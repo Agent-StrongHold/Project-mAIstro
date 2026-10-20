@@ -43,6 +43,7 @@ from maistro.graph import Graph, Node
 from maistro.persistence.pg_audit import PgAuditLog
 from maistro.persistence.sqlite_audit import SqliteAuditLog
 from maistro.projects.pg_scope_store import PgProjectScopeStore
+from maistro.projects.scope import ProjectMembership
 from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.projects.sqlite_scope_store import SqliteProjectScopeStore
 from maistro.runs.model import GraphSnapshot, Run, RunStatus
@@ -52,6 +53,7 @@ from maistro.runs.store import InMemoryRunStore, RunIntegrityError
 from maistro.security.sentinel.audit import InMemoryAuditLog
 from maistro.testing.postgres import postgres_dsn
 from maistro.types.security import AuditEntry
+from maistro.workspaces.model import WorkspaceRole
 from maistro.workspaces.pg_store import PgWorkspaceStore
 from maistro.workspaces.sqlite_store import SqliteWorkspaceStore
 from maistro.workspaces.store import InMemoryWorkspaceStore
@@ -623,3 +625,304 @@ def test_every_known_gap_names_a_real_case() -> None:
     universe |= set(MODEL_KEYS)
 
     assert sorted(KNOWN_GAPS - universe) == []
+
+
+# ── #1150: mutation surfaces, not only read/update by id ───────────
+#
+# The adapter cases above cover `get`/`update`. These cover the surfaces a
+# route-local owner check used to guard: delete, move, membership grants, and
+# membership revocation. They are written against the stores directly so a
+# second route cannot make them pass by checking first.
+
+
+async def test_workspace_membership_surfaces_are_store_scoped(stores: Stores) -> None:
+    owner = await stores.enrol("membership-owner")
+    member = await stores.enrol("membership-member")
+    stranger = await stores.enrol("membership-stranger")
+
+    await stores.workspaces.set_membership(
+        owner.workspace_id,
+        user_id=member.principal_id,
+        role=WorkspaceRole.MEMBER,
+        principal_id=owner.principal_id,
+    )
+
+    # A stranger can neither observe the roster nor mutate it.
+    with pytest.raises(_REFUSALS):
+        await stores.workspaces.list_memberships(
+            owner.workspace_id, principal_id=stranger.principal_id
+        )
+    with pytest.raises(_REFUSALS):
+        await stores.workspaces.get_membership(
+            owner.workspace_id, user_id=member.principal_id, principal_id=stranger.principal_id
+        )
+    with pytest.raises(_REFUSALS):
+        await stores.workspaces.set_membership(
+            owner.workspace_id,
+            user_id=stranger.principal_id,
+            role=WorkspaceRole.OWNER,
+            principal_id=stranger.principal_id,
+        )
+    with pytest.raises(_REFUSALS):
+        await stores.workspaces.remove_membership(
+            owner.workspace_id, user_id=owner.principal_id, principal_id=stranger.principal_id
+        )
+
+    # A plain member may read the roster but may not grant authority.
+    await stores.workspaces.list_memberships(owner.workspace_id, principal_id=member.principal_id)
+    with pytest.raises(_REFUSALS):
+        await stores.workspaces.set_membership(
+            owner.workspace_id,
+            user_id=stranger.principal_id,
+            role=WorkspaceRole.MEMBER,
+            principal_id=member.principal_id,
+        )
+    # A member cannot re-role themselves into ownership either.
+    with pytest.raises(_REFUSALS):
+        await stores.workspaces.set_membership(
+            owner.workspace_id,
+            user_id=member.principal_id,
+            role=WorkspaceRole.OWNER,
+            principal_id=member.principal_id,
+        )
+    # Renaming is an owner mutation, not a member read.
+    workspace = await stores.workspaces.get(owner.workspace_id, principal_id=owner.principal_id)
+    assert workspace is not None
+    with pytest.raises(_REFUSALS):
+        await stores.workspaces.update(
+            workspace.model_copy(update={"name": "member-rename"}),
+            principal_id=member.principal_id,
+        )
+
+    # None of the refused calls landed.
+    roster = await stores.workspaces.list_memberships(
+        owner.workspace_id, principal_id=owner.principal_id
+    )
+    assert {entry.user_id for entry in roster} == {
+        owner.principal_id,
+        member.principal_id,
+    }
+    assert (
+        await stores.workspaces.get_membership(
+            owner.workspace_id, user_id=owner.principal_id, principal_id=owner.principal_id
+        )
+    ).role is WorkspaceRole.OWNER
+
+    # Leaving is not owner-only: the member may remove themselves, and only
+    # themselves.
+    await stores.workspaces.remove_membership(
+        owner.workspace_id,
+        user_id=member.principal_id,
+        principal_id=member.principal_id,
+    )
+    assert (
+        await stores.workspaces.get_membership(
+            owner.workspace_id, user_id=member.principal_id, principal_id=owner.principal_id
+        )
+        is None
+    )
+
+    # A blank principal is a refusal, not an absent one.
+    with pytest.raises(_REFUSALS):
+        await stores.workspaces.list_memberships(owner.workspace_id, principal_id="  ")
+
+
+async def test_workspace_delete_is_store_scoped(stores: Stores) -> None:
+    owner = await stores.enrol("delete-owner")
+    outsider = await stores.enrol("delete-outsider")
+
+    with pytest.raises(_REFUSALS):
+        await stores.workspaces.delete(owner.workspace_id, principal_id=outsider.principal_id)
+    with pytest.raises(_REFUSALS):
+        await stores.workspaces.delete(owner.workspace_id, principal_id="")
+    assert await stores.workspaces.get(owner.workspace_id) is not None
+
+    # The owner's scoped delete lands; the unscoped call remains the internal
+    # composition shape for bootstrap and migration code.
+    await stores.workspaces.delete(owner.workspace_id, principal_id=owner.principal_id)
+    assert await stores.workspaces.get(owner.workspace_id) is None
+
+
+async def test_project_tree_mutations_are_store_scoped(stores: Stores) -> None:
+    owner = await stores.enrol("project-owner")
+    outsider = await stores.enrol("project-outsider")
+    member = await stores.enrol("project-member")
+    await stores.workspaces.set_membership(
+        owner.workspace_id,
+        user_id=member.principal_id,
+        role=WorkspaceRole.MEMBER,
+        principal_id=owner.principal_id,
+    )
+    root = await stores.projects.root_for_workspace(owner.workspace_id)
+    child = await stores.projects.create(
+        workspace_id=owner.workspace_id,
+        parent_project_id=root.project_id,
+        name="Child",
+    )
+    grandchild = await stores.projects.create(
+        workspace_id=owner.workspace_id,
+        parent_project_id=child.project_id,
+        name="Grandchild",
+    )
+
+    # Read surfaces that used to be unscoped.
+    with pytest.raises(_REFUSALS):
+        await stores.projects.root_for_workspace(
+            owner.workspace_id, principal_id=outsider.principal_id
+        )
+    with pytest.raises(_REFUSALS):
+        await stores.projects.lineage(grandchild.project_id, principal_id=outsider.principal_id)
+    with pytest.raises(_REFUSALS):
+        await stores.projects.list_children(root.project_id, principal_id=outsider.principal_id)
+    with pytest.raises(_REFUSALS):
+        await stores.projects.visible_resources(
+            grandchild.project_id, principal_id=outsider.principal_id
+        )
+
+    # Mutations are owner-only at the store, not only in the route. A plain
+    # Workspace member can see the tree but cannot change its defaults.
+    await stores.projects.list_children(root.project_id, principal_id=member.principal_id)
+    assert (
+        await stores.projects.root_for_workspace(
+            owner.workspace_id, principal_id=member.principal_id
+        )
+    ).project_id == root.project_id
+    with pytest.raises(_REFUSALS):
+        await stores.projects.create(
+            workspace_id=owner.workspace_id,
+            parent_project_id=root.project_id,
+            name="member-child",
+            principal_id=member.principal_id,
+        )
+    with pytest.raises(_REFUSALS):
+        await stores.projects.update_defaults(
+            child.project_id,
+            defaults={"model": "member-choice"},
+            principal_id=member.principal_id,
+        )
+    with pytest.raises(_REFUSALS):
+        await stores.projects.move_project(
+            grandchild.project_id,
+            parent_project_id=root.project_id,
+            principal_id=outsider.principal_id,
+        )
+    with pytest.raises(_REFUSALS):
+        await stores.projects.delete(grandchild.project_id, principal_id=outsider.principal_id)
+    with pytest.raises(_REFUSALS):
+        await stores.projects.delete(grandchild.project_id, principal_id="")
+    current = await stores.projects.get(grandchild.project_id)
+    assert current is not None and current.parent_project_id == child.project_id
+
+    assert {
+        project.project_id
+        for project in await stores.projects.list_children(
+            root.project_id, principal_id=owner.principal_id
+        )
+    } == {child.project_id}
+
+    moved = await stores.projects.move_project(
+        grandchild.project_id,
+        parent_project_id=root.project_id,
+        principal_id=owner.principal_id,
+    )
+    assert moved.parent_project_id == root.project_id
+    await stores.projects.delete(grandchild.project_id, principal_id=owner.principal_id)
+    assert await stores.projects.get(grandchild.project_id) is None
+
+
+async def test_project_membership_surfaces_are_store_scoped(stores: Stores) -> None:
+    owner = await stores.enrol("project-membership-owner")
+    outsider = await stores.enrol("project-membership-outsider")
+    target = await stores.enrol("project-membership-target")
+    project = await stores.project_in(owner)
+
+    def grant() -> ProjectMembership:
+        return ProjectMembership(
+            workspace_id=owner.workspace_id,
+            project_id=project,
+            principal_id=target.principal_id,
+            grants={"read"},
+        )
+
+    with pytest.raises(_REFUSALS):
+        await stores.projects.set_membership(grant(), principal_id=outsider.principal_id)
+    with pytest.raises(_REFUSALS):
+        await stores.projects.merge_membership(grant(), principal_id=outsider.principal_id)
+    with pytest.raises(_REFUSALS):
+        await stores.projects.memberships_for(project, acting_principal_id=outsider.principal_id)
+    with pytest.raises(_REFUSALS):
+        await stores.projects.remove_membership(
+            project,
+            principal_id=target.principal_id,
+            acting_principal_id=outsider.principal_id,
+        )
+
+    # A plain Workspace member is not an owner, but may exercise only the
+    # delegable grant the owner actually issued to them.
+    member = await stores.enrol("project-membership-delegate")
+    delegation_project = await stores.project_in(owner)
+    await stores.workspaces.set_membership(
+        owner.workspace_id,
+        user_id=member.principal_id,
+        role=WorkspaceRole.MEMBER,
+        principal_id=owner.principal_id,
+    )
+    await stores.projects.set_membership(
+        ProjectMembership(
+            workspace_id=owner.workspace_id,
+            project_id=delegation_project,
+            principal_id=member.principal_id,
+            grants={"read"},
+            delegable_grants={"read"},
+        ),
+        principal_id=owner.principal_id,
+    )
+
+    def delegated_grant(action: str) -> ProjectMembership:
+        return ProjectMembership(
+            workspace_id=owner.workspace_id,
+            project_id=delegation_project,
+            principal_id=target.principal_id,
+            grants={action},
+        )
+
+    await stores.projects.set_membership(delegated_grant("read"), principal_id=member.principal_id)
+    with pytest.raises(_REFUSALS):
+        await stores.projects.set_membership(
+            delegated_grant("publish"), principal_id=member.principal_id
+        )
+    with pytest.raises(_REFUSALS):
+        await stores.projects.set_membership(
+            ProjectMembership(
+                workspace_id=owner.workspace_id,
+                project_id=delegation_project,
+                principal_id=target.principal_id,
+                denies={"read"},
+            ),
+            principal_id=member.principal_id,
+        )
+
+    # Nothing landed, and the owner's scoped calls still work.
+    assert (
+        await stores.projects.memberships_for(project, acting_principal_id=owner.principal_id) == []
+    )
+    stored = await stores.projects.set_membership(grant(), principal_id=owner.principal_id)
+    assert stored.principal_id == target.principal_id
+    assert [
+        membership.principal_id
+        for membership in await stores.projects.memberships_for(
+            project, acting_principal_id=owner.principal_id
+        )
+    ] == [target.principal_id]
+    await stores.projects.remove_membership(
+        project,
+        principal_id=target.principal_id,
+        acting_principal_id=owner.principal_id,
+    )
+    assert (
+        await stores.projects.memberships_for(project, acting_principal_id=owner.principal_id) == []
+    )
+
+    # A blank acting principal is refused even when the subject is valid.
+    with pytest.raises(_REFUSALS):
+        await stores.projects.memberships_for(project, acting_principal_id=" ")

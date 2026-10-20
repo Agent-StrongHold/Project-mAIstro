@@ -296,7 +296,9 @@ async def add_workspace_member(
         raise HTTPException(status_code=404, detail="workspace not found")
     if await member_role(requester, workspace_id) != "owner":
         raise HTTPException(status_code=403, detail="only an owner can add workspace members")
-    return await set_member(workspace_id, user_id=body.user_id, role=body.role)
+    return await set_member(
+        workspace_id, user_id=body.user_id, role=body.role, principal_id=requester
+    )
 
 
 @router.delete("/{workspace_id}/members/{user_id}", response_model=Workspace)
@@ -314,7 +316,7 @@ async def remove_workspace_member(workspace_id: str, user_id: str, request: Requ
         raise HTTPException(status_code=403, detail="only an owner can remove other members")
 
     try:
-        return await remove_member(workspace_id, user_id=user_id)
+        return await remove_member(workspace_id, user_id=user_id, principal_id=requester)
     except WorkspaceAccessDenied as exc:
         raise HTTPException(
             status_code=400, detail="cannot remove the workspace's last owner"
@@ -402,7 +404,7 @@ async def delete_workspace(workspace_id: str, request: Request) -> None:
         raise HTTPException(status_code=404, detail="workspace not found")
     if await member_role(requester, workspace_id) != "owner":
         raise HTTPException(status_code=403, detail="only an owner can delete this workspace")
-    await delete_canonical_workspace(workspace_id)
+    await delete_canonical_workspace(workspace_id, principal_id=requester)
     # The workspaces store's pop hook (registered in
     # `services.agent_materialization`) already cascades this deletion; call
     # it explicitly rather than re-implementing the pop inline -- a second

@@ -113,6 +113,10 @@ class SqliteWorkspaceStore:
             raise TypeError(msg)
         self._conn = conn
         self._project_store: DurableProjectScopeStore = project_store
+        # Pairing is the composition point: bind the Project store to this
+        # Workspace store so scoped Project reads cannot run unauthorized
+        # (#1150).
+        self._project_store.bind_workspace_store(self)
 
     @property
     def project_store(self) -> ProjectScopeStore:
@@ -186,14 +190,14 @@ class SqliteWorkspaceStore:
         return Workspace.model_validate_json(row[0])
 
     async def update(self, workspace: Workspace, *, principal_id: str | None = None) -> Workspace:
-        """Persist a changed Workspace and stamp ``updated_at``."""
-        from maistro.workspaces.authorization import WorkspaceAuthorizationDenied
-        from maistro.workspaces.store_boundary import is_blank_principal, require_workspace_view
+        """Persist a changed Workspace and stamp ``updated_at``.
 
-        if principal_id is not None:
-            if is_blank_principal(principal_id):
-                raise WorkspaceAuthorizationDenied
-            await require_workspace_view(self, workspace.workspace_id, principal_id)
+        A supplied principal must administer the Workspace (#1150): renaming
+        or re-describing it is an owner mutation, not a member read.
+        """
+        from maistro.workspaces.store_boundary import authorize_workspace_administer
+
+        await authorize_workspace_administer(self, workspace.workspace_id, principal_id)
         updated = workspace.model_copy(update={"updated_at": datetime.now(UTC)})
         async with self._write_transaction() as conn:
             cursor = await conn.execute(
@@ -211,8 +215,16 @@ class SqliteWorkspaceStore:
                 raise WorkspaceNotFound(workspace.workspace_id)
         return updated
 
-    async def delete(self, workspace_id: str) -> None:
-        """Remove the Workspace, its memberships, and its Projects."""
+    async def delete(self, workspace_id: str, *, principal_id: str | None = None) -> None:
+        """Remove the Workspace, its memberships, and its Projects.
+
+        A supplied principal must administer the Workspace (#1150). The
+        check runs before the write opens, so an outsider's attempt does not
+        touch the rows even if it races a membership change.
+        """
+        from maistro.workspaces.store_boundary import authorize_workspace_administer
+
+        await authorize_workspace_administer(self, workspace_id, principal_id)
         # Purge first, then the Workspace row, in one transaction (#1121).
         # `WorkspaceNotFound` from the row delete rolls the purge back with
         # it, so deleting an absent Workspace touches nothing.
@@ -234,8 +246,16 @@ class SqliteWorkspaceStore:
             rows = await cursor.fetchall()
         return [Workspace.model_validate_json(row[0]) for row in rows]
 
-    async def list_memberships(self, workspace_id: str) -> list[WorkspaceMembership]:
-        """Every membership in the Workspace, ordered by (added_at, user_id)."""
+    async def list_memberships(
+        self, workspace_id: str, *, principal_id: str | None = None
+    ) -> list[WorkspaceMembership]:
+        """Every membership in the Workspace, ordered by (added_at, user_id).
+
+        A supplied principal must be able to view the Workspace (#1150).
+        """
+        from maistro.workspaces.store_boundary import authorize_workspace_view
+
+        await authorize_workspace_view(self, workspace_id, principal_id)
         await self._require_workspace(workspace_id)
         async with self._conn.execute(
             """SELECT payload FROM canonical_workspace_memberships
@@ -251,8 +271,15 @@ class SqliteWorkspaceStore:
         workspace_id: str,
         *,
         user_id: str,
+        principal_id: str | None = None,
     ) -> WorkspaceMembership | None:
-        """One user's membership, or ``None`` when they are not a member."""
+        """One user's membership, or ``None`` when they are not a member.
+
+        A supplied principal must be able to view the Workspace (#1150).
+        """
+        from maistro.workspaces.store_boundary import authorize_workspace_view
+
+        await authorize_workspace_view(self, workspace_id, principal_id)
         await self._require_workspace(workspace_id)
         async with self._conn.execute(
             """SELECT payload FROM canonical_workspace_memberships
@@ -268,12 +295,18 @@ class SqliteWorkspaceStore:
         *,
         user_id: str,
         role: WorkspaceRole,
+        principal_id: str | None = None,
     ) -> WorkspaceMembership:
         """Create or re-role a membership, refusing to strip the last owner.
 
         The roster is read inside `BEGIN IMMEDIATE`, so the write lock is
         taken before the owner count is asked, not after.
+
+        A supplied principal must administer the Workspace (#1150).
         """
+        from maistro.workspaces.store_boundary import authorize_workspace_administer
+
+        await authorize_workspace_administer(self, workspace_id, principal_id)
         async with self._write_transaction():
             await self._require_workspace(workspace_id)
             existing = await self._membership(workspace_id, user_id)
@@ -293,8 +326,19 @@ class SqliteWorkspaceStore:
             await self._write_membership(membership)
         return membership
 
-    async def remove_membership(self, workspace_id: str, *, user_id: str) -> None:
-        """Drop a membership, refusing to strip the last owner."""
+    async def remove_membership(
+        self, workspace_id: str, *, user_id: str, principal_id: str | None = None
+    ) -> None:
+        """Drop a membership, refusing to strip the last owner.
+
+        A supplied principal must administer the Workspace, or be the member
+        removing themselves (#1150).
+        """
+        from maistro.workspaces.store_boundary import authorize_membership_removal
+
+        await authorize_membership_removal(
+            self, workspace_id, user_id=user_id, principal_id=principal_id
+        )
         async with self._write_transaction() as conn:
             await self._require_workspace(workspace_id)
             existing = await self._membership(workspace_id, user_id)

@@ -51,8 +51,9 @@ async def _require_project(
     *,
     workspace_id: str,
     project_id: str,
+    principal_id: str | None = None,
 ) -> Project:
-    project = await store.get(project_id)
+    project = await store.get(project_id, principal_id=principal_id)
     if project is None or project.workspace_id != workspace_id:
         # Do not disclose cross-Workspace Project identifiers.
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
@@ -110,9 +111,10 @@ async def get_root_project(
     workspace_store: Annotated[WorkspaceStore, Depends(get_workspace_store)],
     project_store: Annotated[ProjectScopeStore, Depends(get_project_scope_store)],
 ) -> Project:
-    await require_workspace_membership(workspace_store, workspace_id, user_id(auth))
+    requester = user_id(auth)
+    await require_workspace_membership(workspace_store, workspace_id, requester)
     try:
-        return await project_store.root_for_workspace(workspace_id)
+        return await project_store.root_for_workspace(workspace_id, principal_id=requester)
     except ProjectNotFound as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Project not found"
@@ -127,11 +129,13 @@ async def get_project(
     workspace_store: Annotated[WorkspaceStore, Depends(get_workspace_store)],
     project_store: Annotated[ProjectScopeStore, Depends(get_project_scope_store)],
 ) -> Project:
-    await require_workspace_membership(workspace_store, workspace_id, user_id(auth))
+    requester = user_id(auth)
+    await require_workspace_membership(workspace_store, workspace_id, requester)
     return await _require_project(
         project_store,
         workspace_id=workspace_id,
         project_id=project_id,
+        principal_id=requester,
     )
 
 
@@ -143,9 +147,15 @@ async def list_project_children(
     workspace_store: Annotated[WorkspaceStore, Depends(get_workspace_store)],
     project_store: Annotated[ProjectScopeStore, Depends(get_project_scope_store)],
 ) -> list[Project]:
-    await require_workspace_membership(workspace_store, workspace_id, user_id(auth))
-    await _require_project(project_store, workspace_id=workspace_id, project_id=project_id)
-    return await project_store.list_children(project_id)
+    requester = user_id(auth)
+    await require_workspace_membership(workspace_store, workspace_id, requester)
+    await _require_project(
+        project_store,
+        workspace_id=workspace_id,
+        project_id=project_id,
+        principal_id=requester,
+    )
+    return await project_store.list_children(project_id, principal_id=requester)
 
 
 @router.post("", response_model=Project, status_code=status.HTTP_201_CREATED)
@@ -156,11 +166,13 @@ async def create_project(
     workspace_store: Annotated[WorkspaceStore, Depends(get_workspace_store)],
     project_store: Annotated[ProjectScopeStore, Depends(get_project_scope_store)],
 ) -> Project:
-    await require_workspace_owner(workspace_store, workspace_id, user_id(auth))
+    requester = user_id(auth)
+    await require_workspace_owner(workspace_store, workspace_id, requester)
     await _require_project(
         project_store,
         workspace_id=workspace_id,
         project_id=body.parent_project_id,
+        principal_id=requester,
     )
     try:
         return await project_store.create(
@@ -169,6 +181,7 @@ async def create_project(
             name=body.name,
             defaults=body.defaults,
             metadata=body.metadata,
+            principal_id=requester,
         )
     except ProjectIntegrityError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
@@ -183,17 +196,25 @@ async def move_project(
     workspace_store: Annotated[WorkspaceStore, Depends(get_workspace_store)],
     project_store: Annotated[ProjectScopeStore, Depends(get_project_scope_store)],
 ) -> Project:
-    await require_workspace_owner(workspace_store, workspace_id, user_id(auth))
-    await _require_project(project_store, workspace_id=workspace_id, project_id=project_id)
+    requester = user_id(auth)
+    await require_workspace_owner(workspace_store, workspace_id, requester)
+    await _require_project(
+        project_store,
+        workspace_id=workspace_id,
+        project_id=project_id,
+        principal_id=requester,
+    )
     await _require_project(
         project_store,
         workspace_id=workspace_id,
         project_id=body.parent_project_id,
+        principal_id=requester,
     )
     try:
         return await project_store.move_project(
             project_id,
             parent_project_id=body.parent_project_id,
+            principal_id=requester,
         )
     except (ProjectIntegrityError, ProjectNotFound) as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
@@ -208,9 +229,17 @@ async def update_project_defaults(
     workspace_store: Annotated[WorkspaceStore, Depends(get_workspace_store)],
     project_store: Annotated[ProjectScopeStore, Depends(get_project_scope_store)],
 ) -> Project:
-    await require_workspace_owner(workspace_store, workspace_id, user_id(auth))
-    await _require_project(project_store, workspace_id=workspace_id, project_id=project_id)
-    return await project_store.update_defaults(project_id, defaults=body.defaults)
+    requester = user_id(auth)
+    await require_workspace_owner(workspace_store, workspace_id, requester)
+    await _require_project(
+        project_store,
+        workspace_id=workspace_id,
+        project_id=project_id,
+        principal_id=requester,
+    )
+    return await project_store.update_defaults(
+        project_id, defaults=body.defaults, principal_id=requester
+    )
 
 
 @router.delete("/{project_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -221,10 +250,16 @@ async def delete_project(
     workspace_store: Annotated[WorkspaceStore, Depends(get_workspace_store)],
     project_store: Annotated[ProjectScopeStore, Depends(get_project_scope_store)],
 ) -> None:
-    await require_workspace_owner(workspace_store, workspace_id, user_id(auth))
-    await _require_project(project_store, workspace_id=workspace_id, project_id=project_id)
+    requester = user_id(auth)
+    await require_workspace_owner(workspace_store, workspace_id, requester)
+    await _require_project(
+        project_store,
+        workspace_id=workspace_id,
+        project_id=project_id,
+        principal_id=requester,
+    )
     try:
-        await project_store.delete(project_id)
+        await project_store.delete(project_id, principal_id=requester)
     except (ProjectIntegrityError, ProjectNotFound) as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
@@ -237,9 +272,15 @@ async def list_project_memberships(
     workspace_store: Annotated[WorkspaceStore, Depends(get_workspace_store)],
     project_store: Annotated[ProjectScopeStore, Depends(get_project_scope_store)],
 ) -> list[ProjectMembership]:
-    await require_workspace_owner(workspace_store, workspace_id, user_id(auth))
-    await _require_project(project_store, workspace_id=workspace_id, project_id=project_id)
-    return await project_store.memberships_for(project_id)
+    requester = user_id(auth)
+    await require_workspace_owner(workspace_store, workspace_id, requester)
+    await _require_project(
+        project_store,
+        workspace_id=workspace_id,
+        project_id=project_id,
+        principal_id=requester,
+    )
+    return await project_store.memberships_for(project_id, acting_principal_id=requester)
 
 
 @router.post(
@@ -261,7 +302,12 @@ async def add_project_membership(
         workspace_id,
         requester,
     )
-    await _require_project(project_store, workspace_id=workspace_id, project_id=project_id)
+    await _require_project(
+        project_store,
+        workspace_id=workspace_id,
+        project_id=project_id,
+        principal_id=requester,
+    )
 
     denies = body.denies
     grants = body.grants
@@ -304,7 +350,8 @@ async def add_project_membership(
                 grants=grants,
                 denies=denies,
                 delegable_grants=delegable_grants,
-            )
+            ),
+            principal_id=requester,
         )
 
     membership = ProjectMembership(
@@ -317,7 +364,7 @@ async def add_project_membership(
         delegable_grants=delegable_grants,
     )
     try:
-        return await project_store.set_membership(membership)
+        return await project_store.set_membership(membership, principal_id=requester)
     except ProjectIntegrityError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
@@ -332,9 +379,19 @@ async def remove_project_membership(
     project_store: Annotated[ProjectScopeStore, Depends(get_project_scope_store)],
 ) -> None:
     """Revoke one Project membership without leaving a stale grant row."""
-    await require_workspace_owner(workspace_store, workspace_id, user_id(auth))
-    await _require_project(project_store, workspace_id=workspace_id, project_id=project_id)
-    await project_store.remove_membership(project_id, principal_id=principal_id)
+    requester = user_id(auth)
+    await require_workspace_owner(workspace_store, workspace_id, requester)
+    await _require_project(
+        project_store,
+        workspace_id=workspace_id,
+        project_id=project_id,
+        principal_id=requester,
+    )
+    await project_store.remove_membership(
+        project_id,
+        principal_id=principal_id,
+        acting_principal_id=requester,
+    )
 
 
 __all__ = ["get_project_scope_store", "remove_project_membership", "router"]

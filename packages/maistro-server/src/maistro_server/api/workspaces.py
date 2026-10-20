@@ -111,8 +111,9 @@ async def get_workspace(
     Membership is checked before the fetch, so a non-member gets the access
     error rather than a 404 that would confirm the Workspace exists.
     """
-    await require_workspace_membership(store, workspace_id, authenticated_user_id(auth))
-    workspace = await store.get(workspace_id)
+    requester = authenticated_user_id(auth)
+    await require_workspace_membership(store, workspace_id, requester)
+    workspace = await store.get(workspace_id, principal_id=requester)
     if workspace is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Workspace not found")
     return workspace
@@ -130,8 +131,9 @@ async def update_workspace(
     Absent fields are left alone rather than cleared, so a caller sending one
     field does not blank the other.
     """
-    await require_workspace_owner(store, workspace_id, authenticated_user_id(auth))
-    workspace = await store.get(workspace_id)
+    requester = authenticated_user_id(auth)
+    await require_workspace_owner(store, workspace_id, requester)
+    workspace = await store.get(workspace_id, principal_id=requester)
     if workspace is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Workspace not found")
     updates: dict[str, object] = {}
@@ -139,7 +141,7 @@ async def update_workspace(
         updates["name"] = body.name
     if body.description is not None:
         updates["description"] = body.description
-    return await store.update(workspace.model_copy(update=updates))
+    return await store.update(workspace.model_copy(update=updates), principal_id=requester)
 
 
 @router.delete("/{workspace_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -153,9 +155,10 @@ async def delete_workspace(
     Refuses with 409 when the store reports the Workspace still owns something
     that would be orphaned by removing it.
     """
-    await require_workspace_owner(store, workspace_id, authenticated_user_id(auth))
+    requester = authenticated_user_id(auth)
+    await require_workspace_owner(store, workspace_id, requester)
     try:
-        await store.delete(workspace_id)
+        await store.delete(workspace_id, principal_id=requester)
     except WorkspaceOwnershipError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
@@ -170,8 +173,9 @@ async def list_members(
 
     Members can see who else belongs; changing membership is owner-only.
     """
-    await require_workspace_membership(store, workspace_id, authenticated_user_id(auth))
-    return await store.list_memberships(workspace_id)
+    requester = authenticated_user_id(auth)
+    await require_workspace_membership(store, workspace_id, requester)
+    return await store.list_memberships(workspace_id, principal_id=requester)
 
 
 @router.put("/{workspace_id}/members/{user_id}", response_model=WorkspaceMembership)
@@ -188,9 +192,12 @@ async def set_member(
     error. 409 when the store refuses the change -- removing the last owner
     through a role downgrade is the case that matters.
     """
-    await require_workspace_owner(store, workspace_id, authenticated_user_id(auth))
+    requester = authenticated_user_id(auth)
+    await require_workspace_owner(store, workspace_id, requester)
     try:
-        return await store.set_membership(workspace_id, user_id=user_id, role=body.role)
+        return await store.set_membership(
+            workspace_id, user_id=user_id, role=body.role, principal_id=requester
+        )
     except WorkspaceAccessDenied as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
@@ -216,7 +223,7 @@ async def remove_member(
             detail="Workspace owner permission required",
         )
     try:
-        await store.remove_membership(workspace_id, user_id=user_id)
+        await store.remove_membership(workspace_id, user_id=user_id, principal_id=requester)
     except WorkspaceAccessDenied as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 

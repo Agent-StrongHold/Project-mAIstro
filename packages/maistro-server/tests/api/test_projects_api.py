@@ -605,15 +605,26 @@ async def test_owner_revocation_racing_a_delegated_regrant_cannot_resurrect_the_
     real_remove = projects.remove_membership
     revoked = asyncio.Event()
 
-    async def revocation_lands_first(project_id: str, *, principal_id: str) -> None:
-        await real_remove(project_id, principal_id=principal_id)
+    async def revocation_lands_first(
+        project_id: str,
+        *,
+        principal_id: str,
+        acting_principal_id: str | None = None,
+    ) -> None:
+        await real_remove(
+            project_id,
+            principal_id=principal_id,
+            acting_principal_id=acting_principal_id,
+        )
         revoked.set()
 
     async def merge_only_after_revocation(
         membership: ProjectMembership,
+        *,
+        principal_id: str | None = None,
     ) -> ProjectMembership:
         await revoked.wait()
-        return await real_merge(membership)
+        return await real_merge(membership, principal_id=principal_id)
 
     monkeypatch.setattr(projects, "remove_membership", revocation_lands_first)
     monkeypatch.setattr(projects, "merge_membership", merge_only_after_revocation)

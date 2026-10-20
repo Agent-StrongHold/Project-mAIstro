@@ -1,42 +1,85 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: 0
+  packages/maistro-core/tests: +8
 ---
-# Issue 1150 authorization service inventory (reconciled via develop sync)
+# Issue 1150: Workspace/Project authorization at the store boundary
 
-This branch previously shipped `maistro.workspaces.access`
-(`AuthorizedWorkspaceProjectService`, `WorkspaceProjectAccessDenied`) as a
-*service-facade* authorization seam, together with `test_authorized_service.py`
-(six collected parametrized nodes over in-memory, SQLite, and configured
-PostgreSQL backends). That delta (+6) applied only to the pre-develop-sync tree.
+## Reconciliation with develop
 
-During the develop sync, #1150 was already resolved canonically on develop via
+Develop already owns the canonical authorization primitives:
 `maistro/workspaces/authorization.py` (`WorkspaceAction`,
 `WorkspaceAuthorizer.require`) and `maistro/workspaces/store_boundary.py`
-(`require_workspace_view` / `require_project_view` / `is_blank_principal`),
-with scope enforcement moved into the stores (`principal_id` flows all the way
-to `WorkspaceStore` / `ProjectScopeStore` / `RunStore`) and verified by the
-`test_store_boundary_scope_conformance.py` conformance oracle
-(#1809/#364, `KNOWN_GAPS = frozenset()` — green on memory, SQLite, and
-PostgreSQL backends). That makes the branch's facade a **competing
-authorization path**, which the campaign rules forbid.
+(`require_workspace_view`, `require_project_view`, `is_blank_principal`).
+`test_store_boundary_scope_conformance.py` is the conformance oracle for the
+stores that the Workspace consumes (#1809/#364, `KNOWN_GAPS = frozenset()`).
 
-Resolution taken here (one canonical authorization boundary, develop's):
+This branch does not add a second service/facade with its own denial type.
+Authorization stays in those primitives, and the previously route-local
+owner/member checks move down to the stores that product consumers can reach.
 
-* `git rm` `access.py` and `test_authorized_service.py` — the competing facade
-  and its six-node test are superseded by develop's canonical scope-in-stores
-  boundary and the conformance oracle.
-* The 10 merge-conflict regions (plus `scheduler.py`) adopt develop's versions,
-  so all wiring routes through `WorkspaceAuthorizer` + `require_delegable_grant`
-  / `require_*_view`, never the removed facade.
-* Develop's own boundary suites (`test_workspace_authorizer.py`,
-  `test_store_boundary_gates.py`, `test_store_boundary_scope_conformance.py`)
-  are already recorded in `docs/testing/inventory/baseline.json` on develop and
-  require **no** additional delta here.
+## What was still unscoped (+8 inventory delta)
 
-Net inventory delta for this resolution: **0** (the +6 facade test is voided by
-removal; the boundary is covered by develop's baseline-counted suites). The
-PostgreSQL leg of the conformance oracle is exercised via `MAISTRO_TEST_PG_DSN`
-(skipped unless set, required when `MAISTRO_REQUIRE_PG_LEGS` is set), per
-#1150's "green on all supported backends" criterion; the dedicated migrated
-instance is taken down after the gate passes.
+`get`, `update_defaults` and `transition_run` already accepted a principal,
+but these by-id mutation and membership surfaces did not:
+
+* `WorkspaceStore.delete`, `list_memberships`, `get_membership`,
+  `set_membership`, `remove_membership`, and `update` (read-semantics);
+* `ProjectScopeStore.create`, `delete`, `move_project`, `lineage`,
+  `list_children`, `memberships_for`, `set_membership`, `merge_membership`,
+  `remove_membership`, `put_resource`, `root_for_workspace`,
+  `visible_resources`, and `update_defaults` (which previously authorized
+  VIEW despite being an owner mutation).
+
+A caller that reached the store directly -- `hive-conductor`'s
+`services/workspace_authority.py` did -- crossed Workspace boundaries without
+consulting `WorkspaceAuthorizer`. The maistro-server routes passed a route
+check but then called the unscoped store, so the invariant depended on route
+convention.
+
+## Resolution
+
+* Every method above takes an acting principal and enforces the same
+  `WorkspaceAuthorizer` decision inside the memory, SQLite and PostgreSQL
+  stores: VIEW for roster reads, ADMINISTER for Workspace update/delete and
+  Project tree/membership mutation.
+* Project membership grants additionally re-run `require_delegable_grant` for
+  every action a non-owner would add, and refuse non-owner denies, so the
+  store cannot be used to issue authority the route would have refused.
+* Removing a membership keeps the self-service exception in the seam: a
+  principal removing themselves needs VIEW; removing anyone else needs
+  ADMINISTER.
+* `None` is the explicit internal/system call shape (bootstrap, migration);
+  a blank principal is a refusal. A missing foreign record, a foreign record
+  and a blank principal produce the same denial.
+* Workspace-store construction binds the paired Project store, so the
+  canonical composition cannot leave the boundary unwired.
+* The maistro-server Workspace/Project routes now pass the requester into the
+  store calls they already authorize, Hive's `workspace_authority` passes the
+  principal for set/remove/delete, and Hive's DAG admission passes the
+  authenticated user into the Workspace/Project reads it used to make
+  unscoped.
+
+## Tests
+
+`test_store_boundary_scope_conformance.py` gains four cases, collected on the
+memory and SQLite legs here (+8) and on the PostgreSQL leg when
+`MAISTRO_TEST_PG_DSN` is set:
+
+* `test_workspace_membership_surfaces_are_store_scoped`
+* `test_workspace_delete_is_store_scoped`
+* `test_project_tree_mutations_are_store_scoped`
+* `test_project_membership_surfaces_are_store_scoped`
+
+They exercise a stranger, a plain member and an owner separately, assert the
+refused mutation did not land, cover self-removal, blank-principal refusal,
+member self-promotion refusal, and delegable-grant versus non-delegable/deny
+refusal.
+
+Validation run:
+
+* `MAISTRO_TEST_PG_DSN=... pytest packages/maistro-core/tests/workspaces
+  packages/maistro-core/tests/projects packages/maistro-core/tests/runs -q`
+  -> 2218 passed, 7 skipped
+* `pytest` on the maistro-server Workspace/Project/Run APIs and the Hive
+  workspace/HITL/DAG scope suites -> 231 passed, 5 skipped
+* `ruff check`, `ruff format --check`, `check-suite-inventory.py`

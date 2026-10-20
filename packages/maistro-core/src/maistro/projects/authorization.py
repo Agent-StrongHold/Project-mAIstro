@@ -4,8 +4,13 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
+from maistro.projects.scope import Project, ProjectMembership, ProjectScopeDenied
 from maistro.projects.scope_store import ProjectScopeStore
+
+if TYPE_CHECKING:
+    from maistro.workspaces.store import WorkspaceStore
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,8 +97,55 @@ async def require_delegable_grant(
         )
 
 
+async def authorize_membership_write(
+    store: ProjectScopeStore,
+    *,
+    project: Project,
+    workspace_store: WorkspaceStore,
+    membership: ProjectMembership,
+    principal_id: str | None,
+) -> None:
+    """Authorize a Project membership grant at the store boundary (#1150).
+
+    ADMINISTER (Workspace OWNER) may issue any grant or deny. A plain member
+    may only add actions they can themselves delegate, and may not issue
+    denies -- the same rule the HTTP route applies, resolved here so a caller
+    that reaches the store directly cannot skip it. ``None`` is the
+    internal/system shape; a blank principal is a refusal.
+    """
+    if principal_id is None:
+        return
+
+    from maistro.workspaces.store_boundary import (
+        is_blank_principal,
+        require_project_administer,
+    )
+
+    if is_blank_principal(principal_id):
+        raise ProjectScopeDenied("Project not found")
+    try:
+        await require_project_administer(project, workspace_store, principal_id)
+        return
+    except ProjectScopeDenied:
+        pass
+
+    if membership.denies:
+        raise ProjectScopeDenied("Project not found")
+    for action in sorted(membership.grants | membership.delegable_grants):
+        try:
+            await require_delegable_grant(
+                store,
+                project_id=membership.project_id,
+                principal_id=principal_id,
+                action=action,
+            )
+        except PermissionError as exc:
+            raise ProjectScopeDenied("Project not found") from exc
+
+
 __all__ = [
     "EffectiveAuthorization",
+    "authorize_membership_write",
     "require_delegable_grant",
     "resolve_project_authorization",
 ]
