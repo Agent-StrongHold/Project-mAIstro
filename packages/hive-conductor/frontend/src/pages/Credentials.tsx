@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { apiDelete, apiGet, apiPut } from "../lib/api";
+import { apiDelete, apiGet, apiPost, apiPut } from "../lib/api";
 import { AuthorizationNotice } from "../components/Authorization";
 import { LlmProviders } from "../components/LlmProviders";
 import { useAuthorization } from "../context/AuthorizationContext";
@@ -19,10 +19,22 @@ type CredentialRow = {
   help_url: string;
   placeholder: string;
   configured: boolean;
+  enabled: boolean;
   updated_at?: string | null;
   config_fields?: ConfigField[];
   config_values?: Record<string, string>;
 };
+
+/**
+ * Non-secret configuration saved before the first key. `configured` names the
+ * vault secret only, but the backend deletes a generic-gateway draft's config
+ * too (`DELETE` removes secret and metadata), so a config-only draft must stay
+ * deletable — otherwise a saved-but-keyless endpoint can only be removed by
+ * hand.
+ */
+function hasDraftConfig(row: CredentialRow): boolean {
+  return row.id === "openai_compatible" && Object.keys(row.config_values ?? {}).length > 0;
+}
 
 export default function Credentials() {
   const [rows, setRows] = useState<CredentialRow[]>([]);
@@ -98,6 +110,46 @@ export default function Credentials() {
     }
   }
 
+  async function testGateway(providerId: string) {
+    const config = configDrafts[providerId] ?? {};
+    const secret = drafts[providerId]?.trim();
+    setSaving(providerId);
+    setError(null);
+    setMessage(null);
+    try {
+      const result = await apiPost<{
+        models: string[];
+        model_count: number;
+      }>(`/v1/credentials/${providerId}/test`, {
+        config,
+        ...(secret ? { secret } : {}),
+      });
+      setMessage(`${providerId}: connectivity verified; discovered ${result.model_count} model${result.model_count === 1 ? "" : "s"}.`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Connectivity test failed");
+    } finally {
+      setSaving(null);
+    }
+  }
+
+  async function setEnabled(providerId: string, enabled: boolean) {
+    setSaving(providerId);
+    setError(null);
+    setMessage(null);
+    try {
+      await apiPut(`/v1/credentials/${providerId}/config`, {
+        config: configDrafts[providerId] ?? {},
+        enabled,
+      });
+      setMessage(`${providerId}: ${enabled ? "enabled" : "disabled"}`);
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not change provider state");
+    } finally {
+      setSaving(null);
+    }
+  }
+
   async function remove(providerId: string) {
     setSaving(providerId);
     setError(null);
@@ -167,7 +219,7 @@ export default function Credentials() {
                     fontSize: 12,
                   }}
                 >
-                  {row.configured ? "configured" : "missing"}
+                  {row.configured ? (row.enabled ? "configured" : "disabled") : "missing"}
                 </span>
               </div>
 
@@ -210,7 +262,18 @@ export default function Credentials() {
                 >
                   {saving === row.id ? "saving…" : "save"}
                 </button>
-                {row.configured && (
+                {row.id === "openai_compatible" && row.configured && (
+                  <button
+                    type="button"
+                    className="btn"
+                    disabled={saving === row.id}
+                    onClick={() => void setEnabled(row.id, !row.enabled)}
+                    style={{ fontSize: 9 }}
+                  >
+                    {row.enabled ? "disable" : "enable"}
+                  </button>
+                )}
+                {(row.configured || hasDraftConfig(row)) && (
                   <button
                     type="button"
                     className="btn"
@@ -218,7 +281,7 @@ export default function Credentials() {
                     onClick={() => void remove(row.id)}
                     style={{ fontSize: 12 }}
                   >
-                    remove
+                    delete
                   </button>
                 )}
               </div>
@@ -302,6 +365,17 @@ export default function Credentials() {
                   >
                     {saving === row.id ? "saving…" : "save config"}
                   </button>
+                  {row.id === "openai_compatible" && (
+                    <button
+                      type="button"
+                      className="btn btn-accent"
+                      disabled={saving === row.id}
+                      onClick={() => void testGateway(row.id)}
+                      style={{ fontSize: 9, marginTop: 4, marginLeft: 6 }}
+                    >
+                      test & discover models
+                    </button>
+                  )}
                 </div>
               )}
             </article>

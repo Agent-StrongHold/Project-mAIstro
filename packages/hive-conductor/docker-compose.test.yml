@@ -18,6 +18,10 @@ services:
         VITE_RUM_BUILD_ID: e2e
     ports:
       - "8101:8101"
+    mem_limit: 1g
+    memswap_limit: 1g
+    pids_limit: 256
+    cpus: 1.0
     environment:
       - PYTHONUNBUFFERED=1
       - HARDWARE_PRESET=beast
@@ -68,6 +72,10 @@ services:
       dockerfile: tests/Dockerfile
     environment:
       - HIVE_BASE_URL=http://hive:8101
+    mem_limit: 512m
+    memswap_limit: 512m
+    pids_limit: 128
+    cpus: 0.5
     depends_on:
       hive:
         condition: service_healthy
@@ -85,6 +93,10 @@ services:
       # reduced CI budget off this, and without it the suite runs at local
       # settings and overruns the job's step timeout. Empty when run locally.
       - CI=${CI:-}
+    mem_limit: 1g
+    memswap_limit: 1g
+    pids_limit: 256
+    cpus: 1.0
     depends_on:
       hive:
         condition: service_healthy
