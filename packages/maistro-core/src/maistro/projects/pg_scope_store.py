@@ -87,14 +87,30 @@ class PgProjectScopeStore:
             raise ProjectScopeDenied("Project not found")
         await require_project_administer(project, workspace_store, principal_id)
 
+    async def _resolve_for_authorization(
+        self, project_id: str, principal_id: str | None
+    ) -> Project:
+        """Resolve the Project, collapsing not-found into the scoped denial.
+
+        The store boundary must not be an existence oracle: with an acting
+        principal, an unknown Project and one in a foreign Workspace are
+        indistinguishable, so both surface as the same `ProjectScopeDenied`.
+        """
+        try:
+            return await self._require(project_id)
+        except ProjectNotFound:
+            if principal_id is None:
+                raise
+            raise ProjectScopeDenied("Project not found") from None
+
     async def _authorize_view(self, project_id: str, principal_id: str | None) -> Project:
-        project = await self._require(project_id)
+        project = await self._resolve_for_authorization(project_id, principal_id)
         if principal_id is not None:
             await self._require_project_view(project, principal_id)
         return project
 
     async def _authorize_administer(self, project_id: str, principal_id: str | None) -> Project:
-        project = await self._require(project_id)
+        project = await self._resolve_for_authorization(project_id, principal_id)
         if principal_id is not None:
             await self._require_project_administer(project, principal_id)
         return project
