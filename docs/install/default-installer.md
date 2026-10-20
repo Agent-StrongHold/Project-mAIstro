@@ -202,7 +202,7 @@ promise per platform:
 | Platform | Runtime | Zero-administrator install? | Boundary |
 |---|---|---|---|
 | Linux (apt/dnf) | Podman (rootless) | Yes, **if podman is already installed** | Rootless podman runs entirely as the invoking account; the installer verifies `podman info` as that account. Installing the podman *package* needs one-time admin. |
-| Linux (apt/dnf) | Docker Engine | No — one-time admin prerequisite | `sudo apt-get install` is confirmed before mutation. The installer never silently adds the invoking user to the docker group (root-equivalent); if the daemon socket is inaccessible to the account afterwards, it reports the prerequisite and stops. |
+| Linux (apt/dnf) | Docker Engine | No — one-time admin prerequisite | `sudo apt-get install` is confirmed before mutation. A missing or denied elevation is a *recoverable prerequisite report*: the installer names the one-time administrator command (`apt-get update && apt-get install -y docker.io docker-compose-plugin`) and says to re-run `./install.sh`, instead of surfacing sudo's own error. The installer never silently adds the invoking user to the docker group (root-equivalent); if the daemon socket is inaccessible to the account afterwards, it reports the prerequisite and stops. |
 | macOS | Colima + docker CLI | Yes | Homebrew and the Colima VM run user-scoped; no admin prompt. |
 | macOS | Docker Desktop | No — one-time admin prerequisite | Its privileged helper and first-run setup require administrator approval. |
 | Windows (WSL2, via get.ps1) | Docker or Podman inside the distro | No — one-time admin prerequisite | Enabling the WSL2/Virtual Machine Platform Windows features needs elevation, requested once, before any Linux-side mutation. |
@@ -223,6 +223,9 @@ inaccessible to the account → actionable failure, never a silent switch
 even with a working Podman on the same host). Sanitized transcripts,
 including the three actionable mid-install failures the runs surfaced:
 [`runtime-selection-evidence-1820.md`](runtime-selection-evidence-1820.md).
+The elevation-denial report, the retry-after-interruption contract, and the
+ownership of the persisted installer state are additionally pinned by
+automated tests (`tests/test_install_runtime_selection.py`).
 The macOS rows and the Windows-side elevation choreography of `get.ps1`
 remain design claims (no such host in the lane); see *Not exercised* there.
 

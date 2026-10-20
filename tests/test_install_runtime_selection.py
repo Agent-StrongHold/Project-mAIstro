@@ -18,9 +18,12 @@ selected runtime, and the documented ``auto`` choice.
 
 from __future__ import annotations
 
+import os
 import shlex
 import subprocess
 from pathlib import Path
+
+import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 INSTALL_SH = ROOT / "install.sh"
@@ -44,9 +47,24 @@ _FUNCTIONS = (
     "print_success",
 )
 
+#: The elevation path of the Linux bootstrap, lifted verbatim as well (#1820).
+#: `bootstrap_apt_docker_runtime` is deliberately NOT in _FUNCTIONS: the
+#: harness stubs it there to record that a bootstrap was OFFERED, and the
+#: stub is what the "never bootstrap the other runtime" assertions read.
+#: Sourcing the real body overrides the stub (the source runs after the
+#: stubs), so the elevation tests exercise the shipped code while the
+#: selection tests keep their recording stub.
+_ELEVATION_FUNCTIONS = (
+    *_FUNCTIONS,
+    "run_elevated",
+    "bootstrap_apt_docker_runtime",
+)
 
-def _harness(shim_dir: Path, plan_dir: Path, prelude: str = "") -> str:
-    extract = ";".join(f"/^{name}()/,/^}}/p" for name in _FUNCTIONS)
+
+def _harness(
+    shim_dir: Path, plan_dir: Path, prelude: str = "", functions: tuple[str, ...] = _FUNCTIONS
+) -> str:
+    extract = ";".join(f"/^{name}()/,/^}}/p" for name in functions)
     install = shlex.quote(str(INSTALL_SH))
     # Hermetic PATH: the shim dir plus a toolbin holding just the coreutils
     # the lifted functions use. A real docker/podman on the host must never
@@ -74,6 +92,11 @@ warn() {{ echo "WARN: $*"; }}
 fail() {{ echo "[error] $*" >&2; exit 1; }}
 is_macos() {{ return 1; }}
 is_wsl() {{ return 1; }}
+# The real confirm() reads from the terminal; under pytest there is none, and
+# a harness that blocked on a read would hang the suite. It records the
+# prompt instead, so a test can assert the elevation was OFFERED before any
+# mutation.
+confirm() {{ echo "confirm: $*" >> confirms.log; return 0; }}
 # Bootstrap stand-ins: real installers touch brew/apt/sudo. Each records its
 # call so a test can prove a runtime bootstrap never ran for the OTHER
 # runtime's selection.
@@ -99,9 +122,14 @@ source <(sed -n {extract!r} {install})
 
 
 def _run(
-    shim_dir: Path, plan_dir: Path, script: str, *, prelude: str = ""
+    shim_dir: Path,
+    plan_dir: Path,
+    script: str,
+    *,
+    prelude: str = "",
+    functions: tuple[str, ...] = _FUNCTIONS,
 ) -> subprocess.CompletedProcess[str]:
-    harness = _harness(shim_dir, plan_dir, prelude=prelude)
+    harness = _harness(shim_dir, plan_dir, prelude=prelude, functions=functions)
     return subprocess.run(
         ["bash", "-c", harness + script],
         capture_output=True,
@@ -109,6 +137,25 @@ def _run(
         check=False,
         cwd=shim_dir,
     )
+
+
+def _write_exec_shim(shim_dir: Path, name: str, *, exit_code: int = 0, stderr: str = "") -> Path:
+    """A stub executable with a fixed outcome.
+
+    Used for the elevation path: a host that HAS apt-get but DENIES the
+    elevation, and a host with no sudo at all. Both must produce the
+    installer's own recoverable prerequisite report rather than a raw shell
+    error.
+    """
+    shim = shim_dir / name
+    shim.write_text(
+        "#!/usr/bin/env bash\n"
+        + (f"echo {shlex.quote(stderr)} >&2\n" if stderr else "")
+        + f"exit {exit_code}\n",
+        encoding="utf-8",
+    )
+    shim.chmod(0o755)
+    return shim
 
 
 def _write_runtime_shim(
@@ -714,3 +761,133 @@ def test_stack_healthchecks_are_podman_safe() -> None:
             assert test[0] == "CMD-SHELL", f"{name}: {test!r} is word-split by podman"
             assert 'python -c "' in test[1], f"{name}: payload must be quoted: {test!r}"
     assert python_probes >= 2, "expected the engine and conductor health probes"
+
+
+# --- the one-time administrator prerequisite must be REPORTABLE ---------------
+
+
+@pytest.mark.skipif(
+    os.geteuid() == 0,
+    reason="root needs no elevation; the denial path only exists for an ordinary account",
+)
+def test_denied_elevation_reports_a_recoverable_prerequisite(tmp_path: Path) -> None:
+    """A denied one-time elevation must produce a recoverable prerequisite
+    report, not a raw sudo error.
+
+    The Linux bootstrap installs Docker Engine with ``sudo apt-get``. Before
+    #1820 that call was unguarded, so a host that denies elevation (no sudo
+    rights, or a password that cannot be supplied) aborted the installer on
+    sudo's own error line: no statement of WHAT the administrator has to do,
+    and no statement that re-running the installer resumes the install. The
+    issue requires the denial to be identified before any mutation and to
+    come back as a prerequisite report.
+    """
+    plan = tmp_path / "plan"
+    _write_plan(plan, "docker", selection="auto")
+    shim_dir = tmp_path / "bin"
+    shim_dir.mkdir()
+    # A Debian-family host (apt-get present) whose elevation is denied.
+    _write_exec_shim(shim_dir, "apt-get")
+    _write_exec_shim(shim_dir, "sudo", exit_code=1, stderr="sudo: a password is required")
+
+    before = {p.name for p in shim_dir.iterdir()}
+    result = _run(
+        shim_dir,
+        plan,
+        "bootstrap_apt_docker_runtime\n",
+        functions=_ELEVATION_FUNCTIONS,
+    )
+
+    assert result.returncode != 0, result.stdout
+    # The report states what the one-time administrator step is, names the
+    # exact command, and says the install resumes afterwards.
+    assert "one-time administrator" in result.stderr, result.stderr
+    assert "apt-get install -y docker.io docker-compose-plugin" in result.stderr, result.stderr
+    assert "re-run ./install.sh" in result.stderr, result.stderr
+    # The elevation was OFFERED before any mutation: the operator is asked
+    # first, and only then is the privileged command attempted.
+    confirms = (shim_dir / "confirms.log").read_text(encoding="utf-8")
+    assert "Install Docker Engine now via apt?" in confirms, confirms
+    # A denied elevation leaves nothing behind: no half-installed state, no
+    # stray artifacts owned by somebody else. `.toolbin` is the harness's own
+    # tool directory, created by the harness and not by the installer.
+    after = {p.name for p in shim_dir.iterdir()} - before - {".toolbin"}
+    assert after == {"confirms.log"}, f"a failed elevation left artifacts behind: {sorted(after)}"
+
+
+@pytest.mark.skipif(
+    os.geteuid() == 0,
+    reason="root needs no elevation; the denial path only exists for an ordinary account",
+)
+def test_missing_sudo_reports_a_recoverable_prerequisite(tmp_path: Path) -> None:
+    """A host with no sudo at all is the same prerequisite, reported the same
+    way: the installer never pretends it can elevate, and it names the
+    administrator command an operator can hand to whoever holds the rights."""
+    plan = tmp_path / "plan"
+    _write_plan(plan, "docker", selection="auto")
+    shim_dir = tmp_path / "bin"
+    shim_dir.mkdir()
+    _write_exec_shim(shim_dir, "apt-get")
+
+    result = _run(
+        shim_dir,
+        plan,
+        "bootstrap_apt_docker_runtime\n",
+        functions=_ELEVATION_FUNCTIONS,
+    )
+
+    assert result.returncode != 0, result.stdout
+    assert "one-time administrator" in result.stderr, result.stderr
+    assert "'sudo' is not available" in result.stderr, result.stderr
+    assert "apt-get install -y docker.io docker-compose-plugin" in result.stderr, result.stderr
+    assert "re-run ./install.sh" in result.stderr, result.stderr
+    # Nothing was mutated: the apt package manager was never invoked.
+    assert (shim_dir / "confirms.log").exists()
+
+
+# --- interruption / retry: the persisted selection and account ownership -----
+
+
+def test_interrupted_install_retry_keeps_the_persisted_selection_and_ownership(
+    tmp_path: Path,
+) -> None:
+    """A retry after an interrupted install must honor the persisted selection
+    and leave every artifact owned by the invoking account.
+
+    The issue requires interruption/retry and the ownership of persisted
+    configuration to be covered by tests, not only by transcripts. The
+    installer's contract is that a retry RE-READS the plan rather than
+    re-probing the host: the run that was interrupted had already resolved
+    the runtime, so the retry must not let a merely-present Docker CLI (or a
+    stale half-written recovery file) decide again. The artifacts it writes
+    must belong to the ordinary account that operates the stack — the
+    installer runs unprivileged and must never leave root-owned state behind.
+    """
+    install_root = tmp_path / "install-root"
+    install_root.mkdir()
+    plan = install_root / ".maistro-install"
+    # The interrupted run resolved podman and wrote the plan before it was
+    # cut off mid-recovery-file.
+    _write_plan(plan, "podman", selection="podman")
+    (plan / "RECOVERY.md").write_text("# Maistro recovery & operations\n", encoding="utf-8")
+
+    shim_dir = tmp_path / "bin"
+    shim_dir.mkdir()
+    # Both CLIs answer on the retry host: the persisted selection must win,
+    # exactly as it does on a first run.
+    _write_runtime_shim(shim_dir, "docker")
+    _write_runtime_shim(shim_dir, "podman")
+
+    result = _run(shim_dir, plan, "write_recovery_md\n")
+    assert result.returncode == 0, result.stderr
+
+    recovery = (plan / "RECOVERY.md").read_text(encoding="utf-8")
+    # The retry completed the interrupted file for the PERSISTED runtime.
+    assert "podman compose" in recovery, recovery
+    assert "docker compose" not in recovery, recovery
+    status_line = next(line for line in recovery.splitlines() if "Status" in line)
+    assert status_line.startswith("| Status   | `podman compose"), status_line
+
+    # Ownership: installer state belongs to the invoking account, not root.
+    for path in (plan, plan / "RECOVERY.md", plan / "delivery.json"):
+        assert path.stat().st_uid == os.getuid(), f"{path} is not owned by the invoking account"

@@ -1157,6 +1157,18 @@ wait_for_docker_daemon() {
     ok "Docker daemon is ready."
 }
 
+# Run a command with the one-time administrator elevation an install may need
+# (#1820). Root needs none; every other account needs sudo. The caller checks
+# that sudo exists and reports the prerequisite itself — a missing sudo must
+# never reach this function as a raw shell error.
+run_elevated() {
+    if [[ $EUID -eq 0 ]]; then
+        "$@"
+    else
+        sudo "$@"
+    fi
+}
+
 start_colima() {
     info "Starting the Colima container VM (first run can take a minute)..."
     if ! colima start; then
@@ -1277,7 +1289,20 @@ start_dockerd_unsupervised() {
         :
     elif command -v dockerd >/dev/null 2>&1; then
         info "No init system managing dockerd (typical under WSL2); starting it directly."
-        nohup dockerd >/var/log/dockerd.log 2>&1 &
+        # The daemon's own log goes to the install's own state directory, not
+        # /var/log (#1820): an ordinary account cannot create
+        # /var/log/dockerd.log, so the old path printed a raw "Permission
+        # denied" and then waited out the whole readiness budget on a daemon
+        # that could never start — the operator saw neither the engine's error
+        # nor a usable log. Both candidate paths belong to the account that
+        # runs the install, so nothing root-owned is left behind.
+        local log_file="${PLAN_DIR}/dockerd.log"
+        mkdir -p "$PLAN_DIR" 2>/dev/null || true
+        if ! : > "$log_file" 2>/dev/null; then
+            log_file="./dockerd.log"
+        fi
+        info "Docker daemon log: $log_file"
+        nohup dockerd > "$log_file" 2>&1 &
         disown
     fi
     wait_for_docker_daemon
@@ -1305,9 +1330,23 @@ bootstrap_apt_docker_runtime() {
         return
     fi
 
-    info "Installing Docker Engine via apt (you may be prompted for your password)..."
-    sudo apt-get update -qq
-    sudo apt-get install -y -qq docker.io docker-compose-plugin
+    # The one-time administrator prerequisite, identified BEFORE any mutation
+    # (#1820). The package install needs elevation; the account that operates
+    # the daemon afterwards may need nothing more. A missing or denied
+    # elevation is a RECOVERABLE prerequisite report — the exact administrator
+    # command and the instruction to re-run the installer — not a raw sudo
+    # error and not a half-finished install the operator cannot diagnose.
+    if [[ $EUID -ne 0 ]] && ! command -v sudo >/dev/null 2>&1; then
+        fail "Installing Docker Engine needs a one-time administrator action, and 'sudo' is not available on this host. Ask an administrator to run: apt-get update && apt-get install -y docker.io docker-compose-plugin — then re-run ./install.sh."
+    fi
+
+    info "Installing Docker Engine via apt (one-time administrator action; you may be prompted for your password)..."
+    if ! run_elevated apt-get update -qq; then
+        fail "The one-time administrator step failed: 'apt-get update' could not be run with elevation. Ask an administrator to run: apt-get update && apt-get install -y docker.io docker-compose-plugin — then re-run ./install.sh."
+    fi
+    if ! run_elevated apt-get install -y -qq docker.io docker-compose-plugin; then
+        fail "The one-time administrator step failed: 'apt-get install docker.io docker-compose-plugin' did not complete. Finish it as an administrator: apt-get install -y docker.io docker-compose-plugin — then re-run ./install.sh."
+    fi
     ok "Docker Engine installed."
     start_dockerd_unsupervised
 }

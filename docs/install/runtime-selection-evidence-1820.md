@@ -173,7 +173,10 @@ The manifest records the honored selection even in failure; the working
 Podman was never probed into service. (Wart, recorded honestly: the
 unsupervised-daemon fallback prints a raw `Permission denied` for
 `/var/log/dockerd.log` before waiting ~2 minutes on an account that could
-never start dockerd. The final report is still the correct, recoverable one.)
+never start dockerd. The final report is still the correct, recoverable one.
+The wart is fixed in the repair round below: the daemon log now goes to the
+install's own state directory, which the invoking account owns, so the
+operator sees the engine's own error instead of a raw `Permission denied`.)
 
 ## Findings that changed code in this round
 
@@ -182,6 +185,60 @@ never start dockerd. The final report is still the correct, recoverable one.)
 | `--no-start` runs left `COMPOSE_CMD` empty, so `RECOVERY.md`/`print_success` printed the `docker compose` literal for a Podman install | `9d60eab60` — `compose_line_cmd()` prefers the resolved front-end, else the selection's own CLI probe, else the selection literally |
 | Exec-form healthchecks word-split under podman's compose provider; engine stuck "unhealthy", conductor dependency never starts | `3f215bba7` — engine/conductor probes moved to quoted `CMD-SHELL`; both runtimes' `config` render validated; pinned by test |
 | With real `podman` on the dev host, the harness's "podman absent" tests measured the host binary | `3f215bba7` — hermetic PATH (shim dir + coreutils toolbin) |
+
+## Repair round — elevation denial, and the two contracts the transcripts could not cover
+
+The transcripts above prove the *runtime* half of the issue. Two claims in it
+are not visible in a transcript, and the repair round closed them with code
+and tests instead of prose.
+
+### Finding A — a denied elevation was not reported recoverably
+
+The Linux bootstrap installs Docker Engine with `sudo apt-get update` /
+`sudo apt-get install`. Both calls were unguarded, so a host that denies the
+elevation aborted the installer on sudo's own error line:
+
+```console
+$ ./install.sh        # a host whose sudo rights are denied
+[maistro] No container runtime detected.
+sudo: a password is required
+[error] ...            # exit 1, with no statement of what to do next
+```
+
+Nothing in that output says WHAT the one-time administrator step is, and
+nothing says the install resumes when the operator re-runs it. The issue
+requires the denial to be identified *before* any mutation and to come back
+as a recoverable prerequisite report.
+
+**Fix:** `bootstrap_apt_docker_runtime` now checks for `sudo` before it
+mutates anything and reports a missing or refused elevation as a
+prerequisite: the exact administrator command
+(`apt-get update && apt-get install -y docker.io docker-compose-plugin`) and
+the instruction to re-run `./install.sh`. The daemon's own log also moved
+from `/var/log/dockerd.log` (which an ordinary account cannot create) to the
+install's own state directory, so a failed unsupervised start leaves the
+operator the engine's error instead of a raw `Permission denied`, and leaves
+no root-owned artifact behind.
+
+**Tests:** `tests/test_install_runtime_selection.py` —
+`test_denied_elevation_reports_a_recoverable_prerequisite` and
+`test_missing_sudo_reports_a_recoverable_prerequisite`. Both fail against
+the pre-repair `install.sh` (the run then dies on `sudo: command not
+found` / sudo's raw error) and pass after it.
+
+### Finding B — interruption/retry and installer-state ownership had no test
+
+The issue names both, and the lane's only evidence for them was a sanitized
+transcript. The repair round pins the contract: a retry re-reads the
+persisted plan instead of re-probing the host, so a working Docker CLI on
+the retry host cannot override a persisted Podman selection; the recovery
+file the interrupted run left half-written is completed for that selection;
+and every artifact the installer writes belongs to the invoking account.
+
+**Test:** `test_interrupted_install_retry_keeps_the_persisted_selection_and_ownership`.
+It fails if the persisted-plan branch of `selected_container_runtime` is
+removed (mutation-checked in this round), which is the regression the
+pre-#1820 installer had.
 
 ## Not exercised in this lane (UNVERIFIED, machine-bound)
 
