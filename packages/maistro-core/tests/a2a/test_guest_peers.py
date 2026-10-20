@@ -201,20 +201,25 @@ def test_base_url_tolerates_a_transiently_empty_port_file(tmp_path: Path) -> Non
         announcer.join()
 
 
-def _context(
-    agent: str = "planner", *, delegation_key: str = "effect-1", **overrides: Any
-) -> DelegationContext:
-    """One canonical delegation context; tests override single fields."""
-    return DelegationContext(
-        caller_principal_id="actor-1",
-        delegating_agent=agent,
-        workspace_id="workspace-1",
-        project_id="project-1",
-        run_id="run-1",
-        node_run_id="node-run-1",
-        delegation_key=delegation_key,
-        **overrides,
-    )
+def test_peer_port_announcement_tolerates_the_empty_creation_window(tmp_path: Path) -> None:
+    """An existing-but-empty port file is 'not yet announced', never a port.
+
+    The peer's ``open(path, "w")`` creates the file before the port is
+    written. Announcing through ``exists()`` alone parsed that window as a
+    port and crashed with ``ValueError: invalid literal for int() with base
+    10: ''`` under CI load (coverage gate, 2026-10-18). Pre-creating the
+    empty file makes the window deterministic: the old reader fails on the
+    first poll, the current one waits for the real write. With the atomic
+    child publish (sibling ``.tmp`` plus ``os.replace``) the pre-created
+    empty file is the frozen window the tolerant reader must wait out
+    before the rename lands the real port.
+    """
+    peer = _CrossProcessPeer({"delegationReceived": True}, tmp_path)
+    peer._port_file.write_text("")
+    with peer as base_url:
+        port = base_url.rsplit(":", 1)[1]
+        assert port.isdigit()
+        assert int(port) > 0
 
 
 def _patch_transport(monkeypatch: pytest.MonkeyPatch, handler: Any) -> None:
