@@ -601,6 +601,15 @@
         "maistro.graph.executor",
         "maistro.graph.run"
       ]
+    },
+    {
+      "id": "runs-inactive-admission-identity-leaf",
+      "subsystem": "Run / NodeRun / Attempt lifecycle",
+      "disposition": "LIBRARY",
+      "rationale": "Immutable root-admission identity types (#1851) intentionally shipped as an inactive contract leaf: nothing in production imports it yet, and a later separately reviewed integration lands the runtime consumer. Listed in the reachability baseline so the ratchet stops flagging it as newly unreachable; disposition LIBRARY documents that it is library-only by construction.",
+      "modules": [
+        "maistro.runs.admission_identity"
+      ]
     }
   ]
 }

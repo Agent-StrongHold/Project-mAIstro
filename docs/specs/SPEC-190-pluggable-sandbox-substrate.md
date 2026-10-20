@@ -3,7 +3,7 @@ id: SPEC-190
 title: "Pluggable sandbox substrate — SandboxProtocol with container and microVM (Kata/Firecracker) backends"
 repo: maistro-engine
 kind: spec
-status: Proposed
+status: Accepted
 created: 2026-05-31
 substrate:
   - maistro-engine#ADR-093
@@ -26,6 +26,8 @@ owners:
   - '@BlakeMatthews-dev'
 history:
   - status: Proposed
+    date: 2026-05-31
+  - status: Accepted
     date: 2026-05-31
 ---
 
