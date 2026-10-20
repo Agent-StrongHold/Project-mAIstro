@@ -262,3 +262,74 @@ develop-level debt. The same `develop` push also fails `SAST / Gitleaks`
 two-merge wall: `1321 reviewed identities -> 1326 findings` against base
 `fad17a87c`) — both of which clear for this branch, whose ratchet base is
 `e20e9f52`, where the five `admission_identity` rows are already banked.
+
+## Repair round (job `ce7b54d3`, head `d1431777d`) — the gate's sole red is the reachability leg, and it is not this lane's to fix
+
+This round was assigned to repair `exact-debt-ledger` through the vulture
+per-identity ledger. Re-run at this exact head with CI's own argv
+(`.github/workflows/vulture-ratchet.yml`):
+
+| step | command | exit |
+| --- | --- | --- |
+| 1 | `uv run python scripts/check-ratchet-provenance.py` | **1** |
+| 2 | `uv run python scripts/check-shipped-surface-truth.py` | 0 |
+| 3 | `uv run python scripts/check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'` | 0 |
+
+Step 3 is green: `baseline: base e20e9f52ea94`, `candidate: d1431777d1c6`,
+`1326 reviewed identities -> 1326 findings`, `unclassified: 0`,
+`never_allowlist: 0`. The brief's amendment authority
+(`quality/vulture-baseline.json`) has no target — the ledger is already
+exactly the reviewed set and `git diff --numstat origin/develop -- quality/`
+is empty. CI's own `exact-debt-ledger` job (run `39376432253`, job
+`118475501998`) failed at **step 1**, never reaching step 3.
+
+Step 1 fails on exactly one ratchet leg — the reachability ratchet; every
+other leg prints `OK`. The two lines are the same `maistro.runs.admission_identity`
+NEW-unreachable / missing-from-candidate-baseline pair recorded above. The
+module is present in base `e20e9f52` and absent from
+`quality/reachability-baseline.json` (168 rows, zero admission matches) and
+from `quality/ratchet-authorizations.json` (11 `reachability` grants, zero
+admission); it is imported only by
+`packages/maistro-core/tests/runs/test_root_admission_identity.py`, and its
+docstring declares it an inactive contract leaf whose runtime consumer lands
+in a separately reviewed integration.
+
+Develop's own push of `e20e9f52` failed the same Vulture Ratchet run
+(`39369230464`, `conclusion: failure`, event `push`, head `e20e9f52ea94`)
+and CI run `39369230418`. This branch's diff vs develop is exactly three
+files (this note, `tests/test_check_api_route_contracts.py`, `uv.lock`) and
+does not touch the module.
+
+**No in-branch fix exists.** The two-merge wall
+(`ratchet_provenance.load_authorizations` reads the grant ledger from the
+merge base) makes a branch-side reachability grant inert, so the grant must
+land on `develop` first. The lane brief's amendment exception covers only
+`quality/vulture-baseline.json` (green), and #1851's unconditional
+prohibition forbids grants and baseline additions. Wiring the module into
+`maistro/runs/__init__.py` purely to hold an import edge would make the gate
+measure a fiction — #1154 retired exactly that kind of wrapper. Banked is
+not authorized: adding the candidate baseline row alone flips the failure to
+the `not previously authorized` line and cannot clear it.
+
+**Handoff (one exact action, on `develop`).** Land a grant-only change:
+append one entry under `reachability` in `quality/ratchet-authorizations.json`
+for `maistro.runs.admission_identity` (owner `@BlakeMatthews-dev`, issue
+`#1851`; reason: the root-admission identity contract leaf shipped by #1936,
+an importable maistro-core surface with no process entry point in this
+repository, dispositioned LIBRARY; the #1845 integration adopts it and the
+entry then leaves the baseline), plus the matching
+`quality/reachability-baseline.json` row and a LIBRARY group in
+`quality/reachability-dispositions.json`. Then sync `origin/develop` into
+`auto-1859` and re-queue. Until it lands, every branch based on `e20e9f52`
+fails `exact-debt-ledger` identically.
+
+**#1859 acceptance re-proven this round (independent of the note above).**
+`uv run pytest tests/test_check_api_route_contracts.py -q` -> **64 passed**.
+Fail-before, outside the repository tree: with a broad-exemption leak patched
+into the gate consumer (`_canned_handlers` returns no canned handlers, so
+one valid temporary entry excuses every route — the real #389 failure mode),
+all three new negatives fail (`3 failed`); on the shipped gate they pass
+(`3 passed`). `uv run python scripts/check-api-route-contracts.py` -> exit 0
+(`295 handlers scanned, 15 audited routes registered, 0 canned`). Registry,
+gate script and inventory doc are byte-identical to develop; zero
+`temporary` entries.
