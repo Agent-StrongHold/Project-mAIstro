@@ -131,8 +131,12 @@ class SelfModelStateStore(Protocol):
     The protocol is the durability seam (#859): the default implementation is
     process-local and ephemeral; a deployment that needs restart survival or
     replica consistency composes a shared implementation here, without the
-    state machine or routes knowing the difference.
+    state machine or routes knowing the difference. Implementations must
+    explicitly declare whether they are shared across replicas; an arbitrary
+    injected store is not evidence of replica-safe authority.
     """
+
+    is_shared_across_replicas: bool
 
     def load_scope(self, workspace_id: str) -> WorkspaceSelfModelState | None: ...
 
@@ -146,6 +150,8 @@ class InProcessSelfModelStateStore:
     never be presented as durable or replica-consistent. ``reset_state``
     refuses this store for a multi-replica deployment declaration.
     """
+
+    is_shared_across_replicas = False
 
     def __init__(self) -> None:
         self._scopes: dict[str, WorkspaceSelfModelState] = {}
@@ -576,19 +582,20 @@ def get_state() -> TuringState:
 
 
 def _guard_replica_authority(state_store: SelfModelStateStore | None) -> None:
-    """Refuse a multi-replica declaration over the divergent process-local store.
+    """Refuse a multi-replica declaration without an explicitly shared store.
 
-    The in-process store is authoritative for exactly one process. Letting N
-    replicas each keep their own authoritative self model would silently
-    diverge them; the deployment must either declare one process or compose a
-    shared ``SelfModelStateStore``. Fail composition, not correctness (#859).
+    The in-process store is authoritative for exactly one process. Merely
+    injecting a store object is not sufficient: an explicitly injected local
+    store (or a custom store that does not declare its replica semantics) would
+    still let replicas diverge. Fail composition, not correctness (#859).
     """
-    if state_store is None and replica_count() > 1:
+    count = replica_count()
+    if count > 1 and not getattr(state_store, "is_shared_across_replicas", False):
         raise RuntimeError(
-            f"TURING_REPLICA_COUNT={replica_count()} declares a multi-replica "
-            "Turing deployment, but no shared SelfModelStateStore is composed; "
-            "the process-local self-model authority would diverge across "
-            "replicas. Compose a shared store implementation to enable replicas."
+            f"TURING_REPLICA_COUNT={count} declares a multi-replica Turing "
+            "deployment, but the composed SelfModelStateStore is not declared "
+            "shared across replicas; the self-model authority could diverge. "
+            "Compose a shared store implementation to enable replicas."
         )
 
 

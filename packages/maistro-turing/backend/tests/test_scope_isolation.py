@@ -372,6 +372,8 @@ def test_feed_count_is_bounded():
 class SharedFakeStore:
     """Minimal shared ``SelfModelStateStore`` double for composition tests."""
 
+    is_shared_across_replicas = True
+
     def __init__(self) -> None:
         self.scopes: dict[str, Any] = {}
 
@@ -398,11 +400,30 @@ class TestRestartAndReplicaSemantics:
 
     def test_multi_replica_declaration_refuses_the_process_local_authority(self, monkeypatch):
         from ..main import app
-        from ..state import reset_state
+        from ..state import InProcessSelfModelStateStore, reset_state
 
         monkeypatch.setenv("TURING_REPLICA_COUNT", "2")
-        with pytest.raises(RuntimeError, match="multi-replica"):
+        with pytest.raises(RuntimeError, match="not declared shared"):
             reset_state(inbound_security=app.state.turing_security)
+        with pytest.raises(RuntimeError, match="not declared shared"):
+            reset_state(
+                inbound_security=app.state.turing_security,
+                state_store=InProcessSelfModelStateStore(),
+            )
+
+    def test_unclassified_store_cannot_enable_replicas(self, monkeypatch):
+        from ..main import app
+        from ..state import TuringState
+
+        class UnclassifiedStore(SharedFakeStore):
+            is_shared_across_replicas = False
+
+        monkeypatch.setenv("TURING_REPLICA_COUNT", "2")
+        with pytest.raises(RuntimeError, match="not declared shared"):
+            TuringState(
+                inbound_security=app.state.turing_security,
+                state_store=UnclassifiedStore(),
+            )
 
     def test_replica_count_is_validated(self, monkeypatch):
         from ..config import replica_count
