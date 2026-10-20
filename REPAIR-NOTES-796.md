@@ -110,3 +110,81 @@ the M5 reachability suite, `maistro-design` tests, ruff check/format, and the
 CI gates (`check-convergence-matrix.py`, `check-suite-inventory.py`,
 `check-doc-links.py`, `check-contract-markers.py`, `check-vulture-baseline.py`
 with CI's exact arguments) — see the commit message for per-command results.
+
+## Round 4 (2026-10-20, head `2658c27c5`): the preserved `origin/develop` sync conflict, resolved
+
+The round opened with a merge already in progress in the worktree: `origin/develop`
+(`e20e9f52ea94`) merged into `auto-796` (`0cfd4579f19c`) with nine unmerged paths and
+`MERGE_HEAD` still set. No implementation defect was open — the M7-A7 contract file was
+green at the previous head — so this round's work was the conflict resolution plus a
+full re-validation on the merged head.
+
+### Why the nine paths conflicted
+
+The merge base git picked for those paths was `c5e070d97d`, whose blobs still contain
+upstream's committed `Temporary merge branch` conflict-marker lines. Both sides had
+since cleaned those lines up differently, so every hunk overlapped and git could not
+auto-merge.
+
+### How it was resolved
+
+- **Eight files** — `deploy/scripts/verify-restore.sh`,
+  `docs/install/deployment-topology.md`,
+  `packages/maistro-core/src/maistro/graph/durable_runs/attempt_executor.py`,
+  `packages/maistro-core/src/maistro/persistence/pg_audit.py`,
+  `packages/maistro-core/src/maistro/persistence/sqlite_audit.py`,
+  `packages/maistro-core/src/maistro/security/sentinel/audit.py`,
+  `packages/maistro-turing/backend/routes/chat.py`,
+  `tests/cross_product_parity/harness.py` — were byte-identical on our side to
+  `64ea662cb015` (an ancestor of develop's tip), i.e. **this branch had no change
+  there**. Develop's tip version is the forward-evolved truth for those paths and was
+  taken verbatim; nothing of ours was lost, because we had nothing there.
+- **`docs/architecture/CONVERGENCE-MATRIX.md`** is the only path this branch had
+  actually edited (the "One scoring loop…" section). Resolution = develop's newer
+  document (its ownership census moved to 52/73/31) with our section re-inserted
+  verbatim above `## Related`. `git diff --numstat e20e9f52ea94 HEAD --
+  docs/architecture/CONVERGENCE-MATRIX.md` → 21 added lines, 0 removed: the section
+  survives the merge unchanged and the census stays develop's.
+
+Resolution commit `2658c27c5825` (`Merge commit 'e20e9f52ea94…' into auto-796`).
+The branch's whole delta against develop is still the four issue surfaces:
+`REPAIR-NOTES-796.md`, the matrix section, the inventory note and
+`packages/maistro-core/tests/fitness/test_m7_a7_eval_consumer_map.py`
+(`git diff --numstat e20e9f52ea94 HEAD --stat` → 4 files, 751 insertions, 0 deletions);
+`git diff --numstat e20e9f52ea94 HEAD -- 'packages/*/src'` is **empty**, so the merge
+introduced no production-code delta.
+
+### Ledger integrity through the merge
+
+- The merged tree is byte-identical to `e20e9f52ea94` for `quality/`
+  (`git diff --numstat e20e9f52ea94 HEAD -- quality/` is empty) — no per-identity ledger
+  row was lost in the merge.
+- The vulture ratchet re-bases on `merge-base(origin/develop, HEAD)`, which the merge
+  moved from `64ea662cb015` to `e20e9f52ea94`. Re-run with CI's exact arguments:
+  `1326 reviewed identities -> 1326 findings`, exit 0. Develop's five newly banked
+  `admission_identity` rows are now the trusted baseline instead of "new debt" — the
+  ledger needed no amendment from this branch.
+
+### Re-validation on the merged head (`2658c27c5`)
+
+- `uv run pytest packages/maistro-core/tests/fitness/test_m7_a7_eval_consumer_map.py -q`
+  → 7 passed.
+- `uv run pytest packages/maistro-core/tests/fitness/ -q` → 34 passed.
+- `uv run pytest packages/maistro-rsi/tests/test_non_production_reachability.py -q`
+  → 13 passed (M5 invariant unchanged).
+- `uv run pytest packages/maistro-design/tests -q` → 575 passed, 1 skipped.
+- `uv run ruff check .` → clean; `uv run ruff format --check .` → 3363 files formatted.
+- `uv run mypy <7 src trees>` → no issues in 906 source files.
+- `scripts/check-convergence-matrix.py` → OK (52 subsystems / 1417 production modules);
+  `scripts/check-suite-inventory.py` → ok (21 suites match);
+  `scripts/check-doc-links.py` → 0 broken links; `scripts/check-contract-markers.py` → OK;
+  `scripts/check-merge-markers.py` → ok; `scripts/check-vulture-baseline.py` → exit 0.
+
+### Pre-existing upstream condition (not this branch's)
+
+`scripts/check-reachability.py` fails with one newly unreachable module,
+`maestro.runs.admission_identity`. It reproduces **identically on `origin/develop`'s tip
+alone** (exported with `git archive e20e9f52ea94` into a scratch tree → same single
+offender), and this branch changes no `packages/*/src` file. Banking that module in
+`quality/reachability-baseline.json` is develop's call, so the ledger was left
+untouched here.
