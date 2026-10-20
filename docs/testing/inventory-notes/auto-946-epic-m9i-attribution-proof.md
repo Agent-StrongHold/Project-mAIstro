@@ -103,11 +103,52 @@ Validation: extensions suite green with this file's 8 tests; `ruff check` /
 vulture scan (`packages/*/src --min-confidence 60 --exclude
 '*/third_party/*'`) reports exactly the banked identities.
 
-Known inherited gate condition (not caused by this change): the
-acceptance-state ratchet reports `design_coverage: 39.5205 falls below the
-floor of 39.641`. The floor is an owner grant anchored on develop at
-ab8b3737; develop's tip (e20e9f52e) now measures 39.5205 as well — the same
-single failure reproduces on a clean checkout of develop with no candidate
-changes, and this head's own counters match develop's on every other
-counter. Repairing it needs an owner-granted re-anchor of that floor (a
-ledger edit, out of scope for this lane).
+Known inherited gate conditions (not caused by this change). This head is a
+test-only diff against develop (one proof file + this note; `packages/*/src`,
+`quality/reachability-baseline.json`, and `quality/vulture-baseline.json` are
+byte-identical to develop's tip e20e9f52e), so every red merge-queue gate
+below reproduces on a clean checkout of develop and none is introduced here:
+
+- **Quality / Reachability**, **exact-debt-ledger**, and the
+  **Quality gate (Pillars 1–4, 7, 8)** share one root cause:
+  `maistro.runs.admission_identity` is a newly-unreachable module (169 vs the
+  168 banked). It was introduced by #1851 and reached develop via PR #1936
+  (e20e9f52e); running `scripts/check-reachability.py` on a clean checkout of
+  e20e9f52e reports the identical failure (`maistro.runs.admission_identity …
+  NEWLY UNREACHABLE`). `exact-debt-ledger` fails at its
+  `check-ratchet-provenance.py` step, which calls
+  `check-reachability-provenance.py` on the same module; its vulture step is
+  green (`1326 reviewed identities -> 1326 findings`). The Pillars aggregate
+  fails only through its `quality-reachability` dependency — every other
+  Quality sub-gate (Radon, Vulture, Mypy strict, Pyright, Xenon, Acceptance
+  state, Docstring coverage, Wiring reads, …) is green at this head. Repair
+  needs #1851 to wire `admission_identity` (or an owner amendment of
+  `quality/reachability-baseline.json`); neither is the authorized
+  vulture-ledger amendment, and both are out of scope for this lane.
+- **Supply chain (pip-audit)** and the **security** workflow: the pip-audit
+  gate is green against this head's frozen environment
+  (`scripts/pip_audit_gate.py` → `1 known, all triaged in ALLOWED`;
+  dependency-usage OK). This change adds no dependency, so the CI failure is a
+  registry/network transient (the same class as the prior rate-limit preflight
+  block). The `security` workflow red is its `supply-chain` job (this same
+  pip-audit step); its SAST scanners (bandit / semgrep / gitleaks) are green.
+- **test** and **Coverage gate**: the `test` job executes the server / Turing
+  / design / ext-harness / ext-sdk / root / Hive suites, none of which this
+  change touches (the maistro-core suite — this proof's home — is the
+  `coverage (no services)` producer and is green here). The publish-set floor
+  is a whole-tree measure with no production delta from a test-only change.
+
+The earlier `design_coverage` acceptance-state note no longer reproduces: the
+`Quality / Acceptance state` check is green at this head.
+
+Residual review risk (owner): the proof drives the canonical
+`Graph → Run → NodeRun → Attempt` seam and asserts real host evidence (effect
+provenance on the event envelope, Invocation correlation, governed quota
+admission, health projection through the durable store), and its
+mutation-harness notes show the assertions fail on real library regressions.
+However, `ExtensionHost` has no metering collaborator and no non-test path
+records to `ExtensionMeter` (a library surface for downstream wiring), so the
+AC1 meter row, the AC3 denied-dispatch, and the AC6 upgrade/removal are
+exercised at the library seam rather than through a production wiring that
+does not yet exist; Codex review (P1 ×2, P2 ×2) flags exactly this. Closing it
+is a #977 production-wiring decision, not a change to this proof.
