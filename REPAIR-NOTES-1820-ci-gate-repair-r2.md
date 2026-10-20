@@ -148,3 +148,11 @@ socket, and still refuses to silently switch runtimes.
 - `pillow` moved a major version. The canvas suite is green, but the lock
   change is a dependency-policy move that reviewers should confirm against
   the canvas roadmap.
+- `docs/install/runtime-selection-evidence-1820.md` records its clean-account
+  transcript at revision `3f215bba7` (an ancestor of this head). Six
+  `install.sh` refinements landed after that revision (denied-elevation
+  prerequisite, fresh-host runtime bootstrap, manifest front-end recording,
+  user-owned uv bootstrap), so the transcript does not cover the exact bytes
+  at this head. The 32 hermetic runtime-selection tests are the primary
+  regression evidence and pass on this head; a fresh clean-account re-run is
+  the follow-up if a reviewer wants the transcript re-stamped.
