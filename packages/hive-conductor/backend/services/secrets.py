@@ -129,5 +129,6 @@ def maistro_llm_api_key(settings: Settings, *, required: bool = False) -> str | 
     return resolve_secret(
         "MAISTRO_LLM_API_KEY",
         config_value=settings.maistro_llm_api_key,
+        env_var="MAISTRO_LLM_API_KEY",
         required=required,
     )
