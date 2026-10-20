@@ -2,6 +2,7 @@
 
 from pathlib import Path
 
+from maistro_server.api.route_table import iter_effective_routes
 from maistro_server.main import app
 
 _MAIN = Path(__file__).resolve().parents[1] / "src" / "maistro_server" / "main.py"
@@ -21,11 +22,14 @@ def test_server_startup_cannot_resurrect_pm_poc_catalog() -> None:
 def test_server_task_execution_stays_on_canonical_executor() -> None:
     source = _MAIN.read_text(encoding="utf-8")
     assert "import maistro.agents.conductor as conductor" in source
-    assert "executor=conductor.run_task" in source
+    # Still the conductor's canonical `run_task` — since #718 reached via the
+    # governed closure that supplies the Container's effect authority, never
+    # a product-specific executor.
+    assert "return await conductor.run_task(" in source
 
 
 def test_retired_pm_agents_http_entrypoint_is_not_registered() -> None:
-    paths = {getattr(route, "path", "") for route in app.routes}
+    paths = {getattr(route, "path", "") for route in iter_effective_routes(app.routes)}
     assert "/v1/maistro/agents" not in paths
     assert not any(path.startswith("/v1/maistro/agents/") for path in paths)
 

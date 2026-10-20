@@ -1,4 +1,4 @@
-"""Ontology layer per [`engine#ADR-036`](../../../../docs/adr/ADR-036-ontology-semantic-object-layer.md).
+"""Ontology layer per [`engine#ADR-036`](../../../../../docs/adr/ADR-036-ontology-semantic-object-layer.md).
 
 v1.0 ships the **Semantic** facet only — typed entities backed by Pydantic
 for validation, queryable by kind + filters. Kinetic and Dynamic facets
@@ -8,9 +8,17 @@ Public surface:
 
 - ``OntologyEntity`` — the typed entity (id + kind + revision + facets).
 - ``Ontology`` — Protocol every implementation must satisfy.
-- ``InMemoryOntology`` — in-process implementation; suitable for tests
-  and engine boot. SQLAlchemy-backed implementation lands in a follow-up
-  on this branch.
+- ``InMemoryOntology`` — the only implementation, in-process and not
+  thread-safe. There is no durable, SQLAlchemy-backed store.
+
+The registry's process-level wiring is still pending: no in-repo process
+resolves semantic objects through it yet; connecting one is tracked by #34.
+The Goal `Rubric` kind (M7-A2, issue #791) ships as the layer's public library
+surface — registered by :func:`register_rubric_kind` and persisted through
+:class:`maistro.projects.rubric_store.RubricStore`, which
+:mod:`maistro.projects` exports — so the modules are import-reachable as
+published API while the first process consumer lands with M7 scoring/fence
+work.
 
 Usage:
 
@@ -34,6 +42,25 @@ Usage:
 
 from maistro.ontology.protocols import Ontology
 from maistro.ontology.registry import InMemoryOntology
+from maistro.ontology.rubric import (
+    RUBRIC_KIND,
+    RUBRIC_RUN_BINDING_KIND,
+    NumericScale,
+    PackRubricCatalog,
+    PassFailScale,
+    ProvenanceOrigin,
+    RubricAggregation,
+    RubricDimension,
+    RubricGate,
+    RubricProvenance,
+    RubricRunBindingSemantic,
+    RubricScale,
+    RubricSemantic,
+    ScoringMethod,
+    register_rubric_kind,
+    rubric_entity_id,
+    rubric_run_binding_entity_id,
+)
 from maistro.ontology.types import (
     Facet,
     KindAlreadyRegisteredError,
@@ -43,11 +70,28 @@ from maistro.ontology.types import (
 )
 
 __all__ = [
+    "RUBRIC_KIND",
+    "RUBRIC_RUN_BINDING_KIND",
     "Facet",
     "InMemoryOntology",
     "KindAlreadyRegisteredError",
     "KindNotRegisteredError",
+    "NumericScale",
     "Ontology",
     "OntologyEntity",
     "OntologyError",
+    "PackRubricCatalog",
+    "PassFailScale",
+    "ProvenanceOrigin",
+    "RubricAggregation",
+    "RubricDimension",
+    "RubricGate",
+    "RubricProvenance",
+    "RubricRunBindingSemantic",
+    "RubricScale",
+    "RubricSemantic",
+    "ScoringMethod",
+    "register_rubric_kind",
+    "rubric_entity_id",
+    "rubric_run_binding_entity_id",
 ]

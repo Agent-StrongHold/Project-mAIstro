@@ -36,7 +36,9 @@ from maistro.runs.retention import RetentionPolicy, RunRetentionSweeper
 from maistro.runs.retention_scope import WorkspaceRetentionScope
 from maistro.runs.sources import ADMISSION_SOURCE, CHAT_SOURCE
 from maistro.workspaces.store import InMemoryWorkspaceStore
-from maistro_turing.runtime import TuringChatSession
+from maistro_turing.runtime import TuringChatSession, TuringContentBlocked
+
+from .security import TuringInboundSecurity, TuringSecurityContext
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +48,7 @@ _CANCELLED_ERROR = "execution cancelled"
 
 
 class TuringAdmissionUnavailable(RuntimeError):
-    """Canonical audit admission failed before Turing dispatched the chat turn."""
+    """Canonical admission failed before Turing dispatched the chat turn."""
 
 
 class _ChatInput(BaseModel):
@@ -66,7 +68,6 @@ class _ChatNode(BaseNode[_ChatInput, _ChatOutput]):
     output_schema: ClassVar[type[BaseModel]] = _ChatOutput
     display_name: ClassVar[str] = "Turing chat turn"
     description: ClassVar[str] = "Execute one reachable Turing chat request."
-    idempotent: ClassVar[bool] = False
     external_io: ClassVar[bool] = True
 
     def __init__(self, session: TuringChatSession) -> None:
@@ -86,19 +87,22 @@ class TuringExecutionPlane:
 
     Chat admission still follows the canonical chat retention contract: the Run
     is marked with ``CHAT_SOURCE``, gets a durable retention deadline, and is
-    tracked in a small per-Workspace window so high-volume turns do not evict
-    longer-lived task Runs — and never grant one user's admission deletion
-    authority over another user's Runs (#1175).
+    tracked in a small per-process window so high-volume turns do not evict
+    longer-lived task Runs from a shared store.
     """
 
     def __init__(
         self,
         *,
+        inbound_security: TuringInboundSecurity,
         max_retained: int = MAX_RETAINED_CHAT_RUNS,
         retention: RetentionPolicy | None = None,
     ) -> None:
+        if inbound_security is None:
+            raise RuntimeError("canonical Turing security is required for execution")
         if max_retained < 1:
             raise ValueError("max_retained must be >= 1")
+        self.inbound_security = inbound_security
         self.project_store = InMemoryProjectScopeStore()
         self.workspace_store = InMemoryWorkspaceStore(project_store=self.project_store)
         # One continuation store, shared by the durable-graph facade and the
@@ -116,12 +120,9 @@ class TuringExecutionPlane:
         )
         self._workspace_by_user: dict[str, str] = {}
         self._scope_lock = asyncio.Lock()
-        # run_id -> the Workspace the Run was admitted into. The window is
-        # per-Workspace (#1175): this process's store spans every per-user
-        # Workspace it creates, so a process-global window would make one
-        # user's turn the deletion authority over another user's Runs — the
-        # same defect the unscoped purge had, one API up. Eviction counts and
-        # deletes only within the Workspace the triggering admission ran in.
+        # run_id -> owning Workspace id. The bounded window is per-Workspace
+        # (#1175): eviction candidates are only ever this admission's own
+        # Workspace's Runs.
         self._retained_runs: OrderedDict[str, str] = OrderedDict()
         self._retention_lock = asyncio.Lock()
         self._max_retained = max_retained
@@ -168,28 +169,26 @@ class TuringExecutionPlane:
                 if retained_ws == workspace_id
             ]
             excess = len(scoped) - self._max_retained
-            if excess > 0:
-                for retained_id in scoped:
-                    if excess <= 0:
-                        break
-                    retained = await self.run_store.get_run(retained_id)
-                    if retained is None:
-                        self._retained_runs.pop(retained_id, None)
-                        continue
-                    if retained.status not in TERMINAL_RUN_STATUSES:
-                        continue
-                    # Instead of delete_run, we will delete the Run and clean up its continuation.
-                    # We'll try to delete the continuation first, then delete the Run.
-                    try:
-                        if await self._continuations.delete(retained_id):
-                            pass  # continuation deleted
-                    except Exception:
-                        # If continuation cleanup fails, skip deleting this Run.
-                        continue
-                    # Now delete the Run and its spine dependents.
-                    await self.run_store.delete_run(retained_id)
+            for retained_id in scoped:
+                if excess <= 0:
+                    break
+                retained = await self.run_store.get_run(retained_id)
+                if retained is None:
                     self._retained_runs.pop(retained_id, None)
-                    excess -= 1
+                    continue
+                if retained.status not in TERMINAL_RUN_STATUSES:
+                    continue
+                # A graph continuation names a Run that is about to stop
+                # existing. The reference is logical — no foreign key — so
+                # reclaim it first, and if that fails leave the Run alone
+                # rather than orphan a resumable state pointing at nothing.
+                try:
+                    await self._continuations.delete(retained_id)
+                except Exception:
+                    continue
+                await self.run_store.delete_run(retained_id)
+                self._retained_runs.pop(retained_id, None)
+                excess -= 1
         # Scoped to the Workspace this admission ran in: one user's turn
         # is never the deletion authority over another user's expired
         # Runs (#1175). A sweep with no scope refuses and deletes nothing;
@@ -283,12 +282,42 @@ class TuringExecutionPlane:
     ) -> DurableRunRecord:
         """Execute one chat request as one canonical Graph/Run.
 
-        Failure before node resolution is an audit-admission failure: no provider
-        work has been dispatched, so the HTTP boundary may preserve chat
-        availability by executing the domain turn without a Run. Once the node
-        has been resolved, failures belong to canonical execution and are never
+        Failure before node resolution is a canonical-admission failure: no
+        provider work has been dispatched, so callers must refuse the request
+        rather than execute the domain turn without a Run. Once the node has
+        been resolved, failures belong to canonical execution and are never
         replayed outside the spine.
         """
+        # This direct service seam is also an inbound trust boundary. Scan the
+        # consumed message before it can be copied into a persisted Graph.
+        admission_verdict = await self.inbound_security.scan_text(
+            message,
+            boundary="user_input",
+            context=TuringSecurityContext(
+                principal=user_id,
+                route="turing.execution",
+                action="chat",
+            ),
+            audit=False,
+        )
+        if not admission_verdict.clean:
+            # There is no Run to correlate when admission is refused. Preserve
+            # a non-secret blocked verdict rather than silently dropping it.
+            try:
+                await self.inbound_security.audit_verdict(
+                    admission_verdict,
+                    "<request blocked>",
+                    boundary="user_input",
+                    context=TuringSecurityContext(
+                        principal=user_id,
+                        route="turing.execution",
+                        action="chat",
+                    ),
+                )
+            except Exception:
+                logger.warning("direct Turing admission security audit failed", exc_info=True)
+            raise TuringContentBlocked("user input refused by Warden")
+
         admitted_run_id: str | None = None
         try:
             workspace_id, project_id = await self._scope_for(user_id)
@@ -326,6 +355,19 @@ class TuringExecutionPlane:
             )
             admitted_run_id = admitted.run_id
             await self._track_admission(admitted.run_id, workspace_id=workspace_id)
+            await self.inbound_security.audit_verdict(
+                admission_verdict,
+                message,
+                boundary="user_input",
+                context=TuringSecurityContext(
+                    principal=user_id,
+                    route="turing.execution",
+                    action="chat",
+                    workspace_id=workspace_id,
+                    project_id=project_id,
+                    run_id=admitted.run_id,
+                ),
+            )
         except asyncio.CancelledError:
             await asyncio.shield(self._cancel_incomplete_admission(admitted_run_id))
             raise
@@ -368,18 +410,20 @@ class TuringExecutionPlane:
             raise
 
 
-_execution_plane = TuringExecutionPlane()
+_execution_plane: TuringExecutionPlane | None = None
 
 
 def get_execution_plane() -> TuringExecutionPlane:
     """Return the process-local canonical execution composition."""
+    if _execution_plane is None:
+        raise RuntimeError("canonical Turing execution has not been composed")
     return _execution_plane
 
 
-def reset_execution_plane() -> TuringExecutionPlane:
-    """Replace process-local execution composition; used for test isolation."""
+def reset_execution_plane(*, inbound_security: TuringInboundSecurity) -> TuringExecutionPlane:
+    """Replace process-local execution composition with canonical security."""
     global _execution_plane
-    _execution_plane = TuringExecutionPlane()
+    _execution_plane = TuringExecutionPlane(inbound_security=inbound_security)
     return _execution_plane
 
 

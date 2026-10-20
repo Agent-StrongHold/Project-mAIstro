@@ -25,28 +25,17 @@ from __future__ import annotations
 import asyncio
 import threading
 import time
-import weakref
+from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
-import structlog
-
-from maistro.observability.metrics import (
-    retention_backlog_remaining,
-    retention_dependent_evidence_retained,
-    retention_dependents_purged_total,
-    retention_purged_total,
-    retention_sweep_failures_total,
-    retention_sweep_last_success_timestamp,
-)
-from maistro.runs.retention_scope import GlobalRetentionScope, require_retention_scope
+from maistro.observability.metrics import retention_backlog_remaining, retention_purged_total
+from maistro.runs.retention_scope import GlobalRetentionScope
 from maistro.runs.store import DEFAULT_PURGE_BATCH, PurgeOutcome, RetentionScope
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from maistro.runs.store import RunStore
-
-_logger = structlog.get_logger(__name__)
 
 #: Default lifetime of a chat-originated Run. Long enough that "what happened in
 #: my conversation yesterday?" is answerable, short enough that a busy
@@ -58,33 +47,20 @@ DEFAULT_CHAT_RETENTION_SECONDS = 7 * 24 * 60 * 60
 #: to shave minutes off a deadline nobody is watching that closely.
 DEFAULT_SWEEP_INTERVAL_SECONDS = 300.0
 
-#: The per-scope backlog map's key for the explicitly authorized store-wide
-#: scope. Keys are `(mode, scope-id)` pairs, so a Workspace id can never
-#: collide into the global bucket and a global observation can never be
-#: attributed to a Workspace.
-_GLOBAL_SCOPE_KEY = ("global", None)
+#: How many scopes one sweeper remembers a last-sweep time for. Workspaces are
+#: caller-created, so the throttle is LRU-bounded; a scope evicted from it is
+#: merely due again, which costs one extra sweep and never skips one.
+DEFAULT_MAX_TRACKED_SCOPES = 4096
 
-# A gauge can only carry the bounded authorization mode, not a Workspace id
-# (#818). Keep each live sweeper's per-scope observation and publish their
-# per-mode OR, so one Workspace's clean sweep cannot hide another's backlog.
-# Weak owners disappear when an admission-scoped sweeper is released instead
-# of leaving a stale backlog behind indefinitely.
-_BACKLOG_OWNERS: dict[tuple[str, str | None], weakref.WeakSet[RunRetentionSweeper]] = {}
-_BACKLOG_REGISTRY_LOCK = threading.Lock()
-
-
-def _scope_key(scope: RetentionScope) -> tuple[str, str | None]:
-    """The backlog-observation key for one scope: exact per scope, bounded per sweeper."""
-    if isinstance(scope, GlobalRetentionScope):
-        return _GLOBAL_SCOPE_KEY
-    return ("workspace", scope.workspace_id)
-
-
-def _metric_mode(scope: RetentionScope | None) -> str:
-    """Keep retention health labels bounded even for an unscoped failure."""
-    if scope is None:
-        return "unscoped"
-    return "global" if isinstance(scope, GlobalRetentionScope) else "workspace"
+# Scopes whose last *completed* sweep ran out of batch before the scope
+# drained. Process-wide, because every sweeper in the process (chat, Turing)
+# publishes into the one gauge: a per-sweeper or last-writer-wins value would
+# let Workspace B draining erase Workspace A's standing backlog. An entry
+# leaves only when a sweep of that same scope drains it, so a Workspace nobody
+# sweeps again stays counted: its expired Runs are, in fact, still there. The
+# set is bounded by the scopes currently backlogged, not by scopes ever seen.
+_BACKLOGGED_SCOPES: set[RetentionScope] = set()
+_BACKLOG_LOCK = threading.Lock()
 
 
 @dataclass(frozen=True)
@@ -158,23 +134,21 @@ class RunRetentionSweeper:
         store: RunStore,
         policy: RetentionPolicy | None = None,
         scope: RetentionScope | None = None,
+        *,
+        max_tracked_scopes: int = DEFAULT_MAX_TRACKED_SCOPES,
     ) -> None:
+        if max_tracked_scopes <= 0:
+            raise ValueError("max_tracked_scopes must be positive")
         self._store = store
         self._policy = policy if policy is not None else RetentionPolicy()
         self._scope = scope
         self._lock = asyncio.Lock()
-        self._last_sweep: float | None = None
+        self._max_tracked_scopes = max_tracked_scopes
+        # Per scope, not per sweeper (#1175): the Turing plane shares one
+        # sweeper across every per-user Workspace, and a single timestamp let
+        # a busy Workspace spend the interval a quiet one needed.
+        self._last_sweep: OrderedDict[RetentionScope, float] = OrderedDict()
         self.last_error: BaseException | None = None
-        self._last_outcome: PurgeOutcome | None = None
-        # The standing backlog observation, per scope this sweeper has
-        # completed a sweep for (#1175). Keyed by scope — not collapsed to the
-        # mode label — because the metric label space is bounded (#818) but
-        # the observation is not: Workspace B's drained batch must not
-        # overwrite Workspace A's standing backlog with B's clean one. The
-        # gauge publishes the per-mode OR of this map, so it reads "some
-        # authorized scope still has a backlog", which is the state a
-        # retention alert is about.
-        self._backlog_by_scope: dict[tuple[str, str | None], bool] = {}
 
     @property
     def policy(self) -> RetentionPolicy:
@@ -185,16 +159,6 @@ class RunRetentionSweeper:
         """The scope every sweep carries unless the call names another."""
         return self._scope
 
-    @property
-    def last_outcome(self) -> PurgeOutcome | None:
-        """What the last completed sweep deleted, by class of evidence.
-
-        None after a failed sweep, however good the one before it was: a
-        metric that outlives its sweep describes a purge that did not
-        happen, which is exactly what a retention metric must never do.
-        """
-        return self._last_outcome
-
     def _resolve_scope(self, override: RetentionScope | None) -> RetentionScope:
         scope = override if override is not None else self._scope
         if scope is None:
@@ -202,14 +166,19 @@ class RunRetentionSweeper:
                 "retention sweep has no deletion scope: construct the sweeper with a "
                 "RetentionScope or pass one to this sweep; nothing is deleted by default"
             )
-        return require_retention_scope(scope)
+        return scope
 
-    def _due(self) -> bool:
-        if not self._policy.bounded:
-            return False
-        if self._last_sweep is None:
+    def _due(self, scope: RetentionScope) -> bool:
+        last = self._last_sweep.get(scope)
+        if last is None:
             return True
-        return (time.monotonic() - self._last_sweep) >= self._policy.sweep_interval_seconds
+        return (time.monotonic() - last) >= self._policy.sweep_interval_seconds
+
+    def _stamp(self, scope: RetentionScope) -> None:
+        self._last_sweep[scope] = time.monotonic()
+        self._last_sweep.move_to_end(scope)
+        while len(self._last_sweep) > self._max_tracked_scopes:
+            del self._last_sweep[next(iter(self._last_sweep))]
 
     async def maybe_sweep(
         self,
@@ -217,40 +186,39 @@ class RunRetentionSweeper:
         now: datetime | None = None,
         scope: RetentionScope | None = None,
     ) -> int:
-        """Sweep if one is due and none is running. Returns Runs purged, or 0."""
-        if not self._due() or self._lock.locked():
+        """Sweep if one is due for the scope and none is running. Returns Runs purged, or 0."""
+        if not self._policy.bounded:
+            return 0
+        try:
+            resolved = self._resolve_scope(scope)
+        except RetentionScopeRequired as exc:
+            # A missing scope is a misconfiguration, and this is where it
+            # surfaces: recorded, visible, and deleting nothing — the one
+            # failure mode the pre-#1175 signature could not have.
+            self.last_error = exc
+            return 0
+        if not self._due(resolved) or self._lock.locked():
             return 0
         async with self._lock:
             # Re-checked under the lock: two coroutines can both pass the
             # unlocked check above, and without this the second would sweep
             # again the instant the first finished.
-            if not self._due():
+            if not self._due(resolved):
                 return 0
-            self._last_sweep = time.monotonic()
-            resolved: RetentionScope | None = None
+            self._stamp(resolved)
             try:
-                resolved = self._resolve_scope(scope)
                 outcome = await self._store.purge_expired_runs(
                     resolved, now=now, limit=self._policy.batch_limit
                 )
             except Exception as exc:
-                retention_sweep_failures_total.inc(mode=_metric_mode(resolved))
-                # A missing scope is a misconfiguration, and this is where it
-                # surfaces: recorded, visible, and deleting nothing — the one
-                # failure mode the pre-#1175 signature could not have.
+                # A failed sweep commits nothing, so it neither drained this
+                # scope's backlog nor observed a new one: the ledger stands.
                 self.last_error = exc
-                self._last_outcome = None
-                # The failed sweep's own standing observation is withdrawn —
-                # it can no longer vouch for that scope — and the gauge is
-                # republished from what remains. Other scopes' observations
-                # survive: their last completed sweep still stands.
-                if resolved is not None:
-                    self._withdraw_backlog_observation(resolved)
-                self._republish_backlog()
                 return 0
             self.last_error = None
-            self._last_outcome = outcome
-            self._publish_outcome()
+            self._report_backlog(resolved, outcome)
+            if outcome.runs:
+                retention_purged_total.inc(outcome.runs, mode=outcome.mode)
             return outcome.runs
 
     async def sweep_now(
@@ -262,133 +230,46 @@ class RunRetentionSweeper:
         """Sweep unconditionally, ignoring the interval. Errors propagate."""
         if not self._policy.bounded:
             return 0
+        resolved = self._resolve_scope(scope)
         async with self._lock:
-            self._last_sweep = time.monotonic()
-            resolved: RetentionScope | None = None
-            try:
-                resolved = self._resolve_scope(scope)
-                outcome = await self._store.purge_expired_runs(
-                    resolved, now=now, limit=self._policy.batch_limit
-                )
-            except Exception as exc:
-                retention_sweep_failures_total.inc(mode=_metric_mode(resolved))
-                self.last_error = exc
-                self._last_outcome = None
-                if resolved is not None:
-                    self._withdraw_backlog_observation(resolved)
-                self._republish_backlog()
-                raise
+            self._stamp(resolved)
+            outcome = await self._store.purge_expired_runs(
+                resolved, now=now, limit=self._policy.batch_limit
+            )
             self.last_error = None
-            self._last_outcome = outcome
-            self._publish_outcome()
+            self._report_backlog(resolved, outcome)
+            if outcome.runs:
+                retention_purged_total.inc(outcome.runs, mode=outcome.mode)
             return outcome.runs
 
-    def _publish_outcome(self) -> None:
-        """Publish the completed sweep's disposition to every health surface.
+    def _report_backlog(self, scope: RetentionScope, outcome: PurgeOutcome) -> None:
+        """Publish how many scopes of this sweep's mode still have a backlog.
 
-        One seam, read through the same :attr:`last_outcome` accessor an
-        external health surface would poll, so what the metrics and the audit
-        log report can never drift from what a caller sees. Deleting canonical
-        evidence is an auditable act (#1175): the structured record names the
-        scope mode, the principal that authorized a global sweep, and the
-        per-class disposition — spine rows reclaimed, traversal state
-        reclaimed, Event references retained, occurrence claims and schedule
-        cursors released — so a purge that kept provenance is as visible as
-        one that deleted it.
+        The purge count alone cannot alert: a scope whose backlog never
+        drains looks identical to a quiet one unless "the batch ran out"
+        is itself a series a dashboard can graph. The value is a count of
+        backlogged scopes, so one Workspace draining cannot erase another's
+        backlog; the label is the mode, never a Workspace id (#818).
         """
-        outcome = self.last_outcome
-        if outcome is None:
-            return
-        mode = outcome.mode
-        retention_sweep_last_success_timestamp.set(time.time(), mode=mode)
-        # The backlog observation is recorded per scope and published as the
-        # per-mode OR: another Workspace's clean batch must not clear this
-        # scope's standing backlog, and vice versa (#1175).
-        scope_key = _scope_key(outcome.scope)
-        self._backlog_by_scope[scope_key] = outcome.backlog_remaining
-        self._register_backlog_owner(scope_key)
-        self._republish_backlog()
-        if outcome.runs:
-            retention_purged_total.inc(outcome.runs, mode=mode)
-        # Dependent evidence, by class: what the sweep reclaimed beyond the
-        # spine, and what it kept by policy. A sweep that deleted Runs but
-        # reclaimed or released no dependents still publishes the retained
-        # gauge, because "kept, and this is how much" is a disposition too.
-        if outcome.continuations:
-            retention_dependents_purged_total.inc(
-                outcome.continuations, mode=mode, kind="continuation"
+        is_global = isinstance(scope, GlobalRetentionScope)
+        with _BACKLOG_LOCK:
+            if outcome.backlog_remaining:
+                _BACKLOGGED_SCOPES.add(scope)
+            else:
+                _BACKLOGGED_SCOPES.discard(scope)
+            backlogged = sum(
+                1
+                for backlogged_scope in _BACKLOGGED_SCOPES
+                if isinstance(backlogged_scope, GlobalRetentionScope) == is_global
             )
-        if outcome.schedule_claims_released:
-            retention_dependents_purged_total.inc(
-                outcome.schedule_claims_released, mode=mode, kind="schedule_claim"
+            retention_backlog_remaining.set(
+                float(backlogged), mode="global" if is_global else "workspace"
             )
-        if outcome.schedule_pointers_released:
-            retention_dependents_purged_total.inc(
-                outcome.schedule_pointers_released, mode=mode, kind="schedule_pointer"
-            )
-        retention_dependent_evidence_retained.set(
-            float(outcome.event_references_retained), mode=mode
-        )
-        _logger.info(
-            "retention.sweep.completed",
-            mode=mode,
-            workspace_id=outcome.workspace_id,
-            runs=outcome.runs,
-            node_runs=outcome.node_runs,
-            attempts=outcome.attempts,
-            continuations=outcome.continuations,
-            event_references_retained=outcome.event_references_retained,
-            schedule_claims_released=outcome.schedule_claims_released,
-            schedule_pointers_released=outcome.schedule_pointers_released,
-            backlog_remaining=outcome.backlog_remaining,
-            authorized_by=outcome.authorized_by,
-        )
-
-    def _register_backlog_owner(self, scope_key: tuple[str, str | None]) -> None:
-        """Register this live sweeper as one owner of a scope observation."""
-        with _BACKLOG_REGISTRY_LOCK:
-            _BACKLOG_OWNERS.setdefault(scope_key, weakref.WeakSet()).add(self)
-
-    def _withdraw_backlog_observation(self, scope: RetentionScope) -> None:
-        """Withdraw this sweeper's observation after a failed sweep."""
-        scope_key = _scope_key(scope)
-        self._backlog_by_scope.pop(scope_key, None)
-        with _BACKLOG_REGISTRY_LOCK:
-            owners = _BACKLOG_OWNERS.get(scope_key)
-            if owners is None:
-                return
-            owners.discard(self)
-            if not owners:
-                _BACKLOG_OWNERS.pop(scope_key, None)
-
-    def _republish_backlog(self) -> None:
-        """Recompute each mode gauge from every live sweeper's observations.
-
-        The gauge is per authorization mode — a bounded label (#818) — while
-        the observations are per scope. The published value is "does ANY live
-        sweeper report that a scope under this mode still has a backlog". One
-        Workspace's drained batch therefore cannot clear another Workspace's
-        standing backlog, including when Workspaces use separate sweeper
-        instances (#1175).
-        """
-        observations: dict[tuple[str, str | None], bool] = {}
-        with _BACKLOG_REGISTRY_LOCK:
-            for scope_key, owners in tuple(_BACKLOG_OWNERS.items()):
-                live = tuple(owners)
-                if not live:
-                    _BACKLOG_OWNERS.pop(scope_key, None)
-                    continue
-                observations[scope_key] = any(
-                    owner._backlog_by_scope.get(scope_key, False) for owner in live
-                )
-
-        for mode in ("workspace", "global"):
-            matching = (backlog for key, backlog in observations.items() if key[0] == mode)
-            retention_backlog_remaining.set(1.0 if any(matching) else 0.0, mode=mode)
 
 
 __all__ = [
     "DEFAULT_CHAT_RETENTION_SECONDS",
+    "DEFAULT_MAX_TRACKED_SCOPES",
     "DEFAULT_SWEEP_INTERVAL_SECONDS",
     "UNBOUNDED_RETENTION",
     "RetentionPolicy",

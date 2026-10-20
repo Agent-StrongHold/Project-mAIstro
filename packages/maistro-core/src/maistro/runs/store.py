@@ -1,21 +1,30 @@
 from __future__ import annotations
 
 from collections import OrderedDict
-from collections.abc import Collection, Iterator
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from itertools import islice
-from typing import Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+
+if TYPE_CHECKING:
+    from maistro.workspaces.store import WorkspaceStore
 
 from maistro.archive.protocols import ArchiveStore
 from maistro.archive.types import ArchiveKey
 from maistro.graph.definitions import Graph
 from maistro.projects.scope_store import ProjectScopeStore
+from maistro.runs.concurrency import (
+    ACTIVE_ROOT_STATUSES,
+    RunConcurrencyExceeded,
+    RunConcurrencyLimits,
+)
 from maistro.runs.evidence_json import json_of
 from maistro.runs.lifecycle import (
     check_completion_is_earned,
     lease_is_expired,
     reclaim_attempt,
+    refuse_completion_under_terminal_run,
     renew_attempt_lease,
     renewed_lease,
     settle_open_node_run,
@@ -34,6 +43,7 @@ from maistro.runs.model import (
     GraphSnapshot,
     NodeRun,
     Run,
+    RunEvalScore,
     RunStatus,
     evidence_values_equal,
 )
@@ -41,19 +51,35 @@ from maistro.runs.retention_scope import (
     GlobalRetentionScope,
     RetentionScope,
     WorkspaceRetentionScope,
-    require_retention_scope,
     run_in_purge_scope,
 )
 from maistro.runs.sources import (
     ADMISSION_SOURCE,
+    CHAT_SOURCE,
     EPHEMERAL_ADMISSION_SOURCES,
     occurrence_key,
 )
+from maistro.runs.store_boundary import RunStoreBoundary, require_admitted_actor
 
 #: How many lapsed Attempts one reclaim sweep settles. Bounded for the same
 #: reason the retention sweep is: a recovery pass must not become a long
 #: transaction that blocks the workers it is trying to unblock.
 DEFAULT_RECLAIM_BATCH = 100
+
+
+def matches_chat_admission_snapshot(current: Run, expected: Run) -> bool:
+    """Recheck an admission snapshot while the store holds its write authority.
+
+    NodeRun absence must be checked under the same authority by the caller.
+    This is a compare-and-cancel guard, not evidence that an owner died: the
+    request or existing recovery policy still decides which snapshot to offer.
+    """
+    return (
+        current.provenance.get(ADMISSION_SOURCE) == CHAT_SOURCE
+        and current.status in (RunStatus.CREATED, RunStatus.QUEUED, RunStatus.RUNNING)
+        and current.status is expected.status
+        and current.updated_at == expected.updated_at
+    )
 
 
 class RunNotFound(KeyError):
@@ -95,6 +121,14 @@ class ActiveAttemptExists(RunIntegrityError):
     pass
 
 
+@dataclass(frozen=True)
+class RunEffectClaim:
+    """The canonical result of an atomic logical-effect admission."""
+
+    run: Run
+    claimed: bool
+
+
 class DuplicateOccurrence(RunIntegrityError):
     """A Run already exists for this `(schedule_id, scheduled_for)` (#220).
 
@@ -130,6 +164,31 @@ def validate_accepted_outcome_against_attempt(
         or not evidence_values_equal(actual.result, expected.result)
     ):
         raise RunIntegrityError("accepted outcome does not match its canonical persisted Attempt")
+
+
+def validate_eval_score_spine(
+    *,
+    run: Run,
+    node_run: NodeRun,
+    attempt: Attempt,
+) -> None:
+    """Require one eval score's spine references to agree (M7-A3).
+
+    An eval record names the `Run` that produced the artifact, the `NodeRun`
+    whose work it scores, and the physical `Attempt` whose evidence it scored.
+    All three must exist and agree, or the record would be eval evidence
+    hanging off nothing — the sidecar shape the contract forbids.
+    """
+    if node_run.run_id != run.run_id:
+        raise RunIntegrityError(
+            f"eval score NodeRun {node_run.node_run_id!r} belongs to Run {node_run.run_id!r}, "
+            f"not Run {run.run_id!r}"
+        )
+    if attempt.node_run_id != node_run.node_run_id:
+        raise RunIntegrityError(
+            f"eval score Attempt {attempt.attempt_id!r} belongs to NodeRun "
+            f"{attempt.node_run_id!r}, not NodeRun {node_run.node_run_id!r}"
+        )
 
 
 def require_repairable_attempt(attempt: Attempt) -> None:
@@ -196,12 +255,14 @@ def _run_matches_status_scope(
     status: RunStatus,
     project_id: str | None,
     workspace_id: str | None,
+    admission_source: str | None = None,
 ) -> bool:
-    """Whether one Run belongs in a status/scope listing."""
+    """Whether one Run belongs in a status/scope/consumer listing."""
     return (
         run.status is status
         and (project_id is None or run.project_id == project_id)
         and (workspace_id is None or run.workspace_id == workspace_id)
+        and (admission_source is None or run.provenance.get(ADMISSION_SOURCE) == admission_source)
     )
 
 
@@ -235,19 +296,29 @@ def validate_child_scope(
         )
 
 
-@runtime_checkable
-class SchedulePointerRelease(Protocol):
-    """The slice of a Schedule store that a purge needs (#1175).
-
-    Structural, so `InMemoryRunStore` can take any backend's schedule store
-    without `runs` importing `scheduling`: the durable backends repoint
-    `Schedule.last_run_id` inside their own purge transaction, and this is the
-    in-memory store's equivalent seam. Optional — a store wired without one
-    leaves schedule cursors to their own lifecycle, which is correct for a
-    deployment that holds no Schedules beside its Runs.
-    """
-
-    async def release_run_pointers(self, run_ids: Collection[str]) -> int: ...
+def validate_effect_claim_parent(
+    parent: Run | None,
+    parent_node_run: NodeRun | None,
+    *,
+    parent_run_id: str | None,
+    parent_node_run_id: str | None,
+    workspace_id: str,
+    project_id: str,
+    allow_cross_project: bool,
+) -> None:
+    """Validate optional parent evidence before admitting an effect-keyed child Run."""
+    if parent_node_run_id is not None and parent_run_id is None:
+        raise RunIntegrityError("parent_node_run_id requires parent_run_id")
+    if parent is None:
+        return
+    validate_child_scope(
+        parent,
+        workspace_id=workspace_id,
+        project_id=project_id,
+        allow_cross_project=allow_cross_project,
+    )
+    if parent_node_run is not None and parent_node_run.run_id != parent_run_id:
+        raise RunIntegrityError("parent_node_run_id does not belong to parent_run_id")
 
 
 @runtime_checkable
@@ -289,27 +360,15 @@ class PurgeOutcome:
     Dispositions, and why each is what it is:
 
     - ``runs`` / ``node_runs`` / ``attempts`` — owned spine rows, deleted.
-    - ``continuations`` — owned resumable state (the graph-continuation and
-      durable-graph-run tables), deleted. The reference is logical — no foreign
-      key — so nothing would notice it dangling, and a recovery scan would pick
-      the orphan up and try to resume a Run whose identity no longer exists.
-    - ``event_references_retained`` — rows in the canonical Event log that name
-      a purged Run, kept. The Event log is append-only provenance: deleting it
-      would destroy the audit record of work whose deletion is itself an
-      auditable act, so retention's job here is to count what it leaves
-      behind, not to empty it. Other attribution history (task receipts,
-      session turns) is kept for the same reason; only what a store itself can
-      count gets a counter here.
-    - ``schedule_claims_released`` — `(schedule_id, scheduled_for)` occurrence
-      claims that died with their Run rows. Released deliberately: nothing is
-      duplicated by re-admitting a firing whose only record was deliberately
-      destroyed, which is the same coupling the in-memory store's eviction
-      already has.
-    - ``schedule_pointers_released`` — `Schedule.last_run_id` cursors that
-      named a purged Run, repointed back to absent in the purge transaction.
-      The cursor is a pointer to the newest Run, not a history of them, so a
-      purged Run must not leave a Schedule naming an id nothing resolves; the
-      fire history itself (`last_fired_at`, `runs_so_far`) is untouched.
+    - ``continuations`` — owned resumable state in ``graph_continuations``,
+      deleted. The reference is logical — no foreign key — so nothing would
+      notice it dangling, and a recovery scan would pick the orphan up and try
+      to resume a Run whose identity no longer exists.
+
+    Attribution history — the Event log, task and effect receipts, session
+    turns, producer provenance — is preserved and uncounted. The per-table
+    policy, including what the purge does not reach, is the inventory in
+    `maistro.runs.retention_scope` (``RUN_REFERENCING_TABLES``).
 
     ``backlog_remaining`` is the difference between "the scope is drained"
     and "the batch ran out" — the one bit a bare count could never carry, and
@@ -321,9 +380,6 @@ class PurgeOutcome:
     node_runs: int = 0
     attempts: int = 0
     continuations: int = 0
-    event_references_retained: int = 0
-    schedule_claims_released: int = 0
-    schedule_pointers_released: int = 0
     backlog_remaining: bool = False
 
     @property
@@ -336,13 +392,6 @@ class PurgeOutcome:
     def is_global(self) -> bool:
         """Whether this purge ran under a presented global authorization."""
         return isinstance(self.scope, GlobalRetentionScope)
-
-    @property
-    def authorized_by(self) -> str | None:
-        """The principal that presented global deletion authority, if any."""
-        if isinstance(self.scope, GlobalRetentionScope):
-            return self.scope.authorized_by
-        return None
 
     @property
     def mode(self) -> str:
@@ -399,12 +448,23 @@ def is_archivable(run: Run, cutoff: datetime, *, archive_after: timedelta) -> bo
       `finished_at`, which a terminal Run always has (`_validate_finished_at`).
       A Run that somehow lacks one is not archived rather than being treated as
       infinitely old, because "no timestamp" is not evidence of coldness.
+    - **not carrying an occurrence claim** — `(schedule_id, scheduled_for)`
+      lives only in the payload (migration 015 made it an expression index
+      over `payload -> 'provenance'`, deliberately no columns), so nulling the
+      payload releases the claim: the row drops out of the unique index, a
+      stale ticker could re-admit the firing, and `get_run_for_occurrence`
+      could no longer name the winner. Archiving that row would trade storage
+      for exactly the duplicate-firing the claim exists to make impossible, so
+      a claiming Run stays where the claim can see it. The tier still moves
+      every task and chat Run — the population that has the bytes.
     """
     if run.retention_expires_at is not None:
         return False
     if run.status not in TERMINAL_RUN_STATUSES:
         return False
     if run.finished_at is None:
+        return False
+    if occurrence_key(run.provenance) is not None:
         return False
     return run.finished_at <= cutoff - archive_after
 
@@ -448,7 +508,20 @@ class RunStore(Protocol):
         provenance: dict[str, Any] | None = None,
         retention_expires_at: datetime | None = None,
         initial_status: RunStatus = RunStatus.CREATED,
-    ) -> Run: ...
+        goal_id: str | None = None,
+        goal_revision: int | None = None,
+    ) -> Run:
+        """Admit one Run over ``graph``.
+
+        ``goal_id``/``goal_revision`` bind the Run to the canonical Goal and
+        the exact desired-state revision it was admitted against (#1572). The
+        binding is provenance: written once here, carried in the Run's payload
+        from then on, and accepted from no other call — every later mutation
+        of the Run leaves it untouched, so a historical Run always reads with
+        the revision it used. Set both or neither; the model refuses half a
+        binding.
+        """
+        ...
 
     async def purge_expired_runs(
         self,
@@ -468,12 +541,93 @@ class RunStore(Protocol):
         offset: int = 0,
         project_id: str | None = None,
         workspace_id: str | None = None,
+        admission_source: str | None = None,
         after: RunCursor | None = None,
     ) -> list[Run]: ...
 
     async def non_terminal_run_stats(self) -> tuple[int, datetime | None]: ...
 
-    async def get_run(self, run_id: str) -> Run | None: ...
+    async def get_run(self, run_id: str, *, principal_id: str | None = None) -> Run | None: ...
+
+    async def find_run_by_task_receipt(self, task_id: str) -> Run | None:
+        """The Run whose provenance names one task receipt, or None.
+
+        The task admitter stamps the receipt id into ``provenance`` at admit;
+        this is the lookup that makes a minted Run discoverable from the
+        receipt its admission announced (#1176). None means no Run names the
+        receipt. A Run whose payload has been archived cold is outside this
+        search — hours past any retry window — and there is at most one: task
+        ids are minted unique, and a second Run naming the same receipt is
+        exactly the duplicate admission this lookup exists to prevent.
+        """
+        ...
+
+    async def find_run_by_effect(self, effect_key: str) -> Run | None: ...
+
+    async def claim_run_by_effect(
+        self,
+        graph: Graph,
+        *,
+        effect_key: str,
+        parent_run_id: str | None = None,
+        parent_node_run_id: str | None = None,
+        allow_cross_project: bool = False,
+        persona_id: str | None = None,
+        actor_principal_id: str | None = None,
+        provenance: dict[str, Any] | None = None,
+        retention_expires_at: datetime | None = None,
+        initial_status: RunStatus = RunStatus.CREATED,
+    ) -> RunEffectClaim: ...
+
+    async def find_occurrence_run(
+        self,
+        provenance: Mapping[str, Any] | None,
+    ) -> Run | None:
+        """The Run that already claims this provenance's occurrence, if any.
+
+        The read half of the occurrence claim (#220, #1120). A duplicate
+        admission is refused by `create_run`, but the refusal does not name the
+        Run that won — and the loser of a manual-fire race owes its caller the
+        same receipt the winner produced, which means resolving that Run. None
+        means nobody holds the claim (the common case: nothing was admitted
+        twice), not that the occurrence is free to double-fire — admission
+        still owns that decision. Understands both claim shapes: nominal
+        occurrences resolve by `scheduled_for`, manual fires by their
+        `schedule_fire_id` token.
+        """
+        ...
+
+    async def get_run_for_occurrence(self, schedule_id: str, scheduled_for: str) -> Run | None:
+        """Resolve the canonical Run claiming one scheduled occurrence."""
+        ...
+
+    async def get_runs_for_occurrences(
+        self, schedule_id: str, scheduled_fors: Sequence[str]
+    ) -> dict[str, Run]:
+        """Resolve every claim among `scheduled_fors`, in one round trip.
+
+        The batched twin of `get_run_for_occurrence` (#1533): a caller
+        checking many occurrences of the same schedule at once — the
+        scheduling admitter's truncated-tail recovery walk — issues one query
+        instead of one per occurrence, which is the difference between a
+        single lookup and tens of thousands of serial ones on a schedule
+        whose enumeration cap dropped a large tail. An occurrence with no
+        claim is simply absent from the result, the same "no claim"
+        `get_run_for_occurrence` answers with `None`.
+        """
+        ...
+
+    async def find_delegation_run(self, delegation_key: str) -> Run | None: ...
+
+    async def attach_delegation_receipt(
+        self, run_id: str, task_id: str, *, target_agent: str | None = None
+    ) -> Run: ...
+
+    async def claim_delegation_transport_attempt(self, run_id: str) -> bool: ...
+
+    async def cancel_unstarted_chat_run(self, expected: Run, *, error: str) -> bool:
+        """Cancel only an unchanged chat admission with no NodeRuns, atomically."""
+        ...
 
     async def transition_run(
         self,
@@ -483,11 +637,14 @@ class RunStore(Protocol):
         at: datetime | None = None,
         result: object | None = None,
         error: str | None = None,
+        principal_id: str | None = None,
     ) -> Run: ...
 
     async def create_node_run(self, run_id: str, *, node_id: str) -> NodeRun: ...
 
-    async def get_node_run(self, node_run_id: str) -> NodeRun | None: ...
+    async def get_node_run(
+        self, node_run_id: str, *, principal_id: str | None = None
+    ) -> NodeRun | None: ...
 
     async def list_node_runs(self, run_id: str) -> list[NodeRun]: ...
 
@@ -530,7 +687,9 @@ class RunStore(Protocol):
         limit: int = DEFAULT_RECLAIM_BATCH,
     ) -> list[Attempt]: ...
 
-    async def get_attempt(self, attempt_id: str) -> Attempt | None: ...
+    async def get_attempt(
+        self, attempt_id: str, *, principal_id: str | None = None
+    ) -> Attempt | None: ...
 
     async def list_attempts(self, node_run_id: str) -> list[Attempt]: ...
 
@@ -548,7 +707,13 @@ class RunStore(Protocol):
 
     async def repair_attempt_result(self, attempt_id: str, *, result: object) -> Attempt: ...
 
-    async def delete_run(self, run_id: str) -> bool: ...
+    async def delete_run(self, run_id: str, *, force: bool = False) -> bool: ...
+
+    async def record_eval_score(self, eval_score: RunEvalScore) -> RunEvalScore: ...
+
+    async def list_eval_scores(self, run_id: str) -> list[RunEvalScore]: ...
+
+    async def get_eval_score(self, eval_id: str) -> RunEvalScore | None: ...
 
 
 #: Retention bound for the in-memory store. Not a tuning knob so much as an
@@ -577,15 +742,18 @@ class InMemoryRunStore:
         self,
         *,
         project_store: ProjectScopeStore,
+        workspace_store: WorkspaceStore | None = None,
         max_runs: int = MAX_IN_MEMORY_RUNS,
         prune_target: int = RUN_PRUNE_TARGET,
         archive_store: ArchiveStore | None = None,
         continuation_store: ContinuationPurge | None = None,
-        schedule_store: SchedulePointerRelease | None = None,
+        concurrency_limits: RunConcurrencyLimits | None = None,
     ) -> None:
         if prune_target > max_runs:
             raise ValueError("prune_target cannot exceed max_runs")
         self._project_store = project_store
+        self._workspace_store = workspace_store
+        self._concurrency_limits = concurrency_limits or RunConcurrencyLimits.configured()
         # The same seam `archive_store` is: a capability the reference store
         # may be wired with, so a retention sweep reclaims Graph continuation
         # state along with the Run it belongs to (#1175). None — the default —
@@ -593,10 +761,6 @@ class InMemoryRunStore:
         # later; wiring it here is what makes the sweep referentially complete
         # in one call.
         self._continuation_store = continuation_store
-        # The same seam again, for the Schedule fire cursor (#1175): a purge
-        # that deletes the Run a Schedule's `last_run_id` names repoints that
-        # cursor here, so no Schedule is left naming an id nothing resolves.
-        self._schedule_store = schedule_store
         # None is the default and means the tier is off (f436 decision 9): no
         # archive store configured is today's behaviour unchanged, with no
         # warning, because warning on a deliberate choice is how operators
@@ -619,6 +783,23 @@ class InMemoryRunStore:
         # scanning them, because the check is on the hot admission path and a
         # scan would be linear in every Run the store holds.
         self._occurrences: dict[tuple[str, str], str] = {}
+        # `canvas_job_id` -> run_id (#1055 review, migration 039). Same shape
+        # as `_occurrences`: two workers racing the same Canvas idempotency
+        # key both compute the same deterministic `canvas_job_id` before
+        # either inserts, and this is the claim that refuses the second one
+        # rather than leaving two Runs that agree on one job id.
+        self._canvas_job_claims: dict[str, str] = {}
+        # Append-only eval evidence keyed by eval_id (M7-A3). No per-run index:
+        # the volume is the scored dimensions of the Runs held here, and the
+        # spine maps run_id -> node_run_ids already.
+        self._eval_scores: dict[str, RunEvalScore] = {}
+
+    def _run_boundary(self) -> RunStoreBoundary:
+        if self._workspace_store is None:
+            from maistro.runs.scoped_reads import RunNotVisible
+
+            raise RunNotVisible
+        return RunStoreBoundary(self, self._workspace_store, self._project_store)
 
     def _prune_terminal_runs(self) -> None:
         """Evict the oldest terminal Runs once the store exceeds its bound.
@@ -658,6 +839,33 @@ class InMemoryRunStore:
                 continue
             yield run_id
 
+    def _release_occurrence_claim(self, forgotten: Run, run_id: str) -> None:
+        """Release `forgotten`'s schedule-occurrence claim, if it held one.
+
+        The claim goes with the Run, so a Run this store evicted or a
+        retention sweep deleted stops blocking its occurrence. That is the
+        right coupling: nothing is duplicated by re-admitting a firing whose
+        only record has been deliberately destroyed, and keeping the claim
+        would be an unreachable row asserting something no longer true.
+        """
+        occurrence = occurrence_key(forgotten.provenance)
+        if occurrence is not None and self._occurrences.get(occurrence) == run_id:
+            del self._occurrences[occurrence]
+
+    def _release_canvas_job_claim(self, forgotten: Run, run_id: str) -> None:
+        """Release `forgotten`'s Canvas job claim, if it held one.
+
+        Same coupling as `_release_occurrence_claim`, for the Canvas
+        `canvas_job_id` claim (#1055 review, migration 039).
+        """
+        canvas_job_id = forgotten.provenance.get("canvas_job_id")
+        if (
+            isinstance(canvas_job_id, str)
+            and canvas_job_id
+            and self._canvas_job_claims.get(canvas_job_id) == run_id
+        ):
+            del self._canvas_job_claims[canvas_job_id]
+
     def _forget_run(self, run_id: str) -> None:
         """Drop a Run and everything hanging off it.
 
@@ -666,14 +874,8 @@ class InMemoryRunStore:
         also unreachable.
         """
         forgotten = self._runs.pop(run_id)
-        # The claim goes with the Run, so a Run this store evicted or a
-        # retention sweep deleted stops blocking its occurrence. That is the
-        # right coupling: nothing is duplicated by re-admitting a firing whose
-        # only record has been deliberately destroyed, and keeping the claim
-        # would be an unreachable row asserting something no longer true.
-        occurrence = occurrence_key(forgotten.provenance)
-        if occurrence is not None and self._occurrences.get(occurrence) == run_id:
-            del self._occurrences[occurrence]
+        self._release_occurrence_claim(forgotten, run_id)
+        self._release_canvas_job_claim(forgotten, run_id)
         node_run_ids = {
             node_run_id
             for node_run_id, node_run in self._node_runs.items()
@@ -687,6 +889,12 @@ class InMemoryRunStore:
             if attempt.node_run_id in node_run_ids
         ]:
             del self._attempts[attempt_id]
+        # Eval scores are Run evidence: they die with the Run, never before it
+        # and never after (M7-A3).
+        for eval_id in [
+            eval_id for eval_id, score in self._eval_scores.items() if score.run_id == run_id
+        ]:
+            del self._eval_scores[eval_id]
 
     async def create_run(
         self,
@@ -700,6 +908,8 @@ class InMemoryRunStore:
         provenance: dict[str, Any] | None = None,
         retention_expires_at: datetime | None = None,
         initial_status: RunStatus = RunStatus.CREATED,
+        goal_id: str | None = None,
+        goal_revision: int | None = None,
     ) -> Run:
         await self._validate_graph_scope(graph)
         if parent_node_run_id is not None and parent_run_id is None:
@@ -723,23 +933,93 @@ class InMemoryRunStore:
             parent_run_id=parent_run_id,
             parent_node_run_id=parent_node_run_id,
             persona_id=persona_id,
-            actor_principal_id=actor_principal_id,
+            actor_principal_id=require_admitted_actor(actor_principal_id),
             provenance=dict(provenance or {}),
             retention_expires_at=retention_expires_at,
+            goal_id=goal_id,
+            goal_revision=goal_revision,
         )
         run = admit_in_state(run, initial_status)
-        occurrence = occurrence_key(run.provenance)
-        if occurrence is not None:
-            # Checked and claimed with no await between, which is what makes
-            # this atomic here: this store runs in one event loop, and the two
-            # halves cannot be interleaved by another coroutine. The durable
-            # backends get the same guarantee from a unique index instead.
-            if occurrence in self._occurrences:
-                raise DuplicateOccurrence(*occurrence)
-            self._occurrences[occurrence] = run.run_id
+        self._claim_occurrence(run)
+        self._claim_canvas_job(run)
+        # After the claims, so a duplicate is refused as one rather than as
+        # backpressure; no await between this count and the insert below.
+        self._admit_root(run)
         self._runs[run.run_id] = run
         self._prune_terminal_runs()
         return run.model_copy(deep=True)
+
+    def _admit_root(self, run: Run) -> None:
+        if run.parent_run_id is not None:
+            return
+        principal = run.actor_principal_id or None
+        active = [
+            other
+            for other in self._runs.values()
+            if other.parent_run_id is None and other.status in ACTIVE_ROOT_STATUSES
+        ]
+        try:
+            self._concurrency_limits.check(
+                workspace_active=sum(other.workspace_id == run.workspace_id for other in active),
+                principal_active=(
+                    sum(other.actor_principal_id == principal for other in active)
+                    if principal is not None
+                    else None
+                ),
+            )
+        except RunConcurrencyExceeded:
+            self._release_occurrence_claim(run, run.run_id)
+            self._release_canvas_job_claim(run, run.run_id)
+            raise
+
+    def _claim_occurrence(self, run: Run) -> None:
+        """Atomically claim `run`'s schedule occurrence, if it names one.
+
+        Checked and claimed with no await between, which is what makes this
+        atomic here: this store runs in one event loop, and the two halves
+        cannot be interleaved by another coroutine. The durable backends get
+        the same guarantee from a unique index instead (migration 015).
+        """
+        occurrence = occurrence_key(run.provenance)
+        if occurrence is None:
+            return
+        if occurrence in self._occurrences:
+            raise DuplicateOccurrence(*occurrence)
+        self._occurrences[occurrence] = run.run_id
+
+    def _claim_canvas_job(self, run: Run) -> None:
+        """Atomically claim `run`'s Canvas job id, if it is a Canvas admission.
+
+        Same no-await claim as `_claim_occurrence`, mirrored by a real unique
+        index on the durable backends (#1055 review, migration 039). Scoped
+        to `admission_source == "canvas_generation"` too: the field name
+        alone is not exclusively Canvas-owned, and a Run from an unrelated
+        source that happens to carry the same string in its own provenance
+        must not be able to block a real admission.
+        """
+        canvas_job_id = run.provenance.get("canvas_job_id")
+        if not (
+            isinstance(canvas_job_id, str)
+            and canvas_job_id
+            and run.provenance.get(ADMISSION_SOURCE) == "canvas_generation"
+        ):
+            return
+        if canvas_job_id in self._canvas_job_claims:
+            raise RunIntegrityError(f"a Run already claims Canvas job {canvas_job_id!r}")
+        self._canvas_job_claims[canvas_job_id] = run.run_id
+
+    async def find_occurrence_run(
+        self,
+        provenance: Mapping[str, Any] | None,
+    ) -> Run | None:
+        occurrence = occurrence_key(dict(provenance or {}))
+        if occurrence is None:
+            return None
+        run_id = self._occurrences.get(occurrence)
+        if run_id is None:
+            return None
+        run = self._runs.get(run_id)
+        return run.model_copy(deep=True) if run is not None else None
 
     def _referenced_by_children(self) -> tuple[set[str], set[str]]:
         """The Run and NodeRun ids some other Run names as its parent."""
@@ -767,6 +1047,39 @@ class InMemoryRunStore:
             if node_run.run_id == run_id
         )
 
+    def _purge_doomed(self, scope: RetentionScope, cutoff: datetime) -> list[Run]:
+        """Expired terminal Runs inside ``scope`` that no other Run descends from."""
+        parent_runs, parent_node_runs = self._referenced_by_children()
+        return [
+            run
+            for run in self._runs.values()
+            if run_in_purge_scope(run, scope)
+            and is_purgeable(run, cutoff)
+            and not self._has_child(run.run_id, parent_runs, parent_node_runs)
+        ]
+
+    def _spine_counts(self, selected_ids: set[str]) -> tuple[int, int]:
+        """NodeRuns and Attempts that die with the selected Runs."""
+        node_run_ids = {
+            node_run_id
+            for node_run_id, node_run in self._node_runs.items()
+            if node_run.run_id in selected_ids
+        }
+        attempts = sum(
+            1 for attempt in self._attempts.values() if attempt.node_run_id in node_run_ids
+        )
+        return len(node_run_ids), attempts
+
+    async def _delete_continuations(self, selected_ids: set[str]) -> int:
+        """Delete Graph continuations for the purged Runs; count what went."""
+        if self._continuation_store is None:
+            return 0
+        continuations = 0
+        for run_id in selected_ids:
+            if await self._continuation_store.delete(run_id):
+                continuations += 1
+        return continuations
+
     async def purge_expired_runs(
         self,
         scope: RetentionScope,
@@ -776,16 +1089,16 @@ class InMemoryRunStore:
     ) -> PurgeOutcome:
         """Delete up to ``limit`` expired terminal Runs inside ``scope``.
 
+        Orphan-safe: a Run some other Run descends from is skipped, however
+        expired. The durable backend enforces that with `ON DELETE RESTRICT`
+        and this one must agree, or the same retention policy would produce a
+        dangling parent pointer here and an integrity error there.
+
         The scope is the whole of the deletion authority (#1175): a Workspace
         sweep cannot see another Workspace's Runs, and a store-wide sweep is
         only ever an explicit `GlobalRetentionScope` — never the absence of a
         predicate, because a parameter nobody can forget is the one thing that
         makes the default honest.
-
-        Orphan-safe: a Run some other Run descends from is skipped, however
-        expired. The durable backend enforces that with `ON DELETE RESTRICT`
-        and this one must agree, or the same retention policy would produce a
-        dangling parent pointer here and an integrity error there.
 
         The spine forgets run without an await between them, so the sweep is
         atomic with respect to this event loop: two concurrent sweeps divide
@@ -796,153 +1109,24 @@ class InMemoryRunStore:
         `CanonicalDurableRunStore.reconcile_persistence`, the same backstop
         the durable stores keep for a crash.
         """
-        scope = require_retention_scope(scope)
         if limit <= 0:
             raise ValueError("limit must be positive")
         cutoff = now if now is not None else datetime.now(UTC)
-        doomed = self._doomed_runs(scope, cutoff)
+        doomed = self._purge_doomed(scope, cutoff)
         selected = doomed[:limit]
         selected_ids = {run.run_id for run in selected}
-        # Delete the selected runs with their dependents.
-        result = await self._delete_runs_with_dependents(selected_ids)
-        # The backlog_remaining flag: true if there are more doomed runs beyond the limit.
-        backlog_remaining = len(doomed) > limit
-
+        node_runs, attempts = self._spine_counts(selected_ids)
+        for run in selected:
+            self._forget_run(run.run_id)
+        continuations = await self._delete_continuations(selected_ids)
         return PurgeOutcome(
             scope=scope,
-            runs=result["runs"],
-            node_runs=result["node_runs"],
-            attempts=result["attempts"],
-            continuations=result["continuations"],
-            event_references_retained=0,  # This store owns no Event log — canonical Events live in their own store.
-            schedule_claims_released=result["schedule_claims_released"],
-            schedule_pointers_released=result["schedule_pointers_released"],
-            backlog_remaining=backlog_remaining,
+            runs=len(selected),
+            node_runs=node_runs,
+            attempts=attempts,
+            continuations=continuations,
+            backlog_remaining=len(doomed) > limit,
         )
-
-    def _doomed_runs(self, scope: RetentionScope, cutoff: datetime) -> list[Run]:
-        """Every expired terminal Run inside ``scope`` that no Run descends from.
-
-        The three-way filter is the whole deletion policy in one place: the
-        scope predicate, the terminal-and-expired predicate, and orphan
-        safety — in that order of authority, and orderable nowhere else,
-        because a candidate that fails any one of the three must not be
-        deleted and must not even be counted against the batch.
-        """
-        parent_runs, parent_node_runs = self._referenced_by_children()
-        return [
-            run
-            for run in self._runs.values()
-            if run_in_purge_scope(run, scope)
-            and is_purgeable(run, cutoff)
-            and not self._has_child(run.run_id, parent_runs, parent_node_runs)
-        ]
-
-    def _count_spine_dependents(self, run_ids: set[str]) -> tuple[int, int]:
-        """How many NodeRuns and Attempts the given Runs own.
-
-        Counted rather than discovered lazily so the outcome reports every
-        row the sweep actually deleted — a health metric of "1" would
-        describe a sweep that removed four.
-        """
-        node_run_ids = {
-            node_run_id
-            for node_run_id, node_run in self._node_runs.items()
-            if node_run.run_id in run_ids
-        }
-        attempts = sum(
-            1 for attempt in self._attempts.values() if attempt.node_run_id in node_run_ids
-        )
-        return len(node_run_ids), attempts
-
-    async def _delete_runs_with_dependents(self, run_ids: Collection[str]) -> dict[str, int]:
-        """Delete the given run_ids and their dependents, returning counts.
-
-        Each Run stands alone: its dependents are released first, and a Run
-        whose dependent release fails is skipped whole — no spine row goes
-        while a continuation or Schedule cursor it owns survives it. The
-        in-memory store has no transaction to offer its collaborators, so
-        that all-or-nothing-per-Run order *is* its atomicity, and
-        `CanonicalDurableRunStore.reconcile_persistence` remains the crash
-        backstop on the durable legs (#1175).
-
-        Returns a dictionary with keys:
-            'runs': number of runs deleted
-            'node_runs': number of node_runs deleted
-            'attempts': number of attempts deleted
-            'continuations': number of continuations deleted
-            'schedule_pointers_released': number of schedule pointers released
-            'schedule_claims_released': number of schedule claims released
-        """
-        runs_to_delete: set[str] = set()
-        node_runs_to_delete: set[str] = set()
-        attempts_to_delete: set[str] = set()
-        continuations_deleted = 0
-        schedule_pointers_released = 0
-        schedule_claims_released = 0
-
-        for run_id in run_ids:
-            run = self._runs.get(run_id)
-            if run is None:
-                continue
-            node_run_ids, attempt_ids = self._spine_dependent_ids(run_id)
-            try:
-                released = await self._release_run_dependents(run)
-            except Exception:
-                # If dependent cleanup fails, skip this Run whole.
-                continue
-            continuations, pointers, claims = released
-            continuations_deleted += continuations
-            schedule_pointers_released += pointers
-            schedule_claims_released += claims
-            # Dependents are accounted for: the spine may go.
-            runs_to_delete.add(run_id)
-            node_runs_to_delete.update(node_run_ids)
-            attempts_to_delete.update(attempt_ids)
-
-        for run_id in runs_to_delete:
-            self._forget_run(run_id)
-
-        return {
-            "runs": len(runs_to_delete),
-            "node_runs": len(node_runs_to_delete),
-            "attempts": len(attempts_to_delete),
-            "continuations": continuations_deleted,
-            "schedule_pointers_released": schedule_pointers_released,
-            "schedule_claims_released": schedule_claims_released,
-        }
-
-    def _spine_dependent_ids(self, run_id: str) -> tuple[set[str], set[str]]:
-        """The NodeRun and Attempt ids filed directly under one Run."""
-        node_run_ids = {nr.node_run_id for nr in self._node_runs.values() if nr.run_id == run_id}
-        attempt_ids = {
-            a.attempt_id for a in self._attempts.values() if a.node_run_id in node_run_ids
-        }
-        return node_run_ids, attempt_ids
-
-    async def _release_run_dependents(self, run: Run) -> tuple[int, int, int]:
-        """Reclaim one Run's execution identity beyond the spine.
-
-        Returns ``(continuations, schedule_pointers, schedule_claims)`` — the
-        same three counts the outcome reports. The Graph continuation goes
-        (traversal state is execution identity, not audit); the Schedule fire
-        cursor is repointed to absent; and the Run's own provenance occurrence
-        claim dies with the Run row (retention_scope's inventory), counted so
-        the release is a reported fact. Raises on collaborator failure so the
-        caller can skip the Run whole rather than orphan its dependents.
-        """
-        continuations = 0
-        if self._continuation_store is not None:
-            gone = await self._continuation_store.delete(run.run_id)
-            if gone:
-                continuations = 1
-        pointers = 0
-        claims = 0
-        if self._schedule_store is not None:
-            pointers = await self._schedule_store.release_run_pointers({run.run_id})
-            if occurrence_key(run.provenance) is not None:
-                claims = 1
-        return continuations, pointers, claims
 
     async def non_terminal_run_stats(self) -> tuple[int, datetime | None]:
         """How many Runs are non-terminal, and when the oldest one was created.
@@ -1042,6 +1226,7 @@ class InMemoryRunStore:
         offset: int = 0,
         project_id: str | None = None,
         workspace_id: str | None = None,
+        admission_source: str | None = None,
         after: RunCursor | None = None,
     ) -> list[Run]:
         """Runs currently in ``status``, oldest first.
@@ -1069,6 +1254,7 @@ class InMemoryRunStore:
                     status=status,
                     project_id=project_id,
                     workspace_id=workspace_id,
+                    admission_source=admission_source,
                 )
             ),
             key=run_cursor_key,
@@ -1077,9 +1263,150 @@ class InMemoryRunStore:
             matching = [run for run in matching if run_cursor_key(run) > after]
         return [run.model_copy(deep=True) for run in matching[offset : offset + limit]]
 
-    async def get_run(self, run_id: str) -> Run | None:
+    async def get_run(self, run_id: str, *, principal_id: str | None = None) -> Run | None:
         run = self._runs.get(run_id)
-        return run.model_copy(deep=True) if run is not None else None
+        if run is None:
+            return None
+        if principal_id is not None:
+            await self._run_boundary().require_run(run_id, principal_id=principal_id)
+        return run.model_copy(deep=True)
+
+    async def find_run_by_task_receipt(self, task_id: str) -> Run | None:
+        # Insertion-order scan; a match is unique by construction (see the
+        # protocol docstring). The provenance key is spelled by the task
+        # admitter's TASK_ID_KEY; a literal here avoids the runs->tasks import
+        # edge the constant would drag in.
+        for run in self._runs.values():
+            if run.provenance.get("task_id") == task_id:
+                return run.model_copy(deep=True)
+        return None
+
+    async def find_run_by_effect(self, effect_key: str) -> Run | None:
+        for run in self._runs.values():
+            if run.provenance.get("effect_key") == effect_key:
+                return run.model_copy(deep=True)
+        return None
+
+    async def claim_run_by_effect(
+        self,
+        graph: Graph,
+        *,
+        effect_key: str,
+        parent_run_id: str | None = None,
+        parent_node_run_id: str | None = None,
+        allow_cross_project: bool = False,
+        persona_id: str | None = None,
+        actor_principal_id: str | None = None,
+        provenance: dict[str, Any] | None = None,
+        retention_expires_at: datetime | None = None,
+        initial_status: RunStatus = RunStatus.CREATED,
+    ) -> RunEffectClaim:
+        """Atomically claim a logical effect in the reference store.
+
+        Validation is the only await before the check and insert. The store is
+        event-loop confined, so another caller cannot interleave the claim.
+        Durable stores provide the same contract with a database uniqueness
+        constraint.
+        """
+        if not effect_key:
+            raise ValueError("effect_key must be non-empty")
+        await self._validate_graph_scope(graph)
+        for existing in self._runs.values():
+            if existing.provenance.get("effect_key") == effect_key:
+                return RunEffectClaim(existing.model_copy(deep=True), False)
+        parent = self._require_run(parent_run_id) if parent_run_id is not None else None
+        parent_node_run = (
+            self._require_node_run(parent_node_run_id)
+            if parent is not None and parent_node_run_id is not None
+            else None
+        )
+        validate_effect_claim_parent(
+            parent,
+            parent_node_run,
+            parent_run_id=parent_run_id,
+            parent_node_run_id=parent_node_run_id,
+            workspace_id=graph.workspace_id,
+            project_id=graph.project_id,
+            allow_cross_project=allow_cross_project,
+        )
+        run = admit_in_state(
+            Run(
+                workspace_id=graph.workspace_id,
+                project_id=graph.project_id,
+                graph=GraphSnapshot.from_graph(graph.model_copy(deep=True)),
+                parent_run_id=parent_run_id,
+                parent_node_run_id=parent_node_run_id,
+                persona_id=persona_id,
+                actor_principal_id=require_admitted_actor(actor_principal_id),
+                provenance={**dict(provenance or {}), "effect_key": effect_key},
+                retention_expires_at=retention_expires_at,
+            ),
+            initial_status,
+        )
+        self._runs[run.run_id] = run
+        self._prune_terminal_runs()
+        return RunEffectClaim(run.model_copy(deep=True), True)
+
+    async def get_run_for_occurrence(self, schedule_id: str, scheduled_for: str) -> Run | None:
+        """Resolve an occurrence through its claim index, never by scanning Runs."""
+        run_id = self._occurrences.get((schedule_id, scheduled_for))
+        return await self.get_run(run_id) if run_id is not None else None
+
+    async def get_runs_for_occurrences(
+        self, schedule_id: str, scheduled_fors: Sequence[str]
+    ) -> dict[str, Run]:
+        """The batched twin of `get_run_for_occurrence`, from the same index."""
+        found: dict[str, Run] = {}
+        for scheduled_for in scheduled_fors:
+            run_id = self._occurrences.get((schedule_id, scheduled_for))
+            if run_id is None:
+                continue
+            run = await self.get_run(run_id)
+            if run is not None:
+                found[scheduled_for] = run
+        return found
+
+    async def find_delegation_run(self, delegation_key: str) -> Run | None:
+        for run in self._runs.values():
+            if run.provenance.get("delegation_key") == delegation_key:
+                return run.model_copy(deep=True)
+        return None
+
+    async def attach_delegation_receipt(
+        self, run_id: str, task_id: str, *, target_agent: str | None = None
+    ) -> Run:
+        run = self._require_run(run_id)
+        existing = str(run.provenance.get("a2a_task_id") or "")
+        if existing and existing != task_id:
+            raise RunIntegrityError("delegation receipt conflicts with canonical receipt")
+        provenance = dict(run.provenance)
+        provenance["a2a_task_id"] = task_id
+        if target_agent:
+            provenance["target_agent"] = target_agent
+        updated = run.model_copy(update={"provenance": provenance})
+        self._runs[run_id] = updated
+        return updated.model_copy(deep=True)
+
+    async def claim_delegation_transport_attempt(self, run_id: str) -> bool:
+        """Claim the only allowed attempt to cross the transport boundary."""
+        run = self._require_run(run_id)
+        if run.provenance.get("transport_attempted"):
+            return False
+        provenance = dict(run.provenance)
+        provenance["transport_attempted"] = True
+        self._runs[run_id] = run.model_copy(update={"provenance": provenance})
+        return True
+
+    async def cancel_unstarted_chat_run(self, expected: Run, *, error: str) -> bool:
+        # No await: parent comparison, child absence and cancellation are one
+        # event-loop operation, serialized with create_node_run.
+        current = self._require_run(expected.run_id)
+        if not matches_chat_admission_snapshot(current, expected):
+            return False
+        if self._node_runs_of(expected.run_id):
+            return False
+        self._runs[expected.run_id] = transition_run(current, RunStatus.CANCELLED, error=error)
+        return True
 
     async def transition_run(
         self,
@@ -1089,6 +1416,7 @@ class InMemoryRunStore:
         at: datetime | None = None,
         result: object | None = None,
         error: str | None = None,
+        principal_id: str | None = None,
     ) -> Run:
         """Advance one Run, settling its open NodeRuns when it terminalizes.
 
@@ -1100,6 +1428,8 @@ class InMemoryRunStore:
         Every write lands together. The Run's own transition is validated
         first, so an illegal one settles nothing.
         """
+        if principal_id is not None:
+            await self._run_boundary().require_run(run_id, principal_id=principal_id)
         run = self._require_run(run_id)
         check_completion_is_earned(target, self._node_runs_of(run_id))
         updated = transition_run(run, target, at=at, result=result, error=error)
@@ -1160,6 +1490,30 @@ class InMemoryRunStore:
         self._forget_run(run_id)
         return True
 
+    async def record_eval_score(self, eval_score: RunEvalScore) -> RunEvalScore:
+        if eval_score.eval_id in self._eval_scores:
+            raise RunIntegrityError(f"eval score {eval_score.eval_id!r} is already recorded")
+        run = self._require_run(eval_score.run_id)
+        node_run = self._require_node_run(eval_score.node_run_id)
+        attempt = self._require_attempt(eval_score.attempt_id)
+        validate_eval_score_spine(run=run, node_run=node_run, attempt=attempt)
+        self._eval_scores[eval_score.eval_id] = eval_score.model_copy(deep=True)
+        return eval_score.model_copy(deep=True)
+
+    async def list_eval_scores(self, run_id: str) -> list[RunEvalScore]:
+        self._require_run(run_id)
+        scores = [
+            score.model_copy(deep=True)
+            for score in self._eval_scores.values()
+            if score.run_id == run_id
+        ]
+        scores.sort(key=lambda score: (score.scored_at, score.eval_id))
+        return scores
+
+    async def get_eval_score(self, eval_id: str) -> RunEvalScore | None:
+        score = self._eval_scores.get(eval_id)
+        return score.model_copy(deep=True) if score is not None else None
+
     async def create_node_run(self, run_id: str, *, node_id: str) -> NodeRun:
         run = self._require_run(run_id)
         if run.status in TERMINAL_RUN_STATUSES:
@@ -1172,9 +1526,15 @@ class InMemoryRunStore:
         self._node_runs[node_run.node_run_id] = node_run
         return node_run.model_copy(deep=True)
 
-    async def get_node_run(self, node_run_id: str) -> NodeRun | None:
+    async def get_node_run(
+        self, node_run_id: str, *, principal_id: str | None = None
+    ) -> NodeRun | None:
         node_run = self._node_runs.get(node_run_id)
-        return node_run.model_copy(deep=True) if node_run is not None else None
+        if node_run is None:
+            return None
+        if principal_id is not None:
+            await self._run_boundary().require_node_run(node_run_id, principal_id=principal_id)
+        return node_run.model_copy(deep=True)
 
     async def list_node_runs(self, run_id: str) -> list[NodeRun]:
         self._require_run(run_id)
@@ -1312,9 +1672,15 @@ class InMemoryRunStore:
             reclaimed.append(settled.model_copy(deep=True))
         return reclaimed
 
-    async def get_attempt(self, attempt_id: str) -> Attempt | None:
+    async def get_attempt(
+        self, attempt_id: str, *, principal_id: str | None = None
+    ) -> Attempt | None:
         attempt = self._attempts.get(attempt_id)
-        return attempt.model_copy(deep=True) if attempt is not None else None
+        if attempt is None:
+            return None
+        if principal_id is not None:
+            await self._run_boundary().require_attempt(attempt_id, principal_id=principal_id)
+        return attempt.model_copy(deep=True)
 
     async def list_attempts(self, node_run_id: str) -> list[Attempt]:
         self._require_node_run(node_run_id)
@@ -1347,6 +1713,15 @@ class InMemoryRunStore:
             error=error,
             metrics=metrics,
         )
+        if target is AttemptStatus.COMPLETED:
+            # The executor's Run fence is check-then-act across two awaits
+            # (#1335); this guard runs with nothing between it and the durable
+            # write, so a cancellation cannot land a COMPLETED Attempt under a
+            # terminal Run here.
+            node_run = self._require_node_run(attempt.node_run_id)
+            refuse_completion_under_terminal_run(
+                self._require_run(node_run.run_id).status, attempt_id
+            )
         self._attempts[attempt_id] = updated
         return updated.model_copy(deep=True)
 
@@ -1436,10 +1811,10 @@ __all__ = [
     "RunIntegrityError",
     "RunNotFound",
     "RunStore",
-    "SchedulePointerRelease",
     "StaleExecutionFence",
     "WorkspaceRetentionScope",
     "run_in_purge_scope",
     "validate_accepted_outcome_against_attempt",
     "validate_child_scope",
+    "validate_eval_score_spine",
 ]

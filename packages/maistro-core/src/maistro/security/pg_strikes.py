@@ -252,21 +252,6 @@ class PgStrikeTracker:
             rows = await conn.fetch(query, *params)
         return len(rows)
 
-    async def purge_expired_rate_limits(self, *, before: datetime, limit: int = 1_000) -> int:
-        """Bound the short-lived throttle table independently of evidence."""
-        if limit <= 0:
-            raise ValueError("limit must be positive")
-        pool = await self._get_pool()
-        async with pool.acquire() as conn, conn.transaction():
-            rows = await conn.fetch(
-                "DELETE FROM security_rate_limits WHERE (key, window_start) IN ("
-                "SELECT key, window_start FROM security_rate_limits "
-                "WHERE window_start < $1 ORDER BY window_start LIMIT $2) RETURNING key",
-                before.astimezone(UTC),
-                limit,
-            )
-        return len(rows)
-
     async def get(self, user_id: str) -> StrikeRecord | None:
         pool = await self._get_pool()
         async with pool.acquire() as conn:
@@ -460,3 +445,24 @@ class PgRateLimiter:
             current = row["count"]
             allowed = current <= self._max_requests
             return allowed, current
+
+    async def purge_expired(self, *, before: datetime, limit: int = 1_000) -> int:
+        """Bound the short-lived throttle table independently of check traffic.
+
+        check_and_record prunes expired windows opportunistically on the hot
+        path; this is the explicit bounded batch for a caller that sweeps
+        (#325 mechanism, same transaction-and-limit discipline as the other
+        durable purges).
+        """
+        if limit <= 0:
+            raise ValueError("limit must be positive")
+        pool = await self._get_pool()
+        async with pool.acquire() as conn, conn.transaction():
+            rows = await conn.fetch(
+                "DELETE FROM security_rate_limits WHERE (key, window_start) IN ("
+                "SELECT key, window_start FROM security_rate_limits "
+                "WHERE window_start < $1 ORDER BY window_start LIMIT $2) RETURNING key",
+                before.astimezone(UTC),
+                limit,
+            )
+        return len(rows)

@@ -11,7 +11,6 @@ from maistro.types.errors import NoModelsError, QuotaReserveError
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from maistro.protocols.quota import QuotaTracker
     from maistro.types.config import RoutingConfig
     from maistro.types.intent import Intent
     from maistro.types.model import ModelConfig, ModelSelection, ProviderConfig
@@ -20,9 +19,6 @@ if TYPE_CHECKING:
 class RouterEngine:
     """Implements ModelRouter protocol. Selects the best model for an intent."""
 
-    def __init__(self, quota_tracker: QuotaTracker) -> None:
-        self._quota = quota_tracker
-
     def select(
         self,
         intent: Intent,
@@ -30,7 +26,7 @@ class RouterEngine:
         providers: dict[str, ProviderConfig],
         routing_config: RoutingConfig,
     ) -> ModelSelection:
-        """Select the best model. Synchronous — uses cached quota data."""
+        """Select the best model. Synchronous — assumes no usage data (0% for every provider)."""
         return self.select_with_usage(intent, models, providers, routing_config, {})
 
     def select_with_usage(

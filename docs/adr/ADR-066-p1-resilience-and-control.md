@@ -1296,7 +1296,8 @@ Feature: Context length probing
 
 - `packages/maistro-core/src/maistro/graph/executor.py` — existing executor (ADR-062 target)
 - `packages/maistro-core/src/maistro/resilience/` — existing resilience module (ADR-038)
-- `docs/analysis/COMPETITIVE-IMPROVEMENTS.md` — IMP-008, IMP-009, IMP-016, IMP-023, IMP-025, IMP-044
+- Historical competitive-improvements inventory (removed `docs/analysis/COMPETITIVE-IMPROVEMENTS.md`;
+  IMP-008/009/016/023/025/044 absorbed into this ADR)
 - Hermes `SubgraphRegistry` — depth-based role assignment pattern
 - Pi `ContextManager` — iterative summarization pattern
 - OpenClaw `RateLimiter` — cross-process coordination pattern

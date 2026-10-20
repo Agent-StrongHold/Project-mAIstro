@@ -1,10 +1,13 @@
 # Durable retention runbook
 
-`retention-inventory.json` is the policy registry. A table is not considered
-covered merely because it has a TTL comment: it must have an owner, data class,
-growth estimate, deletion constraint, action, and restore/hold behavior. The
-quality gate compares the registry with both Alembic `op.create_table` calls
-and shipped runtime `CREATE TABLE IF NOT EXISTS` schemas.
+`quality/durable-table-retention.json` is the policy registry. A table is not
+considered covered merely because it has a TTL comment: it must have an owner
+module, data class, retention class, and a `deletion_path` that imports and is
+callable when the retention class claims a driven delete. The CI gate
+(`scripts/check-durable-table-inventory.py`) compares the registry with the
+Alembic chains, shipped runtime `CREATE TABLE` DDL, and ORM `__tablename__`s.
+The sweep mechanisms themselves live beside the stores they purge
+(`purge_expired` on each durable store); this runbook is their shared contract.
 
 ## Sweep contract
 

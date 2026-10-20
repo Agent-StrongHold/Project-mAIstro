@@ -89,7 +89,7 @@ const titleStyle: CSSProperties = {
 
 const descStyle: CSSProperties = {
   fontFamily: "var(--mono)",
-  fontSize: 10,
+  fontSize: 12,
   color: "var(--pencil)",
   marginTop: 3,
   lineHeight: 1.45,
@@ -97,7 +97,7 @@ const descStyle: CSSProperties = {
 
 const linkBtnStyle: CSSProperties = {
   fontFamily: "var(--mono)",
-  fontSize: 9,
+  fontSize: 12,
   padding: "3px 8px",
   textDecoration: "none",
   whiteSpace: "nowrap",
@@ -105,7 +105,7 @@ const linkBtnStyle: CSSProperties = {
 
 const countdownStyle: CSSProperties = {
   fontFamily: "var(--mono)",
-  fontSize: 9,
+  fontSize: 12,
   color: "var(--accent)",
   marginTop: 4,
 };
@@ -162,7 +162,7 @@ export function SetupChecklist() {
     <div className="card" style={cardStyle}>
       <div style={headerRow}>
         <div>
-          <div style={{ fontFamily: "var(--mono)", fontSize: 9, color: "var(--pencil)" }}>
+          <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)" }}>
             SETUP CHECKLIST
           </div>
           <div style={{ fontFamily: "var(--hand)", fontSize: 16, fontWeight: 600 }}>
@@ -178,7 +178,7 @@ export function SetupChecklist() {
           type="button"
           className="btn"
           onClick={() => setCollapsed((c) => !c)}
-          style={{ fontFamily: "var(--mono)", fontSize: 9, padding: "3px 8px" }}
+          style={{ fontFamily: "var(--mono)", fontSize: 12, padding: "3px 8px" }}
         >
           {collapsed ? "show" : "hide"}
         </button>
