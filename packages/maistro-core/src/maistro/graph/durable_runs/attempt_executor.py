@@ -41,6 +41,7 @@ from maistro.runtime import (
 from . import executor as traversal
 from .authoritative_fold import fold_authoritative_frontier
 from .execution_store import DurableRunExecutionStore
+from .failure import sanitize_failure_message
 from .launch import require_admitted_launch_state
 from .protocol import DurableRunStore, RecoveryInfrastructureError
 from .spine import mirror_lifecycle
@@ -531,6 +532,12 @@ async def _walk_until_settled(
         await mirror_lifecycle(record, run_store=spine)
         if record.run.status is not RunStatus.RUNNING:
             return record
+        # A physical terminal write can fail after runtime execution returned.
+        # Do not immediately redispatch or mark the graph failed while the
+        # leased Attempt is still active; the bounded recovery claim will
+        # either observe its terminal evidence or reclaim it after expiry.
+        if _frontier_has_active_attempt(record):
+            return record
 
     record = await traversal._finish_walk(
         record,
@@ -604,10 +611,12 @@ async def _walk_frontier(
         )
     except Exception as exc:
         latest = await _reload_record(record.run_id, store=store, cause=exc)
+        if _frontier_has_active_attempt(latest):
+            return latest
         return await traversal._mark_failed(
             latest,
             error_code="PhysicalExecutionError",
-            error_message=str(exc) or type(exc).__name__,
+            error_message=sanitize_failure_message(str(exc) or type(exc).__name__),
             store=store,
         )
 
@@ -617,6 +626,20 @@ async def _walk_frontier(
         graph,
         items,
         store=store,
+    )
+
+
+def _frontier_has_active_attempt(record: DurableRunRecord) -> bool:
+    """Whether a persisted active Attempt still owns unfinished frontier work."""
+    active_ids = {
+        node_run.node_run_id
+        for node_run in record.node_runs
+        if node_run.status is RunStatus.RUNNING
+    }
+    return any(
+        attempt.node_run_id in active_ids
+        and attempt.status in {AttemptStatus.CREATED, AttemptStatus.RUNNING}
+        for attempt in record.attempts
     )
 
 
@@ -760,6 +783,7 @@ async def _execute_frontier(
         interrupted = bool(attempts) and attempts[-1].status is not AttemptStatus.COMPLETED
 
         raw_result: NodeResult | None = None
+        executing_attempt_id: str | None = None
 
         async def executor(work_item: Any, execution_context: Any) -> NodeResult:
             nonlocal raw_result
@@ -776,8 +800,10 @@ async def _execute_frontier(
             return result
 
         def context_for_attempt(attempt: Attempt, base: Any) -> NodeContext:
+            nonlocal executing_attempt_id
             if not isinstance(base, NodeContext):
                 raise TypeError("durable Graph execution requires NodeContext")
+            executing_attempt_id = attempt.attempt_id
             return base.model_copy(
                 update={
                     "node_run_id": node_run.node_run_id,
@@ -785,32 +811,35 @@ async def _execute_frontier(
                 }
             )
 
-        await execution_service.execute(
-            node_run.node_run_id,
-            inputs,
-            ctx,
-            executor=executor,
-            executor_id=str(getattr(node, "kind", None) or spec.node_type or node_id),
-            # The node's declared timeout policy, resolved through the bounded
-            # envelope, becomes the canonical ExecutionRuntime deadline for
-            # this Attempt: `deadline_at` is persisted before launch and
-            # expiry terminalizes the Attempt TIMED_OUT. Undeclared nodes keep
-            # today's no-deadline behavior. This is what makes a product
-            # runner's own transport timeout unable to extend work past the
-            # canonical policy — the runtime owns the enforcement (#1184).
-            timeout_s=declared_node_timeout_s(spec.policies),
-            reconcile_logical=False,
-            context_factory=context_for_attempt,
-            prior_completion_accepted=prior_completion_accepted,
-        )
-        if raw_result is None:
-            raise RuntimeError(f"node {node_id!r} completed without a NodeResult")
+        try:
+            await execution_service.execute(
+                node_run.node_run_id,
+                inputs,
+                ctx,
+                executor=executor,
+                executor_id=str(getattr(node, "kind", None) or spec.node_type or node_id),
+                # The node's declared timeout policy, resolved through the bounded
+                # envelope, becomes the canonical ExecutionRuntime deadline for
+                # this Attempt: `deadline_at` is persisted before launch and
+                # expiry terminalizes the Attempt TIMED_OUT. Undeclared nodes keep
+                # today's no-deadline behavior. This is what makes a product
+                # runner's own transport timeout unable to extend work past the
+                # canonical policy — the runtime owns the enforcement (#1184).
+                timeout_s=declared_node_timeout_s(spec.policies),
+                reconcile_logical=False,
+                context_factory=context_for_attempt,
+                prior_completion_accepted=prior_completion_accepted,
+            )
+        except Exception as exc:
+            raw_result = await _resolve_committed_result(
+                execution_store, executing_attempt_id, cause=exc
+            )
         return traversal._FrontierItem(
             node_id,
             spec,
             node_run,
             ctx,
-            raw_result,
+            _require_node_result(raw_result, node_id),
             semantics,
             logical_effect_key,
         )
@@ -823,6 +852,33 @@ async def _execute_frontier(
             )
         )
     )
+
+
+def _require_node_result(result: NodeResult | None, node_id: str) -> NodeResult:
+    if result is None:
+        raise RuntimeError(f"node {node_id!r} completed without a NodeResult")
+    return result
+
+
+async def _resolve_committed_result(
+    execution_store: DurableRunExecutionStore,
+    attempt_id: str | None,
+    *,
+    cause: Exception,
+) -> NodeResult:
+    """Resolve lost acknowledgement only from this launched Attempt's evidence.
+
+    Never retry the write, use the uncommitted in-process result, or adopt an
+    older accepted completion after a failed continuation redispatch. A
+    classified infrastructure failure must reach the recovery boundary without
+    another read through the broken store.
+    """
+    if isinstance(cause, RecoveryInfrastructureError) or attempt_id is None:
+        raise cause
+    persisted = await execution_store.get_attempt(attempt_id)
+    if persisted is None or persisted.status is not AttemptStatus.COMPLETED:
+        raise cause
+    return NodeResult.model_validate(persisted.result)
 
 
 __all__ = [
