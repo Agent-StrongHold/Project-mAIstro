@@ -143,6 +143,59 @@ values ('run-default', 'ws1', 'proj1', 'completed', '{"actor_principal_id":"defa
 insert into canonical_event_log (event_id, stream_id, sequence, type, timestamp, actor_id)
 values ('evt-default', 'run-default', 1, 'run.completed', 1770000000.0, 'default'),
        ('evt-conductor', 'run-conductor', 1, 'run.completed', 1770000001.0, 'conductor');
+-- Tasks also carry a service principal (webhook/service identity). Seed it
+-- from the owning principal so the migration's tasks.service_principal_id
+-- leg has a legacy and a new row to converge.
+update tasks set service_principal_id = user_id;
+
+-- learning_stage_transitions is append-only ladder audit evidence; org_id is
+-- the scope label. Seed one legacy and one new row.
+insert into learning_stage_transitions (learning_id, org_id, from_stage, to_stage, actor, reason)
+select id, 'default', 'draft', 'published', 'default', 'legacy' from learnings where user_id = 'default' limit 1;
+insert into learning_stage_transitions (learning_id, org_id, from_stage, to_stage, actor, reason)
+select id, 'conductor', 'draft', 'published', 'conductor', 'new' from learnings where user_id = 'conductor' limit 1;
+
+-- Design artifacts: org_id scopes them, created_by names the author. Seed
+-- one legacy and one new row in each surface, reusing the seeded projects.
+insert into design_artifact_versions (id, org_id, project_id, lineage_id, version, kind, origin, content_sha, created_at)
+select gen_random_uuid(), 'default', id, 'lin-default', 1, 'kind', 'origin', 'sha', now()
+  from design_projects where org_id = 'default' limit 1;
+insert into design_artifact_versions (id, org_id, project_id, lineage_id, version, kind, origin, content_sha, created_at)
+select gen_random_uuid(), 'conductor', id, 'lin-conductor', 1, 'kind', 'origin', 'sha', now()
+  from design_projects where org_id = 'conductor' limit 1;
+
+insert into design_artifact_locks (lock_id, org_id, project_id, lineage_id, scope, created_by, created_at)
+select 'lock-default', 'default', id, 'lin-default', 'scope', 'default', now()
+  from design_projects where org_id = 'default' limit 1;
+insert into design_artifact_locks (lock_id, org_id, project_id, lineage_id, scope, created_by, created_at)
+select 'lock-conductor', 'conductor', id, 'lin-conductor', 'scope', 'conductor', now()
+  from design_projects where org_id = 'conductor' limit 1;
+
+insert into design_branch_controls (control_id, org_id, project_id, lineage_id, mode, updated_by, updated_at)
+select gen_random_uuid(), 'default', id, 'lin-default', 'mode', 'default', now()
+  from design_projects where org_id = 'default' limit 1;
+insert into design_branch_controls (control_id, org_id, project_id, lineage_id, mode, updated_by, updated_at)
+select gen_random_uuid(), 'conductor', id, 'lin-conductor', 'mode', 'conductor', now()
+  from design_projects where org_id = 'conductor' limit 1;
+
+insert into design_project_guidance (guidance_id, org_id, project_id, text, author, created_at)
+select 'guidance-default', 'default', id, 'text', 'default', now()
+  from design_projects where org_id = 'default' limit 1;
+insert into design_project_guidance (guidance_id, org_id, project_id, text, author, created_at)
+select 'guidance-conductor', 'conductor', id, 'text', 'conductor', now()
+  from design_projects where org_id = 'conductor' limit 1;
+
+insert into design_creative_briefs (brief_id, lineage_id, version, workspace_id, project_id, goal_id, goal_revision, payload, created_by)
+values ('brief-default', 'lin', 1, 'ws1', 'proj1', 'goal1', 1, '{}'::jsonb, 'default'),
+       ('brief-conductor', 'lin', 2, 'ws2', 'proj2', 'goal1', 1, '{}'::jsonb, 'conductor');
+
+insert into user_model_facts (fact_id, lineage_id, revision, owner_user_id, kind, statement, evidence, first_observed, last_observed, last_reinforced, confidence, state, sensitivity, reusable, persona_hints)
+values ('fact-default', 'lin', 1, 'default', 'kind', 'stmt', '{}'::jsonb, now(), now(), now(), 0.5, 'state', 'sens', true, '{}'::jsonb),
+       ('fact-conductor', 'lin', 1, 'conductor', 'kind', 'stmt', '{}'::jsonb, now(), now(), now(), 0.5, 'state', 'sens', true, '{}'::jsonb);
+
+insert into user_model_statement_keys (fact_key, lineage_id, owner_user_id)
+values ('key-default', 'lin', 'default'), ('key-conductor', 'lin', 'conductor');
+
 """
 
 
@@ -287,11 +340,34 @@ def _assert_losslessly_migrated() -> None:
     # Task ownership follows the identity: the migrated operator still sees
     # every task the legacy principal owned, and loses none to the rename.
     assert _column_values("tasks", "user_id") == ["conductor", "conductor"]
+    # Service-principal scoping follows the identity too.
+    assert _column_values("tasks", "service_principal_id") == ["conductor", "conductor"]
     # Canvas ownership too: org_id is the authenticated owner, and a stale one
     # 404s the operator out of their own canvas.
     assert _query("select id, org_id from canvases order by id") == [
         ("canvas-conductor", "conductor"),
         ("canvas-default", "conductor"),
+    ]
+
+    # learning_stage_transitions org_id scope label follows the identity.
+    assert _column_values("learning_stage_transitions", "org_id") == ["conductor", "conductor"]
+
+    # Design artifact ownership surfaces: org_id scopes, created_by names author.
+    for table in (
+        "design_artifact_versions",
+        "design_artifact_locks",
+        "design_branch_controls",
+        "design_project_guidance",
+    ):
+        assert _column_values(table, "org_id") == ["conductor", "conductor"], table
+    assert _column_values("design_artifact_locks", "created_by") == ["conductor", "conductor"]
+    assert _column_values("design_creative_briefs", "created_by") == ["conductor", "conductor"]
+
+    # User-model ownership boundaries follow the identity.
+    assert _column_values("user_model_facts", "owner_user_id") == ["conductor", "conductor"]
+    assert _column_values("user_model_statement_keys", "owner_user_id") == [
+        "conductor",
+        "conductor",
     ]
     # Durable elevation grants keep granting to the migrated principal.
     assert _query("select principal_id from elevation_grants order by id") == [
@@ -393,6 +469,7 @@ class TestForcedProcessDeathIsRestartReconcilable:
             ) == [("default",)]
             # Task ownership untouched too.
             assert _column_values("tasks", "user_id") == ["conductor", "default"]
+            assert _column_values("tasks", "service_principal_id") == ["conductor", "default"]
         finally:
             if migration.poll() is None:  # pragma: no cover - only on assertion failure
                 migration.kill()

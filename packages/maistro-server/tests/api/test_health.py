@@ -9,11 +9,13 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 from fastapi import FastAPI
+from fastapi.security import HTTPAuthorizationCredentials
 from fastapi.testclient import TestClient
 
 from maistro.config.settings import SandboxSettings, Settings, get_settings
 from maistro_server.api.health import (
     ProbeResult,
+    _admin_diagnostics_authorized,
     _check_docker,
     _check_postgres,
     _persistence_diagnostics,
@@ -427,3 +429,30 @@ class TestReadinessEndpoint:
         # payload cannot grow without bound as providers are discovered.
         assert "provider=p8" not in llm["detail"]
         assert "+2 more" in llm["detail"]
+
+
+class TestAdminDiagnosticsAuthorized:
+    """Admin-only deployments (API_KEYS empty, ADMIN_API_KEYS set) must still
+    grant detailed diagnostics to a valid admin token (#1095)."""
+
+    def test_admin_only_valid_token_authorized(self) -> None:
+        settings = Settings(
+            require_auth=True,
+            api_keys=[],
+            admin_api_keys=["ops:secret"],
+        )
+        creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials="secret")
+        assert _admin_diagnostics_authorized(creds, settings) is True
+
+    def test_admin_only_invalid_token_not_authorized(self) -> None:
+        settings = Settings(
+            require_auth=True,
+            api_keys=[],
+            admin_api_keys=["ops:secret"],
+        )
+        creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials="wrong")
+        assert _admin_diagnostics_authorized(creds, settings) is False
+
+    def test_auth_disabled_not_authorized(self) -> None:
+        settings = Settings(require_auth=False, api_keys=[], admin_api_keys=[])
+        assert _admin_diagnostics_authorized(None, settings) is False

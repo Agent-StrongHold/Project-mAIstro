@@ -190,6 +190,13 @@ def upgrade() -> None:
     # ``expires_at`` purge retires. Recomputing the digest in SQL would be the
     # riskier path. The mapping row is the resolver for anything else that
     # reads a historical principal string out of an immutable payload.
+    #
+    # Also deliberately NOT migrated (append-only provenance, immutable
+    # evidence): ``backlog_events.actor``, ``backlog_authority.actor`` and
+    # ``learning_stage_transitions.actor``. These record who acted at the
+    # time; rewriting them would destroy the historical attribution. The
+    # mapping row (legacy_principal -> canonical_principal) resolves any
+    # reader that needs the current identity for a historical actor string.
 
     # Strike state is keyed by principal and has a foreign-keyed violation log.
     # Merge state first, retarget violations second, then remove the old key.
