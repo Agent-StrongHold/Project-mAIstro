@@ -1031,7 +1031,9 @@ export interface paths {
          *
          *     Failure is explicit at the backend, never fabricated in the client:
          *     unregistered commands answer 404 `unsupported_command`, a handler over
-         *     budget answers 504, and a handler that raises answers 503 — each audited.
+         *     budget answers 504, a capability-authored HTTPException passes through
+         *     with its own status, and a handler that crashes answers 503 — each
+         *     audited.
          */
         post: operations["exec_cli_command_v1_cli_exec_post"];
         delete?: never;
