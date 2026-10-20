@@ -26,6 +26,11 @@ export function resolveSecurityConfig(env = process.env) {
   const bodyLimit = env.CANVAS_BODY_LIMIT || "200mb";
   const maxExportPages = positiveIntOr(env.CANVAS_MAX_EXPORT_PAGES, 400);
   const maxConcurrentExports = positiveIntOr(env.CANVAS_MAX_CONCURRENT_EXPORTS, 2);
+  // Same reasoning as the export caps, and the same helper: a malformed
+  // `API_RATE_LIMIT_PER_MINUTE` must not become NaN. express-rate-limit treats
+  // a NaN limit as "never over the limit", so a typo here would silently
+  // remove the only bound on /api rather than set one (#372).
+  const apiRateLimitPerMinute = positiveIntOr(env.API_RATE_LIMIT_PER_MINUTE, 600);
   const allowTruncate = env.CANVAS_ALLOW_TRUNCATE === "true";
   const exposed = !LOOPBACK.has(host);
   if (exposed && !token) {
@@ -35,7 +40,10 @@ export function resolveSecurityConfig(env = process.env) {
       "request; refusing to listen on a routable interface without a token."
     );
   }
-  return { host, token, origins, bodyLimit, maxExportPages, maxConcurrentExports, allowTruncate, exposed };
+  return {
+    host, token, origins, bodyLimit, maxExportPages, maxConcurrentExports,
+    apiRateLimitPerMinute, allowTruncate, exposed,
+  };
 }
 
 export function isOriginAllowed(origin, origins) {

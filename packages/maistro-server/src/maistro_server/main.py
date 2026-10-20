@@ -33,7 +33,7 @@ from maistro.tasks.progress_webhook import ProgressWebhookNotifier
 from maistro.tasks.queue import configure_task_queue, reset_task_queue
 from maistro.tasks.runner import TaskRunner
 from maistro.tools.sandbox.server import cleanup_all_containers
-from maistro.types.config import AgentConfig
+from maistro.types.config import AgentConfig, SecurityConfig
 from maistro_server.api import (
     canvas,
     chat_completions,
@@ -177,6 +177,29 @@ def _agent_config(settings: Settings) -> AgentConfig:
         agents_dir=_agents_dir(),
         database_url=resolve_database_url(),
         workspace_id=settings.workspace_id,
+        # The Sentinel permission table is fail-closed (#1165): an empty table
+        # denies every tool, so the grants an operator states in
+        # `security.permission_preset` / `security.permissions` must reach the
+        # config the Container is built from, or no deployment can ever
+        # authorize one.
+        security=_security_config(),
+    )
+
+
+def _security_config() -> SecurityConfig:
+    """The Sentinel grants, from `maistro.yaml`'s `security` section.
+
+    Read through the loaded YAML config like `_router_api_key` and
+    `_agents_dir`, because that is where an operator states them; a server
+    started without a YAML file gets the shipped defaults, which is the empty
+    fail-closed table (#1165).
+    """
+    yaml_config = settings_module.get_yaml_config()
+    if yaml_config is None:
+        return SecurityConfig()
+    return SecurityConfig(
+        permission_preset=yaml_config.security.permission_preset,
+        permissions=yaml_config.security.permissions,
     )
 
 

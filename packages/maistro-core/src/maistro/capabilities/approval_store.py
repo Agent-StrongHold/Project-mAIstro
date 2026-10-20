@@ -18,16 +18,8 @@ from typing import Any, Protocol, runtime_checkable
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from maistro.capabilities.slots.approval import ApprovalRequest
+from maistro.security.secret_policy import is_secret_key_name
 
-_SENSITIVE_KEY_PARTS = (
-    "authorization",
-    "credential",
-    "password",
-    "secret",
-    "token",
-    "api_key",
-    "apikey",
-)
 _REDACTED = "[REDACTED]"
 
 
@@ -44,14 +36,24 @@ def approval_request_digest(request: Any) -> str:
 
 
 def redact_approval_value(value: Any) -> Any:
-    """Recursively redact likely credentials before approval context is persisted."""
+    """Recursively redact likely credentials before approval context is persisted.
+
+    Field names are classified by the canonical segment policy
+    (:func:`maistro.security.secret_policy.is_secret_key_name`), shared with the
+    general redactor and the Sentinel PII filter, so ``private_key``,
+    ``ssh_key``, ``signing_key``, a bare ``key``, and camelCase ``apiKey``
+    cannot bypass merely because a different helper produced the evidence
+    (#1159). Identifier-valued fields (``aws_access_key_id``, ``key_arn``)
+    survive: an access key ID is an identifier, not a reusable credential.
+    Nested mappings, lists, and tuples are walked with the same policy before
+    anything reaches durable approval storage.
+    """
 
     if isinstance(value, dict):
         redacted: dict[str, Any] = {}
         for raw_key, item in value.items():
             key = str(raw_key)
-            lowered = key.lower()
-            if lowered == "pat" or any(part in lowered for part in _SENSITIVE_KEY_PARTS):
+            if is_secret_key_name(key):
                 redacted[key] = _REDACTED
             else:
                 redacted[key] = redact_approval_value(item)
@@ -208,7 +210,18 @@ class InMemoryApprovalStore:
             return resolved.model_copy(deep=True)
 
 
-_SCHEMA = """
+class SqliteApprovalStore:
+    """SQLite persistence for approval requests that survive process restart."""
+
+    def __init__(self, conn: Any) -> None:
+        self._conn = conn
+        self._lock = asyncio.Lock()
+
+    async def ensure_schema(self) -> None:
+        # Constant DDL literal, inlined at its single use: no identifier, no
+        # interpolation, nothing user-controlled. Every data-bearing statement
+        # in this file is parameterized (? placeholders with bound params).
+        await self._conn.execute("""
 CREATE TABLE IF NOT EXISTS capability_approvals (
     request_id TEXT PRIMARY KEY,
     run_id TEXT NOT NULL,
@@ -218,18 +231,7 @@ CREATE TABLE IF NOT EXISTS capability_approvals (
     payload TEXT NOT NULL,
     UNIQUE(run_id, node_run_id, binding_id, effect_key)
 )
-"""
-
-
-class SqliteApprovalStore:
-    """SQLite persistence for approval requests that survive process restart."""
-
-    def __init__(self, conn: Any) -> None:
-        self._conn = conn
-        self._lock = asyncio.Lock()
-
-    async def ensure_schema(self) -> None:
-        await self._conn.execute(_SCHEMA)
+""")
         await self._conn.commit()
 
     async def create(self, approval: DurableApproval) -> DurableApproval:

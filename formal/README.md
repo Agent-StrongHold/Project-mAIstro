@@ -15,7 +15,7 @@ A security regression suite. Each model exercises one of Maistro's security inva
 | I3 | `test_trust_boundary.py` | Permission grants: glob-based R/W, regex command allowlist, expiry, path traversal detection |
 | I4 | `test_dangerous_tools.py` | Dangerous command patterns, tool names, blocked host paths all detected |
 | I5 | `test_external_content.py` | Prompt injection detection, content wrapping with boundary markers, invisible char stripping |
-| I6 | `test_sentinel_policy.py` | Pre-call permission check, post-call Warden scan + PII redaction, audit logging |
+| I6 | `test_sentinel_policy.py` | Pre-call permission check (fail-closed default: table miss denies; ADR-072726-0d6b as implemented for #1165, explicit `allow_on_miss` compat mode), post-call Warden scan + PII redaction, audit logging |
 | I7 | `test_auth_scopes.py` | Scope expansion (category:*→all, *:*→superuser), ServiceIdentity immutability |
 | I8 | `test_secret_equal.py` | Constant-time comparison, type confusion defense, case sensitivity |
 | I9 | `test_task_policy.py` | Task creation deny lists, budget enforcement per tier, per-user isolation |

@@ -66,16 +66,31 @@ class Candidate:
     auto_merge_requested: bool = False
 
 
+class GitCommandError(RuntimeError):
+    """A failed Git command with its exit status available to callers."""
+
+    def __init__(self, message: str, returncode: int) -> None:
+        super().__init__(message)
+        self.returncode = returncode
+
+
+class UnmergeableCandidate(RuntimeError):
+    """Expected: the candidate cannot be merged with the current base."""
+
+
 def candidate_from_pr(pr: dict[str, Any]) -> Candidate:
-    return Candidate(
-        number=int(pr["number"]),
-        head_sha=str(pr["head"]["sha"]),
-        base_ref=str(pr["base"]["ref"]),
-        base_sha=str(pr["base"]["sha"]),
-        state=str(pr["state"]),
-        draft=bool(pr.get("draft", False)),
-        auto_merge_requested=pr.get("auto_merge") is not None,
-    )
+    try:
+        return Candidate(
+            number=int(pr["number"]),
+            head_sha=str(pr["head"]["sha"]),
+            base_ref=str(pr["base"]["ref"]),
+            base_sha=str(pr["base"]["sha"]),
+            state=str(pr["state"]),
+            draft=bool(pr.get("draft", False)),
+            auto_merge_requested=pr.get("auto_merge") is not None,
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise RuntimeError("GitHub returned an invalid pull request payload") from exc
 
 
 def latest_status_state(statuses: list[dict[str, Any]], context: str) -> str | None:
@@ -108,7 +123,10 @@ def _git_bytes(
             if isinstance(stderr, bytes)
             else str(stderr).strip()
         )
-        raise RuntimeError(f"git {' '.join(args)} failed ({proc.returncode}): {detail}")
+        raise GitCommandError(
+            f"git {' '.join(args)} failed ({proc.returncode}): {detail}",
+            proc.returncode,
+        )
     stdout = proc.stdout
     return stdout if isinstance(stdout, bytes) else str(stdout).encode("utf-8")
 
@@ -194,13 +212,20 @@ def policy_assessment(repo: Path, candidate: Candidate) -> Any:
     quoting cannot alter the trusted-path classification.
     """
 
-    merge_tree = _git(
-        repo,
-        "merge-tree",
-        "--write-tree",
-        candidate.base_sha,
-        candidate.head_sha,
-    ).strip()
+    try:
+        merge_tree = _git(
+            repo,
+            "merge-tree",
+            "--write-tree",
+            candidate.base_sha,
+            candidate.head_sha,
+        ).strip()
+    except GitCommandError as exc:
+        if exc.returncode == 1:
+            raise UnmergeableCandidate(
+                "candidate does not merge cleanly with the current develop head"
+            ) from exc
+        raise
     if not merge_tree:
         detail = (
             "no merge base-compatible prospective merge tree for "
@@ -258,9 +283,15 @@ def is_admissible(
 
 
 def merge_async_payload(candidate: Candidate) -> dict[str, str]:
+    """Queue enqueues take the PR head SHA and merge_action only.
+
+    ``merge_method`` is a property of the merge queue itself (pinned to
+    SQUASH in .github/merge-queue.json, audited by check-required-checks);
+    echoing it into the enqueue mutation is rejected with HTTP 422, which is
+    what burst-failed the 09-02 enqueues.
+    """
     return {
         "sha": candidate.head_sha,
-        "merge_method": "squash",
         "merge_action": "merge_queue",
     }
 
@@ -313,7 +344,12 @@ class GitHubApi:
         )
         with urllib.request.urlopen(request, timeout=30) as response:
             raw = response.read()
-            return None if not raw else json.loads(raw.decode("utf-8"))
+        if not raw:
+            return None
+        try:
+            return json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise RuntimeError("GitHub API returned invalid JSON") from exc
 
     def open_develop_prs(self) -> list[dict[str, Any]]:
         result: list[dict[str, Any]] = []
@@ -464,6 +500,9 @@ def run(api: GitHubApi) -> int:
 
         try:
             assessment = api.policy_assessment(candidate)
+        except UnmergeableCandidate as exc:
+            print(f"PR #{candidate.number}: not queueable: {exc}")
+            continue
         except RuntimeError as exc:
             failures += 1
             print(
