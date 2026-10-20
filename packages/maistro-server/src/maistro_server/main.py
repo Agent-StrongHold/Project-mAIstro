@@ -18,6 +18,12 @@ import maistro.agents.conductor as conductor
 import maistro.config.settings as settings_module
 import maistro.memory.store as memory_store
 import maistro.persistence as persistence
+from maistro.agents.types import ConductorOutput
+from maistro.api_versioning import (
+    API_VERSIONS,
+    DEFAULT_API_VERSION,
+    VersionNegotiationMiddleware,
+)
 from maistro.config.database import resolve_database_url, to_asyncpg_dsn
 from maistro.config.settings import Settings, get_settings
 from maistro.container import POSTGRES_SCHEMES, create_container
@@ -27,6 +33,12 @@ from maistro.observability.logging import configure_logging
 from maistro.observability.middleware import RequestIDMiddleware
 from maistro.security.outbound import configure_outbound_policy, configured_endpoints
 from maistro.tasks.execution import TaskAttemptExecutor
+from maistro.tasks.http_contract import (
+    IDEMPOTENCY_KEY_HEADER,
+    WORKSPACE_ID_HEADER,
+    WORKSPACE_SCOPE_SIGNATURE_HEADER,
+)
+from maistro.tasks.models import TaskCreate
 from maistro.tasks.progress_webhook import ProgressWebhookNotifier
 from maistro.tasks.queue import configure_task_queue, get_task_queue, reset_task_queue
 from maistro.tasks.runner import TaskRunner
@@ -34,12 +46,15 @@ from maistro.types.config import AgentConfig, ModelBindingConfig, SecurityConfig
 from maistro_server.api import (
     a2a,
     canvas,
+    catalog,
     chat_completions,
+    extensions,
     health,
     metrics,
     models,
     runs,
     tasks,
+    user_model,
     webhooks,
     workspaces,
     ws,
@@ -54,10 +69,43 @@ from maistro_server.startup import StartupPhase, get_startup_phase, set_startup_
 
 if TYPE_CHECKING:
     from maistro.agents.base import Agent
+    from maistro.capabilities.model_chat import ModelChatEgress
 
 logger = structlog.get_logger()
 
 _runner: TaskRunner | None = None
+
+
+async def _configure_user_model(spine_pool: Any) -> None:
+    """Bind the durable user-model service (#1047), or take the routes offline.
+
+    PostgreSQL-only by design (ADR-092526-4391): an in-process fallback would
+    silently forget that a fact must survive restart, so without a database
+    the routes stay offline (503) rather than serving a lookalike store.
+    """
+    from maistro_server.api import user_model
+
+    if spine_pool is None or memory_store.get_async_session_factory() is None:
+        user_model.configure_user_model_service(None)
+        await structlog.get_logger().awarning(
+            "user_model_offline",
+            detail=(
+                "no PostgreSQL database is configured, so /v1/user-model routes "
+                "answer 503 instead of serving facts that could not survive restart"
+            ),
+        )
+        return
+    from maistro.memory.user_model.pg_store import PostgresUserModelStore
+    from maistro.memory.user_model.service import UserModelService
+    from maistro.persistence.pg_audit import PgAuditLog
+
+    user_model.configure_user_model_service(
+        UserModelService(
+            store=PostgresUserModelStore(memory_store.get_async_session_factory()),
+            audit_log=PgAuditLog(spine_pool),
+        )
+    )
+
 
 # Single source of truth for version — read from installed package metadata
 try:
@@ -108,6 +156,48 @@ def _validate_startup(settings: Settings) -> None:
             "Container so that every chat turn reaches the Conduit, and that "
             "requires it. Set ROUTER_API_KEY."
         )
+
+
+def _wire_canvas_ability(app: FastAPI, engine: Any) -> bool:
+    """Bind the shipped Canvas store to ``app.state.canvas_store`` (#851).
+
+    The ``/v2/canvas`` surface is mounted and authenticated unconditionally, and
+    every one of its routes answers 503 until a store is injected — so a default
+    startup shipped a permanently-unavailable product surface. When the shared
+    engine exists (a PostgreSQL database is configured — the same resolver
+    alembic and the canonical spine read), the real ``PgCanvasStore`` backs the
+    routes; without a database the surface keeps answering 503, which is the
+    truthful answer, and the log says which of the two happened.
+
+    Import is lazy on purpose: ``maistro_server.api.canvas`` duck-types the
+    store so the server package carries no import-time dependency on
+    maistro-canvas. In the shipped workspace the package is always present;
+    a leaner environment simply keeps the 503 rather than failing startup.
+
+    An already-injected store is never replaced — deployments and tests that
+    compose their own keep theirs.
+
+    Returns whether a store is (now) present.
+    """
+    if getattr(app.state, "canvas_store", None) is not None:
+        return True
+    if engine is None:
+        logger.info(
+            "canvas_store_unavailable",
+            detail="no PostgreSQL database is configured; /v2/canvas answers 503",
+        )
+        return False
+    try:
+        from maistro_canvas.canvas.store import PgCanvasStore
+    except ImportError as exc:  # pragma: no cover - shipped envs always have it
+        logger.error(
+            "canvas_store_unavailable",
+            detail=f"maistro-canvas is not installed; /v2/canvas answers 503 ({exc})",
+        )
+        return False
+    app.state.canvas_store = PgCanvasStore(engine)
+    logger.info("canvas_store_wired", backend="postgresql")
+    return True
 
 
 async def _run_store_pool() -> Any:
@@ -222,8 +312,8 @@ def _model_bindings() -> list[ModelBindingConfig]:
     return list(yaml_config.model_bindings)
 
 
-async def _build_container(settings: Settings, pg_pool: Any) -> Any:
-    """The process's one Container, with a roster it can actually route to.
+async def _build_container(settings: Settings, pg_pool: Any) -> tuple[Any, ModelChatEgress]:
+    """The process's one Container and the governed egress it comes with.
 
     `Conduit.route_request` answers "No agents available." when `agents` is
     empty, and this server has never built any. `run_task` needs no roster,
@@ -233,6 +323,14 @@ async def _build_container(settings: Settings, pg_pool: Any) -> Any:
 
     `ConductorAgent` is that floor: the same executor, reached through the
     pipeline instead of around it.
+
+    The egress is returned rather than rebuilt per caller because both doors
+    into the conductor LLM path need the same authority (#718): the chat door
+    through `ConductorAgent`, and the `/tasks` worker through its executor.
+    Two constructions over one Container would still share its effect
+    context, but one construction keeps the deployment's gateway endpoint —
+    and the fail-closed Binding scope its credential registers in — a single
+    decision this composition point owns.
 
     **`agents_dir` is deliberately not read here.** It is on `AgentConfig` and
     `create_agents` would consume it, but that factory needs an LLM client and
@@ -244,15 +342,36 @@ async def _build_container(settings: Settings, pg_pool: Any) -> Any:
     want one starts from a Container that already has it.
     """
     container = await create_container(_agent_config(settings), pg_pool=pg_pool)
+    from maistro.capabilities.model_chat import ModelChatEgress
+    from maistro.capabilities.providers.llm_gateway import GatewayEndpoint
+
+    governed_egress = ModelChatEgress(
+        container.capability_effects,
+        registry=container.provider_registry,
+        router=container.llm_router,
+        endpoint=GatewayEndpoint(
+            base_url=settings.litellm.base_url,
+            api_key=settings.litellm.master_key,
+        ),
+    )
     # `Container.agents` is typed `dict[str, Agent]`, and `Agent` is a concrete
     # base class rather than a protocol — but `Conduit` uses the map
     # structurally: `handle(...)`, and `priority_tier` only if present.
     # `ConductorAgent` provides exactly that and deliberately does not subclass
     # `BaseAgent`, which would bring a second strategy stack and a second
     # extraction pass over an answer `run_task` has already produced.
-    container.agents = cast("dict[str, Agent]", {CONDUCTOR_AGENT_NAME: ConductorAgent()})
+    container.agents = cast(
+        "dict[str, Agent]",
+        {
+            CONDUCTOR_AGENT_NAME: ConductorAgent(
+                governed_egress=governed_egress,
+                workspace_id=settings.workspace_id,
+                router=container.llm_router,
+            )
+        },
+    )
     await logger.ainfo("container_wired", agents=sorted(container.agents))
-    return container
+    return container, governed_egress
 
 
 async def _drain_queue_singleton() -> None:
@@ -305,7 +424,11 @@ async def _runtime_lifespan(app: FastAPI) -> AsyncIterator[None]:
     configure_outbound_policy(*configured_endpoints(settings))
 
     # Initialise database engine (no-op if DATABASE_URL unset)
-    memory_store.get_engine()
+    engine = memory_store.get_engine()
+    # The shipped Canvas surface gets its store from this same engine (#851):
+    # /v2/canvas is mounted and authenticated either way, and only this wiring
+    # decides whether it is operable or a wall of 503s.
+    _wire_canvas_ability(app, engine)
 
     # Canonical execution identity (#41): every task submitted through /tasks
     # gets a Run over a one-node Graph, and the response carries its run_id.
@@ -324,7 +447,7 @@ async def _runtime_lifespan(app: FastAPI) -> AsyncIterator[None]:
     # and vice versa, which is an advertised handle that silently stops
     # resolving. The pool opened above is handed over rather than left for the
     # container to open a second one against the same server.
-    container = await _build_container(settings, spine_pool)
+    container, governed_egress = await _build_container(settings, spine_pool)
     app.state.container = container
     run_store = container.run_store
     if spine_pool is None:
@@ -358,6 +481,7 @@ async def _runtime_lifespan(app: FastAPI) -> AsyncIterator[None]:
         workspace_id=settings.workspace_id,
     )
     workspaces.configure_workspace_store(container.workspace_store)
+    await _configure_user_model(spine_pool)
     # The OpenAI-compatible door now routes through the same Container (#142),
     # which owns the Gate scan, the Run admission and the terminalization that
     # #150 had to build here for want of one.
@@ -370,9 +494,23 @@ async def _runtime_lifespan(app: FastAPI) -> AsyncIterator[None]:
             api_key=settings.task_progress_webhook_api_key,
         )
 
+    async def runner_executor(task: TaskCreate) -> ConductorOutput:
+        # #718: the `/tasks` worker is the server's second door into the
+        # conductor LLM path, and it crosses the same canonical effect
+        # authority the chat door's `ConductorAgent` does — the egress built
+        # with this Container, not a per-caller recording callback. Without
+        # it, every task this queue completes leaves no Invocation and no
+        # quota evidence, while per-provider rows present as complete.
+        return await conductor.run_task(
+            task,
+            governed_egress=governed_egress,
+            workspace_id=settings.workspace_id,
+            project_id="agent-runtime",
+        )
+
     _runner = TaskRunner(
         queue,
-        executor=conductor.run_task,
+        executor=runner_executor,
         progress_webhook=progress_wh,
         # Same store the admitter files Runs in, so a task's NodeRun and
         # Attempt land under the Run `POST /tasks` already returned (#143).
@@ -482,7 +620,21 @@ app.add_middleware(
     allow_origins=_settings.cors_origins,
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
-    allow_headers=["Authorization", "Content-Type", "X-Request-ID"],
+    allow_headers=[
+        "Authorization",
+        "Content-Type",
+        "X-Request-ID",
+        # The task submission contract (#1176): the standard Idempotency-Key
+        # header is how a browser client carries a retry's identity, and the
+        # workspace-scope headers are how the trusted Hive boundary carries the
+        # Workspace binding across to maestro-server. Without these in the CORS
+        # allow-list, a preflight that carries any of them is rejected with
+        # "400 Disallowed CORS headers" and the cross-origin client cannot
+        # submit a task with an idempotency key at all.
+        IDEMPOTENCY_KEY_HEADER,
+        WORKSPACE_ID_HEADER,
+        WORKSPACE_SCOPE_SIGNATURE_HEADER,
+    ],
     # Response headers a browser client may actually read. Without this the
     # header is sent and then hidden: `response.headers` in browser JS only
     # exposes the CORS-safelisted set, so `X-Maistro-Run-Id` would have been
@@ -503,6 +655,27 @@ app.add_middleware(RequestIDMiddleware)
 app.add_middleware(
     PayloadSizeLimitMiddleware,
     max_bytes=_settings.max_request_body_bytes,
+)
+
+# API version negotiation (ADR-076) — the negotiated version is selected by
+# Accept media type / api_version query / api_version JSON body field, the
+# default is advertised on every response, and an unsupported selector is a
+# 406 that never reaches a route handler. Infrastructure paths (health,
+# metrics, OpenAPI/docs) and A2A (whose versioning the ADR scopes out) pass
+# through untouched. Added before the security headers so it stays inside
+# them: even a 406 carries the security header set.
+app.add_middleware(
+    VersionNegotiationMiddleware,
+    versions=API_VERSIONS,
+    default_version=DEFAULT_API_VERSION,
+    skip_prefixes=(
+        "/health",
+        "/metrics",
+        "/docs",
+        "/redoc",
+        "/openapi.json",
+        "/a2a",
+    ),
 )
 
 # Security headers — the true outermost middleware (added last), so headers
@@ -562,10 +735,15 @@ API_V1_PREFIX = "/v1"
 app.include_router(tasks.router, prefix=API_V1_PREFIX)
 app.include_router(runs.router, prefix=API_V1_PREFIX)
 app.include_router(workspaces.router, prefix=API_V1_PREFIX)
+# Governed extension install lifecycle (#953): inspect → authorize → install.
+# Every route is authenticated; Workspace-scoped writes require ADMINISTER.
+app.include_router(extensions.router, prefix=API_V1_PREFIX)
+app.include_router(catalog.router, prefix=API_V1_PREFIX)
 app.include_router(chat_completions.router, prefix=API_V1_PREFIX)
 app.include_router(models.router, prefix=API_V1_PREFIX)
 app.include_router(webhooks.router, prefix=API_V1_PREFIX)
 app.include_router(ws.router, prefix=API_V1_PREFIX)
+app.include_router(user_model.router, prefix=API_V1_PREFIX)
 
 # API v2 — canvas ability boundary (ADR-045 / SPEC-070226-8239 Phase 1).
 # The router carries its own /v2/canvas prefix (ADR-042 mount). Deployments
@@ -581,5 +759,6 @@ app.include_router(chat_completions.router)
 app.include_router(models.router)
 app.include_router(webhooks.router)
 app.include_router(ws.router)
+app.include_router(user_model.router)
 
 # Legacy Knights dashboard removed — Hive Conductor (port 8101) is the product UI.
