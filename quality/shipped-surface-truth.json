@@ -1,6 +1,40 @@
 {
-  "_comment": "Truthful shipped-surface matrix (#465). Generated classification is reviewed content: every discovered mutating backend route and frontend execution signal must carry an exact disposition; scripts/check-shipped-surface-truth.py fails closed on drift. Facades stay visible as unresolved/disabled with owning issues rather than being hidden.",
+  "_comment": "Truthful shipped-surface matrix (#465). Generated classification is reviewed content: every discovered mutating/security backend route and frontend execution signal must carry an exact disposition; scripts/check-shipped-surface-truth.py fails closed on drift. Facades stay visible as unresolved/disabled with owning issues rather than being hidden.",
   "schema_version": 2,
+  "known_facade_issues": [
+    {
+      "issue": 286,
+      "disposition": "disabled",
+      "scope": "Design render and Canvas publish surfaces"
+    },
+    {
+      "issue": 292,
+      "disposition": "tracked",
+      "scope": "Conductor CLI page contract"
+    },
+    {
+      "issue": 294,
+      "disposition": "tracked",
+      "scope": "agent Forge artifacts"
+    },
+    {
+      "issue": 295,
+      "disposition": "removed/non-shipped",
+      "scope": "Tools Lab controls; no production route or UI action remains"
+    },
+    {
+      "issue": 382,
+      "disposition": "unresolved",
+      "scope": "container image build facade"
+    }
+  ],
+  "product_status_checks": [
+    {
+      "surface": "packages/hive-conductor/backend/routes/design.py:POST:/projects/{project_id}/render:create_render_job",
+      "file": "README.md",
+      "contains": "| `/v1/design/*` | **Partial** |"
+    }
+  ],
   "backend_roots": [
     "packages"
   ],
@@ -8,16 +42,6 @@
     "packages"
   ],
   "backend_surfaces": [
-    {
-      "source": "packages/hive-conductor/backend/main.py",
-      "method": "POST",
-      "route": "/{confirm_id}/respond",
-      "handler": "respond_to_confirm",
-      "disposition": "canonical",
-      "production_enabled": true,
-      "reason": "answers a HITL confirm and resumes the paused canonical Run",
-      "effect_owner": "services.confirm_response.respond_confirm (Run continuation)"
-    },
     {
       "source": "packages/hive-conductor/backend/routes/agents.py",
       "method": "DELETE",
@@ -140,6 +164,26 @@
     },
     {
       "source": "packages/hive-conductor/backend/routes/auth.py",
+      "method": "GET",
+      "route": "/oauth/{provider}/callback",
+      "handler": "oauth_callback",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "verifies the provider callback and either binds an identity or issues a Hive session",
+      "effect_owner": "OAuth single-use state store + identity/session stores + audit log"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/auth.py",
+      "method": "GET",
+      "route": "/oauth/{provider}/start",
+      "handler": "oauth_start",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "starts the OAuth authorization-code flow and persists browser-bound PKCE state",
+      "effect_owner": "OAuth state store + HttpOnly state cookie"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/auth.py",
       "method": "POST",
       "route": "/register",
       "handler": "register",
@@ -169,6 +213,126 @@
       "effect_owner": "registration policy record store + audit log"
     },
     {
+      "source": "packages/hive-conductor/backend/routes/backlog.py",
+      "method": "PATCH",
+      "route": "/v1/backlog/{item_id}",
+      "handler": "update_backlog_item",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "edits stored backlog planning fields under optimistic version control; submits no Run",
+      "effect_owner": "services.backlog -> stores.backlog_items + audit log"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/backlog.py",
+      "method": "POST",
+      "route": "/v1/backlog",
+      "handler": "create_backlog_item",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "creates a stored backlog planning item; work enters execution only through the canonical Goal path, never here",
+      "effect_owner": "services.backlog -> stores.backlog_items + audit log"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/backlog.py",
+      "method": "POST",
+      "route": "/v1/backlog/{item_id}/archive",
+      "handler": "<unresolved endpoint>",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "sets the durable archived operator flag on a backlog item",
+      "effect_owner": "services.backlog -> stores.backlog_items + audit log"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/backlog.py",
+      "method": "POST",
+      "route": "/v1/backlog/{item_id}/block",
+      "handler": "block_backlog_item",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "records a blocking reason on a backlog item (planning state, not execution pause)",
+      "effect_owner": "services.backlog -> stores.backlog_items + audit log"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/backlog.py",
+      "method": "POST",
+      "route": "/v1/backlog/{item_id}/decompose",
+      "handler": "decompose_backlog_item",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "splits a backlog item into stored child planning items; no graph nodes are created",
+      "effect_owner": "services.backlog -> stores.backlog_items + audit log"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/backlog.py",
+      "method": "POST",
+      "route": "/v1/backlog/{item_id}/pause",
+      "handler": "<unresolved endpoint>",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "sets the durable paused operator flag on a backlog item",
+      "effect_owner": "services.backlog -> stores.backlog_items + audit log"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/backlog.py",
+      "method": "POST",
+      "route": "/v1/backlog/{item_id}/pin",
+      "handler": "<unresolved endpoint>",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "sets the durable pinned operator flag on a backlog item",
+      "effect_owner": "services.backlog -> stores.backlog_items + audit log"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/backlog.py",
+      "method": "POST",
+      "route": "/v1/backlog/{item_id}/reorder",
+      "handler": "reorder_backlog_item",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "moves a backlog item in board ordering (rank/status) under optimistic version control",
+      "effect_owner": "services.backlog -> stores.backlog_items + audit log"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/backlog.py",
+      "method": "POST",
+      "route": "/v1/backlog/{item_id}/restore",
+      "handler": "<unresolved endpoint>",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "clears the archived operator flag on a backlog item",
+      "effect_owner": "services.backlog -> stores.backlog_items + audit log"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/backlog.py",
+      "method": "POST",
+      "route": "/v1/backlog/{item_id}/resume",
+      "handler": "<unresolved endpoint>",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "clears the paused operator flag on a backlog item",
+      "effect_owner": "services.backlog -> stores.backlog_items + audit log"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/backlog.py",
+      "method": "POST",
+      "route": "/v1/backlog/{item_id}/unblock",
+      "handler": "unblock_backlog_item",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "clears the blocking reason on a backlog item",
+      "effect_owner": "services.backlog -> stores.backlog_items + audit log"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/backlog.py",
+      "method": "POST",
+      "route": "/v1/backlog/{item_id}/unpin",
+      "handler": "<unresolved endpoint>",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "clears the pinned operator flag on a backlog item",
+      "effect_owner": "services.backlog -> stores.backlog_items + audit log"
+    },
+    {
       "source": "packages/hive-conductor/backend/routes/canvas.py",
       "method": "POST",
       "route": "/eval",
@@ -176,7 +340,7 @@
       "disposition": "canonical",
       "production_enabled": true,
       "reason": "runs the visual quality evaluation",
-      "effect_owner": "services visual_quality_eval"
+      "effect_owner": "maistro.capabilities ModelChatEgress -> canonical Invocation"
     },
     {
       "source": "packages/hive-conductor/backend/routes/capabilities.py",
@@ -269,6 +433,16 @@
       "effect_owner": "build_llm_port LLM completion (SSE)"
     },
     {
+      "source": "packages/hive-conductor/backend/routes/chat.py",
+      "method": "POST",
+      "route": "/workflows/run",
+      "handler": "run_workflow",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "runs a chat-selected DAG only after the canonical approval inbox settles the request (#1094)",
+      "effect_owner": "maistro.capabilities approval decision -> services.dag_run_store + services.graph_runner.execute_dag"
+    },
+    {
       "source": "packages/hive-conductor/backend/routes/cli.py",
       "method": "POST",
       "route": "/sessions",
@@ -346,7 +520,17 @@
       "disposition": "domain-state",
       "production_enabled": true,
       "reason": "deletes the stored secret for a provider",
-      "effect_owner": "credential vault store + audit log"
+      "effect_owner": "services.user_credentials.UserCredentialStore + audit log"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/credentials.py",
+      "method": "POST",
+      "route": "/{provider_id}/test",
+      "handler": "test_credential",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "performs a real model-discovery probe against the operator-supplied OpenAI-compatible endpoint without persisting input, through the shared outbound guard",
+      "effect_owner": "maistro.http.sync_client under maistro.security.outbound explicit-endpoint policy (#67); the gateway's GET /models is the external effect"
     },
     {
       "source": "packages/hive-conductor/backend/routes/credentials.py",
@@ -356,7 +540,7 @@
       "disposition": "domain-state",
       "production_enabled": true,
       "reason": "stores the provider secret in the vault",
-      "effect_owner": "credential vault store + audit log"
+      "effect_owner": "services.user_credentials.UserCredentialStore + audit log"
     },
     {
       "source": "packages/hive-conductor/backend/routes/credentials.py",
@@ -366,7 +550,7 @@
       "disposition": "domain-state",
       "production_enabled": true,
       "reason": "persists per-user provider config within allow-listed fields",
-      "effect_owner": "credential vault store + audit log"
+      "effect_owner": "stores.user_provider_config + audit log"
     },
     {
       "source": "packages/hive-conductor/backend/routes/dag_runs.py",
@@ -493,19 +677,29 @@
       "method": "POST",
       "route": "/projects",
       "handler": "create_design_project",
-      "disposition": "canonical",
+      "disposition": "domain-state",
       "production_enabled": true,
-      "reason": "generates and persists a design project from discovery responses through the validated pipeline",
-      "effect_owner": "design pipeline: Warden scan, prompt stack, DB persist"
+      "reason": "prepares and persists a Design project/prompt stack; it does not claim visual generation",
+      "effect_owner": "DesignEngine preparation + DesignProjectStore persistence"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/design.py",
+      "method": "POST",
+      "route": "/projects/{project_id}/consistency",
+      "handler": "evaluate_project_consistency",
+      "disposition": "local-only",
+      "production_enabled": true,
+      "reason": "cross-artifact consistency inspection (#779): runs the deterministic evaluator over the submitted frozen snapshot and returns the result contract; it proposes refinement, it never rewrites project state",
+      "truth_contract": "pure evaluation of the request body — no store access, no durable effect, no model call; the same evaluator the design.consistency_eval graph node runs inside a Run"
     },
     {
       "source": "packages/hive-conductor/backend/routes/design.py",
       "method": "POST",
       "route": "/projects/{project_id}/render",
       "handler": "create_render_job",
-      "disposition": "unresolved",
-      "production_enabled": true,
-      "reason": "creates a pending render job that no worker advances: no bytes are produced or served (D-14 facade, #286)",
+      "disposition": "disabled",
+      "production_enabled": false,
+      "reason": "compatibility endpoint fails explicitly until the canonical Canvas rendering seam exists; it creates no process-local job or output",
       "owner_issue": 286
     },
     {
@@ -525,8 +719,9 @@
       "handler": "trigger_cycle",
       "disposition": "canonical",
       "production_enabled": true,
-      "reason": "runs one real evolution cycle",
-      "effect_owner": "services.evolution run cycle"
+      "reason": "admits one canonical Graph -> Run -> NodeRun -> Attempt evolution cycle; unavailable canonical execution returns an explicit availability error and terminal Run failures preserve their identity",
+      "effect_owner": "services.evolution -> services.evolution_graph canonical Run spine",
+      "truth_contract": "POST /cycle is executable only when the engine exposes a canonical Container with Run, Graph continuation, and Project scope stores; canonical failed/cancelled/timed-out Runs are projected with run_id, status, and diagnostic rather than as service-unavailable"
     },
     {
       "source": "packages/hive-conductor/backend/routes/evolution.py",
@@ -617,6 +812,46 @@
       "production_enabled": true,
       "reason": "requests canonical cancellation of one durable human pause",
       "effect_owner": "hitl store settles the cancelled pause"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/home.py",
+      "method": "PUT",
+      "route": "/{workspace_id}/home/layout",
+      "handler": "save_home_layout",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "persists the Workspace's durable Home layout with optimistic-concurrency revision; viewer members are refused",
+      "effect_owner": "stores.home_layouts"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/home.py",
+      "method": "POST",
+      "route": "/{workspace_id}/home/regions/{region_id}/pin",
+      "handler": "pin_home_region",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "persists one region's pinned flag; presentation only, the referenced resource is neither copied nor forked",
+      "effect_owner": "stores.home_layouts"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/home.py",
+      "method": "POST",
+      "route": "/{workspace_id}/home/adaptive/dismiss",
+      "handler": "dismiss_home_adaptive",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "records a counted, backend-side adaptive dismissal as negative reinforcement; viewer members are refused",
+      "effect_owner": "stores.home_adaptive_dismissals"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/home.py",
+      "method": "POST",
+      "route": "/{workspace_id}/home/adaptive/compose",
+      "handler": "compose_home_adaptive",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "persists the Agent's composition of the unpinned space; the service refuses pinned writes to Agent and API alike",
+      "effect_owner": "stores.home_layouts"
     },
     {
       "source": "packages/hive-conductor/backend/routes/install.py",
@@ -890,6 +1125,46 @@
     },
     {
       "source": "packages/hive-conductor/backend/routes/program.py",
+      "method": "DELETE",
+      "route": "/brief",
+      "handler": "drop_brief",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "forgets the caller's open brief interview in this workspace; nothing was committed from it",
+      "effect_owner": "services.brief_store"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/program.py",
+      "method": "POST",
+      "route": "/brief/answer",
+      "handler": "answer_brief",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "applies one free-text turn to the open brief interview and persists it",
+      "effect_owner": "services.brief_store"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/program.py",
+      "method": "POST",
+      "route": "/brief/draft",
+      "handler": "draft_brief",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "the commit gate: returns the Goal/CreativeBrief draft or 409 with the missing fields; writes nothing (no Goal store yet), audits the draft",
+      "effect_owner": "routes.audit.log_audit"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/program.py",
+      "method": "POST",
+      "route": "/brief/start",
+      "handler": "start_brief",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "opens a brief interview from the turn that asked for work and persists it per (user, workspace)",
+      "effect_owner": "services.brief_store"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/program.py",
       "method": "POST",
       "route": "/guidance",
       "handler": "post_guidance",
@@ -1017,6 +1292,26 @@
       "production_enabled": true,
       "reason": "stops a running RSI run",
       "effect_owner": "maistro-rsi service"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/rum.py",
+      "method": "POST",
+      "route": "/events",
+      "handler": "ingest_events",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "perceived-load telemetry ingest (#1420): appends the reporter's own schema-projected timings to the bounded in-memory ring; off unless RUM_INGEST_ENABLED, capped per body and per event count, projected onto the hive.rum.v1 allowlist before storage",
+      "effect_owner": "services/rum_store.py RumStore.ingest (bounded in-memory ring)"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/rum.py",
+      "method": "POST",
+      "route": "/rum-contract",
+      "handler": "_contract",
+      "disposition": "local-only",
+      "production_enabled": true,
+      "reason": "OpenAPI rendering aid for the ingest contract (#1048 drift gate): ingest_events reads its body manually so the 64 KiB cap applies before parsing, which hides the schema from FastAPI's component collection, so this scratch-app route renders the RumBatchIn component schemas through FastAPI itself",
+      "truth_contract": "never mounted on any served app and never routable at runtime; exists only inside ensure_openapi_contract's throwaway FastAPI app so the OpenAPI document renders the hive.rum.v1 schemas byte-identically to a declared body parameter; no store access, no durable effect"
     },
     {
       "source": "packages/hive-conductor/backend/routes/schedules.py",
@@ -1321,6 +1616,16 @@
     {
       "source": "packages/hive-conductor/backend/routes/workspaces.py",
       "method": "POST",
+      "route": "/default",
+      "handler": "ensure_default_workspace",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "returns the caller's default workspace and its Workspace Agent, creating them once (#1037)",
+      "effect_owner": "canonical WorkspaceStore + stores.agents via agent_materialization"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/workspaces.py",
+      "method": "POST",
       "route": "/persona-templates",
       "handler": "create_persona_template_route",
       "disposition": "domain-state",
@@ -1373,10 +1678,10 @@
       "method": "WEBSOCKET",
       "route": "/dags/{dag_id}/run",
       "handler": "stream_dag_run",
-      "disposition": "unresolved",
+      "disposition": "canonical",
       "production_enabled": true,
-      "owner_issue": 766,
-      "reason": "executes the DAG through services.graph_runner.execute_dag_streaming, the pre-durable legacy executor distinct from the canonical execute_dag the HTTP twin POST /{dag_id}/run already uses; gated on dags.write and workspace-selection authorization, but the execution path itself is the #44/#766 convergence gap this entry discloses rather than hides"
+      "reason": "the DagBuilder Run button's socket: gated on dags.write and admitted by authorize_hive_dag_scope against the canonical WorkspaceStore before accept(); services.graph_runner.execute_dag_streaming streams one interactive durable Run/NodeRun/Attempt live in the authorized Workspace/Project, audited as dag_run: node frames are emitted while the Run is in flight, each durably recorded into the same dag_run_store projection POST /{dag_id}/run records (under the canonical run_id) BEFORE its frame is sent and stamped with the projection's per-run sequence number; idle stretches carry bounded heartbeat frames, a consumer that stops reading gets an explicit resync frame plus a canonical-truth replay instead of silent loss, and closing the socket cancels the in-flight Run as #355 documents; an unexpected (non-Run) failure frame carries only the exception kind, while a failed Run reports its canonical error exactly as the HTTP route does (#766)",
+      "effect_owner": "services.dag_execution_scope.authorize_hive_dag_scope -> services.graph_runner.execute_dag_streaming -> services.canonical_dag_runner.execute_dag (durable Run/NodeRun/Attempt) + services.dag_run_store projection"
     },
     {
       "source": "packages/maistro-canvas/frontend/server/lulu/service.py",
@@ -1649,6 +1954,16 @@
       "effect_owner": "canvas executor.start_job"
     },
     {
+      "source": "packages/maistro-server/src/maistro_server/api/a2a.py",
+      "method": "POST",
+      "route": "/tasks/create",
+      "handler": "create_a2a_task",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "durably admits one idempotent remote A2A delegation as a canonical Run (ADR-058, SPEC-182)",
+      "effect_owner": "maistro.runs.store.RunStore.claim_run_by_effect (idempotent canonical Run admission)"
+    },
+    {
       "source": "packages/maistro-server/src/maistro_server/api/canvas.py",
       "method": "DELETE",
       "route": "/designs/{design_id}",
@@ -1699,6 +2014,116 @@
       "effect_owner": "Run admit + conductor routing (stream or full)"
     },
     {
+      "source": "packages/maistro-server/src/maistro_server/api/extensions.py",
+      "method": "POST",
+      "route": "/inspections",
+      "handler": "inspect_extension",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "creates the durable install record and moves the governed state machine (INSPECTING to AWAITING_AUTHORIZATION or REJECTED) without importing extension code",
+      "effect_owner": "extension install store + transition audit trail"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/extensions.py",
+      "method": "POST",
+      "route": "/installations/{install_id}/authorization",
+      "handler": "decide_extension_authorization",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "applies the explicit operator decision, freezing granted permissions to the immutable snapshot on approval or denying terminally, with actor and reason recorded",
+      "effect_owner": "extension install store + transition audit trail"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/extensions.py",
+      "method": "POST",
+      "route": "/installations/{install_id}/installation",
+      "handler": "install_extension",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "installs the bound artifact and activates it only after verification; a failed activation persists the truthful FAILED state with a reason instead of a partial install",
+      "effect_owner": "extension install store + extension loader (activation) + transition audit trail"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/extensions.py",
+      "method": "POST",
+      "route": "/expired-authorizations",
+      "handler": "sweep_expired_authorizations",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "abandons every authorization request whose decision window elapsed, durably keeping late approvals from activating",
+      "effect_owner": "extension install store expire_abandoned + transition audit trail"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/extensions.py",
+      "method": "POST",
+      "route": "/health/{extension_id}/operator",
+      "handler": "decide_extension_operator_state",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "applies the durable operator admission decision (enable/disable/quarantine/release) with the authenticated actor and a required reason; append-only evidence whose newest row is the restart-surviving runtime state",
+      "effect_owner": "extension health store (operator decisions) + health projections"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/extensions.py",
+      "method": "POST",
+      "route": "/installations/{install_id}/pin",
+      "handler": "pin_extension_version",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "pins the active version so activation of another version is refused until the pin is explicitly lifted (#954); both decisions land on the audit trail",
+      "effect_owner": "extension install store + transition audit trail"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/extensions.py",
+      "method": "POST",
+      "route": "/installations/{install_id}/unpin",
+      "handler": "unpin_extension_version",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "lifts the pin with an audited, reason-carrying decision before any version change can follow (#954)",
+      "effect_owner": "extension install store + transition audit trail"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/extensions.py",
+      "method": "POST",
+      "route": "/disable",
+      "handler": "disable_extension",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "suspends the extension: clears the active pointer so the resolution seam stops serving it immediately, while records and transitions stay queryable (#954)",
+      "effect_owner": "extension install store + transition audit trail"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/extensions.py",
+      "method": "POST",
+      "route": "/installations/{install_id}/resume",
+      "handler": "resume_extension",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "returns a disabled extension to service by re-running its activation loader with the same digest-bound artifact; the grant is not re-decided (#954)",
+      "effect_owner": "extension install store + extension loader (activation) + transition audit trail"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/extensions.py",
+      "method": "POST",
+      "route": "/rollback",
+      "handler": "rollback_extension",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "restores a superseded version through the loader only when its frozen grant declares no broadened authority and it still evaluates compatible; otherwise 409 with the current version untouched (#954)",
+      "effect_owner": "extension install store + extension loader (activation) + transition audit trail"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/extensions.py",
+      "method": "POST",
+      "route": "/installations/{install_id}/remove",
+      "handler": "remove_extension",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "uninstalls the record (terminal for authority) while preserving every historical record and transition as queryable evidence; owned-resource cleanup runs before the transition (#954)",
+      "effect_owner": "extension install store + owned-resource janitor + transition audit trail"
+    },
+    {
       "source": "packages/maistro-server/src/maistro_server/api/projects.py",
       "method": "DELETE",
       "route": "/{project_id}",
@@ -1740,6 +2165,16 @@
     },
     {
       "source": "packages/maistro-server/src/maistro_server/api/projects.py",
+      "method": "DELETE",
+      "route": "/{project_id}/memberships/{principal_id}",
+      "handler": "remove_project_membership",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "revokes one membership so no stale grant row survives (owner-only)",
+      "effect_owner": "project scope store"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/projects.py",
       "method": "PUT",
       "route": "/{project_id}/defaults",
       "handler": "update_project_defaults",
@@ -1777,6 +2212,46 @@
       "production_enabled": true,
       "reason": "submits the task to the durable queue",
       "effect_owner": "task queue submit -> canonical Run"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/user_model.py",
+      "method": "POST",
+      "route": "/{lineage_id}/correct",
+      "handler": "correct_fact",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "appends the owner's provenance-bearing correction revision through the one canonical user-model service",
+      "effect_owner": "maistro.memory.user_model.service.UserModelService.correct (UserModelFact revision append)"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/user_model.py",
+      "method": "POST",
+      "route": "/{lineage_id}/mark-private",
+      "handler": "mark_fact_private",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "records the owner's shareability decision (reusable=false) as a new revision through the canonical service",
+      "effect_owner": "maistro.memory.user_model.service.UserModelService.mark_not_reusable (UserModelFact revision append)"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/user_model.py",
+      "method": "DELETE",
+      "route": "/{lineage_id}",
+      "handler": "forget_fact",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "tombstones the owner's fact through the canonical service; content purged, every held wording stays blocked",
+      "effect_owner": "maistro.memory.user_model.service.UserModelService.forget (UserModelFact tombstone)"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/user_model.py",
+      "method": "POST",
+      "route": "/recall",
+      "handler": "recall_for_task",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "relevance-gated recall of the authenticated user's facts for one task; ranking input only, never an authorization",
+      "effect_owner": "maistro.memory.user_model.service.UserModelService.recall_for_task (read-only scoring)"
     },
     {
       "source": "packages/maistro-server/src/maistro_server/api/webhooks.py",
@@ -1907,6 +2382,86 @@
       "production_enabled": true,
       "reason": "adds the artifact to the vault",
       "effect_owner": "turing artifact vault"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/campaigns.py",
+      "method": "POST",
+      "route": "",
+      "handler": "create_campaign",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "creates a versioned campaign policy record (owner-only); grants no permission and touches no Goal",
+      "effect_owner": "campaign store + campaign audit"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/campaigns.py",
+      "method": "POST",
+      "route": "/{campaign_id}/policy",
+      "handler": "update_policy",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "records a new campaign policy_version, keeping prior versions for audit (owner-only)",
+      "effect_owner": "campaign store + campaign audit"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/campaigns.py",
+      "method": "POST",
+      "route": "/{campaign_id}/controls",
+      "handler": "set_control",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "writes a durable pin-next/pause/exclude/human-only operator control, attributed to the actor",
+      "effect_owner": "campaign store + campaign audit"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/campaigns.py",
+      "method": "POST",
+      "route": "/{campaign_id}/controls/{control_id}/clear",
+      "handler": "clear_control",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "clears an operator control as its own recorded decision (clearing is a record, not a deletion)",
+      "effect_owner": "campaign store + campaign audit"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/campaigns.py",
+      "method": "PUT",
+      "route": "/{campaign_id}/items/{item_id}",
+      "handler": "set_item_record",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "replaces the item's per-campaign mode override and explicit human priority; never writes the BacklogItem or Goal",
+      "effect_owner": "campaign store + campaign audit"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/campaigns.py",
+      "method": "POST",
+      "route": "/{campaign_id}/items/{item_id}/park",
+      "handler": "park_item",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "parks an item with evidence, removing it from the eligible set until an attributed unpark",
+      "effect_owner": "campaign store + campaign audit"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/campaigns.py",
+      "method": "POST",
+      "route": "/{campaign_id}/parks/{park_id}/unpark",
+      "handler": "unpark_item",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "attributed un-park decision returning the item to the eligible set",
+      "effect_owner": "campaign store + campaign audit"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/campaigns.py",
+      "method": "POST",
+      "route": "/{campaign_id}/usage",
+      "handler": "record_usage",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "records observed budget consumption against the campaign's stop conditions",
+      "effect_owner": "campaign store + campaign audit"
     }
   ],
   "frontend_surfaces": [
@@ -2007,8 +2562,8 @@
       "route": "${API}/cycle",
       "disposition": "canonical",
       "production_enabled": true,
-      "reason": "triggers an evolution cycle through the real backend route",
-      "effect_owner": "routes/evolution.py trigger_cycle"
+      "reason": "requests a canonical evolution cycle when status reports executable; unavailable or terminal Run failure truth remains visible in the backend response",
+      "effect_owner": "routes/evolution.py trigger_cycle -> canonical Run response"
     },
     {
       "source": "packages/hive-conductor/frontend/src/pages/Evolution.tsx",
@@ -2131,6 +2686,14 @@
       "effect_owner": "routes/rsi.py decide_review"
     },
     {
+      "source": "packages/hive-conductor/frontend/src/pages/RSI.tsx",
+      "signal": "timer-status-simulation",
+      "disposition": "unresolved",
+      "production_enabled": true,
+      "owner_issue": 359,
+      "reason": "the scanned timer is the #359 backoff re-arm (setTimeout(() => void run(false), backoffDelayMs())), which polls real backend state; the status words the detector matches inside its lazily captured body are the runs-list JSX (`r.status === 'running'`), which renders the backend's own status rather than a client-timer success animation. Unresolved only because the detector cannot yet distinguish a re-arm timer from a success-animation timer, not because any state is faked."
+    },
+    {
       "source": "packages/hive-conductor/frontend/src/pages/Settings.tsx",
       "signal": "mutating-api-call",
       "method": "POST",
@@ -2214,7 +2777,7 @@
       "source": "packages/maistro-canvas/frontend/server.js",
       "signal": "mutating-api-call",
       "method": "POST",
-      "route": "${LULU_SERVICE_URL}/orders/${req.params.id}/cancel",
+      "route": "${LULU_SERVICE_URL}/orders/${id}/cancel",
       "disposition": "canonical",
       "production_enabled": true,
       "reason": "cancels a real print order through the lulu service",
@@ -2349,6 +2912,236 @@
       "production_enabled": true,
       "reason": "redeems a handoff code for a session token",
       "effect_owner": "server.js /api/handoff/redeem (handoff code -> session token)"
+    },
+    {
+      "source": "packages/maistro-canvas/frontend/server.js",
+      "signal": "mutating-api-call",
+      "method": "POST",
+      "route": "${AZURE_ENDPOINT}/openai/deployments/${AZURE_DEPLOYMENT}/images/generations?api-version=2025-03-01-preview",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "performs a real upstream image-generation request",
+      "effect_owner": "Azure OpenAI image-generation upstream call"
+    },
+    {
+      "source": "packages/maistro-canvas/frontend/server.js",
+      "signal": "mutating-api-route",
+      "method": "DELETE",
+      "route": "/api/books",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "Express handler performs the real Canvas server effect",
+      "effect_owner": "server.js /api/books"
+    },
+    {
+      "source": "packages/maistro-canvas/frontend/server.js",
+      "signal": "mutating-api-route",
+      "method": "DELETE",
+      "route": "/api/books/:key",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "Express handler performs the real Canvas server effect",
+      "effect_owner": "server.js /api/books/:key"
+    },
+    {
+      "source": "packages/maistro-canvas/frontend/server.js",
+      "signal": "mutating-api-route",
+      "method": "DELETE",
+      "route": "/api/characters/:key",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "Express handler performs the real Canvas server effect",
+      "effect_owner": "server.js /api/characters/:key"
+    },
+    {
+      "source": "packages/maistro-canvas/frontend/server.js",
+      "signal": "mutating-api-route",
+      "method": "DELETE",
+      "route": "/api/templates/:key",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "Express handler performs the real Canvas server effect",
+      "effect_owner": "server.js /api/templates/:key"
+    },
+    {
+      "source": "packages/maistro-canvas/frontend/server.js",
+      "signal": "mutating-api-route",
+      "method": "PATCH",
+      "route": "/api/generation-attempts/:id/verdict",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "Express handler performs the real Canvas server effect",
+      "effect_owner": "server.js /api/generation-attempts/:id/verdict"
+    },
+    {
+      "source": "packages/maistro-canvas/frontend/server.js",
+      "signal": "mutating-api-route",
+      "method": "POST",
+      "route": "/api/books/:key",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "Express handler performs the real Canvas server effect",
+      "effect_owner": "server.js /api/books/:key"
+    },
+    {
+      "source": "packages/maistro-canvas/frontend/server.js",
+      "signal": "mutating-api-route",
+      "method": "POST",
+      "route": "/api/characters/:key",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "Express handler performs the real Canvas server effect",
+      "effect_owner": "server.js /api/characters/:key"
+    },
+    {
+      "source": "packages/maistro-canvas/frontend/server.js",
+      "signal": "mutating-api-route",
+      "method": "POST",
+      "route": "/api/export",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "Express handler performs the real Canvas server effect",
+      "effect_owner": "server.js /api/export"
+    },
+    {
+      "source": "packages/maistro-canvas/frontend/server.js",
+      "signal": "mutating-api-route",
+      "method": "POST",
+      "route": "/api/generation-attempts",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "Express handler performs the real Canvas server effect",
+      "effect_owner": "server.js /api/generation-attempts"
+    },
+    {
+      "source": "packages/maistro-canvas/frontend/server.js",
+      "signal": "mutating-api-route",
+      "method": "POST",
+      "route": "/api/handoff/redeem",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "Express handler performs the real Canvas server effect",
+      "effect_owner": "server.js /api/handoff/redeem"
+    },
+    {
+      "source": "packages/maistro-canvas/frontend/server.js",
+      "signal": "mutating-api-route",
+      "method": "POST",
+      "route": "/api/layout-versions",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "Express handler performs the real Canvas server effect",
+      "effect_owner": "server.js /api/layout-versions"
+    },
+    {
+      "source": "packages/maistro-canvas/frontend/server.js",
+      "signal": "mutating-api-route",
+      "method": "POST",
+      "route": "/api/llm/chat",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "Express handler performs the real Canvas server effect",
+      "effect_owner": "server.js /api/llm/chat"
+    },
+    {
+      "source": "packages/maistro-canvas/frontend/server.js",
+      "signal": "mutating-api-route",
+      "method": "POST",
+      "route": "/api/llm/image",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "Express handler performs the real Canvas server effect",
+      "effect_owner": "server.js /api/llm/image"
+    },
+    {
+      "source": "packages/maistro-canvas/frontend/server.js",
+      "signal": "mutating-api-route",
+      "method": "POST",
+      "route": "/api/llm/image-edit",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "Express handler performs the real Canvas server effect",
+      "effect_owner": "server.js /api/llm/image-edit"
+    },
+    {
+      "source": "packages/maistro-canvas/frontend/server.js",
+      "signal": "mutating-api-route",
+      "method": "POST",
+      "route": "/api/llm/pipeline-image",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "Express handler performs the real Canvas server effect",
+      "effect_owner": "server.js /api/llm/pipeline-image"
+    },
+    {
+      "source": "packages/maistro-canvas/frontend/server.js",
+      "signal": "mutating-api-route",
+      "method": "POST",
+      "route": "/api/print/order",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "Express handler performs the real Canvas server effect",
+      "effect_owner": "server.js /api/print/order"
+    },
+    {
+      "source": "packages/maistro-canvas/frontend/server.js",
+      "signal": "mutating-api-route",
+      "method": "POST",
+      "route": "/api/print/orders/:id/cancel",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "Express handler performs the real Canvas server effect",
+      "effect_owner": "server.js /api/print/orders/:id/cancel"
+    },
+    {
+      "source": "packages/maistro-canvas/frontend/server.js",
+      "signal": "mutating-api-route",
+      "method": "POST",
+      "route": "/api/templates/:key",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "Express handler performs the real Canvas server effect",
+      "effect_owner": "server.js /api/templates/:key"
+    },
+    {
+      "source": "packages/maistro-canvas/frontend/src/lib/llmClient.js",
+      "signal": "mutating-api-call",
+      "method": "POST",
+      "route": "/api/llm/chat",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "routes the browser request through the real Canvas server proxy",
+      "effect_owner": "server.js /api/llm/chat (provider proxy)"
+    },
+    {
+      "source": "packages/maistro-canvas/frontend/src/lib/llmClient.js",
+      "signal": "mutating-api-call",
+      "method": "POST",
+      "route": "/api/llm/image",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "routes the browser request through the real Canvas server proxy",
+      "effect_owner": "server.js /api/llm/image (provider proxy)"
+    },
+    {
+      "source": "packages/maistro-canvas/frontend/src/lib/llmClient.js",
+      "signal": "mutating-api-call",
+      "method": "POST",
+      "route": "/api/llm/image-edit",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "routes the browser request through the real Canvas server proxy",
+      "effect_owner": "server.js /api/llm/image-edit (provider proxy)"
+    },
+    {
+      "source": "packages/maistro-canvas/frontend/src/lib/llmClient.js",
+      "signal": "mutating-api-call",
+      "method": "POST",
+      "route": "/api/llm/pipeline-image",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "routes the browser request through the real Canvas server proxy",
+      "effect_owner": "server.js /api/llm/pipeline-image (provider proxy)"
     }
   ]
 }

@@ -25,8 +25,9 @@ from .base import (
     PAUSE_AWAITING_ROLE_DELEGATE,
     BaseNode,
     NodeContext,
+    ReplaySemantics,
+    hitl_resume_at,
     pause_until,
-    preserved_hitl_deadline,
 )
 
 
@@ -68,7 +69,7 @@ class HumanDelegateToRoleNode(BaseNode[DelegateToRoleIn, DelegateToRoleOut]):
     input_schema: ClassVar[type[BaseModel]] = DelegateToRoleIn
     output_schema: ClassVar[type[BaseModel]] = DelegateToRoleOut
     cost_hint: ClassVar[float] = 0.0
-    idempotent: ClassVar[bool] = True
+    replay_semantics: ClassVar[ReplaySemantics] = ReplaySemantics.EFFECT_KEY
     external_io: ClassVar[bool] = False
     display_name: ClassVar[str] = "Human: delegate to role"
     description: ClassVar[str] = (
@@ -105,7 +106,7 @@ class HumanDelegateToRoleNode(BaseNode[DelegateToRoleIn, DelegateToRoleOut]):
                     timed_out=bool(resumed.get("timed_out", False)),
                 )
 
-        resume_at = preserved_hitl_deadline(resumed, timeout_seconds=inputs.timeout_seconds)
+        resume_at = hitl_resume_at(ctx, inputs.timeout_seconds, resumed=resumed)
         pause_until(
             PAUSE_AWAITING_ROLE_DELEGATE,
             resume_at=resume_at,

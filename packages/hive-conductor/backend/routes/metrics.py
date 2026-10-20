@@ -29,9 +29,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Request
 from services.dag_run_inspection import authorized_workspace_ids
 from services.node_metrics_store import get_store
+from services.request_principal import require_actor_id
 
 router = APIRouter(tags=["dag-metrics"])
 
@@ -43,11 +44,7 @@ def _user_id(request: Request) -> str:
     name its principal must fail closed rather than guess, because every
     response below is scoped to that principal's Workspace universe.
     """
-    user = getattr(request.state, "user", None) or {}
-    uid = str(user.get("id") or user.get("username") or "")
-    if not uid:
-        raise HTTPException(status_code=401, detail="Authentication required")
-    return uid
+    return require_actor_id(request)
 
 
 @router.get("/retention")

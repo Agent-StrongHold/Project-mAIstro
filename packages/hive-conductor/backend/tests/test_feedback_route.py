@@ -32,6 +32,8 @@ from typing import Any
 
 import pytest
 
+from maistro.memory.exposure import MemoryExposureMode
+
 _BACKEND = pathlib.Path(__file__).resolve().parents[1]
 if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
@@ -46,7 +48,7 @@ def fresh_outcome_store():
     from maistro.memory.outcomes import InMemoryOutcomeStore
 
     previous = svc.get_outcome_store()
-    store = InMemoryOutcomeStore()
+    store = InMemoryOutcomeStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
     svc.set_outcome_store(store)
     yield store
     svc.set_outcome_store(previous)
@@ -152,7 +154,7 @@ def test_set_outcome_store_swaps_the_module_singleton() -> None:
     from maistro.memory.outcomes import InMemoryOutcomeStore
 
     original = svc.get_outcome_store()
-    new_store = InMemoryOutcomeStore()
+    new_store = InMemoryOutcomeStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
     svc.set_outcome_store(new_store)
     try:
         assert svc.get_outcome_store() is new_store
@@ -216,12 +218,15 @@ def _seed_visible_run(
     canonical_run_id: str = "",
     name: str = "Feedback",
     workspace_id: str = "",
+    project_id: str = "",
 ) -> str:
     """Put a run row the client's principal can inspect into the projection.
 
     The established seeding pattern (cf. test_dag_run_scope.py): the run row
     is born carrying the Workspace scope the inspection door authorizes
-    against, and the canonical Run id when the caller has one.
+    against, and the canonical Run id when the caller has one. `project_id`
+    is required by the merged feedback route, which resolves the Outcome's
+    Project from the run's authorized scope -- not from the request body.
     """
     from services.dag_run_store import get_dag_run_store
 
@@ -233,6 +238,7 @@ def _seed_visible_run(
             user_id="user",
             workspace_id=ws,
             canonical_run_id=canonical_run_id,
+            project_id=project_id,
         )
 
     _run_sync(_start())
@@ -265,7 +271,9 @@ def _canonical_spine(workspace_id: str) -> tuple[Any, str, str, str]:
             name="Feedback DAG",
             nodes=[Node(node_id="jira_poll", node_type="agent")],
         )
-        run = await store.create_run(graph)
+        # The canonical Run must name its admitting principal: the store
+        # boundary refuses an anonymous Run (`require_admitted_actor`).
+        run = await store.create_run(graph, actor_principal_id="user")
         node_run = await store.create_node_run(run.run_id, node_id="jira_poll")
         attempt = await store.create_attempt(node_run.node_run_id)
         return store, run.run_id, node_run.node_run_id, attempt.attempt_id
@@ -273,10 +281,38 @@ def _canonical_spine(workspace_id: str) -> tuple[Any, str, str, str]:
     return _run_sync(_build())
 
 
+def _workspace_for_run(client: Any, run_id: str) -> str:
+    workspace = client.post(
+        "/v1/workspaces", json={"persona_template_id": "pm_fleet", "name": run_id}
+    )
+    assert workspace.status_code == 201, workspace.text
+    return workspace.json()["id"]
+
+
+async def _seed_run(workspace_id: str, run_id: str, project_id: str) -> None:
+    from services.dag_run_store import get_dag_run_store
+
+    await get_dag_run_store().start_run(
+        run_id=run_id,
+        workspace_id=workspace_id,
+        project_id=project_id,
+    )
+
+
+def _seed_authorized_run(client: Any, run_id: str, project_id: str) -> None:
+    """Feedback must target a run visible in the caller's Workspace."""
+    asyncio.run(_seed_run(_workspace_for_run(client, run_id), run_id, project_id))
+
+
+async def _seed_authorized_run_async(client: Any, run_id: str, project_id: str) -> None:
+    """Async-test counterpart that does not nest ``asyncio.run``."""
+    await _seed_run(_workspace_for_run(client, run_id), run_id, project_id)
+
+
 def test_feedback_route_records_run_level_thumb_down(
     authed_client: Any, fresh_outcome_store: Any
 ) -> None:
-    _seed_visible_run(authed_client, "run-A", canonical_run_id="cr-run-A")
+    _seed_visible_run(authed_client, "run-A", canonical_run_id="cr-run-A", project_id="proj-X")
     r = _login_post(
         authed_client,
         "run-A",
@@ -311,9 +347,14 @@ def test_feedback_route_records_per_node_thumb_up(
 
     ws = _own_workspace(authed_client, "Feedback node")
     store, canonical_run_id, node_run_id, attempt_id = _canonical_spine(ws)
-    _seed_visible_run(authed_client, "run-B", canonical_run_id=canonical_run_id, workspace_id=ws)
+    _seed_visible_run(
+        authed_client,
+        "run-B",
+        canonical_run_id=canonical_run_id,
+        workspace_id=ws,
+        project_id="proj-Y",
+    )
     monkeypatch.setattr(engine_mod, "_singleton", SimpleNamespace(run_store=store))
-
     r = authed_client.post(
         "/v1/dag-runs/run-B/nodes/jira_poll/feedback",
         json={"thumb": "up", "project_id": "proj-Y"},
@@ -328,6 +369,32 @@ def test_feedback_route_records_per_node_thumb_up(
     assert o.run_id == canonical_run_id
     assert o.node_run_id == node_run_id
     assert o.attempt_id == attempt_id
+
+
+def test_feedback_route_refuses_a_missing_run_before_writing(
+    authed_client: Any, fresh_outcome_store: Any
+) -> None:
+    r = _login_post(authed_client, "run-does-not-exist", {"thumb": "down", "project_id": "p"})
+    assert r.status_code == 404
+    assert fresh_outcome_store._outcomes == []
+
+
+def test_feedback_route_refuses_a_caller_project_different_from_the_run(
+    authed_client: Any, fresh_outcome_store: Any
+) -> None:
+    _seed_authorized_run(authed_client, "run-scoped", "run-project")
+    r = _login_post(authed_client, "run-scoped", {"thumb": "down", "project_id": "other"})
+    assert r.status_code == 403
+    assert fresh_outcome_store._outcomes == []
+
+
+def test_feedback_route_refuses_a_run_outside_the_callers_workspace(
+    authed_client: Any, admin_client: Any, fresh_outcome_store: Any
+) -> None:
+    _seed_authorized_run(admin_client, "run-foreign", "foreign-project")
+    r = _login_post(authed_client, "run-foreign", {"thumb": "down"})
+    assert r.status_code == 404
+    assert fresh_outcome_store._outcomes == []
 
 
 def test_feedback_route_invalid_thumb_returns_422(
@@ -364,7 +431,7 @@ def test_feedback_route_refuses_a_foreign_run_like_a_missing_one(
     authed_client: Any, admin_client: Any, fresh_outcome_store: Any
 ) -> None:
     """An out-of-scope run is indistinguishable from a missing one (#1174)."""
-    _seed_visible_run(admin_client, "run-theirs", canonical_run_id="cr-theirs")
+    _seed_visible_run(admin_client, "run-theirs", canonical_run_id="cr-theirs", project_id="proj")
 
     refused = authed_client.post("/v1/dag-runs/run-theirs/feedback", json={"thumb": "up"})
     missing = authed_client.post("/v1/dag-runs/never-existed/feedback", json={"thumb": "up"})
@@ -378,7 +445,7 @@ def test_feedback_route_refuses_a_run_without_canonical_identity(
 ) -> None:
     """A visible projection row that names no canonical Run is a 409, not a
     silently uncorrelated thumb (#337)."""
-    _seed_visible_run(authed_client, "run-projection-only")
+    _seed_visible_run(authed_client, "run-projection-only", project_id="proj")
 
     r = authed_client.post("/v1/dag-runs/run-projection-only/feedback", json={"thumb": "up"})
     assert r.status_code == 409
@@ -396,7 +463,13 @@ def test_feedback_route_per_node_refuses_an_unknown_node(
 
     ws = _own_workspace(authed_client, "Feedback unknown node")
     store, canonical_run_id, _node_run_id, _attempt_id = _canonical_spine(ws)
-    _seed_visible_run(authed_client, "run-N", canonical_run_id=canonical_run_id, workspace_id=ws)
+    _seed_visible_run(
+        authed_client,
+        "run-N",
+        canonical_run_id=canonical_run_id,
+        workspace_id=ws,
+        project_id="proj",
+    )
     monkeypatch.setattr(engine_mod, "_singleton", SimpleNamespace(run_store=store))
 
     r = authed_client.post(
@@ -411,7 +484,7 @@ def test_feedback_route_per_node_refuses_an_unknown_node(
 def test_feedback_route_writes_audit_log(authed_client: Any, fresh_outcome_store: Any) -> None:
     import stores
 
-    _seed_visible_run(authed_client, "run-Audit", canonical_run_id="cr-run-Audit")
+    _seed_visible_run(authed_client, "run-Audit", canonical_run_id="cr-run-Audit", project_id="p")
     audit_count_before = len(stores.audit_log)
     r = authed_client.post(
         "/v1/dag-runs/run-Audit/feedback",
@@ -443,6 +516,48 @@ def test_feedback_route_comment_too_long_returns_422(
 
 
 # --- outcome → next-run prompt invariant --------------------------------
+
+
+async def test_collect_thumbs_scopes_a_sqlite_store_by_org_and_project() -> None:
+    aiosqlite = pytest.importorskip("aiosqlite")
+    import services.feedback_service as svc
+    from services.feedback_service import collect_thumbs, record_thumb
+
+    from maistro.persistence.sqlite_outcomes import SqliteOutcomeStore
+
+    conn = await aiosqlite.connect(":memory:")
+    store = SqliteOutcomeStore(conn, exposure_mode=MemoryExposureMode.AGENT_MANAGED)
+    await store.ensure_schema()
+    previous = svc.get_outcome_store()
+    svc.set_outcome_store(store)
+    try:
+        await record_thumb(
+            user_id="u-a",
+            org_id="org-a",
+            project_id="project-a",
+            run_id="run-a",
+            thumb="down",
+            comment="secret-a",
+            node_id="node-a",
+            dag_id="dag-1",
+        )
+        await record_thumb(
+            user_id="u-b",
+            org_id="org-b",
+            project_id="project-b",
+            run_id="run-b",
+            thumb="down",
+            comment="secret-b",
+            node_id="node-b",
+            dag_id="dag-1",
+        )
+
+        scoped = await collect_thumbs("dag-1", org_id="org-a", project_id="project-a")
+
+        assert scoped == {"node-a": {"up": 0, "down": 1, "comments": ["secret-a"]}}
+    finally:
+        svc.set_outcome_store(previous)
+        await conn.close()
 
 
 async def test_thumbs_down_appears_in_same_project_experience_context(
@@ -497,35 +612,41 @@ def test_resolve_user_id_raises_401_when_user_has_no_id() -> None:
     assert exc_info.value.status_code == 401
 
 
-def test_resolve_project_id_falls_back_to_request_state_when_body_empty() -> None:
+def test_resolve_project_id_uses_the_authorized_run_when_body_empty() -> None:
     from types import SimpleNamespace
 
     from routes.feedback import FeedbackBody, _resolve_project_id
 
-    request = SimpleNamespace(state=SimpleNamespace(project_id="state-proj"))
+    request = SimpleNamespace(state=SimpleNamespace(project_id="caller-controlled"))
     body = FeedbackBody(thumb="up")  # project_id defaults to ""
-    assert _resolve_project_id(request, body) == "state-proj"  # type: ignore[arg-type]
+    assert _resolve_project_id(request, body, "run-project") == "run-project"  # type: ignore[arg-type]
 
 
-def test_resolve_project_id_body_wins_over_state() -> None:
+def test_resolve_project_id_rejects_a_body_scope_mismatch() -> None:
     from types import SimpleNamespace
 
+    from fastapi import HTTPException
     from routes.feedback import FeedbackBody, _resolve_project_id
 
-    request = SimpleNamespace(state=SimpleNamespace(project_id="state-proj"))
-    body = FeedbackBody(thumb="up", project_id="body-proj")
-    assert _resolve_project_id(request, body) == "body-proj"  # type: ignore[arg-type]
+    request = SimpleNamespace(state=SimpleNamespace())
+    body = FeedbackBody(thumb="up", project_id="body-project")
+    with pytest.raises(HTTPException) as exc_info:
+        _resolve_project_id(request, body, "run-project")  # type: ignore[arg-type]
+    assert exc_info.value.status_code == 403
 
 
-def test_resolve_project_id_missing_state_returns_empty_string() -> None:
-    """No body project_id + no request.state.project_id → empty fallback."""
+def test_resolve_project_id_missing_run_scope_fails_closed() -> None:
+    """A projection without a Project cannot receive scoped feedback."""
     from types import SimpleNamespace
 
+    from fastapi import HTTPException
     from routes.feedback import FeedbackBody, _resolve_project_id
 
-    request = SimpleNamespace(state=SimpleNamespace())  # no project_id attr
+    request = SimpleNamespace(state=SimpleNamespace())
     body = FeedbackBody(thumb="up")
-    assert _resolve_project_id(request, body) == ""  # type: ignore[arg-type]
+    with pytest.raises(HTTPException) as exc_info:
+        _resolve_project_id(request, body, "")  # type: ignore[arg-type]
+    assert exc_info.value.status_code == 403
 
 
 async def test_record_feedback_rejects_invalid_thumb_at_runtime(
@@ -591,8 +712,10 @@ async def test_record_feedback_translates_value_error_to_400(
 
     monkeypatch.setattr(fb, "record_thumb", _raise)
 
-    _seed_visible_run(authed_client, "run-V", canonical_run_id="cr-run-V")
-    r = authed_client.post("/v1/dag-runs/run-V/feedback", json={"thumb": "up"})
+    _seed_visible_run(authed_client, "run-V", canonical_run_id="cr-run-V", project_id="project-1")
+    r = authed_client.post(
+        "/v1/dag-runs/run-V/feedback", json={"thumb": "up", "project_id": "project-1"}
+    )
     assert r.status_code == 400
     assert "invariant broken" in r.json()["detail"]
 
@@ -616,3 +739,63 @@ async def test_cross_project_thumb_does_not_leak(
     )
     assert "alpha-only signal" not in ctx_other
     assert ctx_other == ""  # no signals for Beta project at all
+
+
+def test_feedback_route_records_thumb_for_a_completed_canonical_graph_run(
+    admin_client: Any,
+    canonical_graph_spine: Any,
+    fresh_outcome_store: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Positive PM flow: real canonical admission/Graph, with only model I/O faked."""
+    import services.graph_runner as graph_runner
+    import stores
+
+    from maistro.runs.model import RunStatus
+
+    async def model_completion(_messages, **_kwargs):
+        return "hermetic completed work"
+
+    # This fixture tests canonical lifecycle plus feedback, not gateway policy.
+    monkeypatch.setattr(canonical_graph_spine, "capability_effects", None)
+    monkeypatch.setattr(graph_runner, "_build_llm_call", lambda *_args: model_completion)
+    workspace_id = _workspace_for_run(admin_client, "Canonical feedback")
+    created = admin_client.post(
+        "/v1/dags", json={"name": "Canonical feedback", "description": "fixture"}
+    )
+    assert created.status_code == 201
+    dag = created.json()
+    try:
+        updated = admin_client.put(
+            f"/v1/dags/{dag['id']}",
+            json={
+                "nodes": [dict(node, config={"execution_tier": "safe"}) for node in dag["nodes"]],
+                "edges": dag["edges"],
+            },
+        )
+        assert updated.status_code == 200
+        executed = admin_client.post(
+            f"/v1/dags/{dag['id']}/run", json={"workspace_id": workspace_id}
+        )
+        assert executed.status_code == 200
+        body = executed.json()
+        assert body["status"] == "completed", body
+        run_id = body["run_id"]
+        canonical = asyncio.run(canonical_graph_spine.run_store.get_run(run_id))
+        record = asyncio.run(canonical_graph_spine.graph_run_store.get(run_id))
+        assert canonical is not None and canonical.status is RunStatus.COMPLETED
+        assert record.node_runs and record.attempts
+        assert canonical.workspace_id == workspace_id
+        assert canonical.actor_principal_id == "admin"
+        response = _login_post(
+            admin_client, run_id, {"thumb": "up", "comment": "Nailed it!", "dag_id": dag["id"]}
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["recorded"] is True
+        outcome = fresh_outcome_store._outcomes[-1]
+        assert outcome.dag_run_id == canonical.run_id
+        assert outcome.project_id == canonical.project_id
+        assert outcome.user_id == canonical.actor_principal_id
+        assert outcome.thumb == "up"
+    finally:
+        stores.dags.pop(dag["id"], None)

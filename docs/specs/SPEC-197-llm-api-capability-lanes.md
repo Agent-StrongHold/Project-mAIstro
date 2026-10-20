@@ -7,11 +7,11 @@ status: Accepted
 created: 2026-06-08
 accepted: 2026-06-08
 substrate:
-  - maistro-engine#ADR-079
   - maistro-engine#ADR-038
 implements: []
 related:
   - maistro-engine#SPEC-176
+  - maistro-engine#ADR-079
 contracts:
   - boundary
 tests:
@@ -50,7 +50,7 @@ Adapters translate each native dialect into this vocabulary. Tool-call fragments
 
 ### Lane selection
 
-Generalize the existing `llm_http_variant` setting into a **per-model capability map** (model → preferred lane + supported features), defaulting to `chat.completions`. `build_llm_port()` chooses the lane; nothing above the port changes. Fallback is per **ADR-038** (a failed Responses call under `auto` degrades to `chat.completions`); model→lane policy is per **ADR-079**.
+Generalize the existing `llm_http_variant` setting into a **per-model capability map** (model → preferred lane + supported features), defaulting to `chat.completions`. `build_llm_port()` chooses the lane; nothing above the port changes. Fallback is per **ADR-038** (a failed Responses call under `auto` degrades to `chat.completions`). Model→lane policy is set by the per-model capability map defined here (default `chat.completions`); **ADR-079** (model registry / routing, still **Proposed**) is non-authoritative design context for a future registry-driven policy, not governing policy.
 
 ## Lanes
 
@@ -93,4 +93,4 @@ Generalize the existing `llm_http_variant` setting into a **per-model capability
 - `packages/hive-conductor/backend/services/chat_completion.py` — `run_chat_completion_streaming`, `_ToolCallAccumulator`
 - `packages/hive-conductor/backend/adapters/llm_http.py` — `HttpOpenAIProtocolLLM.stream`, `_responses_event_to_chunk`
 - `packages/hive-conductor/backend/protocols/llm.py` — `LLMPort`
-- maistro-engine#ADR-079 (model registry / routing), maistro-engine#ADR-038 (reliability / fallback), maistro-engine#SPEC-176 (Hive Conductor package)
+- maistro-engine#ADR-079 (model registry / routing; Proposed — design context, not policy), maistro-engine#ADR-038 (reliability / fallback), maistro-engine#SPEC-176 (Hive Conductor package)

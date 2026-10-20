@@ -152,10 +152,39 @@ its floor, and it exists for development and deliberate unsafe deployments.
 not a flag another subsystem might set for unrelated reasons. Non-positive values
 are rejected in every mode, unsafe included.
 
+The anonymous health endpoints intentionally return only liveness/readiness
+status. The secured metrics interface and deployment policy are documented in
+[`docs/security/metrics-endpoint.md`](docs/security/metrics-endpoint.md); do
+not add operational configuration or dependency details to public probes.
+
+### Metrics endpoint
+
+`GET /metrics` requires the canonical service-key registry and its dedicated
+`admin:metrics` scope. Scraper identity, TLS, trusted-proxy, network-policy,
+label, and cardinality-backstop requirements are documented in
+[`docs/security/metrics-endpoint.md`](docs/security/metrics-endpoint.md).
+
+### Readiness diagnostics
+
 `GET /health/ready` reports the effective values under
 `effective_resource_policy`, including `unsafe_overrides_enabled`, so what a
 process is actually enforcing can be read rather than inferred from the
-environment it was supposed to have been given.
+environment it was supposed to have been given — but only when the request
+carries a valid admin-scoped bearer token against an auth-enabled deployment.
+Every other caller gets the status-only minimal contract, because `/health`
+is unauthenticated and exempt from rate limiting, and dependency/policy/backend
+detail helps an attacker size an attack.
+The same admin-gated response carries `container_limits`: the cgroup v2 memory,
+PID and CPU ceilings set at the hierarchy root. Under a private cgroup
+namespace, which is the Docker/containerd default on v2 hosts, that root is the
+container's own cgroup. `"unbounded"` means no limit is set at that level,
+though an enclosing cgroup may still impose one. `"unknown"` means nothing
+readable is there: cgroup v1, a non-namespaced host-root view, or unparseable
+content. Deployment capacity helps an attacker size a resource-exhaustion
+attempt, so `container_limits` — like the rest of the detailed payload — is
+withheld from non-admin callers, and an auth-disabled deployment serves the
+minimal contract to everyone. The engine reports these values but does not
+enforce them, and the supported Compose profiles do not set them yet (#862).
 
 ### Gaps against Stronghold's inventory
 
@@ -163,7 +192,7 @@ Stronghold's `SECURITY.md` carries several caps the engine does not (yet) have a
 
 | Stronghold had | Engine has | Status |
 | --- | --- | --- |
-| Tool-argument size limit (100 KB, JSON-bomb protection) | No dedicated tool-arg size cap found in `security/sentinel/validator.py` or `tools/` | `gap-impl` |
+| Tool-argument size/depth limit (100 KiB / 32 container levels, JSON-bomb protection) | **Present** — `security/sentinel/argument_limits.py::check_argument_limits` runs in `Sentinel.pre_call` before schema validation and execution; it measures compact UTF-8 JSON bytes, checks depth iteratively, and fails closed for non-JSON values | ✅ (SPEC-082126-7a31) |
 | SSRF blocklist (private networks, cloud metadata endpoints, loopback) for outbound tool/skill HTTP calls | **Present** — `security/ssrf.py::validate_outbound_url` refuses any URL that is not http(s) with a resolvable host on the public internet, checking every address the host resolves to (private, loopback, link-local, reserved, multicast, unspecified, and the RFC 6598 shared range `100.64.0.0/10`, which no stdlib predicate names) and refusing a name it cannot resolve at all. Applied at `maistro.http`'s pooled transport by `security/outbound.py` (ADR-082326-5386), and at the sync seam `maistro.http::sync_client` builds for the approvals CLI, so a module is covered by routing through the shared pool rather than by remembering to call the guard — redirect hops included, since httpx re-enters the transport for each one. Configured endpoints — the LiteLLM/Ollama gateway, ntfy, a Home Assistant URL — are allowed by exact origin, seeded from settings. The **filesystem** path blocklist (`security/patterns.py:BLOCKED_HOST_PATHS`) is separate and unrelated | `partial` — covered at both the async and sync seams, proxy mounts included; the measured reach is in Known Limitation 1, and the rebinding window between the guard's lookup and the client's remains open |
 | `hmac.compare_digest`-based constant-time comparison for API keys | Present: `security/secret_equal.py` | ✅ (engine has this) |
 | PostgreSQL persistence with org-scoped queries by default | InMemory stores are the default; PostgreSQL implementations exist (`persistence/`) but require explicit configuration | Matches engine's own known limitation below, not a regression |
@@ -213,7 +242,10 @@ Stronghold's `SECURITY.md` carries several caps the engine does not (yet) have a
    the transport for each one; the browser seam re-validates per hop the same way, because
    Chromium consults the route handler for every navigation, redirect and subresource before the
    network stack connects. `tasks/progress_webhook` and `integrations/ntfy` built private
-   clients and were moved onto the pool so the seam actually reaches them.
+   clients and were moved onto the pool so the seam actually reaches them. The connector/source
+   SDK joins the census the same way: `connectors/sync.py` imports `httpx` to normalize upstream
+   failures at the engine boundary, and every request it drives rides the pooled session the
+   host hands the connector, so the seam reaches it without its own client.
 
    The last private client was `cli/_approvals.py`, a *synchronous* `httpx.Client` the async-only
    pool had nothing to lend. It now builds through `maistro.http::sync_client`, whose transports
@@ -239,10 +271,7 @@ Stronghold's `SECURITY.md` carries several caps the engine does not (yet) have a
    lookups is not caught; and a transport that fabricates responses (`httpx.MockTransport`, which
    is how the test suite avoids the network) is not wrapped, because it opens no socket.
 
-2. **No dedicated tool-argument size cap.** Sentinel validates schema and permissions
-   (`security/sentinel/validator.py`) but a JSON-bomb-sized tool-call argument is not rejected by
-   a specific byte-size gate the way skill bodies (50 KB) and tool results (4,000 chars) are.
-3. **Sentinel decision signing is unimplemented.** ADR-073 specifies every Sentinel decision as a
+2. **Sentinel decision signing is unimplemented.** ADR-073 specifies every Sentinel decision as a
    signed VC; the current `InMemoryAuditLog` (`security/sentinel/audit.py`) records decisions but
    does not sign them. A compromised process with write access to the audit store could forge
    history.
