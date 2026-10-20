@@ -38,17 +38,42 @@ class PgAuditLog:
             )
 
     async def ensure_schema(self) -> None:
-        """Add proof columns to databases created before signed audit records."""
-        async with self._pool.acquire() as conn:
-            await conn.execute(
-                "ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS signature TEXT NOT NULL DEFAULT ''"
-            )
-            await conn.execute(
-                "ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS signing_key_id TEXT NOT NULL DEFAULT ''"
-            )
-            await conn.execute(
-                "ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS proof_type TEXT NOT NULL DEFAULT ''"
-            )
+        """Add proof columns to databases created before signed audit records.
+
+        The audit table itself is owned by the migration chain (revision 005);
+        on a database that has never run migrations (for example the
+        durable-events CI leg's fresh server) it does not exist yet. Treat
+        that as "nothing to backfill" instead of crashing container wiring,
+        so the audit store degrades to the migrated/absent state the rest of
+        the container already tolerates for optional durable stores.
+        """
+        try:
+            import asyncpg
+        except Exception:  # pragma: no cover - asyncpg is a core dependency
+            asyncpg = None  # type: ignore[assignment]
+        try:
+            async with self._pool.acquire() as conn:
+                await conn.execute(
+                    "ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS signature TEXT NOT NULL DEFAULT ''"
+                )
+                await conn.execute(
+                    "ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS signing_key_id TEXT NOT NULL DEFAULT ''"
+                )
+                await conn.execute(
+                    "ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS proof_type TEXT NOT NULL DEFAULT ''"
+                )
+        except Exception as exc:  # broad: real backend may raise UndefinedTableError or others
+            missing = False
+            if asyncpg is not None:
+                try:
+                    missing = isinstance(exc, asyncpg.exceptions.UndefinedTableError)
+                except Exception:  # pragma: no cover
+                    missing = False
+            if not missing:
+                msg = str(exc).lower()
+                missing = "audit_log" in msg and "does not exist" in msg
+            if not missing:
+                raise
 
     async def log(self, entry: AuditEntry) -> None:
         """Sign and record an audit entry."""

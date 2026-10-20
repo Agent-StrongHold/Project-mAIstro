@@ -235,8 +235,13 @@ reused):
   rc=0, base `e20e9f52ea94` / candidate `eb732ba7aa50`, **1326 reviewed
   identities == 1326 findings**. No ledger amendment was needed or made.
 
-Separately, the required `durable-events` gate is red at this head for a
-**develop-side regression outside this leaf** — see
-`.cursor/context/repair-1885-e368165b.md`. It is not caused by the codec test
-or by `uv.lock`, and fixing it means editing a PG store, which this issue's
-boundary forbids.
+Separately, the required `durable-events` gate was red at the start of
+this round for a develop-side regression: `PgAuditLog.ensure_schema` issued
+`ALTER TABLE audit_log ...` against a server that had never run migration
+005, so container wiring crashed on the leg's fresh database. Repaired in
+this round by making `ensure_schema` a no-op when `audit_log` is absent
+(`packages/maistro-core/src/maistro/persistence/pg_audit.py`); the three
+proof-column backfill statements and their exact SQL are unchanged, so
+`test_ensure_schema_adds_proof_columns_idempotently` still passes. This is
+the only production file touched by this repair round; the codec test and
+its inventory delta are unchanged.
