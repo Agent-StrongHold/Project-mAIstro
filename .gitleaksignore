@@ -116,3 +116,50 @@ b5c22a358a8b0a0fb064e89eb6b4eba6855b58c2:.gitleaksignore:generic-api-key:54
 # and the merge kept both copies. Duplicates add no suppression coverage —
 # tests/test_gitleaksignore_contract.py::test_fingerprints_are_unique — so the
 # redundant pair was dropped, keeping the single keyed copy.)
+
+# ---- #860 historical soak fixtures on the unmerged auto-860 lane ----
+# Protected-branch scans use --all, which includes fetched unmerged branches.
+# These exact fingerprints are already documented in auto-860's ignore file.
+# The first is a deterministic fixture supplied only to the harness's own
+# throwaway stack; the current lane replaced its credential-shaped spelling.
+# The second is a task-deduplication correlation ID in immutable probe evidence,
+# not authentication material. Preserve the recorded observation unchanged.
+# Scope each exemption to its original commit, path, rule and line. New values
+# or commits remain scanned; no source path or rule is excluded wholesale.
+8185c1d076e3471e41fd948ac2bc43c6c2d110b8:scripts/soak/run_soak.py:generic-api-key:51
+88edcc7ea03baf4257a9edfb47e56a5493d6d329:docs/testing/soak/evidence/m3a-round7-prodstack-quick-probes.json:generic-api-key:13
+
+# ---- auto-837 (#837) redaction-proof fixture on this lane ----
+# The durable-runs failure-evidence redaction tests need a credential-shaped
+# literal to prove what is NOT persisted: an OpenAI-style placeholder key
+# ("sk-proj" prefix plus a short alphabet block) assigned to an api_key
+# parameter — synthetic, never authenticates anything, asserted through
+# pinned equality with the redacted output (REDACTED_SECRET_ASSIGNMENT).
+# Deliberately paraphrased: quoting the fixture verbatim in this comment
+# makes this file trip the same rule (see the M4-A8 note above), and commit
+# 81f898591 is fingerprinted below for exactly that earlier wording.
+# Rewording cannot clean the range scan on its own, because `gitleaks git`
+# scans each commit's own patch and the introducing commits below are
+# immutable history on this branch — only these per-commit fingerprints can
+# quiet them. New values, commits, paths or rules remain fully scanned.
+81f8985913f040b2b12aba0a1f71748ed1b1d20b:.gitleaksignore:generic-api-key:98
+1ac446cf4385285f32ef2408233ab81911fe36a9:packages/maistro-core/tests/graph/durable_runs/test_executor_gaps.py:generic-api-key:69
+f83de3b7a431523a47234102499d35218b9881fe:docs/testing/inventory-notes/837-persisted-failure-redaction.md:generic-api-key:38
+
+# ---- #1825: the engine-image Canvas smoke's placeholder router key ----
+# scripts/smoke-engine-canvas.sh boots the shipped engine image against a
+# throwaway PostgreSQL container it creates and destroys within one CI step.
+# ROUTER_API_KEY there is the ascending digit placeholder 0123456789abcdef
+# repeated — the same literal the inline ci.yml boot smoke carried for months
+# before the script was extracted. It authenticates nothing outside that
+# ephemeral container pair and is overwritten by every real deployment's env.
+# Recorded here rather than splitting the literal, which would obscure the
+# exact value the smoke proves is accepted (and the control assertion that a
+# request WITHOUT a key is refused). Fingerprint scoped to the introducing
+# commit, path, rule and line; later edits to the file are still scanned.
+# Recorded twice because #2201 landed twice: 13e8d307 is the PR-branch
+# commit (unreachable once the squash-merge landed) and c6d2fbdba is the
+# squash-merge actually reachable from develop, where the same line sits at
+# 164. Range scans over merged history only ever see the latter.
+13e8d307574e3c7e634caf181f49c3b37767e9ab:scripts/smoke-engine-canvas.sh:generic-api-key:153
+c6d2fbdba48c38cc5ab86f2b537c8ee047e26c8d:scripts/smoke-engine-canvas.sh:generic-api-key:164
