@@ -86,3 +86,77 @@ allowlist entry. `ruff check` / `ruff format --check` clean; vulture ratchet
 1326/1326 identities match (base e20e9f52).
 
 No test count moves on this change, so no `inventory-delta` is recorded.
+
+## CI-repair round on 9d8d7e96f (2026-10-20)
+
+This round was asked to repair the failing CI gates on this branch. Two
+distinct problems were found, and only one of them belongs to this branch.
+
+### Repaired here — `durable-events` (and therefore `integration-scope`)
+
+`integration-scope` requires the `durable-events` check, and that check was the
+only failing one in its set. Its failure is a real production defect, not a
+scanner artifact: `PgAuditLog.ensure_schema()` only ever *altered* `audit_log`,
+while `container.py:_wire_audit_log` has called it unconditionally on a
+PostgreSQL pool since #2198 (`d32ddff76`). A container wired against a
+database that has not run the migration chain therefore died on startup with
+`relation "audit_log" does not exist` — all five PostgreSQL legs of
+`packages/maistro-core/tests/events` failed.
+
+The repair, the regression tests and the evidence are recorded in
+[`13-audit-log-schema-bootstrap.md`](13-audit-log-schema-bootstrap.md).
+
+### Not repaired here — the reachability floor (owner-held, two merges)
+
+`exact-debt-ledger`, `Quality / Reachability`, the root `test` job, the
+aggregating `Quality gate (Pillars 1–4, 7, 8)` and `Coverage gate` all fail
+for one reason, and it is a develop-level omission rather than anything this
+branch changed:
+
+- `packages/maistro-core/src/maistro/runs/admission_identity.py` (520 lines)
+  reached `develop` through PR #1936 (`auto-1851`) with no importer, and
+  `quality/reachability-baseline.json` was never extended for it. It is
+  documented as an "inactive contract leaf": a later, separately reviewed
+  integration lands its runtime consumer.
+- `uv run python scripts/check-reachability.py` → 1417 modules, 169
+  unreachable, the one new one being `maistro.runs.admission_identity`.
+- `uv run python scripts/check-reachability-provenance.py` → the module is
+  absent from the trusted base (`e20e9f52ea94`) and no prior
+  reachability authorization covers it.
+
+The gate cannot be satisfied from this branch: `ratchet_provenance.
+load_authorizations` reads `quality/ratchet-authorizations.json` **from the
+merge base**, so a grant that lands in this same change cannot authorize
+itself ("Authorizing a floor-raise is now two merges -- the grant, then the
+regression it permits", `scripts/ratchet_provenance.py:616`). Banking the
+module in this branch's baseline without a landed grant is exactly the
+"banking is not authorizing" case, and it would leave the candidate ledger
+carrying an unauthorized floor raise. The alternatives — a fake caller, a
+keep-alive import, a suppression, a rename, or a baseline/allowlist/grants
+edit in this PR — are all excluded by the lane's own constraints and by
+`.cursor/context/repair-1851-9ddea59d.md`.
+
+The owner-held sequence is therefore: land a reachability authorization for
+`maistro.runs.admission_identity` on `develop`, then land the baseline row
+(with its disposition group and its `docs/architecture/CONVERGENCE-MATRIX.md`
+row) in the change that needs it. This branch keeps the tree free of a
+self-approved floor raise and records the blocker instead.
+
+### Round evidence
+
+- `uv run pytest packages/maistro-core/tests/events` with
+  `MAISTRO_TEST_DATABASE_URL` pointing at an unmigrated PostgreSQL 17 and
+  `MAISTRO_REQUIRE_PG_LEGS=1` → `385 passed` (5 failed before the repair).
+- `uv run pytest tests/ --ignore=tests/tools/registry -q --timeout=60
+  -p no:randomly` → `3 failed, 5393 passed, 138 skipped`; the three failures
+  are the reachability-baseline self-checks
+  (`tests/test_check_reachability.py`, `tests/test_reachability_baseline_identity.py`)
+  and all three name `maistro.runs.admission_identity`.
+- `uv run python scripts/check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` → 1326 identities /
+  1326 findings, exit 0.
+- `uv run ruff check .` and `uv run ruff format --check .` → clean.
+
+This round adds three tests to `packages/maistro-core/tests`; the delta is
+recorded in [`13-audit-log-schema-bootstrap.md`](13-audit-log-schema-bootstrap.md),
+not here, so this note keeps describing the reconciliation it was written for.
