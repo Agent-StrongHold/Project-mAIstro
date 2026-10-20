@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +7
+  packages/maistro-core/tests: +15
   packages/hive-conductor/backend/tests: +3
 ---
 # Issue #848 monotonic supply-chain trust
