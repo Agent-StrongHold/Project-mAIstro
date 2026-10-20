@@ -531,6 +531,46 @@ def test_main_temporary_disposition_with_malformed_date_does_not_excuse(
     assert "unparseable expires" in out
 
 
+def test_main_temporary_disposition_under_foreign_identity_does_not_excuse(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    """#1859: the excuse is keyed to the entry's exact (file, method, path)
+    identity. A fully valid temporary entry — tracking issue, unexpired date,
+    live handler, matching name — registered against a *different* route
+    leaves the canned handler unexcused: the gate fails on the canned finding
+    alone, with no registry failure of its own to confuse the repair."""
+    routes = _write_routes(tmp_path, LOGGING_ONLY, REAL_WORK)
+    entry = _identity_entry(
+        route="/real",
+        method="get",
+        path="/real",
+        file="routes_1.py",
+        handler="real_things",
+        disposition="temporary",
+        issue="#1857",
+        expires=(date.today() + timedelta(days=30)).isoformat(),
+        contract="Acknowledges reload requests until the real reload lands.",
+    )
+    inventory_doc = tmp_path / "inventory.md"
+    inventory_doc.write_text("# inventory\n")
+    monkeypatch.setattr(mod, "ROUTES_DIR", routes)
+    monkeypatch.setattr(mod, "REGISTRY", _registry_file(tmp_path, entry))
+    monkeypatch.setattr(mod, "INVENTORY_DOC", inventory_doc)
+    assert mod.main() == 1
+    out = capsys.readouterr().out
+    assert "canned route handler" in out
+    assert "reload_settings" in out
+    assert "real_things" not in out  # the valid entry excuses only its own identity
+    for registry_noise in (
+        "inventory rot",
+        "handler identity drift",
+        "needs an issue",
+        "expired",
+        "unparseable",
+    ):
+        assert registry_noise not in out
+
+
 def test_full_gate_rejects_uncalled_helper_route_without_disposition(
     tmp_path, monkeypatch, capsys
 ) -> None:

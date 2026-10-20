@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  tests/: +2
+  tests/: +3
 ---
 
 # auto-1859 — the API gate's temporary-disposition contract (#1859)
@@ -81,13 +81,15 @@ and the shipped registry holds **zero** `temporary` entries (9 implemented /
   proves at `main()` level: valid temporary entry passes
   (`test_registered_valid_temporary_disposition_excuses_logging_only_handler`,
   `main() == 0`), expired does not, unregistered/logging-only does not,
-  handler-identity drift fails alone; this lane adds the two named
+  handler-identity drift fails alone; this lane adds the three named
   negatives that were still missing at `main()` level — missing tracking
-  issue and unparseable review date.
+  issue, unparseable review date, and a fully valid entry registered under a
+  foreign `(file, method, path)` identity, which excuses nothing (the
+  exact-route keying is the #389 guard against a broad exemption).
 - **No new exemption instance or closure claim** → registry byte-identical
   to develop; zero `temporary` entries; nothing here closes #389.
 
-## Root-suite delta (+2, `tests/test_check_api_route_contracts.py`)
+## Root-suite delta (+3, `tests/test_check_api_route_contracts.py`)
 
 - `test_main_temporary_disposition_without_issue_does_not_excuse` — a
   temporary entry with no tracking issue: registry failure ("needs an
@@ -95,16 +97,24 @@ and the shipped registry holds **zero** `temporary` entries (9 implemented /
 - `test_main_temporary_disposition_with_malformed_date_does_not_excuse` —
   an unparseable review date: registry failure ("unparseable expires") and
   the canned finding both fire, `main() == 1`.
+- `test_main_temporary_disposition_under_foreign_identity_does_not_excuse`
+  — a fully valid temporary entry (issue, future date, live handler,
+  matching name) registered against a *different* live route leaves the
+  canned handler unexcused: `main() == 1` on the canned finding alone, with
+  zero registry failures, pinning the excuse's exact-identity keying.
+  Fail-before verified against a scratch leaky variant of the gate (any
+  valid temporary entry excuses every canned handler): the test fails there
+  (`0 == 1`) while the valid-entry pass test still passes.
 
 (The first attempt's note claimed `tests/: +9`; those tests pinned the
 superseded tracking-only contract and were withdrawn with it. Net lane
-delta against develop is +2.)
+delta against develop is +3.)
 
 ## Validation (this round, at the reconciled head)
 
 - `uv sync --locked --extra dev` — clean.
-- `uv run pytest tests/test_check_api_route_contracts.py -q` — all passed
-  (develop's suite + the 2 new negatives).
+- `uv run pytest tests/test_check_api_route_contracts.py -q` — 64 passed
+  (develop's suite + the 3 new negatives).
 - `uv run python scripts/check-api-route-contracts.py` — OK on the real
   tree (0 canned), exit 0.
 - `uv run ruff check` + `uv run ruff format --check` on changed files —
