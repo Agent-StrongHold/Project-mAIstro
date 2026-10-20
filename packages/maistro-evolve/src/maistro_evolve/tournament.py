@@ -176,6 +176,16 @@ class EloTournament:
             return _DEFAULT_ELO
         return sum(r.elo for r in ratings) / len(ratings)
 
+    def get_total_battles(self, genome_id: str) -> int:
+        """Total battles a genome has fought, across every benchmark.
+
+        Battle evidence for fitness's Elo term (#853): the term only fires when
+        this is > 0, so a genome that never battled (whose ``get_avg_elo`` is
+        the 1200 default) cannot collect head-to-head credit for mere
+        existence.
+        """
+        return sum(r.total_battles for r in self._ratings.values() if r.genome_id == genome_id)
+
     def get_leaderboard(self, benchmark: str | None = None) -> list[dict[str, Any]]:
         """Ranked entries, aggregating battle counts across the matched ratings.
 

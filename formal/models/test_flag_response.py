@@ -9,10 +9,22 @@ from hypothesis.stateful import RuleBasedStateMachine, rule, invariant
 from maistro.security.warden.flag_response import build_audit_payload, build_flagged_response
 
 
+_BANNER_MARKER = "WARNING SECURITY NOTICE: This tool result has been flagged by Warden."
+
+
 class FlagResponseMachine(RuleBasedStateMachine):
+    """Transparency properties for the flagged-response builder.
+
+    Contract (flag_response.py): flag -> warn -> notify -> escalate — never
+    silently pass. The old `built_count_non_negative` invariant counted the
+    machine's own builder calls; it held for every integer and constrained
+    nothing. The invariant below pins the warning onto every built response.
+    """
+
     def __init__(self):
         super().__init__()
-        self.built_count = 0
+        self.last_result: str | None = None
+        self.last_layer: str | None = None
 
     @rule(
         content=st.text(min_size=0, max_size=500),
@@ -22,11 +34,24 @@ class FlagResponseMachine(RuleBasedStateMachine):
     def build_response(self, content, flags, layer):
         result = build_flagged_response(content, flags=flags, detection_layer=layer)
         assert content in result
-        self.built_count += 1
+        self.last_result = result
+        self.last_layer = layer
 
     @invariant()
-    def built_count_non_negative(self):
-        assert self.built_count >= 0
+    def built_response_carries_banner(self):
+        """Safety/transparency property.
+
+        Counterexample class: a builder regression that returns the content
+        without the security banner (flag -> silently pass — the exact
+        failure the module docstring forbids), or that drops the detection
+        layer attribution, fails here on the first built response.
+        """
+        if self.last_result is None:
+            return
+        assert _BANNER_MARKER in self.last_result, "flagged response lost the security banner"
+        assert f"Detection: {self.last_layer}" in self.last_result
+        assert "Reason:" in self.last_result
+        assert self.last_result.rstrip().endswith("---"), "banner terminator lost"
 
 
 TestFlagResponseMachine = FlagResponseMachine.TestCase

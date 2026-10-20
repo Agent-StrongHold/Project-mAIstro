@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from maistro.persistence.audit_pages import AuditPage, make_page, page_query
 from maistro.types.security import AuditEntry
 
 if TYPE_CHECKING:
@@ -44,6 +45,29 @@ class PgAuditLog:
                 entry.trace_id,
                 entry.request_id,
             )
+
+    async def get_page(
+        self,
+        *,
+        org_id: str = "",
+        user_id: str | None = None,
+        boundary: str | None = None,
+        denied: bool | None = None,
+        limit: int = 50,
+        cursor: str | None = None,
+    ) -> AuditPage:
+        query, params = page_query(
+            org_id=org_id,
+            user_id=user_id,
+            boundary=boundary,
+            denied=denied,
+            limit=limit,
+            cursor=cursor,
+            postgres=True,
+        )
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(query, *params)
+        return make_page(rows, limit)
 
     async def get_entries(
         self,

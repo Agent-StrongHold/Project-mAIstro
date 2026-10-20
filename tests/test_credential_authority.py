@@ -51,6 +51,16 @@ def test_credential_authority_ledger_records_live_and_retired_surfaces() -> None
     assert not (ROOT / retired[0]["path"]).exists()
 
 
+# Three whole-graph audits: each drives `_reachable_production_modules()` (a
+# full production import-graph walk, ~1400 modules) plus a parse of every
+# module for the retired-stem scan. Measured at 17-20s each under the
+# coverage-gate producer's `--source=scripts` tracing against the suite's 30s
+# default (2026-10-08), the margin is stated here rather than discovered when
+# a slower or loaded runner turns it into an intermittent red — which is how
+# the coverage gate failed on run 37838854209 while ci.yml's `test` job, run
+# on the same commit without the tracer, passed. Same pattern as
+# tests/test_check_cross_package_imports.py::TestTheRepository.
+@pytest.mark.timeout(120)
 def test_reachable_credential_surfaces_are_classified_and_scoped(
     real_repository_ratchet_base: None,
 ) -> None:
@@ -622,10 +632,14 @@ def test_main_reports_each_failure(
     assert "demo credential failure" in capsys.readouterr().err
 
 
+# Whole-graph audit; see the measured-margin note above.
+@pytest.mark.timeout(120)
 def test_main_passes_on_the_committed_policy(real_repository_ratchet_base: None) -> None:
     assert _checker.main() == 0
 
 
+# Whole-graph audit via the script entrypoint; see the measured-margin note above.
+@pytest.mark.timeout(120)
 def test_script_entrypoint_exits_zero(real_repository_ratchet_base: None) -> None:
     """`python scripts/check-credential-authority.py` is the CI invocation."""
     import runpy

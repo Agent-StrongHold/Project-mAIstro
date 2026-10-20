@@ -1,0 +1,98 @@
+{
+  "_comment": "The approval authority for Dockerfile base/tool image pins (#349). Every digest-pinned image reference in any Dockerfile must appear here with the exact same image, tag and digest, and every pin row must still be referenced by at least one Dockerfile -- the registry and the tree hold each other closed, so a base update is always a reviewable change to this file plus the Dockerfiles. A pin reference is `name:tag@sha256:<digest>`: the digest is the resolution authority (immutable), the tag is the human-readable version annotation. All digests below are the manifest-list (index) digests the named tag resolved to on `recorded`, so every architecture/platform variant of that tag is fixed by one pin and a fixed target platform always resolves to the same per-arch artifact. Checked by scripts/check-image-pins.py, which also rejects any `:latest` reference and any unexempted unpinned base. `exemptions` exist for INTERNAL images that intentionally keep a version tag; each must name an owner, an issue and a reason, exactly like quality/image-inventory.json's coverage exceptions -- an exemption nobody owns is just an exemption.",
+  "pins": [
+    {
+      "image": "python",
+      "tag": "3.13.15-slim-bookworm",
+      "digest": "sha256:2325bb286ec344af3e5898cc224b5844e2707ac6e26b1632516fd3edc84a5e26",
+      "recorded": "2026-09-30",
+      "recorded_in": "#349",
+      "note": "CPython 3.13.15 on Debian bookworm-slim; the interpreter pin that keeps coincurve building from source only on purpose.",
+      "used_by": ["Dockerfile", "packages/hive-conductor/Dockerfile"]
+    },
+    {
+      "image": "python",
+      "tag": "3.12-slim",
+      "digest": "sha256:f77ac9e44ae96ef2c90b8053ea08c31f8be030f824196b0ae4db6d462c84e51f",
+      "recorded": "2026-09-30",
+      "recorded_in": "#349",
+      "note": "CPython 3.12.x line as of the recording date (research, RSI runner, e2e and sbx-tests images).",
+      "used_by": [
+        "Dockerfile.research",
+        "Dockerfile.rsi-runner",
+        "packages/hive-conductor/tests/Dockerfile",
+        "deploy/sbx/template/Dockerfile.tests"
+      ]
+    },
+    {
+      "image": "python",
+      "tag": "3.12.12-slim-bookworm",
+      "digest": "sha256:593bd06efe90efa80dc4eee3948be7c0fde4134606dd40d8dd8dbcade98e669c",
+      "recorded": "2026-09-30",
+      "recorded_in": "#349",
+      "note": "Copier template base: rendered downstream images pin the identical digest.",
+      "used_by": ["templates/autonoetic/Dockerfile.jinja",
+                  "templates/single-tenant-multi-user/{% if host_target in ['docker', 'podman'] %}Dockerfile{% endif %}.jinja"]
+    },
+    {
+      "image": "node",
+      "tag": "22-alpine",
+      "digest": "sha256:0a7108bf6c7bf5de370ffb1a3ed6be93d405b43ff159f681a8d18c0e2bc2e402",
+      "recorded": "2026-09-30",
+      "recorded_in": "#349",
+      "note": "Node 22.x line as of the recording date; frontend build stage only.",
+      "used_by": ["packages/hive-conductor/Dockerfile"]
+    },
+    {
+      "image": "golang",
+      "tag": "1.25.13-alpine",
+      "digest": "sha256:1e0126852075c9c60731c8ba49088448b91f63e2aed97ca9d1a9791622a05946",
+      "recorded": "2026-09-30",
+      "recorded_in": "#349",
+      "note": "Builds the age static binaries; the tag resolves to b8564ad per the Dockerfile's own verification.",
+      "used_by": ["packages/hive-conductor/Dockerfile"]
+    },
+    {
+      "image": "docker",
+      "tag": "29-cli",
+      "digest": "sha256:018edbc908e08fcc9dbf029c812c34251e9b4719e6f71ca0e5eae2a987d014ca",
+      "recorded": "2026-09-30",
+      "recorded_in": "#349",
+      "note": "Static docker CLI tool image (go1.26.8 binary); copied into engine images for the sandbox tool.",
+      "used_by": ["Dockerfile", "Dockerfile.research"]
+    },
+    {
+      "image": "ghcr.io/astral-sh/uv",
+      "tag": "0.12.21",
+      "digest": "sha256:a7aed3216253ee804de3e2d8afa5073baa1a177335345d43845cd4165e43b711",
+      "recorded": "2026-09-30",
+      "recorded_in": "#349",
+      "note": "uv 0.12.21, verified by running `uv --version` from the image the :latest tag resolved to on the recording date; the tag was rewritten from :latest to the release it actually was.",
+      "used_by": [
+        "Dockerfile.research",
+        "Dockerfile.rsi-runner",
+        "deploy/sbx/template/Dockerfile",
+        "deploy/sbx/template/Dockerfile.tests"
+      ]
+    },
+    {
+      "image": "mcr.microsoft.com/playwright",
+      "tag": "v1.52.0-noble",
+      "digest": "sha256:a021500a801bab0611049217ffad6b9697d827205c15babb86a53bc1a61c02d5",
+      "recorded": "2026-09-30",
+      "recorded_in": "#349",
+      "note": "Playwright browsers + deps, e2e harness only.",
+      "used_by": ["packages/hive-conductor/tests/Dockerfile.playwright"]
+    },
+    {
+      "image": "docker/sandbox-templates",
+      "tag": "shell-docker",
+      "digest": "sha256:1560168ac5fb9ce23d413c878349334c5845c07e264cd675d7867f0c78ad1761",
+      "recorded": "2026-09-30",
+      "recorded_in": "#349",
+      "note": "Docker Sandboxes template; `shell-docker` is the template channel name, the digest is the version anchor.",
+      "used_by": ["deploy/sbx/template/Dockerfile"]
+    }
+  ],
+  "exemptions": []
+}

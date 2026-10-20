@@ -14,6 +14,7 @@ from typing import Any
 import pytest
 
 from maistro.container import Container, create_container
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 from maistro.types.config import AgentConfig
 
 PERSONA_YAML = Path(__file__).parent / "personas" / "fixtures" / "plant_wellness_local_seller.yaml"
@@ -97,6 +98,26 @@ async def test_context_assembly_uses_the_canonical_scope_store() -> None:
     assert container.project_store is container.project_scope_store
     root = await container.project_scope_store.create_root("context-wiring")
     assert await container.context_assembly_policy.layer0(root.project_id) == ""
+
+
+async def test_aclose_releases_working_memory_projections_but_never_the_log() -> None:
+    """The graphs are process-local caches over the durable log (#301).
+
+    Shutdown releases what the container took — the live projections — and
+    the observation log they were hydrated from stays exactly where it is.
+    """
+    container = await _container(database_url="sqlite://")
+    manager = container.working_log
+    assert manager is not None
+    await manager.observe("ws-shutdown", cycle=1, text="durable across shutdown")
+    await manager.projection("ws-shutdown")
+    assert manager.hot("ws-shutdown") is not None
+    # The entry is in the log, not only in the graph.
+    assert len(await manager.store.list_entries("ws-shutdown")) == 1
+
+    await container.aclose()
+
+    assert manager.hot("ws-shutdown") is None
 
 
 # --- Resilience (ADR-066) ----------------------------------------------------
@@ -681,8 +702,18 @@ def test_build_node_resolver_resolves_spawn_harness_with_injected_adapters() -> 
     from maistro.container import build_node_resolver
     from maistro.graph.nodes.agent_spawn_harness import AgentSpawnHarnessNode
 
-    fake_adapter = object()
-    resolver = build_node_resolver(harness_adapters={"rsi_cycle": fake_adapter})  # type: ignore[arg-type]
+    # The node shape-validates its adapter map at construction (#1613), so the
+    # identity sentinel must satisfy the HarnessAdapter protocol — unchanged
+    # by the wrapping, which is exactly what the equality asserts.
+    class _StubHarnessAdapter:
+        async def dispatch(self, request: object) -> object: ...
+
+        async def poll(self, handle: object) -> object: ...
+
+        async def cancel(self, handle: object) -> None: ...
+
+    fake_adapter = _StubHarnessAdapter()
+    resolver = build_node_resolver(harness_adapters={"rsi_cycle": fake_adapter})
 
     dag = {"nodes": [{"id": "n1", "kind": "agent.spawn_harness"}]}
     node = resolver("n1", dag)
@@ -838,7 +869,7 @@ async def test_the_container_sweeps_abandoned_attempts() -> None:
         name="g",
         nodes=[Node(node_id="n1", node_type="agent")],
     )
-    run = await store.create_run(graph)
+    run = await store.create_run(graph, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
     for status in (RunStatus.QUEUED, RunStatus.RUNNING):
         await store.transition_run(run.run_id, status)
     node_run = await store.create_node_run(run.run_id, node_id="n1")
@@ -886,7 +917,7 @@ async def test_the_sweep_parks_the_reclaimed_attempts_logical_records() -> None:
         name="g",
         nodes=[Node(node_id="n1", node_type="agent")],
     )
-    run = await store.create_run(graph)
+    run = await store.create_run(graph, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
     for status in (RunStatus.QUEUED, RunStatus.RUNNING):
         await store.transition_run(run.run_id, status)
     node_run = await store.create_node_run(run.run_id, node_id="n1")
@@ -948,7 +979,7 @@ async def test_the_sweep_survives_an_attempt_it_cannot_reconcile(
         name="g",
         nodes=[Node(node_id="n1", node_type="agent")],
     )
-    run = await store.create_run(graph)
+    run = await store.create_run(graph, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
     for status in (RunStatus.QUEUED, RunStatus.RUNNING):
         await store.transition_run(run.run_id, status)
     node_run = await store.create_node_run(run.run_id, node_id="n1")

@@ -8,6 +8,12 @@ services:
       # (#331) and parallel local deployments can pick another host port
       # without touching the container's listener.
       - "${CONDUCTOR_PORT:-8101}:8101"
+    # Keep the UI/API and its legitimate subprocesses bounded in local and
+    # supported container runs; security ceilings are not tuning guidance.
+    mem_limit: 1g
+    memswap_limit: 1g
+    pids_limit: 256
+    cpus: 1.0
     environment:
       - PYTHONUNBUFFERED=1
       # Durable foundation state — SQLite state.db (accounts, sessions,
@@ -32,7 +38,9 @@ services:
       # - MAISTRO_ROUTER_API_KEY=your-key
       # - MAISTRO_LLM_BASE_URL=http://litellm:4000/v1
       # - MAISTRO_LLM_API_KEY=sk-your-key
-      # - MAISTRO_MODEL=gpt-4o
+      # Sentinel tool authority for the standalone Conductor image (#66): the
+      # preset matching dispatch_tool's executable registry, not the engine's.
+      - MAISTRO_PERMISSION_PRESET=hive_conductor_tools
     volumes:
       - conductor-data:/data
 

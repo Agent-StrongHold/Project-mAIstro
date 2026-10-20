@@ -2,18 +2,23 @@
 
 from __future__ import annotations
 
+import asyncio
+import time
 from typing import Any
 
 import pytest
+from pydantic import ValidationError
 from services.dag_execution_scope import DagExecutionScope
 
-from maistro.graph.durable_runs import InMemoryDurableRunStore
+from maistro.runs.model import AttemptStatus
 
 
 @pytest.fixture
-def execution_scope() -> DagExecutionScope:
+def execution_scope(canonical_graph_spine) -> DagExecutionScope:
     return DagExecutionScope(
-        workspace_id="test-workspace", project_id="test-project", user_id="test-user"
+        workspace_id="test-workspace",
+        project_id=canonical_graph_spine.project_id,
+        user_id="test-user",
     )
 
 
@@ -176,9 +181,7 @@ async def test_required_node_failure_terminalizes_canonical_run_failed(
 ) -> None:
     import services.canonical_dag_runner as runner
 
-    store = InMemoryDurableRunStore()
-    monkeypatch.setattr(runner, "_container", lambda: None)
-    monkeypatch.setattr(runner, "get_run_store", lambda: store)
+    store = runner._container().graph_run_store
 
     result = await runner.execute_dag(
         {
@@ -205,9 +208,7 @@ async def test_fanout_runs_under_one_canonical_run(
 ) -> None:
     import services.canonical_dag_runner as runner
 
-    store = InMemoryDurableRunStore()
-    monkeypatch.setattr(runner, "_container", lambda: None)
-    monkeypatch.setattr(runner, "get_run_store", lambda: store)
+    store = runner._container().graph_run_store
 
     result = await runner.execute_dag(
         {
@@ -239,9 +240,7 @@ async def test_run_scout_executes_under_the_same_canonical_run(
 ) -> None:
     import services.canonical_dag_runner as runner
 
-    store = InMemoryDurableRunStore()
-    monkeypatch.setattr(runner, "_container", lambda: None)
-    monkeypatch.setattr(runner, "get_run_store", lambda: store)
+    store = runner._container().graph_run_store
 
     result = await runner.execute_dag(
         {
@@ -356,26 +355,28 @@ async def test_scope_uses_only_the_authorized_immutable_scope(
 ) -> None:
     import services.canonical_dag_runner as runner
 
-    class _Container:
-        run_store = "the-canonical-run-store"
-
     scope = DagExecutionScope(
         workspace_id="ws-authorized", project_id="root-project", user_id="user-1"
     )
-    monkeypatch.setattr(runner, "_container", lambda: _Container())
+    monkeypatch.setattr(runner, "_container", lambda: None)
 
-    workspace, project, run_store = await runner._scope(
+    workspace, project = await runner._scope(
         {"workspace_id": "legacy-injection", "project_id": "legacy-project"},
         scope=scope,
         workspace_id=None,
         project_id=None,
     )
 
-    assert (workspace, project, run_store) == (
+    assert (workspace, project) == (
         "ws-authorized",
         "root-project",
-        "the-canonical-run-store",
     )
+
+    # Read-only scope resolution remains usable without execution authority.
+    assert await runner.resolve_execution_scope(
+        {"workspace_id": "legacy-injection", "project_id": "legacy-project"},
+        scope=scope,
+    ) == (workspace, project)
 
 
 @pytest.mark.asyncio
@@ -506,6 +507,7 @@ def test_recovery_refuses_a_run_whose_nodes_lack_durable_legacy_metadata() -> No
         project_id="p-1",
         graph=GraphSnapshot.from_graph(plain),
         status=RunStatus.QUEUED,
+        actor_principal_id="test-user",
         provenance={"admission_source": "hive_legacy_dag", "execution_mode": "interactive"},
     )
 
@@ -525,10 +527,6 @@ async def test_a_metrics_recording_failure_never_fails_the_completed_run(
 
     import services.canonical_dag_runner as runner
 
-    store = InMemoryDurableRunStore()
-    monkeypatch.setattr(runner, "_container", lambda: None)
-    monkeypatch.setattr(runner, "get_run_store", lambda: store)
-
     def _metrics_down(_record: Any) -> int:
         raise RuntimeError("metrics store unavailable")
 
@@ -544,3 +542,210 @@ async def test_a_metrics_recording_failure_never_fails_the_completed_run(
     assert result["status"] == "completed"
     assert result["run_id"]
     assert any("node_metrics_not_recorded" in record.message for record in caplog.records)
+
+
+# --- declared execution budgets (#1184) ---------------------------------------
+
+
+def _slow_llm_builder(delay_s: float):
+    """An LLM whose every answer takes ``delay_s`` seconds to arrive."""
+
+    def build(_on_response: Any = None):
+        async def call(messages: list[dict[str, Any]], **_kwargs: Any) -> str:
+            await asyncio.sleep(delay_s)
+            return "ok:slept"
+
+        return call
+
+    return build
+
+
+def _two_step_dag(**overrides: Any) -> dict[str, Any]:
+    dag: dict[str, Any] = {
+        "id": "budgeted-chain",
+        "name": "budgeted chain",
+        "max_cycles": 2,
+        "nodes": [_safe_node("a"), _safe_node("b")],
+        "edges": [{"id": "ab", "from_node": "a", "to_node": "b"}],
+    }
+    dag.update(overrides)
+    return dag
+
+
+@pytest.mark.asyncio
+@pytest.mark.contract("behavioral")
+@pytest.mark.asyncio
+async def test_declared_max_cycles_is_enforced_and_reported(
+    monkeypatch: pytest.MonkeyPatch, execution_scope: DagExecutionScope
+) -> None:
+    """``DAGFile.max_cycles`` used to be read nowhere; a budget narrower than
+    the DAG's depth now fails the Run naming the budget, and the projection
+    plus the canonical provenance both carry the effective value."""
+    import services.canonical_dag_runner as runner
+
+    store = runner._container().graph_run_store
+
+    result = await runner.execute_dag(
+        _two_step_dag(max_cycles=1),
+        llm_builder=_fake_llm_builder(),
+        scope=execution_scope,
+    )
+
+    assert result["status"] == "failed"
+    assert "CycleBudgetExhausted" in (result.get("error") or "")
+    assert "max_cycles=1" in (result.get("error") or "")
+    assert result["max_cycles_effective"] == 1
+    record = await store.get(result["run_id"])
+    assert record is not None
+    assert record.run.provenance["max_cycles_declared"] == 1
+    assert record.run.provenance["max_cycles_effective"] == 1
+    # One wave completed before the budget stopped the walk.
+    assert record.graph_state.cycle == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.contract("behavioral")
+@pytest.mark.asyncio
+async def test_a_budget_covering_the_depth_completes(
+    monkeypatch: pytest.MonkeyPatch, execution_scope: DagExecutionScope
+) -> None:
+    import services.canonical_dag_runner as runner
+
+    store = runner._container().graph_run_store
+
+    result = await runner.execute_dag(
+        _two_step_dag(max_cycles=2),
+        llm_builder=_fake_llm_builder(),
+        scope=execution_scope,
+    )
+
+    assert result["status"] == "completed"
+    assert result["max_cycles_effective"] == 2
+    record = await store.get(result["run_id"])
+    assert record is not None
+    assert record.graph_state.cycle == 2
+
+
+@pytest.mark.contract("behavioral")
+def test_out_of_policy_max_cycles_is_clamped_and_both_values_recorded() -> None:
+    from services.canonical_dag_runner import graph_from_legacy_dag
+
+    graph = graph_from_legacy_dag(
+        _two_step_dag(max_cycles=999),
+        workspace_id="w",
+        project_id="p",
+    )
+
+    assert graph.metadata["max_cycles_declared"] == 999
+    assert graph.metadata["max_cycles_effective"] == 20
+
+
+@pytest.mark.contract("behavioral")
+def test_undeclared_max_cycles_declares_no_budget() -> None:
+    from services.canonical_dag_runner import graph_from_legacy_dag
+
+    dag = _two_step_dag()
+    del dag["max_cycles"]
+    graph = graph_from_legacy_dag(dag, workspace_id="w", project_id="p")
+
+    assert "max_cycles_declared" not in graph.metadata
+    assert "max_cycles_effective" not in graph.metadata
+
+
+@pytest.mark.asyncio
+@pytest.mark.contract("behavioral")
+@pytest.mark.asyncio
+async def test_declared_node_timeout_becomes_the_canonical_attempt_deadline(
+    monkeypatch: pytest.MonkeyPatch, execution_scope: DagExecutionScope
+) -> None:
+    """A node's declared ``config.timeout_s`` is enforced by the canonical
+    ExecutionRuntime — the Attempt records ``deadline_at`` and settles
+    ``TIMED_OUT`` well inside the 120-second constant this path used to
+    hard-code (#1184)."""
+    import services.canonical_dag_runner as runner
+
+    store = runner._container().graph_run_store
+
+    slow_node = _safe_node("a")
+    slow_node["config"] = {"execution_tier": "safe", "timeout_s": 1}
+    started = time.monotonic()
+    result = await runner.execute_dag(
+        _two_step_dag(nodes=[slow_node, _safe_node("b")], max_cycles=2),
+        llm_builder=_slow_llm_builder(3.0),
+        scope=execution_scope,
+    )
+    elapsed = time.monotonic() - started
+
+    assert result["status"] == "failed"
+    assert "AttemptDeadlineExceeded" in (result.get("error") or "")
+    assert result["node_results"]["a"]["success"] is False
+    # The declared deadline governed, not the hard-coded 120s.
+    assert elapsed < 30.0
+    record = await store.get(result["run_id"])
+    assert record is not None
+    timed_out = [a for a in record.attempts if a.status is AttemptStatus.TIMED_OUT]
+    assert timed_out
+    assert all(a.deadline_at is not None for a in timed_out)
+    assert any("timeout_s" in str(a.error) or "deadline" in str(a.error) for a in timed_out)
+
+
+@pytest.mark.asyncio
+@pytest.mark.contract("behavioral")
+@pytest.mark.asyncio
+async def test_changing_the_declared_node_timeout_changes_whether_work_survives(
+    monkeypatch: pytest.MonkeyPatch, execution_scope: DagExecutionScope
+) -> None:
+    import services.canonical_dag_runner as runner
+
+    store = runner._container().graph_run_store
+
+    slow_node = _safe_node("a")
+    slow_node["config"] = {"execution_tier": "safe", "timeout_s": 10}
+    result = await runner.execute_dag(
+        _two_step_dag(nodes=[slow_node, _safe_node("b")], max_cycles=2),
+        llm_builder=_slow_llm_builder(1.5),
+        scope=execution_scope,
+    )
+
+    # The same 1.5s answer that misses a 1s deadline survives a 10s one.
+    assert result["status"] == "completed"
+    record = await store.get(result["run_id"])
+    assert record is not None
+    slow_runs = {nr.node_run_id for nr in record.node_runs if nr.node_id == "a"}
+    slow_attempts = [a for a in record.attempts if a.node_run_id in slow_runs]
+    assert slow_attempts
+    assert all(a.deadline_at is not None for a in slow_attempts)
+    assert all(a.status is AttemptStatus.COMPLETED for a in slow_attempts)
+
+
+@pytest.mark.contract("behavioral")
+def test_out_of_policy_node_timeout_clamps_with_provenance() -> None:
+    from services.canonical_dag_runner import graph_from_legacy_dag
+
+    node = _safe_node("a")
+    node["config"] = {"execution_tier": "safe", "timeout_s": 10**6}
+    graph = graph_from_legacy_dag(
+        _two_step_dag(nodes=[node, _safe_node("b")]),
+        workspace_id="w",
+        project_id="p",
+    )
+
+    declared = graph.metadata.get("max_cycles_declared")
+    assert declared == 2
+    timed = next(n for n in graph.nodes if n.node_id == "a")
+    assert timed.policies["timeout_s"] == 600.0
+    assert timed.metadata["legacy_timeout_s_declared"] == 10**6
+
+
+@pytest.mark.contract("behavioral")
+def test_update_route_refuses_out_of_policy_cycle_budgets() -> None:
+    """New writes are validated at edit time against the envelope execution
+    clamps to; stored DAGs stay readable and clamp with provenance instead."""
+    from routes.dags import UpdateDAGBody
+
+    assert UpdateDAGBody(max_cycles=20).max_cycles == 20
+    assert UpdateDAGBody(max_cycles=1).max_cycles == 1
+    with pytest.raises(ValidationError):
+        UpdateDAGBody(max_cycles=0)
+    with pytest.raises(ValidationError):
+        UpdateDAGBody(max_cycles=21)

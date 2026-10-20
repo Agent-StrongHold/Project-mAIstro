@@ -22,6 +22,7 @@ from maistro.graph.nodes import get_node
 from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.runs import InMemoryRunStore
 from maistro.runs.model import RunStatus
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 from .._canonical_helpers import hitl_authorization
 
@@ -98,6 +99,7 @@ async def test_repeated_malformed_answers_preserve_deadline_after_restart(
         store=store,
         node_resolver=_resolve,
         inputs=_inputs(kind, values),
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
     raw_deadline = paused.graph_state.metadata["pauses"]["step"]["resume_at"]
     assert isinstance(raw_deadline, str)
@@ -165,6 +167,7 @@ async def test_canonical_spine_preserves_malformed_verdict_deadline(
         graph,
         initial_status=RunStatus.QUEUED,
         provenance=durable_graph_launch_provenance(inputs=launch_inputs),
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
 
     paused = await run_durable_graph(
@@ -174,6 +177,7 @@ async def test_canonical_spine_preserves_malformed_verdict_deadline(
         inputs=launch_inputs,
         run_id=admitted.run_id,
         run_store=run_store,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
     deadline = paused.graph_state.metadata["pauses"]["step"]["resume_at"]
     malformed = await store.submit_hitl_answer(
@@ -216,6 +220,7 @@ async def test_malformed_answer_cannot_beat_timeout_at_deadline(
             store=SqliteDurableRunStore(database),
             node_resolver=_resolve,
             inputs=_inputs(kind, values),
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         )
         run_id = paused.run_id
         malformed_store = SqliteDurableRunStore(database)
@@ -271,6 +276,7 @@ async def test_valid_answer_before_deadline_still_settles(
         store=store,
         node_resolver=_resolve,
         inputs=_inputs(kind, values),
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
 
     malformed = await store.submit_hitl_answer(

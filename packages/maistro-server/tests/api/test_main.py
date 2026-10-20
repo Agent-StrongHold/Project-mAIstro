@@ -1,14 +1,14 @@
 """Tests for the FastAPI app entrypoint — lifespan, shutdown, exception handlers.
 
-Evidence: main.py wires the task runner into the app lifecycle, registers
-graceful-shutdown signal handlers, and wraps both HTTPException and unhandled
-exceptions in a consistent ErrorResponse envelope (request_id, type, message).
+Evidence: main.py wires the task runner into the app lifecycle, drains it
+through lifespan shutdown (leaving SIGTERM/SIGINT authority with Uvicorn),
+and wraps both HTTPException and unhandled exceptions in a consistent
+ErrorResponse envelope (request_id, type, message).
 """
 
 from __future__ import annotations
 
 import json
-import signal
 import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -21,7 +21,6 @@ import maistro_server.main as main_module
 from maistro.config.settings import Settings
 from maistro_server.api.health import router as health_router
 from maistro_server.main import (
-    _graceful_shutdown,
     _validate_startup,
     app,
     lifespan,
@@ -36,11 +35,11 @@ def client() -> TestClient:
 
 
 class _FakeLoop:
-    """Minimal event-loop stand-in for lifespan signal registration tests.
+    """Minimal event-loop stand-in for lifespan signal-handling assertions.
 
     structlog's async logger also calls ``get_running_loop().run_in_executor``;
-    this fake preserves that awaitable contract while letting the tests assert
-    signal handler registration does not raise.
+    this fake preserves that awaitable contract while recording whether the
+    lifespan touches ``add_signal_handler`` — which it must not (#819).
     """
 
     def __init__(self) -> None:
@@ -93,19 +92,52 @@ class TestExceptionHandlers:
         assert "request_id" in body["error"]
 
 
-class TestGracefulShutdown:
-    async def test_drains_runner_on_signal(self) -> None:
-        mock_runner = MagicMock()
-        mock_runner.drain = AsyncMock()
-        with patch.object(main_module, "_runner", mock_runner):
-            await _graceful_shutdown(signal.SIGTERM)
-        mock_runner.drain.assert_awaited_once_with(timeout=30)
+class TestSignalAuthority:
+    """#819 — Uvicorn owns SIGTERM/SIGINT for the process.
 
-    async def test_noop_when_no_runner(self) -> None:
-        with patch.object(main_module, "_runner", None):
-            await _graceful_shutdown(signal.SIGTERM)
+    The lifespan used to install its own `loop.add_signal_handler` for both
+    signals, which *replaced* Uvicorn's `handle_exit`: `should_exit` was never
+    set, so the server ignored SIGTERM, the lifespan shutdown block (runner
+    drain, sandbox cleanup, client close, engine disposal) never ran, and the
+    container grace deadline ended in SIGKILL. Cleanup must compose through
+    lifespan shutdown instead of taking over the server's signal handling.
+    """
 
-            assert main_module._runner is None
+    @pytest.fixture(autouse=True)
+    def _no_database_configured(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Same input the TestLifespan tests pin: no database resolver input,
+        # and the router key the Container build requires. This class is about
+        # signal authority, not about either of those checks.
+        for name in (
+            "DATABASE_URL",
+            "DB_HOST",
+            "DB_PORT",
+            "DB_NAME",
+            "DB_USER",
+            "DB_PASSWORD",
+        ):
+            monkeypatch.delenv(name, raising=False)
+        monkeypatch.setenv("ROUTER_API_KEY", "test-router-key")
+
+    @pytest.mark.contract("behavioral")
+    async def test_lifespan_does_not_install_signal_handlers(self) -> None:
+        test_app = MagicMock()
+        test_app.state = MagicMock()
+
+        loop = _FakeLoop()
+        with (
+            patch("maistro.agents.conductor.run_task"),
+            patch("maistro.memory.store.get_engine", return_value=None),
+            patch("maistro.memory.store.reset_engine_cache"),
+            patch("maistro.tools.sandbox.server.cleanup_all_containers", AsyncMock()),
+            patch("maistro_server.main.logger", MagicMock(ainfo=AsyncMock(), awarning=AsyncMock())),
+            patch("maistro_server.main.TaskRunner", return_value=_stopped_runner()),
+            patch("asyncio.get_running_loop", return_value=loop),
+        ):
+            async with lifespan(test_app):
+                pass
+
+        loop.add_signal_handler.assert_not_called()
 
 
 def _stopped_runner() -> MagicMock:
@@ -294,7 +326,7 @@ class TestLifespan:
             # the branch emits, not about wiring a real one.
             patch(
                 "maistro_server.main._build_container",
-                AsyncMock(return_value=mock_container),
+                AsyncMock(return_value=(mock_container, MagicMock())),
             ),
             patch("maistro_server.main.TaskRunner", return_value=_stopped_runner()),
             patch("asyncio.get_running_loop") as mock_loop,
@@ -339,7 +371,7 @@ class TestLifespan:
             patch("maistro_server.main._run_store_pool", AsyncMock(return_value=object())),
             patch(
                 "maistro_server.main._build_container",
-                AsyncMock(return_value=mock_container),
+                AsyncMock(return_value=(mock_container, MagicMock())),
             ),
             patch("maistro_server.main.TaskRunner", return_value=_stopped_runner()),
             patch("asyncio.get_running_loop") as mock_loop,
@@ -380,7 +412,7 @@ class TestLifespan:
             patch("maistro_server.main._run_store_pool", AsyncMock(return_value=object())),
             patch(
                 "maistro_server.main._build_container",
-                AsyncMock(return_value=mock_container),
+                AsyncMock(return_value=(mock_container, MagicMock())),
             ),
             patch("maistro_server.main.TaskRunner", return_value=_stopped_runner()),
             patch("asyncio.get_running_loop") as mock_loop,
@@ -528,3 +560,98 @@ class TestRunStorePool:
         assert await main_module._run_store_pool() is not None
         assert seen and seen[0].startswith("postgresql://")
         assert "db:5432/maistro" in seen[0]
+
+
+class TestCanvasAbilityWiring:
+    """The shipped Canvas surface gets its store from this lifecycle (#851).
+
+    ``/v2/canvas`` is mounted and authenticated unconditionally and answers 503
+    until ``app.state.canvas_store`` exists — nothing assigned it, so the
+    supported server path shipped a permanently-unavailable product surface.
+    These tests pin the three decisions the wiring can make: a PostgreSQL
+    deployment gets the real ``PgCanvasStore`` over the shared engine, a
+    database-less deployment keeps the (truthful) 503, and an already-composed
+    store is never replaced.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _router_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # The lifespan builds a Container, and `_validate_startup` refuses to
+        # run without a router key (see TestRunStorePool's same fixture).
+        monkeypatch.setenv("ROUTER_API_KEY", "test-router-key")
+
+    def test_a_real_engine_gets_the_postgres_store(self) -> None:
+        from maistro_canvas.canvas.store import PgCanvasStore
+
+        test_app = FastAPI()
+        engine = MagicMock()
+        assert main_module._wire_canvas_ability(test_app, engine) is True
+        store = test_app.state.canvas_store
+        assert isinstance(store, PgCanvasStore)
+        assert store._engine is engine
+
+    def test_no_engine_keeps_the_503_surface(self) -> None:
+        test_app = FastAPI()
+        assert main_module._wire_canvas_ability(test_app, None) is False
+        assert getattr(test_app.state, "canvas_store", None) is None
+
+    def test_an_already_composed_store_is_not_replaced(self) -> None:
+        test_app = FastAPI()
+        sentinel = object()
+        test_app.state.canvas_store = sentinel
+        assert main_module._wire_canvas_ability(test_app, MagicMock()) is True
+        assert test_app.state.canvas_store is sentinel
+
+    async def test_the_lifespan_wires_the_store_when_an_engine_exists(self) -> None:
+        """Through the real lifespan, not just the helper: the wiring lives in
+        ``_runtime_lifespan``, and a store only tests prove is constructible is
+        still a 503 surface if startup never assigns it."""
+        from types import SimpleNamespace
+
+        test_app = MagicMock()
+        test_app.state = SimpleNamespace()
+        mock_runner = MagicMock()
+        mock_runner.start = AsyncMock()
+        mock_runner.stop = AsyncMock()
+        mock_engine = MagicMock()
+        mock_engine.dispose = AsyncMock()
+
+        with (
+            patch("maistro.agents.conductor.run_task"),
+            patch("maistro.memory.store.get_engine", return_value=mock_engine),
+            patch("maistro.memory.store.reset_engine_cache"),
+            patch("maistro.tools.sandbox.server.cleanup_all_containers", AsyncMock()),
+            patch("maistro_server.main.logger", MagicMock(ainfo=AsyncMock(), awarning=AsyncMock())),
+            patch("maistro_server.main.TaskRunner", return_value=mock_runner),
+            patch("asyncio.get_running_loop") as mock_loop,
+        ):
+            mock_loop.return_value = _FakeLoop()
+            async with lifespan(test_app):
+                from maistro_canvas.canvas.store import PgCanvasStore
+
+                assert isinstance(test_app.state.canvas_store, PgCanvasStore)
+                assert test_app.state.canvas_store._engine is mock_engine
+
+    async def test_the_lifespan_without_a_database_wires_nothing(self) -> None:
+        from types import SimpleNamespace
+
+        test_app = MagicMock()
+        test_app.state = SimpleNamespace()
+        mock_runner = MagicMock()
+        mock_runner.start = AsyncMock()
+        mock_runner.stop = AsyncMock()
+
+        with (
+            patch("maistro.agents.conductor.run_task"),
+            patch("maistro.memory.store.get_engine", return_value=None),
+            patch("maistro.memory.store.reset_engine_cache"),
+            patch("maistro.tools.sandbox.server.cleanup_all_containers", AsyncMock()),
+            patch("maistro_server.main.logger", MagicMock(ainfo=AsyncMock(), awarning=AsyncMock())),
+            patch("maistro_server.main.TaskRunner", return_value=mock_runner),
+            patch("asyncio.get_running_loop") as mock_loop,
+        ):
+            mock_loop.return_value = _FakeLoop()
+            async with lifespan(test_app):
+                pass
+
+        assert getattr(test_app.state, "canvas_store", None) is None

@@ -20,11 +20,34 @@ _VALID_SCOPES = [s.value for s in Scope]
 _VALID_CATEGORIES = [c.value for c in ScopeCategory]
 
 
+def _expected_expansion(spec: str) -> frozenset[Scope]:
+    """The documented expansion contract, computed independently of `expand_scopes`.
+
+    "category:*" -> every scope in the category, "*:*" -> all scopes, a valid
+    concrete scope -> itself, anything else -> the empty set. `CATEGORY_SCOPES`
+    is the governed spec table (the module-level oracle tests use it the same
+    way), not candidate behavior.
+    """
+    if spec == "*:*":
+        all_scopes: set[Scope] = set()
+        for scopes in CATEGORY_SCOPES.values():
+            all_scopes |= scopes
+        return frozenset(all_scopes)
+    if spec.endswith(":*"):
+        try:
+            return frozenset(CATEGORY_SCOPES[ScopeCategory(spec[:-2])])
+        except ValueError:
+            return frozenset()
+    if spec in _VALID_SCOPES:
+        return frozenset({Scope(spec)})
+    return frozenset()
+
+
 class ScopeExpansionMachine(RuleBasedStateMachine):
     def __init__(self):
         super().__init__()
         self.identity = ServiceIdentity(name="test-svc", scopes=frozenset())
-        self.expanded_count = 0
+        self.expected_scopes: frozenset[Scope] = frozenset()
 
     @rule(
         spec=st.one_of(
@@ -36,8 +59,8 @@ class ScopeExpansionMachine(RuleBasedStateMachine):
     )
     def expand_and_set(self, spec):
         scopes = expand_scopes([spec])
+        self.expected_scopes = _expected_expansion(spec)
         self.identity = ServiceIdentity(name="test-svc", scopes=scopes)
-        self.expanded_count += 1
 
     @invariant()
     def identity_scopes_are_frozen(self):
@@ -46,9 +69,33 @@ class ScopeExpansionMachine(RuleBasedStateMachine):
             assert isinstance(s, Scope)
 
     @invariant()
-    def has_scope_consistent(self):
-        for s in self.identity.scopes:
-            assert self.identity.has_scope(s)
+    def scopes_match_documented_expansion(self):
+        """State property: expansion output equals the documented contract.
+
+        Counterexample class: a wildcard that expands to a strict subset of
+        its category (dropped scope), or an invalid spec that leaks a scope,
+        diverges from `_expected_expansion` here. The previous
+        `has_scope_consistent` asserted `has_scope(s)` for `s` drawn from the
+        identity's own scope set — with `has_scope` implemented as
+        `scope in self.scopes` that is `s in S for s in S`, true by
+        construction and constraining nothing.
+        """
+        assert self.identity.scopes == self.expected_scopes
+
+    @invariant()
+    def has_scope_agrees_with_membership_both_ways(self):
+        """Two-sided membership property over the FULL scope universe.
+
+        Counterexample class: a fail-open `has_scope` (always True) fails on
+        any non-member; a fail-closed one (always False) fails on any member;
+        an expansion mutant that swaps two scopes fails on the swapped pair.
+        The old tautology only probed members and so could not see any of
+        these.
+        """
+        for s in Scope:
+            assert self.identity.has_scope(s) == (s in self.expected_scopes), (
+                f"has_scope({s!r})={self.identity.has_scope(s)} but expected member={s in self.expected_scopes}"
+            )
 
 
 TestScopeExpansionMachine = ScopeExpansionMachine.TestCase

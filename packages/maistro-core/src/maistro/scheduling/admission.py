@@ -16,6 +16,21 @@ already has one, so two tickers evaluating the same due window produce one Run
 between them and a crash between creating a Run and stamping the cursor cannot
 duplicate the firing on the next tick.
 
+The claim is an *instant*, not a wall clock (#850). Every store compares
+`scheduled_for` as text — provenance is JSON, and the claim indexes are
+expressions over that text — so the text is one representation of the
+identity. `datetime.isoformat()` renders in the datetime's own offset, and
+the cron walker renders moments in the schedule's timezone, so editing a
+schedule's timezone used to re-render an already-claimed instant as different
+text: the lookup missed, the same firing was admitted twice, and the window
+the uniqueness contract exists to close reopened. Nominal claims are now
+written and probed as the instant in UTC (`canonical_occurrence_instant`),
+so a timezone edit changes the wall clock and never the claim. Rows written
+before this identity keep their wall-clock text: a crash-window occurrence
+straddling the upgrade can re-fire once, the same narrow, loud-documented
+window migrations 015/042 accepted rather than backfill-parse every Run's
+provenance (PostgreSQL refuses the non-IMMUTABLE cast in an index).
+
 That leaves `record_fire` doing what it is actually good at. The cursor is now
 an optimisation — where to start enumerating, so a schedule does not re-derive
 its whole history every tick — rather than the mechanism that makes firing
@@ -94,9 +109,12 @@ from maistro.runs.sources import (
     SCHEDULE_TRIGGER_MANUAL,
     SCHEDULE_TRIGGER_RECURRING,
     SCHEDULED_FOR_KEY,
+    canonical_occurrence_instant,
 )
 from maistro.runs.store import DuplicateOccurrence, RunIntegrityError
 from maistro.scheduling.engine import (
+    DEFAULT_ENUMERATION_LIMITS,
+    EnumerationLimits,
     FireDecision,
     SkippedFire,
     SkipReason,
@@ -164,8 +182,27 @@ class ManualFireRefused(Exception):
 
 
 def _owes(decision: ScheduleEvaluation) -> bool:
-    """Whether the evaluation left an occurrence that still has to run."""
-    return any(skip.reason in _UNCONSUMED_SKIPS for skip in decision.skipped)
+    """Whether the evaluation left work that still has to happen.
+
+    Two kinds of owing, and both keep the due cursor where it is so the next
+    tick comes back (#1199):
+
+    - an occurrence that still has to run: BUFFERED says the cursor does not
+      advance because "run one queued occurrence afterwards" is what
+      BUFFER_ONE means, and TRUNCATED says a caller advancing on it "would
+      otherwise lose the occurrence with no record of it";
+    - a range that was never examined (#1200): an incomplete catch-up walk —
+      budget or step bound reached — considered neither the occurrences in the
+      unexamined range nor their absence. Advancing the due cursor past it
+      would hide the schedule from `due()` until long after that range should
+      have been looked at, so an incomplete walk owes a re-examination.
+
+    Every other reason is a decision not to run that occurrence at all, and
+    the cursor consumes it.
+    """
+    return decision.enumeration_incomplete or any(
+        skip.reason in _UNCONSUMED_SKIPS for skip in decision.skipped
+    )
 
 
 #: Skips whose occurrences the policy never acts on, so their claims are not
@@ -394,6 +431,25 @@ class ScheduleAdmission:
     still has to advance for the ones that did.
     """
 
+    enumeration_incomplete: bool = False
+    """This evaluation's catch-up walk stopped before reaching `now` (#1200).
+
+    The range between where it stopped and `now` was never considered — not
+    fired, not skipped, simply not looked at. The due cursor was left alone so
+    the next tick re-examines it. Reported so a host can say truthfully that a
+    tick ended with backlog work owed, instead of a clean "nothing due" that a
+    budget cut short.
+    """
+
+    enumeration_stopped_at: datetime | None = None
+    """Where an incomplete walk stopped: the exclusive end of what it examined.
+    Everything from here to `now` is the backlog the next tick re-examines."""
+
+    window_clamped: bool = False
+    """The host's window bound, not the schedule's own, sized this evaluation's
+    catch-up window (#1200). Operator-visible for the same reason: the schedule
+    asked to consider more than the host allows."""
+
 
 class ScheduleRunAdmitter:
     """Evaluate a schedule, admit its due occurrences, then advance its cursor."""
@@ -403,10 +459,15 @@ class ScheduleRunAdmitter:
         run_store: RunStore,
         template_store: GraphTemplateStore,
         schedule_store: ScheduleStore,
+        enumeration_limits: EnumerationLimits | None = None,
     ) -> None:
         self._runs = run_store
         self._templates = template_store
         self._schedules = schedule_store
+        # None keeps the substrate's safe defaults (#1200); a host with a
+        # different latency/backlog trade-off passes its own bounds, and every
+        # evaluate() this admitter drives uses exactly these.
+        self._limits = enumeration_limits or DEFAULT_ENUMERATION_LIMITS
 
     async def _record_fire(
         self,
@@ -492,7 +553,7 @@ class ScheduleRunAdmitter:
             # actually holds markers triggers the reconciliation read.
             schedule = await self._reconcile_pending_fires(schedule.schedule_id) or schedule
 
-        decision = evaluate(schedule, now=now, active_run=active_run)
+        decision = evaluate(schedule, now=now, active_run=active_run, limits=self._limits)
         decision, claims, active_run_id, recovered_moments = await self._reconcile_claims(
             schedule, decision, now=now, active_run=active_run
         )
@@ -533,6 +594,9 @@ class ScheduleRunAdmitter:
                 next_due_at=decision.next_due_at,
                 cancel_active_run=decision.cancel_active_run,
                 failures=(exc,),
+                enumeration_incomplete=decision.enumeration_incomplete,
+                enumeration_stopped_at=decision.enumeration_stopped_at,
+                window_clamped=decision.window_clamped,
             )
 
         # The cursor's last_run_id follows the newest consumed occurrence, not
@@ -573,6 +637,9 @@ class ScheduleRunAdmitter:
                 cancel_active_run=decision.cancel_active_run,
                 active_run_id=active_run_id,
                 failures=tuple(failures),
+                enumeration_incomplete=decision.enumeration_incomplete,
+                enumeration_stopped_at=decision.enumeration_stopped_at,
+                window_clamped=decision.window_clamped,
             )
 
         # `next_due_at` is recomputed only when the whole batch landed and
@@ -614,6 +681,9 @@ class ScheduleRunAdmitter:
             active_run_id=active_run_id,
             already_fired=tuple(sorted(already_fired)),
             failures=tuple(failures),
+            enumeration_incomplete=decision.enumeration_incomplete,
+            enumeration_stopped_at=decision.enumeration_stopped_at,
+            window_clamped=decision.window_clamped,
         )
 
     async def _admit_batch(
@@ -824,7 +894,9 @@ class ScheduleRunAdmitter:
                 claims[moment] = run
         claims.update(await self._lookup_truncated_claims(schedule, decision))
         walk: list[datetime] = []
-        for moment in self._claims_before(schedule, enumeration_start(schedule, now=now)):
+        for moment in self._claims_before(
+            schedule, enumeration_start(schedule, now=now, limits=self._limits)
+        ):
             run = await self._lookup_claim(schedule, moment)
             if run is not None:
                 claims[moment] = run
@@ -851,10 +923,12 @@ class ScheduleRunAdmitter:
         if not truncated:
             return {}
         probe = truncated[-_MAX_TRUNCATED_CLAIM_PROBES:]
+        # The canonical instant, not the zone-local rendering: the claims on
+        # disk were written by whatever timezone the schedule had when its
+        # ticker fired (#850).
+        probe_keys = [canonical_occurrence_instant(moment) for moment in probe]
         try:
-            found = await self._runs.get_runs_for_occurrences(
-                schedule.schedule_id, [moment.isoformat() for moment in probe]
-            )
+            found = await self._runs.get_runs_for_occurrences(schedule.schedule_id, probe_keys)
         except Exception as exc:
             logger.warning(
                 "schedule %s could not batch-probe %d truncated claim(s): %s",
@@ -863,7 +937,7 @@ class ScheduleRunAdmitter:
                 exc,
             )
             return {}
-        by_moment = {moment.isoformat(): moment for moment in probe}
+        by_moment = dict(zip(probe_keys, probe, strict=True))
         return {
             by_moment[scheduled_for]: run
             for scheduled_for, run in found.items()
@@ -881,7 +955,9 @@ class ScheduleRunAdmitter:
         that the reactive design rides out (#1059).
         """
         try:
-            return await self._runs.get_run_for_occurrence(schedule.schedule_id, moment.isoformat())
+            return await self._runs.get_run_for_occurrence(
+                schedule.schedule_id, canonical_occurrence_instant(moment)
+            )
         except Exception as exc:
             logger.warning(
                 "schedule %s could not probe the claim on %s: %s",
@@ -1298,6 +1374,9 @@ class ScheduleRunAdmitter:
                 cancel_active_run=decision.cancel_active_run,
                 active_run_id=active_run_id,
                 already_fired=tuple(claimed),
+                enumeration_incomplete=decision.enumeration_incomplete,
+                enumeration_stopped_at=decision.enumeration_stopped_at,
+                window_clamped=decision.window_clamped,
             )
         if _due_cursor_changed(schedule, next_due_at):
             # Nothing fired and nothing was dropped, but the evaluation still
@@ -1319,6 +1398,9 @@ class ScheduleRunAdmitter:
             next_due_at=decision.next_due_at,
             cancel_active_run=decision.cancel_active_run,
             active_run_id=active_run_id,
+            enumeration_incomplete=decision.enumeration_incomplete,
+            enumeration_stopped_at=decision.enumeration_stopped_at,
+            window_clamped=decision.window_clamped,
         )
 
     async def _admit_one(
@@ -1333,7 +1415,11 @@ class ScheduleRunAdmitter:
         provenance: dict[str, Any] = {
             ADMISSION_SOURCE: SCHEDULE_SOURCE,
             SCHEDULE_ID_KEY: schedule.schedule_id,
-            SCHEDULED_FOR_KEY: fire.scheduled_for.isoformat(),
+            # The instant in UTC, not the cron rendering's own offset (#850):
+            # the claim every store compares is this text, and a schedule whose
+            # timezone changes would otherwise re-render the same instant as a
+            # different identity and fire it twice.
+            SCHEDULED_FOR_KEY: canonical_occurrence_instant(fire.scheduled_for),
             SCHEDULE_CATCHUP_KEY: fire.catchup,
         }
         if fire_id is not None:
