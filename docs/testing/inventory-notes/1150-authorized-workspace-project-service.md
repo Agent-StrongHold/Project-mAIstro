@@ -374,3 +374,43 @@ that demonstrably exists inside the container). The PostgreSQL leg above was
 therefore run against the container's bridge address
 (`172.17.0.18:5432`), which routes correctly. The refusal semantics are the
 store's own and are backend-independent; only the address differs.
+
+Repair round 5 (2026-10-20, job 64890a577f80499eaaab7b59e58df9d5) — process
+findings from the independent verify round, re-proven on this head:
+
+* Sync-merge commit message reworded. The develop-sync merge commit
+  (previously 921cdb0576ce9) carried a closure keyword naming this issue in its
+  subject; that keyword must not reach the default branch while the issue's
+  acceptance record is open (check-closure-targets.py discipline, #1141). The
+  commit was recreated with the same tree and parents and a keyword-free
+  message (now 8279265d0a15's successor d4324b13e3da), and the six descendant
+  commits replayed unchanged on top. `git diff <old-head> <new-head>` is empty
+  — content is byte-identical; only commit hashes and the one message differ.
+  The pre-rewrite chain stays reachable in this worktree's reflog. Publishing
+  this branch therefore needs a force push (`--force-with-lease`), not a
+  fast-forward.
+* `scripts/check-reachability.py` fails with `maistro.runs.admission_identity`
+  newly unreachable. Re-run verbatim on the develop base e20e9f52e in a
+  detached scratch worktree: exit 1, "1417 production modules, 169 unreachable
+  from any entry point", the same single newly-unreachable identity —
+  identical on base and head, so this branch introduces no reachability debt.
+  The base-level failure and its ledger disposition are owner-held, not this
+  lane's (reachability ledger edits are outside the vulture-only exception).
+* `scripts/check-vulture-baseline.py packages/*/src --min-confidence 60
+  --exclude '*/third_party/*'` -> exit 0 (1326 reviewed identities ->
+  1323 findings). The three dropped rows (`bind_workspace_store` in the
+  Project scope stores) are identities the fix eliminated: the Workspace
+  stores now call `bind_workspace_store` at construction, so vulture no
+  longer reports them unused.
+* Re-run on the rewritten head: `ruff check .` clean; the boundary conformance
+  plus both server API suites plus the hive workspaces suite -> 171 passed;
+  `MAISTRO_TEST_PG_DSN=...` conformance run -> 68 passed across the memory,
+  SQLite and PostgreSQL legs; `MAISTRO_REQUIRE_PG_LEGS=1` without a DSN ->
+  PostgreSQL legs error (fail closed, 47 passed / 21 errors); server suite ->
+  582 passed, 8 skipped; core workspaces+projects -> 403 passed, 64 skipped;
+  suite inventory for the three touched suites -> all match the recorded
+  baseline (3795 / 16792 / 590); `check-route-permissions.py`,
+  `check-principal-identity.py`, `check-owned-store-access.py`,
+  `check-wiring-reads.py` -> all ok. `mypy --strict packages/maistro-core/src`
+  reports 5 `maistro_bootstrap` import-not-found errors, byte-identical on the
+  develop base (optional `bootstrap` extra absent locally; CI installs it).
