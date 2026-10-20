@@ -413,9 +413,7 @@ class TestCanonicalExecutionWiring:
             design_service.get_design_status().to_dict()["canonical_execution_available"] is False
         )
 
-    async def test_admission_scope_is_the_callers_workspace_not_the_deployments(
-        self, monkeypatch
-    ):
+    async def test_admission_scope_is_the_callers_workspace_not_the_deployments(self, monkeypatch):
         """#52 review: the startup binding is a wiring probe only. At admission
         time the adapter is bound to the principal's own default Workspace --
         the one `resolve_default_workspace` guarantees they own -- so a caller
