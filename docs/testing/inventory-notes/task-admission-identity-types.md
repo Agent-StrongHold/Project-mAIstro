@@ -2461,3 +2461,67 @@ two-merge wall is unchanged.
   #1845 integration head whose real reviewed consumer makes the module reachable and the enum
   read. Per the issue's staging command, the stack is left unmerged with readiness recorded and
   the blocker explicit; no inventory delta (stays `+79`). (Refs #1851)
+
+## Round-221 CI-repair verification at assigned head `06424b27c9e2` (job `0685bb1cf0494627a44129a715f0b2ae`)
+
+Re-derived firsthand at the exact assigned head `06424b27c9e22242ed55b4da130e6ab99bda9790`
+(branch `auto-1851`, develop base `fad17a87c34193a91c568eb8b0a910e8e6384ccd`); worktree
+clean at start; no earlier claim trusted. `git fetch origin` first: `origin/develop` still resolves
+to `fad17a87c341` and equals the merge base — no owner grant and no #1845 integration landed
+since round-220, so the two-merge wall is unchanged.
+
+- Driver battery 5/5 green (job logs): `uv sync --locked --extra dev` rc=0 (260 packages
+  resolved/218 checked); `ruff check .` all passed; `ruff format --check .` 3362 files; focused
+  pytest **79 passed in 1.41s**; `check-suite-inventory.py --suite packages/maistro-core/tests`
+  ok (16784 == recorded, 0 duplicates).
+- Focused battery re-run green at this head: focused pytest **79 passed in 1.16s**; `ruff check`
+  and `ruff format --check` on both issue files clean; `mypy admission_identity.py` Success;
+  `check-suite-inventory.py` ok (16784 == recorded).
+- Contract re-proven live at this head: `__all__` 21 names, 21 unique; `AdmissionAssessment`
+  exactly the six lowercase pairs in issue order (`mismatch`/`replayed`/`pending`/`takeover`/
+  `replace_expired`/`legacy_unresolved`); frozen+slots (mutation raises FrozenInstanceError);
+  `repr` omits the `owner_token` field and keeps `generation_id`; `admitted` False on an
+  unbound record; `owns` fencing conjunction True on match, False on differing generation,
+  False on differing owner; `CanonicalJsonObject` canonicalizes (`{"b":1,"a":2}` ->
+  `{"a":2,"b":1}`) and rejects duplicate keys, `NaN`, non-object roots, and non-string
+  constructor input; lease window `created_at_us <= lease <= expires_at_us` accepted.
+- All 12 issue-named tests (from the issue body) defined exactly once in
+  `test_root_admission_identity.py` (19 test functions total, all distinct).
+- CI-exact `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'` with `RATCHET_BASE_REV=origin/develop`: **rc=1**, banking leg GREEN
+  (1321 reviewed identities -> 1326 findings, `unclassified: 0`, `never_allowlist: 0`, no
+  "must be banked"/"must be pruned" lines), authorization leg RED on exactly the 5
+  issue-mandated enum identities at `admission_identity.py:515-520` (`MISMATCH`/`REPLAYED`/
+  `TAKEOVER`/`REPLACE_EXPIRED`/`LEGACY_UNRESOLVED`; `PENDING` unflagged via the same-name
+  `Pending` collision), remedy "land a reviewed grant first". Trusted base `fad17a87` carries
+  0 `admission_identity` grants (the 5 `admission` matches in `ratchet-authorizations.json` are
+  unrelated identities: `recover_stranded_chat_admissions`, the a2a transport-admission route,
+  `scheduling/admission.py`, canvas `_reconcile_admission`).
+- `check-reachability.py`: **rc=1**, exactly 1 NEWLY UNREACHABLE `maistro.runs.admission_identity`.
+  `check-reachability-dispositions.py` rc=0; `check-promotion-surface.py` rc=0;
+  `check-shipped-surface-truth.py` rc=0; `check-ratchet-provenance.py` **rc=1** solely via
+  `check-reachability-provenance.py: trusted-base gate returned 1`. The three named
+  reachability-baseline tests fail on exactly `Extra items: maistro.runs.admission_identity`
+  (3 failed / 36 passed).
+- Scope invariants hold: branch diff vs `origin/develop` is exactly 5 files (+29 context note,
+  +2463 inventory note, +520 module, +660 test, +5 vulture-baseline); `git diff --numstat
+  origin/develop -- quality/` = exactly `5 0` on `vulture-baseline.json` (no merge-drifted rows);
+  0 production importers of `admission_identity` outside the module (only stale `__pycache__`
+  artifacts match the string); no `runs/__init__` export; #1841 anchors intact
+  (`store_boundary.py:56`, `store.py:550`, `model.py:306/335-336`).
+- Repair space re-proven empty: the 5 identities are the issue's fixed six-pair
+  `AdmissionAssessment` contract, so none is genuinely dead to delete; pruning the banked rows
+  flips the banking leg red; keep-alive references, suppressions, reachability-baseline entries,
+  and branch-side grants are each explicitly prohibited by the issue (and a branch-side grant is
+  inert by construction under `load_authorizations` reading the merge base). The 5 retained vulture
+  rows stay banked multiset-exact (`quality/vulture-baseline.json:283-287`);
+  `quality/ratchet-authorizations.json` and `quality/reachability-baseline.json` remain 0-line
+  diffs.
+- Reconciliation status for the issue's open checkbox: the 5 retained rows stand on this
+  CI-repair round's explicit lane authorization ("amend quality/vulture-baseline.json for
+  reviewed retained identities"; none eliminated), still in recorded conflict with the issue's
+  ordinary-scope no-baseline-additions rule. The authorization-leg exit remains **owner-held**:
+  it can only clear via a develop-side reviewed grant landed before this stack, or via the
+  #1845 integration head whose real reviewed consumer makes the module reachable and the enum
+  read. Per the issue's staging command, the stack is left unmerged with readiness recorded and
+  the blocker explicit; no inventory delta (stays `+79`). (Refs #1851)
