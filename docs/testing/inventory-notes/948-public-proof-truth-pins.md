@@ -63,7 +63,7 @@ than the claim it backs.
   the notes that repeated the stale claim and the stale count.
 
 Validation on this head: `uv run pytest
-packages/maistro-core/tests/extensions/test_lifecycle_proof.py -x -q` → 21
+packages/maistro-core/tests/extensions/test_lifecycle_proof.py -x -q` → 22
 passed; `uv run python scripts/extension_lifecycle_proof.py --out
 /tmp/lifecycle-lineage` → `PROVED: 13/13 stages, 62/62 checks`.
 
@@ -133,3 +133,8 @@ findings) and moves no other ratchet. What remains red in CI is inherited
 develop-side debt with owning lanes — pip-audit advisories (aiohttp, ecdsa)
 and the coverage-gate combine — reproduced against pristine e20e9f52e and
 out of scope for a proof PR.
+
+The step-level diagnosis of the failed `exact-debt-ledger` job (which of its
+three steps failed, and why the vulture ledger needed no amendment) and the
+in-package pin that guards this repair are recorded in
+[`948-reachability-repair-guard.md`](948-reachability-repair-guard.md).
