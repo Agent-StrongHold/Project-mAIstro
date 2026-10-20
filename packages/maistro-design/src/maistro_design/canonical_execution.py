@@ -17,11 +17,42 @@ from maistro.runs.model import TERMINAL_RUN_STATUSES, AttemptStatus, Run, RunSta
 from maistro.runs.service import RunExecutionService
 from maistro.runs.store import RunIntegrityError, RunStore
 from maistro.runtime import ExecutionRuntime, PythonExecutionRuntime
+from maistro_design.types import DesignProject
 
 T = TypeVar("T")
 
 _SOURCE = "design_studio"
 _EXECUTOR_ID = "design_engine"
+
+#: Tag distinguishing Design's stable result DTO from any plain-dict result a
+#: domain operation happens to return. Durable stores JSON-hydrate
+#: `Attempt.result`, so a `DesignProject` cannot survive as a dataclass; the
+#: adapter persists `DesignProject.to_payload()` under this tag and rebuilds
+#: the domain object with `DesignProject.from_payload` on replay.
+_DESIGN_RESULT_TAG = "design.project.v1"
+
+
+def _result_as_evidence(result: Any) -> Any:
+    """The Attempt-result DTO for one Design operation result.
+
+    Non-project results (plain dicts in tests/auxiliary operations) pass
+    through unchanged; `DesignProject` is persisted as a stable, JSON-shaped
+    payload so durable replay can restore the domain type.
+    """
+    if isinstance(result, DesignProject):
+        return {"design_result": _DESIGN_RESULT_TAG, "project": result.to_payload()}
+    return result
+
+
+def _result_from_evidence(evidence: Any) -> Any:
+    """Rebuild the domain result from persisted Attempt evidence."""
+    if (
+        isinstance(evidence, dict)
+        and evidence.get("design_result") == _DESIGN_RESULT_TAG
+        and isinstance(evidence.get("project"), dict)
+    ):
+        return DesignProject.from_payload(evidence["project"])
+    return evidence
 
 
 class DesignCanonicalExecution:
@@ -133,14 +164,16 @@ class DesignCanonicalExecution:
             )
             if completed is None:
                 raise RunIntegrityError("completed Design NodeRun has no completed Attempt")
-            return cast(T, completed.result)
+            return cast(T, _result_from_evidence(completed.result))
 
         captured: list[T] = []
 
-        async def _execute(_work_item: object, _context: object) -> T:
+        async def _execute(_work_item: object, _context: object) -> Any:
             result = await operation()
             captured.append(result)
-            return result
+            # The Attempt keeps a JSON-stable DTO, so a replay through a durable
+            # store returns a DesignProject again — not a hydrated dict.
+            return _result_as_evidence(result)
 
         try:
             _node_run, attempt = await self._service.execute_node(
@@ -157,7 +190,7 @@ class DesignCanonicalExecution:
         if captured:
             return captured[0]
         if attempt.status is AttemptStatus.COMPLETED:
-            return cast(T, attempt.result)
+            return cast(T, _result_from_evidence(attempt.result))
         raise RunIntegrityError("Design operation returned without a completed Attempt result")
 
     async def fail(self, run_id: str, error: str) -> None:

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import json
 from typing import Any
 
 import pytest
@@ -10,7 +12,15 @@ from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.runs.model import AttemptStatus, RunStatus
 from maistro.runs.store import InMemoryRunStore, RunIntegrityError
 from maistro_design.canonical_execution import DesignCanonicalExecution
-from maistro_design.types import DiscoveryResult
+from maistro_design.types import (
+    ArtifactKind,
+    ArtifactNode,
+    DesignOutput,
+    DesignProject,
+    DiscoveryResult,
+    OutputFormat,
+    TrustTier,
+)
 
 pytestmark = pytest.mark.asyncio
 
@@ -88,6 +98,56 @@ async def test_adapter_rejects_a_run_outside_its_bound_scope() -> None:
 
     with pytest.raises(RunIntegrityError, match="outside its bound"):
         await bound.execute(run_id, _must_not_execute)
+
+
+async def test_replay_rebuilds_design_project_from_durable_attempt_evidence() -> None:
+    """A replayed completed Run returns a DesignProject, not a JSON-hydrated dict."""
+    canonical, runs = await _execution()
+    discovery = DiscoveryResult(
+        skill_slug="login-flow",
+        responses={"auth_methods": "email"},
+        design_system_slug="default",
+    )
+    png = b"\x89PNG-not-utf8"
+    project = DesignProject(
+        id="design-project-1",
+        name="Login Flow (Default)",
+        skill_slug="login-flow",
+        design_system_slug="default",
+        org_id="default-org",
+        trust_tier=TrustTier.T2,
+        canvas_id=None,
+        outputs=[
+            DesignOutput(
+                root=ArtifactNode(
+                    key="png",
+                    kind=ArtifactKind.BLOB,
+                    format=OutputFormat.PNG,
+                    value=png,
+                ),
+                trust_tier=TrustTier.T2,
+            )
+        ],
+        discovery=discovery,
+    )
+    run_id = await canonical.admit(discovery=discovery, actor_principal_id="principal-1")
+    generated = await canonical.execute(run_id, lambda: _value(project))
+    assert generated is project
+
+    async def _must_not_execute() -> Any:
+        raise AssertionError("a completed Design Run must not reach the provider again")
+
+    replayed = await canonical.execute(run_id, _must_not_execute)
+    assert isinstance(replayed, DesignProject)
+    assert replayed == project
+    assert replayed.outputs[0].root.value == png
+
+    # The Attempt carries the JSON-stable DTO the durable stores hydrate.
+    node_run = (await runs.list_node_runs(run_id))[0]
+    (attempt,) = await runs.list_attempts(node_run.node_run_id)
+    hydrated = json.loads(json.dumps(attempt.result))
+    assert DesignProject.from_payload(hydrated["project"]) == project
+    assert base64.b64decode(hydrated["project"]["outputs"][0]["root"]["value"]["__bytes_b64__"])
 
 
 async def test_design_failure_is_a_failed_attempt_and_failed_run() -> None:

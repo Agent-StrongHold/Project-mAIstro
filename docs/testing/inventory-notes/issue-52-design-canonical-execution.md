@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-design/tests: +3
+  packages/maistro-design/tests: +4
   packages/hive-conductor/backend/tests: +5
 ---
 # Issue #52 Design canonical execution
@@ -37,3 +37,16 @@ Round 3 (develop sync fad17a87c):
   run cannot see `maistro.*` from source and misreports the package untyped).
 - No test counts changed this round; the front-matter deltas still match
   collection (`scripts/check-suite-inventory.py`: ok, 21 suites).
+
+Round 4 (replay result fidelity):
+
+- `test_canonical_execution.py`: +1 — replaying a completed Design Run now
+  rebuilds the `DesignProject` domain object from durable Attempt evidence
+  instead of returning the JSON-hydrated dict (review finding: `project
+  .to_dict()` on a replay raised `AttributeError`). The adapter persists
+  `DesignProject.to_payload()` under a tagged envelope as the Attempt's
+  evidence — plain-dict results pass through unchanged — and reconstructs via
+  `DesignProject.from_payload()` on replay (BLOB leaves ride a base64
+  envelope). The test also asserts the evidence survives a literal JSON round
+  trip and never re-enters the provider.
+- Front-matter delta updated to match collection (+4).
