@@ -124,11 +124,24 @@ def _text_leaves(value: object, *, path: str = "", depth: int = 0) -> Iterator[t
 
 
 def _warden() -> Warden:
-    """One detector for the process."""
-    global _warden_instance
-    if _warden_instance is None:
-        _warden_instance = Warden()
-    return _warden_instance
+    """One detector for the process: the canonical one (#66/#1171).
+
+    `scan_config` is the walk Conductor chat, voice and the HITL agent door
+    share, so the detector it judges with has to be the process's canonical
+    Warden rather than one this module constructs. A local `Warden()` here
+    would judge the same inbound text with a different pipeline than the
+    surfaces next door, and would never inherit configured layers.
+
+    Resolved per call rather than cached: a replaced Container (re-boot, or a
+    new composition) takes effect on the next scan. `_warden_instance` stays as
+    the explicit override seam — tests install a broken detector through it to
+    prove the fail-closed path — and is never written by production code.
+    """
+    if _warden_instance is not None:
+        return _warden_instance
+    from services.engine import process_warden
+
+    return process_warden()
 
 
 _warden_instance: Warden | None = None

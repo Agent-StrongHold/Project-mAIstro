@@ -35,6 +35,7 @@ __all__ = [
     "TaskRecord",
     "engine_health",
     "get_engine",
+    "process_warden",
     "start_engine",
     "stop_engine",
 ]
@@ -793,6 +794,11 @@ _failed_startup: EngineService | None = None
 #: `/health/ready` that ADR-100126-f9d6 excludes for `starting` (#1181).
 _booting: EngineService | None = None
 
+#: Stand-in detector for a process with no core Container (stub/dev mode, or
+#: before `start_engine`). Kept beside the singleton because the point of
+#: `process_warden` is that there is exactly one answer per process.
+_process_warden: Any = None
+
 
 def get_engine() -> EngineService:
     if _singleton is None:
@@ -828,6 +834,39 @@ def engine_health() -> dict[str, Any]:
             "bridge_configured": False,
         }
     return engine.health()
+
+
+def process_warden() -> Any:
+    """The one Warden this Conductor judges untrusted content with (#66/#1171).
+
+    Conductor chat, voice, HITL definition writes and the inbound harness
+    surface each reach a Warden through `services.agent_materialization` or
+    `routes.harness`. Resolving it here means those surfaces share the core
+    Container's composed detector instead of constructing route-local
+    `Warden()` instances: a second detector is exactly how "what counts as
+    hostile" drifts between neighbouring surfaces, and it would stay
+    pattern-only forever if canonical composition ever gains layers (the
+    LLM-judge tier) or a different policy version.
+
+    No container means a process-wide standalone detector, not no detector.
+    `get_engine()` raises when the engine never started, and a security
+    boundary is the wrong place to turn a boot-order accident into an
+    unscanned path. The fallback is cached so "the Warden refused it" still
+    names one detector for the life of the process.
+    """
+    global _process_warden
+    container = getattr(getattr(_singleton, "agent_port", None), "container", None)
+    canonical = getattr(container, "warden", None)
+    if canonical is not None:
+        return canonical
+    if _process_warden is None:
+        # Imported here rather than at module scope: this module is on the app
+        # boot path (`main` imports it before any core runtime is built), and
+        # the detector drags in the pattern/heuristic stack.
+        from maistro.security.warden.detector import Warden
+
+        _process_warden = Warden()
+    return _process_warden
 
 
 async def start_engine(settings: Settings) -> EngineService:
