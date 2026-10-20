@@ -661,7 +661,15 @@ class TestBoundedRouteLabels:
 class TestAdminOnlyDeployment:
     """Admin-only deployments (API_KEYS empty, ADMIN_API_KEYS set) key the
     bucket to the resolved admin principal, not the pre-auth client IP
-    (#1095)."""
+    (#1095).
+
+    Both tests are written to *distinguish* that gate from the pre-#1095
+    rule (``if not settings.api_keys`` -> every request keyed by client IP):
+    under the old rule all requests below share one per-client ``ip:``
+    bucket with the same limit of 2, so each test's decisive assertion
+    flips to 429. Each test therefore fails when the admin-only branch of
+    ``RateLimitMiddleware._extract_key`` regresses to the old gate.
+    """
 
     def test_valid_admin_credential_keys_the_principal_bucket(
         self, monkeypatch: pytest.MonkeyPatch, tight_limits: None
@@ -669,17 +677,24 @@ class TestAdminOnlyDeployment:
         monkeypatch.setenv("API_KEYS", json.dumps([]))
         configure_admin_api_keys(monkeypatch, "ops:secret")
         get_settings.cache_clear()
-        client = TestClient(_make_app())
-        # First request as the admin resolves to principal:ops.
-        r1 = client.get("/thing", headers={"Authorization": "Bearer secret"})
-        assert r1.status_code == 200
-        # Exhaust the principal bucket.
-        client.get("/thing", headers={"Authorization": "Bearer secret"})
-        r3 = client.get("/thing", headers={"Authorization": "Bearer secret"})
-        assert r3.status_code == 429
-        # A different client IP presenting the same secret shares the
-        # principal bucket (not a fresh ip bucket).
-        # (bucket identity is principal:ops, so no new quota appears)
+        app = _make_app()
+        same_client = TestClient(app)
+        # Same middleware instance, but a second client address: only the
+        # bucket *identity* may decide whether it shares the admin's quota.
+        other_client = TestClient(app, client=("203.0.113.9", 1234))
+        auth = {"Authorization": "Bearer secret"}
+        # Two requests as the admin exhaust the principal:ops bucket.
+        assert same_client.get("/thing", headers=auth).status_code == 200
+        assert same_client.get("/thing", headers=auth).status_code == 200
+        # An invalid bearer from the same client falls into the untouched
+        # ``ip:`` pre-auth bucket — 200, not the exhausted principal's 429.
+        # (Old gate: same ``ip:`` bucket was exhausted above -> 429.)
+        wrong = {"Authorization": "Bearer wrong"}
+        assert same_client.get("/thing", headers=wrong).status_code == 200
+        # A different client IP presenting the same valid secret shares the
+        # exhausted principal bucket — no fresh quota from a new address.
+        # (Old gate: fresh per-IP bucket -> 200.)
+        assert other_client.get("/thing", headers=auth).status_code == 429
 
     def test_invalid_admin_bearer_falls_back_to_client_ip(
         self, monkeypatch: pytest.MonkeyPatch, tight_limits: None
@@ -688,5 +703,14 @@ class TestAdminOnlyDeployment:
         configure_admin_api_keys(monkeypatch, "ops:secret")
         get_settings.cache_clear()
         client = TestClient(_make_app())
-        r = client.get("/thing", headers={"Authorization": "Bearer wrong"})
-        assert r.status_code == 200
+        wrong = {"Authorization": "Bearer wrong"}
+        # Invalid credentials share the bounded per-client-IP bucket:
+        # header text cannot mint fresh quota, and the third request trips.
+        assert client.get("/thing", headers=wrong).status_code == 200
+        assert client.get("/thing", headers=wrong).status_code == 200
+        assert client.get("/thing", headers=wrong).status_code == 429
+        # Exhausting the ``ip:`` bucket never contaminated the principal
+        # bucket: a valid admin bearer from the same client still succeeds.
+        # (Old gate: it shares the exhausted ``ip:`` bucket -> 429.)
+        valid = {"Authorization": "Bearer secret"}
+        assert client.get("/thing", headers=valid).status_code == 200
