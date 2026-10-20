@@ -51,6 +51,7 @@ from maistro.runs.exploration import (
     thesis_provenance_of,
     wave_records,
 )
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 EXPLORE_NODE_ID = "explore"
 
@@ -101,7 +102,9 @@ async def _wave_one(store: Any, run: Run, *, plan: ExplorationPlan | None = None
 
 async def _new_run(store: Any, workspace: str, project_id: str, *, plan: ExplorationPlan) -> Run:
     return await store.create_run(
-        _explore_graph(workspace, project_id), provenance=plan.run_provenance()
+        _explore_graph(workspace, project_id),
+        provenance=plan.run_provenance(),
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
 
 
@@ -296,7 +299,9 @@ async def test_tightening_width_does_not_change_goal_identity(spine) -> None:
         rubric_revision="rubric-rev-1",
     )
     revised = await store.create_run(
-        _explore_graph(workspace, project_id), provenance=tightened.run_provenance()
+        _explore_graph(workspace, project_id),
+        provenance=tightened.run_provenance(),
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
     assert exploration_plan_of(revised) == tightened
     assert exploration_plan_of(revised) is not None
