@@ -180,6 +180,31 @@ introduced no production-code delta.
   `scripts/check-doc-links.py` → 0 broken links; `scripts/check-contract-markers.py` → OK;
   `scripts/check-merge-markers.py` → ok; `scripts/check-vulture-baseline.py` → exit 0.
 
+### The contract tripwires are live (out-of-tree proof, not just the in-file negative control)
+
+The in-file negative control (`test_tripwires_catch_the_forbidden_shapes`) proves the
+scanner helpers catch their shapes. To prove the *test functions* fail on a forbidden
+tree, the contract file was copied outside the repo
+(`/tmp/m7a7-demo/repo/packages/maistro-core/tests/fitness/test_demo.py`, so
+`_REPO_ROOT` resolves to the synthetic tree) with two forbidden shapes planted:
+
+- `maistro_design/engine.py` → `import maistro_evolve.cycle` +
+  `from maistro_rsi.local_loop import LocalRsiLoop`;
+- `maistro_design/stores.py` → `design_quality_score = 0.9`.
+
+`uv run pytest <demo>/test_demo.py -k "design_loop_does_not_import_rsi_or_evolve or
+no_design_quality_scores_stored_outside_the_canonical_homes"` → **2 failed**, with
+
+- `AssertionError: Design Studio loop imports RSI/Evolve as a critic — a second loop
+  (#796) … Offenders: ['packages/maistro-design/src/maistro_design/engine.py:1 import
+  maistro_evolve.cycle', 'packages/maistro-design/src/maistro_design/engine.py:2 from
+  maistro_rsi.local_loop']`;
+- `AssertionError: Design-quality score stored outside Run eval records + M4 candidate
+  evaluation (#796). Offenders: ["packages/maistro-design/src/maistro_design/stores.py:1
+  score field 'design_quality_score'"]`.
+
+The repository tree was not modified for this demonstration (the copy lives in `/tmp`).
+
 ### Pre-existing upstream condition (not this branch's)
 
 `scripts/check-reachability.py` fails with one newly unreachable module,
