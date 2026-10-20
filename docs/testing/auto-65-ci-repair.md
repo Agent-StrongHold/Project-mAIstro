@@ -84,3 +84,94 @@ scoped Run lookup per detail evidence read; no performance bound is claimed.
 No sync conflict, remote mutation, ledger/grant edit, or integration approval.
 
 Snapshot progress: `{checked: 1, done: 0, skipped: 0, errors: 0, next: "#65 owner-seam/product acceptance gaps; focused attribution repair complete"}`.
+
+---
+
+# Round 2 — supply-chain and live-e2e CI repair
+
+Starting HEAD `95460f0012ec046b9a675ad2b4d2974ebee0041b` (branch already merged
+with `origin/develop`; merge base `e20e9f52ea94b393184f210cc9379f9f693f13d0`).
+Working tree was clean; no uncommitted work to salvage. Every claim below is
+from a command run in this worktree, not from the previous round's report.
+
+## Fixed: `Supply chain (pip-audit)`
+
+Reproduced CI's sequence (`uv sync --locked --all-extras`, `uv pip install
+pip-audit`, `uv pip freeze --exclude-editable`, `uv run pip-audit --strict
+--format=json -r …`): exit 1, "Found 5 known vulnerabilities in 2 packages".
+`scripts/pip_audit_gate.py` then reported `aiohttp==3.14.3` (CVE-2026-111064,
+GHSA-2g87-pp6c-29x5, CVE-2026-111063 → fixed in 3.14.4) plus the already
+triaged `ecdsa`/PYSEC-2026-1325.
+
+`aiohttp` reaches us only through `cosmic-ray` (mutation dev tooling); nothing
+in the tree pins it. `uv lock --upgrade-package aiohttp` moves `aiohttp`
+3.14.3 → 3.14.5 and `yarl` 1.24.2 → 1.25.1 (aiohttp ≥3.14.4 requires
+`yarl>=1.25.1`, so the companion bump is mandatory, not cosmetic); the lockfile
+diff touches no other package. After `uv sync --locked --all-extras`,
+`uv run python scripts/pip_audit_gate.py`: exit 0 — "pip-audit OK (1 known, all
+triaged in ALLOWED)"; direct-dependency usage still OK (11 packages, 62 runtime
+dependencies, 4 reviewed dispositions).
+
+## Fixed: `hive-conductor-e2e-ui`
+
+The required live-UI job failed on `packages/hive-conductor/tests/e2e/
+goal-run-roundtrip.spec.ts:307`, `waiting-human is distinguishable from plain
+failure`: `getByText(/Blocker: run .+ finished as paused/)` timed out. Cause is
+inside #65's own spec history: commit `752de8d7a` corrected the `beta` fixture
+to `blocker: null` (matching `services/goal_inspection.py:154-164`, which
+builds a blocker only from `failed`/`timed_out` Runs) but left the assertion
+expecting a `paused` blocker. The fixture, the seam and `Goals.tsx` were
+already correct; the expectation was not.
+
+The assertion now tests the distinction rather than one spelling of it: a
+`waiting_human` Goal renders no `Blocker:` badge and shows the paused Run's own
+recorded error, while the parent Goal's failed child Run still renders
+`Blocker: run … finished as failed`.
+
+Executed in this worktree (`CI=1 docker compose -f docker-compose.test.yml
+-f <port-free override> --profile test up --build --abort-on-container-exit
+--exit-code-from e2e-tests e2e-tests`):
+
+- before: exit 1 — `1 failed, 5 did not run, 176 passed (4.2m)`;
+- after: exit 0 — `182 passed (4.2m)`.
+
+Stack torn down (`docker compose … down -v`); no containers left running.
+
+## Still red, inherited from `develop` (not repaired here)
+
+`maistro.runs.admission_identity` is byte-identical to the merge base and no
+commit on this branch touches it, yet `scripts/check-reachability.py` counts it
+as NEWLY UNREACHABLE. Proof it is develop's: extracting the merge base
+(`git archive e20e9f52e | tar -x -C /tmp/base65`) and running the same script
+there gives exit 1 with the same one module (169 unreachable of 1,417).
+`quality/reachability-baseline.json` at base has no entry for it,
+`quality/ratchet-authorizations.json` grants none, and the module's own
+docstring declares it an inactive contract leaf whose runtime consumer is a
+later, separately reviewed integration. Because a baseline edit in-candidate
+cannot authorize itself (two-merge rule), repairing it here would mean editing
+a ledger this round is not authorized to touch, or wiring a module its owner
+says to leave unwired. It needs its owner's grant + integration PR.
+
+That single module is what makes `check-ratchet-provenance.py` (and therefore
+the `exact-debt-ledger` job), `Quality / Reachability`, `Quality gate (Pillars
+1–4, 7, 8)` and the `test` job's `tests/test_reachability_baseline_identity.py`
+/ `tests/test_check_reachability.py` cases red (`3 failed, 36 passed` locally,
+every failure naming that module). The vulture scan itself passes: 1,326 /
+1,326 reviewed identities, zero unclassified, no ledger amendment needed.
+
+## Executed validation (this round)
+
+| Command | Result |
+|---|---|
+| `uv run ruff check .` | pass |
+| `uv run ruff format --check .` | pass (3,367 files) |
+| `uv run python scripts/check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'` | pass, 1,326/1,326 |
+| `uv run python scripts/check-shipped-surface-truth.py` | pass |
+| `uv run python scripts/check-reachability-dispositions.py` | pass (168 modules dispositioned) |
+| `uv run python scripts/pip_audit_gate.py` | pass after lock bump |
+| `uv run pytest packages/hive-conductor/backend/tests/test_goal_inspection.py packages/hive-conductor/backend/tests/test_canonical_run_inspection.py -q` | 39 passed |
+| `uv run pytest packages/maistro-core/tests/runs/test_goal_store_conformance.py packages/maistro-core/tests/runs/test_goal_context.py packages/maistro-core/tests/runs/test_scoped_reads.py packages/maistro-core/tests/runs/test_spine_conformance.py -q` | 335 passed, 143 skipped |
+| `uv run python scripts/check-suite-inventory.py` (all 21 suites) | pass, 32,438 unique node IDs, 0 duplicates |
+| `uv run python scripts/check-dependency-namespaces.py` | pass |
+| `uv run python scripts/verify-minimum-dependencies.py` | pass |
+| live Playwright suite in Docker | 182 passed |

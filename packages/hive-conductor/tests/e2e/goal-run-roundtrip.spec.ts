@@ -304,8 +304,16 @@ test("waiting-human is distinguishable from plain failure", async () => {
   // so and renders the HITL disposition, not a failure badge.
   await expect(page.getByText(new RegExp(`Delegated from.*${GOAL_ID}`, "s"))).toBeVisible();
   await expect(page.getByText("Waiting for you").first()).toBeVisible();
-  await expect(page.getByText(/Blocker: run .+ finished as paused/)).toBeVisible();
+  // A human pause is not a failure blocker: `_blocker` names only
+  // failed/timed-out Runs (services/goal_inspection.py:154-164), so the paused
+  // Run's own recorded error is the evidence and no Blocker badge is invented
+  // for it. Asserting the absence is the distinguishable part.
+  await expect(page.getByText(/Blocker:/)).toHaveCount(0);
   await expect(page.getByText("waiting on approval").first()).toBeVisible();
+  // The parent Goal's failed child Run *is* a blocker, so the two
+  // dispositions render differently rather than sharing one badge.
+  await page.goto(`/goals?goal=${GOAL_ID}&ws=${WORKSPACE_ID}`, { waitUntil: "domcontentloaded" });
+  await expect(page.getByText(/Blocker: run .+ finished as failed/)).toBeVisible();
 });
 
 test("a run outside any Goal relays no Goal link, and a stale deep link degrades honestly", async () => {
