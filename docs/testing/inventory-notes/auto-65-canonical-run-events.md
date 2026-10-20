@@ -6,9 +6,10 @@ inventory-delta:
 
 Adds a Goal-associated Run detail regression proving inspection reads canonical
 EventStore records, filters out events for other Run IDs in the same Workspace
-stream, and preserves the canonical Run identifier. It also reconnects using
-canonical Run identity after the product-local Run projection is unavailable,
-proving that the event replay does not depend on that projection. This closes
+stream, and preserves the canonical Run identifier. It reopens the SQLite-backed
+canonical EventStore and reconnects using canonical Run identity after the
+product-local Run projection is unavailable, proving persisted event replay
+survives store restart and does not depend on that projection. This closes
 the prior canonical-only detail gap when the core Container exposes its event
 store.
 

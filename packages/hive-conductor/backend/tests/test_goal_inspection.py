@@ -280,19 +280,23 @@ async def test_sequential_runs_form_one_goal_history(
 
 
 async def test_run_detail_reads_events_from_canonical_store(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """Canonical Events survive independently of the Conductor event projection."""
+    import aiosqlite
     import services.engine as engine_mod
     from services.dag_run_inspection import visible_run_detail
 
-    from maistro.events.envelope import EventEnvelope, InMemoryEventStore
+    from maistro.events.envelope import EventEnvelope, SqliteEventStore
     from maistro.runs import RunStatus
 
     goal_id = _next_id("goal")
     scene, run_ids = await _goal_scene(monkeypatch, goal_id=goal_id, statuses=[RunStatus.RUNNING])
     canonical_run_id = _canonical_of(scene, run_ids[0])
-    events = InMemoryEventStore()
+    event_db = tmp_path / "canonical-events.sqlite3"
+    connection = await aiosqlite.connect(event_db)
+    events = SqliteEventStore(connection)
+    await events.ensure_schema()
     await events.append(
         EventEnvelope(type="run.progress", workspace_id=scene.view.id, run_id=canonical_run_id)
     )
@@ -318,9 +322,16 @@ async def test_run_detail_reads_events_from_canonical_store(
     assert [event["type"] for event in detail["events"]] == ["run.progress"]
     assert detail["events"][0]["run_id"] == canonical_run_id
 
-    # A reconnect after the product-local run projection is unavailable still
-    # resolves by canonical Run id and replays the same canonical event. This
-    # exercises the read path without treating the projection as event owner.
+    # Reopen the durable canonical event store to model a store/process restart;
+    # the product-local run projection is unavailable on reconnect as well.
+    await connection.close()
+    reopened_connection = await aiosqlite.connect(event_db)
+    reopened_events = SqliteEventStore(reopened_connection)
+    await reopened_events.ensure_schema()
+    engine = engine_mod.get_engine()
+    monkeypatch.setattr(
+        engine.agent_port.container.capability_effects, "event_store", reopened_events
+    )
     import services.dag_run_inspection as inspection_mod
 
     monkeypatch.setattr(
@@ -332,6 +343,7 @@ async def test_run_detail_reads_events_from_canonical_store(
     assert reconnected is not None
     assert reconnected["canonical_run_id"] == canonical_run_id
     assert reconnected["events"] == detail["events"]
+    await reopened_connection.close()
 
 
 async def test_goal_run_detail_exposes_canonical_node_runs_and_attempts(
