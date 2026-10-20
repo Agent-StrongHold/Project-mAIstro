@@ -2419,3 +2419,45 @@ clean at start; no earlier claim trusted.
 No code or ledger change warranted; the six merge-queue failures decompose to the same two
 structural facts the issue mandates for an intentionally unwired leaf. Integration hold stands;
 stack left unmerged; no inventory delta (stays `+79`). (Refs #1851)
+
+## CI-repair round at assigned head `f4f26392393d` (job `6252a42b7f4b4c7b9104204f5dd3a2a5`)
+
+Re-derived firsthand at the exact assigned head `f4f26392393ddcfd24c79d92cb90f3c5708c9c06`
+(branch `auto-1851`, develop base `fad17a87c34193a91c568eb8b0a910e8e6384ccd`); worktree clean;
+no earlier claim trusted. `git fetch origin` first: `origin/develop` still resolves to
+`fad17a87c341` — no owner grant and no #1845 integration landed since round-220, so the
+two-merge wall is unchanged.
+
+- Focused battery re-run green at this head: focused pytest **79 passed**; `ruff check` on both
+  issue files passed; `ruff format --check` clean; `mypy admission_identity.py` Success.
+- CI-exact `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'` with `RATCHET_BASE_REV=origin/develop`: **rc=1**, identical shape to
+  round-220 — banking leg GREEN (1326 findings, `unclassified: 0`, `never_allowlist: 0`),
+  authorization leg RED on exactly the 5 issue-mandated enum identities at
+  `admission_identity.py:515-519` classified under `pydantic-declarative-field`, remedy
+  "land a reviewed grant first". The gate printed no candidate-ledger section, proving the
+  candidate ledger again matches the scan multiset-exactly at this head.
+- `check-shipped-surface-truth.py` rc=0; `check-reachability.py` **rc=1** with exactly 1 NEWLY
+  UNREACHABLE `maistro.runs.admission_identity` (169/1417); `check-ratchet-provenance.py`
+  **rc=1** solely via `check-reachability-provenance.py: trusted-base gate returned 1`.
+  The three named reachability-baseline tests fail on exactly
+  `Extra items: maistro.runs.admission_identity`, as documented.
+- Lane-brief repair procedure executed with empty outcome, and why each branch is closed:
+  (1) nothing genuinely dead to fix — the 5 identities are the issue's fixed six-pair
+  `AdmissionAssessment` contract asserted verbatim by the contract test; (2) no fix eliminated
+  any identity, so no row is removed and the 5 reviewed retained identities stay banked
+  (`quality/vulture-baseline.json:283-287`, `pydantic-declarative-field` bucket);
+  (3) consuming the module or enum is prohibited in this leaf ("No other production module
+  imports or calls the new module in this leaf"); (4) keep-alives, suppressions,
+  reachability-baseline entries and branch-side grants are issue-prohibited, and a branch-side
+  grant is inert because `load_authorizations` reads the merge base (`fad17a87`, 0 grants —
+  verified). `git diff --numstat origin/develop -- quality/` = exactly `5 0` on
+  `vulture-baseline.json`: no merge-drifted rows.
+- Reconciliation status for the issue's open checkbox: the 5 retained rows stand on this
+  CI-repair round's explicit lane authorization ("amend quality/vulture-baseline.json for
+  reviewed retained identities"; none eliminated), still in recorded conflict with the issue's
+  ordinary-scope no-baseline-additions rule. The authorization-leg exit remains **owner-held**:
+  it can only clear via a develop-side reviewed grant landed before this stack, or via the
+  #1845 integration head whose real reviewed consumer makes the module reachable and the enum
+  read. Per the issue's staging command, the stack is left unmerged with readiness recorded and
+  the blocker explicit; no inventory delta (stays `+79`). (Refs #1851)
