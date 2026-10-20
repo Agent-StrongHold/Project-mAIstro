@@ -641,8 +641,9 @@ class TestTheRealShellPath:
     """
 
     #: The env-writing functions, lifted verbatim from install.sh.
+    #: ensure_python moved to scripts/bootstrap-runtime.sh (#1821); the
+    #: harness sources that library so the real resolver backs these paths.
     _FUNCTIONS = (
-        "ensure_python",
         "secret_env_run",
         "env_has",
         "env_get",
@@ -665,6 +666,7 @@ warn() {{ echo "WARN: $*" >&2; }}
 ok() {{ :; }}
 info() {{ :; }}
 source <(sed -n {extract!r} "$SCRIPT_DIR/install.sh")
+source "$SCRIPT_DIR/scripts/bootstrap-runtime.sh"
 """
 
     def _run(self, workdir: Path, script: str) -> subprocess.CompletedProcess[str]:
