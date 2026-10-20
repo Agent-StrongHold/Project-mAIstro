@@ -279,6 +279,46 @@ async def test_sequential_runs_form_one_goal_history(
     assert [row["run_id"] for row in view["runs"]] == list(reversed(run_ids))
 
 
+async def test_run_detail_reads_events_from_canonical_store(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Canonical Events survive independently of the Conductor event projection."""
+    import services.engine as engine_mod
+    from services.dag_run_inspection import visible_run_detail
+
+    from maistro.events.envelope import EventEnvelope, InMemoryEventStore
+    from maistro.runs import RunStatus
+
+    goal_id = _next_id("goal")
+    scene, run_ids = await _goal_scene(monkeypatch, goal_id=goal_id, statuses=[RunStatus.RUNNING])
+    canonical_run_id = _canonical_of(scene, run_ids[0])
+    events = InMemoryEventStore()
+    await events.append(
+        EventEnvelope(type="run.progress", workspace_id=scene.view.id, run_id=canonical_run_id)
+    )
+    await events.append(
+        EventEnvelope(type="other.progress", workspace_id=scene.view.id, run_id="other-run")
+    )
+    current = engine_mod.get_engine()
+    monkeypatch.setattr(
+        engine_mod,
+        "_singleton",
+        SimpleNamespace(
+            run_reader=current.run_reader,
+            run_store=scene.store,
+            agent_port=SimpleNamespace(
+                container=SimpleNamespace(capability_effects=SimpleNamespace(event_store=events))
+            ),
+        ),
+    )
+
+    detail = await visible_run_detail(_USER_ID, run_ids[0])
+    assert detail is not None
+    assert detail["event_count"] == 1
+    assert [event["type"] for event in detail["events"]] == ["run.progress"]
+    assert detail["events"][0]["run_id"] == canonical_run_id
+
+
 async def test_goal_run_detail_exposes_canonical_node_runs_and_attempts(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

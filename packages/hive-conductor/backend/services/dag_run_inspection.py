@@ -216,6 +216,33 @@ def _timestamp(value: Any) -> float | None:
     return value.timestamp() if value is not None else None
 
 
+async def _canonical_events(
+    run_id: str, user_id: str, *, workspace_id: str
+) -> list[dict[str, Any]] | None:
+    """Read durable canonical Events for an already-authorized Run.
+
+    EventStore has no principal-aware query, so authorization is deliberately
+    established by the scoped Run reader first. Workspace stream reads are
+    then narrowed to the exact canonical run id; unrelated events in that
+    stream are never returned. ``None`` means the canonical store is absent
+    or unavailable, not that the Run had no events.
+    """
+    try:
+        from services.engine import get_engine
+
+        run = await get_engine().run_reader.get_run(run_id, principal_id=user_id)
+        if run.workspace_id != workspace_id:
+            return None
+        container = getattr(get_engine().agent_port, "container", None)
+        event_store = getattr(getattr(container, "capability_effects", None), "event_store", None)
+        if event_store is None:
+            return None
+        events = await event_store.list_stream(f"workspace:{workspace_id}", limit=1000)
+        return [event.to_dict() for event in events if event.run_id == run_id]
+    except Exception:
+        return None
+
+
 async def _execution_evidence(
     run_id: str, user_id: str, *, workspace_id: str
 ) -> list[dict[str, Any]] | None:
@@ -422,6 +449,10 @@ async def visible_run_detail(user_id: str, run_id: str) -> dict[str, Any] | None
         evidence = await _execution_evidence(run.run_id, user_id, workspace_id=run.workspace_id)
         if evidence is not None:
             detail["node_runs"] = evidence
+        events = await _canonical_events(run.run_id, user_id, workspace_id=run.workspace_id)
+        if events is not None:
+            detail["events"] = events
+            detail["event_count"] = len(events)
         # AC-10 (#775), same rule as the projection path below: per-artifact
         # state is only reachable when the caller just read the canonical Run.
         if detail.get("creative_provenance"):
@@ -436,6 +467,12 @@ async def visible_run_detail(user_id: str, run_id: str) -> dict[str, Any] | None
     )
     if evidence is not None:
         detail["node_runs"] = evidence
+    events = await _canonical_events(
+        _canonical_run_id(record), user_id, workspace_id=str(record.get("workspace_id") or "")
+    )
+    if events is not None:
+        detail["events"] = events
+        detail["event_count"] = len(events)
     # AC-10 (#775): Graph inspection in Conductor explains each artifact's
     # lineage. Only reachable when the creative block survived the scoped
     # overlay — i.e. the caller just read the canonical Run — so per-artifact
