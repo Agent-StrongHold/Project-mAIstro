@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -179,6 +179,72 @@ async def test_host_grant_allows_only_its_action_subset() -> None:
     assert response.content == "writer ran"
     assert target_strategy.auth.delegated_actions == frozenset({"read_file"})
     assert target_strategy.auth.delegation_grant_ref == "grant-1"
+
+
+@pytest.mark.asyncio
+async def test_delegated_envelope_carries_the_grant_expiry() -> None:
+    # #60 review: the envelope must carry the host's expiry so per-call
+    # enforcement has something to validate against.
+    expiry = datetime.now(UTC) + timedelta(minutes=5)
+    grant = replace(_grant(actions=frozenset({"read_file"})), expires_at=expiry)
+    authority = InMemoryDelegationAuthority([grant])
+    sentinel = Sentinel(warden=Warden(), permission_table={}, delegation_authority=authority)
+    target_strategy = _Result(ReasoningResult(response="writer ran"))
+    target = Agent(
+        identity=AgentIdentity(name="writer", tools=("read_file", "write_file")),
+        strategy=target_strategy,
+        llm=object(),
+        context_builder=_Context(),
+        prompt_manager=_Prompt(),
+        warden=_Warden(),
+        sentinel=sentinel,
+    )
+    caller = Agent(
+        identity=AgentIdentity(name="low-agent", sub_agents=("writer",)),
+        strategy=_Result(
+            ReasoningResult(delegate_to="writer", delegate_message="delegate this exact task")
+        ),
+        llm=object(),
+        context_builder=_Context(),
+        prompt_manager=_Prompt(),
+        warden=_Warden(),
+        sentinel=sentinel,
+        agent_resolver={"writer": target}.get,
+    )
+
+    await caller.handle(
+        [{"role": "user", "content": "delegate"}],
+        AuthContext(user_id="owner-1", project_id="project-1"),
+        session_id="goal-1",
+        run_id="run-1",
+        invocation_id="inv-1",
+        delegation_scope="project-1",
+    )
+
+    assert target_strategy.auth.delegation_expires_at == expiry
+
+
+@pytest.mark.asyncio
+async def test_pre_call_rejects_delegated_call_once_expired() -> None:
+    # #60 review: expiry is re-checked on every tool call, not only when the
+    # delegation begins; a lapsed grant no longer authorizes anything.
+    sentinel = Sentinel(warden=Warden(), permission_table={}, allow_on_miss=True)
+    expired = AuthContext(
+        user_id="owner-1",
+        roles=frozenset({"user"}),
+        delegated_actions=frozenset({"read_file"}),
+        delegation_expires_at=datetime.now(UTC) - timedelta(seconds=1),
+    )
+
+    verdict = await sentinel.pre_call("read_file", {}, expired, schema={})
+
+    assert verdict.allowed is False
+    assert any(v.rule == "delegation_expired" for v in verdict.violations)
+
+    live = replace(expired, delegation_expires_at=datetime.now(UTC) + timedelta(minutes=5))
+    verdict = await sentinel.pre_call("read_file", {}, live, schema={})
+
+    assert verdict.allowed is True
 
 
 @pytest.mark.asyncio

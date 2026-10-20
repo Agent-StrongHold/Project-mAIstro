@@ -386,6 +386,34 @@ class Sentinel:
 
         table = await self._effective_table()
         delegation_detail = _delegation_detail(auth)
+        delegation_expires_at = getattr(auth, "delegation_expires_at", None)
+        if delegation_expires_at is not None and utc_now() >= delegation_expires_at:
+            violations.append(
+                Violation(
+                    boundary="pre_call",
+                    rule="delegation_expired",
+                    severity="error",
+                    detail=(
+                        "Delegated authority expired at "
+                        f"{delegation_expires_at.isoformat()}; denied fail-closed"
+                    ),
+                )
+            )
+            verdict = SentinelVerdict(
+                allowed=False,
+                violations=tuple(violations),
+            )
+            await self._log_audit(
+                boundary="pre_call",
+                user_id=auth.user_id,
+                org_id=auth.org_id,
+                team_id=auth.team_id,
+                tool_name=tool_name,
+                verdict="denied",
+                violations=tuple(violations),
+                detail=delegation_detail,
+            )
+            return verdict
         if table is None or not check_permission(
             auth, tool_name, table, allow_on_miss=self._allow_on_miss
         ):

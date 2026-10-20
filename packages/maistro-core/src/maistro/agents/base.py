@@ -1368,6 +1368,7 @@ class Agent:
             auth,
             delegated_actions=decision.effective_actions,
             delegation_grant_ref=decision.grant_ref,
+            delegation_expires_at=decision.expires_at,
             on_behalf_of=self.identity.name,
         )
         return delegated_auth, None
