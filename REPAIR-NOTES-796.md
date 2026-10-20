@@ -443,3 +443,65 @@ design (see `AGENTS.md`).
   is a subset of CI's `--all-extras` install; the advisories that decided the CI red
   (`aiohttp`) are covered by it, but a CVE in an extra-only dependency would not be
   visible locally.
+
+## Round 6 (2026-10-20, head `e0556fafd`): post-queue re-verification — no repair needed
+
+The merge-queue evaluation that opened this round reported every required check
+**green**; the only block was GitHub merge-queue contention (`GH006`, "branch queued in
+GitHub merge queue"), which no lane action resolves. The develop sync that cleared the
+seven earlier reds is already in this head: `e0556fafd` is `Merge commit
+'c2d7209f1dbc…' into auto-796`, `origin/develop` is still `c2d7209f1dbc`, and
+`git merge-base --is-ancestor origin/develop HEAD` → true. The branch is fully synced,
+so there was no conflict to resolve; the merge delta is the five issue surfaces only and
+`git diff --numstat origin/develop...HEAD -- 'packages/*/src' quality/` is empty.
+
+Re-validation at `e0556fafd` with CI's exact arguments (all exit 0):
+
+| Command | Outcome |
+| --- | --- |
+| `uv run pytest packages/maistro-core/tests/fitness/test_m7_a7_eval_consumer_map.py -v` | 7/7 pass |
+| `uv run pytest packages/maistro-core/tests/fitness -q` | 34 pass |
+| `uv run pytest packages/maistro-rsi/tests/test_non_production_reachability.py -q` | 13 pass (M5 invariant) |
+| `uv run pytest tests/test_check_reachability.py tests/test_reachability_baseline_identity.py tests/test_reachability_scanner.py tests/test_reachability_source_universe.py -q` | 54 pass |
+| `RATCHET_BASE_REV=origin/develop uv run python scripts/check-ratchet-provenance.py` | exit 0 — 168 → 168 unreachable, no candidate-approved expansion |
+| `RATCHET_BASE_REV=origin/develop uv run python scripts/check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'` | exit 0 — 1326 reviewed identities → 1326 findings |
+| `RATCHET_BASE_REV=origin/develop uv run python scripts/check-shipped-surface-truth.py` | exit 0 |
+| `uv run python scripts/check-reachability.py` | exit 0 — 1420 production modules, 168 unreachable |
+| `uv run python scripts/check-suite-inventory.py` | exit 0 — 21 suites match |
+| `uv run python scripts/check-convergence-matrix.py` | exit 0 — 52 subsystems / 1420 modules |
+| `uv run python scripts/check-doc-links.py` | exit 0 — 0 broken links |
+| `uv run python scripts/check-contract-markers.py` / `check-merge-markers.py` | exit 0 |
+| `uv run ruff check .` / `uv run ruff format --check <file>` | clean / already formatted |
+
+Exact-debt-ledger's three leaves (`check-ratchet-provenance.py`,
+`check-shipped-surface-truth.py`, `check-vulture-baseline.py` with the workflow's
+`packages/*/src --min-confidence 60 --exclude '*/third_party/*'`) all pass, so the
+per-identity vulture ledger needed no amendment — there were no unbanked identities and
+no eliminated identities to remove. The previously-red supply-chain leaf is resolved by
+the sync (`uv.lock` pins `aiohttp==3.14.5`).
+
+**Bank audit.** A re-scan of `packages/maistro-design/src` with the contract's own
+def-name regex returns exactly the six `_DESIGN_SURFACE_BANK` identities — no unbanked
+match and no bank row hiding a genuine second loop. `consistency.py` is read-only,
+deterministic and proposal-only (module docstring: "no write path to any store" …
+"not a self-improvement authority"), and `_evaluate_upgrade` is a preflight returning
+`can_upgrade=not blocked` — neither scores a design Goal nor promotes anything.
+
+**Tripwire liveness re-proved out-of-tree** (repo untouched): a copy of the contract
+file under `/tmp/m7a7-verify/repo/…` with `maistro_design/engine.py` importing
+`maistro_evolve.cycle` + `maistro_rsi.local_loop` and `stores.py` holding
+`design_quality_score = 0.9` made the two named test functions **fail**, naming the
+offenders (`engine.py:1 import maistro_evolve.cycle`, `engine.py:2 from
+maistro_rsi.local_loop`). The tree was not modified for the demonstration.
+
+**Local-only artifact (not a defect).** `quality/ac-state.json` is generated and
+git-ignored (`.gitignore:81`, written by `scripts/check-ac-state.py`); running the
+ratchet gate creates it, after which `tests/test_branch_independence_repository.py`
+reports it as an unclassified quality state surface. CI checks out clean, so it cannot
+exist there. The file was left in place (ignored, untracked).
+
+**Residuals.** The PR branch name (`feat/m7-a7-eval-consumer-map` in the issue text vs
+the campaign's `auto-796`) and the push are dispatcher-owned and unverifiable locally.
+The coverage publish-set floor and full `--all-extras` `pip-audit` were not re-run
+locally; the diff-coverage half is vacuous for this branch (no `packages/*/src` delta)
+and the `aiohttp` advisory is verified fixed by the lockfile.
