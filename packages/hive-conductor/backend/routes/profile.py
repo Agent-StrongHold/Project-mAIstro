@@ -8,8 +8,9 @@ tools read a PostgREST table no migration creates, so neither could see the
 other's writes and the panel's saves were silently overwritten.
 
 The handlers are plain `def`, not `async def`, and that is deliberate. A
-profile write reads SQLite synchronously and then waits in `State.flush()` for
-the writer thread — up to ten seconds when the queue is backed up. Inside an
+profile write reads SQLite synchronously and then waits inside the
+acknowledged `put_raw` (a `State.submit_sync`) for the writer thread to
+commit — up to thirty seconds when the queue is backed up. Inside an
 `async` handler that blocks the event loop and stalls every other request;
 Starlette runs a sync handler in its threadpool instead. `routes/settings.py`
 is sync for the same reason.
@@ -22,6 +23,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 from services.profile_store import ProfilePersistenceError, ProfileSchemaError
+from services.request_principal import require_actor_id
 
 router = APIRouter(tags=["profile"])
 
@@ -35,11 +37,7 @@ def _user_id(request: Request) -> str:
     user-identifying content. `/v1/profile` is behind the auth middleware, so a
     request with no principal at all is already 401; this covers the rest.
     """
-    user = getattr(request.state, "user", None) or {}
-    user_id = str(user.get("id") or user.get("username") or "")
-    if not user_id:
-        raise HTTPException(status_code=401, detail="Authentication required")
-    return user_id
+    return require_actor_id(request)
 
 
 class ProfileBody(BaseModel):

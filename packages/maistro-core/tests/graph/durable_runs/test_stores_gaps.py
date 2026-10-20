@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
+
 import pytest
 
+from maistro.graph.durable_runs.fair_scan import cursor_time
 from maistro.graph.durable_runs.stores import (
     InMemoryDurableRunStore,
     SqliteDurableRunStore,
@@ -11,7 +14,7 @@ from maistro.graph.durable_runs.stores import (
 from maistro.runs.lifecycle import transition_node_run
 from maistro.runs.model import NodeRun, RunStatus
 
-from .._canonical_helpers import durable_record
+from .._canonical_helpers import durable_record, hitl_authorization
 
 
 def _record_for(run_id: str, **overrides: object):  # type: ignore[no-untyped-def]
@@ -71,21 +74,27 @@ async def test_list_for_project_respects_limit_and_ordering() -> None:
 async def test_submit_hitl_answer_missing_run_raises_keyerror() -> None:
     store = InMemoryDurableRunStore()
     with pytest.raises(KeyError, match="no such run"):
-        await store.submit_hitl_answer("missing", "n1", {"answer": "x"})
+        await store.submit_hitl_answer(
+            "missing", "n1", {"answer": "x"}, authorization=hitl_authorization()
+        )
 
 
 async def test_submit_hitl_answer_wrong_status_raises_valueerror() -> None:
     store = InMemoryDurableRunStore()
     await store.create(_record_for("r1", status=RunStatus.RUNNING))
     with pytest.raises(ValueError, match="not paused on HITL"):
-        await store.submit_hitl_answer("r1", "n1", {"answer": "x"})
+        await store.submit_hitl_answer(
+            "r1", "n1", {"answer": "x"}, authorization=hitl_authorization()
+        )
 
 
 async def test_submit_hitl_answer_wrong_node_raises_valueerror() -> None:
     store = InMemoryDurableRunStore()
     await store.create(_record_for("r1", status=RunStatus.PAUSED, active_node_id="ask"))
     with pytest.raises(ValueError, match="waiting on frontier"):
-        await store.submit_hitl_answer("r1", "wrong-node", {"answer": "x"})
+        await store.submit_hitl_answer(
+            "r1", "wrong-node", {"answer": "x"}, authorization=hitl_authorization()
+        )
 
 
 async def test_sqlite_create_collision_raises_valueerror(tmp_path) -> None:
@@ -135,27 +144,94 @@ async def test_sqlite_list_for_project_filters_and_limits(tmp_path) -> None:
 async def test_sqlite_submit_hitl_answer_missing_run_raises_keyerror(tmp_path) -> None:
     store = SqliteDurableRunStore(tmp_path / "durable.db")
     with pytest.raises(KeyError, match="no such run"):
-        await store.submit_hitl_answer("missing", "n1", {"answer": "x"})
+        await store.submit_hitl_answer(
+            "missing", "n1", {"answer": "x"}, authorization=hitl_authorization()
+        )
 
 
 async def test_sqlite_submit_hitl_answer_wrong_status_raises_valueerror(tmp_path) -> None:
     store = SqliteDurableRunStore(tmp_path / "durable.db")
     await store.create(_record_for("r1", status=RunStatus.RUNNING))
     with pytest.raises(ValueError, match="not paused on HITL"):
-        await store.submit_hitl_answer("r1", "n1", {"answer": "x"})
+        await store.submit_hitl_answer(
+            "r1", "n1", {"answer": "x"}, authorization=hitl_authorization()
+        )
 
 
 async def test_sqlite_submit_hitl_answer_wrong_node_raises_valueerror(tmp_path) -> None:
     store = SqliteDurableRunStore(tmp_path / "durable.db")
     await store.create(_record_for("r1", status=RunStatus.PAUSED, active_node_id="ask"))
     with pytest.raises(ValueError, match="waiting on frontier"):
-        await store.submit_hitl_answer("r1", "wrong-node", {"answer": "x"})
+        await store.submit_hitl_answer(
+            "r1", "wrong-node", {"answer": "x"}, authorization=hitl_authorization()
+        )
 
 
 async def test_sqlite_submit_hitl_answer_success_updates_record(tmp_path) -> None:
     store = SqliteDurableRunStore(tmp_path / "durable.db")
     await store.create(_record_for("r1", status=RunStatus.PAUSED, active_node_id="ask"))
-    updated = await store.submit_hitl_answer("r1", "ask", {"answer": "yes"})
+    updated = await store.submit_hitl_answer(
+        "r1", "ask", {"answer": "yes"}, authorization=hitl_authorization()
+    )
     assert updated.status is RunStatus.QUEUED
     assert updated.hitl_answers["ask"]["answer"] == "yes"
     assert updated.version == 2
+
+
+def _at(record, created_at):  # type: ignore[no-untyped-def]
+    """The same record, created at a chosen instant, so order is deterministic."""
+    return record.model_copy(
+        update={"run": record.run.model_copy(update={"created_at": created_at})}
+    )
+
+
+@pytest.mark.asyncio
+async def test_in_memory_status_listing_pages_past_the_cursor() -> None:
+    """`after` is the keyset the #1109 pending-work walk advances.
+
+    Without it the route re-reads the same fixed prefix every page and the
+    human pause behind it is never reached, so the parameter has to actually
+    page rather than merely be accepted.
+    """
+    store = InMemoryDurableRunStore()
+    base = datetime(2026, 9, 1, 12, tzinfo=UTC)
+    for index in range(3):
+        await store.create(
+            _at(_record_for(f"mem-{index}"), base + timedelta(minutes=index)),
+        )
+
+    first = await store.list_by_status(RunStatus.RUNNING, limit=1)
+    assert [record.run_id for record in first] == ["mem-0"]
+
+    cursor = (cursor_time(first[0].run.created_at), first[0].run_id)
+    rest = await store.list_by_status(RunStatus.RUNNING, limit=5, after=cursor)
+    assert [record.run_id for record in rest] == ["mem-1", "mem-2"]
+
+    last = (cursor_time(base + timedelta(minutes=2)), "mem-2")
+    assert await store.list_by_status(RunStatus.RUNNING, limit=5, after=last) == []
+
+
+@pytest.mark.asyncio
+async def test_sqlite_status_listing_pages_past_the_cursor(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """The SQLite twin builds the same keyset predicate in SQL.
+
+    Its `(created_at, run_id) > (?, ?)` clause is a different implementation
+    of the same contract, so it gets the same walk rather than being trusted
+    to agree with the in-memory one.
+    """
+    store = SqliteDurableRunStore(tmp_path / "keyset.db")
+    base = datetime(2026, 9, 1, 12, tzinfo=UTC)
+    for index in range(3):
+        await store.create(
+            _at(_record_for(f"lite-{index}"), base + timedelta(minutes=index)),
+        )
+
+    first = await store.list_by_status(RunStatus.RUNNING, limit=1)
+    assert [record.run_id for record in first] == ["lite-0"]
+
+    cursor = (cursor_time(first[0].run.created_at), first[0].run_id)
+    rest = await store.list_by_status(RunStatus.RUNNING, limit=5, after=cursor)
+    assert [record.run_id for record in rest] == ["lite-1", "lite-2"]
+
+    last = (cursor_time(base + timedelta(minutes=2)), "lite-2")
+    assert await store.list_by_status(RunStatus.RUNNING, limit=5, after=last) == []

@@ -27,7 +27,9 @@ async def test_an_unknown_tool_refuses_with_the_react_contract() -> None:
 async def test_known_tools_route_to_the_real_functions(monkeypatch) -> None:
     calls: list[tuple[str, Any]] = []
 
-    async def fake_web_search(query: str, max_results: int = 5) -> dict[str, Any]:
+    async def fake_web_search(
+        query: str, max_results: int = 5, *, model_call=None
+    ) -> dict[str, Any]:
         calls.append(("web_search", query, max_results))
         return {"query": query}
 
@@ -35,7 +37,9 @@ async def test_known_tools_route_to_the_real_functions(monkeypatch) -> None:
         calls.append(("browse_url", url, task))
         return {"url": url}
 
-    async def fake_clarify(questions: list[str], context: dict[str, Any]) -> dict[str, Any]:
+    async def fake_clarify(
+        questions: list[str], context: dict[str, Any], *, model_call=None
+    ) -> dict[str, Any]:
         calls.append(("clarify", questions, context))
         return {"answers": {}}
 

@@ -22,10 +22,11 @@ dependencies = [
 [project.scripts]
 maistro-rsi = "maistro_rsi.cli:main"
 maistro-rsi-autorun = "maistro_rsi.autorun:main"
+maistro-rsi-campaign = "maistro_rsi.campaign_cli:main"
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=8.3,<10",
+    "pytest>=9.0.3,<10",
     "pytest-asyncio>=0.25,<2",
     "ruff>=0.9,<1",
     "mypy>=1.14,<3",

@@ -12,9 +12,13 @@ exercise one thread at a time, which is why both defects survived them.
 from __future__ import annotations
 
 import contextlib
+import multiprocessing
+import sqlite3
 import threading
 import time
+import traceback
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -28,6 +32,28 @@ def state(tmp_path: Path):
     yield st
     with contextlib.suppress(Exception):
         st.close()
+
+
+requires_fork = pytest.mark.skipif(
+    "fork" not in multiprocessing.get_all_start_methods(),
+    reason="platform does not provide the fork start method (e.g. native Windows)",
+)
+
+
+def _initialize_worker(db_path: str, barrier: Any, results: Any) -> None:
+    """Run `PersistedStore.initialize()` from an independent process (#1528)."""
+    from maistro.state import PersistedStore, State
+
+    barrier.wait(timeout=10)
+    try:
+        st = State(db_path)
+        store = PersistedStore(st)
+        store.initialize()
+        st.close()
+    except BaseException:
+        results.put(("error", traceback.format_exc()))
+    else:
+        results.put(("ok", None))
 
 
 @pytest.mark.contract("behavioral")
@@ -295,3 +321,140 @@ def test_close_is_idempotent(state: State) -> None:
 
     assert state._writer is None
     assert state._writer_open is False
+
+
+@pytest.mark.contract("behavioral")
+@pytest.mark.scope("unit")
+def test_migration_recheck_treats_a_concurrent_winner_as_success(state: State) -> None:
+    """`run_migration`'s except-handler recheck (#1528 Codex review finding
+    3): when this process loses the cross-process race for a migration, the
+    comment above the `with self._writer_lock:` block promises the loss is a
+    no-op — proceed rather than raise `MigrationFailedError` — the moment the
+    recheck finds `schema_migrations` already carries the winner's row.
+
+    `test_independent_processes_apply_first_run_migrations_exactly_once`
+    below exercises the real race end to end via `multiprocessing`, but a
+    plain `coverage run` does not capture branch coverage inside a forked
+    child process, so that test leaves this exact line unmeasured despite
+    genuinely exercising it. This test pins the same outcome deterministically
+    in-process, using the same connection-substitution technique as
+    `test_no_write_commits_inside_the_migration_savepoint` above: the `up`
+    statement's execution is intercepted and, in its place, a second,
+    independent connection commits the "winner's" row for the same migration
+    name before the interception raises — modelling a second process that
+    committed first, followed by this process's own write losing the race.
+    """
+    real_conn = state._writer
+
+    class _LoseTheRace:
+        """Delegates to the real connection, but the first attempt to run the
+        migration's own `up` statement is where a real second process's write
+        would have raced this one — so a genuine second connection commits the
+        winning row there instead, and then the call fails as the loser's
+        would (SQLite's own cross-process lock, or the `schema_migrations`
+        primary key, depending on timing)."""
+
+        def __init__(self, inner: object, db_path: str, name: str) -> None:
+            self._inner = inner
+            self._db_path = db_path
+            self._name = name
+            self._armed = True
+
+        def execute(self, sql: str, *a: object, **k: object) -> object:
+            if self._armed and sql.strip().startswith("CREATE TABLE race_loser"):
+                self._armed = False
+                winner = sqlite3.connect(self._db_path, timeout=5)
+                try:
+                    winner.execute(
+                        "INSERT INTO schema_migrations (name, applied_at) VALUES (?, ?)",
+                        (self._name, "2020-01-01T00:00:00+00:00"),
+                    )
+                    winner.commit()
+                finally:
+                    winner.close()
+                raise sqlite3.OperationalError("database is locked")
+            return self._inner.execute(sql, *a, **k)  # type: ignore[attr-defined]
+
+        def __getattr__(self, name: str) -> object:
+            return getattr(self._inner, name)
+
+    state._writer = _LoseTheRace(real_conn, str(state._db_path), "raced")  # type: ignore[assignment]
+    try:
+        # Must not raise: the recheck inside the except-handler finds
+        # "raced" already applied by the "winner" and returns instead of
+        # propagating MigrationFailedError.
+        state.run_migration("raced", "CREATE TABLE race_loser (k TEXT)")
+    finally:
+        state._writer = real_conn  # type: ignore[assignment]
+
+    reader = state.open_reader()
+    try:
+        names = [row[0] for row in reader.execute("SELECT name FROM schema_migrations").fetchall()]
+    finally:
+        reader.close()
+    assert "raced" in names
+    # The loser's own DDL never ran — only the winner's row exists, and the
+    # loser's rolled-back CREATE TABLE never created the table it named.
+    assert (
+        state._writer.execute(  # type: ignore[union-attr]
+            "SELECT name FROM sqlite_master WHERE name = 'race_loser'"
+        ).fetchone()
+        is None
+    )
+
+
+@requires_fork
+@pytest.mark.contract("behavioral")
+@pytest.mark.scope("integration")
+def test_independent_processes_apply_first_run_migrations_exactly_once(
+    tmp_path: Path,
+) -> None:
+    """Codex review finding 3 (PR #1528): `run_migration` is guarded only by a
+    process-local `threading.Lock`, so two independent processes starting for
+    the first time against the same fresh database can both observe a
+    migration as not yet applied and race it. Before the fix, the loser
+    reliably failed with `MigrationFailedError` — a unique-constraint
+    violation on `schema_migrations.name`, or occasionally "database is
+    locked" during the connection's first-open WAL switch — and its whole
+    startup aborted (Hive's foundation treats that as STATE_UNAVAILABLE).
+
+    Reproduced against the pre-fix code before this test was added: 4 of 5
+    trials with 8 concurrent first-time processes failed this way; against
+    the fix, 0 of 30 trials with 10 processes failed.
+    """
+    db_path = tmp_path / "race.db"
+    context = multiprocessing.get_context("fork")
+    worker_count = 8
+    barrier = context.Barrier(worker_count)
+    results = context.Queue()
+    processes = [
+        context.Process(target=_initialize_worker, args=(str(db_path), barrier, results))
+        for _ in range(worker_count)
+    ]
+    for process in processes:
+        process.start()
+    for process in processes:
+        process.join(timeout=25)
+    for process in processes:
+        if process.is_alive():
+            process.terminate()
+        assert process.exitcode == 0
+
+    outcomes = [results.get(timeout=8) for _ in processes]
+    errors = [outcome for outcome in outcomes if outcome[0] != "ok"]
+    assert not errors, "a concurrent first-run initialize() failed:\n" + "\n".join(
+        message for _, message in errors
+    )
+
+    st = State(str(db_path))
+    reader = st.open_reader()
+    try:
+        names = [row[0] for row in reader.execute("SELECT name FROM schema_migrations").fetchall()]
+    finally:
+        reader.close()
+        st.close()
+
+    # Every migration recorded exactly once, no matter which process won it.
+    assert sorted(names) == sorted(set(names)), f"a migration was recorded more than once: {names}"
+    assert "kv_store_001" in names
+    assert "kv_unique_fields_001" in names

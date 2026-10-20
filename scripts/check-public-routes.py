@@ -31,6 +31,11 @@ RATCHET = "public-routes"
 METRIC_DEFINITION_VERSION = "2"
 _GIT_TIMEOUT_SECONDS = 60
 
+#: Bounded analyzer implementation manifest (#319): the declaration census is
+#: this file's own AST scan of the middleware, so its implementation identity
+#: is the actual bytes of exactly this file.
+ANALYZER_MANIFEST = ("scripts/check-public-routes.py",)
+
 DECLARATIONS: dict[str, str] = {
     "_PUBLIC_PREFIXES": "prefix",
     "_PUBLIC_PREFIXES_LOOSE": "loose-prefix",
@@ -57,6 +62,14 @@ def _provenance() -> ModuleType:
         del sys.modules[spec.name]
         raise
     return module
+
+
+def _tool_version(prov: ModuleType) -> str:
+    """Implementation identity of the scanner that reached this verdict (#319)."""
+    version: str = prov.bundled_implementation_fingerprint(
+        Path(__file__).resolve().parents[1], ANALYZER_MANIFEST
+    )
+    return version
 
 
 def _run_git(args: list[str]) -> subprocess.CompletedProcess[str]:
@@ -91,9 +104,20 @@ def _unshallow_ci_checkout(prov: ModuleType, event_base: str) -> None:
         )
     fetched = _run_git(["fetch", "--no-tags", "--unshallow", "origin", current_ref])
     if fetched.returncode != 0:
-        raise prov.RatchetProvenanceError(
-            f"could not unshallow GitHub event ref {current_ref!r}: {fetched.stderr.strip()}"
-        )
+        # Merge-group checkouts name an ephemeral
+        # refs/heads/gh-readonly-queue/develop/pr-N-<sha> ref that GitHub does
+        # not publish for fetch (observed 2026-09-15: every merge-group lint
+        # run died here and bounced its whole queue group). Unshallow without
+        # a ref filter instead: the unrestricted fetch materializes the queue
+        # merge commit's ancestry from the same branches the queue composed
+        # it from, which is all this gate needs.
+        fallback = _run_git(["fetch", "--no-tags", "--unshallow", "origin"])
+        if fallback.returncode != 0:
+            raise prov.RatchetProvenanceError(
+                f"could not unshallow GitHub event ref {current_ref!r}: "
+                f"{fetched.stderr.strip()}; unrestricted fallback also failed: "
+                f"{fallback.stderr.strip()}"
+            )
 
 
 def _materialize_event_base(prov: ModuleType, event_base: str) -> None:
@@ -262,6 +286,7 @@ def main() -> int:
 
     prov = _provenance()
     try:
+        tool_version = _tool_version(prov)
         _materialize_ci_history(prov)
         base_ref = prov.resolve_baseline(REGISTRY, root=ROOT)
         base_registry = _registry(base_ref.loads(default={"routes": {}}))
@@ -285,6 +310,7 @@ def main() -> int:
             ratchet=RATCHET,
             baseline=base_ref,
             tool="python ast",
+            tool_version=tool_version,
             metric_definition_version=METRIC_DEFINITION_VERSION,
             old_value=f"{len(base_identities)} public route identities",
             new_value=f"{len(current_identities)} public route identities",
