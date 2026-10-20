@@ -14,8 +14,8 @@
  * which is the failure a keyboard user actually feels.
  */
 
-import { test, expect, type BrowserContext, type Locator, type Page } from "@playwright/test";
-import { loginAsPM, setupIfNeeded } from "./session";
+import { test, expect, request, type BrowserContext, type Locator, type Page } from "@playwright/test";
+import { ADMIN_PASS, ADMIN_USER, loginAsPM, setupIfNeeded } from "./session";
 
 test.describe.configure({ mode: "serial" });
 
@@ -175,6 +175,32 @@ test("schedule view tabs are native keyboard controls", async () => {
 });
 
 test("primary page controls are reachable in the real tab order", async () => {
+  // A cold hive has no agents, and the per-agent "Open … details" button
+  // only renders inside a row — the roster is the one journey whose target
+  // control is data-dependent rather than always-present. Seed one agent
+  // through the admin API (the PM principal only carries dags.write, so it
+  // cannot create agents), on an isolated request context so the browser
+  // session stays logged in as the PM user. The journey then asserts a real
+  // row control instead of silently skipping it the way a fresh install
+  // would.
+  const admin = await request.newContext({ baseURL: test.info().project.use.baseURL });
+  try {
+    const login = await admin.post("/v1/auth/login", {
+      data: { username: ADMIN_USER, password: ADMIN_PASS },
+    });
+    expect(login.status()).toBe(200);
+    const seeded = await admin.get("/v1/agents");
+    expect(seeded.status()).toBe(200);
+    if ((await seeded.json()).length === 0) {
+      const created = await admin.post("/v1/agents", {
+        data: { name: "Keyboard Journey Agent", description: "seeded by keyboard.spec.ts" },
+      });
+      expect(created.status()).toBe(201);
+    }
+  } finally {
+    await admin.dispose();
+  }
+
   const journeys: { path: string; expected: RegExp[] }[] = [
     { path: "/agents", expected: [/\+ Create/, /Open .* details/] },
     { path: "/mcp", expected: [/Test connection/, /\+ add server/, /:servers/] },

@@ -1,9 +1,13 @@
 ---
 inventory-delta:
-  tests/: +0
+  packages/hive-conductor/tests/e2e: +0
 ---
 
 # Issue 370 keyboard reachability
+
+The `+0` delta is intentional: this change adds browser-only `*.spec.ts`
+journeys, which pytest never collects, so the suite's pytest node count (the
+`test_pm_workflow_api.py` API tests) does not move.
 
 The keyboard journey inventory for the Conductor primary surfaces now lives in
 `packages/hive-conductor/tests/e2e/keyboard.spec.ts`. That path is the one the
@@ -33,6 +37,13 @@ transcribing passing tests:
   save button is disabled until a value is entered, so it is correctly absent
   from the tab order; the journey now asserts the always-reachable reveal toggle
   and token input.
+- **The /agents journey assumed a seeded roster.** The ported suite's
+  `/agents` leg expected the per-agent `Open … details` button, but a cold
+  hive has zero agents, so the control never rendered and the journey failed
+  the moment it ran against a real backend. The journey now seeds one agent
+  through an isolated admin API request context (the PM principal only holds
+  `dags.write`), then walks the tab order — asserting a real row control
+  instead of skipping it the way a fresh install silently would.
 
 ## What the ported suite covers
 
@@ -53,6 +64,15 @@ transcribing passing tests:
 
 The Design Studio parent-surface journey remains in
 `tests/e2e/design-studio-keyboard.spec.ts` and is unchanged.
+
+## Executed evidence
+
+All five journeys pass (5/5, ~10s) against the branch's own frontend build
+served by a live hive backend, walked with a real Chromium — including the
+full Tab-order leg over `/agents`, `/mcp`, `/credentials`, `/rsi`, and
+`/cli/canvas`. The click-only ratchet (`npm run check:keyboard`) passes on the
+tree and was proven to fail CI-shaped when a click-only `<div onClick>` is
+planted in `src/`.
 
 ## Reviewed exceptions
 
