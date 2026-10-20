@@ -1,21 +1,17 @@
-"""The uvicorn worker loads the documented YAML config before any consumer (#1824).
+"""The worker's installed model configuration reaches the runtime's Binding.
 
-The shipped entrypoint (`maistro_server.entrypoint`) serializes migrations,
-then `os.execvp`s into uvicorn — anything loaded before the exec is lost with
-the parent process. `_runtime_lifespan` therefore loads the documented
-configuration in the worker itself, before `_validate_startup` (which reads
-`ROUTER_API_KEY` through the singleton) and before `_build_container` (whose
-`_agent_config` reads `model_bindings` and the security grants through it).
+The worker loads the operator YAML itself before any consumer
+(`_validate_startup` reads `ROUTER_API_KEY` through the singleton,
+`_agent_config` reads `model_bindings` / the security grants through it) — the
+loader semantics themselves are pinned by develop's
+`test_model_config_process_startup.py`. This file is the proof that the
+configuration which reaches that worker actually reaches the runtime's
+scoped Binding:
 
-Pinned here:
-
-- a fresh worker process loads the documented file with NO test singleton
-  injection, and the declared `model.chat` Bindings resolve through the real
-  Container (existing bootstrap + scope routing; no transport);
-- a malformed or type-invalid explicit file refuses startup before any
-  Container is built — never substituted with empty/default success;
-- a missing file keeps the parser contract: empty, fail-closed model
-  authorization, and startup proceeds.
+- the declared `model.chat` Binding resolves through the real Container the
+  worker itself built, on the existing bootstrap + scope routing (no
+  transport, no test singleton injection);
+- the same holds in a fresh process running the real shipped lifespan.
 """
 
 from __future__ import annotations
@@ -41,9 +37,6 @@ _DRIVER_TIMEOUT_S = 180.0
 @pytest.fixture(autouse=True)
 def _yaml_singleton_hygiene() -> Iterator[None]:
     """`load_yaml_config` sets a process-wide singleton; do not leak it."""
-    # Also clear container state a previous test's successful boot left on the
-    # shared module-level app, so refusal tests can assert "no container was
-    # built" against THIS test's own attempt.
     main.app.state.container = None
     yield
     settings_module.set_yaml_config(None)
@@ -79,22 +72,6 @@ def _write_yaml(tmp_path: Path, body: str) -> Path:
 
 
 class TestWorkerLoadsDocumentedConfig:
-    async def test_missing_file_starts_empty_and_fail_closed(
-        self, _clean_boot_env: None, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
-        """Missing explicit path = the pinned parser contract: `{}` -> empty
-        fail-closed model authorization, startup proceeds."""
-        monkeypatch.setenv("MAISTRO_CONFIG", str(tmp_path / "absent.yaml"))
-
-        async with _lifespan():
-            yaml_config = settings_module.get_yaml_config()
-            assert yaml_config is not None
-            assert yaml_config.model_bindings == []
-            assert main._model_bindings() == []
-            # The container this worker built carries the empty list: nothing
-            # is authorized, and nothing was invented.
-            assert main.app.state.container is not None
-
     async def test_worker_loads_yaml_before_validation_and_container(
         self, _clean_boot_env: None, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
@@ -132,47 +109,6 @@ class TestWorkerLoadsDocumentedConfig:
             )
             assert binding.provider_name == "worker-model"
             assert binding.credential_refs == ()  # no key configured -> no credential
-
-    async def test_malformed_yaml_refuses_startup_before_any_container(
-        self, _clean_boot_env: None, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
-        config_path = _write_yaml(tmp_path, "model_bindings: [unbalanced\n")
-        monkeypatch.setenv("MAISTRO_CONFIG", str(config_path))
-
-        with pytest.raises(RuntimeError, match="failed to load or validate"):
-            async with _lifespan():
-                pass
-        # The failure is a startup failure: no Container was built, no
-        # singleton was set, and empty/default success was not substituted.
-        assert main.app.state.container is None
-        assert settings_module.get_yaml_config() is None
-
-    async def test_type_invalid_yaml_refuses_startup_before_any_container(
-        self, _clean_boot_env: None, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
-        config_path = _write_yaml(tmp_path, 'model_bindings: "not-a-list"\n')
-        monkeypatch.setenv("MAISTRO_CONFIG", str(config_path))
-
-        with pytest.raises(RuntimeError, match="failed to load or validate"):
-            async with _lifespan():
-                pass
-        assert main.app.state.container is None
-        assert settings_module.get_yaml_config() is None
-
-    def test_sanitized_error_names_path_and_class_not_file_content(
-        self, _clean_boot_env: None, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
-        """The surfaced message is sanitized: the file's *content* (which for a
-        config file can be secret material) must not appear in it."""
-        config_path = _write_yaml(tmp_path, "jwt_secret: [unbalanced-secret-value\n")
-        monkeypatch.setenv("MAISTRO_CONFIG", str(config_path))
-
-        with pytest.raises(RuntimeError) as excinfo:
-            main._load_documented_yaml_config()
-        message = str(excinfo.value)
-        assert str(config_path) in message
-        assert "unbalanced-secret-value" not in message
-        assert type(excinfo.value.__cause__) is not None  # detail kept for tracebacks
 
 
 class TestFreshEntrypointProcess:
@@ -265,25 +201,3 @@ class TestFreshEntrypointProcess:
             f"worker failed:\nstdout:\n{proc.stdout[-4000:]}\nstderr:\n{proc.stderr[-4000:]}"
         )
         assert "WORKER-YAML-PROOF-OK" in proc.stdout
-
-    def test_fresh_worker_refuses_malformed_config_before_dispatch(self, tmp_path: Path) -> None:
-        config_path = _write_yaml(tmp_path, "model_bindings: [unbalanced\n")
-        driver = """
-            import asyncio
-
-
-            async def main() -> None:
-                from maistro_server import main
-
-                async with main.app.router.lifespan_context(main.app):
-                    pass
-
-
-            asyncio.run(main())
-        """
-        proc = self._spawn_worker(driver, {"MAISTRO_CONFIG": str(config_path)})
-        assert proc.returncode != 0
-        combined = proc.stdout + proc.stderr
-        # Startup was refused by the sanitized guard, before any dispatch.
-        assert "failed to load or validate" in combined
-        assert "app.state.container" not in combined or "WORKER" not in combined

@@ -25,6 +25,7 @@ from maistro.api_versioning import (
     VersionNegotiationMiddleware,
 )
 from maistro.config.database import resolve_database_url, to_asyncpg_dsn
+from maistro.config.loader import load_yaml_config
 from maistro.config.settings import Settings, get_settings
 from maistro.container import POSTGRES_SCHEMES, create_container
 from maistro.graph.concurrency import configure_graph_concurrency
@@ -330,6 +331,45 @@ def _model_bindings() -> list[ModelBindingConfig]:
     return list(yaml_config.model_bindings)
 
 
+def _load_operator_yaml() -> None:
+    """Load the operator YAML inside this worker process (#1880).
+
+    `maistro_server.entrypoint.main` runs the migrations and then `os.execvp`s
+    uvicorn, so the parent that may have read `maistro.yaml` no longer exists
+    when the worker starts: `load_yaml_config`'s process-wide singleton dies
+    with the exec'd-away interpreter, and every reader below —
+    `_validate_startup`'s `_router_api_key`, then `_agent_config`'s
+    `_security_config` and `_model_bindings` on the way into
+    `create_container` — would see `None` and silently ship the fail-closed
+    defaults no matter what the operator declared. Loading here, before those
+    consumers, is what makes the declarations reach the Container the worker
+    actually builds.
+
+    A file that parses but violates the schema — and a malformed one — must
+    stop startup rather than degrade into those defaults, so the loader's
+    exception is logged sanitized and re-raised without its cause: parser
+    errors embed raw file contents (`_load_raw_yaml`'s "Invalid YAML in ...")
+    and a type-invalid value echoes the operator's input, so the event carries
+    only the config path and the exception type, and `from None` cuts the
+    chained traceback that would otherwise publish them to stderr.
+    """
+    config_path = os.getenv("MAISTRO_CONFIG", "config/maistro.yaml")
+    try:
+        load_yaml_config()
+    except Exception as exc:
+        logger.error(
+            "operator_yaml_config_invalid",
+            config_path=config_path,
+            reason=type(exc).__name__,
+        )
+        msg = (
+            f"Operator YAML configuration is invalid; refusing to start "
+            f"({config_path}). See the operator_yaml_config_invalid startup "
+            f"log event."
+        )
+        raise RuntimeError(msg) from None
+
+
 async def _build_container(settings: Settings, pg_pool: Any) -> tuple[Any, ModelChatEgress]:
     """The process's one Container and the governed egress it comes with.
 
@@ -409,51 +449,6 @@ async def _drain_queue_singleton() -> None:
         await logger.awarning("task_receipt_drain_on_shutdown_failed", exc_info=True)
 
 
-def _load_documented_yaml_config() -> None:
-    """Load + validate the documented YAML config in this worker (#1824).
-
-    The shipped entrypoint (``entrypoint.py``) serializes migrations, then
-    ``os.execvp``s into uvicorn — so any YAML singleton loaded before the exec
-    is lost with the parent process. The uvicorn worker that builds the
-    Container is therefore the place the documented configuration must be
-    loaded, and it must happen before the first consumer (``_validate_startup``
-    and ``_agent_config`` both read the singleton).
-
-    Failure semantics, per the parser contract in ``maistro.config.loader``:
-    a missing file loads as the empty, fail-closed configuration (no model
-    Bindings, no grants — the pinned ``_load_raw_yaml`` contract), while a
-    malformed or type-invalid *explicit* configuration propagates as a
-    startup failure BEFORE any Container is built or model call can be
-    dispatched. It is never caught into empty/default success. The surfaced
-    message is sanitized — file path and failure class only — because YAML
-    and pydantic error strings can echo offending input, which for a config
-    file can be secret material; the chained cause keeps the detail for
-    operators reading tracebacks.
-    """
-    from maistro.config.loader import load_yaml_config
-
-    config_path = os.getenv("MAISTRO_CONFIG", "config/maistro.yaml")
-    try:
-        config = load_yaml_config()
-    except Exception as exc:
-        logger.error(
-            "yaml_config_invalid",
-            path=config_path,
-            error=type(exc).__name__,
-            detail="refusing startup before container/model dispatch",
-        )
-        raise RuntimeError(
-            f"Documented configuration {config_path!r} failed to load or validate "
-            f"({type(exc).__name__}); startup refused before any model dispatch."
-        ) from exc
-    logger.info(
-        "yaml_config_loaded",
-        path=config_path,
-        model_bindings=len(config.model_bindings),
-        permission_preset=config.security.permission_preset or "none",
-    )
-
-
 @asynccontextmanager
 async def _runtime_lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Start/stop the background task runner with the app lifecycle."""
@@ -463,13 +458,16 @@ async def _runtime_lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
     configure_logging(debug=settings.debug, json_output=not settings.debug)
 
-    # Load the documented YAML configuration in THIS worker, before anything
-    # consumes it (#1824): `_validate_startup` reads `ROUTER_API_KEY` through
-    # the singleton via `_router_api_key()`, and `_agent_config` reads
-    # `model_bindings` / security grants through it. Loading only in the
-    # entrypoint parent cannot work — `os.execvp` replaces that process — and
-    # tests injecting the singleton do not prove the shipped path.
-    _load_documented_yaml_config()
+    # The worker loads the operator YAML itself (#1880, carrying #1824): the
+    # entrypoint parent exec'd uvicorn away, taking any preload with it, and
+    # every consumer below — `_validate_startup` through `_router_api_key`,
+    # then `_agent_config` through `_security_config`/`_model_bindings` on the
+    # way into `create_container` — reads the singleton this sets. An invalid
+    # file stops startup here rather than bringing the server up as if the
+    # operator had declared nothing. Loading only in the entrypoint parent
+    # cannot work — `os.execvp` replaces that process — and tests injecting
+    # the singleton do not prove the shipped path.
+    _load_operator_yaml()
 
     # Fail-fast startup validation
     _validate_startup(settings)

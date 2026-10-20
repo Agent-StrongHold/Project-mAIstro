@@ -1,7 +1,7 @@
 ---
 inventory-delta:
   packages/hive-conductor/backend/tests: +18
-  packages/maistro-server/tests: +7
+  packages/maistro-server/tests: +2
 ---
 
 # #1824 installed model configuration reaches the runtime's Binding and gateway credential
@@ -38,16 +38,15 @@ with the effective key is *not* refused — it dispatches to the gateway it
 names, carrying that credential as the bearer token. `stream` delegates to
 `complete`, so one passage covers the guard for both entry points.
 
-**Server +7** pin the worker-side config load: missing file starts empty and
-fail-closed (the pinned parser contract); the worker loads the documented YAML
-before `_validate_startup` and `_agent_config` (the YAML alone satisfies the
-ROUTER_API_KEY check, and the declared Binding resolves through the real
-Container's bootstrap + scope routing); malformed and type-invalid explicit
-configs refuse startup before any Container is built, with a sanitized message
-that never echoes file content; and two fresh-subprocess proofs run the real
-shipped lifespan in a clean worker process — one loading the documented config
-and resolving the Binding with no test singleton injection, one refusing a
-malformed file before dispatch.
+**Server +2** prove the installed configuration reaches the runtime's scoped
+Binding: the declared `model.chat` Binding resolves through the real Container
+the worker itself built (existing bootstrap + scope routing; no transport; no
+test singleton injection), in-process and in a fresh shipped-entrypoint
+process. The loader semantics those two proofs ride on — the worker-side YAML
+hook, the fail-closed missing-file contract, and the sanitized refusal of a
+malformed/type-invalid file — are owned by develop's
+`test_model_config_process_startup.py` (see the reconciliation below), not
+duplicated here.
 
 ## Develop-merge reconciliation (no node-ID delta)
 
@@ -150,3 +149,37 @@ Verified: `check-vulture-baseline.py packages/*/src --min-confidence 60
 reachability-baseline identity tests pass (they failed at the round's starting
 head `0485b254d` and pass on develop tip — the drift was the branch's own
  revived module).
+
+## Develop-sync conflict resolution (merge of `e708451b3887` / `fad17a87`)
+
+The develop sync left one unresolved conflict in
+`packages/maistro-server/src/maistro_server/main.py`: the branch (#1824) had
+added `_load_documented_yaml_config` and develop (#1880) had added
+`_load_operator_yaml`, both as the first YAML consumer in `_runtime_lifespan`.
+The two are the same behavior with contradictory failure semantics, so the
+merge keeps one.
+
+Resolution: develop's `_load_operator_yaml` wins. Its docstring states the
+reason the branch's version is not kept — the branch re-raised
+`RuntimeError(...) from exc`, and the chained cause is a parser/pydantic
+error whose message embeds raw file content (`_load_raw_yaml`'s
+"Invalid YAML in ...", a type-invalid value echoing the operator's input).
+That publishes secret material to stderr in the traceback, which violates the
+issue's "sanitized diagnostics" requirement; develop's `from None` cuts the
+chain and logs only the path and the exception type. The branch's duplicate
+function and its local `load_yaml_config` import are removed; the module-level
+import develop's function uses stays.
+
+Test consequence: the branch's
+`test_worker_yaml_config_startup.py` had seven node IDs. Five pinned the
+loader semantics (missing-file, malformed refusal, type-invalid refusal,
+sanitized-message, fresh malformed refusal) and asserted the branch's message
+and kept `__cause__`; those are develop's coverage and are dropped rather than
+re-pointed, so the loader keeps one test home. The two that prove the issue's
+actual title — the YAML-declared Binding resolving through the real Container,
+in-process and in a fresh worker process — survive unchanged (they never
+referenced the loader function or its message). Net server delta: **+7 → +2**,
+recorded in the front matter above; `1880-worker-yaml-load.md` keeps its +6
+for develop's own file, so the suite's expected collected count is unchanged
+in total. No quality-ledger rows move: `maistro.config.loader` stays live
+through the surviving module-level import.
