@@ -1,7 +1,7 @@
 ---
 inventory-delta:
   packages/maistro-core/tests: +5
-  packages/hive-conductor/backend/tests: +15
+  packages/hive-conductor/backend/tests: +17
   tests/: +4
 ---
 # #845 host-authorized delegation and execution tiers
@@ -31,11 +31,11 @@ is now driven end-to-end against a production-shaped Sentinel (fail-closed
 `build_permission_table` + live `CapabilityPermissionSource` over the
 default capability registry). Pins: the shipped empty table blocks every
 node; a stated `graph.node.execute` permission grant makes the node run at
-the sandbox floor; a configured grant cannot authorize a roleless principal
-(the unsatisfiable-gate regression this repair fixes — the adapter now
-carries host-resolved roles into its Principal); an untrusted node needs an
-explicit tier record, not just a permission grant; an explicit
-`ROLE_AUTO` record is the only path to inline execution.
+the floor the host resolves for it; a configured grant cannot authorize a
+roleless principal (the unsatisfiable-gate regression this repair fixes —
+the adapter now carries host-resolved roles into its Principal); an
+untrusted node needs an explicit tier record, not just a permission grant;
+an explicit `ROLE_AUTO` record selects inline execution.
 
 Core grant provisioning goes through the documented host-only mutation API
 (`InMemoryDelegationAuthority.add_host_grant`), keeping the trust boundary
@@ -116,7 +116,8 @@ New evidence:
   roles `admin` and `user` (the roles a Conductor user record carries).
 - `packages/hive-conductor/backend/tests/test_execution_mode.py` (new file,
   8 tests) pins the behavior of that grant: a normal node is reachable at
-  the sandbox floor, `graph.node.untrusted` stays blocked, a principal
+  the floor the host resolves for it (inline when the node cannot reach the
+  world, sandboxed when it can), `graph.node.untrusted` stays blocked, a principal
   without a host role is denied, and the isolation floor is derived from the
   tier Sentinel resolved — never from a caller label. The four
   execution-mode tests that used to live in the core suite moved here with
@@ -132,12 +133,73 @@ New evidence:
 - **Elevation request/grant/clear is not exposed over HTTP.**
   `request_self_elevation` / `confirm_self_elevation` exist in
   `maistro.security.sentinel.elevation` and the container wires an
-  `elevation_store`, but no shipped route issues or clears an elevation; the
-  tier therefore stays at `SELF_ELEVATION` (sandbox floor) for a graph node.
+  `elevation_store`, but no shipped route issues or clears an elevation.
 - **`graph.node.untrusted` remains ungranted** pending an explicit host
   tier/approval record.
 
 `inventory-delta` for this note is now `packages/maistro-core/tests: +5`
-(the execution-mode tests moved to the Hive suite), `packages/hive-conductor/backend/tests: +15`
+(the execution-mode tests moved to the Hive suite), `packages/hive-conductor/backend/tests: +17`
 (the new `test_execution_mode.py`, 8 tests, plus the branch's earlier
 adapter pins) and `tests/: +4` (the new parametrized shipped-profile pin).
+
+## Repair round (2026-10-27, second) — the isolation floor is the host's, not a blanket elevation
+
+The develop sync left 30 develop-origin DAG tests failing
+(`test_dag_model_tools.py`, 27; `test_legacy_dag_node_container_composition.py`,
+3). Both were branch-caused, in two different ways.
+
+### The floor: a blanket `SELF_ELEVATION` default made every node sandboxed
+
+`LegacyConductorNode._execute` resolved `graph.node.execute` with
+`reversibility="irreversible"` and `default=Tier.SELF_ELEVATION`, so every
+trusted node resolved to an elevation tier and therefore to the *sandbox*
+floor. Two product consequences, both observed:
+
+- the sandbox executor refuses the `autonomous` mode without a
+  user-space-kernel backend ("REFUSED: 'autonomous' execution requires
+  gVisor or microVM isolation"), which is what the 30 tests failed with;
+- the Conductor's *tool* nodes (e.g. `clarify`) lost their tool semantics,
+  because the tool path only exists on the inline branch of
+  `_run_node_tier` — a tool node in the sandbox path runs the generic
+  model script instead.
+
+The floor is now the host's own reading of the node
+(`services/legacy_dag_node.py::_node_reaches_the_world`): a node whose
+*declared* capabilities can reach the world (shell / file write / secrets) is
+irreversible, so the host tier resolves to an elevation tier and the node
+runs sandboxed; a node that declares none of them is reversible, so the host
+tier resolves to the inline floor. An explicit host tier record still
+governs either way (it can raise the floor to the sandbox or deny the node),
+and the caller's `execution_tier` / `tier_approved_by` labels remain
+metadata only. The fail-closed gate is unchanged: without the deployment's
+`graph.node.execute` grant the node is still blocked before any of this.
+
+New/updated pins in `packages/hive-conductor/backend/tests/test_legacy_dag_node.py`:
+a stated grant runs an ordinary node inline; a node that declares
+side-effecting capabilities runs in the isolated subprocess; an elevating
+host tier record raises an ordinary node to the sandbox floor. The
+adapter-level pins in `test_execution_mode.py` now state the two floors a
+shipped deployment produces (inline for a reversible node, sandbox for an
+irreversible one).
+
+### The fixtures: the develop tests were running in a deployment that stated nothing
+
+The two develop-origin modules built their container with
+`create_container(AgentConfig(...))` — no permission grant, and an acting
+user the host had no record of — so under the fail-closed table every node
+was denied (`node_blocked … reason=host_policy`). They now model the
+deployment they run in, through two shared fixtures in
+`packages/hive-conductor/backend/tests/conftest.py`:
+
+- `shipped_deployment_security` reads the *shipped* Conductor profile
+  (`packages/hive-conductor/docker-compose.yml`) and uses the
+  `MAISTRO_PERMISSION_PRESET` / `MAISTRO_PERMISSIONS` it states, so the
+  tests prove the shipped authority instead of a restated copy of it (a
+  profile that stopped stating the grant fails these tests loudly);
+- `host_user_actor` registers the acting user in the host's user store for
+  the duration of the test (and removes it again), because the adapter
+  resolves the principal's roles from that store
+  (`services/canonical_dag_runner._host_principal_roles`).
+
+No product code was weakened to get there: the deployment states the grant,
+the host states the role, and the gate still denies anything else.
