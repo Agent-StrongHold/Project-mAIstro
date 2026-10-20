@@ -1,6 +1,7 @@
 ---
 inventory-delta:
-  packages/maistro-canvas/tests: +76
+  packages/maistro-canvas/tests: +88
+  packages/maistro-server/tests: +7
 ---
 
 # #393 Canvas layer scale bounded before image allocation
@@ -42,3 +43,20 @@ is the new file.
   timeout) no longer commits the request's transforms to the live session
   canvas — the specs are applied to a projection and committed only on
   success. The third test pins that a valid scale stores the validated value.
+- Deep-review repair (+12 canvas, +7 `maistro-server/tests`): the four
+  allocation holes the round-2 review found are closed and pinned —
+  `TestScaleValidatedBeforeDecode` (a rejected scale never fetches/decodes:
+  `composite()` validates before the store round-trip, `_composite_layers`
+  before `Image.open`), `TestDecodedPixelCap` (the `[cap, 2*cap)` window
+  where Pillow only *warns* now rejects typed on compositor, tool and
+  upload paths, and Pillow's raw `DecompressionBombError` is translated
+  into the typed error), `TestRotationBoundingBox`
+  (`rotate(expand=True)`'s ~sqrt(2)-area bounding box is computed, capped
+  per-side/per-image, and charged to the per-request budget *before* the
+  rotation allocates — asserted via a rotate spy), and
+  `TestTypedCompositorLimitErrors` in the server suite (publish/export map
+  `LAYER_SCALE_OUT_OF_RANGE`/`LAYER_PIXEL_BUDGET_EXCEEDED` to 422 and
+  `COMPOSITE_TIMEOUT` to 504 by stable code, matching the canvas routes,
+  while an untyped provider failure stays a truthful 502). All ten
+  regression-naming tests were demonstrated to fail against the pre-fix
+  code before landing.

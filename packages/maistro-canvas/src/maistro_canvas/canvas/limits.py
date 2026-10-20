@@ -14,6 +14,14 @@ server-configured bounds that are enforced *before* any pixel allocation:
 - :class:`PixelBudget` charges each resize against a per-request cumulative
   cap so many individually modest layers cannot accumulate into an
   unbounded allocation ("cumulative multi-layer abuse").
+- :func:`rotated_dimensions` bounds the ``rotate(expand=True)`` bounding box
+  against the same per-image caps *before* the rotation allocates — a
+  45° rotation of a full-cap layer grows its footprint by ~sqrt(2) and that
+  growth is charged to the budget, not just the resize that preceded it.
+- :func:`validate_decoded_pixels` rejects a decoded source whose pixel count
+  is above the per-image cap: Pillow's ``MAX_IMAGE_PIXELS`` guard only warns
+  at the cap and raises at twice it, so the window in between would
+  otherwise decode above the configured limit.
 - :func:`run_with_resize_timeout` bounds the decode/resize worker so a slow
   composite fails explicitly instead of hanging the caller.
 - :func:`configure_pillow_decompression_limit` pins Pillow's decode-time
@@ -29,6 +37,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -49,8 +58,10 @@ __all__ = [
     "PixelBudget",
     "configure_pillow_decompression_limit",
     "load_image_limits",
+    "rotated_dimensions",
     "run_with_resize_timeout",
     "scaled_dimensions",
+    "validate_decoded_pixels",
     "validate_scale",
 ]
 
@@ -224,6 +235,72 @@ def scaled_dimensions(
     return new_w, new_h
 
 
+def validate_decoded_pixels(
+    width: int,
+    height: int,
+    limits: CanvasImageLimits | None = None,
+    *,
+    what: str = "decoded image",
+) -> None:
+    """Reject a decoded image whose pixel count exceeds the per-image cap.
+
+    Pillow's ``MAX_IMAGE_PIXELS`` guard only *warns* once a decode reaches
+    the cap and raises ``DecompressionBombError`` at twice it, so a source
+    in the ``[cap, 2*cap)`` window would otherwise be accepted above the
+    server-configured per-image limit. Every decode of untrusted pixels
+    ends with this check, so the cap is enforced exactly, not at 2x.
+    """
+    bound = limits if limits is not None else load_image_limits()
+    if width * height > bound.max_layer_pixels:
+        msg = (
+            f"{what} is {width}x{height} ({width * height} pixels), above the "
+            f"per-image maximum of {bound.max_layer_pixels} pixels"
+        )
+        raise LayerPixelBudgetError(msg)
+
+
+def rotated_dimensions(
+    src_w: int,
+    src_h: int,
+    rotation_degrees: float,
+    limits: CanvasImageLimits | None = None,
+) -> tuple[int, int]:
+    """Compute and bound the ``rotate(expand=True)`` bounding box (#393).
+
+    ``rotate(angle, expand=True)`` allocates a new image sized to the
+    axis-aligned bounding box of the rotated rectangle, which for a 45°
+    rotation is ~sqrt(2) times the area — an allocation above the per-image
+    cap that neither ``scaled_dimensions`` nor ``PixelBudget.charge`` saw.
+    The bounding box is computed *before* the rotation and validated
+    against the same per-side and per-image caps as the resize target;
+    callers charge it against the :class:`PixelBudget` as well, because the
+    peak holds the resized image and its rotated copy at the same time.
+    """
+    bound = limits if limits is not None else load_image_limits()
+    if rotation_degrees == 0.0:
+        return src_w, src_h
+    angle = math.radians(rotation_degrees % 360.0)
+    cos_a, sin_a = abs(math.cos(angle)), abs(math.sin(angle))
+    # The epsilon absorbs FP noise at right angles (cos(90°) is ~6e-17, and
+    # ceil() would round 60.000000000000006 up to 61): the box is a bound to
+    # check against the caps, and a one-pixel under/over-estimate at a right
+    # angle is exactly the size PIL itself allocates (the swap of the sides).
+    new_w = math.ceil(src_w * cos_a + src_h * sin_a - 1e-9)
+    new_h = math.ceil(src_w * sin_a + src_h * cos_a - 1e-9)
+    if new_w > bound.max_dimension or new_h > bound.max_dimension:
+        msg = (
+            f"rotated size {new_w}x{new_h} exceeds the per-side maximum of {bound.max_dimension}px"
+        )
+        raise LayerPixelBudgetError(msg)
+    if new_w * new_h > bound.max_layer_pixels:
+        msg = (
+            f"rotated size {new_w}x{new_h} ({new_w * new_h} pixels) exceeds the "
+            f"per-image maximum of {bound.max_layer_pixels} pixels"
+        )
+        raise LayerPixelBudgetError(msg)
+    return new_w, new_h
+
+
 class PixelBudget:
     """Cumulative per-request budget for resized layer pixels."""
 
@@ -266,6 +343,16 @@ async def run_with_resize_timeout(
     The worker runs off the event loop (``asyncio.to_thread`` by the
     caller); this bound converts an over-long CPU-bound step into an
     explicit :class:`CompositeTimeoutError` instead of an indefinite hang.
+
+    Boundary, stated honestly: cancelling the await cannot terminate an
+    OS thread, so the *caller* fails at the timeout while the thread runs
+    its already-bounded work to completion. That is acceptable because
+    every allocation the worker can make is validated against the
+    server-configured caps *before* it happens (scale, resize target,
+    decoded pixel count, rotation bounding box, Pillow's decode guard), so
+    the worst a runaway worker can do is burn bounded CPU — never an
+    unbounded allocation. The request itself never hangs: it fails with a
+    typed error and nothing is persisted.
     """
     bound = limits if limits is not None else load_image_limits()
     try:

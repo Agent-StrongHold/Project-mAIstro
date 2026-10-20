@@ -45,6 +45,7 @@ from maistro_canvas.canvas.limits import (
     PixelBudget,
     configure_pillow_decompression_limit,
     load_image_limits,
+    rotated_dimensions,
     run_with_resize_timeout,
     scaled_dimensions,
     validate_scale,
@@ -120,6 +121,32 @@ class _RecordingStore:
     async def save_composite(self, comp: Any, *, org_id: str) -> Any:
         self.saved.append(comp)
         return comp
+
+
+class _RecordingRotate:
+    """Patch target that records every ``Image.rotate`` call site request."""
+
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    def __call__(self, pil_rotate: Any) -> Any:
+        def wrapper(image: Image.Image, angle: float, *args: Any, **kwargs: Any) -> Any:
+            self.calls.append({"angle": angle, "size": image.size, "kwargs": kwargs})
+            return pil_rotate(image, angle, *args, **kwargs)
+
+        return wrapper
+
+
+class _RecordingOpen:
+    """Patch target that records every ``Image.open`` decode request."""
+
+    def __init__(self, pil_open: Any) -> None:
+        self._open = pil_open
+        self.calls: list[bytes] = []
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        self.calls.append(b"<open>")
+        return self._open(*args, **kwargs)
 
 
 def _canvas(width: int = 1024, height: int = 1024) -> CanvasRecord:
@@ -879,3 +906,213 @@ class TestServerConfig:
         monkeypatch.setenv("MAISTRO_CANVAS_MAX_SCALE", "0")
         limits = load_image_limits()
         assert limits.max_scale == CanvasImageLimits().max_scale
+
+
+# ---------------------------------------------------------------------------
+# Repair round 3: decode/rotation allocation boundaries (#393 deep-review)
+# ---------------------------------------------------------------------------
+
+
+class TestScaleValidatedBeforeDecode:
+    """A rejected scale never pays for a decode — the review found the
+    ``convert("RGBA")`` (which forces the full pixel decode) running before
+    ``validate_scale`` in both transform paths."""
+
+    def test_scale_is_validated_before_the_source_is_fetched(self) -> None:
+        """The compositor rejects the scale before the image store is hit."""
+        store = _DictImageStore({"a": _png((10, 10))})
+        compositor = PilCompositorService(store)
+        compositor._limits = SMALL_LIMITS
+        with pytest.raises(LayerScaleLimitError, match="maximum"):
+            _run(compositor.composite(_canvas(), [_layer("a", "a", scale=1e6)]))
+        assert store.fetch_count == 0  # no fetch, so no decode was ever forced
+
+    def test_tool_scale_is_validated_before_any_decode(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The tool path validates the scale before ``Image.open`` runs."""
+        from maistro_canvas.canvas.tool import _composite_layers
+
+        canvas = _tool_canvas("s-nodecode")
+        canvas.get_layer("l1").scale = 1e6  # type: ignore[attr-defined]
+        recording = _RecordingOpen(Image.open)
+        monkeypatch.setattr(Image, "open", recording)
+        with pytest.raises(LayerScaleLimitError, match="maximum"):
+            _composite_layers(canvas, limits=SMALL_LIMITS)
+        assert recording.calls == []  # the stored bytes were never decoded
+
+
+class TestDecodedPixelCap:
+    """Pillow warns at ``MAX_IMAGE_PIXELS`` and raises only at 2x, so the
+    ``[cap, 2*cap)`` window decoded above the configured per-image cap; the
+    explicit post-decode check enforces the cap exactly."""
+
+    def test_decoded_source_above_per_image_cap_is_rejected(self) -> None:
+        """A 200x200 source (40k px) at a valid downscale is rejected — the
+        decode itself exceeded the 10k-px per-image cap."""
+        store = _DictImageStore({"big": _png((200, 200))})
+        compositor = PilCompositorService(store)
+        compositor._limits = SMALL_LIMITS
+        recording = _RecordingResize()
+        original = Image.Image.resize
+        Image.Image.resize = recording(original)
+        try:
+            with pytest.raises(LayerPixelBudgetError, match="per-image maximum"):
+                _run(compositor.composite(_canvas(), [_layer("big", "big", scale=0.5)]))
+        finally:
+            Image.Image.resize = original
+        assert recording.requested == []
+
+    def test_tool_composite_rejects_decoded_layer_above_cap(self) -> None:
+        """The tool path holds stored layer bytes to the same per-image cap."""
+        import maistro_canvas.canvas.tool as tool
+        from maistro_canvas.canvas.tool import _composite_layers
+
+        tool._canvases.pop("s-decoded-cap", None)
+        canvas = get_or_create_canvas("s-decoded-cap", 256, 256)
+        canvas.add_layer(
+            tool.Layer(
+                id="huge",
+                name="huge",
+                layer_type="object",
+                image_data=_png((200, 200)),
+                width=200,
+                height=200,
+                scale=0.5,  # the resize target (100x100) is inside the cap
+            )
+        )
+        with pytest.raises(LayerPixelBudgetError, match="per-image maximum"):
+            _composite_layers(canvas, limits=SMALL_LIMITS)
+
+    @pytest.mark.asyncio
+    async def test_upload_between_cap_and_twice_cap_is_rejected_typed(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """1600 px against a 1000-px cap: Pillow only warns — the explicit
+        check rejects it typed, and no layer is persisted."""
+        canvas = _tool_canvas("u-window")
+        monkeypatch.setenv("MAISTRO_CANVAS_MAX_LAYER_PIXELS", "1000")
+        monkeypatch.setattr(Image, "MAX_IMAGE_PIXELS", Image.MAX_IMAGE_PIXELS)
+        result = await execute_canvas(
+            "u-window",
+            "upload",
+            source_image=base64.b64encode(_png((40, 40))).decode(),
+        )
+        assert result["error"].startswith("LAYER_PIXEL_BUDGET_EXCEEDED"), result
+        assert "per-image maximum" in result["error"]
+        assert set(canvas.layers) == {"l1"}  # nothing was persisted
+
+    @pytest.mark.asyncio
+    async def test_upload_above_twice_cap_is_typed_not_a_raw_bomb(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """2500 px against a 1000-px cap: Pillow raises its raw
+        DecompressionBombError at open — translated into the typed error so
+        the tool reports an explicit code instead of a PIL traceback."""
+        canvas = _tool_canvas("u-bomb")
+        monkeypatch.setenv("MAISTRO_CANVAS_MAX_LAYER_PIXELS", "1000")
+        monkeypatch.setattr(Image, "MAX_IMAGE_PIXELS", Image.MAX_IMAGE_PIXELS)
+        result = await execute_canvas(
+            "u-bomb",
+            "upload",
+            source_image=base64.b64encode(_png((50, 50))).decode(),
+        )
+        assert result["error"].startswith("LAYER_PIXEL_BUDGET_EXCEEDED"), result
+        assert "decompression guard" in result["error"]
+        assert set(canvas.layers) == {"l1"}  # nothing was persisted
+
+
+class TestRotationBoundingBox:
+    """``rotate(expand=True)`` allocates the rotated bounding box — up to
+    sqrt(2)x the area — which the resize-time checks never saw; the box is
+    now computed, capped, and charged *before* the rotation."""
+
+    def test_rotated_dimensions_math(self) -> None:
+        generous = CanvasImageLimits(
+            max_scale=64.0,
+            max_layer_pixels=10_000_000,
+            max_request_pixels=40_000_000,
+            max_dimension=10_000,
+            resize_timeout_s=5.0,
+        )
+        assert rotated_dimensions(100, 60, 0.0, generous) == (100, 60)
+        assert rotated_dimensions(100, 60, 90.0, generous) == (60, 100)
+        # 45deg on a square: each side grows by sqrt(2) (141.42 -> 142)
+        assert rotated_dimensions(100, 100, 45.0, generous) == (142, 142)
+        assert rotated_dimensions(100, 100, -45.0, generous) == (142, 142)
+
+    def test_rotated_box_above_per_side_cap_is_rejected(self) -> None:
+        tall = CanvasImageLimits(
+            max_scale=64.0,
+            max_layer_pixels=10_000_000,
+            max_request_pixels=40_000_000,
+            max_dimension=1_000,
+            resize_timeout_s=5.0,
+        )
+        with pytest.raises(LayerPixelBudgetError, match="per-side maximum"):
+            rotated_dimensions(900, 900, 45.0, tall)  # 1273 > 1000
+
+    def test_rotated_box_above_per_image_cap_is_rejected_before_rotate(self) -> None:
+        """A full-cap layer rotated 45deg would allocate ~2x the cap."""
+        store = _DictImageStore({"r": _png((100, 100))})
+        compositor = PilCompositorService(store)
+        compositor._limits = SMALL_LIMITS  # per-image cap 10_000 == 100x100
+        recording = _RecordingRotate()
+        original = Image.Image.rotate
+        Image.Image.rotate = recording(original)
+        try:
+            layer = _layer("r", "r", scale=1.0)
+            layer.rotation = 45.0
+            with pytest.raises(LayerPixelBudgetError, match="per-image maximum"):
+                _run(compositor.composite(_canvas(), [layer]))
+        finally:
+            Image.Image.rotate = original
+        assert recording.calls == []  # the rotation was never attempted
+
+    def test_rotation_expansion_is_charged_to_the_request_budget(self) -> None:
+        """The rotated box is charged too: 10k charged for the resize leaves
+        5k, and the ~20k rotated box exhausts the 15k request budget."""
+        store = _DictImageStore({"r": _png((100, 100))})
+        compositor = PilCompositorService(store)
+        compositor._limits = CanvasImageLimits(
+            max_scale=64.0,
+            max_layer_pixels=30_000,  # the rotated box fits the per-image cap
+            max_request_pixels=15_000,  # but not the request budget
+            max_dimension=1_000,
+            resize_timeout_s=5.0,
+        )
+        layer = _layer("r", "r", scale=1.0)
+        layer.rotation = 45.0
+        with pytest.raises(LayerPixelBudgetError, match="per-request budget"):
+            _run(compositor.composite(_canvas(), [layer]))
+
+    def test_modest_rotation_still_composites(self) -> None:
+        """A rotation whose bounding box stays inside every cap still renders."""
+        store = _DictImageStore({"r": _png((10, 10))})
+        compositor = PilCompositorService(store)
+        compositor._limits = SMALL_LIMITS
+        layer = _layer("r", "r", scale=2.0)
+        layer.rotation = 45.0  # 20x20 -> 29x29 box, well inside the caps
+        result = _run(compositor.composite(_canvas(), [layer]))
+        assert Image.open(io.BytesIO(result.image_bytes)).size == (1024, 1024)
+
+    @pytest.mark.asyncio
+    async def test_tool_composite_rejects_rotation_above_the_per_image_cap(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The agent tool path bounds the rotated box too, and a rejected
+        rotation leaves the live layer transforms untouched."""
+        canvas = _tool_canvas("s-rot")
+        monkeypatch.setenv("MAISTRO_CANVAS_MAX_LAYER_PIXELS", "20000")
+        monkeypatch.setenv("MAISTRO_CANVAS_MAX_DIMENSION", "1000")
+        monkeypatch.setattr(Image, "MAX_IMAGE_PIXELS", Image.MAX_IMAGE_PIXELS)
+        result = await execute_canvas(
+            "s-rot",
+            "composite",
+            layers=[{"layer_id": "l1", "scale": 2.0, "rotation": 45}],
+        )
+        # 64x64 @2x -> 128x128 fits the 20k cap; the 182x182 rotated box does not
+        assert result["error"].startswith("LAYER_PIXEL_BUDGET_EXCEEDED"), result
+        assert "rotated size" in result["error"]
+        layer = canvas.get_layer("l1")
+        assert (layer.scale, layer.rotation) == (1.0, 0)  # spec not committed

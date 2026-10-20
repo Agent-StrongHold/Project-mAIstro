@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Any
 from maistro.http import shared_client
 from maistro_canvas.types import (
     CanvasError,
+    LayerPixelBudgetError,
     validate_canvas_dimensions,
 )
 
@@ -29,8 +30,10 @@ from .limits import (
     PixelBudget,
     configure_pillow_decompression_limit,
     load_image_limits,
+    rotated_dimensions,
     run_with_resize_timeout,
     scaled_dimensions,
+    validate_decoded_pixels,
     validate_scale,
 )
 
@@ -236,10 +239,14 @@ def _composite_layers(
 ) -> bytes:
     """Composite all visible layers into a single PNG.
 
-    #393: every layer's scale is validated and its resize target is
-    bounded against the per-image and cumulative per-request pixel caps
-    before ``Image.resize`` allocates. A rejected layer raises a typed
-    error and no partial output is returned.
+    #393: every layer's scale is validated *before* its bytes are decoded,
+    and the decoded pixel count, the resize target, and the
+    ``rotate(expand=True)`` bounding box are each bounded against the
+    per-image and cumulative per-request pixel caps before the allocation
+    that would exceed them. A rejected layer raises a typed error and no
+    partial output is returned. Pillow's ``DecompressionBombError`` (raised
+    at twice the pinned guard) is translated into the same typed error so a
+    bomb never escapes as a raw PIL exception.
     """
     from PIL import Image
 
@@ -253,17 +260,33 @@ def _composite_layers(
         if not layer.visible or layer.image_data is None:
             continue
 
-        img = Image.open(io.BytesIO(layer.image_data)).convert("RGBA")
-
-        # Scale — validate and bound the target before allocating (#393)
+        # Scale first — validating after the decode would mean an invalid
+        # scale still pays for a full pixel decode (#393).
         scale = validate_scale(layer.scale, bound)
+
+        try:
+            img = Image.open(io.BytesIO(layer.image_data)).convert("RGBA")
+        except Image.DecompressionBombError as exc:
+            msg = (
+                f"layer {layer.id!r} decodes above the per-image maximum of "
+                f"{bound.max_layer_pixels} pixels (Pillow decompression guard)"
+            )
+            raise LayerPixelBudgetError(msg) from exc
+        # Pillow's guard only warns at the cap and raises at 2x; this check
+        # enforces the per-image cap exactly on what was actually decoded.
+        validate_decoded_pixels(img.width, img.height, bound, what=f"layer {layer.id!r} source")
+
         new_w, new_h = scaled_dimensions(img.width, img.height, scale, bound)
         budget.charge(new_w, new_h)
         if (new_w, new_h) != img.size:
             img = img.resize((new_w, new_h), Image.Resampling.LANCZOS)
 
-        # Rotate (expand=True keeps the full image after rotation)
+        # Rotate (expand=True keeps the full image after rotation, whose
+        # bounding box can be ~sqrt(2) times the area: bound and charge it
+        # before the rotation allocates (#393)).
         if layer.rotation != 0:
+            rot_w, rot_h = rotated_dimensions(new_w, new_h, layer.rotation, bound)
+            budget.charge(rot_w, rot_h)
             img = img.rotate(-layer.rotation, expand=True, resample=Image.Resampling.BICUBIC)
 
         # Paste at position (using alpha channel as mask)
@@ -572,6 +595,10 @@ async def execute_canvas(  # noqa: C901
     if action == "composite":
         try:
             limits = load_image_limits()
+            # The stored layer bytes are decoded here, so Pillow's decode
+            # guard must be pinned to this request's per-image cap before
+            # the worker runs (#393) — not only on the upload path.
+            configure_pillow_decompression_limit(limits)
 
             # Decode/resize runs in a worker thread under the configured
             # timeout; a typed failure means no output is produced at all.
@@ -646,7 +673,18 @@ async def execute_canvas(  # noqa: C901
         def _decode_and_reencode() -> tuple[bytes, int, int]:
             from PIL import Image
 
-            decoded = Image.open(io.BytesIO(img_bytes)).convert("RGBA")
+            try:
+                decoded = Image.open(io.BytesIO(img_bytes)).convert("RGBA")
+            except Image.DecompressionBombError as exc:
+                msg = (
+                    f"upload decodes above the per-image maximum of "
+                    f"{limits.max_layer_pixels} pixels (Pillow decompression guard)"
+                )
+                raise LayerPixelBudgetError(msg) from exc
+            # Pillow's guard only warns at the cap and raises at 2x; this
+            # check enforces the per-image cap exactly, closing the window
+            # where an upload between the cap and twice it was accepted.
+            validate_decoded_pixels(decoded.width, decoded.height, limits, what="uploaded image")
             buf = io.BytesIO()
             decoded.save(buf, format="PNG")
             return buf.getvalue(), decoded.width, decoded.height
