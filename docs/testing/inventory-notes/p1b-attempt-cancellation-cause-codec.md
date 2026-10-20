@@ -190,3 +190,53 @@ model/codec inputs only and authorize no writer. PG/SQLite JSONB round trips,
 archive cold hydration and SQLite reopen remain separate persistence units in
 #232/#1151. Old-reader `extra=forbid` incompatibility with non-null causes
 remains until the separately reviewed cutover.
+
+## 2026-10-20 CI-repair round (head `eb732ba7a`)
+
+Assigned starting head `ad11cdf1a` (empty repair commit) was 508 behind
+`origin/develop` `e20e9f52e`; the required develop sync was merged as
+`eb732ba7aa50fc938816bc8aae1961c8fee45278`, conflict-free (`uv.lock` and
+`quality/vulture-baseline.json` auto-merged; this note and the codec test kept
+the branch's longer versions, no conflict markers left). Diff against
+`origin/develop` at the merged head is exactly four leaf files — this note,
+`auto-1885-3733.md`, the codec test and `uv.lock` (the pip-audit aiohttp/yarl
+remediation) — i.e. zero production files. Production input blobs at this head
+are unchanged from the previous record: `evidence_json.py`
+`5a069112...`, `model.py` `dab398a5...`, `durable_runs/types.py`
+`8042c1ca...`.
+
+Two corrections were made to the test file in this round, and nothing else:
+
+1. **PR #2228 review P2 (hollow suite): the `_HAS_P1A` skip gating is gone.**
+   P1a is present on this branch's base (`Attempt.model_fields` carries the
+   field, `attempt_cancellation_cause_model.py` is 34/34), so conditional
+   skips could only hide a lost feature. All 36 rows are now unconditional.
+   Fail-first evidence for the removal, applied to
+   `runs/model.py` as a mutation (field + wrap serializer + CANCELLED-only
+   validator removed, enum import left available — exactly the reviewed
+   regression): **21 failed, 15 passed, 0 skipped**, and the 21 failures are
+   precisely the rows that used to skip (`requested`/`recovered` rows plus
+   `explicit-null`). Production file restored byte-identical
+   (`git diff --stat` on `runs/model.py` empty) and the suite re-ran
+   **36 passed, 0 skipped**.
+2. Docstring/scoping prose updated to say the rows are unconditional.
+
+Gate evidence at `eb732ba7a` (all re-executed this round, no earlier claim
+reused):
+
+- `uv sync --locked --extra dev` ok; `uv run ruff check .` "All checks passed";
+  `uv run ruff format --check .` 3362 files already formatted.
+- codec suite **36 passed, 0 skipped**; P1a model suite **34 passed**.
+- `scripts/check-suite-inventory.py`: `ok: 21 suite(s) match` (32385 collected,
+  0 duplicate evidence); this leaf's delta is still exactly
+  `packages/maistro-core/tests: +36`.
+- `scripts/check-test-duplicates.py`: ok, no byte-identical test files.
+- vulture with CI's exact arguments and `RATCHET_BASE_REV=origin/develop`:
+  rc=0, base `e20e9f52ea94` / candidate `eb732ba7aa50`, **1326 reviewed
+  identities == 1326 findings**. No ledger amendment was needed or made.
+
+Separately, the required `durable-events` gate is red at this head for a
+**develop-side regression outside this leaf** — see
+`.cursor/context/repair-1885-e368165b.md`. It is not caused by the codec test
+or by `uv.lock`, and fixing it means editing a PG store, which this issue's
+boundary forbids.

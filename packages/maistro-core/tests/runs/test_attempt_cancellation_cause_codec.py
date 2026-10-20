@@ -10,13 +10,11 @@ stores serialize each Attempt individually through `json_of`, and this leaf
 covers exactly that unit; #232/#1151 keep the later persistence units.
 
 Dependency honesty: the optional `cancellation_cause` field and its
-null-dropping wrap serializer are P1a's deliverable (#1884, branch
-`feat/1884-attempt-cancellation-cause-model`). Where this checkout predates
-that model change, the case rows that cannot exist without the field skip with
-`_P1A_REASON` and every row that can run against production today still runs —
-unknown-cause omission against a frozen legacy baseline, DurableRunRecord
-lineage round trips, non-finite evidence and rejection behavior are proven
-either way, and the skipped rows activate with zero edits once P1a lands.
+null-dropping wrap serializer are P1a's deliverable (#1884), and P1a is present
+on this branch's base — `Attempt.model_fields` carries the frozen field and
+`Attempt.model_dump` drops only an unknown cause. These rows are therefore
+unconditional: a regression that removes the field or its serializer must fail
+the suite, not skip it into a green run (PR #2228 review, P2).
 
 Typed REQUESTED/RECOVERED fixtures are model/codec inputs only. Nothing here
 writes a durable store, authorizes a producer, or upgrades historical payloads
@@ -58,22 +56,13 @@ from maistro.runs.model import (
 
 #: P1a's tested shape: `Attempt.cancellation_cause: CancellationCause | None`
 #: (frozen, CANCELLED-only when set) plus a wrap model serializer that keeps an
-#: unknown cause off the wire without dropping other null evidence.
-_HAS_P1A = "cancellation_cause" in Attempt.model_fields
-_P1A_REASON = "P1a (#1884) optional Attempt.cancellation_cause is absent from this checkout"
-
+#: unknown cause off the wire without dropping other null evidence. Nothing here
+#: is conditionally skipped: P1a is present at this base, so losing it is a
+#: failure to report rather than a reason to leave the rows unseen.
 _CAUSE_PARAMS: list[Any] = [
     pytest.param(None, id="unknown"),
-    pytest.param(
-        CancellationCause.REQUESTED,
-        id="requested",
-        marks=pytest.mark.skipif(not _HAS_P1A, reason=_P1A_REASON),
-    ),
-    pytest.param(
-        CancellationCause.RECOVERED,
-        id="recovered",
-        marks=pytest.mark.skipif(not _HAS_P1A, reason=_P1A_REASON),
-    ),
+    pytest.param(CancellationCause.REQUESTED, id="requested"),
+    pytest.param(CancellationCause.RECOVERED, id="recovered"),
 ]
 
 _CREATED = datetime(2026, 10, 3, 12, 0, 0, tzinfo=UTC)
@@ -384,24 +373,16 @@ def test_cause_round_trips_through_canonical_evidence_json(
     assert excluded == {
         key: value for key, value in _expected_wire(cause).items() if key != "error"
     }
-    if _HAS_P1A:
-        selected = attempt.model_dump(mode="json", include={"cancellation_cause", "result"})
-        if cause is None:
-            assert selected == {"result": None}
-        else:
-            assert selected == {"cancellation_cause": cause.value, "result": None}
+    selected = attempt.model_dump(mode="json", include={"cancellation_cause", "result"})
+    if cause is None:
+        assert selected == {"result": None}
+    else:
+        assert selected == {"cancellation_cause": cause.value, "result": None}
 
 
 @pytest.mark.parametrize(
     "explicit_null",
-    [
-        pytest.param(False, id="absent"),
-        pytest.param(
-            True,
-            id="explicit-null",
-            marks=pytest.mark.skipif(not _HAS_P1A, reason=_P1A_REASON),
-        ),
-    ],
+    [pytest.param(False, id="absent"), pytest.param(True, id="explicit-null")],
 )
 def test_unknown_cause_is_omitted_without_dropping_other_none(explicit_null: bool) -> None:
     """Missing or null input hydrates to an unknown cause and emits no key.
