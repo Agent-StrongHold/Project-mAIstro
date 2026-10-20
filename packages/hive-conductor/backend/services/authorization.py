@@ -61,6 +61,12 @@ PROTECTED_OPS: dict[str, dict[str, str]] = {
         # prefix is listed first because matching is ordered startswith.
         "/v1/capabilities/approvals": "approvals.resolve",
         "/v1/capabilities": "config.write",
+        # A credential test can send a draft API key to an operator-supplied
+        # endpoint, so it is the same trust decision as saving the credential;
+        # otherwise an ordinary session would gain an SSRF/probe primitive.
+        "/v1/credentials": "credentials.write",
+        # Provider activation uses the LiteLLM master key, mutates the global
+        # model registry, and can trigger billed calls (SPEC-072726-3439).
         "/v1/providers": "config.write",
     },
     "PUT": {
@@ -104,6 +110,16 @@ def required_permission(method: str, path: str) -> str | None:
     # capability identifiers registered above plus the named, reviewed
     # exceptions below; a path's spelling grants no authority.
     if path.endswith("/feedback"):
+        return None
+    # Workspace Home (#1048): per-member presentation surface carve-out.
+    _parts = path.split("/")
+    if (
+        method in {"PUT", "POST"}
+        and len(_parts) >= 5
+        and _parts[1] == "v1"
+        and _parts[2] == "workspaces"
+        and _parts[4] == "home"
+    ):
         return None
     if method == "GET" and (path == "/v1/dag-runs" or path.startswith("/v1/dag-runs/")):
         return None
