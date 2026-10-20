@@ -245,3 +245,46 @@ production composition. `EventWakeBridge` is a tested, banked entry point but
 no shipped consumer subscribes it to the canonical Event plane yet, and the
 control-plane `goals` row is still separate from #1572's `canonical_goals`;
 both are #805/#804 activation work, not part of this mechanics issue.
+
+## 2026-10-20 acceptance-state repair: bank the coverage floor this branch raised
+
+The merge-queue re-evaluation at 0fbd58674 left one aggregate-blocking
+failure the vulture repair above did not touch: `quality-acceptance`
+(`scripts/check-ac-state.py --run-tests --ratchet --mandate <base>`, base
+fad17a87c) fails with *unbanked improvement* — this branch's 105 new tests
+moved existing decided criteria to the `reachable` rung, raising
+`design_coverage` from the folded floor's 39.641 to a measured 44.2377. The
+ratchet's own remedy is `--bank`, which writes a per-branch note
+(`quality/ac-state-notes/auto-806.json`) rather than touching any grant or
+ledger, per #585's no-shared-line design; banked with exactly that command
+against the real Postgres server and re-verified: the ratchet, the criteria
+mandate (`criteria added or newly claimed: 0`, `unproven and not declared
+so: 0`) and the chain mandate (`specs_implementing_nothing: 0`,
+`adrs_without_implementing_spec: 0`, `specs_declaring_no_criteria: 0`)
+all pass at HEAD.
+
+Same round, full aggregate re-verification of every `quality.yml` sub-check
+named by the Pillars 1–4/7/8 gate, each with CI's exact arguments:
+ruff check/format, check-radon-baseline (134 == base) plus `radon cc
+packages/*/src -i third_party --min B --total-average` (average A), xenon
+(134 block violations == baseline 134, 0 module, 0 average), vulture
+(candidate+trusted, 1320 findings vs base 1321), interrogate (all four
+maistro-core floors pass), mypy --strict (800 files, clean under `uv sync
+--locked --all-extras`), pyright (16 errors <= baseline 21), check-doc-links
+(2464 files, 0 broken), check_enumerations, check-workspace-retirement,
+check-route-permissions, check-principal-identity, check-frontend-typed-client,
+vendor_ifeval/vendor_bfcl --check, check-reachability, the proof-envelope and
+model-proof synthetic conformance steps (both fail closed),
+check-credential-authority, check-wiring-reads, check-agent-store-writes,
+check-contract-markers, check-convergence-matrix, check-reachability-dispositions,
+check-security-inventory, check-image-inventory, check-image-pins,
+check-workflow-inventory, check-backlog-consistency, check-execution-lifecycles,
+check-model-egress, check-foreign-harness-egress, `pytest
+packages/maistro-core/tests/fitness -v --timeout=30` (27 passed),
+`pytest formal/ --timeout=120 -q` (666 passed, 1 skipped, after CI's `uv pip
+install -e packages/maistro-evolve`), and the exact-debt-ledger trio
+(check-ratchet-provenance, check-shipped-surface-truth, check-vulture-baseline)
+plus check-durable-table-inventory (116 tables) and
+check-workflow-write-safety. The goals suite passes 176/176 against the real
+pgvector/pg18 server with `MAISTRO_TEST_DATABASE_URL` set, including the
+PostgreSQL catalogue-agreement tests the CI postgres service runs.
