@@ -117,7 +117,7 @@ maintenance cost of the technique stated precisely.
 | Closed-loop starvation queries | 12 queries (3 budgets × 4 properties), 0.07 s total |
 | Teeth guards | 2 mutations, both detected with witnesses |
 | Suite cost | +12 node IDs, ~3 s wall clock in `packages/maistro-core/tests` |
-| Solver | z3-solver 5.3.1.0, per-query timeout 10 s (never approached), dev dependency only |
+| Solver | z3-solver 5.1.0.0, per-query timeout 10 s (never approached), dev dependency only |
 | Modeling effort | ~330 lines of machinery + ~230 lines of tests; the transcription bugs above were found and fixed by the differential within the first grid walks |
 
 Solver performance and explainability are not the bottleneck: every query is
