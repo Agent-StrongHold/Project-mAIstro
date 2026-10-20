@@ -1,0 +1,498 @@
+"""Workspace Attention is a read-time projection over canonical sources (#1049).
+
+Driven against the app's real durable run store and the canonical Workspace
+authority, not mocks: the contract is that Attention classifies what those
+owners already hold, discloses it only inside the caller's Workspace, and
+writes nothing back.
+"""
+
+from __future__ import annotations
+
+from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
+from typing import Any
+
+import pytest
+from services.attention import list_attention
+from services.workspace_authority import create_workspace
+
+from maistro.graph.definitions import Graph, Node
+from maistro.graph.durable_runs.types import DurableRunRecord
+from maistro.graph.execution_state import GraphExecutionState
+from maistro.graph.nodes.base import (
+    PAUSE_AWAITING_HUMAN_ANSWER,
+    PAUSE_AWAITING_HUMAN_APPROVAL,
+)
+from maistro.runs.lifecycle import transition_node_run, transition_run
+from maistro.runs.model import GraphSnapshot, NodeRun, Run, RunStatus
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+
+_NOW = datetime(2026, 9, 25, 12, 0, tzinfo=UTC)
+
+
+def _paused_record(
+    run_id: str,
+    *,
+    workspace_id: str,
+    kind: str = "hitl",
+    paused_reason: str = PAUSE_AWAITING_HUMAN_ANSWER,
+    deadline: datetime | None = None,
+    created_at: datetime | None = None,
+    extra_metadata: dict[str, Any] | None = None,
+) -> DurableRunRecord:
+    """A Run paused on one node, shaped as the durable executor persists it."""
+    graph = Graph(
+        workspace_id=workspace_id,
+        project_id="project-attention",
+        name="attention",
+        nodes=[Node(node_id="ask", node_type="human.ask_question")],
+    )
+    run = Run(
+        run_id=run_id,
+        workspace_id=workspace_id,
+        project_id=graph.project_id,
+        graph=GraphSnapshot.from_graph(graph),
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
+    if created_at is not None:
+        run = run.model_copy(update={"created_at": created_at})
+    for status in (RunStatus.QUEUED, RunStatus.RUNNING, RunStatus.PAUSED):
+        run = transition_run(run, status)
+    node_run = NodeRun(run_id=run_id, node_id="ask", ordinal=1)
+    for status in (RunStatus.QUEUED, RunStatus.RUNNING, RunStatus.PAUSED):
+        node_run = transition_node_run(node_run, status)
+    metadata = {"paused_reason": paused_reason, "question": f"{run_id}?"}
+    metadata.update(extra_metadata or {})
+    state = GraphExecutionState(
+        run_id=run_id,
+        active_node_ids=("ask",),
+        blackboard_snapshot={},
+        metadata={
+            "initial_inputs": {},
+            "hitl_answers": {},
+            "pauses": {
+                "ask": {
+                    "kind": kind,
+                    "metadata": metadata,
+                    "resume_at": deadline.isoformat() if deadline else None,
+                }
+            },
+        },
+    )
+    return DurableRunRecord(run=run, graph_state=state, node_runs=(node_run,), version=1)
+
+
+async def _workspace(owner: str, name: str) -> str:
+    workspace = await create_workspace(
+        creator_user_id=owner,
+        name=name,
+        persona_template_id="default",
+        checklist=[],
+        theme_id="default",
+        voice_tone_override=None,
+    )
+    return workspace.id
+
+
+@pytest.fixture
+def run_store(monkeypatch):
+    """Document-shaped historical records are explicit read-only test input."""
+    from services import dag_agents
+
+    from maistro.graph.durable_runs import InMemoryDurableRunStore
+
+    store = InMemoryDurableRunStore()
+    monkeypatch.setattr(dag_agents, "get_run_store", lambda: store)
+    return store
+
+
+def _ids(body: dict[str, Any]) -> list[str]:
+    return [item["source_id"] for item in body["items"]]
+
+
+async def test_each_member_sees_only_their_own_workspace(run_store) -> None:
+    ws_admin = await _workspace("admin", "Attention admin")
+    ws_user = await _workspace("user", "Attention user")
+    await run_store.create(_paused_record("att-admin", workspace_id=ws_admin))
+    await run_store.create(_paused_record("att-user", workspace_id=ws_user))
+
+    admin_view = await list_attention("admin", ws_admin, now=_NOW)
+    user_view = await list_attention("user", ws_user, now=_NOW)
+
+    assert admin_view is not None and user_view is not None
+    assert _ids(admin_view) == ["att-admin/ask"]
+    assert _ids(user_view) == ["att-user/ask"]
+    assert admin_view["items"][0]["workspace_id"] == ws_admin
+    # A non-member gets exactly what a Workspace that does not exist gets.
+    assert await list_attention("user", ws_admin, now=_NOW) is None
+    assert await list_attention("user", "ws-does-not-exist", now=_NOW) is None
+
+
+async def test_a_near_deadline_outranks_an_older_undated_question(run_store) -> None:
+    ws = await _workspace("admin", "Attention ranking")
+    await run_store.create(
+        _paused_record(
+            "att-ancient",
+            workspace_id=ws,
+            created_at=_NOW - timedelta(days=400),
+        )
+    )
+    await run_store.create(
+        _paused_record("att-due", workspace_id=ws, deadline=_NOW + timedelta(hours=2))
+    )
+    await run_store.create(
+        _paused_record("att-later", workspace_id=ws, deadline=_NOW + timedelta(days=30))
+    )
+
+    body = await list_attention("admin", ws, now=_NOW)
+
+    assert body is not None
+    assert _ids(body) == ["att-due/ask", "att-later/ask", "att-ancient/ask"]
+    due, later, ancient = body["items"]
+    assert due["attention_class"] == "time_sensitive"
+    assert due["reason"].startswith("Answer due by 2026-09-25T14:00:00+00:00")
+    assert due["evidence"]["deadline"] == "2026-09-25T14:00:00+00:00"
+    # A deadline outside the horizon is evidence, not escalation.
+    assert later["attention_class"] == "queued"
+    # Four hundred days of waiting is still just a queued question.
+    assert ancient["attention_class"] == "queued"
+    assert ancient["reason"] == "Run att-ancient is waiting on your answer at node ask"
+    assert [item["rank"] for item in body["items"]] == [1, 2, 3]
+    assert ancient["answer_href"] == "/v1/hitl/att-ancient/ask/answer"
+    assert body["summary"] == {
+        "counts_by_class": {"time_sensitive": 1, "queued": 2},
+        "highest_class": "time_sensitive",
+        "rising": ["att-due/ask"],
+        "truncated": False,
+    }
+
+    # The horizon is configurable, and widening it is the only thing that
+    # promotes the later deadline.
+    wide = await list_attention("admin", ws, now=_NOW, horizon=timedelta(days=31))
+    assert wide is not None
+    assert [item["attention_class"] for item in wide["items"]] == [
+        "time_sensitive",
+        "time_sensitive",
+        "queued",
+    ]
+
+
+async def test_an_approval_pause_is_a_decision_naming_the_blocked_run(run_store) -> None:
+    ws = await _workspace("admin", "Attention approval")
+    await run_store.create(
+        _paused_record(
+            "att-approve",
+            workspace_id=ws,
+            paused_reason=PAUSE_AWAITING_HUMAN_APPROVAL,
+            extra_metadata={"approval_request_id": "apr-1"},
+        )
+    )
+
+    body = await list_attention("admin", ws, now=_NOW)
+
+    assert body is not None
+    (item,) = body["items"]
+    assert item["source_kind"] == "hitl_node_run"
+    assert item["attention_class"] == "queued"
+    assert item["reason"] == "Run att-approve is blocked awaiting your approval at node ask"
+    assert item["evidence"]["paused_reason"] == PAUSE_AWAITING_HUMAN_APPROVAL
+    assert item["evidence"]["payload"]["approval_request_id"] == "apr-1"
+
+
+async def test_a_long_old_backlog_cannot_push_out_a_near_deadline(run_store) -> None:
+    """The page ceiling applies after ordering, never to the oldest records first."""
+    ws = await _workspace("admin", "Attention backlog")
+    for index in range(205):
+        await run_store.create(
+            _paused_record(
+                f"att-old-{index:03d}",
+                workspace_id=ws,
+                created_at=_NOW - timedelta(days=300, minutes=index),
+            )
+        )
+    await run_store.create(
+        _paused_record("att-urgent", workspace_id=ws, deadline=_NOW + timedelta(hours=1))
+    )
+
+    body = await list_attention("admin", ws, now=_NOW)
+
+    assert body is not None
+    assert len(body["items"]) == 200
+    assert body["items"][0]["source_id"] == "att-urgent/ask"
+    assert body["summary"] == {
+        "counts_by_class": {"time_sensitive": 1, "queued": 205},
+        "highest_class": "time_sensitive",
+        "rising": ["att-urgent/ask"],
+        "truncated": True,
+    }
+
+
+async def test_an_overdue_pause_offers_no_answer(run_store) -> None:
+    """The store refuses answers past the deadline; Attention must not offer one."""
+    ws = await _workspace("admin", "Attention overdue")
+    await run_store.create(
+        _paused_record("att-overdue", workspace_id=ws, deadline=_NOW - timedelta(minutes=5))
+    )
+
+    body = await list_attention("admin", ws, now=_NOW)
+
+    assert body is not None
+    (item,) = body["items"]
+    assert item["attention_class"] == "queued"
+    assert item["answer_href"] is None
+    assert item["reason"].startswith(
+        "Answer deadline passed at 2026-09-25T11:55:00+00:00; awaiting expiry."
+    )
+    assert body["summary"]["rising"] == []
+
+
+async def test_membership_revoked_mid_scan_withholds_payloads(
+    run_store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The up-front check is not the disclosure decision; each record is rechecked."""
+    import services.attention as attention_mod
+    from services import workspace_authority
+
+    ws = await _workspace("user", "Attention revoked")
+    await workspace_authority.set_member(ws, user_id="admin", role="editor")
+    await run_store.create(_paused_record("att-revoked", workspace_id=ws))
+    real_is_member = workspace_authority.is_member
+    calls = 0
+
+    async def revoke_after_admission(user_id: str, workspace_id: str | None) -> bool:
+        nonlocal calls
+        calls += 1
+        allowed = await real_is_member(user_id, workspace_id)
+        if calls == 1:
+            await workspace_authority.remove_member(ws, user_id="admin")
+        return allowed
+
+    monkeypatch.setattr(attention_mod, "is_member", revoke_after_admission)
+
+    body = await list_attention("admin", ws, now=_NOW)
+
+    assert body is not None
+    assert body["items"] == []
+    assert calls >= 2
+
+
+async def test_a_naive_clock_is_refused(run_store) -> None:
+    ws = await _workspace("admin", "Attention naive clock")
+    with pytest.raises(ValueError, match="timezone"):
+        await list_attention("admin", ws, now=datetime(2026, 9, 25, 12, 0))
+
+
+async def test_a_machine_wait_is_not_attention(run_store) -> None:
+    ws = await _workspace("admin", "Attention machine")
+    await run_store.create(
+        _paused_record(
+            "att-timer", workspace_id=ws, kind="wait", deadline=_NOW + timedelta(minutes=5)
+        )
+    )
+
+    body = await list_attention("admin", ws, now=_NOW)
+
+    assert body is not None
+    assert body["items"] == []
+    assert body["summary"] == {
+        "counts_by_class": {},
+        "highest_class": None,
+        "rising": [],
+        "truncated": False,
+    }
+
+
+async def test_attention_finds_the_workspace_pause_behind_a_full_page_of_foreign_pauses(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The #1109 repair's Attention regression: Workspace-wide, behind one
+    full walk page of other tenants' human pauses, this Workspace's pause is
+    still found and `truncated` stays False. Driven against the canonical
+    store, where Workspace scope filters the assembled page — the shape that
+    read as an empty projection page and a false "ran out" before the
+    repair. `MAX_PENDING_SCAN_RECORDS` is pulled down to the page size so the
+    foreign prefix is a full page at Attention's own limit; without the
+    repair the walk answered empty here and called it complete."""
+    from services import attention as attention_module
+    from services import dag_agents
+
+    from maistro.graph.durable_runs import CanonicalDurableRunStore
+    from maistro.graph.durable_runs.continuation import InMemoryGraphContinuationStore
+    from maistro.projects.scope_store import InMemoryProjectScopeStore
+    from maistro.runs import InMemoryRunStore
+
+    projects = InMemoryProjectScopeStore()
+    spine = InMemoryRunStore(project_store=projects)
+    continuations = InMemoryGraphContinuationStore()
+    store = CanonicalDurableRunStore(spine, continuations)
+    monkeypatch.setattr(dag_agents, "get_canonical_run_store", lambda: store)
+    monkeypatch.setattr(attention_module, "MAX_PENDING_SCAN_RECORDS", 100)
+
+    ws = await _workspace("admin", "Attention behind foreign page")
+    foreign_ws = await _workspace("someone-else", "Attention foreign page")
+    own_project = (await projects.create_root(ws)).project_id
+    foreign_project = (await projects.create_root(foreign_ws)).project_id
+
+    async def _plant_canonical_pause(run_id: str, *, workspace_id: str, project_id: str) -> str:
+        """One human-paused Run on the canonical spine, projected beside it."""
+        from maistro.graph.durable_runs.continuation import GraphContinuation
+
+        graph = Graph(
+            workspace_id=workspace_id,
+            project_id=project_id,
+            name="attention",
+            nodes=[Node(node_id="ask", node_type="human.ask_question")],
+        )
+        admitted = await spine.create_run(
+            graph,
+            initial_status=RunStatus.QUEUED,
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+        )
+        await spine.transition_run(admitted.run_id, RunStatus.RUNNING)
+        await spine.transition_run(admitted.run_id, RunStatus.PAUSED)
+        node_run = await spine.create_node_run(admitted.run_id, node_id="ask")
+        await spine.transition_node_run(node_run.node_run_id, RunStatus.QUEUED)
+        await spine.transition_node_run(node_run.node_run_id, RunStatus.RUNNING)
+        await spine.transition_node_run(node_run.node_run_id, RunStatus.PAUSED)
+        run = await spine.get_run(admitted.run_id)
+        assert run is not None
+        node_runs = tuple(await spine.list_node_runs(admitted.run_id))
+        state = GraphExecutionState(
+            run_id=admitted.run_id,
+            active_node_ids=("ask",),
+            blackboard_snapshot={},
+            metadata={
+                "initial_inputs": {},
+                "hitl_answers": {},
+                "pauses": {
+                    "ask": {
+                        "kind": "hitl",
+                        "metadata": {
+                            "paused_reason": PAUSE_AWAITING_HUMAN_ANSWER,
+                            "question": f"{run_id}?",
+                        },
+                        "resume_at": None,
+                    }
+                },
+            },
+        )
+        await continuations.create(
+            GraphContinuation.of(
+                DurableRunRecord(run=run, graph_state=state, node_runs=node_runs, version=1)
+            )
+        )
+        return admitted.run_id
+
+    for index in range(100):
+        await _plant_canonical_pause(
+            f"att-foreign-{index:03d}",
+            workspace_id=foreign_ws,
+            project_id=foreign_project,
+        )
+    mine_run_id = await _plant_canonical_pause(
+        "att-behind", workspace_id=ws, project_id=own_project
+    )
+
+    body = await list_attention("admin", ws, now=_NOW)
+
+    assert body is not None
+    assert _ids(body) == [f"{mine_run_id}/ask"]
+    assert body["summary"]["truncated"] is False
+
+
+async def test_listing_attention_writes_nothing(run_store) -> None:
+    ws = await _workspace("admin", "Attention read-only")
+    await run_store.create(
+        _paused_record("att-readonly", workspace_id=ws, deadline=_NOW + timedelta(hours=1))
+    )
+    before = run_store._rows["att-readonly"].model_dump_json()
+
+    body = await list_attention("admin", ws, now=_NOW)
+
+    assert body is not None and _ids(body) == ["att-readonly/ask"]
+    assert run_store._rows["att-readonly"].model_dump_json() == before
+
+
+async def test_a_failed_run_is_queued_with_its_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The failure's evidence is the canonical Run's own error."""
+    import services.engine as engine_mod
+    from services.dag_run_store import get_dag_run_store
+
+    from maistro.container import create_container
+    from maistro.types.config import AgentConfig
+
+    container = await create_container(AgentConfig(router_api_key="test-key"))
+    monkeypatch.setattr(
+        engine_mod.get_engine(), "_agent_port", SimpleNamespace(container=container)
+    )
+    ws = await _workspace("admin", "Attention failure")
+    other = await _workspace("admin", "Attention failure elsewhere")
+    root = await container.project_scope_store.root_for_workspace(ws)
+    graph = Graph(
+        workspace_id=ws,
+        project_id=root.project_id,
+        name="failing",
+        nodes=[Node(node_id="only", node_type="transform.alias_keys")],
+    )
+    run = await container.run_store.create_run(
+        graph, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+    )
+    for status in (RunStatus.QUEUED, RunStatus.RUNNING):
+        await container.run_store.transition_run(run.run_id, status)
+    await container.run_store.transition_run(
+        run.run_id, RunStatus.FAILED, error="upstream tool refused the request"
+    )
+    projection = get_dag_run_store()
+    seeded = [run.run_id, "att-other-failed", "att-completed"]
+    try:
+        await _seed_projection(projection, run.run_id, ws, other)
+        body = await list_attention("admin", ws, now=_NOW)
+    finally:
+        for run_id in seeded:
+            projection._runs.pop(run_id, None)
+            projection._forget(run_id)
+            if run_id in projection._order:
+                projection._order.remove(run_id)
+
+    assert body is not None
+    (item,) = [i for i in body["items"] if i["source_kind"] == "failed_run"]
+    assert item["source_id"] == run.run_id
+    assert item["workspace_id"] == ws
+    assert item["attention_class"] == "queued"
+    assert item["evidence"]["error"] == "upstream tool refused the request"
+    assert item["reason"] == f"Run {run.run_id} failed: upstream tool refused the request"
+    assert item["answer_href"] is None
+
+
+async def _seed_projection(projection: Any, run_id: str, ws: str, other: str) -> None:
+    await projection.start_run(run_id=run_id, canonical_run_id=run_id, workspace_id=ws)
+    await projection.finish_run(run_id, status="failed")
+    await projection.start_run(run_id="att-other-failed", workspace_id=other)
+    await projection.finish_run("att-other-failed", status="failed")
+    await projection.start_run(run_id="att-completed", workspace_id=ws)
+    await projection.finish_run("att-completed", status="completed")
+
+
+async def test_route_scopes_attention_to_members(admin_client, authed_client, run_store) -> None:
+    ws_admin = await _workspace("admin", "Attention route admin")
+    ws_user = await _workspace("user", "Attention route user")
+    await run_store.create(_paused_record("att-route-admin", workspace_id=ws_admin))
+    await run_store.create(_paused_record("att-route-user", workspace_id=ws_user))
+
+    response = admin_client.get(f"/v1/workspaces/{ws_admin}/attention")
+    assert response.status_code == 200
+    assert _ids(response.json()) == ["att-route-admin/ask"]
+
+    foreign = admin_client.get(f"/v1/workspaces/{ws_user}/attention")
+    missing = admin_client.get("/v1/workspaces/ws-no-such-thing/attention")
+    assert foreign.status_code == missing.status_code == 404
+    assert foreign.json() == missing.json()
+
+    # The items carry the question a paused node is asking, so reading them
+    # takes the scope `/v1/hitl/pending` takes, even for the owner.
+    unscoped = authed_client.get(f"/v1/workspaces/{ws_user}/attention")
+    assert unscoped.status_code == 403
+    # Scope is checked before membership, so an unscoped caller cannot probe
+    # which Workspaces exist.
+    unscoped_missing = authed_client.get("/v1/workspaces/ws-no-such-thing/attention")
+    assert unscoped_missing.status_code == 403

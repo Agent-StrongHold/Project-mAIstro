@@ -1,9 +1,14 @@
 # ADR Decision Backlog
 
+> **Historical snapshot (2026-05).** Many items below were banked in PRs #76–83. For current
+> work use [BACKLOG.md](../../BACKLOG.md), [ROADMAP.md](../../ROADMAP.md), and the live ADR
+> corpus ([ADR-INDEX.md](ADR-INDEX.md)). Open dispositions that are *not* engine decisions
+> remain in [OUT-OF-SCOPE.md](OUT-OF-SCOPE.md).
+
 Tracked list of **open architectural decisions** for maistro-engine, produced by the layered
 consistency + coverage review (2026-05). The ADR corpus is internally consistent (PRs #76–81);
-this file tracks what is *still undecided* so the decision space is finite and worked top-down
-instead of discovered ad hoc.
+this file tracks what was *still undecided at that review* so the decision space is finite and
+worked top-down instead of discovered ad hoc.
 
 It is built from (a) the corpus's own self-admitted deferrals — 59 "out of scope", 16 "separate
 ADR", 12 "follow-up ADR", 3 "follow-up SPEC", 12 "deferred" markers — plus (b) subsystems with

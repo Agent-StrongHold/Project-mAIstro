@@ -36,19 +36,23 @@ from maistro.sandbox.backends.bubblewrap import (
 )
 from maistro.sandbox.backends.fake import FakeSandboxBackend
 from maistro.sandbox.network import EgressGrant, EgressMode
-from maistro.sandbox.policy import WorkloadPolicy
+from maistro.sandbox.policy import IsolationTier, WorkloadPolicy
 
 #: Capability, not binary presence. A host can have `bwrap` on PATH and be
 #: unable to build the namespace with it -- Ubuntu 24.04 restricting
 #: unprivileged user namespaces is the case that taught us -- and a suite
-#: keyed on `which` would run the kernel assertions there and fail.
-HAS_BWRAP = detect_host_capabilities().supports("bubblewrap")
-requires_bwrap = pytest.mark.skipif(
-    HAS_BWRAP is False, reason="this host cannot build a bubblewrap sandbox"
-)
+#: keyed on `which` would run the kernel assertions there and fail. The skip
+#: reason carries the probe's own note, so a host that fails under the
+#: enforced rlimits (#1235) reports *why* instead of a bare "skipped".
+_capabilities = detect_host_capabilities()
+HAS_BWRAP = _capabilities.supports("bubblewrap")
+_BWRAP_SKIP_REASON = "this host cannot build a bubblewrap sandbox"
+if not HAS_BWRAP and _capabilities.notes.get("bubblewrap"):
+    _BWRAP_SKIP_REASON += f": {_capabilities.notes['bubblewrap']}"
+requires_bwrap = pytest.mark.skipif(HAS_BWRAP is False, reason=_BWRAP_SKIP_REASON)
 
 
-def _caps(*tiers: str) -> HostCapabilities:
+def _caps(*tiers: IsolationTier) -> HostCapabilities:
     return HostCapabilities(tiers=tuple(tiers), notes={})
 
 
@@ -198,6 +202,18 @@ def test_the_sandbox_is_unshared_capability_dropped_and_detached(tmp_path: Path)
     assert "--new-session" in argv
 
 
+def test_read_paths_are_mounted_read_only(tmp_path: Path) -> None:
+    """A `filesystem.read` profile's paths arrive as `--ro-bind` mounts: the
+    workload reads the host files in place and cannot write them."""
+    argv = _backend(tmp_path).build_argv(
+        SandboxConfig(read_paths=["/srv/exports"]), tmp_path, ["true"]
+    )
+
+    assert "--ro-bind" in argv
+    ro_binds = [(argv[i + 1], argv[i + 2]) for i, a in enumerate(argv) if a == "--ro-bind"]
+    assert ("/srv/exports", "/srv/exports") in ro_binds
+
+
 def test_a_bare_network_boolean_does_not_grant_egress(tmp_path: Path) -> None:
     """`network=True` used to be the whole story. It is not any more (#77):
     egress comes from an explicit `EgressGrant` carrying a reason, so a config
@@ -326,6 +342,31 @@ async def test_a_real_sandbox_cannot_see_the_host_filesystem(tmp_path: Path) -> 
 
 
 @requires_bwrap
+async def test_a_real_sandbox_bounds_simultaneous_stdout_and_stderr(tmp_path: Path) -> None:
+    backend = BubblewrapSandboxBackend(root=tmp_path)
+    instance = await backend.spawn(
+        config=SandboxConfig(max_stdout_bytes=1024, max_stderr_bytes=1024)
+    )
+
+    result = await backend.exec(
+        instance,
+        [
+            "/bin/sh",
+            "-c",
+            "while :; do printf 'o%.0s' $(seq 1 4096); printf 'e%.0s' $(seq 1 4096) >&2; done",
+        ],
+        timeout_s=5,
+    )
+
+    assert result.exit_code == 125
+    assert result.output_limit_exceeded
+    assert result.stdout_truncated or result.stderr_truncated
+    assert result.stdout_bytes_retained <= 1024
+    assert result.stderr_bytes_retained <= 1024
+    await backend.destroy(instance)
+
+
+@requires_bwrap
 async def test_a_real_sandbox_times_out_rather_than_running_forever(tmp_path: Path) -> None:
     backend = BubblewrapSandboxBackend(root=tmp_path)
     instance = await backend.spawn(config=SandboxConfig())
@@ -419,6 +460,166 @@ def test_a_probe_that_cannot_run_at_all_is_not_a_tier(
 
     assert not caps.supports("bubblewrap")
     assert "could not run" in caps.notes["bubblewrap"]
+
+
+# --- the probe evidences Tier 3 under the budgets spawn enforces (#1235) ------
+
+
+def test_the_probe_runs_bwrap_under_the_spawn_budgets(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The defect this closes: the probe ran un-budgeted while `exec` pinned
+    `resource_limits` onto `bwrap` itself between fork and exec. On a host
+    whose UID task count already exceeded the `RLIMIT_NPROC` budget the probe
+    said Tier 3 and every spawn failed with EAGAIN at namespace clone. The
+    probe must not pass a test the sandbox will fail."""
+    import subprocess
+
+    from maistro.sandbox import detect
+    from maistro.sandbox.backends import bubblewrap as bwrap_module
+    from maistro.sandbox.backends.bubblewrap import resource_limits
+
+    applied: dict[int, tuple[int, int]] = {}
+    calls: list[dict[str, object]] = []
+
+    def _record_setrlimit(which: int, limits: tuple[int, int]) -> None:
+        applied[which] = limits
+
+    def _fake_run(*_args: object, **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        calls.append(kwargs)
+        preexec = kwargs.get("preexec_fn")
+        assert callable(preexec)
+        # Resolves through the monkeypatched setrlimit, so nothing real is
+        # applied to the test process -- only recorded.
+        preexec()
+        return subprocess.CompletedProcess(args=[], returncode=0, stdout=b"", stderr=b"")
+
+    monkeypatch.setattr(detect, "_which", lambda binary: "/usr/bin/bwrap")
+    monkeypatch.setattr(detect.subprocess, "run", _fake_run)
+    monkeypatch.setattr(bwrap_module.resource, "setrlimit", _record_setrlimit)
+
+    caps = detect.detect_host_capabilities()
+
+    assert caps.supports("bubblewrap")
+    assert len(calls) == 1
+    assert applied == resource_limits(SandboxConfig())
+
+
+def test_the_shared_preexec_hook_applies_exactly_the_limits_given(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One hook for `exec` and the probe, so the two cannot drift apart."""
+    import resource
+
+    from maistro.sandbox.backends.bubblewrap import preexec_for
+
+    applied: dict[int, tuple[int, int]] = {}
+
+    def _record_setrlimit(which: int, limits: tuple[int, int]) -> None:
+        applied[which] = limits
+
+    monkeypatch.setattr(resource, "setrlimit", _record_setrlimit)
+
+    preexec_for({resource.RLIMIT_NOFILE: (64, 128)})()
+
+    assert applied == {resource.RLIMIT_NOFILE: (64, 128)}
+
+
+def test_an_eagain_namespace_failure_is_reported_as_an_absent_tier(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The deterministic form of the #1235 reproduction, unitized: under the
+    enforced budgets `bwrap` fails at clone with EAGAIN, and that must read
+    as "Tier 3 absent, here is the stderr" -- not as a spawn-time surprise
+    after the policy check believed it had a boundary."""
+    import subprocess
+
+    from maistro.sandbox import detect
+
+    monkeypatch.setattr(detect, "_which", lambda binary: "/usr/bin/bwrap")
+    monkeypatch.setattr(
+        detect.subprocess,
+        "run",
+        lambda *_a, **_k: subprocess.CompletedProcess(
+            args=[],
+            returncode=1,
+            stdout=b"",
+            stderr=b"bwrap: Creating new namespace failed: Resource temporarily unavailable\n",
+        ),
+    )
+
+    caps = detect.detect_host_capabilities()
+
+    assert not caps.supports("bubblewrap")
+    assert "Resource temporarily unavailable" in caps.notes["bubblewrap"]
+
+
+def test_the_probe_applies_the_configured_budgets_not_the_defaults(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The disagreement the review caught (#1328): `SandboxConfig()` defaults
+    let the probe budget itself at `max_processes=128`, so on a host whose UID
+    task count fits that but not a configured `max_processes=1`, detection
+    evidenced Tier 3 the workload could not reproduce -- EAGAIN at spawn, after
+    the policy check. A caller that knows the config execution will run under
+    must be able to hand it to detection, and the probe must budget itself
+    with exactly those limits."""
+    import subprocess
+
+    from maistro.sandbox import detect
+    from maistro.sandbox.backends import bubblewrap as bwrap_module
+    from maistro.sandbox.backends.bubblewrap import resource_limits
+
+    tight = SandboxConfig(memory_mb=16, cpu_cores=0.1, max_processes=1)
+    applied: dict[int, tuple[int, int]] = {}
+
+    def _record_setrlimit(which: int, limits: tuple[int, int]) -> None:
+        applied[which] = limits
+
+    def _fake_run(*_args: object, **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        preexec = kwargs.get("preexec_fn")
+        assert callable(preexec)
+        # Resolves through the monkeypatched setrlimit, so nothing real is
+        # applied to the test process -- only recorded.
+        preexec()
+        return subprocess.CompletedProcess(args=[], returncode=0, stdout=b"", stderr=b"")
+
+    monkeypatch.setattr(detect, "_which", lambda binary: "/usr/bin/bwrap")
+    monkeypatch.setattr(detect.subprocess, "run", _fake_run)
+    monkeypatch.setattr(bwrap_module.resource, "setrlimit", _record_setrlimit)
+
+    caps = detect.detect_host_capabilities(tight)
+
+    assert caps.supports("bubblewrap")
+    assert applied == resource_limits(tight)
+    # The tight config's budgets, not the defaults -- the disagreement the
+    # review flagged is exactly `applied == resource_limits(SandboxConfig())`.
+    assert applied != resource_limits(SandboxConfig())
+
+
+def test_an_unsupported_preexec_hook_reads_as_absent_not_an_abort(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The subinterpreter case the review caught (#1328): CPython raises
+    `RuntimeError: preexec_fn not supported within subinterpreters` out of
+    `subprocess` before bwrap ever starts -- an embedded server worker is the
+    realistic host. A handler catching only OSError/SubprocessError let that
+    propagate out of `detect_host_capabilities` and abort selector
+    construction, instead of reporting Tier 3 absent with the reason the way
+    ADR-093's evidence contract requires."""
+    from maistro.sandbox import detect
+
+    def _no_subinterpreter_support(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("preexec_fn not supported within subinterpreters")
+
+    monkeypatch.setattr(detect, "_which", lambda binary: "/usr/bin/bwrap")
+    monkeypatch.setattr(detect.subprocess, "run", _no_subinterpreter_support)
+
+    caps = detect.detect_host_capabilities()
+
+    assert not caps.supports("bubblewrap")
+    assert "could not run" in caps.notes["bubblewrap"]
+    assert "subinterpreters" in caps.notes["bubblewrap"]
 
 
 # --- the operator entry point -------------------------------------------------

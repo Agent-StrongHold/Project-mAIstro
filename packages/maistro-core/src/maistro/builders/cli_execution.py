@@ -127,6 +127,7 @@ class CanonicalBuilderTurnExecutor:
             actor_principal_id=self.actor_principal_id,
         )
         self.last_record = await executor.execute(graph, run)
+        assert self.last_record is not None
         result = dict(dispatcher.result or {})
         result["canonical_run_id"] = run.canonical_run_id
         result["canonical_graph_id"] = run.canonical_graph_id

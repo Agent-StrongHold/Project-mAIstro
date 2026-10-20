@@ -17,6 +17,7 @@ Run standalone:
 
 from __future__ import annotations
 
+import json
 import os
 
 import httpx
@@ -65,7 +66,26 @@ def session(client: httpx.Client, setup_done):
             "password": "pmpass1234",
         },
     )
-    assert r.status_code == 200, f"Login failed: {r.text}"
+    if r.status_code != 200:
+        # The setup wizard runs once per data dir. Point this file (its
+        # docstring advertises standalone use) at a deployment whose wizard
+        # completed with different credentials and the login is *supposed*
+        # to 401 — the compose harness always seeds pmuser on a fresh data
+        # dir, so only a foreign target can land here. Name that situation
+        # instead of answering a bare "Invalid credentials" that reads like
+        # a regression in the login route.
+        status = client.get("/v1/setup/status")
+        seeded_as = ""
+        if status.status_code == 200:
+            seeded = (status.json().get("config") or {}).get("user_username")
+            if seeded and seeded != "pmuser":
+                seeded_as = (
+                    f" — this deployment's non-admin user is {seeded!r}, "
+                    "not 'pmuser': the setup wizard already ran with "
+                    "different credentials (fresh data dir or a pointed "
+                    "HIVE_BASE_URL at a foreign deployment)"
+                )
+        pytest.fail(f"Login as pmuser failed: {r.text}{seeded_as}")
     cookie = r.cookies.get("hive_session")
     assert cookie, "No session cookie returned"
     client.cookies.set("hive_session", cookie)
@@ -231,13 +251,69 @@ class TestDAGLifecycle:
 
 class TestAuditTrail:
     def test_audit_log_has_entries(self, client: httpx.Client, session):
-        r = client.get("/v1/audit")
-        assert r.status_code == 200
-        entries = r.json()
-        assert isinstance(entries, list)
-        # Should have at least dag_create + dag_run from above
-        actions = [e.get("action") for e in entries]
-        assert "dag_create" in actions or len(entries) > 0
+        # CI's no-key compose harness binds StubAgentPort, so it serves the
+        # personal legacy trail. A configured bridge serves admin-only Sentinel
+        # decisions (ADR-073). Select expectations from independent health,
+        # never accept either 200 or 403 based on the response under test.
+        health = client.get("/health")
+        assert health.status_code == 200
+        engine = health.json()["engine"]
+        assert engine["state"] == "ready", engine
+        port = engine["agent_port"]
+        assert port in {"StubAgentPort", "MaistroCoreBridge"}, engine
+        canonical = port == "MaistroCoreBridge"
+        identity = client.get("/v1/auth/whoami")
+        assert identity.status_code == 200
+        user = identity.json()["user"]
+        own_actors = {user["id"], user["username"]}
+        for path in ("/v1/audit", "/v1/audit/export"):
+            response = client.get(path, params={"limit": 1})
+            assert response.status_code == (403 if canonical else 200), response.text
+            if not canonical:
+                rows = (
+                    response.json()["entries"]
+                    if path == "/v1/audit"
+                    else [json.loads(line) for line in response.text.splitlines()]
+                )
+                assert rows, "The PM login must be recorded in the personal trail"
+                assert all(row["actor"] in own_actors for row in rows)
+                if path == "/v1/audit":
+                    assert len(rows) == 1
+                else:
+                    assert len(rows) <= 10_000
+                excluded = client.get(path, params={"actor": "admin"})
+                assert excluded.status_code == 200
+                if path == "/v1/audit":
+                    assert excluded.json() == {"entries": [], "next_cursor": None}
+                else:
+                    assert excluded.text == ""
+        # Keep the shared PM session untouched when reading as administrator.
+        with httpx.Client(base_url=BASE, timeout=30.0) as admin:
+            login = admin.post(
+                "/v1/auth/login",
+                json={
+                    "username": "admin",
+                    "password": "adminpass123",
+                },
+            )
+            assert login.status_code == 200, login.text
+            response = admin.get("/v1/audit", params={"limit": 1})
+            assert response.status_code == 200, response.text
+            body = response.json()
+            assert set(body) == {"entries", "next_cursor"}
+            assert len(body["entries"]) == 1
+            assert body["entries"][0]["id"].startswith("core-") is canonical
+            assert body["next_cursor"]
+            following = admin.get(
+                "/v1/audit",
+                params={
+                    "limit": 1,
+                    "cursor": body["next_cursor"],
+                },
+            )
+            assert following.status_code == 200
+            assert len(following.json()["entries"]) == 1
+            assert following.json()["entries"][0]["id"] != body["entries"][0]["id"]
 
 
 class TestDashboardAPIs:

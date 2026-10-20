@@ -16,6 +16,7 @@ from maistro.graph.types import (
     GraphTask,
     HyperagentOutput,
 )
+from maistro.memory.exposure import MemoryExposureMode
 from maistro.memory.learnings.extractor import ToolCorrectionExtractor
 from maistro.memory.learnings.store import InMemoryLearningStore
 from maistro.memory.outcomes import InMemoryOutcomeStore
@@ -73,6 +74,15 @@ class HarnessEnvironment:
         self.provider.reset()
 
     async def run_graph(self, **kwargs: Any) -> HyperagentOutput:
+        """Drive a fresh `GraphRun` and capture its events (ADR-065/SPEC-224).
+
+        This is a test fixture, not an execution path. It shares a name with
+        the pre-durable top-level `run_graph`, which is retired (#1154), but it
+        never was that function: it builds Graph-domain traversal in-process to
+        exercise strategies, scoring and event emission, and claims no
+        canonical Run/NodeRun/Attempt evidence and no restart recovery.
+        Production Graph work goes through `maistro.graph.durable_runs`.
+        """
         task_description = kwargs.pop("task_description", "test task")
         # This is a test-harness default — the string is consumed by GraphTask
         # which never writes to it directly; sandbox writes are gated by
@@ -107,11 +117,13 @@ def create_test_environment(
     warden = Warden()
     learning_extractor = ToolCorrectionExtractor()
     quota_tracker = InMemoryQuotaTracker()
-    learning_store = InMemoryLearningStore()
-    outcome_store = InMemoryOutcomeStore()
+    # The harness stands in for an agent-managed deployment (ADR-057): the
+    # declaration is explicit here for the same reason it is in the container.
+    learning_store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
+    outcome_store = InMemoryOutcomeStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
     session_store = InMemorySessionStore()
 
-    router = RouterEngine(quota_tracker)
+    router = RouterEngine()
     classifier = ClassifierEngine()
     context_builder = ContextBuilder()
     intent_registry = IntentRegistry()
@@ -135,9 +147,22 @@ def create_test_environment(
         preset=config.security.permission_preset,
         permissions=config.security.permissions,
     )
+    # Mirror create_container's live capability reconciliation (#1165): the
+    # harness is a second composition path, and one that drifted from the real
+    # Sentinel wiring once already. The same registry instance goes into the
+    # source and the container, so a test disabling a slot sees exactly what a
+    # production deployment would see.
+    from maistro.capabilities.bootstrap import default_capability_registry
+    from maistro.security.sentinel.permission_source import CapabilityPermissionSource
+
+    capabilities = default_capability_registry()
     sentinel = Sentinel(
         warden=warden,
         permission_table=permission_table,
+        permission_source=CapabilityPermissionSource(
+            base=permission_table,
+            capabilities=capabilities,
+        ),
         audit_log=audit_log,
     )
 
@@ -157,6 +182,7 @@ def create_test_environment(
         context_builder=context_builder,
         intent_registry=intent_registry,
         audit_log=audit_log,
+        capabilities=capabilities,
     )
 
     if agents:

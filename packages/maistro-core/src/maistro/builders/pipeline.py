@@ -3,9 +3,8 @@
 Faithful recreation of the Stronghold Epic-15 builder pipeline on maistro:
 stage ordering, skipping, and post-completion hooks are declared on
 :class:`~maistro.builders.graph.PipelineNode`;
-:class:`~maistro.builders.graph_executor.CanonicalGraphPipelineExecutor` drives
-execution on the canonical durable spine. New since Epic-15: the review stage
-is a verifiable gate that
+:class:`~maistro.builders.graph_executor.CanonicalGraphPipelineExecutor`
+drives execution. New since Epic-15: the review stage is a verifiable gate that
 routes back to implement (bounded verify-and-revise) instead of relying
 solely on a downstream cleanup stage.
 
@@ -27,7 +26,10 @@ import re
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from enum import Enum
-from typing import Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
+
+if TYPE_CHECKING:
+    from maistro.runs.store import RunStore
 
 from maistro.builders.contracts import RunRequest, RunStatus, WorkerName
 from maistro.builders.graph import PipelineGraph, PipelineNode, RunContext
@@ -572,6 +574,12 @@ class BuilderPipeline:
         # Builders state is projected back after the durable walk settles.
         nodes = self._wrap_nodes_with_verification(self._nodes)
         graph = PipelineGraph(nodes)
+        errors = graph.validate()
+        if errors:
+            # Preserve the legacy invalid-graph receipt without admitting a
+            # canonical Run for work that must never start.
+            run.status = f"invalid graph: {'; '.join(errors)}"
+            return run
         project_id = self._project_id
         if project_id is None:
             if self._project_store is None:
@@ -593,6 +601,22 @@ class BuilderPipeline:
 
         self._reconcile_stages(run)
         return run
+
+    def _reconcile_stages(self, run: PipelineRun) -> None:
+        """Update PipelineStage statuses from executor results."""
+        failed_name = ""
+        if run.status.startswith("failed at "):
+            failed_name = run.status[len("failed at ") :]
+
+        for stage in run.stages:
+            if stage.name == failed_name:
+                stage.status = StageStatus.FAILED
+                stage.error = run.failed_stage_error
+            elif stage.name in run.context:
+                stage.status = StageStatus.COMPLETED
+            elif stage.name in run.skipped_stages:
+                stage.status = StageStatus.SKIPPED
+            # else: PENDING (default)
 
     def _wrap_nodes_with_verification(self, nodes: list[PipelineNode]) -> list[PipelineNode]:
         """Return nodes whose on_complete also runs spec verification."""
@@ -625,22 +649,6 @@ class BuilderPipeline:
 
             result.append(replace(node, on_complete=_hook))
         return result
-
-    def _reconcile_stages(self, run: PipelineRun) -> None:
-        """Update PipelineStage statuses from executor results."""
-        failed_name = ""
-        if run.status.startswith("failed at "):
-            failed_name = run.status[len("failed at ") :]
-
-        for stage in run.stages:
-            if stage.name == failed_name:
-                stage.status = StageStatus.FAILED
-                stage.error = run.failed_stage_error
-            elif stage.name in run.context:
-                stage.status = StageStatus.COMPLETED
-            elif stage.name in run.skipped_stages:
-                stage.status = StageStatus.SKIPPED
-            # else: PENDING (default)
 
     def get_run(self, run_id: str) -> PipelineRun | None:
         return self._runs.get(run_id)

@@ -57,6 +57,8 @@ from maistro.runs.store import InMemoryRunStore, RunStore
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Mapping
 
+    from maistro.runs.store import RunStore
+
 # The ADR-062 graph description type. The SPEC calls this ``GraphSpec``;
 # maistro.graph's canonical name is ``GraphConfig`` — alias, don't fork.
 GraphSpec = GraphConfig
@@ -472,6 +474,7 @@ class DagRun:
     issue_number: int = 0
     title: str = ""
     repo: str = ""
+
     status: str = "pending"
     context: RunContext = field(default_factory=dict)
     skipped_stages: list[str] = field(default_factory=list)
@@ -538,6 +541,7 @@ async def run_builders_dag(
     durable_store: CanonicalDurableRunStore | None = None,
     workspace_id: str = "builders-local",
     project_id: str | None = None,
+    actor_principal_id: str | None = None,
 ) -> BuildersDagResult:
     """Run a :class:`BuildersDAG` through canonical Run lifecycle.
 
@@ -578,6 +582,7 @@ async def run_builders_dag(
         durable_store=durable_store,
         workspace_id=workspace_id,
         project_id=project_id,
+        actor_principal_id=actor_principal_id,
         budget=budget or _default_budget(dag),
     )
     await executor.execute(graph, run)

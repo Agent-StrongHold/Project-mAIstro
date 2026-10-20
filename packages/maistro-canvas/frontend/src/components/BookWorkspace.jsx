@@ -396,6 +396,9 @@ export default function BookWorkspace({ bookSpec, onReset }) {
     setBookPlan((prev) => {
       const n = { ...prev };
       const keys = path.split(".");
+      // A dotted path is walked and assigned; a segment naming the prototype
+      // chain would rewrite Object.prototype for the whole page.
+      if (keys.some((k) => k === "__proto__" || k === "constructor" || k === "prototype")) return prev;
       let obj = n;
       for (let i = 0; i < keys.length - 1; i++) { obj[keys[i]] = { ...obj[keys[i]] }; obj = obj[keys[i]]; }
       obj[keys[keys.length - 1]] = value;

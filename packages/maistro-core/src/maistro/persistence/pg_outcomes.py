@@ -7,6 +7,7 @@ from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 from maistro.constants import THUMB_LIMIT, THUMB_WINDOW_DAYS
+from maistro.memory.exposure import Actor, MemoryExposureMode, require_write_authority
 from maistro.observability.correlation import observed_provenance
 from maistro.persistence.outcome_scope import scope_predicates
 from maistro.types.memory import Outcome
@@ -53,19 +54,29 @@ def _scope_clause(params: list[Any], org_id: str = "", project_id: str = "") -> 
 
 
 class PgOutcomeStore:
-    """PostgreSQL-backed outcome store."""
+    """PostgreSQL-backed outcome store.
 
-    def __init__(self, pool: asyncpg.Pool) -> None:
+    The ADR-057 write-authority gate sits at `record`; the default actor is
+    `SYSTEM` (engine bookkeeping about a turn, allowed under every mode), and a
+    caller recording on the agent's behalf passes `actor=Actor.AGENT`.
+    """
+
+    def __init__(self, pool: asyncpg.Pool, exposure_mode: MemoryExposureMode | None = None) -> None:
         self._pool = pool
+        self._exposure_mode = exposure_mode
 
-    async def record(self, outcome: Outcome) -> int:
+    async def record(self, outcome: Outcome, *, actor: Actor = Actor.SYSTEM) -> int:
         """Record an outcome, naming the execution that produced it.
 
         Outcomes are what the router's scoring and the optimizer's fitness read,
         so this is the evidence path behind automated decisions -- and until
         #709 the only execution reference on it was the Conductor's DAG
         identity, which ADR-019 puts on the product side of the split.
+
+        The write-authority gate is the first statement (ADR-057): a denial
+        executes no SQL.
         """
+        require_write_authority(self._exposure_mode, "write", actor, subject=type(self).__name__)
         provenance = observed_provenance(
             run_id=outcome.run_id,
             node_run_id=outcome.node_run_id,
@@ -160,6 +171,7 @@ class PgOutcomeStore:
         task_type: str = "",
         days: int = 7,
         org_id: str = "",
+        project_id: str = "",
     ) -> dict[str, Any]:
         """Get completion rate stats."""
         cutoff = datetime.now(UTC) - timedelta(days=days)
@@ -169,7 +181,7 @@ class PgOutcomeStore:
             if task_type:
                 params.append(task_type)
                 query += f" AND task_type = ${len(params)}"
-            query = _scoped(query, params, org_id)
+            query = _scoped(query, params, org_id, project_id)
             rows = await conn.fetch(query, *params)
 
         total = len(rows)
@@ -200,6 +212,7 @@ class PgOutcomeStore:
         group_by: str = "user_id",
         days: int = 7,
         org_id: str = "",
+        project_id: str = "",
     ) -> list[dict[str, Any]]:
         """Aggregate token usage grouped by a dimension."""
         allowed = {"user_id", "team_id", "model_used", "agent_id", "provider"}
@@ -220,7 +233,7 @@ class PgOutcomeStore:
             if days > 0:
                 cutoff = datetime.now(UTC) - timedelta(days=days)
                 params: list[Any] = [cutoff]
-                scope = _scope_clause(params, org_id)
+                scope = _scope_clause(params, org_id, project_id)
                 rows = await conn.fetch(
                     f"""{select_cols}
                        WHERE created_at >= $1{scope}
@@ -233,7 +246,7 @@ class PgOutcomeStore:
                 # rather than extend one. `days <= 0` means "all time", not
                 # "all orgs".
                 params = []
-                scope = _scope_clause(params, org_id).replace(" AND ", " WHERE ", 1)
+                scope = _scope_clause(params, org_id, project_id).replace(" AND ", " WHERE ", 1)
                 rows = await conn.fetch(
                     f"""{select_cols}{scope}
                        GROUP BY {group_by}
@@ -260,13 +273,14 @@ class PgOutcomeStore:
         group_by: str = "",
         days: int = 7,
         org_id: str = "",
+        project_id: str = "",
     ) -> list[dict[str, Any]]:
         """Daily token usage timeseries."""
         allowed = {"user_id", "team_id", "model_used", "agent_id", "provider"}
         has_group = group_by in allowed
         cutoff = datetime.now(UTC) - timedelta(days=days)
         params: list[Any] = [cutoff]
-        scope = _scope_clause(params, org_id)
+        scope = _scope_clause(params, org_id, project_id)
 
         if has_group:
             query = f"""
@@ -387,6 +401,7 @@ class PgOutcomeStore:
         days: int = 7,
         limit: int = 50,
         org_id: str = "",
+        project_id: str = "",
     ) -> list[Outcome]:
         """List recent outcomes."""
         cutoff = datetime.now(UTC) - timedelta(days=days)
@@ -396,7 +411,7 @@ class PgOutcomeStore:
             if task_type:
                 params.append(task_type)
                 query += f" AND task_type = ${len(params)}"
-            query = _scoped(query, params, org_id)
+            query = _scoped(query, params, org_id, project_id)
             params.append(limit)
             query += f" ORDER BY created_at DESC LIMIT ${len(params)}"
             rows = await conn.fetch(query, *params)
@@ -410,6 +425,7 @@ class PgOutcomeStore:
         days: int = THUMB_WINDOW_DAYS,
         limit: int = THUMB_LIMIT,
         org_id: str = "",
+        project_id: str = "",
     ) -> list[Outcome]:
         """Outcomes carrying a thumb, most recent first.
 
@@ -426,7 +442,7 @@ class PgOutcomeStore:
         if dag_id:
             params.append(dag_id)
             query += f" AND (dag_id = ${len(params)} OR dag_id = '')"
-        query = _scoped(query, params, org_id)
+        query = _scoped(query, params, org_id, project_id)
         params.append(limit)
         query += f" ORDER BY created_at DESC LIMIT ${len(params)}"
         async with self._pool.acquire() as conn:

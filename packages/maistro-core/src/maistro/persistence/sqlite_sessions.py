@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 
 from maistro.observability.correlation import observed_provenance
 from maistro.sessions.turns import reject_blank_turn_id
+from maistro.sqlite_schema import serialized_schema_upgrade
 
 if TYPE_CHECKING:
     import aiosqlite
@@ -65,23 +66,23 @@ class SqliteSessionStore:
 
     async def ensure_schema(self) -> None:
         """Create the sessions table if it doesn't exist."""
-        await self._conn.execute(_SCHEMA)
-        await self._conn.execute(_TURNS_SCHEMA)
-        cursor = await self._conn.execute("PRAGMA table_info(session_turns)")
-        existing = {row[1] for row in await cursor.fetchall()}
-        for column in _TURN_PROVENANCE_COLUMNS:
-            if column not in existing:
-                await self._conn.execute(f"ALTER TABLE session_turns ADD COLUMN {column} TEXT")
-        # Without this, the TTL purge is a full table scan on every append —
-        # which is how a retention sweep turns into a reason to disable the
-        # retention sweep.
-        await self._conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_sessions_timestamp ON sessions (timestamp)"
-        )
-        await self._conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_session_turns_timestamp ON session_turns (timestamp)"
-        )
-        await self._conn.commit()
+        async with serialized_schema_upgrade(self._conn):
+            await self._conn.execute(_SCHEMA)
+            await self._conn.execute(_TURNS_SCHEMA)
+            cursor = await self._conn.execute("PRAGMA table_info(session_turns)")
+            existing = {row[1] for row in await cursor.fetchall()}
+            for column in _TURN_PROVENANCE_COLUMNS:
+                if column not in existing:
+                    await self._conn.execute(f"ALTER TABLE session_turns ADD COLUMN {column} TEXT")
+            # Without this, the TTL purge is a full table scan on every append —
+            # which is how a retention sweep turns into a reason to disable the
+            # retention sweep.
+            await self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_sessions_timestamp ON sessions (timestamp)"
+            )
+            await self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_session_turns_timestamp ON session_turns (timestamp)"
+            )
 
     async def get_history(
         self,
