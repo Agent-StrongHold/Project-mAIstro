@@ -213,3 +213,233 @@ alone** (exported with `git archive e20e9f52ea94` into a scratch tree → same s
 offender), and this branch changes no `packages/*/src` file. Banking that module in
 `quality/reachability-baseline.json` is develop's call, so the ledger was left
 untouched here.
+
+## Round 5 (2026-10-20, head `35f5e170a4`): the seven CI reds were ONE stale-tree defect
+
+The merge-queue evaluation of `4231ab641f3a` reported seven red checks:
+
+```
+Quality / Reachability                     failure
+Quality gate (Pillars 1–4, 7, 8)           failure
+exact-debt-ledger                          failure
+test                                       failure
+Coverage gate (publish-set floor + diff)   failure
+Supply chain (pip-audit)                   failure
+security                                   failure
+```
+
+Read from the Actions job logs (read-only, `gh api .../actions/jobs/<id>/logs`), six of
+the seven are the **same** failure and the seventh is a lockfile bump that develop had
+already landed.
+
+### The single root cause: `maistro.runs.admission_identity` was unreachable in a tree that was behind `develop`
+
+`Quality / Reachability` (job `118771206805`):
+
+```
+1417 production modules, 169 unreachable from any entry point
+1 module(s) are NEWLY UNREACHABLE:
+  maistro.runs.admission_identity  (maistro.runs.admission_identity)
+##[error]Process completed with exit code 1.
+```
+
+`exact-debt-ledger` (job `118771207874`) failed inside `check-ratchet-provenance.py` on
+the *same* ratchet, with the same arithmetic and the same candidate
+(`caed309822ae` = PR #2208's synthetic merge):
+
+```
+ratchet: reachability  [python import graph …]
+  baseline: base e20e9f52ea94
+  candidate: caed309822ae
+  168 unreachable modules  ->  169 unreachable of 1417 modules
+```
+
+`test` (job `118771207923`) failed on the two root-suite self-checks that assert the
+committed reachability baseline against the tree:
+
+```
+FAILED tests/test_check_reachability.py::test_baseline_matches_the_tree
+FAILED tests/test_reachability_baseline_identity.py::test_the_committed_baseline_passes_the_gate_it_now_carries
+FAILED tests/test_reachability_baseline_identity.py::test_the_baseline_is_exactly_the_unreachable_set
+```
+
+`Coverage gate (publish-set floor + diff coverage)` (job `118778406319`) failed with the
+**same two test files** — that job's `combine` step re-runs the root suite, so it
+inherited the `test` job's red rather than a coverage deficit. `Quality gate (Pillars
+1–4, 7, 8)` (job `118773754408`) is the aggregator that requires every `quality-*`
+leaf to succeed, so it went red because `quality-reachability` was red. That is four
+checks, one defect.
+
+**Mechanism.** `packages/maistro-core/src/maistro/runs/__init__.py` is the import edge
+that makes `maistro.runs.admission_identity` reachable. At the tip this branch had
+synced to (`e20e9f52ea94`) that file did **not** import it:
+
+```
+$ git show e20e9f52ea94:packages/maistro-core/src/maistro/runs/__init__.py | head -5
+"""Canonical logical and physical execution lifecycle."""
+
+from maistro.runs.concurrency import RunConcurrencyExceeded, RunConcurrencyLimits
+```
+
+`develop`'s next commit re-added the edge (`9417bb2f4ac`, the P1a/P1b codec merge
+#2228/#1885):
+
+```
+$ git show 9417bb2f4ac:packages/maistro-core/src/maistro/runs/__init__.py | head -9
+from maistro.runs.admission_identity import (
+    AdmissionBinding,
+    AdmissionRecordV2,
+    CanonicalJsonObject,
+    LegacyAdmissionRecord,
+    RootAdmissionEnvelope,
+)
+```
+
+So the module became reachable on `develop` while this branch — cut from the older
+`develop` and never re-synced — still had the unreachable copy. Round 4 recorded this as
+a "pre-existing upstream condition … develop's call"; that reading was wrong in the way
+that matters: the condition was *this branch being behind*, and the fix is a sync, not
+a ledger edit. Banking `maistro.runs.admission_identity` in
+`quality/reachability-baseline.json` would have made the gate green by freezing a
+module `develop` had just made reachable — a floor raise against the base, which the
+ratchet forbids, and a false record of a wired module as dead code.
+
+### The seventh red: `aiohttp` (supply chain)
+
+`Supply chain (pip-audit)` (job `118771208433`) was an independent, dependency-only
+failure:
+
+```
+::error::pip-audit found advisories outside the triaged allowlist:
+  aiohttp==3.14.3 CVE-2026-111064 -> upgrade to 3.14.4
+  aiohttp==3.14.3 GHSA-2g87-pp6c-29x5 -> upgrade to 3.14.4
+  aiohttp==3.14.3 CVE-2026-111063 -> upgrade to 3.14.4
+```
+
+`security` is the workflow-level aggregate of the same `security` workflow, so it went
+red for that leaf alone. This branch adds no dependency; the pinned `aiohttp` was
+`3.14.3` in this branch's `uv.lock` and `3.14.5` in `develop`'s (the same commit that
+re-added the import above bumped it). Both fixes therefore arrive with the sync.
+
+### The repair: merge `origin/develop`
+
+`35f5e170a4` — `Merge commit '9417bb2f4ac84447278639c9d8b747f6c8371970' into
+auto-796`, conflict-free (`git merge-tree --write-tree HEAD origin/develop` → exit 0
+before the merge). Nothing was hand-edited: the branch's whole delta against
+`develop` is still the five issue surfaces, and the merge introduced **no**
+production-code delta:
+
+```
+$ git diff --numstat origin/develop...HEAD
+215	0	REPAIR-NOTES-796.md
+ 21	0	docs/architecture/CONVERGENCE-MATRIX.md
+ 91	0	docs/testing/inventory-notes/auto-796-develop-sync-2658c27c-resolution.md
+ 55	0	docs/testing/inventory-notes/m7-a7-eval-consumer-map.md
+563	0	packages/maistro-core/tests/fitness/test_m7_a7_eval_consumer_map.py
+
+$ git diff --numstat origin/develop...HEAD -- 'packages/*/src'   # empty
+$ git diff --numstat origin/develop...HEAD -- quality/           # empty
+```
+
+No ledger row was added, removed or re-banked: the reachability baseline and the vulture
+per-identity ledger are byte-identical to `develop`'s, and the tree now matches them.
+
+### Re-validation at `35f5e170a4` (all green)
+
+| Command (CI's exact arguments) | Outcome |
+| --- | --- |
+| `uv run python scripts/check-reachability.py` | exit 0 — `1417 production modules, 168 unreachable` (the 169th is reachable again) |
+| `RATCHET_BASE_REV=origin/develop uv run python scripts/check-ratchet-provenance.py` | exit 0 — `168 unreachable module(s) -> 168`, every ratchet `no candidate-approved expansion` |
+| `RATCHET_BASE_REV=origin/develop uv run python scripts/check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'` | exit 0 — `1326 reviewed identities -> 1326 findings` |
+| `RATCHET_BASE_REV=origin/develop uv run python scripts/check-shipped-surface-truth.py` | exit 0 |
+| `uv run pytest tests/test_check_reachability.py tests/test_reachability_baseline_identity.py tests/test_reachability_scanner.py tests/test_reachability_source_universe.py -q` | 54 passed |
+| `uv run pytest tests/ --ignore=tests/tools/registry -q --timeout=120` | 5395 passed, 139 skipped, 0 failed (323.9s) |
+| `uv run pytest packages/maistro-core/tests/fitness -v --timeout=30` | 34 passed (CI's `Quality / Architecture fitness` command) |
+| `uv run pytest packages/maistro-core/tests/fitness/test_m7_a7_eval_consumer_map.py -q` | 7 passed (the M7-A7 contract file) |
+| `uv run pytest packages/maistro-rsi/tests/test_non_production_reachability.py -q` | 13 passed (M5 invariant) |
+| `uv run pytest packages/maistro-design/tests -q` | 575 passed, 1 skipped |
+| `uv run python scripts/check-suite-inventory.py` | exit 0 — 21 suites match, 32394 unique identities |
+| `uv run python scripts/check-convergence-matrix.py` | exit 0 — 52 subsystems / 1417 modules, 168 unreachable attributed |
+| `uv run python scripts/check-doc-links.py` | exit 0 — every relative markdown link resolves |
+| `uv run python scripts/check-contract-markers.py` | exit 0 |
+| `uv run python scripts/check-merge-markers.py` | exit 0 |
+| `uv run python scripts/check-backlog-consistency.py` | exit 0 — 167 backlog items parse |
+| `uv run python scripts/check-test-duplicates.py` | exit 0 |
+| `uv run python scripts/check-reachability-dispositions.py` / `-provenance.py` / `check-promotion-surface.py` / `check-promotion-surface-provenance.py` / `check-security-inventory.py` / `check-model-egress.py` / `check-cross-package-imports.py` / `check-owned-store-access.py` / `check-agent-store-writes.py` / `check-wiring-reads.py` / `check-radon-baseline.py` | all exit 0 |
+| `uv run ruff check .` | exit 0 — `All checks passed!` |
+| `uv run ruff format --check .` | exit 0 — `3363 files already formatted` |
+| `uv run mypy <7 src trees>` | exit 0 — `Success: no issues found in 906 source files` |
+| `uv pip freeze --exclude-editable > deps.txt && uvx pip-audit --strict --format=json -r deps.txt` + `uv run python scripts/pip_audit_gate.py pip-audit.json` | exit 0 — `pip-audit OK (1 known, all triaged in ALLOWED)`; the `aiohttp` advisories are gone with `aiohttp==3.14.5` |
+
+### One local-only red, and why it is not a defect
+
+The root suite first reported
+`tests/test_branch_independence_repository.py::test_every_quality_json_state_surface_is_classified_once`
+→ `unclassified quality state: quality/ac-state.json`. That file is **generated and
+git-ignored** (`.gitignore:81`; "Generated by `scripts/check-ac-state.py` on every
+run"). Running `scripts/check-ratchet-provenance.py` in the worktree creates it, and a
+root-suite run that follows sees an unclassified `quality/*.json` that a CI checkout
+never has. The file was moved aside (preserved at `/tmp/ac-state.json.generated-local`,
+not deleted) and the test passes:
+
+```
+$ uv run pytest tests/test_branch_independence_repository.py -q
+1 passed
+```
+
+CI's `test` job starts from a clean checkout of the synthetic merge, so this artifact
+cannot exist there — consistent with the job's own log, whose only failures were the
+three reachability assertions above. With the artifact absent, the whole root suite is
+green at the merged head:
+
+```
+$ uv run pytest tests/ --ignore=tests/tools/registry -q --timeout=120
+5395 passed, 139 skipped, 19 warnings in 323.88s (0:05:23)
+```
+
+### The full gate battery at `35f5e170a4`
+
+Every `scripts/check-*.py` that takes no CI-only arguments was swept with
+`RATCHET_BASE_REV=origin/develop`; all exit 0 (`check-ac-state`, `check-adr-index`,
+`check-adr-status-language(-provenance)`, `check-agent-store-writes`,
+`check-api-route-contracts`, `check-backlog-consistency`, `check-build-context`,
+`check-citation-status(-provenance)`, `check-closure-targets`, `check-compose-resources`,
+`check-compose-secrets`, `check-connection-credentials`, `check-contract-markers(-provenance)`,
+`check-convergence-matrix`, `check-credential-authority`, `check-cross-package-imports`,
+`check-dependency-namespaces`, `check-deployment-claims`, `check-doc-links`,
+`check-durable-table-inventory`, `check-enumerations-provenance`, `check-execution-lifecycles`,
+`check-extension-imports`, `check-extension-scaffold`, `check-foreign-harness-egress`,
+`check-frontend-api-routes`, `check-frontend-typed-client`, `check-image-inventory`,
+`check-image-pins`, `check-install-functions`, `check-lifecycle-provenance`,
+`check-merge-markers`, `check-model-egress`, `check-owned-store-access`,
+`check-principal-identity`, `check-promotion-surface(-provenance)`, `check-public-routes`,
+`check-radon-baseline`, `check-ratchet-provenance`, `check-reachability`,
+`check-reachability-dispositions(-provenance)`, `check-reachability-provenance`,
+`check-reference-extension`, `check-release-consistency`, `check-retired-guidance`,
+`check-route-permissions`, `check-secret-field-labels`, `check-security-inventory`,
+`check-shell-execution(-provenance)`, `check-shipped-surface-truth`,
+`check-suite-inventory`, `check-test-duplicates`, `check-uv-setup`, `check-wiring-reads`,
+`check-workflow-inventory`, `check-workflow-write-safety`, `check-workspace-retirement`).
+The three that need arguments were run with them —
+`check-formal-oracle-independence.py --base origin/develop` (exit 0),
+`check-m1-convergence-freeze.py --base origin/develop` (exit 0) — and
+`check-vulture-baseline.py` only with **CI's** arguments
+(`packages/*/src --min-confidence 60 --exclude '*/third_party/*'`), because its
+defaults (`packages`, `tests`) bank rows the blocking job can never see and fail by
+design (see `AGENTS.md`).
+
+### Residuals
+
+- Acceptance criterion "PR is `feat/m7-a7-eval-consumer-map` off `develop`" is
+  dispatcher-owned GitHub state. Lane workers may not push or open PRs, so the branch
+  name (`auto-796`) and the PR's existence are unverifiable locally by construction.
+- The `Coverage gate`'s publish-set floor (87%) and diff-coverage thresholds are not
+  re-measured locally: they need the CI coverage producers' artefacts. The diff-coverage
+  half is vacuous for this branch by construction — the branch changes **no** file under
+  any `MEASURED_ROOTS` tree (`git diff --numstat origin/develop...HEAD -- 'packages/*/src'`
+  is empty) — and the job's own log shows it failing in the root-suite re-run, not in
+  the coverage arithmetic.
+- `pip-audit` was run locally against the installed environment (`--extra dev`), which
+  is a subset of CI's `--all-extras` install; the advisories that decided the CI red
+  (`aiohttp`) are covered by it, but a CVE in an extra-only dependency would not be
+  visible locally.
