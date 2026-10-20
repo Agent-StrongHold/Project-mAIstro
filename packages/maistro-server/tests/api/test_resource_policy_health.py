@@ -96,6 +96,64 @@ def test_readiness_exposes_effective_resource_policy_to_admin_callers() -> None:
     }
 
 
+@pytest.mark.ac("SPEC-1182/AC-6")
+def test_readiness_exposes_run_concurrency_limits_to_admin_callers() -> None:
+    """The effective root-Run ceilings — including the opt-in system-wide one
+    (#1182) — are operator diagnostics: admins see them, anonymous probes do
+    not."""
+    secured = _secured_settings()
+    response = _probe_readiness(secured, headers={"Authorization": "Bearer admin-secret"})
+
+    assert response.status_code == 200
+    assert response.json()["run_concurrency_limits"] == {
+        "per_principal": 4,
+        "per_workspace": 16,
+        "system": None,
+    }
+
+    with_system = secured.model_copy(update={"max_active_root_runs_system": 64})
+    response = _probe_readiness(with_system, headers={"Authorization": "Bearer admin-secret"})
+
+    assert response.status_code == 200
+    assert response.json()["run_concurrency_limits"] == {
+        "per_principal": 4,
+        "per_workspace": 16,
+        "system": 64,
+    }
+    # Anonymous callers keep the minimal status-only contract.
+    anonymous = _probe_readiness(with_system)
+    assert anonymous.json() == {"status": "ok"}
+
+
+def test_readiness_degraded_still_reports_run_concurrency_limits_to_admins() -> None:
+    """A degraded deployment answers 503 with the same diagnostic payload,
+    system ceiling included — the admin's backpressure answer does not depend
+    on every dependency being healthy."""
+    settings = _secured_settings().model_copy(update={"max_active_root_runs_system": 64})
+    app.dependency_overrides[get_settings] = lambda: settings
+    ok = ProbeResult(status="ok")
+    bad = ProbeResult(status="error", detail="postgres unreachable")
+    try:
+        with (
+            patch("maistro_server.api.health._check_docker", AsyncMock(return_value=ok)),
+            patch("maistro_server.api.health._check_postgres", AsyncMock(return_value=bad)),
+        ):
+            response = TestClient(app).get(
+                "/health/ready", headers={"Authorization": "Bearer admin-secret"}
+            )
+    finally:
+        app.dependency_overrides.pop(get_settings, None)
+
+    assert response.status_code == 503
+    body = response.json()
+    assert body["status"] == "degraded"
+    assert body["run_concurrency_limits"] == {
+        "per_principal": 4,
+        "per_workspace": 16,
+        "system": 64,
+    }
+
+
 @pytest.mark.parametrize(
     ("files", "expected"),
     [

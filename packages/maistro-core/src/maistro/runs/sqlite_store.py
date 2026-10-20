@@ -373,14 +373,18 @@ CREATE INDEX IF NOT EXISTS idx_canonical_runs_active_root_principal
     WHERE {_ACTIVE_ROOT_PREDICATE};
 """
 
-#: Active root Runs in one Workspace and for one principal (#1182). The
-#: principal ceiling spans Workspaces, so its count has no Workspace predicate.
+#: Active root Runs in one Workspace, for one principal, and system-wide
+#: (#1182). The principal ceiling spans Workspaces, so its count has no
+#: Workspace predicate; the system ceiling spans both, so its count has no
+#: predicate at all beyond the active-root one.
 _ACTIVE_ROOT_COUNTS_SQL = f"""SELECT
     (SELECT COUNT(*) FROM canonical_runs
       WHERE {_ACTIVE_ROOT_PREDICATE} AND workspace_id = ?),
     (SELECT COUNT(*) FROM canonical_runs
       WHERE {_ACTIVE_ROOT_PREDICATE}
-        AND json_extract(payload, '$.actor_principal_id') = ?)"""  # nosec B608
+        AND json_extract(payload, '$.actor_principal_id') = ?),
+    (SELECT COUNT(*) FROM canonical_runs
+      WHERE {_ACTIVE_ROOT_PREDICATE})"""  # nosec B608
 
 
 _PAYLOAD_TABLES = frozenset(
@@ -573,6 +577,7 @@ class SqliteRunStore:
             self._concurrency_limits.check(
                 workspace_active=int(row[0]) - 1,
                 principal_active=int(row[1]) - 1 if principal is not None else None,
+                system_active=int(row[2]) - 1,
             )
         except BaseException:
             # A refusal, or a count that could not be read: either way the row

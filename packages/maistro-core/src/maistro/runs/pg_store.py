@@ -502,9 +502,12 @@ class PgRunStore:
 
         Transaction-scoped advisory locks, so the caller's insert and count are
         one critical section on every replica and the locks go with the
-        transaction however it ends. Workspace before principal, always: each
-        admission takes one lock per namespace in that order, so two cannot
-        wait on each other.
+        transaction however it ends. Workspace before principal before system,
+        always: each admission takes one lock per namespace in that order, so
+        two cannot wait on each other. The system lock is taken only when a
+        system-wide ceiling is configured — the scoped ceilings already
+        serialize their own namespaces, and a deployment that did not opt into
+        the global ceiling should not queue behind one.
         """
         if run.parent_run_id is not None:
             return
@@ -518,6 +521,12 @@ class PgRunStore:
                 "SELECT pg_advisory_xact_lock($1, $2)",
                 _PRINCIPAL_ADMISSION_LOCK,
                 _admission_lock_key(run.actor_principal_id),
+            )
+        if self._concurrency_limits.system is not None:
+            await conn.execute(
+                "SELECT pg_advisory_xact_lock($1, $2)",
+                _SYSTEM_ADMISSION_LOCK,
+                0,
             )
 
     async def _admit_root(self, conn: Any, run: Run) -> None:
@@ -533,6 +542,7 @@ class PgRunStore:
         self._concurrency_limits.check(
             workspace_active=int(row["workspace_active"]) - 1,
             principal_active=int(row["principal_active"]) - 1 if principal is not None else None,
+            system_active=int(row["system_active"]) - 1,
         )
 
     async def purge_expired_runs(
@@ -1871,16 +1881,21 @@ _NOT_FOUND: dict[str, type[Exception]] = {
 
 #: `pg_advisory_xact_lock(key1, key2)` namespaces for root-Run admission.
 #: Separate namespaces so a Workspace and a principal that hash alike never
-#: share a lock, which is what keeps the lock order acyclic.
+#: share a lock, which is what keeps the lock order acyclic. The system
+#: namespace exists only when a system-wide ceiling is configured: unlike the
+#: scoped locks, one deployment shares the single key `0`, so admissions into
+#: unrelated Workspaces serialize behind the one count they can both move.
 _WORKSPACE_ADMISSION_LOCK = 0x72617721  # "raw!"
 _PRINCIPAL_ADMISSION_LOCK = 0x72617021  # "rap!"
+_SYSTEM_ADMISSION_LOCK = 0x72617321  # "ras!"
 
 
 #: Literal statuses rather than a parameter, so the planner can prove the
 #: predicate implies the partial `ix_canonical_runs_live` index (migration 012).
 _ACTIVE_ROOT_COUNTS_SQL = """SELECT
        COUNT(*) FILTER (WHERE workspace_id = $1) AS workspace_active,
-       COUNT(*) FILTER (WHERE payload->>'actor_principal_id' = $2) AS principal_active
+       COUNT(*) FILTER (WHERE payload->>'actor_principal_id' = $2) AS principal_active,
+       COUNT(*) AS system_active
      FROM canonical_runs
     WHERE parent_run_id IS NULL AND status IN ({statuses})""".format(  # nosec B608
     statuses=", ".join(f"'{status}'" for status in ACTIVE_ROOT_STATUS_VALUES)

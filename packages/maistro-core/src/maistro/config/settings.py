@@ -340,6 +340,17 @@ class Settings(BaseSettings):
     # every RunStore at admission. Tighten freely; loosening needs the override.
     max_active_root_runs_per_principal: int = BASELINE_MAX_ACTIVE_ROOT_RUNS_PER_PRINCIPAL
     max_active_root_runs_per_workspace: int = BASELINE_MAX_ACTIVE_ROOT_RUNS_PER_WORKSPACE
+    # The opt-in system-wide ceiling (#1182 "an explicit system/global ceiling
+    # where needed"). The owner-decided baseline is that no global ceiling
+    # exists, so unset cannot weaken anything and any configured value only
+    # tightens admission at the same RunStore authority. Not a resource-policy
+    # floor: there is no numeric baseline to weaken against.
+    max_active_root_runs_system: int | None = Field(
+        default=None,
+        ge=1,
+        description="Optional system-wide ceiling on concurrently active root Runs across "
+        "every Workspace and principal. Unset means no explicit global ceiling.",
+    )
 
     # Shared outbound HTTP pool (see maistro.http). Ceilings against fd
     # exhaustion, NOT a load throttle — a small cap here was measured as the
