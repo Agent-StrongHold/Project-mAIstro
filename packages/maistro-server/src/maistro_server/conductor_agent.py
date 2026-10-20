@@ -100,9 +100,11 @@ class ConductorAgent:
             result = await run_task(
                 task,
                 governed_egress=self._governed_egress,
-                invocation_identity=(turn_id, "conductor-node", "conductor-attempt")
-                if turn_id
-                else None,
+                # No stand-in identity here: the turn runs inside its
+                # Attempt's correlation scope (Container._execute_chat_turn),
+                # so the conductor consumes the persisted Run/NodeRun/Attempt
+                # the spine bound — never fixed node/attempt strings (#1084).
+                invocation_identity=None,
                 workspace_id=self._workspace_id,
                 router=self._router,
             )

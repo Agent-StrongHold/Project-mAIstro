@@ -935,6 +935,87 @@ class TestRunTaskLive:
         assert captured["data"]["usage"] == {"prompt_tokens": 1, "completion_tokens": 2}  # type: ignore[index]
 
 
+class TestGovernedIdentityDerivation:
+    """A governed completion without an explicit tuple consumes the ambient
+    canonical identity the Attempt executor bound — never a fixed stand-in
+    and never an all-blank tuple (#1084)."""
+
+    async def test_identity_is_derived_from_the_bound_execution_context(self) -> None:
+        from types import SimpleNamespace
+
+        from maistro.agents.conductor import ConductorCall, _governed_completion
+        from maistro.observability.correlation import bind_execution_context
+
+        call = ConductorCall(model="m", base_url="http://gw", api_key="k", system_prompt="s")
+        captured: dict[str, object] = {}
+
+        class _Egress:
+            async def complete(self, **kwargs: object) -> SimpleNamespace:
+                captured.update(kwargs)
+                return SimpleNamespace(
+                    body={"model": "m", "choices": [{"message": {"content": "ok"}}]}
+                )
+
+        with bind_execution_context(
+            run_id="run-persisted",
+            node_run_id="node-persisted",
+            attempt_id="attempt-persisted",
+        ):
+            content = await _governed_completion(
+                call,
+                "user prompt",
+                128,
+                _Egress(),  # type: ignore[arg-type]
+                None,
+                1,
+                "ws-1",
+                "project-1",
+            )
+
+        assert content == "ok"
+        assert captured["run_id"] == "run-persisted"
+        assert captured["node_run_id"] == "node-persisted"
+        assert captured["attempt_id"] == "attempt-persisted"
+        # The effect key stays the conductor's deterministic per-invocation
+        # identity, so an Attempt retry addresses its own Invocation.
+        assert captured["effect_key"] == "conductor-llm-1"
+
+    async def test_no_ambient_context_still_yields_a_unique_recorded_identity(self) -> None:
+        from types import SimpleNamespace
+
+        from maistro.agents.conductor import ConductorCall, _governed_completion
+        from maistro.observability.correlation import detached_execution_context
+
+        call = ConductorCall(model="m", base_url="http://gw", api_key="k", system_prompt="s")
+        captured: dict[str, object] = {}
+
+        class _Egress:
+            async def complete(self, **kwargs: object) -> SimpleNamespace:
+                captured.update(kwargs)
+                return SimpleNamespace(
+                    body={"model": "m", "choices": [{"message": {"content": "ok"}}]}
+                )
+
+        with detached_execution_context():
+            await _governed_completion(
+                call,
+                "user prompt",
+                128,
+                _Egress(),  # type: ignore[arg-type]
+                None,
+                1,
+                "ws-1",
+                "project-1",
+            )
+
+        # Never empty: an all-blank tuple would be the run_id:null best-effort
+        # path the owner decision forbids.
+        assert captured["run_id"]
+        assert captured["node_run_id"]
+        assert captured["attempt_id"]
+        assert captured["run_id"] != captured["node_run_id"]
+
+
 class TestGovernedCompletionGuards:
     """The governed gateway path must fail loudly on unusable bodies (#718).
 
