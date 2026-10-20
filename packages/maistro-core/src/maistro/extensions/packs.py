@@ -1299,18 +1299,6 @@ class InstallablePackRegistry:
                     "becomes different bytes"
                 )
             return existing
-        if manifest.pack_id in self._active_extensions:
-            # Extensions installed through the M9-B2 service and packs share
-            # one dependency namespace: installing a pack under an id an
-            # active extension already holds would let this registry's
-            # dependency resolution silently shadow the extension's version
-            # with the pack's.
-            raise PackIdentityConflict(
-                f"{manifest.pack_id} is already active as an extension installed "
-                "through the M9-B2 service; one id names one provider, so a pack "
-                "install may never shadow it or overwrite its resolved version"
-            )
-
         report = evaluate_pack_compatibility(
             manifest,
             CompatibilityPolicy(

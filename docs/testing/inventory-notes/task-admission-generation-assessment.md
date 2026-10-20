@@ -6859,3 +6859,58 @@ reachability blocker, exactly as the issue predicted ("check-reachability.py
 would classify the new module as newly unreachable"). Per the issue's own
 completion contract the stack stays unmerged pending the separately-scoped
 #1845 integration consumer.
+
+## Round 83 (job 208a8d34): develop sync discharged — merge resolved, duplicate guard repaired, stale vulture rows pruned; blocker reduced to the one leaf module
+
+The lane's develop base `e20e9f52` was 1 commit behind the branch tip
+`a89b886d5`, and `origin/develop` had advanced to `1bdc32dc1`, so this round
+performed the required sync: merge `e20e9f52` (commit `8e4e3ed18`, parents
+`a89b886d5` + `e20e9f52`), then merge `origin/develop` `1bdc32dc1` (commit
+`6aa7f67bf`). 39 files conflicted; every resolution took develop's side
+except `_vulture_whitelist.py` and `extensions/packs.py`, which carry
+branch-unique content. The uncommitted merge work was preserved first
+(`salvage/auto-1852-merge-{uncommitted,staged}.patch`) before any edit.
+
+**Merge defect found by validation and repaired.** The union of develop's
+`InstallablePackRegistry.install` active-extension guard (#2143 — "already
+an active extension in this registry (version …); one identity, one
+provider") with the branch's salvage-era guard (the `9eed34901` dedup
+survivor, "…may never shadow it or overwrite its resolved version") left the
+branch's copy unreachable: both raise on the same condition
+(`pack_id in _active_extensions`), so develop's fires first.
+`TestManifestInspection::test_pack_id_colliding_with_an_active_extension_is_refused`
+failed on its regex. Removed the dead guard from `packs.py` and aligned the
+retained salvage test's regex to the surviving develop guard. The test is
+kept, not dropped: `check-suite-inventory.py` counts it, and removing it
+drifts `packages/maistro-core/tests` 16949 → 16948. No reachable behavior
+changed — both guards refuse the same collision.
+
+**Vulture ledger repaired (CI-repair round).** The merge unioned develop's
+five `admission_identity.py` enum-member rows (`LEGACY_UNRESOLVED`/
+`MISMATCH`/`REPLACE_EXPIRED`/`REPLAYED`/`TAKEOVER`) with the branch's
+`_vulture_whitelist.py` suppression: the #1852 classifier uses
+`AdmissionAssessment.X`, so those five identities are no longer produced. The
+gate's own output names them "no longer found — prune them". Pruned the five
+stale rows; the gate is now rc=0 (1326 reviewed identities → 1321 findings,
+unclassified=0, never_allowlist=0). No unbanked identity and no
+genuinely-dead code existed — the row set was a merge artifact, not debt.
+
+**Blocker delta.** `origin/develop`'s #1851 merge wired
+`maistro.runs.admission_identity` through `runs/__init__.py`, so only
+`maistro.tasks.admission_generation` remains newly unreachable.
+
+**Battery at merged head `6aa7f67bf` (base `1bdc32dc1`):** `ruff check .`
+All checks passed; `ruff format --check .` 3368 files already formatted;
+`check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+'*/third_party/*'` rc=0; `check-shipped-surface-truth.py` rc=0;
+`check-suite-inventory.py` rc=0 (21/21 suites, 16949 node IDs);
+`check-promotion-surface.py` rc=0; `packages/maistro-core/tests` 15810 passed
+/ 1132 skipped / 7 xfailed; focused four-file run 278 passed;
+`check-reachability.py` rc=1 naming exactly `maistro.tasks.admission_generation`
+and nothing else; `check-ratchet-provenance.py` rc=1 only via
+`check-reachability-provenance.py` returning 1 — the same single gate. Leaf
+pair byte-identical to `a89b886d5` (empty diff); classifier sha256
+`578c1f1747920f4716822aaaa2a1c9ca415f76064bdf1a5ececaee22d7e7a063` matches the
+front-matter record. Prohibited surfaces (`tasks/idempotency.py`,
+`tasks/__init__.py`, `runs/__init__.py`, `tasks/queue.py`) zero-diff vs
+`origin/develop`; no package-initializer export added.
