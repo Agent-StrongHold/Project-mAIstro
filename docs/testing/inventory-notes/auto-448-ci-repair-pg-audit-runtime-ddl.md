@@ -59,7 +59,7 @@ the table exists) — reproduced by restoring that file with
 `test_ensure_schema_adds_proof_columns_idempotently` is the second, cheaper
 witness: it pins the exact ALTER list, so any DDL inserted before it fails.
 
-## Cause 2 (inherited from develop, NOT repaired here): reachability debt
+## Cause 2 (inherited from develop, RESOLVED by the second develop sync): reachability debt
 
 The remaining six red checks are one failure — `quality/reachability` and the
 three root-suite tests that read the same baseline:
@@ -90,6 +90,17 @@ candidate), and the entry also asserts an architecture answer about #1851's
 root-admission surface — library-and-unwired, or built-but-never-wired. Left to
 develop, recorded here so the next reader does not re-diagnose it as this
 lane's.
+
+**Resolved in the next round** (`auto-448-develop-sync-c2d7209f1.md`): the
+diagnosis above was taken against the stale base `e20e9f52e`. The branch was
+three commits behind `origin/develop`, and develop's `9417bb2f4` is what adds
+the `maistro/runs/__init__.py` re-export that gives
+`maistro.runs.admission_identity` its importer. Merging develop restores the
+import edge: `scripts/check-reachability.py` now reports **1422 modules, 168
+unreachable, no newly unreachable module**, and the three root-suite
+reachability tests, `Quality / Reachability`, `exact-debt-ledger`,
+`Quality gate`, `integration-scope` and `gates-ran` are green. No ledger row
+was banked — the module was made reachable, not excused.
 
 ## Re-executed evidence at this head
 

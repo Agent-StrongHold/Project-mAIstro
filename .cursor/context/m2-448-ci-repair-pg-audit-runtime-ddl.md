@@ -39,3 +39,10 @@ scan (`git archive e20e9f52e` + `check-reachability.py`); `git diff
 origin/develop...HEAD -- quality/` is empty. Banking it needs an owner grant
 landed on develop first (two-merge rule) and an architecture answer about
 #1851's surface — deliberately not attempted here.
+
+**Update (next round):** the branch was three commits behind `origin/develop`,
+and develop's `9417bb2f4` supplies the missing
+`maistro/runs/__init__.py` re-export that gives the module its importer.
+Merging develop restored the import edge and the module is reachable again —
+no ledger row was banked. See
+`.cursor/context/m2-448-develop-sync-c2d7209f1.md`.
