@@ -633,7 +633,9 @@ def _run(command: list[str], cwd: Path) -> None:
 @pytest.mark.skipif(
     os.environ.get("MAISTRO_TEST_EXTENSION_SCAFFOLD_E2E") != "1",
     reason="executes uv build + a fresh venv per family; run with "
-    "MAISTRO_TEST_EXTENSION_SCAFFOLD_E2E=1 (CI and acceptance runs do)",
+    "MAISTRO_TEST_EXTENSION_SCAFFOLD_E2E=1. No workflow sets that flag: CI's "
+    "executed equivalent is scripts/check-extension-scaffold.py, which scaffolds "
+    "through `maistro-ext-sdk new` and never runs this CLI's templates",
 )
 @pytest.mark.parametrize("family", FAMILIES)
 def test_scaffolded_project_builds_and_tests_outside_the_repository(family: str) -> None:
