@@ -180,12 +180,23 @@ class TuringChatSession:
         classifier: TuringClassifierBridge,
         security: TuringSecurityBridge,
         self_id: str,
+        user_id: str = "",
+        workspace_id: str = "",
+        project_id: str = "",
     ) -> None:
         self._memory = memory
         self._provider = provider
         self._classifier = classifier
         self._security = security
         self._self_id = self_id
+        # Canonical scope of the authenticated caller that owns this session
+        # (#859): the episodic chat capture persists with this provenance so
+        # one principal's captures are never indistinguishable from another's
+        # in a shared episodic store. Blank (unscoped sessions in tests and
+        # tooling) keeps the previous unscoped-capture behavior.
+        self._user_id = user_id
+        self._workspace_id = workspace_id
+        self._project_id = project_id
         self._history: list[dict[str, str]] = []
 
     async def handle_message(self, message: str) -> str:
@@ -249,6 +260,8 @@ class TuringChatSession:
                 source="i_did",
                 weight=0.1,
                 intent="chat-capture",
+                user_id=self._user_id or None,
+                project_id=self._project_id or None,
             )
         except Exception:
             logger.debug("chat capture failed", exc_info=True)

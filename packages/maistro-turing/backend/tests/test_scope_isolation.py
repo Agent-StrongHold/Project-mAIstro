@@ -435,3 +435,49 @@ class TestRestartAndReplicaSemantics:
         assert replica_two.mood_snapshot("ws-shared").valence == 0.9
         replica_two.set_facet("ws-shared", "creativity", 4.2)
         assert replica_one.facet_scores("ws-shared")["creativity"] == 4.2
+
+
+# ------------------------------------------- deterministic scope resolution --
+
+
+class TestDeterministicWorkspaceResolution:
+    """The Workspace scope id is a function of the principal, not of the
+    process (#859).
+
+    A shared ``SelfModelStateStore`` only converges replicas if every process
+    resolves the SAME canonical Workspace id for the same principal. A
+    per-process random mint would make two replicas disagree on keys even
+    over one shared store, so the resolution is derived deterministically
+    (uuid5, namespaced) from the authenticated principal id.
+    """
+
+    def test_the_same_principal_resolves_the_same_scope_in_every_process(self):
+        import uuid
+
+        from ..execution import TuringExecutionPlane
+        from ..main import app
+
+        async def scenario() -> None:
+            # Two independently composed planes stand in for two replica
+            # processes: private stores, no shared in-memory state.
+            plane_one = TuringExecutionPlane(inbound_security=app.state.turing_security)
+            plane_two = TuringExecutionPlane(inbound_security=app.state.turing_security)
+
+            first_ws, _first_proj = await plane_one.scope_for("user-replica")
+            second_ws, _second_proj = await plane_two.scope_for("user-replica")
+
+            # The cognitive-state key converges across processes; only the
+            # Workspace id is asserted because it is the seam the scoped
+            # state store (and the chat-session registry) is keyed by.
+            assert first_ws == second_ws
+            # The id is canonical UUID-shaped, not a per-process random mint.
+            assert str(uuid.UUID(first_ws)) == first_ws
+
+            # A different principal resolves a different scope: isolation is
+            # preserved by the same determinism.
+            other_ws, _other_proj = await plane_one.scope_for("user-other")
+            assert other_ws != first_ws
+
+        import asyncio
+
+        asyncio.run(scenario())

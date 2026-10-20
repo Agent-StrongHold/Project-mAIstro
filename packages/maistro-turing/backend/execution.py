@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import uuid
 from collections import OrderedDict
 from typing import Any, ClassVar
 
@@ -145,14 +146,23 @@ class TuringExecutionPlane:
         same resolution the chat admission uses: identity comes from the
         authenticated principal, the Workspace is created once per principal,
         and no route may invent a scope of its own.
+
+        The Workspace id is derived deterministically from the principal
+        (uuid5, namespaced), not minted randomly per process: the same
+        principal resolves to the SAME canonical Workspace id in every
+        worker/replica, so a shared ``SelfModelStateStore`` keyed by Workspace
+        id converges across replicas instead of silently forking one
+        principal's cognitive state per process (#859).
         """
         async with self._scope_lock:
             workspace_id = self._workspace_by_user.get(user_id)
             if workspace_id is None:
+                workspace_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"turing:user:{user_id}"))
                 workspace = await self.workspace_store.create(
                     creator_user_id=user_id,
                     name=f"Turing workspace for {user_id}",
                     description="Canonical scope for the standalone Turing chat surface.",
+                    workspace_id=workspace_id,
                 )
                 workspace_id = workspace.workspace_id
                 self._workspace_by_user[user_id] = workspace_id

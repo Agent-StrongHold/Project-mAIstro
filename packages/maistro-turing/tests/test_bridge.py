@@ -20,13 +20,18 @@ from maistro_turing.bridge import (
 class FakeEpisodicStore:
     def __init__(self) -> None:
         self.stored: list[Any] = []
+        self.last_user_id: str | None = None
 
     async def store(self, memory: Any) -> str:
         self.stored.append(memory)
         return "mem-1"
 
-    async def retrieve(self, query: str, *, limit: int = 5) -> list[Any]:
+    async def retrieve(
+        self, query: str, *, user_id: str | None = None, limit: int = 5
+    ) -> list[Any]:
         from maistro.types.memory import EpisodicMemory, MemoryTier
+
+        self.last_user_id = user_id
 
         return [
             EpisodicMemory(
@@ -34,6 +39,7 @@ class FakeEpisodicStore:
                 tier=MemoryTier.OBSERVATION,
                 content=f"{query}-{i}",
                 weight=0.3,
+                user_id=user_id,
             )
             for i in range(min(limit, 2))
         ]
@@ -209,6 +215,49 @@ class TestTuringMemoryBridge:
         assert result[0]["tier"] == "observation"
         assert result[0]["weight"] == 0.3
         assert isinstance(result[0]["created_at"], str)
+        # Unscoped retrieval does not claim a scope filter.
+        assert store.last_user_id is None
+
+    async def test_store_episode_carries_principal_provenance(self) -> None:
+        """Scoped writes persist the caller's identity on the row (#859).
+
+        Blank-scope rows are indistinguishable across principals in a shared
+        episodic store, so the write seam must accept — and set — the
+        caller's canonical user/project provenance.
+        """
+        store = FakeEpisodicStore()
+        bridge = TuringMemoryBridge(episodic_store=store)
+
+        await bridge.store_episode(
+            content="scoped capture",
+            tier="observation",
+            user_id="user-7",
+            project_id="proj-9",
+        )
+        mem = store.stored[-1]
+        assert mem.user_id == "user-7"
+        assert mem.project_id == "proj-9"
+
+        # The unscoped path keeps blank provenance rather than guessing one.
+        await bridge.store_episode(content="unscoped capture", tier="observation")
+        mem = store.stored[-1]
+        assert mem.user_id is None
+        assert mem.project_id == ""
+
+    async def test_retrieve_episodes_scopes_reads_to_the_calling_principal(self) -> None:
+        """Scoped reads pass the caller's identity to the store's filter (#859).
+
+        Retrieval without a scope filter would surface every principal's
+        episodes to everyone; the scope filter is how one Workspace's reads
+        stay inside its own cognitive history.
+        """
+        store = FakeEpisodicStore()
+        bridge = TuringMemoryBridge(episodic_store=store)
+
+        result = await bridge.retrieve_episodes("query", user_id="user-7")
+        assert len(result) == 2
+        assert store.last_user_id == "user-7"
+        assert all(item["content"].startswith("query") for item in result)
 
     async def test_store_learning_with_no_store_returns_zero(self) -> None:
         bridge = TuringMemoryBridge()

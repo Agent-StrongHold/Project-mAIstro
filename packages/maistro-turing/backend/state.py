@@ -1,5 +1,9 @@
 """Live Turing cognitive state, scoped to canonical Workspace principals (#859).
 
+Holds the per-Workspace in-memory self-model scopes, the producer-artifact
+feed, and the wired runtime objects (actor / chat / bridges). Routes read and
+mutate this composed object.
+
 Every piece of private cognitive state — the self-model snapshot (mood,
 personality facets) and chat sessions — is keyed by the canonical Workspace
 identity the execution plane resolves for the authenticated principal. There is
@@ -19,7 +23,10 @@ Restart and replica semantics are explicit, not implied:
   process-local authority: composition refuses (``TURING_REPLICA_COUNT > 1``
   with no shared ``SelfModelStateStore``). Composing a shared store
   implementation is the single seam that makes self-model state survive
-  restarts and stay consistent across replicas.
+  restarts and stay consistent across replicas — and because the execution
+  plane resolves the same deterministic Workspace id for a principal in every
+  process, a shared store actually converges instead of silently forking one
+  Workspace's state per replica.
 
 The producer-artifact feed is the one deliberately shared surface: it is
 published content (each artifact names its ``self_id`` provenance), not private
@@ -62,7 +69,9 @@ MAX_ARTIFACT_TITLE_CHARS = 200
 MAX_ARTIFACT_BODY_CHARS = 20_000
 
 # Chat-session bounds (#859): cardinality and lifetime are declared here, not
-# implicit in however many session ids callers happen to invent.
+# implicit in however many session ids callers happen to invent. Both bounds
+# are enforced per Workspace partition, so one scope cannot spend another
+# scope's capacity.
 MAX_CHAT_SESSIONS = 256
 CHAT_SESSION_TTL_SECONDS = 60.0 * 60.0
 MAX_SESSION_ID_CHARS = 128
@@ -86,19 +95,21 @@ def _default_facet_scores() -> dict[str, float]:
     return {facet: 3.0 for _trait, facet in ALL_FACETS}
 
 
+def _require_scope(workspace_id: str) -> None:
+    """Refuse scope-less access: there is no global self model to fall back on."""
+    if not isinstance(workspace_id, str) or not workspace_id.strip():
+        raise LookupError(
+            "a canonical Workspace scope is required for Turing cognitive state; "
+            "there is no process-global self model"
+        )
+
+
 @dataclass
 class WorkspaceSelfModelState:
     """One Workspace's self-model snapshot — the state one principal owns.
 
     A fresh scope starts from the documented defaults; nothing is inherited
     from another Workspace or from a process-wide baseline.
-
-    M1 product-local projection: Workspace
-
-    Not the canonical Workspace model — ``maistro.workspaces`` owns that.
-    This is Turing's optional cognitive state keyed by the canonical
-    ``workspace_id`` the execution plane resolves; it holds no shared
-    semantics of its own.
     """
 
     workspace_id: str
@@ -108,11 +119,12 @@ class WorkspaceSelfModelState:
 
 @runtime_checkable
 class SelfModelStateStore(Protocol):
-    """Where scoped self-model state lives.
+    """Where scoped self-model snapshots persist.
 
-    The in-process implementation below is the single-replica default. A
-    durable deployment (restart survival, replica consistency) composes its
-    own implementation behind this contract; no other code changes.
+    The protocol is the durability seam (#859): the default implementation is
+    process-local and ephemeral; a deployment that needs restart survival or
+    replica consistency composes a shared implementation here, without the
+    state machine or routes knowing the difference.
     """
 
     def load_scope(self, workspace_id: str) -> WorkspaceSelfModelState | None: ...
@@ -149,7 +161,7 @@ class ChatSessionEntry:
 
 
 class ChatSessionRegistry:
-    """Bounded, workspace-owned registry of live chat sessions.
+    """Bounded, Workspace-partitioned registry of live chat sessions.
 
     Sessions are keyed by ``(workspace_id, session_id)``: the client-supplied
     session id selects a conversation *inside* the caller's resolved scope and
@@ -158,9 +170,15 @@ class ChatSessionRegistry:
     session-id guessing collapses into an isolated fresh session, never into
     someone else's conversation.
 
-    Cardinality is capped (LRU eviction) and lifetime is TTL-bounded, swept on
-    access. Entries are disposable: nothing here survives a restart, and the
-    durable trace of a conversation is the episodic chat capture.
+    Capacity and LRU are enforced *within* each Workspace's own partition: a
+    Workspace holds at most ``max_sessions`` sessions and eviction removes only
+    that Workspace's least-recently-used entry, so flooding distinct session
+    ids can never evict another Workspace's live session. Lifetime is
+    TTL-bounded, swept on access; because every hit also moves its entry to the
+    partition's recency end, a frozen or coarse clock still evicts the true
+    least-recently-used session. Entries are disposable: nothing here survives
+    a restart, and the durable trace of a conversation is the episodic chat
+    capture.
     """
 
     def __init__(
@@ -173,7 +191,10 @@ class ChatSessionRegistry:
             raise ValueError("max_sessions must be >= 1")
         if ttl_seconds <= 0:
             raise ValueError("ttl_seconds must be positive")
-        self._entries: OrderedDict[tuple[str, str], ChatSessionEntry] = OrderedDict()
+        # workspace_id -> (session_id -> entry), each partition an OrderedDict
+        # kept in LRU order: every hit does move_to_end and every create
+        # appends, so the front entry is the true LRU even when timestamps tie.
+        self._partitions: dict[str, OrderedDict[str, ChatSessionEntry]] = {}
         self._lock = threading.RLock()
         self._max_sessions = max_sessions
         self._ttl = timedelta(seconds=ttl_seconds)
@@ -195,33 +216,38 @@ class ChatSessionRegistry:
             )
         with self._lock:
             self._sweep_expired()
-            key = (workspace_id, session_id)
-            entry = self._entries.get(key)
+            partition = self._partitions.get(workspace_id)
+            if partition is None:
+                partition = self._partitions[workspace_id] = OrderedDict()
+            entry = partition.get(session_id)
             if entry is not None:
                 entry.last_used_at = _now()
-                self._entries.move_to_end(key)
+                partition.move_to_end(session_id)
                 return entry.session
-            session = factory()
-            self._entries[key] = ChatSessionEntry(
-                session=session,
+            while len(partition) >= self._max_sessions:
+                partition.popitem(last=False)  # this Workspace's own LRU only
+            partition[session_id] = ChatSessionEntry(
+                session=factory(),
                 workspace_id=workspace_id,
                 created_at=_now(),
                 last_used_at=_now(),
             )
-            while len(self._entries) > self._max_sessions:
-                self._entries.popitem(last=False)
-            return session
+            return partition[session_id].session
 
     def _sweep_expired(self) -> None:
+        """Drop entries idle past the TTL, then empty partitions. Lock required."""
         cutoff = _now() - self._ttl
-        expired = [k for k, e in self._entries.items() if e.last_used_at < cutoff]
-        for key in expired:
-            self._entries.pop(key, None)
+        for partition in self._partitions.values():
+            expired = [sid for sid, e in partition.items() if e.last_used_at < cutoff]
+            for sid in expired:
+                del partition[sid]
+        for workspace_id in [w for w, p in self._partitions.items() if not p]:
+            del self._partitions[workspace_id]
 
     def active_count(self) -> int:
         with self._lock:
             self._sweep_expired()
-            return len(self._entries)
+            return sum(len(partition) for partition in self._partitions.values())
 
 
 @dataclass
@@ -260,15 +286,6 @@ class ProducerArtifact:
         }
 
 
-def _require_scope(workspace_id: str) -> None:
-    """Refuse scope-less access: there is no global self model to fall back on."""
-    if not isinstance(workspace_id, str) or not workspace_id.strip():
-        raise LookupError(
-            "a canonical Workspace scope is required for Turing cognitive state; "
-            "there is no process-global self model"
-        )
-
-
 class TuringState:
     """Live state for the backend, partitioned by canonical Workspace scope.
 
@@ -292,8 +309,14 @@ class TuringState:
         if inbound_security is None:
             raise RuntimeError("canonical Turing security is required for backend startup")
         self.inbound_security = inbound_security
-        self.state_store: SelfModelStateStore = state_store or InProcessSelfModelStateStore()
-        self.sessions = session_registry or ChatSessionRegistry()
+        # An injected store is selected by identity, not truthiness (#859): an
+        # empty mapping-backed shared store is falsey but is still the
+        # deployment's chosen authority — replacing it here would silently
+        # downgrade durability to the process-local default.
+        self.state_store: SelfModelStateStore = (
+            state_store if state_store is not None else InProcessSelfModelStateStore()
+        )
+        self.sessions = session_registry if session_registry is not None else ChatSessionRegistry()
 
         self._artifacts: list[ProducerArtifact] = []
 
@@ -367,36 +390,58 @@ class TuringState:
         """Validated mood mutation for exactly one Workspace scope.
 
         The ``Mood`` constructor is the range authority (valence [-1, 1],
-        arousal/focus [0, 1]); an out-of-range proposal raises here and never
-        reaches the snapshot. Every mood write in the backend goes through
-        this method — there is no second mutation path.
+        arousal/focus [0, 1]); the candidate is validated before any state is
+        materialized or replaced, so a rejected write persists nothing and
+        leaves no default scope behind for a previously unseen Workspace.
+        Every mood write in the backend goes through this method — there is
+        no second mutation path.
         """
         _require_scope(workspace_id)
         with self._lock:
-            current = self._scope(workspace_id)
+            current = self.state_store.load_scope(workspace_id)
+            base = current.mood if current is not None else _default_mood()
             updated = Mood(
                 self_id=SELF_ID,
-                valence=fields.get("valence", current.mood.valence),
-                arousal=fields.get("arousal", current.mood.arousal),
-                focus=fields.get("focus", current.mood.focus),
-                last_tick_at=current.mood.last_tick_at,
+                valence=fields.get("valence", base.valence),
+                arousal=fields.get("arousal", base.arousal),
+                focus=fields.get("focus", base.focus),
+                last_tick_at=base.last_tick_at,
                 updated_at=_now(),
             )
-            current.mood = updated
-            self.state_store.save_scope(workspace_id, current)
+            if current is not None:
+                current.mood = updated
+                self.state_store.save_scope(workspace_id, current)
+            else:
+                self.state_store.save_scope(
+                    workspace_id,
+                    WorkspaceSelfModelState(workspace_id=workspace_id, mood=updated),
+                )
             return updated
 
     def set_facet(self, workspace_id: str, facet_id: str, score: float) -> None:
-        """Validated facet mutation for exactly one Workspace scope."""
+        """Validated facet mutation for exactly one Workspace scope.
+
+        Like ``set_mood``, the candidate is validated against the scope's
+        candidate facet map before any state is materialized or replaced: a
+        rejected write persists nothing and installs no default scope.
+        """
         _require_scope(workspace_id)
         with self._lock:
-            current = self._scope(workspace_id)
-            if facet_id not in current.facet_scores:
+            current = self.state_store.load_scope(workspace_id)
+            scores = dict(current.facet_scores) if current is not None else _default_facet_scores()
+            if facet_id not in scores:
                 raise KeyError(facet_id)
             if not 1.0 <= score <= 5.0:
                 raise ValueError(f"facet score out of range: {score}")
-            current.facet_scores[facet_id] = float(score)
-            self.state_store.save_scope(workspace_id, current)
+            scores[facet_id] = float(score)
+            if current is not None:
+                current.facet_scores = scores
+                self.state_store.save_scope(workspace_id, current)
+            else:
+                self.state_store.save_scope(
+                    workspace_id,
+                    WorkspaceSelfModelState(workspace_id=workspace_id, facet_scores=scores),
+                )
 
     # ------------------------------------------------------------- feed ------
 
@@ -439,13 +484,29 @@ class TuringState:
 
     # ------------------------------------------------------------- chat -----
 
-    def new_chat_session(self) -> TuringChatSession:
+    def new_chat_session(
+        self,
+        *,
+        user_id: str = "",
+        workspace_id: str = "",
+        project_id: str = "",
+    ) -> TuringChatSession:
+        """Create one disposable chat session, bound to its caller's scope.
+
+        The scope rides on the session so the episodic chat capture persists
+        with the caller's provenance (user/project) instead of blank scope
+        fields — unscoped captures from different Workspaces would be
+        indistinguishable in a shared episodic store (#859).
+        """
         return TuringChatSession(
             memory=self.memory,
             provider=self.provider,
             classifier=self.classifier,
             security=self.security,
             self_id=SELF_ID,
+            user_id=user_id,
+            workspace_id=workspace_id,
+            project_id=project_id,
         )
 
 
@@ -484,5 +545,9 @@ def reset_state(
     """Replace the singleton — used by tests and the composition root."""
     global _state
     _guard_replica_authority(state_store)
-    _state = TuringState(config=config, inbound_security=inbound_security, state_store=state_store)
+    _state = TuringState(
+        config=config,
+        inbound_security=inbound_security,
+        state_store=state_store,
+    )
     return _state

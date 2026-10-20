@@ -157,6 +157,8 @@ class TuringMemoryBridge:
         weight: float = 0.3,
         intent: str = "",
         context: dict[str, Any] | None = None,
+        user_id: str | None = None,
+        project_id: str | None = None,
     ) -> str:
         """The single validated write seam for Turing episodic memories.
 
@@ -167,6 +169,11 @@ class TuringMemoryBridge:
         real number, and it is clamped into the tier's declared bounds by
         ``clamp_weight``. Out-of-range proposals are clamped; malformed ones
         (wrong type, non-finite, unknown tier) fail the write.
+
+        ``user_id``/``project_id`` carry the caller's canonical provenance
+        onto the persisted row; when supplied, scoped readers can filter this
+        episode to its own principal, and blank rows never masquerade as
+        another principal's memory.
         """
         if self._episodic is None:
             logger.warning("no episodic store configured; memory write dropped")
@@ -193,6 +200,8 @@ class TuringMemoryBridge:
             source=source,
             weight=clamped,
             context=context or {},
+            user_id=user_id,
+            project_id=project_id or "",
         )
         return str(await self._episodic.store(mem))
 
@@ -201,10 +210,20 @@ class TuringMemoryBridge:
         query: str,
         *,
         limit: int = 5,
+        user_id: str | None = None,
     ) -> list[dict[str, Any]]:
+        """Retrieve episodic memories, optionally scoped to one principal.
+
+        ``user_id`` maps to the episodic store's scope filter, so a scoped
+        caller only ever sees episodes written for their own principal;
+        unscoped callers keep the previous unfiltered behavior.
+        """
         if self._episodic is None:
             return []
-        results = await self._episodic.retrieve(query, limit=limit)
+        if user_id is None:
+            results = await self._episodic.retrieve(query, limit=limit)
+        else:
+            results = await self._episodic.retrieve(query, user_id=user_id, limit=limit)
         return [
             {
                 "memory_id": m.memory_id,
