@@ -81,6 +81,7 @@ from maistro_rsi.htr import (
     NodeStatus,
 )
 from maistro_rsi.protocols import ApplyPatchFn, MicroVmSandbox
+from maistro_rsi.work_source import RsiWorkSource, SourcedObjective
 
 __all__ = [
     "ApplyPatchFn",
@@ -98,6 +99,8 @@ __all__ = [
     "RsiCycle",
     "RsiCycleConfig",
     "RsiCycleResult",
+    "RsiWorkSource",
+    "SourcedObjective",
     "__version__",
     "report_from_cycle_result",
 ]

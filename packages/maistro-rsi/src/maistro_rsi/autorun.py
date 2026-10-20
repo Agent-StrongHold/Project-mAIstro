@@ -43,6 +43,7 @@ from maistro.security.warden.detector import Warden
 from maistro_evolve.tournament import EloTournament
 from maistro_evolve.types import DAGTopology, EvalWeights, NodeGenome, PipelineGenome
 from maistro_rsi.apply_agents import OPENCODE_TEMPLATE, ApplyPatchError, command_apply_patch
+from maistro_rsi.canonical_provenance import CanonicalCycleRecord, RsiCycleProvenance
 from maistro_rsi.coordinator import (
     CoordinatorResult,
     ExecutionReport,
@@ -79,6 +80,7 @@ from maistro_rsi.runner import (
     RsiCycleResult,
     build_harness,
 )
+from maistro_rsi.work_source import RsiWorkSource, RsiWorkSourceError, SourcedObjective
 
 logger = structlog.get_logger()
 
@@ -940,6 +942,214 @@ def _load_or_create_tree(
     return tree, policy_state
 
 
+async def _claim_seed_objective(
+    work_source: RsiWorkSource,
+    provenance: RsiCycleProvenance,
+    tree: HypothesisTree,
+    *,
+    fresh_tree: bool,
+    actor: str,
+) -> SourcedObjective | None:
+    """Claim the campaign's seed objective from the generic work source.
+
+    The claim and its #101 receipt go through the authorized surface; a
+    fresh tree gains the objective as its first queued hypothesis (the
+    coordinator drains queued hypotheses first), while a resumed tree
+    already carries it as a node.
+    """
+    sourced = await work_source.next_objective(actor=actor, workspace_id=provenance.workspace_id)
+    if sourced is None:
+        return None
+    await work_source.record_claim(sourced, actor_principal_id=actor)
+    if fresh_tree:
+        tree.expand(tree.root_id, sourced.instruction)
+    return sourced
+
+
+async def _maybe_claim_seed(
+    work_source: RsiWorkSource | None,
+    provenance: RsiCycleProvenance | None,
+    tree: HypothesisTree,
+    *,
+    fresh_tree: bool,
+    actor: str,
+) -> SourcedObjective | None:
+    """Claim a seed objective when both adapters are wired, else None."""
+    if work_source is None or provenance is None:
+        return None
+    return await _claim_seed_objective(
+        work_source, provenance, tree, fresh_tree=fresh_tree, actor=actor
+    )
+
+
+def _wrap_canonical_executor(
+    active_executor: ExecutorFn,
+    provenance: RsiCycleProvenance | None,
+    work_source: RsiWorkSource | None,
+    *,
+    work_actor: str,
+    config: AutorunConfig,
+    run_id: str,
+    cycle_records: list[CanonicalCycleRecord],
+) -> ExecutorFn:
+    """Wrap the campaign executor so each cycle is one canonical Run (#50).
+
+    A claimed backlog item must be worked under canonical Run identity, never
+    an RSI-private one — the half-state is refused here, before any cycle
+    runs, rather than discovered mid-campaign.
+    """
+    if work_source is not None and provenance is None:
+        raise ValueError(
+            "work_source requires provenance: a claimed backlog item must be worked "
+            "under canonical Run identity, not an RSI-private one"
+        )
+    if provenance is None:
+        return active_executor
+    return provenance.wrap_executor(
+        active_executor,
+        campaign_id=run_id,
+        actor_principal_id=work_actor,
+        budget={
+            "max_wall_clock_s": config.max_wall_clock_s,
+            "max_cycles": config.num_cycles,
+        },
+        records=cycle_records,
+    )
+
+
+def _citing_cycle(
+    result: CoordinatorResult, cycle_records: Sequence[CanonicalCycleRecord]
+) -> CanonicalCycleRecord | None:
+    """The canonical Run to cite for a campaign's settlement receipts.
+
+    Prefers the Run behind the campaign's best candidate; falls back to the
+    first executed cycle's Run so an unimproved campaign still cites real
+    evidence rather than none.
+    """
+    best = result.best
+    if best is not None:
+        cite = next((r for r in cycle_records if r.cycle_id == best.id), None)
+        if cite is not None:
+            return cite
+    return cycle_records[0] if cycle_records else None
+
+
+def _proven_improved(result: CoordinatorResult) -> bool:
+    """Whether the campaign's best candidate is a proven improvement."""
+    best = result.best
+    return best is not None and best.evidence is not None and best.evidence.improved
+
+
+async def _propose_discovered_work(
+    work_source: RsiWorkSource,
+    sourced: SourcedObjective,
+    result: CoordinatorResult,
+    *,
+    cite: CanonicalCycleRecord | None,
+    actor: str,
+) -> None:
+    """File stall-review directions as new PROPOSED backlog work (#50).
+
+    A stall intervention's reviewer directions are discovered prerequisites:
+    the campaign found the current item needs new directions. They are filed
+    as new items in the generic backlog — proposed work with visible RSI
+    provenance, never a silent widening of the claimed item's scope — and
+    journaled against the Run that discovered them.
+    """
+    child_ids: list[str] = []
+    for intervention in result.interventions:
+        for direction in intervention.directions:
+            try:
+                child_id = await work_source.propose_discovered_work(
+                    actor=actor,
+                    workspace_id=sourced.workspace_id,
+                    title=direction.text,
+                    details=(
+                        f"Discovered by RSI stall review (intervention {intervention.index}); "
+                        f"proposed as new work, not a widening of {sourced.item_id}."
+                    ),
+                    parent_id=sourced.item_id,
+                )
+            except RsiWorkSourceError as exc:
+                logger.warning("rsi_discovered_work_unfiled", error=str(exc))
+                continue
+            child_ids.append(child_id)
+    if child_ids:
+        await work_source.record_discovered_work(
+            sourced,
+            child_item_ids=child_ids,
+            discovered_by_run_id=cite.run_id if cite is not None else None,
+            summary="stall review directions filed as discovered work",
+        )
+
+
+async def _settle_sourced_objective(
+    work_source: RsiWorkSource,
+    sourced: SourcedObjective,
+    result: CoordinatorResult,
+    cycle_records: Sequence[CanonicalCycleRecord],
+    *,
+    actor: str,
+) -> None:
+    """File the claimed item's evidence/closure receipts after a campaign.
+
+    Every receipt cites canonical Run identity (#101). Closure happens only
+    on a proven improvement, with the citing Run as one evidence ref beside
+    the campaign's own account — a completed Run alone is never closure
+    evidence (ADR-082426-19ed). Anything less releases the claim: the item
+    stays open for the next claimant instead of being quietly closed on an
+    unimproved campaign. Discovered work from any stall review is proposed
+    back into the generic backlog either way.
+    """
+    cite = _citing_cycle(result, cycle_records)
+    if cite is not None:
+        await work_source.record_cycle_evidence(
+            sourced,
+            run_id=cite.run_id,
+            node_run_id=cite.node_run_id,
+            attempt_id=cite.attempt_id,
+            summary=f"RSI campaign finished: {len(result.steps)} cycle(s) executed",
+        )
+    if _proven_improved(result) and cite is not None:
+        await work_source.close(
+            sourced,
+            actor=actor,
+            evidence_refs=(
+                f"run:{cite.run_id}",
+                f"autorun-cycles:{len(result.steps)}",
+            ),
+            run_id=cite.run_id,
+            node_run_id=cite.node_run_id,
+            attempt_id=cite.attempt_id,
+            closure_summary="RSI campaign produced an improved candidate",
+        )
+    else:
+        await work_source.release(
+            sourced,
+            actor=actor,
+            reason=(
+                "no proven improvement"
+                if not _proven_improved(result)
+                else "no canonical run to cite"
+            ),
+        )
+    await _propose_discovered_work(work_source, sourced, result, cite=cite, actor=actor)
+
+
+async def _settle_if_sourced(
+    work_source: RsiWorkSource | None,
+    sourced: SourcedObjective | None,
+    result: CoordinatorResult,
+    cycle_records: Sequence[CanonicalCycleRecord],
+    *,
+    actor: str,
+) -> None:
+    """Settle the claimed item after a campaign, when one was claimed."""
+    if work_source is None or sourced is None:
+        return
+    await _settle_sourced_objective(work_source, sourced, result, cycle_records, actor=actor)
+
+
 async def _record_objective_parked(audit: AuditLog, exc: ObjectiveParked) -> None:
     """Log the park and append its provenance record to the audit trail."""
     await logger.awarning(
@@ -1006,6 +1216,9 @@ async def run_autonomous(
     proposer: HypothesisProposer | None = None,
     audit: AuditLog | None = None,
     ledger: LearningsLedger | None = None,
+    provenance: RsiCycleProvenance | None = None,
+    work_source: RsiWorkSource | None = None,
+    work_actor: str = "rsi-campaign",
 ) -> CoordinatorResult:
     """Run the full autonomous experimentation loop and return the grown tree.
 
@@ -1017,6 +1230,15 @@ async def run_autonomous(
 
     `executor`/`proposer`/`audit`/`ledger` are injectable for tests; production
     wiring is the default. The wall-clock budget is enforced between cycles.
+
+    Canonical convergence (#50): with ``provenance``, every cycle executes as
+    one canonical Run/NodeRun/Attempt in the authorized Workspace/Project —
+    the campaign keeps its own hypothesis-tree logic and gains canonical
+    execution identity, never a second one. With ``work_source`` (requires
+    ``provenance``), the campaign's seed objective is claimed from the generic
+    Workspace backlog through the authorized surface (#98/#100), and the
+    claimed item's evidence/closure receipts cite the canonical Runs (#101)
+    — RSI consumes the generic work-source contracts instead of owning one.
     """
     run_id = uuid.uuid4().hex[:10]
     # Every Warden admission decision this run records is attributable to it:
@@ -1064,6 +1286,17 @@ async def run_autonomous(
         prior_learnings=prior_learnings,
         correlation=run_correlation,
     )
+    # Canonical convergence (#50): one Run/NodeRun/Attempt per executed cycle.
+    cycle_records: list[CanonicalCycleRecord] = []
+    active_executor = _wrap_canonical_executor(
+        active_executor,
+        provenance,
+        work_source,
+        work_actor=work_actor,
+        config=config,
+        run_id=run_id,
+        cycle_records=cycle_records,
+    )
     active_proposer = proposer or make_llm_proposer(
         config.model,
         prior_learnings=prior_learnings,
@@ -1072,6 +1305,16 @@ async def run_autonomous(
     )
 
     tree, policy_state = _load_or_create_tree(config, tree_path)
+
+    # Generic work-source consumption (#50/#98/#100): the campaign's first
+    # objective is *claimed* from the authorized Workspace backlog rather
+    # than invented — the coordinator still drains queued hypotheses first,
+    # so a fresh tree works the claimed item before proposing its own. A
+    # resumed tree already carries the seed node, so only a fresh tree gains
+    # one (re-expanding would duplicate it, same as config seeds).
+    sourced = await _maybe_claim_seed(
+        work_source, provenance, tree, fresh_tree=policy_state is None, actor=work_actor
+    )
 
     # M5-B stall policy: N non-improving cycles trigger a lineage review over
     # the stalled branch's full evidence + the archived promising candidates,
@@ -1175,6 +1418,7 @@ async def run_autonomous(
         )
 
     result = CoordinatorResult(tree=tree, steps=steps, interventions=interventions)
+    await _settle_if_sourced(work_source, sourced, result, cycle_records, actor=work_actor)
     best = result.best
     await logger.ainfo(
         "rsi_autorun_complete",

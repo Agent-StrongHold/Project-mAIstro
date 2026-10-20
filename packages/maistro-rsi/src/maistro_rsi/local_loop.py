@@ -53,6 +53,7 @@ import structlog
 from maistro.security.warden.detector import Warden
 from maistro_evolve._candidate_env import candidate_env
 from maistro_evolve.improvement import BudgetTier, ImprovementKind
+from maistro_rsi.canonical_provenance import RsiCycleProvenance
 from maistro_rsi.competitors import Competitor
 from maistro_rsi.contained_validation import (
     CONTAINED_PYTHON,
@@ -214,6 +215,31 @@ def _promotion_gate_evidence(note: Any) -> dict[str, Any] | None:
     if note is None or note.gate_evidence is None:
         return None
     return dict(note.gate_evidence)
+
+
+def _evaluator_versions(note: Any) -> dict[str, str]:
+    """Evaluator version provenance from a promotion's trace note (#109).
+
+    The shared M4 promotion contract requires every promotion record to name
+    the version of each evaluator that produced its evidence — a score
+    without the version of the thing that scored it cannot be reproduced.
+    The honest sources RSI already records: the evaluator-oracle digest the
+    integrity gate pinned (#109) and the trace-note format version. Absent
+    note → empty dict → the caller reports the promotion as skipped from the
+    shared contract rather than inventing versions.
+    """
+    if note is None:
+        return {}
+    versions: dict[str, str] = {}
+    evaluator = getattr(note, "evaluator", None)
+    if isinstance(evaluator, dict):
+        digest = evaluator.get("evaluator_digest")
+        if isinstance(digest, str) and digest:
+            versions["evaluator_oracle"] = digest
+    note_version = getattr(note, "version", None)
+    if isinstance(note_version, int):
+        versions["trace_note"] = f"v{note_version}"
+    return versions
 
 
 def _gate_evidence_entry(gate: Any) -> dict[str, Any]:
@@ -1111,6 +1137,12 @@ class CycleOutcome:
     sha: str = ""
     kind: ImprovementKind = ImprovementKind.DOC
     regression_judge_score: float | None = None
+    # Canonical evaluation Runs for this cycle's evidence (#50): the
+    # Run/NodeRun/Attempt identity the cycle was recorded under, when a
+    # provenance adapter was wired. Empty means the cycle ran without one —
+    # promotion records then say so honestly rather than citing ids that do
+    # not exist.
+    evaluation_run_ids: tuple[str, ...] = ()
 
 
 @dataclass
@@ -1265,9 +1297,31 @@ class LocalRsiLoop:
     losers are discarded. Nothing leaves the work root.
     """
 
-    def __init__(self, config: LocalRsiConfig, apply_patch: ApplyPatchFn | None = None) -> None:
+    def __init__(
+        self,
+        config: LocalRsiConfig,
+        apply_patch: ApplyPatchFn | None = None,
+        *,
+        provenance: RsiCycleProvenance | None = None,
+        campaign_id: str = "",
+        actor_principal_id: str = "rsi-operator",
+    ) -> None:
         self._config = config
         self._injected_apply = apply_patch
+        # Canonical convergence (#50): when a provenance adapter is wired,
+        # every executed cycle is recorded as one canonical
+        # Run/NodeRun/Attempt in the authorized Workspace/Project, and the
+        # promotion review can bind kept promotions to that canonical
+        # evaluation evidence through the shared M4 contract. Unwired, the
+        # loop behaves exactly as before and its promotion records say so.
+        self._provenance = provenance
+        self._campaign_id = campaign_id
+        self._actor_principal_id = actor_principal_id
+        # Shared M4 promotion-contract state (#116): the lazily created
+        # contract and, per promoted subject, the (version, content hash)
+        # the next promotion's staleness fence compares against.
+        self._shared_contract_instance: Any = None
+        self._shared_promotions: dict[str, tuple[int, str]] = {}
         self._baseline = Path(config.work_root) / "baseline"
         self._warden_audit_sink = JsonlAuditSink(
             config.audit_path or str(Path(config.work_root) / "rsi-warden-audit.jsonl")
@@ -2922,6 +2976,7 @@ class LocalRsiLoop:
                 outcome = CycleOutcome(
                     index, changed=False, tests_passed=False, promoted=False, note=f"error: {exc}"
                 )
+            self._record_cycle_provenance(outcome)
             result.cycles.append(outcome)
             # Interim checkpoint every N cycles: a progress report + a refreshed
             # export of everything promoted so far. The baseline is not touched —
@@ -2946,6 +3001,124 @@ class LocalRsiLoop:
         if self._population is not None:
             logger.info("rsi_live_final_summary", **self._population_summary())
         return result
+
+    _KEPT_REVIEW_OUTCOMES = frozenset({"auto_keep_mechanical", "auto_keep_judgment"})
+
+    def _shared_contract_leg(
+        self,
+        outcome: CycleOutcome,
+        *,
+        sha: str,
+        built_on: str,
+        touched_paths: list[str],
+        note: Any,
+        decision: dict[str, Any],
+    ) -> dict[str, Any]:
+        """The shared M4 promotion-contract leg (#116 / epic #552).
+
+        A kept promotion is gated and minted through
+        ``maistro.governance.promotion`` — the one contract every definition
+        family promotes under — bound to the cycle's canonical evaluation
+        Runs (#50) and to the evaluator provenance on its trace note (#109).
+        Anything the contract needs but the cycle cannot honestly supply
+        (no canonical Runs, no evaluator provenance, a non-kept decision) is
+        REPORTED as skipped, never fabricated; a contract refusal on a
+        promotion the loop already kept is a governance discrepancy, so it is
+        recorded loudly rather than crashing the review pass.
+        """
+        from maistro.governance.promotion import PromotionRefused
+        from maistro_rsi.promotion_contract import record_kept_promotion
+
+        verb = str(decision.get("outcome", ""))
+        if verb not in self._KEPT_REVIEW_OUTCOMES:
+            return {"status": "skipped", "reason": f"decision {verb!r} is not a kept promotion"}
+        if not outcome.evaluation_run_ids:
+            return {
+                "status": "skipped",
+                "reason": "cycle recorded no canonical evaluation Run ids (provenance unwired)",
+            }
+        evaluator_versions = _evaluator_versions(note)
+        if not evaluator_versions:
+            return {
+                "status": "skipped",
+                "reason": "trace note carries no evaluator version provenance",
+            }
+        subject = f"rsi-baseline:{self._config.baseline_branch}"
+        version, content_hash = self._shared_promotions.get(subject, (0, built_on))
+        try:
+            record = record_kept_promotion(
+                self._shared_contract(),
+                subject=subject,
+                base_sha=content_hash,
+                candidate_sha=sha,
+                touched_paths=touched_paths,
+                evaluation_run_ids=outcome.evaluation_run_ids,
+                evaluator_versions=evaluator_versions,
+                approver=(
+                    "rsi-mechanical-policy"
+                    if verb == "auto_keep_mechanical"
+                    else "rsi-checkpoint-reviewer"
+                ),
+                reason=str(decision.get("reason", "checkpoint review keep")),
+                mechanical=verb == "auto_keep_mechanical",
+                current_version=version,
+            )
+        except PromotionRefused as exc:
+            logger.error(
+                "rsi_local_shared_contract_refused",
+                sha=sha,
+                reason=str(exc),
+            )
+            return {"status": "refused", "reason": str(exc)}
+        self._shared_promotions[subject] = (record.new_version, sha)
+        return {
+            "status": "recorded",
+            "record_id": record.record_id,
+            "new_version": record.new_version,
+            "policy": record.approval.policy_id,
+            "authority": record.approval.effective_authority,
+        }
+
+    def _shared_contract(self) -> Any:
+        """The loop's shared promotion contract, created once."""
+        if self._shared_contract_instance is None:
+            from maistro_rsi.promotion_contract import rsi_promotion_contract
+
+            self._shared_contract_instance = rsi_promotion_contract()
+        return self._shared_contract_instance
+
+    def _record_cycle_provenance(self, outcome: CycleOutcome) -> None:
+        """Record one executed cycle as canonical Run work (#50).
+
+        The loop's own execution is untouched; this files the receipt the
+        promotion review later binds kept promotions to. A recording failure
+        must not discard real improvement work, so it warns and leaves the
+        outcome without canonical ids — the promotion record then reports the
+        omission instead of citing evidence that does not exist.
+        """
+        if self._provenance is None:
+            return
+        try:
+            record = self._provenance.record_completed_cycle_sync(
+                campaign_id=self._campaign_id or "local-loop",
+                cycle_id=f"cycle-{outcome.index}",
+                objective=outcome.target or outcome.note or "RSI local cycle",
+                actor_principal_id=self._actor_principal_id,
+                outcome={
+                    "index": outcome.index,
+                    "changed": outcome.changed,
+                    "tests_passed": outcome.tests_passed,
+                    "promoted": outcome.promoted,
+                    "composite": outcome.composite,
+                    "sha": outcome.sha,
+                    "kind": outcome.kind.value,
+                },
+                failed=not outcome.tests_passed and not outcome.changed,
+                error=None if outcome.note == "" else outcome.note,
+            )
+            outcome.evaluation_run_ids = (record.run_id,)
+        except Exception as exc:
+            logger.warning("rsi_local_cycle_provenance_failed", index=outcome.index, error=str(exc))
 
     def _write_checkpoint(self, result: LocalRsiResult, *, label: str) -> None:
         """Write a progress report (markdown + JSON) and refresh the rolling,
@@ -3119,6 +3292,14 @@ class LocalRsiLoop:
             parent = _git(self._baseline, "rev-parse", f"{sha}^", check=False)
             if parent.returncode == 0:
                 built_on = parent.stdout.strip()
+            decision["shared_contract"] = self._shared_contract_leg(
+                outcome,
+                sha=sha,
+                built_on=built_on,
+                touched_paths=touched_paths,
+                note=note,
+                decision=decision,
+            )
             write_promotion_record(
                 promotions_dir(report_dir),
                 PromotionRecord(
