@@ -8,7 +8,8 @@
 # A fat builder makes a self-contained venv; the runtime copies only the venv and
 # app sources.
 # ---- frontend build ----
-FROM node:22-alpine AS frontend
+# Digest-pinned (#349); node:22-alpine resolved to this index digest 2026-09-30.
+FROM node:22-alpine@sha256:0a7108bf6c7bf5de370ffb1a3ed6be93d405b43ff159f681a8d18c0e2bc2e402 AS frontend
 WORKDIR /build
 COPY packages/hive-conductor/frontend/package.json packages/hive-conductor/frontend/package-lock.json ./
 RUN npm ci
@@ -19,6 +20,17 @@ ENV VITE_POC_MODE=${VITE_POC_MODE}
 # breaking asset URLs. Defaults to / so standalone builds are unaffected.
 ARG VITE_BASE_PATH=/
 ENV VITE_BASE_PATH=${VITE_BASE_PATH}
+# Perceived-load telemetry (#1420). Collection stays OFF unless the builder
+# sets VITE_RUM_ENABLED=true (and the runtime sets RUM_INGEST_ENABLED=true):
+# both sides must opt in before any observation exists. docs/RUM.md is the
+# contract; the sample rate defaults to 1.0 and the build id defaults to
+# "dev" when the builder does not name the build.
+ARG VITE_RUM_ENABLED=
+ENV VITE_RUM_ENABLED=${VITE_RUM_ENABLED}
+ARG VITE_RUM_SAMPLE_RATE=1
+ENV VITE_RUM_SAMPLE_RATE=${VITE_RUM_SAMPLE_RATE}
+ARG VITE_RUM_BUILD_ID=
+ENV VITE_RUM_BUILD_ID=${VITE_RUM_BUILD_ID}
 RUN npm run build
 
 # ---- age build ----
@@ -27,7 +39,7 @@ RUN npm run build
 # immutable release tag ourselves with a patched Go toolchain/dependency set so
 # the runtime does not inherit vulnerabilities from an otherwise-current source
 # release. The release tag resolves to b8564ad; fail if upstream ever disagrees.
-FROM golang:1.25.13-alpine AS agebuild
+FROM golang:1.25.13-alpine@sha256:1e0126852075c9c60731c8ba49088448b91f63e2aed97ca9d1a9791622a05946 AS agebuild
 ARG AGE_VERSION=1.3.1
 ARG AGE_COMMIT_SHORT=b8564ad
 RUN apk add --no-cache git && \
@@ -40,20 +52,30 @@ RUN apk add --no-cache git && \
     CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/age-keygen ./cmd/age-keygen
 
 # ---- builder: self-contained venv (has shell/pip) ----
-FROM python:3.13.15-slim-bookworm AS pybuild
+# Digest-pinned (#349); shared with the runtime stage below so both resolve to
+# the same CPython build.
+FROM python:3.13.15-slim-bookworm@sha256:2325bb286ec344af3e5898cc224b5844e2707ac6e26b1632516fd3edc84a5e26 AS pybuild
 WORKDIR /app
-# uv is pinned to the release that generated the committed uv.lock: `uv export
-# --locked` (below) is version-sensitive, and a floating installer is exactly
-# the kind of unexamined resolution this image must not do (#348).
-COPY --from=ghcr.io/astral-sh/uv:0.12.20 /uv /usr/local/bin/uv
+# uv is the installer tool image — pinned to the 0.12.21 release by digest
+# (#349); a `:latest` tag could swap the installer under every build with no
+# repository diff, and an immutable digest cannot. The same pinned uv
+# generated the committed uv.lock this image installs from (#348).
+COPY --from=ghcr.io/astral-sh/uv:0.12.21@sha256:a7aed3216253ee804de3e2d8afa5073baa1a177335345d43845cd4165e43b711 /uv /usr/local/bin/uv
 ENV PATH="/app/venv/bin:$PATH" \
-    UV_LINK_MODE=copy
+    UV_LINK_MODE=copy \
+    UV_HTTP_TIMEOUT=120 \
+    UV_MAX_RETRIES=10
 # The lock covers the whole workspace, so uv needs every member's
 # pyproject.toml to verify `--locked` (lock-vs-pyproject drift fails the
 # build). Only the five members the image installs end up in the venv; the
 # other members are build-time metadata and never reach the runtime stage.
+# `extensions/` is copied for the same reason: the reference extension is a
+# workspace member, and the export resolves its selection by building the
+# workspace root, which fails without the member's pyproject.toml in the
+# context. It is never installed and never reaches the runtime stage.
 COPY pyproject.toml uv.lock README.md ./
 COPY packages/ packages/
+COPY extensions/ extensions/
 # Install the exact locked requirement set for this image's dependency contract
 # (hive-conductor over maistro-core[bcrypt,identity] + design/evolve/bootstrap
 # + canvas), then the workspace members themselves, non-editable, --no-deps:
@@ -114,6 +136,21 @@ RUN if [ "$INSTALL_OBSERVABILITY" = "1" ]; then \
              -r /tmp/lock-requirements-otel.txt \
         && uv pip check --python /app/venv/bin/python; \
     fi
+
+# #406: bip-utils pins pytoniq-core-fork, whose wheel installs a generic
+# top-level `examples` namespace package. Both PyPI releases of the fork ship
+# it and pip cannot exclude a subpath, so the payload is pruned at build time
+# and the whole environment is then re-checked in production mode — placed
+# AFTER every install that can touch site-packages (identity stack, backend
+# requirements, optional observability), because a gate that runs before the
+# last dependency lands does not gate that dependency. A silent no-op prune
+# fails this build, not the next audit. RECORD is rewritten, so the syft SBOM
+# keeps the fork provenance (pkg:pypi/pytoniq-core-fork) with the pruned file
+# inventory.
+COPY scripts/check-dependency-namespaces.py scripts/prune-dependency-namespaces.py /tmp/
+RUN python /tmp/prune-dependency-namespaces.py \
+    && python /tmp/check-dependency-namespaces.py --production \
+    && rm -rf /tmp/check-dependency-namespaces.py /tmp/prune-dependency-namespaces.py
 # The image build is the first contract test: exercise the same identity import
 # and derivation that setup uses, and fail if a native wheel was not selected.
 RUN python -c "import importlib.metadata as m, sys; from maistro.identity import ConductorSeed; assert sys.version_info[:3] == (3, 13, 15), sys.version; assert m.version('bip-utils') == '${BIP_UTILS_VERSION}'; assert m.version('coincurve') == '${COINCURVE_VERSION}'; assert m.version('pynacl') == '${PYNACL_VERSION}'; seed = ConductorSeed.generate(); assert seed.did_key().startswith('did:key:z'); seed.zero()" && \
@@ -127,7 +164,7 @@ RUN python -c "import importlib.metadata as m, sys; from maistro.identity import
 RUN mkdir -p /app/state_seed
 
 # ---- thin runtime: same pinned CPython ABI, nonroot ----
-FROM python:3.13.15-slim-bookworm
+FROM python:3.13.15-slim-bookworm@sha256:2325bb286ec344af3e5898cc224b5844e2707ac6e26b1632516fd3edc84a5e26
 WORKDIR /app
 ENV PATH="/app/venv/bin:$PATH" \
     PYTHONPATH=/app/backend:/app \

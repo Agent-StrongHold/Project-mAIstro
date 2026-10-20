@@ -167,17 +167,33 @@ class SqliteWorkspaceStore:
             await self._project_store.create_root_in(conn, workspace.workspace_id)
         return workspace
 
-    async def get(self, workspace_id: str) -> Workspace | None:
+    async def get(self, workspace_id: str, *, principal_id: str | None = None) -> Workspace | None:
         """Return the Workspace, or ``None`` when no record has that id."""
+        from maistro.workspaces.authorization import WorkspaceAuthorizationDenied
+        from maistro.workspaces.store_boundary import is_blank_principal, require_workspace_view
+
         async with self._conn.execute(
             "SELECT payload FROM canonical_workspaces WHERE workspace_id = ?",
             (workspace_id,),
         ) as cursor:
             row = await cursor.fetchone()
-        return Workspace.model_validate_json(row[0]) if row is not None else None
+        if row is None:
+            return None
+        if principal_id is not None:
+            if is_blank_principal(principal_id):
+                raise WorkspaceAuthorizationDenied
+            await require_workspace_view(self, workspace_id, principal_id)
+        return Workspace.model_validate_json(row[0])
 
-    async def update(self, workspace: Workspace) -> Workspace:
+    async def update(self, workspace: Workspace, *, principal_id: str | None = None) -> Workspace:
         """Persist a changed Workspace and stamp ``updated_at``."""
+        from maistro.workspaces.authorization import WorkspaceAuthorizationDenied
+        from maistro.workspaces.store_boundary import is_blank_principal, require_workspace_view
+
+        if principal_id is not None:
+            if is_blank_principal(principal_id):
+                raise WorkspaceAuthorizationDenied
+            await require_workspace_view(self, workspace.workspace_id, principal_id)
         updated = workspace.model_copy(update={"updated_at": datetime.now(UTC)})
         async with self._write_transaction() as conn:
             cursor = await conn.execute(

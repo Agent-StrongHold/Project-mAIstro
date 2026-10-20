@@ -10,6 +10,7 @@ no execution identity behind it.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
@@ -28,8 +29,9 @@ from maistro.tasks.admission import (
     TASK_QUEUE_SOURCE,
     TaskRunAdmitter,
 )
-from maistro.tasks.models import TaskCreate, TaskStatus
+from maistro.tasks.models import TaskCreate, TaskResponse, TaskStatus
 from maistro.tasks.queue import TaskQueue, configure_task_queue, get_task_queue
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 
 @pytest.fixture
@@ -123,13 +125,15 @@ async def test_absent_session_and_user_are_omitted_rather_than_blank(scoped) -> 
         admitter=TaskRunAdmitter(runs, workspace_id="w1", project_id=project.project_id)
     )
 
-    task = await queue.submit(TaskCreate(description="Fix it"))
+    task = await queue.submit(
+        TaskCreate(description="Fix it", user_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
+    )
 
     run = await runs.get_run(task.run_id or "")
     assert run is not None
     assert SESSION_ID_KEY not in run.provenance
-    assert "user_id" not in run.provenance
-    assert run.actor_principal_id is None
+    assert run.provenance["user_id"] == DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+    assert run.actor_principal_id == DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 
 async def test_the_bound_request_id_lands_on_the_runs_provenance(scoped) -> None:
@@ -532,6 +536,7 @@ async def test_recovery_ignores_queued_runs_from_other_admission_sources(scoped)
         node_type=DELEGATE_NODE_KIND,
         name="scheduled work",
         source="schedule",
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         initial_status=RunStatus.QUEUED,
     )
     stranded_schedule = await admit_direct_work(
@@ -541,6 +546,7 @@ async def test_recovery_ignores_queued_runs_from_other_admission_sources(scoped)
         node_type=DELEGATE_NODE_KIND,
         name="scheduled work left running",
         source="schedule",
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         initial_status=RunStatus.QUEUED,
     )
     await runs.transition_run(stranded_schedule.run_id, RunStatus.RUNNING)
@@ -1352,3 +1358,42 @@ async def test_a_run_that_left_waiting_under_us_does_not_falsely_report_progress
     run = await runs.get_run(run_id)
     assert run is not None
     assert run.status is RunStatus.CANCELLED
+
+
+async def test_prepare_run_stamps_the_admission_source_like_admit_does() -> None:
+    """The atomic lane's prepare half (#1845) must produce a Run
+    indistinguishable from `admit`'s: the entry-point `admission_source`
+    stamped last (so a provenance caller cannot claim an entry point the Run
+    never touched), the receipt correlation keys, and the QUEUED initial
+    state — without writing anything."""
+
+    class _PreparingStore:
+        """The PG store's prepare half at the admitter's seam: records the
+        kwargs, writes nothing."""
+
+        def __init__(self) -> None:
+            self.kwargs: dict[str, Any] = {}
+
+        async def prepare_run(self, graph: Any, **kwargs: Any) -> Any:
+            self.kwargs = kwargs
+            return object()  # the Run's shape is the store's concern here
+
+    store = _PreparingStore()
+    admitter = TaskRunAdmitter(store, workspace_id="w1", project_id="p1")
+    task = TaskResponse(
+        task_id="t1",
+        status=TaskStatus.QUEUED,
+        description="d",
+        workspace="w1",
+        user_id="u1",
+        tier=2,
+        created_at=datetime.now(UTC),
+        task_type="code_gen",
+    )
+
+    await admitter.prepare_run(task)
+
+    assert store.kwargs["provenance"][ADMISSION_SOURCE] == TASK_QUEUE_SOURCE
+    assert store.kwargs["provenance"][TASK_ID_KEY] == "t1"
+    assert store.kwargs["actor_principal_id"] == "u1"
+    assert store.kwargs["initial_status"] is RunStatus.QUEUED

@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 from collections.abc import Iterator
+from datetime import UTC, datetime
 
 import pytest
 
@@ -17,6 +19,14 @@ os.environ.setdefault("MAISTRO_DRY_RUN", "1")
 os.environ.setdefault("ALLOW_UNSAFE_RESOURCE_OVERRIDES", "true")
 os.environ.setdefault("RATE_LIMIT_PER_MINUTE", "6000")
 os.environ.setdefault("RATE_LIMIT_BURST", "1000")
+
+# Pin the Rich/Click render width so CLI output assertions do not depend on the
+# developer's terminal. Rich resolves `COLUMNS` in `Console.__init__`, and the
+# CLI modules build their consoles at import time, so this has to be set here
+# (conftest is imported before any test module) and unconditionally -- an
+# inherited `COLUMNS` would otherwise silently re-flow tables and wrap paths.
+# 80 is what CI renders at, so local output matches CI's.
+os.environ["COLUMNS"] = "80"
 
 
 @pytest.fixture(autouse=True)
@@ -45,7 +55,16 @@ def _reset_singletons() -> Iterator[None]:
     tracing_module._langfuse = None
     tracing_module._langfuse_checked = False
 
-    pass
+    # Process default quota ledger: container-creating tests register it via
+    # the composition root, and a leaked registration would route a later
+    # test's ungoverned-fallback evidence into an unrelated tracker (#718).
+    from maistro.quota.default_tracker import set_default_quota_tracker
+
+    set_default_quota_tracker(None)
+
+    from maistro.capabilities.effect_context import default_effect_context
+
+    default_effect_context.cache_clear()
 
 
 @pytest.fixture(autouse=True)
@@ -106,6 +125,7 @@ def _reset_shared_http() -> Iterator[None]:
 #: discovered: truncating everything would take out the alembic version table
 #: and make a migrated database look unmigrated.
 _PG_SCRATCH_TABLES = (
+    "quota_invocation_evidence",
     "quota_usage_events",
     "quota_usage",
     "sessions",
@@ -150,8 +170,8 @@ async def pg_pool():
     PostgreSQL parametrization. Skipping here would take the whole suite with it.
 
     Built directly rather than through `maistro.persistence.get_pool`, which is a
-    process singleton: one test's pool would outlive it and be handed to the
-    next, along with whatever event loop it was created on.
+    process singleton: one test's pool would outlive it and be handed to the next,
+    along with whatever event loop it was created on.
     """
     from maistro.testing.postgres import postgres_dsn
 
@@ -168,9 +188,123 @@ async def pg_pool():
     pool = await asyncpg.create_pool(dsn, min_size=1, max_size=8, init=_register_json_codecs)
     try:
         async with pool.acquire() as conn:
-            await conn.execute(
-                "TRUNCATE {} RESTART IDENTITY CASCADE".format(", ".join(_PG_SCRATCH_TABLES))
-            )
+            # Under coverage the previous test's async work can still hold row
+            # or table locks while this TRUNCATE ... CASCADE walks its table
+            # list in a different order; PostgreSQL resolves the lock-order
+            # inversion by aborting the TRUNCATE with DeadlockDetectedError
+            # (deadlock_timeout, 1s by default). The statement is idempotent
+            # scratch cleanup: back off and retry rather than poisoning every
+            # later test in this process with one failed fixture setup.
+            for attempt in range(3):
+                try:
+                    await conn.execute(
+                        "TRUNCATE {} RESTART IDENTITY CASCADE".format(", ".join(_PG_SCRATCH_TABLES))
+                    )
+                    break
+                except asyncpg.exceptions.DeadlockDetectedError:
+                    if attempt == 2:
+                        raise
+                    await asyncio.sleep(0.5 * (attempt + 1))
         yield pool
     finally:
         await pool.close()
+
+
+@pytest.fixture(autouse=True)
+async def governed_pm_bindings() -> None:
+    """Supply explicit test Bindings for retained PM polling node tests."""
+    from maistro.capabilities.binding import Binding
+    from maistro.capabilities.effect_context import default_effect_context
+    from maistro.credentials.types import CredentialRecord
+
+    # `create_container` publishes the container it builds as the process-wide
+    # default effect context (#804). A test that never tears down its container
+    # leaves that publication pointing at a sqlite store whose aiosqlite worker
+    # dies with the test's event loop, and the next test's `put` below then
+    # fails with aiosqlite's "no active connection". Every test starts from
+    # the unbound, in-memory default; a container that wants to be the
+    # default publishes itself during its own test.
+    default_effect_context.cache_clear()
+    effects = default_effect_context()
+    definitions = (
+        (
+            "test-jira-binding",
+            "jira.search",
+            {"base_url": "https://jira.example.com", "flavor": "server"},
+            "jira",
+        ),
+        (
+            "test-jira-cloud-binding",
+            "jira.search",
+            {
+                "base_url": "https://acme.atlassian.net",
+                "flavor": "cloud",
+                "email": "alice@example.com",
+            },
+            "jira",
+        ),
+        (
+            "test-jira-subtasks-binding",
+            "jira.subtasks",
+            {"base_url": "https://jira.example.com", "flavor": "server"},
+            "jira",
+        ),
+        (
+            "test-jira-cloud-subtasks-binding",
+            "jira.subtasks",
+            {
+                "base_url": "https://acme.atlassian.net",
+                "flavor": "cloud",
+                "email": "alice@example.com",
+            },
+            "jira",
+        ),
+        (
+            "test-jira-cloud-no-email-subtasks-binding",
+            "jira.subtasks",
+            {"base_url": "https://acme.atlassian.net", "flavor": "cloud"},
+            "jira",
+        ),
+        ("test-airtable-binding", "airtable.records", {}, "airtable"),
+        (
+            "test-seed-jira-binding",
+            "jira.search",
+            {"base_url": "https://jira.example.com", "flavor": "server"},
+            "jira",
+        ),
+        (
+            "test-seed-jira-binding-2",
+            "jira.search",
+            {"base_url": "https://jira.example.com", "flavor": "server"},
+            "jira",
+        ),
+    )
+    for binding_id, capability, config, provider in definitions:
+        workspace_id = "test-workspace" if binding_id.startswith("test-seed-jira-binding") else "w1"
+        project_id = (
+            "pm-proj-2"
+            if binding_id == "test-seed-jira-binding-2"
+            else "pm-proj-1"
+            if binding_id == "test-seed-jira-binding"
+            else "p1"
+        )
+        await effects.bindings.put(
+            Binding(
+                binding_id=binding_id,
+                workspace_id=workspace_id,
+                project_id=project_id,
+                capability=capability,
+                config=config,
+                credential_refs=(f"{provider}-test-key",),
+                created_at=datetime(2026, 9, 1, tzinfo=UTC),
+            )
+        )
+        effects.credentials.add(
+            workspace_id=workspace_id,
+            project_id=project_id,
+            record=CredentialRecord(
+                key_id=f"{provider}-test-key",
+                provider=provider,
+                api_key=f"test-{provider}-secret",
+            ),
+        )

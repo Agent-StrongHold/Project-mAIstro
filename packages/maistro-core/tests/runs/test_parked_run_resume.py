@@ -37,6 +37,7 @@ from maistro.graph.nodes.base import (
 from maistro.runs.model import AttemptStatus, RunStatus
 from maistro.runs.sources import ADMISSION_SOURCE, SCHEDULE_INPUTS_KEY, SCHEDULE_SOURCE
 from maistro.runs.store import RunIntegrityError
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 from maistro.types.config import AgentConfig
 
 pytestmark = [pytest.mark.contract("behavioral")]
@@ -253,6 +254,7 @@ async def _parked_run(container: Container, kind: str, *, workspace: str) -> str
         graph,
         provenance={ADMISSION_SOURCE: SCHEDULE_SOURCE, SCHEDULE_INPUTS_KEY: {"marker": "m"}},
         initial_status=RunStatus.QUEUED,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
     assert await container.execute_admitted_runs() == 1
     parked = await container.run_store.get_run(run.run_id)
@@ -450,6 +452,7 @@ async def test_a_resumed_schedule_attempt_is_leased_and_reclaimed_after_worker_d
         graph,
         provenance={ADMISSION_SOURCE: SCHEDULE_SOURCE, SCHEDULE_INPUTS_KEY: {"marker": "m"}},
         initial_status=RunStatus.QUEUED,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
     # Leave room for a real PostgreSQL round trip while keeping the recovery
     # window short enough to exercise the heartbeat and expiry boundary.
@@ -481,24 +484,28 @@ async def test_a_resumed_schedule_attempt_is_leased_and_reclaimed_after_worker_d
         # Poll for a renewal instead of sleeping a fixed multiple of the TTL:
         # PostgreSQL round trips can consume most of a short test window, while
         # the explicit recovery clock below makes expiry itself deterministic.
-        # The deadline is generous wall-clock rather than a multiple of the
-        # heartbeat interval: on a coverage-instrumented CI runner, leaked
-        # background threads and disk stalls can starve this loop's cooperative
-        # tasks for whole seconds while loop.time() keeps advancing, so a tight
-        # budget can expire without the heartbeat ever getting a turn (seen as
-        # a flaky "not renewed by the heartbeat" on the no-services coverage
-        # job -- same head, adjacent pass and fail runs).
-        loop = asyncio.get_running_loop()
+        # The budget is completed poll iterations, not wall-clock: on a
+        # coverage-instrumented CI runner, leaked background threads and disk
+        # stalls can starve this loop's cooperative tasks (the heartbeat with
+        # them) for whole seconds while any clock keeps advancing, so a
+        # wall-clock deadline can expire without the heartbeat ever getting a
+        # turn (seen as a flaky "not renewed by the heartbeat" on the
+        # no-services coverage job and again on the coverage (PostgreSQL)
+        # job's sqlite leg, adjacent pass and fail runs on the same head).
+        # Each completed iteration proves the loop was scheduled; once it is,
+        # the heartbeat's lapsed timer fires within a few iterations, so an
+        # exhausted budget means the heartbeat genuinely never renewed.
         live = await store.get_attempt(resumed.attempt_id)
-        renewal_deadline = loop.time() + 15.0
+        polls_left = 150
         while (
             live is None
             or live.execution_lease is None
             or live.execution_lease.expires_at is None
             or live.execution_lease.expires_at <= lease.expires_at
         ):
-            if loop.time() >= renewal_deadline:
+            if polls_left <= 0:
                 pytest.fail("a live resumed Attempt was not renewed by the heartbeat")
+            polls_left -= 1
             await asyncio.sleep(0.05)
             live = await store.get_attempt(resumed.attempt_id)
         live_lease = live.execution_lease
@@ -761,6 +768,10 @@ class TestThePollDeadlineCanNowBeReached:
             run_id="r",
             dag_id="d",
             node_id="n1",
+            workspace_id="w1",
+            project_id="p1",
+            node_run_id="nr1",
+            attempt_id="a1",
             metadata={RESUMED_PAUSE_KEY: {"first_seen": long_ago}},
         )
 
@@ -772,10 +783,10 @@ class TestThePollDeadlineCanNowBeReached:
         monkeypatch.setattr(jira_module, "_fetch_subtask_statuses", _statuses)
         result = await node.run(
             {
-                "base_url": "https://jira.example.com",
+                "binding_id": "test-jira-subtasks-binding",
                 "parent_key": "PROJ-100",
-                "pat": "x",
                 "timeout_seconds": 60,
+                "poll_interval_seconds": 60,
             },
             ctx,
         )
@@ -1393,6 +1404,7 @@ class TestAMultiNodeRunIsNotThisTicksToResume:
             graph,
             provenance={ADMISSION_SOURCE: SCHEDULE_SOURCE},
             initial_status=RunStatus.QUEUED,
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         )
         await container.run_store.transition_run(run.run_id, RunStatus.RUNNING)
         await container.run_store.transition_run(run.run_id, RunStatus.WAITING)

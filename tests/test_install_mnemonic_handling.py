@@ -33,8 +33,10 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 INSTALL_SH = ROOT / "install.sh"
 
-#: Lifted verbatim from install.sh, by name.
-_FUNCTIONS = ("ensure_python", "secret_file_run", "purge_file", "note_residual_risk")
+#: Lifted verbatim from install.sh, by name. ensure_python moved to
+#: scripts/bootstrap-runtime.sh (#1821); the harness sources that library so
+#: the stub-override test below still lands on top of the real definition.
+_FUNCTIONS = ("secret_file_run", "purge_file", "note_residual_risk")
 
 
 def _harness(plan_dir: Path) -> str:
@@ -48,6 +50,7 @@ warn() {{ echo "WARN: $*" >&2; }}
 ok() {{ echo "OK: $*"; }}
 info() {{ echo "INFO: $*"; }}
 source <(sed -n {extract!r} "$SCRIPT_DIR/install.sh")
+source "$SCRIPT_DIR/scripts/bootstrap-runtime.sh"
 """
 
 

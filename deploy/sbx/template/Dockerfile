@@ -7,7 +7,7 @@
 # Base: shell-docker = Docker's arbitrary-code sandbox template WITH a private
 # Docker daemon inside the microVM — required because RSI's nested test
 # sandbox (maistro.tools.sandbox.docker) shells out to `docker run`.
-FROM docker/sandbox-templates:shell-docker
+FROM docker/sandbox-templates:shell-docker@sha256:1560168ac5fb9ce23d413c878349334c5845c07e264cd675d7867f0c78ad1761
 
 USER root
 
@@ -20,9 +20,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     git gh python3 python3-venv python-is-python3 \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# uv is pinned to the release that generated the committed uv.lock (#348).
-COPY --from=ghcr.io/astral-sh/uv:0.12.20 /uv /usr/local/bin/uv
-ENV UV_LINK_MODE=copy
+# uv is the installer tool image — pinned to the 0.12.21 release by digest
+# (#349): a `:latest` tag could swap the installer under every build, and an
+# immutable digest cannot. The same pinned uv generated the committed uv.lock
+# this image installs from (#348).
+COPY --from=ghcr.io/astral-sh/uv:0.12.21@sha256:a7aed3216253ee804de3e2d8afa5073baa1a177335345d43845cd4165e43b711 /uv /usr/local/bin/uv
+ENV UV_LINK_MODE=copy \
+    UV_HTTP_TIMEOUT=120 \
+    UV_MAX_RETRIES=10
 
 # Install the maistro packages from this repo's LOCK, system-wide so they
 # are on the builders _SAFE_ENV PATH (#348). Previously this was
@@ -41,6 +46,13 @@ ENV UV_LINK_MODE=copy
 #   --require-hashes  fails the build on an unresolvable locked artifact.
 COPY pyproject.toml uv.lock README.md /opt/maistro-engine/
 COPY packages/ /opt/maistro-engine/packages/
+# The workspace's extension members are not installed here, but their
+# pyproject.toml is what the export needs: `uv export --locked --package ...`
+# resolves the selection by building the workspace root, and that build
+# fails without the member's metadata in the context ("reference-greeter
+# references a workspace in tool.uv.sources ... but is not a workspace
+# member").
+COPY extensions/ /opt/maistro-engine/extensions/
 RUN cd /opt/maistro-engine \
     && uv export --locked \
         --package maistro-workspace \

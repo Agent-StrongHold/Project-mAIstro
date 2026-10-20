@@ -23,13 +23,22 @@ pin the image does not carry — is a red exit with the diff on stdout.
 
 Usage:
     uv export --locked --package maistro-server \
-      --extra identity --extra observability --no-dev --no-emit-workspace \
+      --extra image --no-dev --no-emit-workspace \
       --format requirements-txt --output-file /tmp/expected.txt
     python scripts/check-image-lock-reconciliation.py \
       --image maistro-engine:pr-123 \
       --python /app/venv/bin/python \
       --expected-file /tmp/expected.txt \
-      --member maistro-core==0.9.0 --member maistro-server==0.9.0
+      --member maistro-core==0.9.0 --member maistro-server==0.9.0 \
+      --member maistro-canvas==0.9.0
+
+The engine image's contract is maistro-server's `image` extra: the core
+surfaces the API server ships (identity, llm, sandbox, observability), the
+Canvas package (#1825) and the openai pin the image has always carried. The
+export above is the same invocation the root Dockerfile's builder runs, and
+the `--member` pins are the workspace members the image installs from the
+copied sources with `--no-deps` — the export names their third-party
+dependencies, not the members themselves.
 """
 
 from __future__ import annotations

@@ -35,6 +35,52 @@ dependencies = [
 identity = ["maistro-core[identity]>=0.9.0"]
 observability = ["maistro-core[observability]>=0.9.0"]
 browser = ["maistro-core[browser]>=0.9.0"]
+# The API server image's whole dependency contract, in one name (#348).
+#
+# The engine image installs three workspace members — maistro-core,
+# maistro-server and maistro-canvas — and nothing else. Before the lock
+# existed, that was a pip command line in the Dockerfile:
+# `pip install ./packages/maistro-core[identity,llm,sandbox,observability]
+#  ./packages/maistro-server ./packages/maistro-canvas alembic>=1.14
+#  psycopg[binary]>=3.2 openai>=1.40,<2 anyio>=4.14.2 httpx>=0.27.0`
+# — a second resolution, at build time, of a set the scanners never saw. The
+# image now exports THIS extra from the committed lock and installs the three
+# members from source, so the shipped set is the locked set by construction.
+#
+# Every name below is load-bearing, and each is named for a reason:
+#   identity      the DID-key surface maistro.identity exposes; the server
+#                 wires it at startup.
+#   llm           the fastmcp tool servers maistro-core exposes. (It is
+#                 already a hard dependency of this package; naming it here
+#                 keeps the image's contract readable in one place.)
+#   sandbox       the docker-CLI sandbox tool. It has no third-party
+#                 dependency today, and it is named anyway so the contract
+#                 says which surface the image ships.
+#   observability the OTLP exporter the server's tracing setup uses.
+#   maistro-canvas
+#                 the Canvas package ships in the supported image (#1825):
+#                 `_wire_canvas_ability()` hit ImportError at startup and
+#                 every Canvas route answered 503 forever when it was
+#                 missing. It is named here, not in the server's hard
+#                 dependencies, because `maistro_server.api.canvas` duck-types
+#                 the store on purpose — a leaner environment keeps the 503
+#                 rather than failing startup. Naming it here also puts
+#                 canvas's own third-party dependency (Pillow) in the
+#                 exported set, so the member installs with no unmet
+#                 dependency instead of pulling one at build time.
+#   openai        the engine image has shipped openai>=1.40,<2 since before
+#                 the lock existed. It is kept: this extra exists to make
+#                 the image's set reproducible, not to shrink it. The one
+#                 importer of the openai SDK in the product is core's browser
+#                 tool, which the API image deliberately does not ship
+#                 (Dockerfile.research is its home) — so this line is dead
+#                 weight today, and removing it is a deliberate change to
+#                 what the image ships, not a side effect of locking it.
+image = [
+    "maistro-core[identity,llm,sandbox,observability]>=0.9.0",
+    "maistro-canvas>=0.9.0",
+    "openai>=1.40,<2",
+]
 dev = [
     "pytest>=9.0.3,<10",
     "pytest-asyncio>=0.25,<2",
