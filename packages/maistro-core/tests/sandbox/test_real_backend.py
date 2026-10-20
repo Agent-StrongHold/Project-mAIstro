@@ -202,6 +202,18 @@ def test_the_sandbox_is_unshared_capability_dropped_and_detached(tmp_path: Path)
     assert "--new-session" in argv
 
 
+def test_read_paths_are_mounted_read_only(tmp_path: Path) -> None:
+    """A `filesystem.read` profile's paths arrive as `--ro-bind` mounts: the
+    workload reads the host files in place and cannot write them."""
+    argv = _backend(tmp_path).build_argv(
+        SandboxConfig(read_paths=["/srv/exports"]), tmp_path, ["true"]
+    )
+
+    assert "--ro-bind" in argv
+    ro_binds = [(argv[i + 1], argv[i + 2]) for i, a in enumerate(argv) if a == "--ro-bind"]
+    assert ("/srv/exports", "/srv/exports") in ro_binds
+
+
 def test_a_bare_network_boolean_does_not_grant_egress(tmp_path: Path) -> None:
     """`network=True` used to be the whole story. It is not any more (#77):
     egress comes from an explicit `EgressGrant` carrying a reason, so a config
@@ -323,6 +335,31 @@ async def test_a_real_sandbox_cannot_see_the_host_filesystem(tmp_path: Path) -> 
 
     assert result.exit_code != 0
     assert "do not read me" not in result.stdout
+    await backend.destroy(instance)
+
+
+@requires_bwrap
+async def test_a_real_sandbox_bounds_simultaneous_stdout_and_stderr(tmp_path: Path) -> None:
+    backend = BubblewrapSandboxBackend(root=tmp_path)
+    instance = await backend.spawn(
+        config=SandboxConfig(max_stdout_bytes=1024, max_stderr_bytes=1024)
+    )
+
+    result = await backend.exec(
+        instance,
+        [
+            "/bin/sh",
+            "-c",
+            "while :; do printf 'o%.0s' $(seq 1 4096); printf 'e%.0s' $(seq 1 4096) >&2; done",
+        ],
+        timeout_s=5,
+    )
+
+    assert result.exit_code == 125
+    assert result.output_limit_exceeded
+    assert result.stdout_truncated or result.stderr_truncated
+    assert result.stdout_bytes_retained <= 1024
+    assert result.stderr_bytes_retained <= 1024
     await backend.destroy(instance)
 
 

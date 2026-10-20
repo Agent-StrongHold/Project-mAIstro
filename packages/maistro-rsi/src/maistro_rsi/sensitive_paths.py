@@ -64,9 +64,23 @@ SENSITIVE_PATH_PATTERNS: tuple[str, ...] = (
     # happens to live (Codex, #513).
     "hive-conductor/backend/services/rsi.py",
     "hive-conductor/backend/routes/rsi.py",
+    # The #509 dispatch backend: it builds the ``docker run`` argv that decides
+    # WHERE a run's candidate code executes — caps, mounts, network, user,
+    # interpreter resolution. A candidate that could edit it could move its own
+    # execution back onto the host without touching either file above — the
+    # same one-diff authorization hole the test-suite patterns below close for
+    # the classifier itself, so its pinning suite travels with it.
+    "hive-conductor/backend/services/rsi_container_dispatch.py",
+    "hive-conductor/backend/tests/test_rsi_container_dispatch.py",
     # The services package initializer, on the same reasoning as the others
     # below: a docstring today, on the runtime import path regardless.
     "hive-conductor/backend/services/__init__.py",
+    # The acceptance-criteria trees (#109): docs/specs/SPEC-*.md enumerate the
+    # ACs the loop's spec-completion signal is scored against. A candidate that
+    # can rewrite the contract can manufacture its own success evidence, so the
+    # trees escalate here AND sit on the stricter evaluator-oracle surface
+    # below, where a candidate diff touching them is vetoed before scoring.
+    "docs/specs/",
     # Package initializers on the promotion path. Python executes these before
     # the module actually imported, so they are on the runtime import path even
     # when they only re-export. They are re-export shims *today*, and a
@@ -77,11 +91,20 @@ SENSITIVE_PATH_PATTERNS: tuple[str, ...] = (
     # (Codex, #513).
     "maistro/__init__.py",
     "maistro/config/__init__.py",
+    "maistro/memory/__init__.py",
     "maistro/observability/__init__.py",
     "maistro/quota/__init__.py",
     "maistro/tools/__init__.py",
     "maistro/types/__init__.py",
     "maistro_bootstrap/__init__.py",
+    # The memory write-authority decision (ADR-057, #390): `exposure.py` holds
+    # the one gate (`require_write_authority`) every memory mutation must pass,
+    # so a candidate that edits it can rewrite who may write durable memory --
+    # the same reasoning that protects capabilities/authority.py. The package
+    # initializer joined the promotion-path closure for the same ADR: the
+    # exposure-mode enum is re-exported through `maistro.memory` and imported
+    # by `maistro.types.config`, which every settings import executes.
+    "maistro/memory/exposure.py",
     # The shared client is where the outbound guard is *installed*:
     # `_guard_built_transports` wraps the real transports with
     # `maistro.security.outbound.guarded`. The policy living under
@@ -109,6 +132,59 @@ SENSITIVE_PATH_PATTERNS: tuple[str, ...] = (
     # SafeHarnessRunner composes Warden and the ActionGate but lives under
     # capabilities/, so the "maistro/security/" pattern above never saw it.
     "maistro/capabilities/providers/",
+    # The governed capability-effect boundary (#55/#1362): governed_invocation
+    # evaluates the invocation policy and enforces the durable approvals it
+    # consults; authority.py and approval_store.py are the approval authority
+    # and its durable record; invocation.py is the external-effect boundary and
+    # the invocation stores are its durable state. A candidate that can edit
+    # any of these can weaken the approval/effect gate without touching
+    # security/ or capabilities/providers/, so they sit on the sensitive
+    # surface instead of being tolerated as baseline admission (Codex review,
+    # chore/authorize-effect-door-promotion).
+    "maistro/capabilities/governed_invocation.py",
+    "maistro/capabilities/authority.py",
+    "maistro/capabilities/approval_store.py",
+    # binding_store.py is the gate itself, not a record of one: `_resolve` and
+    # `_scope_checked` enforce registration, disablement, revocation, and
+    # workspace/project/node/capability scope before every physical effect.
+    # `binding.py` next to it really is an inert dataclass and stays tolerated;
+    # this one is where a candidate would weaken the check and authorize its
+    # own effects without touching a protected module (Codex, #1758).
+    "maistro/capabilities/binding_store.py",
+    # effect_context.py composes the authority itself: which Binding store,
+    # which policy evaluator, which Invocation service and which quota door a
+    # deployment ends up with. A candidate editing it does not weaken one
+    # check, it chooses a different gate. credential_routing.py is the other
+    # half -- it decides which credential a Binding's effect actually uses.
+    "maistro/capabilities/effect_context.py",
+    "maistro/capabilities/credential_routing.py",
+    # The credential pool, store, router and the providers that fill them.
+    # A directory pattern rather than five file patterns, for the reason this
+    # file already gives for `maistro_rsi/`: a pattern cannot fall behind a
+    # new file, and enumerating them one at a time is how omissions get in.
+    # Routing an effect onto a more privileged credential is self-grant by
+    # another name, so this is containment, not configuration.
+    "maistro/credentials/",
+    # The sole image-effect boundary. `_require_image_binding` re-reads the
+    # registered Binding record, refuses a caller-built or altered one, and
+    # checks the capability and disabled state before any HTTP; the egress
+    # then installs credential routing around the Invocation. `model_chat.py`
+    # has no equivalent function, so this is not "one capability like the
+    # others" -- it is where an image effect is authorized (Codex, #1763).
+    "maistro/capabilities/image_generation.py",
+    "maistro/capabilities/invocation.py",
+    "maistro/capabilities/invocation_store.py",
+    "maistro/capabilities/pg_invocation_store.py",
+    # The third-party provider adapter SDK (M9-E1, #961): it registers
+    # out-of-tree models into canonical routing, decides how the resolved
+    # credential is presented, feeds health signals into canonical
+    # availability, and pins the provider error taxonomy the transport
+    # raises. It sits on the promotion-path import closure (autorun -> quota
+    # -> capabilities -> llm_gateway -> provider_adapters), and it is the
+    # same class of surface as binding_store/credential_routing above: a
+    # candidate editing it edits what future model calls are allowed to
+    # reach, so its diffs escalate rather than ride a tolerance.
+    "maistro/capabilities/provider_adapters.py",
     # The DAG-synthesis substrate that lets an agent spawn further
     # sub-agents/DAGs: the recursion-depth cap and the two node kinds that
     # dispatch through it.
@@ -160,6 +236,93 @@ SENSITIVE_PATH_PATTERNS: tuple[str, ...] = (
 )
 
 
+# The evaluator-oracle surface (#109): the artifacts that DEFINE what success
+# means for a candidate -- the scorer, the scenario corpus it is judged
+# against, the ratchet baselines, and the acceptance-criteria trees. This is a
+# STRICTER tier than ``SENSITIVE_PATH_PATTERNS``: sensitive paths escalate a
+# diff to adversarial review before it may leave the sandbox, while a candidate
+# that edits the oracle it is scored against must be vetoed BEFORE the mutated
+# oracle produces its acceptance evidence (``LocalRsiLoop`` enforces this at
+# scoring time, see ``evaluator_oracle.py``). RSI may satisfy the oracle; it
+# may not edit it. Human governance changes remain possible through the
+# explicit ``allow_evaluator_mutation`` override (recorded, never silent) and
+# through ordinary reviewed PRs, which never pass through the loop.
+#
+# Entries here follow the same segment-boundary matching rules as
+# ``SENSITIVE_PATH_PATTERNS``. Keep the list derived from what the scoring
+# path actually consumes; every entry must match tracked files (the generated-
+# artifact guard patterns live in ``evaluator_oracle.GENERATED_ORACLE_PATTERNS``
+# because they deliberately match untracked output).
+EVALUATOR_ORACLE_PATTERNS: tuple[str, ...] = (
+    # The scoring machine, whole: candidate_fitness, fail_first, regression
+    # judge, test inventory, spec tracker, scorecard, benchmark harnesses. A
+    # candidate that edits any of them is judged by the thing it just changed.
+    "maistro_rsi/",
+    "maistro_evolve/",
+    # The tests that pin the evaluator: same one-diff authorization hole the
+    # sensitive list closes, one tier stricter -- the mutated tests ARE the
+    # acceptance evidence the test command produces.
+    "maistro-rsi/tests/",
+    "maistro-evolve/tests/",
+    # The vendored graders carry the pinned digests of the scenario corpora;
+    # weakening one is editing the exam.
+    "scripts/vendor_ifeval.py",
+    "scripts/vendor_bfcl.py",
+    # Ratchet baselines: the recorded floors the quality gates score against.
+    "quality/",
+    # The acceptance-criteria trees (docs/specs/SPEC-*.md): the contracts the
+    # spec-completion signal scores against. Additions are the designed
+    # spec_proposed contribution and stay allowed -- the enforcement layer
+    # (evaluator_oracle.py) vetoes MUTATIONS of oracle files tracked at the
+    # base revision, so a candidate can contract new work but cannot rewrite
+    # the definition of done it inherits.
+    "docs/specs/",
+)
+
+# Generated artifacts a candidate diff may never carry (#109): compiled
+# bytecode, package build output and import-time hook files can hijack the
+# oracle's own execution (a crafted .pyc with a matching source header, a
+# sitecustomize.py imported before the scorer) without any listed path looking
+# edited. A leading ``*`` marks a SUBSTRING pattern (``*.egg-info/`` matches
+# any ``<pkg>.egg-info/`` directory — segment-boundary matching can't express
+# a suffix inside a segment); everything else matches at segment boundaries
+# like the sensitive tier. They live here rather than in
+# EVALUATOR_ORACLE_PATTERNS because they are untracked by design — a
+# dead-pattern ratchet over them would fail on exactly the property that
+# makes them dangerous.
+GENERATED_ORACLE_PATTERNS: tuple[str, ...] = (
+    "__pycache__/",
+    "*.egg-info/",
+    "sitecustomize.py",
+    "usercustomize.py",
+)
+
+# Test-control surfaces (Codex review, #109): files that change how pytest
+# collects, selects, or reports the very run that produces a candidate's
+# acceptance evidence. pytest imports every ``conftest.py`` on the collection
+# path *before* it runs anything, so a top-level or otherwise out-of-tree one
+# carrying a ``pytest_sessionfinish`` hook can force a zero exit status despite
+# failing tests — and the ini files can deselect, re-root, or load plugins via
+# ``addopts``. These basenames are matched AT ANY DEPTH: the danger is what
+# pytest loads, not which directory it sits in, which is exactly the gap the
+# directory patterns for the two package test suites leave open. The set is
+# kept in lockstep with ``test_inventory``'s config-basename recognition so
+# both scoring paths veto a test-control edit before it can count as evidence.
+TEST_CONTROL_BASENAMES: frozenset[str] = frozenset(
+    {"conftest.py", "pytest.ini", "tox.ini", "setup.cfg", "pyproject.toml"}
+)
+
+
+def matches_test_control_path(path: str) -> bool:
+    """True if ``path`` is a pytest test-control file at any depth (#109).
+
+    Basename matching, deliberately broader than the segment matcher used by
+    the pattern tiers: ``conftest.py`` applies per directory, so a nested one
+    is exactly as load-bearing as the root one.
+    """
+    return normalize_touched_path(path).rsplit("/", 1)[-1] in TEST_CONTROL_BASENAMES
+
+
 def normalize_touched_path(path: str) -> str:
     """A diff path in the one spelling the patterns are written against."""
     normalized = path.replace("\\", "/")
@@ -171,6 +334,45 @@ def normalize_touched_path(path: str) -> str:
     return normalized
 
 
+def _matches_segment_patterns(path: str, patterns: tuple[str, ...]) -> bool:
+    """Segment-boundary matching shared by both pattern tiers.
+
+    Directory patterns match at the path start or after a ``/``; file patterns
+    must match a whole trailing path segment. Raw ``pattern in path`` accepted
+    ``notmaistro/security/x`` and rejected nothing adjacent — both directions
+    were wrong.
+
+    Directory patterns also match the directory name itself as the terminal
+    segment. Git reports a symlink (or gitlink) whose name equals the directory
+    without a trailing slash — a root-level ``maistro_rsi -> evil`` lands in
+    the diff and the HEAD tree as plain ``maistro_rsi`` — so startswith and
+    slash-containment alone miss exactly the entry that smuggles a directory
+    in. Over-matching a regular file of the same name costs one escalated
+    review; missing the symlink costs the containment surface.
+    """
+    for pattern in patterns:
+        if pattern.endswith("/"):
+            if path.startswith(pattern) or f"/{pattern}" in path:
+                return True
+            bare = pattern.rstrip("/")
+            if path == bare or path.endswith(f"/{bare}"):
+                return True
+        elif path == pattern or path.endswith(f"/{pattern}"):
+            return True
+    return False
+
+
+def matches_evaluator_oracle_pattern(path: str) -> bool:
+    """True if ``path`` sits on the evaluator-oracle surface (#109).
+
+    Same matcher semantics as :func:`matches_sensitive_pattern` (including
+    :func:`normalize_touched_path`), over the stricter oracle tier -- kept as a
+    separate function so the two surfaces can drift deliberately, not
+    accidentally.
+    """
+    return _matches_segment_patterns(normalize_touched_path(path), EVALUATOR_ORACLE_PATTERNS)
+
+
 def matches_sensitive_pattern(path: str) -> bool:
     """True if ``path`` falls on the containment surface.
 
@@ -179,11 +381,4 @@ def matches_sensitive_pattern(path: str) -> bool:
     path segment. Raw ``pattern in path`` accepted ``notmaistro/security/x``
     and rejected nothing adjacent — both directions were wrong.
     """
-    normalized = normalize_touched_path(path)
-    for pattern in SENSITIVE_PATH_PATTERNS:
-        if pattern.endswith("/"):
-            if normalized.startswith(pattern) or f"/{pattern}" in normalized:
-                return True
-        elif normalized == pattern or normalized.endswith(f"/{pattern}"):
-            return True
-    return False
+    return _matches_segment_patterns(normalize_touched_path(path), SENSITIVE_PATH_PATTERNS)

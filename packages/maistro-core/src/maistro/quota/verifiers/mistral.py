@@ -1,27 +1,33 @@
-"""Mistral Admin API `QuotaVerifier` — checks remaining request headroom via
-Mistral's Admin Console rate-limit endpoint.
+"""Mistral Admin API `QuotaVerifier` — UNSUPPORTED until the response schema is
+confirmed; must never be wired on the strength of field-name guessing.
 
-**Response schema caveat (read before trusting this blindly):** unlike
-OpenRouter's `/api/v1/key` (`openrouter.py`, confirmed against OpenRouter's own
-published docs), Mistral does not publish a documented JSON response schema
-for `GET https://console.mistral.ai/api/admin/rate-limit`. What *is* confirmed:
+Status (#1205): nothing in production imports this module — it stays unwired.
+Wiring it requires confirming the actual reply shape of
+`GET https://console.mistral.ai/api/admin/rate-limit` against a real Admin
+Console API key and recording that contract explicitly. What *is* confirmed:
 the endpoint exists, requires a **separate Admin Console API key** (not the
-regular completions key), and is authenticated via an `x-api-key` header —
-Mistral's public docs describe the rate-limit dimensions themselves (RPS, TPM,
-tokens-per-month) and an Admin Console "Limits" page, but not this endpoint's
-exact reply shape.
+regular completions key), and is authenticated via an `x-api-key` header.
+Mistral does not publish a documented JSON response schema for the endpoint.
 
-So the field-extraction here is deliberately defensive rather than confident:
-it checks a short list of plausible "remaining" field names and raises — it
-does not fabricate a snapshot — if none match. Treat this as a best-effort
-starting point to verify against a real response the first time it's
-exercised with actual Admin API credentials, and extend
-`_REMAINING_FIELD_CANDIDATES` once the real shape is known.
+Earlier revisions guessed among four plausible "remaining" field names and
+accepted the first match — an unconfirmed schema must never be papered over
+that way: the first match of a guess list is exactly how a wrong field (e.g. a
+monthly token budget read as remaining requests) becomes quota truth. The
+guessing is gone. The verifier now requires the caller to supply a
+`MistralRateLimitSchema` — an explicit shape/version contract naming the one
+remaining-quota field — and parses strictly against it: the field must be
+present, a JSON number (bool rejected), finite, and non-negative, or the
+verification fails with `MistralSchemaContractError` instead of fabricating a
+snapshot. This verifier is a read-only observability input for reconciliation
+(ADR-085, #56); it is not, and must not become, an enforcement or accounting
+authority beside the canonical Invocation recording (#718).
 """
 
 from __future__ import annotations
 
+import math
 import time
+from dataclasses import dataclass
 from typing import Any
 
 import httpx
@@ -32,39 +38,78 @@ from maistro.quota.reconciliation import ProviderQuotaSnapshot
 
 _DEFAULT_BASE_URL = "https://console.mistral.ai/api/admin"
 
-# Checked in order; first match wins. See module docstring -- unconfirmed
-# against a real response, extend/reorder once the actual shape is known.
-_REMAINING_FIELD_CANDIDATES = (
-    "remaining",
-    "requests_remaining",
-    "rate_limit_remaining",
-    "remaining_requests",
-)
+
+class MistralSchemaContractError(RuntimeError):
+    """The response did not match the explicitly declared schema contract."""
 
 
-def _extract_remaining(payload: dict[str, Any]) -> float | None:
-    for field in _REMAINING_FIELD_CANDIDATES:
-        if field in payload:
-            try:
-                return float(payload[field])
-            except (TypeError, ValueError):
-                return None
-    return None
+@dataclass(frozen=True)
+class MistralRateLimitSchema:
+    """The confirmed response-shape contract for the Admin rate-limit endpoint.
+
+    `version` identifies *which* confirmed shape the verifier parses (bump it
+    when Mistral's reply shape changes and re-confirm against a real response);
+    `remaining_field` names the one field that carries the remaining-quota
+    number. There is deliberately no candidate list and no fallback: if the
+    named field is absent or malformed, verification fails loudly.
+    """
+
+    version: str
+    remaining_field: str
+
+
+def _extract_remaining(payload: Any, schema: MistralRateLimitSchema) -> float:
+    """Parse `schema.remaining_field` out of `payload`, strictly.
+
+    Every deviation from the declared contract raises — a missing field, a
+    string masquerading as a number, a boolean, NaN/infinity, or a negative
+    value can never be silently reinterpreted as a usable remaining quota.
+    """
+    if not isinstance(payload, dict):
+        raise MistralSchemaContractError(
+            f"Mistral rate-limit schema {schema.version!r}: expected a JSON object, "
+            f"got {type(payload).__name__}; payload={payload!r}"
+        )
+    if schema.remaining_field not in payload:
+        raise MistralSchemaContractError(
+            f"Mistral rate-limit schema {schema.version!r}: field "
+            f"{schema.remaining_field!r} absent from response (keys="
+            f"{sorted(payload)}); the declared contract does not match the "
+            "endpoint's actual shape — re-confirm the schema before wiring"
+        )
+    value = payload[schema.remaining_field]
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        raise MistralSchemaContractError(
+            f"Mistral rate-limit schema {schema.version!r}: field "
+            f"{schema.remaining_field!r} must be a JSON number, got "
+            f"{type(value).__name__} ({value!r})"
+        )
+    remaining = float(value)
+    if not math.isfinite(remaining) or remaining < 0:
+        raise MistralSchemaContractError(
+            f"Mistral rate-limit schema {schema.version!r}: field "
+            f"{schema.remaining_field!r} must be a finite non-negative number, "
+            f"got {value!r}"
+        )
+    return remaining
 
 
 class MistralAdminApiVerifier:
-    """Calls Mistral's Admin Console rate-limit endpoint with a **separate**
-    Admin API key. See module docstring for the response-schema caveat."""
+    """Calls Mistral's Admin Console rate-limit endpoint against an explicit,
+    caller-supplied schema contract. See the module docstring: unwired until
+    the contract is confirmed against a real response."""
 
     def __init__(
         self,
         admin_api_key: str,
         *,
+        schema: MistralRateLimitSchema,
         base_url: str = _DEFAULT_BASE_URL,
         timeout: float = 15.0,
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         self._admin_api_key = admin_api_key
+        self._schema = schema
         self._base_url = base_url.rstrip("/")
         self._timeout = timeout
         self._transport = transport  # test seam: inject an httpx.MockTransport
@@ -76,14 +121,7 @@ class MistralAdminApiVerifier:
             response.raise_for_status()
             payload = response.json()
 
-        remaining = _extract_remaining(payload)
-        if remaining is None:
-            raise RuntimeError(
-                "MistralAdminApiVerifier: response did not contain a recognized "
-                f"remaining-quota field (checked {_REMAINING_FIELD_CANDIDATES}); "
-                f"payload={payload!r} — verify the endpoint's actual response shape "
-                "and update _REMAINING_FIELD_CANDIDATES"
-            )
+        remaining = _extract_remaining(payload, self._schema)
 
         return ProviderQuotaSnapshot(
             scope_key=scope_key,
@@ -93,4 +131,8 @@ class MistralAdminApiVerifier:
         )
 
 
-__all__ = ["MistralAdminApiVerifier"]
+__all__ = [
+    "MistralAdminApiVerifier",
+    "MistralRateLimitSchema",
+    "MistralSchemaContractError",
+]

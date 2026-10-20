@@ -33,6 +33,7 @@ from typing import TYPE_CHECKING, Any
 from maistro.capabilities.providers.subprocess_harness import (
     SandboxExec,
     SandboxFactory,
+    SelectorSandboxExec,
     SubprocessHarnessRunner,
     _message_text,
     _Session,
@@ -44,12 +45,11 @@ from maistro.tools.sandbox.microvm import (
 )
 
 if TYPE_CHECKING:
-    # Imported lazily at call time, not here: these modules sit behind
+    # Imported lazily at call time, not here: this module sits behind
     # ``maistro.sandbox``'s package init, which imports the runs/graph chain
-    # back into ``maistro.capabilities`` — importing them while this module
+    # back into ``maistro.capabilities`` — importing it while this module
     # loads would be circular.
     from maistro.sandbox.policy import WorkloadPolicy
-    from maistro.sandbox.protocol import SandboxInstance, SandboxProtocol
 
 _OPENCODE_BINARY = "opencode"
 
@@ -99,25 +99,6 @@ class OpencodeHarnessRunner(SubprocessHarnessRunner):
         parts += [shlex.quote(a) for a in self._extra_args]
         parts.append(shlex.quote(prompt))
         return " ".join(parts)
-
-
-class SelectorSandboxExec:
-    """``SandboxExec`` view of one selector-selected sandbox instance (#76).
-
-    Every turn executes through the selected canonical backend; there is no
-    second, provider-private sandbox implementation to bypass policy with.
-    """
-
-    def __init__(self, backend: SandboxProtocol, instance: SandboxInstance) -> None:
-        self._backend = backend
-        self._instance = instance
-
-    async def exec(self, command: str, timeout: int = 60) -> tuple[int, str]:
-        # One element = the shell command line, handed to the backend verbatim
-        # (the ``LauncherVMSandboxBackend`` contract); the backend's own
-        # dangerous-command screen sees exactly what the harness asked for.
-        result = await self._backend.exec(self._instance, [command], timeout_s=timeout)
-        return result.exit_code, result.stdout + result.stderr
 
 
 def opencode_microvm_factory(

@@ -37,7 +37,7 @@ history:
 
 # ADR-068: Unified Authorization & Elevation
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-05-29
 **Amends:** ADR-028 (configurable roles + approver graph + the agent principal — retires
 its "Full RBAC out of scope"), ADR-051 (its layer-3 "learned trust" becomes RLPHD;

@@ -18,12 +18,19 @@ import shlex
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from maistro.agents.spec.agent_spec import AgentSpec
 from maistro.capabilities.slots.harness_runner import SLOT_NAME
 from maistro.capabilities.types import ProviderHealth
 from maistro.tools.sandbox.workspace import ALLOWED_HOST_ROOTS
+
+if TYPE_CHECKING:
+    # Behind ``maistro.sandbox``'s package init (which imports the runs/graph
+    # chain back into ``maistro.capabilities``): importing them at module load
+    # would be circular, so the canonical selector types are type-checker-only
+    # here (#76).
+    from maistro.sandbox.protocol import SandboxInstance, SandboxProtocol
 
 # Default healthcheck probe location: the sandbox's own first allowlisted root
 # (single source of truth; avoids a hardcoded /tmp literal here).
@@ -42,6 +49,29 @@ class SandboxExec(Protocol):
 
 
 SandboxFactory = Callable[[str], Awaitable[SandboxExec]]
+
+
+class SelectorSandboxExec:
+    """``SandboxExec`` view of one selector-selected sandbox instance (#76).
+
+    Every turn executes through the selected canonical backend; there is no
+    second, provider-private sandbox implementation to bypass policy with.
+    Shared by every microVM-backed harness provider (``opencode``, ``pi``,
+    ``openclaw``): the factory selects a backend through the canonical
+    :class:`~maistro.sandbox.selector.SandboxSelector`, and this adapts that
+    instance to the exec-only ``SandboxExec`` seam the harness runner speaks.
+    """
+
+    def __init__(self, backend: SandboxProtocol, instance: SandboxInstance) -> None:
+        self._backend = backend
+        self._instance = instance
+
+    async def exec(self, command: str, timeout: int = 60) -> tuple[int, str]:
+        # One element = the shell command line, handed to the backend verbatim
+        # (the ``LauncherVMSandboxBackend`` contract); the backend's own
+        # dangerous-command screen sees exactly what the harness asked for.
+        result = await self._backend.exec(self._instance, [command], timeout_s=timeout)
+        return result.exit_code, result.stdout + result.stderr
 
 
 @dataclass

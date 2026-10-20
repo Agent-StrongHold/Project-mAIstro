@@ -50,8 +50,9 @@ class _StubVMSandbox:
 
     tier = "vm"
 
-    def __init__(self, exec_result: tuple[int, str] = (0, "")) -> None:
+    def __init__(self, exec_result: tuple[int, str] = (0, ""), exec_stderr: str = "") -> None:
         self.exec_result = exec_result
+        self.exec_stderr = exec_stderr
         self.spawned: list[SandboxConfig] = []
         self.execs: list[tuple[list[str], int]] = []
         self.destroyed: list[str] = []
@@ -64,7 +65,7 @@ class _StubVMSandbox:
         self, instance: SandboxInstance, command: list[str], *, timeout_s: int = 120
     ) -> ExecResult:
         self.execs.append((list(command), timeout_s))
-        return ExecResult(self.exec_result[0], self.exec_result[1], "", 0)
+        return ExecResult(self.exec_result[0], self.exec_result[1], self.exec_stderr, 0)
 
     async def read_file(self, instance: SandboxInstance, path: str) -> bytes:
         return self._resolve(path).read_bytes()
@@ -269,8 +270,31 @@ class TestTheBuilderSandboxShape:
         assert not seed.exists()
 
 
-# The candidate-shaped egress probe from #77: every path class — public IPv4,
-# public IPv6, DNS, link-local cloud metadata, RFC1918 private — must fail.
+def test_run_argv_streams_returns_separated_streams_and_the_status(
+    tmp_path: Path,
+) -> None:
+    """The #614 seam: callers that PARSE output (tool reports, pytest
+    collectors) need stdout/stderr SEPARATED — a stray stderr line merged into
+    stdout would corrupt a JSON report and silently erase a real finding —
+    with the exit status carried back intact."""
+    backend = _StubVMSandbox(exec_result=(3, "to-stdout\n"), exec_stderr="to-stderr\n")
+    (tmp_path / "f.py").write_text("x = 1\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+
+    with ContainerBuilderSandbox(tmp_path, selector=_selector(backend)) as sb:
+        rc, out, err = sb.run_argv_streams(
+            ["sh", "-c", "echo to-stdout; echo to-stderr >&2; exit 3"]
+        )
+
+    assert rc == 3
+    assert out == "to-stdout\n"
+    assert err == "to-stderr\n"
+
+
+# A candidate-shaped egress probe: it tries every path class #77 names — a
+# public IPv4 target, a public IPv6 target, DNS resolution, the link-local
+# cloud-metadata address, and RFC1918 private ranges — and reports which
+# ones it could reach. Under `--network=none` every one of them must fail.
 _EGRESS_PROBE = """import socket
 for host, port in [
     ("1.1.1.1", 443),
