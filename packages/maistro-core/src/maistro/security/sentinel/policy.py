@@ -34,8 +34,13 @@ from maistro.security.warden.sanitizer import strip_terminal_escapes
 logger = logging.getLogger("maistro.sentinel")
 
 if TYPE_CHECKING:
+    from maistro.events.durable_log import EventLogStore
     from maistro.security._types import AuditLog, AuthContext, PermissionTable
     from maistro.security.warden.detector import Warden
+
+#: Stable identifier for the Sentinel policy in the ADR-037 event contract.
+#: The snapshot (not this label) is what carries the tunables a decision read.
+_POLICY_ID = "maistro.sentinel"
 
 
 def check_permission(
@@ -87,6 +92,7 @@ class Sentinel:
         argument_limits: ToolArgumentLimits | None = None,
         allow_on_miss: bool = False,
         integrity_signer: DecisionSigner | None = None,
+        event_log: EventLogStore | None = None,
     ) -> None:
         self._warden = warden
         self._permission_table = permission_table
@@ -110,6 +116,12 @@ class Sentinel:
         # durable-key-backed signer; the default still protects the audit record
         # and exposes only public verification material.
         self._integrity_signer = integrity_signer or DecisionSigner()
+        # The ADR-037 `policy.decision` event is appended to the existing
+        # ADR-086 durable event log, never to a second event authority. A
+        # standalone Sentinel (tests, embedded callers) has no log until a
+        # composition root attaches one; the durable audit record is still
+        # written and signed in either case.
+        self._event_log = event_log
         # Fail-closed default (ADR-072726-0d6b, #1165): a tool absent from the
         # permission table is DENIED. allow_on_miss=True is the explicit
         # compatibility mode for non-production/test/demo wiring; it is never
@@ -124,6 +136,15 @@ class Sentinel:
                 "use only (ADR-072726-0d6b); production wiring must configure an "
                 "explicit permission source instead."
             )
+
+    @property
+    def verification_keyring(self) -> dict[str, str]:
+        """Publishable verification-key reference set for pinned verification."""
+        return self._integrity_signer.keyring
+
+    def attach_event_log(self, event_log: EventLogStore) -> None:
+        """Attach the canonical durable event log used for `policy.decision`."""
+        self._event_log = event_log
 
     async def _effective_table(self) -> PermissionTable | None:
         """The permission table for THIS decision, or None when undecidable.
@@ -646,7 +667,50 @@ class Sentinel:
                 await self._audit_log.log(entry)
             except Exception:
                 logger.error("Security audit log write failed")
+        await self._emit_policy_event(entry)
         return entry
+
+    async def _emit_policy_event(self, entry: AuditEntry) -> None:
+        """Append the ADR-037 `policy.decision` event for a signed record.
+
+        Decision durability must not depend on the event log: the signed audit
+        write above is the authoritative record, so a failing event backend is
+        reported loudly but does not turn a policy decision into an exception.
+        The payload carries only public material and the same `inputs_hash` the
+        signature commits to, allowing an event reader to correlate the event
+        with the durable decision record without reading secrets.
+        """
+        if self._event_log is None:
+            return
+        integrity = entry.integrity
+        try:
+            await self._event_log.append(
+                "policy.decision",
+                entity_type="policy_decision",
+                entity_id=entry.action or entry.tool_name,
+                source="maistro.security.sentinel",
+                payload={
+                    "policy_id": _POLICY_ID,
+                    "boundary": entry.boundary,
+                    "decision": entry.verdict,
+                    "inputs_hash": entry.inputs_hash,
+                    "action": entry.action or entry.tool_name,
+                    "principal_id": entry.principal_id,
+                    "policy_snapshot": entry.policy_snapshot,
+                    "integrity": (
+                        {
+                            "key_id": integrity.key_id,
+                            "algorithm": integrity.algorithm,
+                            "signature": integrity.signature,
+                            "public_key": integrity.public_key,
+                        }
+                        if integrity is not None
+                        else None
+                    ),
+                },
+            )
+        except Exception:
+            logger.error("Policy decision event append failed")
 
 
 def _detection_layer(verdict: WardenVerdict) -> str:

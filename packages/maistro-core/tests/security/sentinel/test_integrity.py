@@ -21,6 +21,7 @@ from dataclasses import replace
 import aiosqlite
 import pytest
 
+from maistro.events.durable_log import InMemoryEventLog
 from maistro.persistence.sqlite_audit import SqliteAuditLog
 from maistro.security._types import AuditEntry, AuthContext, Violation, WardenVerdict
 from maistro.security.sentinel.authz_types import Principal
@@ -74,6 +75,10 @@ def _sentinel(audit: _Audit, *, signer: DecisionSigner | None = None) -> Sentine
         audit_log=audit,
         integrity_signer=signer or DecisionSigner(),
     )
+
+
+def _b64(value: bytes) -> str:
+    return base64.urlsafe_b64encode(value).rstrip(b"=").decode("ascii")
 
 
 def _tamper(entry: AuditEntry, field: str) -> AuditEntry:
@@ -386,6 +391,89 @@ async def test_authorize_product_path_returns_and_persists_signed_decision() -> 
     assert verify_decision(record)
     assert inspect_decision(record, trusted_keys=signer.keyring) is IntegrityStatus.VERIFIED
     assert not verify_decision(_tamper(record, "user_id"))
+
+
+@pytest.mark.asyncio
+async def test_authorize_emits_canonical_policy_decision_event() -> None:
+    """ADR-037 `policy.decision` is appended beside the signed audit record.
+
+    The event must carry the same decision, inputs hash and public
+    verification material as the record, so a reader can correlate the two
+    without trusting a second source or reading a private key.
+    """
+    audit = _Audit()
+    signer = DecisionSigner()
+    events = InMemoryEventLog()
+    sentinel = _sentinel(audit, signer=signer)
+    sentinel.attach_event_log(events)
+
+    decision = await sentinel.authorize(
+        "deploy", Principal("owner-1", "human", ("admin",)), args={"change": "42"}
+    )
+
+    record = audit.entries[0]
+    logged = await events.query(event_type="policy.decision")
+    assert len(logged) == 1
+    payload = logged[0].payload
+    assert payload["policy_id"] == "maistro.sentinel"
+    assert payload["decision"] == "allowed"
+    assert payload["inputs_hash"] == record.inputs_hash == hash_args({"change": "42"})
+    assert payload["action"] == "deploy"
+    assert payload["principal_id"] == "owner-1"
+    assert payload["integrity"]["key_id"] == signer.active_key_id
+    assert payload["integrity"]["signature"] == decision.integrity.signature
+    assert payload["integrity"]["public_key"] == signer.keyring[signer.active_key_id]
+
+
+@pytest.mark.asyncio
+async def test_pre_call_emits_policy_decision_event_for_gate_outcome() -> None:
+    """The `pre_call` gate outcome is a decision too, and its event is durable.
+
+    A reader can tell which boundary produced the event and which inputs the
+    signed record covers, which is what lets the audit and event streams be
+    reconciled after the fact.
+    """
+    audit = _Audit()
+    signer = DecisionSigner()
+    events = InMemoryEventLog()
+    sentinel = Sentinel(
+        warden=_CleanWarden(),
+        permission_table={"tool": frozenset({"admin"})},
+        audit_log=audit,
+        integrity_signer=signer,
+        event_log=events,
+    )
+    args = {"query": "gate inputs"}
+    await sentinel.pre_call(
+        "tool", args, AuthContext(user_id="u1", roles=frozenset({"admin"})), schema={}
+    )
+
+    logged = await events.query(event_type="policy.decision")
+    assert len(logged) == 1
+    assert logged[0].payload["boundary"] == "pre_call"
+    assert logged[0].payload["inputs_hash"] == hash_args(args)
+    assert logged[0].payload["integrity"]["key_id"] == signer.active_key_id
+
+
+def test_signer_from_seed_is_stable_across_processes() -> None:
+    """The deployment seed reproduces the same key id/public key after restart."""
+    seed = _b64(b"\x01" * 32)
+    first = DecisionSigner.from_seed_b64(seed)
+    second = DecisionSigner.from_seed_b64(seed)
+    assert first.active_key_id == second.active_key_id
+    assert first.keyring == second.keyring
+
+    entry = AuditEntry(boundary="policy.decision", user_id="u1", verdict="allowed")
+    signed = first.sign(entry)
+    reloaded = dataclasses.replace(entry, integrity=signed)
+    assert inspect_decision(reloaded, trusted_keys=second.keyring) is IntegrityStatus.VERIFIED
+
+
+def test_signer_from_seed_rejects_bad_material_without_echoing_it() -> None:
+    for bad in ("not-base64!", _b64(b"short"), ""):
+        with pytest.raises(ValueError) as caught:
+            DecisionSigner.from_seed_b64(bad)
+        assert bad not in str(caught.value) or bad == ""
 
 
 @pytest.mark.asyncio

@@ -8,6 +8,7 @@ connected, and reachable on the container.
 
 from __future__ import annotations
 
+import base64
 from pathlib import Path
 
 import pytest
@@ -63,6 +64,60 @@ async def test_sqlite_backend_wires_sqlite_durable_event_stores() -> None:
     assert type(container.invocation_store).__name__ == "SqliteInvocationStore"
     event = await container.durable_event_log.append("task.created", source="test")
     assert (await container.durable_event_log.get(event.id)) is not None
+
+
+async def test_sentinel_decision_reaches_durable_policy_decision_topic() -> None:
+    """The product composition root emits ADR-037 `policy.decision` events.
+
+    `create_container` must attach the same durable event log the rest of the
+    engine uses, and the event must carry the signature public material the
+    audit record carries.
+    """
+    from maistro.security.sentinel.authz_types import Principal
+    from maistro.types.config import SecurityConfig
+
+    container = await _container(
+        security=SecurityConfig(permissions={"deploy": frozenset({"admin"})})
+    )
+    decision = await container.sentinel.authorize(
+        "deploy", Principal("owner-1", "human", ("admin",)), args={"change": "42"}
+    )
+    assert decision.integrity is not None
+
+    events = await container.durable_event_log.query(event_type="policy.decision")
+    assert len(events) == 1
+    payload = events[0].payload
+    assert payload["decision"] == "allowed"
+    assert payload["integrity"]["key_id"] == decision.integrity.key_id
+    assert payload["integrity"]["signature"] == decision.integrity.signature
+    assert payload["integrity"]["public_key"] == decision.integrity.public_key
+
+
+async def test_container_reloads_stable_sentinel_signing_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A configured signing seed is the same key across container creations."""
+    from maistro.types.config import SecurityConfig
+
+    seed = base64.urlsafe_b64encode(b"\x02" * 32).rstrip(b"=").decode("ascii")
+    monkeypatch.setenv("MAISTRO_SENTINEL_SIGNING_KEY", seed)
+    first = await _container(security=SecurityConfig())
+    second = await _container(security=SecurityConfig())
+
+    assert first.sentinel.verification_keyring == second.sentinel.verification_keyring
+    assert len(first.sentinel.verification_keyring) == 1
+
+
+async def test_container_refuses_malformed_sentinel_signing_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Falling back to an ephemeral key would silently break pinned verification."""
+    from maistro.types.config import AgentConfig
+    from maistro.types.errors import ConfigError
+
+    monkeypatch.setenv("MAISTRO_SENTINEL_SIGNING_KEY", "not-a-key")
+    with pytest.raises(ConfigError, match="MAISTRO_SENTINEL_SIGNING_KEY"):
+        await create_container(AgentConfig(router_api_key="test-key"))
 
 
 # --- Resilience (ADR-066) ----------------------------------------------------

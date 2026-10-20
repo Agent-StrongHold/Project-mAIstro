@@ -242,7 +242,7 @@ Stronghold's `SECURITY.md` carries several caps the engine does not (yet) have a
 2. **No dedicated tool-argument size cap.** Sentinel validates schema and permissions
    (`security/sentinel/validator.py`) but a JSON-bomb-sized tool-call argument is not rejected by
    a specific byte-size gate the way skill bodies (50 KB) and tool results (4,000 chars) are.
-3. **Sentinel decision signing is process-local unless a deployment injects a durable key service.**
+3. **Sentinel decision signing is process-local unless the deployment supplies a durable seed.**
    Sentinel signs every decision (allow, deny, elevate, and the gate outcomes) with Ed25519 over a
    canonical payload covering identity, scope, timestamp, policy snapshot, decision payload, the
    `inputs_hash` of the call, and the violations list. The record stores only public material —
@@ -250,13 +250,18 @@ Stronghold's `SECURITY.md` carries several caps the engine does not (yet) have a
    (`security/sentinel/integrity.py`). Verification has two modes: resolving the record's own
    public key proves the row was not edited in place, while pinning an independently held
    verification-key reference (`inspect_decision(..., trusted_keys=...)`, published by
-   `DecisionSigner.keyring`) is what rejects a store-writing attacker who swaps the public key and
-   re-signs — so production verifiers must pin. Retired public keys are retained for verification
-   history and retired private keys are dropped at rotation. Records written before signing landed
-   resolve to `IntegrityStatus.UNSIGNED` and are reported as unverifiable, never as signed. The
-   default signer is generated at process start, so a deployment that needs key continuity across
-   restarts must inject its key service; the injected key is also what makes the pinned reference
-   stable across processes.
+   `DecisionSigner.keyring` / `Sentinel.verification_keyring`) is what rejects a store-writing
+   attacker who swaps the public key and re-signs — so production verifiers must pin. Retired public
+   keys are retained for verification history and retired private keys are dropped at rotation.
+   Records written before signing landed resolve to `IntegrityStatus.UNSIGNED` and are reported as
+   unverifiable, never as signed. `MAISTRO_SENTINEL_SIGNING_KEY` (base64url raw 32-byte Ed25519
+   seed) is read by the container at composition time to keep the same `key_id` across restarts; it
+   is not persisted, and a malformed value fails startup rather than silently falling back to a
+   fresh process-ephemeral key. Without that variable the default signer is still generated per
+   process, so embedded verification works after restart but a pinned verifier has no stable
+   reference to trust. `policy.decision` events are appended to the existing ADR-086 durable event
+   log with the same public verification material; an event-log failure is logged but does not
+   discard the signed audit record.
 4. **InMemory stores are the default.** Learning store, audit log, quota tracker, and session
    store all default to in-memory implementations; data is lost on restart. PostgreSQL
    implementations exist under `persistence/` but require explicit `database_url` configuration —

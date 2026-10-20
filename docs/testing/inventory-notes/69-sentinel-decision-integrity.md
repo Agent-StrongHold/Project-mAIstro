@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +42
+  packages/maistro-core/tests: +49
 ---
 
 Coverage for tamper-evident Sentinel decisions (issue #69, ADR-073). The delta
@@ -8,7 +8,7 @@ is the whole change: the nine node IDs that previously sat unrecorded are the
 parametrized per-field tamper cases, and the rest were missing from the ledger
 when the lane's test count moved.
 
-`tests/security/sentinel/test_integrity.py` (new, 37 node IDs) signs real
+`tests/security/sentinel/test_integrity.py` (new, 41 node IDs) signs real
 Ed25519 decisions and checks the contract the signature actually commits to:
 
 - one case per protected field (`timestamp`, `boundary`, the five identity
@@ -34,8 +34,21 @@ Ed25519 decisions and checks the contract the signature actually commits to:
 - two subprocess cases that keep `cryptography` out of the type-module import
   graph (see `security/integrity_types.py`) while still failing loudly if the
   signer itself is used without the backend;
+- the ADR-037 `policy.decision` event carries the same decision, `inputs_hash`
+  and public verification material as the signed record, on both the
+  authorization and `pre_call` gate paths;
+- `DecisionSigner.from_seed_b64` reproduces the same key id/public key across
+  process instances, rejects malformed or wrong-length material without
+  echoing it, and the resulting record verifies against a pinned keyring;
 - SQLite durable round-trips for both verdicts, persist→reload→verify→alter
   each field→require failure, plus an unsigned historical row.
+
+`tests/test_container_wiring.py` (+3 node IDs) covers the product composition
+root: `create_container` attaches the existing durable event log, a Sentinel
+authorization reaches the `policy.decision` topic with the signed record's
+public material, the same `MAISTRO_SENTINEL_SIGNING_KEY` seed yields the same
+key reference across container instances, and a malformed seed fails startup
+instead of silently falling back to an ephemeral key.
 
 `tests/persistence/test_pg_audit.py` (+5 node IDs) covers the PostgreSQL
 store's side: the signed timestamp is bound rather than left to the column's

@@ -133,6 +133,24 @@ class DecisionSigner:
         self._active_key_id = ""
         self._install(private_key or Ed25519PrivateKey.generate())
 
+    @classmethod
+    def from_seed_b64(cls, seed: str) -> DecisionSigner:
+        """Build a signer from a base64url raw 32-byte Ed25519 seed.
+
+        This is the deployment seam for a durable key service: a process can
+        reload the same seed after restart, so records written earlier stay
+        verifiable against the same ``key_id`` and a verifier can pin the
+        published keyring. The seed itself is never stored on a decision
+        record or returned by any public property.
+        """
+        try:
+            raw = _unb64(seed)
+        except (ValueError, TypeError) as exc:
+            raise ValueError("sentinel signing key is not valid base64url") from exc
+        if len(raw) != _PUBLIC_KEY_BYTES:
+            raise ValueError("sentinel signing key must decode to 32 bytes")
+        return cls(Ed25519PrivateKey.from_private_bytes(raw))
+
     @property
     def active_key_id(self) -> str:
         return self._active_key_id

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -1427,6 +1428,7 @@ async def create_container(
         audit_log=audit_log,
         tier_policy=tier_policy,
         elevation_store=elevation_store,
+        integrity_signer=_wire_sentinel_signer(),
     )
     strike_recovery = _wire_strike_recovery(
         tracker=strike_tracker,
@@ -1490,6 +1492,11 @@ async def create_container(
         await durable_event_log.append(**append_from_bus_event(event))
 
     event_bus.subscribe(_persist_bus_event)
+
+    # Sentinel decisions join the ADR-037 `policy.decision` topic on the same
+    # durable log the rest of the engine uses; this is a consumer of the
+    # existing event authority, not a competing one.
+    sentinel.attach_event_log(durable_event_log)
 
     # --- LLM provider registry + cost-aware router (SPEC-070226-cb8d) ----
     from maistro.providers.config import load_provider_registry
@@ -1701,6 +1708,29 @@ async def _wire_prompt_manager(*, pg_pool: Any, db_pool: Any) -> PromptManager:
     from maistro.prompts.store import InMemoryPromptManager
 
     return InMemoryPromptManager()
+
+
+def _wire_sentinel_signer() -> Any:
+    """Build the Sentinel signer from the deployment's durable-key seam.
+
+    `MAISTRO_SENTINEL_SIGNING_KEY` is a base64url raw 32-byte Ed25519 seed.
+    It is read here, not persisted, and a malformed value fails container
+    construction instead of silently falling back to a process-ephemeral key
+    whose `key_id` a pinned verifier cannot know in advance.
+    """
+    from maistro.security.sentinel.integrity import DecisionSigner
+
+    seed = os.environ.get("MAISTRO_SENTINEL_SIGNING_KEY", "").strip()
+    if not seed:
+        return DecisionSigner()
+    try:
+        signer = DecisionSigner.from_seed_b64(seed)
+    except ValueError as exc:
+        raise ConfigError(
+            "MAISTRO_SENTINEL_SIGNING_KEY must be base64url encoding of a 32-byte Ed25519 seed"
+        ) from exc
+    logger.info("Sentinel signing key: %s", signer.active_key_id)
+    return signer
 
 
 async def _wire_audit_log(*, pg_pool: Any, db_pool: Any) -> Any:
