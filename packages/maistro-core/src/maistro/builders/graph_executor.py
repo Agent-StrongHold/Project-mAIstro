@@ -128,7 +128,6 @@ class PipelineDispatcher(Protocol):
         ...
 
 
-
 def _build_prompt(template: str, context: RunContext) -> str:
     class _Default(dict):  # type: ignore[type-arg]
         def __missing__(self, key: str) -> str:

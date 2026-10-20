@@ -320,6 +320,7 @@ class TestStepBudgetExhaustion:
         assert result.run.error.startswith("StepBudgetExhausted:")
         assert "max_steps=3" in result.run.error
 
+
 class TestPersistedFailureRedaction:
     """A node failure must not write credential-shaped text into canonical state.
 
@@ -408,6 +409,7 @@ class TestPersistedFailureRedaction:
             "RuntimeError: provider rejected api_key=[REDACTED_SECRET_ASSIGNMENT] for tenant 42"
         )
         assert "sk-proj-ABCdef123456" not in error
+
 
 class TestCanonicalNodeRunPersistence:
     async def test_nonterminal_node_run_is_reused_on_resume(self) -> None:
