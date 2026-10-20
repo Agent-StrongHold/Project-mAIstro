@@ -207,15 +207,25 @@ export default function Backlog() {
   const [decomposing, setDecomposing] = useState<BacklogItem | null>(null);
   const [decomposeTitles, setDecomposeTitles] = useState("");
 
+  // Each board read carries a sequence number; only the newest one may
+  // commit (#1421). The failed read now offers a Retry, and that button
+  // stays clickable while a retry is in flight: two overlapping reads
+  // could otherwise let the older answer land last and replace the newer
+  // list with stale items.
+  const loadSeq = useRef(0);
+
   const load = useCallback(async () => {
+    const seq = ++loadSeq.current;
     try {
       const body = await apiGet<{ items: BacklogItem[]; authority: Authority }>(
         "/v1/backlog?include_archived=true",
       );
+      if (seq !== loadSeq.current) return;
       setItems(body.items);
       setAuthority(body.authority);
       setLoadStatus("ready");
     } catch (err) {
+      if (seq !== loadSeq.current) return;
       // A failed retry (or post-action refresh) keeps the error banner when
       // the board never loaded, and otherwise keeps the loaded board rather
       // than blanking it (#1421); the toast still names the failure.
@@ -242,16 +252,17 @@ export default function Backlog() {
     // real unmount; re-arm the guard so later openDetail reads still commit.
     detailUnmounted.current = false;
     (async () => {
+      const seq = ++loadSeq.current;
       try {
         const body = await apiGet<{ items: BacklogItem[]; authority: Authority }>(
           "/v1/backlog?include_archived=true",
         );
-        if (cancelled) return;
+        if (cancelled || seq !== loadSeq.current) return;
         setItems(body.items);
         setAuthority(body.authority);
         setLoadStatus("ready");
       } catch {
-        if (cancelled) return;
+        if (cancelled || seq !== loadSeq.current) return;
         // The banner + retry is the degraded state; a refresh via the load
         // path reports the transport error when the user acts. An
         // unreachable board must not render as four "empty" columns (#1421).

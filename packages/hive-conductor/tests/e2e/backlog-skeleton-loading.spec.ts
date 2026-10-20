@@ -110,6 +110,18 @@ let listRelease: (() => void) | null = null;
 // Per-item detail scripts; an id without a script answers 200 immediately.
 let detailQueue: Record<string, ListResponse> = {};
 let detailRelease: (() => void) | null = null;
+// Board reads answered by the in-browser route (see startHarness). Parked
+// reads are released newest-first, so a test can land the newer answer
+// before the older one it superseded.
+let boardRouteQueue: ListResponse[] = [];
+let boardRouteReleases: (() => void)[] = [];
+
+function scriptBoardRoute(...responses: ListResponse[]) {
+  boardRouteQueue = responses;
+}
+function releaseBoardRoute() {
+  boardRouteReleases.pop()?.();
+}
 
 function scriptList(...responses: ListResponse[]) {
   listQueue = responses;
@@ -240,6 +252,29 @@ createRoot(document.getElementById("root")!).render(
 
   context = await browser.newContext();
   page = await context.newPage();
+
+  // Board reads can also be intercepted in the browser. Over the real
+  // socket a second read to the same URL is pipelined behind the first
+  // one (the browser reuses the busy connection), so two reads to
+  // /v1/backlog could never be in flight at once -- and the stale-answer
+  // ordering needs exactly that. The route below answers from its own
+  // queue and hands everything else to the server above; the workspace
+  // tabs spec scripts its stale refresh the same way.
+  await page.route("**/v1/backlog*", async (route) => {
+    const next = boardRouteQueue.shift();
+    if (!next) {
+      await route.continue();
+      return;
+    }
+    if (next.hold) {
+      await new Promise<void>((resolve) => { boardRouteReleases.push(resolve); });
+    }
+    await route.fulfill({
+      status: next.status,
+      contentType: "application/json",
+      body: JSON.stringify(next.status === 200 ? next.payload : { detail: "scripted" }),
+    });
+  });
 }
 
 const TWO_ITEMS = {
@@ -347,6 +382,45 @@ for (const boardFailureStatus of [500, 401] as const) {
     await expect(page.getByTestId("backlog-load-error")).toHaveCount(0);
   });
 }
+
+test("a retry that answers after a newer one cannot restore the older board", async () => {
+  // The failed read leaves a Retry the user can press again while the
+  // first retry is still in flight, so two board reads can be in flight
+  // at once. The newer read answers first; the older one lands afterwards
+  // and must not replace the board the newer read already committed
+  // (#1421 - a stale response must not replace the current one).
+  const staleBoard = { items: [item("b-1", "Stale board item", "todo")], authority: AUTHORITY };
+  const freshBoard = { items: [item("c-1", "Fresh board item", "todo")], authority: AUTHORITY };
+  // The initial read fails, so the banner offers the retry; the two
+  // retries below are answered by the in-browser route.
+  scriptList({ status: 500, payload: {} });
+  await page.goto(harnessUrl, { waitUntil: "domcontentloaded" });
+
+  const alert = page.getByTestId("backlog-load-error");
+  await expect(alert).toBeVisible();
+  // Arm the route only now: the initial read has already been answered by
+  // the server, and the route must not swallow it.
+  scriptBoardRoute(
+    { status: 200, payload: staleBoard, hold: true },
+    { status: 200, payload: freshBoard, hold: true },
+  );
+  const retry = alert.getByRole("button", { name: "Retry" });
+  await retry.click();
+  // The first retry is parked in the route; the second one supersedes it.
+  await expect.poll(() => boardRouteReleases.length).toBe(1);
+  await retry.click();
+  await expect.poll(() => boardRouteReleases.length).toBe(2);
+
+  // The newer read answers first and commits its board.
+  releaseBoardRoute();
+  await expect(page.locator(".card", { hasText: "Fresh board item" })).toBeVisible();
+  // The older read answers afterwards: its board is stale, and it must
+  // not take the screen back.
+  releaseBoardRoute();
+  await expect(page.locator(".card", { hasText: "Fresh board item" })).toBeVisible();
+  await expect(page.locator(".card", { hasText: "Stale board item" })).toHaveCount(0);
+  scriptBoardRoute();
+});
 
 test("the opened item's detail region is a sized skeleton until its read lands", async () => {
   scriptList({ status: 200, payload: TWO_ITEMS });

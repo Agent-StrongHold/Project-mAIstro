@@ -66,8 +66,11 @@ Evidence: 26/26 harness spec tests pass in the final image; the two
 backend-dependent specs (`template-picker-skeleton`, `app-shell-loading`) pass
 5/5 against a live hive container; screenshot pairs land at desktop and
 narrow widths (loading vs resolved differ; loading frames show the styled
-skeletons, not blank regions). `scripts/check-suite-inventory.py` and
-`scripts/check-frontend-typed-client.py` both pass on the merged tree.
+skeletons, not blank regions). `scripts/check-suite-inventory.py` passes on
+the merged tree. `scripts/check-frontend-typed-client.py` does **not**: on
+the develop-merged tree it reports 45 problems, because #1421 shifted the
+line numbers of 15 debt rows the ratchet banks by line (see the repair
+round below).
 
 ## Salvage round 2026-10-18 (empty-state opener)
 
@@ -91,3 +94,64 @@ rather than passing for an environmental reason. Frontend `npm run lint`
 (94 warnings ≤ the 96 budget, 0 errors) and `npm run build` (both tsconfigs +
 vite) pass; `scripts/check-suite-inventory.py` and
 `scripts/check-frontend-typed-client.py` pass on the tree.
+
+## Repair round (ratchet repair + the two open review findings)
+
+The develop merge left the frontend typed-client ratchet red: it banks debt
+**by line number**, and #1421's edits to `frontend/src/pages/Dashboard.tsx`
+moved 15 banked rows (13 `raw_fetch`, 2 `hand_typed`) to new lines, so the
+gate saw 13 "NEW frontend typed-client debt absent from the trusted base",
+2 "current violation missing from the candidate ledger" and 30 "fixed --
+delete it from the candidate ledger" problems while the totals (56 raw
+fetch / 136 hand-typed) were unchanged. The repair keeps every banked row
+on its original line instead of touching
+`quality/frontend-typed-client-baseline.json` (no ledger or grant edits in
+an implementation change): the hook reports settlement through a callback
+(`useServerTabs(..., onSettled)`) rather than through state the page owns
+differently, the pending-state ternary and both skeleton components are
+laid out so the debt rows keep their line numbers, and the two skeleton
+components moved to the end of the file (after the last banked row).
+
+Two findings from the PR review are closed here as well:
+
+* **P1 — a hung layout/metrics read pinned the skeleton forever.** Both
+  reads now carry the shared client's 30 s budget
+  (`lib/api.ts` `DEFAULT_TIMEOUT_MS`), applied through a `boundedRead`
+  helper at the end of `Dashboard.tsx` (`AbortController` + `setTimeout` +
+  `clearTimeout`, the house pattern; no `AbortSignal.any`, so the build's
+  browser baseline holds). A stalled read therefore ends the pending state
+  and the page settles into the long-standing default dashboard.
+* **P2 — a retry could restore a stale board.** The board read in
+  `Backlog.tsx` now carries a sequence number (`loadSeq`), the same
+  `WorkspaceContext` pattern, so only the newest read may commit.
+
+Two cases were added to the two specs (the e2e suite stays non-pytest-
+collectible, so the delta is still `+0`):
+
+* `dashboard-skeleton-loading.spec.ts` — "a stalled layout read cannot pin
+  the skeleton forever": the harness holds the layout read open and the
+  test crosses the read's budget with Playwright's clock
+  (`page.clock.install()` / `fastForward(31_000)`), then asserts the
+  skeleton is gone and the default board is back. Shown to fail against the
+  unbounded read (`dashboard-skeleton` still visible after the budget).
+* `backlog-skeleton-loading.spec.ts` — "a retry that answers after a newer
+  one cannot restore the older board": two board reads are in flight at
+  once, the newer answers first, and the older answer must not replace the
+  board. The two reads are answered by an in-browser `page.route` (the
+  workspace-tabs spec scripts its stale refresh the same way): over the
+  real socket the browser pipelines a second request to the same URL
+  behind the first, so two reads to `/v1/backlog` could never overlap on
+  the wire. Shown to fail against the unsequenced read ("Stale board
+  item" back on screen).
+
+Local evidence: 36/36 harness tests pass across the four #1421 skeleton
+specs (dashboard 10, metrics 7, backlog 10, tabs 9), and the same 20
+dashboard+backlog tests pass under the CI image's Playwright 1.52 as well
+(the local run uses 1.60). The full local e2e suite is 192 passed / 4
+failed, and the four failures are live-backend environment failures
+(`CanonicalGraphUnavailable` in `pm-workflow.spec.ts`, plus one
+credentials-draft case) that touch none of the surfaces above. Frontend
+`npm run lint` (94 warnings ≤ the 96 budget, 0 errors), `npm run build`
+(both tsconfigs + vite), `npx tsc --noEmit`,
+`scripts/check-frontend-typed-client.py` (56 raw fetch / 136 hand-typed,
+none new) and `scripts/check-vulture-baseline.py` all pass.

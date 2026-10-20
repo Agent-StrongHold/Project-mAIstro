@@ -336,6 +336,30 @@ for (const layoutFailureStatus of [401, 500] as const) {
   });
 }
 
+test("a stalled layout read cannot pin the skeleton forever", async () => {
+  // The server accepts the connection and never answers. Without a budget
+  // on the read the pending state would last as long as the browser keeps
+  // the socket open, hiding the whole widget grid behind the skeleton; the
+  // read carries the shared client's 30s budget, so the stall ends the
+  // pending state the same way a refused or failed read does -- the
+  // long-standing default dashboard takes over. The clock is faked so the
+  // budget is crossed deterministically instead of by waiting it out.
+  resetBackend();
+  holdLayout();
+  const stalled = await context.newPage();
+  try {
+    await stalled.clock.install();
+    await stalled.goto(harnessUrl, { waitUntil: "domcontentloaded" });
+    await expect(stalled.getByTestId("dashboard-skeleton")).toBeVisible();
+    await stalled.clock.fastForward(31_000);
+    await expect(stalled.getByTestId("dashboard-skeleton")).toHaveCount(0);
+    await expect(stalled.locator(".dashboard-widget-card").first()).toBeVisible();
+  } finally {
+    await stalled.close();
+    flushLayout();
+  }
+});
+
 test("pending metrics render sized KPI skeletons, then the measured values", async () => {
   resetBackend();
   holdMetrics();
