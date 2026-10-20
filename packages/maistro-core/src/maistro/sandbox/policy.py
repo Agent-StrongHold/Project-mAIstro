@@ -47,7 +47,6 @@ class WorkloadPolicy:
     """What isolation a workload requires."""
 
     min_tier: IsolationTier
-    network_allowed: bool = False
     max_memory_mb: int = 512
     max_timeout_s: int = 300
     reason: str = ""
@@ -84,13 +83,11 @@ class WorkloadPolicy:
 
 UNTRUSTED_CODE = WorkloadPolicy(
     min_tier="vm",
-    network_allowed=False,
     reason="Model-generated code must run behind a VM boundary",
 )
 
 TRUSTED_TOOL = WorkloadPolicy(
     min_tier="container",
-    network_allowed=True,
     max_memory_mb=1024,
     reason="First-party tool with network access (e.g. Jira, web search)",
     untrusted=False,
@@ -102,14 +99,12 @@ TRUSTED_TOOL = WorkloadPolicy(
 
 BENCHMARK_EVAL = WorkloadPolicy(
     min_tier="vm",
-    network_allowed=False,
     max_timeout_s=600,
     reason="Benchmark execution runs untrusted candidate code",
 )
 
 BUILDER_AGENT = WorkloadPolicy(
     min_tier="vm",
-    network_allowed=False,
     # A builders session is one sandbox for a whole working session — many
     # commands over hours (installs, test suites) — not one command. The
     # ceilings are operator budgets for what the session may consume, not
@@ -125,7 +120,6 @@ BUILDER_AGENT = WorkloadPolicy(
 
 BROWSER_AUTOMATION = WorkloadPolicy(
     min_tier="container",
-    network_allowed=True,
     max_memory_mb=2048,
     reason="Browser needs egress; isolated from code sandbox",
     untrusted=False,
@@ -137,7 +131,6 @@ BROWSER_AUTOMATION = WorkloadPolicy(
 
 DEV_ONLY = WorkloadPolicy(
     min_tier="fake",
-    network_allowed=True,
     reason="Development/test only — no real isolation",
     untrusted=False,
     egress=EgressGrant(mode=EgressMode.HOST, reason="dev/test only — no real isolation"),

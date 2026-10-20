@@ -105,13 +105,15 @@ class SandboxSelector:
     def build_config(self, policy: WorkloadPolicy, **overrides: Any) -> SandboxConfig:
         """Build a SandboxConfig from a policy.
 
-        Overrides may only make the sandbox *tighter*. The policy fields are
-        named ``max_memory_mb``, ``max_timeout_s`` and ``network_allowed`` —
-        ceilings and a permission, not defaults — so an override is clamped
-        against them rather than replacing them. Without the clamp,
-        ``build_config(UNTRUSTED_CODE, network=True)`` would hand model-
-        generated code an egress-capable sandbox, against a policy whose
-        stated reason is that it must run behind a VM boundary.
+        Overrides may only make the sandbox *tighter*. The policy fields
+        ``max_memory_mb`` and ``max_timeout_s`` are ceilings, not defaults — so
+        an override is clamped against them rather than replacing them. Network
+        egress is never an override target: it is the policy's grant, decided
+        before the sandbox exists, so there is nothing for candidate code to
+        widen later. Without the clamp, ``build_config(UNTRUSTED_CODE,
+        network=True)`` would hand model-generated code a networked sandbox,
+        against a policy whose stated reason is that it must run behind a VM
+        boundary.
         """
         memory_mb = min(int(overrides.get("memory_mb", policy.max_memory_mb)), policy.max_memory_mb)
         timeout_s = min(int(overrides.get("timeout_s", policy.max_timeout_s)), policy.max_timeout_s)

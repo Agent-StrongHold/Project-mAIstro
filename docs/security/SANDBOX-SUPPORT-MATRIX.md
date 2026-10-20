@@ -175,7 +175,9 @@ and vanish with it — that distinction is asserted rather than assumed, because
 that nothing a workload writes outlives the sandbox except under `/work`. The
 environment is `--clearenv`'d and repopulated only from `SandboxConfig.env`.
 Network requires `--share-net`, which is reachable only through a policy whose
-`network_allowed` is true.
+`egress` grant names `EgressMode.HOST`. Egress is the sole network authority: a
+policy carries no separate `network_allowed` boolean, and `SandboxConfig.network`
+is mechanically rejected when true rather than silently ignored.
 
 ### Resource budgets (#80)
 

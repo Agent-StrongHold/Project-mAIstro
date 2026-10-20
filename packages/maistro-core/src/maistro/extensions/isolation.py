@@ -292,7 +292,6 @@ class ExtensionIsolationProfile:
             )
         return WorkloadPolicy(
             min_tier=self.min_tier,
-            network_allowed=self.egress.grants_network,
             max_memory_mb=self.memory_mb,
             max_timeout_s=self.timeout_s,
             reason=(

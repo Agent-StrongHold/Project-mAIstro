@@ -16,17 +16,18 @@ Two complementary tiers pin that contract:
 materialized and executed against hostile candidate inputs with the host
 interpreter -- no Docker required. Spoofed PASS markers, early exits,
 ``os._exit`` traps, and type-confused results all fail, while genuine
-implementations pass. Docker-gated tests exercise the real
+implementations pass. Backend-gated tests exercise the real
 ``run_function_checks`` boundary (sandbox creation, read-only mounts, per-case
-exec) and are skipped when no Docker binary is available, mirroring the
-precedent in ``tests/test_e2e_sandbox_loop.py``.
+exec) and are skipped when the canonical selector cannot place a
+``TRUSTED_TOOL`` workload on this host -- the same host measurement the sibling
+``test_swebench.py`` keys on -- rather than reporting a false result against a
+host that correctly refused.
 """
 
 from __future__ import annotations
 
 import base64
 import json
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -284,14 +285,39 @@ class TestCaseCommand:
 
 
 # ---------------------------------------------------------------------------
-# Real Docker boundary
+# Real sandbox boundary (canonical selector, #76)
 # ---------------------------------------------------------------------------
 
-_DOCKER_AVAILABLE = shutil.which("docker") is not None
+
+def _selector_satisfies_trusted_tool() -> bool:
+    """Can the canonical selector actually place a TRUSTED_TOOL workload here?
+
+    `run_function_checks` executes untrusted candidate code through the
+    canonical selector (#76), not the retired Docker adapter. On a host whose
+    selector cannot evidence a backend at the policy's tier (Kata/vm), the
+    check fails closed -- so a test that asserts a *passing* check, or a
+    sandbox-observed failure, must skip rather than report a false result
+    against a host that correctly refused. Same host measurement the sibling
+    ``test_swebench.py`` gate keys on.
+    """
+    try:
+        from maistro.sandbox import build_selector
+        from maistro.sandbox.policy import TRUSTED_TOOL
+
+        build_selector().select(TRUSTED_TOOL)
+    except Exception:
+        return False
+    return True
 
 
-@pytest.mark.skipif(not _DOCKER_AVAILABLE, reason="docker binary not available")
-class TestRunFunctionChecksDocker:
+requires_sandbox_backend = pytest.mark.skipif(
+    not _selector_satisfies_trusted_tool(),
+    reason="no canonical sandbox backend satisfies TRUSTED_TOOL on this host",
+)
+
+
+class TestRunFunctionChecksSandbox:
+    @requires_sandbox_backend
     async def test_correct_implementation_passes(self) -> None:
         passed, detail = await run_function_checks(
             CORRECT_FLATTEN, "flatten_list", [(CASE_ARGS, CASE_EXPECTED)]
@@ -299,6 +325,7 @@ class TestRunFunctionChecksDocker:
         assert passed is True
         assert detail == "ok"
 
+    @requires_sandbox_backend
     async def test_spoofed_pass_marker_fails(self) -> None:
         passed, detail = await run_function_checks(
             'print("PASS")\nraise SystemExit(0)\n',
@@ -308,6 +335,7 @@ class TestRunFunctionChecksDocker:
         assert passed is False
         assert "PASS" not in detail  # detail is not an echo of candidate output
 
+    @requires_sandbox_backend
     async def test_wrong_implementation_fails(self) -> None:
         passed, _ = await run_function_checks(
             "def flatten_list(lst):\n    return lst\n",

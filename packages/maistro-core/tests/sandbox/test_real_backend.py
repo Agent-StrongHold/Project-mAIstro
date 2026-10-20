@@ -16,6 +16,7 @@ every machine without bubblewrap installed — which is most of them.
 from __future__ import annotations
 
 import shutil
+import signal
 from pathlib import Path
 
 import pytest
@@ -502,6 +503,41 @@ def test_limits_use_a_single_thread_safe_execing_helper() -> None:
     assert argv[1:3] == ["-m", "maistro.sandbox.backends._rlimit_exec"]
     assert argv[3:6] == [str(resource.RLIMIT_NOFILE), "64", "128"]
     assert argv[-3:] == ["--", "bwrap", "true"]
+
+
+def test_the_execing_helper_hands_default_signal_dispositions_to_the_sandbox() -> None:
+    """The helper ``execvp``s in place, so a signal CPython sets to ignore at
+    startup is inherited by ``bwrap`` and by every workload process inside the
+    sandbox. ``SIGXFSZ`` is the one that bites (#80): ignored, a write past
+    ``RLIMIT_FSIZE`` returns ``EFBIG`` instead of killing the process, so the
+    file-size ceiling's kernel-stop proof never arrives -- the process exits 1
+    on its own terms. The helper restores exactly the signals ``subprocess``
+    restores in a forked child (``restore_signals``)."""
+    import subprocess
+
+    from maistro.sandbox.backends.bubblewrap import limited_argv
+
+    if not Path("/bin/sh").exists() or not Path("/proc/self/status").exists():
+        pytest.skip("no /bin/sh or /proc to read signal dispositions from")
+
+    completed = subprocess.run(
+        limited_argv({}, ["/bin/sh", "-c", 'grep -E "^SigIgn" /proc/self/status']),
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+    # `SigIgn:` is a hex bitmask; bit N-1 is signal N.
+    ignored_mask = int(completed.stdout.split()[1], 16)
+    for name in ("SIGPIPE", "SIGXFSZ"):
+        signum = getattr(signal, name, None)
+        if signum is None:  # pragma: no cover - platform without the signal
+            continue
+        assert ignored_mask & (1 << (signum - 1)) == 0, (
+            f"{name} stayed ignored across the execing helper; the sandbox would "
+            "inherit a disposition the host interpreter set"
+        )
 
 
 def test_an_eagain_namespace_failure_is_reported_as_an_absent_tier(
