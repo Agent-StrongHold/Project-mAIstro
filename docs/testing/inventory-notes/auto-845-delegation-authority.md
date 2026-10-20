@@ -266,3 +266,59 @@ The same failure reds the three root reachability-baseline tests
 cascades to the Coverage and Quality gates on CI. It is unfixable in this
 lane: a ledger/grant edit is prohibited in an ordinary implementation PR, and
 wiring the module is #1851's surface, not #60/#845's.
+
+## Repair round (2026-10-20, second) — full gates re-run at `ab8ecc92b`; the inherited reachability block proven by scan-set identity
+
+Independent re-validation of every prior claim at head `ab8ecc92b`. All
+prior-round claims held; two items gained stronger evidence.
+
+### The reachability block: the unreachable SET is identical at base and head
+
+Beyond the prior membership check, this round computed the full unreachable
+module set with the same analyzer (`check-reachability.py::_reachability`)
+over both trees: base `e20e9f52e` → 169 unreachable of 1417 modules; head
+`ab8ecc92b` → 169 unreachable of 1419 modules; set difference **empty in both
+directions** (no module changed reachability). The trusted-base ledger at
+`e20e9f52e` records 168 — the base ledger is stale relative to the base's own
+code, which develop's round-221 note (`task-admission-identity-types.md`:
+"check-reachability.py: rc=1, exactly 1 NEWLY UNREACHABLE
+`maistro.runs.admission_identity`", owner-held) already documents. `origin/develop`
+has not moved since (still `e20e9f52e`), so the blocker is live on develop
+itself; `load_authorizations` reads grants from the merge base, so no edit on
+this branch can turn the gate green.
+
+### `mypy --strict` requires CI's environment, not `--extra dev`
+
+`uv run mypy --strict packages/maistro-core/src` fails with 5 `import-not-found`
+errors on `maistro_bootstrap.*` in a venv built with `uv sync --locked
+--extra dev` — that sync installs only a subset of the workspace members
+(no `maistro-bootstrap`/`maistro-server`/`maistro-turing`), and no mypy
+override covers `maistro_bootstrap.*`. CI's `quality-mypy` job syncs with
+`--locked --all-extras`; under that exact environment the gate passes:
+`Success: no issues found in 797 source files`. The errors are environmental,
+not branch-caused (the branch touches neither `cli/_install.py` nor
+`cli/_builders_tui.py`, and `maistro-bootstrap` exists at both base and head).
+
+### Full-suite and gate results at `ab8ecc92b`
+
+- Targeted suites, full packages: `packages/maistro-core/tests/security` +
+  `tests/a2a` — 1677 passed, 22 skipped; `packages/hive-conductor/backend/tests`
+  — 3785 passed, 24 skipped; root `tests/security` — 15 passed. Focused on the
+  branch's files: `test_delegation_authority.py` + `test_broker.py` +
+  `test_sentinel_permission_table_armed.py` + `test_execution_mode.py` +
+  `test_legacy_dag_node.py` — 76 passed.
+- `ruff check .` / `ruff format --check .` — clean.
+- `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'` — exit 0, 1326 reviewed == 1326 findings, unclassified 0,
+  never_allowlist 0 (no ledger edit).
+- `check-suite-inventory.py` (21 suites match), `check-radon-baseline.py`
+  (134 == 134), `check-promotion-surface.py`,
+  `check-reachability-dispositions.py` (48 groups / 168 modules dispositioned),
+  `check-backlog-consistency.py`, `check-shipped-surface-truth.py`,
+  `check-security-inventory.py`, `check-execution-lifecycles.py` (19 == 19) —
+  all exit 0.
+- `check-ratchet-provenance.py` — every sub-ratchet passes except the
+  reachability trusted-base gate documented above.
+
+No test counts changed in this round; the `inventory-delta` block above is
+unchanged and still reconciles.
