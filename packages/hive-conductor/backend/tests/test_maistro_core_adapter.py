@@ -31,6 +31,9 @@ def _fake_container() -> SimpleNamespace:
         run_store=object(),
         provider_registry=object(),
         llm_router=object(),
+        # The canonical client the Container composes; None keeps the
+        # fallback-composition path under test.
+        model_chat_client=None,
         a2a_delegator=object(),
         agents={},
     )
@@ -73,6 +76,7 @@ async def test_start_passes_container_prompt_manager_to_agent_factory(monkeypatc
         run_store=object(),
         provider_registry=object(),
         llm_router=object(),
+        model_chat_client=None,
         a2a_delegator=object(),
     )
     captured: dict[str, object] = {}
@@ -121,6 +125,27 @@ async def test_start_passes_container_prompt_manager_to_agent_factory(monkeypatc
     assert captured["a2a_delegator"] is container.a2a_delegator
     assert list(container.agents) == ["wired-agent"]
     assert bridge.container is container
+
+
+@pytest.mark.asyncio
+async def test_start_hands_the_roster_the_container_model_client(monkeypatch):
+    """The roster's LLM client IS the Container's canonical model client.
+
+    Later-materialized Agents must reach models through the same authorized
+    effect authority as the boot roster (#1084): the client the Container
+    composes over its model-chat Binding/egress, never a bridge-local
+    transport. When the Container supplies none, the bridge composes the same
+    canonical boundary over its configured gateway (the fallback above).
+    """
+    container = _fake_container()
+    canonical_client = object()
+    container.model_chat_client = canonical_client
+    captured = _capture_runtime_seams(monkeypatch, container)
+
+    bridge = MaistroCoreBridge()
+    await bridge.start(Settings(maistro_agents_dir="agents", litellm_api_base="http://gw.test/v1"))
+
+    assert captured["llm"] is canonical_client
 
 
 @pytest.mark.asyncio
@@ -238,6 +263,7 @@ async def test_start_populates_the_dict_the_hierarchy_closed_over(monkeypatch):
         run_store=object(),
         provider_registry=object(),
         llm_router=object(),
+        model_chat_client=None,
         a2a_delegator=object(),
         agents=wired_agents,
     )

@@ -463,10 +463,10 @@
       "owner": "#286",
       "rationale": "The approved image.generate Provider implementation itself. The call executes beneath a resolved image.generate Binding, Binding-scoped credential routing and a governed Invocation (ImageGenerationEgress), so this site IS the governed image egress, not a bypass."
     },
-    "packages/maistro-core/src/maistro/capabilities/providers/llm_gateway.py::execute_model_chat._post::MODEL_EFFECT:openai-compatible-http#1": {
+    "packages/maistro-core/src/maistro/capabilities/providers/llm_gateway.py::_post_model_chat::MODEL_EFFECT:openai-compatible-http#1": {
       "path": "packages/maistro-core/src/maistro/capabilities/providers/llm_gateway.py",
-      "qualname": "execute_model_chat._post",
-      "line": 447,
+      "qualname": "_post_model_chat",
+      "line": 429,
       "category": "MODEL_EFFECT",
       "entry_point": "openai-compatible-http",
       "callee": "client.stream",
@@ -474,10 +474,10 @@
       "owner": "56",
       "rationale": "The approved Provider implementation's protocol-fallback helper: the one module #56 authorizes to hold an HTTP client for a model endpoint. The call executes beneath a resolved canonical Binding and a governed Invocation, so this site IS the governed egress, not a bypass."
     },
-    "packages/maistro-core/src/maistro/capabilities/providers/llm_gateway.py::execute_model_chat._post::MODEL_EFFECT:openai-compatible-http#2": {
+    "packages/maistro-core/src/maistro/capabilities/providers/llm_gateway.py::_post_model_chat::MODEL_EFFECT:openai-compatible-http#2": {
       "path": "packages/maistro-core/src/maistro/capabilities/providers/llm_gateway.py",
-      "qualname": "execute_model_chat._post",
-      "line": 459,
+      "qualname": "_post_model_chat",
+      "line": 441,
       "category": "MODEL_EFFECT",
       "entry_point": "openai-compatible-http",
       "callee": "client.post",
@@ -485,10 +485,10 @@
       "owner": "56",
       "rationale": "The approved Provider implementation's protocol-fallback helper: the one module #56 authorizes to hold an HTTP client for a model endpoint. The call executes beneath a resolved canonical Binding and a governed Invocation, so this site IS the governed egress, not a bypass."
     },
-    "packages/maistro-core/src/maistro/capabilities/providers/llm_gateway.py::execute_model_chat::MODEL_EFFECT:openai-compatible-http#1": {
+    "packages/maistro-core/src/maistro/capabilities/providers/llm_gateway.py::_dispatch_adapter_model_chat::MODEL_EFFECT:openai-compatible-http#1": {
       "path": "packages/maistro-core/src/maistro/capabilities/providers/llm_gateway.py",
-      "qualname": "execute_model_chat",
-      "line": 418,
+      "qualname": "_dispatch_adapter_model_chat",
+      "line": 397,
       "category": "MODEL_EFFECT",
       "entry_point": "openai-compatible-http",
       "callee": "client.post",
