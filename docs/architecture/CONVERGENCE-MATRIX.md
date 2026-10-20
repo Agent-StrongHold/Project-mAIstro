@@ -25,7 +25,7 @@ It still **does not prove a prose ownership claim**. Reachability proves that co
 
 ## Ownership
 
-`Lifecycle owner` is the authoritative "what state is this work in" record today. `Persistence owner` is what survives restart. `Authorization owner` is what decides whether the work is allowed.
+`Lifecycle owner` is the authoritative “what state is this work in” record today. `Persistence owner` is what survives restart. `Authorization owner` is what decides whether the work is allowed.
 
 ### How to read an ownership cell (#378)
 
