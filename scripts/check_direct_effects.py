@@ -131,12 +131,12 @@ _PATH_CALLS: dict[tuple[str, str, str], tuple[str, str]] = {
     ): ("HARNESS_EFFECT", "harness.stop"),
     (
         "packages/maistro-core/src/maistro/capabilities/providers/llm_gateway.py",
-        "execute_model_chat._post",
+        "_post_model_chat",
         "client.post",
     ): ("MODEL_EFFECT", "openai-compatible-http"),
     (
         "packages/maistro-core/src/maistro/capabilities/providers/llm_gateway.py",
-        "execute_model_chat._post",
+        "_post_model_chat",
         "client.stream",
     ): ("MODEL_EFFECT", "openai-compatible-http"),
     (
