@@ -607,3 +607,104 @@ not push or open PRs, so it is unverifiable locally by construction — the bran
 floor and a full `--all-extras` `pip-audit` were not re-run; the diff-coverage half is
 vacuous here (no `packages/*/src` delta) and round 5 verified the `aiohttp==3.14.5`
 lockfile fix.
+
+## Round 8 (2026-10-20, head `5b5ce42a0`): audit found a real scanner hole — bare `__import__`
+
+Round 7 ended green with the block being GitHub merge-queue contention (`GH006`,
+dispatcher-owned). This round re-validated everything and, rather than re-asserting the
+tripwires' strength, **audited them against the shapes their own docstring claims**. One
+claim was false.
+
+### The defect (evidence)
+
+`_DYNAMIC_IMPORT_FUNCS` includes `__import__`, and the module docstring and the inventory
+note both promise dynamic-import coverage — but `_dynamic_import_offenders` only inspected
+`ast.Call` nodes whose `func` was an `ast.Attribute`. `importlib.import_module(...)` was
+caught; `__import__('maistro_rsi.gateway')` is a **bare `ast.Name` call** and was dropped
+silently. Measured before the fix:
+
+```
+$ python - <<'PY'   # probe file: __import__('maistro_rsi.gateway') + aliased import_module
+dynamic offenders: []
+static offenders: []
+PY
+```
+
+and in the real tree, a transient probe at
+`packages/maistro-design/src/maistro_design/_probe796_bareimport.py` calling
+`__import__('maistro_rsi.gateway')` left
+`test_design_loop_does_not_import_rsi_or_evolve` **passing**. That is exactly the
+acceptance criterion "contract test fails if the Design Studio/in-Run loop imports RSI or
+Evolve as the critic" failing to hold for one import form, so it is a defect in the guard,
+not a cosmetic scan finding.
+
+### The repair
+
+`_dynamic_import_callable_names` now resolves each module's dynamic-import callables —
+the builtin `__import__`, `from importlib[.util] import import_module|find_spec` under
+its own name or an `as` alias, and `im = importlib.import_module` assignments — and
+`_dynamic_import_offenders` accepts both attribute *and* resolved bare-name calls. The
+negative control grew accordingly (loop imports ×6: two static + four dynamic bindings),
+still inside the same seven test functions, so the inventory delta stays `+7`.
+
+Verified after the fix — same probe file:
+
+```
+/tmp/probe_dyn.py:1 dynamic import 'maistro_rsi.gateway'    # __import__(...)
+/tmp/probe_dyn.py:3 dynamic import 'maistro_evolve.cycle'   # from importlib import import_module as im
+/tmp/probe_dyn.py:5 dynamic import 'maistro_rsi.oracle'     # from importlib.util import find_spec
+```
+
+`find_spec('json')` stayed unflagged (no over-trigger), and the in-tree probe now fails the
+real test: `Offenders: [".../_probe796_bareimport.py:2 dynamic import 'maistro_rsi.gateway'"]`.
+The probe was removed in a `trap … EXIT`; `git status --porcelain` showed only this round's
+edited files afterwards.
+
+Residual (recorded, not expanded): a computed module string
+(`importlib.import_module("maistro_" + "rsi")`) or `getattr(importlib, "import_module")(...)`
+still evades a static scan; the guard is a tripwire against the shape reappearing, not a
+sandbox. The score-field tripwire covers assign/annotated/param/keyword/dict-key stores in
+the design loop; a `Column("design_quality_score", …)`-style *string* column name is outside
+that shape set (and no such string exists anywhere in the design loop today).
+
+### Validation re-run at this head (all exit 0)
+
+| Command | Outcome |
+| --- | --- |
+| `uv run pytest packages/maistro-core/tests/fitness/test_m7_a7_eval_consumer_map.py -v` | 7 passed |
+| `uv run pytest packages/maistro-core/tests/fitness -q` | 34 passed |
+| `uv run pytest packages/maistro-rsi/tests/test_non_production_reachability.py -q` | 13 passed |
+| `uv run pytest packages/maistro-design/tests -q` | 575 passed, 1 skipped |
+| `uv run ruff check .` / `uv run ruff format --check .` | clean / 3370 files already formatted |
+| `uv run python scripts/check-reachability.py` | exit 0 — 1420 modules, 168 unreachable |
+| `uv run python scripts/check-promotion-surface.py` | ok |
+| `uv run python scripts/check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'` | exit 0 — 1326 identities → 1326 findings (no ledger change) |
+| `uv run python scripts/check-suite-inventory.py` | ok — 21 suites match |
+| `uv run python scripts/check-convergence-matrix.py` | OK — 52 subsystems / 1420 modules |
+| `uv run python scripts/check-doc-links.py` | 2485 files, 0 broken links |
+| `uv run python scripts/check-contract-markers.py` | OK |
+| `git merge-tree --write-tree HEAD origin/develop` | conflict-free; `origin/develop` still `c2d7209f1` (0 commits behind) |
+
+### Independent re-checks of the acceptance criteria (not assumed from earlier rounds)
+
+- **Map is written and anchored in reality**: `docs/architecture/CONVERGENCE-MATRIX.md`
+  "One scoring loop…"; the root node is real production code —
+  `maistro/personas/rubric.py:34` `RubricEval`, scored as `RunEvalScore` rows on the
+  canonical Run (`maistro/runs/model.py:576,594,614` `EvalMethod`/`EvalJudge`/`RunEvalScore`,
+  `maistro/runs/eval.py:1-33,116` "eval-on-Run … evidence on the execution spine").
+- **Bank audit**: re-scanning `packages/maistro-design/src` with the contract's own
+  def-name regex yields exactly the six `_DESIGN_SURFACE_BANK` identities (6 hits, 6
+  banked, 6 rows) — nothing unbanked hides behind the bank, no row is stale.
+- **No second loop is hiding in the Hive evolution services**:
+  `grep -rn "maistro_design|maistro.personas" services/evolution*.py services/optimizer*.py
+  services/rsi*.py` → no matches, so the consumer-side guard's scope over
+  `maistro-evolve`/`maistro-rsi` sources has no gap in today's production code.
+- **Ownership untouched**: `git diff --stat origin/develop...HEAD` touches only this
+  note, `CONVERGENCE-MATRIX.md`, three inventory notes and the contract test — no
+  `packages/*/src`, no `quality/*` ledger, so #21 keeps promotion and #552 keeps RSI.
+
+**Residuals.** The issue's acceptance line "PR is `feat/m7-a7-eval-consumer-map` off
+`develop`" stays dispatcher-owned GitHub state (campaign branch is `auto-796`); the current
+block (`GH006`, merge-queue contention) is likewise not a code defect and cannot be cleared
+from a lane worker. Coverage publish-set floor and full `--all-extras` `pip-audit` were not
+re-run locally; diff coverage is vacuous for this branch (no `packages/*/src` delta).

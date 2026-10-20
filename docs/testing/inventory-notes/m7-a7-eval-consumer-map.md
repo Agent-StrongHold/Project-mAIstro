@@ -13,7 +13,10 @@ M5 #552 consumer) and fail the PR that stands a second design loop back up:
   (`maistro_design` + the Hive `routes/design*.py` / `services/design*.py` surfaces)
   gains no static or dynamic (`importlib`/`__import__`/`find_spec`) import of
   `maistro_rsi`/`maistro_evolve`: the in-Run critic is maistro-core's Rubric eval,
-  never RSI/Evolve.
+  never RSI/Evolve. The dynamic half resolves the callable's local binding, so the
+  builtin `__import__(...)` (a bare `ast.Name` call), `from importlib import
+  import_module [as im]`, and `im = importlib.import_module` all trip — an
+  attribute-only scan silently dropped the builtin form.
 - `test_evolve_and_rsi_do_not_reach_the_design_rubric_domain` — no
   `maistro_evolve`/`maistro_rsi` module imports `maistro_design` or
   `maistro.personas`, so no fitness function can score design-Goal Rubric dimensions
@@ -44,7 +47,8 @@ M5 #552 consumer) and fail the PR that stands a second design loop back up:
   and still allowlists only the two Conductor RSI surfaces; trimming either would
   quietly open the second loop.
 - `test_tripwires_catch_the_forbidden_shapes` — negative controls: every scanner is
-  fed its forbidden shape in `tmp_path` (loop imports ×3, consumer imports ×2,
+  fed its forbidden shape in `tmp_path` (loop imports ×6 — two static plus four
+  dynamic callable bindings, consumer imports ×2,
   scorer/promoter definitions ×3, score fields ×4, plus a banked def name at a
   different path to prove `_DESIGN_SURFACE_BANK` is path-pinned) and must catch all
   of them, so a green run on `develop` is a proven scan, not a vacuous one.

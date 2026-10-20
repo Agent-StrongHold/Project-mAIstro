@@ -128,7 +128,15 @@ _SCORE_FIELD_RE = re.compile(
     re.IGNORECASE,
 )
 
+#: Callables that import by string at runtime. ``__import__`` is a *builtin*, so it
+#: reaches a scan as a bare ``ast.Name`` call; ``import_module``/``find_spec`` arrive
+#: either as an attribute (``importlib.import_module``) or, after
+#: ``from importlib import import_module``, as a bare name or an alias.
 _DYNAMIC_IMPORT_FUNCS = {"import_module", "__import__", "find_spec"}
+
+#: Modules whose attributes are dynamic-import callables (used to recognise
+#: ``im = importlib.import_module`` style bindings).
+_IMPORTLIB_MODULES = frozenset({"importlib", "importlib.util"})
 
 _SKIP_DIR_PARTS = frozenset({"__pycache__", ".venv", "node_modules", "dist", "build", "mutants"})
 
@@ -202,12 +210,47 @@ def _static_import_offenders(tree: ast.Module, path: Path, roots: tuple[str, ...
     return offenders
 
 
+def _dynamic_import_callable_names(tree: ast.Module) -> set[str]:
+    """Local identifiers bound to a dynamic-import callable in this module.
+
+    The builtin ``__import__`` always counts. ``import_module``/``find_spec``
+    count when imported straight from ``importlib`` (``from importlib import
+    import_module`` or ``... as im``) or assigned from an attribute of one of
+    those modules (``im = importlib.import_module``). Without this, the bare
+    ``ast.Name`` forms — including ``__import__('maistro_rsi.gateway')`` — slip
+    past the attribute-only scan, which is the one shape the docstring promises
+    to catch.
+    """
+    names = set(_DYNAMIC_IMPORT_FUNCS)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module in _IMPORTLIB_MODULES:
+            names.update(
+                alias.asname or alias.name
+                for alias in node.names
+                if alias.name in _DYNAMIC_IMPORT_FUNCS
+            )
+        elif (
+            isinstance(node, ast.Assign)
+            and isinstance(node.value, ast.Attribute)
+            and node.value.attr in _DYNAMIC_IMPORT_FUNCS
+        ):
+            for target in node.targets:
+                names.update(_assign_target_names(target))
+    return names
+
+
 def _dynamic_import_offenders(tree: ast.Module, path: Path, roots: tuple[str, ...]) -> list[str]:
+    """Dynamic imports of a forbidden root, by attribute call or bare name call."""
+    names = _dynamic_import_callable_names(tree)
     offenders: list[str] = []
     for node in ast.walk(tree):
-        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)):
+        if not isinstance(node, ast.Call) or not node.args:
             continue
-        if node.func.attr not in _DYNAMIC_IMPORT_FUNCS or not node.args:
+        func = node.func
+        is_dynamic_import = (
+            isinstance(func, ast.Attribute) and func.attr in _DYNAMIC_IMPORT_FUNCS
+        ) or (isinstance(func, ast.Name) and func.id in names)
+        if not is_dynamic_import:
             continue
         first = node.args[0]
         if (
@@ -507,13 +550,24 @@ def test_tripwires_catch_the_forbidden_shapes(tmp_path: Path) -> None:
     loop_file.write_text(
         "import maistro_evolve.cycle\n"
         "from maistro_rsi.local_loop import LocalRsiLoop\n"
-        "import importlib\n\n"
+        "import importlib\n"
+        "from importlib import import_module as _im\n"
+        "im = importlib.import_module\n\n"
         "def reload() -> None:\n"
-        "    importlib.import_module('maistro_rsi.gateway')\n",
+        "    importlib.import_module('maistro_rsi.gateway')\n"
+        "    __import__('maistro_evolve.cycle')\n"
+        "    _im('maistro_rsi.oracle')\n"
+        "    im('maistro_rsi.coordinator')\n",
         encoding="utf-8",
     )
     caught = _forbidden_imports([loop_file], _LOOP_FORBIDDEN_IMPORT_ROOTS)
-    assert len(caught) == 3, f"loop import scanner missed a forbidden shape: {caught}"
+    # Two static imports plus four dynamic ones: the attribute call, the builtin
+    # ``__import__`` (a bare Name call — the shape an attribute-only scan drops),
+    # and both the aliased ``from importlib import`` and ``im = ...`` bindings.
+    assert len(caught) == 6, f"loop import scanner missed a forbidden shape: {caught}"
+    assert sum("dynamic import" in line for line in caught) == 4, (
+        f"dynamic-import scanner missed a callable binding: {caught}"
+    )
 
     consumer_file = design_pkg.parent / "somewhere" / "fitness.py"
     consumer_file.parent.mkdir()
