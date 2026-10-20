@@ -1,4 +1,4 @@
-"""Behavioral parity and canonical evidence for the Builders execution adapter (#734)."""
+"""Behavioral and canonical evidence for the Builders execution adapter (#734)."""
 
 from __future__ import annotations
 
@@ -11,10 +11,12 @@ import pytest
 
 from maistro.builders.graph import PipelineGraph, PipelineNode, RunContext
 from maistro.builders.graph_executor import (
+    _DEFAULT_EXECUTIONS_PER_NODE,
     CanonicalGraphPipelineExecutor,
     DispatchResult,
+    _build_prompt,
     _canonical_graph,
-    _LegacyGraphPipelineExecutor,
+    _derived_max_steps,
     _mark_skipped,
     _project_canonical_record,
     _resolver,
@@ -32,11 +34,15 @@ from maistro.runs.store import InMemoryRunStore
 pytestmark = pytest.mark.contract("behavioral")
 
 
-def test_legacy_executor_is_private_and_canonical_adapter_is_public() -> None:
+def test_canonical_adapter_is_public_and_executor_names_are_not_exported() -> None:
     import maistro.builders as builders
 
     assert not hasattr(builders, "GraphPipelineExecutor")
     assert builders.CanonicalGraphPipelineExecutor is CanonicalGraphPipelineExecutor
+
+
+def test_build_prompt_falls_back_to_raw_template_on_malformed_format_spec() -> None:
+    assert _build_prompt("{0!Z}", {}) == "{0!Z}"
 
 
 class ScriptedDispatcher:
@@ -49,12 +55,18 @@ class ScriptedDispatcher:
         fail: set[str] | None = None,
         unsupported: set[str] | None = None,
         delay: float = 0.0,
+        delays: dict[str, float] | None = None,
     ) -> None:
         self._outputs = outputs or {}
         self._fail = fail or set()
         self._unsupported = unsupported or set()
         self._delay = delay
+        self._delays = delays or {}
         self.calls: list[str] = []
+        # A snapshot of `context` (copied, since it's a live shared dict) at
+        # the moment each dispatch began -- lets a test assert what a stage
+        # actually saw, not just what it output.
+        self.contexts: dict[str, list[dict[str, Any]]] = {}
         self.in_flight = 0
         self.max_in_flight = 0
 
@@ -71,11 +83,13 @@ class ScriptedDispatcher:
         context: RunContext,
     ) -> DispatchResult:
         self.calls.append(node_name)
+        self.contexts.setdefault(node_name, []).append(dict(context))
         self.in_flight += 1
         self.max_in_flight = max(self.max_in_flight, self.in_flight)
         try:
-            if self._delay:
-                await asyncio.sleep(self._delay)
+            delay = self._delays.get(node_name, self._delay)
+            if delay:
+                await asyncio.sleep(delay)
             if node_name in self._fail:
                 return DispatchResult(ok=False, error=f"{node_name} broke")
             scripted = self._outputs.get(node_name, f"{node_name} output")
@@ -169,7 +183,7 @@ async def _canonical(
 
 
 @pytest.mark.asyncio
-async def test_stage_wave_parity_creates_one_canonical_run_node_runs_and_attempts() -> None:
+async def test_stage_wave_creates_one_canonical_run_node_runs_and_attempts() -> None:
     graph = PipelineGraph(
         [
             _node("spec"),
@@ -178,26 +192,18 @@ async def test_stage_wave_parity_creates_one_canonical_run_node_runs_and_attempt
             _node("review", ("tests", "code")),
         ]
     )
-    legacy_dispatcher = ScriptedDispatcher(delay=0.01)
-    canonical_dispatcher = ScriptedDispatcher(delay=0.01)
-    legacy_run = _run(graph, run_id="legacy")
+    dispatcher = ScriptedDispatcher(delay=0.01)
 
-    await _LegacyGraphPipelineExecutor(legacy_dispatcher).execute(graph, legacy_run)
-    canonical_run, record, owner = await _canonical(graph, canonical_dispatcher)
+    canonical_run, record, owner = await _canonical(graph, dispatcher)
 
-    assert legacy_run.status == canonical_run.status == "completed"
-    assert (
-        legacy_dispatcher.calls
-        == canonical_dispatcher.calls
-        == [
-            "spec",
-            "tests",
-            "code",
-            "review",
-        ]
-    )
-    assert legacy_dispatcher.max_in_flight == canonical_dispatcher.max_in_flight == 2
-    assert legacy_run.context["review"] == canonical_run.context["review"]
+    assert canonical_run.status == "completed"
+    assert dispatcher.calls == [
+        "spec",
+        "tests",
+        "code",
+        "review",
+    ]
+    assert dispatcher.max_in_flight == 2
 
     stored = await owner.run_store.get_run(record.run_id)
     assert stored is not None
@@ -229,16 +235,13 @@ async def test_multiple_root_ready_wave_preserves_concurrency_with_control_front
             _node("review", ("tests", "code")),
         ]
     )
-    legacy_dispatcher = ScriptedDispatcher(delay=0.01)
-    canonical_dispatcher = ScriptedDispatcher(delay=0.01)
-    legacy_run = _run(graph, run_id="legacy")
+    dispatcher = ScriptedDispatcher(delay=0.01)
 
-    await _LegacyGraphPipelineExecutor(legacy_dispatcher).execute(graph, legacy_run)
-    canonical_run, record, owner = await _canonical(graph, canonical_dispatcher)
+    canonical_run, record, owner = await _canonical(graph, dispatcher)
 
-    assert legacy_run.status == canonical_run.status == "completed"
-    assert legacy_dispatcher.max_in_flight == canonical_dispatcher.max_in_flight == 2
-    assert legacy_dispatcher.calls == canonical_dispatcher.calls == ["tests", "code", "review"]
+    assert canonical_run.status == "completed"
+    assert dispatcher.max_in_flight == 2
+    assert dispatcher.calls == ["tests", "code", "review"]
 
     node_runs = await owner.run_store.list_node_runs(record.run_id)
     stage_runs = [item for item in node_runs if item.node_id.startswith("builders-stage:")]
@@ -251,7 +254,7 @@ async def test_multiple_root_ready_wave_preserves_concurrency_with_control_front
 
 
 @pytest.mark.asyncio
-async def test_skip_and_unsupported_stage_domain_projection_matches_legacy() -> None:
+async def test_skip_and_unsupported_stage_domain_projection() -> None:
     graph = PipelineGraph(
         [
             _node("spec", skip_if=lambda ctx: True),
@@ -259,16 +262,13 @@ async def test_skip_and_unsupported_stage_domain_projection_matches_legacy() -> 
             _node("code", ("tests",)),
         ]
     )
-    legacy_dispatcher = ScriptedDispatcher(unsupported={"tests"})
-    canonical_dispatcher = ScriptedDispatcher(unsupported={"tests"})
-    legacy_run = _run(graph, run_id="legacy")
+    dispatcher = ScriptedDispatcher(unsupported={"tests"})
 
-    await _LegacyGraphPipelineExecutor(legacy_dispatcher).execute(graph, legacy_run)
-    canonical_run, record, owner = await _canonical(graph, canonical_dispatcher)
+    canonical_run, record, owner = await _canonical(graph, dispatcher)
 
-    assert legacy_run.status == canonical_run.status == "completed"
-    assert legacy_run.skipped_stages == canonical_run.skipped_stages == ["spec", "tests"]
-    assert legacy_dispatcher.calls == canonical_dispatcher.calls == ["code"]
+    assert canonical_run.status == "completed"
+    assert canonical_run.skipped_stages == ["spec", "tests"]
+    assert dispatcher.calls == ["code"]
     assert [stage.status for stage in canonical_run.stages] == [
         StageStatus.SKIPPED,
         StageStatus.SKIPPED,
@@ -282,26 +282,20 @@ async def test_skip_and_unsupported_stage_domain_projection_matches_legacy() -> 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("mode", ["failure", "timeout"])
-async def test_failure_and_timeout_match_private_oracle(
-    mode: str,
-) -> None:
-    """The canonical adapter preserves externally visible terminal behavior."""
+async def test_failure_and_timeout_terminal_behavior(mode: str) -> None:
+    """The canonical adapter's externally visible terminal behavior."""
     graph = PipelineGraph([_node("tests", timeout_seconds=0.001 if mode == "timeout" else 600.0)])
     kwargs: dict[str, Any] = {}
     if mode == "failure":
         kwargs["fail"] = {"tests"}
     else:
         kwargs["delay"] = 0.02
-    legacy_dispatcher = ScriptedDispatcher(**kwargs)
-    canonical_dispatcher = ScriptedDispatcher(**kwargs)
-    legacy_run = _run(graph, run_id="legacy")
+    dispatcher = ScriptedDispatcher(**kwargs)
 
-    await _LegacyGraphPipelineExecutor(legacy_dispatcher).execute(graph, legacy_run)
-    canonical_run, record, owner = await _canonical(graph, canonical_dispatcher)
+    canonical_run, record, owner = await _canonical(graph, dispatcher)
 
-    assert canonical_run.status == legacy_run.status == "failed at tests"
-    assert canonical_dispatcher.calls == legacy_dispatcher.calls == ["tests"]
-    assert canonical_run.failed_stage_error == legacy_run.failed_stage_error
+    assert canonical_run.status == "failed at tests"
+    assert dispatcher.calls == ["tests"]
     assert record.run.status is RunStatus.FAILED
     node_runs = await owner.run_store.list_node_runs(record.run_id)
     assert len(node_runs) == 1
@@ -323,17 +317,14 @@ async def test_gate_revision_is_new_node_run_and_attempt_evidence_with_feedback(
             ),
         ]
     )
-    legacy_dispatcher = ScriptedDispatcher(outputs=outputs)
-    canonical_dispatcher = ScriptedDispatcher(outputs=outputs)
-    legacy_run = _run(graph, run_id="legacy")
+    dispatcher = ScriptedDispatcher(outputs=outputs)
 
-    await _LegacyGraphPipelineExecutor(legacy_dispatcher).execute(graph, legacy_run)
-    canonical_run, record, owner = await _canonical(graph, canonical_dispatcher)
+    canonical_run, record, owner = await _canonical(graph, dispatcher)
 
     expected_calls = ["implement", "review", "implement", "review"]
-    assert legacy_dispatcher.calls == canonical_dispatcher.calls == expected_calls
-    assert legacy_run.status == canonical_run.status == "completed"
-    assert legacy_run.revisions == canonical_run.revisions == {"review": 1}
+    assert dispatcher.calls == expected_calls
+    assert canonical_run.status == "completed"
+    assert canonical_run.revisions == {"review": 1}
     assert canonical_run.context["review_feedback"] == "VIOLATION: missing tests"
     assert canonical_run.context["review"] == "APPROVED"
 
@@ -351,6 +342,178 @@ async def test_gate_revision_is_new_node_run_and_attempt_evidence_with_feedback(
         attempts.extend(await owner.run_store.list_attempts(node_run.node_run_id))
     assert len(attempts) == 4
     assert len({attempt.attempt_id for attempt in attempts}) == 4
+
+
+@pytest.mark.asyncio
+async def test_revision_dominates_a_concurrent_wave_after_it_settles() -> None:
+    """#1067 defect 1: legacy gathers a whole wave, *then* applies gate failures.
+
+    ``plan`` is the revise target. ``gate`` and ``sibling`` are both direct,
+    concurrent children of ``plan`` -- one ready wave. ``sibling`` is the
+    slower of the two, so its dispatch (and its write into ``run.context``)
+    lands after ``gate``'s failed-gate decision would, under the old
+    eager/synchronous invalidation, already have cleared ``run.context`` for
+    the stale set -- reproducing the exact race the old code lost. Against
+    unpatched code this test fails: the stale ``sibling-v1`` write survives
+    into ``plan``'s second dispatch, and ``successor`` (which depends only on
+    ``sibling``, one hop further out) gets dispatched *twice* -- once
+    prematurely, riding on the stale/incomplete wave, and once for real.
+    """
+    graph = PipelineGraph(
+        [
+            _node("plan"),
+            _node(
+                "gate",
+                ("plan",),
+                gate=lambda ctx: str(ctx.get("gate", "")).startswith("OK"),
+                revise_target="plan",
+                max_revisions=2,
+            ),
+            _node("sibling", ("plan",)),
+            _node("successor", ("sibling",)),
+        ]
+    )
+    dispatcher = ScriptedDispatcher(
+        outputs={
+            "gate": ["VIOLATION", "OK"],
+            "sibling": ["sibling-v1", "sibling-v2"],
+            "successor": "successor output",
+        },
+        # `gate` also gets a (smaller) delay so its coroutine actually
+        # suspends and lets `sibling`'s coroutine start (and begin its own
+        # real dispatch) before `gate`'s gate-failure decision fires --
+        # otherwise a zero-delay gate can run to completion, decision and
+        # all, before `sibling` gets its first turn at all, which changes
+        # which race this test is exercising.
+        delays={"gate": 0.01, "sibling": 0.03},
+    )
+
+    canonical_run, _record, _owner = await _canonical(graph, dispatcher)
+
+    assert canonical_run.status == "completed"
+    # `sibling` genuinely re-ran once the revision settled (real dispatch
+    # twice). `successor` must have run for real exactly once -- under the
+    # old eager-invalidation bug it runs twice: once too early (a premature
+    # echo riding on `sibling`'s stale/incomplete wave), once for real.
+    assert dispatcher.calls.count("sibling") == 2
+    assert dispatcher.calls.count("successor") == 1
+    assert canonical_run.context["sibling"] == "sibling-v2"
+    assert canonical_run.context["successor"] == "successor output"
+    # The only real dispatch of `successor` must have seen the *fresh*
+    # sibling output, never the stale or missing one.
+    assert dispatcher.contexts["successor"][0].get("sibling") == "sibling-v2"
+    # Right after the wave settles (`plan`'s revision redispatch), the stale
+    # sibling output must be gone from run.context, not merely overwritten
+    # later.
+    assert "sibling" not in dispatcher.contexts["plan"][1]
+
+
+@pytest.mark.asyncio
+async def test_revision_dominates_a_concurrent_wave_with_an_immediate_dispatcher() -> None:
+    """#1067 follow-up (Codex review, 2026-09-21): flush must be per-frontier, not per-task.
+
+    ``test_revision_dominates_a_concurrent_wave_after_it_settles`` only
+    reproduces the wave-ordering race by *delaying* ``gate`` just enough to
+    let ``sibling`` start its own real dispatch first. It does not exercise
+    the version of the race that matters most: with a fast/immediate
+    dispatcher (no artificial delay at all, as here), ``gate`` -- the first
+    task ``asyncio.gather`` steps in this wave -- can run to full completion,
+    including queuing its own gate failure with ``_RevisionLedger``, before
+    ``sibling`` -- its wave-mate in the very same ``asyncio.gather`` batch --
+    ever gets its own first turn. A flush applied from inside each stage's
+    own ``_execute`` (as an earlier version of the #1067 fix did) would then
+    apply that invalidation to ``sibling`` *before* ``sibling`` was ever
+    dispatched, failing it out of the stale guard and silently eating its
+    legacy-mandated real dispatch instead of giving every member of the
+    admitted wave a genuine chance to run -- undoing defect 1's own fix.
+    """
+    graph = PipelineGraph(
+        [
+            _node("plan"),
+            _node(
+                "gate",
+                ("plan",),
+                gate=lambda ctx: str(ctx.get("gate", "")).startswith("OK"),
+                revise_target="plan",
+                max_revisions=2,
+            ),
+            _node("sibling", ("plan",)),
+            _node("successor", ("sibling",)),
+        ]
+    )
+    dispatcher = ScriptedDispatcher(
+        outputs={
+            "gate": ["VIOLATION", "OK"],
+            "sibling": ["sibling-v1", "sibling-v2"],
+            "successor": "successor output",
+        },
+        # No delays at all: gate resolves immediately.
+    )
+
+    canonical_run, _record, _owner = await _canonical(graph, dispatcher)
+
+    assert canonical_run.status == "completed"
+    # `sibling` must be genuinely dispatched twice: once as an ordinary
+    # member of the wave that also contained `gate` (before the revision
+    # was ever decided), and once for real once the revision settles --
+    # never silently skipped out of its first, legitimate dispatch.
+    assert dispatcher.calls.count("sibling") == 2
+    assert dispatcher.calls.count("successor") == 1
+    assert canonical_run.context["sibling"] == "sibling-v2"
+    assert canonical_run.context["successor"] == "successor output"
+    assert canonical_run.skipped_stages == []
+
+
+@pytest.mark.asyncio
+async def test_stale_guard_defer_does_not_survive_a_genuine_later_failure() -> None:
+    """#1067 follow-up (Codex review, 2026-09-21): the transient guard marker must not stick.
+
+    ``successor`` is prematurely routed into a frontier riding on
+    ``sibling``'s stale/incomplete wave (the same setup as
+    ``test_revision_dominates_a_concurrent_wave_after_it_settles``), so it
+    hits ``_stale_guard_output`` and is transiently added to
+    ``run.skipped_stages``. Its later, *genuine* redispatch (once `sibling`
+    truly re-completes) is made to fail for real. Before this fix, nothing
+    ever reached ``_route_stage_result``'s ``_unmark_skipped`` for that real
+    failure, so the transient marker outlived it and
+    ``_project_stage`` -- which checks ``run.skipped_stages`` before NodeRun
+    status -- reported ``successor`` as SKIPPED even though the canonical
+    Run and its NodeRun both genuinely FAILED there.
+    """
+    graph = PipelineGraph(
+        [
+            _node("plan"),
+            _node(
+                "gate",
+                ("plan",),
+                gate=lambda ctx: str(ctx.get("gate", "")).startswith("OK"),
+                revise_target="plan",
+                max_revisions=2,
+            ),
+            _node("sibling", ("plan",)),
+            _node("successor", ("sibling",)),
+        ]
+    )
+    dispatcher = ScriptedDispatcher(
+        outputs={
+            "gate": ["VIOLATION", "OK"],
+            "sibling": ["sibling-v1", "sibling-v2"],
+        },
+        fail={"successor"},
+        delays={"gate": 0.01, "sibling": 0.03},
+    )
+
+    run, record, _owner = await _canonical(graph, dispatcher)
+
+    assert record.run.status is RunStatus.FAILED
+    assert run.status == "failed at successor"
+    assert run.failed_stage_error == "successor broke"
+    # The transient stale-guard defer must not linger once `successor`'s
+    # real (failing) dispatch has run.
+    assert "successor" not in run.skipped_stages
+    successor_stage = next(stage for stage in run.stages if stage.name == "successor")
+    assert successor_stage.status is StageStatus.FAILED
+    assert successor_stage.error == "successor broke"
 
 
 @pytest.mark.asyncio
@@ -405,7 +568,44 @@ async def test_dispatch_failure_fails_canonical_run_and_never_starts_downstream(
 
 
 @pytest.mark.asyncio
-async def test_timeout_preserves_legacy_no_on_complete_behavior() -> None:
+async def test_two_concurrent_stage_failures_project_one_consistent_authoritative_failure() -> None:
+    """#1067 defect 4: the projected stage and its error must come from the same failure.
+
+    ``alpha`` and ``beta`` are independent roots dispatched in the same
+    concurrent wave and both fail. Against unpatched code, ``failed_stage``
+    (a reversed scan) and ``run.failed_stage_error`` (a shared mutable var
+    each concurrent dispatcher writes) can each end up naming a *different*
+    one of the two failures. The receipt must instead name one failure and
+    carry *its* message -- and it must be the one canonical's own
+    ``first_exhausted_failure`` selected (the first in frontier order; every
+    Builders stage is ``max_attempts: 1``, so both failures are immediately
+    exhausted).
+    """
+    graph = PipelineGraph([_node("alpha"), _node("beta")])
+    # `alpha` is slower, so under the old racy code `beta`'s exception (and
+    # its write to the shared `run.failed_stage_error`) lands first and
+    # `alpha`'s overwrites it last -- while the old reversed-scan
+    # `_failed_stage` names `beta` (last in frontier position) regardless of
+    # timing. That mismatch is exactly the bug: two different failures
+    # supply the stage name and the error message.
+    dispatcher = ScriptedDispatcher(fail={"alpha", "beta"}, delays={"alpha": 0.01})
+
+    run, record, _owner = await _canonical(graph, dispatcher)
+
+    assert record.run.status is RunStatus.FAILED
+    assert run.status == "failed at alpha"
+    assert run.failed_stage_error == "alpha broke"
+    stage_by_name = {stage.name: stage for stage in run.stages}
+    assert stage_by_name["alpha"].status is StageStatus.FAILED
+    assert stage_by_name["alpha"].error == "alpha broke"
+    # beta also failed, but is not the authoritative failure -- it must not
+    # be credited with (or blamed for) alpha's message, or vice versa.
+    assert stage_by_name["beta"].status is StageStatus.FAILED
+    assert stage_by_name["beta"].error != "alpha broke"
+
+
+@pytest.mark.asyncio
+async def test_timeout_never_runs_the_on_complete_hook() -> None:
     hook_outputs: list[str] = []
 
     async def hook(run: Any, output: str) -> None:
@@ -602,11 +802,18 @@ def test_projection_maps_running_queued_and_non_failed_terminal_node_runs() -> N
         [_node("implement"), _node("tests", ("implement",)), _node("review", ("tests",))]
     )
 
-    def _record(run_status: RunStatus, node_runs: list[tuple[str, RunStatus]]) -> Any:
+    def _record(
+        run_status: RunStatus,
+        node_runs: list[tuple[str, RunStatus]],
+        errors: dict[str, str] | None = None,
+    ) -> Any:
+        errors = errors or {}
         return SimpleNamespace(
             run=SimpleNamespace(status=run_status),
             node_runs=tuple(
-                SimpleNamespace(node_id=f"builders-stage:{name}", status=status, error=None)
+                SimpleNamespace(
+                    node_id=f"builders-stage:{name}", status=status, error=errors.get(name)
+                )
                 for name, status in node_runs
             ),
         )
@@ -644,6 +851,16 @@ def test_projection_maps_running_queued_and_non_failed_terminal_node_runs() -> N
         StageStatus.PENDING,
     ]
 
+    # Two stages failed in the same concurrent frontier (#1067 defect 4).
+    # canonical's own selected failure is the *first* one in frontier order
+    # (every Builders stage is max_attempts=1, so any failure is immediately
+    # exhausted -- see durable_runs.executor.first_exhausted_failure). The
+    # receipt must name that same stage and carry *its* error, never a
+    # different stage's -- and must derive it from the NodeRun evidence
+    # rather than trust whatever a differently-raced write already left on
+    # `failed_stage_error` (deliberately pre-set here to the *other*,
+    # non-authoritative stage's message to prove the projection overrides
+    # it rather than trusting it).
     failed = _run(graph, run_id="projection-failed")
     failed.failed_stage_error = "review broke"
     _project_canonical_record(
@@ -655,14 +872,19 @@ def test_projection_maps_running_queued_and_non_failed_terminal_node_runs() -> N
                 ("tests", RunStatus.FAILED),
                 ("review", RunStatus.FAILED),
             ],
+            errors={
+                "tests": "RuntimeError: tests broke",
+                "review": "RuntimeError: review broke",
+            },
         ),
     )
-    assert failed.status == "failed at review"
+    assert failed.status == "failed at tests"
+    assert failed.failed_stage_error == "tests broke"
     stage_by_name = {stage.name: stage for stage in failed.stages}
-    assert stage_by_name["review"].status is StageStatus.FAILED
-    assert stage_by_name["review"].error == "review broke"
     assert stage_by_name["tests"].status is StageStatus.FAILED
-    assert stage_by_name["tests"].error == ""
+    assert stage_by_name["tests"].error == "tests broke"
+    assert stage_by_name["review"].status is StageStatus.FAILED
+    assert stage_by_name["review"].error == ""
 
 
 @pytest.mark.asyncio
@@ -680,3 +902,121 @@ async def test_execute_rejects_an_invalid_pipeline_graph_before_any_run() -> Non
 
     with pytest.raises(ValueError, match="invalid Builders pipeline graph"):
         await executor.execute(graph, run)
+
+
+def test_derived_max_steps_covers_a_representative_wide_pipeline() -> None:
+    """#1067 defect 3: the derived bound must comfortably exceed the generic default.
+
+    A representative >256-node linear Builders pipeline (cheap to
+    *construct* -- see test_execute_derives_and_passes_a_sufficient_max_steps
+    for proof that ``execute()`` actually passes this value on, and
+    test_public_entry_point_honors_an_explicit_max_steps_override in
+    ``test_executor_gaps.py`` for proof the durable walk actually honors it;
+    neither runs a real >256-step walk end to end, since the canonical
+    durable store's own per-checkpoint cost -- unrelated to this issue --
+    makes that impractically slow for a unit test).
+    """
+    size = 300
+    nodes = [_node("stage-0")]
+    nodes.extend(_node(f"stage-{i}", (f"stage-{i - 1}",)) for i in range(1, size))
+    graph = PipelineGraph(nodes)
+    budget = IterationBudget(max_iterations=_DEFAULT_EXECUTIONS_PER_NODE * len(graph))
+
+    bound = _derived_max_steps(graph, budget)
+
+    assert bound > 256
+    # Every real dispatch consumes exactly one unit of `budget`
+    # (_reserve_iteration), so the bound must cover the whole budget too.
+    assert bound >= budget.max_iterations
+
+
+def test_derived_max_steps_covers_repeated_revision_driven_free_frontiers() -> None:
+    """#1067 follow-up (Codex review, 2026-09-21): one free step per node isn't enough.
+
+    Concrete counterexample from the review: a 100-node graph with one
+    always-skipped root, one always-failing gated child that revises that
+    root, and 98 other unrelated always-skipped roots. The prior formula
+    (``budget.max_iterations + len(graph) + 1``) assumed a skip-only
+    frontier happens at most once per node for the whole run, but a
+    revision can replay an already-skipped node's frontier once per failed
+    attempt: the walker alternates one free skipped-root frontier with one
+    budget-consuming gate frontier, so legitimately exhausting the default
+    300-iteration budget needs roughly ``2 * 300`` steps, not the ``401``
+    the old formula derived -- it used to hit ``StepBudgetExhausted`` after
+    only ~200 real executions.
+
+    This does not run the walk end to end (see
+    ``test_derived_max_steps_covers_a_representative_wide_pipeline`` for why
+    that is impractically slow); it proves the derived bound itself now
+    comfortably covers the steps such a run would legitimately need.
+    """
+    size = 100
+    nodes = [_node("root", skip_if=lambda _ctx: True)]
+    nodes.append(
+        _node(
+            "gate",
+            ("root",),
+            gate=lambda _ctx: False,
+            revise_target="root",
+            max_revisions=1000,
+        )
+    )
+    nodes.extend(_node(f"padding-{i}", skip_if=lambda _ctx: True) for i in range(size - 2))
+    graph = PipelineGraph(nodes)
+    budget = IterationBudget(max_iterations=300)
+
+    bound = _derived_max_steps(graph, budget)
+    old_formula_bound = budget.max_iterations + len(graph) + 1
+
+    # The walker alternates one free `root`-settle frontier with one
+    # budget-consuming `gate` frontier, so it needs roughly 2 steps per
+    # allowed real dispatch (plus a small constant for the initial control
+    # frontier) to legitimately exhaust the budget.
+    required = 2 * budget.max_iterations + 2
+    assert old_formula_bound < required, "counterexample must actually defeat the old formula"
+    assert bound >= required
+
+
+@pytest.mark.asyncio
+async def test_execute_derives_and_passes_a_sufficient_max_steps(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#1067 defect 3: ``execute()`` must derive, not hardcode, the walk's step bound.
+
+    Against unpatched code, ``execute()`` calls ``run_durable_graph`` with no
+    ``max_steps`` at all, so the durable walk silently falls back to its
+    generic 256-step default regardless of the admitted pipeline's own size
+    -- this spy captures exactly what ``execute()`` passes, without paying
+    for the (slow -- see test_derived_max_steps_covers_a_representative_wide_pipeline)
+    cost of a real 300-step walk.
+    """
+    size = 300
+    nodes = [_node("stage-0")]
+    nodes.extend(_node(f"stage-{i}", (f"stage-{i - 1}",)) for i in range(1, size))
+    graph = PipelineGraph(nodes)
+
+    captured: dict[str, Any] = {}
+
+    class _Captured(Exception):
+        pass
+
+    async def _spy(*_args: Any, **kwargs: Any) -> Any:
+        captured.update(kwargs)
+        raise _Captured
+
+    monkeypatch.setattr("maistro.builders.graph_executor.run_durable_graph", _spy)
+
+    owner = await _owner()
+    executor = CanonicalGraphPipelineExecutor(
+        ScriptedDispatcher(),
+        run_store=owner.run_store,
+        durable_store=owner.durable_store,
+        workspace_id=owner.workspace_id,
+        project_id=owner.project_id,
+    )
+    run = _run(graph, run_id="wide-pipeline-run")
+
+    with pytest.raises(_Captured):
+        await executor.execute(graph, run)
+
+    assert captured["max_steps"] > 256

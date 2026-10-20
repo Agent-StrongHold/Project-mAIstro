@@ -1,0 +1,22 @@
+{
+  "id": "gallery.weather-connector",
+  "publisher": "gallery",
+  "version": "1.0.0",
+  "title": "Gallery weather connector",
+  "description": "Reference gallery connector/tool extension: pure forecast-brief handlers a host invokes through the governed tool surface; the host owns all transport.",
+  "contract": ">=1.0.0,<2.0.0",
+  "family": "tool",
+  "capabilities": ["network.outbound", "tool.invoke"],
+  "effects": ["external-side-effect"],
+  "data": {
+    "scopes": []
+  },
+  "network": {
+    "allow": ["api.weather.example"],
+    "allowed_ports": [443]
+  },
+  "entrypoint": {
+    "module": "gallery_weather_connector.plugin",
+    "object": "PLUGIN"
+  }
+}

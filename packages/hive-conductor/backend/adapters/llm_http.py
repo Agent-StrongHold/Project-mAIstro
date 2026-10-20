@@ -7,12 +7,19 @@ from typing import Any, Literal
 import httpx
 from models.schemas import ChatCompletionRequest
 
+from maistro.capabilities.binding import Binding
 from maistro.capabilities.invocation import EffectNotApplied
 from maistro.capabilities.model_chat import (
+    MODEL_CHAT_CAPABILITY,
     GovernedModelChatClient,
     build_model_chat_client,
 )
-from maistro.capabilities.providers.llm_gateway import GatewayEndpoint
+from maistro.capabilities.providers.llm_gateway import (
+    DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,
+    MODEL_GATEWAY_CREDENTIAL_PROVIDER,
+    GatewayEndpoint,
+)
+from maistro.credentials.types import CredentialRecord
 
 
 def stub_completion(req: ChatCompletionRequest) -> dict[str, Any]:
@@ -103,9 +110,41 @@ class HttpOpenAIProtocolLLM:
         client: GovernedModelChatClient | None = None,
     ) -> None:
         self._variant = variant
-        self._client = client or build_model_chat_client(
+        self._client = client or self._compose_client(base_url, api_key, variant)
+
+    @staticmethod
+    def _compose_client(base_url: str, api_key: str, variant: str) -> GovernedModelChatClient:
+        """Compose the canonical compatibility client for a stub/dev process.
+
+        The fallback names the deployment's default gateway credential and
+        registers the caller's own gateway secret under that reference in the
+        process's canonical effect context, so the call acquires its credential
+        through the same credential authority every other governed call uses and
+        lands on the canonical Invocation ledger. No second credential path,
+        and no adapter-owned HTTP dispatch.
+        """
+        from maistro.capabilities.effect_context import default_effect_context
+
+        effects = default_effect_context()
+        effects.credentials.add(
+            workspace_id="default",
+            project_id="default",
+            record=CredentialRecord(
+                key_id=DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,
+                provider=MODEL_GATEWAY_CREDENTIAL_PROVIDER,
+                api_key=api_key,
+            ),
+        )
+        return build_model_chat_client(
             endpoint=GatewayEndpoint(base_url=base_url, api_key=api_key),
             protocol=variant,
+            effects=effects,
+            binding=Binding(
+                workspace_id="default",
+                project_id="default",
+                capability=MODEL_CHAT_CAPABILITY,
+                credential_refs=(DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,),
+            ),
         )
 
     @staticmethod

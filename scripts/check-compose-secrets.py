@@ -19,6 +19,22 @@ the convention the repository already follows:
 required (`${VAR:?message}`) or optional-and-empty (`${VAR:-}`). Never a
 literal, and never a non-empty fallback.**
 
+And, since #402 (the `MAISTRO_ACCESS_TOKEN` removal):
+
+**A secret-shaped variable a tracked Compose file hands to a service or
+interpolates from the environment must have a consumer.** Either production
+code under `packages/` reads it (matched case-insensitively, because a
+pydantic setting named `maistro_router_api_key` is the reader for the env var
+`MAISTRO_ROUTER_API_KEY`), the tracked LiteLLM config names it, or it is in
+`_THIRD_PARTY_CONSUMERS` below -- the reviewed list of names whose reader is
+another image (postgres, redis, langfuse, the LiteLLM gateway's
+provider-convention keys). A variable that fails all three is a dead
+credential-shaped knob: rotating it protects nothing and setting it enforces
+nothing, which is exactly the false confidence this gate exists to prevent.
+`MAISTRO_ACCESS_TOKEN` shipped for months in exactly that state -- passed to
+the engine while the engine's auth read `API_KEYS` -- and no scanner could
+catch it, because the variable itself was well-formed.
+
 ## Why `:-` with a value is the worse half
 
 A bare literal at least looks like what it is. `${API_KEYS:-alice:changeme}`
@@ -40,6 +56,7 @@ from __future__ import annotations
 import argparse
 import re
 import sys
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -167,6 +184,24 @@ _FALLBACK = (
 )
 
 
+def _defaults_only_to_references(value: str) -> bool:
+    """Whether every fallback in a `${A:-${B:-...}}` chain is another reference.
+
+    Walks the chain and accepts it only if it ends in a required, plain or
+    empty reference. Any literal anywhere -- `${A:-${B:-hunter2}}` -- is still
+    a committed default, so this returns False and the caller flags it.
+    """
+    for _ in range(8):
+        match = re.fullmatch(r"\$\{[A-Z0-9_]+:?-(.+)\}", value)
+        if match is None:
+            return False
+        fallback = match.group(1).strip()
+        if _REQUIRED.match(fallback) or _PLAIN.match(fallback) or _EMPTY_DEFAULT.match(fallback):
+            return True
+        value = fallback
+    return False
+
+
 def classify(value: str, *, name: str = "") -> str:
     """Return why `value` is unacceptable, or "" when it is fine."""
     stripped = value.strip().strip('"').strip("'")
@@ -185,6 +220,13 @@ def classify(value: str, *, name: str = "") -> str:
             else ""
         )
     if _REQUIRED.match(stripped) or _EMPTY_DEFAULT.match(stripped) or _PLAIN.match(stripped):
+        return ""
+    if _defaults_only_to_references(stripped):
+        # `${LITELLM_API_KEY:-${LITELLM_MASTER_KEY:?msg}}`: a caller who sets
+        # nothing gets a *refusal*, not a value, because the fallback is itself
+        # a required reference. The reason this rule exists -- "a caller who
+        # sets nothing still gets this value" -- does not hold, so flagging it
+        # would push a correct layered default towards a worse spelling.
         return ""
     if re.match(r"^\$\{[A-Z0-9_]+:?-.+\}$", stripped):
         return _FALLBACK
@@ -236,13 +278,139 @@ def scan(repo_root: Path = REPO_ROOT) -> list[Finding]:
         findings.extend(
             scan_text(path.read_text(encoding="utf-8"), path=str(path.relative_to(repo_root)))
         )
+    findings.extend(unused_secret_findings(repo_root))
+    return findings
+
+
+#: `${VAR` -- an interpolation reference, in any value position. `$$VAR` (an
+#: escaped dollar) does not match, and deliberately so: Compose hands the
+#: literal to the container's shell, which is not a consumer of the .env name.
+_REF = re.compile(r"\$\{([A-Z][A-Z0-9_]*)")
+
+#: Names whose reader is another image, not this repository's code. Each entry
+#: is a reviewed decision with its consumer named: adding one claims "some
+#: process outside this tree reads this secret", and a reviewer should be able
+#: to check that claim against the compose file that passes it.
+_THIRD_PARTY_CONSUMERS: dict[str, str] = {
+    "POSTGRES_PASSWORD": "the official postgres image",
+    "REPLICATION_PASSWORD": "postgres streaming replication (deploy/init-replication.sh)",
+    "REDIS_PASSWORD": "the official redis image",
+    "LANGFUSE_PUBLIC_KEY": "the langfuse server image",
+    "LANGFUSE_SECRET_KEY": "the langfuse server image",
+    "LANGFUSE_NEXTAUTH_SECRET": "the langfuse server image",
+    "NEXTAUTH_SECRET": "the langfuse server image",
+    "CEREBRAS_API_KEY": "the LiteLLM gateway, by provider-convention env name",
+    "COHERE_API_KEY": "the LiteLLM gateway, by provider-convention env name",
+    "DEEPINFRA_API_KEY": "the LiteLLM gateway, by provider-convention env name",
+    "DEEPSEEK_API_KEY": "the LiteLLM gateway, by provider-convention env name",
+    "FIREWORKS_API_KEY": "the LiteLLM gateway, by provider-convention env name",
+    "NVIDIA_API_KEY": "the LiteLLM gateway, by provider-convention env name",
+    "SAMBANOVA_API_KEY": "the LiteLLM gateway, by provider-convention env name",
+    "TOGETHER_API_KEY": "the LiteLLM gateway, by provider-convention env name",
+}
+
+_UNUSED_WHY = (
+    "has no production reader: no code under packages/ consumes it and it is "
+    "not a documented third-party consumer -- a secret-named variable nothing "
+    "reads only creates false confidence; wire it up or remove it (#402)"
+)
+
+
+def _consumer_roots(repo_root: Path) -> tuple[Path, ...]:
+    """Where a production reader of an env var may live.
+
+    `packages/*/src` is the library and server code. Hive-conductor is a
+    reference app whose backend is not under `src/`, and it is the production
+    reader of `MAISTRO_ROUTER_API_KEY`, so its backend joins explicitly.
+    `litellm_config.yaml` names provider keys (`os.environ/GEMINI_API_KEY`),
+    making the tracked gateway config itself a consumer surface.
+    """
+    roots: list[Path] = [repo_root / "litellm_config.yaml"]
+    packages = repo_root / "packages"
+    if packages.is_dir():
+        for package in sorted(packages.iterdir()):
+            src = package / "src"
+            if src.is_dir():
+                roots.append(src)
+    backend = packages / "hive-conductor" / "backend"
+    if backend.is_dir():
+        roots.append(backend)
+    return tuple(roots)
+
+
+def _is_test_path(path: Path) -> bool:
+    """A test asserting a var name is not a production consumer of it."""
+    return "tests" in path.parts or path.name.startswith("test_")
+
+
+def production_consumer_corpus(repo_root: Path) -> str:
+    """Every production source that can name an env var, lowercased once.
+
+    Lowercased because the consumer of `MAISTRO_ROUTER_API_KEY` is often the
+    pydantic field `maistro_router_api_key`, not a literal string.
+    """
+    chunks: list[str] = []
+    for root in _consumer_roots(repo_root):
+        if root.is_file():
+            with suppress(OSError, UnicodeDecodeError):
+                chunks.append(root.read_text(errors="replace"))
+            continue
+        for path in sorted(root.rglob("*.py")):
+            if _is_test_path(path):
+                continue
+            with suppress(OSError, UnicodeDecodeError):
+                chunks.append(path.read_text(errors="replace"))
+    return "\n".join(chunks).lower()
+
+
+def secret_named_references(text: str) -> dict[str, int]:
+    """Secret-shaped names a Compose file uses, with each one's first line.
+
+    Both shapes count: interpolation sources (`${VAR:?...}` -- what the .env
+    must supply) and assignment names (`- VAR=...` -- what the container will
+    read). The second is what makes the conductor's `MAISTRO_ROUTER_API_KEY`
+    checkable: its reader is the container process, not another `${...}`.
+    """
+    found: dict[str, int] = {}
+    for line_no, line in enumerate(text.splitlines(), start=1):
+        if line.lstrip().startswith("#"):
+            continue
+        for name in _REF.findall(line):
+            if is_secret_name(name):
+                found.setdefault(name, line_no)
+        match = _LIST_FORM.match(line) or _MAP_FORM.match(line)
+        if match and is_secret_name(match.group(1)):
+            found.setdefault(match.group(1), line_no)
+    return found
+
+
+def unused_secret_findings(repo_root: Path = REPO_ROOT) -> list[Finding]:
+    """Secret-named Compose variables with no consumer anywhere (#402).
+
+    A name passes if production code names it, the tracked LiteLLM config
+    names it, or it is on the reviewed third-party list. Anything else is
+    reported: the variable still *works* -- it just enforces nothing, which
+    is the state #402 removed `MAISTRO_ACCESS_TOKEN` from.
+    """
+    corpus = production_consumer_corpus(repo_root)
+    findings: list[Finding] = []
+    for path in compose_files(repo_root):
+        rel = str(path.relative_to(repo_root))
+        for name, line_no in secret_named_references(path.read_text(encoding="utf-8")).items():
+            if name in _THIRD_PARTY_CONSUMERS:
+                continue
+            if name.lower() in corpus:
+                continue
+            findings.append(
+                Finding(path=rel, line_no=line_no, name=name, value="", why=_UNUSED_WHY)
+            )
     return findings
 
 
 def render(findings: list[Finding], scanned: int) -> str:
     if not findings:
         return f"ok: {scanned} tracked Compose file(s) hand out no credential"
-    lines = [f"FAIL: {len(findings)} credential(s) committed in a deployment profile", ""]
+    lines = [f"FAIL: {len(findings)} secret finding(s) in a deployment profile", ""]
     for finding in findings:
         lines.append(f"  {finding.path}:{finding.line_no}")
         # The name and the reason, never the value: printing it into a CI log
