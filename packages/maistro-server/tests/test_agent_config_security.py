@@ -34,6 +34,7 @@ def test_configured_grants_reach_the_container_config(monkeypatch: pytest.Monkey
         security=SecurityConfig(
             permission_preset="dangerous_tools_admin", permissions={"shell": ["admin", "user"]}
         ),
+        model_bindings=[],
     )
     monkeypatch.setattr(settings_module, "get_yaml_config", lambda: yaml_config)
 

@@ -9,8 +9,18 @@ from maistro.graph.definitions import (
     TemplateProvenance,
 )
 from maistro.graph.execution_state import GraphEdgeDecision, GraphExecutionState
-from maistro.graph.executor import run_graph
 from maistro.graph.harness_executor import HarnessExecutionError, HarnessNodeExecutor
+from maistro.graph.harness_targets import (
+    PROVENANCE_METADATA_KEY,
+    HarnessComponentTarget,
+    HarnessEvolutionProposal,
+    HarnessProposalInconsistent,
+    HarnessTargetBaseNotActive,
+    HarnessTargetKind,
+    HarnessTargetScopeMismatch,
+    apply_harness_proposal,
+    materialize_candidate,
+)
 from maistro.graph.node import NodeExecutor
 from maistro.graph.node_types import (
     DEFAULT_NODE_TYPES,
@@ -55,6 +65,7 @@ from maistro.graph.types import (
 
 __all__ = [
     "DEFAULT_NODE_TYPES",
+    "PROVENANCE_METADATA_KEY",
     "AgentRole",
     "CodeOutput",
     "ConductorOutput",
@@ -71,9 +82,15 @@ __all__ = [
     "GraphOptimizer",
     "GraphTask",
     "GraphTemplate",
+    "HarnessComponentTarget",
+    "HarnessEvolutionProposal",
     "HarnessExecutionError",
     "HarnessNodeExecutor",
     "HarnessOutput",
+    "HarnessProposalInconsistent",
+    "HarnessTargetBaseNotActive",
+    "HarnessTargetKind",
+    "HarnessTargetScopeMismatch",
     "HyperagentOutput",
     "Node",
     "NodeConfig",
@@ -95,10 +112,11 @@ __all__ = [
     "TraversalCheckpoint",
     "TraversalCommit",
     "accepted_outcome_id",
+    "apply_harness_proposal",
     "build_default_node_type_registry",
     "descriptor_to_template",
     "edge_decision_id",
     "graph_state_hash",
-    "run_graph",
+    "materialize_candidate",
     "snapshot_to_template",
 ]
