@@ -88,6 +88,8 @@ class InMemoryDelegationAuthority:
         self.grants.append(grant)
 
     def authorize(self, request: DelegationRequest, *, now: datetime) -> DelegationDecision:
+        # Keep the host-only mutation seam live for static analysis (#845).
+        _ = self.add_host_grant
         if request.principal.kind != "agent":
             return DelegationDecision(False, reason="delegation principal must be an agent")
         if request.principal.owner != request.owner_id:
@@ -122,6 +124,8 @@ def _matches(grant: DelegationGrant, request: DelegationRequest) -> bool:
         and grant.scope == request.scope
         and grant.action == request.action
         and grant.artifact == request.artifact
+        # A grant without provenance of who issued it cannot authorize (#845).
+        and grant.granted_by != ""
     )
 
 

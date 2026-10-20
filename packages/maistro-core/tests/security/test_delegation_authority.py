@@ -128,6 +128,7 @@ def test_auth_context_enforces_the_effective_subset() -> None:
         user_id="owner-1",
         roles=frozenset({"user"}),
         delegated_actions=frozenset({"read_file"}),
+        delegation_grant_id="grant-1",
     )
     table = {"read_file": frozenset({"user"}), "write_file": frozenset({"user"})}
 

@@ -275,6 +275,8 @@ class Sentinel:
         rlphd_features: dict[str, float] | None = None,
     ) -> AuthzDecision:
         """ADR-068 §F steps 1-4, short-circuiting on first deny."""
+        # Keep the host-trusted execution-mode seam live for static analysis (#845).
+        _ = self.resolve_authorized_execution_mode
         tier = self.resolve_tier(action, principal, reversibility=reversibility)
 
         denial_reason = await self._permission_denial_reason(action, principal)
