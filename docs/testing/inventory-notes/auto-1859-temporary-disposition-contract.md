@@ -458,6 +458,24 @@ too, and the module is no longer "newly unreachable":
 The repository tree was restored after both mutations
 (`git status --porcelain -uall` shows only this lane's four files).
 
+### Fail-before proof for #1859's own three negatives (re-run this round)
+
+The prior round's claim was not taken on trust: the shipped gate and the
+shipped test module were loaded from outside the repository tree (a scratch
+harness at `/tmp/test_failbefore_1859.py`; the repository tree was not
+modified) and leaky gate variants were injected into it.
+
+| leak injected into the gate | negative that must catch it | result |
+| --- | --- | --- |
+| L1 — one valid temporary entry excuses **every** canned route (`_canned_handlers` returns no findings) | `test_main_temporary_disposition_under_foreign_identity_does_not_excuse` | fails on the leak, passes on the shipped gate |
+| L2 — the excuse stops requiring a tracking issue | `test_main_temporary_disposition_without_issue_does_not_excuse` | fails on the leak, passes on the shipped gate |
+| L3 — the excuse stops requiring an unexpired review date | `test_main_temporary_disposition_with_malformed_date_does_not_excuse` | fails on the leak, passes on the shipped gate |
+
+`uv run pytest /tmp/test_failbefore_1859.py -q` -> **4 passed** (3 leak
+variants x fail-on-leak, 1 control x pass-on-shipped-gate). The #389 invariant
+(the exemption is exact-identity and expiring) is therefore enforced by
+behaviour, not by documentation.
+
 ### What the owner still owns, and what this round does not claim
 
 - The repair is a **tree-side** fix, not a ledger decision: the reachability
