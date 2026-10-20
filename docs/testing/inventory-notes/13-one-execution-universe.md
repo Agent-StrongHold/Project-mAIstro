@@ -177,3 +177,88 @@ and filtered audit read unindexed on a bootstrapped database. Fixed and proved
 on a real PostgreSQL 17 in
 [`13-audit-log-schema-bootstrap.md`](13-audit-log-schema-bootstrap.md#second-repair-round--the-bootstraps-index-shape-2026-10-20-job-5939f970).
 No node IDs were added, so no `inventory-delta` is recorded for this round.
+
+## Third CI-repair round at `6808fca72` (2026-10-20)
+
+The two attempts immediately before this one (`dd7f252b`, `c9102f21`) died to
+provider rate limits after their checks had already passed; no new evidence was
+produced. This round re-executed everything first-hand at `6808fca72` instead
+of inheriting any prior claim:
+
+### The named gate, all three steps at CI's exact argv
+
+- `check-ratchet-provenance.py` → **rc=1**, sole finding unchanged:
+  `maistro.runs.admission_identity` NEW unreachable / missing from candidate
+  baseline, then `ratchet provenance inventory is incomplete` off that one
+  failure. Every other ratchet in the inventory is green
+  (adr-status-language, citation-status, promotion-surface 272/74,
+  reachability-dispositions 168→168, shell-execution 3→3, contract-markers
+  358→358, enumerations 1→1, lifecycle 0→0).
+- `check-shipped-surface-truth.py` → **rc=0**.
+- `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'` → **rc=0**, 1326 reviewed identities → 1326 findings,
+  `unclassified: 0`, `never_allowlist: 0`. The lane brief's vulture-ledger
+  remedy still has nothing to amend.
+
+### The inheritance, proven from the base tree again
+
+`~/Git/worktrees/base-e20e` is a clean worktree at the assigned base
+`e20e9f52ea94`; its `check-reachability.py` reports **1417 production
+modules, 169 unreachable, 1 NEWLY UNREACHABLE:
+`maistro.runs.admission_identity`**, rc=1. The module exists at the base
+(landed for #1851 by `c8c8adbff`/`9efe89caa`, docstring: *inactive contract
+leaf*), and is absent from the base `quality/reachability-baseline.json` and
+base `quality/ratchet-authorizations.json`; this branch still carries zero
+`quality/` diffs vs `origin/develop` (`git diff --numstat origin/develop HEAD
+-- quality/` empty). `origin/develop` has not moved off the base, so the
+two-merge sequence (grant on develop, then the baseline row) remains unstarted
+and unstartable from here — `scripts/ratchet_provenance.py:600-625` states the
+two-merge rule and `scripts/check-reachability-provenance.py:80` reads grants
+from `trusted_ref.base_sha`.
+
+The root `test` job's three failures were reproduced
+(`tests/test_reachability_baseline_identity.py`, `tests/test_check_reachability.py`:
+3 failed / 36 passed, `::error title=New unreachable
+modules::maistro.runs.admission_identity`), and the `Coverage gate` inheritance
+is now pinned to its mechanism: its producer runs `pytest tests/`
+(`.github/workflows/quality.yml:714`), so it fails on the same three tests
+before any floor or diff-coverage evaluation.
+
+### The branch's own repair, proved on real PostgreSQL both ways
+
+- **Bootstrapped path** — fresh database on the `auto-13-pg17` container that
+  never ran migrations, `MAISTRO_TEST_DATABASE_URL` +
+  `MAISTRO_REQUIRE_PG_LEGS=1`: `pytest packages/maistro-core/tests/events -q`
+  → **385 passed**, including the two audit tests and their `pg_indexes`
+  assertions (pkey, scope, timestamp, user, agent, all `AUDIT_PAGE_INDEXES`).
+- **Migrated path** — fresh `pgvector/pgvector:pg18` database,
+  `alembic upgrade head` → head `063`, then `MAISTRO_TEST_PG_DSN`:
+  `pytest packages/maistro-core/tests/persistence/test_pg_audit.py
+  packages/maistro-core/tests/test_container_wiring.py -q` → **66 passed**
+  (org_id nullable per the chain, `ix_audit_log_scope` on `(org_id,
+  "timestamp")`, two-org scope predicate).
+- **Before/after on one fresh database** — the base tree's `ensure_schema`
+  (`~/Git/worktrees/base-e20e` module loaded directly) raises
+  `asyncpg.exceptions.UndefinedTableError: relation "audit_log" does not
+  exist`; the branch's `ensure_schema` then creates the table (15 columns)
+  with all 13 indexes. The regression the new tests name is real, not a
+  fixture artifact.
+
+### Epic acceptance re-verified at this head
+
+- #1194 — `ReplaySemantics` executable contract at
+  `graph/durable_runs/executor.py:80` and `attempt_executor.py:389,692`; the
+  two named regressions run (`test_attempt_executor.py`: 448, 619) — **14
+  passed**.
+- #1193 — `NodeCompositionError(missing=("graph_run_store", "run_store"))` at
+  `graph/nodes/agent_synth_dag.py:484` — `test_agent_synth_dag.py` **32
+  passed**.
+- #1199 — canonical tick `_tick_due` at
+  `hive-conductor/backend/services/scheduler.py:443`, enumerating
+  `container.schedule_store.due(now=now)` at :457 —
+  `test_scheduler_canonical_admission.py` **16 passed**.
+
+No test counts move in this round, so no `inventory-delta` is recorded. The
+blocker and the owner-held unblock sequence are unchanged from the previous
+round and recorded in
+[`../13-repair-20261020-exact-debt-ledger-inherited.md`](../13-repair-20261020-exact-debt-ledger-inherited.md).

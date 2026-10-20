@@ -208,7 +208,25 @@ to the gate: the audit bootstrap created the table without the indexes the
 migration chain and the SQLite sibling give it. See
 [`inventory-notes/13-audit-log-schema-bootstrap.md`](inventory-notes/13-audit-log-schema-bootstrap.md#second-repair-round--the-bootstraps-index-shape-2026-10-20-job-5939f970).
 
-## 8. Residual risks
+## 8. Re-derived at `6808fca72` (2026-10-20, this round)
+
+The two attempts before this one died to provider rate limits after their
+checks passed; nothing they observed is inherited here. Re-executed at
+`6808fca72`: all three `exact-debt-ledger` steps at CI's exact argv (step 1
+rc=1 on the same single reachability bullet pair, steps 2–3 rc=0, vulture
+1326→1326 with `unclassified: 0`), the base-worktree reproduction at
+`e20e9f52` (169 unreachable, `maistro.runs.admission_identity` NEWLY
+UNREACHABLE, rc=1), and the root-test failures (3 failed / 36 passed, all
+naming that module). `origin/develop` is still at the base, so the two-merge
+unblock has not started. The branch's audit-bootstrap repair was additionally
+proved on a migrated `pgvector:pg18` database (`alembic upgrade head` → `063`:
+test_pg_audit + test_container_wiring, 66 passed) and by a direct
+before/after: the base `ensure_schema` raises `UndefinedTableError` on a fresh
+database where the branch's `ensure_schema` creates the table with all 13
+indexes. Full detail:
+[`inventory-notes/13-one-execution-universe.md`](inventory-notes/13-one-execution-universe.md#third-ci-repair-round-at-6808fca72-2026-10-20).
+
+## 9. Residual risks
 
 - Until step 1 lands, this epic PR cannot merge no matter what any lane does
   here; the failure will keep reproducing on every sync.
