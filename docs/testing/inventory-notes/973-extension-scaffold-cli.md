@@ -249,3 +249,53 @@ develop-based candidate until an owner lands the grant or the #1845 consumer;
 concern outside #973; (3) CI executes the out-of-tree build/test proof for the
 SDK scaffold, not for this CLI's templates — the gap the corrected skip reason
 now names.
+
+## Independent verification (this round, branch `auto-973` @ 89fabf290)
+
+Re-executed from the branch head rather than inherited from the prior record
+(the seven #973 surface files are byte-identical to `f68ba8526`; only a
+docs-only notes commit separates them). No tree edits were made — the
+develop-side root cause has no branch-side repair (see the trust-base gate
+below), so there is nothing to commit to code and this note is the record of
+its being re-proven.
+
+- `scripts/check-reachability.py` -> exit 1; `maistro.runs.admission_identity`
+  reported NEWLY UNREACHABLE (1 of 1419 modules, 169 unreachable).
+- Reproduced at the develop base (`e20e9f52e`, PR #1936 / auto-1851) in a
+  detached worktree: "1417 production modules, 169 unreachable; 1 module(s)
+  are NEWLY UNREACHABLE: maistro.runs.admission_identity" — identical, so the
+  failure is develop-side, not introduced by #973.
+- `scripts/check-reachability-provenance.py` -> exit 1; trusted-base gate
+  FAILS on both "NEW unreachable module absent from trusted base and not
+  previously authorized" and "current unreachable module missing from
+  candidate baseline" — banking only the candidate baseline cannot clear the
+  trusted-base leg; repair space on this branch is empty by construction.
+- `scripts/check-ratchet-provenance.py` (exact-debt-ledger) -> exit 1; its
+  ONLY failure is `check-reachability-provenance.py: trusted-base gate
+  returned 1`; enumerations gap tolerated, lifecycle clean — so the ledger red
+  is purely the develop-side reachability debt.
+- `scripts/check-vulture-baseline.py packages/*/src --min-confidence 60
+  --exclude '*/third_party/*'` (`RATCHET_BASE_REV=origin/develop`) -> exit 0,
+  1326 reviewed identities == 1326 findings, no unbanked identity.
+- `scripts/check-convergence-matrix.py` -> exit 0, OK (52 subsystems, 1419
+  modules; the `some`->`few` row is in).
+- `scripts/check-extension-imports.py` -> exit 0 (only the public SDK).
+- `scripts/check-extension-scaffold.py` (full, all 5 families + reference)
+  -> exit 0: each scaffold built, tested, conformed, certified (Ed25519),
+  verified, and refused a one-byte-flipped artifact; private product roots
+  (`maistro`, `packages`, `extensions`, ...) unimportable from the fresh
+  venvs.
+- Coverage: `coverage run --branch --source=packages/maistro-core/src/maistro
+  -m pytest packages/maistro-core/tests/extensions -q` -> 1200 passed, 5
+  skipped; `scripts/check-diff-coverage.py /tmp/coverage.xml --base
+  origin/develop` -> exit 0 ("every measured file this change touches is at
+  or above 90% lines / 80% branch arcs"). The publish-set floor (94% vs 87%)
+  passed per the job log; in CI the diff step never ran only because the
+  combine step died on the develop-side reachability tests above.
+
+Verdict unchanged from the prior round: #973 is implementation-complete and
+all acceptance criteria hold, but the Coverage gate (and the `test`,
+Quality/Reachability, Quality Pillars, and exact-debt-ledger jobs it drags
+down) stay red on every develop-based candidate until an owner resolves the
+develop-side `maistro.runs.admission_identity` debt (#1851 / #1845) — owner
+decision required on develop.
