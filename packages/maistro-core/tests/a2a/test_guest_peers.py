@@ -222,6 +222,22 @@ def test_peer_port_announcement_tolerates_the_empty_creation_window(tmp_path: Pa
         assert int(port) > 0
 
 
+def _context(
+    agent: str = "planner", *, delegation_key: str = "effect-1", **overrides: Any
+) -> DelegationContext:
+    """One canonical delegation context; tests override single fields."""
+    return DelegationContext(
+        caller_principal_id="actor-1",
+        delegating_agent=agent,
+        workspace_id="workspace-1",
+        project_id="project-1",
+        run_id="run-1",
+        node_run_id="node-run-1",
+        delegation_key=delegation_key,
+        **overrides,
+    )
+
+
 def _patch_transport(monkeypatch: pytest.MonkeyPatch, handler: Any) -> None:
     """Route the shared client through a MockTransport for this test."""
     del monkeypatch  # kept for call-site compatibility
