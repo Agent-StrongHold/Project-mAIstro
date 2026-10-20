@@ -58,15 +58,24 @@ async def _fixture(
     *,
     template: bool = True,
     max_runs: int | None = None,
+    projects: Any | None = None,
 ) -> tuple[Any, Any, Any]:
+    """A configured-process Container stand-in, optionally over an existing scope.
+
+    ``projects`` lets a "restarted" process share the Workspace's Project
+    scope, which is durable in production rather than process-local truth.
+    """
     from maistro.graph.definitions import GraphTemplate, Node
     from maistro.graph.templates import InMemoryGraphTemplateStore
     from maistro.projects.scope_store import InMemoryProjectScopeStore
     from maistro.runs.store import InMemoryRunStore
     from maistro.scheduling.store import InMemoryScheduleStore
 
-    projects = InMemoryProjectScopeStore()
-    root = await projects.create_root("ws-1")
+    if projects is None:
+        projects = InMemoryProjectScopeStore()
+        root = await projects.create_root("ws-1")
+    else:
+        root = await projects.root_for_workspace("ws-1")
     runs = InMemoryRunStore(project_store=projects)
     templates = InMemoryGraphTemplateStore()
     schedules = InMemoryScheduleStore()
@@ -340,6 +349,203 @@ def test_max_runs_disables_canonical_and_product_projection(
             assert projected.enabled is False
             assert projected.last_run_id == recorded.last_run_id
         finally:
+            _remove_row(row)
+
+    asyncio.run(scenario())
+
+
+class _FrozenDatetime(datetime):
+    """`datetime.now` under the test's control; everything else is real.
+
+    The tick and `fire_now` read the clock through their module's `datetime`,
+    so patching that one name drives both without touching the maistro core.
+    """
+
+    at: datetime = datetime(2026, 8, 21, 12, 5, tzinfo=UTC)
+
+    @classmethod
+    def now(cls, tz: Any = None) -> datetime:
+        return cls.at if tz is not None else cls.at.replace(tzinfo=None)
+
+
+def test_tick_resumes_from_durable_sqlite_state_after_restart(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    """#1199: a restart resumes from the durable cursor, not the Hive dict.
+
+    The legacy row comes back from its own persistence stale — no cursor at
+    all — which is exactly the state a tick driven by `stores.schedules`
+    would evaluate as due. The canonical SQLite store must be what decides.
+    """
+    import aiosqlite
+    import services.scheduler as scheduler_mod
+    from services.scheduler import _ScheduleRunner
+
+    from maistro.scheduling import Schedule
+    from maistro.scheduling.store import SqliteScheduleStore
+
+    clock = _FrozenDatetime
+    monkeypatch.setattr(scheduler_mod, "datetime", clock)
+    db = tmp_path / "schedules.db"
+
+    async def scenario() -> None:
+        container, row, root = await _fixture()
+        _install_row(row)
+        conn = await aiosqlite.connect(db)
+        durable = SqliteScheduleStore(conn)
+        await durable.ensure_schema()
+        await durable.put(
+            Schedule(
+                schedule_id="s-1",
+                workspace_id=row.workspace_id,
+                project_id=root.project_id,
+                name=row.name,
+                cron="0 * * * *",
+                graph_template_id=row.mission_template_id,
+                last_fired_at=datetime(2026, 8, 21, 11, 0, tzinfo=UTC),
+                next_due_at=datetime(2026, 8, 21, 12, 0, tzinfo=UTC),
+                created_at=row.created_at,
+            )
+        )
+        container.schedule_store = durable
+        monkeypatch.setattr(
+            _ScheduleRunner, "_canonical_container", staticmethod(lambda: container)
+        )
+        conn2 = None
+        try:
+            await _ScheduleRunner()._tick()
+            fired = await durable.get("s-1")
+            assert fired is not None
+            assert fired.runs_so_far == 1
+            assert fired.last_run_id
+            assert fired.next_due_at == datetime(2026, 8, 21, 13, 0, tzinfo=UTC)
+
+            # --- restart: the process, its run store and the projection die --
+            await conn.close()
+            restarted, stale, _root = await _fixture(projects=container.project_scope_store)
+            # A stale product projection: enabled, but no cursor at all.
+            stale.next_run = None
+            stale.last_run = None
+            stale.last_run_id = None
+            _install_row(stale)
+            conn2 = await aiosqlite.connect(db)
+            durable2 = SqliteScheduleStore(conn2)
+            await durable2.ensure_schema()
+            restarted.schedule_store = durable2
+            monkeypatch.setattr(
+                _ScheduleRunner, "_canonical_container", staticmethod(lambda: restarted)
+            )
+
+            clock.at = datetime(2026, 8, 21, 12, 6, tzinfo=UTC)
+            await _ScheduleRunner()._tick()
+            resumed = await durable2.get("s-1")
+            assert resumed is not None
+            assert resumed.runs_so_far == 1, "the restart must not refire the 12:00 firing"
+            assert resumed.last_fired_at == datetime(2026, 8, 21, 12, 0, tzinfo=UTC)
+            assert resumed.next_due_at == datetime(2026, 8, 21, 13, 0, tzinfo=UTC)
+            assert len(restarted.run_store._runs) == 0  # type: ignore[attr-defined]
+
+            clock.at = datetime(2026, 8, 21, 13, 5, tzinfo=UTC)
+            await _ScheduleRunner()._tick()
+            caught_up = await durable2.get("s-1")
+            assert caught_up is not None
+            assert caught_up.runs_so_far == 2
+            assert len(restarted.run_store._runs) == 1  # type: ignore[attr-defined]
+            run = await restarted.run_store.get_run(caught_up.last_run_id)
+            assert run is not None
+            assert run.provenance["schedule_id"] == "s-1"
+            assert (
+                run.provenance["scheduled_for"]
+                == datetime(2026, 8, 21, 13, 0, tzinfo=UTC).isoformat()
+            )
+        finally:
+            if conn2 is not None:
+                await conn2.close()
+            _remove_row(row)
+
+    asyncio.run(scenario())
+
+
+def test_manual_fire_and_tick_interleave_on_one_durable_cursor(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    """#1199: a manual fire and a tick share one cursor and lose neither.
+
+    The tick claims the owed occurrence; `fire_now` fires out of band onto the
+    same SQLite cursor; the next tick must neither refire the tick's occurrence
+    nor the manual one — every firing counted exactly once.
+    """
+    import aiosqlite
+    import services.scheduler as scheduler_mod
+    from services.dag_agents import get_registry
+    from services.scheduler import _ScheduleRunner, fire_now
+
+    from maistro.scheduling import Schedule
+    from maistro.scheduling.store import SqliteScheduleStore
+
+    clock = _FrozenDatetime
+    monkeypatch.setattr(scheduler_mod, "datetime", clock)
+    monkeypatch.setattr(scheduler_mod, "_runner", None)
+    get_registry().register(
+        {
+            "id": "scheduled-template",
+            "name": "scheduled-template",
+            "entry_node": "only",
+            "nodes": [{"id": "only", "kind": "transform.alias_keys", "config": {"mapping": {}}}],
+            "edges": [],
+        }
+    )
+
+    async def scenario() -> None:
+        container, row, root = await _fixture()
+        _install_row(row)
+        conn = await aiosqlite.connect(tmp_path / "schedules.db")
+        durable = SqliteScheduleStore(conn)
+        await durable.ensure_schema()
+        await durable.put(
+            Schedule(
+                schedule_id="s-1",
+                workspace_id=row.workspace_id,
+                project_id=root.project_id,
+                name=row.name,
+                cron="0 * * * *",
+                graph_template_id=row.mission_template_id,
+                last_fired_at=datetime(2026, 8, 21, 11, 0, tzinfo=UTC),
+                next_due_at=datetime(2026, 8, 21, 12, 0, tzinfo=UTC),
+                created_at=row.created_at,
+            )
+        )
+        container.schedule_store = durable
+        monkeypatch.setattr(
+            _ScheduleRunner, "_canonical_container", staticmethod(lambda: container)
+        )
+        try:
+            await _ScheduleRunner()._tick()
+            after_tick = await durable.get("s-1")
+            assert after_tick is not None
+            assert after_tick.runs_so_far == 1
+            assert after_tick.last_run_id
+            assert len(container.run_store._runs) == 1  # type: ignore[attr-defined]
+
+            clock.at = datetime(2026, 8, 21, 12, 30, tzinfo=UTC)
+            manual_run = await fire_now("s-1")
+            assert manual_run
+            assert manual_run != after_tick.last_run_id
+            after_manual = await durable.get("s-1")
+            assert after_manual is not None
+            assert after_manual.runs_so_far == 2
+            assert after_manual.last_run_id == manual_run
+            assert after_manual.next_due_at == datetime(2026, 8, 21, 13, 0, tzinfo=UTC)
+
+            clock.at = datetime(2026, 8, 21, 12, 35, tzinfo=UTC)
+            await _ScheduleRunner()._tick()
+            after = await durable.get("s-1")
+            assert after is not None
+            assert after.runs_so_far == 2, "no firing is refired after the interleave"
+            assert after.last_run_id == manual_run
+            assert len(container.run_store._runs) == 1  # type: ignore[attr-defined]
+        finally:
+            await conn.close()
             _remove_row(row)
 
     asyncio.run(scenario())
