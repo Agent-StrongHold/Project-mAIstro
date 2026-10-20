@@ -57,3 +57,32 @@ epic's remaining open items are owned elsewhere: direct children #41, #42,
 #44, #46, #47, #48, open nested items #251 and #1082, sub-issue #1612
 (GraphExecutionState load/fork at event sequence N), and #1192 (hierarchy-
 owned by M1-E #62). This note intentionally does not close them.
+
+## Revalidation on the e20e9f52 sync (2026-10-20)
+
+The branch was re-synced to `origin/develop` at e20e9f52 (merge 616e513b3;
+clean, no conflicts — the only branch-local files are this note and `uv.lock`).
+The three requirements were rechecked against reachable production behavior on the
+synced tree rather than assuming the earlier note's claims:
+
+- #1194 — `ReplaySemantics` present in `executor.py` (`replay_semantics` field,
+  `_may_revisit_after` gate) and `attempt_executor.py` (`_node_replay_semantics`,
+  `_replay_refused`); `test_attempt_executor.py` passes.
+- #1193 — `NodeCompositionError` raised at `agent_synth_dag.py:484` composition
+  when the durable run store is absent; `test_agent_synth_dag.py` passes.
+- #1199 — `services/scheduler.py` canonical tick wired (`_tick_due`,
+  `definition_lock`, `schedule_store` cursors);
+  `test_scheduler_canonical_admission.py` passes (16 tests).
+
+Focused files on the synced tree: `test_attempt_executor.py`,
+`test_agent_synth_dag.py`, `test_root_admission_identity.py` (new from develop)
+125 passed; `test_scheduler_canonical_admission.py` 16 passed.
+
+Security revalidation (this round's CI gate): `scripts/check-dependency-namespaces.py`
+exit 0 ("no unreviewed top-level namespaces"), and `scripts/pip_audit_gate.py`
+exit 0 on the frozen `--extra dev` environment with `aiohttp 3.14.5` /
+`yarl 1.25.1`; the only advisory is the reviewed `ecdsa PYSEC-2026-1325`
+allowlist entry. `ruff check` / `ruff format --check` clean; vulture ratchet
+1326/1326 identities match (base e20e9f52).
+
+No test count moves on this change, so no `inventory-delta` is recorded.
