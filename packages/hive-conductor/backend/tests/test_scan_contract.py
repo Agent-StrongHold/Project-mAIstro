@@ -123,6 +123,50 @@ def _fake_clean_literals() -> list[str]:
     return hits
 
 
+def _top_level_test_defs(
+    tree: ast.Module,
+) -> dict[str, ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef]:
+    """Top-level class/function definitions in a test module, keyed by name."""
+    return {
+        node.name: node
+        for node in tree.body
+        if isinstance(node, ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef)
+    }
+
+
+def _assert_behavioral_scan_coverage(entry: str) -> None:
+    """Prove the behavioral test a registry entry names still exists on disk.
+
+    An entry is ``tests/<file>[::Symbol]``. The file must exist and define
+    ``Symbol``; a class must carry at least one ``test_*`` method and a bare
+    function must itself be a collected ``test_*``. Without resolving the
+    entry the census only pins route *identities*: deleting
+    ``TestTheScanActuallyScans`` (the malicious/clean/broken-scanner cases)
+    would still pass while the docstring claimed behavioral coverage exists.
+    """
+    rel, _, symbol = entry.partition("::")
+    path = _BACKEND / rel
+    assert path.exists(), f"behavioral scan coverage points at a missing file: {rel}"
+    defs = _top_level_test_defs(ast.parse(path.read_text(encoding="utf-8"), filename=str(path)))
+    if not symbol:
+        return
+    node = defs.get(symbol)
+    assert node is not None, (
+        f"{rel} no longer defines {symbol!r}; its behavioral scan coverage vanished"
+    )
+    if isinstance(node, ast.ClassDef):
+        methods = {
+            child.name
+            for child in node.body
+            if isinstance(child, ast.FunctionDef | ast.AsyncFunctionDef)
+        }
+        assert any(name.startswith("test_") for name in methods), (
+            f"{rel}::{symbol} carries no test_* method; it proves nothing"
+        )
+    else:
+        assert symbol.startswith("test_"), f"{rel}::{symbol} is not a collected test"
+
+
 class TestTheScanSurfaceContract:
     def test_every_scan_route_is_registered(self) -> None:
         """Both directions: no unregistered scan route can appear (a new stub
@@ -145,16 +189,20 @@ class TestTheScanSurfaceContract:
         """The census only pins identities; the behavioral proof (malicious
         fixture flagged, clean fixture handled, broken scanner unknown) must
         exist for every HTTP scan surface. Each registry entry names the test
-        module that walks its fixtures."""
+        module -- and the specific class/function -- that walks its fixtures,
+        and each one is resolved against the file on disk, so deleting the
+        behavioral suite fails here rather than silently passing."""
         coverage = {
             "/v1/agents/scan": "tests/test_agents_routes.py::TestTheScanActuallyScans",
             "/v1/agents/{agent_id}/scan": "tests/test_agents_routes.py::TestTheScanActuallyScans",
-            "/v1/skills/scan": "tests/test_skills_routes.py",
+            "/v1/skills/scan": "tests/test_skills_routes.py::test_scan_flags_a_dirty_stored_skill",
             "/v1/mcp/servers/{server_id}/scan": (
                 "tests/test_mcp_routes.py::test_scan_server_found_is_explicitly_unsupported"
             ),
         }
         assert set(coverage) == set(EXPECTED_SCAN_ROUTES)
+        for entry in coverage.values():
+            _assert_behavioral_scan_coverage(entry)
 
     def test_unsupported_scan_surfaces_refuse_explicitly(self) -> None:
         """A surface with no scanner wired must not borrow the verdict shape.

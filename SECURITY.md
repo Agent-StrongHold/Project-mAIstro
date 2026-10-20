@@ -50,8 +50,12 @@ clean. The MCP server-record scan has no scanner wired and is the explicit-unsup
 - **clean** — the analysis *completed* and found nothing. Scan-route results say what ran and
   on what: `scanner.name` / `scanner.policy_version` (the Warden `WARDEN_POLICY_VERSION`),
   `target` (kind and id of the artifact walked), `scanned_at` (completion timestamp), and
-  `scanned_values` (how many strings the walk judged). Stored agent definitions carry the same
-  stamp in `config["provenance"]["scan"]`.
+  `scanned_values` (how many strings the walk judged). Agent definitions written through a
+  scanned write path (CRUD, Forge, chat-tool) persist the same stamp in
+  `config["provenance"]["scan"]` — and Forge's artifact records it again in
+  `config["forge"]["scan"]` — so a stored `clean` row can always show the completed analysis
+  behind it. (Persona-spawn and canonical-roster materialization are not scanned write paths;
+  they project trusted internal content and carry no scan stamp rather than a fabricated one.)
 - **flagged (findings)** — the analysis completed and found patterns; each finding names the
   path inside the target where it hit (`config.prompt: …`), so a human can act on it.
 - **unknown / failed** — the scanner could not run, raised, or timed out. The HTTP scan routes

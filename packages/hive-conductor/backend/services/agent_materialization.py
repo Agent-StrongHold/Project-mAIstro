@@ -287,14 +287,23 @@ def _provenance(source: str, scan: dict | None, when: datetime) -> dict[str, Any
     the scan itself otherwise."""
     entry: dict[str, Any] = {"source": source, "timestamp": when.isoformat()}
     if scan is not None:
+        # Carry the scan's OWN self-describing stamp forward (#288): the same
+        # fields the HTTP scan routes return -- scanner identity/policy, the
+        # target it walked, when the analysis completed, and how many values it
+        # judged -- so a stored row's validation history is as self-describing
+        # as the live result. A "clean" row can then always show the completed
+        # analysis behind it (SECURITY.md's stored-definition claim); the
+        # fallbacks keep a caller-supplied partial verdict honest rather than
+        # inventing a field it never computed.
+        scanner = scan.get("scanner", {"name": "warden", "policy_version": WARDEN_POLICY_VERSION})
         entry["scan"] = {
-            "scanner": scan.get(
-                "scanner", {"name": "warden", "policy_version": WARDEN_POLICY_VERSION}
-            ),
-            "boundary": "user_input",
+            "scanner": scanner,
+            "boundary": scanner.get("boundary", "user_input"),
             "status": scan.get("status", "flagged" if scan.get("findings") else "clean"),
             "findings": list(scan.get("findings", [])),
-            "scanned_at": when.isoformat(),
+            "target": scan.get("target", {"kind": "config", "id": None}),
+            "scanned_at": scan.get("scanned_at", when.isoformat()),
+            "scanned_values": scan.get("scanned_values", 0),
         }
     return entry
 

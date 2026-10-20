@@ -375,7 +375,7 @@ async def forge_agent(body: ForgeAgentBody, request: Request, response: Response
         "config": {"strategy": body.strategy, "model": body.model, "role": "worker"},
     }
     try:
-        scan = await scan_config(artifact_for_scan)
+        scan = await scan_config(artifact_for_scan, target={"kind": "agent_definition", "id": aid})
     except ScanBudgetExceeded as exc:
         raise HTTPException(status_code=413, detail=str(exc)) from exc
     except Exception as exc:
@@ -416,10 +416,13 @@ async def forge_agent(body: ForgeAgentBody, request: Request, response: Response
                     "model": body.model,
                 },
                 "scan": {
-                    "boundary": "user_input",
+                    "scanner": scan["scanner"],
+                    "boundary": scan["scanner"]["boundary"],
                     "status": scan["status"],
                     "findings": scan["findings"],
-                    "scanned_at": t.isoformat(),
+                    "target": scan["target"],
+                    "scanned_at": scan["scanned_at"],
+                    "scanned_values": scan["scanned_values"],
                 },
             },
         },

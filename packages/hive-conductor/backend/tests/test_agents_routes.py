@@ -298,6 +298,14 @@ class TestForgeCreatesACanonicalArtifact:
         assert provenance["scan"]["status"] == "clean"
         assert provenance["scan"]["findings"] == []
         assert provenance["scan"]["scanned_at"]
+        # The full self-describing stamp (#288): the durable forge record names
+        # the scanner and its policy, the artifact it walked, and how many
+        # values it judged -- the same fields the scan route returns, so the
+        # stored verdict is as self-describing as the live result.
+        assert provenance["scan"]["scanner"]["name"] == "warden"
+        assert provenance["scan"]["scanner"]["policy_version"]
+        assert provenance["scan"]["target"] == {"kind": "agent_definition", "id": body["id"]}
+        assert provenance["scan"]["scanned_values"] >= 1
 
     def test_repeated_submission_is_idempotent(self, admin_client: Any) -> None:
         first = admin_client.post(
