@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +3
+  packages/maistro-core/tests: +0
 ---
 
 # #954 develop-sync round — lifecycle hardening carried across the #952 merge
@@ -16,38 +16,39 @@ operator-asserted evidence is now `OperatorTrustEvidence`, so the durable #952
 the merge itself is zero (upstream's +41 is already in the recorded baseline
 via `952-extension-install-records.md`).
 
-**+3 `packages/maistro-core/tests/extensions/`** — carried salvage from the
-crashed prior attempt, completed and validated here:
+## Second develop sync (420d503d4, this round): salvage superseded, delta zeroed
 
-- `test_install_lifecycle.py::TestRemovedVersionBytesStayAnchored` (2) — a
-  removed version's digests stay anchored: reinstalling a different payload
-  under the same semver is refused (`InspectionConflict`, and no candidate
-  record is created); the identical artifact reopens a fresh authorization
-  track (new `install_id`, `AWAITING_AUTHORIZATION`, loader called once per
-  install). Pins #954's remove/reinstall semantics against the identity rule
-  the #952 registry layer enforces on its own records.
+The second develop sync (history-rewritten develop tip `420d503d4`) brought
+develop's own evolved B3 implementation for the same files this lane had
+drafted (TrustClaim, `ExtensionStore` protocol, health/catalog services,
+`pinned_record`, expired-authorization sweep). The sync resolution takes
+develop's side for every conflicted path, which supersedes the +3 salvage
+tests this note previously carried; their delta is now **+0**:
+
+- `test_install_lifecycle.py::TestRemovedVersionBytesStayAnchored` (2) —
+  dropped: develop's `_reinspection_outcome` treats terminal records
+  (including REMOVED) as non-gating, so a removed `(scope, extension,
+  version)` key may be re-inspected with different bytes. The stricter
+  removed-version byte anchoring the draft enforced is not part of develop's
+  semantics; the draft tests are preserved in history at `139018eb5` and in
+  the merge parents, not in this tree.
 - `test_post_install_lifecycle.py::TestRollback::test_later_activations_preserve_the_original_installer`
-  (1) — `installed_by` stays the first installer across resume and rollback;
-  later operators are attributed on the transition trail only. Fixed in this
-  round: the salvaged draft re-installed the already-ACTIVE v1.4.0 via
-  `install_then_upgrade`, which idempotent re-inspection correctly returns
-  as-is; the test now upgrades the live v1 to 1.5.0 and rolls back, matching
-  the service contract the other 20 rollback tests pin.
+  (1) — dropped: develop's service attributes `installed_by` at install time
+  and names later operators on the transition trail; the first-installer
+  freeze the draft implemented is not develop's contract.
 
-Companion service changes (uncommitted salvage completed): inspect() refuses a
-removed version reinstalled under different bytes; activation freezes
-`installed_by` at first activation; resume re-evaluates compatibility against
-the platform as it stands now.
+The branch-only HTTP surface file
+`packages/maistro-server/tests/api/test_extensions_lifecycle_api.py` (13
+cases, declared +13 by the pre-sync draft of
+`954-extension-post-install-lifecycle.md`) tested draft-only routes
+(`/pins`, `/upgrades`, `/resolution`, `/reconciliation`) that develop's
+canonical API replaces with `/installations/{id}/pin|unpin|resume|remove`,
+`/rollback` and the transitions audit endpoint; it is removed with this
+round. Every behavior it pinned over HTTP is pinned by develop's
+`test_extensions_api.py::TestPostInstallLifecycleHttp` against the live
+routes.
 
-Fail-before evidence: muting the new `InspectionConflict` raise makes
-`test_reinstall_of_removed_version_with_different_bytes_is_refused` fail
-(record silently created); reverting the `installed_by` freeze makes
-`test_later_activations_preserve_the_original_installer` fail
-(record re-attributed to `operator-9`). Both mutations were reverted before
-commit.
-
-Validation on this head: `pytest packages/maistro-core/tests/extensions
-packages/maistro-server/tests/api/test_extensions_api.py
-packages/maistro-server/tests/api/test_extensions_lifecycle_api.py` — 213
-passed; `ruff check .` and `ruff format --check .` clean; mypy clean on the
-extensions surface.
+Net inventory effect of this round: `packages/maistro-core/tests` +0,
+`packages/maistro-server/tests` −13 relative to the pre-sync branch tree,
+both accounted by the union of notes now in the tree (develop's
+`954-extension-post-install-lifecycle.md` declares the canonical suite).
