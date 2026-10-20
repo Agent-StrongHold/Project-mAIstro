@@ -34,8 +34,35 @@ import ast
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Protocol
 
 from maistro_evolve.tdd_gate import run_test_selection
+
+
+#: The containment seam (#614). ``probe_diff_mutations`` writes each mutant
+#: into the tree whose tests it then runs, so a contained evaluation supplies
+#: a runner that reads/writes INSIDE the sandbox and executes the selection
+#: there — the host worktree is never touched and no mutant executes on the
+#: host. The host default (``None``) keeps the historical direct-file behavior.
+class MutationRunner(Protocol):
+    """File and test access for one probe, against one tree.
+
+    ``read_text`` raises whatever the tree's transport raises for a missing
+    file; ``write_text`` creates parent directories as needed; ``run_tests``
+    returns ``(exit_code, output)`` for the changed-test selection.
+    """
+
+    def read_text(self, rel: str) -> str: ...
+
+    def write_text(self, rel: str, content: str) -> None: ...
+
+    def run_tests(self, selectors: list[str], *, timeout: int) -> tuple[int, str]: ...
+
+
+def _posix(path: Path, root: Path) -> str:
+    """Repo-relative POSIX path for ``path`` under ``root`` (forward slashes)."""
+    return path.relative_to(root).as_posix()
+
 
 # Semantics-changing swaps. Comparisons map to their negation-style counterpart
 # (Lt<->GtE, Gt<->LtE, Eq<->NotEq, Is<->IsNot) so every swap is guaranteed to
@@ -212,18 +239,28 @@ class MutationProbe:
 
 
 def _build_plan(
-    root: Path, new_source_lines: dict[str, set[int]], max_mutants: int
+    root: Path,
+    new_source_lines: dict[str, set[int]],
+    max_mutants: int,
+    read_text: Callable[[Path], str] | None = None,
 ) -> list[tuple[str, int, str]]:
     """A deterministic, capped list of ``(file, lineno, mutant_source)`` — the
     prefix of diff-scoped mutations to actually run. Files are visited in sorted
-    order; a no-op mutation (unparses to the original) is dropped."""
+    order; a no-op mutation (unparses to the original) is dropped. ``read_text``
+    is the containment seam's reader (#614): parsing happens wherever the plan
+    is built, but the bytes come from the tree the tests will run against."""
+    if read_text is None:
+        read_text = lambda p: p.read_text(encoding="utf-8")  # noqa: E731
     plan: list[tuple[str, int, str]] = []
     for rel, lines in sorted(new_source_lines.items()):
         if len(plan) >= max_mutants:
             break
         try:
-            source = (root / rel).read_text(encoding="utf-8")
+            source = read_text(root / rel)
         except OSError:
+            # A missing/unreadable host file is skipped; a containment failure
+            # (ContainmentUnavailable, a RuntimeError) deliberately propagates —
+            # an empty plan must never read as "nothing to measure".
             continue
         for lineno, mutant in _mutants(source, lines):
             if mutant == source:
@@ -241,6 +278,7 @@ def probe_diff_mutations(
     *,
     timeout: int = 120,
     max_mutants: int = 6,
+    runner: MutationRunner | None = None,
 ) -> MutationProbe:
     """Mutate the diff's new source lines one at a time and check the candidate's
     changed tests catch each mutation.
@@ -248,6 +286,13 @@ def probe_diff_mutations(
     ``new_source_lines`` maps a changed source file to the set of line numbers
     the diff ADDED (see ``coverage_gate.new_source_lines``). ``test_selectors``
     are the candidate's changed test files (see ``tdd_gate.changed_test_paths``).
+
+    ``runner`` is the containment seam (#614): when given, every read, write and
+    test run goes through it, so mutants are written into — and executed
+    inside — the sandbox the evaluation opened, never on the host. The AST work
+    (finding mutable sites, building each mutant) stays a host-side computation
+    over file CONTENT: parsing candidate bytes executes nothing the candidate
+    wrote.
 
     A mutant is *killed* when the tests fail with it in place, *survived* when
     they still pass. The original source is always restored. At most
@@ -259,7 +304,15 @@ def probe_diff_mutations(
     if not test_selectors:
         return MutationProbe(available=False)
 
-    plan = _build_plan(root, new_source_lines, max_mutants)
+    if runner is None:
+        plan = _build_plan(root, new_source_lines, max_mutants)
+    else:
+        plan = _build_plan(
+            root,
+            new_source_lines,
+            max_mutants,
+            read_text=lambda p: runner.read_text(_posix(p, root)),
+        )
     if not plan:
         return MutationProbe(available=False)
 
@@ -267,13 +320,21 @@ def probe_diff_mutations(
     survived = 0
     survivors: list[str] = []
     for rel, lineno, mutant in plan:
-        path = root / rel
-        original = path.read_text(encoding="utf-8")
-        try:
-            path.write_text(mutant, encoding="utf-8")
-            rc, _ = run_test_selection(root, test_selectors, timeout=timeout)
-        finally:
-            path.write_text(original, encoding="utf-8")
+        if runner is None:
+            path = root / rel
+            original = path.read_text(encoding="utf-8")
+            try:
+                path.write_text(mutant, encoding="utf-8")
+                rc, _ = run_test_selection(root, test_selectors, timeout=timeout)
+            finally:
+                path.write_text(original, encoding="utf-8")
+        else:
+            original = runner.read_text(rel)
+            try:
+                runner.write_text(rel, mutant)
+                rc, _ = runner.run_tests(test_selectors, timeout=timeout)
+            finally:
+                runner.write_text(rel, original)
         if rc == 0:
             survived += 1
             survivors.append(f"{rel}:{lineno}")

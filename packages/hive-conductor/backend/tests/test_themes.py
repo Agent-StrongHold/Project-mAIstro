@@ -5,7 +5,13 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 from models.workspace import Workspace
-from services.themes import THEME_CATALOG, is_valid_theme_id, resolve_workspace_tone
+from services.themes import (
+    DEFAULT_THEME_ID,
+    THEME_CATALOG,
+    canonical_theme_id,
+    is_valid_theme_id,
+    resolve_workspace_tone,
+)
 
 
 def _workspace(**overrides: object) -> Workspace:
@@ -21,14 +27,41 @@ def _workspace(**overrides: object) -> Workspace:
     return Workspace(**defaults)
 
 
-def test_theme_catalog_includes_default_fantasia_and_dark() -> None:
-    ids = {t.id for t in THEME_CATALOG}
-    assert ids == {"default", "fantasia", "dark"}
+def test_theme_catalog_is_the_workspace_persona_templates() -> None:
+    """The catalog is what the bundled Workspace design system offers as
+    persona templates, greenhouse first; nothing is invented here."""
+    import json
+    from pathlib import Path
+
+    manifest = json.loads(
+        (
+            Path(__file__).resolve().parents[3]
+            / "maistro-design/src/maistro_design/systems/bundled/workspace/manifest.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert [t.id for t in THEME_CATALOG] == manifest["personas"]["templates"]
+    assert manifest["personas"]["default"] == DEFAULT_THEME_ID
 
 
 def test_is_valid_theme_id() -> None:
-    assert is_valid_theme_id("fantasia") is True
+    assert is_valid_theme_id("slate") is True
     assert is_valid_theme_id("nope") is False
+
+
+def test_retired_ids_stay_valid_and_resolve_to_a_template() -> None:
+    """Workspaces stored before the switchover carry "default", "dark" or
+    "fantasia"; they keep validating and render as the nearest template
+    without a migration, but they are not in the catalog."""
+    catalog = {t.id for t in THEME_CATALOG}
+    for legacy, template in (
+        ("default", "greenhouse"),
+        ("dark", "greenhouse"),
+        ("fantasia", "slate"),
+    ):
+        assert is_valid_theme_id(legacy) is True
+        assert legacy not in catalog
+        assert canonical_theme_id(legacy) == template
+    assert canonical_theme_id("studio") == "studio"
 
 
 def test_resolve_tone_uses_override_when_set() -> None:

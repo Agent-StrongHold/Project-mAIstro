@@ -70,7 +70,7 @@ def test_stale_trusted_adapter_mapping_is_a_failure(inventory) -> None:
 
 def test_lifecycle_consumer_has_a_real_trusted_adapter(inventory, tmp_path: Path) -> None:
     key = ("tools/lint_lifecycle.py", "quality/lifecycle-baseline.json")
-    adapter = inventory.TRUSTED_ADAPTERS[key]
+    adapter = inventory.DELEGATED_ADAPTERS[key]
 
     assert adapter == "check-lifecycle-provenance"
     assert inventory._adapter_problem(ROOT, adapter) is None
@@ -166,6 +166,7 @@ def test_enumeration_ratchet_can_reach_zero_debt(
         load_authorizations=lambda *_args, **_kwargs: {},
         Provenance=_Proof,
         head_sha=lambda *_args, **_kwargs: "candidate",
+        bundled_implementation_fingerprint=lambda *_args, **_kwargs: "bundled-sha256:fake",
     )
     monkeypatch.setattr(
         enumerations_adapter,
@@ -217,6 +218,7 @@ def test_public_route_matching_kind_change_requires_prior_authorization(
         load_authorizations=lambda *_args, **_kwargs: {},
         Provenance=_Proof,
         head_sha=lambda *_args, **_kwargs: "candidate",
+        bundled_implementation_fingerprint=lambda *_args, **_kwargs: "bundled-sha256:fake",
     )
     monkeypatch.setattr(public_routes, "MIDDLEWARE", middleware)
     monkeypatch.setattr(public_routes, "REGISTRY", registry)
