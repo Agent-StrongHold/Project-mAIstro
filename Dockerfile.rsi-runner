@@ -97,7 +97,6 @@ RUN find . -type f \( -name '*.py' -o -name '*.md' -o -name '*.txt' -o -name '*.
     && git init -q \
     && git add -A \
     && git -c user.email=rsi@maistro.local -c user.name=RSI commit -qm "rsi baseline snapshot"
-
 # Install the workspace (maistro-core/evolve/rsi/bootstrap + their deps) plus the
 # fitness toolchain, so tests/coverage/lint gates all run in-container.
 #
@@ -109,24 +108,16 @@ RUN find . -type f \( -name '*.py' -o -name '*.md' -o -name '*.txt' -o -name '*.
 # silently shipped a dependency set nobody declared, into the container where
 # agent-authored code runs (#351). A drifted lock is now a red build, which is
 # a `uv lock` away from fixed.
-RUN uv sync --python 3.12 --frozen
-
-# Left unpinned deliberately, and it is a known gap rather than an oversight:
-# these drift independently of uv.lock, so two RSI runs a month apart can
-# disagree about a fitness score for reasons no commit explains. Pinning them
-# means choosing versions and proving the image still builds, which needs a
-# Docker build this change cannot run -- so it is #348's to do alongside the
-# lock-enforced installs, not something to guess at here.
-RUN uv pip install coverage bandit radon interrogate vulture pylint
-
-# #406: the workspace lock installs maistro-core[tui,identity] -> bip-utils ->
-# pytoniq-core-fork, whose wheel ships a generic top-level `examples`
-# namespace. This container runs AGENT-AUTHORED code, so a stray importable
-# `examples` tree is surface an agent can reach; the shipped images prune it,
-# and so does this one — placed after the last site-packages-mutating install,
-# with the same build-time assertion behind it, so a silent no-op prune fails
-# this build rather than shipping the surface to the loop.
-RUN .venv/bin/python scripts/prune-dependency-namespaces.py \
-    && .venv/bin/python scripts/check-dependency-namespaces.py --production
+#
+# Combine all installation and cache cleanup in one layer so the uv wheel
+# cache (which holds METADATA for every resolved wheel, including vulnerable
+# tuples not in the final venv, plus SDK example files the secret scanner
+# flags) never persists to the final image. Mirrors the cleanup in
+# Dockerfile.research and the main Dockerfile.
+RUN uv sync --python 3.12 --frozen \
+    && uv pip install coverage bandit radon interrogate vulture pylint \
+    && .venv/bin/python scripts/prune-dependency-namespaces.py \
+    && .venv/bin/python scripts/check-dependency-namespaces.py --production \
+    && uv cache clean
 
 CMD ["sleep", "infinity"]
