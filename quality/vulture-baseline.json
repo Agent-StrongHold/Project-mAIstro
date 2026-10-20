@@ -536,7 +536,6 @@
         "packages/maistro-core/src/maistro/tools/browser/guard.py::unused attribute 'websocket_governed'",
         "packages/maistro-core/src/maistro/tools/browser/types.py::unused variable 'screenshot_b64'",
         "packages/maistro-core/src/maistro/tools/sandbox/microvm.py::unused variable 'kernel_image'",
-        "packages/maistro-core/src/maistro/tools/sandbox/microvm.py::unused variable 'memory_mib'",
         "packages/maistro-core/src/maistro/tools/sandbox/microvm.py::unused variable 'rootfs_image'",
         "packages/maistro-core/src/maistro/tools/sandbox/microvm.py::unused variable 'vcpus'",
         "packages/maistro-core/src/maistro/types/intent.py::unused variable 'keyword_score'",

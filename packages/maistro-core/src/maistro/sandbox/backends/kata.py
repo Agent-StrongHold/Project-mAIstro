@@ -16,8 +16,15 @@ import time
 from pathlib import Path
 from uuid import uuid4
 
+from maistro.sandbox.capture import capture_process
 from maistro.sandbox.network import EgressMode, resolve_grant
-from maistro.sandbox.protocol import ExecResult, SandboxConfig, SandboxInstance
+from maistro.sandbox.paths import read_beneath, write_beneath
+from maistro.sandbox.protocol import (
+    OUTPUT_LIMIT_EXIT_CODE,
+    ExecResult,
+    SandboxConfig,
+    SandboxInstance,
+)
 from maistro.tools.sandbox.workspace import validate_workspace_path
 
 logger = logging.getLogger("maistro.sandbox.kata")
@@ -52,7 +59,8 @@ class KataSandboxBackend:
                 "Kata requires both docker and kata-runtime on PATH; refusing to claim a VM tier"
             )
         self._image = image or os.environ.get("SANDBOX_IMAGE", "python:3.12-slim")
-        self._instances: dict[str, tuple[SandboxConfig, Path, bool]] = {}
+        self._instances: dict[str, tuple[SandboxConfig, Path, bool, int]] = {}
+        self._locks: dict[str, asyncio.Lock] = {}
 
     async def spawn(self, *, config: SandboxConfig) -> SandboxInstance:
         sid = f"kata-{uuid4().hex[:12]}"
@@ -76,26 +84,34 @@ class KataSandboxBackend:
 
         command = self.build_run_argv(config, sid, workdir)
         try:
+            workdir_fd = os.open(workdir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        except OSError:
+            await self._cleanup_workdir(workdir, owned)
+            raise
+        try:
             stdout, stderr, returncode = await self._run(command)
         except BaseException:
             # Cancellation can arrive after Docker created the guest but before
             # its id was returned. The deterministic name lets cleanup reclaim
             # that guest without relying on a host process hook.
+            os.close(workdir_fd)
             await self._remove_container(sid)
-            if owned:
-                await asyncio.to_thread(shutil.rmtree, workdir, True)
+            await self._cleanup_workdir(workdir, owned)
             raise
         if returncode != 0:
-            if owned:
-                await asyncio.to_thread(shutil.rmtree, workdir, True)
+            os.close(workdir_fd)
+            await self._remove_container(sid)
+            await self._cleanup_workdir(workdir, owned)
             detail = stderr.decode(errors="replace").strip() or "unknown error"
             raise RuntimeError(f"failed to start Kata sandbox: {detail}")
         container_id = stdout.decode(errors="replace").strip()
         if not container_id:
-            if owned:
-                await asyncio.to_thread(shutil.rmtree, workdir, True)
+            os.close(workdir_fd)
+            await self._remove_container(sid)
+            await self._cleanup_workdir(workdir, owned)
             raise RuntimeError("Kata runtime returned no container id")
-        self._instances[sid] = (config, workdir, owned)
+        self._instances[sid] = (config, workdir, owned, workdir_fd)
+        self._locks[sid] = asyncio.Lock()
         logger.info("sandbox_spawned id=%s tier=vm runtime=kata", sid)
         return SandboxInstance(
             id=sid,
@@ -103,6 +119,12 @@ class KataSandboxBackend:
             isolation_tier=self.tier,
             metadata={"container_id": container_id, "workdir": str(workdir)},
         )
+
+    @staticmethod
+    async def _cleanup_workdir(workdir: Path, owned: bool) -> None:
+        """Release ephemeral scratch only; never remove a caller-owned bind."""
+        if owned:
+            await asyncio.to_thread(shutil.rmtree, workdir, True)
 
     def build_run_argv(self, config: SandboxConfig, name: str, workdir: Path) -> list[str]:
         """Build the locked-down OCI launch command without executing it."""
@@ -146,91 +168,106 @@ class KataSandboxBackend:
     async def exec(
         self, instance: SandboxInstance, command: list[str], *, timeout_s: int = 120
     ) -> ExecResult:
-        config, _workdir, _owned = self._require(instance)
-        container_id = str(instance.metadata["container_id"])
-        start = time.monotonic()
-        process = await asyncio.create_subprocess_exec(
-            self._docker or "docker",
-            "exec",
-            container_id,
-            *command,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        try:
-            stdout, stderr = await asyncio.wait_for(
-                process.communicate(), timeout=min(timeout_s, config.timeout_s)
-            )
-        except TimeoutError:
-            process.kill()
-            await process.wait()
-            await self._remove_container(container_id)
+        async with self._lock(instance):
+            config, _workdir, _owned, _fd = self._require(instance)
+            start = time.monotonic()
+            try:
+                process = await asyncio.create_subprocess_exec(
+                    self._docker or "docker",
+                    "exec",
+                    instance.id,
+                    *command,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    start_new_session=True,
+                )
+                captured = await capture_process(
+                    process,
+                    timeout_s=min(timeout_s, config.timeout_s),
+                    max_stdout_bytes=config.max_stdout_bytes,
+                    max_stderr_bytes=config.max_stderr_bytes,
+                )
+            except BaseException:
+                # Killing the host Docker client alone does not stop guest exec.
+                await self._remove_container(instance.id)
+                raise
+            exit_code = process.returncode if process.returncode is not None else -1
+            if captured.timed_out or captured.output_limit_exceeded:
+                await self._remove_container(instance.id)
+                exit_code = (
+                    OUTPUT_LIMIT_EXIT_CODE if captured.output_limit_exceeded else TIMEOUT_EXIT_CODE
+                )
             return ExecResult(
-                exit_code=TIMEOUT_EXIT_CODE,
-                stdout="",
-                stderr=f"sandbox timed out after {timeout_s}s",
+                exit_code=exit_code,
+                stdout=captured.stdout.decode(errors="replace"),
+                stderr=captured.stderr.decode(errors="replace"),
                 duration_ms=int((time.monotonic() - start) * 1000),
-                timed_out=True,
+                timed_out=captured.timed_out,
+                output_limit_exceeded=captured.output_limit_exceeded,
+                stdout_truncated=captured.stdout_truncated,
+                stderr_truncated=captured.stderr_truncated,
+                stdout_bytes_retained=len(captured.stdout),
+                stderr_bytes_retained=len(captured.stderr),
             )
-        return ExecResult(
-            exit_code=process.returncode if process.returncode is not None else -1,
-            stdout=stdout.decode(errors="replace"),
-            stderr=stderr.decode(errors="replace"),
-            duration_ms=int((time.monotonic() - start) * 1000),
-        )
 
     async def destroy(self, instance: SandboxInstance) -> None:
-        entry = self._instances.pop(instance.id, None)
-        if entry is None:
+        lock = self._locks.get(instance.id)
+        if lock is None:
             return
-        _config, workdir, owned = entry
-        await self._remove_container(str(instance.metadata["container_id"]))
-        if owned:
-            await asyncio.to_thread(shutil.rmtree, workdir, True)
+        async with lock:
+            entry = self._instances.get(instance.id)
+            if entry is None:
+                return
+            _config, workdir, owned, fd = entry
+            await self._remove_container(instance.id)
+            # Keep the instance retryable if removal is cancelled.
+            self._instances.pop(instance.id)
+            os.close(fd)
+            await self._cleanup_workdir(workdir, owned)
+            self._locks.pop(instance.id, None)
 
     async def write_file(self, instance: SandboxInstance, path: str, content: bytes) -> None:
-        await asyncio.to_thread(self._resolve(instance, path).write_bytes, content)
+        async with self._lock(instance):
+            _config, _workdir, _owned, fd = self._require(instance)
+            await asyncio.to_thread(write_beneath, fd, path, content, mount="/workspace")
 
     async def read_file(self, instance: SandboxInstance, path: str) -> bytes:
-        return await asyncio.to_thread(self._resolve(instance, path).read_bytes)
+        async with self._lock(instance):
+            _config, _workdir, _owned, fd = self._require(instance)
+            return await asyncio.to_thread(read_beneath, fd, path, mount="/workspace")
 
     async def _remove_container(self, container_id: str) -> None:
         try:
-            process = await asyncio.create_subprocess_exec(
-                self._docker or "docker",
-                "rm",
-                "-f",
-                container_id,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
+            _stdout, stderr, code = await self._run(
+                [self._docker or "docker", "rm", "-f", container_id]
             )
-        except OSError:
-            return
-        await process.communicate()
+        except OSError as exc:
+            raise RuntimeError(f"cannot remove Kata sandbox {container_id}") from exc
+        if code != 0 and b"No such container" not in stderr:
+            raise RuntimeError(
+                f"cannot remove Kata sandbox {container_id}: {stderr.decode(errors='replace')}"
+            )
 
     async def _run(self, argv: list[str]) -> tuple[bytes, bytes, int]:
         process = await asyncio.create_subprocess_exec(
             *argv,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            start_new_session=True,
         )
-        stdout, stderr = await process.communicate()
-        return stdout, stderr, process.returncode if process.returncode is not None else -1
+        captured = await capture_process(process, timeout_s=30)
+        code = process.returncode if process.returncode is not None else -1
+        if captured.timed_out or captured.output_limit_exceeded:
+            code = OUTPUT_LIMIT_EXIT_CODE if captured.output_limit_exceeded else TIMEOUT_EXIT_CODE
+        return captured.stdout, captured.stderr, code
 
-    def _resolve(self, instance: SandboxInstance, path: str) -> Path:
-        _config, workdir, _owned = self._require(instance)
-        relative = Path(path)
-        if relative.is_absolute():
-            try:
-                relative = relative.relative_to("/workspace")
-            except ValueError:
-                raise ValueError(f"path {path!r} is outside the sandbox") from None
-        target = (workdir / relative).resolve()
-        if not target.is_relative_to(workdir.resolve()):
-            raise ValueError(f"path {path!r} escapes the sandbox workspace")
-        return target
+    def _lock(self, instance: SandboxInstance) -> asyncio.Lock:
+        lock = self._locks.get(instance.id)
+        if lock is None:
+            raise KeyError(f"no live sandbox {instance.id!r}")
+        return lock
 
-    def _require(self, instance: SandboxInstance) -> tuple[SandboxConfig, Path, bool]:
+    def _require(self, instance: SandboxInstance) -> tuple[SandboxConfig, Path, bool, int]:
         entry = self._instances.get(instance.id)
         if entry is None:
             raise KeyError(f"no live sandbox {instance.id!r}")

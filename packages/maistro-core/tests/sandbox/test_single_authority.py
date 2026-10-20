@@ -17,16 +17,24 @@ are out of scope by design.
 
 from __future__ import annotations
 
+import ast
 import re
 from pathlib import Path
 
+import pytest
+
 _ROOT = Path(__file__).resolve().parents[4]
 
-#: Substring forms that mean "constructed a sandbox implementation directly".
-_DIRECT_CONSTRUCTIONS = (
-    "MicroVMSandbox(",
-    "SandboxContainer(",
-)
+#: Concrete constructors, including aliases and module-qualified calls.
+_DIRECT_CONSTRUCTIONS = {
+    "MicroVMSandbox",
+    "SandboxContainer",
+    "CanonicalSandboxContainer",
+    "KataSandboxBackend",
+    "LauncherVMSandboxBackend",
+    "BubblewrapSandboxBackend",
+    "FakeSandboxBackend",
+}
 
 #: Import statements that reach around the selector to the retired backend.
 _LEGACY_IMPORT_RE = re.compile(
@@ -44,6 +52,7 @@ _DOCKER_RUN_RE = re.compile(r"[\"']docker[\"']\s*,\s*[\"']run[\"']")
 #: themselves, and the canonical adapters that enter through the selector.
 _ALLOWED_PREFIXES = (
     "packages/maistro-core/src/maistro/sandbox/backends/",
+    "packages/maistro-core/src/maistro/sandbox/wiring.py",
     "packages/maistro-core/src/maistro/tools/sandbox/",
 )
 
@@ -65,13 +74,52 @@ def _offenders(predicate) -> list[str]:
     ]
 
 
+def _constructs_implementation(text: str) -> bool:
+    tree = ast.parse(text)
+    aliases = {
+        alias.asname or alias.name: alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom)
+        for alias in node.names
+    }
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        if isinstance(node.func, ast.Name):
+            name = aliases.get(node.func.id, node.func.id)
+        elif isinstance(node.func, ast.Attribute):
+            name = node.func.attr
+        else:
+            continue
+        if name in _DIRECT_CONSTRUCTIONS:
+            return True
+    return False
+
+
+@pytest.mark.parametrize("name", sorted(_DIRECT_CONSTRUCTIONS))
+@pytest.mark.parametrize("form", ["direct", "aliased", "qualified"])
+def test_convergence_rejects_in_memory_product_bypass(monkeypatch, name, form):
+    if form == "aliased":
+        text = f"from maistro.sandbox.backends.kata import {name} as Backend\nBackend()"
+    elif form == "qualified":
+        text = f"import maistro.sandbox.backends.kata as backend\nbackend.{name}()"
+    else:
+        text = f"{name}()"
+    production = _production_files()
+    monkeypatch.setattr(
+        __import__(__name__, fromlist=["_production_files"]),
+        "_production_files",
+        lambda: [*production, ("packages/product/src/bypass.py", text)],
+    )
+    with pytest.raises(AssertionError, match=r"bypass\.py"):
+        test_no_product_code_constructs_a_sandbox_implementation_directly()
+
+
 def test_no_product_code_constructs_a_sandbox_implementation_directly() -> None:
     """`MicroVMSandbox`/`SandboxContainer` may be constructed only inside the
     sandbox package (backends and the canonical adapter). A consumer that
     wants execution builds a selector and asks it (#76)."""
-    offenders: list[str] = []
-    for needle in _DIRECT_CONSTRUCTIONS:
-        offenders.extend(_offenders(lambda text, n=needle: n in text))
+    offenders = _offenders(_constructs_implementation)
     assert offenders == [], (
         "product code constructed a sandbox implementation outside the canonical "
         f"selector authority: {sorted(set(offenders))}"

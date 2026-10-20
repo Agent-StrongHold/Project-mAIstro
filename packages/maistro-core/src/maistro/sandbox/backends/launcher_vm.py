@@ -86,7 +86,12 @@ class LauncherVMSandboxBackend:
                 "profile exists to honour this grant; refusing rather than "
                 "approximating it"
             )
-        effective = dataclasses.replace(self._substrate, network="none")
+        effective = dataclasses.replace(
+            self._substrate,
+            network="none",
+            memory_mib=min(self._substrate.memory_mib, config.memory_mb),
+            timeout=min(self._substrate.timeout, config.timeout_s),
+        )
         self._instances[sid] = MicroVMSandbox(
             self._launcher,
             config=effective,

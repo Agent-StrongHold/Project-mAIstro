@@ -8,13 +8,16 @@ all pass through the canonical selector and policy authority.
 from __future__ import annotations
 
 import time
+from dataclasses import replace
 from pathlib import Path
 
 from maistro.config.settings import SandboxSettings
-from maistro.sandbox import TRUSTED_TOOL, SandboxInstance, SandboxProtocol, build_selector
-from maistro.sandbox.protocol import SandboxConfig
+from maistro.sandbox import UNTRUSTED_CODE, SandboxInstance, SandboxProtocol, build_selector
+from maistro.sandbox.network import DENY_ALL, EgressMode
+from maistro.sandbox.policy import WorkloadPolicy
 from maistro.sandbox.selector import NoSuitableBackendError
 from maistro.security.dangerous_tools import is_dangerous_command
+from maistro.tools.sandbox.microvm import _parse_mib
 from maistro.tools.sandbox.workspace import CONTAINER_WORKSPACE, ensure_workspace
 
 
@@ -86,25 +89,26 @@ async def create_sandbox(
     *,
     ttl: int | None = None,
     env: dict[str, str] | None = None,
+    policy: WorkloadPolicy = UNTRUSTED_CODE,
 ) -> CanonicalSandboxContainer:
-    """Create a sandbox through the selector; never choose a backend directly."""
+    """Create through canonical policy; settings may tighten, never grant egress."""
+    overrides: dict[str, int] = {}
+    if settings is not None:
+        if settings.network_disabled:
+            policy = replace(policy, egress=DENY_ALL)
+        elif policy.egress.mode is EgressMode.DENY:
+            raise ValueError("network access requires an explicit policy egress grant")
+        overrides = {"memory_mb": _parse_mib(settings.memory_limit), "timeout_s": settings.timeout}
     host_path = ensure_workspace(workspace)
     selector = build_selector()
-    _tier, backend = selector.select(TRUSTED_TOOL)
-    config = selector.build_config(TRUSTED_TOOL)
-    config = SandboxConfig(
-        memory_mb=config.memory_mb,
-        cpu_cores=config.cpu_cores,
-        timeout_s=config.timeout_s,
-        max_file_mb=config.max_file_mb,
-        max_processes=config.max_processes,
-        writable_paths=config.writable_paths,
+    _tier, backend = selector.select(policy)
+    config = selector.build_config(policy, **overrides)
+    config = replace(
+        config,
         workspace_host=str(host_path),
         image=settings.image if settings is not None else config.image,
+        cpu_cores=settings.cpu_count if settings is not None else config.cpu_cores,
         env=dict(env or {}),
-        min_isolation=config.min_isolation,
-        egress=config.egress,
-        fence=config.fence,
     )
     instance = await backend.spawn(config=config)
     effective_ttl = settings.timeout if settings is not None else (ttl or 3600)

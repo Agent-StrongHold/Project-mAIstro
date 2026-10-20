@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
+import os
+import sys
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -74,3 +78,139 @@ def test_vm_capability_selects_every_standard_policy(monkeypatch: pytest.MonkeyP
 def test_kata_backend_claims_only_the_protocol_vm_tier() -> None:
     assert _backend().tier == "vm"
     assert isinstance(_backend(), KataSandboxBackend)
+
+
+@pytest.fixture
+async def spawned(monkeypatch: pytest.MonkeyPatch):
+    backend = _backend()
+    monkeypatch.setattr(backend, "_run", AsyncMock(return_value=(b"container-id", b"", 0)))
+    remove = AsyncMock()
+    monkeypatch.setattr(backend, "_remove_container", remove)
+    instance = await backend.spawn(
+        config=SandboxConfig(timeout_s=10, max_stdout_bytes=8, max_stderr_bytes=8)
+    )
+    try:
+        yield backend, instance, remove
+    finally:
+        await backend.destroy(instance)
+
+
+@pytest.mark.parametrize("operation", ["read", "write"])
+async def test_file_transfer_refuses_directory_swap(spawned, tmp_path, monkeypatch, operation):
+    backend, instance, _remove = spawned
+    root = Path(instance.metadata["workdir"])
+    (root / "nested").mkdir()
+    (root / "nested" / "marker").write_bytes(b"guest")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    marker = outside / "marker"
+    marker.write_bytes(b"host-secret")
+    original_to_thread = asyncio.to_thread
+
+    async def swap_before_host_open(func, *args, **kwargs):
+        (root / "nested").rename(root / "original")
+        (root / "nested").symlink_to(outside, target_is_directory=True)
+        return await original_to_thread(func, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(asyncio, "to_thread", swap_before_host_open)
+        with pytest.raises((OSError, ValueError)):
+            if operation == "write":
+                await backend.write_file(instance, "/workspace/nested/marker", b"overwrite")
+            else:
+                await backend.read_file(instance, "/workspace/nested/marker")
+    assert marker.read_bytes() == b"host-secret"
+
+
+@pytest.mark.parametrize("stream", ["stdout", "stderr"])
+async def test_real_child_output_is_bounded(spawned, monkeypatch, stream):
+    backend, instance, remove = spawned
+    create = asyncio.create_subprocess_exec
+
+    async def real_child(*_argv, **kwargs):
+        return await create(
+            sys.executable,
+            "-c",
+            f"import os; os.write({1 if stream == 'stdout' else 2}, b'x'*4096)",
+            **kwargs,
+        )
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", real_child)
+    result = await backend.exec(instance, ["ignored"])
+    assert result.exit_code == 125
+    assert result.output_limit_exceeded
+    assert getattr(result, f"{stream}_truncated")
+    assert getattr(result, f"{stream}_bytes_retained") == 8
+    assert len(getattr(result, stream).encode()) == 8
+    remove.assert_awaited_once()
+
+
+async def test_cancellation_reaps_child_and_removes_guest(spawned, monkeypatch):
+    backend, instance, remove = spawned
+    create = asyncio.create_subprocess_exec
+    started = asyncio.Event()
+    children = []
+
+    async def real_child(*_argv, **kwargs):
+        child = await create(sys.executable, "-c", "import time; time.sleep(60)", **kwargs)
+        children.append(child)
+        started.set()
+        return child
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", real_child)
+    task = asyncio.create_task(backend.exec(instance, ["ignored"]))
+    await started.wait()
+    # Let exec enter its capture scope before cancelling the task.
+    await asyncio.sleep(0)
+    task.cancel()
+    try:
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert children[0].returncode is not None
+        remove.assert_awaited_once()
+    finally:
+        if children[0].returncode is None:
+            children[0].kill()
+            await children[0].wait()
+
+
+async def test_timeout_reaps_real_child_and_removes_guest(spawned, monkeypatch):
+    backend, instance, remove = spawned
+    create = asyncio.create_subprocess_exec
+    children = []
+
+    async def real_child(*_argv, **kwargs):
+        child = await create(sys.executable, "-c", "import time; time.sleep(60)", **kwargs)
+        children.append(child)
+        return child
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", real_child)
+    result = await backend.exec(instance, ["ignored"], timeout_s=0)
+    assert result.exit_code == 124
+    assert result.timed_out
+    assert children[0].returncode is not None
+    remove.assert_awaited_once()
+
+
+async def test_failed_removal_does_not_discard_retryable_instance(spawned):
+    backend, instance, remove = spawned
+    fd = backend._require(instance)[3]
+    remove.side_effect = [RuntimeError("daemon unavailable"), None]
+    with pytest.raises(RuntimeError, match="daemon unavailable"):
+        await backend.destroy(instance)
+    os.fstat(fd)
+    await backend.destroy(instance)
+    await backend.destroy(instance)
+    with pytest.raises(OSError):
+        os.fstat(fd)
+    assert not Path(instance.metadata["workdir"]).exists()
+
+
+async def test_container_removal_failure_is_not_reported_as_success(monkeypatch):
+    backend = _backend()
+    run = AsyncMock(return_value=(b"", b"daemon unavailable", 1))
+    monkeypatch.setattr(backend, "_run", run)
+    with pytest.raises(RuntimeError, match="daemon unavailable"):
+        await backend._remove_container("kata-test")
+    run.return_value = (b"", b"No such container: kata-test", 1)
+    await backend._remove_container("kata-test")

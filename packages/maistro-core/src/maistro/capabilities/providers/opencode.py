@@ -123,19 +123,14 @@ def opencode_microvm_factory(
     # The canonical authority imports live here (see the TYPE_CHECKING note):
     # at module load they would be circular; at factory-call time every
     # package is initialized.
-    from maistro.sandbox.backends.launcher_vm import LauncherVMSandboxBackend
     from maistro.sandbox.policy import UNTRUSTED_CODE
-    from maistro.sandbox.selector import SandboxSelector
+    from maistro.sandbox.wiring import build_launcher_selector
 
     effective_policy = policy if policy is not None else UNTRUSTED_CODE
 
     async def factory(workdir: str) -> SandboxExec:
-        selector = SandboxSelector()
-        selector.register(
-            "vm",
-            LauncherVMSandboxBackend(
-                launcher, config=config, workspace=workdir, trusted_env=shared_env
-            ),
+        selector = build_launcher_selector(
+            launcher, config=config, workspace=workdir, trusted_env=shared_env
         )
         _tier, backend = selector.select(effective_policy)
         instance = await backend.spawn(config=selector.build_config(effective_policy))

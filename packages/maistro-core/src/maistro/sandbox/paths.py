@@ -207,9 +207,9 @@ def _open_parent(root: Path | int, parts: tuple[str, ...], *, create: bool) -> t
         raise
 
 
-def read_beneath(root: Path | int, path: str) -> bytes:
+def read_beneath(root: Path | int, path: str, *, mount: str = "/work") -> bytes:
     """Read a regular path beneath ``root`` without following symlinks."""
-    parts = _relative_parts(path)
+    parts = _relative_parts(path, mount=mount)
     parent_fd, name = _open_parent(root, parts, create=False)
     try:
         file_fd = os.open(name, os.O_RDONLY | _NOFOLLOW, dir_fd=parent_fd)
@@ -219,9 +219,9 @@ def read_beneath(root: Path | int, path: str) -> bytes:
         os.close(parent_fd)
 
 
-def write_beneath(root: Path | int, path: str, content: bytes) -> None:
+def write_beneath(root: Path | int, path: str, content: bytes, *, mount: str = "/work") -> None:
     """Replace a file beneath ``root`` without following a swapped symlink."""
-    parts = _relative_parts(path)
+    parts = _relative_parts(path, mount=mount)
     parent_fd, name = _open_parent(root, parts, create=True)
     try:
         file_fd = os.open(

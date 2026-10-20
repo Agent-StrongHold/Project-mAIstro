@@ -197,6 +197,28 @@ def test_a_workspace_outside_the_allowlist_is_refused_at_construction() -> None:
         LauncherVMSandboxBackend(_FakeLauncher(), workspace=str(PurePosixPath("/etc")))
 
 
+async def test_canonical_resource_ceilings_clamp_launcher_requests() -> None:
+    launcher = _FakeLauncher()
+    backend = LauncherVMSandboxBackend(
+        launcher,
+        config=MicroVMConfig(memory_mib=4096, timeout=60),
+        workspace=_workspace("ceilings"),
+    )
+    selector = SandboxSelector()
+    selector.register("vm", backend)
+    policy = WorkloadPolicy(min_tier="vm", max_memory_mb=64, max_timeout_s=1)
+    _tier, selected = selector.select(policy)
+    instance = await selected.spawn(config=selector.build_config(policy))
+    try:
+        await selected.exec(instance, ["echo hi"], timeout_s=60)
+        spec = launcher.specs[-1]
+        assert spec.config.memory_mib == 64
+        assert spec.config.timeout == 1
+        assert spec.timeout == 1
+    finally:
+        await selected.destroy(instance)
+
+
 async def test_destroy_is_an_idempotent_noop() -> None:
     # One VM per exec (SPEC-205): there is no persistent resource, so destroy
     # must simply never raise — including twice.

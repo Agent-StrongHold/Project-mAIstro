@@ -20,6 +20,10 @@ There is no bare-subprocess tier."
 from __future__ import annotations
 
 import logging
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from maistro.tools.sandbox.microvm import LauncherFn, MicroVMConfig, VMMLauncher
 
 from maistro.sandbox.detect import HostCapabilities, detect_host_capabilities
 from maistro.sandbox.protocol import SandboxConfig
@@ -88,4 +92,28 @@ def build_selector(
     return selector
 
 
-__all__ = ["build_selector"]
+def build_launcher_selector(
+    launcher: VMMLauncher | LauncherFn,
+    *,
+    config: MicroVMConfig | None = None,
+    workspace: str,
+    trusted_env: dict[str, str] | None = None,
+) -> SandboxSelector:
+    """Register an operator-wired launcher under the same selector authority.
+
+    This is explicit wiring, not host capability evidence or a supported VMM
+    implementation. Product consumers must still select and build policy config.
+    """
+    from maistro.sandbox.backends.launcher_vm import LauncherVMSandboxBackend
+
+    selector = SandboxSelector()
+    selector.register(
+        "vm",
+        LauncherVMSandboxBackend(
+            launcher, config=config, workspace=workspace, trusted_env=trusted_env
+        ),
+    )
+    return selector
+
+
+__all__ = ["build_launcher_selector", "build_selector"]

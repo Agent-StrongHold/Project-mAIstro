@@ -44,7 +44,7 @@ rather than trusted.
 
 From `maistro.sandbox.policy`:
 
-| Policy | Minimum tier | Runs on a Tier-3-only host? |
+| Policy | Minimum tier | Supported disposition |
 |---|---|---|
 | `UNTRUSTED_CODE` | `vm` | **Yes, when the Kata profile is available; otherwise refused** |
 | `BENCHMARK_EVAL` | `vm` | **Yes, when the Kata profile is available; otherwise refused** |
@@ -127,11 +127,25 @@ constructs a direct Docker/process/microVM sandbox of its own:
 
 | Consumer | Policy | Backend it gets |
 |---|---|---|
-| Sandbox MCP tools (`maistro.tools.sandbox.canonical`) | `TRUSTED_TOOL` | strongest available (Kata when evidenced) |
-| Evolve benchmark checks (`maistro_evolve.benchmarks.sandbox_exec`) | `TRUSTED_TOOL` | strongest available |
-| RSI microVM adapter (`maistro_rsi.sandbox.microvm`) | `TRUSTED_TOOL` | strongest available |
+| Sandbox MCP tools (`maistro.tools.sandbox.canonical`) | `UNTRUSTED_CODE` | Kata profile, else refusal |
+| Evolve benchmark checks (`maistro_evolve.benchmarks.sandbox_exec`) | `UNTRUSTED_CODE` | Kata profile, else refusal |
+| RSI microVM adapter (`maistro_rsi.sandbox.microvm`) | `UNTRUSTED_CODE` | Kata profile, else refusal |
 | RSI contained validation + builders sessions (`ContainerBuilderSandbox`) | `BUILDER_AGENT` | Kata profile, else refusal |
 | opencode foreign harness (`opencode_microvm_factory`) | `UNTRUSTED_CODE` | launcher-vm substrate registered behind the selector (deny-only) |
+
+The generic command facade defaults to `UNTRUSTED_CODE`, not `TRUSTED_TOOL`:
+model-generated shell and benchmark code are not trusted first-party API calls.
+Settings memory/time requests are clamped through `selector.build_config`.
+`network_disabled=True` tightens any policy to DENY; false cannot manufacture
+an egress grant. A networked first-party caller must explicitly supply its
+policy. Launcher factories register only through canonical wiring; their
+memory/time requests are capped by the selected canonical config.
+
+Kata transfers share the canonical descriptor-relative no-follow primitives,
+anchored to an instance-owned workspace fd. Execution and teardown serialize
+with transfers. Bounded concurrent output capture terminates the host client
+and removes the guest on overflow, timeout, or cancellation; killing only the
+Docker client is insufficient. Lifecycle CLI capture is bounded as well.
 
 The builders adapter's host-side credential boundary (denylist-filtered seed
 copy, `.git`-filtered sync-back) is caller policy on top of the selected
@@ -234,10 +248,14 @@ workdir while a host operation or bwrap process is using it.
   exhaustion and cleanup, and every expectation in it was measured against a
   live sandbox before it was written down. The bubblewrap lane in CI *is* the
   designated conformance lane for Tier 3. The canonical Kata backend has the
-  same protocol-level launch assertions in
-  `packages/maistro-core/tests/sandbox/test_kata_backend.py`; live VM and
-  escape coverage is required on the Kata deployment profile and is skipped
-  when this host does not expose Kata/KVM evidence.
+  protocol-level launch and real-host-child safety assertions in
+  `packages/maistro-core/tests/sandbox/test_kata_backend.py`. Live selected-VM
+  checks are in `test_kata_live_conformance.py` (same directory): all four
+  policies launch workloads, with containment, deny egress, file limits,
+  transfer, overflow, timeout, and cancellation checks on the untrusted policy.
+  They explicitly skip when the host lacks Kata/KVM evidence. These skips
+  **do not establish VM acceptance**; a supported deployment must execute
+  this lane before issue #76 can be considered complete.
 
   What it establishes, concretely: the host's `/etc/passwd` and `/home` are not
   there to read; `/usr` is read-only; `/proc/1/root` is the sandbox's root and
