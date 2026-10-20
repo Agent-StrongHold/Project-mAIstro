@@ -27,6 +27,7 @@ from maistro.capabilities.effect_context import (
 from maistro.graph.nodes.base import BaseNode, NodeContext
 from maistro.graph.policies import DEFAULT_NODE_TIMEOUT_S, resolve_node_timeout_s
 from maistro.http import shared_client
+from services.governed_tools import validate_hive_tool_arguments
 from services.tool_executor import ModelCall
 
 logger = logging.getLogger(__name__)
@@ -222,6 +223,10 @@ async def _tool_web_search(
 
     all_results = []
     max_r = tool_config.get("max_results", 5)
+    # Validate the entire batch before its first effect: a malformed later
+    # parent-derived query must not leave a partially executed tool batch.
+    for query in queries[:5]:
+        validate_hive_tool_arguments("web_search", {"query": query, "max_results": max_r})
     for query in queries[:5]:
         model_kwargs = {"model_call": model_call} if model_call is not None else {}
         all_results.append(await web_search(query, max_results=max_r, **model_kwargs))
@@ -234,6 +239,9 @@ async def _tool_clarify(
     from services.tool_executor import clarify
 
     questions = tool_config.get("questions", [])
+    validate_hive_tool_arguments(
+        "clarify", {"questions": questions, "context": {"input": task_desc}}
+    )
     model_kwargs = {"model_call": model_call} if model_call is not None else {}
     answers = await clarify(questions, {"input": task_desc}, **model_kwargs)
     return "\n".join(
@@ -245,10 +253,12 @@ async def _tool_clarify(
 async def _tool_browse_url(tool_config: dict[str, Any]) -> str:
     from services.tool_executor import browse_url
 
-    result = await browse_url(
-        tool_config.get("url", ""),
-        tool_config.get("task", "Extract key information"),
-    )
+    arguments = {
+        "url": tool_config.get("url", ""),
+        "task": tool_config.get("task", "Extract key information"),
+    }
+    validate_hive_tool_arguments("browse_url", arguments)
+    result = await browse_url(arguments["url"], arguments["task"])
     return json.dumps(result, indent=2)
 
 

@@ -251,6 +251,108 @@ async def test_browse_url_returns_the_extractor_payload_as_json(
     assert '"facts"' in results["n1"]["response"]
 
 
+@pytest.mark.parametrize(
+    ("tool_name", "tool_config", "parents"),
+    [
+        ("browse_url", {"url": {"unexpected": "object"}}, {}),
+        ("browse_url", {"url": "https://example.com", "task": 1}, {}),
+        ("clarify", {"questions": ["valid?", 1]}, {}),
+        ("web_search", {"max_results": "five"}, {}),
+        (
+            "web_search",
+            {"iterate_over": "src.topics"},
+            {"src": {"response": '{"topics": ["valid", {"wrong": "type"}]}', "success": True}},
+        ),
+    ],
+)
+async def test_legacy_tools_validate_materialized_arguments_before_any_backend(
+    monkeypatch: pytest.MonkeyPatch,
+    tool_name: str,
+    tool_config: dict[str, Any],
+    parents: dict[str, dict[str, Any]],
+) -> None:
+    """Legacy config/parent data cannot evade the shared host tool schema."""
+    import services.legacy_dag_node as adapter
+    import services.tool_executor as tools
+
+    from maistro.capabilities.effect_context import binding_scope_policy, new_effect_context
+
+    calls: list[tuple[Any, ...]] = []
+
+    async def backend(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        calls.append(args)
+        return {"unexpected": "dispatch"}
+
+    monkeypatch.setattr(tools, tool_name, backend)
+    effects = new_effect_context(policy_evaluator=binding_scope_policy)
+    ctx = _compat_ctx()
+    results = dict(parents)
+    await adapter._run_tool_node(
+        {"id": "n1", "tool": tool_name, "tool_config": tool_config},
+        "n1",
+        {"n1": set(parents)},
+        results,
+        "task",
+        effect_context=effects,
+        ctx=ctx,
+    )
+
+    assert calls == []
+    assert results["n1"]["success"] is False
+    assert "must be a" in results["n1"]["response"]
+    invocations = await effects.invocation_store.list_effect(
+        run_id=ctx.run_id,
+        node_run_id=ctx.node_run_id,
+        binding_id=f"legacy-tool:ws-1:proj-1:n1:{tool_name}",
+        effect_key=f"legacy-tool:{tool_name}",
+    )
+    assert len(invocations) == 1
+    assert invocations[0].status.value == "failed"
+
+
+async def test_legacy_backend_argument_error_retains_unknown_outcome(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A provider error is not proof that its external effect was unapplied."""
+    import services.legacy_dag_node as adapter
+    import services.tool_executor as tools
+
+    from maistro.capabilities.effect_context import binding_scope_policy, new_effect_context
+    from maistro.tools.contracts import ToolArgumentError
+
+    calls: list[str] = []
+
+    async def backend(url: str, task: str) -> dict[str, Any]:
+        calls.append(url)
+        raise ToolArgumentError("provider error after possible external effect")
+
+    monkeypatch.setattr(tools, "browse_url", backend)
+    effects = new_effect_context(policy_evaluator=binding_scope_policy)
+    ctx = _compat_ctx()
+    results: dict[str, dict[str, Any]] = {}
+    await adapter._run_tool_node(
+        {"id": "n1", "tool": "browse_url", "tool_config": {"url": "https://example.com"}},
+        "n1",
+        {},
+        results,
+        "task",
+        effect_context=effects,
+        ctx=ctx,
+    )
+
+    assert calls == ["https://example.com"]
+    assert results["n1"]["success"] is False
+    invocations = await effects.invocation_store.list_effect(
+        run_id=ctx.run_id,
+        node_run_id=ctx.node_run_id,
+        binding_id="legacy-tool:ws-1:proj-1:n1:browse_url",
+        effect_key="legacy-tool:browse_url",
+    )
+    assert len(invocations) == 1
+    assert invocations[0].status.value == "unknown"
+    assert invocations[0].error == "provider error after possible external effect"
+
+
 async def test_legacy_tool_uses_the_canonical_governed_invocation_boundary(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

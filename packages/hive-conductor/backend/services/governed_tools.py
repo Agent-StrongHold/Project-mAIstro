@@ -28,15 +28,18 @@ from typing import TYPE_CHECKING, Any
 
 from maistro.capabilities.binding import Binding
 from maistro.capabilities.binding_store import register_boot_binding
+from maistro.capabilities.invocation import EffectNotApplied
 from maistro.observability.correlation import current_execution_context
 from maistro.runs.store import RunIntegrityError
 from maistro.tools.contracts import (
     GovernedToolExecutor,
     ToolContract,
+    ToolContractError,
     ToolContractRegistry,
     ToolInvocationContext,
     ToolRegistration,
     ToolReversibility,
+    validate_tool_arguments,
 )
 
 if TYPE_CHECKING:
@@ -122,6 +125,21 @@ def _registry() -> ToolContractRegistry:
     if _REGISTRY is None:
         _REGISTRY = hive_tool_contracts()
     return _REGISTRY
+
+
+def validate_hive_tool_arguments(name: str, arguments: dict[str, Any]) -> None:
+    """Validate materialized legacy inputs with the same host-owned schemas.
+
+    This is argument validation only: callers still need canonical Invocation
+    admission. Legacy adapters run this pure stage before *any* batch effects,
+    so refusal proves EffectNotApplied to their existing Invocation rather
+    than leaving an unknown external outcome. Backend exceptions are not
+    caught here and retain the canonical conservative settlement semantics.
+    """
+    try:
+        validate_tool_arguments(_registry().require(name).schema, arguments)
+    except ToolContractError as exc:
+        raise EffectNotApplied(str(exc)) from exc
 
 
 def hive_tool_names() -> frozenset[str]:
