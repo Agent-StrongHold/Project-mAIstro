@@ -81,7 +81,26 @@ $ uv run pytest packages/maistro-core/tests/runs/ -x -q
 ```
 
 The re-export adds no vulture identities (__all__ re-exports are uses, not
-findings) and moves no other ratchet. What remains red in CI is inherited
-develop-side debt with owning lanes -- pip-audit advisories (aiohttp, ecdsa)
-and the coverage-gate combine -- reproduced against pristine e20e9f52e and
-out of scope for this lane.
+findings) and moves no other ratchet.
+
+## Diff coverage of this branch's changed files
+
+The per-file diff gate (90% lines / 80% branch arcs) was reproduced locally
+against the develop base e20e9f52e by running the two producers that measure
+the changed trees under ``coverage run --branch``:
+
+```console
+$ uv run coverage run --branch --source=packages/maistro-core/src/maistro \
+    -m pytest packages/maistro-core/tests --timeout=30 -q
+15664 passed, 1131 skipped, 7 xfailed
+$ uv run coverage run --append --branch --source=packages/hive-conductor/backend \
+    -m pytest packages/hive-conductor/backend/tests --timeout=30 -q
+3780 passed, 24 skipped
+$ uv run coverage xml -o /tmp/coverage.xml
+$ uv run python scripts/check-diff-coverage.py /tmp/coverage.xml --base e20e9f52e
+ok: every measured file this change touches is at or above 90% lines / 80% branch arcs
+```
+
+The aggregate publish-set floor and the pip-audit advisories (aiohttp, ecdsa)
+remain inherited develop-side debt with owning lanes, reproduced against
+pristine e20e9f52e and out of scope for this lane.
