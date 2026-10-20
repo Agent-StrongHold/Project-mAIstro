@@ -1925,9 +1925,16 @@ def test_release_workflow_resolves_and_preserves_evidence_before_build(checker: 
     gate = next(step for step in steps if "--require-release-evidence" in step.get("run", ""))
     assert "--resolve-release-evidence" in gate["run"]
     assert "--resolved-output release-compliance.json" in gate["run"]
-    assert jobs["wheels"]["needs"] == "guard"
-    assert "guard" in jobs["pypi"]["needs"]
-    assert "guard" in jobs["images"]["needs"]
+    # #1069: a release is not a closure candidate unless strict M1 closeout
+    # parity executed every required scenario, so the build/publish chain needs
+    # the closeout job alongside the evidence-resolving guard gate. The guard
+    # membership is what this test has always pinned (compliance evidence must
+    # be resolved before anything is built or published); the closeout
+    # membership is the release policy that keeps an abstained scenario from
+    # shipping.
+    for job in ("wheels", "pypi", "images"):
+        assert "guard" in jobs[job]["needs"]
+        assert "m1-closeout" in jobs[job]["needs"]
     assert any(step.get("with", {}).get("name") == "release-compliance" for step in steps)
     publisher = jobs["github-release"]["steps"]
     assert any(step.get("with", {}).get("name") == "release-compliance" for step in publisher)

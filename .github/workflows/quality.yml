@@ -1329,15 +1329,26 @@ jobs:
           # (_validate_least_authority 14, VersionRange.satisfied_by 12) as
           # ledger rows: 137 + 2 = 139.
           #
-          # 139 -> 137 (this PR): those two SDK blocks did not stay debt. The
-          # Boy Scout ratchet took them down instead of banking them --
+          # 139 -> 137: those two SDK blocks did not stay debt. The Boy Scout
+          # ratchet took them down instead of banking them --
           # _validate_least_authority split into its two one-directional halves
           # and VersionRange.satisfied_by became an operator dispatch, both now
           # B or better -- so the scan widening surfaced no new debt and the
           # two ledger rows and their grants were withdrawn as never landed.
-          # Re-measured at HEAD: 137 block identities, xenon and the ledger
+          # Re-measured on develop: 137 block identities, xenon and the ledger
           # one-for-one, module and average axes clean.
-          XENON_BASELINE: 137
+          #
+          # 137 -> 134 (#1791, developed in parallel with the waves above and
+          # merged here): the three consistency-evaluator blocks in
+          # maistro-design (consistency.py::_build_refinement,
+          # _check_sibling_contradictions, evaluate_project_snapshot) went
+          # from C (17/16/15) to B (8/6/6), and the radon ledger dropped the
+          # same three rows together with their #1682 grants -- the same move
+          # #1674 made for tau_bench. A divergence between this count and the
+          # ledger's length is itself a signal that one of the two instruments
+          # stopped looking; tests/test_complexity_gate_scope.py pins them
+          # together.
+          XENON_BASELINE: 134
           # Module rank was never gated at all. The old count matched only
           # '^ERROR:xenon:block', so a whole module drifting to C passed in
           # silence; widening the scope surfaced one.
