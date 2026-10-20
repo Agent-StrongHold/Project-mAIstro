@@ -203,3 +203,66 @@ deployment they run in, through two shared fixtures in
 
 No product code was weakened to get there: the deployment states the grant,
 the host states the role, and the gate still denies anything else.
+
+## Validation round (2026-10-20) — develop sync verified complete, gates re-run at `10e51d26e`
+
+The develop sync conflict recorded as the previous block is resolved: merge
+commit `292a383bd` (`Merge origin/develop into auto-60 (#60/#845)`) has
+parents `7a76ef082` and `e20e9f52e`; the working tree is clean; `origin/develop`
+is still at `e20e9f52e` (the merge-base, 0 commits ahead), so there is no
+further sync to perform. The resolution is complete and consistent:
+`optimizer.py` is byte-identical to develop's (0-line diff — develop's
+escalation handling was taken as documented), and no conflict markers remain
+anywhere under `packages/` or `docs/`.
+
+Re-run at head `10e51d26e5d53257acd65d0f03191a68b751a3bc`:
+
+- `uv run ruff check .` — all checks passed; `uv run ruff format --check .`
+  — 3366 files already formatted.
+- Targeted suites: `packages/maistro-core/tests/security/test_delegation_authority.py`
+  + `a2a/test_broker.py` + `tests/security/test_sentinel_permission_table_armed.py`
+  — 33 passed; `packages/hive-conductor/backend/tests/test_execution_mode.py`
+  + `test_legacy_dag_node.py` + `test_legacy_dag_node_container_composition.py`
+  — 46 passed; `test_dag_model_tools.py` + `test_security_regression.py` —
+  40 passed.
+- `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'` — exit 0, 1326 findings (exactly develop's banked count,
+  no ledger edit).
+- `check-suite-inventory.py` — ok, 21 suites match the recorded inventory.
+  The note's deltas reconcile exactly: core +5 (the new
+  `test_delegation_authority.py`), hive +17 (`test_execution_mode.py` 8 +
+  `test_legacy_dag_node.py` 9), tests/ +4 (the parametrized
+  `test_shipped_profiles_authorize_graph_node_execution`, one case per
+  shipped profile).
+- `check-backlog-consistency.py`, `check-reachability-dispositions.py`
+  (48 groups / 168 modules), `check-radon-baseline.py` (134 C-or-worse),
+  `check-promotion-surface.py`, `check-shipped-surface-truth.py` — all ok.
+- `xenon` with CI's exact arguments — 0 block violations (baseline 134),
+  0 module violations, no average violation.
+- `mypy packages/maistro-core/src` — success, 797 source files.
+
+### The one red gate is inherited from develop, not branch-caused
+
+`check-ratchet-provenance.py` fails the reachability ratchet:
+`maistro.runs.admission_identity` is flagged NEW unreachable (169 vs the
+trusted base's 168). This is a pre-existing develop-side structural blocker,
+proven three ways:
+
+1. The module exists at the trusted base `e20e9f52e` and nothing imports it
+   there (`git grep` over `origin/develop` finds only docs and its own test).
+2. Running `check-reachability.py` in a scratch worktree at `e20e9f52e`
+   reports the same module as unreachable — the trusted base itself carries
+   the debt.
+3. The branch diff touches nothing under `runs/` (`git diff --name-only
+   e20e9f52e..HEAD` lists no `runs/` file), and develop's own inventory note
+   (`docs/testing/inventory-notes/task-admission-identity-types.md`) records
+   this exact failure as the #1851 leaf's known structural blocker — that
+   leaf was prohibited from adding a reachability-baseline entry, and the
+   two-merge rule makes a branch-side entry inert anyway.
+
+The same failure reds the three root reachability-baseline tests
+(`tests/test_reachability_baseline_identity.py` ×2,
+`tests/test_check_reachability.py::test_baseline_matches_the_tree`) and
+cascades to the Coverage and Quality gates on CI. It is unfixable in this
+lane: a ledger/grant edit is prohibited in an ordinary implementation PR, and
+wiring the module is #1851's surface, not #60/#845's.
