@@ -1,13 +1,7 @@
 ---
-inventory-delta:
-  # No net test delta on this branch: the 2026-09-11 closeout attempt's three
-  # added tests were superseded by develop's canonical implementations of the
-  # same acceptance (#1194 replay contract, #1193 composition failure, #1199
-  # canonical tick) and were dropped during the develop merge reconciliation.
-  # Develop's own notes carry those suites' deltas.
 ---
 
-# Issue 13 — one execution universe (develop reconciliation)
+# Issue 13 — one execution universe (develop reconciliation, revalidated 2026-10-20)
 
 The 2026-09-11 closeout commit (c4fa327b) implemented the epic's three
 Core-review requirements (#1194 node retry/idempotency, #1193 synth-DAG
@@ -28,7 +22,7 @@ supersede that branch-local variant:
   `ScheduleStore.due()` (`_tick_due`), re-reads canonical truth under
   `definition_lock`, persists cursors through the canonical store, and the
   bounded consumer executes admitted Runs
-  (`test_scheduler_canonical_admission.py`).
+  (`packages/hive-conductor/backend/tests/test_scheduler_canonical_admission.py`).
 
 The merge into develop (ab8b3737) therefore takes develop's side for every
 overlapping hunk and removes the branch-local test variants
@@ -36,3 +30,30 @@ overlapping hunk and removes the branch-local test variants
 they duplicated develop's canonical coverage and no longer compiled against
 the `ReplaySemantics` contract. This note records that reconciliation so the
 ledger does not count tests this branch no longer adds.
+
+## Revalidation on the fad17a87c sync (2026-10-20)
+
+The branch was re-synced to `origin/develop` at fad17a87c (merge 552658ace;
+clean, no conflicts — the only branch-local file is this note). The three
+requirements were rechecked against reachable production behavior rather than
+assuming the earlier note's claims:
+
+- #1194 — `ReplaySemantics` present in `executor.py` (contract field,
+  `_may_revisit_after` gate) and `attempt_executor.py` (`_node_replay_semantics`,
+  `_replay_refused`); the two regression tests pass.
+- #1193 — `NodeCompositionError` raised at `agent_synth_dag.py` composition
+  when the durable run store is absent; `test_agent_synth_dag.py` asserts
+  `error_code == "NodeCompositionError"` (32 tests pass).
+- #1199 — `scheduler.py` canonical tick wired (`_tick_due`,
+  `definition_lock`, `schedule_store` cursors);
+  `test_scheduler_canonical_admission.py` passes (16 tests).
+
+Focused suites on the synced tree: `graph/durable_runs` 710 passed,
+`graph/nodes` 601 passed, conductor scheduling 185 passed, `runs` 1320
+passed, `scheduling` 274 passed; `ruff check` and `ruff format --check` clean.
+
+No test count moves on this change, so no `inventory-delta` is recorded. The
+epic's remaining open items are owned elsewhere: direct children #41, #42,
+#44, #46, #47, #48, open nested items #251 and #1082, sub-issue #1612
+(GraphExecutionState load/fork at event sequence N), and #1192 (hierarchy-
+owned by M1-E #62). This note intentionally does not close them.
