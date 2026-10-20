@@ -211,6 +211,7 @@ async def exec_cli_command(body: CliExecBody, request: Request) -> dict[str, Any
         )
         raise
     except Exception:
+        _append_history(session_id, command, "error", [])
         log_audit(
             action="cli_exec",
             actor=actor,
