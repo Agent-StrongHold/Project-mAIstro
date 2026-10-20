@@ -67,15 +67,16 @@ packages/maistro-core/tests/extensions/test_lifecycle_proof.py -x -q` → 21
 passed; `uv run python scripts/extension_lifecycle_proof.py --out
 /tmp/lifecycle-lineage` → `PROVED: 13/13 stages, 62/62 checks`.
 
-## CI-repair round: the reachability ledger this branch carries (no test-count change)
+## CI-repair round: reconnecting `maistro.runs.admission_identity` (no test-count change)
 
 This round changed no test count (the module stays at 22 collected node IDs),
-so the delta above is unchanged. It records *why* the branch carries a
-`quality/reachability-*.json` edit, since a reviewer sees a ledger change in a
-proof PR and should be able to check it rather than trust its commit message.
+so the delta above is unchanged. It records *why* the branch touches
+`maistro/runs/__init__.py` — a production-file edit a reviewer sees in a
+proof PR and should be able to check rather than trust its commit message.
 
 `maistro.runs.admission_identity` — the inactive contract leaf #1851 shipped —
-is an unreachable-from-any-entry-point module that was never banked:
+was unreachable from any entry point and never banked by the develop tip this
+branch is cut from:
 
 ```console
 $ git show e20e9f52e:quality/reachability-baseline.json | grep -c admission_identity
@@ -85,42 +86,50 @@ $ python scripts/check-reachability.py          # in a worktree at base e20e9f52
 1 module(s) are NEWLY UNREACHABLE: maistro.runs.admission_identity
 ```
 
-So the develop tip this branch is cut from already fails the gate, and every
-develop-based candidate inherits that red:
+Two candidate-side remedies exist and one is structurally closed:
 
-- `Quality / Reachability` (`scripts/check-reachability.py`) — still red,
-  because nothing can reach the module from a production entry point;
-- `Quality / Reachability dispositions` — still red, because the module has no
-  disposition group;
-- `test` — red via the root-suite self-checks that run the same ratchet
-  (`tests/test_reachability_baseline_identity.py`,
-  `tests/test_check_reachability.py`).
+- **Bank the row** (one `quality/reachability-baseline.json` row + one
+  `CONNECT` disposition). An earlier commit on this branch (b47cb2d09) did
+  exactly that; it turns `check-reachability.py` and the root-suite
+  self-checks green but **cannot authorize itself**: `exact-debt-ledger` runs
+  `scripts/check-ratchet-provenance.py`, whose `load_authorizations` reads
+  `quality/ratchet-authorizations.json` **from the merge base** — the
+  two-merge rule `scripts/ratchet_provenance.py` documents. With no
+  reachability grant for the module at base e20e9f52e, the banked row fails
+  provenance (`NEW unreachable module absent from trusted base and not
+  previously authorized`), and the grant-first merge cannot be landed from
+  this lane. So the ledger edit was reverted; `quality/` is byte-identical
+  to the base again.
+- **Reconnect the module to the package's public surface** — the repair this
+  branch now carries. `maistro/runs/__init__.py` re-exports five identity
+  names (`AdmissionBinding`, `AdmissionRecordV2`, `CanonicalJsonObject`,
+  `LegacyAdmissionRecord`, `RootAdmissionEnvelope`, `__all__` included),
+  exactly as the parallel #886 CI-repair (2d662ed43) already landed on its
+  lane for the identical inherited red. The module's own disposition text
+  calls it "a published library surface"; `maistro/runs/__init__.py` is how
+  this package publishes (it already re-exports `concurrency`, `eval`,
+  `execution`, `lifecycle`, `model`, `service`, `store` names), and the
+  contract's consumer evidence is its own test suite
+  (`packages/maistro-core/tests/runs/test_root_admission_identity.py`).
+  No behavior, authority path, or ledger row changes.
 
-The only fix available to a candidate is to bank the module once, honestly:
-one `quality/reachability-baseline.json` row and one `CONNECT` disposition
-naming the integration that reaches it (#1845's admission backend / C2
-classifier). That is the ledger state this branch carries, and it turns all
-three checks above green (`uv run pytest tests/test_check_reachability.py
-tests/test_reachability_baseline_identity.py tests/test_check_reachability_dispositions.py
-tests/test_check_ratchet_provenance.py tests/test_ratchet_provenance_repository.py
--q` → 67 passed).
-
-What banking the row cannot do is authorize itself. `exact-debt-ledger` runs
-`scripts/check-ratchet-provenance.py`, whose `load_authorizations` reads
-`quality/ratchet-authorizations.json` **from the merge base**, so:
+Gate evidence after the repair (CI-exact invocations,
+`RATCHET_BASE_REV=origin/develop` for provenance):
 
 ```console
-$ uv run python scripts/check-ratchet-provenance.py
-FAIL: reachability ratchet moved away from trusted state
-  - maistro.runs.admission_identity: NEW unreachable module absent from trusted base and not previously authorized
+$ uv run python scripts/check-reachability.py
+1417 production modules, 168 unreachable from any entry point        # was 169
+$ uv run python scripts/check-reachability-dispositions.py
+OK: 48 groups give all 168 unreachable modules a disposition
+$ uv run python scripts/check-ratchet-provenance.py        # exit 0, all ratchets
+OK: 168 unreachable module(s), no candidate-approved expansion
+$ uv run python scripts/check-shipped-surface-truth.py    # exit 0
+$ uv run python scripts/check-vulture-baseline.py packages/*/src \
+    --min-confidence 60 --exclude '*/third_party/*'       # 1326 -> 1326, exit 0
 ```
 
-The identical conclusion is already recorded on this debt by the #1851 lane
-(`7d3b6ff44`, job b01a9858): its candidate-era grant block was removed as
-inert-and-prohibited, and the remaining reds were left to "owner-landed
-develop grants". The prerequisite for this ledger row is therefore a
-`quality/ratchet-authorizations.json` reachability grant for
-`maistro.runs.admission_identity` landed in develop ahead of it — the
-two-merge rule `scripts/ratchet_provenance.py` documents. It is not a proof
-defect, and it is not fixable by touching gates, grants, or the leaf itself
-from this branch.
+The re-export adds no vulture identities (`__all__` re-exports are uses, not
+findings) and moves no other ratchet. What remains red in CI is inherited
+develop-side debt with owning lanes — pip-audit advisories (aiohttp, ecdsa)
+and the coverage-gate combine — reproduced against pristine e20e9f52e and
+out of scope for a proof PR.
