@@ -1,6 +1,7 @@
 """Regression checks for metadata repair authorization and native graph evidence."""
 
 import importlib.util
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -50,8 +51,13 @@ def manifest(child, parent):
 class FakeAPI:
     repository = "owner/repo"
 
-    def __init__(self, child, parent, actual=None, lose_reverse=False):
-        self.issues = {child["number"]: child, parent["number"]: parent}
+    def __init__(self, child, parent, actual=None, lose_reverse=False, extra=()):
+        self.issues = {
+            child["number"]: child,
+            parent["number"]: parent,
+            **{x["number"]: x for x in extra},
+        }
+        self.parents = {child["number"]: actual} if actual is not None else {}
         self.actual = actual
         self.posts = []
         self.lose_reverse = lose_reverse
@@ -59,14 +65,17 @@ class FakeAPI:
     def request(self, method, path, payload=None):
         if method == "POST":
             self.posts.append((path, payload))
-            self.actual = int(path.split("/")[2])
+            self.parents[payload["sub_issue_id"] - 1000] = int(path.split("/")[2])
             return {}
         return self.issues[int(path.split("/")[2])]
 
     def parent(self, number):
-        if self.actual is None:
+        if number not in self.parents:
             return None
-        return {"number": self.actual, "repository_url": "https://api.github.com/repos/owner/repo"}
+        return {
+            "number": self.parents[number],
+            "repository_url": "https://api.github.com/repos/owner/repo",
+        }
 
     def pages(self, path):
         return [] if self.lose_reverse else list(self.issues.values())
@@ -130,20 +139,45 @@ class TestIssueMetadataIntegrity(unittest.TestCase):
             )
             self.assertIn('"verified": true', journal.read_text())
 
-    def test_second_run_produces_no_post(self):
+    def test_second_run_revalidates_existing_link_without_writes(self):
         child, parent = issue(1, "Parent: #2"), issue(2)
         api = FakeAPI(child, parent, actual=2)
         with tempfile.TemporaryDirectory() as directory:
+            journal = Path(directory) / "journal.jsonl"
             self.assertEqual(
                 gate.apply_links(
                     api,
                     snapshot(child, parent, edges=[{"child": 1, "parent": 2}]),
                     manifest(child, parent),
-                    Path(directory) / "journal",
+                    journal,
                 ),
                 0,
             )
+            text = journal.read_text()
+            self.assertIn('"action": "already_linked"', text)
+            self.assertIn('"verified": true', text)
         self.assertEqual(api.posts, [])
+
+    def test_mutation_limit_counts_new_writes_not_verifications(self):
+        child, parent = issue(1, "Parent: #2"), issue(2)
+        new_child, new_parent = issue(3, "Parent: #4"), issue(4)
+        api = FakeAPI(child, parent, actual=2, extra=[new_child, new_parent])
+        applied = {
+            "repository": "owner/repo",
+            "links": manifest(child, parent)["links"] + manifest(new_child, new_parent)["links"],
+        }
+        snap = snapshot(
+            child, parent, new_child, new_parent, edges=[{"child": 1, "parent": 2}]
+        )
+        with tempfile.TemporaryDirectory() as directory, patch.object(gate.time, "sleep"):
+            journal = Path(directory) / "journal.jsonl"
+            self.assertEqual(gate.apply_links(api, snap, applied, journal, limit=1), 1)
+            actions = [json.loads(line)["action"] for line in journal.read_text().splitlines()]
+        self.assertEqual(
+            api.posts,
+            [("/issues/4/sub_issues", {"sub_issue_id": 1003, "replace_parent": False})],
+        )
+        self.assertEqual(actions, ["already_linked", "intent", "linked"])
 
     def test_cross_repository_sub_issue_is_inventoried_separately(self):
         class CrossRepoAPI:

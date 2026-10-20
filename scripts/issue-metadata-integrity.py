@@ -357,7 +357,12 @@ def apply_link(api: API, edge: dict[str, Any], output: Any) -> bool:
 def apply_links(
     api: API, snapshot: dict[str, Any], manifest: dict[str, Any], journal: Path, limit: int = 25
 ) -> int:
-    """Preflight the entire batch, resume safely, then verify each mutation."""
+    """Preflight the entire batch, resume safely, then verify each link.
+
+    Already-linked entries stay eligible: every run revalidates their live
+    bodies, ownership comments and both read-backs, journaling
+    `already_linked`. Only new writes count against the mutation limit.
+    """
     if manifest.get("repository") != api.repository:
         raise ValueError("manifest repository mismatch")
     issues = {x["number"]: x for x in snapshot["issues"]}
@@ -365,12 +370,15 @@ def apply_links(
     if len({x["child"] for x in edges}) != len(edges):
         raise ValueError("duplicate manifest child")
     check_cycles(snapshot["native_edges"] + edges)
-    existing = {(x["child"], x["parent"]) for x in snapshot["native_edges"]}
-    edges = [x for x in edges if (x["child"], x["parent"]) not in existing][:limit]
     for edge in edges:
         validate_source(edge, issues[edge["child"]], issues[edge["parent"]])
     with journal.open("a", encoding="utf-8") as output:
-        return sum(apply_link(api, edge, output) for edge in edges)
+        writes = 0
+        for edge in edges:
+            writes += apply_link(api, edge, output)
+            if writes >= limit:
+                break
+        return writes
 
 
 def main() -> int:
