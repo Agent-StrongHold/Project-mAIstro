@@ -123,6 +123,9 @@ wait forever for an `Expected` result.
 | Formal Conformance | `formal-conformance` | every PR |
 | Gate C | `Gate C — canonical clean install` | every PR |
 | Integration Scope | `integration-scope` | every PR |
+| Issue metadata integrity | `audit` | paths |
+| Issue metadata integrity | `issue-metadata-tests` | paths |
+| Issue metadata integrity | `repair` | paths |
 | Registry CI | `Validate ADR/spec front-matter` | every PR |
 | Vulture Ratchet | `exact-debt-ledger` | every PR |
 | quality | `Coverage gate (publish-set floor + diff coverage)` | every PR |
