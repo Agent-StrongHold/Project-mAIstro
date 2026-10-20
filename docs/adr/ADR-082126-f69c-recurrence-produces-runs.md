@@ -243,11 +243,9 @@ setting.
 
 - Scheduled work becomes visible to every tool that understands Runs, and
   needs no scheduler-specific observability to be debuggable or billable.
-- Schedules *can* survive a restart: the durable store exists and both
-  implementations are held to the same tests. The failure is not yet closed
-  end to end, because Hive's `/v1/schedules` routes still write the in-memory
-  `stores.schedules`. That migration is the remaining step and is tracked in
-  `KNOWN-GAPS.md` rather than claimed here.
+- Schedules survive a restart: the durable store exists, both implementations
+  are held to the same tests, and Hive's `/v1/schedules` routes now write the
+  canonical store while keeping `stores.schedules` as a response projection.
 - Two reachability islands (`maistro.scheduling`, `maistro.scheduling.store`)
   join the spine.
 - The `/v1/schedules` HTTP contract is unchanged; only the semantics moved.
@@ -271,10 +269,10 @@ missing; it was overtaken on *how* to provide them.
 | Bounded catch-up work + truthful incompleteness (#1200) | Shipped (`engine.py` `EnumerationLimits`, `admission.py`) — window ≤ 7d at definition time, host-selected window/step/budget bounds, an incomplete walk holds the due cursor and is logged by the live tick |
 | Product frequency floor + catch-up window cap (#1200) | Shipped (`routes/schedules.py`, `config.py`) — `schedule_min_frequency_gap_s` (default 900s) refused below at create/update, `schedule_max_catchup_window_s` (default 1d), both bounded 300s–7d / 1h–7d at startup |
 | Store protocol + in-memory + SQLite | Shipped (`store.py`) |
-| Hive `/v1/schedules` rows on the durable store | **Not yet** — the routes still write `stores.schedules`, which is in memory, so schedules created through the live API still do not survive a restart. The durable store exists and is tested; migrating the CRUD path behind the unchanged HTTP contract is the next step |
-| Hive runner evaluating through the engine | Shipped (`services/scheduler.py`) |
+| Hive `/v1/schedules` rows on the durable store | Shipped — CRUD writes the canonical store behind the unchanged HTTP contract; the legacy row is a response projection and a one-time migration source |
+| Hive runner evaluating through the engine | Shipped (`services/scheduler.py`); the live tick reads canonical `ScheduleStore.due()` |
 | Fires produce canonical Runs | Shipped — via `services/dag_agents.py` |
-| Postgres store implementation | **Not yet** — the protocol is the seam |
+| Postgres store implementation | Shipped (`scheduling/pg_store.py`) — wired by the execution spine when the deployment's PostgreSQL is migrated (`runs/wiring.py`), and held to the same tests as in-memory/SQLite: backend-parity admissions, the serialized `record_fire` concurrency test, and the real-alembic-schema tick legs in `test_scheduler_canonical_due.py` |
 | Hive `/v1/schedules` timezone column | **Not yet** — UTC until added |
 | `maistro_schedule_fires_total` + `schedule.fire` span | **Not yet** — declared by ADR-037's registry contract; the Run correlation exists in the audit trail today |
 
