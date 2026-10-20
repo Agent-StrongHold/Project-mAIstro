@@ -1,22 +1,27 @@
-"""The scan-surface contract (#288): every Scan action the app exposes runs a
-real scanner, and no production code ships the fake-clean shape.
+"""The scan-surface contract (#288): every Scan action the app exposes either
+runs a real scanner or refuses explicitly, and no production code ships the
+fake-clean shape.
 
 #418 closed the fake-clean agent scan, and the same stub survived one door
 over: `POST /v1/mcp/servers/{server_id}/scan` answered
-`{"findings": [], "status": "clean"}` without running anything. Closing one
-path must not leave another stub behind, so this module enforces the property
-mechanically, two ways:
+`{"findings": [], "status": "clean"}` without running anything. That surface
+now refuses explicitly (501, #389); the agent and skills surfaces run the
+Warden walk. Closing one path must not leave another stub behind, so this
+module enforces the property mechanically, three ways:
 
 1. **The route census.** Every POST route whose path ends in `/scan` is
    enumerated from the *live app* (`main.app`), not from a hand-kept list, and
-   must map to exactly the registered real-scanner handler. A new scan route
-   fails here until it is registered (a deliberate act), and a registered
-   route that vanishes fails too -- the enumeration cannot rot silently.
+   must map to exactly the registered handler. A new scan route fails here
+   until it is registered (a deliberate act), and a registered route that
+   vanishes fails too -- the enumeration cannot rot silently.
 2. **The source sweep.** No module under `routes/` or `services/` may contain
    the literal fake-clean dict (`"findings": []` beside a constant
    `"status": "clean"`). Conditional forms (`"clean" if not findings else
    "flagged"`) are the correct shape and are not matched; only the
    unconditional literal is -- the one that reports clean without looking.
+3. **The unsupported surface.** The one scan route without a scanner wired
+   must say so with an explicit error, never answer `clean`. This keeps the
+   "unsupported" state distinct from both "clean" and "failed".
 
 The per-surface behavior (a known malicious fixture is flagged, a known clean
 fixture passes, a broken scanner is an explicit unknown) is proven in the
@@ -38,8 +43,8 @@ if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
 
 #: The complete set of Scan actions the live app exposes, mapped to the
-#: `module.handler` that must be a real scanner. Enumerated from the app at
-#: test time -- not trusted from this list.
+#: `module.handler` that owns each surface. Enumerated from the app at test
+#: time -- not trusted from this list.
 #:
 #: Note: `routes/projects.py` also defines `POST /{project_id}/scan` (a real
 #: repo scanner), but that router is not mounted in `main.py`, so it is no
@@ -50,6 +55,10 @@ EXPECTED_SCAN_ROUTES: dict[str, str] = {
     "/v1/skills/scan": "routes.skills.scan_skills",
     "/v1/mcp/servers/{server_id}/scan": "routes.mcp.scan_server",
 }
+
+#: Scan surfaces that deliberately have no scanner wired. They must refuse
+#: explicitly -- `clean` is the one answer they may never give.
+EXPECTED_UNSUPPORTED_SCAN_ROUTES: frozenset[str] = frozenset({"/v1/mcp/servers/{server_id}/scan"})
 
 
 def _iter_api_routes() -> Iterator[tuple[str, Any]]:
@@ -115,16 +124,14 @@ def _fake_clean_literals() -> list[str]:
 
 
 class TestTheScanSurfaceContract:
-    def test_every_scan_route_runs_a_real_scanner(self) -> None:
+    def test_every_scan_route_is_registered(self) -> None:
         """Both directions: no unregistered scan route can appear (a new stub
-        fails until its real scanner is registered here), and no registered
-        entry survives the vanishing of its route."""
+        fails until its handler is registered here), and no registered entry
+        survives the vanishing of its route."""
         found = _scan_routes()
         unregistered = {p: h for p, h in found.items() if EXPECTED_SCAN_ROUTES.get(p) != h}
         vanished = [p for p in EXPECTED_SCAN_ROUTES if p not in found]
-        assert not unregistered, (
-            f"scan route(s) not backed by a registered real scanner: {unregistered}"
-        )
+        assert not unregistered, f"scan route(s) not backed by a registered handler: {unregistered}"
         assert not vanished, f"registered scan route(s) no longer exist: {vanished}"
 
     def test_no_production_code_ships_the_fake_clean_literal(self) -> None:
@@ -143,9 +150,42 @@ class TestTheScanSurfaceContract:
             "/v1/agents/scan": "tests/test_agents_routes.py::TestTheScanActuallyScans",
             "/v1/agents/{agent_id}/scan": "tests/test_agents_routes.py::TestTheScanActuallyScans",
             "/v1/skills/scan": "tests/test_skills_routes.py",
-            "/v1/mcp/servers/{server_id}/scan": "tests/test_mcp_routes.py (scan tests)",
+            "/v1/mcp/servers/{server_id}/scan": (
+                "tests/test_mcp_routes.py::test_scan_server_found_is_explicitly_unsupported"
+            ),
         }
         assert set(coverage) == set(EXPECTED_SCAN_ROUTES)
+
+    def test_unsupported_scan_surfaces_refuse_explicitly(self) -> None:
+        """A surface with no scanner wired must not borrow the verdict shape.
+        The MCP scan answers 501 for a real server and names the gap; it has no
+        branch that returns `clean`."""
+        import importlib
+        import inspect
+        import textwrap
+
+        assert set(EXPECTED_SCAN_ROUTES) >= EXPECTED_UNSUPPORTED_SCAN_ROUTES
+        for path in EXPECTED_UNSUPPORTED_SCAN_ROUTES:
+            module, symbol = EXPECTED_SCAN_ROUTES[path].rsplit(".", 1)
+            source = inspect.getsource(getattr(importlib.import_module(module), symbol))
+            assert "status_code=501" in source, f"{path} must refuse explicitly"
+            # Docstrings may *describe* the removed stub; only executable
+            # `return {... "status": "clean"}` shapes are prohibited.
+            tree = ast.parse(textwrap.dedent(source))
+            returned_clean = [
+                node.lineno
+                for node in ast.walk(tree)
+                if isinstance(node, ast.Return)
+                and isinstance(node.value, ast.Dict)
+                and any(
+                    isinstance(k, ast.Constant)
+                    and k.value == "status"
+                    and isinstance(v, ast.Constant)
+                    and v.value == "clean"
+                    for k, v in zip(node.value.keys, node.value.values, strict=False)
+                )
+            ]
+            assert not returned_clean, f"{path} must not fabricate clean (lines {returned_clean})"
 
 
 @pytest.mark.parametrize(
@@ -153,12 +193,13 @@ class TestTheScanSurfaceContract:
     [
         ("routes.agents", "scan_proposed_config"),
         ("routes.agents", "scan_agent"),
-        ("routes.mcp", "scan_server"),
     ],
 )
 def test_the_scan_handlers_run_the_shared_warden_walk(module: str, symbol: str) -> None:
-    """The surfaces #288 covers must run the *same* bounded Warden walk the
-    write path gates on -- not a second, weaker check written locally."""
+    """The agent scan surfaces must run the *same* bounded Warden walk the
+    write path gates on -- not a second, weaker check written locally. The MCP
+    surface has no scanner wired and is pinned by the explicit-refusal test
+    above instead."""
     import importlib
     import inspect
 

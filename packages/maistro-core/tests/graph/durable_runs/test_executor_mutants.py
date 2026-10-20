@@ -26,6 +26,7 @@ from maistro.graph.nodes.base import NodeResult
 from maistro.runs.lifecycle import transition_node_run
 from maistro.runs.model import NodeRun
 from maistro.runtime import PythonExecutionRuntime
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 from .._canonical_helpers import completed_node_run, durable_record, graph_from_dag
 
@@ -299,7 +300,11 @@ class TestInitialInputsAndIdentity:
         assert _initial_inputs(record) == {"text": "hi"}
 
     def test_generated_canonical_run_id_is_full_uuid_hex(self) -> None:
-        run = _new_run(_one_node_graph(), run_id=None, actor_principal_id=None)
+        run = _new_run(
+            _one_node_graph(),
+            run_id=None,
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+        )
         assert len(run.run_id) == 32
         int(run.run_id, 16)
 
@@ -315,6 +320,7 @@ class TestInitialInputsAndIdentity:
             store=store,
             node_resolver=_resolver,
             inputs={"text": "hi"},
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         )
         assert result.status is RunStatus.COMPLETED
         assert result.run.result == {"text": "hi"}

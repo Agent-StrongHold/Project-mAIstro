@@ -63,6 +63,19 @@ def test_chat_payload_merges_tools_only_when_present() -> None:
     assert without_tools["stream"] is False
 
 
+@pytest.mark.parametrize("temperature", [None, 0.0, 0.7])
+def test_sampling_omission_preserves_provider_default_without_dropping_zero(
+    temperature: float | None,
+) -> None:
+    payload = _chat_payload(
+        LlmGatewayProvider(None, model="m1"), ModelChatRequest(temperature=temperature)
+    )
+    if temperature is None:
+        assert "temperature" not in payload
+    else:
+        assert payload["temperature"] == temperature
+
+
 def test_checked_body_accepts_object_body() -> None:
     """Arc 128 False: an object body passes through unchanged."""
 
@@ -151,3 +164,32 @@ async def test_foreign_request_shape_refuses_seam() -> None:
             {"model": "m1", "messages": []},  # raw dict, not the governed shape
             endpoint=GatewayEndpoint(base_url="http://gw"),
         )
+
+
+def test_authorization_header_injects_optional_gateway_identity() -> None:
+    """Enterprise-gateway identity headers ride only when configured (issue #289).
+
+    ``organization``/``project`` on a GatewayEndpoint are optional: a plain
+    gateway sees neither header, while a configured one must see exactly the
+    OpenAI identity headers next to the bearer token.
+    """
+
+    plain = GatewayEndpoint(base_url="http://gw", api_key="k1")
+    assert plain.authorization_header() == {
+        "Content-Type": "application/json",
+        "Authorization": "Bearer k1",
+    }  # both identity arcs False: empty strings never emit a header
+
+    full = GatewayEndpoint(base_url="http://gw", organization="org_1", project="proj_2")
+    assert full.authorization_header() == {
+        "Content-Type": "application/json",
+        "OpenAI-Organization": "org_1",
+        "OpenAI-Project": "proj_2",
+    }  # no api_key: no bearer, both identity arcs True
+
+    partial = GatewayEndpoint(base_url="http://gw", api_key="k2", organization="org_3")
+    assert partial.authorization_header() == {
+        "Content-Type": "application/json",
+        "Authorization": "Bearer k2",
+        "OpenAI-Organization": "org_3",
+    }  # project arc stays False while organization is present
