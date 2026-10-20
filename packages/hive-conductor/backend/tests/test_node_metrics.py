@@ -191,6 +191,7 @@ def _seed_n(
     phase: str = "COMPLETED",
     node_id: str = "x",
     dag_id: str = "d",
+    workspace_id: str = "",
 ) -> None:
     from services.node_metrics_store import NodeObservation
 
@@ -202,6 +203,7 @@ def _seed_n(
             project_id=project,
             dag_id=dag_id,
             phase=phase,
+            workspace_id=workspace_id,
             latency_ms=latency,
             tokens_in=0,
             tokens_out=0,
@@ -526,9 +528,17 @@ def test_set_store_swaps_module_singleton() -> None:
 # --- HTTP route tests ----------------------------------------------------
 
 
+def _own_workspace(client: Any, name: str) -> str:
+    """A Workspace the client's principal owns (the caller becomes owner)."""
+    r = client.post("/v1/workspaces", json={"persona_template_id": "pm_fleet", "name": name})
+    assert r.status_code == 201, r.text
+    return r.json()["id"]
+
+
 def test_metrics_endpoint_returns_aggregate(authed_client: Any, isolated_store: Any) -> None:
-    _seed_n(isolated_store, "x", "p", 100)
-    _seed_n(isolated_store, "x", "p", 200)
+    ws = _own_workspace(authed_client, "Metrics aggregate")
+    _seed_n(isolated_store, "x", "p", 100, workspace_id=ws)
+    _seed_n(isolated_store, "x", "p", 200, workspace_id=ws)
     r = authed_client.get("/v1/dag-metrics")
     assert r.status_code == 200
     body = r.json()
@@ -540,7 +550,8 @@ def test_metrics_endpoint_window_seconds_clamps_to_minimum(
     authed_client: Any, isolated_store: Any
 ) -> None:
     """Caller passes window_seconds=10 — clamped to 60s minimum."""
-    _seed_n(isolated_store, "x", "p", 100)
+    ws = _own_workspace(authed_client, "Metrics min window")
+    _seed_n(isolated_store, "x", "p", 100, workspace_id=ws)
     r = authed_client.get("/v1/dag-metrics?window_seconds=10")
     assert r.status_code == 200
     # Still includes the observation (within 60s)
@@ -551,17 +562,47 @@ def test_metrics_endpoint_window_seconds_clamps_to_maximum(
     authed_client: Any, isolated_store: Any
 ) -> None:
     """Caller passes window_seconds=99999999 — clamped to 7-day max."""
-    _seed_n(isolated_store, "x", "p", 100)
+    ws = _own_workspace(authed_client, "Metrics max window")
+    _seed_n(isolated_store, "x", "p", 100, workspace_id=ws)
     r = authed_client.get("/v1/dag-metrics?window_seconds=99999999")
     assert r.status_code == 200
     assert r.json()["count"] == 1
 
 
+def test_metrics_endpoint_hides_foreign_workspace_observations(
+    authed_client: Any, admin_client: Any, isolated_store: Any
+) -> None:
+    """The aggregate is scoped to the caller's Workspace universe (#1174).
+
+    A foreign observation is indistinguishable from a missing one, and an
+    observation that names no Workspace at all is served to no HTTP reader
+    (fail-closed, the same rule an unscoped run row gets).
+    """
+    mine = _own_workspace(authed_client, "Metrics mine")
+    theirs = _own_workspace(admin_client, "Metrics theirs")
+    _seed_n(isolated_store, "x", "p", 100, workspace_id=mine)
+    _seed_n(isolated_store, "x", "p", 200, workspace_id=theirs)
+    _seed_n(isolated_store, "x", "p", 300, workspace_id="")  # unscoped
+
+    mine_body = authed_client.get("/v1/dag-metrics").json()
+    assert mine_body["count"] == 1
+    assert mine_body["latency_ms_p50"] == 100
+
+    theirs_body = admin_client.get("/v1/dag-metrics").json()
+    assert theirs_body["count"] == 1
+    assert theirs_body["latency_ms_p50"] == 200
+
+    # The in-process seam stays unscoped: the optimizer collects server-side
+    # over its own deployment's observations, not across a request boundary.
+    assert isolated_store.aggregate(window_seconds=3600)["count"] == 3
+
+
 def test_metrics_observations_endpoint_returns_list(
     authed_client: Any, isolated_store: Any
 ) -> None:
-    _seed_n(isolated_store, "alpha", "p", 100)
-    _seed_n(isolated_store, "beta", "p", 200)
+    ws = _own_workspace(authed_client, "Metrics observations")
+    _seed_n(isolated_store, "alpha", "p", 100, workspace_id=ws)
+    _seed_n(isolated_store, "beta", "p", 200, workspace_id=ws)
     r = authed_client.get("/v1/dag-metrics/observations")
     assert r.status_code == 200
     items = r.json()
@@ -574,10 +615,28 @@ def test_metrics_observations_endpoint_returns_list(
     assert items[0]["node_kind"] == "alpha"
 
 
+def test_metrics_observations_endpoint_hides_foreign_workspace_rows(
+    authed_client: Any, admin_client: Any, isolated_store: Any
+) -> None:
+    """Raw observations answer through the same Workspace door (#1174)."""
+    mine = _own_workspace(authed_client, "Observations mine")
+    theirs = _own_workspace(admin_client, "Observations theirs")
+    _seed_n(isolated_store, "x", "p", 100, workspace_id=mine, node_id="mine-1")
+    _seed_n(isolated_store, "x", "p", 200, workspace_id=theirs, node_id="theirs-1")
+
+    assert [
+        item["node_id"] for item in authed_client.get("/v1/dag-metrics/observations").json()
+    ] == ["mine-1"]
+    assert [
+        item["node_id"] for item in admin_client.get("/v1/dag-metrics/observations").json()
+    ] == ["theirs-1"]
+
+
 def test_metrics_observations_limit_clamped(authed_client: Any, isolated_store: Any) -> None:
     """limit param is clamped to [1, 1000]; below 1 → 1, above 1000 → 1000."""
+    ws = _own_workspace(authed_client, "Metrics limit")
     for i in range(5):
-        _seed_n(isolated_store, "x", "p", i)
+        _seed_n(isolated_store, "x", "p", i, workspace_id=ws)
     r = authed_client.get("/v1/dag-metrics/observations?limit=0")
     assert r.status_code == 200
     assert len(r.json()) == 1  # clamped to 1

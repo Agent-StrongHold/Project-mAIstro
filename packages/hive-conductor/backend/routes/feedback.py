@@ -12,6 +12,12 @@ node kind. project_id defaults to the user's active project (cookie /
 session); if not present, the signal is recorded with empty project_id
 and will only surface in cross-project queries.
 
+Every accepted Outcome carries its canonical Run/NodeRun/Attempt
+provenance (#709): the run must be visible in the caller's Workspace
+universe and carry a canonical execution identity, so feedback is always
+correlatable (#337). A run id with no visible projection row is refused
+like a foreign one.
+
 Auth: requires the logged-in user (AuthMiddleware sets request.state.user).
 The user_id from the session is the actor; cross-user writes are
 impossible because the route never accepts user_id from the body.
@@ -81,24 +87,26 @@ async def _execution_identity(
 ) -> tuple[str, str, str]:
     """Resolve feedback to the visible canonical Run/NodeRun/Attempt.
 
-    Projection-free legacy callers are retained for compatibility, but once a
-    history row exists the Workspace inspection door is mandatory. A node
-    thumb names the latest Attempt under that NodeRun; it never invents a
-    second execution identity.
+    Every accepted thumb names a run the caller may inspect (the Workspace
+    inspection door, #1174) that carries a canonical execution identity; a
+    run that is missing, foreign, or projection-only is refused, because an
+    Outcome that cannot name its Run/NodeRun/Attempt is feedback nothing can
+    correlate (#337). A node thumb names the latest Attempt under that
+    NodeRun; it never invents a second execution identity.
     """
     from services.dag_run_inspection import visible_run_detail
-    from services.dag_run_store import get_dag_run_store
 
     user = getattr(request.state, "user", None) or {}
     user_id = str(user.get("id") or "")
     detail = await visible_run_detail(user_id, run_id)
     if detail is None:
-        # Existing deployments may still accept feedback for a projection
-        # written before history was enabled. Do not apply this compatibility
-        # path to a known row: a missing/foreign row must be indistinguishable.
-        if get_dag_run_store().get_run(run_id) is not None:
-            raise HTTPException(status_code=404, detail="run not found")
-        return run_id, "", ""
+        # "No such run" and "not in your Workspace universe" are deliberately
+        # indistinguishable — the same 404-shaped refusal every other scoped
+        # run surface gives (#1174). This used to accept a projection-free
+        # run_id as a compatibility write; that row could carry no canonical
+        # identity, so it is retired rather than kept as silently
+        # uncorrelated feedback.
+        raise HTTPException(status_code=404, detail="run not found")
 
     canonical_run_id = str(detail.get("canonical_run_id") or "")
     if not canonical_run_id:

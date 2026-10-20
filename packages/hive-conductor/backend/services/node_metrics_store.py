@@ -159,6 +159,7 @@ class NodeMetricsStore:
         node_id: str = "",
         dag_id: str = "",
         window_seconds: int = 3600,
+        workspace_ids: frozenset[str] | set[str] | None = None,
         now: datetime | None = None,
     ) -> list[NodeObservation]:
         self._refresh()
@@ -175,6 +176,14 @@ class NodeMetricsStore:
                 continue
             if dag_id and obs.dag_id != dag_id:
                 continue
+            if workspace_ids is not None and obs.workspace_id not in workspace_ids:
+                # Fail-closed, the same rule `dag_run_inspection._in_scope`
+                # applies to run rows: an observation that names no Workspace
+                # proves nothing about where it executed, so an HTTP reader is
+                # never served it on a guess. `None` is the in-process seam
+                # (the optimizer collects server-side, not across a request
+                # boundary) and is not reachable from a route.
+                continue
             out.append(obs)
         return out
 
@@ -186,6 +195,7 @@ class NodeMetricsStore:
         node_id: str = "",
         dag_id: str = "",
         window_seconds: int = 3600,
+        workspace_ids: frozenset[str] | set[str] | None = None,
         now: datetime | None = None,
     ) -> dict[str, Any]:
         """Return aggregate stats for the filtered observation set."""
@@ -195,6 +205,7 @@ class NodeMetricsStore:
             node_id=node_id,
             dag_id=dag_id,
             window_seconds=window_seconds,
+            workspace_ids=workspace_ids,
             now=now,
         )
         return _aggregate(obs)
@@ -207,6 +218,7 @@ class NodeMetricsStore:
         node_id: str = "",
         dag_id: str = "",
         window_seconds: int = 3600,
+        workspace_ids: frozenset[str] | set[str] | None = None,
         now: datetime | None = None,
     ) -> list[NodeObservation]:
         """The filtered observations themselves.
@@ -222,6 +234,7 @@ class NodeMetricsStore:
             node_id=node_id,
             dag_id=dag_id,
             window_seconds=window_seconds,
+            workspace_ids=workspace_ids,
             now=now,
         )
 
@@ -236,6 +249,7 @@ class NodeMetricsStore:
         node_kind: str = "",
         project_id: str = "",
         window_seconds: int = 3600,
+        workspace_ids: frozenset[str] | set[str] | None = None,
         limit: int = 100,
         now: datetime | None = None,
     ) -> list[dict[str, Any]]:
@@ -243,6 +257,7 @@ class NodeMetricsStore:
             node_kind=node_kind,
             project_id=project_id,
             window_seconds=window_seconds,
+            workspace_ids=workspace_ids,
             now=now,
         )
         return [_to_dict(o) for o in reversed(obs[-limit:])]

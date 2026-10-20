@@ -177,3 +177,28 @@ def test_metrics_retention_evicts_the_oldest_durable_row() -> None:
 
     assert list(rows) == ["attempt-new"]
     assert [item.attempt_id for item in store.observations(window_seconds=3600)] == ["attempt-new"]
+
+
+@pytest.mark.ac("M1-E/metrics-scope-authorization")
+def test_workspace_scoped_reads_are_fail_closed() -> None:
+    """The HTTP seam scopes reads to a caller's Workspace universe (#1174).
+
+    `workspace_ids` is the only door the routes pass: a member observation is
+    served, a foreign one is not, and an observation that names no Workspace
+    is served to nobody. `None` stays the in-process seam the optimizer reads
+    through, and it is not reachable from a route.
+    """
+    store = NodeMetricsStore()
+    store.append(_observation(attempt_id="a-mine", workspace_id="ws-mine"))
+    store.append(_observation(attempt_id="a-theirs", workspace_id="ws-theirs"))
+    store.append(_observation(attempt_id="a-legacy", workspace_id=""))
+
+    mine = store.observations(window_seconds=3600, workspace_ids=frozenset({"ws-mine"}))
+    assert [item.attempt_id for item in mine] == ["a-mine"]
+    assert (
+        store.aggregate(window_seconds=3600, workspace_ids=frozenset({"ws-theirs"}))["count"] == 1
+    )
+    # No Workspace at all: nothing is in scope, not even the caller's own rows.
+    assert store.observations(window_seconds=3600, workspace_ids=frozenset()) == []
+    # The in-process seam is unchanged for server-side collectors.
+    assert store.aggregate(window_seconds=3600)["count"] == 3

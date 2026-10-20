@@ -93,13 +93,14 @@ async def record_thumb(
         user_id=user_id,
         project_id=project_id,
         # `dag_run_id` is the Hive projection shown in the UI. The canonical
-        # provenance columns name the Run spine when this route has one; old
-        # projection-free callers keep the compatibility identity in both
-        # places until that unsupported path is retired.
+        # provenance columns name the Run spine the route resolved (#337):
+        # `run_id` is the canonical Run, never a borrowed projection id. Empty
+        # canonical identities reach here only from direct service-level
+        # callers, which the HTTP route never is.
         dag_run_id=run_id,
         dag_id=dag_id,
         node_id=node_id,
-        run_id=canonical_run_id or run_id,
+        run_id=canonical_run_id,
         node_run_id=node_run_id,
         attempt_id=attempt_id,
         thumb=thumb,
