@@ -256,66 +256,14 @@ if [[ ${#ANSWERS_PROBLEMS[@]} -gt 0 ]]; then
     exit 1
 fi
 
-ensure_python() {
-    if [[ ${#PYTHON_CMD[@]} -gt 0 ]]; then
-        return
-    fi
-
-    local candidate
-    for candidate in python3 python; do
-        if command -v "$candidate" >/dev/null 2>&1 && "$candidate" - <<'PY' >/dev/null 2>&1
-import sys
-raise SystemExit(0 if sys.version_info >= (3, 11) else 1)
-PY
-        then
-            PYTHON_CMD=("$candidate")
-            ok "Python found: $("$candidate" -c 'import sys; print(".".join(map(str, sys.version_info[:3])))')"
-            return
-        fi
-    done
-
-    if command -v py >/dev/null 2>&1 && py -3 - <<'PY' >/dev/null 2>&1
-import sys
-raise SystemExit(0 if sys.version_info >= (3, 11) else 1)
-PY
-    then
-        PYTHON_CMD=(py -3)
-        ok "Python found: $(py -3 -c 'import sys; print(".".join(map(str, sys.version_info[:3])))')"
-        return
-    fi
-
-    fail "Python 3.11+ is required. Install Python, then re-run ./install.sh."
-}
-
-ensure_uv() {
-    if [[ ${#UV_CMD[@]} -gt 0 ]]; then
-        return
-    fi
-
-    if command -v uv >/dev/null 2>&1; then
-        UV_CMD=(uv)
-        ok "uv found: $(uv --version)"
-        return
-    fi
-
-    ensure_python
-    info "Installing uv into the current user's Python environment..."
-    "${PYTHON_CMD[@]}" -m pip install --user --quiet uv
-
-    if "${PYTHON_CMD[@]}" -m uv --version >/dev/null 2>&1; then
-        UV_CMD=("${PYTHON_CMD[@]}" -m uv)
-        ok "uv installed: $("${PYTHON_CMD[@]}" -m uv --version)"
-        return
-    fi
-
-    if command -v uv >/dev/null 2>&1; then
-        UV_CMD=(uv)
-        ok "uv installed: $(uv --version)"
-        return
-    fi
-
-    fail "uv installed, but the executable is not on PATH. Add the Python user scripts directory to PATH and retry."
-}
+# The user-owned Python/uv bootstrap contract (#1821): uv first (its official
+# standalone installer needs neither Python nor pip), then a helper interpreter
+# (3.11+ floor) reused from the host or provisioned by uv — with the wizard
+# package's separate 3.12+ requirement validated by ensure_package_python, so
+# an accepted helper interpreter is never reported as satisfying package
+# execution. Defined in one place, shared with get.sh's legacy migration:
+# shellcheck source=scripts/bootstrap-runtime.sh
+source "$SCRIPT_DIR/scripts/bootstrap-runtime.sh"
 
 random_secret() {
     local prefix="${1:-}"
@@ -1343,6 +1291,12 @@ run_feature_wizard() {
     fi
 
     ensure_uv
+    # The wizard runs packages/maistro-bootstrap, whose requires-python is
+    # >= 3.12 — a requirement distinct from the 3.11+ helper floor. Resolve
+    # and verify what uv will actually execute it on before starting, so a
+    # host with only an older interpreter fails here, with the reason, rather
+    # than mid-wizard (#1821).
+    ensure_package_python
     mkdir -p "$PLAN_DIR"
 
     local args=(run --project packages/maistro-bootstrap maistro-install --materialize-dir "$PLAN_DIR" --maistro-root "$PWD")

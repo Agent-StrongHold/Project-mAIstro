@@ -66,6 +66,7 @@ from maistro.runs.store import (
     require_repairable_attempt,
     validate_accepted_outcome_against_attempt,
     validate_child_scope,
+    validate_effect_claim_parent,
     validate_eval_score_spine,
 )
 from maistro.runs.store_boundary import RunStoreBoundary, require_admitted_actor
@@ -232,6 +233,13 @@ CREATE TABLE IF NOT EXISTS canonical_runs (
     FOREIGN KEY (parent_node_run_id) REFERENCES canonical_node_runs(node_run_id)
 );
 
+-- Recovery enumerates the bounded live prefix from this index, matching the
+-- PostgreSQL `ix_canonical_runs_live` partial index. The ordering expressions
+-- follow `status` so `list_by_status` walks the index in `(created_at,
+-- run_id)` order instead of building a temporary B-tree over the whole live
+-- population on every recovery tick.
+CREATE INDEX IF NOT EXISTS idx_canonical_runs_status
+    ON canonical_runs(status, json_extract(payload, '$.created_at'), run_id);
 CREATE INDEX IF NOT EXISTS idx_canonical_runs_workspace_project
     ON canonical_runs(workspace_id, project_id);
 CREATE INDEX IF NOT EXISTS idx_canonical_runs_parent
@@ -458,6 +466,8 @@ class SqliteRunStore:
         provenance: dict[str, Any] | None = None,
         retention_expires_at: datetime | None = None,
         initial_status: RunStatus = RunStatus.CREATED,
+        goal_id: str | None = None,
+        goal_revision: int | None = None,
     ) -> Run:
         async with self._write_lock:
             await self._validate_graph_scope(graph)
@@ -487,6 +497,8 @@ class SqliteRunStore:
                 actor_principal_id=require_admitted_actor(actor_principal_id),
                 provenance=dict(provenance or {}),
                 retention_expires_at=retention_expires_at,
+                goal_id=goal_id,
+                goal_revision=goal_revision,
             )
             # Before the insert, not after it: one commit, so there is no window
             # in which a process death leaves a CREATED Run whose provenance
@@ -597,7 +609,7 @@ class SqliteRunStore:
             return None
         return model_of_json(Run, row[0])
 
-    async def _require_locked_parent_scope(
+    async def _effect_claim_parent(
         self,
         graph: Graph,
         *,
@@ -605,23 +617,22 @@ class SqliteRunStore:
         parent_node_run_id: str | None,
         allow_cross_project: bool,
     ) -> None:
-        """Validate the optional parent chain inside the claim transaction."""
-        if parent_node_run_id is not None and parent_run_id is None:
-            raise RunIntegrityError("parent_node_run_id requires parent_run_id")
+        """Load and validate optional parent evidence for an effect-keyed Run."""
         parent = await self._require_run(parent_run_id) if parent_run_id else None
-        if parent is None:
-            return
-        validate_child_scope(
+        parent_node_run = (
+            await self._require_node_run(parent_node_run_id)
+            if parent is not None and parent_node_run_id is not None
+            else None
+        )
+        validate_effect_claim_parent(
             parent,
+            parent_node_run,
+            parent_run_id=parent_run_id,
+            parent_node_run_id=parent_node_run_id,
             workspace_id=graph.workspace_id,
             project_id=graph.project_id,
             allow_cross_project=allow_cross_project,
         )
-        if parent_node_run_id is None:
-            return
-        parent_node_run = await self._require_node_run(parent_node_run_id)
-        if parent_node_run.run_id != parent_run_id:
-            raise RunIntegrityError("parent_node_run_id does not belong to parent_run_id")
 
     async def claim_run_by_effect(
         self,
@@ -653,7 +664,7 @@ class SqliteRunStore:
                 if row is not None:
                     await self._conn.commit()
                     return RunEffectClaim(model_of_json(Run, row[0]), False)
-                await self._require_locked_parent_scope(
+                await self._effect_claim_parent(
                     graph,
                     parent_run_id=parent_run_id,
                     parent_node_run_id=parent_node_run_id,

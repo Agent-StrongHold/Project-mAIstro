@@ -36,6 +36,23 @@ SUPPORTED_CONTRACT_MAJORS: tuple[int, ...] = (1,)
 #: moves on its own schedule.
 REPORT_SCHEMA = "maistro-ext-harness/report@1"
 
+#: Version of the machine-readable *certification* report this harness emits
+#: (M9-H3, #975). Its own axis: the certification report's shape moves on
+#: its own schedule, and a consumer can tell the two documents apart by
+#: their schema ids alone.
+CERTIFICATION_SCHEMA = "maistro-ext-harness/certification@1"
+
+#: The one claim no local run can make, worded for the certification report
+#: and referenced by the tests, so the boundary cannot quietly disappear:
+#: a local certification is evidence for the install lifecycle to weigh,
+#: never authorization by itself.
+PLATFORM_NOTE = (
+    "no sandbox executed, no canonical Goal->Graph->Run->NodeRun->Attempt "
+    "evidence was created, and no organization policy was evaluated; this "
+    "report is evidence for an install lifecycle to weigh, not authorization "
+    "by itself"
+)
+
 #: The closed extension families. An unknown family is a validation error,
 #: never an ignored line — a misspelled family name must not quietly become
 #: an unconformed extension.
