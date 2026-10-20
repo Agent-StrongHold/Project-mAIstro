@@ -132,15 +132,19 @@ A node may declare a model ladder on the snapshot as
   the shortfall in the accepted visit's evidence. There is no unbounded
   retry or escalation loop by construction.
 - Budget accounting stays with the canonical Invocation; each rung's
-  completion is its own keyed effect (`llm.summarize.complete:{rung}`), so
-  escalation never replays an unbilled call under a reused key.
+  completion is its own keyed effect
+  (`llm.summarize.complete:<run>:<node>:<digest>`, where the digest covers the
+  rung and the node's inputs), so escalation never replays an unbilled call
+  under a reused key.
 
 `llm.summarize` moves from `NON_RETRYABLE` to `EFFECT_KEY` replay semantics
 under this contract. Nothing changes for graphs that declare neither
 `max_attempts` nor a ladder (default budget is one visit); the change only
 opens the door supervision walks through, and it is honest because the
-governed completion already files its Invocation under a stable per-rung
-effect key — a re-visit is a new keyed effect, not a blind replay.
+governed completion already files its Invocation under a stable Run/node/input
+scoped effect key — a re-visit is a new keyed effect, not a blind replay — and
+the rung is part of that key's digest, so two nodes on one Binding and model
+never share an effect.
 
 ### 4. Node self-reporting: the result-metadata channel
 
