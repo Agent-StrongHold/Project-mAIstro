@@ -10,6 +10,7 @@
 - The passing suite includes `test_replica_selection_has_an_independent_production_allowance` (lines 480 onward): for the same principal/client identity, each production `RateLimitMiddleware` instance allows `[200, 200, 429]` independently. `packages/maistro-server/src/maistro_server/api/rate_limit.py:32-37,93-98` confirms and documents process-local budgets. This proves independent allowance behavior, not cluster-wide non-bypass.
 - `scripts/soak/run_soak.py:1064-1088` confirms the schedule probe is cancelled without executing the admitted Run. This is admission evidence, not physical Attempt fencing/recovery.
 - `docs/testing/soak/m3a-load-profile.md:167-183` explicitly records missing representative user/Workspace, Graph fan-out, successful model/tool and Canvas/Goal workloads, and missing application-loop/physical recovery proof. The profile requires a >=14,400-second exact-RC soak; host-process preflight evidence cannot satisfy that artifact gate.
+- Re-ran `uv run pytest tests/test_soak_promotion_gates.py -x -q` at HEAD `af312c21d3628ec578d45dea1af4a67297bf2ce4`: **84 passed in 1.96s**. The assigned job directory has no `check-*.log` files to inspect. This test validates harness gate behavior only; it does not establish the missing RC/load evidence.
 
 ## Acceptance disposition
 
