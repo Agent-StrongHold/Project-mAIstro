@@ -16,7 +16,9 @@ and Hypothesis tests (`test_engine.py`) cannot make.
 
 from __future__ import annotations
 
+import re
 import time
+import tomllib
 from datetime import timedelta
 from pathlib import Path
 
@@ -258,3 +260,30 @@ def test_z3_is_absent_from_production_sources() -> None:
                 if "import z3" in line or "from z3" in line or line.lstrip().startswith("z3."):
                     matches.append(f"{source}:{lineno}: {line.strip()}")
     assert matches == []
+
+
+def test_z3_is_absent_from_production_dependency_manifests() -> None:
+    """The same non-goal at the manifest layer (#891 review): the source scan
+    above cannot see a dependency that is installed but never statically
+    imported (dynamic `importlib` use, or a transitive import), so the package
+    manifests are the gate too — `z3-solver` must not appear in any package's
+    runtime `[project.dependencies]` or in a non-dev optional extra. The only
+    sanctioned home is the root dev environment (dev group / `dev` extra)."""
+    violations: list[str] = []
+    for manifest in sorted((_REPO_ROOT / "packages").glob("*/pyproject.toml")):
+        data = tomllib.loads(manifest.read_text(encoding="utf-8"))
+        project = data.get("project", {})
+        dependency_groups: list[tuple[str, list[str]]] = [
+            ("dependencies", project.get("dependencies", [])),
+            *[  # every optional extra is shipped to users except the dev extra
+                (f"optional-dependencies.{name}", reqs)
+                for name, reqs in project.get("optional-dependencies", {}).items()
+                if name != "dev"
+            ],
+        ]
+        for where, reqs in dependency_groups:
+            for req in reqs:
+                name = re.match(r"[A-Za-z0-9._-]+", req)
+                if name and name.group(0).lower().startswith("z3"):
+                    violations.append(f"{manifest}: {where}: {req}")
+    assert violations == []
