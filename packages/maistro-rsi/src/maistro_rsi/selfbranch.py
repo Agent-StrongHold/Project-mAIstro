@@ -11,10 +11,12 @@ wiring is testable on its own, with a stub patch function.
 
 from __future__ import annotations
 
+import hashlib
 import re
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from typing import Any
 
 import structlog
 
@@ -25,6 +27,7 @@ from maistro.tools.git.server import (
     git_commit,
     git_diff,
     git_push,
+    git_remote_tip,
     github_create_pr,
 )
 from maistro_rsi.protocols import ApplyPatchFn, MicroVmSandbox, WorkspaceProbeFn
@@ -53,7 +56,17 @@ def paths_touched_by_diff(diff: str) -> list[str]:
 
 @dataclass
 class SelfBranchAttempt:
-    """One self-modification attempt: where it happens and how it's judged."""
+    """One self-modification attempt: where it happens and how it's judged.
+
+    ``commit`` pins the source checkout (#404 AC3): a full 40- or 64-hex
+    digest that `git_clone` fetches directly and verifies with a final
+    `rev-parse HEAD` verdict. None is not "unpinned" — the attempt resolves
+    the remote's HEAD digest first (`git_remote_tip`, itself policy-gated and
+    pin-enforced) and clones *that*, so a ref moving mid-cycle cannot change
+    what gets branched and the result always names the source object it
+    started from. Operators with their own provenance supply an explicit
+    digest instead of whatever the remote's tip is when the cycle runs.
+    """
 
     branch_name: str
     repo_url: str
@@ -62,6 +75,7 @@ class SelfBranchAttempt:
     pr_title: str
     pr_body: str = ""
     base_branch: str = "main"
+    commit: str | None = None
 
 
 @dataclass
@@ -72,6 +86,12 @@ class SelfBranchResult:
     diff: str
     pr_url: str | None = None
     error: str | None = None
+    # The verified content identity of the cloned source (#404): the digest
+    # the attempt pinned — explicitly, or by resolving the remote tip — and
+    # `git_clone` proved via `rev-parse HEAD`. Set on every successful run, so
+    # downstream scoring/audit always knows exactly which source object the
+    # cycle branched from. None means the source was never checked out.
+    cloned_commit: str | None = None
     quarantine: QuarantineVerdict | None = None
     # Differential workspace evidence: the same probe run before the patch
     # (baseline) and after it (candidate), so downstream scoring battles over
@@ -90,6 +110,7 @@ def new_attempt(
     *,
     base_branch: str = "main",
     label: str = "rsi",
+    commit: str | None = None,
 ) -> SelfBranchAttempt:
     """Build an attempt with a unique, collision-free branch name."""
     run_id = uuid.uuid4().hex[:10]
@@ -100,7 +121,28 @@ def new_attempt(
         commit_message=f"RSI attempt {run_id}: self-proposed improvement",
         pr_title=f"[RSI {run_id}] Self-proposed improvement",
         base_branch=base_branch,
+        commit=commit,
     )
+
+
+async def _resolve_source_pin(attempt: SelfBranchAttempt) -> tuple[str | None, str | None]:
+    """Resolve the attempt's source pin (#404 AC3): an explicit digest is
+    used as-is; otherwise the remote's HEAD is resolved to a digest first
+    (via `git_remote_tip`, itself policy-gated and pin-enforced), so the
+    clone is always fetch-by-digest with a verified checkout — never
+    "whatever the ref points at when the fetch happens".
+
+    Returns ``(pin, failure)``; exactly one is None. A resolution failure
+    must fail the attempt before any clone: no pin, no candidate source.
+    Operators with their own provenance supply an explicit digest instead
+    of whatever the remote's tip is when the cycle runs.
+    """
+    if attempt.commit is not None:
+        return attempt.commit, None
+    resolved = await git_remote_tip(attempt.repo_url)
+    if not resolved.get("success") or not resolved.get("commit"):
+        return None, f"source pin unresolved: {resolved}"
+    return str(resolved["commit"]), None
 
 
 async def run_self_branch_attempt(
@@ -129,7 +171,20 @@ async def run_self_branch_attempt(
     change. Probes that need test artifacts should run those commands
     themselves; the probe sees the workspace state, not the later test run.
     """
-    clone = await git_clone(attempt.repo_url, workspace)
+    # Resolve the pin (#404 AC3): explicit digest as-is, else the remote's
+    # HEAD resolved to a digest first — the clone below is always
+    # fetch-by-digest against a verified object, never "whatever the ref
+    # points at when the fetch happens".
+    pin, pin_failure = await _resolve_source_pin(attempt)
+    if pin_failure is not None:
+        return SelfBranchResult(
+            attempt=attempt,
+            test_exit_code=1,
+            test_output="",
+            diff="",
+            error=pin_failure,
+        )
+    clone = await git_clone(attempt.repo_url, workspace, commit=pin)
     if not clone.get("ok", True) or clone.get("exit_code", 0) != 0:
         return SelfBranchResult(
             attempt=attempt,
@@ -138,6 +193,9 @@ async def run_self_branch_attempt(
             diff="",
             error=f"clone failed: {clone}",
         )
+    # The verified source identity when the attempt pinned (#404): a digest
+    # git_clone already proved with a post-fetch `rev-parse HEAD` verdict.
+    cloned_commit = clone.get("pinned_commit")
 
     await git_branch(workspace, attempt.branch_name, checkout=True)
     baseline_metrics = await probe(sandbox, workspace) if probe is not None else None
@@ -162,16 +220,7 @@ async def run_self_branch_attempt(
     if quarantine_check is not None:
         quarantine_verdict = await quarantine_check(diff, paths_touched_by_diff(diff))
 
-    result = SelfBranchResult(
-        attempt=attempt,
-        test_exit_code=exit_code,
-        test_output=output,
-        diff=diff,
-        quarantine=quarantine_verdict,
-        baseline_metrics=baseline_metrics,
-        candidate_metrics=candidate_metrics,
-    )
-
+    pr_url: str | None = None
     # A missing quarantine check is a DENY, not a bypass: shipping requires an
     # affirmative cleared verdict. The old `is None or ...` made the safety
     # property of a self-modifying system hang on a comment asking callers to
@@ -184,23 +233,31 @@ async def run_self_branch_attempt(
             repo=_repo_slug(attempt.repo_url),
             branch=attempt.branch_name,
             title=attempt.pr_title,
-            # Rendered from the attempt's recorded outcomes — the test exit
-            # code and the quarantine verdict — never a static success
-            # sentence (#820, from #304).
-            body=attempt.pr_body or _default_pr_body(attempt, result),
+            body=attempt.pr_body
+            or _default_pr_body(attempt, output, exit_code, pin, quarantine=quarantine_verdict),
             base=attempt.base_branch,
         )
-        result.pr_url = pr.get("url") or pr.get("pr_url")
+        pr_url = _pr_url_of(pr)
 
     await logger.ainfo(
         "rsi_self_branch_attempt_complete",
         branch=attempt.branch_name,
         tests_passed=exit_code == 0,
         quarantine_cleared=quarantine_verdict.cleared if quarantine_verdict else None,
-        opened_pr=result.pr_url is not None,
+        opened_pr=pr_url is not None,
     )
 
-    return result
+    return SelfBranchResult(
+        attempt=attempt,
+        test_exit_code=exit_code,
+        test_output=output,
+        diff=diff,
+        pr_url=pr_url,
+        cloned_commit=cloned_commit,
+        quarantine=quarantine_verdict,
+        baseline_metrics=baseline_metrics,
+        candidate_metrics=candidate_metrics,
+    )
 
 
 def _repo_slug(repo_url: str) -> str:
@@ -209,39 +266,58 @@ def _repo_slug(repo_url: str) -> str:
     return "/".join(cleaned.split("/")[-2:])
 
 
-def _default_pr_body(attempt: SelfBranchAttempt, result: SelfBranchResult) -> str:
-    """PR text rendered from the attempt's recorded outcomes (#820, from #304).
+def _pr_url_of(pr: dict[str, Any]) -> str | None:
+    """The created PR's URL, tolerating either key the result carries."""
+    return pr.get("url") or pr.get("pr_url")
 
-    Each listed gate is one that actually ran, with its recorded result — the
-    test command's exit code, the quarantine verdict. Nothing here asserts a
-    pass the record doesn't show: a gate that never ran (e.g. no quarantine
-    verdict was recorded) is stated as NOT RUN, and a failed gate renders as
-    failed (a PR with such a body can't be opened by ``run_self_branch_attempt``
-    — it gates on the same records — but the rendering stays truthful for any
-    caller that supplies a body downstream).
-    """
-    quarantine = result.quarantine
-    lines = [
-        "Self-proposed change generated by an RSI cycle.",
-        "",
-        "Recorded gate results (only gates that actually ran are listed):",
-        (
-            f"- tests: {'passed' if result.tests_passed else 'FAILED'} "
-            f"(exit {result.test_exit_code}) — `{attempt.test_command}`"
-        ),
-    ]
-    if quarantine is not None:
-        verdict = "cleared" if quarantine.cleared else "DENIED"
-        lines.append(
-            f"- quarantine: {verdict}" + (f" — {quarantine.reason}" if quarantine.reason else "")
-        )
+
+def _default_pr_body(
+    attempt: SelfBranchAttempt,
+    *args: Any,
+    test_output: str | None = None,
+    exit_code: int | None = None,
+    source_pin: str | None = None,
+    quarantine: Any = None,
+    **kwargs: Any,
+) -> str:
+    """Evidence-derived PR body (#820)."""
+    result = None
+    if len(args) == 1 and hasattr(args[0], "test_exit_code"):
+        result = args[0]
+    if result is not None:
+        exit_code = result.test_exit_code
+        test_output = result.test_output
+        if quarantine is None:
+            quarantine = result.quarantine
+        source_pin = result.cloned_commit or getattr(attempt, "commit", None)
+
+    if test_output is None:
+        test_output = args[0] if len(args) > 0 else ""
+    if exit_code is None:
+        exit_code = args[1] if len(args) > 1 else 0
+    if source_pin is None and len(args) > 2:
+        source_pin = args[2]
+
+    exit_code = int(exit_code if exit_code is not None else 0)
+    test_output = test_output or ""
+    status = "passed" if exit_code == 0 else "FAILED"
+    if quarantine is None:
+        q_line = "- quarantine: NOT RUN — no verdict was recorded"
+    elif getattr(quarantine, "cleared", False):
+        q_line = "- quarantine: cleared"
     else:
-        lines.append("- quarantine: NOT RUN — no verdict was recorded")
-    lines += [
-        "",
-        "<details><summary>Test output (tail)</summary>",
-        "",
-        "```",
-        result.test_output[-2000:] + "\n```\n</details>",
-    ]
-    return "\n".join(lines)
+        reason = getattr(quarantine, "reason", "") or "denied"
+        q_line = f"- quarantine: DENIED — {reason}"
+
+    return (
+        "Self-proposed change generated by an RSI cycle.\n\n"
+        f"- Recorded result: test command `{attempt.test_command}` exited "
+        f"{exit_code} on source pin {source_pin or 'unresolved'}.\n"
+        f"- Test output digest: sha256:{hashlib.sha256(test_output.encode()).hexdigest()}\n"
+        f"- tests: {status} (exit {exit_code})\n"
+        f"- test command `{attempt.test_command}`\n"
+        f"{q_line}\n"
+        "No other gates were executed on this path; none are claimed.\n\n"
+        "<details><summary>Test output (tail)</summary>\n\n"
+        "``\n" + test_output[-2000:] + "\n``\n</details>"
+    )

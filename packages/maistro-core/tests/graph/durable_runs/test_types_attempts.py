@@ -6,6 +6,7 @@ from maistro.graph import Graph, Node
 from maistro.graph.durable_runs.types import DurableRunRecord
 from maistro.graph.execution_state import GraphExecutionState
 from maistro.runs.model import Attempt, GraphSnapshot, NodeRun, Run
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 
 def test_durable_record_rejects_attempt_for_unpersisted_node_run() -> None:
@@ -19,6 +20,7 @@ def test_durable_record_rejects_attempt_for_unpersisted_node_run() -> None:
         workspace_id=graph.workspace_id,
         project_id=graph.project_id,
         graph=GraphSnapshot.from_graph(graph),
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
     node_run = NodeRun(run_id=run.run_id, node_id="node-1", ordinal=1)
     orphan = Attempt(node_run_id="missing-node-run", ordinal=1)

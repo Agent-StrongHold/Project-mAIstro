@@ -11,6 +11,7 @@ a child id that belongs to another Run -- so no answer confirms an id exists.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Iterable
 from contextlib import suppress
@@ -28,6 +29,13 @@ from maistro.workspaces.authorization import (
 from maistro.workspaces.store import WorkspaceStore
 
 logger = logging.getLogger(__name__)
+
+#: How many canonical Run lookups one batched read keeps in flight. A Recent
+#: Runs page caps at 100 rows (`services.dag_run_store.MAX_RUNS` behind the
+#: route's `min(limit, 100)`), so the bound turns a full page's serialized
+#: round trips into a few overlapping waves without letting one batch pin a
+#: database pool.
+_LOOKUPS_IN_FLIGHT = 16
 
 
 class RunNotVisible(LookupError):
@@ -85,13 +93,26 @@ class ScopedRunReader:
         """The visible Runs among `run_ids`, keyed by id; the rest are simply absent.
 
         For a page of Runs: membership is resolved once and each
-        Workspace/Project decision once, not once per Run.
+        Workspace/Project decision once, not once per Run. The per-Run lookups
+        are independent, so they overlap instead of serializing one database
+        round trip per row (#1333): a full Recent Runs page no longer waits on
+        up to 100 sequential `get_run` reads.
         """
         member_of = await self._member_workspace_ids(principal_id)
+        ids = list(dict.fromkeys(run_ids))
+        # `_lookup_run` never raises for an unreadable row -- it answers None
+        # -- so no page member can lose a peer's failure, and one concurrent
+        # wave lands exactly what the sequential walk did.
+        permits = asyncio.Semaphore(_LOOKUPS_IN_FLIGHT)
+
+        async def lookup(run_id: str) -> Run | None:
+            async with permits:
+                return await self._lookup_run(run_id)
+
+        runs = await asyncio.gather(*(lookup(run_id) for run_id in ids))
         decided: dict[tuple[str, str], bool] = {}
         visible: dict[str, Run] = {}
-        for run_id in dict.fromkeys(run_ids):
-            run = await self._lookup_run(run_id)
+        for run_id, run in zip(ids, runs, strict=True):
             if run is None or run.workspace_id not in member_of:
                 continue
             scope = (run.workspace_id, run.project_id)

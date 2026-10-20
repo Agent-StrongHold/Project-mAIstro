@@ -241,10 +241,10 @@ def test_ran_gate_records_provenance(tmp_path: Path) -> None:
     ruff = next(g for g in gates if g.name == "ruff_clean")
     assert ruff.passed is True
     assert ruff.detail.get("not_run", False) is False
-    assert ruff.detail.get("exit_code") == 0
-    argv = ruff.detail.get("argv")
+    assert ruff.detail.get("exit_status") == 0
+    argv = ruff.detail.get("command")
     assert isinstance(argv, list) and any("ruff" in str(part) for part in argv)
     digest = ruff.detail.get("output_digest")
-    assert isinstance(digest, str) and len(digest) == 12
-    version = ruff.detail.get("version")
+    assert isinstance(digest, str) and str(digest).startswith("sha256:")
+    version = ruff.detail.get("tool_version")
     assert isinstance(version, str) and version  # e.g. "ruff 0.x.y"

@@ -7,11 +7,18 @@ import logging
 import threading
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
+from maistro.config.first_run import (  # pyright: ignore[reportMissingImports]
+    DEFAULT_ADMIN_USERNAME,
+    DEFAULT_CONDUCTOR_NAME,
+    DEFAULT_DAILY_DRIVER_USERNAME,
+    DEFAULT_DEFAULT_MODEL,
+    DEFAULT_HARDWARE_PRESET,
+)
 from maistro.security.passwords import (  # pyright: ignore[reportMissingImports]
     validate_password as validate_canonical_password,
 )
@@ -149,6 +156,14 @@ def _is_setup_complete() -> bool:
     "setup happened" signal this process can see. This is deliberately
     fail-closed after partial initialization; a failed attempt with no account
     remains retryable.
+
+    Scope, versus the other two "first-run state" notions (#443): this answers
+    "may the one-shot provisioning endpoint / wizard still run at all" — the
+    authority the SPA AuthGuard, ``GET /v1/setup/status`` (install.sh probes
+    the same route), and the ``/complete`` guard all consume. The setup
+    checklist (``routes/setup_checklist.py``) answers a different question —
+    which *post*-provisioning onboarding steps remain for the now-authenticated
+    operator — and is unreachable until this has gone terminal.
     """
     import stores
 
@@ -183,25 +198,69 @@ def setup_status() -> dict[str, Any]:
     }
 
 
+@router.get("/questions")
+def setup_questions() -> dict[str, Any]:
+    """The first-run question declaration, for wizard seeding (#443 AC-1).
+
+    Serves ``maistro.config.first_run.FIRST_RUN_QUESTIONS`` — the same
+    declarations the terminal wizard reads directly — so the SPA wizard seeds
+    its state (labels, defaults, required flags) instead of restating them.
+    Public like the rest of ``/v1/setup``: it carries question metadata only,
+    never credentials or answers.
+    """
+    from maistro.config.first_run import (
+        FIRST_RUN_QUESTIONS,  # pyright: ignore[reportMissingImports]
+    )
+
+    return {
+        "kind": "first_run_questions",
+        "questions": {key: q.model_dump() for key, q in FIRST_RUN_QUESTIONS.items()},
+    }
+
+
 class SetupCompleteBody(BaseModel):
-    """Validated payload for the one-shot first-run provisioning endpoint."""
+    """Validated payload for the one-shot first-run provisioning endpoint.
+
+    Field defaults are read from ``maistro.config.first_run`` — the one
+    declaration of the first-run questions that the terminal wizard and the
+    SPA wizard (via ``GET /v1/setup/questions``) also read (#443). This model
+    never restates a default: identical answers must produce an identical
+    payload whichever path collected them, defaults included.
+    """
 
     model_config = ConfigDict(extra="ignore")
 
-    hardware_preset: str
-    admin_username: str = "admin"
+    hardware_preset: str = DEFAULT_HARDWARE_PRESET
+    admin_username: str = DEFAULT_ADMIN_USERNAME
     admin_password: str
-    user_username: str = "user"
+    user_username: str = DEFAULT_DAILY_DRIVER_USERNAME
     user_password: str
     optional_modules: list[str] = Field(default_factory=list)
-    conductor_name: str = "Hive Conductor"
-    default_model: str | None = None
+    conductor_name: str = DEFAULT_CONDUCTOR_NAME
+    default_model: str | None = DEFAULT_DEFAULT_MODEL
+    # #287: set by the Setup wizard's final gateway preflight. Absent (None)
+    # means the caller predates the field and made no claim; an explicit
+    # "unverified" must be preserved as-is, never silently upgraded.
+    model_availability: Literal["verified", "unverified"] | None = None
 
     @field_validator("hardware_preset")
     @classmethod
     def validate_hardware_preset(cls, value: str) -> str:
         if not value:
             raise ValueError("hardware_preset required")
+        return value
+
+    @field_validator("admin_username", "user_username")
+    @classmethod
+    def validate_usernames_present(cls, value: str) -> str:
+        """Blank names are refused, not defaulted.
+
+        A collector that cannot ask (or dropped the field) must omit the key
+        and let the declaration default apply; sending an empty string would
+        otherwise provision an account with an empty username (#443 DOD-1).
+        """
+        if not value.strip():
+            raise ValueError("username must not be blank")
         return value
 
     @field_validator("admin_password", "user_password")
@@ -388,6 +447,11 @@ def _provision_first_run(
         "identity_persisted": identity_persisted,
         "completed_at": now_ts.isoformat(),
     }
+    if body.model_availability is not None:
+        # #287: keep the wizard's gateway-preflight verdict next to the model
+        # it qualifies, so a degraded install is explicitly recorded as such
+        # rather than indistinguishable from a verified one.
+        config["model_availability"] = body.model_availability
 
     # Was `stores.settings.default_model = ...` — an in-place mutation of a
     # module-level object, so the Setup wizard's choice never outlived the

@@ -19,6 +19,7 @@ from maistro.runs import (
     RunStatus,
 )
 from maistro.runtime import PythonExecutionRuntime
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 
 async def _node_run() -> tuple[InMemoryRunStore, str]:
@@ -36,7 +37,7 @@ async def _node_run() -> tuple[InMemoryRunStore, str]:
         name="One node",
         nodes=[Node(node_id="node-1", node_type="agent")],
     )
-    run = await store.create_run(graph)
+    run = await store.create_run(graph, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
     node_run = await store.create_node_run(run.run_id, node_id="node-1")
     return store, node_run.node_run_id
 
@@ -128,7 +129,9 @@ async def test_store_rejects_fabricated_accepted_attempt_evidence() -> None:
     # execution does not mask the storage-integrity assertion under test.
     run = await store.get_run(accepted.run_id)
     assert run is not None
-    fresh_run = await store.create_run(run.graph.materialize())
+    fresh_run = await store.create_run(
+        run.graph.materialize(), actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+    )
     second = await store.create_node_run(fresh_run.run_id, node_id="node-1")
     fabricated = AcceptedNodeOutcome(
         node_run_id=second.node_run_id,

@@ -83,18 +83,32 @@ class TraceNote:
     reward: RewardVector = field(default_factory=RewardVector)
     # Per-gate pass/fail, so the note carries the whole verdict, not just a score.
     gates: dict[str, bool] = field(default_factory=dict)
-    # Per-gate recorded results (#304/#820): for each gate, whether its tool
-    # actually EXECUTED and the recorded reason — so summaries rendered from the
-    # promotion (harvest PR bodies) name only gates that ran and distinguish a
-    # measured pass from an unavailable/not-run one. None on notes written
-    # before the field existed: readers must treat that as "not recorded",
-    # never as "all passed".
+    # Per-gate evidence (#304): state (passed/failed/not_run/unavailable),
+    # reason, and execution provenance (command, tool version, candidate SHA,
+    # exit status, output digest) for every gate the scorecard named. A gate
+    # absent here did not produce a recorded result — downstream PR/promotion
+    # reporting must say so, never claim it. None on older notes simply means
+    # no evidence bundle was recorded (the boolean map above still holds).
+    gate_evidence: dict[str, dict[str, object]] | None = None
+    # Per-gate results in the simpler name/passed/not_run/reason shape (#820).
+    # Optional so older notes (and non-fitness runs) simply omit it.
     gate_results: list[dict[str, object]] | None = None
     # Protected-test-inventory evidence (#306): base/candidate servable counts,
     # the (capped) deleted/added node-ID lists, and the override flag when a
     # governance-authorized shrink passed. Present on fitness promotions;
     # older notes (and non-fitness runs) simply omit it.
     inventory: dict[str, object] | None = None
+    # Fail-first evidence record (#392): the base SHA, failing test identities,
+    # failure-output digest, candidate SHA, and passing result behind a
+    # behavior-changing promotion — the replayable proof the change was
+    # test-first. Optional so older notes (and non-behavioral contracts:
+    # refactor/characterization/documentation) simply omit it.
+    fail_first: dict[str, object] | None = None
+    # Evaluator-oracle provenance (#109): the trusted base digest of the
+    # score-defining artifacts this promotion was judged against, plus the
+    # integrity verdict (mutated paths + authorization flag). A promotion is
+    # replayable against the exact oracle version that accepted it.
+    evaluator: dict[str, object] | None = None
     note: str = ""
     version: int = NOTE_VERSION
 
