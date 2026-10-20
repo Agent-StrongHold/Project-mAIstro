@@ -906,6 +906,16 @@
     {
       "source": "packages/hive-conductor/backend/routes/mcp.py",
       "method": "POST",
+      "route": "/servers/{server_id}/approve",
+      "handler": "approve_server",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "records the admin approval and binds the server's finite tool allowlist (#59)",
+      "effect_owner": "stores.mcp_servers"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/mcp.py",
+      "method": "POST",
       "route": "/servers/{server_id}/scan",
       "handler": "scan_server",
       "disposition": "unresolved",
