@@ -458,6 +458,36 @@ def _resolver(
     return resolve
 
 
+def _host_execution_authority(container: Any) -> tuple[Any, str | None]:
+    """Pair the Sentinel with the host mode Sentinel actually produced.
+
+    ``host_mode`` is a Sentinel verdict, never a default. A container that
+    wires the canonical stores but no Sentinel yields ``(None, None)`` so
+    node classification fails closed to sandbox (untrusted nodes block)
+    instead of inheriting an authorized inline mode Sentinel never granted.
+    """
+
+    if container is None:
+        # No container at all: standalone / test execution keeps the historical
+        # inline floor. A container that wires canonical stores but no Sentinel
+        # is the fail-closed case below.
+        return None, "async"
+    sentinel = getattr(container, "sentinel", None)
+    if sentinel is not None:
+        return sentinel, "async"
+    # A container that carries the canonical stores but no Sentinel never
+    # received host authorization: fail closed to (None, None) so node
+    # classification lands on the sandbox floor instead of an unearned inline
+    # mode. Containers without the spine (test doubles, partial fakes) keep
+    # the compatibility inline floor.
+    if (
+        getattr(container, "run_store", None) is not None
+        or getattr(container, "graph_run_store", None) is not None
+    ):
+        return None, None
+    return None, "async"
+
+
 def _recovery_resolver(run: Run):
     """Rebuild one legacy-node resolver entirely from durable canonical Run facts."""
     graph = run.graph.materialize()
@@ -475,6 +505,7 @@ def _recovery_resolver(run: Run):
         raise ValueError(f"Run {run.run_id!r} has invalid legacy execution_mode {execution_mode!r}")
     legacy_dag_id = str(graph.metadata.get("legacy_dag_id") or graph.graph_id)
     container = _container()
+    sentinel, host_mode = _host_execution_authority(container)
     return _resolver(
         raw_by_id,
         task_desc=graph.description or graph.name,
@@ -491,8 +522,8 @@ def _recovery_resolver(run: Run):
         llm_builder=None,
         effect_context=(getattr(container, "capability_effects", None) if container else None),
         governed_runtime=dag_node_runtime(container),
-        sentinel=getattr(container, "sentinel", None) if container else None,
-        host_mode="async",
+        sentinel=sentinel,
+        host_mode=host_mode,
         principal_roles=_host_principal_roles(run.actor_principal_id or ""),
     )
 
@@ -646,6 +677,7 @@ async def execute_dag(
     )
     container = _container()
     require_graph_execution_spine(container)
+    sentinel, host_mode = _host_execution_authority(container)
     canonical_run_store = container.run_store
     graph = graph_from_legacy_dag(
         dag_data,
@@ -700,8 +732,8 @@ async def execute_dag(
             progress=on_event,
             effect_context=(getattr(container, "capability_effects", None) if container else None),
             governed_runtime=dag_node_runtime(container),
-            sentinel=getattr(container, "sentinel", None) if container else None,
-            host_mode="async",
+            sentinel=sentinel,
+            host_mode=host_mode,
             principal_roles=_host_principal_roles(user_id),
         )
 

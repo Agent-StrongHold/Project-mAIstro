@@ -253,9 +253,19 @@ def _legacy_registration_implementation_tests(request: pytest.FixtureRequest):
 def _chat_spine_container():
     from maistro.container import create_container
     from maistro.types import AgentConfig
+    from maistro.types.config import SecurityConfig
 
     return asyncio.run(
-        create_container(AgentConfig(router_api_key="test-key", database_url="memory://"))
+        create_container(
+            AgentConfig(
+                router_api_key="test-key",
+                database_url="memory://",
+                security=SecurityConfig(
+                    permission_preset="none",
+                    permissions={"graph.node.execute": ["admin", "user"]},
+                ),
+            )
+        )
     )
 
 
@@ -279,6 +289,7 @@ def chat_run_spine(_chat_spine_container, monkeypatch: pytest.MonkeyPatch):
         intent_registry=c.intent_registry,
         _close_chat_run=c._close_chat_run,
         _cancel_incomplete_admission=c._cancel_incomplete_admission,
+        sentinel=getattr(c, "sentinel", None),
     )
     monkeypatch.setattr(get_engine(), "_agent_port", SimpleNamespace(container=spine))
     chat_runs.reset_for_tests()
@@ -380,6 +391,45 @@ def canonical_graph_spine(monkeypatch: pytest.MonkeyPatch):
     project = asyncio.run(projects.create_root("test-workspace"))
     runs = InMemoryRunStore(project_store=projects)
     providers = InMemoryProviderRegistry()
+
+    # Host user record for the acting principal (role intersection, #60/#845).
+    import datetime as _dt
+
+    import stores as _stores
+
+    _stores.users["test-user"] = _stores.users._model_class(
+        id="test-user",
+        username="test-user",
+        password_hash="unused",
+        role="user",
+        is_active=True,
+        permissions=[],
+        created_at=_dt.datetime.now(_dt.UTC),
+    )
+
+    # Sentinel with the shipped graph-node grant, so ordinary (reversible)
+    # nodes run inline and world-reaching nodes sandbox -- the floors a shipped
+    # deployment produces. Containers without a Sentinel stay fail-closed.
+    from maistro.capabilities.bootstrap import default_capability_registry
+    from maistro.security.permission_policy import build_permission_table
+    from maistro.security.sentinel.delegation import InMemoryDelegationAuthority
+    from maistro.security.sentinel.permission_source import CapabilityPermissionSource
+    from maistro.security.sentinel.policy import Sentinel
+    from maistro.security.warden.detector import Warden
+
+    _table = build_permission_table(
+        preset="none", permissions={"graph.node.execute": ["admin", "user"]}
+    )
+    sentinel = Sentinel(
+        warden=Warden(),
+        permission_table=_table,
+        permission_source=CapabilityPermissionSource(
+            base=_table, capabilities=default_capability_registry()
+        ),
+        tier_policy={},
+        delegation_authority=InMemoryDelegationAuthority(),
+    )
+
     container = SimpleNamespace(
         run_store=runs,
         graph_run_store=CanonicalDurableRunStore(runs, InMemoryGraphContinuationStore()),
@@ -393,9 +443,11 @@ def canonical_graph_spine(monkeypatch: pytest.MonkeyPatch):
         capability_effects=new_in_memory_effect_context(),
         provider_registry=providers,
         llm_router=CostAwareRouter(providers),
+        sentinel=sentinel,
     )
     monkeypatch.setattr(get_engine(), "_agent_port", SimpleNamespace(container=container))
-    return container
+    yield container
+    _stores.users.pop("test-user", None)
 
 
 @pytest.fixture

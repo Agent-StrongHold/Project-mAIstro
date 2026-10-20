@@ -19,6 +19,10 @@ Two rules follow from the host tier record, never from a caller label:
   resolved. Tiers whose human decision is not (yet) cleared run at the
   "sandbox" floor, never inline; only an explicit ``Tier.OPEN`` or
   ``Tier.ROLE_AUTO`` host record selects the inline ("async") mode.
+* ``authorized`` only means the principal holds the underlying capability. A
+  decision whose ``needs`` is not "none" still awaits the required human
+  approval, so it never takes the inline floor no matter what a caller
+  default re-resolves to -- it stays parked at the sandbox floor.
 
 A deployment's permission grant for the action is itself the host policy
 record that makes graph-node execution reachable: without one, the fail-closed
@@ -62,7 +66,10 @@ async def resolve_authorized_execution_mode(
 
     A denial is "blocked" and nothing else is: the tier floor never turns a
     denial into a weaker mode, and never turns an authorization into a
-    stronger one than the host record allows.
+    stronger one than the host record allows. An authorization with an
+    outstanding ``needs`` (self-elevation / scoped 2FA / delegated / admin)
+    has not cleared the required human approval yet, so it is parked at the
+    sandbox floor -- the caller's ``default`` cannot promote it inline.
     """
     decision = await sentinel.authorize(
         action,
@@ -72,10 +79,17 @@ async def resolve_authorized_execution_mode(
     )
     if not decision.authorized:
         return "blocked"
-    return resolve_execution_mode(
+    mode = resolve_execution_mode(
         sentinel,
         action,
         principal,
         reversibility=reversibility,
         default=default,
     )
+    if mode == "async" and decision.needs != "none":
+        # Sentinel judged this call against an approval-requiring tier (it
+        # resolves without ``default``), so the uncleared human decision --
+        # not the caller's default -- decides the floor. Park it in the
+        # governed sandbox; it never executes inline pre-approval.
+        return "sandbox"
+    return mode

@@ -93,6 +93,47 @@ async def test_execution_mode_is_the_authorized_tier_floor() -> None:
 
 
 @pytest.mark.asyncio
+async def test_an_uncleared_elevation_is_never_promoted_inline() -> None:
+    """`authorized` alone is not clearance: a decision whose ``needs`` is still
+    outstanding (self-elevation / 2FA / delegated / admin) must never take the
+    inline floor, even when a caller default re-resolves to ``ROLE_AUTO``."""
+    principal = Principal(id="owner-1", kind="human", roles=("user",))
+    sentinel = Sentinel(warden=Warden(), permission_table={}, allow_on_miss=True)
+
+    # Irreversible: authorize judges the SELF_ELEVATION tier (needs=
+    # "self_elevation") without the default; the ROLE_AUTO default must not
+    # promote the uncleared decision past the sandbox floor.
+    assert (
+        await resolve_authorized_execution_mode(
+            sentinel,
+            "graph.node.execute",
+            principal,
+            args={"node_id": "n1"},
+            default=Tier.ROLE_AUTO,
+        )
+        == "sandbox"
+    )
+
+    # Same pin for an explicit delegated tier whose approval is not cleared.
+    delegated = Sentinel(
+        warden=Warden(),
+        permission_table={},
+        tier_policy={("graph.node.execute", "user"): Tier.DELEGATED},
+        allow_on_miss=True,
+    )
+    assert (
+        await resolve_authorized_execution_mode(
+            delegated,
+            "graph.node.execute",
+            principal,
+            args={"node_id": "n1"},
+            default=Tier.ROLE_AUTO,
+        )
+        == "sandbox"
+    )
+
+
+@pytest.mark.asyncio
 async def test_an_explicitly_blocked_tier_denies_even_an_authorized_action() -> None:
     principal = Principal(id="owner-1", kind="human", roles=("user",))
     sentinel = Sentinel(
