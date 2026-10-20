@@ -190,3 +190,58 @@ other unmerged lanes' refs, none reachable from this HEAD. Suite
 inventory, ruff check/format, the goals tests (154 passed / 22 skipped),
 check-ratchet-provenance, check-shipped-surface-truth and
 check-durable-table-inventory re-verified green at 5503239b6+.
+
+## 2026-10-20 exact-debt-ledger repair: reviewed references, not a grant
+
+The merge-queue run at 863ac5723 failed `exact-debt-ledger` (and therefore the
+`Quality gate (Pillars 1–4, 7, 8)` aggregate) on the 13 #806 identities the
+previous round banked in `quality/vulture-baseline.json`. That round's residual
+was correct and unlandable: `load_authorizations` reads
+`quality/ratchet-authorizations.json` from the merge base, so a topic branch
+cannot authorize its own floor raise, and no grant for these identities exists
+on develop at fad17a87c.
+
+Repair, verified with CI's exact invocation
+(`uv run python scripts/check-vulture-baseline.py packages/*/src
+--min-confidence 60 --exclude '*/third_party/*'`, `RATCHET_BASE_REV=origin/develop`):
+
+- The 13 identities are not dead code: they are the control-plane public surface
+  (`Container.sweep_goal_leases`/`reconcile_goals`, the store protocol's
+  `cancel_goal`/`reconciliation_view` plus both durable twins,
+  `WakeReason.SAFETY_SWEEP`, and `ReconciliationOutcome`'s
+  `skipped_asleep`/`slept_as` sweep evidence), exercised by the 105 tests in
+  this note rather than by package-local src call sites. They are therefore
+  named in `packages/maistro-core/src/_vulture_whitelist.py` — the file's
+  documented mechanism for reviewed public/framework surface — with an inline
+  #806 rationale, exactly like the existing `CampaignSelector`,
+  `WorkingMemoryStats`, `RubricStore` and eval-score blocks.
+- Because the whitelist references make the names used, the candidate ledger
+  must shrink: `quality/vulture-baseline.json` drops those 13 banked rows
+  (whole-file `--update`, reviewed as a 13-deletion diff; no other row moved).
+  The scan now reports 1320 findings against the base ledger's 1321 reviewed
+  identities — the difference is develop's already-pruned
+  `graph/harness.py::dispatched_at` row.
+- No `quality/ratchet-authorizations.json` entry was added: an unused grant in
+  the branch would be a self-grant the gate cannot read, and the whitelist
+  removes the finding rather than tolerating it.
+
+The develop sync the previous round left in the worktree is committed as
+b92a0a4e3 (`Merge commit 'fad17a87c…' into auto-806`, parents 863ac5723 and
+fad17a87c); the tree is 0 commits behind `origin/develop` and the merge is
+clean.
+
+Re-verified at the repaired HEAD: `check-vulture-baseline` exit 0 (candidate and
+trusted phases), `check-ratchet-provenance` OK (no candidate-approved
+expansion), `check-shipped-surface-truth` complete, `check-reachability` exit 0
+(1421 modules / 168 unreachable), `check-durable-table-inventory` 116 tables,
+`check-execution-lifecycles` 19 classified, `check-wiring-reads`,
+`check-owned-store-access`, `check-cross-package-imports`,
+`check-promotion-surface`, `check-suite-inventory` (16810 node IDs in
+`packages/maistro-core/tests`, unchanged), repo-wide ruff check/format, mypy on
+the touched whitelist module, and the goals suite (105 passed).
+
+Residual, unchanged and documented above: the mechanics ship ahead of their
+production composition. `EventWakeBridge` is a tested, banked entry point but
+no shipped consumer subscribes it to the canonical Event plane yet, and the
+control-plane `goals` row is still separate from #1572's `canonical_goals`;
+both are #805/#804 activation work, not part of this mechanics issue.

@@ -81,6 +81,13 @@ from maistro.extensions.ui import (
     SandboxPolicy,
     UiProjectionService,
 )
+from maistro.goals.reconciliation.model import WakeReason
+from maistro.goals.reconciliation.reconciler import ReconciliationOutcome
+from maistro.goals.reconciliation.store import (
+    GoalReconciliationStore,
+    InMemoryGoalStore,
+    SqliteGoalStore,
+)
 from maistro.governance.promotion import PromotionContract, PromotionLedger
 from maistro.graph.harness_targets import HarnessEvolutionProposal, HarnessTargetKind
 from maistro.identity import __getattr__ as identity_getattr
@@ -611,4 +618,30 @@ _VULTURE_WHITELIST = (
     InstallablePackRegistry.instantiate_graph,
     InstallablePackRegistry.instantiate_persona,
     InstallablePackRegistry.instantiate_rubric,
+    # Goal reconciliation control-plane mechanics (M3-D2, #806). These are
+    # control metadata, not an execution authority: the canonical work they
+    # name is still admitted as Goal -> Graph -> Run -> NodeRun -> Attempt.
+    # The two Container ticks are operator-scheduled by ADR-019's
+    # bounded/idempotent/never-self-starting pattern (the same shape as
+    # recover_stranded_chat_admissions above), so no scanned in-package call
+    # site drives them; the issue's activation composition is #805/#804's
+    # wiring round. The store methods are the control-plane port and its two
+    # durable twins, exercised by the three-backend reconciliation suite
+    # (packages/maistro-core/tests/goals/) rather than by package-local code.
+    # WakeReason.SAFETY_SWEEP is the serialized reason the bounded sweep
+    # records; ReconciliationOutcome's two fields are the inspectable
+    # "skipped a sleeping Goal" / "slept into this status" evidence callers
+    # assert on. Named here as reviewed retained surface, not banked as new
+    # vulture debt (a ledger floor-raise needs a separately landed grant).
+    Container.sweep_goal_leases,
+    Container.reconcile_goals,
+    GoalReconciliationStore.cancel_goal,
+    InMemoryGoalStore.cancel_goal,
+    SqliteGoalStore.cancel_goal,
+    GoalReconciliationStore.reconciliation_view,
+    InMemoryGoalStore.reconciliation_view,
+    SqliteGoalStore.reconciliation_view,
+    WakeReason.SAFETY_SWEEP,
+    ReconciliationOutcome.skipped_asleep,
+    ReconciliationOutcome.slept_as,
 )
