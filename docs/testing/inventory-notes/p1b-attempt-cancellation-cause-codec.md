@@ -6,8 +6,9 @@ inventory-delta:
 # P1b Attempt cancellation-cause codec (#1885)
 
 inventory-delta basis: `packages/maistro-core/tests` +36 collected node IDs,
-true at the original branch base and unchanged by the sync below (the sync
-moves no collected count).
+true at the original branch base and still exactly +36 at the current head —
+the develop sync moves that suite's total only through develop's own
+recorded deltas, never this leaf's 36.
 
 Lineage (all SHAs verified with `git merge-base`/`git show`):
 - Original branch base `a586560170a9ce4d72ee7d750100d0178c1f69d0`: the leaf
@@ -16,16 +17,35 @@ Lineage (all SHAs verified with `git merge-base`/`git show`):
 - Assigned develop base `ab8b3737fa64f8d840f421ef87ca506c509444ff`: P1a
   (#1884) is present — landed via #1928, commit `91996e192` — so the
   dependency block below is resolved at the base this leaf is judged on.
-- Final head: merge `44f16b483` joining the leaf commit `ec986e182` with the
-  assigned base (conflict-free; the leaf adds two new files only). Final leaf
-  content = the two files in `ec986e182`, byte-identical.
+- Final head (this round): merge `4b6b92f6b` joining `431bb089b` (the leaf +
+  its verification round) with `origin/develop` `2f56be40a` — the develop
+  sync the driver preserved as a both-added conflict on the two leaf files.
+  The conflict was resolved keeping this branch's versions verbatim: the test
+  file stays the skip-gated `_HAS_P1A` variant (the only variant that runs
+  honestly on pre-P1a checkouts; develop's no-skip variant from PR #2141
+  stays on develop, and the skip-gated one supersedes it on merge-back —
+  both variants collect and pass identically at this head, 36/34 live), and
+  this note stays the long verification-round version. No content was lost:
+  final leaf content = the two files in `ec986e182`, byte-identical
+  (`git diff ec986e182 HEAD -- <test file>` empty).
+- Historical final head: merge `44f16b483` joined the leaf commit `ec986e182`
+  with the assigned base (conflict-free; the leaf adds two new files only).
+  Its final leaf content is the same two files.
 
-Production inputs verified byte-identical to the pinned audit at the original
-base: `runs/evidence_json.py` blob `5a069112a0a1ffcf33888a912f21e88465f0f1c8`,
-`graph/durable_runs/types.py` blob `943271b4beec5961ce0ee0b7e823102c7baeb3c9`,
-`runs/model.py` blob `0de6b8ed9dedc87d590b39019cb0b0431e6259a2`. The sync
-brings P1a's audited model/serializer changes to `runs/model.py` from develop;
-the leaf itself still touches no production file.
+Production inputs at the current head `4b6b92f6b` (`git hash-object`):
+`runs/evidence_json.py` blob `5a069112a0a1ffcf33888a912f21e88465f0f1c8` —
+still byte-identical to the pinned audit at the original base;
+`runs/model.py` blob `dab398a5387ae423bb28df5bdb29ee8bfb4cde51` — the sync
+brings P1a's audited model/serializer changes from develop (expected; the
+mutation sites `_serialize_attempt_without_unknown_cause` and the wrap
+serializer registration at `runs/model.py:573` are intact);
+`graph/durable_runs/types.py` blob
+`8042c1ca5268e58d81cb4410f0f22988726e4866` — **no longer byte-identical** to
+the pinned `943271b4...`: develop added
+`RECOVERY_CLAIM_UNTIL_KEY = "recovery_claim_until"` (types.py:21). No claim
+in this leaf depended on that file's bytes — the DurableRunRecord nesting
+proof uses Run/NodeRun/Attempt lineage only. The leaf itself still touches no
+production file.
 
 ## Dependency state (read this before interpreting results)
 
@@ -97,12 +117,40 @@ types, non-CANCELLED typed causes and extra fields rejected after decode.
   `encode_evidence` non-finite → `None` → **3 failed** (exactly the
   non-finite node); both production files restored byte-identical (`git
   diff` clean after each).
+- This round (head `4b6b92f6b`, post-conflict-resolution): all five issue
+  commands re-executed — codec suite **36 passed, 0 skipped**; P1a model suite
+  **34 passed**; repo-wide `ruff check .` / `ruff format --check .` pass;
+  `scripts/check-suite-inventory.py` ok (17 suites) after recording the
+  develop sync's residual `tests/: +1` in `auto-1885-3733.md`; collected IDs
+  re-dumped (36). Three mutations re-applied and re-verified live at this
+  head: unconditional cause pop → **20 failed** (exactly the typed rows);
+  `encode_evidence` non-finite → `None` → **3 failed** (exactly the
+  non-finite node); `Attempt` `extra="forbid"` → `extra="ignore"` →
+  **1 failed** (exactly `unexpected-extra-field`); both production files
+  restored byte-identical (`git diff --stat` empty after each).
+
+## Develop sync and the tests/ +1 drift
+
+The sync brought `tests/` from 5210 (pre-sync base `ab8b3737`, verified by
+collection in an isolated worktree) to 5261 collected node IDs. 50 of the 51
+were recorded by develop's own notes (`1881-restore-oracle-snapshot-
+consistency` +19, `l319-tool-version-reporting` +28,
+`claude-ws-459-strict-m1-closeout-mode-and-a-named-pari-b993` +3); the 51st
+— `tests/security/test_sentinel_permission_table_armed.py::test_hive_preset_tracks_the_executable_registry`
+— was added upstream by `edb669149` (PR #1993) with no note on either
+lineage, so the gate reported `DRIFT tests/: expected 5260, collected 5261`
+at the merged head. Recorded as this branch's own residual delta in
+`auto-1885-3733.md`; the drift pre-exists on develop `2f56be40a` (identical
+`tests/` tree, baseline and notes), so that note also repairs develop's
+latent drift when this branch merges back. No node was added, removed or
+renamed on this branch.
 
 ## Mutation evidence (each mutation applied, run, then restored byte-identical)
 
-Independently re-verified this round at the synced head `44f16b483` (all 36
-rows live; originals saved, restored by byte-copy, `git diff` clean after
-each):
+Independently re-verified again this round at the develop-synced head
+`4b6b92f6b` (all 36 rows live; originals saved, restored by byte-copy,
+`git diff --stat` on `packages/maistro-core/src/` empty after each — the
+production tree is byte-identical to HEAD):
 
 - wrap serializer pops the cause key unconditionally (`runs/model.py`
   `_serialize_attempt_without_unknown_cause`): **20 failed** — exactly the
@@ -128,7 +176,8 @@ On the pinned base (15 live rows): encoder passthrough → 1 failed
 (`..._nonfinite_physical_evidence[unknown]`); `extra="ignore"` → 4 failed
 (all four rejection rows). Production files were restored and verified with
 `git status`/`git diff` after every mutation; the final diff adds the test
-file and this note only.
+file, this note, and `auto-1885-3733.md` (the sync's residual `tests/: +1`
+record) only.
 
 ## Scope
 
