@@ -41,6 +41,15 @@ sys.path.insert(0, str(_BACKEND))
 
 pytestmark = [pytest.mark.contract("boundary")]
 
+
+def test_cancelled_run_has_distinct_execution_disposition() -> None:
+    from services.goal_inspection import _disposition
+
+    assert _disposition(["cancelled"]) == "cancelled"
+    # An unsettled run remains more actionable than an older cancellation.
+    assert _disposition(["cancelled", "running"]) == "active"
+
+
 _USER_ID = "goal-inspection-user"
 _REVISION = 1
 

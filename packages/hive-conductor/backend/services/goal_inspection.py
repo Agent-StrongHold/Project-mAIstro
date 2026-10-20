@@ -118,14 +118,15 @@ _EVIDENCE_WINDOW = MAX_RUNS
 #: human pause (Run PAUSED, `reconciliation._parked_run_status` parks a Run
 #: there for a human pause and nowhere else), `blocked` a failed/timed-out
 #: Run, `active` a Run still admitted-and-unsettled, `waiting` the canonical
-#: non-human parked state. There is no "stopping" value: the canonical Run
-#: spine exposes no such intermediate, and this projection does not invent one
-#: (#65: states are distinguishable *where the canonical owners expose them*).
-#: None of them is a Goal verdict.
+#: non-human parked state. Cancelled remains distinct from other settled
+#: evidence; no "stopping" value is invented because the canonical Run spine
+#: exposes no such intermediate (#65: states are distinguishable *where the
+#: canonical owners expose them*). None of these values is a Goal verdict.
 DISPOSITION_WAITING_HUMAN = "waiting_human"
 DISPOSITION_BLOCKED = "blocked"
 DISPOSITION_ACTIVE = "active"
 DISPOSITION_WAITING = "waiting"
+DISPOSITION_CANCELLED = "cancelled"
 DISPOSITION_EVIDENCE_SETTLED = "evidence_settled"
 
 _ACTIVE_RUN_STATUS_NAMES = frozenset(
@@ -145,6 +146,8 @@ def _disposition(statuses: list[str]) -> str:
         return DISPOSITION_ACTIVE
     if "waiting" in statuses:
         return DISPOSITION_WAITING
+    if "cancelled" in statuses:
+        return DISPOSITION_CANCELLED
     return DISPOSITION_EVIDENCE_SETTLED
 
 
@@ -536,6 +539,7 @@ def goal_state_is_recorded(view: dict[str, Any]) -> bool:
 __all__ = [
     "DISPOSITION_ACTIVE",
     "DISPOSITION_BLOCKED",
+    "DISPOSITION_CANCELLED",
     "DISPOSITION_EVIDENCE_SETTLED",
     "DISPOSITION_WAITING",
     "DISPOSITION_WAITING_HUMAN",
