@@ -318,6 +318,21 @@ async def test_run_detail_reads_events_from_canonical_store(
     assert [event["type"] for event in detail["events"]] == ["run.progress"]
     assert detail["events"][0]["run_id"] == canonical_run_id
 
+    # A reconnect after the product-local run projection is unavailable still
+    # resolves by canonical Run id and replays the same canonical event. This
+    # exercises the read path without treating the projection as event owner.
+    import services.dag_run_inspection as inspection_mod
+
+    monkeypatch.setattr(
+        inspection_mod,
+        "get_dag_run_store",
+        lambda: SimpleNamespace(get_run=lambda _run_id: None),
+    )
+    reconnected = await visible_run_detail(_USER_ID, canonical_run_id)
+    assert reconnected is not None
+    assert reconnected["canonical_run_id"] == canonical_run_id
+    assert reconnected["events"] == detail["events"]
+
 
 async def test_goal_run_detail_exposes_canonical_node_runs_and_attempts(
     monkeypatch: pytest.MonkeyPatch,
