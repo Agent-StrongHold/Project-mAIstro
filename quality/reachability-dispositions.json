@@ -593,16 +593,6 @@
       ]
     },
     {
-      "id": "sandbox-rlimit-exec-helper",
-      "subsystem": "Sandbox isolation",
-      "disposition": "CONNECT",
-      "rationale": "A `python -m` subprocess target, not an import: bubblewrap.py launches it as `sys.executable -m maistro.sandbox.backends._rlimit_exec` to apply rlimits through a tiny execing helper — the async/threaded-safe replacement for `preexec_fn` (#76). The import-graph scan cannot follow a `-m` edge, the same blind spot `shell-invoked-build-evidence` documents for tooling, so the module reports unreachable while being load-bearing for the bubblewrap backend on every spawn.",
-      "root": "maistro.sandbox.backends.bubblewrap's spawn path (`sys.executable -m maistro.sandbox.backends._rlimit_exec`); becomes visible to the graph if backend rooting ever follows subprocess `-m` invocations",
-      "modules": [
-        "maistro.sandbox.backends._rlimit_exec"
-      ]
-    },
-    {
       "id": "graph-pre-durable-retirement",
       "subsystem": "Graph execution",
       "disposition": "LIBRARY",

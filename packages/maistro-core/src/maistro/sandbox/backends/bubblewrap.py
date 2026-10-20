@@ -35,6 +35,11 @@ from collections.abc import Iterable
 from pathlib import Path
 from uuid import uuid4
 
+# Imported (not merely named in a string) so the `python -m` edge below is a
+# real dependency: the helper module must ship with the backend, and the
+# reachability graph has to be able to see it. Its own `main()` runs only under
+# `__main__`, so importing it here has no side effect.
+from maistro.sandbox.backends import _rlimit_exec
 from maistro.sandbox.capture import capture_process
 from maistro.sandbox.detect import BUBBLEWRAP_BINARY
 from maistro.sandbox.network import EgressMode, resolve_grant
@@ -113,7 +118,7 @@ def limited_argv(limits: dict[int, tuple[int, int]], command: list[str]) -> list
     single-threaded process and immediately ``execvp``s bwrap, so the limits
     still reach every process in the sandbox without fork-time Python hooks.
     """
-    argv = [sys.executable, "-m", "maistro.sandbox.backends._rlimit_exec"]
+    argv = [sys.executable, "-m", _rlimit_exec.__name__]
     for which, (soft, hard) in limits.items():
         argv += [str(which), str(soft), str(hard)]
     return [*argv, "--", *command]
