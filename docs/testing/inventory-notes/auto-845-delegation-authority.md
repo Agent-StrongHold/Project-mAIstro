@@ -41,7 +41,7 @@ Core grant provisioning goes through the documented host-only mutation API
 (`InMemoryDelegationAuthority.add_host_grant`), keeping the trust boundary
 itself covered by tests rather than constructor backdoors.
 
-## Repair round (2026-10-27) — develop sync merged, B1 and B2 closed
+## Repair round (2026-10-20) — develop sync merged, B1 and B2 closed
 
 `origin/develop` (`e20e9f52e`) is merged into this branch (merge commit
 `292a383bd`, merge-base `e20e9f52e`). The four conflicts were resolved by
@@ -142,7 +142,7 @@ New evidence:
 (the new `test_execution_mode.py`, 8 tests, plus the branch's earlier
 adapter pins) and `tests/: +4` (the new parametrized shipped-profile pin).
 
-## Repair round (2026-10-27, second) — the isolation floor is the host's, not a blanket elevation
+## Repair round (2026-10-20, third) — the isolation floor is the host's, not a blanket elevation
 
 The develop sync left 30 develop-origin DAG tests failing
 (`test_dag_model_tools.py`, 27; `test_legacy_dag_node_container_composition.py`,
@@ -321,4 +321,56 @@ not branch-caused (the branch touches neither `cli/_install.py` nor
   reachability trusted-base gate documented above.
 
 No test counts changed in this round; the `inventory-delta` block above is
+unchanged and still reconciles.
+
+## Verification round (2026-10-20, third) — independent re-verification at `13fd2745e`
+
+Re-executed at the assigned head by the independent verifier (driver checks
+plus fresh runs):
+
+- Focused suites: `test_delegation_authority.py` + `test_broker.py` +
+  `test_sentinel_permission_table_armed.py` — 33 passed;
+  `test_execution_mode.py` + `test_legacy_dag_node.py` +
+  `test_legacy_dag_node_container_composition.py` + `test_dag_model_tools.py` +
+  `test_security_regression.py` — 86 passed. `ruff check .` and
+  `ruff format --check .` clean; `check-suite-inventory.py` 21/21;
+  `check-backlog-consistency.py`, `check-shipped-surface-truth.py`,
+  `check-vulture-baseline.py packages/*/src --min-confidence 60
+  --exclude '*/third_party/*'` (1326 == 1326) all exit 0.
+- The reachability trusted-base failure was re-proven **inherited** by direct
+  scan-set computation on a base-tree export (`git archive e20e9f52e`): the
+  base scans to 169 unreachable modules *including*
+  `maistro.runs.admission_identity`; the branch touches zero `runs/` paths.
+- **NEW branch-caused gate failure (repair required):**
+  `check-workspace-retirement.py` exits 1 —
+  `packages/hive-conductor/backend/stores.py::users: NEW importer
+  packages/hive-conductor/backend/services/canonical_dag_runner.py -- a
+  retiring surface may not gain consumers`. Introduced by
+  `_host_principal_roles` (`import stores; stores.users.get(...)`), which
+  landed with the develop sync / isolation-floor rounds. Matches the live
+  FAILURE of CI `Quality / Workspace retirement` and the aggregate
+  `Quality gate (Pillars 1–4, 7, 8)` at this head. The server-side role
+  resolution itself is required by #845; the repair must move the lookup onto
+  an approved (non-retiring) store seam — not a retirement-ledger edit.
+- CI `Supply chain (pip-audit)` and the aggregate CI `security` job FAIL at
+  this head; the branch diff contains no `uv.lock` / `pyproject.toml` /
+  requirements changes, so the advisory set is develop-vintage, not
+  branch-caused — but the checks are red on the PR.
+- CI `exact-debt-ledger` (Vulture Ratchet) reproduces locally as
+  `check-ratchet-provenance.py` failing **only** on the documented
+  reachability trusted-base row; its vulture step passes locally with CI's
+  exact arguments.
+- PR #2242 is still DRAFT; `test`, `coverage (no services)`,
+  `coverage (PostgreSQL)`, `integration-scope`, `docker-build` and the
+  `gates-ran` context were IN_PROGRESS at capture — no green claim is made.
+- **Closure-keyword review:** commit `a0fbfe33c`'s subject "Close #60
+  blockers: …" contains the `Close #60` pair GitHub parses as an auto-close
+  directive once the commit reaches the default branch; #60 must not close
+  before #845 closes. Reword before merge (e.g. "Address #60 blockers: …").
+- Date drift fixed in this note: the two round headings below were dated
+  2026-10-27; every commit in those rounds is dated 2026-10-18…2026-10-20
+  (`git log`), so they now read 2026-10-20.
+
+Verdict evidence for this round: NEEDS-REPAIR (workspace-retirement importer;
+closure keyword). No test counts changed; the `inventory-delta` block above is
 unchanged and still reconciles.
