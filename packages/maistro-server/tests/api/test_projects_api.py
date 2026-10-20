@@ -392,6 +392,148 @@ async def test_only_workspace_owner_can_issue_project_denies(api) -> None:
     assert any(item["principal_id"] == "cara" for item in listed.json())
 
 
+async def test_non_owner_cannot_delegate_a_non_delegable_action_via_regrant(api) -> None:
+    """A held action is not a delegable one, even re-granted with the flag (#1150).
+
+    Bob holds ``publish`` at this Project without the delegable flag. The
+    escalation attempt is to re-grant it to cara *with* ``delegable_grants``
+    so cara can re-delegate further. The body validator forces the action
+    into ``grants`` too, and both the route's pre-check and the store's
+    boundary authorization answer that holding is not delegating: 403, and
+    nothing stored.
+    """
+    app, client, workspaces, projects = api
+    workspace = await workspaces.create(creator_user_id="alice", name="Auth")
+    root = await projects.root_for_workspace(workspace.workspace_id)
+    await workspaces.set_membership(
+        workspace.workspace_id,
+        user_id="bob",
+        role=WorkspaceRole.CONTRIBUTOR,
+    )
+    await projects.set_membership(
+        ProjectMembership(
+            workspace_id=workspace.workspace_id,
+            project_id=root.project_id,
+            principal_id="bob",
+            grants={"publish"},
+        )
+    )
+    _as_user(app, "bob")
+
+    response = client.post(
+        f"/workspaces/{workspace.workspace_id}/projects/{root.project_id}/memberships",
+        json={
+            "principal_id": "cara",
+            "grants": ["publish"],
+            "delegable_grants": ["publish"],
+        },
+    )
+
+    assert response.status_code == 403
+    assert "cannot delegate" in response.json()["detail"]
+    assert await projects.memberships_for(root.project_id, principal_id="cara") == []
+
+
+async def test_a_revocation_landing_after_the_pre_check_is_not_a_500(api, monkeypatch) -> None:
+    """A membership-write refusal after the pre-check is a 403, not a 500 (#1150).
+
+    The store's membership-write boundary re-resolves the requester's
+    delegable grants itself. An owner's revocation landing between the
+    route's pre-check and that boundary check makes the store refuse with
+    `ProjectScopeDenied` -- which this route must render as its own 403,
+    the same answer the pre-check would have given, rather than let escape
+    as an unhandled exception.
+    """
+    from maistro_server.api import projects as projects_api
+
+    app, client, workspaces, projects = api
+    workspace = await workspaces.create(creator_user_id="alice", name="Auth")
+    root = await projects.root_for_workspace(workspace.workspace_id)
+    await workspaces.set_membership(
+        workspace.workspace_id, user_id="bob", role=WorkspaceRole.CONTRIBUTOR
+    )
+    await projects.set_membership(
+        ProjectMembership(
+            workspace_id=workspace.workspace_id,
+            project_id=root.project_id,
+            principal_id="bob",
+            grants={"publish"},
+            delegable_grants={"publish"},
+        ),
+        principal_id="alice",
+    )
+    _as_user(app, "bob")
+
+    async def _revocation_lands_after_the_pre_check(*args: object, **kwargs: object) -> None:
+        # The owner's revocation commits between the route's pre-check and
+        # the store's boundary authorization: the pre-check saw the
+        # delegable grant, the boundary below must refuse without it.
+        await projects.remove_membership(
+            root.project_id, principal_id="bob", acting_principal_id="alice"
+        )
+
+    monkeypatch.setattr(
+        projects_api, "require_delegable_grant", _revocation_lands_after_the_pre_check
+    )
+
+    response = client.post(
+        f"/workspaces/{workspace.workspace_id}/projects/{root.project_id}/memberships",
+        json={"principal_id": "cara", "grants": ["publish"]},
+    )
+
+    assert response.status_code == 403
+    assert "cannot delegate" in response.json()["detail"]
+    assert await projects.memberships_for(root.project_id, principal_id="cara") == []
+
+
+async def test_an_ownership_loss_racing_a_membership_removal_is_not_a_500(api, monkeypatch) -> None:
+    """A membership-removal refusal at the boundary is a 403, not a 500 (#1150).
+
+    ``remove_membership`` re-resolves the requester's ADMINISTER authority in
+    the store. Ownership revoked between the route's owner check and that
+    boundary check must render as the route's owner-permission 403, not
+    escape as an unhandled `ProjectScopeDenied`.
+    """
+    from maistro_server.api import projects as projects_api
+
+    app, client, workspaces, projects = api
+    workspace = await workspaces.create(creator_user_id="alice", name="Auth")
+    root = await projects.root_for_workspace(workspace.workspace_id)
+    await workspaces.set_membership(workspace.workspace_id, user_id="bob", role=WorkspaceRole.OWNER)
+    await projects.set_membership(
+        ProjectMembership(
+            workspace_id=workspace.workspace_id,
+            project_id=root.project_id,
+            principal_id="cara",
+            grants={"publish"},
+        ),
+        principal_id="alice",
+    )
+    _as_user(app, "alice")
+
+    async def _ownership_revoked_after_the_route_check(*args: object, **kwargs: object) -> None:
+        # A co-owner demotes the requester between the route's owner check
+        # and the store's boundary authorization.
+        await workspaces.set_membership(
+            workspace.workspace_id, user_id="alice", role=WorkspaceRole.CONTRIBUTOR
+        )
+
+    monkeypatch.setattr(
+        projects_api,
+        "require_workspace_owner",
+        _ownership_revoked_after_the_route_check,
+    )
+
+    response = client.delete(
+        f"/workspaces/{workspace.workspace_id}/projects/{root.project_id}/memberships/cara"
+    )
+
+    assert response.status_code == 403
+    assert "Workspace owner permission required" in response.json()["detail"]
+    memberships = await projects.memberships_for(root.project_id, principal_id="cara")
+    assert memberships and memberships[0].grants == {"publish"}
+
+
 async def test_workspace_owner_can_revoke_a_project_membership(api) -> None:
     app, client, workspaces, projects = api
     workspace = await workspaces.create(creator_user_id="alice", name="Auth")

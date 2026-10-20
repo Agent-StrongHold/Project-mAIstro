@@ -1,7 +1,7 @@
 ---
 inventory-delta:
   packages/maistro-core/tests: +8
-  packages/maistro-server/tests: +1
+  packages/maistro-server/tests: +4
 ---
 # Issue 1150: Workspace/Project authorization at the store boundary
 
@@ -105,6 +105,36 @@ same 404 an unknown id gets. It passes on `develop@e20e9f52e` and fails on
 the branch before this repair, so it names the regression rather than the
 implementation.
 
+## Repair round 2: the membership-write boundary must render its refusals
+
+The first repair covered the *read* seams. The Project membership *write*
+seams had the same disease: `add_project_membership` pre-checks the
+requester's delegable grants (or ownership) and then calls
+`merge_membership`/`set_membership`, and `remove_project_membership`
+calls `remove_membership` after its owner check -- none of the three calls
+is wrapped. The store's boundary authorization re-resolves the requester's
+authority inside those calls and can refuse with `ProjectScopeDenied`
+(e.g. an owner's revocation committing between the route's pre-check and
+the boundary check); on the branch before this repair that denial escaped
+the route as an unhandled exception (a 500 in production), while the same
+refusal from the pre-check rendered as 403.
+
+`test_projects_api.py` gains three cases (+3, counted in the +4 above):
+
+* `test_a_revocation_landing_after_the_pre_check_is_not_a_500` -- failed
+  with the escaping `ProjectScopeDenied` before the fix, passes with the
+  route's 403 after it.
+* `test_an_ownership_loss_racing_a_membership_removal_is_not_a_500` -- the
+  removal seam had the identical unguarded call at the merge base.
+* `test_non_owner_cannot_delegate_a_non_delegable_action_via_regrant` --
+  pins that a held-but-not-delegable action cannot be re-granted with the
+  delegable flag (holding is not delegating); refused at 403 with nothing
+  stored.
+
+All three refusals are still *decided* by the canonical store; only the
+rendering moved to the route, as `HTTPException(403)` with the pre-check's
+own answer ("cannot delegate ..." / "Workspace owner permission required").
+
 Validation run:
 
 * `MAISTRO_TEST_PG_DSN=... pytest packages/maistro-core/tests/workspaces
@@ -125,3 +155,16 @@ Validation run:
   -> ok: 21 suite(s) match the recorded inventory
 * `mypy` over the AGENTS.md package list -> Success: no issues found in 906
   source files
+
+Repair round 2 validation:
+
+* `pytest packages/maistro-server/tests -q` -> 575 passed, 8 skipped
+  (572 + the three new cases)
+* `ruff check` / `ruff format --check` over the tree -> clean
+* `mypy` over the AGENTS.md package list -> Success: no issues found in 906
+  source files
+* `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'` -> exit 0 after pruning the three `bind_workspace_store`
+  rows the earlier work eliminated from `quality/vulture-baseline.json`
+  (617 -> 614 findings in the core-public-api-surface rule; 1326 reviewed
+  identities -> 1323 findings overall)
