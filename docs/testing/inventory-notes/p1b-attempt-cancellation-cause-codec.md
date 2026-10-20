@@ -143,7 +143,10 @@ at the merged head. Recorded as this branch's own residual delta in
 `auto-1885-3733.md`; the drift pre-exists on develop `2f56be40a` (identical
 `tests/` tree, baseline and notes), so that note also repairs develop's
 latent drift when this branch merges back. No node was added, removed or
-renamed on this branch.
+renamed on this branch. (Later re-derived to zero: develop's own
+`1993-hive-permission-preset-inventory.md` arrived with the second sync
+`6977e9161` recording the same +1, so this branch's duplicated block was
+withdrawn — see `auto-1885-3733.md`.)
 
 ## Mutation evidence (each mutation applied, run, then restored byte-identical)
 
