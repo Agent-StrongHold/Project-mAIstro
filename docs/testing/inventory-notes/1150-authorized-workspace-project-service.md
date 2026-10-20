@@ -246,3 +246,44 @@ Repair round 3 validation:
 * `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
   '*/third_party/*'` -> exit 0 (1326 reviewed identities -> 1323 findings,
   0 unclassified, 0 never-allowlist)
+
+## Independent verification addendum (read-only verifier, 2026-10-20)
+
+Re-executed on this tree at `131d4196f398c46e35b6f96c937b005d81f8b0f5`:
+
+* `ruff check .` / `ruff format --check .` -> clean
+* `test_store_boundary_scope_conformance.py` -> 47 passed (memory + SQLite);
+  `MAISTRO_TEST_PG_DSN=... MAISTRO_REQUIRE_PG_LEGS=1` over
+  `packages/maistro-core/tests/workspaces` -> 342 passed, 2 skipped, against
+  the migrated `pg-1150-verify` container (alembic `063`)
+* `packages/maistro-server/tests` -> 579 passed, 8 skipped;
+  `packages/hive-conductor/backend/tests` -> 3771 passed, 24 skipped;
+  `packages/maistro-core/tests/{workspaces,projects}` with the PG DSN ->
+  484 passed, 4 skipped
+* `check-suite-inventory.py` -> 21 suites match; `check-vulture-baseline.py`
+  with CI's exact arguments -> exit 0; `mypy` over the AGENTS.md package list
+  -> clean (906 files)
+* Regression-naming property proven by execution in throwaway clones: the
+  round-1, round-2 and round-3 route-rendering tests fail at their respective
+  pre-repair commits (`0678b0570`, `03b016c32`, `284ac3a07`) with the escaping
+  `ProjectScopeDenied` / `WorkspaceAuthorizationDenied`, and pass here.
+
+Two facts for the next reader, neither caused by this branch:
+
+1. `scripts/check-reachability.py` (and therefore
+   `check-ratchet-provenance.py`) fails identically on the develop base
+   `e20e9f52ea94`: `maistro.runs.admission_identity` is unreachable in the
+   base scan too (169 vs the ledger's 168) and no commit on this branch
+   touches that module or any importer. The branch adds no unreachable
+   module. The ledger grant/repair belongs to a separate merge per the
+   two-merge rule; do not misattribute the red gate to this change.
+2. Residual `principal_id=None` store reads in production are the documented
+   internal shape: `a2a.py` and `routes/providers.py` read the root Project of
+   the server-configured default Workspace (no client-selected Workspace id),
+   and the chat/task admitters, memory wiring, Evolve and scheduler resolve
+   their own bound Workspace (schedule actor provenance is #1201's leaf).
+
+Integration note: commit `921cdb057`'s subject contains the literal
+`resolve #1150`, a GitHub closure token. Merging this branch into develop with
+that commit preserved will auto-close #1150; the integrator should reword or
+squash so closure stays a deliberate post-verification act.
