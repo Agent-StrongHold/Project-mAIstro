@@ -42,8 +42,9 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}
 
 jobs:
-  sast:
-    name: SAST (bandit + semgrep + gitleaks)
+  # Independent jobs let a retry rerun just the failed scanner.
+  sast-bandit:
+    name: SAST / Bandit
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -74,6 +75,21 @@ jobs:
               sys.exit(1)
           print('bandit Medium+ count: 0 (strict gate)')
           "
+
+  sast-semgrep:
+    name: SAST / Semgrep
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Install uv + Python
+        uses: ./.github/actions/setup-uv
+      - name: Setup Python 3.12
+        run: uv python install 3.12
+      - name: uv sync
+        run: uv sync --locked --all-extras
       - name: semgrep (custom + p/security-audit + p/owasp-top-ten + p/secrets)
         run: |
           set -o pipefail
@@ -85,6 +101,15 @@ jobs:
             --exclude 'packages/hive-conductor/eval' \
             --exclude 'packages/hive-conductor/cage' \
             --error packages/ tests/ 2>&1 | tee semgrep-report.txt
+
+  sast-gitleaks:
+    name: SAST / Gitleaks
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
       - name: install gitleaks CLI
         run: |
           set -euo pipefail
@@ -113,6 +138,23 @@ jobs:
           else
             gitleaks git --redact --log-opts="--all" .
           fi
+
+  # Preserve the required check name, and reject any leaf that did not pass.
+  sast:
+    name: SAST (bandit + semgrep + gitleaks)
+    if: ${{ always() }}
+    needs: [sast-bandit, sast-semgrep, sast-gitleaks]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Require every SAST scanner to succeed
+        env:
+          CHECK_RESULTS: ${{ toJSON(needs) }}
+        run: python scripts/check_ci_job_results.py sast-bandit sast-semgrep sast-gitleaks
 
   supply-chain:
     name: Supply chain (pip-audit)
@@ -322,7 +364,7 @@ jobs:
             -o cyclonedx-json > sbom-maistro-rsi-runner.json
 
       - name: Upload SBOMs as artifacts
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: sboms-${{ env.CANDIDATE_TAG }}
           path: sbom-*.json

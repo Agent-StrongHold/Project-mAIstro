@@ -110,7 +110,7 @@ jobs:
           --resolved-output release-compliance.json
 
       - name: Preserve validated release claims and immutable evidence links
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: release-compliance
           path: release-compliance.json
@@ -213,6 +213,27 @@ jobs:
           } >> "${GITHUB_STEP_SUMMARY}"
 
   # ---------------------------------------------------------------------------
+  # M1 closeout — a release is not a closure candidate unless strict parity
+  # executed every required producer -> canonical spine -> Conductor scenario.
+  # The job intentionally fails on an unavailable seam; source probes and
+  # development-mode BLOCKED evidence cannot satisfy this release gate.
+  # ---------------------------------------------------------------------------
+  m1-closeout:
+    name: M1 strict cross-product parity closeout
+    needs: guard
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: ./.github/actions/setup-uv
+      - run: uv sync --locked --extra dev
+      - name: Execute strict M1 closeout scenarios
+        run: uv run python scripts/run-m1-closeout.py
+
+  # ---------------------------------------------------------------------------
   # wheels — build the publish set, twine check it, install+import it clean.
   #
   # The publish set is SIX packages. maistro-server, maistro-turing,
@@ -223,7 +244,7 @@ jobs:
   # ---------------------------------------------------------------------------
   wheels:
     name: Build + verify wheels
-    needs: guard
+    needs: [guard, m1-closeout]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
@@ -311,7 +332,7 @@ jobs:
       - name: Install + import at the minimum supported dependency floors
         run: python scripts/verify-minimum-dependencies.py --package packages/maistro-core --python 3.12
 
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@v7
         with:
           name: dist
           path: dist/
@@ -334,7 +355,7 @@ jobs:
   # ---------------------------------------------------------------------------
   pypi:
     name: Publish to ${{ needs.guard.outputs.prerelease == 'true' && 'TestPyPI' || 'PyPI' }}
-    needs: [guard, wheels]
+    needs: [guard, wheels, m1-closeout]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment:
@@ -400,7 +421,7 @@ jobs:
   # ---------------------------------------------------------------------------
   images:
     name: Build, scan, push + sign images
-    needs: [guard, wheels]
+    needs: [guard, wheels, m1-closeout]
     runs-on: ubuntu-latest
     # Builds, two remote Trivy pulls, two remote Grype pulls, promotion and
     # signing. The scans doubled the registry traffic of the push-only shape,
@@ -468,6 +489,31 @@ jobs:
           # provenance (#349).
           provenance: mode=max
           sbom: true
+
+      # #1825: the release consumes the digest the Canvas proof tested. The
+      # same script CI's docker-build job runs on the local candidate is run
+      # here against the exact pushed digest — import on image contents only
+      # (--network=none, no mounts), Canvas-less control probe, boot through
+      # the shipped entrypoint on a clean PostgreSQL 18 volume,
+      # canvas_store_wired, and an authenticated Canvas create/read through
+      # /v2/canvas. Proof runs BEFORE signing: a digest that cannot serve its
+      # advertised Canvas surface is not signed, attested, or announced.
+      # The build above is push-only into the `-rc` quarantine repo, so nothing
+      # exists under the production name yet and nothing was loaded into this
+      # runner's Docker daemon — pull the candidate digest by its `-rc`
+      # reference first (the script opens with `docker image inspect`) and run
+      # the proof against that same reference. Promotion below is a byte-for-
+      # byte manifest-level re-tag, so the digest proven here is the digest
+      # the release tags resolve to. (The promotion vocabulary is spelled out
+      # in the step that performs it; naming the command here too would make
+      # scripts/check-image-inventory.py read this proof step as the
+      # promotion step and mis-order the job.)
+      - name: Prove the pushed maistro-engine digest ships its Canvas surface (#1825)
+        env:
+          ENGINE_DIGEST: ${{ steps.engine.outputs.digest }}
+        run: |
+          docker pull "${IMAGE_NAMESPACE}/maistro-engine-rc@${ENGINE_DIGEST}"
+          scripts/smoke-engine-canvas.sh "${IMAGE_NAMESPACE}/maistro-engine-rc@${ENGINE_DIGEST}"
 
       - name: Build + push hive-conductor (release candidate)
         id: conductor
@@ -646,7 +692,7 @@ jobs:
             -o cyclonedx-json > "sboms/sbom-source-${GITHUB_REF_NAME}.cyclonedx.json"
           ls -1 sboms/
 
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@v7
         with:
           name: sboms
           path: sboms/

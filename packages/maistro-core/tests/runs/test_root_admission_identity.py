@@ -10,10 +10,12 @@ from __future__ import annotations
 
 import json
 import uuid
-from dataclasses import FrozenInstanceError, fields
+from dataclasses import FrozenInstanceError, dataclass, fields
+from typing import Any
 
 import pytest
 
+import maistro.runs.admission_identity as admission_identity
 from maistro.runs.admission_identity import (
     Acknowledged,
     AdmissionBinding,
@@ -105,6 +107,60 @@ def _run_snapshot(run_id: str = "run-1") -> CanonicalJsonObject:
     return CanonicalJsonObject(text=json.dumps({"run_id": run_id, "status": "pending"}))
 
 
+def _subclass_copy(base: type[object], instance: object) -> object:
+    """Construct a frozen dataclass subclass carrying an otherwise valid value."""
+    # Deliberately built through ``Any``: a frozen-dataclass subclass is valid
+    # data for the runtime checks below but must be statically rejected.
+    subclass: Any = dataclass(frozen=True, slots=True)(type("ContractSubclass", (base,), {}))
+    constructor: Any = subclass
+    return constructor(
+        **{
+            item.name: getattr(instance, item.name)
+            for item in fields(instance)  # type: ignore[arg-type]
+            if item.init
+        }
+    )
+
+
+# --- module-local API ------------------------------------------------------
+
+
+def test_module_exports_exact_contract_and_assessment_values() -> None:
+    assert admission_identity.__all__ == [
+        "Acknowledged",
+        "AdmissionAssessment",
+        "AdmissionBinding",
+        "AdmissionRecordV2",
+        "AdmissionTicket",
+        "AlreadyAcknowledged",
+        "AlreadyBound",
+        "BindingMismatch",
+        "CanonicalJsonObject",
+        "ClaimResult",
+        "Claimed",
+        "CompletionResult",
+        "LegacyAdmissionRecord",
+        "LegacyUnresolved",
+        "Pending",
+        "ReleaseResult",
+        "Released",
+        "Replayed",
+        "RootAdmissionEnvelope",
+        "RootAdmissionResult",
+        "StaleOwner",
+    ]
+    assert tuple(
+        (member.name, member.value) for member in admission_identity.AdmissionAssessment
+    ) == (
+        ("MISMATCH", "mismatch"),
+        ("REPLAYED", "replayed"),
+        ("PENDING", "pending"),
+        ("TAKEOVER", "takeover"),
+        ("REPLACE_EXPIRED", "replace_expired"),
+        ("LEGACY_UNRESOLVED", "legacy_unresolved"),
+    )
+
+
 # --- canonical JSON snapshots ---------------------------------------------
 
 
@@ -172,7 +228,76 @@ def test_canonical_json_rejects_non_string_constructor_input(bad_input: object) 
         CanonicalJsonObject(text=bad_input)  # type: ignore[arg-type]
 
 
+def test_canonical_json_preserves_finite_floats_the_rejection_hook_must_not_fire_on() -> None:
+    # ``_parse_finite_float`` exists to reject values that overflow to inf
+    # ("1e999"); ordinary finite floats must canonicalize through the same
+    # hook untouched, and the compact canonical form round-trips.
+    canonical = CanonicalJsonObject(text='{ "ratio" : 1.5, "tiny": 2e-3 }')
+    assert canonical.text == '{"ratio":1.5,"tiny":0.002}'
+    assert json.loads(canonical.text) == {"ratio": 1.5, "tiny": 0.002}
+
+
+def test_canonical_json_preserves_valid_escaped_lone_surrogates() -> None:
+    # The constructor's sole representation rule is json.dumps(...,
+    # ensure_ascii=False); storage-boundary encoding policy is outside this DTO.
+    source = r'{"x":"\ud800"}'
+    expected = json.dumps(
+        json.loads(source),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,
+    )
+    assert CanonicalJsonObject(text=source).text == expected
+
+
+def test_canonical_json_normalizes_excessive_nesting_to_value_error() -> None:
+    # CPython raises RecursionError rather than ValueError for nesting beyond
+    # its decoder limit; constructor validation has one public error type.
+    nested_object = '{"x":' * 20_000 + "0" + "}" * 20_000
+    with pytest.raises(ValueError, match="CanonicalJsonObject"):
+        CanonicalJsonObject(text=nested_object)
+
+
 # --- immutability ----------------------------------------------------------
+
+
+def test_nested_dtos_require_exact_declared_types() -> None:
+    snapshot = CanonicalJsonObject(text='{"value": 1}')
+    snapshot_subclass = _subclass_copy(CanonicalJsonObject, snapshot)
+    binding = _binding()
+    binding_subclass = _subclass_copy(AdmissionBinding, binding)
+    envelope = _envelope()
+    envelope_subclass = _subclass_copy(RootAdmissionEnvelope, envelope)
+    record = _record()
+    record_subclass = _subclass_copy(AdmissionRecordV2, record)
+    legacy = _legacy()
+    legacy_subclass = _subclass_copy(LegacyAdmissionRecord, legacy)
+    ticket_subclass = _subclass_copy(AdmissionTicket, _ticket())
+
+    invalid_builders = (
+        lambda: _envelope(request_snapshot=snapshot_subclass),
+        lambda: _record(envelope=envelope_subclass),
+        lambda: _record(binding=binding_subclass),
+        lambda: _legacy(request_snapshot=snapshot_subclass),
+        lambda: _legacy(binding=binding_subclass),
+        lambda: RootAdmissionResult(
+            run_id="run-1",
+            receipt_id="receipt-1",
+            run_snapshot=snapshot_subclass,  # type: ignore[arg-type]
+            created=True,
+        ),
+        lambda: Claimed(ticket=ticket_subclass, record=record),  # type: ignore[arg-type]
+        lambda: Claimed(ticket=_ticket(), record=record_subclass),  # type: ignore[arg-type]
+        lambda: Replayed(record=_record(binding=binding_subclass)),
+        lambda: Replayed(record=legacy_subclass),  # type: ignore[arg-type]
+        lambda: Pending(record=record_subclass),  # type: ignore[arg-type]
+        lambda: LegacyUnresolved(record=legacy_subclass),  # type: ignore[arg-type]
+        lambda: AlreadyBound(binding=binding_subclass),  # type: ignore[arg-type]
+    )
+    for build in invalid_builders:
+        with pytest.raises(ValueError):
+            build()
 
 
 def test_identity_dtos_are_frozen_and_snapshot_fields_are_immutable() -> None:
@@ -244,6 +369,28 @@ def test_generation_and_owner_are_not_compared_to_each_other() -> None:
     # A ticket whose owner token equals the record's generation id does not
     # own the lease: the owner role is checked against the owner role only.
     assert distinct_record.owns(_ticket(owner_token=_GENERATION)) is False
+
+
+# --- variant accept paths -----------------------------------------------------
+
+
+def test_valid_claimed_pending_and_already_bound_variants_construct() -> None:
+    # The accept direction of the variant guards: each constructor admits the
+    # exact combination its rejection table refuses, and exposes its payload.
+    ticket = _ticket()
+    record = _record()
+    claimed = Claimed(ticket=ticket, record=record)
+    assert claimed.ticket is ticket
+    assert claimed.record is record
+    assert claimed.record.owns(ticket) is True
+
+    pending = Pending(record=record)
+    assert pending.record is record
+    assert pending.record.binding is None
+
+    binding = _binding()
+    already = AlreadyBound(binding=binding)
+    assert already.binding is binding
 
 
 # --- binding and acknowledgement --------------------------------------------
@@ -340,12 +487,14 @@ def test_legacy_pending_record_has_no_invented_identity() -> None:
             id="scope-too-short",
         ),
         pytest.param(
-            lambda: AdmissionTicket(scope_key=1, generation_id=_GENERATION, owner_token=_OWNER),
+            lambda: AdmissionTicket(scope_key=1, generation_id=_GENERATION, owner_token=_OWNER),  # type: ignore[arg-type]
             id="scope-not-str",
         ),
         pytest.param(
             lambda: AdmissionTicket(
-                scope_key=_SCOPE, generation_id="not-a-uuid", owner_token=_OWNER
+                scope_key=_SCOPE,
+                generation_id="not-a-uuid",  # type: ignore[arg-type]
+                owner_token=_OWNER,
             ),
             id="generation-string",
         ),
@@ -409,20 +558,35 @@ def test_legacy_pending_record_has_no_invented_identity() -> None:
             lambda: Claimed(ticket=_ticket(owner_token=_GENERATION), record=_record()),
             id="claimed-with-wrong-owner",
         ),
-        pytest.param(lambda: Claimed(ticket=_record(), record=_record()), id="claimed-non-ticket"),
+        pytest.param(
+            lambda: Claimed(ticket=_record(), record=_record()),  # type: ignore[arg-type]
+            id="claimed-non-ticket",
+        ),
         pytest.param(lambda: Replayed(record=_record()), id="replayed-unbound-v2"),
         pytest.param(lambda: Replayed(record=_legacy()), id="replayed-unbound-legacy"),
-        pytest.param(lambda: Replayed(record="record"), id="replayed-non-record"),
+        pytest.param(
+            lambda: Replayed(record="record"),  # type: ignore[arg-type]
+            id="replayed-non-record",
+        ),
         pytest.param(
             lambda: Pending(record=_record(binding=_binding())), id="pending-bound-record"
         ),
-        pytest.param(lambda: Pending(record=_legacy()), id="pending-legacy-record"),
+        pytest.param(
+            lambda: Pending(record=_legacy()),  # type: ignore[arg-type]
+            id="pending-legacy-record",
+        ),
         pytest.param(
             lambda: LegacyUnresolved(record=_legacy(binding=_binding())),
             id="legacy-unresolved-bound",
         ),
-        pytest.param(lambda: LegacyUnresolved(record=_record()), id="legacy-unresolved-v2"),
-        pytest.param(lambda: AlreadyBound(binding="binding"), id="already-bound-str"),
+        pytest.param(
+            lambda: LegacyUnresolved(record=_record()),  # type: ignore[arg-type]
+            id="legacy-unresolved-v2",
+        ),
+        pytest.param(
+            lambda: AlreadyBound(binding="binding"),  # type: ignore[arg-type]
+            id="already-bound-str",
+        ),
     ],
 )
 def test_invalid_ids_timestamps_and_variant_combinations_are_rejected(

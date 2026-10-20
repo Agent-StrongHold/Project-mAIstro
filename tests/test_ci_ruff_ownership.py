@@ -56,6 +56,26 @@ def _assert_checkout_scope(job, owner):
     return checkout
 
 
+def _assert_quality_summary(quality):
+    """The Ruff leaf must feed the unchanged, fail-closed required context."""
+    summary = quality["jobs"]["quality-gate"]
+    assert summary.get("if") == "${{ always() }}"
+    assert "continue-on-error" not in summary and "strategy" not in summary
+    defaults = summary.get("defaults", {}).get("run", {})
+    assert not defaults.get("working-directory") and "shell" not in defaults
+    needs = summary.get("needs", [])
+    assert isinstance(needs, list) and "quality-ruff" in needs
+    assert len(needs) == len(set(needs))
+    commands = [step for step in summary["steps"] if "run" in step]
+    assert len(commands) == 1
+    step = commands[0]
+    for option in ("if", "continue-on-error", "working-directory", "shell"):
+        assert option not in step
+    assert step.get("env") == {"CHECK_RESULTS": "${{ toJSON(needs) }}"}
+    assert step["run"].split() == ["python", "scripts/check_ci_job_results.py", *needs]
+    _assert_checkout_scope(summary, step)
+
+
 def _assert_owner(documents, command):
     ci = documents["ci"]
     quality = documents["quality"]
@@ -88,7 +108,7 @@ def _assert_owner(documents, command):
 
     for document, job_id, condition in (
         (ci, "lint-and-type-check", FALLBACK),
-        (quality, "quality-gate", None),
+        (quality, "quality-ruff", None),
     ):
         assert (
             sum(
@@ -116,7 +136,7 @@ def _assert_owner(documents, command):
             assert step["if"] == condition
         expected_sync = {
             "lint-and-type-check": "uv sync --locked --extra dev",
-            "quality-gate": "uv sync --locked --all-extras",
+            "quality-ruff": "uv sync --locked --all-extras",
         }[job_id]
         setup = [item for item in job["steps"] if item.get("uses") == "./.github/actions/setup-uv"]
         sync = [item for item in job["steps"] if item.get("run") == expected_sync]
@@ -127,6 +147,7 @@ def _assert_owner(documents, command):
         assert job["steps"].index(setup[0]) < job["steps"].index(sync[0])
         assert job["steps"].index(sync[0]) < job["steps"].index(step)
 
+    _assert_quality_summary(quality)
     names = {
         quality["jobs"]["quality-gate"]["name"],
         ci["jobs"]["lint-and-type-check"].get("name", "lint-and-type-check"),
@@ -198,7 +219,7 @@ def test_each_supported_event_executes_exactly_one_ruff_owner(
         "github.event.action": action,
     }
     owners = []
-    for workflow, job_id in (("ci", "lint-and-type-check"), ("quality", "quality-gate")):
+    for workflow, job_id in (("ci", "lint-and-type-check"), ("quality", "quality-ruff")):
         document = documents[workflow]
         if _receives(document, event, branch, action):
             owners.extend(
@@ -213,7 +234,7 @@ def test_each_supported_event_executes_exactly_one_ruff_owner(
 @pytest.mark.parametrize("mutation", ["remove", "narrow", "tolerate", "different-root"])
 def test_removing_or_weakening_the_remaining_owner_is_detected(documents, command, mutation):
     changed = copy.deepcopy(documents)
-    steps = changed["quality"]["jobs"]["quality-gate"]["steps"]
+    steps = changed["quality"]["jobs"]["quality-ruff"]["steps"]
     owner = next(step for step in steps if step.get("run") == command)
     if mutation == "remove":
         steps.remove(owner)
@@ -278,7 +299,44 @@ def test_owner_cannot_become_advisory_after_deduplication(documents, branch, wor
 
 
 @pytest.mark.parametrize(
-    "workflow,job_id", [("ci", "lint-and-type-check"), ("quality", "quality-gate")]
+    "mutation",
+    [
+        "missing-dependency",
+        "unchecked-dependency",
+        "tolerated-job",
+        "tolerated-step",
+        "skipped-on-cancellation",
+        "conditional-step",
+        "swallowed-failure",
+        "substituted-evidence",
+    ],
+)
+def test_required_summary_cannot_bypass_the_ruff_owner(documents, mutation):
+    changed = copy.deepcopy(documents)
+    summary = changed["quality"]["jobs"]["quality-gate"]
+    step = next(step for step in summary["steps"] if "run" in step)
+    if mutation == "missing-dependency":
+        summary["needs"].remove("quality-ruff")
+    elif mutation == "unchecked-dependency":
+        step["run"] = step["run"].replace("quality-ruff", "")
+    elif mutation == "tolerated-job":
+        summary["continue-on-error"] = True
+    elif mutation == "tolerated-step":
+        step["continue-on-error"] = True
+    elif mutation == "skipped-on-cancellation":
+        summary["if"] = "${{ !cancelled() }}"
+    elif mutation == "conditional-step":
+        step["if"] = "${{ success() }}"
+    elif mutation == "swallowed-failure":
+        step["run"] += " || true"
+    else:
+        step["env"]["CHECK_RESULTS"] = '{"quality-ruff": {"result": "success"}}'
+    with pytest.raises(AssertionError):
+        _assert_owner(changed, COMMANDS[0])
+
+
+@pytest.mark.parametrize(
+    "workflow,job_id", [("ci", "lint-and-type-check"), ("quality", "quality-ruff")]
 )
 @pytest.mark.parametrize(
     "option,value",
@@ -309,7 +367,7 @@ def test_negative_push_patterns_cannot_remove_an_owned_event(documents, pattern)
 
 
 @pytest.mark.parametrize(
-    "workflow,job_id", [("ci", "lint-and-type-check"), ("quality", "quality-gate")]
+    "workflow,job_id", [("ci", "lint-and-type-check"), ("quality", "quality-ruff")]
 )
 @pytest.mark.parametrize("level", ["workflow", "job", "step"])
 def test_shell_tolerance_cannot_mask_the_retained_owner(documents, workflow, job_id, level):
@@ -335,7 +393,7 @@ def test_quality_cannot_overlap_the_ci_only_push(documents, pattern):
 
 
 @pytest.mark.parametrize(
-    "workflow,job_id", [("ci", "lint-and-type-check"), ("quality", "quality-gate")]
+    "workflow,job_id", [("ci", "lint-and-type-check"), ("quality", "quality-ruff")]
 )
 @pytest.mark.parametrize("prerequisite", ["setup", "sync"])
 @pytest.mark.parametrize(
@@ -366,7 +424,7 @@ def test_ruff_setup_is_unconditional_and_precedes_the_owner(
 
 
 @pytest.mark.parametrize(
-    "workflow,job_id", [("ci", "lint-and-type-check"), ("quality", "quality-gate")]
+    "workflow,job_id", [("ci", "lint-and-type-check"), ("quality", "quality-ruff")]
 )
 def test_job_matrix_cannot_duplicate_the_owner(documents, workflow, job_id):
     changed = copy.deepcopy(documents)
@@ -376,7 +434,7 @@ def test_job_matrix_cannot_duplicate_the_owner(documents, workflow, job_id):
 
 
 @pytest.mark.parametrize(
-    "workflow,job_id", [("ci", "lint-and-type-check"), ("quality", "quality-gate")]
+    "workflow,job_id", [("ci", "lint-and-type-check"), ("quality", "quality-ruff")]
 )
 def test_another_job_cannot_duplicate_the_owner(documents, workflow, job_id):
     changed = copy.deepcopy(documents)

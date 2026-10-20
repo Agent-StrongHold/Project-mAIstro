@@ -25,6 +25,24 @@ or placeholder-only section.
 
 ### Added
 
+- **Named `cross-product-parity` CI job and M1 closeout strict mode
+  (#459, partial).** The #459 cross-product parity suite
+  (`tests/cross_product_parity`) now runs as its own required `ci.yml` job
+  instead of being folded, unnamed, into the general `test` job. A new
+  `workflow_dispatch`-only workflow, `cross-product-parity-strict.yml`, runs
+  the same suite with `MAISTRO_PARITY_STRICT=1` (M1 closeout mode): under
+  that flag, `dependency_assessment` raises `DependencyUnavailable` instead
+  of returning a named blocker, so a scenario that only proves its
+  dependency missing fails the suite rather than passing it. It is not part
+  of the PR check contract — it fails today on the CONDUCTOR_INSPECTION
+  blocker until #1036 lands. Four scenarios (Builders/schedule/Evolve
+  activation against Conductor, and the #463 golden-fixture check) also gain
+  their own permanently-evidenced blockers so a landed product dependency
+  alone cannot read as closure evidence while the scenario itself still only
+  checks import/source tokens, or — for the golden fixture — feeds the
+  fixture's own example back at itself instead of a real product
+  observation.
+
 - **Third-party provider adapter SDK with canonical routing and usage semantics (#961).**
   An out-of-tree provider package implements the `ProviderAdapter` normalization
   protocol over a declarative `ProviderAdapterSpec` and registers through
@@ -51,6 +69,21 @@ or placeholder-only section.
   honoring `litellm_url`, and `create_container` accepting a host-registered
   catalog through `provider_adapter_catalog`; configuring an adapter
   authorizes nothing by itself). See ADR-105.
+
+- **The out-of-tree reference extension repository ships four extension families with a shared publish/sign/catalog workflow (#980).**
+  `extensions/reference-gallery/` is a third-party-shaped, multi-package
+  repository: a `tool`-family connector, a `skill` (with an extension-level
+  dependency the catalog resolves), a `capability-provider` model adapter
+  written against the ADR-104 provider-adapter SDK contract, and a
+  `renderer-plugin` UI pack. `tools/publish.py` builds every package, binds
+  each manifest to its wheel's digest, signs the canonical install payload
+  with the publisher's Ed25519 key, and emits a deterministic catalog
+  snapshot that `resolve_lock`/`materialize_lock` and the governed
+  inspect → authorize → install lifecycle consume — wheels, never editable
+  source paths. The same reusable extension gates run in CI against the
+  gallery's own namespace policy via `--policy`, and the four packages'
+  suites are inventoried and collected like the first-party reference
+  extension's.
 
 - **The extension SDK boundary is enforced and a reference extension ships outside the
   core tree (#951).** `extensions/namespace-policy.json` declares the public
@@ -83,6 +116,12 @@ or placeholder-only section.
   stable `/v1` mounts; no `/vN` path duplication exists.
 
 ### Changed
+
+- **Quality and SAST checks can be retried independently (#1357).** Each Quality
+  obligation and SAST scanner has its own job. The existing required check names
+  now reject incomplete or unsuccessful dependency results, preserving branch
+  protection and merge-queue enforcement. One duplicate credential-authority
+  invocation is removed; scanner scopes and proof profiles stay unchanged.
 
 - **Evolve model effects require declared, execution-scoped authority (#1087).**
   Manual/request-scoped Evolve work now resolves an operator-declared `model.chat`
@@ -128,6 +167,26 @@ or placeholder-only section.
   in favor of ADR-101; added AC Defined spec index to [`docs/specs/README.md`](docs/specs/README.md).
 
 ### Fixed
+
+- **Hive Graph execution refuses missing canonical authority (#1113).**
+  Registered and stored DAGs now require the Container's RunStore and Graph
+  continuation owner before admission or execution. Stub/degraded mode reports
+  Graph execution unavailability instead of creating process-local Runs.
+  Definition/resolver helpers and existing read-only legacy archives remain usable.
+
+- **Prevent competing Graph recovery ticks from stealing a persisted claim (#837).**
+  Claim ownership is fenced before orphaned-attempt reconciliation, including
+  the WAITING-to-RUNNING activation window. Losing readers leave the owner's
+  lifecycle and physical work unchanged; ordinary timer parks release the
+  marker and expired claims remain recoverable without redispatch.
+
+- **Rubrics instantiated from pack assets now pin the exact source snapshot
+  (#966).** `RubricProvenance` recorded only `pack_id`, so rubrics minted from
+  different versions of the same pack were provenance-indistinguishable.
+  `RubricProvenance` gained optional `publisher`, `pack_version`,
+  `manifest_sha256`, `asset_id`, and `asset_version` fields, and pack rubric
+  instantiation populates them from the installed manifest snapshot; catalog
+  adoption — which carries no manifest — still records `pack_id` only.
 
 - **Pending HITL discovery is fair instead of filtering after a bounded PAUSED
   prefix (#1109).** `GET /v1/hitl/pending` used to page the generic PAUSED

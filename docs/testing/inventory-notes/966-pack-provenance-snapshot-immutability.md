@@ -1,9 +1,25 @@
----
-inventory-delta:
-  packages/maistro-core/tests: +5
----
 
 # 966 CI-repair round — exact rubric provenance and byte-anchored snapshots
+
+> **Develop-line round, folded into `966-installable-pack-contracts.md` by the
+> 2026-10 develop sync.** In the merged tree the surviving coverage is counted
+> in the main note's `inventory-delta` (+125 → +133), so this note carries **no
+> delta block**. Of the tests this round added on develop:
+>
+> - `test_rubric_provenance_distinguishes_pack_versions`,
+>   `test_mutating_a_stored_dimension_cannot_serve_wrong_bytes` (adapted to
+>   the frozen-tree representation),
+>   `test_instantiated_objects_never_alias_the_snapshot_tree`, and
+>   `test_pack_provenance_details_are_all_or_nothing` are **ported and
+>   counted in the main note**.
+> - `test_persona_payload_trees_are_frozen` is **not ported**: every
+>   assertion it makes is already pinned by the main branch's
+>   `test_manifest_snapshot_is_deep_frozen`.
+> - The P2 implementation differs by design: the merged tree freezes the
+>   whole snapshot (rubric dimensions as pack-local frozen dataclasses;
+>   canonical models minted fresh at every probe/instantiation) instead of
+>   re-parsing `raw` on every asset use — the stronger closure of the same
+>   hazard, with the digest-truthfulness assertion kept.
 
 Closes the two review findings the salvage round had recorded as deferred
 (`966-pack-contract-refusal-repairs.md`, "Reviewed and deliberately

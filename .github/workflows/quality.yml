@@ -185,7 +185,7 @@ jobs:
           uv run coverage run --append --branch --source=packages/maistro-bootstrap/src/maistro_bootstrap \
             -m pytest packages/maistro-bootstrap/tests --timeout=30 -q
       - name: upload coverage data
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: coverage-unit
           # `.coverage` is a dotfile and upload-artifact@v4 skips hidden files
@@ -307,7 +307,7 @@ jobs:
           uv run coverage run --branch --source=packages/maistro-core/src/maistro \
             -m pytest packages/maistro-core/tests/archive -v --tb=short
       - name: upload coverage data
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: coverage-archive
           include-hidden-files: true
@@ -476,7 +476,7 @@ jobs:
             --source=packages/maistro-canvas/src/maistro_canvas \
             -m pytest packages/maistro-canvas/tests --timeout=30 -q
       - name: upload coverage data
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: coverage-postgres
           include-hidden-files: true
@@ -742,43 +742,16 @@ jobs:
           uv run python scripts/check-diff-coverage.py coverage.xml \
             --base "$DIFF_BASE_SHA"
 
-  quality-gate:
-    name: Quality gate (Pillars 1–4, 7, 8)
+  # Each validation has its own retry boundary. Required contexts below remain
+  # stable: the summary refuses any missing, skipped, cancelled, or failed leaf.
+  # Coverage keeps its existing producers and evidence population (#1605).
+
+  quality-ruff:
+    name: Quality / Ruff
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    # A real PostgreSQL, because the acceptance-state ratchet below runs the
-    # marked tests and `ac_outcome_plugin` counts a *skip* as not-passing --
-    # deliberately, since a skip proves nothing about whether a criterion
-    # holds. Without a server, every criterion whose evidence needs one is
-    # unprovable here, which silently excluded the entire durable-store layer
-    # from the acceptance mandate: the tests existed, passed in the `postgres`
-    # job, and could never raise design coverage (#328).
-    #
-    # pg18 alone rather than the 17/18 matrix `ci.yml` runs. This job asks
-    # whether the criteria are proven, not whether they hold on every supported
-    # major; the compatibility question is the matrix's and stays there.
-    services:
-      postgres:
-        image: pgvector/pgvector:pg18
-        env:
-          POSTGRES_USER: maistro
-          POSTGRES_PASSWORD: maistro
-          POSTGRES_DB: maistro_test
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U maistro -d maistro_test"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
     env:
-      MAISTRO_TEST_PG_DSN: postgresql://maistro:maistro@127.0.0.1:5432/maistro_test
-      DATABASE_URL: postgresql://maistro:maistro@127.0.0.1:5432/maistro_test
-      # AC-state must read the same candidate base for a topic push and its
-      # pull-request run. `before` is the previous topic tip and may already
-      # contain the candidate's own note, so it is not an independent base.
-      # Protected-branch pushes are different: their parent is the immutable
-      # revision the merge-time guard replaces.
+      # Candidate grants must never authorize their own changes.
       RATCHET_BASE_REV: >-
         ${{ github.event_name == 'pull_request'
             && format('origin/{0}', github.base_ref)
@@ -795,54 +768,56 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0   # full history for Boy-Scout-Rule diff vs baseline
-
       - name: Install uv
         uses: ./.github/actions/setup-uv
-
       - name: Setup Python 3.12
         run: uv python install 3.12
-
       - name: uv sync (full dev deps)
         run: uv sync --locked --all-extras
-
       # formal/ imports maistro_evolve (RSI conformance suites); not a uv
       # workspace member, so `uv sync` alone doesn't install it.
       - name: install maistro-evolve
         run: uv pip install -e packages/maistro-evolve
-
-      # age/age-keygen are required by the vault + state encryption tests
-      # (SPEC-011 / SPEC-010). apt's `age` package omits age-keygen on some
-      # runners, so fall back to the upstream release tarball.
-      - name: install age + age-keygen
-        run: |
-          set -e
-          # Bounded: an unbounded apt-get or curl here hangs the whole job with
-          # no output. Observed 2026-08-19 — quality.yml sat 29 minutes on this
-          # step (past its own timeout-minutes) with every later step pending,
-          # because the fetch from dl.filippo.io never returned and nothing
-          # bounded it. `|| true` tolerates a *failed* apt, not a wedged one.
-          timeout 180 sudo apt-get update || true
-          timeout 180 sudo apt-get install -y age || true
-          if ! command -v age-keygen &> /dev/null; then
-            mkdir -p /tmp/age && cd /tmp/age
-            curl -fsSL --max-time 120 --retry 3 --retry-delay 5 --retry-all-errors \
-              https://dl.filippo.io/age/latest/age-linux-amd64.tar.gz | tar xz
-            sudo mv /tmp/age/age /tmp/age/age-keygen /usr/local/bin/
-            age-keygen --help > /dev/null && echo "✓ age-keygen ready"
-          fi
-
-      # The analyzer CLIs are NOT project extras (see requirements-dev-tools.txt
-      # — semgrep-class tools carry conflicting pins; these are safe in-venv).
-      - name: install quality tools
-        run: uv pip install radon xenon vulture pyright interrogate pytest-timeout
-
       # ----- Pillar 3: code smells -----
       - name: ruff lint (full ruleset)
         run: uv run ruff check .
-
       - name: ruff format check
         run: uv run ruff format --check .
 
+  quality-radon:
+    name: Quality / Radon
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      # Candidate grants must never authorize their own changes.
+      RATCHET_BASE_REV: >-
+        ${{ github.event_name == 'pull_request'
+            && format('origin/{0}', github.base_ref)
+            || github.event_name == 'merge_group'
+            && github.event.merge_group.base_sha
+            || github.ref == 'refs/heads/develop'
+            && github.event.before
+            || github.ref == 'refs/heads/integration'
+            && github.event.before
+            || github.ref == 'refs/heads/main'
+            && github.event.before
+            || 'origin/develop' }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0   # full history for Boy-Scout-Rule diff vs baseline
+      - name: Install uv
+        uses: ./.github/actions/setup-uv
+      - name: Setup Python 3.12
+        run: uv python install 3.12
+      - name: uv sync (full dev deps)
+        run: uv sync --locked --all-extras
+      # formal/ imports maistro_evolve (RSI conformance suites); not a uv
+      # workspace member, so `uv sync` alone doesn't install it.
+      - name: install maistro-evolve
+        run: uv pip install -e packages/maistro-evolve
+      - name: Install this check's analyzer
+        run: uv pip install radon
       # The workflow header has claimed since Phase 20 that radon findings are
       # gated against quality/radon-baseline.json — but the checker was never
       # invoked (Codex, #262): the plain `radon cc` below reports blocks and
@@ -851,10 +826,41 @@ jobs:
       # complexity grew; stale entries are pruned as hotspots are refactored.
       - name: radon CC ratchet (new/regressed hotspots vs quality/radon-baseline.json)
         run: uv run python scripts/check-radon-baseline.py
-
       - name: radon CC (report; the ratchet above is the gate)
         run: uv run radon cc packages/*/src -i third_party --min B --total-average
 
+  quality-version:
+    name: Quality / Version consistency
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      # Candidate grants must never authorize their own changes.
+      RATCHET_BASE_REV: >-
+        ${{ github.event_name == 'pull_request'
+            && format('origin/{0}', github.base_ref)
+            || github.event_name == 'merge_group'
+            && github.event.merge_group.base_sha
+            || github.ref == 'refs/heads/develop'
+            && github.event.before
+            || github.ref == 'refs/heads/integration'
+            && github.event.before
+            || github.ref == 'refs/heads/main'
+            && github.event.before
+            || 'origin/develop' }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0   # full history for Boy-Scout-Rule diff vs baseline
+      - name: Install uv
+        uses: ./.github/actions/setup-uv
+      - name: Setup Python 3.12
+        run: uv python install 3.12
+      - name: uv sync (full dev deps)
+        run: uv sync --locked --all-extras
+      # formal/ imports maistro_evolve (RSI conformance suites); not a uv
+      # workspace member, so `uv sync` alone doesn't install it.
+      - name: install maistro-evolve
+        run: uv pip install -e packages/maistro-evolve
       # Single-sourced version (E1/#294): VERSION is the source of truth, and
       # every package's pyproject.toml/__version__ fallback, inter-package
       # dependency lower bound, and app-level FastAPI(version=...) literal
@@ -862,6 +868,38 @@ jobs:
       - name: version consistency check (VERSION vs. every version site)
         run: uv run python scripts/bump_version.py --check
 
+  quality-release:
+    name: Quality / Release consistency
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      # Candidate grants must never authorize their own changes.
+      RATCHET_BASE_REV: >-
+        ${{ github.event_name == 'pull_request'
+            && format('origin/{0}', github.base_ref)
+            || github.event_name == 'merge_group'
+            && github.event.merge_group.base_sha
+            || github.ref == 'refs/heads/develop'
+            && github.event.before
+            || github.ref == 'refs/heads/integration'
+            && github.event.before
+            || github.ref == 'refs/heads/main'
+            && github.event.before
+            || 'origin/develop' }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0   # full history for Boy-Scout-Rule diff vs baseline
+      - name: Install uv
+        uses: ./.github/actions/setup-uv
+      - name: Setup Python 3.12
+        run: uv python install 3.12
+      - name: uv sync (full dev deps)
+        run: uv sync --locked --all-extras
+      # formal/ imports maistro_evolve (RSI conformance suites); not a uv
+      # workspace member, so `uv sync` alone doesn't install it.
+      - name: install maistro-evolve
+        run: uv pip install -e packages/maistro-evolve
       # The step above proves the 32 version sites agree on a number. It says
       # nothing about the number's relationship to the release the repo is
       # writing notes for — and VERSION 0.9.0 against a CHANGELOG heading of
@@ -880,6 +918,38 @@ jobs:
       - name: release consistency (VERSION, CHANGELOG, README and tags tell one story)
         run: uv run python scripts/check-release-consistency.py
 
+  quality-doc-links:
+    name: Quality / Documentation links
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      # Candidate grants must never authorize their own changes.
+      RATCHET_BASE_REV: >-
+        ${{ github.event_name == 'pull_request'
+            && format('origin/{0}', github.base_ref)
+            || github.event_name == 'merge_group'
+            && github.event.merge_group.base_sha
+            || github.ref == 'refs/heads/develop'
+            && github.event.before
+            || github.ref == 'refs/heads/integration'
+            && github.event.before
+            || github.ref == 'refs/heads/main'
+            && github.event.before
+            || 'origin/develop' }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0   # full history for Boy-Scout-Rule diff vs baseline
+      - name: Install uv
+        uses: ./.github/actions/setup-uv
+      - name: Setup Python 3.12
+        run: uv python install 3.12
+      - name: uv sync (full dev deps)
+        run: uv sync --locked --all-extras
+      # formal/ imports maistro_evolve (RSI conformance suites); not a uv
+      # workspace member, so `uv sync` alone doesn't install it.
+      - name: install maistro-evolve
+        run: uv pip install -e packages/maistro-evolve
       # The maistro-registry gate validates front-matter relationships
       # (supersedes/depends_on); it never resolves prose links in a document
       # body. Renaming an ADR therefore leaves dead [ADR-xxx](...) links behind
@@ -889,6 +959,38 @@ jobs:
       - name: doc links (every relative markdown link resolves)
         run: uv run python scripts/check-doc-links.py
 
+  quality-enumerations:
+    name: Quality / Enumeration coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      # Candidate grants must never authorize their own changes.
+      RATCHET_BASE_REV: >-
+        ${{ github.event_name == 'pull_request'
+            && format('origin/{0}', github.base_ref)
+            || github.event_name == 'merge_group'
+            && github.event.merge_group.base_sha
+            || github.ref == 'refs/heads/develop'
+            && github.event.before
+            || github.ref == 'refs/heads/integration'
+            && github.event.before
+            || github.ref == 'refs/heads/main'
+            && github.event.before
+            || 'origin/develop' }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0   # full history for Boy-Scout-Rule diff vs baseline
+      - name: Install uv
+        uses: ./.github/actions/setup-uv
+      - name: Setup Python 3.12
+        run: uv python install 3.12
+      - name: uv sync (full dev deps)
+        run: uv sync --locked --all-extras
+      # formal/ imports maistro_evolve (RSI conformance suites); not a uv
+      # workspace member, so `uv sync` alone doesn't install it.
+      - name: install maistro-evolve
+        run: uv pip install -e packages/maistro-evolve
       # Unlike the ratchets below, this one is a *count-free* ratchet: the
       # baseline names every tolerated gap, and a gap that gets fixed but left
       # in the file fails the build too. That asymmetry is the point — a count
@@ -902,6 +1004,38 @@ jobs:
       - name: enumeration coverage (derived control lists — ratchet)
         run: uv run python scripts/check_enumerations.py
 
+  quality-retirement:
+    name: Quality / Workspace retirement
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      # Candidate grants must never authorize their own changes.
+      RATCHET_BASE_REV: >-
+        ${{ github.event_name == 'pull_request'
+            && format('origin/{0}', github.base_ref)
+            || github.event_name == 'merge_group'
+            && github.event.merge_group.base_sha
+            || github.ref == 'refs/heads/develop'
+            && github.event.before
+            || github.ref == 'refs/heads/integration'
+            && github.event.before
+            || github.ref == 'refs/heads/main'
+            && github.event.before
+            || 'origin/develop' }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0   # full history for Boy-Scout-Rule diff vs baseline
+      - name: Install uv
+        uses: ./.github/actions/setup-uv
+      - name: Setup Python 3.12
+        run: uv python install 3.12
+      - name: uv sync (full dev deps)
+        run: uv sync --locked --all-extras
+      # formal/ imports maistro_evolve (RSI conformance suites); not a uv
+      # workspace member, so `uv sync` alone doesn't install it.
+      - name: install maistro-evolve
+        run: uv pip install -e packages/maistro-evolve
       # The Workspace cutover only deprecates the old Conductor surfaces if
       # they can't pick up new consumers while their replacements land, so
       # quality/workspace-retirement.json only shrinks (#1046, cutover S0.1).
@@ -910,6 +1044,38 @@ jobs:
       - name: workspace retirement (retiring Conductor surfaces gain no importers — ratchet)
         run: uv run python scripts/check-workspace-retirement.py
 
+  quality-route-permissions:
+    name: Quality / Route permissions
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      # Candidate grants must never authorize their own changes.
+      RATCHET_BASE_REV: >-
+        ${{ github.event_name == 'pull_request'
+            && format('origin/{0}', github.base_ref)
+            || github.event_name == 'merge_group'
+            && github.event.merge_group.base_sha
+            || github.ref == 'refs/heads/develop'
+            && github.event.before
+            || github.ref == 'refs/heads/integration'
+            && github.event.before
+            || github.ref == 'refs/heads/main'
+            && github.event.before
+            || 'origin/develop' }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0   # full history for Boy-Scout-Rule diff vs baseline
+      - name: Install uv
+        uses: ./.github/actions/setup-uv
+      - name: Setup Python 3.12
+        run: uv python install 3.12
+      - name: uv sync (full dev deps)
+        run: uv sync --locked --all-extras
+      # formal/ imports maistro_evolve (RSI conformance suites); not a uv
+      # workspace member, so `uv sync` alone doesn't install it.
+      - name: install maistro-evolve
+        run: uv pip install -e packages/maistro-evolve
       # Default-allow route prefixes are the seam Workspace cutover P0.2 closes:
       # every authenticated /v1/{segment} mount must declare a permission or a
       # reviewed exempt_reason before Workspace surfaces land (#53 AC-P2). Same
@@ -917,6 +1083,38 @@ jobs:
       - name: route permissions (every authenticated prefix declared — ratchet)
         run: uv run python scripts/check-route-permissions.py
 
+  quality-principal:
+    name: Quality / Principal identity
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      # Candidate grants must never authorize their own changes.
+      RATCHET_BASE_REV: >-
+        ${{ github.event_name == 'pull_request'
+            && format('origin/{0}', github.base_ref)
+            || github.event_name == 'merge_group'
+            && github.event.merge_group.base_sha
+            || github.ref == 'refs/heads/develop'
+            && github.event.before
+            || github.ref == 'refs/heads/integration'
+            && github.event.before
+            || github.ref == 'refs/heads/main'
+            && github.event.before
+            || 'origin/develop' }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0   # full history for Boy-Scout-Rule diff vs baseline
+      - name: Install uv
+        uses: ./.github/actions/setup-uv
+      - name: Setup Python 3.12
+        run: uv python install 3.12
+      - name: uv sync (full dev deps)
+        run: uv sync --locked --all-extras
+      # formal/ imports maistro_evolve (RSI conformance suites); not a uv
+      # workspace member, so `uv sync` alone doesn't install it.
+      - name: install maistro-evolve
+        run: uv pip install -e packages/maistro-evolve
       # Parallel HTTP principal types and dict-shaped request.state.user are
       # how the last three Conductor attempts kept diverging identity. P0.1
       # ratchets them to one canonical Principal in maistro-core (#53). Its
@@ -924,6 +1122,38 @@ jobs:
       - name: principal identity (one HTTP principal surface — ratchet)
         run: uv run python scripts/check-principal-identity.py
 
+  quality-frontend:
+    name: Quality / Frontend typed client
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      # Candidate grants must never authorize their own changes.
+      RATCHET_BASE_REV: >-
+        ${{ github.event_name == 'pull_request'
+            && format('origin/{0}', github.base_ref)
+            || github.event_name == 'merge_group'
+            && github.event.merge_group.base_sha
+            || github.ref == 'refs/heads/develop'
+            && github.event.before
+            || github.ref == 'refs/heads/integration'
+            && github.event.before
+            || github.ref == 'refs/heads/main'
+            && github.event.before
+            || 'origin/develop' }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0   # full history for Boy-Scout-Rule diff vs baseline
+      - name: Install uv
+        uses: ./.github/actions/setup-uv
+      - name: Setup Python 3.12
+        run: uv python install 3.12
+      - name: uv sync (full dev deps)
+        run: uv sync --locked --all-extras
+      # formal/ imports maistro_evolve (RSI conformance suites); not a uv
+      # workspace member, so `uv sync` alone doesn't install it.
+      - name: install maistro-evolve
+        run: uv pip install -e packages/maistro-evolve
       # Workspace cutover P0.3 closes the hand-typed client seam: HTTP must
       # eventually go through one generated client and entity shapes must come
       # from types.gen.ts (#1048 AC-P3). Until then this ratchet banks the
@@ -932,6 +1162,38 @@ jobs:
       - name: frontend typed client (raw fetch + hand-typed entities — ratchet)
         run: uv run python scripts/check-frontend-typed-client.py
 
+  quality-ifeval:
+    name: Quality / IFEval provenance
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      # Candidate grants must never authorize their own changes.
+      RATCHET_BASE_REV: >-
+        ${{ github.event_name == 'pull_request'
+            && format('origin/{0}', github.base_ref)
+            || github.event_name == 'merge_group'
+            && github.event.merge_group.base_sha
+            || github.ref == 'refs/heads/develop'
+            && github.event.before
+            || github.ref == 'refs/heads/integration'
+            && github.event.before
+            || github.ref == 'refs/heads/main'
+            && github.event.before
+            || 'origin/develop' }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0   # full history for Boy-Scout-Rule diff vs baseline
+      - name: Install uv
+        uses: ./.github/actions/setup-uv
+      - name: Setup Python 3.12
+        run: uv python install 3.12
+      - name: uv sync (full dev deps)
+        run: uv sync --locked --all-extras
+      # formal/ imports maistro_evolve (RSI conformance suites); not a uv
+      # workspace member, so `uv sync` alone doesn't install it.
+      - name: install maistro-evolve
+        run: uv pip install -e packages/maistro-evolve
       # The vendored IFEval grader and corpus are the *exam* the RSI loop is
       # scored against, so they must stay byte-comparable to what Google
       # published. This verifies the committed tree still matches its pinned
@@ -942,9 +1204,75 @@ jobs:
       - name: vendored benchmark provenance (IFEval grader + corpus)
         run: uv run python scripts/vendor_ifeval.py --check
 
+  quality-bfcl:
+    name: Quality / BFCL provenance
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      # Candidate grants must never authorize their own changes.
+      RATCHET_BASE_REV: >-
+        ${{ github.event_name == 'pull_request'
+            && format('origin/{0}', github.base_ref)
+            || github.event_name == 'merge_group'
+            && github.event.merge_group.base_sha
+            || github.ref == 'refs/heads/develop'
+            && github.event.before
+            || github.ref == 'refs/heads/integration'
+            && github.event.before
+            || github.ref == 'refs/heads/main'
+            && github.event.before
+            || 'origin/develop' }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0   # full history for Boy-Scout-Rule diff vs baseline
+      - name: Install uv
+        uses: ./.github/actions/setup-uv
+      - name: Setup Python 3.12
+        run: uv python install 3.12
+      - name: uv sync (full dev deps)
+        run: uv sync --locked --all-extras
+      # formal/ imports maistro_evolve (RSI conformance suites); not a uv
+      # workspace member, so `uv sync` alone doesn't install it.
+      - name: install maistro-evolve
+        run: uv pip install -e packages/maistro-evolve
       - name: vendored benchmark provenance (BFCL checker + corpus)
         run: uv run python scripts/vendor_bfcl.py --check
 
+  quality-xenon:
+    name: Quality / Xenon
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      # Candidate grants must never authorize their own changes.
+      RATCHET_BASE_REV: >-
+        ${{ github.event_name == 'pull_request'
+            && format('origin/{0}', github.base_ref)
+            || github.event_name == 'merge_group'
+            && github.event.merge_group.base_sha
+            || github.ref == 'refs/heads/develop'
+            && github.event.before
+            || github.ref == 'refs/heads/integration'
+            && github.event.before
+            || github.ref == 'refs/heads/main'
+            && github.event.before
+            || 'origin/develop' }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0   # full history for Boy-Scout-Rule diff vs baseline
+      - name: Install uv
+        uses: ./.github/actions/setup-uv
+      - name: Setup Python 3.12
+        run: uv python install 3.12
+      - name: uv sync (full dev deps)
+        run: uv sync --locked --all-extras
+      # formal/ imports maistro_evolve (RSI conformance suites); not a uv
+      # workspace member, so `uv sync` alone doesn't install it.
+      - name: install maistro-evolve
+        run: uv pip install -e packages/maistro-evolve
+      - name: Install this check's analyzer
+        run: uv pip install xenon
       # Ratchet, not a 0-baseline: the backlog (140 ERROR blocks over all
       # shipped src, measured 2026-09-29; 139 by 2026-09-30) is too large to
       # clear in one PR.
@@ -954,9 +1282,11 @@ jobs:
       # reach 0.
       #
       # This step's unique value after #1682 is the module-rank and
-      # project-average axes: check-radon-baseline.py now carries the same
-      # 139 blocks as a per-identity ledger, which is strictly stronger than
-      # a count for the per-block axis.
+      # project-average axes: check-radon-baseline.py carries the same blocks
+      # as a per-identity ledger, which is strictly stronger than a count for
+      # the per-block axis. tests/test_complexity_gate_scope.py pins
+      # XENON_BASELINE to the ledger's length, so the two instruments cannot
+      # drift apart silently.
       - name: xenon (per-function ≤ B; per-module ≤ B; project avg ≤ A — ratchet)
         env:
           # 77 -> 140 when the scope widened from maistro-core to every shipped
@@ -976,11 +1306,41 @@ jobs:
           # scan does not watch *until this PR lands* -- which is the argument
           # for landing it rather than refreshing the number again.
           #
-          # 145 is the same number check-radon-baseline.py now carries, and that
-          # is the point: the two tools measure the same blocks over the same
-          # scope, so a divergence between this count and the ledger's length is
-          # itself a signal that one of them stopped looking.
-          XENON_BASELINE: 145
+          # 145 -> 143: the Boy Scout wave after this landed (the M4-A8/#115
+          # refactors, then the M5-B rounds) fixed LocalRsiLoop._fitness_decision
+          # and LocalRsiLoop.export_promotions outright and re-pinned six more
+          # rows lower; the ledger followed every improvement down and this
+          # ceiling follows the ledger. Re-measured 2026-10-18 at 31d891a561df:
+          # 143 xenon block identities matching the ledger's 143 entries
+          # one-for-one, rank for rank.
+          #
+          # 143 -> 139: the pin test caught the ceiling drifted from the ledger
+          # it mirrors (143 vs a ledger the post-2026-10-04 Boy Scout waves had
+          # pulled down to 137), and the radon scan widened to
+          # packages/maistro-ext-sdk/src, banking the SDK's two C blocks
+          # (_validate_least_authority 14, VersionRange.satisfied_by 12) as
+          # ledger rows: 137 + 2 = 139.
+          #
+          # 139 -> 137: those two SDK blocks did not stay debt. The Boy Scout
+          # ratchet took them down instead of banking them --
+          # _validate_least_authority split into its two one-directional halves
+          # and VersionRange.satisfied_by became an operator dispatch, both now
+          # B or better -- so the scan widening surfaced no new debt and the
+          # two ledger rows and their grants were withdrawn as never landed.
+          # Re-measured on develop: 137 block identities, xenon and the ledger
+          # one-for-one, module and average axes clean.
+          #
+          # 137 -> 134 (#1791, developed in parallel with the waves above and
+          # merged here): the three consistency-evaluator blocks in
+          # maistro-design (consistency.py::_build_refinement,
+          # _check_sibling_contradictions, evaluate_project_snapshot) went
+          # from C (17/16/15) to B (8/6/6), and the radon ledger dropped the
+          # same three rows together with their #1682 grants -- the same move
+          # #1674 made for tau_bench. A divergence between this count and the
+          # ledger's length is itself a signal that one of the two instruments
+          # stopped looking; tests/test_complexity_gate_scope.py pins them
+          # together.
+          XENON_BASELINE: 134
           # Module rank was never gated at all. The old count matched only
           # '^ERROR:xenon:block', so a whole module drifting to C passed in
           # silence; widening the scope surfaced one.
@@ -1055,6 +1415,40 @@ jobs:
           fi
           exit "$fail"
 
+  quality-vulture:
+    name: Quality / Vulture
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      # Candidate grants must never authorize their own changes.
+      RATCHET_BASE_REV: >-
+        ${{ github.event_name == 'pull_request'
+            && format('origin/{0}', github.base_ref)
+            || github.event_name == 'merge_group'
+            && github.event.merge_group.base_sha
+            || github.ref == 'refs/heads/develop'
+            && github.event.before
+            || github.ref == 'refs/heads/integration'
+            && github.event.before
+            || github.ref == 'refs/heads/main'
+            && github.event.before
+            || 'origin/develop' }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0   # full history for Boy-Scout-Rule diff vs baseline
+      - name: Install uv
+        uses: ./.github/actions/setup-uv
+      - name: Setup Python 3.12
+        run: uv python install 3.12
+      - name: uv sync (full dev deps)
+        run: uv sync --locked --all-extras
+      # formal/ imports maistro_evolve (RSI conformance suites); not a uv
+      # workspace member, so `uv sync` alone doesn't install it.
+      - name: install maistro-evolve
+        run: uv pip install -e packages/maistro-evolve
+      - name: Install this check's analyzer
+        run: uv pip install vulture
       # Per-identity debt ledger, not a count: quality/vulture-baseline.json
       # records the exact reviewed finding identities per classification rule,
       # so a new finding fails by name and a fixed one must shrink the ledger
@@ -1081,6 +1475,38 @@ jobs:
           --min-confidence 60
           --exclude '*/third_party/*'
 
+  quality-reachability:
+    name: Quality / Reachability
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      # Candidate grants must never authorize their own changes.
+      RATCHET_BASE_REV: >-
+        ${{ github.event_name == 'pull_request'
+            && format('origin/{0}', github.base_ref)
+            || github.event_name == 'merge_group'
+            && github.event.merge_group.base_sha
+            || github.ref == 'refs/heads/develop'
+            && github.event.before
+            || github.ref == 'refs/heads/integration'
+            && github.event.before
+            || github.ref == 'refs/heads/main'
+            && github.event.before
+            || 'origin/develop' }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0   # full history for Boy-Scout-Rule diff vs baseline
+      - name: Install uv
+        uses: ./.github/actions/setup-uv
+      - name: Setup Python 3.12
+        run: uv python install 3.12
+      - name: uv sync (full dev deps)
+        run: uv sync --locked --all-extras
+      # formal/ imports maistro_evolve (RSI conformance suites); not a uv
+      # workspace member, so `uv sync` alone doesn't install it.
+      - name: install maistro-evolve
+        run: uv pip install -e packages/maistro-evolve
       # Vulture works at symbol granularity inside a file, so it is structurally
       # blind to a whole module that only its own siblings and tests import —
       # every symbol in it looks used. That is the shape of #344/#346/#347 and
@@ -1089,6 +1515,38 @@ jobs:
       - name: reachability ratchet (built-but-never-wired modules)
         run: uv run python scripts/check-reachability.py
 
+  quality-proof-envelope:
+    name: Quality / Installed proof CLI
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      # Candidate grants must never authorize their own changes.
+      RATCHET_BASE_REV: >-
+        ${{ github.event_name == 'pull_request'
+            && format('origin/{0}', github.base_ref)
+            || github.event_name == 'merge_group'
+            && github.event.merge_group.base_sha
+            || github.ref == 'refs/heads/develop'
+            && github.event.before
+            || github.ref == 'refs/heads/integration'
+            && github.event.before
+            || github.ref == 'refs/heads/main'
+            && github.event.before
+            || 'origin/develop' }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0   # full history for Boy-Scout-Rule diff vs baseline
+      - name: Install uv
+        uses: ./.github/actions/setup-uv
+      - name: Setup Python 3.12
+        run: uv python install 3.12
+      - name: uv sync (full dev deps)
+        run: uv sync --locked --all-extras
+      # formal/ imports maistro_evolve (RSI conformance suites); not a uv
+      # workspace member, so `uv sync` alone doesn't install it.
+      - name: install maistro-evolve
+        run: uv pip install -e packages/maistro-evolve
       # The installed-workspace proof validator (#1878) is release tooling, and
       # the ratchet above counts a scripts/ module as wired only when a
       # workflow names its file — so this step is its call path, not an
@@ -1192,6 +1650,38 @@ jobs:
           }
           echo "installed proof envelope validator fails closed: structural exit 0, closeout exit 1 (SYNTHETIC_NOT_CLOSEOUT)"
 
+  quality-model-proof:
+    name: Quality / Selected model-call CLI
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      # Candidate grants must never authorize their own changes.
+      RATCHET_BASE_REV: >-
+        ${{ github.event_name == 'pull_request'
+            && format('origin/{0}', github.base_ref)
+            || github.event_name == 'merge_group'
+            && github.event.merge_group.base_sha
+            || github.ref == 'refs/heads/develop'
+            && github.event.before
+            || github.ref == 'refs/heads/integration'
+            && github.event.before
+            || github.ref == 'refs/heads/main'
+            && github.event.before
+            || 'origin/develop' }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0   # full history for Boy-Scout-Rule diff vs baseline
+      - name: Install uv
+        uses: ./.github/actions/setup-uv
+      - name: Setup Python 3.12
+        run: uv python install 3.12
+      - name: uv sync (full dev deps)
+        run: uv sync --locked --all-extras
+      # formal/ imports maistro_evolve (RSI conformance suites); not a uv
+      # workspace member, so `uv sync` alone doesn't install it.
+      - name: install maistro-evolve
+        run: uv pip install -e packages/maistro-evolve
       # The selected-model-call validator (#1879) is release tooling, and the
       # ratchet above counts a scripts/ module as wired only when a workflow
       # names its file — so this step is its call path, not an ornament. It
@@ -1305,16 +1795,75 @@ jobs:
           }
           echo "selected model-call validator fails closed: valid document exit 0, spliced dispatch exit 1 (DISPATCH_LINK_MISMATCH)"
 
+  quality-credentials:
+    name: Quality / Credential authority
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      # Candidate grants must never authorize their own changes.
+      RATCHET_BASE_REV: >-
+        ${{ github.event_name == 'pull_request'
+            && format('origin/{0}', github.base_ref)
+            || github.event_name == 'merge_group'
+            && github.event.merge_group.base_sha
+            || github.ref == 'refs/heads/develop'
+            && github.event.before
+            || github.ref == 'refs/heads/integration'
+            && github.event.before
+            || github.ref == 'refs/heads/main'
+            && github.event.before
+            || 'origin/develop' }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0   # full history for Boy-Scout-Rule diff vs baseline
+      - name: Install uv
+        uses: ./.github/actions/setup-uv
+      - name: Setup Python 3.12
+        run: uv python install 3.12
+      - name: uv sync (full dev deps)
+        run: uv sync --locked --all-extras
+      # formal/ imports maistro_evolve (RSI conformance suites); not a uv
+      # workspace member, so `uv sync` alone doesn't install it.
+      - name: install maistro-evolve
+        run: uv pip install -e packages/maistro-evolve
       # Credential authority is checked against the same reachable module graph;
       # a renamed unscoped store must fail before it can become a route dependency.
       - name: credential authority (reachable stores are classified and scoped)
         run: uv run python scripts/check-credential-authority.py
 
-      # Credential authority is checked against the same reachable module graph;
-      # a renamed unscoped store must fail before it can become a route dependency.
-      - name: credential authority (reachable stores are classified and scoped)
-        run: uv run python scripts/check-credential-authority.py
-
+  quality-wiring:
+    name: Quality / Wiring reads
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      # Candidate grants must never authorize their own changes.
+      RATCHET_BASE_REV: >-
+        ${{ github.event_name == 'pull_request'
+            && format('origin/{0}', github.base_ref)
+            || github.event_name == 'merge_group'
+            && github.event.merge_group.base_sha
+            || github.ref == 'refs/heads/develop'
+            && github.event.before
+            || github.ref == 'refs/heads/integration'
+            && github.event.before
+            || github.ref == 'refs/heads/main'
+            && github.event.before
+            || 'origin/develop' }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0   # full history for Boy-Scout-Rule diff vs baseline
+      - name: Install uv
+        uses: ./.github/actions/setup-uv
+      - name: Setup Python 3.12
+        run: uv python install 3.12
+      - name: uv sync (full dev deps)
+        run: uv sync --locked --all-extras
+      # formal/ imports maistro_evolve (RSI conformance suites); not a uv
+      # workspace member, so `uv sync` alone doesn't install it.
+      - name: install maistro-evolve
+        run: uv pip install -e packages/maistro-evolve
       # Both gates above stop one level short of the DI root. `Container` is not
       # a value object -- its fields exist so the runtime can consume them -- and
       # a field that is constructed, stored and read by nobody is wiring that
@@ -1347,6 +1896,38 @@ jobs:
                 || 'origin/develop' }}
         run: uv run python scripts/check-wiring-reads.py
 
+  quality-agent-writes:
+    name: Quality / Agent store writes
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      # Candidate grants must never authorize their own changes.
+      RATCHET_BASE_REV: >-
+        ${{ github.event_name == 'pull_request'
+            && format('origin/{0}', github.base_ref)
+            || github.event_name == 'merge_group'
+            && github.event.merge_group.base_sha
+            || github.ref == 'refs/heads/develop'
+            && github.event.before
+            || github.ref == 'refs/heads/integration'
+            && github.event.before
+            || github.ref == 'refs/heads/main'
+            && github.event.before
+            || 'origin/develop' }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0   # full history for Boy-Scout-Rule diff vs baseline
+      - name: Install uv
+        uses: ./.github/actions/setup-uv
+      - name: Setup Python 3.12
+        run: uv python install 3.12
+      - name: uv sync (full dev deps)
+        run: uv sync --locked --all-extras
+      # formal/ imports maistro_evolve (RSI conformance suites); not a uv
+      # workspace member, so `uv sync` alone doesn't install it.
+      - name: install maistro-evolve
+        run: uv pip install -e packages/maistro-evolve
       # #840: stores.agents is a durable product projection with exactly one
       # writer (services/agent_materialization.py). CRUD, Forge, chat tools
       # and the workspace cascade all funnel through it, and container.agents
@@ -1356,6 +1937,38 @@ jobs:
       - name: agent store write path (one writer for stores.agents)
         run: uv run python scripts/check-agent-store-writes.py
 
+  quality-contract-markers:
+    name: Quality / Contract markers
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      # Candidate grants must never authorize their own changes.
+      RATCHET_BASE_REV: >-
+        ${{ github.event_name == 'pull_request'
+            && format('origin/{0}', github.base_ref)
+            || github.event_name == 'merge_group'
+            && github.event.merge_group.base_sha
+            || github.ref == 'refs/heads/develop'
+            && github.event.before
+            || github.ref == 'refs/heads/integration'
+            && github.event.before
+            || github.ref == 'refs/heads/main'
+            && github.event.before
+            || 'origin/develop' }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0   # full history for Boy-Scout-Rule diff vs baseline
+      - name: Install uv
+        uses: ./.github/actions/setup-uv
+      - name: Setup Python 3.12
+        run: uv python install 3.12
+      - name: uv sync (full dev deps)
+        run: uv sync --locked --all-extras
+      # formal/ imports maistro_evolve (RSI conformance suites); not a uv
+      # workspace member, so `uv sync` alone doesn't install it.
+      - name: install maistro-evolve
+        run: uv pip install -e packages/maistro-evolve
       # ADR-032 says the registry cross-checks a document's declared contract
       # kinds against `@pytest.mark.contract` on the tests it lists. Nothing
       # consumed the marker, so 228 uses carried an enforcement that did not
@@ -1364,6 +1977,38 @@ jobs:
       - name: contract marker ledger (ADR-032's cross-check, enforced)
         run: uv run python scripts/check-contract-markers.py
 
+  quality-convergence:
+    name: Quality / Convergence matrix
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      # Candidate grants must never authorize their own changes.
+      RATCHET_BASE_REV: >-
+        ${{ github.event_name == 'pull_request'
+            && format('origin/{0}', github.base_ref)
+            || github.event_name == 'merge_group'
+            && github.event.merge_group.base_sha
+            || github.ref == 'refs/heads/develop'
+            && github.event.before
+            || github.ref == 'refs/heads/integration'
+            && github.event.before
+            || github.ref == 'refs/heads/main'
+            && github.event.before
+            || 'origin/develop' }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0   # full history for Boy-Scout-Rule diff vs baseline
+      - name: Install uv
+        uses: ./.github/actions/setup-uv
+      - name: Setup Python 3.12
+        run: uv python install 3.12
+      - name: uv sync (full dev deps)
+        run: uv sync --locked --all-extras
+      # formal/ imports maistro_evolve (RSI conformance suites); not a uv
+      # workspace member, so `uv sync` alone doesn't install it.
+      - name: install maistro-evolve
+        run: uv pip install -e packages/maistro-evolve
       # The reachability ratchet says *how much* is unwired; the convergence
       # matrix says *who owns what* and which subsystem each unreachable module
       # belongs to. It is the M0 planning surface (#28), so it is checked rather
@@ -1376,6 +2021,38 @@ jobs:
       - name: convergence matrix (subsystem ownership stays current)
         run: uv run python scripts/check-convergence-matrix.py
 
+  quality-dispositions:
+    name: Quality / Reachability dispositions
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      # Candidate grants must never authorize their own changes.
+      RATCHET_BASE_REV: >-
+        ${{ github.event_name == 'pull_request'
+            && format('origin/{0}', github.base_ref)
+            || github.event_name == 'merge_group'
+            && github.event.merge_group.base_sha
+            || github.ref == 'refs/heads/develop'
+            && github.event.before
+            || github.ref == 'refs/heads/integration'
+            && github.event.before
+            || github.ref == 'refs/heads/main'
+            && github.event.before
+            || 'origin/develop' }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0   # full history for Boy-Scout-Rule diff vs baseline
+      - name: Install uv
+        uses: ./.github/actions/setup-uv
+      - name: Setup Python 3.12
+        run: uv python install 3.12
+      - name: uv sync (full dev deps)
+        run: uv sync --locked --all-extras
+      # formal/ imports maistro_evolve (RSI conformance suites); not a uv
+      # workspace member, so `uv sync` alone doesn't install it.
+      - name: install maistro-evolve
+        run: uv pip install -e packages/maistro-evolve
       # The baseline says a module is unreachable; this says what is to be done
       # about it. Without the pairing, 207 unexplained entries is a number people
       # learn to ignore rather than a plan (#33). CONNECT must name the root that
@@ -1384,6 +2061,38 @@ jobs:
       - name: reachability dispositions (every unreachable module has an owner)
         run: uv run python scripts/check-reachability-dispositions.py
 
+  quality-security-inventory:
+    name: Quality / Security inventory
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      # Candidate grants must never authorize their own changes.
+      RATCHET_BASE_REV: >-
+        ${{ github.event_name == 'pull_request'
+            && format('origin/{0}', github.base_ref)
+            || github.event_name == 'merge_group'
+            && github.event.merge_group.base_sha
+            || github.ref == 'refs/heads/develop'
+            && github.event.before
+            || github.ref == 'refs/heads/integration'
+            && github.event.before
+            || github.ref == 'refs/heads/main'
+            && github.event.before
+            || 'origin/develop' }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0   # full history for Boy-Scout-Rule diff vs baseline
+      - name: Install uv
+        uses: ./.github/actions/setup-uv
+      - name: Setup Python 3.12
+        run: uv python install 3.12
+      - name: uv sync (full dev deps)
+        run: uv sync --locked --all-extras
+      # formal/ imports maistro_evolve (RSI conformance suites); not a uv
+      # workspace member, so `uv sync` alone doesn't install it.
+      - name: install maistro-evolve
+        run: uv pip install -e packages/maistro-evolve
       # SECURITY.md was the one load-bearing document with no gate behind it --
       # no script and no workflow referenced it at all -- while making the
       # strongest claims in the repository about what the code does. It had
@@ -1393,6 +2102,38 @@ jobs:
       - name: security inventory (SECURITY.md's checkable claims match the code)
         run: uv run python scripts/check-security-inventory.py
 
+  quality-image-inventory:
+    name: Quality / Image inventory
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      # Candidate grants must never authorize their own changes.
+      RATCHET_BASE_REV: >-
+        ${{ github.event_name == 'pull_request'
+            && format('origin/{0}', github.base_ref)
+            || github.event_name == 'merge_group'
+            && github.event.merge_group.base_sha
+            || github.ref == 'refs/heads/develop'
+            && github.event.before
+            || github.ref == 'refs/heads/integration'
+            && github.event.before
+            || github.ref == 'refs/heads/main'
+            && github.event.before
+            || 'origin/develop' }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0   # full history for Boy-Scout-Rule diff vs baseline
+      - name: Install uv
+        uses: ./.github/actions/setup-uv
+      - name: Setup Python 3.12
+        run: uv python install 3.12
+      - name: uv sync (full dev deps)
+        run: uv sync --locked --all-extras
+      # formal/ imports maistro_evolve (RSI conformance suites); not a uv
+      # workspace member, so `uv sync` alone doesn't install it.
+      - name: install maistro-evolve
+        run: uv pip install -e packages/maistro-evolve
       # Trivy and Grype covered two images. The repository has nine
       # Dockerfiles, and the one whose own header calls the browser surface
       # "the single largest remaining CVE source" was not among the two —
@@ -1402,6 +2143,38 @@ jobs:
       - name: image inventory (every Dockerfile is dispositioned; shipped ones name live jobs)
         run: uv run python scripts/check-image-inventory.py
 
+  quality-image-pins:
+    name: Quality / Image pins
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      # Candidate grants must never authorize their own changes.
+      RATCHET_BASE_REV: >-
+        ${{ github.event_name == 'pull_request'
+            && format('origin/{0}', github.base_ref)
+            || github.event_name == 'merge_group'
+            && github.event.merge_group.base_sha
+            || github.ref == 'refs/heads/develop'
+            && github.event.before
+            || github.ref == 'refs/heads/integration'
+            && github.event.before
+            || github.ref == 'refs/heads/main'
+            && github.event.before
+            || 'origin/develop' }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0   # full history for Boy-Scout-Rule diff vs baseline
+      - name: Install uv
+        uses: ./.github/actions/setup-uv
+      - name: Setup Python 3.12
+        run: uv python install 3.12
+      - name: uv sync (full dev deps)
+        run: uv sync --locked --all-extras
+      # formal/ imports maistro_evolve (RSI conformance suites); not a uv
+      # workspace member, so `uv sync` alone doesn't install it.
+      - name: install maistro-evolve
+        run: uv pip install -e packages/maistro-evolve
       # Digest pins close what the inventory comment names as its open gap: a
       # mutable base means the released artifact can differ from the scanned
       # one. This gate rejects `:latest` (explicit or implicit) everywhere, and
@@ -1413,6 +2186,38 @@ jobs:
       - name: image pins (release bases digest-pinned; no mutable :latest anywhere)
         run: uv run python scripts/check-image-pins.py
 
+  quality-workflow-inventory:
+    name: Quality / Workflow inventory
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      # Candidate grants must never authorize their own changes.
+      RATCHET_BASE_REV: >-
+        ${{ github.event_name == 'pull_request'
+            && format('origin/{0}', github.base_ref)
+            || github.event_name == 'merge_group'
+            && github.event.merge_group.base_sha
+            || github.ref == 'refs/heads/develop'
+            && github.event.before
+            || github.ref == 'refs/heads/integration'
+            && github.event.before
+            || github.ref == 'refs/heads/main'
+            && github.event.before
+            || 'origin/develop' }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0   # full history for Boy-Scout-Rule diff vs baseline
+      - name: Install uv
+        uses: ./.github/actions/setup-uv
+      - name: Setup Python 3.12
+        run: uv python install 3.12
+      - name: uv sync (full dev deps)
+        run: uv sync --locked --all-extras
+      # formal/ imports maistro_evolve (RSI conformance suites); not a uv
+      # workspace member, so `uv sync` alone doesn't install it.
+      - name: install maistro-evolve
+        run: uv pip install -e packages/maistro-evolve
       # stream1-diagnostic.yml sat pinned to a branch deleted after #373
       # landed, with a baseline SHA the repository no longer contained and
       # every step ending in `|| true` -- unable to run, unable to fail, and
@@ -1426,6 +2231,38 @@ jobs:
       - name: workflow inventory (every workflow dispositioned; references live; swallows reasoned)
         run: uv run python scripts/check-workflow-inventory.py
 
+  quality-backlog:
+    name: Quality / Backlog consistency
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      # Candidate grants must never authorize their own changes.
+      RATCHET_BASE_REV: >-
+        ${{ github.event_name == 'pull_request'
+            && format('origin/{0}', github.base_ref)
+            || github.event_name == 'merge_group'
+            && github.event.merge_group.base_sha
+            || github.ref == 'refs/heads/develop'
+            && github.event.before
+            || github.ref == 'refs/heads/integration'
+            && github.event.before
+            || github.ref == 'refs/heads/main'
+            && github.event.before
+            || 'origin/develop' }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0   # full history for Boy-Scout-Rule diff vs baseline
+      - name: Install uv
+        uses: ./.github/actions/setup-uv
+      - name: Setup Python 3.12
+        run: uv python install 3.12
+      - name: uv sync (full dev deps)
+        run: uv sync --locked --all-extras
+      # formal/ imports maistro_evolve (RSI conformance suites); not a uv
+      # workspace member, so `uv sync` alone doesn't install it.
+      - name: install maistro-evolve
+        run: uv pip install -e packages/maistro-evolve
       # BACKLOG.md is the hand-maintained work-source of record until the DB
       # backlog is live (#50), and agents read it as well as people. The gate
       # reads its vocabulary out of the file's own legend tables, so a legend
@@ -1433,6 +2270,74 @@ jobs:
       - name: backlog consistency (legends match usage; citations resolve)
         run: uv run python scripts/check-backlog-consistency.py
 
+  quality-acceptance:
+    name: Quality / Acceptance state
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # Each service-backed leaf owns its migrated schema; no cross-job side effects.
+    services:
+      postgres:
+        image: pgvector/pgvector:pg18
+        env:
+          POSTGRES_USER: maistro
+          POSTGRES_PASSWORD: maistro
+          POSTGRES_DB: maistro_test
+        ports:
+        - 5432:5432
+        options: --health-cmd "pg_isready -U maistro -d maistro_test" --health-interval 5s --health-timeout 5s --health-retries
+          10
+    env:
+      # Candidate grants must never authorize their own changes.
+      RATCHET_BASE_REV: >-
+        ${{ github.event_name == 'pull_request'
+            && format('origin/{0}', github.base_ref)
+            || github.event_name == 'merge_group'
+            && github.event.merge_group.base_sha
+            || github.ref == 'refs/heads/develop'
+            && github.event.before
+            || github.ref == 'refs/heads/integration'
+            && github.event.before
+            || github.ref == 'refs/heads/main'
+            && github.event.before
+            || 'origin/develop' }}
+      MAISTRO_TEST_PG_DSN: postgresql://maistro:maistro@127.0.0.1:5432/maistro_test
+      DATABASE_URL: postgresql://maistro:maistro@127.0.0.1:5432/maistro_test
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0   # full history for Boy-Scout-Rule diff vs baseline
+      - name: Install uv
+        uses: ./.github/actions/setup-uv
+      - name: Setup Python 3.12
+        run: uv python install 3.12
+      - name: uv sync (full dev deps)
+        run: uv sync --locked --all-extras
+      # formal/ imports maistro_evolve (RSI conformance suites); not a uv
+      # workspace member, so `uv sync` alone doesn't install it.
+      - name: install maistro-evolve
+        run: uv pip install -e packages/maistro-evolve
+      # age/age-keygen are required by the vault + state encryption tests
+      # (SPEC-011 / SPEC-010). apt's `age` package omits age-keygen on some
+      # runners, so fall back to the upstream release tarball.
+      - name: install age + age-keygen
+        run: |
+          set -e
+          # Bounded: an unbounded apt-get or curl here hangs the whole job with
+          # no output. Observed 2026-08-19 — quality.yml sat 29 minutes on this
+          # step (past its own timeout-minutes) with every later step pending,
+          # because the fetch from dl.filippo.io never returned and nothing
+          # bounded it. `|| true` tolerates a *failed* apt, not a wedged one.
+          timeout 180 sudo apt-get update || true
+          timeout 180 sudo apt-get install -y age || true
+          if ! command -v age-keygen &> /dev/null; then
+            mkdir -p /tmp/age && cd /tmp/age
+            curl -fsSL --max-time 120 --retry 3 --retry-delay 5 --retry-all-errors \
+              https://dl.filippo.io/age/latest/age-linux-amd64.tar.gz | tar xz
+            sudo mv /tmp/age/age /tmp/age/age-keygen /usr/local/bin/
+            age-keygen --help > /dev/null && echo "✓ age-keygen ready"
+          fi
+      - name: Install this check's analyzer
+        run: uv pip install pytest-timeout
       # Measuring how far a completion claim outruns its evidence was the easy
       # half; failing when it moves is the half that holds a line (#31). Seven
       # debt counters, each may only go down, and an unbanked improvement fails
@@ -1468,7 +2373,6 @@ jobs:
       # job's side effects.
       - name: Apply migrations
         run: uv run alembic upgrade head
-
       # `--mandate` needs the immutable candidate base. A push has none, so a
       # push gets the ratchet alone; PR and merge-group candidates get mandate.
       - name: acceptance-state ratchet + mandate
@@ -1482,10 +2386,76 @@ jobs:
             uv run python scripts/check-ac-state.py --run-tests --ratchet
           fi
 
+  quality-mypy:
+    name: Quality / Mypy strict
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      # Candidate grants must never authorize their own changes.
+      RATCHET_BASE_REV: >-
+        ${{ github.event_name == 'pull_request'
+            && format('origin/{0}', github.base_ref)
+            || github.event_name == 'merge_group'
+            && github.event.merge_group.base_sha
+            || github.ref == 'refs/heads/develop'
+            && github.event.before
+            || github.ref == 'refs/heads/integration'
+            && github.event.before
+            || github.ref == 'refs/heads/main'
+            && github.event.before
+            || 'origin/develop' }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0   # full history for Boy-Scout-Rule diff vs baseline
+      - name: Install uv
+        uses: ./.github/actions/setup-uv
+      - name: Setup Python 3.12
+        run: uv python install 3.12
+      - name: uv sync (full dev deps)
+        run: uv sync --locked --all-extras
+      # formal/ imports maistro_evolve (RSI conformance suites); not a uv
+      # workspace member, so `uv sync` alone doesn't install it.
+      - name: install maistro-evolve
+        run: uv pip install -e packages/maistro-evolve
       # ----- Pillar 4: types -----
       - name: mypy --strict
         run: uv run mypy --strict packages/maistro-core/src
 
+  quality-pyright:
+    name: Quality / Pyright
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      # Candidate grants must never authorize their own changes.
+      RATCHET_BASE_REV: >-
+        ${{ github.event_name == 'pull_request'
+            && format('origin/{0}', github.base_ref)
+            || github.event_name == 'merge_group'
+            && github.event.merge_group.base_sha
+            || github.ref == 'refs/heads/develop'
+            && github.event.before
+            || github.ref == 'refs/heads/integration'
+            && github.event.before
+            || github.ref == 'refs/heads/main'
+            && github.event.before
+            || 'origin/develop' }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0   # full history for Boy-Scout-Rule diff vs baseline
+      - name: Install uv
+        uses: ./.github/actions/setup-uv
+      - name: Setup Python 3.12
+        run: uv python install 3.12
+      - name: uv sync (full dev deps)
+        run: uv sync --locked --all-extras
+      # formal/ imports maistro_evolve (RSI conformance suites); not a uv
+      # workspace member, so `uv sync` alone doesn't install it.
+      - name: install maistro-evolve
+        run: uv pip install -e packages/maistro-evolve
+      - name: Install this check's analyzer
+        run: uv pip install pyright
       # Ratchet, matching the xenon/vulture pattern above — NOT advisory.
       #
       # This step used to be `pyright ... || echo "::warning::"`. The comment then
@@ -1521,6 +2491,89 @@ jobs:
           uv run python scripts/check-pyright-report.py pyright.json \
             --baseline "$PYRIGHT_BASELINE" --exit-code "$pyright_status"
 
+  quality-hypothesis:
+    name: Quality / Hypothesis
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # Each service-backed leaf owns its migrated schema; no cross-job side effects.
+    services:
+      postgres:
+        image: pgvector/pgvector:pg18
+        env:
+          POSTGRES_USER: maistro
+          POSTGRES_PASSWORD: maistro
+          POSTGRES_DB: maistro_test
+        ports:
+        - 5432:5432
+        options: --health-cmd "pg_isready -U maistro -d maistro_test" --health-interval 5s --health-timeout 5s --health-retries
+          10
+    env:
+      # Candidate grants must never authorize their own changes.
+      RATCHET_BASE_REV: >-
+        ${{ github.event_name == 'pull_request'
+            && format('origin/{0}', github.base_ref)
+            || github.event_name == 'merge_group'
+            && github.event.merge_group.base_sha
+            || github.ref == 'refs/heads/develop'
+            && github.event.before
+            || github.ref == 'refs/heads/integration'
+            && github.event.before
+            || github.ref == 'refs/heads/main'
+            && github.event.before
+            || 'origin/develop' }}
+      MAISTRO_TEST_PG_DSN: postgresql://maistro:maistro@127.0.0.1:5432/maistro_test
+      DATABASE_URL: postgresql://maistro:maistro@127.0.0.1:5432/maistro_test
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0   # full history for Boy-Scout-Rule diff vs baseline
+      - name: Install uv
+        uses: ./.github/actions/setup-uv
+      - name: Setup Python 3.12
+        run: uv python install 3.12
+      - name: uv sync (full dev deps)
+        run: uv sync --locked --all-extras
+      # formal/ imports maistro_evolve (RSI conformance suites); not a uv
+      # workspace member, so `uv sync` alone doesn't install it.
+      - name: install maistro-evolve
+        run: uv pip install -e packages/maistro-evolve
+      - name: Install this check's analyzer
+        run: uv pip install pytest-timeout
+      # Measuring how far a completion claim outruns its evidence was the easy
+      # half; failing when it moves is the half that holds a line (#31). Seven
+      # debt counters, each may only go down, and an unbanked improvement fails
+      # too so the ceiling cannot hold slack a later regression would spend.
+      # --run-tests runs only the ~180 @pytest.mark.ac tests, not the suite.
+      # One invocation, both checks. `--run-tests` executes the ~180 AC-marked
+      # tests, and the script performs that run once before dispatching either
+      # check — so splitting these across two steps re-collected the corpus and
+      # re-ran every AC test a second time, doubling this gate's slowest part
+      # and its flake exposure inside a 20-minute cap. Two questions, one
+      # measurement.
+      #
+      # THE RATCHET says the repository did not get worse: ten debt counters
+      # against a bound folded from quality/ac-state-notes/ at the base
+      # revision, each may only go down, and an unbanked improvement fails too
+      # so the ceiling cannot hold slack a later regression would spend. The
+      # bound moved off one shared line in #585 because that line was rewritten
+      # by every AC-proving PR and serialized the queue; the strictness is
+      # unchanged.
+      #
+      # THE MANDATE says this change proved what it claimed, in two halves.
+      # The criterion half: zero tolerance on criteria the PR creates or newly
+      # claims. The chain half (ADR-082526-ef55): zero tolerance on absent links
+      # it introduces — an orphan spec, a taken decision nothing implements, a
+      # spec stating nothing checkable. Both compare against the base by
+      # identity rather than by count, because a ceiling on totals lets a new
+      # violation be paid for by an unrelated legacy fix. Legacy stays on the
+      # ceilings either way.
+      #
+      # The ratchet's own tests read this database. Applying the chain here
+      # rather than trusting the `postgres` job's copy keeps this job
+      # self-contained: it is a required check and must not depend on another
+      # job's side effects.
+      - name: Apply migrations
+        run: uv run alembic upgrade head
       # ----- Pillar 2: Hypothesis property tests -----
       # The property suite lives in formal/ (also run by formal-conformance.yml
       # on PRs; cheap enough to gate here too). The old `-m "scope: property"`
@@ -1531,6 +2584,38 @@ jobs:
         run: |
           uv run pytest formal/ --timeout=120 -q
 
+  quality-lifecycles:
+    name: Quality / Execution lifecycles
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      # Candidate grants must never authorize their own changes.
+      RATCHET_BASE_REV: >-
+        ${{ github.event_name == 'pull_request'
+            && format('origin/{0}', github.base_ref)
+            || github.event_name == 'merge_group'
+            && github.event.merge_group.base_sha
+            || github.ref == 'refs/heads/develop'
+            && github.event.before
+            || github.ref == 'refs/heads/integration'
+            && github.event.before
+            || github.ref == 'refs/heads/main'
+            && github.event.before
+            || 'origin/develop' }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0   # full history for Boy-Scout-Rule diff vs baseline
+      - name: Install uv
+        uses: ./.github/actions/setup-uv
+      - name: Setup Python 3.12
+        run: uv python install 3.12
+      - name: uv sync (full dev deps)
+        run: uv sync --locked --all-extras
+      # formal/ imports maistro_evolve (RSI conformance suites); not a uv
+      # workspace member, so `uv sync` alone doesn't install it.
+      - name: install maistro-evolve
+        run: uv pip install -e packages/maistro-evolve
       # ----- Pillar 7: architecture fitness functions -----
       # The convergence spine's central claim is that Run/NodeRun/Attempt is the
       # one execution identity. A second one arrives as an Enum or status-shaped
@@ -1540,6 +2625,38 @@ jobs:
       - name: execution lifecycles (no unclassified second spine)
         run: uv run python scripts/check-execution-lifecycles.py
 
+  quality-model-egress:
+    name: Quality / Model egress
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      # Candidate grants must never authorize their own changes.
+      RATCHET_BASE_REV: >-
+        ${{ github.event_name == 'pull_request'
+            && format('origin/{0}', github.base_ref)
+            || github.event_name == 'merge_group'
+            && github.event.merge_group.base_sha
+            || github.ref == 'refs/heads/develop'
+            && github.event.before
+            || github.ref == 'refs/heads/integration'
+            && github.event.before
+            || github.ref == 'refs/heads/main'
+            && github.event.before
+            || 'origin/develop' }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0   # full history for Boy-Scout-Rule diff vs baseline
+      - name: Install uv
+        uses: ./.github/actions/setup-uv
+      - name: Setup Python 3.12
+        run: uv python install 3.12
+      - name: uv sync (full dev deps)
+        run: uv sync --locked --all-extras
+      # formal/ imports maistro_evolve (RSI conformance suites); not a uv
+      # workspace member, so `uv sync` alone doesn't install it.
+      - name: install maistro-evolve
+        run: uv pip install -e packages/maistro-evolve
       # Invariant 2 of #36 cannot be enforced as written yet: maistro.providers
       # is a registry with no HTTP client, so there is no approved Provider
       # implementation for a caller to be outside of. #56 builds it. What is
@@ -1547,6 +2664,38 @@ jobs:
       - name: model egress (the direct-caller set may only shrink)
         run: uv run python scripts/check-model-egress.py
 
+  quality-harness-egress:
+    name: Quality / Foreign-harness egress
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      # Candidate grants must never authorize their own changes.
+      RATCHET_BASE_REV: >-
+        ${{ github.event_name == 'pull_request'
+            && format('origin/{0}', github.base_ref)
+            || github.event_name == 'merge_group'
+            && github.event.merge_group.base_sha
+            || github.ref == 'refs/heads/develop'
+            && github.event.before
+            || github.ref == 'refs/heads/integration'
+            && github.event.before
+            || github.ref == 'refs/heads/main'
+            && github.event.before
+            || 'origin/develop' }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0   # full history for Boy-Scout-Rule diff vs baseline
+      - name: Install uv
+        uses: ./.github/actions/setup-uv
+      - name: Setup Python 3.12
+        run: uv python install 3.12
+      - name: uv sync (full dev deps)
+        run: uv sync --locked --all-extras
+      # formal/ imports maistro_evolve (RSI conformance suites); not a uv
+      # workspace member, so `uv sync` alone doesn't install it.
+      - name: install maistro-evolve
+        run: uv pip install -e packages/maistro-evolve
       # M1-D (#1613): foreign harnesses are admitted as governed graph nodes —
       # Provider -> Binding -> Invocation. A product module that references
       # OpenClaw/Pi and performs its own HTTP/subprocess transport is a raw
@@ -1554,6 +2703,40 @@ jobs:
       - name: foreign-harness egress (OpenClaw/Pi transport stays inside the Provider boundary)
         run: uv run python scripts/check-foreign-harness-egress.py
 
+  quality-fitness:
+    name: Quality / Architecture fitness
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      # Candidate grants must never authorize their own changes.
+      RATCHET_BASE_REV: >-
+        ${{ github.event_name == 'pull_request'
+            && format('origin/{0}', github.base_ref)
+            || github.event_name == 'merge_group'
+            && github.event.merge_group.base_sha
+            || github.ref == 'refs/heads/develop'
+            && github.event.before
+            || github.ref == 'refs/heads/integration'
+            && github.event.before
+            || github.ref == 'refs/heads/main'
+            && github.event.before
+            || 'origin/develop' }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0   # full history for Boy-Scout-Rule diff vs baseline
+      - name: Install uv
+        uses: ./.github/actions/setup-uv
+      - name: Setup Python 3.12
+        run: uv python install 3.12
+      - name: uv sync (full dev deps)
+        run: uv sync --locked --all-extras
+      # formal/ imports maistro_evolve (RSI conformance suites); not a uv
+      # workspace member, so `uv sync` alone doesn't install it.
+      - name: install maistro-evolve
+        run: uv pip install -e packages/maistro-evolve
+      - name: Install this check's analyzer
+        run: uv pip install pytest-timeout
       - name: Architecture fitness functions
         env:
           PYTHONPATH: packages/maistro-core/src
@@ -1563,6 +2746,40 @@ jobs:
         # the directory were ever deleted. It is now a hard step.
         run: uv run pytest packages/maistro-core/tests/fitness -v --timeout=30
 
+  quality-interrogate:
+    name: Quality / Docstring coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      # Candidate grants must never authorize their own changes.
+      RATCHET_BASE_REV: >-
+        ${{ github.event_name == 'pull_request'
+            && format('origin/{0}', github.base_ref)
+            || github.event_name == 'merge_group'
+            && github.event.merge_group.base_sha
+            || github.ref == 'refs/heads/develop'
+            && github.event.before
+            || github.ref == 'refs/heads/integration'
+            && github.event.before
+            || github.ref == 'refs/heads/main'
+            && github.event.before
+            || 'origin/develop' }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0   # full history for Boy-Scout-Rule diff vs baseline
+      - name: Install uv
+        uses: ./.github/actions/setup-uv
+      - name: Setup Python 3.12
+        run: uv python install 3.12
+      - name: uv sync (full dev deps)
+        run: uv sync --locked --all-extras
+      # formal/ imports maistro_evolve (RSI conformance suites); not a uv
+      # workspace member, so `uv sync` alone doesn't install it.
+      - name: install maistro-evolve
+        run: uv pip install -e packages/maistro-evolve
+      - name: Install this check's analyzer
+        run: uv pip install interrogate
       # ----- Pillar 8: docstring coverage on touched modules -----
       # Per-module floors are RATCHET BASELINES set at measured coverage
       # (2026-06-10): regressions fail; raise the floor as docstrings land.
@@ -1591,3 +2808,98 @@ jobs:
           uv run interrogate -f 45 packages/maistro-bootstrap/src
           uv run interrogate -f 36 packages/maistro-canvas/src
           uv run interrogate -f 24 packages/maistro-turing/src
+          # The shipped extension SDK. Floored at its measured coverage
+          # (73.1%); it was unmeasured until this PR -- xenon watched it, but
+          # nothing asked its docstrings for anything.
+          uv run interrogate -f 73 packages/maistro-ext-sdk/src
+
+  quality-gate:
+    name: Quality gate (Pillars 1–4, 7, 8)
+    if: ${{ always() }}
+    needs:
+      - quality-ruff
+      - quality-radon
+      - quality-version
+      - quality-release
+      - quality-doc-links
+      - quality-enumerations
+      - quality-retirement
+      - quality-route-permissions
+      - quality-principal
+      - quality-frontend
+      - quality-ifeval
+      - quality-bfcl
+      - quality-xenon
+      - quality-vulture
+      - quality-reachability
+      - quality-proof-envelope
+      - quality-model-proof
+      - quality-credentials
+      - quality-wiring
+      - quality-agent-writes
+      - quality-contract-markers
+      - quality-convergence
+      - quality-dispositions
+      - quality-security-inventory
+      - quality-image-inventory
+      - quality-image-pins
+      - quality-workflow-inventory
+      - quality-backlog
+      - quality-acceptance
+      - quality-mypy
+      - quality-pyright
+      - quality-hypothesis
+      - quality-lifecycles
+      - quality-model-egress
+      - quality-harness-egress
+      - quality-fitness
+      - quality-interrogate
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Require every Quality check to succeed
+        env:
+          CHECK_RESULTS: ${{ toJSON(needs) }}
+        run: >-
+          python scripts/check_ci_job_results.py
+          quality-ruff
+          quality-radon
+          quality-version
+          quality-release
+          quality-doc-links
+          quality-enumerations
+          quality-retirement
+          quality-route-permissions
+          quality-principal
+          quality-frontend
+          quality-ifeval
+          quality-bfcl
+          quality-xenon
+          quality-vulture
+          quality-reachability
+          quality-proof-envelope
+          quality-model-proof
+          quality-credentials
+          quality-wiring
+          quality-agent-writes
+          quality-contract-markers
+          quality-convergence
+          quality-dispositions
+          quality-security-inventory
+          quality-image-inventory
+          quality-image-pins
+          quality-workflow-inventory
+          quality-backlog
+          quality-acceptance
+          quality-mypy
+          quality-pyright
+          quality-hypothesis
+          quality-lifecycles
+          quality-model-egress
+          quality-harness-egress
+          quality-fitness
+          quality-interrogate
