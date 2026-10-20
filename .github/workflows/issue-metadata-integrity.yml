@@ -1,0 +1,93 @@
+name: Issue metadata integrity
+
+on:
+  issues:
+    types: [opened, edited, reopened, labeled, unlabeled, milestoned, demilestoned]
+  schedule:
+    - cron: '37 5 * * *'
+  workflow_dispatch:
+    inputs:
+      apply_links:
+        description: Apply up to 25 links from the reviewed manifest
+        type: boolean
+        default: false
+  pull_request:
+    paths:
+      - scripts/issue-metadata-integrity.py
+      - tests/test_issue_metadata_integrity.py
+      - quality/issue-hierarchy-links.json
+      - .github/workflows/issue-metadata-integrity.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: issue-metadata-integrity-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.event.issue.number || 'live' }}
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - run: python3 -m unittest discover -s tests -p test_issue_metadata_integrity.py -v
+
+  audit:
+    needs: test
+    if: github.event_name != 'pull_request' && !(github.event_name == 'workflow_dispatch' && inputs.apply_links)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      issues: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: develop
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Validate issue metadata or audit the complete backlog (read only)
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          if [ -n "$ISSUE_NUMBER" ]; then
+            python3 scripts/issue-metadata-integrity.py --issue "$ISSUE_NUMBER" --check
+          else
+            python3 scripts/issue-metadata-integrity.py --check
+          fi
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: issue-metadata-audit
+          path: issue-integrity-output/
+
+  repair:
+    needs: test
+    if: github.event_name == 'workflow_dispatch' && inputs.apply_links
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: develop
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Apply one bounded batch and verify native links
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 scripts/issue-metadata-integrity.py --apply-manifest quality/issue-hierarchy-links.json --limit 25
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: issue-metadata-repair
+          path: issue-integrity-output/
