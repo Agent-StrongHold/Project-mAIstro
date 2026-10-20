@@ -253,6 +253,19 @@ class TuringChatSession:
         if len(self._history) > MAX_HISTORY_TURNS:
             del self._history[:-MAX_HISTORY_TURNS]
 
+        await self._capture_chat_episode(message, reply)
+
+        return reply
+
+    async def _capture_chat_episode(self, message: str, reply: str) -> None:
+        """Persist the turn as an episodic chat capture (best-effort).
+
+        The capture carries the owning caller's canonical provenance (#859):
+        user/project ride on the persisted row so one principal's captures are
+        never indistinguishable from another's in a shared episodic store. A
+        failed capture never fails the turn — the conversation itself is the
+        product here, the trace is auxiliary.
+        """
         try:
             await self._memory.store_episode(
                 content=f"User said: {message[:200]}; I replied: {reply[:200]}",
@@ -265,5 +278,3 @@ class TuringChatSession:
             )
         except Exception:
             logger.debug("chat capture failed", exc_info=True)
-
-        return reply
