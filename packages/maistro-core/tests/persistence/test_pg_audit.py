@@ -8,6 +8,8 @@ canned rows, so tests assert on emitted SQL/params, not just "didn't raise".
 from __future__ import annotations
 
 import logging
+import uuid
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from typing import Any
 
@@ -17,6 +19,7 @@ from maistro.persistence.pg_audit import PgAuditLog
 from maistro.security._types import AuditEntry as SentinelAuditEntry
 from maistro.security._types import Violation as SentinelViolation
 from maistro.security.sentinel.signing import SIGNING_KEY_ENV, AuditSigner
+from maistro.testing.postgres import postgres_dsn
 from maistro.types.security import AuditEntry
 
 
@@ -77,6 +80,40 @@ def log(conn: FakeConnection) -> PgAuditLog:
     return PgAuditLog(FakePool(conn))
 
 
+@pytest.fixture
+async def unmigrated_pool() -> AsyncIterator[Any]:
+    """An asyncpg pool on a database of its own that no revision has touched.
+
+    ``MAISTRO_TEST_PG_DSN`` names a *migrated* database, so the one schema a
+    test cannot get from it is the pre-migration one. Yields ``None`` without a
+    server, like every other PostgreSQL case in this directory.
+    """
+    dsn = postgres_dsn()
+    if not dsn:
+        yield None
+        return
+    asyncpg = pytest.importorskip("asyncpg")
+    from sqlalchemy.engine import make_url
+
+    name = f"audit_unmigrated_{uuid.uuid4().hex[:12]}"
+    admin = await asyncpg.connect(dsn)
+    try:
+        await admin.execute(f'CREATE DATABASE "{name}"')
+    finally:
+        await admin.close()
+    url = make_url(dsn).set(database=name).render_as_string(hide_password=False)
+    pool = await asyncpg.create_pool(url, min_size=1, max_size=2)
+    try:
+        yield pool
+    finally:
+        await pool.close()
+        admin = await asyncpg.connect(dsn)
+        try:
+            await admin.execute(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)')
+        finally:
+            await admin.close()
+
+
 def test_ephemeral_signing_key_warns_on_a_durable_store(
     conn: FakeConnection, caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -112,6 +149,33 @@ async def test_ensure_schema_adds_proof_columns_idempotently(conn: FakeConnectio
         "ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS signing_key_id TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS proof_type TEXT NOT NULL DEFAULT ''",
     ]
+
+
+@pytest.mark.asyncio
+async def test_ensure_schema_never_fabricates_the_migrated_audit_table(
+    unmigrated_pool: Any,
+) -> None:
+    """Alembic owns ``audit_log``; a startup upgrade may not create it.
+
+    Runtime ``CREATE TABLE IF NOT EXISTS`` here looked helpful and was not: the
+    table it produced gave ``org_id`` no server default (036 declares one), and
+    the alembic chain could then never be applied to that database — ``upgrade
+    head`` dies with ``DuplicateTable: relation "audit_log" already exists``
+    because 005's ``create_table`` is not conditional. The contract is the one
+    the sibling PostgreSQL stores keep: an idempotent ``ADD COLUMN`` against a
+    migrated table, and a loud ``UndefinedTable`` on one that was never
+    migrated, rather than a silently forked schema.
+    """
+    if unmigrated_pool is None:
+        pytest.skip("MAISTRO_TEST_PG_DSN is not set")
+    asyncpg = pytest.importorskip("asyncpg")
+
+    with pytest.raises(asyncpg.exceptions.UndefinedTableError):
+        await PgAuditLog(unmigrated_pool, signer=AuditSigner(bytes(32))).ensure_schema()
+
+    async with unmigrated_pool.acquire() as conn:
+        created = await conn.fetchval("SELECT to_regclass('audit_log')")
+    assert created is None
 
 
 @pytest.mark.asyncio
