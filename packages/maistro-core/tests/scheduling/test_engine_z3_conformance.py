@@ -160,6 +160,21 @@ def test_the_bounded_buffer_loop_never_starves_a_budgeted_occurrence(budget: int
     assert model.respects_budget() == z3.unsat
 
 
+def test_starvation_queries_hold_occurrence_identity_not_just_a_count() -> None:
+    """A 0/1 buffer count cannot tell draining the held occurrence from a
+    fire that bypasses it and leaves it queued forever — both keep the count
+    at 1. The ID-aware encoding distinguishes them: the faithful policy drains
+    the held occurrence by ID (unsat violation), while the bypass drift that
+    perpetually replaces it is flagged as starvation (sat witness)."""
+    faithful = BufferedStarvationModel(budget=3)
+    assert faithful.no_starvation_while_budget_remains() == z3.unsat
+    assert faithful.drains_after_run_ends() == z3.unsat
+
+    drift = BufferedStarvationModel(budget=3, mutate="bypass-held")
+    assert drift.no_starvation_while_budget_remains() == z3.sat
+    assert drift.drains_after_run_ends() == z3.sat
+
+
 def test_a_never_ending_run_holds_the_buffer_by_design_not_starvation() -> None:
     """The one hold that never drains is the documented one: a Run that never
     ends. The solver produces the witness — the hold persists precisely while

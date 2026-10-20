@@ -460,15 +460,24 @@ class BufferedStarvationModel:
     Run of symbolic length `run_length` ticks; `budget` bounds total fires
     (the max_runs rule). Every run length and interleaving inside the bound
     is explored symbolically, in one query per property.
+
+    Occurrences carry identities: `held[t]` is the ID of the queued
+    occurrence (0 = none; the arrival at tick t has ID t+1) and `fired[t]`
+    is the ID of the occurrence a fire consumed. Identity is what makes the
+    starvation queries about a *specific* occurrence — a 0/1 buffer count
+    cannot distinguish draining the held occurrence from a fire that
+    bypasses it and leaves it queued forever.
     """
 
     TICKS = 4
     NEVER = 99  # a run length beyond the horizon: the Run never ends within it
 
-    def __init__(self, budget: int) -> None:
+    def __init__(self, budget: int, mutate: str | None = None) -> None:
         self.budget = budget
+        self.mutate = mutate
         self.run_length = z3.Int("run_length")
-        self.buffer = [z3.Int(f"buffer_{t}") for t in range(self.TICKS + 1)]
+        self.held = [z3.Int(f"held_{t}") for t in range(self.TICKS + 1)]
+        self.fired = [z3.Int(f"fired_{t}") for t in range(self.TICKS)]
         self.run_left = [z3.Int(f"run_left_{t}") for t in range(self.TICKS + 1)]
         self.spent = [z3.Int(f"spent_{t}") for t in range(self.TICKS + 1)]
         self.fire = [z3.Bool(f"fire_{t}") for t in range(self.TICKS)]
@@ -478,21 +487,34 @@ class BufferedStarvationModel:
         solver.set("timeout", QUERY_TIMEOUT_MS)
         solver.add(self.run_length >= 1)
         solver.add(self.run_length <= self.NEVER)
-        solver.add(self.buffer[0] == 0)
+        solver.add(self.held[0] == 0)
         solver.add(self.run_left[0] == self.run_length)
         solver.add(self.spent[0] == 0)
         for t in range(self.TICKS):
             idle = self.run_left[t] == 0
             budgeted = self.spent[t] < self.budget
             solver.add(self.fire[t] == z3.And(idle, budgeted))
-            # Idle and within budget: fire the oldest due occurrence (the
-            # held one when there is one); the newest arrival is then the one
-            # held. In flight, or idle with the budget spent: hold the newest
-            # arrival, drop older ones — the buffer never exceeds one and
-            # never drains while the Run keeps going (or the budget is gone).
-            solver.add(
-                self.buffer[t + 1] == z3.If(self.fire[t], z3.If(self.buffer[t] >= 1, 1, 0), 1)
-            )
+            # Idle and within budget: fire the oldest due occurrence — the
+            # held one by ID when there is one, else the fresh arrival. After
+            # a held occurrence drains, the newest arrival is the one held. In
+            # flight, or idle with the budget spent: hold the newest arrival,
+            # drop older ones — the queue never exceeds one and never drains
+            # while the Run keeps going (or the budget is gone).
+            if self.mutate == "bypass-held":
+                # Deliberate drift: the fire consumes the fresh arrival while
+                # the held occurrence stays queued. The count stays 1 either
+                # way; only the IDs tell the two behaviors apart.
+                solver.add(self.fired[t] == z3.If(self.fire[t], t + 1, 0))
+                solver.add(self.held[t + 1] == z3.If(self.fire[t], self.held[t], t + 1))
+            else:
+                solver.add(
+                    self.fired[t]
+                    == z3.If(self.fire[t], z3.If(self.held[t] >= 1, self.held[t], t + 1), 0)
+                )
+                solver.add(
+                    self.held[t + 1]
+                    == z3.If(self.fire[t], z3.If(self.held[t] >= 1, t + 1, 0), t + 1)
+                )
             solver.add(self.spent[t + 1] == self.spent[t] + z3.If(self.fire[t], 1, 0))
             solver.add(
                 self.run_left[t + 1]
@@ -503,24 +525,34 @@ class BufferedStarvationModel:
         return solver
 
     def no_starvation_while_budget_remains(self) -> z3.CheckSatResult:
-        """unsat iff every idle tick holding an occurrence fires within budget."""
+        """unsat iff every idle tick holding an occurrence fires *that*
+        occurrence (by ID) within budget — not merely some occurrence."""
         violations: list[z3.ExprRef | bool] = []
         for t in range(self.TICKS):
+            never_fires = z3.And(*[self.fired[u] != self.held[t] for u in range(t, self.TICKS)])
             violations.append(
                 z3.And(
                     self.run_left[t] == 0,
-                    self.buffer[t] >= 1,
+                    self.held[t] >= 1,
                     self.spent[t] < self.budget,
-                    z3.Not(self.fire[t]),
+                    never_fires,
                 )
             )
         return self._solver_with(z3.Or(*violations)).check()
 
     def drains_after_run_ends(self) -> z3.CheckSatResult:
-        """unsat iff a run that ends within the horizon lets the buffer fire."""
+        """unsat iff a run that ends within the horizon lets the held
+        occurrence fire — the fired ID is the held ID, not a newer arrival's."""
         return self._solver_with(
             self.run_length <= 3,  # a real run: ends within the horizon
-            z3.Not(z3.Or(*self.fire)),
+            z3.Not(
+                z3.Or(
+                    *[
+                        z3.And(self.fire[t], self.held[t] >= 1, self.fired[t] == self.held[t])
+                        for t in range(self.TICKS)
+                    ]
+                )
+            ),
         ).check()
 
     def respects_budget(self) -> z3.CheckSatResult:
