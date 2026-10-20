@@ -386,7 +386,15 @@ class TuringState:
     def mood_snapshot(self, workspace_id: str) -> Mood:
         _require_scope(workspace_id)
         with self._lock:
-            return self._scope(workspace_id).mood
+            mood = self._scope(workspace_id).mood
+            return Mood(
+                self_id=mood.self_id,
+                valence=mood.valence,
+                arousal=mood.arousal,
+                focus=mood.focus,
+                last_tick_at=mood.last_tick_at,
+                updated_at=mood.updated_at,
+            )
 
     def facet_scores(self, workspace_id: str) -> dict[str, float]:
         _require_scope(workspace_id)
@@ -423,7 +431,14 @@ class TuringState:
                     workspace_id,
                     WorkspaceSelfModelState(workspace_id=workspace_id, mood=updated),
                 )
-            return updated
+            return Mood(
+                self_id=updated.self_id,
+                valence=updated.valence,
+                arousal=updated.arousal,
+                focus=updated.focus,
+                last_tick_at=updated.last_tick_at,
+                updated_at=updated.updated_at,
+            )
 
     def set_facet(self, workspace_id: str, facet_id: str, score: float) -> None:
         """Validated facet mutation for exactly one Workspace scope.
