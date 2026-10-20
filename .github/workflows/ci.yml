@@ -938,8 +938,8 @@ jobs:
         if: always()
         working-directory: packages/hive-conductor
         run: |
-          docker compose -f docker-compose.yml ps -a || true
-          docker compose -f docker-compose.yml logs --no-color --tail=200 || true
+          docker compose -f docker-compose.yml ps -a || true # a stack that never started has no state to print
+          docker compose -f docker-compose.yml logs --no-color --tail=200 || true # logs vanish when the stack was torn down mid-failure
       - name: Tear down
         if: always()
         working-directory: packages/hive-conductor
