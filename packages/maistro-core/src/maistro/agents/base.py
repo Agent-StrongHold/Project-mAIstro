@@ -1357,10 +1357,17 @@ class Agent:
                 content="Delegation refused: authorization envelope cannot be carried.",
                 agent_name=self.identity.name,
             )
+        log.info(
+            "Delegation authorized by host policy: agent=%s target=%s grant_ref=%s granted_by=%s",
+            self.identity.name,
+            target.identity.name,
+            decision.grant_ref,
+            decision.granted_by,
+        )
         delegated_auth = replace_dataclass(
             auth,
             delegated_actions=decision.effective_actions,
-            delegation_grant_id=decision.grant_id,
+            delegation_grant_ref=decision.grant_ref,
             on_behalf_of=self.identity.name,
         )
         return delegated_auth, None

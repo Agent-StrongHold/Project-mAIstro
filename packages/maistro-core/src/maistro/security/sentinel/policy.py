@@ -68,6 +68,23 @@ def _principal_auth_context(principal: Principal) -> AuthContext:
     return _AuthContext(user_id=principal.id, roles=frozenset(principal.roles))
 
 
+def _delegation_detail(auth: AuthContext) -> str:
+    """Audit provenance for a delegated call: the host grant it rests on.
+
+    A delegated invocation is authorized by a host grant, not by the agent
+    that asked for it, so the call audit names that grant. Only the host's
+    own reference is recorded -- never request content.
+    """
+    if not auth.delegation_grant_ref:
+        return ""
+    return f"delegation_grant_ref={auth.delegation_grant_ref}"
+
+
+def _join_detail(*parts: str) -> str:
+    """Join audit detail fragments, skipping the empty ones."""
+    return "; ".join(part for part in parts if part)
+
+
 class Sentinel:
     """Policy enforcement at every boundary crossing.
 
@@ -216,58 +233,6 @@ class Sentinel:
         if reversibility == "irreversible":
             return Tier.SELF_ELEVATION
         return Tier.OPEN
-
-    def resolve_execution_mode(
-        self,
-        action: str,
-        principal: Principal,
-        *,
-        reversibility: str = "reversible",
-        default: Tier | None = None,
-    ) -> str:
-        """Map a host-resolved tier to the adapter's isolation floor."""
-        tier = self.resolve_tier(action, principal, reversibility=reversibility, default=default)
-        if tier == Tier.BLOCKED:
-            return "blocked"
-        if tier in (Tier.OPEN, Tier.ROLE_AUTO):
-            return "async"
-        return "sandbox"
-
-    async def resolve_authorized_execution_mode(
-        self,
-        action: str,
-        principal: Principal,
-        *,
-        args: dict[str, Any],
-        reversibility: str = "irreversible",
-        default: Tier | None = None,
-    ) -> str:
-        """Resolve isolation after Sentinel's authorization gate.
-
-        "blocked" is reserved for a host DENIAL: a permission miss (fail-closed
-        table/source) or an explicit ``Tier.BLOCKED`` tier. An authorized
-        action gets the isolation floor of the tier the host policy resolves
-        -- tiers whose human decision is not (yet) cleared run at the
-        "sandbox" floor, never inline; only an explicit ``Tier.OPEN`` or
-        ``Tier.ROLE_AUTO`` host record selects the inline ("async") mode. A
-        deployment's permission grant for the action is itself the host
-        policy record that makes graph-node execution reachable: without one,
-        the fail-closed table denies and every node blocks (#1165 posture).
-        """
-        decision = await self.authorize(
-            action,
-            principal,
-            reversibility=reversibility,
-            args=args,
-        )
-        if not decision.authorized:
-            return "blocked"
-        return self.resolve_execution_mode(
-            action,
-            principal,
-            reversibility=reversibility,
-            default=default,
-        )
 
     async def authorize(
         self,
@@ -420,6 +385,7 @@ class Sentinel:
         violations: list[Violation] = []
 
         table = await self._effective_table()
+        delegation_detail = _delegation_detail(auth)
         if table is None or not check_permission(
             auth, tool_name, table, allow_on_miss=self._allow_on_miss
         ):
@@ -447,6 +413,7 @@ class Sentinel:
                 tool_name=tool_name,
                 verdict="denied",
                 violations=tuple(violations),
+                detail=delegation_detail,
             )
             return verdict
 
@@ -462,7 +429,7 @@ class Sentinel:
                 tool_name=tool_name,
                 verdict="denied",
                 violations=tuple(violations),
-                detail=limit_violation.detail,
+                detail=_join_detail(delegation_detail, limit_violation.detail),
             )
             return verdict
 
@@ -485,7 +452,10 @@ class Sentinel:
             tool_name=tool_name,
             verdict="allowed" if verdict.allowed else "denied",
             violations=tuple(violations),
-            detail=f"repaired={schema_verdict.repaired}" if schema_verdict.repaired else "",
+            detail=_join_detail(
+                delegation_detail,
+                f"repaired={schema_verdict.repaired}" if schema_verdict.repaired else "",
+            ),
             repaired_data=schema_verdict.repaired_data if schema_verdict.repaired else None,
         )
 

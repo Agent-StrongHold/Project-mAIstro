@@ -652,10 +652,11 @@ def _production_sentinel(
     )
 
 
-async def test_shipped_default_permissions_block_every_gated_node() -> None:
-    """The shipped empty permission table is deny-by-default (#1165): even a
+async def test_an_unstated_permission_grant_blocks_every_gated_node() -> None:
+    """The code's default permission table is deny-by-default (#1165): even a
     role-bearing principal cannot run a node until the deployment states the
-    grant."""
+    grant (the shipped Conductor profiles state it in MAISTRO_PERMISSIONS; see
+    tests/security/test_sentinel_permission_table_armed.py)."""
     node = _adapter_node(
         {"id": "n1", "config": {}},
         sentinel=_production_sentinel({}),

@@ -8,7 +8,8 @@ effect so it cannot be copied to a different run or action.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from collections.abc import Iterable
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Protocol, runtime_checkable
 
@@ -35,9 +36,15 @@ class DelegationRequest:
 
 @dataclass(frozen=True)
 class DelegationGrant:
-    """A host-created grant; no AgentIdentity field can create one."""
+    """A host-created grant; no AgentIdentity field can create one.
 
-    grant_id: str
+    ``grant_ref`` is the host's own reference for the grant. It is
+    deliberately *not* named ``grant_id``: the permission-grant record in
+    ``maistro.security.trust_boundary`` already owns that name, and a second
+    meaning for one identifier makes audit evidence ambiguous.
+    """
+
+    grant_ref: str
     principal_id: str
     owner_id: str
     delegating_agent_id: str
@@ -60,8 +67,9 @@ class DelegationDecision:
 
     allowed: bool
     effective_actions: frozenset[str] = frozenset()
-    grant_id: str = ""
+    grant_ref: str = ""
     expires_at: datetime | None = None
+    granted_by: str = ""
     provenance: str = ""
     reason: str = ""
 
@@ -73,26 +81,30 @@ class DelegationAuthority(Protocol):
     def authorize(self, request: DelegationRequest, *, now: datetime) -> DelegationDecision: ...
 
 
-@dataclass
 class InMemoryDelegationAuthority:
     """Host-owned policy store for tests and ephemeral deployments.
 
     Production may replace this object with a durable implementation without
     changing Agent or Graph execution.  The only mutating API is intentionally
-    named ``add_host_grant`` to make the trust boundary explicit.
+    named ``add_host_grant`` to make the trust boundary explicit: the host
+    provisions grants, and no agent, manifest, or request field can.
     """
 
-    grants: list[DelegationGrant] = field(default_factory=list)
+    def __init__(self, grants: Iterable[DelegationGrant] = ()) -> None:
+        self._grants: list[DelegationGrant] = []
+        for grant in grants:
+            self.add_host_grant(grant)
 
     def add_host_grant(self, grant: DelegationGrant) -> None:
-        self.grants.append(grant)
+        """Record a host-created grant. Only the host may call this."""
+        self._grants.append(grant)
 
     def authorize(self, request: DelegationRequest, *, now: datetime) -> DelegationDecision:
         if request.principal.kind != "agent":
             return DelegationDecision(False, reason="delegation principal must be an agent")
         if request.principal.owner != request.owner_id:
             return DelegationDecision(False, reason="delegation owner does not match principal")
-        for grant in reversed(self.grants):
+        for grant in reversed(self._grants):
             if now >= grant.expires_at:
                 continue
             if not _matches(grant, request):
@@ -103,8 +115,9 @@ class InMemoryDelegationAuthority:
             return DelegationDecision(
                 True,
                 effective_actions=frozenset(request.requested_actions & grant.actions),
-                grant_id=grant.grant_id,
+                grant_ref=grant.grant_ref,
                 expires_at=grant.expires_at,
+                granted_by=grant.granted_by,
                 provenance=grant.provenance,
             )
         return DelegationDecision(False, reason="no host grant matches this delegation")

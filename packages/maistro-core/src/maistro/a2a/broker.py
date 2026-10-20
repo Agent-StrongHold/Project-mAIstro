@@ -206,7 +206,8 @@ class A2ABroker:
             if not decision.allowed:
                 raise DelegationRefused(f"host delegation refused: {decision.reason}")
             metadata["delegated_actions"] = sorted(decision.effective_actions)
-            metadata["delegation_grant_id"] = decision.grant_id
+            metadata["delegation_grant_ref"] = decision.grant_ref
+            metadata["delegation_granted_by"] = decision.granted_by
 
         hop_budget = budget.spend(to)
         a2a_task = A2ATask(

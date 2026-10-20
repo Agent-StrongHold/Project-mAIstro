@@ -772,6 +772,7 @@ class LegacyConductorNode(BaseNode[_LegacyInputs, _LegacyOutput]):
         host_mode: str | None = self._host_mode
         if self._sentinel is not None:
             from maistro.security.sentinel.authz_types import Principal, Tier
+            from services.execution_mode import resolve_authorized_execution_mode
 
             config = self._raw_node.get("config", {})
             untrusted = bool(config.get("untrusted", False))
@@ -783,7 +784,8 @@ class LegacyConductorNode(BaseNode[_LegacyInputs, _LegacyOutput]):
                     value for value in (ctx.workspace_id, ctx.project_id, ctx.user_id) if value
                 ),
             )
-            host_mode = await self._sentinel.resolve_authorized_execution_mode(
+            host_mode = await resolve_authorized_execution_mode(
+                self._sentinel,
                 "graph.node.untrusted" if untrusted else "graph.node.execute",
                 principal,
                 args={"node_id": node_id, "artifact": self._task_desc},

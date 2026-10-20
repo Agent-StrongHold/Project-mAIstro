@@ -1,7 +1,8 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +6
-  packages/hive-conductor/backend/tests: +2
+  packages/maistro-core/tests: +5
+  packages/hive-conductor/backend/tests: +15
+  tests/: +4
 ---
 # #845 host-authorized delegation and execution tiers
 
@@ -40,62 +41,103 @@ Core grant provisioning goes through the documented host-only mutation API
 (`InMemoryDelegationAuthority.add_host_grant`), keeping the trust boundary
 itself covered by tests rather than constructor backdoors.
 
-## Validation round (2026-10-20) — open blockers for the next repair
+## Repair round (2026-10-27) — develop sync merged, B1 and B2 closed
 
-Re-ran the full acceptance battery on head `46f6d3a06`. The branch's own
-tests pass (`tests/security/test_delegation_authority.py` 9 passed,
-`tests/a2a/test_broker.py` 13 passed, Hive `test_legacy_dag_node.py` +
-`test_security_regression.py` 36 passed; full Hive backend 2354 passed /
-4 skipped; `ruff check`/`ruff format --check` clean; `radon-baseline` 72->72;
-`wiring-reads` 11->11; `security-inventory` OK; `cross-package-imports` OK).
-Two open blockers remain, both actual evidence, not scanner guesses.
+`origin/develop` (`e20e9f52e`) is merged into this branch (merge commit
+`292a383bd`, merge-base `e20e9f52e`). The four conflicts were resolved by
+combining both sides: `canonical_dag_runner.py` and `legacy_dag_node.py`
+keep develop's `effect_context` / `governed_runtime` / progress-hook wiring
+*and* this branch's Sentinel gate, host-mode resolution and principal-role
+resolution; `optimizer.py` takes develop's escalation handling
+(`upgrade_execution_tier` is an escalation there, not a tier upgrade);
+`container.py` takes develop's restructured composition root and re-adds
+`InMemoryDelegationAuthority` plus `delegation_authority=` on the Sentinel.
 
-### B1 — the graph-node gate blocks every production DAG node under shipped defaults
+### B2 — the vulture ratchet is green without touching the ledger
 
-`LegacyConductorNode._execute` resolves `graph.node.execute` (trusted) /
-`graph.node.untrusted` (untrusted) and calls
-`Sentinel.resolve_authorized_execution_mode`, which authorizes against the
-fail-closed permission table (ADR-072726-0d6b / #1165). The action is
-registered in NO permission preset (`permission_policy.py` has only
-`dangerous_tools_admin = DANGEROUS_TOOL_NAMES`), in no default config
-(`hive-conductor/backend/config.py` ships `maistro_permissions = {}` and
-`permission_preset = "none"`), and in no capability slot
-(`default_capability_registry()`). The shipped container therefore builds
-an empty table, `authorize` misses, and `resolve_authorized_execution_mode`
-returns `"blocked"` for every node.
+The gate is `python scripts/check-vulture-baseline.py packages/*/src
+--min-confidence 60 --exclude '*/third_party/*'`; it now exits 0 with
+1326 findings — exactly develop's banked count, no new identity, no row
+dropped. The branch was made vulture-neutral *in source* rather than by
+editing `quality/vulture-baseline.json` or `quality/ratchet-authorizations.json`
+(a ledger edit is not allowed in an ordinary implementation PR, and a grant
+authorizes a later change, never its own introduction):
 
-Proof: `packages/hive-conductor/backend/tests/test_legacy_dag_node.py::test_shipped_default_permissions_block_every_gated_node`
-asserts `PermissionError` for a role-bearing principal against
-`_production_sentinel({})` — the exact shipped wiring. The repair commit
-`3caff90f6` fixed the *role* half of the unsatisfiable gate but never
-registered the *action*, so under the shipped container the Run dies as
-`PhysicalExecutionError` and no configuration surface in the repo states the
-grant. This is the ADR's own warned failure mode: "Every missed tool name
-is an outage."
+- `DelegationGrant.grant_id` → `grant_ref`, `DelegationDecision.grant_id` →
+  `grant_ref`, `AuthContext.delegation_grant_id` → `delegation_grant_ref`.
+  The name `grant_id` already belongs to
+  `maistro.security.trust_boundary.PermissionGrant.grant_id`, and vulture's
+  `used_names` is a global exact-match set: a second `.grant_id` load masks
+  develop's banked row. One identifier, one meaning.
+- `DelegationGrant.granted_by` is now read: it is carried on
+  `DelegationDecision`, logged by `agents/base.py` ("Delegation authorized by
+  host policy: … grant_ref=… granted_by=…") and published on the A2A task
+  metadata as `delegation_granted_by`.
+- `InMemoryDelegationAuthority.add_host_grant` is now genuinely read: the
+  authority seeds its grants through it (`__init__` takes an iterable of
+  grants), so the host-only mutation API stays the single provisioning path
+  and is exercised from `src`.
+- `Sentinel.resolve_execution_mode` / `Sentinel.resolve_authorized_execution_mode`
+  moved out of the core into `packages/hive-conductor/backend/services/execution_mode.py`.
+  The isolation vocabulary ("blocked" / "async" / "sandbox") belongs to the
+  Conductor adapter, not to the core; the core keeps exactly one policy
+  decision surface (`Sentinel.authorize` + `Sentinel.resolve_tier`), so no
+  competing authority path is introduced. The adapter helper is outside the
+  vulture scan (`packages/*/src` only).
+- `AuthContext.delegation_grant_ref` is now read inside `src`: `Sentinel.pre_call`
+  emits it on the call audit (`detail="delegation_grant_ref=…"`, the host's
+  reference only — never request content), which is also what makes the
+  approval/elevation provenance criterion observable at the audit seam.
 
-Recommended repair (needs the lane owner's posture call, not a unilateral
-gate edit): ship a deployment grant for `graph.node.execute` /
-`graph.node.untrusted` in the Hive Conductor default `maistro_permissions`
-(the lane's own contract — "a deployment's permission grant for the action
-is itself the host policy record that makes graph-node execution
-reachable"), or document and enforce a mandatory `MAISTRO_PERMISSIONS`
-requirement at startup. The fail-closed posture for every other action is
-preserved either way.
+### B1 — graph-node execution is reachable in every shipped Conductor profile
 
-### B2 — vulture ratchet fails (CI `quality.yml` hard gate)
+The blocker was a deployment gap, not a code gap: the fail-closed table
+denies `graph.node.execute` because no preset names it (the
+`hive_conductor_tools` preset is pinned to `services.tool_executor.TOOLS` by
+`tests/security/test_sentinel_permission_table_armed.py`, so the preset
+cannot carry it). The repair states the grant where authority belongs — the
+deployment:
 
-`check-vulture-baseline.py packages/*/src --min-confidence 60` exits 1.
-Branch-caused new debt: `packages/maistro-core/src/maistro/security/_types.py::39`
-— `AuthContext.delegation_grant_id` is assigned at
-`agents/base.py:1006` but never read in `src` (only the test at
-`test_delegation_authority.py:298` reads it). Pre-existing / develop-sync
-staleness (branch is 1044 commits behind `develop`): unledgered
-`capabilities/invocation.py::127 observed_at` (added by `d7a9a75bf`, an
-ancestor of the merge-base, after the ledger's last update `838357134`) and
-a stale ledger row `security/trust_boundary.py::grant_id`. Ledger edits are
-prohibited in an ordinary implementation PR, so the branch-caused finding
-should be fixed (use or remove the field) and the staleness resolved by a
-develop sync or a dedicated CI-repair round.
+- `MAISTRO_PERMISSIONS='{"graph.node.execute": ["admin", "user"]}'` is now
+  part of the shipped Conductor profiles: `docker-compose.yml`,
+  `docker-compose.pm-poc.yml`, `deploy/docker-compose.prod.yml` and
+  `packages/hive-conductor/docker-compose.yml` (the four stacks the
+  `hive-conductor` service runs in). The code default stays fail-closed
+  (`permission_preset="none"`, empty map): an unstated grant still denies
+  every node.
+- `graph.node.untrusted` is deliberately *not* granted: the untrusted node
+  class stays behind its own host tier/approval record.
 
-`inventory-delta` for this note is unchanged (+6 core / +2 hive); this
-round adds no tests.
+New evidence:
+
+- `tests/security/test_sentinel_permission_table_armed.py::test_shipped_profiles_authorize_graph_node_execution`
+  renders each shipped Conductor profile exactly as `docker compose` would
+  and asserts the composed table grants `graph.node.execute` to the host
+  roles `admin` and `user` (the roles a Conductor user record carries).
+- `packages/hive-conductor/backend/tests/test_execution_mode.py` (new file,
+  8 tests) pins the behavior of that grant: a normal node is reachable at
+  the sandbox floor, `graph.node.untrusted` stays blocked, a principal
+  without a host role is denied, and the isolation floor is derived from the
+  tier Sentinel resolved — never from a caller label. The four
+  execution-mode tests that used to live in the core suite moved here with
+  the code they cover (they exercise the adapter's vocabulary).
+
+### Remaining limitations (recorded, not repaired in this round)
+
+- **Delegation grants have no product path yet.** Exact-bound grants
+  (`artifact` / `run_id` / `invocation_id`) can only be minted by a host
+  component at runtime; `InMemoryDelegationAuthority` is process-local, so
+  a grant does not survive a restart. Wiring the HITL reviewer flow
+  (park → approve → resume) into grant issuance is the follow-up.
+- **Elevation request/grant/clear is not exposed over HTTP.**
+  `request_self_elevation` / `confirm_self_elevation` exist in
+  `maistro.security.sentinel.elevation` and the container wires an
+  `elevation_store`, but no shipped route issues or clears an elevation; the
+  tier therefore stays at `SELF_ELEVATION` (sandbox floor) for a graph node.
+- **`graph.node.untrusted` remains ungranted** pending an explicit host
+  tier/approval record.
+
+`inventory-delta` for this note is now `packages/maistro-core/tests: +5`
+(the execution-mode tests moved to the Hive suite), `packages/hive-conductor/backend/tests: +15`
+(the new `test_execution_mode.py`, 8 tests, plus the branch's earlier
+adapter pins) and `tests/: +4` (the new parametrized shipped-profile pin).

@@ -10,7 +10,7 @@ import pytest
 
 from maistro.agents.base import Agent
 from maistro.security._types import AuthContext
-from maistro.security.sentinel.authz_types import Principal, Tier
+from maistro.security.sentinel.authz_types import Principal
 from maistro.security.sentinel.delegation import (
     DelegationGrant,
     DelegationRequest,
@@ -60,7 +60,7 @@ class _Result:
 
 def _grant(*, actions: frozenset[str]) -> DelegationGrant:
     return DelegationGrant(
-        grant_id="grant-1",
+        grant_ref="grant-1",
         principal_id="low-agent",
         owner_id="owner-1",
         delegating_agent_id="low-agent",
@@ -112,7 +112,8 @@ def test_host_grant_returns_only_the_explicit_action_subset() -> None:
 
     assert decision.allowed is True
     assert decision.effective_actions == frozenset({"read_file"})
-    assert decision.grant_id == "grant-1"
+    assert decision.grant_ref == "grant-1"
+    assert decision.granted_by == "host-policy"
 
 
 def test_an_approval_for_another_artifact_cannot_be_reused() -> None:
@@ -137,124 +138,6 @@ def test_auth_context_enforces_the_effective_subset() -> None:
 
     assert auth.can_use_tool("read_file", table) is True
     assert auth.can_use_tool("write_file", table) is False
-
-
-@pytest.mark.asyncio
-async def test_execution_mode_is_the_authorized_tier_floor() -> None:
-    """A host denial is the only "blocked"; an authorized action gets its floor."""
-    principal = Principal(id="owner-1", kind="human", roles=("user",))
-
-    # No permission decision at all (fail-closed table): a host denial.
-    strict_sentinel = Sentinel(warden=Warden(), permission_table={})
-    assert (
-        await strict_sentinel.resolve_authorized_execution_mode(
-            "graph.node.execute", principal, args={"node_id": "n1"}
-        )
-        == "blocked"
-    )
-
-    # Authorized (compatibility allow-on-miss) with no explicit tier record:
-    # the irreversible default tier is SELF_ELEVATION, whose floor is the
-    # sandbox -- never inline, and no longer collapsed into a denial.
-    default_sentinel = Sentinel(warden=Warden(), permission_table={}, allow_on_miss=True)
-    assert (
-        await default_sentinel.resolve_authorized_execution_mode(
-            "graph.node.execute", principal, args={"node_id": "n1"}
-        )
-        == "sandbox"
-    )
-
-    # Only an explicit host tier record promotes an authorized action inline.
-    role_sentinel = Sentinel(
-        warden=Warden(),
-        permission_table={},
-        tier_policy={("graph.node.execute", "user"): Tier.ROLE_AUTO},
-        allow_on_miss=True,
-    )
-    assert (
-        await role_sentinel.resolve_authorized_execution_mode(
-            "graph.node.execute", principal, args={"node_id": "n1"}
-        )
-        == "async"
-    )
-
-
-@pytest.mark.asyncio
-async def test_an_explicitly_blocked_tier_denies_even_an_authorized_action() -> None:
-    principal = Principal(id="owner-1", kind="human", roles=("user",))
-    sentinel = Sentinel(
-        warden=Warden(),
-        permission_table={},
-        tier_policy={("graph.node.execute", "user"): Tier.BLOCKED},
-        allow_on_miss=True,
-    )
-
-    assert (
-        await sentinel.resolve_authorized_execution_mode(
-            "graph.node.execute", principal, args={"node_id": "n1"}
-        )
-        == "blocked"
-    )
-
-
-@pytest.mark.asyncio
-async def test_a_cleared_elevation_grant_selects_the_sandbox_floor() -> None:
-    """The TTL-bound elevation grant is the human decision record that clears
-    the SELF_ELEVATION tier; the cleared action still executes at the sandbox
-    floor, never inline."""
-    from maistro.security.sentinel.elevation import (
-        InMemoryElevationStore,
-        confirm_self_elevation,
-        request_self_elevation,
-    )
-
-    principal = Principal(id="owner-1", kind="human", roles=("user",))
-    store = InMemoryElevationStore()
-    challenge = request_self_elevation(principal.id, "graph.node.execute")
-    await store.store(confirm_self_elevation(challenge, "re-auth proof", ttl_seconds=300))
-    sentinel = Sentinel(
-        warden=Warden(),
-        permission_table={},
-        elevation_store=store,
-        allow_on_miss=True,
-    )
-
-    # Cleared by the stored grant: sandbox floor (never inline).
-    assert (
-        await sentinel.resolve_authorized_execution_mode(
-            "graph.node.execute", principal, args={"node_id": "n1"}
-        )
-        == "sandbox"
-    )
-
-    # A different action class is not covered by the grant: still authorized,
-    # still at the sandbox floor, but the grant decision stays action-bound.
-    assert (
-        await sentinel.resolve_authorized_execution_mode(
-            "graph.node.untrusted", principal, args={"node_id": "n1"}
-        )
-        == "sandbox"
-    )
-    grants_for_other_action = await store.find_valid(principal.id, "graph.node.untrusted", None)
-    assert grants_for_other_action is None
-
-
-@pytest.mark.asyncio
-async def test_an_uncleared_delegated_tier_stays_off_the_inline_mode() -> None:
-    principal = Principal(id="owner-1", kind="human", roles=("user",))
-    sentinel = Sentinel(
-        warden=Warden(),
-        permission_table={},
-        tier_policy={("graph.node.execute", "user"): Tier.DELEGATED},
-        allow_on_miss=True,
-    )
-
-    assert (
-        await sentinel.resolve_authorized_execution_mode(
-            "graph.node.execute", principal, args={"node_id": "n1"}
-        )
-        == "sandbox"
-    )
 
 
 @pytest.mark.asyncio
@@ -295,7 +178,7 @@ async def test_host_grant_allows_only_its_action_subset() -> None:
 
     assert response.content == "writer ran"
     assert target_strategy.auth.delegated_actions == frozenset({"read_file"})
-    assert target_strategy.auth.delegation_grant_id == "grant-1"
+    assert target_strategy.auth.delegation_grant_ref == "grant-1"
 
 
 @pytest.mark.asyncio

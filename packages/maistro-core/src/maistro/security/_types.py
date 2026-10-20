@@ -38,7 +38,10 @@ class AuthContext:
     # A delegated invocation carries the host-authorized subset separately
     # from the owner's roles. ``None`` means this is not a delegated call.
     delegated_actions: frozenset[str] | None = None
-    delegation_grant_id: str = ""
+    # The host grant reference the delegated envelope was issued from. It is
+    # recorded on the call audit so a delegated action names the decision it
+    # rests on, not just the principal it runs as.
+    delegation_grant_ref: str = ""
 
     def can_use_tool(self, tool_name: str, permission_table: PermissionTable) -> bool:
         """Fail-closed permission lookup (ADR-072726-0d6b, implemented for #1165).
