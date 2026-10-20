@@ -1,6 +1,7 @@
 ---
 inventory-delta:
   tests/: +3
+  packages/maistro-core/tests: +3
 ---
 
 # auto-1859 — the API gate's temporary-disposition contract (#1859)
@@ -310,6 +311,15 @@ prohibition forbids grants and baseline additions. Wiring the module into
 measure a fiction — #1154 retired exactly that kind of wrapper. Banked is
 not authorized: adding the candidate baseline row alone flips the failure to
 the `not previously authorized` line and cannot clear it.
+
+> **Corrected by the round below.** "No in-branch fix exists" was too strong.
+> The two-merge wall closes the *ledger* repairs (a branch-side grant, a
+> branch-side baseline row); it does not close a repair that changes the
+> **tree**. When the module is reachable from an entry point there is no
+> candidate debt to authorize at all, and no `quality/*.json` file has to
+> move. Sibling lanes `#886` (`2d662ed43`) and `#948` (`8b5a2e838`) applied
+> exactly that tree-side repair for the identical inherited red while this
+> lane was blocked; the next section applies the same change here.
 
 **Handoff (one exact action, on `develop`).** Land a grant-only change:
 append one entry under `reachability` in `quality/ratchet-authorizations.json`
