@@ -41,6 +41,13 @@ logger = logging.getLogger("maistro.code_registry.execution")
 #: Honest label recorded when nothing ran the code (ADR-069 failure table).
 ISOLATION_REFUSED = "refused"
 
+#: Honest label for a failure raised by the sandbox after execution started
+#: (timeout kill, OOM, result-collection error): the code may have partially
+#: run, so the invocation is neither ``refused`` (which asserts nothing ran)
+#: nor the runtime's label (which we can no longer confirm) — recorded as
+#: unknown (ADR-069: honest labelling, treat as invocation failure).
+ISOLATION_UNKNOWN = "unknown"
+
 #: Reversibility class per kind (ADR-050): registry code is internal
 #: computation — a compensator/estimator/gate must never be classed as an
 #: irreversible external effect, which would push it up the tier ladder for
@@ -138,16 +145,30 @@ class CodeInvoker:
         )
         if not decision.authorized:
             return self._refused(ref, f"authorization denied: {decision.reason}")
+        # `authorized=True` with an outstanding approval (self-elevation,
+        # scoped 2FA, delegation, admin) is not execution clearance: the
+        # required approval must be granted (needs clears to "none") before
+        # the sandbox runs. Fail closed rather than execute early.
+        if getattr(decision, "needs", "none") != "none":
+            return self._refused(
+                ref,
+                f"authorization pending approval ({decision.needs}); refusing to execute before it is granted",
+            )
 
         # 3. Warden risk scan of the untrusted payload (best-effort text form).
         if self._warden_scan is not None:
             verdict = await self._warden_scan(
                 json.dumps(payload, default=str, sort_keys=True), "code_invoke"
             )
-            blocked = getattr(verdict, "blocked", False)
+            # Fail closed on every non-clean verdict. Warden reserves
+            # blocked=True for reject-pattern hits; heuristic, semantic-
+            # poisoning, and configured-LLM findings come back as
+            # clean=False/blocked=False, and this is an untrusted execution
+            # boundary — any suspicion refuses the payload.
+            clean = getattr(verdict, "clean", False)
             flags = getattr(verdict, "flags", ())
-            if blocked:
-                return self._refused(ref, f"warden blocked payload: {'; '.join(flags)}")
+            if not clean:
+                return self._refused(ref, f"warden flagged payload: {'; '.join(flags)}")
 
         # 4. Isolation: fail-closed. No sandbox runtime configured means the
         #    code does not run — for trusted engine-authored code too, since
@@ -158,7 +179,10 @@ class CodeInvoker:
             outcome = await self._sandbox.execute(entry, payload)
         except Exception as exc:  # over-budget/failed microVM: invocation failure
             logger.warning("code invocation failed in sandbox: ref=%s error=%s", ref, exc)
-            return CodeResult(ref=ref, ok=False, isolation=ISOLATION_REFUSED, reason=str(exc))
+            # The sandbox was entered, so the code may have partially executed:
+            # keep the honest "unknown" label — "refused" would falsely assert
+            # in isolation/audit evidence that nothing ran (ADR-069).
+            return CodeResult(ref=ref, ok=False, isolation=ISOLATION_UNKNOWN, reason=str(exc))
         return CodeResult(
             ref=ref,
             ok=True,
@@ -174,6 +198,7 @@ class CodeInvoker:
 
 __all__ = [
     "ISOLATION_REFUSED",
+    "ISOLATION_UNKNOWN",
     "CodeInvoker",
     "CodeResult",
     "CodeSandbox",
