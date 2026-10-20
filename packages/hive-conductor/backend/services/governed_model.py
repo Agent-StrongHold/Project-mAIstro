@@ -24,6 +24,7 @@ from maistro.capabilities.governed_invocation import (
     InvocationApprovalRequired,
     InvocationDenied,
 )
+from maistro.capabilities.invocation import CapabilityUnavailable
 from maistro.capabilities.model_chat import ModelCallResult, ModelChatEgress
 from maistro.capabilities.providers.llm_gateway import (
     DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,
@@ -36,6 +37,7 @@ from maistro.capabilities.providers.llm_gateway import (
 )
 from maistro.credentials.types import CredentialRecord
 from maistro.graph.definitions import Graph, Node
+from maistro.graph.nodes.base import NodeContext
 from maistro.providers.protocols import LLMProviderRegistry, LLMRouter
 from maistro.runs.lifecycle import transition_path
 from maistro.runs.model import (
@@ -268,6 +270,57 @@ async def dag_node_completion(
     return content
 
 
+async def dag_tool_completion(
+    runtime: GovernedModelRuntime,
+    *,
+    ctx: NodeContext,
+    binding_id: str,
+    effect_key: str,
+    request: ModelChatRequest,
+    timeout_s: float,
+) -> str:
+    """Execute a tool's model sub-effect using its existing canonical Attempt.
+
+    The DAG only references an operator-declared model Binding. It cannot
+    register a credential or authorize its requested model by constructing a
+    new Binding. The outer tool Invocation retains tool policy/lifecycle;
+    this distinct model Invocation owns model selection, credentials and usage.
+    """
+    if not binding_id.strip():
+        raise BindingResolutionError("model-backed DAG tools require a model_binding_id")
+    binding = await runtime.effects.bindings.resolve(
+        binding_id,
+        workspace_id=str(ctx.workspace_id or ""),
+        project_id=str(ctx.project_id or ""),
+        node_id=ctx.node_id,
+        capability=MODEL_CHAT_CAPABILITY,
+    )
+    result = await ModelChatEgress(
+        runtime.effects,
+        registry=runtime.registry,
+        router=runtime.router,
+        endpoint=runtime.endpoint.model_copy(update={"timeout_s": timeout_s}),
+    ).complete(
+        binding=binding,
+        run_id=ctx.run_id,
+        node_run_id=ctx.node_run_id,
+        attempt_id=ctx.attempt_id,
+        actor_id=str(ctx.user_id or ""),
+        effect_key=effect_key,
+        request=request,
+    )
+    choices = result.body.get("choices")
+    message = (
+        choices[0].get("message")
+        if isinstance(choices, list) and choices and isinstance(choices[0], dict)
+        else None
+    )
+    content = message.get("content") if isinstance(message, dict) else None
+    if not isinstance(content, str):
+        raise LLMProviderError("DAG tool model returned no text content")
+    return content
+
+
 async def ensure_binding(runtime: GovernedModelRuntime, binding: Binding) -> Binding:
     """Register an immutable control-plane Binding once, then reuse it."""
 
@@ -348,7 +401,10 @@ async def register_and_health_check(
     instead of registering models before being told no. The billable/diagnostic
     completion crosses the canonical model egress so its outcome and usage are
     auditable, and the transient registration key never enters the Invocation
-    record.
+    record. The health model is a Binding pin: its metadata must already be
+    registered by the configured ProviderRegistry (``provider_config_path``).
+    This hook registers gateway transport names, not trusted cost metadata.
+    An unknown pin refuses before setup and must remain an actionable error.
     """
 
     async def register_then_probe() -> None:
@@ -375,6 +431,10 @@ async def register_and_health_check(
         )
     except ProviderActivationError:
         raise
+    except CapabilityUnavailable as exc:
+        raise ProviderHealthError(
+            f"provider health selection unavailable for {provider_name}: {exc}"
+        ) from exc
     except (BindingResolutionError, InvocationDenied, InvocationApprovalRequired) as exc:
         raise ProviderAuthorizationError(
             f"provider health authorization failed for {provider_name}"

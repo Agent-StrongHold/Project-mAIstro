@@ -141,12 +141,42 @@ async def test_mark_outcome_empty_list_is_noop(store: SqliteLearningStore) -> No
 async def test_check_auto_promotions_promotes_above_threshold(
     store: SqliteLearningStore,
 ) -> None:
+    lid = await store.store(make_learning(run_id="run-1"))
+    await store.mark_used([lid])
+    await store.mark_used([lid])
+    await store.mark_outcome([lid], success=True)
+    promoted = await store.check_auto_promotions(threshold=2)
+    assert len(promoted) == 1
+    assert promoted[0].status == "promoted"
+
+
+async def test_check_auto_promotions_refuses_rows_without_evidence(
+    store: SqliteLearningStore,
+) -> None:
+    """M4-B3: hits alone do not promote — a source Run id and measured
+    confidence are required, and an unevidenced row stays active."""
     lid = await store.store(make_learning())
     await store.mark_used([lid])
     await store.mark_used([lid])
     promoted = await store.check_auto_promotions(threshold=2)
-    assert len(promoted) == 1
-    assert promoted[0].status == "promoted"
+    assert promoted == []
+    (row,) = await store.list_all()
+    assert row.status == "active"
+
+
+async def test_check_auto_promotions_refuses_majority_failing_rows(
+    store: SqliteLearningStore,
+) -> None:
+    """M4-B3: measured confidence below the floor blocks promotion too."""
+    lid = await store.store(make_learning(run_id="run-1"))
+    await store.mark_used([lid])
+    await store.mark_used([lid])
+    await store.mark_outcome([lid], success=False)
+    await store.mark_outcome([lid], success=False)
+    await store.mark_outcome([lid], success=True)
+    assert (await store.list_all())[0].confidence == pytest.approx(1 / 3)
+    promoted = await store.check_auto_promotions(threshold=2)
+    assert promoted == []
 
 
 @pytest.mark.asyncio
@@ -160,9 +190,10 @@ async def test_check_auto_promotions_none_above_threshold_returns_empty(
 
 @pytest.mark.asyncio
 async def test_get_promoted_returns_only_promoted_status(store: SqliteLearningStore) -> None:
-    lid = await store.store(make_learning())
+    lid = await store.store(make_learning(run_id="run-1"))
     await store.store(make_learning(tool_name="other"))
     await store.mark_used([lid])
+    await store.mark_outcome([lid], success=True)
     await store.check_auto_promotions(threshold=1)
     promoted = await store.get_promoted()
     assert len(promoted) == 1
@@ -170,8 +201,9 @@ async def test_get_promoted_returns_only_promoted_status(store: SqliteLearningSt
 
 @pytest.mark.asyncio
 async def test_get_promoted_filters_by_task_type(store: SqliteLearningStore) -> None:
-    lid1 = await store.store(make_learning(category="chat"))
-    lid2 = await store.store(make_learning(tool_name="other", category="code"))
+    lid1 = await store.store(make_learning(category="chat", run_id="run-1"))
+    lid2 = await store.store(make_learning(tool_name="other", category="code", run_id="run-2"))
+    await store.mark_outcome([lid1, lid2], success=True)
     await store.check_auto_promotions(threshold=0)
     assert lid1 and lid2
     promoted = await store.get_promoted(task_type="chat")
@@ -188,3 +220,80 @@ async def test_list_all_orders_newest_first_and_respects_limit(
     all_learnings = await store.list_all(limit=2)
     assert len(all_learnings) == 2
     assert all_learnings[0].tool_name == "tool2"
+
+
+@pytest.mark.asyncio
+async def test_applicability_columns_written_outside_the_store_read_back_tolerant() -> None:
+    """`_json_list` must tolerate legacy NULLs, junk text and JSON scalars.
+
+    The M4-B3 columns carry NOT NULL DEFAULT '[]' in this repo's DDL, but a
+    database written outside this migration chain (an older nullable shape, a
+    partial writer) can hold anything. The mapper's contract is that such a
+    row reads back as an empty list — never a crash and never a fabricated
+    applicability claim (#119). The well-formed column in the same row proves
+    the tolerance is per-column, not a blanket wipe.
+    """
+    conn = await aiosqlite.connect(":memory:")
+    # A database written before the NOT NULL DEFAULT '[]' tightening: the
+    # columns exist but accept anything. ensure_schema inspects the column
+    # list, finds them present, and correctly leaves them alone.
+    await conn.execute(
+        """
+        CREATE TABLE learnings (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            category TEXT NOT NULL DEFAULT 'general',
+            trigger_keys TEXT NOT NULL DEFAULT '[]',
+            learning TEXT NOT NULL DEFAULT '',
+            tool_name TEXT NOT NULL DEFAULT '',
+            source_query TEXT NOT NULL DEFAULT '',
+            agent_id TEXT NOT NULL DEFAULT '',
+            user_id TEXT,
+            org_id TEXT NOT NULL DEFAULT '',
+            team_id TEXT NOT NULL DEFAULT '',
+            scope TEXT NOT NULL DEFAULT 'agent',
+            hit_count INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'active',
+            rca_category TEXT,
+            rca_prevention TEXT NOT NULL DEFAULT '',
+            success_after_use INTEGER NOT NULL DEFAULT 0,
+            failure_after_use INTEGER NOT NULL DEFAULT 0,
+            run_id TEXT,
+            node_run_id TEXT,
+            attempt_id TEXT,
+            epistemic_type TEXT,
+            works_when TEXT,
+            avoid_in TEXT,
+            confidence REAL,
+            evidence_run_ids TEXT,
+            evaluation_ids TEXT
+        )
+        """
+    )
+    store = SqliteLearningStore(conn)
+    await store.ensure_schema()
+    try:
+        await conn.execute(
+            "INSERT INTO learnings (trigger_keys, learning, tool_name, org_id,"
+            " works_when, avoid_in, evidence_run_ids, evaluation_ids)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                '["deploy"]',
+                "legacy row with hand-written applicability",
+                "bash",
+                "org-legacy",
+                None,  # legacy NULL where the newer shape requires a JSON array
+                "not json {",
+                "42",  # JSON scalar, not a list
+                '[ "run-1" ]',  # well-formed control
+            ),
+        )
+        await conn.commit()
+        rows = await store.list_all(org_id="org-legacy")
+    finally:
+        await conn.close()
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.works_when == []
+    assert row.avoid_in == []
+    assert row.evidence_run_ids == []
+    assert row.evaluation_ids == ["run-1"]
