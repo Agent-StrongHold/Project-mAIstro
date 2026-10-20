@@ -296,6 +296,31 @@ def validate_child_scope(
         )
 
 
+def validate_effect_claim_parent(
+    parent: Run | None,
+    parent_node_run: NodeRun | None,
+    *,
+    parent_run_id: str | None,
+    parent_node_run_id: str | None,
+    workspace_id: str,
+    project_id: str,
+    allow_cross_project: bool,
+) -> None:
+    """Validate optional parent evidence before admitting an effect-keyed child Run."""
+    if parent_node_run_id is not None and parent_run_id is None:
+        raise RunIntegrityError("parent_node_run_id requires parent_run_id")
+    if parent is None:
+        return
+    validate_child_scope(
+        parent,
+        workspace_id=workspace_id,
+        project_id=project_id,
+        allow_cross_project=allow_cross_project,
+    )
+    if parent_node_run is not None and parent_node_run.run_id != parent_run_id:
+        raise RunIntegrityError("parent_node_run_id does not belong to parent_run_id")
+
+
 @runtime_checkable
 class ContinuationPurge(Protocol):
     """The slice of a Graph continuation store that a purge needs (#1175).
@@ -483,7 +508,20 @@ class RunStore(Protocol):
         provenance: dict[str, Any] | None = None,
         retention_expires_at: datetime | None = None,
         initial_status: RunStatus = RunStatus.CREATED,
-    ) -> Run: ...
+        goal_id: str | None = None,
+        goal_revision: int | None = None,
+    ) -> Run:
+        """Admit one Run over ``graph``.
+
+        ``goal_id``/``goal_revision`` bind the Run to the canonical Goal and
+        the exact desired-state revision it was admitted against (#1572). The
+        binding is provenance: written once here, carried in the Run's payload
+        from then on, and accepted from no other call — every later mutation
+        of the Run leaves it untouched, so a historical Run always reads with
+        the revision it used. Set both or neither; the model refuses half a
+        binding.
+        """
+        ...
 
     async def purge_expired_runs(
         self,
@@ -870,6 +908,8 @@ class InMemoryRunStore:
         provenance: dict[str, Any] | None = None,
         retention_expires_at: datetime | None = None,
         initial_status: RunStatus = RunStatus.CREATED,
+        goal_id: str | None = None,
+        goal_revision: int | None = None,
     ) -> Run:
         await self._validate_graph_scope(graph)
         if parent_node_run_id is not None and parent_run_id is None:
@@ -896,6 +936,8 @@ class InMemoryRunStore:
             actor_principal_id=require_admitted_actor(actor_principal_id),
             provenance=dict(provenance or {}),
             retention_expires_at=retention_expires_at,
+            goal_id=goal_id,
+            goal_revision=goal_revision,
         )
         run = admit_in_state(run, initial_status)
         self._claim_occurrence(run)
@@ -1245,32 +1287,6 @@ class InMemoryRunStore:
                 return run.model_copy(deep=True)
         return None
 
-    def _require_parent_scope(
-        self,
-        graph: Graph,
-        *,
-        parent_run_id: str | None,
-        parent_node_run_id: str | None,
-        allow_cross_project: bool,
-    ) -> Run | None:
-        """Validate the optional parent chain for an effect claim; return the parent."""
-        if parent_node_run_id is not None and parent_run_id is None:
-            raise RunIntegrityError("parent_node_run_id requires parent_run_id")
-        parent = self._require_run(parent_run_id) if parent_run_id is not None else None
-        if parent is None:
-            return None
-        validate_child_scope(
-            parent,
-            workspace_id=graph.workspace_id,
-            project_id=graph.project_id,
-            allow_cross_project=allow_cross_project,
-        )
-        if parent_node_run_id is not None:
-            parent_node_run = self._require_node_run(parent_node_run_id)
-            if parent_node_run.run_id != parent_run_id:
-                raise RunIntegrityError("parent_node_run_id does not belong to parent_run_id")
-        return parent
-
     async def claim_run_by_effect(
         self,
         graph: Graph,
@@ -1298,10 +1314,19 @@ class InMemoryRunStore:
         for existing in self._runs.values():
             if existing.provenance.get("effect_key") == effect_key:
                 return RunEffectClaim(existing.model_copy(deep=True), False)
-        self._require_parent_scope(
-            graph,
+        parent = self._require_run(parent_run_id) if parent_run_id is not None else None
+        parent_node_run = (
+            self._require_node_run(parent_node_run_id)
+            if parent is not None and parent_node_run_id is not None
+            else None
+        )
+        validate_effect_claim_parent(
+            parent,
+            parent_node_run,
             parent_run_id=parent_run_id,
             parent_node_run_id=parent_node_run_id,
+            workspace_id=graph.workspace_id,
+            project_id=graph.project_id,
             allow_cross_project=allow_cross_project,
         )
         run = admit_in_state(

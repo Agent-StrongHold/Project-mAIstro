@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import importlib.util
+import re
 import sys
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -39,6 +41,115 @@ def _contract_gate():
     return module
 
 
+# ---------------------------------------------------------------------------
+# A minimal evaluator for the GitHub-expression subset the specialized scope
+# gates use: dotted identifiers, single-quoted string literals, ==, !=, &&,
+# ||, and parentheses. Structural substring assertions cannot tell a policy
+# where PRs are unconditionally enabled from one gated on the classifier
+# output; evaluating the condition can (#1351). An unknown identifier raises,
+# so a condition drifting to an unmodelled form fails the test loudly.
+# ---------------------------------------------------------------------------
+_TOKEN_RE = re.compile(r"\s*(\(|\)|&&|\|\||==|!=|'[^']*'|[A-Za-z][A-Za-z0-9_.\-]*)")
+
+
+def _tokenize(expression: str) -> list[str]:
+    tokens: list[str] = []
+    position = 0
+    while position < len(expression):
+        match = _TOKEN_RE.match(expression, position)
+        if match is None:
+            if expression[position:].strip() == "":
+                break
+            raise ValueError(f"unmodelled expression syntax at: {expression[position:]!r}")
+        tokens.append(match.group(1))
+        position = match.end()
+    return tokens
+
+
+#: Parsed conditions: ``("or"|"and", left, right)`` or ``("cmp", ident, op, literal)``.
+Condition = tuple
+
+
+class _ConditionParser:
+    """Recursive descent over the full token stream (no evaluation yet), so
+    short-circuiting later never leaves tokens unconsumed."""
+
+    def __init__(self, tokens: list[str]) -> None:
+        self.tokens = tokens
+        self.index = 0
+
+    def _peek(self) -> str | None:
+        return self.tokens[self.index] if self.index < len(self.tokens) else None
+
+    def _take(self) -> str:
+        token = self.tokens[self.index]
+        self.index += 1
+        return token
+
+    def _comparison(self) -> Condition:
+        left = self._take()
+        operator = self._take()
+        right = self._take()
+        if operator not in ("==", "!="):
+            raise ValueError(f"unmodelled operator: {operator!r}")
+        if len(right) >= 2 and right[0] == "'" and right[-1] == "'":
+            right = right[1:-1]
+        return ("cmp", left, operator, right)
+
+    def _atom(self) -> Condition:
+        if self._peek() == "(":
+            self._take()
+            value = self._or_expr()
+            if self._take() != ")":
+                raise ValueError("unbalanced parentheses")
+            return value
+        return self._comparison()
+
+    def _and_expr(self) -> Condition:
+        value = self._atom()
+        while self._peek() == "&&":
+            self._take()
+            value = ("and", value, self._atom())
+        return value
+
+    def _or_expr(self) -> Condition:
+        value = self._and_expr()
+        while self._peek() == "||":
+            self._take()
+            value = ("or", value, self._and_expr())
+        return value
+
+    def parse(self) -> Condition:
+        result = self._or_expr()
+        if self.index != len(self.tokens):
+            raise ValueError(f"trailing tokens: {self.tokens[self.index :]!r}")
+        return result
+
+
+def _parse_condition(tokens: list[str]) -> Condition:
+    return _ConditionParser(tokens).parse()
+
+
+def _eval_condition(condition: Condition, env: Mapping[str, str]) -> bool:
+    kind = condition[0]
+    if kind == "or":
+        # Python's own short-circuit: a false-guarded right side (e.g. the
+        # merge_group clauses on a pull_request event) is never evaluated, so
+        # identifiers it names need not be in `env`.
+        return _eval_condition(condition[1], env) or _eval_condition(condition[2], env)
+    if kind == "and":
+        return _eval_condition(condition[1], env) and _eval_condition(condition[2], env)
+    _, identifier, operator, literal = condition
+    if identifier not in env:
+        raise KeyError(f"condition references an unmodelled identifier: {identifier!r}")
+    return (env[identifier] == literal) if operator == "==" else (env[identifier] != literal)
+
+
+def evaluate_github_expression(expression: str, env: Mapping[str, str]) -> bool:
+    """Evaluate one scope-gate condition; raise on unknown identifiers."""
+    return _eval_condition(_parse_condition(_tokenize(expression)), env)
+
+
 def test_required_workflow_lint_job_emits_every_specialized_leg() -> None:
     scope = _jobs()["workflow-lint"]
     outputs = scope["outputs"]
@@ -59,8 +170,15 @@ def test_required_workflow_lint_job_emits_every_specialized_leg() -> None:
 
 def test_specialized_scope_gates_preserve_required_matrix_contexts() -> None:
     jobs = _jobs()
-    event_guard = "github.event_name != 'merge_group'"
-    base_guard = "github.event.merge_group.base_ref != 'refs/heads/develop'"
+    # Both candidate events are path-scoped (#1351): the only clause that can
+    # enable a job on pull_request or a develop merge group is the classifier
+    # output guard. Non-candidate events and foreign merge bases keep the
+    # unconditional escapes.
+    event_escape = "(github.event_name != 'merge_group' && github.event_name != 'pull_request')"
+    base_escape = (
+        "(github.event_name == 'merge_group'"
+        " && github.event.merge_group.base_ref != 'refs/heads/develop')"
+    )
 
     for job_name, output in SPECIALIZED.items():
         job = jobs[job_name]
@@ -74,9 +192,66 @@ def test_specialized_scope_gates_preserve_required_matrix_contexts() -> None:
 
         condition = job["if"]
         output_guard = f"needs.workflow-lint.outputs.{output} == 'true'"
-        assert event_guard in condition, job_name
-        assert base_guard in condition, job_name
+        assert event_escape in condition, job_name
+        assert base_escape in condition, job_name
         assert output_guard in condition, job_name
+
+
+@pytest.mark.parametrize("leg_output", ["true", "false"])
+def test_pull_request_scope_gate_is_exactly_the_classifier_output(
+    leg_output: str,
+) -> None:
+    """On a pull_request event, a specialized job runs iff its measured leg
+    is selected -- the same policy gates-ran judges the head with (#1351)."""
+    jobs = _jobs()
+    for job_name, output in SPECIALIZED.items():
+        if job_name == "postgres":
+            continue
+        condition = jobs[job_name]["if"]
+        env = {
+            "github.event_name": "pull_request",
+            f"needs.workflow-lint.outputs.{output}": leg_output,
+        }
+        assert evaluate_github_expression(condition, env) is (leg_output == "true"), job_name
+
+
+@pytest.mark.parametrize("leg_output", ["true", "false"])
+def test_develop_merge_group_scope_gate_is_exactly_the_classifier_output(
+    leg_output: str,
+) -> None:
+    jobs = _jobs()
+    for job_name, output in SPECIALIZED.items():
+        if job_name == "postgres":
+            continue
+        condition = jobs[job_name]["if"]
+        env = {
+            "github.event_name": "merge_group",
+            "github.event.merge_group.base_ref": "refs/heads/develop",
+            f"needs.workflow-lint.outputs.{output}": leg_output,
+        }
+        assert evaluate_github_expression(condition, env) is (leg_output == "true"), job_name
+
+
+def test_non_candidate_events_and_foreign_merge_bases_run_unconditionally() -> None:
+    """Protected pushes and merge groups targeting any other base are not
+    path-scoped candidates: every specialized job must run even when the
+    classifier output says false."""
+    jobs = _jobs()
+    for job_name, output in SPECIALIZED.items():
+        if job_name == "postgres":
+            continue
+        condition = jobs[job_name]["if"]
+        push = {
+            "github.event_name": "push",
+            f"needs.workflow-lint.outputs.{output}": "false",
+        }
+        assert evaluate_github_expression(condition, push) is True, job_name
+        foreign = {
+            "github.event_name": "merge_group",
+            "github.event.merge_group.base_ref": "refs/heads/main",
+            f"needs.workflow-lint.outputs.{output}": "false",
+        }
+        assert evaluate_github_expression(condition, foreign) is True, job_name
 
 
 @pytest.mark.parametrize(
@@ -124,6 +299,16 @@ def test_postgres_matrix_keeps_both_required_names_and_real_database_checks() ->
         assert required in commands
     workspace = next(step for step in steps if "tests/workspaces" in step.get("run", ""))
     assert workspace["env"]["MAISTRO_REQUIRE_PG_LEGS"] == "1"
+
+
+def test_postgres_matrix_is_not_filtered_by_pull_request_path_scope() -> None:
+    # Same constraint on the other path-scoped event (#1351): the classifier
+    # may deselect the postgres leg for a PR, but the matrix job still runs.
+    scope = scope_for_event("pull_request", ["docs/ci/MERGE-QUEUE.md"])
+    assert scope["postgres"] is False
+    postgres = _jobs()["postgres"]
+    assert "if" not in postgres
+    assert all("if" not in step for step in postgres["steps"])
 
 
 def test_merge_group_base_targeting_does_not_narrow_the_pr_check_contract() -> None:
