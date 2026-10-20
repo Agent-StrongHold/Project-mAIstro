@@ -42,9 +42,10 @@ harder guarantee (hypervisor boundary) than the container/RBAC layers above it.
 
 ### Scan result states (#288)
 
-Every security scan surface (agent config scans, the skills content scan, the MCP server
-record scan, the HITL answer gate) distinguishes four states, and a scan that did not run is
-never allowed to read as clean:
+Every security scan surface (agent config scans, the skills content scan, the HITL answer
+gate) distinguishes four states, and a scan that did not run is never allowed to read as
+clean. The MCP server-record scan has no scanner wired and is the explicit-unsupported case
+(`501`, #389) rather than a fabricated verdict:
 
 - **clean** — the analysis *completed* and found nothing. Scan-route results say what ran and
   on what: `scanner.name` / `scanner.policy_version` (the Warden `WARDEN_POLICY_VERSION`),
@@ -61,14 +62,17 @@ never allowed to read as clean:
   surfaced as `503` on the Forge route); the chat gate refuses the turn with its scanner-error
   / scanner-timeout reasons. Warden's per-pattern regex timeout fails closed too: it becomes a
   `regex_error:` finding, i.e. flagged — never silently clean.
-- **unsupported / over-budget** — the target exceeds the bounded walk (nesting depth, value
-  count, string size) and is refused with `413` (`ScanBudgetExceeded`) rather than truncated
-  into a partial — and therefore unearned — clean.
+- **unsupported** — no scanner is wired for the target, so the surface refuses with `501`
+  (the MCP server-record scan) instead of reporting a verdict it did not compute.
+- **over-budget** — the target exceeds the bounded walk (nesting depth, value count, string
+  size) and is refused with `413` (`ScanBudgetExceeded`) rather than truncated into a
+  partial — and therefore unearned — clean.
 
 The surface set itself is checked, not trusted:
 `packages/hive-conductor/backend/tests/test_scan_contract.py` enumerates every `POST …/scan`
-route from the live app and must find each one backed by the registered real scanner, and it
-parses `routes/` and `services/` to forbid the unconditional
+route from the live app and must find each one backed by its registered handler. A surface
+with no scanner wired is pinned to an explicit `501` refusal, never a `clean` result, and the
+test parses `routes/` and `services/` to forbid the unconditional
 `{"findings": [], "status": "clean"}` literal anywhere in production code — the shape the
 agent scan used to answer before #418 and the MCP server-record scan answered until #288.
 
