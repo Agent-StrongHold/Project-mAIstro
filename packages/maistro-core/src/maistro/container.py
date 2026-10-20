@@ -85,6 +85,8 @@ if TYPE_CHECKING:
         StateStore,
     )
     from maistro.capabilities.registry import CapabilityRegistry
+    from maistro.code_registry.execution import CodeInvoker, CodeResult
+    from maistro.code_registry.registry import CodeRegistry
     from maistro.events.bus import EventBus
     from maistro.events.durable_log import EventLogStore
     from maistro.events.invocations import InvocationStore
@@ -122,6 +124,7 @@ if TYPE_CHECKING:
     from maistro.runs.consumption import ParkedPause
     from maistro.runs.store import RunStore
     from maistro.security._types import AuditLog
+    from maistro.security.sentinel.authz_types import Principal
     from maistro.security.sentinel.elevation import ElevationStore
     from maistro.security.sentinel.policy import Sentinel
     from maistro.skills.import_pipeline import (
@@ -310,6 +313,11 @@ class Container:
     # Skill import pipeline (ADR-083).
     skill_registry: InMemorySkillRegistry = None  # type: ignore[assignment]
     policy_attachment_store: PolicyAttachmentStore = None  # type: ignore[assignment]
+    # Signed code registry + its governed execution harness (ADR-069, #59).
+    # Reachable-by-design from `invoke()` — wiring them here is what connects
+    # the code-registry modules to a process entry point.
+    code_registry: CodeRegistry = None  # type: ignore[assignment]
+    code_invoker: CodeInvoker = None  # type: ignore[assignment]
     # OAuth (ADR-059): state + identity-link stores; clients via oauth_client().
     oauth_state_store: StateStore = None  # type: ignore[assignment]
     identity_linker: IdentityLinker = None  # type: ignore[assignment]
@@ -1142,6 +1150,21 @@ class Container:
 
         return verify_skill_payload(skill_name, payload, policy_store=self.policy_attachment_store)
 
+    async def invoke_code(
+        self,
+        ref: str,
+        payload: dict[str, Any],
+        principal: Principal,
+    ) -> CodeResult:
+        """Execute a signed code ref through the governed envelope (ADR-069).
+
+        Resolve (signature recheck) -> Sentinel authorization -> Warden payload
+        scan -> sandbox execution with an honest isolation label. Refused, not
+        run, when no sandbox runtime is configured. Raises the registry's
+        fail-closed errors for an unresolved/tampered ref.
+        """
+        return await self.code_invoker.invoke(ref, payload, principal)
+
     def persona_scorer(
         self,
         template_path: str,
@@ -1528,6 +1551,21 @@ async def create_container(
     skill_registry = InMemorySkillRegistry()
     policy_attachment_store = InMemoryPolicyAttachmentStore()
 
+    # --- Signed code registry + governed execution (ADR-069, #59) ---------
+    from maistro.code_registry.execution import CodeInvoker
+    from maistro.code_registry.registry import CodeRegistry
+
+    # No default verifier and no default sandbox: an empty registry refuses
+    # every registration (unsigned) and the invoker refuses every execution
+    # (no runtime) until a deployment wires its own key + microVM backend —
+    # the ADR-069 degraded-but-honest default.
+    code_registry = CodeRegistry()
+    code_invoker = CodeInvoker(
+        code_registry,
+        sentinel=sentinel,
+        warden_scan=warden.scan,
+    )
+
     # The live agent map every wiring closure below reads. Populated later by
     # `create_agents`; the closures capture the dict, not its contents.
     agents: dict[str, Agent] = {}
@@ -1622,6 +1660,8 @@ async def create_container(
         golden_record_store=golden_record_store,
         skill_registry=skill_registry,
         policy_attachment_store=policy_attachment_store,
+        code_registry=code_registry,
+        code_invoker=code_invoker,
         oauth_state_store=oauth_state_store,
         identity_linker=identity_linker,
         a2a_delegator=a2a_delegator,

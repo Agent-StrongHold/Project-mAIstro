@@ -7,18 +7,29 @@ Filesystem watcher detects new/modified skill files without restart.
 
 from __future__ import annotations
 
-import hashlib
 import logging
 import threading
 from dataclasses import dataclass, replace
 from pathlib import Path
 
 from maistro.skills.parser import parse_skill_file, security_scan
+from maistro.skills.registry import skill_content_hash
 from maistro.types.skill import SkillDefinition
 
 logger = logging.getLogger("maistro.skills.catalog")
 
 _SCOPE_PRIORITY = {"builtin": 0, "tenant": 1, "user": 2}
+
+
+class SkillAdmissionError(ValueError):
+    """An entry refused by the catalog's supply-chain admission gate.
+
+    Raised by :meth:`SkillCatalog.register` when an entry arrives without
+    host-owned trust metadata (content hash + provenance), with a hash that
+    does not match its own content, or with CRITICAL scanner findings. The
+    catalog shares one governed gate with the ADR-083 import pipeline (#59):
+    there is no register call that bypasses scan/hash/provenance policy.
+    """
 
 
 @dataclass(frozen=True)
@@ -41,6 +52,17 @@ def _is_visible(entry: SkillCatalogEntry, tenant_id: str, user_id: str) -> bool:
     return bool(entry.scope == "user" and user_id and entry.user_id == user_id)
 
 
+def _entry_scan_text(skill: SkillDefinition) -> str:
+    """The attacker-controlled text of a catalog entry, as one scan blob.
+
+    Same composition rule as the registry's content hash: every field that can
+    reach a prompt or a tool-call schema is scanned, not just the description.
+    """
+    return "\x00".join(
+        (skill.name, skill.description, "\n".join(skill.groups), skill.system_prompt)
+    )
+
+
 class SkillCatalog:
     """Skill catalog with cascade resolution and filesystem watching."""
 
@@ -52,6 +74,33 @@ class SkillCatalog:
         self._file_mtimes: dict[str, float] = {}
 
     def register(self, entry: SkillCatalogEntry) -> None:
+        """Admit an entry through the shared supply-chain gate (#59).
+
+        Fail-closed, like every other path that installs skill content: an
+        entry must carry a host-computed content hash that matches its own
+        definition, a provenance string, and clean scanner findings. Anything
+        else raises :class:`SkillAdmissionError` instead of being listed —
+        the catalog is not a second, softer importer next to the ADR-083
+        pipeline.
+        """
+        definition = entry.definition
+        if not definition.content_hash:
+            raise SkillAdmissionError(
+                f"skill '{definition.name}' has no host-computed content hash"
+            )
+        if not definition.provenance:
+            raise SkillAdmissionError(f"skill '{definition.name}' has no provenance")
+        recomputed = skill_content_hash(definition)
+        if definition.content_hash != recomputed:
+            raise SkillAdmissionError(
+                f"skill '{definition.name}' content hash does not match its content"
+            )
+        safe, findings = security_scan(_entry_scan_text(definition))
+        if not safe:
+            critical = "; ".join(f for f in findings if f.startswith("CRITICAL:"))
+            raise SkillAdmissionError(
+                f"skill '{definition.name}' failed the admission scan: {critical}"
+            )
         with self._lock:
             self._entries.append(entry)
 
@@ -119,7 +168,11 @@ class SkillCatalog:
                 entry = SkillCatalogEntry(
                     definition=replace(
                         skill_def,
-                        content_hash=hashlib.sha256(content.encode("utf-8")).hexdigest(),
+                        # Host-computed hash over the parsed definition, the
+                        # same helper `register` verifies — so a file whose
+                        # parsed content drifts from its recorded hash is
+                        # refused rather than listed.
+                        content_hash=skill_content_hash(skill_def),
                         provenance=str(path),
                     ),
                     scope=scope,
@@ -182,7 +235,7 @@ class SkillCatalog:
                     entry = SkillCatalogEntry(
                         definition=replace(
                             skill_def,
-                            content_hash=hashlib.sha256(content.encode("utf-8")).hexdigest(),
+                            content_hash=skill_content_hash(skill_def),
                             provenance=str(path),
                         ),
                         scope="builtin",

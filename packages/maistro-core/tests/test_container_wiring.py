@@ -52,6 +52,8 @@ async def test_container_exposes_all_new_subsystems() -> None:
         "spawn_harness_node",
         "capability_effects",
         "usage_log",
+        "code_registry",
+        "code_invoker",
     ):
         assert getattr(container, attr) is not None, f"container.{attr} is not wired"
 
@@ -286,6 +288,52 @@ async def test_skill_payload_verification_via_container() -> None:
     )
     allowed, reasons = container.verify_skill_payload("bound-skill", payload)
     assert allowed is True and reasons == ()
+
+
+# --- Code registry execution (ADR-069, #59) -------------------------------------
+
+
+async def test_invoke_code_refuses_unresolved_ref() -> None:
+    from maistro.code_registry.types import CodeRefUnresolved
+    from maistro.security.sentinel.authz_types import Principal
+
+    container = await _container()
+    principal = Principal(id="test", kind="human")
+
+    with pytest.raises(CodeRefUnresolved):
+        await container.invoke_code("nonexistent@1.0.0", {"x": 1}, principal)
+
+
+async def test_invoke_code_refuses_without_sandbox() -> None:
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    from maistro.code_registry.types import CodeEntry, CodeKind
+    from maistro.code_registry.verify import Ed25519Verifier
+    from maistro.security.sentinel.authz_types import Principal
+    from maistro.types.config import SecurityConfig
+
+    container = await _container(
+        security=SecurityConfig(permissions={"code.invoke.compensator": ["admin"]})
+    )
+    principal = Principal(id="test", kind="human", roles=("admin",))
+
+    # Register a signed entry
+    private_key = Ed25519PrivateKey.generate()
+    verifier = Ed25519Verifier(private_key.public_key().public_bytes_raw())
+    entry = CodeEntry(
+        name="test_compensator",
+        version="1.0.0",
+        kind=CodeKind.COMPENSATOR,
+        code_sha256="abc123",
+        signature=private_key.sign(b"test_compensator@1.0.0:abc123"),
+    )
+    container.code_registry.register(entry, verifier=verifier)
+
+    # No sandbox configured -> refused
+    result = await container.invoke_code("test_compensator@1.0.0", {"x": 1}, principal)
+    assert result.ok is False
+    assert result.isolation == "refused"
+    assert "no sandbox runtime configured" in result.reason
 
 
 # --- Agent-harness DAG node adapters (ADR-062 spawn_harness) ------------------------

@@ -31,11 +31,21 @@ class SkillTrustMetadata:
     content_hash: str
 
 
-def _content_hash(skill: SkillDefinition) -> str:
+def skill_content_hash(skill: SkillDefinition) -> str:
+    """Host-computed content hash over every field that reaches a prompt.
+
+    The one hash the governed supply-chain paths agree on: the skill registry
+    records it, the catalog verifies it at admission, and a per-use boundary
+    can recompute it to detect a body that changed after import (#59).
+    """
     payload = "\x00".join(
         (skill.name, skill.description, "\n".join(skill.groups), skill.system_prompt)
     )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+#: Internal alias retained for existing call sites in this module.
+_content_hash = skill_content_hash
 
 
 class InMemorySkillRegistry:
