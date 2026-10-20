@@ -187,7 +187,6 @@ def _wait_ready(container: str) -> None:
         time.sleep(_READY_POLL_S)
 
 
-
 def _source_lib() -> str:
     return f"set -euo pipefail\nsource {ORACLE_LIB}\n"
 
