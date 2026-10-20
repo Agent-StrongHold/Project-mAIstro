@@ -886,7 +886,13 @@ async def test_project_membership_surfaces_are_store_scoped(stores: Stores) -> N
             grants={action},
         )
 
-    await stores.projects.set_membership(delegated_grant("read"), principal_id=member.principal_id)
+    # `set_membership` replaces the row wholesale, so it is an ADMINISTER
+    # write even when every action in it is delegable -- a member must not be
+    # able to erase an owner-issued deny by upserting an empty one.
+    with pytest.raises(_REFUSALS):
+        await stores.projects.set_membership(
+            delegated_grant("read"), principal_id=member.principal_id
+        )
     with pytest.raises(_REFUSALS):
         await stores.projects.set_membership(
             delegated_grant("publish"), principal_id=member.principal_id
@@ -901,6 +907,41 @@ async def test_project_membership_surfaces_are_store_scoped(stores: Stores) -> N
             ),
             principal_id=member.principal_id,
         )
+
+    # The additive `merge_membership` is the member's path: it may create a
+    # fresh row carrying only the delegated action.
+    merged = await stores.projects.merge_membership(
+        delegated_grant("read"), principal_id=member.principal_id
+    )
+    assert merged.grants == {"read"}
+    assert merged.denies == set()
+
+    # With an owner-issued row already on the Project, the member's merge
+    # unions onto it and preserves the owner's denies and role; replacement
+    # stays refused even scoped to the delegable action.
+    owner_issued = await stores.projects.set_membership(
+        ProjectMembership(
+            workspace_id=owner.workspace_id,
+            project_id=delegation_project,
+            principal_id=target.principal_id,
+            role="editor",
+            grants={"read", "publish"},
+            denies={"delete"},
+            delegable_grants={"read"},
+        ),
+        principal_id=owner.principal_id,
+    )
+    with pytest.raises(_REFUSALS):
+        await stores.projects.set_membership(
+            delegated_grant("read"), principal_id=member.principal_id
+        )
+    preserved = await stores.projects.merge_membership(
+        delegated_grant("read"), principal_id=member.principal_id
+    )
+    assert preserved.membership_id == owner_issued.membership_id
+    assert preserved.role == "editor"
+    assert preserved.grants == {"read", "publish"}
+    assert preserved.denies == {"delete"}
 
     # Nothing landed, and the owner's scoped calls still work.
     assert (

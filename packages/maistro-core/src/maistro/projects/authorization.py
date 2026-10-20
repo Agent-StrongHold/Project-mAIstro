@@ -104,6 +104,7 @@ async def authorize_membership_write(
     workspace_store: WorkspaceStore,
     membership: ProjectMembership,
     principal_id: str | None,
+    replacement: bool,
 ) -> None:
     """Authorize a Project membership grant at the store boundary (#1150).
 
@@ -112,6 +113,13 @@ async def authorize_membership_write(
     denies -- the same rule the HTTP route applies, resolved here so a caller
     that reaches the store directly cannot skip it. ``None`` is the
     internal/system shape; a blank principal is a refusal.
+
+    ``replacement`` distinguishes the destructive `set_membership` upsert
+    from the additive `merge_membership`: a replacement rewrites `role`,
+    `grants`, `denies`, and `delegable_grants` wholesale, so holding a
+    delegable action is not a sufficient credential for it (it would let a
+    member erase an owner-issued deny with an empty set). Replacement writes
+    therefore require ADMINISTER; only merges take the delegable path.
     """
     if principal_id is None:
         return
@@ -129,7 +137,7 @@ async def authorize_membership_write(
     except ProjectScopeDenied:
         pass
 
-    if membership.denies:
+    if replacement or membership.denies:
         raise ProjectScopeDenied("Project not found")
     for action in sorted(membership.grants | membership.delegable_grants):
         try:

@@ -412,7 +412,7 @@ class InMemoryProjectScopeStore:
         return project
 
     async def _authorize_membership_write(
-        self, membership: ProjectMembership, principal_id: str | None
+        self, membership: ProjectMembership, principal_id: str | None, *, replacement: bool
     ) -> Project:
         project = await self._authorize_view(membership.project_id, principal_id)
         if principal_id is not None and self._workspace_store is not None:
@@ -424,6 +424,7 @@ class InMemoryProjectScopeStore:
                 workspace_store=self._workspace_store,
                 membership=membership,
                 principal_id=principal_id,
+                replacement=replacement,
             )
         return project
 
@@ -561,9 +562,14 @@ class InMemoryProjectScopeStore:
         *,
         principal_id: str | None = None,
     ) -> ProjectMembership:
-        """Create or update the one canonical membership per (project, principal)."""
+        """Create or update the one canonical membership per (project, principal).
 
-        project = await self._authorize_membership_write(membership, principal_id)
+        This upsert replaces the row wholesale, so a supplied ``principal_id``
+        must hold ADMINISTER (#1150); delegated additions go through
+        `merge_membership`.
+        """
+
+        project = await self._authorize_membership_write(membership, principal_id, replacement=True)
         if project.workspace_id != membership.workspace_id:
             raise ProjectIntegrityError("ProjectMembership Workspace does not match Project")
         key = (membership.project_id, membership.principal_id)
@@ -591,7 +597,9 @@ class InMemoryProjectScopeStore:
         no other coroutine can interleave a `remove_membership` between the
         two the way it could against the API's read-then-write (#1148).
         """
-        project = await self._authorize_membership_write(membership, principal_id)
+        project = await self._authorize_membership_write(
+            membership, principal_id, replacement=False
+        )
         if project.workspace_id != membership.workspace_id:
             raise ProjectIntegrityError("ProjectMembership Workspace does not match Project")
         key = (membership.project_id, membership.principal_id)

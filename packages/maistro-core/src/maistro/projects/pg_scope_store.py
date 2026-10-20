@@ -100,7 +100,7 @@ class PgProjectScopeStore:
         return project
 
     async def _authorize_membership_write(
-        self, membership: ProjectMembership, principal_id: str | None
+        self, membership: ProjectMembership, principal_id: str | None, *, replacement: bool
     ) -> Project:
         project = await self._authorize_view(membership.project_id, principal_id)
         if principal_id is not None and self._workspace_store is not None:
@@ -112,6 +112,7 @@ class PgProjectScopeStore:
                 workspace_store=self._workspace_store,
                 membership=membership,
                 principal_id=principal_id,
+                replacement=replacement,
             )
         return project
 
@@ -428,9 +429,11 @@ class PgProjectScopeStore:
         minting a second, independent grant (#1148) -- the existing row is
         read under `FOR UPDATE` so the decision of what to preserve is
         atomic with the write. A supplied ``principal_id`` is the acting
-        principal whose membership-write authority is enforced (#1150).
+        principal whose membership-write authority is enforced (#1150); this
+        replacement upsert requires ADMINISTER, while `merge_membership`
+        takes the delegable-add path.
         """
-        project = await self._authorize_membership_write(membership, principal_id)
+        project = await self._authorize_membership_write(membership, principal_id, replacement=True)
         if project.workspace_id != membership.workspace_id:
             raise ProjectIntegrityError("ProjectMembership Workspace does not match Project")
         async with self._pool.acquire() as conn, conn.transaction():
@@ -490,7 +493,9 @@ class PgProjectScopeStore:
         supplied ``principal_id`` is the acting principal whose
         membership-write authority is enforced (#1150).
         """
-        project = await self._authorize_membership_write(membership, principal_id)
+        project = await self._authorize_membership_write(
+            membership, principal_id, replacement=False
+        )
         if project.workspace_id != membership.workspace_id:
             raise ProjectIntegrityError("ProjectMembership Workspace does not match Project")
         async with self._pool.acquire() as conn, conn.transaction():
