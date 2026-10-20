@@ -145,3 +145,18 @@ against a branch-local draft that the syncs superseded.
   of the enforcement. Wiring the host into a run loop later must keep
   resolving through `ExtensionInstallService.active()`, or a disabled record
   would stay invocable.
+
+
+## Fourth develop sync (c2d7209f1, this repair round): merge finished, delta +0
+
+`git fetch origin develop` advanced the develop tip from `e20e9f52` to `c2d7209f1`
+(three new commits: #2228 attempt-cancellation-cause codec, #2211 org/Workspace
+extension policy, #2223 conductor CLI page contract). The merge was clean and
+brought no conflict markers; `quality/` remains byte-identical to develop
+(`git diff --numstat origin/develop -- quality/` empty) and
+`scripts/check-suite-inventory.py` reports 21/21 suites matching the recorded
+baseline. No production code unique to this lane changed beyond the already-landed
+`soft_wrap=True` CLI lock-output fix; the lifecycle acceptance rests on develop's
+canonical suites, all of which pass on this head (extensions 1145 passed,
+events 383 passed, migration chain 18 passed, org-workspace policy 32 passed,
+attempt-cancellation codec/model 70 passed, CLI contract 37 passed).
