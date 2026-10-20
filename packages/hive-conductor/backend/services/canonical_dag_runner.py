@@ -465,7 +465,7 @@ def _recovery_resolver(run: Run):
         on_response=None,
         llm_builder=None,
         sentinel=getattr(container, "sentinel", None),
-        host_mode="async",
+        host_mode="sandbox",
         effect_context=(getattr(container, "capability_effects", None) if container else None),
         governed_runtime=dag_node_runtime(container),
     )
@@ -676,10 +676,11 @@ async def execute_dag(
             governed_runtime=dag_node_runtime(container),
             # Execution-tier authority (#845) comes from the host-owned
             # Sentinel on the live Container; the request's declared tier is
-            # metadata only. "async" keeps sentinel-less compatibility
-            # callers runnable while untrusted nodes still fail closed.
+            # metadata only. "sandbox" is the fail-closed default for
+            # sentinel-less compatibility callers; untrusted nodes still
+            # fail closed.
             sentinel=(getattr(container, "sentinel", None) if container else None),
-            host_mode="async",
+            host_mode="sandbox",
         )
 
     record = await run_durable_graph(

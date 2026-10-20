@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +9
+  packages/maistro-core/tests: +12
   packages/hive-conductor/backend/tests: +4
 ---
 # #845 host-authorized delegation and execution tiers

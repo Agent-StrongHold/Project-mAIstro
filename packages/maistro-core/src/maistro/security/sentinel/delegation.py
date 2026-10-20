@@ -88,8 +88,6 @@ class InMemoryDelegationAuthority:
         self.grants.append(grant)
 
     def authorize(self, request: DelegationRequest, *, now: datetime) -> DelegationDecision:
-        # Keep the host-only mutation seam live for static analysis (#845).
-        _ = self.add_host_grant
         if request.principal.kind != "agent":
             return DelegationDecision(False, reason="delegation principal must be an agent")
         if request.principal.owner != request.owner_id:
@@ -113,20 +111,22 @@ class InMemoryDelegationAuthority:
 
 
 def _matches(grant: DelegationGrant, request: DelegationRequest) -> bool:
-    return (
-        grant.principal_id == request.principal.id
-        and grant.owner_id == request.owner_id
-        and grant.delegating_agent_id == request.delegating_agent_id
-        and grant.target_agent_id == request.target_agent_id
-        and grant.goal_id == request.goal_id
-        and grant.run_id == request.run_id
-        and grant.invocation_id == request.invocation_id
-        and grant.scope == request.scope
-        and grant.action == request.action
-        and grant.artifact == request.artifact
-        # A grant without provenance of who issued it cannot authorize (#845).
-        and grant.granted_by != ""
+    # A grant without provenance of who issued it cannot authorize (#845).
+    if grant.granted_by == "":
+        return False
+    checks = (
+        grant.principal_id == request.principal.id,
+        grant.owner_id == request.owner_id,
+        grant.delegating_agent_id == request.delegating_agent_id,
+        grant.target_agent_id == request.target_agent_id,
+        grant.goal_id == request.goal_id,
+        grant.run_id == request.run_id,
+        grant.invocation_id == request.invocation_id,
+        grant.scope == request.scope,
+        grant.action == request.action,
+        grant.artifact == request.artifact,
     )
+    return all(checks)
 
 
 def utc_now() -> datetime:
