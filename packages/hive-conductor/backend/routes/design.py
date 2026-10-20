@@ -23,6 +23,8 @@ from services.design_service import (
 )
 from services.request_principal import require_actor_id
 
+from maistro.runs.chat_refusal import CHAT_TURN_RETRY_AFTER_S
+from maistro.runs.concurrency import RunConcurrencyExceeded
 from maistro_design.consistency import (
     CreativeProjectSnapshot,
     evaluate_project_snapshot,
@@ -227,6 +229,17 @@ async def create_design_project(request: Request, discovery: DiscoveryResult) ->
         raise HTTPException(status_code=400, detail=str(e)) from None
     except DesignError as e:
         raise HTTPException(status_code=400, detail=str(e)) from None
+    except RunConcurrencyExceeded as exc:
+        # Canonical admission backpressure (#1182), not a preparation failure:
+        # the RunStore refused a new root before any project state existed, so
+        # the same request is admissible once a slot frees. Same contract as
+        # the DAG and chat admission surfaces: retryable 429, scoped detail
+        # (the ceiling kind, never the exception text) and Retry-After.
+        raise HTTPException(
+            status_code=429,
+            detail=f"too many active runs for this {exc.scope}; retry shortly",
+            headers={"Retry-After": str(CHAT_TURN_RETRY_AFTER_S)},
+        ) from exc
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Project preparation failed: {e!s}") from None
 

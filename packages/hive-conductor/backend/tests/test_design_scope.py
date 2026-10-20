@@ -24,6 +24,7 @@ from fastapi import HTTPException  # noqa: E402
 from routes import design as design_routes  # noqa: E402
 
 from maistro.identity import Principal  # noqa: E402
+from maistro.runs.concurrency import RunConcurrencyExceeded  # noqa: E402
 from maistro_design.types import (  # noqa: E402
     ArtifactKind,
     ArtifactNode,
@@ -475,6 +476,44 @@ class TestTheRoutesPassItDown:
         assert raised.value.status_code == 500
         assert "Project preparation failed" in str(raised.value.detail)
         assert "Generation failed" not in str(raised.value.detail)
+
+    @pytest.mark.ac("SPEC-083026-6bc5/AC-6")
+    async def test_a_full_run_ceiling_is_backpressure_429_not_a_500(
+        self, ready: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A full canonical root-Run ceiling is admission backpressure (#1182),
+        the same retryable condition the DAG and chat surfaces answer with 429
+        and Retry-After — preparation never started, so a server fault would
+        make temporary capacity indistinguishable from a failed project."""
+
+        class _Engine:
+            @staticmethod
+            async def generate(*a: Any, **k: Any) -> Any:
+                raise AssertionError("a full ceiling must refuse admission before generation")
+
+        class _Canonical:
+            @staticmethod
+            async def generate(*a: Any, **k: Any) -> Any:
+                raise RunConcurrencyExceeded(scope="principal", limit=3, active=3)
+
+        monkeypatch.setattr(design_routes, "get_design_store", lambda: object())
+        monkeypatch.setattr(design_routes, "get_design_engine", lambda: _Engine())
+
+        async def _canonical_for(principal_id: str) -> Any:
+            return _Canonical()
+
+        monkeypatch.setattr(
+            design_routes, "get_design_canonical_execution_for_principal", _canonical_for
+        )
+        with pytest.raises(HTTPException) as raised:
+            await design_routes.create_design_project(
+                _Request(org_id="org-7", principal=Principal(user_id="user-1")), object()
+            )
+        assert raised.value.status_code == 429
+        assert raised.value.headers is not None
+        assert raised.value.headers.get("Retry-After") is not None
+        assert "too many active runs for this principal" in str(raised.value.detail)
+        assert "Project preparation failed" not in str(raised.value.detail)
 
     @pytest.mark.ac("SPEC-083026-6bc5/AC-2")
     async def test_creating_a_project_with_a_blank_request_scope_is_refused(
