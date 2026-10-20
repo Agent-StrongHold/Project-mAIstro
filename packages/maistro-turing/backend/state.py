@@ -151,10 +151,40 @@ class InProcessSelfModelStateStore:
         self._scopes: dict[str, WorkspaceSelfModelState] = {}
 
     def load_scope(self, workspace_id: str) -> WorkspaceSelfModelState | None:
-        return self._scopes.get(workspace_id)
+        state = self._scopes.get(workspace_id)
+        if state is None:
+            return None
+        # Defensive copy: a caller that mutates the returned snapshot (or
+        # its mood/facet map) cannot bypass the validated mutation seam and
+        # corrupt the authoritative stored scope (#859).
+        return WorkspaceSelfModelState(
+            workspace_id=state.workspace_id,
+            mood=Mood(
+                self_id=state.mood.self_id,
+                valence=state.mood.valence,
+                arousal=state.mood.arousal,
+                focus=state.mood.focus,
+                last_tick_at=state.mood.last_tick_at,
+                updated_at=state.mood.updated_at,
+            ),
+            facet_scores=dict(state.facet_scores),
+        )
 
     def save_scope(self, workspace_id: str, state: WorkspaceSelfModelState) -> None:
-        self._scopes[workspace_id] = state
+        # Store a defensive copy so later mutation of the caller's object
+        # cannot retroactively change persisted state (#859).
+        self._scopes[workspace_id] = WorkspaceSelfModelState(
+            workspace_id=state.workspace_id,
+            mood=Mood(
+                self_id=state.mood.self_id,
+                valence=state.mood.valence,
+                arousal=state.mood.arousal,
+                focus=state.mood.focus,
+                last_tick_at=state.mood.last_tick_at,
+                updated_at=state.mood.updated_at,
+            ),
+            facet_scores=dict(state.facet_scores),
+        )
 
 
 @dataclass
@@ -316,6 +346,10 @@ class TuringState:
         if inbound_security is None:
             raise RuntimeError("canonical Turing security is required for backend startup")
         self.inbound_security = inbound_security
+        # Refuse a multi-replica declaration over the divergent process-local
+        # store at composition time, even when TuringState is constructed
+        # directly rather than through reset_state (#859).
+        _guard_replica_authority(state_store)
         # An injected store is selected by identity, not truthiness (#859): an
         # empty mapping-backed shared store is falsey but is still the
         # deployment's chosen authority — replacing it here would silently
