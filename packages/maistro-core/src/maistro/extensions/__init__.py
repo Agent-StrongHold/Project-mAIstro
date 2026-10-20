@@ -112,6 +112,14 @@ from maistro.extensions.authority import (
     compute_authority_delta,
     normalize_permission,
 )
+from maistro.extensions.catalog_json import (
+    CATALOG_FORMAT,
+    CatalogDocumentError,
+    ParsedCatalogSnapshot,
+    canonical_json,
+    parse_catalog_document,
+    parse_catalog_json,
+)
 from maistro.extensions.certification import (
     BUNDLE_FORMAT,
     CERTIFICATION_FORMAT,
@@ -479,6 +487,7 @@ from maistro.extensions.ui import (
 __all__ = [
     "ATTRIBUTION_FORMAT",
     "BUNDLE_FORMAT",
+    "CATALOG_FORMAT",
     "CERTIFICATION_FORMAT",
     "CERTIFIER_VERSION",
     "CONFORMANCE_CHECK_ID",
@@ -521,6 +530,7 @@ __all__ = [
     "AuthorityBaseline",
     "AuthorityDelta",
     "CallerAuthority",
+    "CatalogDocumentError",
     "CatalogEntry",
     "CatalogRejected",
     "CertificationCheck",
@@ -683,6 +693,7 @@ __all__ = [
     "PackageIdentity",
     "PackageSignatureInvalid",
     "PackageStructureCheck",
+    "ParsedCatalogSnapshot",
     "PermissionDenial",
     "PreflightPolicy",
     "PreflightReport",
@@ -746,6 +757,7 @@ __all__ = [
     "build_sandbox_config",
     "bundle_digest",
     "canonical_install_payload",
+    "canonical_json",
     "certification_as_trust_claim",
     "certify",
     "compute_authority_delta",
@@ -774,6 +786,8 @@ __all__ = [
     "normalize_permission",
     "operator_state_for",
     "pack_extension_view",
+    "parse_catalog_document",
+    "parse_catalog_json",
     "parse_compat_metadata",
     "parse_contract_range",
     "parse_contract_version",

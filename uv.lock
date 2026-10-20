@@ -10,6 +10,10 @@ resolution-markers = [
 
 [manifest]
 members = [
+    "gallery-model-adapter",
+    "gallery-renderer-pack",
+    "gallery-unit-skill",
+    "gallery-weather-connector",
     "hive-conductor",
     "maistro-bootstrap",
     "maistro-canvas",
@@ -1565,6 +1569,26 @@ wheels = [
 ]
 
 [[package]]
+name = "gallery-model-adapter"
+version = "1.0.0"
+source = { editable = "extensions/reference-gallery/packages/gallery-model-adapter" }
+
+[[package]]
+name = "gallery-renderer-pack"
+version = "1.0.0"
+source = { editable = "extensions/reference-gallery/packages/gallery-renderer-pack" }
+
+[[package]]
+name = "gallery-unit-skill"
+version = "1.0.0"
+source = { editable = "extensions/reference-gallery/packages/gallery-unit-skill" }
+
+[[package]]
+name = "gallery-weather-connector"
+version = "1.0.0"
+source = { editable = "extensions/reference-gallery/packages/gallery-weather-connector" }
+
+[[package]]
 name = "gherkin-official"
 version = "42.0.1"
 source = { registry = "https://pypi.org/simple" }
@@ -2996,6 +3020,10 @@ dev = [
     { name = "aiosqlite" },
     { name = "boto3" },
     { name = "cosmic-ray" },
+    { name = "gallery-model-adapter" },
+    { name = "gallery-renderer-pack" },
+    { name = "gallery-unit-skill" },
+    { name = "gallery-weather-connector" },
     { name = "gherkin-official" },
     { name = "google-re2" },
     { name = "hypothesis" },
@@ -3053,6 +3081,10 @@ requires-dist = [
     { name = "cosmic-ray", marker = "extra == 'dev'", specifier = ">=8.0.0" },
     { name = "fastapi", specifier = ">=0.115" },
     { name = "fastmcp", specifier = ">=3.2.0" },
+    { name = "gallery-model-adapter", marker = "extra == 'dev'", editable = "extensions/reference-gallery/packages/gallery-model-adapter" },
+    { name = "gallery-renderer-pack", marker = "extra == 'dev'", editable = "extensions/reference-gallery/packages/gallery-renderer-pack" },
+    { name = "gallery-unit-skill", marker = "extra == 'dev'", editable = "extensions/reference-gallery/packages/gallery-unit-skill" },
+    { name = "gallery-weather-connector", marker = "extra == 'dev'", editable = "extensions/reference-gallery/packages/gallery-weather-connector" },
     { name = "gherkin-official", marker = "extra == 'dev'", specifier = ">=29.0" },
     { name = "google-re2", marker = "extra == 'dev'", specifier = ">=1.1" },
     { name = "httpx", specifier = ">=0.28" },

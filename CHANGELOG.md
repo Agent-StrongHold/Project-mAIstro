@@ -43,6 +43,7 @@ or placeholder-only section.
   Invocation ids. Attribution is provenance only: the canonical correlation
   namespace rejects extension-defined ids, and the Event envelope's existing
   provenance redaction applies to the fragment.
+
 - **Named `cross-product-parity` CI job and M1 closeout strict mode
   (#459, partial).** The #459 cross-product parity suite
   (`tests/cross_product_parity`) now runs as its own required `ci.yml` job
@@ -87,6 +88,21 @@ or placeholder-only section.
   honoring `litellm_url`, and `create_container` accepting a host-registered
   catalog through `provider_adapter_catalog`; configuring an adapter
   authorizes nothing by itself). See ADR-105.
+
+- **The out-of-tree reference extension repository ships four extension families with a shared publish/sign/catalog workflow (#980).**
+  `extensions/reference-gallery/` is a third-party-shaped, multi-package
+  repository: a `tool`-family connector, a `skill` (with an extension-level
+  dependency the catalog resolves), a `capability-provider` model adapter
+  written against the ADR-104 provider-adapter SDK contract, and a
+  `renderer-plugin` UI pack. `tools/publish.py` builds every package, binds
+  each manifest to its wheel's digest, signs the canonical install payload
+  with the publisher's Ed25519 key, and emits a deterministic catalog
+  snapshot that `resolve_lock`/`materialize_lock` and the governed
+  inspect → authorize → install lifecycle consume — wheels, never editable
+  source paths. The same reusable extension gates run in CI against the
+  gallery's own namespace policy via `--policy`, and the four packages'
+  suites are inventoried and collected like the first-party reference
+  extension's.
 
 - **The extension SDK boundary is enforced and a reference extension ships outside the
   core tree (#951).** `extensions/namespace-policy.json` declares the public
