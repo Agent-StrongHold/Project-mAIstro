@@ -13,6 +13,11 @@ execute as canonical Run/NodeRun/Attempt work, consume the generic M3
 work-source contracts, and gate kept promotions through the shared M4
 promotion contract — as a downstream consumer, never a second authority.
 
+Re-validated after syncing the lane branch onto the latest origin/develop
+(`fad17a87c`, merge `85e84fc6a` — +98 upstream commits incl. the M5-B #2171
+bounded frontier-model campaign surface): the #50 convergence seam is
+the sole author and unchanged by the sync; all gates were re-run and pass.
+
 ## What this pass adds (issue #50, epic exit criteria)
 
 - `packages/maistro-rsi/src/maistro_rsi/canonical_provenance.py` —
@@ -78,27 +83,37 @@ promotion contract — as a downstream consumer, never a second authority.
 - Regression on the two wired drivers: `uv run pytest
   packages/maistro-rsi/tests/test_autorun.py test_local_loop.py
   test_promotion_review.py test_review_promotions.py` — **102 passed**.
-- Containment batteries re-run unchanged (no gate weakened): **147**
-  (host-shell/non-production-reachability/quarantine/promotion-review/
-  sensitive-paths/regression-judge/argv/spec/gate-helpers), **163**
-  (harvest-boundary/export/rate-pacer/fitness/inventory/red-green/
-  evolve-bridge/gateway/quota/mutation — test_autorun moved into the
-  regression run above), **72** (isolated wrapper/harvest/checkpoint),
-  **69** Conductor containment, **220 passed + 3 skipped** child-behavior
-  suites (#108/#109/#392/#2043/#2101/#110-partial).
+- Full RSI suite: `uv run pytest packages/maistro-rsi/tests -q` —
+  **1758 passed, 4 skipped** (was 1664 at the pre-sync head; +94 from
+  develop's #2171 campaign surface — not part of this pass's delta).
+- Containment batteries re-run (no gate weakened): all green at the
+  post-sync head — host-shell/non-production-reachability/quarantine/
+  promotion-review/sensitive-paths/regression-judge/argv/spec/gate-helpers,
+  harvest-boundary/export/rate-pacer/fitness/inventory/red-green/
+  evolve-bridge/gateway/quota/mutation, isolated-wrapper/harvest/checkpoint,
+  **216** Conductor containment, child-behavior suites
+  (#108/#109/#392/#2043/#2101/#110-partial).
 - `uv run ruff check .` and `uv run ruff format --check .` — clean.
 - `uv run mypy` with CI's exact ten-package argument list — **no issues in
-  1048 source files**.
+  1068 source files** (was 1048; +20 from develop's new source files).
 - `uv run python scripts/check-radon-baseline.py` — 0 new, 0 regressed,
-  0 stale (137 C-or-worse blocks, unchanged).
+  0 stale (134 C-or-worse blocks at the synced base fad17a87; unchanged
+  from the post-sync baseline).
 - `uv run python scripts/check-vulture-baseline.py packages/*/src
   --min-confidence 60 --exclude '*/third_party/*'` (CI's exact args) —
-  1322 findings == 1322 reviewed identities, exit 0.
+  1321 findings == 1321 reviewed identities, exit 0.
 - `uv run python scripts/check-reachability.py` — no newly unreachable
-  module (`work_source` is reachable via the package `__init__` export).
-- `uv run interrogate -f 64 packages/maistro-rsi/src` — 68.0% ≥ 64% floor.
-- `uv run python scripts/check-suite-inventory.py` — the only drift is this
-  note's +40, recorded above.
+  module (`work_source` is reachable via the package `__init__
+  export`); 1419 production modules, 168 unreachable.
+- `uv run interrogate -f 64 packages/maistro-rsi/src` — 68.6% ≥ 64% floor.
+- `uv run python scripts/check-suite-inventory.py` — the only RSI drift is
+  this note's **+40** (unchanged; develop's #2171 campaign tests are in
+  the synced baseline, not the delta). The script reports a **pre-existing
+  collection error** in `extensions/reference-gallery/packages/gallery-
+  renderer-pack` (ModuleNotFoundError: gallery_renderer_pack — an
+  out-of-tree extension not installed in this workspace env; added by
+  develop's #2198/#2213, unrelated to RSI). That broken suite is not
+  inventory drift and is out of scope for #552.
 
 ## Containment half (still proven, prior passes)
 
@@ -106,11 +121,14 @@ promotion contract — as a downstream consumer, never a second authority.
   Conductor confined to two policy-gated files; quarantine + signed
   approval gate promotion; sensitive-path protection; fail-closed regression
   judge; argv-only model arguments; SPEC §3 fail-closed conformance.
+- #804 non-instantiation re-verified at the post-sync head: `grep -riE
+  "workspace[_ ]agent|goal.?reconcil" packages/maistro-rsi/src` matches only
+  the design docstring in `work_source.py` that attributes the generic
+  contract to #804 — there are zero imports or call sites of a workspace
+  agent / goal reconciler in RSI. The #50 convergence pass consumes the
+  generic contracts only, no reconciliation loop of its own.
 - Bandit gate mandatory in fitness; per-gate state/evidence on TraceNote
   (#304/#820); CI-side execution evidence is `scripts/check-gates-ran.py`.
-- #804 non-instantiation: `grep -riE "workspace[_ ]agent|goal.?reconcil"
-  packages/maistro-rsi/src` — zero hits; this pass adds consumption of the
-  generic contracts only, no reconciliation loop of its own.
 
 ## Still open for the epic
 
