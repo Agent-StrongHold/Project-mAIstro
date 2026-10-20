@@ -41,8 +41,11 @@ _DEFAULT_HEALTHCHECK_WORKSPACE = str(ALLOWED_HOST_ROOTS[0])
 class SandboxExec(Protocol):
     """Minimal process-isolation seam: run a command, return ``(exit_code, output)``.
 
-    Matches ``maistro.tools.sandbox.docker.SandboxContainer.exec`` so the real
-    sandbox satisfies it directly; tests inject an in-memory fake.
+    Matches ``maistro.tools.sandbox.canonical.CanonicalSandboxContainer.exec``
+    so the real (selector-placed) sandbox satisfies it directly; tests inject
+    an in-memory fake. The retired direct Docker adapter this seam originally
+    mirrored (``maistro.tools.sandbox.docker.SandboxContainer``) was removed
+    by the #76 cutover.
     """
 
     async def exec(self, command: str, timeout: int = 60) -> tuple[int, str]: ...

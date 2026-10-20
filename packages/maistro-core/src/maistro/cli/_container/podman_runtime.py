@@ -33,9 +33,10 @@ class PodmanRuntime(DockerRuntime):
         process-wide `DOCKER_HOST`. Setting that variable here — as this class
         used to, inside a mere availability *probe* — silently repoints every
         other Docker consumer in the process for the rest of its lifetime.
-        That includes `maistro.tools.sandbox.docker`, which spawns the `docker`
-        CLI with an inherited environment, so a probe could send the security
-        sandbox at Podman's socket. Binding the endpoint to this instance keeps
+        That includes the canonical sandbox backends (`maistro.sandbox.backends`,
+        e.g. the Kata backend's `docker --runtime=kata` CLI child), which spawn
+        the `docker` CLI with an inherited environment, so a probe could send
+        the security sandbox at Podman's socket. Binding the endpoint to this instance keeps
         the choice local to the runtime that made it.
         """
         if self._client is None:

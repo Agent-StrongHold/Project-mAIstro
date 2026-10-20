@@ -3,7 +3,10 @@
 A single trivial-coding-task variant evaluates two genome candidates through
 the real, wired-together sandbox + evolve loop:
 
-    maistro-core's real Docker sandbox boundary (SandboxContainer/create_sandbox)
+    maistro-core's canonical sandbox boundary
+    (`maistro.tools.sandbox.canonical.CanonicalSandboxContainer` -- the
+    facade over whatever real backend the canonical selector placed; since
+    the #76 cutover this is the only sandbox surface product code may enter)
         -> EvalHarness.evaluate_genome() registers a benchmark that actually
            drives the sandbox to write and execute a trivial coding task and
            turns the exit code into a score
@@ -18,22 +21,23 @@ lives in maistro-evolve's own test suite and imports maistro-core's sandbox
 module directly, the same direction the real product wiring would use (the
 self-evolving-agent host process depends on both packages).
 
-Docker itself is not available in CI/sandboxed dev environments, so --
-mirroring the existing precedent in
-packages/maistro-core/tests/tools/sandbox/test_docker.py -- only the OS
-process boundary (`asyncio.create_subprocess_exec`) is mocked. Every other
-component (SandboxContainer, EvalHarness, EloTournament, PipelineGenome) is
-the real production class.
+Docker itself is not available in CI/sandboxed dev environments -- and the
+retired direct Docker adapter (`maistro.tools.sandbox.docker`) was removed
+with its module by the #76 cutover -- so only the OS process boundary is
+stood in for: the container under test is the real production facade
+`CanonicalSandboxContainer` over an in-test fake `SandboxProtocol` backend.
+Every other component (CanonicalSandboxContainer, EvalHarness,
+EloTournament, PipelineGenome) is the real production class.
 """
 
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from maistro.tools.sandbox.docker import SandboxContainer
+from maistro.sandbox.protocol import ExecResult, SandboxConfig, SandboxInstance
+from maistro.tools.sandbox.canonical import CanonicalSandboxContainer
 from maistro_evolve.harness import EvalHarness
 from maistro_evolve.tournament import EloTournament
 from maistro_evolve.types import DAGTopology, EvalWeights, NodeGenome, PipelineGenome
@@ -41,19 +45,48 @@ from maistro_evolve.types import DAGTopology, EvalWeights, NodeGenome, PipelineG
 BENCHMARK_NAME = "trivial_addition"
 
 
-class _FakeProc:
-    """Stands in for the asyncio subprocess used by SandboxContainer.exec.
+class _FakeOSBoundaryBackend:
+    """Stands in for the OS process boundary under `CanonicalSandboxContainer`.
 
-    Mirrors maistro-core's own test_docker.py boundary mock -- no real Docker
-    daemon is available in this environment.
+    The #76 cutover retired the direct Docker adapter this test used to mock
+    (`maistro.tools.sandbox.docker.SandboxContainer`, removed with its
+    module). The production facade wraps a `SandboxProtocol` backend; this
+    fake is that backend, standing in for exactly the layer the old
+    `asyncio.create_subprocess_exec` mock did, so the dangerous-command
+    filter and output concatenation in `CanonicalSandboxContainer.exec`
+    stay real while no Docker daemon is required.
     """
 
-    def __init__(self, stdout: bytes = b"", returncode: int = 0) -> None:
+    def __init__(self, exit_code: int, stdout: bytes) -> None:
+        self._exit_code = exit_code
         self._stdout = stdout
-        self.returncode = returncode
 
-    async def communicate(self) -> tuple[bytes, bytes]:
-        return self._stdout, b""
+    async def spawn(self, *, config: SandboxConfig) -> SandboxInstance:
+        return SandboxInstance(
+            id="fake-os-boundary",
+            backend="_FakeOSBoundaryBackend",
+            isolation_tier="fake",
+        )
+
+    async def exec(
+        self, instance: SandboxInstance, command: list[str], *, timeout_s: int = 120
+    ) -> ExecResult:
+        return ExecResult(
+            exit_code=self._exit_code,
+            stdout=self._stdout.decode(),
+            stderr="",
+            duration_ms=0,
+            timed_out=False,
+        )
+
+    async def write_file(self, instance: SandboxInstance, path: str, content: bytes) -> None:
+        raise AssertionError("the trivial coding task must not write files through the fake")
+
+    async def read_file(self, instance: SandboxInstance, path: str) -> bytes:
+        raise AssertionError("the trivial coding task must not read files through the fake")
+
+    async def destroy(self, instance: SandboxInstance) -> None:
+        return None
 
 
 def _make_genome(
@@ -101,19 +134,15 @@ async def _run_coding_task_in_sandbox(
     correct code") gets exit code 0; the other gets a nonzero exit code --
     this is the deterministic stand-in for "harness scores the result."
     """
-    container = SandboxContainer(f"sandbox-{genome.id}", "/host")
-    fake_proc = _FakeProc(
+    backend = _FakeOSBoundaryBackend(
+        exit_code=expected_exit,
         stdout=b"3\n" if expected_exit == 0 else b"Traceback: NameError\n",
-        returncode=expected_exit,
     )
-    with (
-        patch("maistro.tools.sandbox.docker.is_dangerous_command", return_value=[]),
-        patch(
-            "maistro.tools.sandbox.docker.asyncio.create_subprocess_exec",
-            new=AsyncMock(return_value=fake_proc),
-        ),
-    ):
-        code, output = await container.exec("python3 add.py")
+    container = CanonicalSandboxContainer(
+        backend, await backend.spawn(config=SandboxConfig(workspace_host="/host")), "/host", 3600
+    )
+    code, output = await container.exec("python3 add.py")
+    await container.destroy()
     return code, output
 
 

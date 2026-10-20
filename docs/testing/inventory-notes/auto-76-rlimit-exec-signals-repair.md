@@ -95,6 +95,17 @@ suites ok (no delta this round: no test added or removed).
 
 Two reachability reds remain and neither is repairable inside this lane:
 
+> **Corrected by the round below** (`auto-76-56c5.md`). "Not repairable
+> inside this lane" was true only of *ledger* repairs. The two-merge wall
+> closes branch-side grants and baseline rows, not tree-side fixes: the
+> admission identity leaf became reachable by publishing the vocabulary from
+> `maistro.runs.__init__` (the same repair sibling lanes #886/#948/#1859
+> applied for the identical develop-side red), and the retired Docker module
+> was removed outright with its dedicated tests — the retirement this note
+> deferred to #35, executed because no in-branch authorization can ever land
+> first. Both banked rows and their disposition groups are reverted to the
+> trusted base; `check-ratchet-provenance.py` exits 0.
+
 * `maistro.runs.admission_identity` — **pre-existing on develop**, not caused by
   #76. Proven by scanning the base in a throwaway detached worktree: at
   `e20e9f52ea` `check-reachability.py` returns 1 naming the same module, and

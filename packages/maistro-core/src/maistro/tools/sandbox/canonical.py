@@ -15,7 +15,7 @@ from maistro.sandbox import TRUSTED_TOOL, SandboxInstance, SandboxProtocol, buil
 from maistro.sandbox.protocol import SandboxConfig
 from maistro.sandbox.selector import NoSuitableBackendError
 from maistro.security.dangerous_tools import is_dangerous_command
-from maistro.tools.sandbox.workspace import ensure_workspace
+from maistro.tools.sandbox.workspace import CONTAINER_WORKSPACE, ensure_workspace
 
 
 class CanonicalSandboxContainer:
@@ -58,7 +58,7 @@ class CanonicalSandboxContainer:
 
     @staticmethod
     def _safe_path(workspace: str, path: str) -> str:
-        if workspace != "/workspace":
+        if workspace != CONTAINER_WORKSPACE:
             raise ValueError("canonical sandbox paths must use /workspace")
         if Path(path).is_absolute():
             raise ValueError(f"Absolute paths are not allowed: {path}")
@@ -68,12 +68,12 @@ class CanonicalSandboxContainer:
         return f"{workspace}/{normalized.as_posix()}"
 
     async def read_file(self, path: str) -> str:
-        safe = self._safe_path("/workspace", path)
+        safe = self._safe_path(CONTAINER_WORKSPACE, path)
         content = await self._backend.read_file(self._instance, safe)
         return content.decode(errors="replace")
 
     async def write_file(self, path: str, content: str) -> None:
-        safe = self._safe_path("/workspace", path)
+        safe = self._safe_path(CONTAINER_WORKSPACE, path)
         await self._backend.write_file(self._instance, safe, content.encode())
 
     async def destroy(self) -> None:

@@ -169,7 +169,10 @@ environment; privilege boundaries follow SPEC-012.
 ## References
 
 - ADR-093 — sandbox isolation model (the decision this implements).
-- `packages/maistro-core/src/maistro/tools/sandbox/` — current implementation (`docker.py`,
-  `env_sanitize.py`, `workspace.py`, `server.py`).
+- `packages/maistro-core/src/maistro/tools/sandbox/` — the MCP tool surface
+  (`canonical.py`, `env_sanitize.py`, `workspace.py`, `server.py`) over the
+  `maistro.sandbox` substrate. The pre-spec direct Docker adapter
+  (`docker.py`) was removed by the #76 cutover after its last product callers
+  converged on the selector (`maistro.sandbox.backends.*` are the backends).
 - SPEC-011 (vault), SPEC-012 (privilege separation), SPEC-013 (reactor), SPEC-184 (capability platform).
 - Firecracker, Kata Containers, Cloud Hypervisor, Microsoft Hyperlight (substrate candidates).

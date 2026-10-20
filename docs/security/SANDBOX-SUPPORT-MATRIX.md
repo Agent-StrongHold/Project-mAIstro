@@ -135,10 +135,13 @@ constructs a direct Docker/process/microVM sandbox of its own:
 
 The builders adapter's host-side credential boundary (denylist-filtered seed
 copy, `.git`-filtered sync-back) is caller policy on top of the selected
-backend, not a second isolation implementation. `maistro.tools.sandbox.docker`
-retains no product callers; it is unreachable per `check-reachability.py` and
-slated for removal. The bootstrap hardening suite asserts the adapter never
-constructs a container CLI itself.
+backend, not a second isolation implementation. The retired direct Docker
+adapter (`maistro.tools.sandbox.docker`) was removed outright by the #76
+cutover after its last product callers converged on the selector: no product
+path may import or construct it again
+(`packages/maistro-core/tests/sandbox/test_single_authority.py`). The
+bootstrap hardening suite asserts the adapter never constructs a container
+CLI itself.
 
 ## Failure behaviour
 

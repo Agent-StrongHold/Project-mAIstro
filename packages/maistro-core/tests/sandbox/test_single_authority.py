@@ -4,9 +4,10 @@ The issue's final acceptance criterion names this test shape: if a supported
 code-execution consumer again constructs a direct sandbox implementation
 outside the canonical selector, a reachability/convergence check must fail.
 The reachability ratchet already refuses a *product import* of the retired
-Docker sandbox (`maistro.tools.sandbox.docker` stays unreachable); this module
-covers what an import graph cannot see — constructing a sandbox class or a
-container CLI argv at runtime from product code.
+Docker sandbox (`maistro.tools.sandbox.docker` was removed outright by the
+#76 cutover, so any import now fails at collection); this module covers what
+an import graph cannot see — constructing a sandbox class or a container CLI
+argv at runtime from product code.
 
 Scanned: production source trees under ``packages/*/src`` only. Tests, tooling
 and the first-party stack deployment path (``maistro.cli._container`` —

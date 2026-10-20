@@ -1,4 +1,4 @@
-"""Tests for SandboxContainer path safety.
+"""Tests for the canonical sandbox container's path safety.
 
 Evidence: The sandbox must prevent path traversal and absolute path injection
 that could allow reading/writing files outside /workspace.
@@ -8,40 +8,47 @@ root ``tests/tools`` copy (#396): they were the only cases that file had that
 this one did not, and they pin a different layer — the MCP ``sandbox_grep`` /
 ``sandbox_glob`` entry points must reject a hostile path *before* any container
 is created, not merely ``_safe_path`` afterwards.
+
+Since the #76 cutover the path-safety surface is
+``maistro.tools.sandbox.canonical.CanonicalSandboxContainer`` — the facade over
+whatever real backend the canonical selector placed. The retired direct Docker
+adapter (``maistro.tools.sandbox.docker``) was removed with its module; these
+cases pin the same rejection contract on the canonical class that every
+product consumer now enters through.
 """
 
 from __future__ import annotations
 
 import pytest
 
-from maistro.tools.sandbox.docker import SandboxContainer
+from maistro.tools.sandbox.canonical import CanonicalSandboxContainer
 
 
 class TestSafePathResolution:
     """Evidence: _safe_path must block absolute paths and traversal attempts."""
 
     def test_relative_path_resolves_under_workspace(self) -> None:
-        result = SandboxContainer._safe_path("/workspace", "src/main.py")
+        result = CanonicalSandboxContainer._safe_path("/workspace", "src/main.py")
         assert result == "/workspace/src/main.py"
 
     def test_absolute_path_rejected(self) -> None:
         with pytest.raises(ValueError, match="Absolute paths"):
-            SandboxContainer._safe_path("/workspace", "/etc/passwd")
+            CanonicalSandboxContainer._safe_path("/workspace", "/etc/passwd")
 
     def test_traversal_rejected(self) -> None:
         with pytest.raises(ValueError, match="Path traversal"):
-            SandboxContainer._safe_path("/workspace", "../../etc/passwd")
+            CanonicalSandboxContainer._safe_path("/workspace", "../../etc/passwd")
 
     def test_traversal_in_middle_rejected(self) -> None:
         with pytest.raises(ValueError, match="Path traversal"):
-            SandboxContainer._safe_path("/workspace", "src/../../etc/passwd")
+            CanonicalSandboxContainer._safe_path("/workspace", "src/../../etc/passwd")
 
     def test_normalized_dot_path(self) -> None:
-        result = SandboxContainer._safe_path("/workspace", "./src/main.py")
+        result = CanonicalSandboxContainer._safe_path("/workspace", "./src/main.py")
         assert result == "/workspace/src/main.py"
 
     def test_simple_filename(self) -> None:
-        result = SandboxContainer._safe_path("/workspace", "README.md")
+        result = CanonicalSandboxContainer._safe_path("/workspace", "README.md")
         assert result == "/workspace/README.md"
 
 
