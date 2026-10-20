@@ -1,4 +1,4 @@
-"""Publication proofs for the root-admission identity vocabulary (#1851).
+"""Publication proofs for the root-admission identity vocabulary (#1859).
 
 ``maistro.runs`` is the published surface of the canonical execution model
 (``Goal -> Graph -> Run -> NodeRun -> Attempt``). The root-admission identity
