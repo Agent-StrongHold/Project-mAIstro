@@ -1,7 +1,7 @@
 ---
 inventory-delta:
   packages/hive-conductor/backend/tests: +18
-  packages/maistro-server/tests: +2
+  packages/maistro-server/tests: +5
 ---
 
 # #1824 installed model configuration reaches the runtime's Binding and gateway credential
@@ -38,7 +38,7 @@ with the effective key is *not* refused — it dispatches to the gateway it
 names, carrying that credential as the bearer token. `stream` delegates to
 `complete`, so one passage covers the guard for both entry points.
 
-**Server +2** prove the installed configuration reaches the runtime's scoped
+**Server +3** prove the installed configuration reaches the runtime's scoped
 Binding: the declared `model.chat` Binding resolves through the real Container
 the worker itself built (existing bootstrap + scope routing; no transport; no
 test singleton injection), in-process and in a fresh shipped-entrypoint
@@ -46,7 +46,8 @@ process. The loader semantics those two proofs ride on — the worker-side YAML
 hook, the fail-closed missing-file contract, and the sanitized refusal of a
 malformed/type-invalid file — are owned by develop's
 `test_model_config_process_startup.py` (see the reconciliation below), not
-duplicated here.
+duplicated here. Three further nodes (see "Credential-door proof" below) pin the credential
+half of the issue title, taking this note's server delta from **+2** to **+5**.
 
 ## Develop-merge reconciliation (no node-ID delta)
 
@@ -183,3 +184,88 @@ recorded in the front matter above; `1880-worker-yaml-load.md` keeps its +6
 for develop's own file, so the suite's expected collected count is unchanged
 in total. No quality-ledger rows move: `maistro.config.loader` stays live
 through the surviving module-level import.
+
+## Credential-door proof (merge-queue CI-repair round at `64b98c763`)
+
+`maistro_server.main._gateway_credential` had **no test**: no node in the tree
+named it, and no server test set `LITELLM_API_KEY`, so the acceptance criterion
+"bundled and external gateways use intended credentials" was carried by prose
+in that function's docstring only. It is exactly the drift the issue's baseline
+paragraph names — "Server construction used to read only the bundled
+`LITELLM_MASTER_KEY` setting" — so the unproven half was the half that had
+already regressed once.
+
+`test_worker_yaml_config_startup.py::TestInstalledGatewayCredential` (+3 nodes;
+this file is the only branch-added node source in the suite, so its note delta
+moves **+2 -> +5**) now pins it, one node per door:
+
+- `test_an_external_gateway_key_outranks_the_bundled_master_key` — with
+  `LITELLM_API_KEY` stated, both `_gateway_credential(settings)` and
+  `_agent_config(settings).litellm_key` (the value `create_container` registers
+  the scoped `model.chat` credential from) carry the external key, not the
+  bundled master key;
+- `test_a_bundled_stack_keeps_its_master_key` — the degenerate path: nothing
+  but the bundled proxy configured keeps `LITELLM_MASTER_KEY` as the credential
+  instead of resolving to `""`;
+- `test_the_governed_egress_carries_the_same_credential` — drives the real
+  composition point `_build_container` (in-memory Container, no DB) with
+  `GatewayEndpoint` instrumented, and asserts the governed egress endpoint is
+  built with the same external key the `AgentConfig` handed the Container: the
+  two doors read one decision, not two resolutions of it.
+
+Both fixtures are the shipped shape (env-only, no singleton injection).
+Mutation evidence, run in this round: reverting `_gateway_credential` to
+`return settings.litellm.master_key` fails the first and third nodes only;
+changing only the egress endpoint in `_build_container` back to
+`settings.litellm.master_key` fails the third node alone. Unmutated:
+`uv run pytest packages/maistro-server/tests/test_worker_yaml_config_startup.py
+-q` -> 5 passed. Suite inventory: `check-suite-inventory.py` ->
+`ok: 21 suite(s) match the recorded inventory`.
+
+## Inherited blocker: `maistro.runs.admission_identity` (NOT this branch)
+
+The merge-queue `test` gate is red for this candidate, and the failure is
+develop's, not #1824's. `pytest tests/ --ignore=tests/tools/registry` at
+`64b98c763` is **5394 passed, 3 failed** and the three are
+`tests/test_check_reachability.py::test_baseline_matches_the_tree` plus both
+`tests/test_reachability_baseline_identity.py` identity nodes, all reporting the
+same single module:
+
+    maistro.runs.admission_identity  (newly unreachable, absent from the baseline)
+
+Provenance of that module is PR #1936 (`auto-1851`, merge `e20e9f52e`, now in
+`develop`): it added `packages/maistro-core/src/maistro/runs/admission_identity.py`
+plus vulture rows but **no** `quality/reachability-baseline.json` row. The
+module's own docstring calls it "an inactive contract leaf — nothing in
+production imports it yet", which is the case the baseline exists to bank. Not
+fixable here:
+
+- `quality/reachability-baseline.json` and `quality/ratchet-authorizations.json`
+  are byte-identical to `origin/develop` on this branch
+  (`git diff --numstat origin/develop...HEAD -- quality/` is empty) and the
+  branch touches no `runs/` path, so nothing this lane changed produced it.
+- `scripts/check-reachability-provenance.py` reads authorizations **from the
+  merge base** (`prov.load_authorizations("reachability", base=trusted.base_sha)`)
+  and fails with "NEW unreachable module absent from trusted base and not
+  previously authorized" for any candidate-side ledger edit. Banking it needs
+  the two-merge sequence on `develop` — grant first, row second — which is the
+  `auto-1851`/`#1845` owner's call, not this lane's.
+
+Same root cause, the other red checks at `fac3f6c38` (check-runs captured for
+this job): `Quality / Reachability` (the gate itself), `exact-debt-ledger`
+(`check-ratchet-provenance.py` -> `FAIL: ratchet provenance inventory is
+incomplete - check-reachability-provenance.py: trusted-base gate returned 1`)
+and the `Coverage gate`, whose combine step re-runs the same root `tests/`
+suite. The vulture ledger itself is green:
+`check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+'*/third_party/*'` -> `1326 reviewed identities -> 1326 findings`, exit 0, and
+`check-shipped-surface-truth.py` -> complete. `Supply chain (pip-audit)` reds
+with no dependency delta (`uv.lock`/`pyproject.toml` unchanged vs
+`origin/develop`), i.e. a disclosed CVE, not a branch change.
+
+Environment note for the next round: `scripts/check-ac-state.py` writes a
+gitignored `quality/ac-state.json`, and while that file exists in a worktree
+`tests/test_branch_independence_repository.py::test_every_quality_json_state_surface_is_classified_once`
+fails ("unclassified quality state"). It does not exist in a CI checkout — the
+root-suite run above was taken with it moved aside; do not read it as a
+regression.

@@ -11,7 +11,11 @@ scoped Binding:
 - the declared `model.chat` Binding resolves through the real Container the
   worker itself built, on the existing bootstrap + scope routing (no
   transport, no test singleton injection);
-- the same holds in a fresh process running the real shipped lifespan.
+- the same holds in a fresh process running the real shipped lifespan;
+- the credential the installed configuration names reaches both doors the
+  server has into the gateway — the `AgentConfig.litellm_key` handed to
+  `create_container` (where the scoped `model.chat` credential registers) and
+  the `GatewayEndpoint` the governed egress carries (§ `_gateway_credential`).
 """
 
 from __future__ import annotations
@@ -26,7 +30,9 @@ from pathlib import Path
 
 import pytest
 
+import maistro.capabilities.providers.llm_gateway as llm_gateway
 import maistro.config.settings as settings_module
+from maistro.config.settings import LiteLLMSettings, Settings
 from maistro_server import main
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -201,3 +207,70 @@ class TestFreshEntrypointProcess:
             f"worker failed:\nstdout:\n{proc.stdout[-4000:]}\nstderr:\n{proc.stderr[-4000:]}"
         )
         assert "WORKER-YAML-PROOF-OK" in proc.stdout
+
+
+class TestInstalledGatewayCredential:
+    """The credential half of the issue title: the installed configuration's
+    gateway credential must reach the runtime, not just the Binding.
+
+    A stack switched to an external gateway (`LITELLM_BASE_URL` pointed
+    off-stack) states its key as `LITELLM_API_KEY` — exactly the variable the
+    shipped compose file derives for both containers
+    (`LITELLM_API_KEY=${LITELLM_API_KEY:-${LITELLM_MASTER_KEY}}`). Server
+    construction used to read only the bundled `LITELLM_MASTER_KEY` setting, so
+    the roster's client and the governed egress both presented the *bundled*
+    proxy's key to a foreign gateway and every governed call came back 401.
+    """
+
+    def _settings(self, master_key: str) -> Settings:
+        return Settings(
+            api_keys=["ops:test-key"],
+            require_auth=False,
+            litellm=LiteLLMSettings(master_key=master_key),
+        )
+
+    def test_an_external_gateway_key_outranks_the_bundled_master_key(
+        self, _clean_boot_env: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("LITELLM_API_KEY", "external-gateway-key")
+        settings = self._settings(master_key="bundled-proxy-master-key")
+
+        assert main._gateway_credential(settings) == "external-gateway-key"
+        # The Container's scoped `model.chat` credential registers from this
+        # value, so the roster door and the governed door cannot disagree.
+        assert main._agent_config(settings).litellm_key == "external-gateway-key"
+
+    def test_a_bundled_stack_keeps_its_master_key(
+        self, _clean_boot_env: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Nothing configured beyond the bundled proxy: the master key stays
+        the credential rather than the empty string an alias-only read gives."""
+        monkeypatch.delenv("LITELLM_API_KEY", raising=False)
+        settings = self._settings(master_key="bundled-proxy-master-key")
+
+        assert main._gateway_credential(settings) == "bundled-proxy-master-key"
+        assert main._agent_config(settings).litellm_key == "bundled-proxy-master-key"
+
+    async def test_the_governed_egress_carries_the_same_credential(
+        self, _clean_boot_env: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Both doors read one decision: the `GatewayEndpoint` the composition
+        point builds carries the credential `_agent_config` handed the
+        Container, not a second resolution of it."""
+        monkeypatch.setenv("LITELLM_API_KEY", "external-gateway-key")
+        settings = self._settings(master_key="bundled-proxy-master-key")
+        built: list[llm_gateway.GatewayEndpoint] = []
+        real_endpoint = llm_gateway.GatewayEndpoint
+
+        def _recording_endpoint(base_url: str, api_key: str = "") -> object:
+            endpoint = real_endpoint(base_url=base_url, api_key=api_key)
+            built.append(endpoint)
+            return endpoint
+
+        monkeypatch.setattr(llm_gateway, "GatewayEndpoint", _recording_endpoint)
+        container, _egress = await main._build_container(settings, pg_pool=None)
+
+        endpoints = [endpoint for endpoint in built if endpoint.api_key]
+        assert endpoints, "the composition point built no credentialed endpoint"
+        assert {endpoint.api_key for endpoint in endpoints} == {"external-gateway-key"}
+        assert sorted(container.agents) == [main.CONDUCTOR_AGENT_NAME]
