@@ -5,7 +5,12 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
-from maistro.persistence.audit_pages import AuditPage, make_page, page_query
+from maistro.persistence.audit_pages import (
+    AUDIT_PAGE_INDEXES,
+    AuditPage,
+    make_page,
+    page_query,
+)
 from maistro.security.sentinel.signing import SIGNING_KEY_ENV, AuditSigner
 from maistro.types.security import AuditEntry
 
@@ -38,17 +43,56 @@ class PgAuditLog:
             )
 
     async def ensure_schema(self) -> None:
-        """Add proof columns to databases created before signed audit records."""
-        async with self._pool.acquire() as conn:
-            await conn.execute(
-                "ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS signature TEXT NOT NULL DEFAULT ''"
-            )
-            await conn.execute(
-                "ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS signing_key_id TEXT NOT NULL DEFAULT ''"
-            )
-            await conn.execute(
-                "ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS proof_type TEXT NOT NULL DEFAULT ''"
-            )
+        """Create or upgrade the audit_log table and its indexes.
+
+        Managed deployments get these tables from Alembic (migration 005 plus
+        the org-scope and cursor-index migrations). This mirrors the event
+        stores' contract: a Container wired against a database that has not run
+        ``alembic upgrade head`` still comes up, and wiring creates the schema
+        it needs. ``CREATE TABLE IF NOT EXISTS`` is not serialised on its own,
+        so a transaction-scoped advisory lock serialises concurrent bootstrap.
+        """
+        _SCHEMA = """
+        CREATE TABLE IF NOT EXISTS audit_log (
+            id BIGSERIAL PRIMARY KEY,
+            timestamp TIMESTAMPTZ NOT NULL DEFAULT now(),
+            boundary TEXT NOT NULL DEFAULT '',
+            user_id TEXT NOT NULL DEFAULT '',
+            org_id TEXT,
+            team_id TEXT NOT NULL DEFAULT '',
+            agent_id TEXT NOT NULL DEFAULT '',
+            tool_name TEXT,
+            verdict TEXT NOT NULL DEFAULT 'allowed',
+            detail TEXT NOT NULL DEFAULT '',
+            trace_id TEXT NOT NULL DEFAULT '',
+            request_id TEXT NOT NULL DEFAULT '',
+            signature TEXT NOT NULL DEFAULT '',
+            signing_key_id TEXT NOT NULL DEFAULT '',
+            proof_type TEXT NOT NULL DEFAULT ''
+        )
+        """
+        async with self._pool.acquire() as conn, conn.transaction():
+            await conn.execute("SELECT pg_advisory_xact_lock($1)", 0x6175_6469)
+            await conn.execute(_SCHEMA)
+            for ddl in (
+                "ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS org_id TEXT",
+                "ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS signature TEXT NOT NULL DEFAULT ''",
+                "ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS signing_key_id TEXT NOT NULL DEFAULT ''",
+                "ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS proof_type TEXT NOT NULL DEFAULT ''",
+            ):
+                await conn.execute(ddl)
+            await conn.execute("UPDATE audit_log SET org_id = '' WHERE org_id IS NULL")
+            for statement in (
+                "CREATE INDEX IF NOT EXISTS ix_audit_log_timestamp ON audit_log (timestamp)",
+                "CREATE INDEX IF NOT EXISTS ix_audit_log_user ON audit_log (user_id, timestamp)",
+                "CREATE INDEX IF NOT EXISTS ix_audit_log_agent ON audit_log (agent_id, timestamp)",
+                "CREATE INDEX IF NOT EXISTS ix_audit_log_scope ON audit_log (org_id, timestamp)",
+            ):
+                await conn.execute(statement)
+            for name, fields in AUDIT_PAGE_INDEXES.items():
+                await conn.execute(
+                    f"CREATE INDEX IF NOT EXISTS {name} ON audit_log ({', '.join(fields)})"
+                )
 
     async def log(self, entry: AuditEntry) -> None:
         """Sign and record an audit entry."""
