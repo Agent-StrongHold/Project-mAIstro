@@ -126,8 +126,7 @@ b5c22a358a8b0a0fb064e89eb6b4eba6855b58c2:.gitleaksignore:generic-api-key:54
 # not authentication material. Preserve the recorded observation unchanged.
 # Scope each exemption to its original commit, path, rule and line. New values
 # or commits remain scanned; no source path or rule is excluded wholesale.
-8185c1d076e3471e41fd948ac2bc43c6c2d110b8:scripts/soak/run_soak.py:generic-api-key:51
-88edcc7ea03baf4257a9edfb47e56a5493d6d329:docs/testing/soak/evidence/m3a-round7-prodstack-quick-probes.json:generic-api-key:13
+# The #860 fingerprints are already recorded in the historical entries above.
 
 # ---- auto-837 (#837) redaction-proof fixture on this lane ----
 # The durable-runs failure-evidence redaction tests need a credential-shaped
