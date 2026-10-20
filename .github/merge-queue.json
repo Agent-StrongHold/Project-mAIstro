@@ -8,17 +8,24 @@
     "ruleset reviewable without pretending the classic protection payload accepts",
     "fields it does not.",
     "",
-    "Do not enable the live queue until the merge_group workflow changes that",
-    "ship with this file are on develop and one canary proves every required",
-    "context reports on the synthetic queue SHA."
+    "Batching posture: one merge-group verification cycle covers up to",
+    "max_entries_to_merge compatible candidates; a group forms once that many",
+    "candidates wait or min_entries_to_merge_wait_minutes elapses with at least",
+    "min_entries_to_merge present. A failed group bounces as a whole and each PR",
+    "re-enters the queue independently, so one bad candidate costs its group one",
+    "retry instead of blocking the others behind it. This supersedes the",
+    "one-PR-per-group rollout posture: the original canary precondition is met",
+    "(the queue has been live on develop since 2026-08-30; see",
+    "docs/ci/MERGE-QUEUE.md). scripts/check-required-checks.py enforces these",
+    "values and fails closed on anything else."
   ],
   "branches": {
     "develop": {
       "merge_method": "SQUASH",
       "max_entries_to_build": 3,
       "min_entries_to_merge": 1,
-      "max_entries_to_merge": 1,
-      "min_entries_to_merge_wait_minutes": 0,
+      "max_entries_to_merge": 3,
+      "min_entries_to_merge_wait_minutes": 2,
       "grouping_strategy": "ALLGREEN",
       "check_response_timeout_minutes": 60
     }

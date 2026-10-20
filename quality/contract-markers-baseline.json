@@ -260,7 +260,6 @@
         "docs/adr/ADR-070426-f2a0-optional-renderer-plugins-capability-providers.md",
         "docs/adr/ADR-071-task-planner-orchestration.md",
         "docs/adr/ADR-072-threat-model.md",
-        "docs/adr/ADR-072726-0d6b-sentinel-permission-table-fail-closed.md",
         "docs/adr/ADR-073-warden-sentinel.md",
         "docs/adr/ADR-073126-c4e1-release-and-versioning-process.md",
         "docs/adr/ADR-074-policy-adr-deconfliction.md",

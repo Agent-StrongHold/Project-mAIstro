@@ -128,7 +128,9 @@ class _RsiService:
             raise
         except Exception as exc:
             run.status = "errored"
-            run.last_error = str(exc)
+            # The run record is returned to the browser; the exception text
+            # (paths, hosts, provider replies) stays in the server log.
+            run.last_error = f"{type(exc).__name__}: run failed; see server logs"
             logger.warning("rsi run %s failed: %s", run.run_id, exc, exc_info=True)
         finally:
             run.ended_at = _now()

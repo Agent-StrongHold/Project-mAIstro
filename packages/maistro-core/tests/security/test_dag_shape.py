@@ -34,8 +34,14 @@ def _sentinel(
     tier_policy: dict[tuple[str, str], Tier] | None = None,
     permission_table: dict[str, frozenset[str]] | None = None,
 ) -> Sentinel:
+    # COMPATIBILITY (#1165): this suite tests DAG-shape evaluation mechanics,
+    # not permission-table misses; the fail-closed default is pinned in
+    # test_sentinel_policy.py and the node's own fail-closed test.
     return Sentinel(
-        warden=Warden(), permission_table=permission_table or {}, tier_policy=tier_policy
+        warden=Warden(),
+        permission_table=permission_table or {},
+        tier_policy=tier_policy,
+        allow_on_miss=True,
     )
 
 

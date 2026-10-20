@@ -83,6 +83,12 @@ def build_output_security_gate(
 
     output_sentinel = sentinel or Sentinel(
         warden=warden or Warden(),
+        # Fail-closed by the shared Sentinel semantics (ADR-072726-0d6b,
+        # #1165): an empty table denies every permission-table lookup, so this
+        # gate can never widen authority by omission. The gate performs only
+        # post-call output processing, which consults no permission entry; a
+        # future pre_call/authorize caller would have to wire a governed
+        # permission source (build_permission_table) explicitly.
         permission_table={},
         audit_log=audit_log,
     )
