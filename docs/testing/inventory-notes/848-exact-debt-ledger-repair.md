@@ -1,10 +1,8 @@
----
-inventory-delta:
----
 # Issue 848: exact-debt-ledger reachability repair (no test-count change)
 
-This round added no tests (the module stays at its collected node IDs), so the
-inventory delta above is zero. It records why the branch touches
+This round added no tests, so it records no `inventory-delta:` block at all
+(the key is present only when a change moves a collected node-ID count; this
+one moves none). It records why the branch touches
 packages/maistro-core/src/maistro/runs/__init__.py -- a production-file edit
 a reviewer sees in a proof PR and should be able to check rather than trust
 its commit message.
