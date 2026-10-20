@@ -41,9 +41,10 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import asynccontextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from enum import StrEnum
+from types import MappingProxyType
 
 from maistro.extensions.authority import normalize_permission
 from maistro.extensions.types import ExtensionScope
@@ -299,6 +300,45 @@ def _validate_workspace_policy(policy: WorkspaceExtensionPolicy) -> None:
                 raise PolicyConfigurationError(str(exc)) from exc
 
 
+def _frozen_org_policy(policy: OrgExtensionPolicy) -> OrgExtensionPolicy:
+    """An equal policy whose every collection is caller-proof.
+
+    The dataclass is frozen but its ``pins`` mapping (and any ``set`` a caller
+    passed where a ``frozenset`` is declared) is caller-owned: publishing it
+    as-is would let a retained reference change a pin *after* ``set_org_policy``
+    returned — outside the organization lock, with no audit row, and possibly
+    while :meth:`ExtensionPolicyEngine.enforcement_window` is held, which is
+    precisely the linearization that window promises. ``None`` stays ``None``:
+    it is the declared default-allow, not an empty allow-list.
+    """
+    return replace(
+        policy,
+        allowed_extensions=(
+            None if policy.allowed_extensions is None else frozenset(policy.allowed_extensions)
+        ),
+        denied_extensions=frozenset(policy.denied_extensions),
+        approved_publishers=(
+            None if policy.approved_publishers is None else frozenset(policy.approved_publishers)
+        ),
+        pins=MappingProxyType(dict(policy.pins)),
+    )
+
+
+def _frozen_workspace_policy(policy: WorkspaceExtensionPolicy) -> WorkspaceExtensionPolicy:
+    """An equal Workspace policy whose enablement and ceilings are caller-proof."""
+    return replace(
+        policy,
+        enabled_extensions=frozenset(policy.enabled_extensions),
+        denied_extensions=frozenset(policy.denied_extensions),
+        permission_ceilings=MappingProxyType(
+            {
+                extension_id: frozenset(ceiling)
+                for extension_id, ceiling in policy.permission_ceilings.items()
+            }
+        ),
+    )
+
+
 class ExtensionPolicyEngine:
     """Holds organization/Workspace policies and evaluates candidates.
 
@@ -324,32 +364,45 @@ class ExtensionPolicyEngine:
     # -- mutation ----------------------------------------------------------
 
     async def set_org_policy(self, policy: OrgExtensionPolicy, *, actor: str) -> None:
-        """Install the organization layer wholesale and audit the change."""
+        """Install the organization layer wholesale and audit the change.
+
+        What is published is an immutable snapshot of the submitted policy:
+        the caller keeps no reference that could add or drop a pin after this
+        returns, so enforcement can only change through this method — inside
+        the organization lock, with an audit row.
+        """
         _require_non_blank(actor, "actor")
         _validate_org_policy(policy)
-        async with self._org_lock(policy.org_id):
-            self._org_policies[policy.org_id] = policy
+        published = _frozen_org_policy(policy)
+        async with self._org_lock(published.org_id):
+            self._org_policies[published.org_id] = published
             self._audit.append(
                 at=self._clock(),
                 actor=actor,
                 kind="org-policy-set",
-                org_id=policy.org_id,
-                detail=_summarize_org_policy(policy),
+                org_id=published.org_id,
+                detail=_summarize_org_policy(published),
             )
 
     async def set_workspace_policy(self, policy: WorkspaceExtensionPolicy, *, actor: str) -> None:
-        """Install one Workspace's narrowing layer wholesale and audit it."""
+        """Install one Workspace's narrowing layer wholesale and audit it.
+
+        Published as an immutable snapshot, exactly like the organization
+        layer: a retained ceiling ``set`` cannot widen authority behind the
+        engine's back.
+        """
         _require_non_blank(actor, "actor")
         _validate_workspace_policy(policy)
-        async with self._org_lock(policy.org_id):
-            self._workspace_policies[(policy.org_id, policy.workspace_id)] = policy
+        published = _frozen_workspace_policy(policy)
+        async with self._org_lock(published.org_id):
+            self._workspace_policies[(published.org_id, published.workspace_id)] = published
             self._audit.append(
                 at=self._clock(),
                 actor=actor,
                 kind="workspace-policy-set",
                 org_id=policy.org_id,
-                workspace_id=policy.workspace_id,
-                detail=_summarize_workspace_policy(policy),
+                workspace_id=published.workspace_id,
+                detail=_summarize_workspace_policy(published),
             )
 
     # -- reads -------------------------------------------------------------

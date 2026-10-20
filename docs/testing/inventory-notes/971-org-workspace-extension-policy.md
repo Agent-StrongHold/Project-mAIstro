@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +28
+  packages/maistro-core/tests: +29
   packages/maistro-server/tests: +20
 ---
 
@@ -9,7 +9,7 @@ inventory-delta:
 #971 (M9-G3): organization/Workspace extension policy, pinning, approval, and
 cross-tenant noninterference.
 
-`packages/maistro-core/tests/extensions/test_org_workspace_policy.py` (+28)
+`packages/maistro-core/tests/extensions/test_org_workspace_policy.py` (+29)
 carries one cluster per acceptance criterion: deterministic, explainable
 resolution (fixed rule order with the full per-rule trace on every decision,
 `explain` proven side-effect-free against the audit log); organization deny
@@ -24,7 +24,11 @@ a foreign Workspace cannot bind a handle, cannot observe values, and
 org-only scope is its own tenant rather than a wildcard; a Hypothesis
 property test interleaving mixed config/cache operations across two
 Workspaces with model-checked noninterference of both invocation and state;
-and Container wiring (lazy, cached, default engine imposes nothing).
+and Container wiring (lazy, cached, default engine imposes nothing). A
+regression test pins the caller-proof publication of both layers: mutating
+the caller's retained dict/set after `set_org_policy`/`set_workspace_policy`
+returns changes no decision, writes no audit row, and the stored collections
+are immutable types.
 
 `packages/maistro-server/tests/api/test_extensions_policy_api.py` (+20)
 drives the real router: org policy gating the lifecycle over HTTP (including

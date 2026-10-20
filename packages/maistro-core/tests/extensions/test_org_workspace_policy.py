@@ -18,7 +18,9 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+from dataclasses import FrozenInstanceError
 from datetime import UTC, datetime, timedelta
+from types import MappingProxyType
 from typing import Any
 
 import pytest
@@ -377,6 +379,89 @@ class TestPolicyResolution:
         ws_only = engine.audit_events("org-1", workspace_id="ws-a")
         assert [e.kind for e in ws_only] == ["workspace-policy-set", "decision"]
         assert len(engine.audit_events("org-1", kind="decision")) == 1
+
+    async def test_published_policy_is_caller_proof(self) -> None:
+        """A retained reference cannot change enforcement behind the engine's back.
+
+        ``set_org_policy``/``set_workspace_policy`` publish immutable
+        snapshots: mutating the caller's dict/set after the call returns must
+        not alter any decision, and such a mutation — which bypassed the
+        per-org lock — must leave no audit row. Every assertion here fails
+        against an engine that stores the submitted policy object as-is.
+        """
+        engine = ExtensionPolicyEngine()
+        pins: dict[str, ExtensionPin] = {
+            "acme.chart_tools": ExtensionPin(publisher_id="acme"),
+        }
+        allowed: set[str] = {"acme.chart_tools"}
+        await engine.set_org_policy(
+            OrgExtensionPolicy(org_id="org-1", allowed_extensions=allowed, pins=pins),
+            actor="org-admin",
+        )
+        ceilings: dict[str, set[str]] = {"acme.chart_tools": {"network.http"}}
+        enabled: set[str] = {"acme.chart_tools"}
+        await engine.set_workspace_policy(
+            WorkspaceExtensionPolicy(
+                org_id="org-1",
+                workspace_id="ws-1",
+                enabled_extensions=enabled,
+                permission_ceilings=ceilings,
+            ),
+            actor="ws-admin",
+        )
+
+        # The caller keeps every reference and mutates them post-publication:
+        # a version-pin tightening, an allow-list/enablement widening, and a
+        # ceiling widening. None of this may reach enforcement.
+        pins["acme.chart_tools"] = ExtensionPin(publisher_id="acme", version="9.9.9")
+        pins["evil.ext"] = ExtensionPin(publisher_id="evil")
+        allowed.add("evil.ext")
+        enabled.add("evil.ext")
+        ceilings["acme.chart_tools"] = {"network.http", "host.exec"}
+        ceilings["evil.ext"] = {"host.exec"}
+        scope = ExtensionScope("org-1", "ws-1")
+
+        # evil.ext stays outside the published allow-list and enablement; if
+        # either collection were aliased it would now be admitted.
+        assert not engine.explain(
+            candidate(extension_id="evil.ext", publisher="evil", permissions=("host.exec",)),
+            scope,
+        ).allowed
+        # The published pin binds the publisher only: 2.0.0 is still admitted
+        # even though the caller's dict now pins 9.9.9.
+        assert engine.explain(
+            candidate(version="2.0.0", permissions=("network.http",)), scope
+        ).allowed
+        # The published ceiling still excludes host.exec.
+        ceiling_decision = engine.explain(
+            candidate(permissions=("network.http", "host.exec")), scope
+        )
+        assert not ceiling_decision.allowed
+        ceiling_outcome = next(
+            o for o in ceiling_decision.trace if o.rule == "workspace.permission-ceiling"
+        )
+        assert "host.exec" in ceiling_outcome.detail
+
+        # The side channel wrote no evidence: enforcement only changes through
+        # set_org_policy, inside the lock, with an audit row.
+        assert [e.kind for e in engine.audit_events("org-1")] == [
+            "org-policy-set",
+            "workspace-policy-set",
+        ]
+
+        # What is stored is itself immutable, not merely equal.
+        stored_org = engine.org_policy("org-1")
+        assert stored_org is not None
+        assert isinstance(stored_org.allowed_extensions, frozenset)
+        assert isinstance(stored_org.pins, MappingProxyType)
+        with pytest.raises(FrozenInstanceError):
+            stored_org.denied_extensions = frozenset({"acme.chart_tools"})  # type: ignore[misc]
+        with pytest.raises(TypeError):
+            stored_org.pins["evil.ext"] = ExtensionPin(publisher_id="evil")  # type: ignore[index]
+        stored_ws = engine.workspace_policy("org-1", "ws-1")
+        assert stored_ws is not None
+        assert isinstance(stored_ws.permission_ceilings, MappingProxyType)
+        assert isinstance(stored_ws.permission_ceilings["acme.chart_tools"], frozenset)
 
     async def test_malformed_policies_are_refused(self) -> None:
         engine = ExtensionPolicyEngine()
