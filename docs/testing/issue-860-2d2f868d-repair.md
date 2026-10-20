@@ -133,3 +133,35 @@ Progress: checked 1 issue; done 0 acceptance-complete; skipped 0 issues;
 validation errors 0. This local report commit is a checkpoint, not integration
 approval. Residual risks: unverified deployed behavior and inherited branch/base
 integration differences, which were deliberately not changed in this round.
+
+## Revalidation at assigned head 5b636f1461ca
+
+The current job directory contains no `check-*.log` files, so no driver log
+claims were assumed. Re-ran the focused seam suite: 105 passed in 3.31s;
+`uv run ruff check .` passed; `uv run ruff format --check .` passed (3373
+files); `scripts/check-deployment-claims.py` passed; and
+`scripts/check-execution-lifecycles.py` passed (19/19). The exact CI vulture
+command passed with 1326 reviewed identities / 1326 findings, zero unclassified
+or never-allowlist findings; no ledger edit is warranted. `git diff --check`
+passed. No tests or inventory changes were added.
+
+Re-read the issue snapshot's ten acceptance criteria against the current load
+profile and runner. The profile still documents unsupported workload surfaces
+and its host-process path explicitly cannot qualify the exact RC. The recorded
+round-109 artifact is stale, preflight-only, and short of the four-hour minimum;
+current local regressions do not provide a new production soak. Rate-limit
+middleware still uses independent in-memory limiter instances, so replica
+selection's fresh allowance remains a demonstrated failure of the criterion,
+not an unverified hypothesis. No exact RC artifact/configuration or deployment
+credentials/workload were supplied; running a local preflight cannot close the
+gaps. Findings remain in the earlier ten-criterion table: none of the ten is
+proven complete at promotion level. No production acceptance was waived, and
+no alternate scheduler, execution authority, Goal store, event authority, or
+authorization path was introduced.
+
+Current handoff: **NEEDS-REPAIR** for acceptance (at least the replica-selection
+rate-limit criterion is not satisfied); remaining deployment/soak criteria are
+UNVERIFIED. Checked 1 issue; done 0 acceptance-complete; skipped 0; errors 0.
+Next: resolve the rate-budget prerequisite at the canonical existing seam and
+supply the exact immutable RC/configuration plus qualifying multi-replica soak
+evidence. This checkpoint is not integration approval.
