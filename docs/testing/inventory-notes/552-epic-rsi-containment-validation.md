@@ -109,12 +109,14 @@ the sole author and unchanged by the sync; all gates were re-run and pass.
 - `uv run python scripts/check-suite-inventory.py` — the only RSI drift is
   this note's **+40** (unchanged; develop's #2171 campaign tests are in
   the synced baseline, not the delta). The script aborts on **pre-existing
-  collection errors** in two out-of-tree extensions added by develop's
-  #2198/#2213 — `extensions/reference-gallery/packages/gallery-renderer-
-  pack` and `gallery-model-adapter` (ModuleNotFoundError: gallery_renderer_
-  pack / gallery_model_adapter — neither installed in this workspace env).
-  Per the script's own guidance these are broken suites, not inventory
-  drift, and are out of scope for #552.
+  collection errors** in four out-of-tree extensions added by develop's
+  #2198/#2213 — `extensions/reference-gallery/packages/gallery-weather-
+  connector`, `gallery-unit-skill`, `gallery-model-adapter`, and
+  `gallery-renderer-pack` (ModuleNotFoundError: no `gallery_*` module is
+  installed in this workspace env — verified: the lane commit `0e6f13eee`
+  touches no pyproject workspace membership or gallery package, so these
+  errors are independent of #50). Per the script's own guidance these are
+  broken suites, not inventory drift, and are out of scope for #552.
 
 ## Containment half (still proven, prior passes)
 
