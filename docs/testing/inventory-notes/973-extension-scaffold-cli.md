@@ -299,3 +299,98 @@ Quality/Reachability, Quality Pillars, and exact-debt-ledger jobs it drags
 down) stay red on every develop-based candidate until an owner resolves the
 develop-side `maistro.runs.admission_identity` debt (#1851 / #1845) — owner
 decision required on develop.
+
+## CI-repair round (2026-10-20 late, branch `auto-973` merged with origin/develop)
+
+The "develop unmoved" premise above expired: origin/develop gained
+`c2d7209f1` (#292 r8, "carry #1859 admission-identity publication to green
+exact-debt-ledger"), which publishes the previously-unreachable
+`maistro.runs.admission_identity` types from `maistro.runs`' public surface —
+exactly the debt the two prior rounds proved unrepairable in-lane. This round
+merged origin/develop (`c2d7209f1`, with #2211 extension policy, #2223 CLI
+page contract, #2228 codec proofs) into `auto-973`; the only shared-path file
+(`_vulture_whitelist.py`) auto-merged, and the seven #973 surface files are
+byte-identical to `f68ba8526` (the one test-file delta vs that head is the
+prior round's skip-reason wording fix). Because the branch now contains the
+develop tip, the merge queue's synthetic merge equals this tree — every check
+below is what CI will run.
+
+Root cause of the named Coverage-gate failure, re-derived and then cleared:
+
+- Pre-merge reproduction (head `d3afe03c5`): `check-reachability.py` exit 1,
+  `maistro.runs.admission_identity` NEWLY UNREACHABLE — the failure is real
+  and develop-side, as recorded.
+- Post-merge: `check-reachability.py` -> exit 0 (1422 modules, 168
+  unreachable == baseline, no expansion); the three reachability root tests
+  (`tests/test_check_reachability.py`, `tests/test_reachability_baseline_identity.py`)
+  -> 39 passed; `check-reachability-provenance.py` -> exit 0 (trusted-base
+  gate green, 168 -> 168); `check-ratchet-provenance.py` -> exit 0
+  (exact-debt-ledger's provenance leg, enumerations gap tolerated, lifecycle
+  clean).
+- The exact producer that killed `combine` in CI, run with the workflow's
+  argv (`coverage run --append --branch --source=scripts -m pytest tests/
+  tests/test_model_check_consumer_claim.py
+  packages/maistro-core/tests/extensions/test_lifecycle_proof.py
+  --timeout=30 -q`) -> **5500 passed, 138 skipped** (CI's failing run: 5
+  failed, 5391 passed). The two `test_restore_oracle_characterization.py`
+  failures in that CI run were pg-container startup flake: all 4 cases pass
+  here against real Docker (`pgvector/pgvector:pg17`), 25.6s.
+- `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'` (base `origin/develop` = `c2d7209f1`) -> exit 0, 1326
+  reviewed identities == 1326 findings; `check-shipped-surface-truth.py` ->
+  exit 0 (the merged develop-side quality rows are consistent).
+
+Diff-coverage leg, at the merged head: full core producer (`coverage run
+--branch --source=packages/maistro-core/src/maistro -m pytest
+packages/maistro-core/tests --timeout=30 -q`) -> 15765 passed, 1137 skipped,
+7 xfailed; `coverage xml` + `check-diff-coverage.py --base origin/develop` ->
+ok (3 changed files measured; test file exempt by declaration;
+`_vulture_whitelist.py` unmeasured by declaration; measured files at or above
+90% lines / 80% branch arcs). Publish-set floor not re-measured locally (the
+87%-floor database needs the unit+archive+postgres producers): it measured
+94% in the last CI run on identical branch content, and each develop-side
+addition passed the same floor on its own merge.
+
+#973 acceptance re-proven at the merged head (all commands run this round,
+not inherited):
+
+- `ruff check .` / `ruff format --check .` clean; scaffold suite offline 85
+  passed + 5 skipped; with `MAISTRO_TEST_EXTENSION_SCAFFOLD_E2E=1` -> **90
+  passed** (all five families scaffold, `uv build`, fresh-venv install,
+  generated suite passes, `import maistro` fails there).
+- `check-extension-scaffold.py` -> exit 0 (5 families + reference through
+  build, conformance, certification, signature, negative control);
+  `check-extension-imports.py` -> exit 0.
+- The CLI's own output scaffolded to `/tmp/v973r` (all five families, real
+  `maistro extension new`): every `extension.json` parses via
+  `maistro_ext_sdk.validation.manifest_from_json`, passes `jsonschema`
+  against `public_json_schema()`, family names in SDK `EXTENSION_FAMILIES`,
+  and `validate_extension_dir` accepts all five; pairwise family templates
+  are structurally distinct (`HANDLERS`/`"handler"`,
+  `SKILL_INSTRUCTIONS`/`"skills"`, `"upstreams"`, `"providers"`,
+  `"renderers"`); AST sweep over every generated `.py`: stdlib + own package
+  imports only.
+- Conformance + signing on the CLI-scaffolded tool tree: `uv build --wheel`
+  -> `maistro-ext-harness run` 9/7/7/7/7 passed (0 failed) per family;
+  `certify` (standard profile, Ed25519 over the exact wheel bytes) -> 28
+  proven, 0 decline reasons; `verify-certification` -> OK on the exact bytes
+  and exit 1 on a one-byte-mutated wheel.
+- Merged-tree hygiene: `check-suite-inventory.py --suite
+  packages/maistro-core/tests` -> ok (16909 identities match the recorded
+  inventory — both sides' note deltas compose); `check-convergence-matrix.py`
+  -> OK (52 subsystems, 1422 modules); mypy strict over the AGENTS.md package
+  list -> Success (910 files); `check-backlog-consistency.py` -> OK;
+  `git diff --numstat origin/develop -- quality/` empty (no ledger drift
+  from this branch; the merged quality rows are develop's own).
+
+Residual, reported rather than repaired (both outside the named lane):
+(1) `Supply chain (pip-audit)` reds on the shared lock — certifi 2026.4.22
+(PYSEC-2026-4320 -> 2026.10.19) and pillow 12.3.0 (8 CVEs -> 13.0.0);
+`uv.lock` and `scripts/pip_audit_gate.py` are byte-identical to
+origin/develop (`git diff origin/develop -- uv.lock pyproject.toml
+'packages/*/pyproject.toml' scripts/pip_audit_gate.py` is empty), so this is
+develop-side lockfile debt with available fixed versions — a dependency-round
+repair, not #973's. (2) CI executes the out-of-tree build/test proof for the
+SDK scaffold (`check-extension-scaffold.py`), while this CLI's templates are
+covered by the env-gated E2E suite and the runs above — unchanged
+classification from the prior round.
