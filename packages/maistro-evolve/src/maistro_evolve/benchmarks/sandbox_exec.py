@@ -74,6 +74,7 @@ async def run_function_checks(
 
     try:
         from maistro.config.settings import SandboxSettings
+        from maistro.sandbox.selector import NoSuitableBackendError
         from maistro.tools.sandbox.canonical import create_sandbox
     except ImportError as exc:
         return False, f"isolated sandbox unavailable: {exc}"[:_MAX_OUTPUT_CHARS]
@@ -115,7 +116,17 @@ async def run_function_checks(
                     "python check.py",
                     timeout=max(1, math.ceil(timeout)),
                 )
-        except (FileNotFoundError, PermissionError, RuntimeError, ValueError, OSError) as exc:
+        except (
+            FileNotFoundError,
+            PermissionError,
+            RuntimeError,
+            ValueError,
+            OSError,
+            # The canonical selector refusing (#76) is the same fail-closed
+            # case as Docker being absent: the check fails, candidate code
+            # never runs on the host.
+            NoSuitableBackendError,
+        ) as exc:
             return False, f"isolated sandbox unavailable: {exc}"[:_MAX_OUTPUT_CHARS]
 
     output = output.strip()
