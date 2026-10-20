@@ -10,6 +10,7 @@ from threading import Lock
 from typing import Any
 
 from maistro.persistence.audit_pages import MAX_PAGE_SIZE, AuditPage, decode_cursor, make_page
+from maistro.security.sentinel.signing import AuditSigner
 from maistro.types.security import AuditEntry
 
 TOOL_ALLOWLIST_BOUNDARY = "tool_allowlist"
@@ -86,11 +87,17 @@ class InMemoryAuditLog:
     shape has an ordered index, so sparse filters cannot turn a page into a
     corpus scan. Writes retain eight keys per record; out-of-order inserts may
     shift an index, while page reads cost O(log n + limit).
+
+    Entries are signed with the store's signer before retention (ADR-073
+    decision proofs). The default generated key is intentionally process-local:
+    a deployment using this store for anything beyond tests must pass the same
+    externally managed signer key it uses for its durable audit store.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, signer: AuditSigner | None = None) -> None:
         self._lock = Lock()
         self._entries: list[AuditEntry] = []
+        self.signer = signer or AuditSigner()
         self._page_indexes: dict[
             tuple[str, str | None, str | None, bool | None], list[tuple[str, int]]
         ] = {}
@@ -100,13 +107,14 @@ class InMemoryAuditLog:
 
     def log_sync(self, entry: AuditEntry) -> None:
         """Shared append seam for async callers and synchronous bridge threads."""
+        signed = self.signer.sign(entry)
         with self._lock:
-            key = (entry.timestamp.isoformat(), len(self._entries) + 1)
-            self._entries.append(entry)
+            key = (signed.timestamp.isoformat(), len(self._entries) + 1)
+            self._entries.append(signed)
             for user, boundary, denied in product(
-                (None, entry.user_id), (None, entry.boundary), (None, entry.verdict == "denied")
+                (None, signed.user_id), (None, signed.boundary), (None, signed.verdict == "denied")
             ):
-                index = self._page_indexes.setdefault((entry.org_id, user, boundary, denied), [])
+                index = self._page_indexes.setdefault((signed.org_id, user, boundary, denied), [])
                 insort(index, key)
 
     async def get_page(
@@ -135,6 +143,10 @@ class InMemoryAuditLog:
                 for timestamp, row_id in reversed(keys)
             ]
         return make_page(rows, size)
+
+    def verify(self, entry: Any) -> bool:
+        """Verify an entry with this store's public verification key."""
+        return self.signer.verify(entry)
 
     async def get_entries(
         self,
