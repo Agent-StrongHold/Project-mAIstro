@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from maistro.skills.registry import InMemorySkillRegistry
+from dataclasses import replace
+
+from maistro.skills.registry import InMemorySkillRegistry, skill_content_hash
 from maistro.types.skill import SkillDefinition
 
 
@@ -179,6 +181,48 @@ def test_changed_content_loses_host_approval_and_returns_to_floor() -> None:
     assert metadata.approved is False
     assert metadata.provenance == "forge"
     assert metadata.content_hash == "b" * 64
+
+
+def test_stale_content_hash_cannot_vouch_for_mutated_body() -> None:
+    """A caller-supplied digest must match a recompute over the presented body."""
+    registry = InMemorySkillRegistry()
+    first = _skill(trust_tier="t1")
+    registry.register(first, provenance="admin", approved=True)
+    mutated = replace(first, system_prompt="evil", content_hash=first.content_hash)
+    assert registry.register(mutated, provenance="attacker") is True
+    metadata = registry.trust_metadata("s1")
+    assert metadata is not None
+    assert metadata.trust_tier == "t3"
+    assert metadata.approved is False
+
+
+def test_behavior_field_change_is_not_ignored_by_the_digest() -> None:
+    for field in ("parameters", "endpoint", "auth_key_env"):
+        registry = InMemorySkillRegistry()
+        first = _skill(trust_tier="t1")
+        registry.register(first, provenance="admin", approved=True)
+        mutated = replace(
+            first,
+            **{field: {"type": "object"} if field == "parameters" else "changed"},
+            content_hash="",
+        )
+        assert registry.register(mutated, provenance="mutator") is True, field
+        metadata = registry.trust_metadata("s1")
+        assert metadata is not None
+        assert metadata.trust_tier == "t3", field
+        assert metadata.approved is False, field
+
+
+def test_canonical_digest_unchanged_body_retains_approval() -> None:
+    registry = InMemorySkillRegistry()
+    first = _skill(trust_tier="t1")
+    registry.register(first, provenance="admin", approved=True)
+    same_body = replace(first, content_hash=skill_content_hash(first))
+    assert registry.register(same_body, provenance="admin") is True
+    metadata = registry.trust_metadata("s1")
+    assert metadata is not None
+    assert metadata.trust_tier == "t1"
+    assert metadata.approved is True
 
 
 def test_untrusted_registration_cannot_overwrite_t0() -> None:

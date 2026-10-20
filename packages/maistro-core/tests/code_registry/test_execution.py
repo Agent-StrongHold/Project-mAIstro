@@ -14,7 +14,6 @@ Covers the P1 review findings on #59:
 from __future__ import annotations
 
 import hashlib
-from dataclasses import replace
 from typing import Any
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -86,7 +85,9 @@ def _invoker(
 ) -> CodeInvoker:
     signer = Ed25519PrivateKey.generate()
     registry = CodeRegistry()
-    registry.register(_make_signed_entry(signer), verifier=Ed25519Verifier(signer.public_key().public_bytes_raw()))
+    registry.register(
+        _make_signed_entry(signer), verifier=Ed25519Verifier(signer.public_key().public_bytes_raw())
+    )
     return CodeInvoker(
         registry,
         sentinel=_FakeSentinel(decision),

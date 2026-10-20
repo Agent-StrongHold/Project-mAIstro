@@ -23,7 +23,7 @@ def _make_signed_entry(
     *, name: str = "my_compensator", version: str = "1.0.0", signer: Ed25519PrivateKey
 ) -> CodeEntry:
     code_sha256 = hashlib.sha256(b"body").hexdigest()
-    payload = f"{name}@{version}:{code_sha256}".encode()
+    payload = f"{name}@{version}:{CodeKind.COMPENSATOR.value}:{code_sha256}".encode()
     signature = signer.sign(payload)
     return CodeEntry(
         name=name,
@@ -130,10 +130,34 @@ def test_register_does_not_replace_an_existing_ref() -> None:
     replacement = replace(
         entry,
         code_sha256=changed_hash,
-        signature=signer.sign(f"{entry.name}@{entry.version}:{changed_hash}".encode()),
+        signature=signer.sign(
+            f"{entry.name}@{entry.version}:{entry.kind.value}:{changed_hash}".encode()
+        ),
     )
     with pytest.raises(CodeEntryConflict, match="already registered"):
         registry.register(replacement, verifier=verifier)
+
+
+def test_register_rejects_kind_relabel_with_stale_signature() -> None:
+    """A signature vouches for the kind: relabeling an entry into a kind whose
+    ``code.invoke.<kind>`` action the principal holds must invalidate the
+    original signature (P1 review finding on #59)."""
+    signer = Ed25519PrivateKey.generate()
+    verifier = Ed25519Verifier(signer.public_key().public_bytes_raw())
+    registry = CodeRegistry()
+    entry = _make_signed_entry(signer=signer)  # signed as COMPENSATOR
+    relabeled = replace(entry, kind=CodeKind.MERGE_RESOLVER)
+    with pytest.raises(InvalidSignature, match="invalid signature"):
+        registry.register(relabeled, verifier=verifier)
+    with pytest.raises(CodeRefUnresolved):
+        registry.resolve("my_compensator@1.0.0")
+
+
+def test_signing_payload_binds_kind() -> None:
+    entry = CodeEntry(
+        name="n", version="1.0.0", kind=CodeKind.DYNAMIC_GATE, code_sha256="h", signature=b""
+    )
+    assert CodeRegistry.signing_payload(entry) == b"n@1.0.0:dynamic_gate:h"
 
 
 class TestCompatible:

@@ -639,7 +639,7 @@ async def test_invoke_code_refuses_without_sandbox() -> None:
         version="1.0.0",
         kind=CodeKind.COMPENSATOR,
         code_sha256="abc123",
-        signature=private_key.sign(b"test_compensator@1.0.0:abc123"),
+        signature=private_key.sign(b"test_compensator@1.0.0:compensator:abc123"),
     )
     container.code_registry.register(entry, verifier=verifier)
 
@@ -648,6 +648,60 @@ async def test_invoke_code_refuses_without_sandbox() -> None:
     assert result.ok is False
     assert result.isolation == "refused"
     assert "no sandbox runtime configured" in result.reason
+
+
+async def test_invoke_code_sandbox_failure_keeps_unknown_isolation() -> None:
+    """A sandbox that raises after starting must NOT be labelled ``refused``.
+
+    ``refused`` asserts nothing ran; a post-start failure (timeout kill,
+    result-collection error) may have partially executed, so the honest label
+    is ``unknown`` (ADR-069 failure table).
+    """
+    import hashlib
+
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    from maistro.code_registry.execution import CodeInvoker, CodeSandbox
+    from maistro.code_registry.types import CodeEntry, CodeKind
+    from maistro.code_registry.verify import Ed25519Verifier
+    from maistro.security.sentinel.authz_types import Principal
+    from maistro.types.config import SecurityConfig
+
+    class _ExplodingSandbox:
+        """Sandbox that accepts the invocation, then dies mid-run (timeout-like)."""
+
+        async def execute(self, entry: CodeEntry, payload: dict) -> CodeSandbox:
+            raise TimeoutError("microVM over budget: killed")
+
+    container = await _container(
+        security=SecurityConfig(permissions={"code.invoke.compensator": ["admin"]})
+    )
+    principal = Principal(id="test", kind="human", roles=("admin",))
+
+    private_key = Ed25519PrivateKey.generate()
+    verifier = Ed25519Verifier(private_key.public_key().public_bytes_raw())
+    entry = CodeEntry(
+        name="test_compensator",
+        version="1.0.0",
+        kind=CodeKind.COMPENSATOR,
+        code_sha256=hashlib.sha256(b"body").hexdigest(),
+        signature=private_key.sign(
+            b"test_compensator@1.0.0:compensator:" + hashlib.sha256(b"body").hexdigest().encode()
+        ),
+    )
+    container.code_registry.register(entry, verifier=verifier)
+
+    container.code_invoker = CodeInvoker(  # type: ignore[assignment]
+        container.code_registry,
+        sentinel=container.code_invoker._sentinel,
+        warden_scan=container.code_invoker._warden_scan,
+        sandbox=_ExplodingSandbox(),
+    )
+
+    result = await container.invoke_code("test_compensator@1.0.0", {"x": 1}, principal)
+    assert result.ok is False
+    assert result.isolation == "unknown"
+    assert "over budget" in result.reason
 
 
 # --- Agent-harness DAG node adapters (ADR-062 spawn_harness) ------------------------

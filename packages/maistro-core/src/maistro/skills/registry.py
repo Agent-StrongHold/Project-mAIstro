@@ -7,6 +7,7 @@ and trust tier enforcement. Mutation history tracked per skill.
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import threading
 from dataclasses import dataclass, replace
@@ -32,14 +33,24 @@ class SkillTrustMetadata:
 
 
 def skill_content_hash(skill: SkillDefinition) -> str:
-    """Host-computed content hash over every field that reaches a prompt.
+    """Host-computed content hash over the complete executable definition.
 
     The one hash the governed supply-chain paths agree on: the skill registry
     records it, the catalog verifies it at admission, and a per-use boundary
-    can recompute it to detect a body that changed after import (#59).
+    can recompute it to detect a body that changed after import (#59). It
+    covers every behavior-bearing field — parameters, endpoint, and
+    auth_key_env included — so a change to any of them yields a new digest.
     """
     payload = "\x00".join(
-        (skill.name, skill.description, "\n".join(skill.groups), skill.system_prompt)
+        (
+            skill.name,
+            skill.description,
+            "\n".join(skill.groups),
+            json.dumps(skill.parameters, sort_keys=True, separators=(",", ":")),
+            skill.endpoint,
+            skill.auth_key_env,
+            skill.system_prompt,
+        )
     )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
@@ -75,7 +86,14 @@ class InMemorySkillRegistry:
         content, while every changed body returns to the untrusted floor.
         """
         key = skill.name
-        incoming_hash = content_hash or skill.content_hash or _content_hash(skill)
+        # A caller-supplied digest is trusted only when it matches a host
+        # recompute over THIS body. A stale hash of a previously approved body
+        # (e.g. dataclasses.replace(existing, system_prompt=...)) can no longer
+        # vouch for mutated content, so it can never preserve the prior
+        # approval or tier.
+        computed_hash = skill_content_hash(skill)
+        incoming_hash = content_hash or skill.content_hash or computed_hash
+        digest_vouches_for_body = incoming_hash == computed_hash
         incoming_provenance = provenance or skill.provenance or skill.source or "unknown"
         with self._lock:
             existing = self._skills.get(key)
@@ -86,7 +104,7 @@ class InMemorySkillRegistry:
                 if incoming_rank < prior_rank or (prior_rank <= 1 and incoming_rank > prior_rank):
                     logger.warning("Blocked non-monotonic trust change for skill '%s'", key)
                     return False
-                if incoming_hash == prior.content_hash:
+                if digest_vouches_for_body and incoming_hash == prior.content_hash:
                     effective = prior
                 else:
                     effective = SkillTrustMetadata(

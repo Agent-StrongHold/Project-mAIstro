@@ -216,6 +216,10 @@ def delete_server(server_id: str) -> None:
     if server_id not in stores.mcp_servers:
         raise HTTPException(status_code=404, detail="server not found")
     stores.mcp_servers.pop(server_id)
+    # Cascade: without this, tools would linger as unapproved orphans and be
+    # exposed by GET /v1/mcp/tools with no remaining approval record.
+    for tool_id in [t.id for t in stores.mcp_tools.values() if t.server_id == server_id]:
+        stores.mcp_tools.pop(tool_id, None)
 
 
 @router.post("/servers/{server_id}/scan")

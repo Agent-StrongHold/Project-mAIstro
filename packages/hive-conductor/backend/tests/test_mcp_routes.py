@@ -181,6 +181,14 @@ def test_delete_server(admin_client: Any) -> None:
     assert "s1" not in stores.mcp_servers
 
 
+def test_delete_server_cascades_tools(admin_client: Any) -> None:
+    stores.mcp_servers["s1"] = _make_server()
+    stores.mcp_tools["t1"] = MCPTool(id="t1", server_id="s1", name="tool", description="d")
+    assert admin_client.delete("/v1/mcp/servers/s1").status_code == 204
+    assert "t1" not in stores.mcp_tools
+    assert admin_client.get("/v1/mcp/tools").json() == []
+
+
 def test_delete_server_missing_404(admin_client: Any) -> None:
     r = admin_client.delete("/v1/mcp/servers/missing")
     assert r.status_code == 404

@@ -39,9 +39,22 @@ class CodeRegistry:
         self._default_verifier = verifier
 
     @staticmethod
-    def _verify(entry: CodeEntry, verifier: SignatureVerifier) -> None:
-        payload = f"{entry.name}@{entry.version}:{entry.code_sha256}".encode()
-        if not verifier.verify(payload, entry.signature):
+    def signing_payload(entry: CodeEntry) -> bytes:
+        """The exact bytes a registry signature must vouch for.
+
+        This is every field the governed execution path trusts: the identity
+        (``name@version``), the *kind* — which selects the Sentinel permission
+        action (``code.invoke.<kind>``) and reversibility class at invoke time
+        — and the content-addressed body. Signing the kind closes the
+        relabeling hole where an entry signed under a restricted kind could be
+        re-registered as a kind the principal is authorized to invoke while
+        retaining the original valid signature.
+        """
+        return (f"{entry.name}@{entry.version}:{entry.kind.value}:{entry.code_sha256}").encode()
+
+    @classmethod
+    def _verify(cls, entry: CodeEntry, verifier: SignatureVerifier) -> None:
+        if not verifier.verify(cls.signing_payload(entry), entry.signature):
             raise InvalidSignature(f"invalid signature for {entry.name}@{entry.version}")
 
     def register(self, entry: CodeEntry, *, verifier: SignatureVerifier | None = None) -> None:
