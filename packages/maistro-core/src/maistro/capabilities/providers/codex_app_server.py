@@ -171,7 +171,7 @@ class CodexAppServerHarnessRunner(SubprocessHarnessRunner):
 
     async def send(self, session_id: str, messages: list[dict[str, Any]]) -> dict[str, Any]:
         session = self._require_session(session_id)
-        thread_id = self._threads.get(session_id)
+        thread_id = self.foreign_session_id(session_id)
         if thread_id is None:
             raise KeyError(f"no correlated codex thread for session: {session_id}")
         prompt = "\n".join(_message_text(m) for m in messages if m.get("role") != "system")
@@ -217,7 +217,7 @@ class CodexAppServerHarnessRunner(SubprocessHarnessRunner):
         future enhancement (the governing manager buffers streams anyway).
         """
         session = self._require_session(session_id)
-        thread_id = self._threads.get(session_id)
+        thread_id = self.foreign_session_id(session_id)
         if thread_id is None:
             raise KeyError(f"no correlated codex thread for session: {session_id}")
         code, output = await session.sandbox.exec(self._stream_command(thread_id), self._timeout)

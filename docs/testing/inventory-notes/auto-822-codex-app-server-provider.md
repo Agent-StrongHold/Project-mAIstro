@@ -47,5 +47,8 @@ output cannot mint new sessions/runs (Codex is not a peer scheduler).
 turn failure propagates the typed error and still releases the session.
 
 Local run: `uv run pytest packages/maistro-core/tests/capabilities/test_codex_app_server_harness.py -q`
-→ 25 passed; `uv run ruff check .` and `uv run ruff format --check .` clean;
-`uv run mypy packages/maistro-core/src` clean.
+→ 27 passed; `uv run ruff check .` and `uv run ruff format --check .` clean;
+`uv run mypy packages/maistro-core/src` clean. The provider's public
+`foreign_session_id` accessor is read by `send`/`stream` (not only by tests),
+so the vulture per-identity ratchet (`packages/*/src --min-confidence 60
+--exclude '*/third_party/*'`) reports no new debt for this change.
