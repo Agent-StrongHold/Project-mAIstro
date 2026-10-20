@@ -53,8 +53,8 @@ class _ReportingNode(BaseNode[_In, _Out]):
         self.models_seen: list[str | None] = []
 
     async def run(self, inputs: BaseModel, ctx: NodeContext) -> NodeResult:
-        escalated = ctx.metadata.get("escalated_model")
-        self.models_seen.append(str(escalated) if escalated else None)
+        rung = ctx.metadata.get("escalated_model") or ctx.metadata.get("escalation_ladder_start")
+        self.models_seen.append(str(rung) if rung else None)
         quality = (
             self._quality_by_visit[self.visit] if self.visit < len(self._quality_by_visit) else None
         )
@@ -218,7 +218,7 @@ async def test_mixed_frontier_supervises_completed_siblings() -> None:
     # frontier: it re-queued at the next rung exactly as it would have on a
     # clean frontier, then passed on its second visit.
     assert quality.visit == 2
-    assert quality.models_seen == [None, "pro"]
+    assert quality.models_seen == ["flash", "pro"]
     # The failing branch retried through its own budget; the exhausted failure
     # stayed soft via continue_on_failure.
     assert flaky.calls == 2
@@ -282,7 +282,7 @@ async def test_quality_shortfall_escalates_to_next_rung() -> None:
     )
     assert record.status is RunStatus.COMPLETED
     assert node.visit == 2
-    assert node.models_seen == [None, "pro"]
+    assert node.models_seen == ["flash", "pro"]
     # The shortfall visit keeps its completed NodeRun as evidence; the
     # escalated re-visit is a fresh NodeRun, never a rewritten one.
     assert [node_run.status for node_run in record.node_runs] == [
@@ -296,6 +296,14 @@ async def test_quality_shortfall_escalates_to_next_rung() -> None:
 
 
 async def test_quality_pass_on_first_visit_runs_cheap_only() -> None:
+    """The first visit runs the ladder's cheapest rung, not an ambient default.
+
+    The executor seeds ``escalated_model`` with ``models[0]`` for the initial
+    visit of a ladder-declaring node, so a node whose configured default
+    model differs from the cheapest rung still starts cheap-first — the
+    fold's "no supervision state yet = cheapest rung ran" premise holds by
+    construction.
+    """
     node = _ReportingNode(quality_by_visit=[0.9])
     record, _ = await _run(
         node,
@@ -307,7 +315,7 @@ async def test_quality_pass_on_first_visit_runs_cheap_only() -> None:
     )
     assert record.status is RunStatus.COMPLETED
     assert node.visit == 1
-    assert node.models_seen == [None]
+    assert node.models_seen == ["flash"]
 
 
 async def test_exhausted_ladder_accepts_shortfall_without_looping() -> None:
@@ -322,7 +330,7 @@ async def test_exhausted_ladder_accepts_shortfall_without_looping() -> None:
     )
     assert record.status is RunStatus.COMPLETED
     assert node.visit == 2
-    assert node.models_seen == [None, "pro"]
+    assert node.models_seen == ["flash", "pro"]
     # Exhausting the ladder accepts the shortfall as final and must clear the
     # stale rung from persisted graph state, not just the local mapping.
     assert ESCALATION_STATE_METADATA_KEY not in record.graph_state.metadata
@@ -384,10 +392,8 @@ class _SelfReportingNode(BaseNode[_In, _Out]):
     def logical_effect_key(self, inputs: _In, ctx: NodeContext) -> str | None:
         # Same fail-closed contract as the shipped llm.summarize node: the
         # rung-scoped key makes a supervision re-visit a *new* keyed effect.
-        escalated = ctx.metadata.get("escalated_model")
-        return "test.verification_self_report:{}".format(
-            str(escalated).strip() if escalated else "first"
-        )
+        rung = ctx.metadata.get("escalated_model") or ctx.metadata.get("escalation_ladder_start")
+        return "test.verification_self_report:{}".format(str(rung).strip() if rung else "first")
 
     def __init__(self, *, quality_by_visit: list[float | None]) -> None:
         self._quality_by_visit = quality_by_visit
@@ -395,8 +401,8 @@ class _SelfReportingNode(BaseNode[_In, _Out]):
         self.models_seen: list[str | None] = []
 
     async def _execute(self, inputs: _In, ctx: NodeContext) -> _Out:
-        escalated = ctx.metadata.get("escalated_model")
-        self.models_seen.append(str(escalated) if escalated else None)
+        rung = ctx.metadata.get("escalated_model") or ctx.metadata.get("escalation_ladder_start")
+        self.models_seen.append(str(rung) if rung else None)
         quality = (
             self._quality_by_visit[self.visit] if self.visit < len(self._quality_by_visit) else None
         )
@@ -422,7 +428,7 @@ async def test_production_self_report_channel_drives_escalation() -> None:
     )
     assert record.status is RunStatus.COMPLETED
     assert node.visit == 2
-    assert node.models_seen == [None, "pro"]
+    assert node.models_seen == ["flash", "pro"]
     # Both visits are distinct completed NodeRuns; the shortfall visit was
     # withheld from advancement, never rewritten.
     assert [node_run.status for node_run in record.node_runs] == [

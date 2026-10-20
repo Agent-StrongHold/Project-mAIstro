@@ -21,6 +21,7 @@ from maistro.graph.nodes import NodeContext
 from maistro.graph.nodes.llm_summarize import LlmSummarizeNode
 from maistro.graph.verification.escalation import (
     ESCALATED_MODEL_CONTEXT_KEY,
+    LADDER_START_CONTEXT_KEY,
     QUALITY_METADATA_KEY,
 )
 from maistro.graph.verification.quality import summarize_quality
@@ -187,6 +188,59 @@ async def test_escalated_rung_outranks_the_default_alias(
 
     ctx = _ctx(metadata={ESCALATED_MODEL_CONTEXT_KEY: "vision-pro"})
     out = await llm_node.run({"text": "activity", "binding_id": llm_binding_id}, ctx)
+    assert out.success
+    assert seen["body"]["model"] == "vision-pro"
+
+
+async def test_seeded_ladder_start_runs_cheapest_rung_on_the_first_visit(
+    monkeypatch: pytest.MonkeyPatch,
+    llm_env: tuple[LlmSummarizeNode, str],
+) -> None:
+    """The executor-seeded ladder start, not the ambient default, runs first.
+
+    Review-finding regression: on the first visit there used to be no
+    ``escalated_model``, so the node ran ``inputs.model`` — which could be a
+    more expensive or unlisted model — while the fold still escalated as if
+    the cheapest rung had run. The seeded start makes cheap-first hold by
+    construction; a conflicting ``inputs.model`` simply loses.
+    """
+    llm_node, llm_binding_id = llm_env
+    monkeypatch.setenv("MAISTRO_LLM_BASE_URL", "http://fake-litellm:4000")
+    monkeypatch.setenv("MAISTRO_LLM_API_KEY", "fake-key")
+    seen: dict[str, Any] = {}
+    _fake_gateway(monkeypatch, seen)
+
+    ctx = _ctx(metadata={LADDER_START_CONTEXT_KEY: "gemini-3.1-flash-lite"})
+    out = await llm_node.run(
+        {"text": "activity", "model": "pro", "binding_id": llm_binding_id},
+        ctx,
+    )
+    assert out.success
+    assert seen["body"]["model"] == "gemini-3.1-flash-lite"
+
+
+async def test_seeded_ladder_start_yields_to_the_vision_alias(
+    monkeypatch: pytest.MonkeyPatch,
+    llm_env: tuple[LlmSummarizeNode, str],
+) -> None:
+    """The seeded start is the ladder's beginning, not a supervision order:
+    an image observation's vision alias still governs the first visit."""
+    llm_node, llm_binding_id = llm_env
+    monkeypatch.setenv("MAISTRO_LLM_BASE_URL", "http://fake-litellm:4000")
+    monkeypatch.setenv("MAISTRO_LLM_API_KEY", "fake-key")
+    seen: dict[str, Any] = {}
+    _fake_gateway(monkeypatch, seen)
+
+    ctx = _ctx(metadata={LADDER_START_CONTEXT_KEY: "gemini-3.1-flash-lite"})
+    out = await llm_node.run(
+        {
+            "observations": ["data:image/png;base64,QUJDREVG"],
+            "image_model": "vision-pro",
+            "model": "pro",
+            "binding_id": llm_binding_id,
+        },
+        ctx,
+    )
     assert out.success
     assert seen["body"]["model"] == "vision-pro"
 

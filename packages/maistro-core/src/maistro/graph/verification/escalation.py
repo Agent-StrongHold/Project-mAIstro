@@ -32,6 +32,14 @@ ESCALATION_LADDER_POLICY_KEY = "escalation_ladder"
 ESCALATION_STATE_METADATA_KEY = "escalations"
 #: NodeContext metadata key through which the executor hands the re-visit its rung.
 ESCALATED_MODEL_CONTEXT_KEY = "escalated_model"
+#: NodeContext metadata key through which the executor seeds a declared
+#: ladder's cheapest rung for a node's *first* supervised visit, so
+#: cheap-first starts the ladder rather than the node's ambient default
+#: model. Distinct from ``escalated_model``: a seeded start is the ladder's
+#: own beginning, so node-level rules that outrank it (an image
+#: observation's vision alias, say) still apply, while a supervision
+#: escalation is final and outranks everything.
+LADDER_START_CONTEXT_KEY = "escalation_ladder_start"
 
 
 class ModelLadder(BaseModel):
@@ -110,9 +118,10 @@ def decide_escalation(
     """Decide whether a completed visit at ``current_model`` must escalate.
 
     Cheap-first: the gate failing is necessary but not sufficient — a rung
-    is spent only when a stronger rung exists. ``current_model`` that is not
-    on the ladder escalates from the cheapest rung (the first visit may have
-    used the node's own default, which is not a ladder position).
+    is spent only when a stronger rung exists. ``current_model`` of ``None``
+    is the first supervised visit: the executor seeds a declared ladder's
+    cheapest rung for that visit, so the fold escalates from the cheapest
+    rung — the rung that actually ran — not from an ambient default.
     """
     if gate.passes(quality):
         return EscalationDecision(
@@ -173,6 +182,7 @@ __all__ = [
     "ESCALATED_MODEL_CONTEXT_KEY",
     "ESCALATION_LADDER_POLICY_KEY",
     "ESCALATION_STATE_METADATA_KEY",
+    "LADDER_START_CONTEXT_KEY",
     "QUALITY_METADATA_KEY",
     "EscalationDecision",
     "ModelLadder",
