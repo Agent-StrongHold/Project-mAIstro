@@ -27,7 +27,13 @@ This module is the bounded prototype the issue's deliverable names:
 - the explicitly documented global-state exceptions, pinned as behavior:
   persona feedback aggregates per persona template across every workspace
   instantiating it (services/persona_feedback.py), and the chat-session
-  listing lazily seeds the reader's own starter session on first read.
+  listing lazily seeds the reader's own starter session on first read;
+- a same-principal case: Alice owns A and holds an editor membership in B,
+  so her acting-user rows exist on both sides; A-scoped destructive
+  operations must still leave B untouched, and the review's named
+  regression -- a delete scoped to the acting *user* instead of the
+  Workspace -- is simulated against the store and proven to fail the
+  oracle (the AGENTS.md show-the-failure rule).
 
 Findings and the research disposition live in
 docs/research/886-workspace-noninterference.md.
@@ -56,7 +62,9 @@ pytestmark = [pytest.mark.contract("behavioral"), pytest.mark.scope("property")]
 #: ungated (an ordinary authenticated action), so neither needs
 #: workspaces.write to create their own Workspace.
 _A_PERMS = ["agents.write", "agents.delete", "schedules.write", "workspaces.write"]
-_B_PERMS = ["agents.write", "schedules.write"]
+#: workspaces.write lets Bob grant Alice her B membership in the
+#: same-principal case (only an owner can add members).
+_B_PERMS = ["agents.write", "schedules.write", "workspaces.write"]
 
 _ALICE = "m8a6-alice"
 _BOB = "m8a6-bob"
@@ -93,7 +101,10 @@ class Harness:
         self.memory_ids: list[str] = []
         self.chat_ids: list[str] = []
         self.feedback_ids: list[str] = []
-        #: Seeded B-owned rows: teardown-only, never A-op working sets.
+        #: Seeded B-side rows -- teardown-only, never A-op working sets.
+        #: Populated with Bob-owned rows by the `parties` fixture and with
+        #: Alice's B-side row (via her B membership) by the same-principal
+        #: case.
         self.bob_schedule_ids: list[str] = []
         self.bob_memory_ids: list[str] = []
         #: Members currently added to A (removed ones are popped).
@@ -799,6 +810,84 @@ async def _canonical_get(workspace_id: str) -> Any:
     from services.workspace_authority import canonical_store_for_tests
 
     return await canonical_store_for_tests().get(workspace_id)
+
+
+def test_same_principal_two_workspaces_destructive_ops_stay_workspace_scoped(
+    parties,
+) -> None:
+    """One principal authorized on both Workspaces (review P2).
+
+    The `parties` topology alone establishes cross-user isolation: B is
+    Bob-only, so a regression that keeps principal isolation but drops
+    Workspace isolation -- deleting every schedule or Agent owned by the
+    acting *user* -- finds no B-side rows of Alice's to damage and passes.
+    This case closes that gap without forking the fixture: Bob grants Alice
+    an editor membership in B, and Alice seeds real B-side rows through it,
+    so her acting-user rows exist on both sides while every operation stays
+    explicitly scoped to A. Memory entries and chat sessions are excluded
+    here: they are principal-owned records by design (the research note's
+    documented exception), so schedules and Agents are the surfaces where
+    user-scoping versus Workspace-scoping can disagree.
+    """
+    h = parties
+    # Alice's authorized universe now spans both Workspaces.
+    added = h.bob.post(
+        f"/v1/workspaces/{h.ws_b.id}/members", json={"user_id": _ALICE, "role": "editor"}
+    )
+    assert added.status_code == 200, added.text
+
+    # B-side row created by Alice *through her B membership*: exactly what
+    # a principal-scoped delete would take out. Teardown-only list, never
+    # the A-op working set the vocabulary pops from. (Agents have no
+    # equivalent row here: adding an Agent to a Workspace is owner-gated, so
+    # an editor membership cannot seed one -- schedules carry the case.)
+    b_schedule = h.alice.post(
+        "/v1/schedules", json={**_SCHEDULE_BODY, "workspace_id": h.ws_b.id}
+    )
+    assert b_schedule.status_code == 201, b_schedule.text
+    b_schedule_id = b_schedule.json()["id"]
+    assert b_schedule.json()["workspace_id"] == h.ws_b.id
+    h.bob_schedule_ids.append(b_schedule_id)
+
+    baseline = _observe(h)
+    # Anti-vacuity: B's projection carries Alice's cross-Workspace row, so
+    # a user-scoped regression has something real to damage.
+    assert any(s["id"] == b_schedule_id for s in baseline["schedules"])
+
+    # The destructive corner of the vocabulary, still explicitly scoped to A.
+    a_projection = _observe_a(h)
+    for op in (
+        _op_create_schedule_a,
+        _op_delete_schedule_a,
+        _op_create_agent_a,
+        _op_delete_agent_a,
+        _op_archive_workspace_a,
+        _op_recover_workspace_a,
+    ):
+        op(h)
+        _assert_untouched(baseline, _observe(h), f"same-principal: {op.__name__}")
+        a_projection = _observe_a(h)
+    _op_delete_workspace_a(h)
+    _assert_untouched(baseline, _observe(h), "same-principal: delete workspace A")
+
+    # Sensitivity (AGENTS.md L88-L92): simulate exactly the named regression
+    # -- a handler that deletes every schedule owned by the acting user,
+    # regardless of Workspace -- and prove the oracle fails against it, so
+    # the passes above are not vacuous.
+    import stores
+
+    for sid in [
+        sid
+        for sid, row in stores.schedules.items()
+        if row.user_id == _ALICE and row.workspace_id == h.ws_b.id
+    ]:
+        stores.schedules.pop(sid, None)
+    after_regression = _observe(h)
+    with pytest.raises(AssertionError, match="noninterference violated"):
+        _assert_untouched(
+            baseline, after_regression, "principal-scoped delete (the named regression)"
+        )
+    assert all(s["id"] != b_schedule_id for s in after_regression["schedules"])
 
 
 # ---------------------------------------------------------------------------
