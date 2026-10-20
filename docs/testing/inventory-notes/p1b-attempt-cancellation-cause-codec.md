@@ -322,3 +322,111 @@ previously authorized" (the `exact-debt-ledger` failure). The two-merge rule
 cannot authorize the debt — `load_authorizations` reads only the base — so the
 repair is an owner-held grant plus baseline row on develop, as #1851's own
 notes anticipated ("structural gates owner-held").
+
+## 2026-10-20 third repair round (head `3ee7f185e` → this commit): `exact-debt-ledger`
+
+The `exact-debt-ledger` job is red at `3ee7f185e`, and it is **not** the vulture
+step. `vulture` with CI's exact arguments passes at this head and at base:
+
+```
+$ uv run python scripts/check-vulture-baseline.py packages/*/src \
+      --min-confidence 60 --exclude '*/third_party/*'
+ratchet: vulture  [vulture (tool version: 2.16), metric v1]
+  baseline: base e20e9f52ea94
+  candidate: 3ee7f185e1d8
+  1326 reviewed identities  ->  1326 findings          # rc=0, no amendment needed
+```
+
+The job's failure is its **reachability** step, inherited from develop
+`e20e9f52e`. Reproduced on the committed head in a clean detached worktree
+(`/tmp/wt1885-head`, `git worktree add ... HEAD --detach`):
+
+```
+$ uv run python scripts/check-ratchet-provenance.py      # rc=1
+  168 unreachable modules  ->  169 unreachable of 1417 modules
+FAIL: reachability ratchet moved away from trusted state
+  - maistro.runs.admission_identity: NEW unreachable module absent from trusted
+    base and not previously authorized
+  - maistro.runs.admission_identity: current unreachable module missing from
+    candidate baseline
+FAIL: ratchet provenance inventory is incomplete
+  - check-reachability-provenance.py: trusted-base gate returned 1
+```
+
+Same identity at the base commit itself (`e20e9f52e`, detached worktree):
+`scripts/check-reachability.py` prints "1 module(s) are NEWLY UNREACHABLE:
+maistro.runs.admission_identity", and
+`tests/test_reachability_baseline_identity.py` (2) +
+`tests/test_check_reachability.py` (1) fail — the three rows behind the `test`
+job's failure.
+
+### Why the ledger could not be amended
+
+Proved, not assumed. In a third detached worktree (`/tmp/wt1885-bank`) I added
+the module to `quality/reachability-baseline.json` **and** a matching
+`quality/ratchet-authorizations.json` reachability grant, exactly what the
+brief permits for a retained identity:
+
+```
+$ uv run python scripts/check-ratchet-provenance.py      # rc=1
+FAIL: reachability ratchet moved away from trusted state
+  - maistro.runs.admission_identity: NEW unreachable module absent from trusted
+    base and not previously authorized
+```
+
+The two-merge rule (`scripts/ratchet_provenance.py`) reads authorizations from
+the **merge base**, so a candidate cannot bank or authorize it. `vulture` also
+never listed it as unbanked: it is not dead code, it is `#1851`'s inactive
+contract leaf (types and validators only, no side effects at import). Deleting
+it is out of scope, banking it is candidate-impossible — so the only remaining
+repair is the third one the gate offers: **give it a call path**.
+
+### The repair
+
+`packages/maistro-core/src/maistro/runs/__init__.py` re-exports the leaf's
+vocabulary from the canonical `maistro.runs` package surface
+(`AdmissionBinding`, `AdmissionRecordV2`, `CanonicalJsonObject`,
+`LegacyAdmissionRecord`, `RootAdmissionEnvelope`, all already in the leaf's own
+`__all__`). `maistro.runs` is imported by every process entry point, so the
+module now has a real inbound import edge and is measured reachable:
+`169 -> 168 unreachable of 1417 modules`.
+
+This **wires no consumer and authorizes nothing**: constructing a DTO is not
+admission, the leaf still has no runtime caller, and `#1851`/C2 own the
+classifier and backend integration that gives these types meaning. It is a CI
+repair outside the codec leaf, like the `pg_audit.py` repair above.
+
+Verification with the branch-local change applied:
+
+| Check | Result |
+| --- | --- |
+| `scripts/check-ratchet-provenance.py` (the `exact-debt-ledger` job) | rc=0; reachability **168 -> 168**, "no candidate-approved expansion" |
+| `scripts/check-shipped-surface-truth.py` | "Shipped-surface truth matrix is complete.", rc=0 |
+| `scripts/check-reachability.py` | "1417 production modules, 168 unreachable from any entry point" |
+| `scripts/check-reachability-dispositions.py` | "OK: 48 groups give all 168 unreachable modules a disposition" |
+| `scripts/check-promotion-surface.py` | "promotion surface: ok", rc=0 |
+| `scripts/check-vulture-baseline.py` (CI args) | `1326 reviewed identities -> 1326 findings`, rc=0 (unchanged) |
+| `tests/test_reachability_baseline_identity.py` + 4 sibling reachability suites | **67 passed** (these 3 rows fail at base: 3 failed, 45 passed) |
+| `uv run mypy <all ten CI src trees>` | 1066 files, 0 errors (the `lint-and-type-check` / `Mypy strict` failures at `1e1086f96` are already fixed by `3ee7f185e`) |
+| `uv run ruff check .` / `ruff format --check .` | clean / 3362 files already formatted |
+| `pytest .../test_attempt_cancellation_cause_codec.py .../test_attempt_cancellation_cause_model.py` | **70 passed** (36 + 34) |
+| import smoke | `import maistro.runs`, `maistro.runs.AdmissionRecordV2`, `import maistro.container` all ok (no cycle) |
+
+### Codec oracles re-proved non-vacuous this round
+
+Minimal mutations of `runs/model.py`'s `_omit_unknown_cause` serializer, each
+applied, run, and reverted byte-identical (`git diff` clean afterwards):
+
+- (A) drop the key unconditionally -> **20 failed** (every non-null cause row);
+- (B) never drop it, i.e. emit `null` for unknown -> **10 failed**
+  (`test_cause_round_trips_through_canonical_evidence_json[unknown-json-of-bytes]`,
+  both `test_unknown_cause_is_omitted_without_dropping_other_none` rows,
+  `test_nested_durable_record_preserves_cause_and_lineage[unknown]`, ...);
+- (C) bypass child serialization (hand-rolled dict) -> **30 failed**.
+
+Inventory delta is unchanged (`+38`) by this round: it adds no tests. The
+regression guard for the re-export is already in the root suite — reverting it
+makes `test_reachability_baseline_identity.py` (2 rows) and
+`test_check_reachability.py::test_baseline_matches_the_tree` fail again — and
+`vulture` pins the `__all__` entries, since removing them turns the imports
+into reported `unused import` identities.
