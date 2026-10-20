@@ -2,13 +2,20 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
+import aiosqlite
 import pytest
 
 from maistro.capabilities.binding import Binding
-from maistro.capabilities.effect_context import binding_scope_policy, new_effect_context
+from maistro.capabilities.effect_context import (
+    binding_scope_policy,
+    new_effect_context,
+    new_sqlite_effect_context,
+)
 from maistro.capabilities.invocation import InvocationStatus
+from maistro.events.envelope import EventEnvelope
 from maistro.tools.contracts import (
     ExpectedEffectRequired,
     GovernedToolExecutor,
@@ -173,6 +180,99 @@ async def test_prediction_mismatch_is_durable_evidence_and_not_success() -> None
     )
     assert unchanged.expected_effect is not None
     assert unchanged.expected_effect.matched is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("append_committed", [False, True])
+async def test_mismatch_event_recovers_after_sqlite_reopen(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, append_committed: bool
+) -> None:
+    """Recover a lost append/ack without redispatch or duplicate mismatch events."""
+    db_path = tmp_path / "tool-effects.db"
+    calls: list[dict[str, Any]] = []
+    arguments = {"title": "durable mismatch"}
+
+    async def backend(_name: str, args: dict[str, Any]) -> dict[str, Any]:
+        calls.append(args)
+        return {"id": "ticket-1"}
+
+    async def binding_for(_contract: ToolContract, _context: ToolInvocationContext) -> Binding:
+        return _binding()
+
+    async with aiosqlite.connect(db_path) as conn:
+        effects = await new_sqlite_effect_context(conn, policy_evaluator=binding_scope_policy)
+        await effects.bindings.put(_binding())
+        append = effects.event_store.append
+
+        async def interrupted_append(event: EventEnvelope) -> EventEnvelope:
+            if event.type.endswith("expected_effect_mismatch"):
+                if append_committed:
+                    await append(event)
+                raise OSError("lost mismatch append acknowledgement")
+            return await append(event)
+
+        monkeypatch.setattr(effects.event_store, "append", interrupted_append)
+        executor = GovernedToolExecutor(
+            effects=effects,
+            contracts=_registry(observed={"ticket_count": 2}),
+            binding_for=binding_for,
+            backend=backend,
+        )
+        with pytest.raises(OSError, match="lost mismatch append acknowledgement"):
+            await executor.execute(
+                "create_ticket", arguments, context=_CONTEXT, authorized_tools={"create_ticket"}
+            )
+        rows = await effects.invocation_store.list_effect(
+            run_id=_CONTEXT.run_id,
+            node_run_id=_CONTEXT.node_run_id,
+            binding_id=_binding().binding_id,
+            effect_key="tool:create_ticket:" + canonical_digest(arguments),
+        )
+        original = rows[0]
+        assert original.expected_effect is not None
+        assert original.expected_effect.matched is False
+        prediction = original.expected_effect.model_dump(mode="json")
+
+    # Rebuild the real durable composition, not just an executor over old stores.
+    async with aiosqlite.connect(db_path) as conn:
+        effects = await new_sqlite_effect_context(conn, policy_evaluator=binding_scope_policy)
+        executor = GovernedToolExecutor(
+            effects=effects,
+            # A later observation must not turn the persisted mismatch into success.
+            contracts=_registry(observed={"ticket_count": 1}),
+            binding_for=binding_for,
+            backend=backend,
+        )
+        for _ in range(2):
+            with pytest.raises(PredictionMismatch):
+                await executor.execute(
+                    "create_ticket", arguments, context=_CONTEXT, authorized_tools={"create_ticket"}
+                )
+        persisted = await effects.invocation_store.get(original.invocation_id)
+        assert persisted is not None
+        assert persisted.expected_effect is not None
+        evidence = persisted.expected_effect
+        assert evidence.model_dump(mode="json") == prediction
+        assert evidence.invocation_id == original.invocation_id
+        assert evidence.capability == "ticketing"
+        assert evidence.provider == persisted.binding.provider_name == "ticket-provider"
+        assert evidence.materialized_arguments == arguments
+        assert evidence.arguments_digest == canonical_digest(arguments)
+        assert evidence.pre_state_digest == canonical_digest({"ticket_count": 0})
+        assert evidence.expected_post_state == {"ticket_count": 1}
+        assert evidence.observed_post_state == {"ticket_count": 2}
+        assert evidence.policy_version == "tickets-v3"
+        events = await effects.event_store.list_stream("workspace:ws-1")
+        mismatches = [e for e in events if e.type.endswith("expected_effect_mismatch")]
+        assert len(mismatches) == 1
+        mismatch = mismatches[0]
+        assert mismatch.invocation_id == original.invocation_id
+        assert mismatch.run_id == _CONTEXT.run_id
+        assert mismatch.node_run_id == _CONTEXT.node_run_id
+        assert mismatch.attempt_id == _CONTEXT.attempt_id
+        assert mismatch.payload["evidence_digest"] == evidence.evidence_digest
+        assert mismatch.payload["observed_post_state"] == {"ticket_count": 2}
+    assert calls == [arguments]
 
 
 @pytest.mark.asyncio

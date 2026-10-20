@@ -982,6 +982,9 @@ class InvocationExecutionService:
         if evidence is None or evidence.matched is not False:
             raise ValueError("expected-effect mismatch event requires a mismatch")
         return EventEnvelope(
+            # One host verdict per Invocation. Stable identity lets the
+            # canonical EventStore repair a missed append without duplicates.
+            event_id=f"invocation:{invocation.invocation_id}:expected-effect-mismatch",
             type="capability.invocation.expected_effect_mismatch",
             workspace_id=invocation.workspace_id,
             project_id=invocation.project_id,

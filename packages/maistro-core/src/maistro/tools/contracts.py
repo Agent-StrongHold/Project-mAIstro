@@ -383,15 +383,13 @@ class GovernedToolExecutor:
         if not (contract.high_impact and contract.observed_post_state is not None):
             return invocation.result
         observed = contract.observed_post_state(invocation.result)
-        was_observed = (
-            invocation.expected_effect is not None
-            and invocation.expected_effect.matched is not None
-        )
         settled = await self._effects.invocations.record_expected_effect_observation(
             invocation.invocation_id, observed
         )
-        if not was_observed:
-            await self._record_mismatch_event(contract, settled)
+        # Observation and event append are separate durable writes. Retry the
+        # idempotent append even on replay: a prior worker may have stopped
+        # after saving the observation, or lost the append acknowledgement.
+        await self._record_mismatch_event(contract, settled)
         if self._mismatched(settled.expected_effect):
             raise PredictionMismatch(f"expected effect mismatch for tool {contract.name!r}")
         return settled.result
