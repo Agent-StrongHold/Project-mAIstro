@@ -237,3 +237,14 @@ indexes. Full detail:
   by hand. A future migration that changes `audit_log` must keep the two in
   step; the real-PostgreSQL `pg_indexes`/`information_schema` assertions in
   `test_container_pg_durable_events.py` are what will catch it.
+
+## Resolution (2026-10-20 sync)
+
+`auto-13` was merged with `origin/develop` at `c2d7209f1dbc` (merge commit
+`9ec0c7eaa`). The inherited reachability ratchet no longer fires on the
+merged tree: `maistro.runs.admission_identity` is reachable through
+`maistro.runs`, and `check-ratchet-provenance.py`, `check-reachability.py`,
+`check-vulture-baseline.py`, and `check-shipped-surface-truth.py` all exit 0.
+The audit-schema bootstrap contract (bootstrap-create + page indexes) was
+retained over develop's ALTER-only variant; see
+`docs/testing/inventory-notes/auto-13-7b24.md` for the test-count delta.
