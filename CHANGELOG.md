@@ -2237,6 +2237,19 @@ or placeholder-only section.
   terminalization and a fresh-job dispatch control. The existing retry and
   lease-ownership behavior is unchanged.
 
+### Dependencies
+
+- **Pillow and certifi move past their open advisories (#363).** The
+  installed `pillow` 12.3.0 carried eight advisories with fixes only in
+  13.0.0, and `certifi` 2026.4.22 carried GHSA-6q48-6c7w-9gw2 with its
+  fix in 2026.10.19; the supply-chain gate therefore failed on both.
+  `maistro-canvas` now requires `pillow>=13.0.0,<14` — the floor is raised
+  past the advisories so a fresh resolve cannot pick a vulnerable release
+  again, and the `<14` ceiling keeps the next major Pillow release an
+  explicit, reviewable decision — and `uv.lock` resolves `pillow` 13.0.0
+  and `certifi` 2026.10.19. No code path changes; both distributions keep
+  the licenses the license inventory already recorded (MIT-CMU and MPL-2.0).
+
 ## [1.0.0] - TBD
 
 First tagged release. Prior to this, the repository had no tags, no release
