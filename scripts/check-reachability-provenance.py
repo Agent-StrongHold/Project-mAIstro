@@ -15,6 +15,13 @@ PROVENANCE = ROOT / "scripts" / "ratchet_provenance.py"
 RATCHET = "reachability"
 METRIC_DEFINITION_VERSION = "1"
 
+#: Bounded analyzer implementation manifest (#319): this adapter plus the
+#: delegated import-graph checker it executes.
+ANALYZER_MANIFEST = (
+    "scripts/check-reachability-provenance.py",
+    "scripts/check-reachability.py",
+)
+
 
 def _load(path: Path, name: str) -> ModuleType:
     spec = importlib.util.spec_from_file_location(name, path)
@@ -31,6 +38,14 @@ def _load(path: Path, name: str) -> ModuleType:
         del sys.modules[name]
         raise
     return module
+
+
+def _tool_version(prov: ModuleType) -> str:
+    """Implementation identity of the analyzers that reached this verdict (#319)."""
+    version: str = prov.bundled_implementation_fingerprint(
+        Path(__file__).resolve().parents[1], ANALYZER_MANIFEST
+    )
+    return version
 
 
 def _unreachable(payload: object) -> set[str]:
@@ -58,6 +73,7 @@ def main() -> int:
     )
 
     try:
+        tool_version = _tool_version(prov)
         trusted_ref = prov.resolve_baseline(checker.BASELINE, root=ROOT)
         trusted = _unreachable(trusted_ref.loads(default={"unreachable": []}))
         prov.require_measurement(mods, ratchet=RATCHET, what="production module universe")
@@ -77,6 +93,7 @@ def main() -> int:
             ratchet=RATCHET,
             baseline=trusted_ref,
             tool="python import graph",
+            tool_version=tool_version,
             metric_definition_version=METRIC_DEFINITION_VERSION,
             old_value=f"{len(trusted)} unreachable modules",
             new_value=f"{len(current)} unreachable of {len(mods)} modules",

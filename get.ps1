@@ -63,7 +63,10 @@
   / *_INSTALL_CLI / *_OPEN_BROWSER.
 
 .EXAMPLE
-  irm https://raw.githubusercontent.com/Agent-StrongHold/Project-mAIstro/main/get.ps1 | iex
+  Invoke-WebRequest -UseBasicParsing -Uri https://raw.githubusercontent.com/Agent-StrongHold/Project-mAIstro/main/get.ps1 -OutFile .\get.ps1
+  Get-Content .\get.ps1
+  # Review the downloaded script and run it only if you trust its contents.
+  .\get.ps1
 
 .EXAMPLE
   .\get.ps1 -AutoInstallDeps

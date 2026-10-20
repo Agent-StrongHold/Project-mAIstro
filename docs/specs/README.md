@@ -37,7 +37,7 @@ Frozen **reference** trees that specs ported from (hyperagent bundle, gateway sn
 
 ## AC Defined specs (implementation backlog)
 
-**56 specs** with acceptance criteria defined but not yet fully implemented.
+**57 specs** with acceptance criteria defined but not yet fully implemented.
 Regenerate: `uv run python scripts/generate-spec-ac-defined-index.py`.
 
 | ID | Title | File |
@@ -90,6 +90,7 @@ Regenerate: `uv run python scripts/generate-spec-ac-defined-index.py`.
 | SPEC-092826-a780 | "Versioned human+AI artifact state, locks, guidance, and branch control" | [SPEC-092826-a780-versioned-creative-artifact-state.md](SPEC-092826-a780-versioned-creative-artifact-state.md) |
 | SPEC-100126-a9c4 | Canonical promotion contract (M4-A9) | [SPEC-100126-a9c4-canonical-promotion-contract.md](SPEC-100126-a9c4-canonical-promotion-contract.md) |
 | SPEC-100126-b779 | "Cross-artifact consistency evaluation and targeted refinement" | [SPEC-100126-b779-cross-artifact-consistency-evaluation.md](SPEC-100126-b779-cross-artifact-consistency-evaluation.md) |
+| SPEC-100826-c0e1 | "Coin-ledger billing and idempotency identity contract" | [SPEC-100826-c0e1-coin-ledger-billing-identity.md](SPEC-100826-c0e1-coin-ledger-billing-identity.md) |
 | SPEC-175 | Task progress webhook (conductor-router compatibility) | [SPEC-175-task-progress-webhook.md](SPEC-175-task-progress-webhook.md) |
 | SPEC-176 | Hive Conductor monorepo package | [SPEC-176-hive-conductor-package.md](SPEC-176-hive-conductor-package.md) |
 | SPEC-177 | Hyperagent graph execution (legacy port) | [SPEC-177-hyperagent-graph-execution.md](SPEC-177-hyperagent-graph-execution.md) |

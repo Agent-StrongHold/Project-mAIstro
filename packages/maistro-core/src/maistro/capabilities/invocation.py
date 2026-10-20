@@ -23,7 +23,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any, Protocol, runtime_checkable
@@ -35,6 +37,30 @@ from maistro.capabilities.binding import Binding, ResolvedBinding, ResolvedCapab
 from maistro.capabilities.types import Unavailable
 
 logger = logging.getLogger("maistro.capabilities.invocation")
+
+# The durable Graph executor binds its node's stable logical-effect key while
+# node code runs. This keeps an omitted per-call scope from silently degrading
+# a graph retry into a new per-NodeRun effect identity. Explicit scopes still
+# win, and non-Graph callers retain the node-run fallback below.
+_logical_effect_scope: ContextVar[str | None] = ContextVar(
+    "maistro_logical_effect_scope", default=None
+)
+
+
+@contextmanager
+def bind_logical_effect_scope(effect_scope: str | None) -> Iterator[None]:
+    """Bind a Graph node's stable effect scope for nested Invocations.
+
+    The binding is context-local, so concurrent frontier nodes cannot borrow
+    each other's identity. It deliberately accepts ``None``: nodes without a
+    usable key continue to use their physical NodeRun identity.
+    """
+
+    token = _logical_effect_scope.set(effect_scope)
+    try:
+        yield
+    finally:
+        _logical_effect_scope.reset(token)
 
 
 def _id() -> str:
@@ -217,13 +243,9 @@ class Invocation(BaseModel):
     actor_id: str = ""
     binding: ResolvedBinding
     effect_key: str
-    # Persisted replay-scope discriminator (#1194): when True this Invocation
-    # is one logical effect for the whole Run -- admission, dedup, and the
-    # unsafe-retry guard key on (run_id, binding_id, effect_key) across every
-    # physical NodeRun -- so a concurrent retry under a new NodeRun collides
-    # with the canonical row instead of double-dispatching. Ordinary
-    # capability effects keep their physical per-NodeRun scope.
-    logical_effect: bool = False
+    # Stable logical scope for retries; physical node_run_id remains the
+    # provenance of the Invocation that actually dispatched the provider call.
+    effect_scope: str = ""
     status: InvocationStatus = InvocationStatus.CREATED
     request: Any | None = None
     result: Any | None = None
@@ -259,6 +281,17 @@ class Invocation(BaseModel):
             if value is not None and value.tzinfo is None:
                 object.__setattr__(self, field, _utc(value))
         return self
+
+    @property
+    def effect_identity(self) -> tuple[str, str, str, str]:
+        """Logical effect identity stable across physical Attempt retries."""
+
+        return (
+            self.run_id,
+            self.effect_scope or self.node_run_id,
+            self.binding.binding_id,
+            self.effect_key,
+        )
 
 
 def _settled_by_another_admission(
@@ -311,7 +344,16 @@ class InvocationStore(Protocol):
         node_run_id: str | None,
         binding_id: str,
         effect_key: str,
-    ) -> list[Invocation]: ...
+        effect_scope: str | None = None,
+    ) -> list[Invocation]:
+        """Chronological effect history for one logical or physical effect.
+
+        ``effect_scope`` keys the logical effect identity when given.
+        Otherwise ``node_run_id`` discriminates: a concrete id scopes to that
+        node run, and ``None`` spans every node run under the run for the
+        binding+effect_key pair (the cross-node audit read).
+        """
+        ...
 
     async def list_ambiguous(self, *, stale_before: datetime) -> list[Invocation]: ...
 
@@ -335,7 +377,7 @@ class InMemoryInvocationStore:
             if invocation.invocation_id in self._items:
                 raise ValueError(f"Invocation {invocation.invocation_id!r} already exists")
             if any(
-                _same_admission_effect(item, invocation)
+                item.effect_identity == invocation.effect_identity
                 and item.status
                 in {
                     InvocationStatus.CREATED,
@@ -376,14 +418,24 @@ class InMemoryInvocationStore:
         node_run_id: str | None,
         binding_id: str,
         effect_key: str,
+        effect_scope: str | None = None,
     ) -> list[Invocation]:
+        if effect_scope is None and node_run_id is None:
+            # ``node_run_id=None`` spans every node run under the run for this
+            # binding+effect_key pair (the cross-node audit read).
+            return [
+                item.model_copy(deep=True)
+                for item in sorted(self._items.values(), key=lambda candidate: candidate.created_at)
+                if item.run_id == run_id
+                and item.binding.binding_id == binding_id
+                and item.effect_key == effect_key
+            ]
+        scope = effect_scope or node_run_id
+        identity = (run_id, scope, binding_id, effect_key)
         return [
             item.model_copy(deep=True)
             for item in sorted(self._items.values(), key=lambda candidate: candidate.created_at)
-            if item.run_id == run_id
-            and (node_run_id is None or item.node_run_id == node_run_id)
-            and item.binding.binding_id == binding_id
-            and item.effect_key == effect_key
+            if item.effect_identity == identity
         ]
 
     async def list_ambiguous(self, *, stale_before: datetime) -> list[Invocation]:
@@ -403,9 +455,11 @@ class InMemoryInvocationStore:
             history = [
                 item
                 for item in sorted(self._items.values(), key=lambda candidate: candidate.created_at)
-                # develop replaced Invocation.effect_identity with this helper,
-                # which widens the comparison for a logical effect (#1194).
-                if _same_admission_effect(item, invocation)
+                # The claim keys the persisted logical identity
+                # (``effect_scope or node_run_id``), so a retry under a new
+                # NodeRun carrying the same stable scope collides with the
+                # canonical row instead of double-dispatching (#1194).
+                if item.effect_identity == invocation.effect_identity
             ]
             if history and history[-1].status is not InvocationStatus.FAILED:
                 return history[-1].model_copy(deep=True)
@@ -426,31 +480,6 @@ class StaleInvocationUpdate(RuntimeError):
 
 class UnsafeEffectRetry(RuntimeError):
     """Recovery cannot safely repeat an effect whose outcome may already exist."""
-
-
-def _same_admission_effect(stored: Invocation, candidate: Invocation) -> bool:
-    """One admission identity for two Invocations (#1194).
-
-    A logical-effect Invocation is admitted against the Run-scoped identity
-    ``(run_id, binding_id, effect_key)`` -- spanning every physical NodeRun --
-    while an ordinary capability effect stays scoped to its own NodeRun
-    visit. Either side opting into the logical scope widens the comparison,
-    so a retry that carries a new NodeRun cannot be admitted beside the
-    canonical row still recording the same logical effect.
-    """
-    if (
-        stored.run_id,
-        stored.binding.binding_id,
-        stored.effect_key,
-    ) != (
-        candidate.run_id,
-        candidate.binding.binding_id,
-        candidate.effect_key,
-    ):
-        return False
-    if stored.logical_effect or candidate.logical_effect:
-        return True
-    return stored.node_run_id == candidate.node_run_id
 
 
 class CapabilityUnavailable(RuntimeError):
@@ -580,17 +609,16 @@ class InvocationExecutionService:
         run_id: str,
         node_run_id: str,
         effect_key: str,
-        logical_effect: bool = False,
+        effect_scope: str | None = None,
     ) -> Invocation | None:
         """Return the latest canonical Invocation for one logical effect identity."""
 
-        # Only an executable EFFECT_KEY contract may widen history across
-        # NodeRuns; ordinary capability keys remain physical-visit scoped.
         history = await self._store.list_effect(
             run_id=run_id,
-            node_run_id=None if logical_effect else node_run_id,
+            node_run_id=node_run_id,
             binding_id=binding.binding_id,
             effect_key=effect_key,
+            effect_scope=effect_scope,
         )
         return history[-1] if history else None
 
@@ -621,7 +649,7 @@ class InvocationExecutionService:
                 node_run_id=candidate.node_run_id,
                 binding_id=candidate.binding.binding_id,
                 effect_key=candidate.effect_key,
-                logical_effect=candidate.logical_effect,
+                effect_scope=candidate.effect_scope,
             )
             if replay is not None:
                 return replay
@@ -699,16 +727,17 @@ class InvocationExecutionService:
         # nothing but `binding_id`, which both models carry.
         binding_id: str,
         effect_key: str,
-        logical_effect: bool = False,
+        effect_scope: str | None = None,
     ) -> Invocation | None:
         """Re-read canonical history after an admission race with another worker.
 
         Another worker may have completed the effect between our initial
         history read and the store-level admission guard. Returns the accepted
         completed Invocation, or None when the race outcome is not a replay.
-        The re-read uses the caller's scope: a logical effect re-reads its
-        whole Run history, so a completed canonical row under a different
-        NodeRun is a replay rather than a re-raised race error (#1194).
+        The re-read uses the caller's scope: an effect carrying a stable
+        logical scope re-reads that whole logical scope, so a completed
+        canonical row under a different NodeRun is a replay rather than a
+        re-raised race error (#1194).
 
         A replay found here is a terminal fact the quota ledger has not yet
         observed in this process, so it repairs and notifies on the way out
@@ -716,9 +745,10 @@ class InvocationExecutionService:
         """
         latest_history = await self._store.list_effect(
             run_id=run_id,
-            node_run_id=None if logical_effect else node_run_id,
+            node_run_id=node_run_id,
             binding_id=binding_id,
             effect_key=effect_key,
+            effect_scope=effect_scope,
         )
         if latest_history and latest_history[-1].status is InvocationStatus.COMPLETED:
             latest = latest_history[-1]
@@ -726,6 +756,19 @@ class InvocationExecutionService:
             await self._notify_completion(latest)
             return latest
         return None
+
+    @staticmethod
+    async def _resolve_provider(
+        binding: Binding,
+        resolver: ProviderResolver,
+    ) -> ResolvedCapabilityProvider:
+        """Resolve an eligible provider before creating its Invocation record."""
+        provider = await resolver(binding)
+        if isinstance(provider, Unavailable):
+            raise CapabilityUnavailable(
+                f"capability {binding.capability!r} unavailable: {provider.reason}"
+            )
+        return provider
 
     async def _run_provider(
         self,
@@ -785,11 +828,11 @@ class InvocationExecutionService:
         attempt_id: str,
         effect_key: str,
         request: Any,
+        effect_scope: str | None = None,
         resolver: ProviderResolver,
         executor: ProviderExecutor,
         usage_from: UsageExtractor | None = None,
         actor_id: str = "",
-        logical_effect: bool = False,
     ) -> Invocation:
         """Execute one effect, deduplicating or blocking unsafe recovery.
 
@@ -799,30 +842,27 @@ class InvocationExecutionService:
         absent. Only a prior ``FAILED`` record, produced by ``EffectNotApplied``,
         is eligible for a new physical Invocation under a later Attempt.
 
-        Admission is atomic against the same scope the caller declared: with
-        ``logical_effect=True`` the persisted discriminator makes the store's
-        admission guard Run-scoped across NodeRuns, so two workers racing a
-        retry under different NodeRuns cannot both dispatch (#1194).
+        Admission is atomic against the same scope the caller or enclosing
+        Graph node declared: with a stable ``effect_scope`` the persisted scope
+        makes the store's admission guard logical across NodeRuns, so two
+        workers racing a retry under different NodeRuns cannot both dispatch
+        (#1194).
         """
 
         _require(effect_key, "effect_key")
+        resolved_effect_scope = effect_scope or _logical_effect_scope.get() or node_run_id
         async with self._effect_lock:
-            # An EFFECT_KEY node opts into a stable Run/node identity; all
-            # other capability effects stay scoped to their physical NodeRun.
             history = await self._store.list_effect(
                 run_id=run_id,
-                node_run_id=None if logical_effect else node_run_id,
+                node_run_id=node_run_id,
                 binding_id=binding.binding_id,
                 effect_key=effect_key,
+                effect_scope=resolved_effect_scope,
             )
             if (prior := await self._prior_effect(history, effect_key)) is not None:
                 return prior
 
-            provider = await resolver(binding)
-            if isinstance(provider, Unavailable):
-                raise CapabilityUnavailable(
-                    f"capability {binding.capability!r} unavailable: {provider.reason}"
-                )
+            provider = await self._resolve_provider(binding, resolver)
             resolved = ResolvedBinding.from_provider(binding, provider)
             candidate = Invocation(
                 run_id=run_id,
@@ -833,8 +873,8 @@ class InvocationExecutionService:
                 actor_id=actor_id,
                 binding=resolved,
                 effect_key=effect_key,
+                effect_scope=resolved_effect_scope,
                 request=request,
-                logical_effect=logical_effect,
             )
             invocation = await self._admit_effect(candidate)
             settled = _settled_by_another_admission(candidate, invocation, effect_key)

@@ -428,6 +428,17 @@ and the single linear head remains `056`. The chain test walks to `056`
 still asserts `get_heads() == ["056"]`; the refused-downgrade stamp
 assertion continues to track the head, so it stays at `056`.
 
+Update (auto-1572 develop sync, Goal-store collision): the Goal-store lane
+(#1572) had independently landed **`056_canonical_goals`** on that same quota
+door, colliding with this revision's id a fourth time. The merged tree
+renumbers the later-integrated revision onto the landed tip:
+**`057_user_model_facts`** (`down_revision = "056"`). The same sync lands
+#863's planner-stability revision (on develop `057`, re-parented onto the
+user-model tip), colliding with the renumbered `057_user_model_facts`; it
+renumbers onto that tip as **`058_run_store_planner_stability`**. The chain
+test walks to `058` and asserts `get_heads() == ["058"]`; the head-tracking
+stamp assertion follows the tip.
+
 Update (auto-102 lane sync of `c560d4cca`, backlog pair re-parents past the
 tip): on this lane the #102 backlog work-source/authority-cutover pair
 (#98/#102) already held the quota door's child slots as `056`/`057`, so
@@ -449,3 +460,9 @@ the pair renumbers to `059_backlog_work_source` and
 `060_backlog_authority_cutover`, the chain test walks to `060` and asserts
 `get_heads() == ["060"]`, and the refused-downgrade stamp assertion now
 reads the head dynamically (`_chain_head()`) instead of pinning a literal.
+
+Correction (auto-1572 salvage): the Goal-first renumbering above was an
+abandoned draft. User-model `056`, planner `057`, provenance `058`, and
+incoming backlog `059`/`060` retain their identities. Unmerged Goals append
+as candidate `061`; central reservation remains unverified. The refusal
+assertion preserves the actual pre-downgrade stamp. No test-count change.

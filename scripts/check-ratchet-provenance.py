@@ -134,6 +134,13 @@ CANDIDATE_AUTHORED: dict[tuple[str, str], str] = {
         "so a prior-tree oracle would predate the routes this tree ships; a changed "
         "disposition or contract is the substantive change reviewers read"
     ),
+    ("bench_fleet_routing.py", "quality/model-egress.json"): (
+        "measurement input, not a comparison oracle: the #934 fleet bench reports "
+        "the frozen egress inventory's row count and the approved provider's "
+        "presence as its portability evidence and writes nothing; the blocking "
+        "two-way ratchet over this ledger is owned by check-model-egress.py with "
+        "its own provenance policy"
+    ),
 }
 
 # Adapter values are tooling identities (filename stems), not paths. Keeping the

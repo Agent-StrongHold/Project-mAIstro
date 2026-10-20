@@ -108,6 +108,13 @@ class _Blocking(BaseNode[_Empty, _Seed]):
 
 
 class _UnboundEffect(BaseNode[_Empty, _Seed]):
+    """An EFFECT_KEY node whose key builder explicitly reports no key.
+
+    Distinct from a node with no ``logical_effect_key`` at all: the callable
+    exists and runs, but the effect contract it returns is unusable, so the
+    fold must still refuse a second visit.
+    """
+
     kind: ClassVar[str] = "test.attempt.unbound_effect"
     kind_category: ClassVar[str] = "sync.transform"
     input_schema: ClassVar[type[BaseModel]] = _Empty
@@ -115,13 +122,26 @@ class _UnboundEffect(BaseNode[_Empty, _Seed]):
     replay_semantics: ClassVar[ReplaySemantics] = ReplaySemantics.EFFECT_KEY
     calls: ClassVar[int] = 0
 
-    def replay_effect_key(self, inputs: _Empty, ctx: NodeContext) -> str:
+    def logical_effect_key(self, inputs: _Empty, ctx: NodeContext) -> str | None:
         del inputs, ctx
-        return ""
+        return None
 
     async def _execute(self, inputs: _Empty, ctx: NodeContext) -> _Seed:
         type(self).calls += 1
         raise RuntimeError("effect key unavailable")
+
+
+class _HardNonRetryable(BaseNode[_Empty, _Seed]):
+    kind: ClassVar[str] = "test.attempt.hard_non_retryable"
+    kind_category: ClassVar[str] = "sync.transform"
+    input_schema: ClassVar[type[BaseModel]] = _Empty
+    output_schema: ClassVar[type[BaseModel]] = _Seed
+    replay_semantics: ClassVar[ReplaySemantics] = ReplaySemantics.NON_RETRYABLE
+    calls: ClassVar[int] = 0
+
+    async def _execute(self, inputs: _Empty, ctx: NodeContext) -> _Seed:
+        type(self).calls += 1
+        raise RuntimeError("ambiguous effect")
 
 
 class _NeverRetry(BaseNode[_Empty, _Seed]):
@@ -129,7 +149,9 @@ class _NeverRetry(BaseNode[_Empty, _Seed]):
     kind_category: ClassVar[str] = "sync.transform"
     input_schema: ClassVar[type[BaseModel]] = _Empty
     output_schema: ClassVar[type[BaseModel]] = _Seed
-    replay_semantics: ClassVar[ReplaySemantics] = ReplaySemantics.NON_RETRYABLE
+    # A label without a concrete key must fail closed rather than retrying an
+    # ambiguous external effect.
+    replay_semantics: ClassVar[ReplaySemantics] = ReplaySemantics.EFFECT_KEY
     calls: ClassVar[int] = 0
 
     async def _execute(self, inputs: _Empty, ctx: NodeContext) -> _Seed:
@@ -150,6 +172,22 @@ def _unbound_effect_graph() -> Graph:
             )
         ],
         metadata={"entry_node": "unbound"},
+    )
+
+
+def _hard_non_retryable_graph() -> Graph:
+    return Graph(
+        workspace_id="ws-1",
+        project_id="project-1",
+        name="Hard non-retryable",
+        nodes=[
+            Node(
+                node_id="hard",
+                node_type=_HardNonRetryable.kind,
+                policies={"max_attempts": 3},
+            )
+        ],
+        metadata={"entry_node": "hard"},
     )
 
 
@@ -254,6 +292,12 @@ def _unbound_effect_resolver(node_id: str, graph: Graph) -> BaseNode[Any, Any]:
     return _UnboundEffect()
 
 
+def _hard_non_retryable_resolver(node_id: str, graph: Graph) -> BaseNode[Any, Any]:
+    del graph
+    assert node_id == "hard"
+    return _HardNonRetryable()
+
+
 def _never_retry_resolver(node_id: str, graph: Graph) -> BaseNode[Any, Any]:
     del graph
     assert node_id == "never"
@@ -279,7 +323,11 @@ def _single_recovery_record(
     attempt_result: object | None = None,
     node_id: str = "start",
 ) -> DurableRunRecord:
-    kinds = {"start": _Start.kind, "never": _NeverRetry.kind}
+    kinds = {
+        "start": _Start.kind,
+        "never": _NeverRetry.kind,
+        "hard": _HardNonRetryable.kind,
+    }
     graph = Graph(
         workspace_id="ws-1",
         project_id="project-1",
@@ -361,7 +409,26 @@ async def test_public_durable_executor_routes_each_node_run_through_attempt_runt
 
 
 @pytest.mark.asyncio
+async def test_unkeyed_effect_contract_overrides_a_graph_retry_budget() -> None:
+    """A node labeled EFFECT_KEY but exposing no key gets exactly one visit."""
+    _NeverRetry.calls = 0
+    store = InMemoryDurableRunStore()
+
+    record = await run_durable_graph(
+        _never_retry_graph(),
+        store=store,
+        node_resolver=_never_retry_resolver,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
+
+    assert record.status is RunStatus.FAILED
+    assert _NeverRetry.calls == 1
+    assert len(record.attempts) == 1
+
+
+@pytest.mark.asyncio
 async def test_effect_key_contract_requires_a_recorded_key_before_retry() -> None:
+    """An explicit ``logical_effect_key -> None`` is as unusable as no method."""
     _UnboundEffect.calls = 0
     store = InMemoryDurableRunStore()
 
@@ -379,18 +446,18 @@ async def test_effect_key_contract_requires_a_recorded_key_before_retry() -> Non
 
 @pytest.mark.asyncio
 async def test_non_retryable_contract_overrides_a_graph_retry_budget() -> None:
-    _NeverRetry.calls = 0
+    _HardNonRetryable.calls = 0
     store = InMemoryDurableRunStore()
 
     record = await run_durable_graph(
-        _never_retry_graph(),
+        _hard_non_retryable_graph(),
         store=store,
-        node_resolver=_never_retry_resolver,
+        node_resolver=_hard_non_retryable_resolver,
         actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
 
     assert record.status is RunStatus.FAILED
-    assert _NeverRetry.calls == 1
+    assert _HardNonRetryable.calls == 1
     assert len(record.attempts) == 1
 
 
@@ -561,18 +628,18 @@ async def test_resume_never_reexecutes_a_non_retryable_nodes_ambiguous_effect() 
     the ambiguity lands in front of a person instead of on the remote system.
     """
     # One call before the crash: the physical effect's outcome is unknown.
-    _NeverRetry.calls = 1
+    _HardNonRetryable.calls = 1
     store = InMemoryDurableRunStore()
     await store.create(
-        _single_recovery_record(attempt_status=AttemptStatus.RUNNING, node_id="never")
+        _single_recovery_record(attempt_status=AttemptStatus.RUNNING, node_id="hard")
     )
 
     record = await resume_durable_graph(
-        "recover-run", store=store, node_resolver=_never_retry_resolver
+        "recover-run", store=store, node_resolver=_hard_non_retryable_resolver
     )
 
     # The body never ran again: one ambiguous effect, not two.
-    assert _NeverRetry.calls == 1
+    assert _HardNonRetryable.calls == 1
     # The canonical recovery rotation still happened (ADR-082826-08f0): the
     # orphaned Attempt is CANCELLED and a fresh chronological Attempt settles
     # the refusal as its own durable evidence.

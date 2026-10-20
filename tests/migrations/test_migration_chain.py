@@ -105,6 +105,13 @@ EXPECTED_TABLES = frozenset(
         # score names the Run, NodeRun and Attempt it scored, so it is
         # execution evidence, not a sidecar lifecycle.
         "canonical_run_eval_scores",
+        # The canonical Goal store (#1572, 063): identity + Subgoal lineage,
+        # the append-only desired-state revision chain, and the recorded,
+        # attributed transition ledger. Desired state and accountability, not
+        # execution state — they are NOT children of canonical_runs.
+        "canonical_goals",
+        "canonical_goal_revisions",
+        "canonical_goal_transitions",
         # The Workspace those Projects and Runs belong to (#516). Their
         # `workspace_id` columns were bare Text with nothing to reference
         # until migration 019 gave the Workspace a table of its own.
@@ -185,8 +192,10 @@ EXPECTED_TABLES = frozenset(
         # a second Run (#1176).
         "task_idempotency",
         "tasks",
-        # The durable cross-Workspace user model (#1047, 056, re-parented past
-        # develop's 054 and 055): one row per fact
+        # The durable cross-Workspace user model (#1047, 056 — the identity
+        # develop merged in #1951's c560d4c, kept so installed databases
+        # upgrade forward without a stamp edit):
+        # one row per fact
         # revision, plus the owner-bound statement keys that keep a tombstone
         # blocking every wording its lineage ever held.
         "user_model_facts",
@@ -290,6 +299,77 @@ def empty_database():
     _drop_all_tables()
 
 
+class TestAuditCursorIndexes:
+    def test_indexes_upgrade_and_reverse_without_losing_audit_rows(self, empty_database) -> None:
+        """The shipping chain installs every seek and rolls back only its indexes."""
+        assert _alembic("upgrade", "061").returncode == 0
+        _execute("INSERT INTO audit_log (boundary, user_id) VALUES ('login', 'alice')")
+
+        result = _alembic("upgrade", "head")
+        assert result.returncode == 0, result.stderr
+        indexes = dict(
+            _query(
+                "SELECT indexname, indexdef FROM pg_indexes "
+                "WHERE schemaname = 'public' AND tablename = 'audit_log' "
+                "AND indexname LIKE %s",
+                ("ix_audit_page_%",),
+            )
+        )
+        assert set(indexes) == {f"ix_audit_page_{index}" for index in range(8)}
+        assert all("org_id" in definition for definition in indexes.values())
+        assert all('"timestamp" DESC, id DESC' in definition for definition in indexes.values())
+
+        result = _alembic("downgrade", "061")
+        assert result.returncode == 0, result.stderr
+        assert not _query(
+            "SELECT indexname FROM pg_indexes WHERE schemaname = 'public' "
+            "AND tablename = 'audit_log' AND indexname LIKE %s",
+            ("ix_audit_page_%",),
+        )
+        assert _query("SELECT boundary, user_id FROM audit_log") == [("login", "alice")]
+        # Rolling back audit indexes must not undo develop's preceding revision.
+        assert _query("SELECT version_num FROM alembic_version") == [("061",)]
+        assert _query(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_schema = 'public' AND table_name = 'graph_continuations' "
+            "AND column_name = 'has_hitl_pause'"
+        ) == [("has_hitl_pause",)]
+        assert _query(
+            "SELECT indexname FROM pg_indexes WHERE schemaname = 'public' "
+            "AND tablename = 'graph_continuations' "
+            "AND indexname = 'ix_graph_continuations_hitl_paused'"
+        ) == [("ix_graph_continuations_hitl_paused",)]
+        assert _query(
+            "SELECT indexname FROM pg_indexes WHERE schemaname = 'public' "
+            "AND tablename = 'canonical_runs' "
+            "AND indexname = 'ix_canonical_runs_status_created'"
+        ) == [("ix_canonical_runs_status_created",)]
+        assert {
+            "backlog_items",
+            "backlog_events",
+            "backlog_documents",
+            "backlog_claims",
+            "backlog_authority",
+            "user_model_facts",
+            "user_model_statement_keys",
+            "invocation_quota_allocations",
+            "invocation_quota_budgets",
+            "invocation_quota_evidence",
+            "invocation_quota_reservations",
+        } <= _tables()
+        assert _query(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_schema = 'public' AND table_name = 'task_idempotency' "
+            "AND column_name = 'generation_id'"
+        ) == [("generation_id",)]
+        # The preceding learning-lifecycle migration must still be present.
+        assert _query(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_schema = 'public' AND table_name = 'learnings' "
+            "AND column_name = 'confidence'"
+        ) == [("confidence",)]
+
+
 class TestTheChainApplies:
     def test_upgrade_head_succeeds_on_an_empty_database(self, empty_database) -> None:
         """The exact command the README gives, against the state it assumes."""
@@ -363,32 +443,35 @@ class TestTheChainApplies:
             """
             insert into capability_invocations
                 (invocation_id, run_id, node_run_id, attempt_id, binding_id,
-                 effect_key, status, created_at, payload, logical_effect)
+                 effect_key, effect_scope, status, created_at, payload)
             values ('inv-adopted', 'run-adopted', 'node-1', 'att-1', 'bind-1',
-                    'effect-1', 'completed', 0.0, '{}', true)
+                    'effect-1', 'run-adopted:charge:order-42', 'completed', 0.0, '{}')
             """
         )
-        # 044's parent: the re-application walks 044, 043, 045 and 046 over
-        # the existing schema — the exact walk the Canvas conformance suite
-        # drives.
+        # 044's parent: the re-application walks 044 and 046 over the existing
+        # schema — the exact walk the Canvas conformance suite drives.
         assert _alembic("stamp", "039_quota_usage_event_identity").returncode == 0
         result = _alembic("upgrade", "head")
         assert result.returncode == 0, result.stderr
-        # The adopted column and its Run-scoped admission index exist exactly
-        # once, and the pre-existing row kept its flagged value rather than
-        # being rewritten by the re-run default.
+        # The effect-claim shape the durable stores and migration 035 agree on
+        # still exists exactly once, the guarded elevation-grants table (046)
+        # was adopted rather than duplicated, and the pre-existing row kept
+        # its claimed scope rather than being rewritten by a re-run default.
         assert _query(
             "select count(*) from information_schema.columns "
             "where table_name = 'capability_invocations' "
-            "and column_name = 'logical_effect'"
+            "and column_name = 'effect_scope'"
         ) == [(1,)]
         assert _query(
             "select count(*) from pg_indexes where tablename = 'capability_invocations' "
-            "and indexname = 'uq_capability_invocation_active_logical_effect'"
+            "and indexname = 'uq_capability_invocation_active_effect'"
         ) == [(1,)]
         assert _query(
-            "select logical_effect from capability_invocations where invocation_id = 'inv-adopted'"
-        ) == [(True,)]
+            "select count(*) from information_schema.tables where table_name = 'elevation_grants'"
+        ) == [(1,)]
+        assert _query(
+            "select effect_scope from capability_invocations where invocation_id = 'inv-adopted'"
+        ) == [("run-adopted:charge:order-42",)]
 
 
 class TestTaskIdentityMigration:

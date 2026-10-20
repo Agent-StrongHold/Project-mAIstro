@@ -187,6 +187,7 @@ def _stub_provenance(
         require_metric_version=lambda *_args, **_kwargs: None,
         load_authorizations=lambda *_args, **_kwargs: dict(authorizations or {}),
         head_sha=lambda *_args, **_kwargs: "candidate",
+        bundled_implementation_fingerprint=lambda *_args, **_kwargs: "bundled-sha256:fake",
     )
 
 

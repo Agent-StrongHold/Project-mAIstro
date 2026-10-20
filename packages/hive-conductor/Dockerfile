@@ -20,6 +20,17 @@ ENV VITE_POC_MODE=${VITE_POC_MODE}
 # breaking asset URLs. Defaults to / so standalone builds are unaffected.
 ARG VITE_BASE_PATH=/
 ENV VITE_BASE_PATH=${VITE_BASE_PATH}
+# Perceived-load telemetry (#1420). Collection stays OFF unless the builder
+# sets VITE_RUM_ENABLED=true (and the runtime sets RUM_INGEST_ENABLED=true):
+# both sides must opt in before any observation exists. docs/RUM.md is the
+# contract; the sample rate defaults to 1.0 and the build id defaults to
+# "dev" when the builder does not name the build.
+ARG VITE_RUM_ENABLED=
+ENV VITE_RUM_ENABLED=${VITE_RUM_ENABLED}
+ARG VITE_RUM_SAMPLE_RATE=1
+ENV VITE_RUM_SAMPLE_RATE=${VITE_RUM_SAMPLE_RATE}
+ARG VITE_RUM_BUILD_ID=
+ENV VITE_RUM_BUILD_ID=${VITE_RUM_BUILD_ID}
 RUN npm run build
 
 # ---- age build ----

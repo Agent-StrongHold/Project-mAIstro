@@ -289,6 +289,34 @@ The HMAC trust root is distinct from the admin/user identity keys managed by
 `PrivilegeGuard.rotate_admin_key`; rotate both independently if both were
 compromised.
 
+## Backup and escrow disposition
+
+The daily backup (`deploy/scripts/backup.sh`) captures this data directory —
+`state.db` (consistent SQLite snapshot), `secrets.age`, `user_credentials.enc` —
+but deliberately does **not** carry the decryption roots. `admin.key` (the age
+identity for `secrets.age`) and `credential_master.key` are escrowed by the same
+script into `ESCROW_ROOT` (default `/var/lib/maistro-escrow`), a dated snapshot
+outside the backup artifact; see
+[the deployment runbook §2.1](install/deployment-topology.md#21-conductor-durable-state-and-the-credential-escrow).
+
+Consequence, stated plainly: **if the escrow is lost and no off-host copy
+exists, the vault contents are gone permanently** — age/X25519 has no recovery
+path, and the Fernet-encrypted provider tokens in `user_credentials.enc` must be
+re-entered by hand. "Restore the data directory from backup" (above) recovers
+`state.db` and the ciphertext, never the keys.
+
+Before you rely on any escrow, prove it: run the weekly drill
+(`deploy/scripts/verify-restore.sh`), which decrypts the backed-up vault with the
+escrowed key, or by hand:
+
+```bash
+age --decrypt -i "${ESCROW_ROOT}/<date>/admin.key" \
+    "${BACKUP_ROOT}/<date>/conductor-data/secrets.age"
+```
+
+If that prints your secrets, the escrow is real. If it fails, treat the escrow
+as lost and re-escrow from the live data directory immediately.
+
 ## What this does not cover
 
 - **Third-party tokens.** Revoke and reissue at the provider (see above).

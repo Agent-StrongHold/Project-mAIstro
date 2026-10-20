@@ -123,12 +123,14 @@ async def test_resume_refuses_a_demonstrably_live_attempt() -> None:
     _Work.calls = 0
     store = InMemoryDurableRunStore()
     await store.create(_crashed_record("live-run", lease_expires_in=timedelta(minutes=5)))
+    before = await store.get("live-run")
 
     with pytest.raises(ValueError, match="live execution lease"):
         await resume_durable_graph("live-run", store=store, node_resolver=_resolver)
 
     untouched = await store.get("live-run")
     assert untouched is not None
+    assert untouched == before
     assert untouched.attempts[0].status is AttemptStatus.RUNNING
     assert untouched.node_runs[0].status is RunStatus.RUNNING
     assert _Work.calls == 0
@@ -154,6 +156,60 @@ async def test_resume_recovers_an_attempt_whose_lease_lapsed() -> None:
         AttemptStatus.CANCELLED,
         AttemptStatus.COMPLETED,
     ]
+    assert _Work.calls == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.ac("ADR-082826-08f0/AC-1")
+async def test_resume_refuses_a_live_recovery_claim_on_a_running_run() -> None:
+    """A claim checkpoint another recovery still holds is live-worker evidence too.
+
+    The due scan lists a candidate before its owner's claim checkpoint extends
+    ``resume_at``; a second tick claiming anyway bumps the continuation version
+    under the live worker, whose terminal write is then refused as a version
+    regression -- leaving the Run stranded RUNNING until the stolen claim
+    itself expires. Only the claim TTL may hand the work on; the lease guard
+    above cannot see this shape, because the stranded worker's Attempt carries
+    no execution lease until its first physical step.
+    """
+    _Work.calls = 0
+    store = InMemoryDurableRunStore()
+    claim_horizon = datetime.now(UTC) + timedelta(minutes=1)
+    await store.create(
+        _crashed_record("claimed-run").model_copy(update={"resume_at": claim_horizon})
+    )
+
+    with pytest.raises(ValueError, match="recovery claim held by another worker"):
+        await resume_durable_graph("claimed-run", store=store, node_resolver=_resolver)
+
+    untouched = await store.get("claimed-run")
+    assert untouched is not None
+    assert untouched.status is RunStatus.RUNNING
+    assert untouched.resume_at == claim_horizon
+    assert _Work.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_resume_still_steals_an_expired_recovery_claim() -> None:
+    """An expired claim is the proof of death the claim TTL exists to carry.
+
+    Refusing live claims must not turn a crashed recovery's claim into a
+    permanent lock: once ``resume_at`` has elapsed, the resume proceeds and
+    the work completes through the canonical orphaned-Attempt seam.
+    """
+    _Work.calls = 0
+    store = InMemoryDurableRunStore()
+    await store.create(
+        _crashed_record("expired-claim-run").model_copy(
+            update={"resume_at": datetime.now(UTC) - timedelta(seconds=1)}
+        )
+    )
+
+    recovered = await resume_durable_graph(
+        "expired-claim-run", store=store, node_resolver=_resolver
+    )
+
+    assert recovered.status is RunStatus.COMPLETED
     assert _Work.calls == 1
 
 

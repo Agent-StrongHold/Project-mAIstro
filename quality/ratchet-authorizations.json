@@ -6,7 +6,13 @@
       "reason": "The seam #231 exists to have the live Hive scheduler build against, not yet a consumed dependency: the migration is blocked on maistro.runs.consumption's deliberate single-node-Run scope (#44/#34), since Hive's bundled daily-status DAG is multi-node and a straight swap today would leave firings QUEUED forever. Exposed ahead of its reader so the constructor exists in one reviewed place before the migration lands, following template_store's own precedent (#251) of exposing a store ahead of the routes that consume it."
     }
   },
-  "ac-state": {},
+  "ac-state": {
+    "design_coverage@39.641": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#166",
+      "reason": "Measured re-anchor, owner-authorized 2026-10-17 (primary session 01a09220, publisher lane). develop ab8b3737 measures design_coverage 39.641 while the folded floor 44.2377 was banked from a stacked-branch tree (auto-1572 note via #1938, Oct 13) that never reflected a develop tip, leaving the Quality-gate ratchet unpassable for every develop-based candidate (observed red on #1641/#1936/#1941). This grant lowers the floor to the honestly measured 39.641 -- it permits this one specific fall, not open season -- while measured coverage recovers upward; the #1641 fix-forward banked its note at the same measured value. Two-merge rule observed: this authorization lands before any candidate that needs it."
+    }
+  },
   "reachability": {
     "maistro.events.convergence": {
       "owner": "@BlakeMatthews-dev",
@@ -1008,21 +1014,6 @@
       "owner": "@BlakeMatthews-dev",
       "issue": "#1682",
       "reason": "Newly visible, not newly complex (#1682). The radon ratchet scanned only packages/maistro-core/src, so every C-or-worse block in the other eight shipped packages went unmeasured -- including all 13 D blocks and the single E in production code. This grant admits the block at the complexity it already had on the day the scope widened. It authorizes nothing to get worse: the ledger row is pinned to this exact value and the Boy Scout ratchet takes it down from here. Re-keyed from @15, which this change deletes: develop has taken this block down to 14, and a grant names the complexity it authorizes. Keeping @15 would not be inert -- the checker consults grants exactly when a regression makes that value reachable again, so the stale key would pre-authorize raising this function back to 15 (Codex, #1761)."
-    },
-    "packages/maistro-design/src/maistro_design/consistency.py::_build_refinement@17": {
-      "owner": "@BlakeMatthews-dev",
-      "issue": "#1682",
-      "reason": "New code in a package the ratchet does not yet watch (#1682). Unlike the #1761 grants, this block is not legacy: it landed today in #1663 (cross-artifact consistency evaluation), and it is unmeasured only because the radon scan still covers packages/maistro-core/src alone. #1684 is what brings it into scope. Said plainly rather than filed under 'newly visible', because the distinction is the whole value of the ledger: this is fresh complexity being admitted at its authored value, not old debt being surfaced. The three blocks are the consistency evaluator's branching core -- sibling-contradiction checks, project-snapshot evaluation and refinement construction. Refactoring is cheapest now, while the code is days old, and #1791 tracks that; this grant pins the value so the block cannot drift further while that work is scheduled."
-    },
-    "packages/maistro-design/src/maistro_design/consistency.py::_check_sibling_contradictions@16": {
-      "owner": "@BlakeMatthews-dev",
-      "issue": "#1682",
-      "reason": "New code in a package the ratchet does not yet watch (#1682). Unlike the #1761 grants, this block is not legacy: it landed today in #1663 (cross-artifact consistency evaluation), and it is unmeasured only because the radon scan still covers packages/maistro-core/src alone. #1684 is what brings it into scope. Said plainly rather than filed under 'newly visible', because the distinction is the whole value of the ledger: this is fresh complexity being admitted at its authored value, not old debt being surfaced. The three blocks are the consistency evaluator's branching core -- sibling-contradiction checks, project-snapshot evaluation and refinement construction. Refactoring is cheapest now, while the code is days old, and #1791 tracks that; this grant pins the value so the block cannot drift further while that work is scheduled."
-    },
-    "packages/maistro-design/src/maistro_design/consistency.py::evaluate_project_snapshot@15": {
-      "owner": "@BlakeMatthews-dev",
-      "issue": "#1682",
-      "reason": "New code in a package the ratchet does not yet watch (#1682). Unlike the #1761 grants, this block is not legacy: it landed today in #1663 (cross-artifact consistency evaluation), and it is unmeasured only because the radon scan still covers packages/maistro-core/src alone. #1684 is what brings it into scope. Said plainly rather than filed under 'newly visible', because the distinction is the whole value of the ledger: this is fresh complexity being admitted at its authored value, not old debt being surfaced. The three blocks are the consistency evaluator's branching core -- sibling-contradiction checks, project-snapshot evaluation and refinement construction. Refactoring is cheapest now, while the code is days old, and #1791 tracks that; this grant pins the value so the block cannot drift further while that work is scheduled."
     },
     "packages/maistro-rsi/src/maistro_rsi/fail_first.py::_has_related_failure@14": {
       "owner": "@BlakeMatthews-dev",

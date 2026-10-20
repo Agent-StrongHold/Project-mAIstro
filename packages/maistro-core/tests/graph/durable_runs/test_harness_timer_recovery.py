@@ -8,6 +8,7 @@ that is store-reconstruction evidence, not an OS-process-kill claim.
 from __future__ import annotations
 
 import asyncio
+import os
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
@@ -121,6 +122,8 @@ async def spine(
     request: pytest.FixtureRequest, tmp_path: Any, pg_pool: Any
 ) -> AsyncIterator[Spine]:
     if request.param == "postgres" and pg_pool is None:
+        if os.environ.get("MAISTRO_REQUIRE_PG_LEGS"):
+            pytest.fail("MAISTRO_REQUIRE_PG_LEGS is set but PostgreSQL is not configured")
         pytest.skip("PostgreSQL service is not configured")
     projects: ProjectScopeStore = (
         PgProjectScopeStore(pg_pool) if request.param == "postgres" else InMemoryProjectScopeStore()
@@ -333,3 +336,187 @@ async def test_two_recovery_stores_cannot_poll_the_same_observation_twice(
     assert len(completed.attempts) == 2
     assert await recover(second) == 0
     assert remote.polls == ["durable-handle"]
+
+
+@pytest.mark.parametrize(
+    "contender_window", ["after_claim", "after_initial_guard", "after_reactivation"]
+)
+async def test_waiting_claim_is_not_stolen_before_canonical_reactivation(
+    spine: Spine, clock: Clock, monkeypatch: pytest.MonkeyPatch, contender_window: str
+) -> None:
+    """Hold real persisted claims at the three previously unguarded read windows.
+
+    The PostgreSQL parameter uses the canonical stores. SQLite is only the
+    existing race harness; neither case claims OS-process-kill evidence.
+    """
+    from maistro.graph.durable_runs import attempt_executor, recovery
+
+    # Tick time is deliberately unrelated to the process wall clock. A
+    # projection repair must not expire this tick's live claim on its own.
+    clock.started_at = clock.value = datetime(2001, 1, 1, tzinfo=UTC)
+    remote = Remote(
+        answers=[HarnessResult(handle_id="durable-handle", success=True, output="once")]
+    )
+    parked = await _start(spine, remote)
+    clock.value += timedelta(seconds=10)
+    owner_spine = await spine.reconstruct()
+    contender_spine = await spine.reconstruct()
+    claimed = asyncio.Event()
+    release_owner = asyncio.Event()
+    initial_guard_passed = asyncio.Event()
+    release_contender = asyncio.Event()
+    original_reactivate = attempt_executor._reactivate_for_walk
+    original_spine = attempt_executor.traversal._canonical_spine
+    original_candidate = recovery._resume_due_candidate
+    original_reconcile = attempt_executor._reconcile_orphaned_attempts
+    reconciled_by: list[str] = []
+
+    async def record_reconciler(*args: Any, **kwargs: Any) -> DurableRunRecord:
+        task = asyncio.current_task()
+        assert task is not None
+        reconciled_by.append(task.get_name())
+        return await original_reconcile(*args, **kwargs)
+
+    async def hold_stale_listing(*args: Any, **kwargs: Any) -> bool:
+        task = asyncio.current_task()
+        if (
+            contender_window != "after_initial_guard"
+            and task is not None
+            and task.get_name() == "claim-contender"
+        ):
+            initial_guard_passed.set()
+            await release_contender.wait()
+        return await original_candidate(*args, **kwargs)
+
+    async def hold_owner(record: DurableRunRecord, run_store: Any) -> DurableRunRecord:
+        task = asyncio.current_task()
+        if task is not None and task.get_name() == "claim-owner":
+            if contender_window == "after_reactivation":
+                record = await original_reactivate(record, run_store)
+            claimed.set()
+            await release_owner.wait()
+        return await original_reactivate(record, run_store)
+
+    async def hold_contender(record: DurableRunRecord, run_store: Any) -> Any:
+        task = asyncio.current_task()
+        if (
+            contender_window == "after_initial_guard"
+            and not initial_guard_passed.is_set()
+            and task is not None
+            and task.get_name() == "claim-contender"
+        ):
+            initial_guard_passed.set()
+            await release_contender.wait()
+        return await original_spine(record, run_store)
+
+    monkeypatch.setattr(attempt_executor, "_reactivate_for_walk", hold_owner)
+    monkeypatch.setattr(attempt_executor.traversal, "_canonical_spine", hold_contender)
+    monkeypatch.setattr(recovery, "_resume_due_candidate", hold_stale_listing)
+    monkeypatch.setattr(attempt_executor, "_reconcile_orphaned_attempts", record_reconciler)
+
+    async def recover(
+        composed: tuple[RunStore, CanonicalDurableRunStore, CapabilityEffectContext],
+    ) -> int:
+        runs, store, effects = composed
+        return await resume_due_graph_runs(
+            store=store,
+            run_store=runs,
+            now=clock.value,
+            node_resolver_factory=lambda _: _resolver(effects, remote),
+        )
+
+    contender = None
+    owner = None
+    try:
+        async with asyncio.timeout(10):
+            contender = asyncio.create_task(recover(contender_spine), name="claim-contender")
+            await initial_guard_passed.wait()
+            owner = asyncio.create_task(recover(owner_spine), name="claim-owner")
+            await claimed.wait()
+            before = await contender_spine[1].get(parked.run_id)
+            expected_status = (
+                RunStatus.RUNNING if contender_window == "after_reactivation" else RunStatus.WAITING
+            )
+            assert before is not None and before.status is expected_status
+            assert before.resume_at == clock.value + attempt_executor.GRAPH_RECOVERY_CLAIM_TTL
+            release_contender.set()
+            assert await contender == 0
+            assert "claim-contender" not in reconciled_by
+            after = await contender_spine[1].get(parked.run_id)
+            assert after == before
+            assert remote.polls == []
+    finally:
+        release_contender.set()
+        release_owner.set()
+        results = await asyncio.gather(
+            *(task for task in (owner, contender) if task is not None), return_exceptions=True
+        )
+    assert results[0] == 1
+    completed = await owner_spine[1].get(parked.run_id)
+    assert completed is not None and completed.status is RunStatus.COMPLETED
+    assert len(remote.dispatches) == 1
+    assert remote.polls == ["durable-handle"]
+    assert len(completed.attempts) == 2
+
+
+async def test_future_timer_is_not_a_claim_even_when_deadlines_match(
+    spine: Spine, clock: Clock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Re-parking releases ownership without forbidding existing direct resumes."""
+    from maistro.graph.durable_runs import attempt_executor, resume_durable_graph
+    from maistro.graph.durable_runs.types import RECOVERY_CLAIM_UNTIL_KEY
+
+    monkeypatch.setattr(attempt_executor, "GRAPH_RECOVERY_CLAIM_TTL", timedelta(seconds=10))
+    remote = Remote()
+    parked = await _start(spine, remote)
+    assert parked.resume_at == clock.value + attempt_executor.GRAPH_RECOVERY_CLAIM_TTL
+    assert RECOVERY_CLAIM_UNTIL_KEY not in parked.graph_state.metadata
+    runs, store, effects = await spine.reconstruct()
+    resumed = await resume_durable_graph(
+        parked.run_id, store=store, run_store=runs, node_resolver=_resolver(effects, remote)
+    )
+    assert resumed.status is RunStatus.WAITING
+    assert resumed.resume_at == parked.resume_at
+    assert RECOVERY_CLAIM_UNTIL_KEY not in resumed.graph_state.metadata
+    assert len(resumed.attempts) == 1
+    assert remote.polls == []
+
+
+@pytest.mark.parametrize("reactivated", [False, True])
+async def test_expired_marked_waiting_claim_recovers_without_redispatch(
+    spine: Spine, clock: Clock, monkeypatch: pytest.MonkeyPatch, reactivated: bool
+) -> None:
+    from maistro.graph.durable_runs import attempt_executor
+    from maistro.graph.durable_runs.types import RECOVERY_CLAIM_UNTIL_KEY
+
+    class ProcessLost(BaseException):
+        pass
+
+    remote = Remote(
+        answers=[HarnessResult(handle_id="durable-handle", success=True, output="once")]
+    )
+    parked = await _start(spine, remote, timeout=300)
+    clock.value += timedelta(seconds=10)
+
+    original_reactivate = attempt_executor._reactivate_for_walk
+
+    async def lose_after_claim(record: DurableRunRecord, run_store: Any) -> DurableRunRecord:
+        if reactivated:
+            await original_reactivate(record, run_store)
+        raise ProcessLost
+
+    with monkeypatch.context() as patch:
+        patch.setattr(attempt_executor, "_reactivate_for_walk", lose_after_claim)
+        with pytest.raises(ProcessLost):
+            await _tick(spine, parked, remote, clock)
+    claimed = await spine.graph_store.get(parked.run_id)
+    expected_status = RunStatus.RUNNING if reactivated else RunStatus.WAITING
+    assert claimed is not None and claimed.status is expected_status
+    assert claimed.resume_at is not None
+    assert claimed.graph_state.metadata[RECOVERY_CLAIM_UNTIL_KEY] == claimed.resume_at.isoformat()
+    clock.value = claimed.resume_at
+    completed = await _tick(spine, parked, remote, clock)
+    assert completed.status is RunStatus.COMPLETED
+    assert len(remote.dispatches) == 1
+    assert remote.polls == ["durable-handle"]
+    assert len(completed.attempts) == 2

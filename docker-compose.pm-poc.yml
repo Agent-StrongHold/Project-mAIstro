@@ -4,6 +4,12 @@ version: "3.9"
 
 services:
   maistro-engine:
+    # Keep the overlay's effective merged configuration bounded even when it
+    # is reviewed or rendered separately from the root file.
+    mem_limit: 2g
+    memswap_limit: 2g
+    pids_limit: 512
+    cpus: 2.0
     environment:
       - MAISTRO_POC_MODE=pm
       # Required, with no default. This overlay sets REQUIRE_AUTH=true, so a
@@ -17,6 +23,10 @@ services:
       - pm-poc
 
   hive-conductor:
+    mem_limit: 1g
+    memswap_limit: 1g
+    pids_limit: 256
+    cpus: 1.0
     build:
       context: .
       dockerfile: packages/hive-conductor/Dockerfile
@@ -39,6 +49,9 @@ services:
       - ATLASSIAN_ROVO_MCP_URL=https://mcp.atlassian.com/v1/mcp/authv2
       # - ATLASSIAN_SITE_URL=https://your-org.atlassian.net
       # - ATLASSIAN_API_TOKEN=${ATLASSIAN_API_TOKEN:-}
+      # Same Sentinel preset as the dev stack (#66); the PM overlay inherits
+      # the base hive-conductor service but replaces its environment block.
+      - MAISTRO_PERMISSION_PRESET=hive_conductor_tools
     depends_on:
       - maistro-engine
     profiles:

@@ -30,11 +30,22 @@ cancellation stranding the receipt projection) were caught by *only* this
 suite — 996-998 stateless tests across `packages/maistro-server/tests` and
 `packages/maistro-core/tests/tasks` survived both. The other two (fingerprint
 narrowing, list owner-scoping dropped) were also caught here at the HTTP
-relation level while core unit tests caught them directly. The suite encodes
-the observed production asymmetry that a Run cancelled through
-`POST /runs/{id}/cancel` terminalizes the Run while its receipt stays `queued`
-until a worker reconciles it — a relation no stateless test in this package
-asserts.
+relation level while core unit tests caught them directly. That matrix was
+measured at the leaf base (`af7996883`); the stateless battery at the
+develop-sync head collects 1104 (server 581, core tasks 523).
+
+The suite pins the *cross-route* cancellation relation: a Run cancelled through
+`POST /runs/{id}/cancel` terminalizes the Run and projects that truth onto its
+task receipt in the same request, so the receipt route must then refuse the
+repeat with 400 while the run route stays idempotent, and every later rule
+(replay, listing, foreign probe) reads the same terminal pair. The two halves
+of that sentence changed sides during this leaf: at the base commit the receipt
+stayed `queued` until a worker reconciled it and no stateless test asserted
+either shape; develop then landed the receipt projection together with its own
+stateless tests (`test_runs_api.py::test_run_cancel_uses_the_canonical_lifecycle`,
+`::test_cancel_without_a_task_correlation_keeps_local_receipts_unchanged`), and
+this suite was the only thing that went red on the route *pair* — evidence for
+keeping it in the PR job rather than nightly.
 
 An independent re-validation round exposed two latent defects in the suite's
 own oracle (model, not production): the listing invariant checked only the
@@ -46,9 +57,11 @@ textual key, and each owner's replay/409 verdict is computed against their
 own record (now tracked per-owner). Both surfaced only at nightly depth
 (fresh seeds), never on the derandomized PR profile.
 
-Runtime cost: ~7s derandomized on PRs (25 examples × ≤12 steps, 5/5 stable
-runs during development, 3/3 on re-validation post-fix); 100×20 randomized
-runs green 4/4 post-fix at 36-54s. Deeper nightly runs
+Runtime cost: ~8s derandomized on PRs at the develop-sync head (25 examples ×
+≤12 steps; 5/5 stable runs during development, 3/3 on re-validation, green
+again post-sync); 100×20 randomized
+runs green 4/4 post-fix at 36-54s, and green 2/2 at 35.4s/43.0s at the
+develop-sync head after the cancel-oracle repair. Deeper nightly runs
 without touching the file: `MAISTRO_STATEFUL_API_EXAMPLES=200
 MAISTRO_STATEFUL_API_STEPS=40 MAISTRO_STATEFUL_API_DERANDOMIZE=0`. The second
 node ID also pins contract documentation: the served spec still declares no

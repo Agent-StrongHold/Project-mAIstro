@@ -218,6 +218,100 @@ async def test_denied_tool_call_is_one_core_audit_row(booted: Container) -> None
     await _assert_converges("denied_tool_call", booted, before, user_id)
 
 
+async def test_core_decision_audit_is_admin_scoped(
+    client: httpx.AsyncClient, booted: Container
+) -> None:
+    user_id, username, password = _USER
+    await _login(client, username, password)
+    marker = f"private-decision-{uuid4().hex}"
+    assert booted.audit_log is not None
+    await booted.audit_log.log(
+        AuditEntry(
+            timestamp=datetime.now(UTC),
+            boundary="test",
+            user_id=user_id,
+            verdict="denied",
+            detail=marker,
+            request_id=marker,
+        )
+    )
+
+    response = await client.get("/v1/audit")
+
+    assert response.status_code == 403
+    assert marker not in response.text
+
+
+async def test_core_detail_cannot_bypass_admin_scope_via_legacy_replica(
+    client: httpx.AsyncClient,
+    booted: Container,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import stores
+    from routes.audit import log_audit
+
+    await _login(client, _USER[1], _USER[2])
+    marker = f"private-detail-{uuid4().hex}"
+    log_audit("gate_block", _USER[1], detail={"decision": marker}, severity="warning")
+    mirrored = [row for row in stores.audit_log.values() if marker in str(row)]
+    assert len(mirrored) == 1
+    assert any(marker in row.detail for row in await _core_rows(booted))
+    path = f"/v1/audit/{mirrored[0]['id']}"
+
+    # A known ID must not expose the replica of an admin-only decision, even
+    # when its actor is the requesting principal. List/export deny this too.
+    response = await client.get(path)
+    assert response.status_code == 403
+    assert marker not in response.text
+
+    def forbidden_lookup(*args, **kwargs):
+        pytest.fail("canonical authorization must precede legacy detail lookup")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(stores.audit_log, "get", forbidden_lookup)
+        for detail_path in (path, "/v1/audit/nonexistent-detail"):
+            denied = await client.get(detail_path)
+            assert denied.status_code == 403
+            assert denied.json() == response.json()
+
+
+async def test_sync_audit_bridge_is_visible_in_memory_pages_and_export(
+    client: httpx.AsyncClient,
+    booted: Container,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The sync route writer must maintain the same indexes as async log()."""
+    import asyncio
+
+    from routes.audit import log_audit
+
+    from maistro.security.sentinel.audit import InMemoryAuditLog
+
+    audit_log = InMemoryAuditLog()
+    monkeypatch.setattr(booted, "audit_log", audit_log)
+    await _login(client, _ADMIN[1], _ADMIN[2])
+    await asyncio.to_thread(log_audit, "test-index", "sync-actor", detail={"marker": "sync-bridge"})
+    await audit_log.log(
+        AuditEntry(boundary="test-index", user_id="async-actor", detail="async-write")
+    )
+    response = await client.get("/v1/audit", params={"action": "test-index", "limit": 1})
+    assert response.status_code == 200, response.text
+    first = response.json()
+    assert first["entries"][0]["actor"] == "async-actor"
+    assert first["next_cursor"]
+    response = await client.get(
+        "/v1/audit",
+        params={"action": "test-index", "limit": 1, "cursor": first["next_cursor"]},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["entries"][0]["detail"] == {"marker": "sync-bridge"}
+    assert response.json()["next_cursor"] is None
+    exported = await client.get("/v1/audit/export", params={"actor": "sync-actor"})
+    assert exported.status_code == 200, exported.text
+    assert len(exported.text.splitlines()) == 1
+    assert "sync-bridge" in exported.text
+
+
 async def test_audit_route_reads_the_core_audit_log(
     client: httpx.AsyncClient, booted: Container
 ) -> None:
@@ -245,3 +339,199 @@ async def test_audit_route_reads_the_core_audit_log(
         assert served == 0, "GET /v1/audit now serves the core AuditLog; delete it from KNOWN_GAPS"
         return
     assert served >= 1
+    assert set(response.json()) == {"entries", "next_cursor"}
+    assert len(response.json()["entries"]) <= 50
+
+
+async def test_settings_projection_uses_bounded_core_pages(
+    client: httpx.AsyncClient,
+    booted: Container,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The develop projection must not reintroduce a full-corpus audit read."""
+    await _login(client, _ADMIN[1], _ADMIN[2])
+    audit_log = booted.audit_log
+    assert audit_log is not None
+    for index in range(75):
+        await audit_log.log(
+            AuditEntry(boundary="settings_patch", user_id="system", detail=str(index))
+        )
+    await audit_log.log(AuditEntry(boundary="unrelated", user_id="system"))
+    original_page = audit_log.get_page
+    calls = []
+
+    async def bounded_page(**kwargs):
+        assert kwargs["limit"] == 50
+        assert kwargs["boundary"] in {"settings_patch", "settings_reload", "settings_update"}
+        calls.append(kwargs)
+        return await original_page(**kwargs)
+
+    async def forbidden_list(**kwargs):
+        pytest.fail("projection must not materialize the corpus")
+
+    monkeypatch.setattr(audit_log, "get_page", bounded_page)
+    monkeypatch.setattr(audit_log, "get_entries", forbidden_list)
+    response = await client.get("/v1/settings/audit", params={"limit": 60})
+    assert response.status_code == 200, response.text
+    assert len(response.json()) == 60
+    assert [e["detail"]["message"] for e in response.json()] == [str(i) for i in range(74, 14, -1)]
+    assert len(calls) == 4  # two matching pages, one empty page per other action
+    assert sum(call["cursor"] is not None for call in calls) == 1
+
+
+async def test_core_cursor_route_filters_before_page_and_streams_same_corpus(
+    client: httpx.AsyncClient,
+    booted: Container,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    await _login(client, _ADMIN[1], _ADMIN[2])
+    assert booted.audit_log is not None
+    stamp = datetime.now(UTC)
+    for index in range(5):
+        await booted.audit_log.log(
+            AuditEntry(
+                timestamp=stamp,
+                boundary="cursor-test",
+                user_id="alice",
+                verdict="denied",
+                detail=f"entry-{index}",
+                request_id="",  # absent correlation must not randomize IDs
+            )
+        )
+
+    async def forbidden_list(**kwargs):
+        pytest.fail("canonical HTTP pagination must not list-and-slice")
+
+    monkeypatch.setattr(booted.audit_log, "get_entries", forbidden_list)
+    first = await client.get("/v1/audit", params={"action": "cursor-test", "limit": 2})
+    assert first.status_code == 200
+    page = first.json()
+    assert len(page["entries"]) == 2
+    assert page["next_cursor"]
+    assert (
+        await client.get("/v1/audit", params={"action": "cursor-test", "limit": 2})
+    ).json() == page
+    await booted.audit_log.log(AuditEntry(boundary="unrelated", user_id="bob"))
+    second = await client.get(
+        "/v1/audit",
+        params={
+            "action": "cursor-test",
+            "limit": 2,
+            "cursor": page["next_cursor"],
+        },
+    )
+    assert second.status_code == 200
+    assert len(second.json()["entries"]) == 2
+    assert {entry["id"] for entry in page["entries"]}.isdisjoint(
+        entry["id"] for entry in second.json()["entries"]
+    )
+    export = await client.get(
+        "/v1/audit/export",
+        params={
+            "action": "cursor-test",
+            "actor": "alice",
+            "severity": "warning",
+        },
+    )
+    assert export.status_code == 200
+    import json
+
+    rows = [json.loads(line) for line in export.text.splitlines()]
+    assert len(rows) == 5
+    assert {row["detail"]["message"] for row in rows} == {f"entry-{i}" for i in range(5)}
+    monkeypatch.setattr("routes.audit.EXPORT_MAX_ENTRIES", 3)
+    capped = await client.get("/v1/audit/export", params={"action": "cursor-test"})
+    assert capped.status_code == 200
+    assert len(capped.text.splitlines()) == 3
+    assert (await client.get("/v1/audit", params={"cursor": "invalid"})).status_code == 400
+
+
+async def test_unmatchable_severity_returns_an_empty_page_without_querying(
+    client: httpx.AsyncClient,
+    booted: Container,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Core's AuditLog has no `critical` severity: a filter it cannot match is
+    an empty page by contract, answered before the authority is asked a
+    question it cannot mean — never an error, never a proxied foreign value."""
+    await _login(client, _ADMIN[1], _ADMIN[2])
+    assert booted.audit_log is not None
+
+    async def forbidden_page(**kwargs):
+        pytest.fail(f"severity the authority cannot match must not reach it: {kwargs}")
+
+    monkeypatch.setattr(booted.audit_log, "get_page", forbidden_page)
+    page = await client.get("/v1/audit", params={"severity": "critical"})
+    assert page.status_code == 200, page.text
+    assert page.json() == {"entries": [], "next_cursor": None}
+    export = await client.get("/v1/audit/export", params={"severity": "critical"})
+    assert export.status_code == 200, export.text
+    assert export.text == ""
+
+
+@pytest.mark.parametrize(
+    "path", ["/v1/audit", "/v1/audit/export", "/v1/settings/audit", "/v1/schedules/history"]
+)
+async def test_core_authorization_precedes_any_query(
+    client: httpx.AsyncClient,
+    booted: Container,
+    monkeypatch: pytest.MonkeyPatch,
+    path: str,
+) -> None:
+    await _login(client, _USER[1], _USER[2])
+
+    async def forbidden_query(**kwargs):
+        pytest.fail("unauthorized audit read reached the store")
+
+    monkeypatch.setattr(booted.audit_log, "get_page", forbidden_query)
+    monkeypatch.setattr(booted.audit_log, "get_entries", forbidden_query)
+    response = await client.get(path)
+    assert response.status_code == 403
+
+
+@pytest.mark.parametrize("canonical", [False, True], ids=["legacy", "canonical"])
+def test_pm_audit_contract_against_each_production_authority(
+    container: Container, monkeypatch: pytest.MonkeyPatch, canonical: bool
+) -> None:
+    """Run the external PM assertion against real routes, auth, and both stores.
+
+    Only transport and boot binding differ from compose. Neither audit responses
+    nor engine health are mocked, so selecting the wrong contract fails here.
+    """
+    import runpy
+    from contextlib import closing
+
+    import stores
+    from adapters.maistro_core import MaistroCoreBridge, StubAgentPort
+    from fastapi.testclient import TestClient
+    from main import app
+    from routes.auth import hash_password
+    from services.engine import get_engine
+
+    engine = get_engine()
+    bridge = MaistroCoreBridge()
+    bridge._container = container
+    monkeypatch.setattr(engine, "_agent_port", bridge if canonical else StubAgentPort())
+    monkeypatch.setattr(engine, "_state", "ready")
+    monkeypatch.setattr(engine, "_configured", canonical)
+    for user_id, username, password in (
+        ("user", "pmuser", "pmpass1234"),
+        ("admin", "admin", "adminpass123"),
+    ):
+        monkeypatch.setitem(
+            stores.users,
+            user_id,
+            stores.users[user_id].model_copy(
+                update={"username": username, "password_hash": hash_password(password)}
+            ),
+        )
+    # The shared suite boot/binding is already installed. Don't start a second
+    # lifespan when the external assertion opens its isolated administrator.
+    monkeypatch.setattr(httpx, "Client", lambda **kwargs: closing(TestClient(app)))
+    namespace = runpy.run_path(str(Path(__file__).parents[2] / "tests/e2e/test_pm_workflow_api.py"))
+    with closing(TestClient(app)) as pm:
+        login = pm.post("/v1/auth/login", json={"username": "pmuser", "password": "pmpass1234"})
+        assert login.status_code == 200
+        namespace["TestAuditTrail"]().test_audit_log_has_entries(
+            pm, login.cookies.get("hive_session")
+        )

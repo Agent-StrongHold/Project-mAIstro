@@ -1,0 +1,22 @@
+{
+  "id": "gallery.model-adapter",
+  "publisher": "gallery",
+  "version": "1.0.0",
+  "title": "Gallery model adapter",
+  "description": "Reference gallery provider adapter extension: a declarative model adapter registered through the canonical provider-adapter seam; the host owns the transport.",
+  "contract": ">=1.0.0,<2.0.0",
+  "family": "capability-provider",
+  "capabilities": ["network.outbound"],
+  "effects": ["external-side-effect"],
+  "data": {
+    "scopes": []
+  },
+  "network": {
+    "allow": ["gallery-provider.invalid"],
+    "allowed_ports": [443]
+  },
+  "entrypoint": {
+    "module": "gallery_model_adapter.plugin",
+    "object": "PLUGIN"
+  }
+}

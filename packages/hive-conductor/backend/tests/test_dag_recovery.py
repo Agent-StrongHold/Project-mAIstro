@@ -124,7 +124,7 @@ async def test_admitted_run_persists_execution_mode_needed_after_restart(
 
     async def _scope(*args, **kwargs):
         del args, kwargs
-        return "ws-1", "project-1", canonical_run_store
+        return "ws-1", "project-1"
 
     async def _run_durable_graph(graph, **kwargs):
         seen["execute_graph"] = graph
@@ -145,7 +145,11 @@ async def test_admitted_run_persists_execution_mode_needed_after_restart(
         )
 
     monkeypatch.setattr(runner, "_scope", _scope)
-    monkeypatch.setattr(runner, "get_run_store", lambda: object())
+    monkeypatch.setattr(
+        runner,
+        "_container",
+        lambda: SimpleNamespace(run_store=canonical_run_store, graph_run_store=object()),
+    )
     monkeypatch.setattr(runner, "run_durable_graph", _run_durable_graph)
 
     result = await runner.execute_dag(

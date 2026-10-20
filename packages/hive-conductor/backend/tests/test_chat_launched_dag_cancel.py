@@ -29,7 +29,7 @@ import pytest
 from fastapi import HTTPException
 
 from maistro.graph.definitions import Graph
-from maistro.graph.durable_runs import InMemoryDurableRunStore
+from maistro.graph.durable_runs import CanonicalDurableRunStore, InMemoryGraphContinuationStore
 from maistro.identity import Principal
 from maistro.runs import InMemoryRunStore
 from maistro.runs.scoped_reads import ScopedRunReader
@@ -177,8 +177,7 @@ def _install_canonical_spine(monkeypatch: pytest.MonkeyPatch, canonical: Any) ->
     """Point every face of the seam at one real canonical spine.
 
     `canonical_dag_runner` resolves its canonical Run store through the
-    Container (`_container().run_store`) and its durable-record store through
-    `get_run_store()`; the cancel route resolves both through
+    same captured Container; the cancel route resolves its canonical store through
     `services.engine.get_engine()`. A wired deployment composes them from the
     same Container, and so does this suite.
     """
@@ -188,8 +187,11 @@ def _install_canonical_spine(monkeypatch: pytest.MonkeyPatch, canonical: Any) ->
 
     workspaces = canonical_store_for_tests()
     projects = workspaces.project_store
-    monkeypatch.setattr(runner, "_container", lambda: SimpleNamespace(run_store=canonical))
-    monkeypatch.setattr(runner, "get_run_store", lambda: InMemoryDurableRunStore())
+    container = SimpleNamespace(
+        run_store=canonical,
+        graph_run_store=CanonicalDurableRunStore(canonical, InMemoryGraphContinuationStore()),
+    )
+    monkeypatch.setattr(runner, "_container", lambda: container)
     reader = ScopedRunReader(canonical, workspaces, projects)
     monkeypatch.setattr(
         engine_mod,
@@ -386,8 +388,8 @@ async def test_missing_admission_cannot_create_a_falsely_cancellable_success(
 
     A deployment without the canonical Container admits nothing, so the sink
     never fires and the row keeps its honest empty `canonical_run_id`. The
-    row may complete as a success record, but the cancel route must refuse it
-    (404) rather than pretend a projection id is a canonical Run.
+    row fails explicitly, and the cancel route must refuse it (404) rather
+    than pretend a projection id is a canonical Run.
     """
     import services.canonical_dag_runner as runner
     from routes.dag_runs import cancel_run as cancel_route
@@ -395,14 +397,14 @@ async def test_missing_admission_cannot_create_a_falsely_cancellable_success(
 
     view = await _owned_workspace()
     monkeypatch.setattr(runner, "_container", lambda: None)
-    monkeypatch.setattr(runner, "get_run_store", lambda: InMemoryDurableRunStore())
     _install_empty_spine(monkeypatch)
     _patch_llm(monkeypatch, _fast_llm_builder())
 
     answer = await _tool_run_workflow({"dag_id": _DAG_ID, "workspace_id": view.id}, _USER_ID, None)
-    assert answer["status"] == "completed"
-    projection_id = str(answer["run_id"])
-
+    assert "canonical graph execution spine is unavailable" in answer["error"]
+    (row,) = _dag_run_summaries()
+    assert row["status"] == "failed"
+    projection_id = str(row["id"])
     assert _projection_detail(projection_id)["canonical_run_id"] == ""
 
     with pytest.raises(HTTPException) as refused:
@@ -431,8 +433,11 @@ async def test_failed_admission_cannot_create_a_falsely_cancellable_success(
         async def create_run(self, *args: Any, **kwargs: Any) -> Any:
             raise RuntimeError("admission refused")
 
-    monkeypatch.setattr(runner, "_container", lambda: SimpleNamespace(run_store=_RefusingStore()))
-    monkeypatch.setattr(runner, "get_run_store", lambda: InMemoryDurableRunStore())
+    monkeypatch.setattr(
+        runner,
+        "_container",
+        lambda: SimpleNamespace(run_store=_RefusingStore(), graph_run_store=object()),
+    )
     _install_empty_spine(monkeypatch)
 
     answer = await _tool_run_workflow({"dag_id": _DAG_ID, "workspace_id": view.id}, _USER_ID, None)
@@ -476,10 +481,15 @@ class TestTheAdmissionSinkItself:
     ) -> dict[str, Any]:
         import services.canonical_dag_runner as runner
 
-        monkeypatch.setattr(
-            runner, "_container", lambda: SimpleNamespace(run_store=canonical_run_store)
+        container = SimpleNamespace(
+            run_store=canonical_run_store,
+            graph_run_store=(
+                CanonicalDurableRunStore(canonical_run_store, InMemoryGraphContinuationStore())
+                if canonical_run_store is not None
+                else None
+            ),
         )
-        monkeypatch.setattr(runner, "get_run_store", lambda: InMemoryDurableRunStore())
+        monkeypatch.setattr(runner, "_container", lambda: container)
         return await runner.execute_dag(
             dict(_LEGACY_DAG),
             llm_builder=_fast_llm_builder(),
@@ -524,11 +534,12 @@ class TestTheAdmissionSinkItself:
         async def on_admitted(run_id: str) -> None:  # pragma: no cover - must not run
             seen.append(run_id)
 
-        result = await self._run(
-            monkeypatch, scope=scope, canonical_run_store=None, on_admitted=on_admitted
-        )
+        from services.dag_agents import CanonicalGraphUnavailable
 
-        assert result["status"] == "completed"
+        with pytest.raises(CanonicalGraphUnavailable, match="canonical graph execution spine"):
+            await self._run(
+                monkeypatch, scope=scope, canonical_run_store=None, on_admitted=on_admitted
+            )
         assert seen == []
 
     async def test_a_raising_sink_does_not_fail_the_execution(

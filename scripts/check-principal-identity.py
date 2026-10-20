@@ -39,6 +39,11 @@ _PROVENANCE_SOURCE = ROOT / "scripts" / "ratchet_provenance.py"
 RATCHET = "principal-identity"
 METRIC_DEFINITION_VERSION = "1"
 
+#: Bounded analyzer implementation manifest (#319): the measurement this gate
+#: reports is this file's own AST scan, so its implementation identity is the
+#: actual bytes of exactly this file -- not a prose label or Python version.
+ANALYZER_MANIFEST = ("scripts/check-principal-identity.py",)
+
 SCAN_ROOTS = (
     ROOT / "packages" / "maistro-core" / "src",
     ROOT / "packages" / "maistro-server" / "src",
@@ -93,6 +98,14 @@ def _provenance() -> ModuleType:
         del sys.modules[spec.name]
         raise
     return module
+
+
+def _tool_version(prov: ModuleType) -> str:
+    """Implementation identity of the scanner that reached this verdict (#319)."""
+    version: str = prov.bundled_implementation_fingerprint(
+        Path(__file__).resolve().parents[1], ANALYZER_MANIFEST
+    )
+    return version
 
 
 def _rel(path: Path) -> str:
@@ -251,6 +264,7 @@ def main() -> int:
 
     prov = _provenance()
     try:
+        tool_version = _tool_version(prov)
         prov.require_measurement(scanned, ratchet=RATCHET, what="production Python files")
         trusted_ref = prov.resolve_baseline(BASELINE, root=ROOT)
         trusted_payload = trusted_ref.loads(default={})
@@ -273,6 +287,7 @@ def main() -> int:
             ratchet=RATCHET,
             baseline=trusted_ref,
             tool="python ast",
+            tool_version=tool_version,
             metric_definition_version=METRIC_DEFINITION_VERSION,
             old_value=f"{len(trusted)} tolerated violations",
             new_value=f"{len(current)} current violations",

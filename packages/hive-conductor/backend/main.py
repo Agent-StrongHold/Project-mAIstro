@@ -39,6 +39,7 @@ from routes import (
     harness,
     health,
     hitl,
+    home,
     install,
     mcp,
     memory,
@@ -48,6 +49,7 @@ from routes import (
     program,
     providers,
     quotas,
+    rum,
     schedules,
     setup,
     setup_checklist,
@@ -382,6 +384,10 @@ def create_app() -> FastAPI:
     app.include_router(backlog.router)
     app.include_router(workspaces.router, prefix="/v1/workspaces")
     app.include_router(attention.router, prefix="/v1/workspaces")
+    # Workspace Home (#1048): same /v1/workspaces prefix as Attention, so the
+    # route-permissions registry's existing entry covers it — no new prefix,
+    # no new exemption.
+    app.include_router(home.router, prefix="/v1/workspaces")
     app.include_router(mcp.router, prefix="/v1/mcp")
     app.include_router(cli.router, prefix="/v1/cli")
     app.include_router(containers.router, prefix="/v1/containers")
@@ -417,6 +423,15 @@ def create_app() -> FastAPI:
     app.include_router(messages.router, prefix="/v1/messages")
     app.include_router(audit.router, prefix="/v1/audit")
     app.include_router(quotas.router, prefix="/v1/quotas")
+    # Perceived-load telemetry collector (#1420). The route exists even when
+    # ingest is disabled so an enabled client gets a bounded 202 instead of a
+    # 404 churn loop; services/rum_store.py decides whether anything is kept.
+    app.include_router(rum.router, prefix="/v1/rum")
+    # The ingest handler reads its body manually (byte cap before parsing),
+    # so the OpenAPI document needs the router's help to keep describing it;
+    # without this the generated client types silently lose the contract
+    # (#1048 drift gate).
+    rum.ensure_openapi_contract(app)
     # Optional feature slices degrade explicitly: a missing dependency may keep
     # the base API available, but it must never make an entire route family
     # disappear without an actionable startup log.

@@ -1,0 +1,40 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "gallery-weather-connector"
+version = "1.0.0"
+description = "Reference gallery connector/tool extension (M9-J2): pure forecast-brief handlers a host invokes through the governed tool surface"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "Apache-2.0" }
+# Deliberately empty, like the first-party reference extension: this package
+# is pure data plus pure functions, so a clean environment installs the wheel
+# and nothing else. The *extension-level* dependencies other gallery packages
+# declare live in their manifests (the catalog resolves them); a Python
+# distribution dependency here would make the wheel uninstallable outside an
+# index that does not exist.
+dependencies = []
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/gallery_weather_connector"]
+
+# The wheel carries both manifests' SOURCE. The install envelope
+# (manifest.json, the authority declaration without an artifact claim — a
+# manifest cannot know the digest of the wheel it rides in) supports host
+# discovery of installed distributions; the SDK discovery manifest
+# (extension.json, validated by `maistro-ext-sdk validate`) is what the
+# public SDK and SDK-shaped hosts read. The authoritative install manifest —
+# the one whose artifact claim names this wheel and whose digest the
+# publisher signed — is the sidecar document the catalog serves.
+[tool.hatch.build.targets.wheel.force-include]
+"manifest.json" = "gallery_weather_connector/manifest.json"
+"extension.json" = "gallery_weather_connector/extension.json"
+
+[tool.pytest.ini_options]
+# importlib mode keeps pytest from inserting the rootdir on sys.path — the
+# repo-relative rescue this package must never need. The tests import the
+# installed package from the venv's site-packages or they fail.
+addopts = "--import-mode=importlib --strict-markers"
+testpaths = ["tests"]

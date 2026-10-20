@@ -1,0 +1,24 @@
+{
+  "id": "gallery.unit-skill",
+  "publisher": "gallery",
+  "version": "1.0.0",
+  "title": "Gallery unit skill",
+  "description": "Reference gallery skill extension: pure unit-conversion handlers over host-fetched report data; depends on the gallery weather connector.",
+  "contract": ">=1.0.0,<2.0.0",
+  "family": "skill",
+  "capabilities": ["workspace.read"],
+  "effects": ["read-only"],
+  "data": {
+    "scopes": ["workspace"]
+  },
+  "dependencies": [
+    {
+      "id": "gallery.weather-connector",
+      "range": "==1.0.0"
+    }
+  ],
+  "entrypoint": {
+    "module": "gallery_unit_skill.plugin",
+    "object": "PLUGIN"
+  }
+}

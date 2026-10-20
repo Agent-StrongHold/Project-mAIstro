@@ -30,10 +30,15 @@ response against a model of everything this scenario did before, which is
 the failure class single-request endpoint tests cannot reach (an ordering,
 an interleaving, or a second principal).
 
-The oracle encodes observed production semantics, including the deliberate
-asymmetry that a Run cancelled through ``POST /runs/{id}/cancel``
-terminalizes the Run while its task receipt stays ``queued`` until a worker
-reconciles it — a relation no stateless test in this package asserts.
+The oracle encodes production semantics as they stand at this head: a Run
+cancelled through ``POST /runs/{id}/cancel`` terminalizes the canonical Run
+*and* projects that truth onto its task receipt inside the same request, so
+the two cancel routes must agree afterwards — the receipt route refuses the
+repeat cancellation and a terminal admission still replays its original
+identity. (The leaf's base commit left the receipt ``queued`` pending a
+worker reconcile; ``cancel_run``'s receipt projection closed that asymmetry
+on develop and this suite caught the semantic change at the sync — which is
+the argument for running it on every PR.)
 
 Native Schemathesis stateful testing (``schema.as_state_machine()``) cannot
 run against this surface: it requires OpenAPI response ``links``, and the
@@ -433,9 +438,22 @@ class WorkflowMachine(RuleBasedStateMachine):
     @precondition(lambda self: any(r.run_status != "cancelled" for r in self.receipts.values()))
     @rule(data=st.data())
     def owner_cancels_through_the_run(self, data: st.DataObject) -> None:
-        """Run-route cancellation terminalizes the canonical run. The receipt
-        may still read ``queued`` until a worker reconciles it — the observed
-        production asymmetry this suite pins instead of guessing."""
+        """Run-route cancellation terminalizes the canonical Run and, in the
+        same request, projects that truth onto the task receipt — no worker
+        reconcile in between. The relation this rule owns is *cross-route
+        terminal agreement*: afterwards the receipt route refuses the repeat
+        cancellation (the pinned 400) instead of re-cancelling or re-minting,
+        the run route stays idempotent, and both surfaces keep reading the
+        same terminal state to every later rule (replay, listing, foreign
+        probe).
+
+        This oracle changed shape at the develop sync: the leaf's base commit
+        left the receipt ``queued`` until a worker reconciled it, and the
+        run-cancel receipt projection (``cancel_run`` ->
+        ``TaskQueue.settle_terminal_receipt``) closed that asymmetry. The
+        suite failed on the merge and named the route pair that changed —
+        the stateful form's whole argument in one red build.
+        """
         live = [r for r in self.receipts.values() if r.run_status != "cancelled"]
         receipt = data.draw(st.sampled_from(live))
         self._switch(receipt.owner)
@@ -443,12 +461,20 @@ class WorkflowMachine(RuleBasedStateMachine):
         assert response.status_code == 200, response.text
         assert response.json()["status"] == "cancelled"
         receipt.run_status = "cancelled"
+        receipt.receipt_status = "cancelled"
         assert self.surface.client.get(f"/runs/{receipt.run_id}").json()["status"] == "cancelled"
-        # The receipt route then finishes the projection it owns.
-        if not receipt.terminal:
-            finished = self.surface.client.delete(f"/tasks/{receipt.task_id}")
-            assert finished.status_code == 200
-            receipt.receipt_status = "cancelled"
+        # The projection lands inside the cancelling request, for the same Run.
+        projected = self.surface.client.get(f"/tasks/{receipt.task_id}")
+        assert projected.status_code == 200, projected.text
+        assert projected.json()["status"] == "cancelled"
+        assert projected.json()["run_id"] == receipt.run_id
+        # Cross-route agreement: the receipt route refuses the repeat.
+        refused = self.surface.client.delete(f"/tasks/{receipt.task_id}")
+        assert refused.status_code == 400, refused.text
+        # The run route stays idempotent on an already-terminal Run.
+        again = self.surface.client.post(f"/runs/{receipt.run_id}/cancel")
+        assert again.status_code == 200, again.text
+        assert again.json()["status"] == "cancelled"
 
     @rule(entry=task_entries)
     def node_runs_are_a_safe_read(self, entry: _Receipt) -> None:

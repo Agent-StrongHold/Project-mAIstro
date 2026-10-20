@@ -161,6 +161,11 @@ async def test_container_resolved_summarize_uses_real_authorities_and_governed_i
         calls.append(provider.name)
         assert provider.metadata is metadata
         assert endpoint.base_url == "https://gateway.test"
+        # #1078 decisive datum, pinned: the physical call authenticates with the
+        # POOL-ISSUED credential (the `litellm_key`-seeded pool record), not the
+        # `MAISTRO_LLM_API_KEY` env secret set below — the env var is a
+        # construction fallback, never a routing bypass.
+        assert endpoint.api_key == "test-litellm-key"
         return {
             "model": "yaml-model-2026-09",
             "choices": [{"message": {"content": "A governed summary."}}],
