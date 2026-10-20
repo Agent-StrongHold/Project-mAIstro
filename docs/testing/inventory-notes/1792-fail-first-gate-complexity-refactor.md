@@ -1,6 +1,7 @@
 ---
 inventory-delta:
   packages/maistro-rsi/tests: +4
+  packages/maistro-core/tests: +3
 ---
 # 1792-fail-first-gate-complexity-refactor
 
