@@ -505,3 +505,105 @@ the campaign's `auto-796`) and the push are dispatcher-owned and unverifiable lo
 The coverage publish-set floor and full `--all-extras` `pip-audit` were not re-run
 locally; the diff-coverage half is vacuous for this branch (no `packages/*/src` delta)
 and the `aiohttp` advisory is verified fixed by the lockfile.
+
+## Round 7 (2026-10-20, head `4ee8f4120`): post-queue re-verification, liveness proven **in-tree**
+
+No repair was required again. The dispatch reported the previous merge-queue evaluation
+**green**, with the block being GitHub merge-queue contention (`GH006`) — dispatcher-owned
+state, not a code defect — and the vulture/exact-debt-ledger repair clause was conditional
+("fix what is genuinely dead"). Both were re-checked rather than assumed.
+
+### The branch is still exactly synced (nothing to merge)
+
+```
+$ git fetch origin develop && git rev-parse origin/develop
+c2d7209f1dbc1039e8ca9d99444b88ded3bbe26b
+$ git merge-base --is-ancestor origin/develop HEAD && echo synced   # synced
+$ git rev-list --count HEAD..origin/develop
+0
+```
+
+`origin/develop` has not moved since round 6, so there is **no develop sync conflict** —
+neither a rebase nor a merge base exists to resolve. The branch delta against
+`origin/develop` is still the five issue surfaces (`git diff --stat` → 6 files, 1299
+insertions, 0 deletions once the two sync notes are counted), and
+`git diff --numstat origin/develop...HEAD -- 'packages/*/src' quality/` is empty: this
+branch changes no production code and no per-identity ledger row.
+
+### Gates re-run at `4ee8f4120` (all exit 0)
+
+| Command | Outcome |
+| --- | --- |
+| `uv run pytest packages/maistro-core/tests/fitness/test_m7_a7_eval_consumer_map.py -x -q` | 7 passed |
+| `uv run pytest packages/maistro-core/tests/fitness -q` | 34 passed |
+| `uv run pytest packages/maistro-rsi/tests/test_non_production_reachability.py -x -q` | 13 passed (M5 invariant) |
+| `uv run pytest packages/maistro-design/tests -x -q` | 575 passed, 1 skipped |
+| `uv run ruff check .` | All checks passed |
+| `uv run ruff format --check .` | 3370 files already formatted |
+| `uv run mypy <7 src trees>` | no issues in 908 source files |
+| `uv run python scripts/check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'` | exit 0 — 1326 reviewed identities → 1326 findings |
+| `uv run python scripts/check-reachability.py` | exit 0 — 1420 production modules, 168 unreachable |
+| `uv run python scripts/check-ratchet-provenance.py` | exit 0 — 0 lifecycle violations |
+| `RATCHET_BASE_REV=origin/develop uv run python scripts/check-shipped-surface-truth.py` | exit 0 |
+| `uv run python scripts/check-suite-inventory.py` | ok — 21 suites (`maistro-core/tests` 16826 = baseline + `+7`) |
+| `uv run python scripts/check-convergence-matrix.py` | OK — 52 subsystems / 1420 modules |
+| `uv run python scripts/check-doc-links.py` | 2485 files, 0 broken links |
+| `uv run python scripts/check-contract-markers.py` | OK (the 2 `undefined-marker-kind` rows are pre-existing, neither is this file) |
+| `uv run python scripts/check-test-duplicates.py` | ok — 1639 files, 0 byte-identical |
+| `uv run python scripts/check-merge-markers.py` / `check-retired-guidance.py` | ok / ok |
+
+The vulture ledger needed **no amendment**: with CI's exact arguments there are no
+unbanked identities and no banked identity that this branch's fix eliminated
+(`packages/*/src` is untouched by the branch).
+
+### Liveness proven **in the real tree**, not only out-of-tree
+
+Rounds 4 and 6 demonstrated liveness on a `/tmp` copy, where `_REPO_ROOT` resolved to a
+*synthetic* tree — that proves the scanner helpers catch their shapes, but not that the
+contract's real inventories (`_DESIGN_SRC`, the Hive `routes/design*.py` /
+`services/design*.py` globs, `_EVOLVE_SRC`, `_RSI_SRC`) are what they scan. This round
+planted each forbidden shape in the **actual repository paths**, ran the named test
+function, and removed the probe in a `trap … EXIT` so the tree was restored in the same
+script:
+
+| Probe (real path) | Test function | Result |
+| --- | --- | --- |
+| `maistro_design/_probe796loop.py` → `import maistro_evolve.cycle` | `test_design_loop_does_not_import_rsi_or_evolve` | **failed** at `test_m7_a7_eval_consumer_map.py:331` |
+| `hive-conductor/backend/routes/design_probe796.py` → `from maistro_rsi.gateway import …` | `test_design_loop_does_not_import_rsi_or_evolve` | **failed** at `:331` (the `design*.py` glob is live) |
+| `maistro_design/_probe796scorer.py` → `class DesignCritic` | `test_maistro_design_declares_no_scoring_or_promotion_surface` | **failed** at `:389` |
+| `maistro_design/_probe796store.py` → `design_quality_score = 0.9` | `test_no_design_quality_scores_stored_outside_the_canonical_homes` | **failed** at `:429` |
+| `maistro_evolve/_probe796fitness.py` → `from maistro_design.types import …` | `test_evolve_and_rsi_do_not_reach_the_design_rubric_domain` | **failed** at `:357` |
+
+Five probes, five failures, each on the intended assertion — so the green run on
+`develop` is a proven scan of the real inventories, not a vacuous one. `git status
+--porcelain` was empty immediately afterwards: the probes were the only tree change and
+they are gone.
+
+### Bank audit re-confirmed
+
+Re-scanning `packages/maistro-design/src` with the contract's own def-name regex yields
+**exactly** the six `_DESIGN_SURFACE_BANK` identities — nothing unbanked is hiding behind
+the bank and no bank row is stale. Independent of the bank: `grep -rn score
+packages/maistro-design/src packages/hive-conductor/backend/(routes|services)/design*.py`
+returns nothing, so no design-quality score is stored anywhere in the design loop today;
+the tripwire is preventive against the shape reappearing.
+
+### `quality/ac-state.json` — artifact removed
+
+Round 6 left the generated, git-ignored `quality/ac-state.json` in place, which made
+`scripts/check-branch-independence.py` fail locally on an "unclassified quality state"
+that cannot exist in a CI checkout. Running `check-ac-state.py` regenerated it this round;
+it was backed up to `/tmp/ac-state-796-backup.json` and removed, after which
+`check-branch-independence.py` → `PASS: every quality JSON state surface has one
+branch-independence representation`. Only an ignored file was touched; `git status` is
+clean.
+
+### Residuals (unchanged from round 6)
+
+The issue's acceptance line "PR is `feat/m7-a7-eval-consumer-map` off `develop`" is
+dispatcher-owned GitHub state (this campaign's branch is `auto-796`); lane workers may
+not push or open PRs, so it is unverifiable locally by construction — the branch *is* off
+`develop`, with `origin/develop` a direct merge-base ancestor. The coverage publish-set
+floor and a full `--all-extras` `pip-audit` were not re-run; the diff-coverage half is
+vacuous here (no `packages/*/src` delta) and round 5 verified the `aiohttp==3.14.5`
+lockfile fix.
