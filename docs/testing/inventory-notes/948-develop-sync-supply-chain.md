@@ -45,6 +45,10 @@ against the base the merge queue will use.
   in ALLOWED)` / `direct-dependency usage OK: 11 packages, 62 runtime
   dependencies, 4 reviewed dispositions` — exit 0. The only remaining advisory
   is the reviewed `ecdsa` PYSEC-2026-1325 pair.
+- The same gate re-run over CI's exact shape — `uv sync --locked --all-extras`
+  (210 frozen requirements, not the 208 of `--extra dev`) then pip-audit and
+  `scripts/pip_audit_gate.py`: identical exit 0, identical triage line. The
+  wider optional set adds no advisory.
 - `uv run ruff check .` and `uv run ruff format --check .`: clean (3363 files).
 - `uv run pytest packages/maistro-core/tests/extensions/test_lifecycle_proof.py
   packages/maistro-core/tests/runs/test_public_surface.py -q`: 25 passed.
