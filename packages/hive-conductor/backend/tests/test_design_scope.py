@@ -62,6 +62,10 @@ def ready(monkeypatch: pytest.MonkeyPatch) -> None:
     class _Status:
         ready = True
         cause = ""
+        # The no-database mode: startup ran, nothing was configured, so no
+        # store cause was recorded (#1826). A set store_cause would mean a
+        # configured URL that failed, which answers with its own cause.
+        store_cause = None
 
     monkeypatch.setattr(design_routes, "get_design_status", lambda: _Status())
 
@@ -190,7 +194,11 @@ class TestTheRoutesPassItDown:
         with pytest.raises(HTTPException) as raised:
             await design_routes.list_design_projects(_Request())
         assert raised.value.status_code == 503
-        assert "not initialized" in str(raised.value.detail)
+        # A ready service with an unbuilt store and no recorded cause is the
+        # deliberate no-database mode (#1826): the route answers with *that*,
+        # not with the generic initialization error — a configured URL that
+        # failed would have come back with its own store_cause instead.
+        assert "no database URL configured" in str(raised.value.detail)
 
     @pytest.mark.ac("SPEC-083026-6bc5/AC-6")
     async def test_rendering_without_persistence_is_a_503_not_a_500(

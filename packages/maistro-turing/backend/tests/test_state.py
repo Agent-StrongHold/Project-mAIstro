@@ -155,7 +155,14 @@ def test_snapshot_shape(authed_client):
     assert total_facets == 24
 
 
-def test_snapshot_reflects_admin_mood_change(authed_client, admin_client):
+def test_snapshot_reflects_the_calling_admins_own_mood_change(admin_client):
+    """Scoped cognitive state (#859): the caller's own view moves; nobody else's.
+
+    The pre-#859 version of this test asserted the audit's defect itself —
+    that a DIFFERENT authenticated user's snapshot reflected one admin's
+    PATCH. Cross-principal invisibility is pinned by
+    test_state_scoping.py::test_admin_mood_patch_is_invisible_to_other_principals.
+    """
     admin_client.patch("/v1/admin/mood", json={"valence": -0.5})
-    body = authed_client.get("/v1/state/snapshot").json()
+    body = admin_client.get("/v1/state/snapshot").json()
     assert body["mood"]["valence"] == -0.5
