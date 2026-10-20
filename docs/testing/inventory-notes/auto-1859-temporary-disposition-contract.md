@@ -6,7 +6,7 @@ inventory-delta:
 
 # auto-1859 — the API gate's temporary-disposition contract (#1859)
 
-## Status: resolved on the owner-accepted exception contract, reconciled with develop `e20e9f52`
+## Status: resolved on the owner-accepted exception contract, reconciled with develop `e20e9f52`; `exact-debt-ledger` green at `43361b8ed`
 
 ## The contradiction (characterized before anything changed)
 
@@ -343,3 +343,137 @@ all three new negatives fail (`3 failed`); on the shipped gate they pass
 (`295 handlers scanned, 15 audited routes registered, 0 canned`). Registry,
 gate script and inventory doc are byte-identical to develop; zero
 `temporary` entries.
+
+## Repair round (job `96898f22`, commit `43361b8ed`) — `exact-debt-ledger` is green
+
+The previous round's handoff ("**No in-branch fix exists**") was **too
+strong**, and this round corrects it. The two-merge wall does close the
+*ledger* repairs — a branch-side grant is inert because
+`ratchet_provenance.load_authorizations` reads
+`quality/ratchet-authorizations.json` from the merge base, and a branch-side
+`quality/reachability-baseline.json` row is not authorized either. It does
+**not** close a repair that changes the **tree**: when the module is
+reachable from an entry point there is no candidate debt to authorize at
+all, and no `quality/*.json` file has to move.
+
+Two sibling lanes found that tree-side repair for the identical inherited
+red while this lane was blocked:
+
+- `#886` — commit `2d662ed43` ("reconnect `maestro.runs.admission_identity`
+  re-export to green exact-debt-ledger");
+- `#948` — commit `8b5a2e838` (the same change, after `#948`'s own banking
+  attempt `b47cb2d09` was reverted because it is inert under the two-merge
+  rule).
+
+This lane applies the **same** change rather than a third variant, so the
+three lanes carry byte-identical content for the same file and merge without
+conflict. The lane brief's amendment authority
+(`quality/vulture-baseline.json`) was not needed: the vulture leg is green
+and the ledger is byte-identical to develop
+(`git diff --numstat origin/develop -- quality/` is empty).
+
+### The change (2 source files + 1 test)
+
+- `packages/maistro-core/src/maistro/runs/__init__.py` — the package now
+  publishes the identity vocabulary: `AdmissionBinding`, `AdmissionRecordV2`,
+  `CanonicalJsonObject`, `LegacyAdmissionRecord` and `RootAdmissionEnvelope`
+  are imported from `maistro.runs.admission_identity` and declared in
+  `maestro.runs.__all__`. `maistro.runs` already publishes every other
+  submodule of the canonical execution model this way (concurrency, eval,
+  execution, lifecycle, model, reconciliation, service, sqlite_store, store),
+  so this is the package's existing publication convention, not a new one.
+- `packages/maistro-core/src/maistro/runs/admission_identity.py` — the
+  docstring said "Nothing in production imports it yet ... before these types
+  become reachable". After the publication that sentence is false, so it is
+  corrected: no production path *consumes* the types yet, and the identity
+  vocabulary is published from `maistro.runs`' public surface. The contract
+  itself is untouched — same DTOs, same fencing conjunction, same "constructing
+  a DTO is not admission" rule, same `__all__`.
+- `packages/maistro-core/tests/runs/test_runs_admission_identity_publication.py`
+  (new, 3 node IDs) — pins the publication *and* pins that the leaf stays a
+  leaf: the package `__init__` is the only production edge into the module,
+  so the reachability the import graph now reports is a published library
+  surface and not a runtime consumer. This is the difference from a fiction
+  (the failure mode #1154 retired): the edge is a package's own public
+  export, it is declared in `__all__`, and the test fails the moment a
+  *second* production edge appears.
+
+### Gate evidence at `43361b8ed` (CI's exact argv, `RATCHET_BASE_REV=origin/develop`)
+
+The `exact-debt-ledger` job of `.github/workflows/vulture-ratchet.yml` runs
+three steps; all three are green at this head:
+
+| step | command | exit | output |
+| --- | --- | --- | --- |
+| 1 | `uv run python scripts/check-ratchet-provenance.py` | **0** | every ratchet `OK`; reachability `168 unreachable module(s), no candidate-approved expansion` (base `e20e9f52ea94`, candidate `43361b8ed8f7` — the repair commit; the documentation commit that follows it changes no source file, and the same numbers re-run at its head) |
+| 2 | `uv run python scripts/check-shipped-surface-truth.py` | 0 | `Shipped-surface truth matrix is complete.` |
+| 3 | `uv run python scripts/check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'` | 0 | `1326 reviewed identities -> 1326 findings`, `unclassified: 0`, `never_allowlist: 0` |
+
+The reachability pair that the `Quality / Reachability` job runs is green
+too, and the module is no longer "newly unreachable":
+
+- `uv run python scripts/check-reachability.py` -> exit 0,
+  `1417 production modules, 168 unreachable from any entry point`
+  (was 169 before this change; develop's own `e20e9f52` push is red at 169).
+- `uv run python scripts/check-reachability-dispositions.py` -> exit 0,
+  `48 groups give all 168 unreachable modules a disposition (146 CONNECT,
+  20 LIBRARY, 2 RETIRE)`.
+
+### Test evidence
+
+- `uv run pytest tests/ -q` -> **5491 passed, 139 skipped, 0 failed**
+  (the three reachability tests that failed on the previous round —
+  `tests/test_check_reachability.py::test_baseline_matches_the_tree`,
+  `tests/test_reachability_baseline_identity.py::
+  test_the_committed_baseline_passes_the_gate_it_now_carries` and
+  `...::test_the_baseline_is_exactly_the_unreachable_set` — now pass).
+- `uv run pytest packages/maistro-core/tests/runs -q` -> **1402 passed,
+  338 skipped** (1399 + this lane's 3 new node IDs).
+- `uv run pytest packages/maistro-core/tests -q` -> 15648 passed, 1131
+  skipped, 7 xfailed, **1 failed**:
+  `packages/maistro-core/tests/extensions/test_cli_lock.py::
+  test_lock_commands_exit_nonzero_for_an_invalid_lock`. That failure is
+  **pre-existing and unrelated**: it fails identically with develop's
+  `maistro/runs/__init__.py` and `admission_identity.py` restored (verified
+  in this round), and it is a message-wrapping artifact of the local
+  terminal width ("... is not\na valid extension lock").
+- `uv run pytest packages/maistro-server/tests -q` -> 571 passed, 8 skipped.
+- `uv run pytest tests/test_check_api_route_contracts.py -q` -> **64 passed**
+  (#1859's own suite: develop's + this lane's three `main()`-level
+  negatives).
+- `uv run python scripts/check-api-route-contracts.py` -> exit 0
+  (`295 handlers scanned, 15 audited routes registered, 0 canned`).
+- `uv run ruff check .` -> `All checks passed!`;
+  `uv run ruff format --check .` -> `3363 files already formatted`;
+  `uv run mypy packages/maistro-core/src` -> `Success: no issues found in
+  796 source files`.
+
+### Fail-before proof for the new test (this round)
+
+| mutation | expected | observed |
+| --- | --- | --- |
+| `maistro/runs/__init__.py` reverted to develop's version | the new test cannot pass | `ImportError: cannot import name 'AdmissionBinding' from 'maistro.runs'` at collection — the tests are coupled to the publication |
+| a second production edge into the leaf (`packages/maistro-core/src/maistro/runs/_probe_tmp.py` importing `maistro.runs.admission_identity`, removed again immediately) | the "only production edge" test fails | `FAILED ...::test_the_package_publication_is_the_only_production_edge` (`Left contains one more item: .../runs/_probe_tmp.py`), the other two still pass |
+
+The repository tree was restored after both mutations
+(`git status --porcelain -uall` shows only this lane's four files).
+
+### What the owner still owns, and what this round does not claim
+
+- The repair is a **tree-side** fix, not a ledger decision: the reachability
+  disposition for `maistro.runs.admission_identity` is unchanged, and no
+  grant is asked for. If the owner prefers the ledger form (a `LIBRARY`
+  disposition plus a base-landed grant, as the handoff above proposed), that
+  is still available and remains a `develop`-side action.
+- Two sibling lanes (#886, #948) carry the identical change. Whichever lands
+  first turns this branch's file into a no-op; the merge is content-identical
+  and conflict-free.
+- Develop's own push of `e20e9f52` was red for reasons this branch does not
+  own: the reachability hole (fixed here by the publication), `SAST /
+  Gitleaks` (3 leaks in #1936's commits) and the develop-side vulture
+  two-merge wall (1321 -> 1326 against base `fad17a87c`) — the last one
+  clears for this branch, whose ratchet base is `e20e9f52`, where the five
+  `admission_identity` rows are already banked.
+- `pip-audit`/`ecdsa` and the coverage-combine red reported by the sibling
+  lanes are inherited develop-side debt, reproduced on pristine `e20e9f52`
+  and owned by their lanes.
