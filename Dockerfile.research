@@ -154,19 +154,26 @@ RUN uv pip install --system \
  && python -m playwright install chromium \
  && uv pip install --system \
     "anyio>=4.14.2" \
+    "aiohttp>=3.14.4" \
     "pypdf>=6.19.0" \
- && python -c "from importlib.metadata import version; import anyio, pypdf, browser_use; assert version('anyio') >= '4.14.2', version('anyio'); assert version('pypdf') >= '6.19.0', version('pypdf')" \
+ && python -c "from importlib.metadata import version; import anyio, pypdf, browser_use; assert version('anyio') >= '4.14.2', version('anyio'); assert version('aiohttp') >= '3.14.4', version('aiohttp'); assert version('pypdf') >= '6.19.0', version('pypdf')" \
  && rm -rf /root/.cache/uv
 # The second uv install re-asserts the security floors the first one cannot
 # carry: browser-use 0.13.11 (the latest upstream release) pins
 # anyio==4.12.1 (CVE-2026-63374 CRITICAL, TLS certificate spoofing, fixed
-# 4.14.2) and pypdf==6.16.2 (CVE-2026-102993/4/5/8 HIGHs, fixed 6.17-6.19)
+# 4.14.2), pypdf==6.16.2 (CVE-2026-102993/4/5/8 HIGHs, fixed 6.17-6.19), and
+# aiohttp==3.14.3 (CVE-2026-111064 missing-initial-request-timeout DoS HIGH
+# and GHSA-2g87-pp6c-29x5 unbounded memory/CPU HIGH, both fixed 3.14.4)
 # exactly, so its resolution silently downgrades whatever the first install
-# put in place. anyio/pypdf keep their public API across these minors; the
-# import assertion above fails the build if that ever stops holding. The uv
-# wheel cache is dropped in the same layer: its archives keep the METADATA of
-# every wheel uv resolved (the vulnerable tuples again) plus SDK example
-# files the secret scanner flags.
+# put in place — CI run 39400043294 shipped aiohttp 3.14.3 to this image that
+# way and the trivy gate failed on it. Every browser-use release to date pins
+# aiohttp exactly, so the pin cannot be satisfied jointly with the CVE floor;
+# the patched aiohttp replaces the pinned one after browser-use is installed.
+# anyio/aiohttp/pypdf keep their public API across these minors; the import
+# assertion above fails the build if that ever stops holding. The uv wheel
+# cache is dropped in the same layer: its archives keep the METADATA of every
+# wheel uv resolved (the vulnerable tuples again) plus SDK example files the
+# secret scanner flags.
 
 # Drop the same build tooling the other images drop: pip is not invoked at
 # runtime by anything in the shipped app, and its vendored dependency tree
