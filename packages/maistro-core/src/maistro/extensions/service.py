@@ -61,7 +61,7 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import Protocol
 
-from maistro.extensions.attribution import ExtensionAttribution
+from maistro.extensions.attribution import attribution_from_governed_install
 from maistro.extensions.authority import AuthorityBaseline, compute_authority_delta
 from maistro.extensions.compatibility import CompatibilityPolicy, evaluate_compatibility
 from maistro.extensions.effective_authority import (
@@ -818,7 +818,7 @@ class ExtensionInstallService:
         # (version, publisher, both digests) and the canonical install/scope
         # linkage, so every effect of this extension is traceable to the
         # identity that produced it — including after upgrade or removal.
-        attribution = ExtensionAttribution.from_governed_install(record)
+        attribution = attribution_from_governed_install(record)
         logger.info(
             "extension active: %s",
             attribution.describe(),

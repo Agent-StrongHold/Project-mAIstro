@@ -101,8 +101,11 @@ from __future__ import annotations
 
 from maistro.extensions.attribution import (
     ATTRIBUTION_FORMAT,
+    ATTRIBUTION_KEYS,
     ExtensionAttribution,
     InvalidAttribution,
+    attribution_from_governed_install,
+    attribution_from_install_record,
     attribution_from_payload,
     attribution_identity_key,
 )
@@ -486,6 +489,8 @@ from maistro.extensions.ui import (
 
 __all__ = [
     "ATTRIBUTION_FORMAT",
+    "ATTRIBUTION_FORMAT",
+    "ATTRIBUTION_KEYS",
     "BUNDLE_FORMAT",
     "CATALOG_FORMAT",
     "CERTIFICATION_FORMAT",
@@ -752,6 +757,8 @@ __all__ = [
     "WorkspaceExtensionPolicy",
     "assert_snapshot_intact",
     "assert_ui_snapshot_intact",
+    "attribution_from_governed_install",
+    "attribution_from_install_record",
     "attribution_from_payload",
     "attribution_identity_key",
     "build_sandbox_config",

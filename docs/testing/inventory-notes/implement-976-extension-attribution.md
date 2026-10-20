@@ -1,12 +1,12 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +45
+  packages/maistro-core/tests: +48
 ---
 # Extension attribution through canonical telemetry (#976, M9-I1)
 
 ## What moved
 
-`packages/maistro-core/tests` collects 45 more node IDs, all additive; no test
+`packages/maistro-core/tests` collects 48 more node IDs, all additive; no test
 was removed or renamed.
 
 - **41** from the extension attribution evidence slice: a new
@@ -25,6 +25,13 @@ was removed or renamed.
   fields (`extensions/service.py`), and `maistro extensions show` renders the
   payload (`cli/_extensions.py`) — two events cases, one log case, one CLI
   case.
+- **3** from the promotion-surface containment repair that moved the
+  attribution carrier into the capabilities layer: the extension surface
+  re-exports the one canonical carrier object (one type, not two
+  implementations), the carrier's strict-version rule is pinned to the
+  extension contract's parser over a corpus, and a static check refuses any
+  ``maistro.capabilities`` module that imports ``maistro.extensions`` — the
+  edge that put 300+ extension modules on the promotion path.
 
 ## Evidence shape
 

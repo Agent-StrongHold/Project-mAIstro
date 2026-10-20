@@ -58,7 +58,7 @@ from rich.console import Console
 from rich.table import Table
 from typer import Argument, Exit, Option, Typer
 
-from maistro.extensions.attribution import ExtensionAttribution
+from maistro.extensions.attribution import attribution_from_install_record
 from maistro.extensions.certification import (
     MANIFEST_PROFILE,
     PUBLICATION_PROFILE,
@@ -294,7 +294,7 @@ def extensions_show(
         # M9-I1 (#976): the canonical attribution evidence this install's
         # effects carry in telemetry — the same version-tagged payload that
         # rides in Binding snapshots, log fields, and Event provenance.
-        attribution = ExtensionAttribution.from_install_record(record)
+        attribution = attribution_from_install_record(record)
         console.print(f"  attribution:   {attribution.describe()}")
         console.print(
             f"  attribution payload: {json.dumps(attribution.to_payload(), sort_keys=True)}"

@@ -28,6 +28,10 @@ from maistro.capabilities.invocation import (
     ReconciliationDisposition,
     UsageExtractor,
 )
+from maistro.capabilities.providers.extension_attribution import (
+    InvalidAttribution,
+    attribution_from_payload,
+)
 from maistro.capabilities.slots.approval import ApprovalRequest
 from maistro.events.envelope import EventEnvelope, EventStore
 from maistro.policy.types import Decision, PolicyVerdict
@@ -50,13 +54,6 @@ def _extension_provenance(binding: Binding | ResolvedBinding) -> dict[str, Any]:
     raw = binding.config.get("extension_attribution")
     if raw is None:
         return {}
-    # Imported here, not at module level: ``maistro.capabilities`` is imported
-    # by ``maistro.graph.harness_executor``, and develop's ``maistro.extensions``
-    # package ``__init__`` pulls ``isolation → sandbox → runs → graph``. A
-    # module-level import from the extensions package would re-enter the still
-    # partially-initialized ``maistro.capabilities`` (import cycle, #976 sync).
-    from maistro.extensions.attribution import InvalidAttribution, attribution_from_payload
-
     try:
         return attribution_from_payload(raw).provenance_payload()
     except InvalidAttribution as exc:

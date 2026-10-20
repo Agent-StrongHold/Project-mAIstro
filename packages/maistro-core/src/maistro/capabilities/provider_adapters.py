@@ -50,7 +50,6 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass
@@ -60,6 +59,10 @@ from urllib.parse import SplitResult, urlsplit
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from maistro.capabilities.binding import Binding
+from maistro.capabilities.providers.extension_attribution import (
+    ExtensionAttribution,
+    InvalidAttribution,
+)
 from maistro.capabilities.providers.llm_gateway import MODEL_CHAT_CAPABILITY
 from maistro.credentials.types import CredentialRecord
 from maistro.providers.types import ModelMetadata, ModelTier
@@ -69,7 +72,6 @@ if TYPE_CHECKING:
 
     from maistro.capabilities.effect_context import CapabilityEffectContext
     from maistro.capabilities.providers.llm_gateway import ModelChatRequest
-    from maistro.extensions.attribution import ExtensionAttribution
     from maistro.providers.registry import InMemoryProviderRegistry
     from maistro.types.config import AdapterInstanceConfig, AgentConfig
 
@@ -109,8 +111,10 @@ _SECRET_FIELD_NAMES = frozenset({"api_key", "apikey", "secret", "token", "passwo
 
 #: Declared package digests must already be the digest form install records
 #: use. Shape-checked at registration so a malformed identity is refused at
-#: wiring time, never discovered while reading old evidence.
-_SHA256_HEX_RE = re.compile(r"^[0-9a-f]{64}$")
+#: wiring time, never discovered while reading old evidence. The rule itself
+#: lives with the canonical attribution carrier
+#: (``maistro.capabilities.providers.extension_attribution``), so there is one
+#: implementation of it.
 
 
 def _parse_adapter_base_url(url: str) -> SplitResult | None:
@@ -360,22 +364,24 @@ class ProviderAdapterSpec(BaseModel):
                 f"(missing: {missing}); declare version, publisher, package_sha256 "
                 "and manifest_sha256 together, or none of them"
             )
-        from maistro.extensions.semver import InvalidSemanticVersion, SemVer
-
+        # The canonical attribution carrier owns the shape rules (strict
+        # MAJOR.MINOR.PATCH version, sha256-hex digests) so the capabilities
+        # layer has one implementation of them. It lives in
+        # ``maistro.capabilities.providers.extension_attribution`` rather than
+        # ``maistro.extensions`` because this module is on the promotion-path
+        # import closure and may not import the extensions package.
         try:
-            SemVer.parse(self.version)
-        except InvalidSemanticVersion as exc:
+            ExtensionAttribution(
+                extension_id=self.adapter_id,
+                version=self.version,
+                publisher=self.publisher,
+                package_sha256=self.package_sha256,
+                manifest_sha256=self.manifest_sha256,
+            )
+        except InvalidAttribution as exc:
             raise ValueError(
-                f"adapter version {self.version!r} is not a strict MAJOR.MINOR.PATCH "
-                "version (the extension contract allows no pre-release, build "
-                "metadata, 'v' prefix, or partial forms)"
+                f"adapter {self.adapter_id!r} declares an invalid package identity: {exc}"
             ) from exc
-        for value, label in (
-            (self.package_sha256, "package_sha256"),
-            (self.manifest_sha256, "manifest_sha256"),
-        ):
-            if not _SHA256_HEX_RE.fullmatch(value):
-                raise ValueError(f"adapter {label} must be sha256 hex, got {value!r}")
 
     def extension_attribution(self) -> ExtensionAttribution | None:
         """The declared package identity as canonical attribution evidence.
@@ -385,13 +391,6 @@ class ProviderAdapterSpec(BaseModel):
         """
         if not self.version:
             return None
-        # Imported here, not at module level: this module is imported by
-        # ``maistro.capabilities.__init__``, and ``maistro.extensions``'
-        # package ``__init__`` pulls ``isolation → sandbox → runs → graph``,
-        # whose ``harness_executor`` re-enters the still partially-initialized
-        # ``maistro.capabilities`` (import cycle, #976 sync).
-        from maistro.extensions.attribution import ExtensionAttribution
-
         return ExtensionAttribution(
             extension_id=self.adapter_id,
             version=self.version,

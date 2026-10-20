@@ -33,6 +33,8 @@ from maistro.extensions import (
     ATTRIBUTION_FORMAT,
     ExtensionAttribution,
     InvalidAttribution,
+    attribution_from_governed_install,
+    attribution_from_install_record,
     attribution_from_payload,
     attribution_identity_key,
 )
@@ -68,9 +70,7 @@ async def test_attribution_from_install_record_names_the_exact_identity() -> Non
     await store.register_publisher(bundle["publisher"])
     record = await store.record_install(bundle["request"], package_bytes=bundle["package_bytes"])
 
-    attribution = ExtensionAttribution.from_install_record(
-        record, org_id="org-1", workspace_id="ws-1"
-    )
+    attribution = attribution_from_install_record(record, org_id="org-1", workspace_id="ws-1")
 
     assert attribution.extension_id == "ext-tool"
     assert attribution.version == "1.0.0"
@@ -146,7 +146,7 @@ async def test_attribution_from_governed_install_carries_canonical_scope() -> No
         artifact_sha256=sha256(payload).hexdigest(),
     )
 
-    attribution = ExtensionAttribution.from_governed_install(record)
+    attribution = attribution_from_governed_install(record)
 
     assert attribution.extension_id == "acme.chart_tools"
     assert attribution.version == "1.4.0"
@@ -197,7 +197,7 @@ async def test_attribution_refuses_an_uninstalled_governed_record() -> None:
     )
 
     with pytest.raises(InvalidAttribution, match="no installed artifact digest"):
-        ExtensionAttribution.from_governed_install(record)
+        attribution_from_governed_install(record)
 
 
 # ---------------------------------------------------------------------------
@@ -374,7 +374,7 @@ async def test_attribution_from_record_carries_no_manifest_content_or_secrets() 
     await store.register_publisher(bundle["publisher"])
     record = await store.record_install(bundle["request"], package_bytes=bundle["package_bytes"])
 
-    attribution = ExtensionAttribution.from_install_record(record)
+    attribution = attribution_from_install_record(record)
 
     assert set(attribution.to_payload()) == {
         "format",
@@ -557,7 +557,7 @@ async def test_governed_activation_logs_the_declared_identity(
         record = await inspect_default(service)
         installed = await authorize_and_install(service, record)
 
-    attribution = ExtensionAttribution.from_governed_install(installed)
+    attribution = attribution_from_governed_install(installed)
     records = [r for r in caplog.records if r.name == "maistro.extensions.service"]
     assert records, "activation must log one attribution line"
     line = records[-1]
@@ -570,3 +570,104 @@ async def test_governed_activation_logs_the_declared_identity(
     flat = line.getMessage() + str(line.__dict__)
     assert "extension-payload-v1" not in flat
     assert attribution.describe() in flat
+
+
+# ---------------------------------------------------------------------------
+# Containment: one carrier, one strict-version rule, no capabilities->extensions
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.ac("#976/AC-1")
+def test_extension_surface_re_exports_the_one_canonical_carrier() -> None:
+    """The extension surface and the capabilities carrier are the same type.
+
+    The carrier lives in ``maistro.capabilities.providers`` because the
+    capabilities layer is on the promotion-path import closure and may not
+    import the extensions package (its initializer pulls isolation ->
+    sandbox -> runs -> graph). If the two layers ever grew a second,
+    separately-defined attribution type, evidence written by one would not
+    decode in the other — so this pins them to one object.
+    """
+
+    from maistro.capabilities.providers.extension_attribution import (
+        ExtensionAttribution as CarrierAttribution,
+    )
+    from maistro.capabilities.providers.extension_attribution import (
+        attribution_from_payload as carrier_attribution_from_payload,
+    )
+
+    assert ExtensionAttribution is CarrierAttribution
+    assert attribution_from_payload is carrier_attribution_from_payload
+
+
+@pytest.mark.ac("#976/AC-1")
+def test_carrier_version_rule_matches_the_extension_contract_parser() -> None:
+    """The carrier's strict-version rule and the contract parser agree.
+
+    The carrier mirrors the extension contract's strict ``MAJOR.MINOR.PATCH``
+    rule instead of importing ``maistro.extensions.semver`` (the capabilities
+    layer may not import the extensions package). A drift between the two
+    would let an adapter declare a version the extension contract refuses —
+    so both implementations are pinned to the same decisions here.
+    """
+
+    from maistro.capabilities.providers.extension_attribution import is_strict_version
+    from maistro.extensions.semver import InvalidSemanticVersion, SemVer
+
+    corpus = (
+        "0.0.0",
+        "1.4.0",
+        "10.20.30",
+        "01.0.0",
+        "1.00.0",
+        "1.0.00",
+        "1.0",
+        "1.0.0.0",
+        "1.0.0-rc1",
+        "1.0.0+build",
+        "v1.0.0",
+        "1.0.0 ",
+        "",
+        "latest",
+    )
+    for text in corpus:
+        try:
+            SemVer.parse(text)
+        except InvalidSemanticVersion:
+            contract_accepts = False
+        else:
+            contract_accepts = True
+        assert is_strict_version(text) is contract_accepts, text
+
+
+@pytest.mark.ac("#976/AC-1")
+def test_capabilities_layer_does_not_import_the_extensions_package() -> None:
+    """No module under ``maistro/capabilities`` may import ``maistro.extensions``.
+
+    The capabilities layer sits on the promotion-path import closure, and the
+    promotion-surface gate requires every module that closure reaches to be a
+    protected path. ``maistro.extensions`` is not one: importing it drags
+    isolation -> sandbox -> runs -> graph (and hundreds of modules) onto the
+    promotion path. This static check is the regression guard for that
+    containment -- the carrier exists precisely so the edge is unnecessary.
+    """
+
+    import ast
+    from pathlib import Path
+
+    import maistro.capabilities as capabilities_pkg
+
+    root = Path(capabilities_pkg.__file__).parent
+    offenders: list[str] = []
+    for path in sorted(root.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and (node.module or "").startswith(
+                "maistro.extensions"
+            ):
+                offenders.append(f"{path.name}: from {node.module} import ...")
+            elif isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.name.startswith("maistro.extensions"):
+                        offenders.append(f"{path.name}: import {alias.name}")
+    assert offenders == []
