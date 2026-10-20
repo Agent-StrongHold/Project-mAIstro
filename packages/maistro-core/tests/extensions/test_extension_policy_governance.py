@@ -39,6 +39,7 @@ from maistro.extensions.policy import (
     ExtensionPolicyError,
     ExtensionPolicyTable,
     _table_digest,
+    resolve_extension_policy,
 )
 from maistro.extensions.service import ExtensionInstallService, UnwiredExtensionLoader
 from maistro.extensions.types import TrustClaim
@@ -153,6 +154,39 @@ def test_unregistered_workspace_denies() -> None:
     resolution = _resolve(ledger, workspace_id=WS_B)
     assert not resolution.enabled
     assert any(f"org:{ORG}/workspace:{WS_B}" in reason for reason in resolution.reasons)
+
+
+def test_org_absent_from_a_workspace_scoped_table_denies() -> None:
+    """A table that scopes a Workspace but never recorded the org still denies.
+
+    The ledger refuses to build this shape (`set_workspace_override` raises
+    "not registered; set its policy first"), so no ledger-built snapshot can
+    reach it. `resolve_extension_policy` is the exported pure function that
+    every resolution funnels through, and it is called with whatever table it
+    is handed -- so its org layer has to be the thing that denies, not the
+    Workspace layer.
+
+    This is the one table where the two "not registered" reasons do not
+    overlap: with the Workspace registered and the extension enabled, the org
+    reason is the only thing standing between an unregistered org and an
+    enabled resolution. Deleting it flips this to `enabled=True` with no
+    ceiling and no pin -- policy becomes optional rather than canonical.
+    """
+    table = ExtensionPolicyTable(
+        workspaces={(ORG, WS_A): _workspace()},
+    )
+    resolution = resolve_extension_policy(
+        table,
+        extension_id=EXT,
+        version=VERSION,
+        publisher=PUBLISHER,
+        org_id=ORG,
+        workspace_id=WS_A,
+    )
+    assert not resolution.enabled
+    assert any("is not registered" in reason for reason in resolution.reasons)
+    assert resolution.permission_ceiling is None
+    assert resolution.pin is None
 
 
 def test_org_allowlist_excludes_despite_workspace_enablement() -> None:
