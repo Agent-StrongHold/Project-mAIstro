@@ -226,7 +226,7 @@ class TestAnalyzerRunnerNonExecution:
             [sys.executable, "-m", "definitely_not_a_module_451"], tmp_path
         )
         assert proc is None
-        assert cause == "module_missing"
+        assert cause == "missing"
 
     def test_wedged_tool_reports_timeout(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -241,7 +241,7 @@ class TestAnalyzerRunnerNonExecution:
     def test_unspawnable_binary_reports_error(self, tmp_path: Path) -> None:
         proc, cause = candidate_fitness._run_lint_tool(["definitely-not-a-binary-451"], tmp_path)
         assert proc is None
-        assert cause == "missing"
+        assert cause == "error"
 
 
 # ---------------------------------------------------------------------------

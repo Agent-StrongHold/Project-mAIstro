@@ -333,40 +333,27 @@ class TestRunSelfBranchAttempt:
 class TestDefaultPrBodyRendersRecordedOutcomes:
     """#820 (from #304): the default PR body is rendered from the attempt's
     recorded outcomes — the test exit code and the quarantine verdict — never
-    a static success sentence. Only gates that actually ran are listed, and a
-    gate with no record is stated as NOT RUN."""
+    a static success sentence. Only gates that actually ran are named, and a
+    gate with no recorded verdict is stated as NOT RUN."""
 
     @staticmethod
-    def _result(
-        attempt,
-        *,
-        exit_code: int = 0,
-        output: str = "3 passed",
-        quarantine=None,
-    ):
-        return selfbranch.SelfBranchResult(
-            attempt=attempt,
-            test_exit_code=exit_code,
-            test_output=output,
-            diff="diff --git a/x b/x",
-            quarantine=quarantine,
+    def _quarantine(*, cleared: bool = True, reason: str | None = None) -> QuarantineVerdict:
+        return QuarantineVerdict(
+            cleared=cleared,
+            requires_adversarial_review=not cleared,
+            flags=() if cleared else ("flagged",),
+            reason=reason,
         )
 
     def test_body_lists_gates_that_ran_with_their_recorded_results(self):
         attempt = new_attempt("https://github.com/org/repo", "pytest -q")
         body = selfbranch._default_pr_body(
-            attempt,
-            self._result(
-                attempt,
-                quarantine=QuarantineVerdict(
-                    cleared=True, requires_adversarial_review=False, flags=()
-                ),
-            ),
+            attempt, "3 passed", 0, "a" * 40, quarantine=self._quarantine()
         )
         # The old static claim is gone — the body states recorded results.
         assert "Tests passed before" not in body
-        assert "- tests: passed (exit 0)" in body
-        assert "`pytest -q`" in body
+        assert "full fitness scorecard" not in body
+        assert "`pytest -q` exited 0" in body
         assert "- quarantine: cleared" in body
         assert "3 passed" in body  # the recorded output tail
 
@@ -374,28 +361,20 @@ class TestDefaultPrBodyRendersRecordedOutcomes:
         attempt = new_attempt("https://github.com/org/repo", "pytest -q")
         body = selfbranch._default_pr_body(
             attempt,
-            self._result(
-                attempt,
-                exit_code=1,
-                output="2 failed",
-                quarantine=QuarantineVerdict(
-                    cleared=False,
-                    requires_adversarial_review=True,
-                    flags=("flagged",),
-                    reason="pending review",
-                ),
-            ),
+            "2 failed",
+            1,
+            None,
+            quarantine=self._quarantine(cleared=False, reason="pending review"),
         )
-        assert "- tests: FAILED (exit 1)" in body
+        assert "`pytest -q` exited 1" in body
         assert "- quarantine: DENIED — pending review" in body
 
     def test_body_states_a_gate_that_never_ran_as_not_run(self):
         # #820 AC-2's rendering half: a missing/unrun gate is named as NOT
         # RUN in the generated text — never omitted, never success-shaped.
         attempt = new_attempt("https://github.com/org/repo", "pytest -q")
-        body = selfbranch._default_pr_body(attempt, self._result(attempt, quarantine=None))
-        assert "- quarantine: NOT RUN" in body
-        assert "no verdict was recorded" in body
+        body = selfbranch._default_pr_body(attempt, "3 passed", 0, None, quarantine=None)
+        assert "- quarantine: NOT RUN — no verdict was recorded" in body
 
     @pytest.mark.asyncio
     async def test_opened_pr_body_is_the_rendered_record(self, patch_git_ops):
@@ -418,7 +397,7 @@ class TestDefaultPrBodyRendersRecordedOutcomes:
         assert "create_pr" in fake.calls
         body = fake.pr_body
         assert "Tests passed before" not in body
-        assert "- tests: passed (exit 0)" in body
+        assert "`pytest -q` exited 0" in body
         assert "- quarantine: cleared" in body
         assert "5 passed" in body
 

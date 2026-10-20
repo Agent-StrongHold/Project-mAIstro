@@ -26,7 +26,6 @@ import subprocess
 import sys
 import tempfile
 from collections.abc import Callable
-from typing import Any
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -1038,12 +1037,10 @@ def _run_lint_tool(
             )
         except subprocess.TimeoutExpired:
             return None, "timeout"
-        except FileNotFoundError as exc:
-            return None, "missing"
-        except OSError as exc:
-            return None, f"launch_error: {exc}"
+        except OSError:
+            return None, "error"
     if "No module named" in proc.stderr:
-        return None, "module_missing"
+        return None, "missing"
     return proc, None
 
 
@@ -1077,40 +1074,15 @@ REQUIRED_LINT_TOOL_SPEC: tuple[tuple[str, str, list[str]], ...] = (
 )
 
 
-def _tool_version(tool_or_dist: Any, cwd: Any = None) -> str | None:
-    """Return a tool's version string.
-
-    Accepts either a distribution name (str) — read in-process from installed
-    metadata — or an argv list + cwd, in which case the tool is probed with
-    ``--version`` using the invocation's head (interpreter, ``-m``, tool) so
-    the probe actually reaches the tool. Returns None when the tool will not
-    answer."""
-    if isinstance(tool_or_dist, str):
-        try:
-            return importlib.metadata.version(tool_or_dist)
-        except importlib.metadata.PackageNotFoundError:
-            return None
-    argv = list(tool_or_dist)
-    if "-m" in argv:
-        idx = argv.index("-m")
-        head = argv[: idx + 2]
-    else:
-        head = argv[:1]
-    probe = [*head, "--version"]
+def _tool_version(dist: str) -> str | None:
+    """The installed distribution version of a gate's tool, or None when the
+    dist is absent (which for a required tool surfaces as a not_run gate
+    anyway). Read in-process: the gate argv runs under ``sys.executable``, so
+    this interpreter's metadata IS the version that produced the result."""
     try:
-        proc = subprocess.run(
-            probe,
-            cwd=str(cwd) if cwd is not None else None,
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-    except (OSError, subprocess.SubprocessError, subprocess.TimeoutExpired):
+        return importlib.metadata.version(dist)
+    except importlib.metadata.PackageNotFoundError:
         return None
-    if proc.returncode != 0:
-        return None
-    out = (proc.stdout or proc.stderr or "").strip()
-    return out or None
 
 
 def _candidate_sha(cwd: Path) -> str | None:
@@ -1179,8 +1151,9 @@ def _not_run_gate(name: str, dist: str, cause: str, provenance: dict[str, object
     return GateResult(
         name,
         False,
-        f"NOT RUN: {dist} unavailable ({cause}) — required gate fails closed",
-        detail={"cause": cause, "not_run": True, "tool": dist, **provenance},
+        f"{dist} did not run ({cause}) — required gate not_run; "
+        "a missing analyzer blocks promotion rather than narrowing the evidence",
+        detail={"cause": cause, **provenance},
         state=GateState.NOT_RUN,
     )
 
@@ -1244,31 +1217,6 @@ def _bandit_high_gate(
         detail=provenance,
         state=GateState.PASSED if len(high) == 0 else GateState.FAILED,
     )
-
-
-def _ruff_judgement(proc: subprocess.CompletedProcess[str]) -> tuple[bool, str]:
-    """Count ruff findings; unparseable output counts as zero (tool ran)."""
-    try:
-        n = len(json.loads(proc.stdout or "[]"))
-    except (json.JSONDecodeError, ValueError, TypeError):
-        return True, "0 lint violation(s)"
-    return (n == 0), f"{n} lint violation(s)"
-
-
-def _mypy_judgement(proc: subprocess.CompletedProcess[str]) -> tuple[bool, str]:
-    """Count mypy error lines."""
-    errs = sum(1 for ln in (proc.stdout or "").splitlines() if ": error:" in ln)
-    return (errs == 0), f"{errs} type error(s)"
-
-
-def _bandit_judgement(proc: subprocess.CompletedProcess[str]) -> tuple[bool, str]:
-    """Count HIGH-severity bandit findings; unparseable counts as zero."""
-    try:
-        results = json.loads(proc.stdout or "{}").get("results", [])
-    except (json.JSONDecodeError, ValueError, TypeError, AttributeError):
-        return True, "0 HIGH-severity finding(s)"
-    high = [r for r in results if isinstance(r, dict) and r.get("issue_severity") == "HIGH"]
-    return (len(high) == 0), f"{len(high)} HIGH-severity finding(s)"
 
 
 # Per-tool result builders for the executed-and-well-formed path, keyed by
@@ -1336,8 +1284,7 @@ def _lint_gates(
         return []
     gates: list[GateResult] = []
     for name, dist, argv in REQUIRED_LINT_TOOL_SPEC:
-        current_argv = [sys.executable] + list(argv[1:])
-        full_argv = [*current_argv, *src_files]
+        full_argv = [*argv, *src_files]
         if execute is not None:
             proc, cause = _run_lint_tool(full_argv, cwd, execute)
             provenance = _gate_provenance(

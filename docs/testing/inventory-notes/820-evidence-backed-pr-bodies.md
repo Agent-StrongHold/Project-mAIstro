@@ -1,58 +1,55 @@
 ---
 inventory-delta:
-  packages/maistro-rsi/tests: +25
+  packages/maistro-rsi/tests: +5
 ---
 # 820-evidence-backed-pr-bodies
 
 ## What moved
 
-Issue #820 (from #304's finding): RSI PR bodies asserted a full fitness-scorecard
-pass (tests, coverage, ruff, mypy, bandit) without reading any recorded gate
-result, and a missing Bandit installation produced *no* gate at all — an
-unavailable required analyzer indistinguishable from a gate nobody declared.
-+25 node IDs across five files of `packages/maistro-rsi/tests`:
+Issue #820 (from #304's finding): RSI PR bodies asserted a full
+fitness-scorecard pass (tests, coverage, ruff, mypy, bandit) without reading
+any recorded gate result, and a missing Bandit installation produced *no* gate
+at all — an unavailable required analyzer indistinguishable from a gate nobody
+declared.
 
-- `test_lint_gate_fail_closed.py` (new, +12): the fail-closed gate contract.
-  A tool that cannot launch (`FileNotFoundError`), is not importable
-  (`No module named ...`), wedges past its budget (`TimeoutExpired`), or fails
-  at the OS launch layer (`OSError`) yields an explicit FAILING `not_run`
-  `GateResult` naming the cause — and, because every scorecard gate is a
-  veto, that result blocks promotion (proven through `compose_scorecard`:
-  `accepted is False`, composite 0.0). The ran-tool half is deterministic
-  too: the judgement helpers are pinned on synthetic `CompletedProcess`
-  values (ruff finding counts incl. unparseable output, mypy error lines,
-  bandit HIGH-only severity incl. unparseable reports), `_tool_version` is
-  pinned to probe the invocation head (`python -m <tool> --version`, never
-  the full check argv) and to record nothing when the probe fails, and a
-  gate whose tool ran records provenance (argv, exit code, output digest,
-  version). No changed source files → no lint gate declared.
-- `test_harvest.py` (+5): PR bodies render ONLY recorded gate results with
-  their recorded states — measured pass, FAILED, or NOT RUN — aggregated
-  truthfully across a file group (one failed promotion fails the line, a gate
-  that ran on only some promotions says so); a manifest entry with no gate
-  evidence renders as "unverified", never as a pass; `manifest_records`
-  projects `gate_results` records, the legacy `gates` bool-map, and — for
-  pre-evidence entries — no gates at all.
+Most of that implementation is already on the base: `_lint_gate_result`
+(missing/wedged/usage-error tool ⇒ a blocking `not_run` `GateResult`),
+`_gate_provenance` (command, tool version, exit status, output digest,
+candidate SHA), `TraceNote.gate_evidence`, the export manifest's projection of
+it, and `harvest.pr_body`'s evidence rendering (`passed`/`FAILED`/`NOT RUN`/
+`unavailable`, worst-state-wins across a file group, `unverified` for rows with
+no record) all predate this change, with tests in `test_gate_evidence.py`.
+This lane's earlier commits re-implemented that machinery alongside the landed
+version — a second gate-evidence channel (`TraceNote.gate_results`, a
+`PromotedGates` tuple that compared equal to a `name→bool` dict, three
+`*_judgement` helpers referenced only from tests, an `args`-sniffing
+`_default_pr_body`) — and that duplicate was reverted in favour of the landed
+path. See the commit message for the per-file accounting.
+
+What is genuinely new here, and what the +5 node IDs cover:
+
 - `test_selfbranch.py` (+4): the default PR body is rendered from the
-  attempt's recorded outcomes (test exit code, quarantine verdict); a failed
-  run renders as FAILED/DENIED; a never-run gate is stated as NOT RUN; and the
-  body actually handed to `github_create_pr` is the rendered record.
-- `test_trace_notes.py` (+1): `TraceNote.gate_results` round-trips and stays
-  optional — a pre-field note parses with `gate_results None`, which readers
-  must treat as "not recorded", never "all passed".
-- `test_checkpoint_report.py` (+3): a fitness promotion's per-gate records
-  land in the durable trace note, the export manifest carries the recorded
-  gate evidence for harvest PR bodies to render, and BOTH manifest evidence
-  states are pinned — a noted promotion projects `gates` + `gate_results`
-  (not_run flag included) while an un-noted commit projects neither key, so
-  the harvest body renders it as unverified. (One existing judge-unavailable
-  test also stubs the now-required lint gates, since a missing tool in the
-  test environment would otherwise veto before the judge stage under test —
-  the fail-closed behavior itself is what the new file pins.)
+  attempt's recorded outcomes — the test command, its recorded exit code, and
+  the quarantine verdict this path also ran — and names nothing else. A failed
+  run renders `exited 1` plus `quarantine: DENIED — <reason>`; a path with no
+  recorded verdict says `NOT RUN — no verdict was recorded` rather than being
+  omitted or implied cleared; and the body actually handed to
+  `github_create_pr` is that rendered record. The behavioral change behind
+  these tests is `_default_pr_body`'s quarantine line: before it, the body
+  disclaimed "no other gates were executed on this path" while the quarantine
+  gate had in fact run to authorize the PR.
+- `test_trace_notes.py` (+1): `TraceNote.gate_evidence` round-trips and stays
+  optional — a note written before the field existed parses with
+  `gate_evidence` `None`, which readers must treat as "not recorded", never as
+  "all passed".
+
+No other file in `packages/maistro-rsi/tests` changes count.
 
 ## Why
 
 The stop condition in #820: do not fix the wording while promotion can still
-treat missing required gates as success. The wording fix (harvest/selfbranch
-rendering) and the promotion fix (fail-closed required gates) land together,
-and the tests pin both halves so neither can regress independently.
+treat missing required gates as success. The promotion half is enforced by the
+landed `_lint_gate_result`/`compose_scorecard` path and pinned by
+`test_gate_evidence.py`; this change pins the remaining self-branch rendering
+half, where the generated body was still describing the quarantine gate
+implicitly instead of from its recorded verdict.

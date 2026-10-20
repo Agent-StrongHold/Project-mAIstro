@@ -9,11 +9,7 @@ PR text, manifest projection); the git/gh orchestration is
 
 The run exports, into a host-mounted dir, one ``git format-patch`` file per
 promotion plus a ``manifest.json`` mapping each patch to the source file it
-edits and to the gate results recorded for its promotion; the harvester reads
-that, groups, and opens the PRs. PR bodies are rendered FROM those recorded
-gate results (#304, #820): only gates with a recorded result are named, with
-their recorded state, and a promotion with no recorded evidence is stated as
-unverified — the body never asserts a full pass it cannot show.
+edits; the harvester reads that, groups, and opens the PRs.
 
 Assumption / limitation: each promotion is treated as a *self-contained* change
 to one file and is applied onto the base independently. This holds for the
@@ -30,108 +26,26 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import Any
 
 from maistro_evolve.scorecard import GateState
-
-
-@dataclass(frozen=True)
-class PromotedGate:
-    """One gate's recorded result for a promotion (#304/#820).
-
-    ``not_run`` marks a gate whose tool never executed (missing/unavailable) —
-    recorded as the blocking failure evidence; since every gate in the
-    Scorecard is a veto, a not-run required gate cannot sit on a promoted
-    commit, but the rendered record must still be able to state it.
-    """
-
-    name: str
-    passed: bool
-    reason: str = ""
-    not_run: bool = False
-
-
-class PromotedGates(tuple):
-    """A tuple of :class:`PromotedGate` that also compares equal to a
-    ``name -> bool`` dict (the shape older manifests and some callers use) and
-    exposes ``.items()`` so the dict-style renderers keep working. This lets a
-    single ``PromotedPatch`` serve both the tuple-style and dict-style tests
-    without forcing a single representation on callers."""
-
-    def items(self) -> list[tuple[str, bool]]:
-        return [(g.name, bool(g.passed)) for g in self]
-
-    def __eq__(self, other: Any) -> bool:
-        if isinstance(other, (tuple, list)):
-            return super().__eq__(tuple(other))
-        if isinstance(other, dict):
-            return {g.name: bool(g.passed) for g in self} == {
-                str(k): (v if isinstance(v, bool) else bool(v)) for k, v in other.items()
-            }
-        return NotImplemented
-
-    def __hash__(self) -> int:
-        return super().__hash__()
-
-
-def _normalize_gates(value: Any) -> PromotedGates:
-    if value is None:
-        return PromotedGates(())
-    if isinstance(value, PromotedGates):
-        return value
-    if isinstance(value, dict):
-        out: list[PromotedGate] = []
-        for k, v in value.items():
-            if isinstance(v, dict):
-                out.append(
-                    PromotedGate(
-                        name=str(k),
-                        passed=bool(v.get("passed", False)),
-                        reason=str(v.get("reason", "")),
-                        not_run=bool(v.get("not_run", False)),
-                    )
-                )
-            else:
-                out.append(PromotedGate(name=str(k), passed=(v if isinstance(v, bool) else False)))
-        return PromotedGates(out)
-    if isinstance(value, (tuple, list)):
-        out2: list[PromotedGate] = []
-        for g in value:
-            if isinstance(g, PromotedGate):
-                out2.append(g)
-            elif isinstance(g, dict):
-                out2.append(
-                    PromotedGate(
-                        name=str(g.get("name", "")),
-                        passed=bool(g.get("passed", False)),
-                        reason=str(g.get("reason", "")),
-                        not_run=bool(g.get("not_run", False)),
-                    )
-                )
-            else:
-                out2.append(PromotedGate(name=str(g), passed=bool(g)))
-        return PromotedGates(out2)
-    return PromotedGates(())
 
 
 @dataclass(frozen=True)
 class PromotedPatch:
     """One promoted commit exported as a patch, tagged with the file it edits.
 
-    ``gates`` may arrive as a tuple of :class:`PromotedGate`, a ``name -> bool``
-    dict, or a ``name -> evidence`` dict; it is normalised to a
-    :class:`PromotedGates` tuple. ``gate_evidence`` carries the richer
-    per-gate state/provenance bundle when the promotion recorded it.
-    """
+    ``gates``/``gate_evidence`` (#304/#820) carry the promotion's recorded
+    gate results projected from the export manifest: ``gates`` is the plain
+    name→boolean verdict map, ``gate_evidence`` adds each gate's state and
+    execution provenance (tool version, exit status, output digest). Both
+    default empty/None so pre-evidence manifests still project — a patch with
+    no recorded evidence is rendered as UNVERIFIED, never as passed."""
 
     patch_file: str
     file: str
     subject: str = ""
-    gates: Any = ()
+    gates: dict[str, bool] = field(default_factory=dict)
     gate_evidence: dict[str, dict[str, object]] | None = None
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "gates", _normalize_gates(self.gates))
 
 
 def group_by_file(patches: list[PromotedPatch]) -> dict[str, list[PromotedPatch]]:
@@ -163,74 +77,16 @@ def pr_title(file: str, patches: list[PromotedPatch]) -> str:
 def pr_body(file: str, patches: list[PromotedPatch]) -> str:
     """Render the group's PR body from RECORDED gate results (#820).
 
-    If any promotion recorded a ``gate_evidence`` bundle, the richer
-    state/provenance renderer is used; otherwise the PromotedGate renderer
-    (which carries measured-counts) is used. Either way only recorded results
-    are named and no wholesale pass is claimed.
+    Only gates with a recorded result on one of the group's promotions are
+    named, each with its outcome and — where recorded — its execution
+    provenance. Every promotion without recorded evidence is stated as
+    unverified — including in a mixed group, where another promotion's
+    recorded rows must not vouch for a legacy patch with unknown outcomes.
+    Nothing here claims a gate that did not run: the historical hard-coded
+    "passed the full fitness scorecard (tests, coverage-not-dropped, ruff,
+    mypy, bandit)" sentence was exactly the false-evidence defect #820
+    closes, so it is gone; the body states evidence, never a wholesale pass.
     """
-    if any(getattr(p, "gate_evidence", None) for p in patches):
-        return _pr_body_evidence(file, patches)
-    return _pr_body_gates(file, patches)
-
-
-def _pr_body_gates(file: str, patches: list[PromotedPatch]) -> str:
-    lines = [
-        f"Automated recursive-self-improvement changes to `{file}`.",
-        "",
-        "Each was produced in an isolated container and competed head-to-head "
-        "before promotion. The gate results below are the ones recorded at "
-        "promotion time; no gate without a recorded result is claimed.",
-        "",
-        *_gate_section(patches),
-        "",
-        "Commits:",
-    ]
-    lines += [f"- {p.subject}" for p in patches]
-    return "\n".join(lines)
-
-
-def _gate_section(patches: list[PromotedPatch]) -> list[str]:
-    if not any(p.gates for p in patches):
-        return [
-            "## Recorded gate evidence",
-            "",
-            "No recorded gate evidence on any promotion in this group — "
-            "No gate results were recorded; treat every gate as unverified; "
-            "do not assume a pass.",
-        ]
-    n = len(patches)
-    names: list[str] = []
-    for p in patches:
-        for g in p.gates:
-            if g.name not in names:
-                names.append(g.name)
-    lines = [
-        "## Recorded gate evidence",
-        "",
-        f"Rendered from the promotions' recorded gate results ({n} promotion(s) "
-        "in this PR); only gates with a recorded result appear.",
-        "",
-    ]
-    for name in names:
-        records = [g for p in patches for g in p.gates if g.name == name]
-        not_run = [g for g in records if getattr(g, "not_run", False)]
-        ran = [g for g in records if not getattr(g, "not_run", False)]
-        measured = f"measured on {len(ran)} of {n} promotion(s)"
-        if not_run:
-            cause = not_run[0].reason or "tool unavailable"
-            if cause.startswith("NOT RUN: "):
-                cause = cause[len("NOT RUN: ") :]
-            lines.append(f"- {name}: NOT RUN — {cause} ({measured})")
-        elif all(g.passed for g in ran):
-            lines.append(f"- {name}: passed ({measured})")
-        else:
-            failed = next((g for g in ran if not g.passed), None)
-            reason = failed.reason if failed and failed.reason else "gate failed"
-            lines.append(f"- {name}: FAILED — {reason} ({measured})")
-    return lines
-
-
-def _pr_body_evidence(file: str, patches: list[PromotedPatch]) -> str:
     lines = [
         f"Automated recursive-self-improvement changes to `{file}`.",
         "",
@@ -247,9 +103,6 @@ def _pr_body_evidence(file: str, patches: list[PromotedPatch]) -> str:
             "- No recorded gate evidence on any promotion in this group — "
             "the gate outcomes are unknown and must not be treated as verified."
         )
-        # keep the unverified keyword for older callers/tests
-        if "unverified" not in lines[-1]:
-            lines[-1] = lines[-1].replace("verified.", "verified (unverified).")
     lines += ["", "Commits:"]
     lines += [f"- {p.subject}" for p in patches]
     return "\n".join(lines)
@@ -258,6 +111,13 @@ def _pr_body_evidence(file: str, patches: list[PromotedPatch]) -> str:
 def _merge_group_evidence(
     patches: list[PromotedPatch],
 ) -> tuple[list[str], dict[str, dict[str, object]]]:
+    """Merge every recorded gate result in the group by gate name.
+
+    A per-file PR groups promotions of one file, so every promotion was
+    scored against the same gate set; the worst recorded state wins — a gate
+    that is not_run/failed on ANY promotion is reported at that state, since
+    the group PR ships every patch. Evidence rows are kept in first-seen
+    order so the rendered body is stable."""
     order: list[str] = []
     merged: dict[str, dict[str, object]] = {}
     for patch in patches:
@@ -268,6 +128,9 @@ def _merge_group_evidence(
             elif _state_rank(str(evidence.get("state", ""))) < _state_rank(
                 str(merged[name].get("state", ""))
             ):
+                # The group PR ships every patch, so the worst recorded state
+                # for a gate is the group's state (#820): not_run/failed
+                # outrank a pass from another promotion in the same group.
                 merged[name] = dict(evidence)
         for name, passed in patch.gates.items():
             if name not in merged:
@@ -280,6 +143,11 @@ def _merge_group_evidence(
 
 
 def _gate_evidence_lines(patches: list[PromotedPatch]) -> list[str]:
+    """One line per recorded gate result across the group's promotions.
+
+    Only gates with a recorded result are named. Provenance (tool version,
+    exit status, output digest) rides along when a promotion recorded it, so
+    a reviewer can tell a measured pass from an unavailable tool."""
     if not any(p.gates or p.gate_evidence for p in patches):
         return []
     order, merged = _merge_group_evidence(patches)
@@ -303,6 +171,11 @@ def _gate_evidence_lines(patches: list[PromotedPatch]) -> list[str]:
 
 
 def _unevidenced_lines(patches: list[PromotedPatch]) -> list[str]:
+    """One line per promotion with no recorded gate result, naming it
+    unverified. Evidence is judged per patch: in a group that mixes an
+    evidenced promotion with a legacy row (neither ``gates`` nor
+    ``gate_evidence``), the recorded rows must not read as evidence for the
+    unevidenced patch, whose gate outcomes are unknown (#820)."""
     return [
         f"- {p.subject or p.patch_file}: no recorded gate evidence — unverified"
         for p in patches
@@ -311,6 +184,11 @@ def _unevidenced_lines(patches: list[PromotedPatch]) -> list[str]:
 
 
 def _state_rank(state: str) -> int:
+    """Reporting precedence when promotions disagree: not_run (0) and failed
+    (1) outrank unavailable (2), which outranks passed (3) — a group PR must
+    surface the worst recorded evidence, and a gate that never executed for
+    one shipped patch must not read as passed for the whole group (#820).
+    An absent/unknown state ranks lowest (gets replaced)."""
     if state == GateState.NOT_RUN.value:
         return 0
     if state == GateState.FAILED.value:
@@ -339,20 +217,24 @@ def _provenance_suffix(ev: dict[str, object]) -> str:
     return f" ({', '.join(parts)})" if parts else ""
 
 
-def _project_gates(entry: dict[str, object]) -> PromotedGates:
+def _project_gates(entry: dict[str, object]) -> dict[str, bool]:
+    """The row's recorded name→boolean verdict map, defaulting empty when the
+    manifest row predates gate recording.
+
+    Fail closed: only a genuine JSON boolean counts as a verdict. Any other
+    serialized value (e.g. the string ``"false"``, which Python truthiness
+    would score as passed) projects to False so the gate renders as failed,
+    never as passed (#451 review)."""
     raw = entry.get("gates")
     if not isinstance(raw, dict):
-        return PromotedGates(())
-    return PromotedGates(
-        PromotedGate(
-            name=str(k),
-            passed=(v if isinstance(v, bool) else False),
-        )
-        for k, v in raw.items()
-    )
+        return {}
+    return {str(k): v if isinstance(v, bool) else False for k, v in raw.items()}
 
 
 def _project_gate_evidence(entry: dict[str, object]) -> dict[str, dict[str, object]] | None:
+    """The row's recorded per-gate evidence bundle, or None when the manifest
+    row predates evidence (#304) — rendered downstream as UNVERIFIED, never
+    as a pass."""
     raw = entry.get("gate_evidence")
     if not isinstance(raw, dict):
         return None
@@ -360,45 +242,20 @@ def _project_gate_evidence(entry: dict[str, object]) -> dict[str, dict[str, obje
 
 
 def manifest_records(data: list[dict[str, object]]) -> list[PromotedPatch]:
-    records: list[PromotedPatch] = []
-    for entry in data:
-        raw_results = entry.get("gate_results")
-        gate_results = (
-            [g for g in raw_results if isinstance(g, dict)] if isinstance(raw_results, list) else []
+    """Project one already-read manifest into the typed harvest records.
+
+    Callers read and parse ``manifest.json`` themselves so the parsed value can
+    pass the Warden harvest boundary *before* it becomes harvest records; the
+    production harvester deliberately projects the admitted value instead of
+    re-reading the file here, which would reopen a scan/use TOCTOU gap.
+    """
+    return [
+        PromotedPatch(
+            patch_file=str(entry["patch_file"]),
+            file=str(entry["file"]),
+            subject=str(entry.get("subject", "")),
+            gates=_project_gates(entry),
+            gate_evidence=_project_gate_evidence(entry),
         )
-        if gate_results:
-            gates: Any = PromotedGates(
-                PromotedGate(
-                    name=str(g.get("name", "")),
-                    passed=bool(g.get("passed", False)),
-                    reason=str(g.get("reason", "")),
-                    not_run=bool(g.get("not_run", False)),
-                )
-                for g in gate_results
-            )
-        else:
-            gates = _project_gates(entry)
-        # If only gate_evidence is present, derive gates from it too.
-        if not gates and isinstance(entry.get("gate_evidence"), dict):
-            ge = entry["gate_evidence"]
-            gates = PromotedGates(
-                PromotedGate(
-                    name=str(k),
-                    passed=bool(v.get("passed", False)) if isinstance(v, dict) else False,
-                    reason=str(v.get("reason", "")) if isinstance(v, dict) else "",
-                    not_run=(str(v.get("state", "")) == "not_run")
-                    if isinstance(v, dict)
-                    else False,
-                )
-                for k, v in ge.items()
-            )
-        records.append(
-            PromotedPatch(
-                patch_file=str(entry["patch_file"]),
-                file=str(entry["file"]),
-                subject=str(entry.get("subject", "")),
-                gates=gates,
-                gate_evidence=_project_gate_evidence(entry),
-            )
-        )
-    return records
+        for entry in data
+    ]

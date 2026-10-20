@@ -68,7 +68,6 @@ from maistro_rsi.harvest_boundary import (
     WardenHarvestBoundary,
 )
 from maistro_rsi.merge import greedy_merge
-from maistro_evolve.scorecard import GateState
 from maistro_rsi.protocols import ApplyPatchFn, MicroVmSandbox
 from maistro_rsi.regression_judge import JudgeVerdict, judge_regression_verdict
 from maistro_rsi.test_inventory import InventoryResult, collect_inventory
@@ -2779,15 +2778,6 @@ class LocalRsiLoop:
             # #304: per-gate state + provenance (command/tool version/candidate
             # SHA/exit status/output digest where the gate recorded them).
             "gate_evidence": {g.name: _gate_evidence_entry(g) for g in scorecard.gates},
-            "gate_results": [
-                {
-                    "name": g.name,
-                    "passed": g.passed,
-                    "not_run": g.resolved_state() is GateState.NOT_RUN,
-                    "reason": g.reason,
-                }
-                for g in scorecard.gates
-            ],
             **_named_gate_evidence(scorecard),
         }
         return trace
@@ -2823,24 +2813,6 @@ class LocalRsiLoop:
 
         source = trace if trace is not None else top.trace
         gates = source.get("gates") or {"tests_pass": top.tests_passed}
-        if not isinstance(gates, dict):
-            gates = {"tests_pass": bool(top.tests_passed)}
-        gate_results = source.get("gate_results")
-        if not isinstance(gate_results, list):
-            gate_results = [
-                {"name": str(k), "passed": bool(v), "not_run": False, "reason": ""}
-                for k, v in gates.items()
-            ]
-        gate_evidence = source.get("gate_evidence")
-        if not isinstance(gate_evidence, dict):
-            gate_evidence = {
-                str(k): {
-                    "state": "passed" if bool(v) else "failed",
-                    "passed": bool(v),
-                    "reason": "",
-                }
-                for k, v in gates.items()
-            }
         trace_note = TraceNote(
             cycle=index,
             target=target,
@@ -2856,11 +2828,10 @@ class LocalRsiLoop:
             ),
             gates={str(k): bool(v) for k, v in gates.items()},
             gate_evidence=(
-                {str(k): dict(v) for k, v in gate_evidence.items()}
-                if isinstance(gate_evidence, dict)
+                {str(k): dict(v) for k, v in source["gate_evidence"].items()}
+                if isinstance(source.get("gate_evidence"), dict)
                 else None
             ),
-            gate_results=gate_results,
             note=summary,
             inventory=source.get("inventory"),
             fail_first=source.get("fail_first"),
@@ -3412,23 +3383,7 @@ class LocalRsiLoop:
             "subject": subject,
             "evaluator_digest": evaluator.get("evaluator_digest"),
             "evaluator_authorized": bool(evaluator.get("authorized")),
+            "gates": dict(note.gates) if note is not None else {},
+            "gate_evidence": _promotion_gate_evidence(note),
         }
-        if note is not None:
-            entry["gates"] = dict(note.gates)
-            ge = _promotion_gate_evidence(note)
-            if ge is not None:
-                entry["gate_evidence"] = ge
-            gr = note.gate_results
-            if gr is None and ge is not None:
-                gr = [
-                    {
-                        "name": k,
-                        "passed": bool(v.get("passed", False)),
-                        "not_run": str(v.get("state", "")) == "not_run",
-                        "reason": v.get("reason", ""),
-                    }
-                    for k, v in ge.items()
-                ]
-            if gr is not None:
-                entry["gate_results"] = gr
         return entry

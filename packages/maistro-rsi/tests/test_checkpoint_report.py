@@ -13,16 +13,13 @@ from pathlib import Path
 
 import pytest
 
-from maistro_rsi.harvest import PromotedGate, manifest_records, pr_body
 from maistro_rsi.local_loop import (
     CycleOutcome,
     LocalRsiConfig,
     LocalRsiLoop,
-    _VariantResult,
     build_checkpoint_report,
 )
 from maistro_rsi.protocols import MicroVmSandbox
-from maistro_rsi.trace_notes import read_trace_note
 
 
 def _git(cwd: Path, *args: str) -> None:
@@ -223,161 +220,6 @@ def test_rolling_export_is_complete_and_not_stale(tmp_path: Path) -> None:
     # the prior window's patches rather than accumulating duplicates.
     assert len(manifest) == 4
     assert len(patches) == 4
-
-
-def test_promotion_trace_note_carries_per_gate_results(tmp_path: Path) -> None:
-    """#820 (from #304): a fitness promotion's trace — per-gate records of
-    whether each tool ran, with reasons — lands in the durable trace note.
-    This is the evidence harvest PR bodies must render from."""
-    repo = _make_repo(tmp_path / "src")
-    config = LocalRsiConfig(
-        repo_path=str(repo),
-        test_command="exit 0",
-        work_root=str(tmp_path / "work"),
-        max_cycles=1,
-    )
-    loop = LocalRsiLoop(config)
-    loop._baseline = repo  # annotate into the fixture repo, not a fresh work root
-    sha = subprocess.run(
-        ["git", "rev-parse", "HEAD"], cwd=str(repo), capture_output=True, text=True
-    ).stdout.strip()
-    trace = {
-        "gates": {"tests_pass": True, "no_bandit_high": False},
-        "composite": 0.8,
-        "mutation_score": 0.9,
-        "gate_results": [
-            {"name": "tests_pass", "passed": True, "not_run": False, "reason": "exit 0: ok"},
-            {
-                "name": "no_bandit_high",
-                "passed": False,
-                "not_run": True,
-                "reason": "NOT RUN: bandit unavailable (missing) — required gate fails closed",
-            },
-        ],
-    }
-    top = _VariantResult(branch="cand", cycle_dir=tmp_path)
-    assert loop._annotate_promotion(sha, 1, "pkg/m.py", top, 0.8, 1, "c1", trace=trace) is True
-    note = read_trace_note(repo, sha)
-    assert note is not None
-    assert note.gates == {"tests_pass": True, "no_bandit_high": False}
-    assert note.gate_results == trace["gate_results"]
-
-
-def test_export_manifest_carries_recorded_gate_evidence(tmp_path: Path) -> None:
-    """#820 (from #304): the harvest manifest carries each promotion's recorded
-    gate evidence, and a PR body rendered from it names only the gates that
-    ran — never the old hardcoded full-pass sentence."""
-    repo = _make_repo(tmp_path / "src")
-    reports = tmp_path / "reports"
-    config = LocalRsiConfig(
-        repo_path=str(repo),
-        test_command="exit 0",
-        work_root=str(tmp_path / "work"),
-        max_cycles=2,
-        report_every=2,
-        report_dir=str(reports),
-        promotion_review=False,
-    )
-    LocalRsiLoop(config, apply_patch=_make_apply(_bump)).run()
-
-    manifest = json.loads((reports / "export" / "manifest.json").read_text(encoding="utf-8"))
-    assert len(manifest) == 2
-    for entry in manifest:
-        # A non-fitness promotion records the one gate it actually ran.
-        assert entry["gates"] == {"tests_pass": True}
-
-    patches = manifest_records(manifest)
-    assert patches[0].gates == (PromotedGate("tests_pass", True),)
-    body = pr_body(patches[0].file, [patches[0]])
-    assert "- tests_pass: passed" in body
-    assert "full fitness scorecard" not in body
-
-
-def test_export_manifest_states_promotions_without_evidence_as_none(tmp_path: Path) -> None:
-    """#820 (from #304): the manifest must be able to express BOTH evidence
-    states — a promotion whose note carries per-gate results projects them, and
-    a commit with NO note (pre-evidence bookkeeping commit) projects neither
-    ``gates`` nor ``gate_results``, so the harvest body renders it as
-    unverified instead of inventing a pass."""
-    repo = _make_repo(tmp_path / "src")
-    branch = subprocess.run(
-        ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-        cwd=str(repo),
-        capture_output=True,
-        text=True,
-    ).stdout.strip()
-    start_ref = subprocess.run(
-        ["git", "rev-parse", "HEAD"], cwd=str(repo), capture_output=True, text=True
-    ).stdout.strip()
-
-    # Commit A: a promotion whose note carries the full per-gate evidence.
-    (repo / "a.txt").write_text("a\n", encoding="utf-8")
-    _git(repo, "add", "-A")
-    _git(repo, "commit", "-q", "-m", "noted promotion")
-    noted_sha = subprocess.run(
-        ["git", "rev-parse", "HEAD"], cwd=str(repo), capture_output=True, text=True
-    ).stdout.strip()
-    from maistro_rsi.trace_notes import RewardVector, TraceNote, write_trace_note
-
-    note = TraceNote(
-        cycle=1,
-        target="a.txt",
-        accepted=True,
-        kind="code",
-        model="m",
-        files_touched=1,
-        reward=RewardVector(composite=0.5),
-        gates={"tests_pass": True, "no_bandit_high": False},
-        gate_results=[
-            {"name": "tests_pass", "passed": True, "not_run": False, "reason": "exit 0: ok"},
-            {
-                "name": "no_bandit_high",
-                "passed": False,
-                "not_run": True,
-                "reason": "NOT RUN: bandit unavailable (missing)",
-            },
-        ],
-    )
-    assert write_trace_note(repo, noted_sha, note) is True
-
-    # Commit B: no note at all — the manifest entry must carry NO gates key.
-    (repo / "b.txt").write_text("b\n", encoding="utf-8")
-    _git(repo, "add", "-A")
-    _git(repo, "commit", "-q", "-m", "un-noted bookkeeping commit")
-
-    config = LocalRsiConfig(
-        repo_path=str(repo),
-        test_command="exit 0",
-        work_root=str(tmp_path / "work"),
-        baseline_branch=branch,
-    )
-    loop = LocalRsiLoop(config)
-    loop._baseline = repo
-    loop._start_ref = start_ref
-    dest = tmp_path / "export"
-    assert loop.export_promotions(dest) == 2
-
-    manifest = json.loads((dest / "manifest.json").read_text(encoding="utf-8"))
-    assert [e["subject"] for e in manifest] == ["noted promotion", "un-noted bookkeeping commit"]
-    # The noted promotion's evidence survives to the manifest, not_run flag included.
-    assert manifest[0]["gates"] == {"tests_pass": True, "no_bandit_high": False}
-    assert manifest[0]["gate_results"] == note.gate_results
-    # The un-noted commit asserts nothing: no gates key at all — which the
-    # harvest body renders as "No gate results were recorded", never as a pass.
-    assert "gates" not in manifest[1]
-    assert "gate_results" not in manifest[1]
-
-    patches = manifest_records(manifest)
-    assert patches[0].gates == (
-        PromotedGate("tests_pass", True, "exit 0: ok"),
-        PromotedGate(
-            "no_bandit_high", False, "NOT RUN: bandit unavailable (missing)", not_run=True
-        ),
-    )
-    assert patches[1].gates == ()
-    body = pr_body(patches[1].file, [patches[1]])
-    assert "No gate results were recorded" in body
-    assert "unverified" in body
 
 
 @pytest.mark.ac("SPEC-070126-9d37/AC-17")

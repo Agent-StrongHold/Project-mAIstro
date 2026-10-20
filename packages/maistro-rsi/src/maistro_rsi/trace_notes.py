@@ -90,9 +90,6 @@ class TraceNote:
     # reporting must say so, never claim it. None on older notes simply means
     # no evidence bundle was recorded (the boolean map above still holds).
     gate_evidence: dict[str, dict[str, object]] | None = None
-    # Per-gate results in the simpler name/passed/not_run/reason shape (#820).
-    # Optional so older notes (and non-fitness runs) simply omit it.
-    gate_results: list[dict[str, object]] | None = None
     # Protected-test-inventory evidence (#306): base/candidate servable counts,
     # the (capped) deleted/added node-ID lists, and the override flag when a
     # governance-authorized shrink passed. Present on fitness promotions;
