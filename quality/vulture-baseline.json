@@ -808,7 +808,6 @@
         "packages/maistro-core/src/maistro/collaboration/session_collab.py::unused method 'presence'",
         "packages/maistro-core/src/maistro/collaboration/session_collab.py::unused method 'set_role'",
         "packages/maistro-core/src/maistro/config/database.py::unused function 'to_sync_url'",
-        "packages/maistro-core/src/maistro/config/loader.py::unused function 'load_yaml_config'",
         "packages/maistro-core/src/maistro/config/presets.py::unused function 'preset_to_config'",
         "packages/maistro-core/src/maistro/config/presets.py::unused function 'resolve_preset'",
         "packages/maistro-core/src/maistro/config/settings.py::unused class 'OllamaSettings'",

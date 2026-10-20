@@ -10,6 +10,10 @@ resolution-markers = [
 
 [manifest]
 members = [
+    "gallery-model-adapter",
+    "gallery-renderer-pack",
+    "gallery-unit-skill",
+    "gallery-weather-connector",
     "hive-conductor",
     "maistro-bootstrap",
     "maistro-canvas",
@@ -647,30 +651,30 @@ wheels = [
 
 [[package]]
 name = "boto3"
-version = "1.43.109"
+version = "1.43.114"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "botocore" },
     { name = "jmespath" },
     { name = "s3transfer" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/2a/80/0430e16c302b0d1a4ca3c8c69ffee9e4f8f2170d56162d2761b34fd512ba/boto3-1.43.109.tar.gz", hash = "sha256:c829bc3352e1e3922d8fe1db10b697182ac411b64ce5fc3acb0a06a29837417e", size = 112661, upload-time = "2026-10-07T15:24:51.293Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/e2/8c/f6f884dc947789317e73ed6fce85e18580d22e9f90e48d67c2367b02667e/boto3-1.43.114.tar.gz", hash = "sha256:be704857751564a5cf69c5bbaadbfa01c22806409815c73563db42fbffe583a2", size = 112653, upload-time = "2026-10-14T19:24:22.561Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/a1/56/c83a8fdadf06f631d1a0c4d82fc8daa9e1a40f6354264fba20c186363f49/boto3-1.43.109-py3-none-any.whl", hash = "sha256:703a81baed186d31e27cf50065d25a9faeb704f009e7c56b0f002ca52a328896", size = 140044, upload-time = "2026-10-07T15:24:49.793Z" },
+    { url = "https://files.pythonhosted.org/packages/c8/f8/0799a101e6f65c8b687f50c218654cef1e44658e946c7d33d362e2572621/boto3-1.43.114-py3-none-any.whl", hash = "sha256:d9cac2eb921ce674970cef1c9ad750f85ee3a846aedcf188d18368fb9eb6da23", size = 140043, upload-time = "2026-10-14T19:24:21.038Z" },
 ]
 
 [[package]]
 name = "botocore"
-version = "1.43.111"
+version = "1.43.114"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "jmespath" },
     { name = "python-dateutil" },
     { name = "urllib3" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/6c/43/257e97270ddd6833fd54b11e544a09b441b02f8c731bdeb29b90479be565/botocore-1.43.111.tar.gz", hash = "sha256:44d5e80962ac6cb9e85af72667b77c9586451e3328ab0ce33195380767e213d8", size = 16321685, upload-time = "2026-10-09T19:27:44.19Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/ce/c8/b508359d1f3846a918c06807a9ae27eee063f904559269e42ccde9de09ea/botocore-1.43.114.tar.gz", hash = "sha256:f366fa4db518775632ad1eb128cd8203ca46396cecf37209d904f0bbc049ce90", size = 16369844, upload-time = "2026-10-14T19:24:17.683Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/ad/5b/c3ce1b227954eb0313e76e6e7c0b5b24d4c553f0e8a03e5828ff5a5918dc/botocore-1.43.111-py3-none-any.whl", hash = "sha256:f1f4c28cb2a096bf246d0bb24cbb1a01c5cb696ef499fa71b155adda7b94c90b", size = 16018923, upload-time = "2026-10-09T19:27:40.066Z" },
+    { url = "https://files.pythonhosted.org/packages/9a/41/7c6fa7ac5fcfd5ea3c6f32aab001942da32b184a210f39042778cb1ad8ed/botocore-1.43.114-py3-none-any.whl", hash = "sha256:d1c441a22e93e158de5b1e026205f5d6d67a4545d10540c5090c62dccb3a9eca", size = 16067885, upload-time = "2026-10-14T19:24:14.629Z" },
 ]
 
 [[package]]
@@ -1563,6 +1567,26 @@ sdist = { url = "https://files.pythonhosted.org/packages/70/b8/c6081521ff70afdff
 wheels = [
     { url = "https://files.pythonhosted.org/packages/d5/08/c2409cb01d5368dcfedcbaffa7d044cc8957d57a9d0855244a5eb4709d30/funcy-2.0-py2.py3-none-any.whl", hash = "sha256:53df23c8bb1651b12f095df764bfb057935d49537a56de211b098f4c79614bb0", size = 30891, upload-time = "2023-03-28T06:22:42.576Z" },
 ]
+
+[[package]]
+name = "gallery-model-adapter"
+version = "1.0.0"
+source = { editable = "extensions/reference-gallery/packages/gallery-model-adapter" }
+
+[[package]]
+name = "gallery-renderer-pack"
+version = "1.0.0"
+source = { editable = "extensions/reference-gallery/packages/gallery-renderer-pack" }
+
+[[package]]
+name = "gallery-unit-skill"
+version = "1.0.0"
+source = { editable = "extensions/reference-gallery/packages/gallery-unit-skill" }
+
+[[package]]
+name = "gallery-weather-connector"
+version = "1.0.0"
+source = { editable = "extensions/reference-gallery/packages/gallery-weather-connector" }
 
 [[package]]
 name = "gherkin-official"
@@ -2996,6 +3020,10 @@ dev = [
     { name = "aiosqlite" },
     { name = "boto3" },
     { name = "cosmic-ray" },
+    { name = "gallery-model-adapter" },
+    { name = "gallery-renderer-pack" },
+    { name = "gallery-unit-skill" },
+    { name = "gallery-weather-connector" },
     { name = "gherkin-official" },
     { name = "google-re2" },
     { name = "hypothesis" },
@@ -3053,6 +3081,10 @@ requires-dist = [
     { name = "cosmic-ray", marker = "extra == 'dev'", specifier = ">=8.0.0" },
     { name = "fastapi", specifier = ">=0.115" },
     { name = "fastmcp", specifier = ">=3.2.0" },
+    { name = "gallery-model-adapter", marker = "extra == 'dev'", editable = "extensions/reference-gallery/packages/gallery-model-adapter" },
+    { name = "gallery-renderer-pack", marker = "extra == 'dev'", editable = "extensions/reference-gallery/packages/gallery-renderer-pack" },
+    { name = "gallery-unit-skill", marker = "extra == 'dev'", editable = "extensions/reference-gallery/packages/gallery-unit-skill" },
+    { name = "gallery-weather-connector", marker = "extra == 'dev'", editable = "extensions/reference-gallery/packages/gallery-weather-connector" },
     { name = "gherkin-official", marker = "extra == 'dev'", specifier = ">=29.0" },
     { name = "google-re2", marker = "extra == 'dev'", specifier = ">=1.1" },
     { name = "httpx", specifier = ">=0.28" },
