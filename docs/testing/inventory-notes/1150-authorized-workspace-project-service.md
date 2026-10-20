@@ -1,7 +1,7 @@
 ---
 inventory-delta:
   packages/maistro-core/tests: +8
-  packages/maistro-server/tests: +8
+  packages/maistro-server/tests: +11
   packages/hive-conductor/backend/tests: +3
 ---
 # Issue 1150: Workspace/Project authorization at the store boundary
@@ -287,3 +287,90 @@ Integration note: commit `921cdb057`'s subject contains the literal
 `resolve #1150`, a GitHub closure token. Merging this branch into develop with
 that commit preserved will auto-close #1150; the integrator should reword or
 squash so closure stays a deliberate post-verification act.
+
+## Repair round 4: the Project tree routes must render the boundary's refusals
+
+Rounds 1-3 rendered the boundary's refusals on the Project *read* seam, the
+Project *membership write* seam and the Workspace routes. The Project **tree**
+routes were still unguarded: `packages/maistro-server/src/maistro_server/api/
+projects.py` passed the acting principal into `root_for_workspace`,
+`list_children`, `create`, `move_project`, `update_defaults`, `delete` and
+`memberships_for`, but only `_require_project` (the `get` seam) translated the
+canonical store's `ProjectScopeDenied` into the route's own answer. A refusal
+from the *other* seven calls escaped the route as an unhandled exception -- a
+500 in production -- instead of the answer the route already gives for the same
+situation:
+
+* a read refused at the boundary got a 500 instead of the route's 404
+  "Project not found", the answer that also does not disclose Project
+  existence;
+* a write refused at the boundary got a 500 instead of the route's 403
+  "Workspace owner permission required", the answer the route's own owner
+  check gives for the same requester.
+
+The two seams are now rendered by one pair of helpers,
+`_authorized_read`/`_authorized_write`, next to the refusal shapes they
+return (`_project_hidden` -> 404 "Project not found", `_project_write_refused`
+-> 403 "Workspace owner permission required"). `_require_project` reuses
+`_authorized_read`, so the `get` seam and the tree seams cannot drift apart
+again. The refusal is still *decided* by the canonical store; only its
+rendering moved back to the route, exactly as in rounds 1-3.
+
+`packages/maistro-server/tests/api/test_projects_api.py` gains three cases
+(+3, counted in the +11 above):
+
+* `test_a_write_racing_an_ownership_revocation_is_not_a_500` -- create,
+  defaults, move and delete, all refused at the boundary after the route's
+  owner check; the refusal is the route's 403 and the refused write mutated
+  nothing (no child created, defaults and parent untouched).
+* `test_a_read_racing_a_membership_revocation_is_not_a_500` -- the root
+  Project read refused at the boundary after the route's membership check
+  renders as the same 404 an unknown Project id gets.
+* `test_a_child_list_racing_a_membership_revocation_is_not_a_500` -- the
+  child listing, whose boundary check lands after the route resolved the
+  Project, renders as the same 404.
+
+All three fail on the branch before this repair (the refusal escapes as an
+unhandled `ProjectScopeDenied`) and pass with it. Verified by execution:
+with the pre-repair `projects.py` restored, the three cases fail; with the
+repaired file they pass.
+
+The test module also imports the route module once at module scope
+(`from maistro_server.api import projects as projects_api`) instead of
+re-importing it inside each case. The repeated function-local import was a
+source of spurious `ModuleNotFoundError` failures in constrained filesystems,
+where a re-import of an already-imported module can be served from a
+momentarily unreadable source tree; the module-scope import happens once, at
+collection, where the same tree is already being read.
+
+Repair round 4 validation:
+
+* `pytest packages/maistro-server/tests/api/test_projects_api.py -q` ->
+  33 passed (30 + the three new cases), run three times with the same result
+* `pytest packages/maistro-server/tests -q` -> 582 passed, 8 skipped
+* `uv run python -m pytest packages/hive-conductor/backend/tests -q` ->
+  3771 passed, 24 skipped
+* `pytest packages/maistro-core/tests/workspaces packages/maistro-core/tests/projects -q`
+  -> 403 passed, 64 skipped
+* `MAISTRO_TEST_PG_DSN=... MAISTRO_REQUIRE_PG_LEGS=1 pytest
+  packages/maistro-core/tests/workspaces/test_store_boundary_scope_conformance.py -q`
+  -> 68 passed -- the two-principal/two-Workspace refusal proven on the
+  memory, SQLite *and* PostgreSQL legs
+* `MAISTRO_TEST_PG_DSN=... MAISTRO_REQUIRE_PG_LEGS=1 pytest
+  packages/maistro-core/tests/workspaces -q` -> 342 passed, 2 skipped
+* `ruff check .` / `ruff format --check .` over the tree -> clean
+* `mypy` over the AGENTS.md package list -> Success: no issues found in 906
+  source files
+* `check-suite-inventory.py` -> 21 suites match the recorded inventory after
+  the `packages/maistro-server/tests: +8 -> +11` delta above
+* `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'` -> exit 0 (1326 reviewed identities -> 1323 findings)
+
+Environment note for the next reader: in this sandbox the host's published
+port for a container is not reliably routed to that container's PostgreSQL
+(connecting to `127.0.0.1:<published port>` reached an unrelated local
+PostgreSQL and answered "database \"maestro\" does not exist" for a database
+that demonstrably exists inside the container). The PostgreSQL leg above was
+therefore run against the container's bridge address
+(`172.17.0.18:5432`), which routes correctly. The refusal semantics are the
+store's own and are backend-independent; only the address differs.

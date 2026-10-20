@@ -9,7 +9,8 @@ resolver says that exact action is delegable at the target Project.
 
 from __future__ import annotations
 
-from typing import Annotated, Any, Self, cast
+from collections.abc import Awaitable
+from typing import Annotated, Any, Self, TypeVar, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -34,6 +35,8 @@ from maistro_server.api.workspace_access import (
 
 router = APIRouter(prefix="/{workspace_id}/projects", tags=["projects"])
 
+_T = TypeVar("_T")
+
 
 def get_project_scope_store(request: Request) -> ProjectScopeStore:
     """Return the exact Project store selected by the process Container."""
@@ -47,6 +50,49 @@ def get_project_scope_store(request: Request) -> ProjectScopeStore:
     return cast(ProjectScopeStore, store)
 
 
+def _project_hidden() -> HTTPException:
+    """The route's answer for a Project the requester may not see."""
+    return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+
+
+def _project_write_refused() -> HTTPException:
+    """The route's answer for a Project write the requester may not perform."""
+    return HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="Workspace owner permission required",
+    )
+
+
+async def _authorized_read(coro: Awaitable[_T]) -> _T:
+    """Await a canonical Project read and render its refusal as the route's 404.
+
+    The canonical store is the authority (#1150): it re-resolves the acting
+    principal's VIEW authority inside the store call, so a membership that is
+    revoked between the route's own check and the store call arrives here as
+    a refusal. The route answers it the way it answers an unknown Project id
+    -- one 404 -- so a foreign Project id is not an existence oracle and a
+    store refusal never escapes as a 500.
+    """
+    try:
+        return await coro
+    except ProjectScopeDenied as exc:
+        raise _project_hidden() from exc
+
+
+async def _authorized_write(coro: Awaitable[_T]) -> _T:
+    """Await a canonical Project write and render its refusal as the route's 403.
+
+    The write routes already require Workspace ownership, so a refusal from
+    the boundary means the requester's ADMINISTER authority was revoked after
+    the route's own check. The route's answer to that is its owner-permission
+    403, never an unhandled store denial.
+    """
+    try:
+        return await coro
+    except ProjectScopeDenied as exc:
+        raise _project_write_refused() from exc
+
+
 async def _require_project(
     store: ProjectScopeStore,
     *,
@@ -54,19 +100,10 @@ async def _require_project(
     project_id: str,
     principal_id: str | None = None,
 ) -> Project:
-    try:
-        project = await store.get(project_id, principal_id=principal_id)
-    except ProjectScopeDenied as exc:
-        # The store resolved the acting principal's authority and refused
-        # (#1150). The route answers that the way it answers an unknown id:
-        # one 404, so a foreign Project id is not an existence oracle and a
-        # store refusal never escapes as a 500.
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Project not found"
-        ) from exc
+    project = await _authorized_read(store.get(project_id, principal_id=principal_id))
     if project is None or project.workspace_id != workspace_id:
         # Do not disclose cross-Workspace Project identifiers.
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+        raise _project_hidden()
     return project
 
 
@@ -124,11 +161,11 @@ async def get_root_project(
     requester = user_id(auth)
     await require_workspace_membership(workspace_store, workspace_id, requester)
     try:
-        return await project_store.root_for_workspace(workspace_id, principal_id=requester)
+        return await _authorized_read(
+            project_store.root_for_workspace(workspace_id, principal_id=requester)
+        )
     except ProjectNotFound as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Project not found"
-        ) from exc
+        raise _project_hidden() from exc
 
 
 @router.get("/{project_id}", response_model=Project)
@@ -165,7 +202,7 @@ async def list_project_children(
         project_id=project_id,
         principal_id=requester,
     )
-    return await project_store.list_children(project_id, principal_id=requester)
+    return await _authorized_read(project_store.list_children(project_id, principal_id=requester))
 
 
 @router.post("", response_model=Project, status_code=status.HTTP_201_CREATED)
@@ -185,13 +222,15 @@ async def create_project(
         principal_id=requester,
     )
     try:
-        return await project_store.create(
-            workspace_id=workspace_id,
-            parent_project_id=body.parent_project_id,
-            name=body.name,
-            defaults=body.defaults,
-            metadata=body.metadata,
-            principal_id=requester,
+        return await _authorized_write(
+            project_store.create(
+                workspace_id=workspace_id,
+                parent_project_id=body.parent_project_id,
+                name=body.name,
+                defaults=body.defaults,
+                metadata=body.metadata,
+                principal_id=requester,
+            )
         )
     except ProjectIntegrityError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
@@ -221,10 +260,12 @@ async def move_project(
         principal_id=requester,
     )
     try:
-        return await project_store.move_project(
-            project_id,
-            parent_project_id=body.parent_project_id,
-            principal_id=requester,
+        return await _authorized_write(
+            project_store.move_project(
+                project_id,
+                parent_project_id=body.parent_project_id,
+                principal_id=requester,
+            )
         )
     except (ProjectIntegrityError, ProjectNotFound) as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
@@ -247,8 +288,8 @@ async def update_project_defaults(
         project_id=project_id,
         principal_id=requester,
     )
-    return await project_store.update_defaults(
-        project_id, defaults=body.defaults, principal_id=requester
+    return await _authorized_write(
+        project_store.update_defaults(project_id, defaults=body.defaults, principal_id=requester)
     )
 
 
@@ -269,7 +310,7 @@ async def delete_project(
         principal_id=requester,
     )
     try:
-        await project_store.delete(project_id, principal_id=requester)
+        await _authorized_write(project_store.delete(project_id, principal_id=requester))
     except (ProjectIntegrityError, ProjectNotFound) as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
@@ -290,7 +331,9 @@ async def list_project_memberships(
         project_id=project_id,
         principal_id=requester,
     )
-    return await project_store.memberships_for(project_id, acting_principal_id=requester)
+    return await _authorized_read(
+        project_store.memberships_for(project_id, acting_principal_id=requester)
+    )
 
 
 @router.post(

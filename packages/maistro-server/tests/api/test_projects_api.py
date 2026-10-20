@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 from maistro.projects.scope import ProjectMembership
 from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.workspaces import InMemoryWorkspaceStore, WorkspaceRole
+from maistro_server.api import projects as projects_api
 from maistro_server.api import workspaces as workspace_api
 from maistro_server.api.auth import verify_api_key
 from maistro_server.api.principal import AuthenticatedPrincipal
@@ -444,8 +445,6 @@ async def test_a_revocation_landing_after_the_pre_check_is_not_a_500(api, monkey
     the same answer the pre-check would have given, rather than let escape
     as an unhandled exception.
     """
-    from maistro_server.api import projects as projects_api
-
     app, client, workspaces, projects = api
     workspace = await workspaces.create(creator_user_id="alice", name="Auth")
     root = await projects.root_for_workspace(workspace.workspace_id)
@@ -494,8 +493,6 @@ async def test_an_ownership_loss_racing_a_membership_removal_is_not_a_500(api, m
     boundary check must render as the route's owner-permission 403, not
     escape as an unhandled `ProjectScopeDenied`.
     """
-    from maistro_server.api import projects as projects_api
-
     app, client, workspaces, projects = api
     workspace = await workspaces.create(creator_user_id="alice", name="Auth")
     root = await projects.root_for_workspace(workspace.workspace_id)
@@ -532,6 +529,132 @@ async def test_an_ownership_loss_racing_a_membership_removal_is_not_a_500(api, m
     assert "Workspace owner permission required" in response.json()["detail"]
     memberships = await projects.memberships_for(root.project_id, principal_id="cara")
     assert memberships and memberships[0].grants == {"publish"}
+
+
+async def test_a_write_racing_an_ownership_revocation_is_not_a_500(api, monkeypatch) -> None:
+    """A Project write refused at the boundary is a 403, not a 500 (#1150).
+
+    The canonical store re-resolves the acting principal's ADMINISTER
+    authority inside the store call. Ownership revoked between the route's
+    own owner check and that boundary check makes the store refuse with
+    `ProjectScopeDenied` -- which the write routes must render as their own
+    owner-permission 403, the answer the route's own check would have
+    given, rather than let escape as an unhandled exception.
+    """
+    app, client, workspaces, projects = api
+    workspace = await workspaces.create(creator_user_id="alice", name="Auth")
+    root = await projects.root_for_workspace(workspace.workspace_id)
+    child = await projects.create(
+        workspace_id=workspace.workspace_id, parent_project_id=root.project_id, name="Child"
+    )
+    await workspaces.set_membership(workspace.workspace_id, user_id="bob", role=WorkspaceRole.OWNER)
+    _as_user(app, "bob")
+
+    async def _demoted_after_the_route_check(*args: object, **kwargs: object) -> None:
+        # A co-owner demotes the requester between the route's owner check
+        # and the store's boundary authorization.
+        await workspaces.set_membership(
+            workspace.workspace_id, user_id="bob", role=WorkspaceRole.CONTRIBUTOR
+        )
+
+    monkeypatch.setattr(projects_api, "require_workspace_owner", _demoted_after_the_route_check)
+
+    created = client.post(
+        f"/workspaces/{workspace.workspace_id}/projects",
+        json={"parent_project_id": root.project_id, "name": "Raced"},
+    )
+    defaults = client.put(
+        f"/workspaces/{workspace.workspace_id}/projects/{child.project_id}/defaults",
+        json={"defaults": {"model": "raced"}},
+    )
+    moved = client.patch(
+        f"/workspaces/{workspace.workspace_id}/projects/{child.project_id}/parent",
+        json={"parent_project_id": root.project_id},
+    )
+    deleted = client.delete(
+        f"/workspaces/{workspace.workspace_id}/projects/{child.project_id}",
+    )
+
+    for response in (created, defaults, moved, deleted):
+        assert response.status_code == 403
+        assert "Workspace owner permission required" in response.json()["detail"]
+    # The refused write mutated nothing: no "Raced" child was created, the
+    # defaults and the parent are untouched, and the Project still exists.
+    children = await projects.list_children(root.project_id)
+    assert [item.project_id for item in children] == [child.project_id]
+    assert (await projects.get(child.project_id)).defaults == {}
+    assert (await projects.get(child.project_id)).parent_project_id == root.project_id
+
+
+async def test_a_read_racing_a_membership_revocation_is_not_a_500(api, monkeypatch) -> None:
+    """A Project read refused at the boundary is a 404, not a 500 (#1150).
+
+    The canonical store re-resolves the acting principal's VIEW authority
+    inside the store call. A membership revoked between the route's own
+    check and that boundary check makes the store refuse with
+    `ProjectScopeDenied` -- which the read routes must render as the same
+    404 an unknown Project id gets, so the refusal is neither a 500 nor an
+    existence oracle.
+    """
+    app, client, workspaces, _projects = api
+    workspace = await workspaces.create(creator_user_id="alice", name="Auth")
+    await workspaces.set_membership(
+        workspace.workspace_id, user_id="bob", role=WorkspaceRole.CONTRIBUTOR
+    )
+    _as_user(app, "bob")
+
+    async def _removed_after_the_route_check(*args: object, **kwargs: object) -> None:
+        # The requester leaves the Workspace between the route's membership
+        # check and the store's boundary authorization.
+        await workspaces.remove_membership(workspace.workspace_id, user_id="bob")
+
+    monkeypatch.setattr(
+        projects_api, "require_workspace_membership", _removed_after_the_route_check
+    )
+
+    response = client.get(f"/workspaces/{workspace.workspace_id}/projects/root")
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Project not found"
+
+
+async def test_a_child_list_racing_a_membership_revocation_is_not_a_500(api, monkeypatch) -> None:
+    """A child listing refused at the boundary is a 404, not a 500 (#1150).
+
+    The route resolves the Project once and then asks the store for its
+    children -- two separate boundary checks. A membership revoked between
+    them makes the second one refuse, and the refusal must render as the
+    route's 404 rather than escape as an unhandled `ProjectScopeDenied`.
+    """
+    app, client, workspaces, projects = api
+    workspace = await workspaces.create(creator_user_id="alice", name="Auth")
+    root = await projects.root_for_workspace(workspace.workspace_id)
+    await projects.create(
+        workspace_id=workspace.workspace_id, parent_project_id=root.project_id, name="Child"
+    )
+    await workspaces.set_membership(
+        workspace.workspace_id, user_id="bob", role=WorkspaceRole.CONTRIBUTOR
+    )
+    _as_user(app, "bob")
+
+    original_list_children = projects.list_children
+
+    async def _revocation_lands_between_the_project_check_and_the_listing(
+        *args: object, **kwargs: object
+    ) -> list:
+        await workspaces.remove_membership(workspace.workspace_id, user_id="bob")
+        return await original_list_children(*args, **kwargs)
+
+    monkeypatch.setattr(
+        projects, "list_children", _revocation_lands_between_the_project_check_and_the_listing
+    )
+
+    response = client.get(
+        f"/workspaces/{workspace.workspace_id}/projects/{root.project_id}/children"
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Project not found"
 
 
 async def test_workspace_owner_can_revoke_a_project_membership(api) -> None:
