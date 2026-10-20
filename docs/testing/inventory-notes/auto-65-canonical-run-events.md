@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/hive-conductor/backend/tests: +1
+  packages/hive-conductor/backend/tests: +2
 ---
 # #65 canonical Run event inspection
 
@@ -11,7 +11,8 @@ canonical EventStore and reconnects using canonical Run identity after the
 product-local Run projection is unavailable, proving persisted event replay
 survives store restart and does not depend on that projection. This closes
 the prior canonical-only detail gap when the core Container exposes its event
-store.
+store. A paginated-stream regression places the target Run's Event at sequence
+1001 and verifies inspection returns it beyond the first 100-event page.
 
 Validation: `uv run pytest packages/hive-conductor/backend/tests/test_goal_inspection.py -x -q`
 (34 passed); `uv run ruff check packages/hive-conductor/backend/tests/test_goal_inspection.py`

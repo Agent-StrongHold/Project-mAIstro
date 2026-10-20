@@ -237,8 +237,20 @@ async def _canonical_events(
         event_store = getattr(getattr(container, "capability_effects", None), "event_store", None)
         if event_store is None:
             return None
-        events = await event_store.list_stream(f"workspace:{workspace_id}", limit=1000)
-        return [event.to_dict() for event in events if event.run_id == run_id]
+        stream_id = f"workspace:{workspace_id}"
+        after_sequence = 0
+        matching: list[dict[str, Any]] = []
+        while True:
+            events = await event_store.list_stream(
+                stream_id, after_sequence=after_sequence, limit=100
+            )
+            if not events:
+                break
+            matching.extend(event.to_dict() for event in events if event.run_id == run_id)
+            after_sequence = events[-1].sequence
+            if len(events) < 100:
+                break
+        return matching
     except Exception:
         return None
 
