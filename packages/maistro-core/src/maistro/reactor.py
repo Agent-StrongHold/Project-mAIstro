@@ -74,6 +74,21 @@ class Reactor:
     def is_running(self) -> bool:
         return self._running
 
+    @property
+    def persistence_backend(self) -> State | None:
+        """The store this Reactor's state writes land in (#1178).
+
+        Every state mutation the Reactor makes routes through the canonical
+        `maistro.state.State` — one writer on the configured state database —
+        so a non-None backend means "the Reactor's events are persisted in the
+        Conductor's own state database, by that one writer". `None` means the
+        Reactor has no persistence authority at all: `state_submit` drops the
+        write instead of writing it somewhere else, which is exactly what a
+        health report has to say out loud rather than let a reader assume a
+        durable store is behind it.
+        """
+        return self._state
+
     def register_source(self, name: str, handler: Callable[[Any], Awaitable[None]]) -> None:
         self._handlers[name] = handler
 
