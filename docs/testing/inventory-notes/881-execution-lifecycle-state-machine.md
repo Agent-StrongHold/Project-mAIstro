@@ -1,6 +1,7 @@
 ---
 inventory-delta:
   formal/: +3
+  tests/: +1
 ---
 # Issue 881 — execution-lifecycle state machine (research prototype M8-A1)
 
@@ -20,9 +21,13 @@ Three node IDs under `formal/models/test_execution_lifecycle_state.py`:
 
 `pytest formal/models --collect-only -q` collects 664 nodes before and 667
 after (baseline `docs/testing/inventory/baseline.json` formal/ = 417 plus open
-deltas). Like I29, the machine is about the PostgreSQL store, so it skips
-without `MAISTRO_TEST_PG_DSN`; `formal-conformance.yml` already provisions the
-service, so nothing skips in CI. Runs at the PR budget in ~4-8s; measured
+deltas). One additional node lands in `tests/`: `tests/
+te_postgres_health_checks.py` parametrizes one case per workflow that declares
+a Postgres service, and `formal-conformance-nightly.yml` adds the nightly
+service (`formal-conformance-nightly.yml:formal-nightly:postgres`), hence the
+`tests/: +1` delta above. Like I29, the machine is about the PostgreSQL
+store, so it skips without `MAISTRO_TEST_PG_DSN`; `formal-conformance.yml`
+and the nightly workflow both provision the service, so nothing skips in CI. Runs at the PR budget in ~4-8s; measured
 60-example run 17.6s, so nightly budgets for this module should stay on the
 `MAISTRO_FORMAL_PG_EXAMPLES` knob rather than the default 10k.
 
