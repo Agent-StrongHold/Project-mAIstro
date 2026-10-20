@@ -119,6 +119,16 @@ prerequisite at the existing canonical seams, and a fresh exact-artifact soak
 observations. Redispatching the same historical CI failure cannot provide those
 inputs. No GitHub mutation, push, destructive cleanup, or competing authority.
 
+## Revalidation at assigned head fdc6342e9
+
+No `check-*.log` files were present in this job directory; validation below was
+executed directly. The targeted soak/task-concurrency/execution-fencing/recovery
+suite passed again: 105 passed in 3.35s. `uv run ruff check .` passed;
+`uv run ruff format --check .` passed (3373 files); deployment-claims and
+execution-lifecycles gates passed (19/19). This is local seam evidence only; it
+does not change any production-acceptance gap above. No test was added, so no
+inventory delta is applicable.
+
 Progress: checked 1 issue; done 0 acceptance-complete; skipped 0 issues;
 validation errors 0. This local report commit is a checkpoint, not integration
 approval. Residual risks: unverified deployed behavior and inherited branch/base
