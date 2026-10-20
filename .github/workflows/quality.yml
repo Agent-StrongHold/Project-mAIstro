@@ -423,6 +423,13 @@ jobs:
       # diff gate scored the new store's 238 changed lines at 25.6% while the
       # same arcs passed against a real server in the `postgres` job — the
       # exact shape #231 documented for scheduling.
+      #
+      # `capabilities/test_backend_effect_context.py` joins by that same rule
+      # (#16/#1133): its PostgreSQL leg selects the canonical EventStore through
+      # `new_backend_effect_context(pg_pool=...)`, and no other producer runs
+      # `tests/capabilities` against a server. Without it here the `pg_pool`
+      # branch scores 0% in this producer while `coverage (no services)` skips
+      # the leg, so the diff gate read the new selection seam as untested code.
       - name: Apply the chain, then the suites that need a schema (under coverage)
         run: |
           uv run alembic upgrade head
@@ -431,6 +438,7 @@ jobs:
             -m pytest packages/maistro-core/tests/persistence \
             packages/maistro-core/tests/test_container_postgres.py \
             packages/maistro-core/tests/events \
+            packages/maistro-core/tests/capabilities/test_backend_effect_context.py \
             packages/maistro-core/tests/runs \
             packages/maistro-core/tests/graph \
             packages/maistro-core/tests/projects \
