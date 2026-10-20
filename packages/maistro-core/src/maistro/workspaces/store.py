@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import NotRequired, Protocol, TypedDict, runtime_checkable
+from typing import Any, NotRequired, Protocol, TypedDict, runtime_checkable
 
 from maistro.projects.scope_store import InMemoryProjectScopeStore, ProjectScopeStore
 from maistro.workspaces.model import (
@@ -72,6 +72,30 @@ class WorkspaceStore(Protocol):
         user_id: str,
         principal_id: str | None = None,
     ) -> WorkspaceMembership | None: ...
+
+    async def lock_and_read_membership(
+        self,
+        conn: Any,
+        workspace_id: str,
+        *,
+        user_id: str,
+    ) -> WorkspaceMembership | None:
+        """Read one membership on a connection the caller already holds.
+
+        The durable stores answer this *after* taking the Workspace's own
+        serialization point -- PostgreSQL's ``SELECT ... FOR UPDATE`` on the
+        Workspace row, SQLite's ``BEGIN IMMEDIATE`` the caller already
+        holds -- so a caller that is about to write can ask for authority on
+        its own connection and be serialized against a concurrent
+        revocation of it (#1150). The in-memory reference has no such race:
+        it has no await between the decision and the write, so it answers
+        from its map.
+
+        ``conn`` is the connection the write will happen on. Reading the
+        membership anywhere else -- a second pooled connection, or before
+        the lock -- answers a question that may already have changed.
+        """
+        ...
 
     async def set_membership(
         self,
@@ -301,6 +325,22 @@ class InMemoryWorkspaceStore:
         if existing.role is WorkspaceRole.OWNER:
             self._ensure_another_owner(workspace_id, excluding_user_id=user_id)
         del self._memberships[key]
+
+    async def lock_and_read_membership(
+        self,
+        conn: Any,
+        workspace_id: str,
+        *,
+        user_id: str,
+    ) -> WorkspaceMembership | None:
+        """One membership, from the map, on the caller's connection.
+
+        The reference store is single-threaded and has no await between a
+        decision and the write it guards, so there is no window for a
+        revocation to slip through and no lock to take.
+        """
+        membership = self._memberships.get((workspace_id, user_id))
+        return membership.model_copy(deep=True) if membership is not None else None
 
     def _require_workspace(self, workspace_id: str) -> Workspace:
         workspace = self._workspaces.get(workspace_id)

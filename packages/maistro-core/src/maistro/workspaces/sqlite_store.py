@@ -200,6 +200,7 @@ class SqliteWorkspaceStore:
         await authorize_workspace_administer(self, workspace.workspace_id, principal_id)
         updated = workspace.model_copy(update={"updated_at": datetime.now(UTC)})
         async with self._write_transaction() as conn:
+            await self._require_administer_on(conn, workspace.workspace_id, principal_id)
             cursor = await conn.execute(
                 """UPDATE canonical_workspaces
                       SET name = ?, updated_at = ?, payload = ?
@@ -220,7 +221,9 @@ class SqliteWorkspaceStore:
 
         A supplied principal must administer the Workspace (#1150). The
         check runs before the write opens, so an outsider's attempt does not
-        touch the rows even if it races a membership change.
+        touch the rows even if it races a membership change, and is re-read
+        inside the write transaction, so a demotion that commits in between
+        still refuses (#1150).
         """
         from maistro.workspaces.store_boundary import authorize_workspace_administer
 
@@ -229,6 +232,7 @@ class SqliteWorkspaceStore:
         # `WorkspaceNotFound` from the row delete rolls the purge back with
         # it, so deleting an absent Workspace touches nothing.
         async with self._write_transaction() as conn:
+            await self._require_administer_on(conn, workspace_id, principal_id)
             await self._project_store.purge_workspace_in(conn, workspace_id)
             await self._delete_workspace_row(conn, workspace_id)
 
@@ -302,13 +306,16 @@ class SqliteWorkspaceStore:
         The roster is read inside `BEGIN IMMEDIATE`, so the write lock is
         taken before the owner count is asked, not after.
 
-        A supplied principal must administer the Workspace (#1150).
+        A supplied principal must administer the Workspace (#1150), re-read
+        inside the write transaction so a demotion that commits between the
+        first check and the lock still refuses (#1150).
         """
         from maistro.workspaces.store_boundary import authorize_workspace_administer
 
         await authorize_workspace_administer(self, workspace_id, principal_id)
-        async with self._write_transaction():
+        async with self._write_transaction() as conn:
             await self._require_workspace(workspace_id)
+            await self._require_administer_on(conn, workspace_id, principal_id)
             existing = await self._membership(workspace_id, user_id)
             if (
                 existing is not None
@@ -332,7 +339,8 @@ class SqliteWorkspaceStore:
         """Drop a membership, refusing to strip the last owner.
 
         A supplied principal must administer the Workspace, or be the member
-        removing themselves (#1150).
+        removing themselves (#1150), re-read inside the write transaction so
+        a concurrent demotion still refuses (#1150).
         """
         from maistro.workspaces.store_boundary import authorize_membership_removal
 
@@ -341,6 +349,9 @@ class SqliteWorkspaceStore:
         )
         async with self._write_transaction() as conn:
             await self._require_workspace(workspace_id)
+            await self._require_removal_on(
+                conn, workspace_id, user_id=user_id, principal_id=principal_id
+            )
             existing = await self._membership(workspace_id, user_id)
             if existing is None:
                 return
@@ -410,6 +421,72 @@ class SqliteWorkspaceStore:
             row = await cursor.fetchone()
         if row is None:
             raise WorkspaceNotFound(workspace_id)
+
+    async def _require_administer_on(
+        self, conn: aiosqlite.Connection, workspace_id: str, principal_id: str | None
+    ) -> None:
+        """Re-decide ADMINISTER inside the write transaction (#1150).
+
+        The pre-transaction `authorize_workspace_administer` call can go
+        stale when a demotion or removal commits between it and this
+        connection's `BEGIN IMMEDIATE`; re-reading the acting principal's
+        membership under that lock serialises revocation with the
+        mutation, so a revoked owner's write rolls back with its own
+        transaction.
+
+        The decision is the canonical one -- `decide_workspace_action`,
+        shared with `WorkspaceAuthorizer` -- so the re-check cannot drift
+        from the rule it re-checks, and there is still exactly one rule.
+        ``None`` stays the internal/system shape.
+        """
+        if principal_id is None:
+            return
+        from maistro.workspaces.authorization import WorkspaceAction
+        from maistro.workspaces.store_boundary import require_workspace_action_on
+
+        await require_workspace_action_on(
+            self, conn, workspace_id, principal_id, WorkspaceAction.ADMINISTER
+        )
+
+    async def _require_removal_on(
+        self,
+        conn: aiosqlite.Connection,
+        workspace_id: str,
+        *,
+        user_id: str,
+        principal_id: str | None,
+    ) -> None:
+        """Re-decide a membership removal inside the write transaction (#1150).
+
+        Removing oneself needs only membership, and removing anyone else is
+        an administer action; both are re-decided under the lock, by the
+        same rule the pre-write check used.
+        """
+        if principal_id is None:
+            return
+        from maistro.workspaces.store_boundary import require_membership_removal_on
+
+        await require_membership_removal_on(
+            self, conn, workspace_id, user_id=user_id, principal_id=principal_id
+        )
+
+    async def lock_and_read_membership(
+        self, conn: aiosqlite.Connection, workspace_id: str, *, user_id: str
+    ) -> WorkspaceMembership | None:
+        """One membership, on the connection the caller already holds (#1150).
+
+        A durable write calls this inside its `BEGIN IMMEDIATE`, so the read
+        that decides authority is serialized with a revocation that commits
+        before the lock was taken -- the property a pre-write check cannot
+        have, since it answers from a roster that may already have changed.
+        """
+        async with conn.execute(
+            """SELECT payload FROM canonical_workspace_memberships
+                WHERE workspace_id = ? AND user_id = ?""",
+            (workspace_id, user_id),
+        ) as cursor:
+            row = await cursor.fetchone()
+        return WorkspaceMembership.model_validate_json(row[0]) if row is not None else None
 
     async def _require_another_owner(self, workspace_id: str, *, excluding_user_id: str) -> None:
         async with self._conn.execute(
