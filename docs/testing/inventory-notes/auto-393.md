@@ -60,3 +60,14 @@ is the new file.
   exporter-encode paths — while an untyped provider failure stays a truthful
   502). All ten regression-naming tests were demonstrated to fail against
   the pre-fix code before landing.
+- CI-repair round (`exact-debt-ledger`, no test delta): reverted the
+  candidate-authored amendment of `quality/reachability-baseline.json` and
+  `quality/reachability-dispositions.json` (commit `cdefe5ec8`) that added an
+  unauthorized disposition for `maistro.runs.admission_identity`. That ledger
+  movement is a two-merge-rule violation (a candidate cannot self-authorize
+  a ratchet expansion; `quality/ratchet-authorizations.json` is read from the
+  merge base) and is outside #393's scope. The vulture half of the gate is
+  green (`check-vulture-baseline.py` exit 0, 1326 reviewed == 1326 findings);
+  the remaining red is the pre-existing develop reachability defect carried
+  by #1851's unwired inactive contract leaf, reproduced on a detached base
+  worktree at `e20e9f52`.
