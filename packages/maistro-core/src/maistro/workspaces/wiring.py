@@ -59,7 +59,7 @@ async def _workspaces_are_migrated(pg_pool: Any) -> bool:
     return False
 
 
-def _backend_of(project_store: ProjectScopeStore) -> str:
+def backend_of(project_store: ProjectScopeStore) -> str:
     """Which relational backend the Project scope store already committed to.
 
     Read from the object rather than re-derived from configuration: the store
@@ -88,7 +88,7 @@ async def wire_workspace_store(
     Workspace's Root Project is created in, and every implementation provisions
     that Root Project as part of `create`.
     """
-    backend = _backend_of(project_store)
+    backend = backend_of(project_store)
 
     if backend == "postgres":
         if pg_pool is None:
@@ -133,4 +133,4 @@ async def wire_workspace_store(
     return InMemoryWorkspaceStore(project_store=project_store)
 
 
-__all__ = ["WORKSPACE_PG_TABLES", "wire_workspace_store"]
+__all__ = ["WORKSPACE_PG_TABLES", "backend_of", "wire_workspace_store"]

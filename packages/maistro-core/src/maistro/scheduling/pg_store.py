@@ -106,17 +106,20 @@ class PgScheduleStore:
         return [_schedule_of(row["payload"]) for row in rows]
 
     async def due(self, *, now: datetime) -> list[Schedule]:
-        """Enabled schedules whose cursor has arrived, plus those with none.
+        """Enabled schedules needing recurrence evaluation or manual recovery.
 
         `next_due_at IS NULL` is included deliberately, matching the protocol:
         an unknown cursor must be evaluated. A schedule written by `put` before
         its first tick has one, and treating it as not-due would mean a brand
-        new schedule never fires.
+        new schedule never fires. Pending manual-fire markers are selected
+        independently of the recurrence cursor, so a crashed manual fire is
+        reconciled on the next tick; admission still checks the marker lease.
         """
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
                 """SELECT payload FROM schedules
-                   WHERE enabled AND (next_due_at IS NULL OR next_due_at <= $1)
+                   WHERE enabled AND (next_due_at IS NULL OR next_due_at <= $1
+                       OR jsonb_array_length(COALESCE(payload->'pending_fires', '[]'::jsonb)) > 0)
                    ORDER BY schedule_id""",
                 now,
             )

@@ -15,6 +15,7 @@ from maistro.capabilities.authority import (
     verify_approval_authority,
 )
 from maistro.capabilities.binding import Binding, ResolvedBinding
+from maistro.capabilities.binding_store import BindingDisabled, PgBindingStore, SqliteBindingStore
 from maistro.capabilities.bootstrap import default_capability_registry
 from maistro.capabilities.discovery import discover_into
 from maistro.capabilities.governed_invocation import (
@@ -27,6 +28,16 @@ from maistro.capabilities.governed_invocation import (
 from maistro.capabilities.harness_manager import HarnessSessionManager
 from maistro.capabilities.http import AsyncHttp
 from maistro.capabilities.http_client import HttpxAsyncHttp
+from maistro.capabilities.image_generation import (
+    IMAGE_GENERATE_CAPABILITY,
+    ImageBlobStore,
+    ImageBlobUnavailable,
+    ImageGenerationEgress,
+    ImageGenerationRequest,
+    ImageGenerationResult,
+    ImageStorageError,
+    InMemoryImageBlobStore,
+)
 from maistro.capabilities.invocation import (
     CapabilityUnavailable,
     EffectNotApplied,
@@ -57,10 +68,20 @@ from maistro.capabilities.providers.harness_safety import (
     DenyAllGate,
     SafeHarnessRunner,
 )
+from maistro.capabilities.providers.openclaw import (
+    OpenClawHarnessRunner,
+    openclaw_microvm_factory,
+    openclaw_microvm_runner,
+)
 from maistro.capabilities.providers.opencode import (
     OpencodeHarnessRunner,
     opencode_microvm_factory,
     opencode_microvm_runner,
+)
+from maistro.capabilities.providers.pi import (
+    PiHarnessRunner,
+    pi_microvm_factory,
+    pi_microvm_runner,
 )
 from maistro.capabilities.providers.subprocess_harness import (
     SandboxExec,
@@ -86,12 +107,14 @@ from maistro.capabilities.types import (
 __all__ = [
     "CODEX_APP_SERVER_BINARY",
     "HARNESS_RUNNER_SLOT",
+    "IMAGE_GENERATE_CAPABILITY",
     "PREFERRED_CODEX_PROVIDER",
     "ActionGate",
     "ApprovalAuthority",
     "ApprovalStatus",
     "AsyncHttp",
     "Binding",
+    "BindingDisabled",
     "CapabilityProvider",
     "CapabilityRegistry",
     "CapabilityUnavailable",
@@ -107,7 +130,14 @@ __all__ = [
     "HarnessRunner",
     "HarnessSessionManager",
     "HttpxAsyncHttp",
+    "ImageBlobStore",
+    "ImageBlobUnavailable",
+    "ImageGenerationEgress",
+    "ImageGenerationRequest",
+    "ImageGenerationResult",
+    "ImageStorageError",
     "InMemoryApprovalStore",
+    "InMemoryImageBlobStore",
     "InMemoryInvocationStore",
     "Invocation",
     "InvocationApprovalPending",
@@ -118,8 +148,11 @@ __all__ = [
     "InvocationReconciliation",
     "InvocationReconciliationEvidence",
     "InvocationStatus",
+    "OpenClawHarnessRunner",
     "OpencodeHarnessRunner",
+    "PgBindingStore",
     "PgInvocationStore",
+    "PiHarnessRunner",
     "ProviderHealth",
     "ProviderReconciliationAdapter",
     "ReconciliationDisposition",
@@ -128,6 +161,7 @@ __all__ = [
     "SandboxExec",
     "SlotSpec",
     "SqliteApprovalStore",
+    "SqliteBindingStore",
     "SqliteInvocationStore",
     "StaleInvocationUpdate",
     "SubprocessHarnessRunner",
@@ -138,8 +172,12 @@ __all__ = [
     "codex_app_server_microvm_runner",
     "default_capability_registry",
     "discover_into",
+    "openclaw_microvm_factory",
+    "openclaw_microvm_runner",
     "opencode_microvm_factory",
     "opencode_microvm_runner",
+    "pi_microvm_factory",
+    "pi_microvm_runner",
     "resolve_harness_runner",
     "sign_approval_authority",
     "verify_approval_authority",

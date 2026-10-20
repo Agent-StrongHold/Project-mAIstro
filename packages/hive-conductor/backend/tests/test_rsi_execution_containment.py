@@ -251,7 +251,9 @@ class TestIsolationFailsClosed:
 
         assert policy.REQUIRED_ISOLATION == "container"
 
-    def test_this_process_does_not_claim_containment_it_cannot_provide(self) -> None:
+    def test_this_process_does_not_claim_containment_it_cannot_provide(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """The load-bearing assertion of the whole change.
 
         `isolation="container"` sandboxes only the builders agent's edits; the
@@ -262,23 +264,54 @@ class TestIsolationFailsClosed:
         sandbox importable and is docker on PATH" would answer a narrower
         question than the one being asked, and read as containment to every
         caller.
+
+        In its #509 form the gate is no longer the literal `False` that
+        refused every run: it is `None`, meaning the answer must come from the
+        container dispatch backend's probe — CLI, reachable daemon, runner
+        image. What stays load-bearing is that the default attests nothing by
+        itself. A literal `True` in source would be the silenced check this
+        test exists to catch.
         """
+        from services import rsi_container_dispatch as dispatch
         from services import rsi_execution_policy as policy
 
-        assert policy.IN_PROCESS_ISOLATION_AVAILABLE is False
+        assert policy.IN_PROCESS_ISOLATION_AVAILABLE is None
+        monkeypatch.setattr(dispatch, "backend_available", lambda: False)
         assert policy._isolation_available() is False
 
-    def test_unavailable_isolation_is_an_error_not_a_downgrade(self) -> None:
+    def test_unavailable_isolation_is_an_error_not_a_downgrade(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from services import rsi_container_dispatch as dispatch
         from services import rsi_execution_policy as policy
 
-        with pytest.raises(policy.RsiPolicyError, match="isolation boundary"):
+        monkeypatch.setattr(dispatch, "backend_available", lambda: False)
+        # The refusal quotes the backend's reason; keep the probe off the
+        # host's real docker — this asserts the policy, not daemon state.
+        monkeypatch.setattr(
+            dispatch,
+            "unavailability_reason",
+            lambda: "the docker daemon is not reachable from this process",
+        )
+
+        with pytest.raises(policy.RsiPolicyError, match="no contained RSI backend"):
             policy.require_isolation()
 
-    def test_the_refusal_names_the_path_that_does_contain(self) -> None:
+    def test_the_refusal_names_the_path_that_does_contain(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """A refusal that leaves the operator with no way to run the loop
         invites the workaround. The isolated wrapper is the answer, so the
         error says so."""
+        from services import rsi_container_dispatch as dispatch
         from services import rsi_execution_policy as policy
+
+        monkeypatch.setattr(dispatch, "backend_available", lambda: False)
+        monkeypatch.setattr(
+            dispatch,
+            "unavailability_reason",
+            lambda: "the docker CLI is not on this process's PATH",
+        )
 
         with pytest.raises(policy.RsiPolicyError, match=r"run_rsi_isolated\.sh"):
             policy.require_isolation()
@@ -375,84 +408,101 @@ class TestTheServiceRefusesWhatTheRouteWouldNotSend:
         with pytest.raises(ValueError, match="container isolation"):
             self._drive({"repo_path": str(tmp_path), "test_argv": ["python"]})
 
-    def test_a_policy_resolved_config_reaches_the_loop_with_its_argv(
+    def test_a_policy_resolved_config_reaches_the_dispatch_with_its_argv(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """The success branch of both checks. Without it, a service that
         refused every config would satisfy the three refusals above."""
+        import json
+
+        from services import rsi_container_dispatch as dispatch
+
         import maistro_rsi.local_loop as local_loop
 
-        seen: list[object] = []
+        specs: list[object] = []
 
-        class _Loop:
-            def __init__(self, config: object, **_kw: object) -> None:
-                seen.append(config)
+        def fake_launch(spec: object) -> str:
+            specs.append(spec)
+            return "container-t"
 
-            def run(self) -> object:
-                raise AssertionError("the loop must not start in this test")
+        monkeypatch.setattr(dispatch, "launch", fake_launch)
+        monkeypatch.setattr(dispatch, "wait", lambda _cid: 0)
+        monkeypatch.setattr(dispatch, "poll_reports", lambda _report_dir: {})
+        monkeypatch.setattr(dispatch, "final_summary", lambda _report_dir: None)
+        monkeypatch.setattr(dispatch, "_detect_gateway_network", lambda: "test-net")
 
-        monkeypatch.setattr(local_loop, "LocalRsiLoop", _Loop)
-        monkeypatch.setattr(local_loop, "make_builders_apply_patch", lambda **_kw: None)
+        def _no_host_loop(*_a: object, **_kw: object) -> None:
+            raise AssertionError("the loop must not start in this process")
 
-        with pytest.raises(AssertionError, match="must not start"):
-            self._drive(
-                {
-                    "repo_path": str(tmp_path),
-                    "test_argv": ["python", "-m", "pytest", "-q"],
-                    "isolation": "container",
-                    "work_root": str(tmp_path / "work"),
-                }
-            )
+        monkeypatch.setattr(local_loop, "LocalRsiLoop", _no_host_loop)
 
-        config = seen[0]
-        assert config.test_argv == ("python", "-m", "pytest", "-q")
-        assert config.isolation == "container"
-        # Kept only so reports can name what ran; nothing executes it.
-        assert config.test_command == "python -m pytest -q"
+        self._drive(
+            {
+                "repo_path": str(tmp_path),
+                "test_argv": ["python", "-m", "pytest", "-q"],
+                "isolation": "container",
+            }
+        )
 
-    @pytest.mark.ac("SPEC-082926-a6ab/AC-7")
-    def test_the_builders_factory_is_told_which_sandbox_to_build(
+        spec = specs[0]
+        assert spec.test_argv == ("python", "-m", "pytest", "-q")
+        # The policy-resolved vector crosses as a vector: the container-side
+        # command carries it as --test-argv JSON, and no shell string is
+        # composed on either side of the boundary. The bare interpreter is
+        # resolved to the image's virtualenv python in the same step: the base
+        # env's pinned PATH would otherwise pick the base-image interpreter,
+        # which cannot import pytest (Codex, #509).
+        argv = dispatch.container_argv(spec)
+        assert json.loads(argv[argv.index("--test-argv") + 1]) == [
+            "/workspace/.venv/bin/python",
+            "-m",
+            "pytest",
+            "-q",
+        ]
+
+    def test_the_loop_argv_runs_inside_the_runner_image(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """The refusal above governed the loop's sandbox, not the agent's.
+        """The agent-sandbox decision this file used to pin on
+        `make_builders_apply_patch` (#305, SPEC-082926-a6ab/AC-7) moved with
+        the loop: the whole loop — builders agent included — runs inside the
+        runner container, so the host-side proof is that the dispatch command
+        is the image's own venv interpreter importing the container's
+        maistro_rsi, and that this process builds no agent at all."""
+        from services import rsi_container_dispatch as dispatch
 
-        `make_builders_apply_patch` defaults to `isolation="local"` and builds
-        a `LocalWorktreeSandbox`, and an injected apply function wins over the
-        one the loop would have constructed for itself — so omitting the
-        argument handed an HTTP-initiated run an agent that edits and executes
-        on the host, straight past the `isolation != "container"` check
-        (Codex, #305).
-        """
         import maistro_rsi.local_loop as local_loop
 
-        factory_kwargs: list[dict] = []
+        specs: list[object] = []
 
-        class _Loop:
-            def __init__(self, config: object, **_kw: object) -> None: ...
+        def fake_launch(spec: object) -> str:
+            specs.append(spec)
+            return "container-t"
 
-            def run(self) -> object:
-                raise AssertionError("the loop must not start in this test")
-
-        monkeypatch.setattr(local_loop, "LocalRsiLoop", _Loop)
+        monkeypatch.setattr(dispatch, "launch", fake_launch)
+        monkeypatch.setattr(dispatch, "wait", lambda _cid: 0)
+        monkeypatch.setattr(dispatch, "poll_reports", lambda _report_dir: {})
+        monkeypatch.setattr(dispatch, "final_summary", lambda _report_dir: None)
+        monkeypatch.setattr(dispatch, "_detect_gateway_network", lambda: "test-net")
         monkeypatch.setattr(
             local_loop,
             "make_builders_apply_patch",
-            lambda **kw: factory_kwargs.append(kw),
+            lambda **_kw: (_ for _ in ()).throw(AssertionError("no agent is built host-side")),
         )
 
-        with pytest.raises(AssertionError, match="must not start"):
-            self._drive(
-                {
-                    "repo_path": str(tmp_path),
-                    "test_argv": ["python", "-m", "pytest", "-q"],
-                    "isolation": "container",
-                }
-            )
+        self._drive(
+            {
+                "repo_path": str(tmp_path),
+                "test_argv": ["python", "-m", "pytest", "-q"],
+                "isolation": "container",
+            }
+        )
 
-        assert factory_kwargs[0]["isolation"] == "container"
-        # The image too: a container backend with no image to run is the same
-        # unavailability the route already refuses, discovered later.
-        assert factory_kwargs[0]["image"]
+        argv = dispatch.container_argv(specs[0])
+        image_at = argv.index(dispatch.runner_image())
+        loop_cmd = argv[image_at + 1 :]
+        assert loop_cmd[0] == "/workspace/.venv/bin/python"
+        assert loop_cmd[1:4] == ["-m", "maistro_rsi", "run"]
 
 
 class TestTheAuthorizedRootsComeFromConfiguration:
@@ -774,37 +824,27 @@ class TestTheCallerCannotAimTheLoopsWrites:
     ) -> None:
         """And they are derived from the run id, so two runs cannot collide on
         the same reports directory."""
-        import maistro_rsi.local_loop as local_loop
+        from services import rsi_container_dispatch as dispatch
 
-        seen: list[object] = []
+        monkeypatch.setattr(dispatch, "work_root", lambda: tmp_path)
 
-        class _Loop:
-            def __init__(self, config: object, **_kw: object) -> None:
-                seen.append(config)
-
-            def run(self) -> object:
-                raise AssertionError("the loop must not start in this test")
-
-        monkeypatch.setattr(local_loop, "LocalRsiLoop", _Loop)
-        monkeypatch.setattr(local_loop, "make_builders_apply_patch", lambda **_kw: None)
-
-        import asyncio
-
-        from services.rsi import RunState, _RsiService
-
-        run = RunState(
+        spec = dispatch.build_spec(
             run_id="derived",
-            mode="cleanup",
-            config={
-                "repo_path": str(tmp_path),
-                "test_argv": ["python", "-m", "pytest"],
-                "isolation": "container",
-            },
+            repo=tmp_path,
+            test_argv=("python", "-m", "pytest"),
+            cycles=1,
+            agent_turns=6,
+            model=None,
+            objective="",
+            targets=[],
+            use_fitness=False,
+            coverage_source=".",
+            coverage_pytest_args="",
+            scout=False,
+            genome_models=[],
+            roster_size=4,
         )
-        with pytest.raises(AssertionError, match="must not start"):
-            asyncio.run(_RsiService()._drive_cleanup(run))
 
-        config = seen[0]
-        assert "derived" in config.work_root
-        assert config.report_dir.startswith(config.work_root)
-        assert config.export_patches.startswith(config.report_dir)
+        assert "derived" in str(spec.report_dir)
+        assert str(spec.report_dir).startswith(str(tmp_path))
+        assert spec.report_dir.name == "reports"
