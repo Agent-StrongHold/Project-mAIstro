@@ -8,7 +8,7 @@ evidence as a machine-readable `lineage.json` and a per-run human-readable
 
 ```console
 uv run python scripts/extension_lifecycle_proof.py --out /tmp/lifecycle-lineage
-# PROVED: 13/13 stages, 61/61 checks
+# PROVED: 13/13 stages, 62/62 checks
 ```
 
 The suite that pins the harness is
@@ -38,7 +38,7 @@ platform behavior:
 | Stage | Production seam exercised | What is proven |
 |---|---|---|
 | build-catalog | (proof-side data) | a private catalog file of digest-pinned, signed offerings; every manifest pins its artifact sha256 |
-| distribution | `maistro.extensions.catalog_service.CatalogService` (#979) | the private org catalog serves publisher metadata, search/filter, and per-version manifest detail anchored to the pinned digests; the identical signed snapshot distributes to a second org as a public catalog; an org the distribution never reached sees nothing |
+| distribution | `maistro.extensions.catalog_service.CatalogService` (#979) | the private org catalog serves publisher metadata, search/filter, and per-version manifest detail anchored to the pinned digests; the identical signed snapshot is seeded independently into a second organization's private catalog, which then serves the identical digest-anchored identity set, and an org that was never seeded sees nothing — per-org snapshot fidelity, not public distribution (the platform exposes no cross-org publish/consume seam) |
 | discover | `maistro.extensions.resolution.resolve_lock` | one operator ask resolves transitively (`acme.notary ^1.0.0` → 1.1.0, never 2.0.0), pins full identity + catalog snapshot digest, is byte-reproducible, and explains its own selection |
 | inspect | `ExtensionInstallService.inspect` | manifest-only evaluation; dependency order enforced (greeter before its dependency is `REJECTED`, truthfully recorded); candidates park in `AWAITING_AUTHORIZATION`; permissions display from the immutable snapshot |
 | authorize-install | `authorize` + `install` + host loader | the grant freezes to the inspected set; activation runs only after every check; the loaded entrypoint lives under the install root — extracted artifact bytes, never a source-tree or editable path |
@@ -49,7 +49,7 @@ platform behavior:
 | catalog-integrity | install records vs. snapshot digests | a tampered catalog is a different snapshot and cannot rewrite installed truth; a catalog outage blocks only discovery — installed extensions keep invoking and the audit trail stays queryable |
 | disable-rollback-remove | `ExtensionInstallService.disable`/`resume`/`rollback`/`remove` (#954) | disabling stops new use structurally (the active pointer is cleared) while the record keeps its frozen grant and audited trail; resume re-crosses the loader seam with the same bound artifact; rollback restores the superseded 1.1.0, truthfully narrows authority back to its frozen grant (the storage reach is denied again), and cannot smuggle broader frozen authority; removal is terminal for authority yet preserves the record, its digests, grant, and full trail as historical evidence — first for the already-superseded 2.0.0, then for the record that *is* the active pointer, whose uninstall leaves the scope with no active version at all |
 | durable-restart | `SqliteExtensionInstallStore` + `materialize_lock` | the lock alone reinstalls the exact pinned identities through real digest/signature verification; history, trust evidence, and catalog provenance survive restart; a clean registry rebuilt from the lock holds the identical identity set |
-| canonical-truth-boundary | (structural check) | no module under `maistro/extensions` imports `maistro.runs`, `maistro.goals`, or `maistro.graph` — extension status has no write path into canonical Goal/Run truth by construction |
+| canonical-truth-boundary | (structural check) | no module under `maistro/extensions` imports `maistro.runs` or `maistro.goals`, or `maistro.graph` beyond the declarative `maistro.graph.definitions` types the #966 pack contract instantiates — extension status has no write path into canonical Goal/Run truth by construction |
 
 ## Honest boundaries of this proof at its base commit
 
@@ -70,6 +70,16 @@ document repeats them:
   surface are exercised. The out-of-tree multi-family reference repository
   remains **#980**; the proof's artifacts are minimal honest stand-ins:
   bytes on disk, signed entries, snapshot-digested.
+- **The catalog is per-org private; there is no public publish/consume seam
+  yet.** The #979 catalog service exposes one private catalog per
+  organization (`set_catalog` is the only write path), so the
+  `distribution` stage proves the private listing/search/detail surface and
+  *per-org snapshot fidelity* — two organizations seeded independently from
+  the same publisher pairs serve identical digest-anchored identities —
+  rather than public cross-org distribution, and an organization that was
+  never seeded sees nothing, which is the property that is reachable
+  today. The epic's public-catalog contract is optional scope and stays
+  open.
 - **Activation-state restart durability is in-memory by design** at this
   base (the B2 activation store documents itself as process-lifetime);
   restart durability is proven for the durable registry layer (B1 +
@@ -92,7 +102,7 @@ document repeats them:
 |---|---|
 | a fresh install with no extension source in-tree consumes the reference catalog | every stage: artifacts are built as scratch bytes and consumed only through catalog → lock → governed install → artifact loader (`code-runs-only-from-artifact`, `test_loaded_code_originates_only_from_the_install_root`); nothing under `packages/` or `extensions/` is imported as extension code |
 | operator inspects permissions/trust/version/dependencies before install | `inspect` (manifest-only evaluation, permission display from the immutable snapshot) + `distribution` (per-version detail with declared permissions and pinned digests, publisher metadata, search) |
-| provider, connector/tool, Agent/Graph or domain/UI families installed and invoked through canonical seams | connector/tool: `invoke-observe` + the governed tool seam; Agent/Graph: `canonical-execution` runs the installed artifact inside a canonical Attempt whose effect crosses the canonical Invocation seam; provider/UI-family routing beyond the tool seam remains with M9-D/M9-E (stated above, not claimed) |
+| provider, connector/tool, Agent/Graph or domain/UI families installed and invoked through canonical seams | connector/tool: `acme.notary` and `acme.greeter` are tool-family manifests, installed through the governed path and invoked through the host context (`invoke-observe`) and the governed `Capability → Provider → Binding → Invocation` seam inside a canonical Attempt (`canonical-execution`); the provider/Agent-Graph/domain-UI families' own canonical routing remains with M9-D/M9-E (stated above, not claimed) |
 | update requiring broader authority triggers explicit re-authorization | `update-fence`: the delta names the new permission, install-before-decision is fenced, denial is terminal, grants never transfer across versions |
 | rollback/disable/remove truthful, historical evidence preserved | `disable-rollback-remove`: disable clears the active pointer but keeps the frozen grant and audited trail; resume re-crosses the loader seam with the same bound artifact; rollback restores the superseded version and truthfully narrows authority (a rollback that would smuggle the broader frozen grant is refused); removal is terminal for authority, idempotent, and preserves the record's digest, grant, manifest snapshot, and full trail as historical evidence, including the removal of the active record itself, which clears the active pointer and leaves no runtime authority |
 | catalog outage does not break installed pinned extensions | `catalog-integrity`: tampered snapshot ≠ installed truth; with the catalog gone, discovery fails loudly while the installed extension keeps invoking and the audit trail stays queryable |

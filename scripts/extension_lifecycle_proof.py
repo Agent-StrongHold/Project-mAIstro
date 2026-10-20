@@ -13,9 +13,12 @@ epic acceptance links no sibling lane owned alone —
 
 * ``distribution``: the private organizational catalog is served through the
   production catalog service (#979) with publisher metadata, search, and
-  digest-anchored manifests, and the same signed snapshot distributes to a
-  second organization as a public catalog — while an org the distribution
-  never reached sees nothing;
+  digest-anchored manifests; a second organization's independently seeded
+  snapshot serves the identical digest-anchored identity set, and an org
+  that was never seeded sees nothing. The platform has no cross-org
+  publish/consume seam yet — the catalog service is a per-org private
+  catalog — so this stage proves per-org snapshot fidelity, not public
+  distribution; the lineage says so in the check text;
 * ``canonical-execution``: the installed, re-authorized artifact is loaded
   from the install root and executes inside a canonical
   ``Graph → Run → NodeRun → Attempt`` execution; its declared effect crosses
@@ -936,13 +939,16 @@ class LifecycleProof:
         return stage
 
     async def stage_public_distribution(self) -> Stage:
-        """Public/private catalog distribution through the #979 service.
+        """The private organizational catalog through the #979 service.
 
-        The same signed snapshot is (a) the organization's private catalog,
-        served with publisher metadata, search, and digest-anchored manifest
-        detail, and (b) a public distribution any consuming organization can
-        serve from the identical bytes — while an organization the
-        distribution never reached sees nothing.
+        The signed snapshot is the organization's private catalog, served
+        with publisher metadata, search, and digest-anchored manifest
+        detail; a second organization's independently seeded snapshot serves
+        the identical identity set, while an organization that was never
+        seeded sees nothing. The platform exposes no cross-org
+        publish/consume seam (the catalog service is per-org private), so
+        what this stage proves is per-org snapshot fidelity — not public
+        distribution.
         """
         stage = self._stage("distribution")
         catalog, _snapshot = load_private_catalog(self.catalog_path)

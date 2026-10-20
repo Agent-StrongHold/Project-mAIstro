@@ -54,5 +54,5 @@ the remaining boundary (activation-pointer restart durability, marked on
 
 Validation on this head: `uv run pytest
 packages/maistro-core/tests/extensions/test_lifecycle_proof.py -x -q` →
-17 passed; script standalone `PROVED: 13/13 stages, 61/61 checks` with an
+17 passed; script standalone `PROVED: 13/13 stages, 62/62 checks` with an
 identical `deterministic_core_sha256` across two runs.

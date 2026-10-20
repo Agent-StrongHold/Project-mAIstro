@@ -27,6 +27,7 @@ from __future__ import annotations
 import importlib.util
 import io
 import json
+import re
 import subprocess
 import sys
 import time
@@ -41,6 +42,7 @@ from maistro.extensions.types import ExtensionState
 
 REPO = Path(__file__).resolve().parents[4]
 SCRIPT = REPO / "scripts" / "extension_lifecycle_proof.py"
+DOC = REPO / "docs" / "extensions" / "lifecycle-proof.md"
 
 EXPECTED_STAGES = (
     "build-catalog",
@@ -57,6 +59,41 @@ EXPECTED_STAGES = (
     "durable-restart",
     "canonical-truth-boundary",
 )
+
+#: A backticked token shaped like a check id — lower-case words joined by
+#: hyphens (``code-runs-only-from-artifact``). Stage ids share the shape, so
+#: they are excluded before the remainder is checked against the proof, as
+#: are the repository's organization/workspace identifiers (``org-acme``,
+#: ``ws-7``), which are names, not claims.
+CHECK_ID_SHAPE = re.compile(r"^[a-z][a-z0-9]*(?:-[a-z0-9]+)+$")
+NAMESPACE_IDENTIFIER = re.compile(r"^(?:org|ws|tenant|workspace)-[a-z0-9]+$")
+
+
+def _stage_table_rows(text: str) -> list[str]:
+    """The stage ids the document's stage table lists, in document order."""
+    rows: list[str] = []
+    in_table = False
+    for line in text.splitlines():
+        if not in_table:
+            in_table = line.startswith("| Stage |")
+            continue
+        if not line.startswith("|"):
+            break
+        first_cell = line.split("|")[1].strip()
+        if not first_cell or set(first_cell) <= set("-: "):
+            continue
+        rows.append(first_cell)
+    return rows
+
+
+def _cited_check_ids(text: str) -> set[str]:
+    """Backticked check ids the document cites (stage ids included)."""
+    tokens = set(re.findall(r"`([^`\n]+)`", text))
+    return {
+        token
+        for token in tokens
+        if CHECK_ID_SHAPE.match(token) and not NAMESPACE_IDENTIFIER.match(token)
+    }
 
 
 def _load_proof_module():
@@ -497,3 +534,67 @@ class TestCommandLineContract:
         assert report["summary"]["checks_failed"] == 1
         markdown = (out / "lineage.md").read_text(encoding="utf-8")
         assert "FAIL: `injected`" in markdown
+
+
+@pytest.mark.contract("boundary")
+@pytest.mark.scope("integration")
+class TestPublicProofDocumentStaysTrue:
+    """The public proof document must describe the proof that exists.
+
+    The document is the epic's evidence artifact (#948: "one public proof
+    documents every canonical object/evidence link from catalog entry
+    through executed Run/Invocation"), so a stale stage table, a stale check
+    count, or a cited check id the proof does not implement makes it lie.
+    These pins fail loudly when the proof moves and the document does not
+    follow.
+    """
+
+    async def test_document_stage_table_matches_the_stages_the_proof_runs(
+        self, proof_module, tmp_path: Path
+    ) -> None:
+        report = await _run_proof(proof_module, tmp_path / "scratch")
+        stages = [stage["name"] for stage in report["stages"]]
+        rows = _stage_table_rows(DOC.read_text(encoding="utf-8"))
+        assert rows == stages, (
+            "the public proof document must document exactly the stages the "
+            "proof runs, in the order the proof runs them"
+        )
+
+    async def test_document_quotes_the_proofs_own_counts(
+        self, proof_module, tmp_path: Path
+    ) -> None:
+        report = await _run_proof(proof_module, tmp_path / "scratch")
+        summary = report["summary"]
+        passed = summary["checks_total"] - summary["checks_failed"]
+        quoted = (
+            f"PROVED: {summary['stages_ok']}/{summary['stages']} stages, "
+            f"{passed}/{summary['checks_total']} checks"
+        )
+        assert quoted in DOC.read_text(encoding="utf-8"), (
+            "the document quotes the proof's own summary line — a stale count "
+            "means the published proof misstates what actually ran"
+        )
+
+    async def test_every_check_id_the_document_cites_exists_in_the_proof(
+        self, proof_module, tmp_path: Path
+    ) -> None:
+        report = await _run_proof(proof_module, tmp_path / "scratch")
+        stage_names = {stage["name"] for stage in report["stages"]}
+        check_ids = {check["id"] for stage in report["stages"] for check in stage["checks"]}
+        cited = _cited_check_ids(DOC.read_text(encoding="utf-8")) - stage_names
+        assert cited <= check_ids, (
+            f"the document cites check ids the proof does not implement: "
+            f"{sorted(cited - check_ids)}"
+        )
+
+    def test_document_does_not_claim_a_public_catalog_distribution_seam(self) -> None:
+        """The platform has no cross-org publish/consume seam.
+
+        ``CatalogService`` is a per-org private catalog whose only write path
+        is ``set_catalog``, so the document must not describe the second
+        organization's snapshot as a public distribution — and must keep
+        disclosing the per-org boundary instead.
+        """
+        text = DOC.read_text(encoding="utf-8")
+        assert "as a public catalog" not in text
+        assert "per-org" in text

@@ -12,9 +12,17 @@ the two epic-level links no sibling lane owned alone, and pins them in
 - **`distribution` stage** — serves the proof's signed snapshot through the
   production #979 catalog service (`CatalogService`/`InMemoryCatalogStore`):
   publisher metadata on every listing row, search/publisher filtering,
-  per-version detail anchored to the pinned artifact digest; the identical
-  snapshot distributes to a second org as a public catalog; an org the
-  distribution never reached sees nothing.
+  per-version detail anchored to the pinned artifact digest; a second
+  organization's independently seeded snapshot serves the identical
+  digest-anchored identity set, and an organization that was never seeded
+  sees nothing. **Correction (this round):** the stage proves *per-org
+  snapshot fidelity*, not cross-org distribution — `CatalogService` is a
+  per-org private catalog and `set_catalog` is its only write path, so no
+  public publish/consume seam exists to exercise. The check id is
+  `independent-private-snapshots-serve-identical-bytes` and the check text
+  says so; the round that relabelled it left this note and the public
+  proof document claiming "distributes to a second org as a public
+  catalog", which the reachable production behavior does not support.
 - **`canonical-execution` stage** — the installed, re-authorized notary 2.0.0
   artifact executes inside a canonical `Graph → Run → NodeRun → Attempt`
   (`AttemptExecutionService` over `PythonExecutionRuntime`); its declared
