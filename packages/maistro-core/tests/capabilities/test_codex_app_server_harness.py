@@ -181,6 +181,48 @@ class TestTruthfulProjection:
         # No half-registered session: the sandbox was released again.
         assert sandbox.destroyed is True
 
+    async def test_raising_session_create_cleans_up_registered_session(self) -> None:
+        sandbox = _FakeSandbox(fail_on="codex-app-server session create")  # VM crash
+        runner = _runner(sandbox)
+        with pytest.raises(RuntimeError, match="vm crashed"):
+            await runner.start_session(_spec(), workdir="/repos/proj")
+        # The exception path must not orphan the already-registered session:
+        # sandbox destroyed, registry empty, no unstopped session left behind.
+        assert sandbox.destroyed is True
+        assert not runner._sessions
+
+    async def test_session_create_non_object_output_fails_closed(self) -> None:
+        # A parseable-but-non-object create result still yields no thread id:
+        # fail closed rather than keeping a half-registered session.
+        sandbox = _FakeSandbox({"codex-app-server session create": (0, "[1, 2, 3]")})
+        with pytest.raises(CodexTurnError, match="session create failed"):
+            await _started(sandbox)
+        assert sandbox.destroyed is True
+
+    async def test_session_create_without_session_id_fails_closed(self) -> None:
+        # A JSON object with no usable session_id is just as unusable as a
+        # non-object one: no correlation, no session.
+        sandbox = _FakeSandbox({"codex-app-server session create": (0, '{"status": "ok"}')})
+        with pytest.raises(CodexTurnError, match="session create failed"):
+            await _started(sandbox)
+        assert sandbox.destroyed is True
+
+    async def test_create_exec_failure_releases_sandbox_and_propagates(self) -> None:
+        # If the create exec itself raises (launcher timeout / VM crash) there
+        # is no exit code to read: the orphan sandbox must still be released
+        # and the original failure propagated.
+        sandbox = _FakeSandbox(fail_on="codex-app-server session create")
+        with pytest.raises(RuntimeError, match="vm crashed"):
+            await _started(sandbox)
+        assert sandbox.destroyed is True
+
+    async def test_session_create_unparseable_output_fails_closed(self) -> None:
+        # A non-JSON create response also yields no thread id; fail closed.
+        sandbox = _FakeSandbox({"codex-app-server session create": (0, "not json at all")})
+        with pytest.raises(CodexTurnError, match="session create failed"):
+            await _started(sandbox)
+        assert sandbox.destroyed is True
+
     async def test_failed_turn_raises_instead_of_fabricating_success(self) -> None:
         sandbox = _FakeSandbox(
             {
@@ -284,6 +326,27 @@ class TestStreamProjection:
         runner, sid = await _started(sandbox)
         events = [e async for e in runner.stream(sid)]
         assert any(e["type"] == "error" and "garbage" in e["detail"] for e in events)
+        assert events[-1]["state"] == "failed"
+
+    async def test_blank_and_non_object_lines_surface_without_fatal(self) -> None:
+        # Blank NDJSON lines are skipped; a non-object line is surfaced as an
+        # error event and marks the terminal status failed — never silently
+        # reshaped into a successful observation.
+        ndjson = '\n{"type": "task_started"}\n[1, 2, 3]\n{"type": "task_complete"}\n'
+        sandbox = _FakeSandbox(
+            {
+                "codex-app-server session create": _CREATE_OK,
+                "codex-app-server session stream": (0, ndjson),
+            }
+        )
+        runner, sid = await _started(sandbox)
+        events = [e async for e in runner.stream(sid)]
+        assert [e["type"] for e in events[1:-1]] == [
+            "codex.task_started",
+            "error",
+            "codex.task_complete",
+        ]
+        assert any("non-object" in e["detail"] for e in events if e["type"] == "error")
         assert events[-1]["state"] == "failed"
 
     async def test_failed_stream_exit_projects_failed_status(self) -> None:

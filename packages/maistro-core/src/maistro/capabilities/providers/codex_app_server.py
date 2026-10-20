@@ -154,9 +154,19 @@ class CodexAppServerHarnessRunner(SubprocessHarnessRunner):
         """Create the sandbox + App Server thread; return the MAIstro session id."""
         session_id = await super().start_session(agent_spec, workdir=workdir)
         session = self._require_session(session_id)
-        code, output = await session.sandbox.exec(
-            f"{CODEX_APP_SERVER_BINARY} session create", self._timeout
-        )
+        try:
+            code, output = await session.sandbox.exec(
+                f"{CODEX_APP_SERVER_BINARY} session create", self._timeout
+            )
+        except BaseException:
+            # The exec itself raised (launcher timeout, VM crash, ...): no
+            # exit code or response comes back, so the fail-closed branch
+            # below never runs. The session is already registered in
+            # _sessions but its id has not reached the caller, so nobody can
+            # stop this orphan — release the sandbox and registry entry
+            # before propagating the original failure.
+            await super().stop(session_id)
+            raise
         thread_id = self._parse_thread_id(output) if code == 0 else None
         if thread_id is None:
             # Fail closed: never keep a MAIstro session whose foreign thread
