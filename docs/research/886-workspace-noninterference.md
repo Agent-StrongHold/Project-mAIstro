@@ -79,6 +79,14 @@ Executed probe (head `28614700bd9a`, 2026-10-07):
   → **3487 passed, 6 skipped in ~161s** (harness included; no interference);
 - `uv run ruff check` / `uv run ruff format --check` clean.
 
+Re-validated after the develop sync at `e0141ed7e` (2026-10-20): the module
+reports **15 passed in 20.24s** on the merged tree, the suite-inventory gate
+matches 21/21 suites (3807 collected node IDs for the product backend suite),
+and `ruff check` / `ruff format --check` remain clean. The develop-sync merge
+conflicts were all additive and resolved to develop's side; this lane's diff
+against `origin/develop` is only this note, its inventory note, and the
+harness module.
+
 **Oracle validation by mutation** (injected, run, reverted; not committed):
 
 - `delete_workspace_agents` ignoring its workspace argument (the delete
