@@ -194,7 +194,7 @@ tested modules with no call path, so "the code is there" is not the bar.
 | `curl \| bash` installer (`get.sh`, `install.sh`, `get.ps1`) | **Complete** | Includes WSL2 setup on Windows. |
 | `maistro install` / `launch server` / `builders` / `approvals` | **Complete** | |
 | `maistro-install`, `maistro-registry` | **Complete** | |
-| `maistro-rsi`, `maistro-rsi-autorun` | **Complete** | The real RSI product is the CLI, not the UI page. |
+| `maistro-rsi`, `maistro-rsi-autorun`, `maistro-rsi-campaign` | **Complete** | The real RSI product is the CLI, not the UI page. `maistro-rsi-campaign` runs a bounded frontier-vs-baseline objective-pool experiment through the gateway (#114). |
 | `maistro upgrade` | **Partial** | `git pull` + `uv sync`. Does nothing useful for a tarball install. |
 | `maistro launch tui` | **TODO** | Prints "coming soon". |
 | `maistro-core`, `-server`, `-evolve`, `-registry`, `-bootstrap`, `-design` | **Complete** | |
