@@ -451,19 +451,32 @@ Open §7 issues → land P0 checks red with baselines → P0.1–P0.4 green → 
 green → **M1 RunStore unification (#251)** → Phase 1 steps 1–6 (step 7 deferred v1.1), each PR
 retiring its ledger row → Phase 2 deletes → epics close by ac-state, never by keyword.
 
-### Phase 0 progress (2026-10-05, L1046 verification round)
+### Phase 0 progress (re-measured 2026-10-20, L1046 verification round)
+
+Every row was re-run against this branch's merge base in the 2026-10-20 round, not copied
+from the 2026-10-05 one. "Landed" below means: the artifact exists on `develop` and the
+check is wired where the row says it is. "Green" means the command named in the row exited
+0 in this round.
 
 | Item | State |
 |---|---|
-| §5 retirement ledger + gate | **landed** with [#1766](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1766) (`6b74fc14b`); delete-by values follow the §9 v1.0 amendments; verified green locally against `HEAD~1` (89 ledger entries match the tree) and runs in `quality.yml` as `check-workspace-retirement.py` |
-| §6 epic-closure guard | **landed** with [#1765](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1765) (`059a3e4f5`); `check-closure-targets.py` runs in `ci.yml` |
-| AC-P1–P9 registration | **landed** with [#1768](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1768) (`168fb1a0c`); [SPEC-100126-c041](../specs/SPEC-100126-c041-workspace-cutover-phase-0-contract.md) declares AC-1..AC-9 with the plan's AC-P labels as aliases |
-| P0.1, P0.2 grants | **landed** with [#1804](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1804) (`d896e7751`); 31 and 40 entries, re-measured on `develop` at `8ccab2c9` |
-| P0.1, P0.2 checks | **landed** with [#1805](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1805) (`41663c63b`); verified green locally against `HEAD~1` (4 tolerated principal-identity violations, none new) |
-| P0.3 check | **landed** with [#1814](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1814) (`082dadb8a`); verified green locally against `HEAD~1` — the raw-fetch ratchet has already shrunk from the 64 banked at review to 60 tolerated, plus 142 hand-typed declarations, none new |
-| P0.6 check | **landed** with [#1807](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1807) (`6f9f1a9e4`); `check-cross-package-imports.py` reports no new flat modules under `packages/*/backend/` (6 tolerated, shrink-only) |
-| P0.4, P0.7–P0.9 checks | not started |
-| P0.5 | backend selection landed with #1321 (see P0.5 "Today"); durable approvals and one process-wide context remain; the check is not started |
+| §5 retirement ledger + gate | **landed** with [#1766](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1766) (`6b74fc14b`); delete-by values follow the §9 v1.0 amendments; `uv run python scripts/check-workspace-retirement.py` reports `89 retirement ledger entries match the tree` (green, `quality.yml` step at `:911`) |
+| §6 epic-closure guard | **landed** with [#1765](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1765) (`059a3e4f5`); `check-closure-targets.py` runs in `ci.yml` (`:287`). Not executed in this round: it resolves PR/issue bodies over the GitHub API |
+| AC-P1–P9 registration | **landed** with [#1768](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1768) (`168fb1a0c`); [SPEC-100126-c041](../specs/SPEC-100126-c041-workspace-cutover-phase-0-contract.md) declares AC-1..AC-9 with the plan's AC-P labels as aliases. `scripts/check-ac-state.py` still records all nine as `unproven`; only AC-8's suite carries a `@pytest.mark.ac` marker at all |
+| P0.1, P0.2 grants | **landed** with [#1804](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1804) (`d896e7751`); `quality/ratchet-authorizations.json` carries 32 `principal-identity` and 40 `route-permissions` grant rows, re-measured on `develop` at `8ccab2c9` |
+| P0.1, P0.2 checks | **landed** with [#1805](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1805) (`41663c63b`); green — `check-principal-identity.py` reports `4 tolerated … none new` and `check-route-permissions.py` reports `41 declared, 0 tolerated undeclared prefix(es), none new` |
+| P0.3 check | **landed** with [#1814](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1814) (`082dadb8a`); green — `check-frontend-typed-client.py` reports `56 raw fetch and 136 hand-typed declaration(s) tolerated, none new`, down from the 64 + 142 banked at review |
+| P0.4 check | **landed green (behavioural half)**: `packages/hive-conductor/backend/tests/test_audit_convergence.py` ([#1811](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1811), `611994c4a`) — failed login, elevation, HITL cancel, denied tool call and `GET /v1/audit` each read back through the core audit store. Its strict `KNOWN_GAPS` set is empty, so the suite asserts the converged behaviour: `uv run pytest … -q` → 18 passed. `routes/audit.py:60` still dual-writes `stores.audit_log`; that store's deletion stays the ledger's Phase 2 item (`quality/workspace-retirement.json`, `stores.py::audit_log`) |
+| P0.5 check | **landed green**: `packages/maistro-core/tests/test_effect_context_convergence.py` ([#1813](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1813), `b4b9e187e`) — backend-selected stores, `default_effect_context() is container.capability_effects`, durable approvals on SQLite, one invocation authority. Empty `KNOWN_GAPS`; `pytest -q` → 7 passed, 1 skipped (the PostgreSQL leg without `MAISTRO_TEST_PG_DSN`). Backend selection itself landed with #1321 |
+| P0.6 check | **landed** with [#1807](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1807) (`6f9f1a9e4`); green — `check-cross-package-imports.py` reports `no new flat modules under packages/*/backend/ (6 tolerated)`, shrink-only |
+| P0.7 check | **landed green**: `packages/maistro-core/tests/runs/test_crash_window_invariants.py` ([#1810](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1810), `065c0d5f8`) — one kill per two-write seam on the spine plus one recovery tick. Empty `KNOWN_GAPS`; `pytest -q` → 6 passed |
+| P0.8 check | **landed green**: `packages/maistro-core/tests/workspaces/test_store_boundary_scope_conformance.py` ([#1809](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1809), `fc382542c`; gaps burned by [#1841](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1841), `053f93969`) — 38 passed on the `memory` and `sqlite` legs; the `postgres` leg is added whenever `MAISTRO_TEST_PG_DSN` is set, as CI's postgres jobs do |
+| P0.9 check | **landed green**: `packages/maistro-core/tests/security/test_scan_what_the_model_sees.py` ([#1812](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1812), `b9f712bb9`) — aggregated-context scan, the spaced/leet/split evasions and the PII redactors. Empty `KNOWN_GAPS`; `pytest -q` → 12 passed. The plan's third clause — `permission_table` non-empty asserted at Workspace deploy — is not in this suite and has no other test in the tree |
+
+The five P0.4/P0.5/P0.7–P0.9 rows are ordinary suites, not `scripts/check-*.py` gates: they run in
+the package test jobs, so a regression in them fails CI without a separate workflow step.
+Each keeps a strict `KNOWN_GAPS` set in which a listed case asserts today's miss, and each
+set is now empty — the entries were burned, not deleted as a shortcut.
 
 An early draft of the P0.1/P0.2 checks reached `develop` without review on 2026-10-01 and
 was reverted by [#1769](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1769); the
