@@ -35,13 +35,21 @@ class FakeConnection:
     def __init__(self) -> None:
         self.calls: list[Call] = []
         self._fetch_results: list[list[FakeRecord]] = []
+        self._fetchval_results: list[Any] = []
 
     def queue_fetch(self, rows: list[dict[str, Any]]) -> None:
         self._fetch_results.append([FakeRecord(r) for r in rows])
 
+    def queue_fetchval(self, value: Any) -> None:
+        self._fetchval_results.append(value)
+
     async def fetch(self, query: str, *args: Any) -> list[FakeRecord]:
         self.calls.append(Call("fetch", query, args))
         return self._fetch_results.pop(0) if self._fetch_results else []
+
+    async def fetchval(self, query: str, *args: Any) -> Any:
+        self.calls.append(Call("fetchval", query, args))
+        return self._fetchval_results.pop(0) if self._fetchval_results else None
 
     async def execute(self, query: str, *args: Any) -> str:
         self.calls.append(Call("execute", query, args))
@@ -105,13 +113,29 @@ async def test_ensure_schema_adds_proof_columns_idempotently(conn: FakeConnectio
     """Databases created before signed audit records lack the proof columns;
     wiring runs this upgrade on every start, so it must be the idempotent
     ADD COLUMN IF NOT EXISTS form covering all three proof columns."""
+    conn.queue_fetchval("public.audit_log")  # to_regclass: the table exists
     await PgAuditLog(FakePool(conn), signer=AuditSigner(bytes(32))).ensure_schema()
 
     assert [call.query for call in conn.calls] == [
+        "SELECT to_regclass('public.audit_log') IS NOT NULL",
         "ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS signature TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS signing_key_id TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS proof_type TEXT NOT NULL DEFAULT ''",
     ]
+
+
+@pytest.mark.asyncio
+async def test_ensure_schema_on_unmigrated_database_is_a_no_op(conn: FakeConnection) -> None:
+    """A database that never ran the migration chain has no `audit_log` table
+    (the durable-events leg wires the container on a fresh server); the
+    belt-and-braces backfill must answer the same `to_regclass` probe the run
+    and workspace wiring ask and emit no ALTER at all — not crash wiring and
+    not classify server error-message text."""
+    conn.queue_fetchval(None)  # to_regclass: no such table
+    await PgAuditLog(FakePool(conn), signer=AuditSigner(bytes(32))).ensure_schema()
+
+    assert [call.method for call in conn.calls] == ["fetchval"]
+    assert conn.calls[0].query == "SELECT to_regclass('public.audit_log') IS NOT NULL"
 
 
 @pytest.mark.asyncio
@@ -401,3 +425,41 @@ async def test_real_postgres_two_org_scope_and_schema(
 
     assert [entry.boundary for entry in entries] == ["org-a"]
     assert all(entry.org_id == "org-a" for entry in entries)
+
+
+@pytest.mark.asyncio
+async def test_real_postgres_ensure_schema_tolerates_unmigrated_database(pg_pool: Any) -> None:
+    """The absent-table branch is real PostgreSQL behavior, not a mock: on a
+    database where `audit_log` does not exist (renamed away here to mirror the
+    fresh server the durable-events leg wires), `ensure_schema` returns without
+    error and without creating anything, and once the table is back it still
+    performs the idempotent proof-column backfill against the live server."""
+    if pg_pool is None:
+        pytest.skip("MAISTRO_TEST_PG_DSN is not set")
+
+    probe = "SELECT to_regclass('public.audit_log') IS NOT NULL"
+    async with pg_pool.acquire() as conn:
+        await conn.execute("ALTER TABLE audit_log RENAME TO audit_log_ensure_probe")
+    try:
+        await PgAuditLog(pg_pool, signer=AuditSigner(bytes(32))).ensure_schema()
+        async with pg_pool.acquire() as conn:
+            assert await conn.fetchval(probe) is False
+    finally:
+        async with pg_pool.acquire() as conn:
+            await conn.execute("ALTER TABLE audit_log_ensure_probe RENAME TO audit_log")
+
+    # Present-table path: the backfill runs and the proof columns really exist.
+    await PgAuditLog(pg_pool, signer=AuditSigner(bytes(32))).ensure_schema()
+    async with pg_pool.acquire() as conn:
+        columns = await conn.fetch(
+            """SELECT column_name
+               FROM information_schema.columns
+               WHERE table_name = 'audit_log'
+                 AND column_name IN ('signature', 'signing_key_id', 'proof_type')
+               ORDER BY column_name"""
+        )
+    assert [row["column_name"] for row in columns] == [
+        "proof_type",
+        "signature",
+        "signing_key_id",
+    ]
