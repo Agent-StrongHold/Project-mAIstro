@@ -833,9 +833,9 @@ async def test_selected_graphs_come_from_canonical_runs(
 async def test_projection_persists_nothing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Reading Goal views writes nothing: two reads agree, and the projection
-    storage gains no records — the view survives restart/reconnect because
-    every fact it serves already survives in its canonical owner."""
+    """Reading Goal views writes nothing: two reads agree and projection
+    storage gains no records. This checks read-time purity only; it does not
+    exercise store/process restart or prove canonical-source durability."""
     from services.dag_run_store import get_dag_run_store
 
     from maistro.runs import RunStatus
