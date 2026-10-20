@@ -134,6 +134,34 @@ class TestFullLifecycleProof:
         assert "#954" in restart_stage["note"]
         assert "rollback" in restart_stage["note"]
 
+    async def test_canonical_truth_boundary_scans_the_whole_extension_package(
+        self, proof_module, tmp_path: Path
+    ) -> None:
+        """The structural boundary must cover every module it names.
+
+        The document says *no module under* ``maistro/extensions`` imports
+        canonical run/goal truth. A scan that read only the top-level
+        modules would leave ``tool_skill/`` unchecked and let the claim
+        drift from the check, so the lineage must name the subpackage
+        modules it read.
+        """
+        report = await _run_proof(proof_module, tmp_path / "scratch")
+        stage = next(s for s in report["stages"] if s["name"] == "canonical-truth-boundary")
+        scanned = stage["evidence"]["scanned_modules"]
+        assert "tool_skill/execution.py" in scanned
+        assert "tool_skill/registration.py" in scanned
+        on_disk = sorted(
+            str(
+                path.relative_to(
+                    REPO / "packages" / "maistro-core" / "src" / "maistro" / "extensions"
+                )
+            )
+            for path in (
+                REPO / "packages" / "maistro-core" / "src" / "maistro" / "extensions"
+            ).rglob("*.py")
+        )
+        assert scanned == on_disk
+
     async def test_every_invocation_record_carries_canonical_provenance(
         self, proof_module, tmp_path: Path
     ) -> None:

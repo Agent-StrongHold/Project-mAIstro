@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +4
+  packages/maistro-core/tests: +5
 ---
 
 # #948 (EPIC M9-J) — the public proof document must describe the proof that exists
@@ -11,8 +11,8 @@ catalog entry through executed Run/Invocation" criterion). A document that
 outruns its proof is a false public claim, so four pins make the document
 answer to the proof instead of to the last edit.
 
-**+4 `packages/maistro-core/tests/extensions/test_lifecycle_proof.py`**
-(collect verified; module total 17 → 21), in
+**+5 `packages/maistro-core/tests/extensions/test_lifecycle_proof.py`**
+(collect verified; module total 17 → 22), in
 `TestPublicProofDocumentStaysTrue`:
 
 - `test_document_stage_table_matches_the_stages_the_proof_runs` — the
@@ -34,6 +34,16 @@ answer to the proof instead of to the last edit.
 The pins are not vacuous: mutating the document (stale count, renamed
 stage, invented check id, re-added "as a public catalog") fails all four,
 and the truthful document passes all four.
+
+**+1 more, in `TestFullLifecycleProof`** —
+`test_canonical_truth_boundary_scans_the_whole_extension_package`: the
+`canonical-truth-boundary` stage now scans the whole extension package
+(`rglob`, so `tool_skill/` is included, not just the top-level modules) and
+records the modules it read in the lineage; the test asserts the recorded
+set equals the package's `*.py` files on disk. Before this round the
+document claimed *no module under* `maistro/extensions` imports canonical
+run/goal truth while the check read only the top level — a check weaker
+than the claim it backs.
 
 **Corrections in the same round** (no test-count change):
 

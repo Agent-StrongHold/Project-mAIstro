@@ -1966,7 +1966,11 @@ class LifecycleProof:
         # at all, stays forbidden.
         allowed_exact = "from maistro.graph.definitions import"
         forbidden: list[str] = []
-        for source in sorted(extensions_dir.glob("*.py")):
+        # The whole package, subpackages included: ``tool_skill/`` is part of
+        # the extension subsystem, so a boundary that only read the
+        # top-level modules would let the claim drift from the check.
+        scanned = sorted(extensions_dir.rglob("*.py"))
+        for source in scanned:
             for line in source.read_text(encoding="utf-8").splitlines():
                 stripped = line.strip()
                 if not stripped.startswith(("import ", "from ")):
@@ -1987,7 +1991,9 @@ class LifecycleProof:
             "canonical Goal/Run truth by construction"
             + ("" if not forbidden else f" (found: {'; '.join(forbidden)})"),
         )
-        stage.evidence["scanned_modules"] = sorted(p.name for p in extensions_dir.glob("*.py"))
+        stage.evidence["scanned_modules"] = sorted(
+            str(source.relative_to(extensions_dir)) for source in scanned
+        )
         return stage
 
     # -- orchestration ---------------------------------------------------------
