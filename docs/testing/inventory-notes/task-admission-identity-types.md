@@ -2386,3 +2386,36 @@ not an in-leaf-fixable defect. Remedies remain #1845 real-consumer integration p
 reconciliation decision (remove the rows, or land a reviewed develop-side grant first — the issue
 text currently authorizes neither silently). Integration hold stands; stack left unmerged; no
 inventory delta (stays `+79`). (Refs #1851)
+
+## Round-220 CI-repair verification at assigned head `ab5391492564` (job `c8a8a7401c1342d28aa14d4c50add293`)
+
+Re-derived firsthand at the exact assigned head `ab539149256445857d2ba38ad34c822104116010`
+(branch `auto-1851`, develop base `fad17a87c34193a91c568eb8b0a910e8e6384ccd`); worktree
+clean at start; no earlier claim trusted.
+
+- Driver battery 5/5 green: `uv sync --locked --extra dev` rc=0; `ruff check .` all passed;
+  `ruff format --check .` 3362 files; focused pytest **79 passed**; `check-suite-inventory.py
+  --suite packages/maistro-core/tests` ok (16784 == recorded).
+- CI-exact vulture (`packages/*/src --min-confidence 60 --exclude '*/third_party/*'`,
+  `RATCHET_BASE_REV=origin/develop`): **rc=1**, banking leg GREEN (1326 findings, `unclassified: 0`,
+  `never_allowlist: 0`), authorization leg RED on exactly the 5 issue-mandated enum identities
+  `admission_identity.py:515-520` (`MISMATCH`/`REPLAYED`/`TAKEOVER`/`REPLACE_EXPIRED`/
+  `LEGACY_UNRESOLVED`; `PENDING` unflagged via the same-name `Pending` collision). Gate remedy:
+  "land a reviewed grant first". Trusted base `fad17a87` carries 0 `admission_identity` grants.
+- `check-reachability.py`: **rc=1**, exactly 1 NEWLY UNREACHABLE `maistro.runs.admission_identity`.
+  `check-ratchet-provenance.py`: **rc=1** solely via the reachability-provenance leg.
+  `check-shipped-surface-truth.py` rc=0.
+- Repair space re-proven empty: the 5 identities are the issue's fixed six-pair enum contract, so
+  none is genuinely dead to delete; pruning the banked rows flips the banking leg red; keep-alive
+  references, suppressions, reachability-baseline entries, and branch-side grants are each
+  explicitly prohibited by the issue (and a branch-side grant is inert by construction under
+  `load_authorizations` reading the merge base). The 5 retained vulture rows stay banked
+  multiset-exact (`quality/vulture-baseline.json:283-287`); `quality/ratchet-authorizations.json`
+  and `quality/reachability-baseline.json` remain 0-line diffs.
+- Scope invariants hold: 0 production importers of `admission_identity` outside the module; no
+  `runs/__init__` export; #1841 anchors intact (`store_boundary.py:56`, `store.py:507/576/907`,
+  `model.py:306`).
+
+No code or ledger change warranted; the six merge-queue failures decompose to the same two
+structural facts the issue mandates for an intentionally unwired leaf. Integration hold stands;
+stack left unmerged; no inventory delta (stays `+79`). (Refs #1851)
