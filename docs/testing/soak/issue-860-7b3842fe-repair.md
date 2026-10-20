@@ -89,3 +89,39 @@ nonexistent vulture debt. Do not relabel emulator evidence as promotion evidence
 Progress: checked 1 assigned issue; done 0 acceptance-complete issues; skipped 0
 issues; errors 0 validation commands; 6 DB-dependent test skips. Commit this
 checkpoint locally.
+
+## Reverification at 0460e5c9 (2026-10-20)
+
+The assigned job starts clean at `0460e5c91151fc3e372a744e0cf333cef4681542`.
+The current job directory contains no `check-*.log`; prior-job logs are not
+present in this worktree and are not treated as this round's validation. Read
+the captured #860 acceptance body and the current soak profile, then re-ran:
+
+- `uv run pytest tests/test_soak_promotion_gates.py -x -q`: **84 passed**.
+  In particular, `test_replica_selection_has_an_independent_production_allowance`
+  passing proves the middleware's known per-process behavior: identical
+  authenticated and unauthenticated identities each get `[200, 200, 429]` on
+  each separate replica. It does not prove replica-independent aggregate
+  enforcement; it falsifies that criterion as currently worded.
+- No RC images/configuration or new machine evidence were supplied. Existing
+  `m3a-load-profile.md` explicitly makes the host-uvicorn emulator
+  non-promotional and requires 14,400 seconds plus exact artifact identity.
+  Its own remaining gaps also exclude concurrent Workspaces, Graph fan-out,
+  successful tool/model/Canvas/Goal workloads and Attempt-level physical-work
+  proof. None of these can be claimed from the executed unit suite.
+
+Reconciliation: ADR-081626-f383 makes Attempt lease/fencing the physical
+execution authority and explicitly does not define lease-expiry takeover; the
+schedule probe only tests admission and cancels its unexecuted queued Run.
+ADR-046 is superseded by ADR-082126-f69c, which makes recurrence produce
+canonical Runs. ADR-056's older task-recovery contract is not evidence that
+physical failover currently works. The middleware likewise documents a
+process-local limiter per #842; making its budget cluster-wide would be a
+separate architecture/runtime change, not something this issue's emulator can
+prove. No behavior or policy was changed and no new tests were added.
+
+Disposition remains **BLOCKED**: the rate-limit criterion is falsified, and the
+exact-RC, four-hour, representative workload and physical recovery criteria are
+unverified. An acceptance-complete soak cannot be performed without an
+identified production RC/configuration and fixes or an explicit accepted
+resolution of the rate-limit contract. No GitHub action taken.
