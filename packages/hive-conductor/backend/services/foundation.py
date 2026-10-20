@@ -134,10 +134,14 @@ class Foundation:
 
             # Metrics are a query projection of the canonical Run spine. They
             # share this state database for restart and replica reads; they do
-            # not become a second execution authority.
+            # not become a second execution authority. The durable JsonStore is
+            # owned by the service module, not `stores.py`: new durable state is
+            # not a row in the cutover retirement ledger, which only grows by
+            # declaring stores.py surfaces (#1046).
             from services.node_metrics_store import configure_store as configure_metrics_store
+            from services.node_metrics_store import node_metrics
 
-            configure_metrics_store(stores.node_metrics)
+            configure_metrics_store(node_metrics)
 
             from services.profile_store import PersistedProfileRecordStore
             from services.profile_store import configure as configure_profiles

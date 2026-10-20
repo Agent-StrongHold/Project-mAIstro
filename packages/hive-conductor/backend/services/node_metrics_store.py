@@ -2,10 +2,11 @@
 
 The canonical Run/NodeRun/Attempt spine owns execution identity and lifecycle.
 This module owns only a bounded, query-friendly observation projection. When
-Conductor persistence is configured, observations are written to
-``stores.node_metrics`` and read through that shared state database, so a
-restart or another replica sees the same measurements. ``memory://`` remains
-an explicit ephemeral deployment choice.
+Conductor persistence is configured, observations are written to the durable
+``node_metrics`` JsonStore registered with the central persistence wiring and
+read through that shared state database, so a restart or another replica sees
+the same measurements. ``memory://`` remains an explicit ephemeral deployment
+choice.
 
 The UI run path must produce canonical identities before an observation can be
 written. Legacy observations without those identities remain supported for
@@ -32,7 +33,21 @@ from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+import stores
+from stores import JsonStore
+
 DEFAULT_MAX_OBSERVATIONS = 10_000
+STORE_NAME = "node_metrics"
+
+#: The durable observation store, owned by this service rather than `stores.py`.
+#: Every `stores.py` store is a row in the cutover retirement ledger (#1046)
+#: and a retiring surface may not gain consumers, so durable state added by
+#: #337 lives beside the only code that writes it — the same move `settings`
+#: made out of `stores.py` (#334) — while `stores.register_json_store` keeps
+#: the deployment's persistence wiring and initialization centralized, so the
+#: store cannot silently miss the configured backend and stop surviving a
+#: restart.
+node_metrics: JsonStore = stores.register_json_store(JsonStore(STORE_NAME))
 
 
 @dataclass(frozen=True)

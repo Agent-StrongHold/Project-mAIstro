@@ -81,10 +81,14 @@ dropped. A metrics write must not fail a run that already produced a result;
 that is not a reason for the loss to be invisible.
 
 ****The module's prose matches its storage.** The observation projection is
-bounded. With Conductor persistence configured it is backed by the shared
-`stores.node_metrics` JsonStore and refreshes before production reads; with
-`memory://` it remains explicitly ephemeral. It is not a second execution
-authority: Run/NodeRun/Attempt rows remain canonical.
+bounded. With Conductor persistence configured it is backed by a durable
+`node_metrics` JsonStore owned by `services/node_metrics_store` and registered
+through `stores.register_json_store`, and refreshes before production reads;
+with `memory://` it remains explicitly ephemeral. The store is deliberately
+not declared in `stores.py`: every store there is a row in the cutover
+retirement ledger (#1046), and a retiring surface may not gain consumers, so
+a store added to that module would be born unable to name a reader. It is not
+a second execution authority: Run/NodeRun/Attempt rows remain canonical.
 
 ## Related, once it lands
 

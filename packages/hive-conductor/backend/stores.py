@@ -131,9 +131,6 @@ oauth_identity_links: JsonStore = JsonStore("oauth_identity_links")
 #: projection is bounded and uses the same state database as the other Hive
 #: projections; canonical lifecycle truth remains in maistro-core's Run spine.
 dag_runs: JsonStore = JsonStore("dag_runs")
-#: Per-node metric observations. The observation index is a projection of
-#: canonical Run/NodeRun/Attempt rows; it is not an execution authority.
-node_metrics: JsonStore = JsonStore("node_metrics")
 #: Registration invitations (#313) — insert-only records under
 #: ``inv:<sha256(token)>`` plus the ``used:<sha256(token)>`` redemption marker
 #: whose conflict-safe insert decides single use. Name is shared with
@@ -174,7 +171,6 @@ _all_json_stores: list[JsonStore] = [
     dashboard_layouts,
     oauth_identity_links,
     dag_runs,
-    node_metrics,
     registration_invitations,
     username_claims,
 ]

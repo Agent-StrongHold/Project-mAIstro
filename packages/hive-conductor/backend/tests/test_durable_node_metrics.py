@@ -202,3 +202,23 @@ def test_workspace_scoped_reads_are_fail_closed() -> None:
     assert store.observations(window_seconds=3600, workspace_ids=frozenset()) == []
     # The in-process seam is unchanged for server-side collectors.
     assert store.aggregate(window_seconds=3600)["count"] == 3
+
+
+@pytest.mark.ac("M1-E/metrics-restart-and-replica")
+def test_the_projection_store_is_registered_not_declared_in_stores_py() -> None:
+    """The durable store is owned here and adopted by the central wiring.
+
+    Declaring it in `stores.py` would add it to the cutover retirement
+    ledger's census (#1046), where a retiring surface may not gain consumers,
+    so a store added there is born unable to name a reader. Ownership stays
+    with the only code that writes it, while `stores.register_json_store`
+    keeps the deployment's persistence wiring and initialization centralized
+    — the same seam `services.home_layouts` and `services.home_projections`
+    use. A store that missed the wiring would silently stop surviving a
+    restart.
+    """
+    import stores
+    from services import node_metrics_store
+
+    assert node_metrics_store.node_metrics in stores._all_json_stores
+    assert not hasattr(stores, "node_metrics")
