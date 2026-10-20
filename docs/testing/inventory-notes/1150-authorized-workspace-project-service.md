@@ -1,6 +1,7 @@
 ---
 inventory-delta:
   packages/maistro-core/tests: +8
+  packages/maistro-server/tests: +1
 ---
 # Issue 1150: Workspace/Project authorization at the store boundary
 
@@ -75,11 +76,52 @@ refused mutation did not land, cover self-removal, blank-principal refusal,
 member self-promotion refusal, and delegable-grant versus non-delegable/deny
 refusal.
 
+## Repair: a store refusal must not escape a route as a 500
+
+Passing the acting principal into the store turns a previously-unscoped read
+into one that can be *refused*. Two call sites treated "the store said no" as
+an exception rather than as the refusal it is, so a foreign Project id became
+an unhandled server fault instead of the route's own answer:
+
+* `packages/hive-conductor/backend/services/dag_execution_scope.py`
+  `authorize_hive_dag_scope` -- `project_store.get(..., principal_id=...)`
+  raises `ProjectScopeDenied`, which the schedules route does not catch.
+  `packages/hive-conductor/backend/tests/test_schedule_workspace_scope.py::
+  test_create_refuses_a_project_outside_the_selected_workspace` failed with
+  that exception (500) where the route promises 403.
+* `packages/maistro-server/src/maistro_server/api/projects.py::_require_project`
+  -- the same refusal escaped the Project routes, which answer an unreadable
+  Project id with 404.
+
+Both seams now translate the store's refusal into the route's own shape:
+`DagWorkspaceSelectionError` (Hive -> 403) and `HTTPException(404)` (the
+maistro-server Project routes). The refusal is still decided by the canonical
+store; only its rendering moved back to the route.
+
+`packages/maestro-server/tests/api/test_projects_api.py` gains one case
+(+1): `test_cross_workspace_project_id_is_hidden_from_a_foreign_member` -- a
+member of one Workspace asking for another Workspace's Project id gets the
+same 404 an unknown id gets. It passes on `develop@e20e9f52e` and fails on
+the branch before this repair, so it names the regression rather than the
+implementation.
+
 Validation run:
 
 * `MAISTRO_TEST_PG_DSN=... pytest packages/maistro-core/tests/workspaces
   packages/maistro-core/tests/projects packages/maistro-core/tests/runs -q`
   -> 2218 passed, 7 skipped
-* `pytest` on the maistro-server Workspace/Project/Run APIs and the Hive
-  workspace/HITL/DAG scope suites -> 231 passed, 5 skipped
+* `pytest packages/maistro-core/tests/workspaces/test_store_boundary_scope_conformance.py`
+  -> 47 passed (memory + SQLite); 68 passed with the PostgreSQL leg
+  (`MAISTRO_REQUIRE_PG_LEGS=1`)
+* `pytest packages/hive-conductor/backend/tests packages/maistro-server/tests`
+  -> 4340 passed, 32 skipped
+* `MAISTRO_TEST_PG_DSN=... pytest packages/maistro-core/tests -q`
+  -> 16659 passed, 140 skipped, 7 xfailed, 7 failed. Every failure is a
+  PostgreSQL conformance case in `tests/backlog/test_backlog_store_conformance.py`
+  and `tests/conformance/test_approval_store_conformance.py`; the same cases
+  fail unchanged on `develop@e20e9f52e` in the same container (a stale
+  container schema), so they are not this change.
 * `ruff check`, `ruff format --check`, `check-suite-inventory.py`
+  -> ok: 21 suite(s) match the recorded inventory
+* `mypy` over the AGENTS.md package list -> Success: no issues found in 906
+  source files

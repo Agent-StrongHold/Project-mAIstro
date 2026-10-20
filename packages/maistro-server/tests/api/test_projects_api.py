@@ -147,6 +147,26 @@ async def test_cross_workspace_project_id_is_hidden(api) -> None:
     assert response.status_code == 404
 
 
+async def test_cross_workspace_project_id_is_hidden_from_a_foreign_member(api) -> None:
+    """A member of one Workspace cannot reach another's Project id (#1150).
+
+    The store resolves Project scope against the acting principal, so a
+    Project in a Workspace the caller does not belong to is refused at the
+    boundary. The route must answer that refusal the way it answers an
+    unknown id -- a 404 -- rather than surfacing the store's denial.
+    """
+    app, client, workspaces, projects = api
+    first = await workspaces.create(creator_user_id="alice", name="First")
+    second = await workspaces.create(creator_user_id="bob", name="Second")
+    second_root = await projects.root_for_workspace(second.workspace_id)
+    # alice owns `first` only; bob owns `second`.
+    _as_user(app, "alice")
+
+    response = client.get(f"/workspaces/{first.workspace_id}/projects/{second_root.project_id}")
+
+    assert response.status_code == 404
+
+
 async def test_cross_workspace_parent_is_hidden_and_cannot_create_child(api) -> None:
     app, client, workspaces, projects = api
     first = await workspaces.create(creator_user_id="alice", name="First")

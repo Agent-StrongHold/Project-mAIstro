@@ -20,6 +20,7 @@ from maistro.projects.scope import (
     ProjectIntegrityError,
     ProjectMembership,
     ProjectNotFound,
+    ProjectScopeDenied,
 )
 from maistro.projects.scope_store import ProjectScopeStore
 from maistro.workspaces import WorkspaceStore
@@ -53,7 +54,16 @@ async def _require_project(
     project_id: str,
     principal_id: str | None = None,
 ) -> Project:
-    project = await store.get(project_id, principal_id=principal_id)
+    try:
+        project = await store.get(project_id, principal_id=principal_id)
+    except ProjectScopeDenied as exc:
+        # The store resolved the acting principal's authority and refused
+        # (#1150). The route answers that the way it answers an unknown id:
+        # one 404, so a foreign Project id is not an existence oracle and a
+        # store refusal never escapes as a 500.
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Project not found"
+        ) from exc
     if project is None or project.workspace_id != workspace_id:
         # Do not disclose cross-Workspace Project identifiers.
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
