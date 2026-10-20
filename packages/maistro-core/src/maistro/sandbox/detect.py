@@ -206,7 +206,12 @@ def _probe_vm(_config: SandboxConfig) -> tuple[bool, str]:
             timeout=PROBE_TIMEOUT_S,
             check=False,
         )
-    except (OSError, subprocess.SubprocessError) as exc:
+    except (OSError, subprocess.SubprocessError, RuntimeError) as exc:
+        # Same contract as the bubblewrap probe: a launcher that cannot run —
+        # including a RuntimeError from process construction in an embedded
+        # interpreter (#1328) — reads as Tier 1 absent with the reason, never
+        # as an abort of the detection or the selector construction that
+        # asked the question.
         return False, f"Kata Docker runtime probe failed: {exc}"
     if completed.returncode != 0:
         return False, "Kata Docker runtime probe failed; docker daemon is unavailable"

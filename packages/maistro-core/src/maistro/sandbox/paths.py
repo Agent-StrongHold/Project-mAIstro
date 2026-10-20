@@ -207,6 +207,44 @@ def _open_parent(root: Path | int, parts: tuple[str, ...], *, create: bool) -> t
         raise
 
 
+def make_beneath_guest_readable(root: Path | int, path: str, *, mount: str = "/work") -> None:
+    """Widen the mode of a written file and its parent chain for id-mapped guests.
+
+    Kata's virtiofs share enforces the host's mode bits against the guest's
+    id mapping (the guest sees ``UNKNOWN:UNKNOWN`` owners and no capability
+    to bypass DAC), so the ``0o700``/``0o600`` objects `write_beneath`
+    creates are unreadable inside a Kata guest even to root there. Files
+    beneath the sandbox bind are guest-facing by definition while the bind
+    itself keeps its host-side permissions, so widening the written chain is
+    the transfer contract, not a weakening of it.
+
+    The walk reuses `write_beneath`'s no-follow directory discipline: a
+    symlink swapped in after the write aborts the chmod instead of letting
+    the mode change escape the sandbox root.
+    """
+    parts = _relative_parts(path, mount=mount)
+    if not _NOFOLLOW or not hasattr(os, "O_DIRECTORY"):
+        raise OSError("descriptor-relative no-follow file access is unavailable")
+    fd = (
+        os.dup(root)
+        if isinstance(root, int)
+        else os.open(root, os.O_RDONLY | os.O_DIRECTORY | _NOFOLLOW)
+    )
+    try:
+        for part in parts[:-1]:
+            next_fd = os.open(part, os.O_RDONLY | os.O_DIRECTORY | _NOFOLLOW, dir_fd=fd)
+            os.fchmod(next_fd, 0o755)
+            os.close(fd)
+            fd = next_fd
+        file_fd = os.open(parts[-1], os.O_RDONLY | _NOFOLLOW, dir_fd=fd)
+        try:
+            os.fchmod(file_fd, 0o644)
+        finally:
+            os.close(file_fd)
+    finally:
+        os.close(fd)
+
+
 def read_beneath(root: Path | int, path: str, *, mount: str = "/work") -> bytes:
     """Read a regular path beneath ``root`` without following symlinks."""
     parts = _relative_parts(path, mount=mount)
@@ -241,6 +279,7 @@ def write_beneath(root: Path | int, path: str, content: bytes, *, mount: str = "
 __all__ = [
     "AUTHORIZED_HOST_ROOTS",
     "authorized_host_mounts",
+    "make_beneath_guest_readable",
     "read_beneath",
     "validate_host_root",
     "write_beneath",

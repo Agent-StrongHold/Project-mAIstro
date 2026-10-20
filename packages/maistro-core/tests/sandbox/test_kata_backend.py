@@ -122,6 +122,31 @@ async def test_file_transfer_refuses_directory_swap(spawned, tmp_path, monkeypat
     assert marker.read_bytes() == b"host-secret"
 
 
+async def test_exec_enforces_no_new_privileges_on_guest_processes(spawned, monkeypatch):
+    """Kata does not propagate no-new-privileges to exec'd processes (#76).
+
+    The spawn pins --security-opt=no-new-privileges, so exec must re-assert
+    the promise itself: a bare `docker exec` runs NoNewPrivs:0 inside the
+    guest, which would let a compromise elevate through setuid in the rootfs.
+    """
+    backend, instance, _remove = spawned
+    create = asyncio.create_subprocess_exec
+    captured: dict[str, list[str]] = {}
+
+    async def capturing_child(*argv, **kwargs):
+        captured["argv"] = list(argv)
+        return await create(sys.executable, "-c", "pass", **kwargs)
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", capturing_child)
+    result = await backend.exec(instance, ["python", "-c", "print('nnp')"])
+    assert result.exit_code == 0
+    argv = captured["argv"]
+    exec_idx = argv.index("exec")
+    assert argv[exec_idx + 1] == instance.id
+    assert argv[exec_idx + 2 : exec_idx + 4] == ["setpriv", "--no-new-privs"]
+    assert argv[exec_idx + 4 :] == ["python", "-c", "print('nnp')"]
+
+
 @pytest.mark.parametrize("stream", ["stdout", "stderr"])
 async def test_real_child_output_is_bounded(spawned, monkeypatch, stream):
     backend, instance, remove = spawned

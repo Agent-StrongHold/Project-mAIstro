@@ -84,6 +84,12 @@ import importlib.util
 import json
 import sys
 
+# Kata's guest writes as root through the virtiofs share; a root-owned
+# __pycache__ in the shared workspace cannot be cleaned by the host-side
+# evaluator. Isolated mode (-I) ignores PYTHONDONTWRITEBYTECODE, so the
+# runner opts out directly before importing candidate code.
+sys.dont_write_bytecode = True
+
 SOLUTION_PATH = "__SOLUTION_FILENAME__"
 
 
@@ -250,7 +256,13 @@ async def run_function_checks(
     sandbox_root.mkdir(parents=True, exist_ok=True)
     sandbox_root.chmod(0o755)
 
-    with tempfile.TemporaryDirectory(prefix="case-", dir=sandbox_root) as tmp_name:
+    with tempfile.TemporaryDirectory(
+        prefix="case-", dir=sandbox_root, ignore_cleanup_errors=True
+    ) as tmp_name:
+        # ignore_cleanup_errors: a hostile candidate can plant root-owned
+        # objects into the shared workspace (the Kata guest writes as root
+        # through virtiofs), which a host-side cleanup running unprivileged
+        # cannot remove. A leftover case directory fails no verdict.
         tmp = Path(tmp_name)
 
         # TemporaryDirectory deliberately creates directories as 0700. The

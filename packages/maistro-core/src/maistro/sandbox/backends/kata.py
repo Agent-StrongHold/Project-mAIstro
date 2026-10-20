@@ -18,7 +18,7 @@ from uuid import uuid4
 
 from maistro.sandbox.capture import capture_process
 from maistro.sandbox.network import EgressMode, resolve_grant
-from maistro.sandbox.paths import read_beneath, write_beneath
+from maistro.sandbox.paths import make_beneath_guest_readable, read_beneath, write_beneath
 from maistro.sandbox.protocol import (
     OUTPUT_LIMIT_EXIT_CODE,
     ExecResult,
@@ -81,6 +81,16 @@ class KataSandboxBackend:
             workdir = validate_workspace_path(config.workspace_host)
             workdir.mkdir(parents=True, exist_ok=True)
             owned = False
+        # Kata's virtiofs share enforces the host's mode bits against the
+        # guest's id mapping, and this backend's guests run with every
+        # capability dropped: a 0700 mkdtemp bind root owned by the host uid
+        # is neither traversable nor writable even by guest root, which makes
+        # the /workspace transfer contract unusable in both directions. The
+        # bind is the workload's scratch by definition, so the root gets
+        # /tmp semantics (sticky, world-writable); written contents are
+        # widened per-write by make_beneath_guest_readable, and the bind's
+        # parent keeps the host-side permissions that fence the mount.
+        workdir.chmod(0o1777)
 
         command = self.build_run_argv(config, sid, workdir)
         try:
@@ -176,7 +186,7 @@ class KataSandboxBackend:
                     self._docker or "docker",
                     "exec",
                     instance.id,
-                    *command,
+                    *self._exec_argv(command),
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                     start_new_session=True,
@@ -226,10 +236,29 @@ class KataSandboxBackend:
             await self._cleanup_workdir(workdir, owned)
             self._locks.pop(instance.id, None)
 
+    @staticmethod
+    def _exec_argv(command: list[str]) -> list[str]:
+        """Enforce the spawn-time no-new-privileges promise on `docker exec`.
+
+        Kata's guest agent applies the container's no-new-privileges flag to
+        the init process but *not* to processes created by a later exec, so a
+        bare `docker exec` would run with ``NoNewPrivs: 0`` inside a guest
+        whose spawn advertised ``--security-opt=no-new-privileges``. The
+        promise is the backend's, not the agent's, so exec re-asserts it via
+        util-linux ``setpriv`` (present in the shipped guest image; a guest
+        image without it fails the exec closed instead of silently weaker).
+        """
+        return ["setpriv", "--no-new-privs", *command]
+
     async def write_file(self, instance: SandboxInstance, path: str, content: bytes) -> None:
         async with self._lock(instance):
             _config, _workdir, _owned, fd = self._require(instance)
             await asyncio.to_thread(write_beneath, fd, path, content, mount="/workspace")
+            # Kata's virtiofs share enforces host mode bits against the guest's
+            # id mapping, so the 0700/0600 transfer defaults are invisible to
+            # guest root. Widen the written chain without giving up the
+            # no-follow walk (see make_beneath_guest_readable).
+            await asyncio.to_thread(make_beneath_guest_readable, fd, path, mount="/workspace")
 
     async def read_file(self, instance: SandboxInstance, path: str) -> bytes:
         async with self._lock(instance):

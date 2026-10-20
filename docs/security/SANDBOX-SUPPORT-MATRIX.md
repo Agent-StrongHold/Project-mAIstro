@@ -16,7 +16,7 @@ untrusted code badly — it is a host on which untrusted code does not run.
 
 | Tier | ADR-093 name | Backend shipped | Host requirements | Status |
 |---|---|---|---|---|
-| 1 | Hardware VM | `KataSandboxBackend` (`docker --runtime=kata`) | `/dev/kvm` readable/writable; `kata-runtime` and `docker` on `PATH`; Docker daemon reports a configured Kata runtime; a preloaded OCI image | **Shipped**, selected by the canonical selector |
+| 1 | Hardware VM | `KataSandboxBackend` (`docker --runtime=kata`) | `/dev/kvm` readable/writable; `kata-runtime` and `docker` on `PATH`; Docker daemon reports a configured Kata runtime; a preloaded OCI image; guest image must ship util-linux `setpriv` | **Shipped**, selected by the canonical selector |
 | 2 | User-space kernel | *none yet* | `runsc` on `PATH` | Detected, not implemented |
 | 3 | OS sandbox | `BubblewrapSandboxBackend` | `bwrap` on `PATH` **and able to build a namespace** — see below | **Shipped** |
 | — | Fake | `FakeSandboxBackend` | none | Dev/test only, never registered automatically |
@@ -88,6 +88,31 @@ container isolation" — so `TRUSTED_TOOL` and `BROWSER_AUTOMATION` carry
 `untrusted=False` and are not floored by mode. Applying it to them would refuse
 a first-party API call on every host without gVisor, which is the ADR being
 read past its own scope.
+
+### Tier-1 runtime notes (live-profile verified)
+
+The live conformance (`test_kata_live_conformance.py`) ran green against real
+Kata VMs on a 3.32.0 static deployment with docker registered via
+`runtimeType: io.containerd.kata.v2`. Two host behaviors it exposed are now
+part of the backend contract, not the guest's goodwill:
+
+- **No-new-privileges is enforced per exec.** Kata's guest agent applies the
+  container's NNP flag to the init process but not to later `docker exec`
+  processes, so `KataSandboxBackend.exec` re-asserts the promise itself via
+  util-linux `setpriv --no-new-privs`. A guest image without `setpriv` fails
+  the exec closed instead of silently weaker — this is why `setpriv` appears
+  in the Tier-1 requirements above.
+- **virtiofs enforces host mode bits against the guest's id mapping, and the
+  guests run with every capability dropped.** A 0700 mkdtemp bind or a 0600
+  transferred file is unreadable in-guest even to root there. The bind root
+  therefore gets /tmp semantics (sticky, world-writable — it is the
+  workload's scratch by definition) and `write_file` widens exactly the
+  written chain through the same `O_NOFOLLOW` walk as the write itself
+  (`make_beneath_guest_readable`); a symlink swapped in after the transfer
+  aborts the widening instead of escaping the sandbox root. Residual edge: a
+  directory the *guest* creates inside the bind is not writable by the
+  host-side transfer until the caller widens it — guest-created paths are
+  guest-owned on the share.
 
 ## Egress
 
