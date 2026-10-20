@@ -102,7 +102,12 @@ class Harness:
         #: Workspace refuses DAG-scoped writes, so the schedule ops restore
         #: that precondition first.
         self.ws_a_archived = False
-        #: Successful A-side mutations performed (anti-vacuous ledger).
+        #: Accepted A-side mutations, per helper bookkeeping. Deliberately
+        #: NOT the anti-vacuity evidence (that is the observed A-side delta
+        #: in the sequence tests): this only uniquifies payloads and covers
+        #: the restart family, whose in-memory leg may be observationally
+        #: inert. A route returning success without persisting would still
+        #: increment it.
         self.mutations = 0
         #: Read-only A-side queries performed.
         self.queries = 0
@@ -151,24 +156,36 @@ def _store_level_projection(workspace_id: str) -> dict[str, Any]:
     return asyncio.run(_read())
 
 
-def _observe(h: Harness) -> dict[str, Any]:
-    """Everything the untouched B principal can observe, normalized.
+def _workspace_feedback_rows(workspace_id: str) -> list[dict[str, Any]]:
+    """Workspace-scoped persona-feedback rows, read at store level: there is
+    no per-Workspace read model (the persona-wide summary is the aggregated,
+    admin-gated surface pinned separately below). Filtering by workspace_id
+    keeps the documented cross-workspace persona aggregation out of this
+    projection while making A's own feedback writes observable."""
+    import stores
 
-    HTTP views are taken through Bob's authenticated session, so the
-    projection is exactly what the product would show B's owner. Every read
-    is asserted successful: a projection read that silently degraded to 403
-    would freeze a constant oracle and make the property vacuous.
-    """
-    bob = h.bob
-    ws_b = h.ws_b.id
+    return _sorted_by(
+        [
+            f.model_dump(mode="json")
+            for f in stores.persona_feedback.values()
+            if f.workspace_id == workspace_id
+        ],
+        "id",
+    )
 
-    listed = bob.get("/v1/workspaces")
-    detail = bob.get(f"/v1/workspaces/{ws_b}")
-    schedules = bob.get("/v1/schedules")
-    agents = bob.get(f"/v1/agents?workspace_id={ws_b}")
-    entries = bob.get("/v1/memory/entries")
-    namespaces = bob.get("/v1/memory/namespaces")
-    chats = bob.get("/v1/chat/sessions")
+
+def _projection(client: Any, workspace_id: str) -> dict[str, Any]:
+    """The observable projection of one Workspace, normalized: every HTTP
+    view its owner can reach plus the persistence stores underneath. Every
+    read is asserted successful: a projection read that silently degraded
+    to 403 would freeze a constant oracle and make the property vacuous."""
+    listed = client.get("/v1/workspaces")
+    detail = client.get(f"/v1/workspaces/{workspace_id}")
+    schedules = client.get("/v1/schedules")
+    agents = client.get(f"/v1/agents?workspace_id={workspace_id}")
+    entries = client.get("/v1/memory/entries")
+    namespaces = client.get("/v1/memory/namespaces")
+    chats = client.get("/v1/chat/sessions")
     for response in (listed, detail, schedules, agents, entries, namespaces, chats):
         assert response.status_code == 200, (
             f"projection read degraded: {response.request.url} -> "
@@ -176,7 +193,7 @@ def _observe(h: Harness) -> dict[str, Any]:
         )
 
     return {
-        # The workspace universe as B sees it: A must be absent from it.
+        # The workspace universe as this owner sees it.
         "workspace_list_ids": sorted(w["id"] for w in listed.json()),
         "workspace_detail": detail.json(),
         "schedules": _sorted_by(schedules.json(), "id"),
@@ -184,8 +201,26 @@ def _observe(h: Harness) -> dict[str, Any]:
         "memory_entries": _sorted_by(entries.json(), "id"),
         "memory_namespaces": sorted(namespaces.json(), key=lambda n: n["name"]),
         "chat_sessions": _sorted_by(chats.json(), "id"),
-        "store_level": _store_level_projection(ws_b),
+        "workspace_feedback": _workspace_feedback_rows(workspace_id),
+        "store_level": _store_level_projection(workspace_id),
     }
+
+
+def _observe(h: Harness) -> dict[str, Any]:
+    """Everything the untouched B principal can observe, normalized.
+
+    Taken through Bob's authenticated session, so the projection is exactly
+    what the product would show B's owner.
+    """
+    return _projection(h.bob, h.ws_b.id)
+
+
+def _observe_a(h: Harness) -> dict[str, Any]:
+    """The same projection taken from A's side through Alice's warmed
+    readers. This is the anti-vacuity evidence: it shows A-scoped operations
+    actually changed A's observable state, rather than trusting that an
+    accepted HTTP response persisted something."""
+    return _projection(h.alice, h.ws_a.id)
 
 
 def _assert_untouched(before: dict[str, Any], after: dict[str, Any], step: str) -> None:
@@ -399,8 +434,33 @@ def _op_submit_feedback_a(h: Harness) -> None:
     h.mutations += 1
 
 
+def _assert_a_payload_excludes_b(h: Harness, path: str, payload: Any) -> None:
+    """The disclosure half of isolation, checked from A's side: no row Alice
+    receives may carry B's identity. Without this, a 200 from a list/detail
+    handler that leaked B's data to Alice would pass -- the B-side projection
+    (and the `Bob cannot name A` baseline) cannot observe that disclosure."""
+    ws_b = h.ws_b.id
+    rows = payload if isinstance(payload, list) else [payload]
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        assert row.get("workspace_id") != ws_b, f"{path}: B-owned row leaked to A: {row}"
+        assert row.get("id") != ws_b, f"{path}: B's Workspace leaked to A: {row}"
+    if path == "/v1/schedules":
+        assert all(s["id"] not in h.bob_schedule_ids for s in payload), "B schedule leaked to A"
+    elif path == "/v1/memory/entries":
+        assert all(e["id"] not in h.bob_memory_ids for e in payload), "B memory leaked to A"
+        assert all(e.get("namespace") != "m8a6-b" for e in payload), "B memory namespace leaked"
+    elif path == "/v1/memory/namespaces":
+        assert all(n["name"] != "m8a6-b" for n in payload), "B memory namespace leaked"
+    elif path == "/v1/chat/sessions":
+        assert all(s["id"] != f"chat-seed-{_BOB}" for s in payload), "B chat session leaked"
+
+
 def _op_query_as_a(h: Harness) -> None:
-    """Read-only A-side traffic: queries must not alter the untouched party."""
+    """Read-only A-side traffic: queries must not alter the untouched party,
+    and their payloads must not disclose B's data to Alice (checked per
+    response by `_assert_a_payload_excludes_b`)."""
     for path in (
         "/v1/workspaces",
         f"/v1/workspaces/{h.ws_a.id}",
@@ -414,6 +474,7 @@ def _op_query_as_a(h: Harness) -> None:
     ):
         r = h.alice.get(path)
         assert r.status_code == 200, f"{path} -> {r.status_code} {r.text}"
+        _assert_a_payload_excludes_b(h, path, r.json())
     h.queries += 1
 
 
@@ -592,6 +653,15 @@ def _cleanup(h: Harness) -> None:
         # The cascade the delete route performs for materialized personas.
         delete_workspace_agents(ws.id)
         stores.workspaces.pop(ws.id, None)
+    # End the principals' authenticated sessions and drop the warmed
+    # starter-chat rows before removing the users: sessions and lazily
+    # seeded chats live in process-global stores and this fixture runs
+    # once per parametrized case, so leftovers would accumulate across
+    # cases and leak into later backend tests.
+    for client, username in ((h.alice, _ALICE), (h.bob, _BOB)):
+        with contextlib.suppress(Exception):
+            client.post("/v1/auth/logout")
+        stores.chat_sessions.pop(f"chat-seed-{username}", None)
     stores.users.pop(_ALICE, None)
     stores.users.pop(_BOB, None)
 
@@ -635,22 +705,33 @@ def test_parties_start_independent_and_b_projection_is_populated(parties) -> Non
 def test_mixed_operation_sequence_preserves_untouched_workspace(parties) -> None:
     h = parties
     baseline = _observe(h)
+    a_projection = _observe_a(h)
     steps: list[str] = []
+    observed_a_changes = 0
 
     for i in range(_SEQUENCE_LENGTH):
         op = h.rng.choice(_VOCABULARY)
         op(h)
-        after = _observe(h)
-        _assert_untouched(baseline, after, f"step {i}: {op.__name__}")
+        _assert_untouched(baseline, _observe(h), f"step {i}: {op.__name__}")
+        after_a = _observe_a(h)
+        if after_a != a_projection:
+            observed_a_changes += 1
+        a_projection = after_a
         steps.append(op.__name__)
 
-    # Anti-vacuous guards: the sequence did real A-side work and exercised
-    # every operation family, so "B never changed" is evidence, not idleness.
+    # Anti-vacuous guards, derived from observations of A rather than the
+    # helpers' own bookkeeping (a counter incremented on an accepted response
+    # would also be satisfied by a route that persists nothing): the sequence
+    # exercised every operation family, and A's observable state actually
+    # changed in at least half the steps. Read-only queries, the
+    # observationally-inert in-memory restart, and create/delete pairs that
+    # fall inside a single step legitimately may not change A.
     exercised = set(steps)
     missing = {op.__name__ for op in _VOCABULARY} - exercised
     assert not missing, f"seeded sequence never exercised: {sorted(missing)}"
-    assert h.mutations >= _SEQUENCE_LENGTH // 2, (
-        f"only {h.mutations} of {len(steps)} steps mutated A-side state"
+    assert observed_a_changes >= _SEQUENCE_LENGTH // 2, (
+        f"only {observed_a_changes} of {len(steps)} steps changed A's "
+        f"observable state; the noninterference pass would be vacuous"
     )
 
     # The destructive corner, last: deleting A leaves B exactly as observed.
@@ -668,10 +749,26 @@ def test_operation_family_preserves_untouched_workspace(
     pinpoints which operation family introduced the leak."""
     h = parties
     baseline = _observe(h)
+    a_projection = _observe_a(h)
+    observed = 0
     for op in ops:
         op(h)
         _assert_untouched(baseline, _observe(h), f"{family}:{op.__name__}")
-    assert h.mutations > 0, f"family {family} performed no successful A-side mutation"
+        after_a = _observe_a(h)
+        observed += after_a != a_projection
+        a_projection = after_a
+    if family == "restart":
+        # `initialize_stores()` is allowed to be observationally inert in the
+        # in-memory suite (no database configured; seeds already present), so
+        # there is no A-side delta to demand. Its value here is that a full
+        # re-initialization leaves B untouched, asserted above per step; the
+        # durable-reload leg is a recorded research limitation.
+        assert h.mutations > 0, f"family {family} never ran"
+    else:
+        assert observed > 0, (
+            f"family {family} performed no observable A-side mutation; "
+            f"its noninterference pass would be vacuous"
+        )
 
 
 def test_deleting_a_cascades_only_into_a(parties) -> None:
