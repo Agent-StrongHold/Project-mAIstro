@@ -1109,6 +1109,10 @@ class _AuditFakeConnection:
     def __init__(self) -> None:
         self.statements: list[str] = []
 
+    async def fetchval(self, query: str, *args: Any) -> Any:
+        self.statements.append(query)
+        return "public.audit_log"  # to_regclass: the table exists
+
     async def execute(self, query: str, *args: Any) -> str:
         self.statements.append(query)
         return "ALTER TABLE"
@@ -1150,6 +1154,7 @@ async def test_audit_log_wiring_prefers_postgres_and_upgrades_its_schema() -> No
 
         assert type(audit) is PgAuditLog
         assert conn.statements == [
+            "SELECT to_regclass('public.audit_log') IS NOT NULL",
             "ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS signature TEXT NOT NULL DEFAULT ''",
             "ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS signing_key_id TEXT NOT NULL DEFAULT ''",
             "ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS proof_type TEXT NOT NULL DEFAULT ''",
