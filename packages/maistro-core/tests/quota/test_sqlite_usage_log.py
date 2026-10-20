@@ -188,6 +188,41 @@ async def test_purge_is_bounded_and_legal_hold_is_scope_isolated(
 
 
 @pytest.mark.asyncio
+async def test_repeated_bounded_purges_never_double_count_aggregates(
+    persist: SqliteUsageLog,
+) -> None:
+    """A bounded delete must aggregate exactly the batch it deletes.
+
+    Expired rows outnumber the batch limit here, so the sweeper must be
+    called repeatedly. Aggregating every expired row while deleting only a
+    bounded batch would re-aggregate the survivors on the next sweep and
+    corrupt the durable reconciliation record with double-counted usage.
+    """
+    log = InMemoryUsageLog()
+    for i in range(7):
+        log.record("provider:model", input_tokens=1, output_tokens=2, now=float(i))
+    log.record("other:model", input_tokens=10, now=3.0)
+    await persist.snapshot(log)
+
+    purged = 0
+    for _ in range(20):
+        deleted = await persist.purge_expired(before=6.5, limit=2)
+        if deleted == 0:
+            break
+        purged += deleted
+
+    assert purged == 8  # all rows are older than the 6.5 cutoff
+    cursor = await persist._conn.execute("SELECT COUNT(*) FROM usage_events")
+    assert (await cursor.fetchone())[0] == 0
+    cursor = await persist._conn.execute(
+        "SELECT SUM(input_tokens), SUM(output_tokens) FROM usage_event_aggregates"
+    )
+    # Exactly the deleted raw usage -- not the double-counted survivors of
+    # earlier bounded sweeps.
+    assert await cursor.fetchall() == [(7 * 1 + 10, 7 * 2)]
+
+
+@pytest.mark.asyncio
 async def test_restore_reproduces_max_retention_pruning(persist: SqliteUsageLog) -> None:
     log = InMemoryUsageLog()
     log.record("groq:kimi-k2", input_tokens=1, now=1000.0)

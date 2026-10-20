@@ -165,6 +165,16 @@ class SqliteUsageLog:
             marks = ",".join("?" for _ in legal_hold_scopes)
             hold_sql = f" AND scope_key NOT IN ({marks})"  # values remain bound
             hold_params = tuple(legal_hold_scopes)
+        # The aggregate must cover exactly the batch being deleted -- not
+        # every expired row.  Otherwise the rows that survive a bounded
+        # delete are aggregated again by the next sweep and the aggregates
+        # double-count them.  ``ORDER BY timestamp, rowid`` makes the batch
+        # deterministic, so the two statements below select the same rows.
+        batch_sql = (
+            "SELECT rowid FROM usage_events WHERE timestamp < ?"
+            + hold_sql
+            + " ORDER BY timestamp, rowid LIMIT ?"
+        )
         async with self._write_lock:
             await self._conn.execute("BEGIN IMMEDIATE")
             try:
@@ -174,9 +184,9 @@ class SqliteUsageLog:
                        SELECT scope_key, CAST(timestamp / 86400 AS INTEGER) * 86400 AS bucket_start,
                               SUM(input_tokens), SUM(output_tokens), SUM(images), SUM(cost_usd)
                        FROM usage_events
-                       WHERE timestamp < """
-                    + "?"
-                    + hold_sql
+                       WHERE rowid IN ("""
+                    + batch_sql
+                    + ")"
                     + """ GROUP BY scope_key, bucket_start
                        ON CONFLICT(scope_key, bucket_start) DO UPDATE SET
                          input_tokens = usage_event_aggregates.input_tokens + excluded.input_tokens,
@@ -184,13 +194,8 @@ class SqliteUsageLog:
                          images = usage_event_aggregates.images + excluded.images,
                          cost_usd = usage_event_aggregates.cost_usd + excluded.cost_usd"""
                 )
-                await self._conn.execute(aggregate_sql, (before, *hold_params))
-                delete_sql = (
-                    "DELETE FROM usage_events WHERE rowid IN ("
-                    "SELECT rowid FROM usage_events WHERE timestamp < ?"
-                    + hold_sql
-                    + " ORDER BY timestamp LIMIT ?)"
-                )
+                await self._conn.execute(aggregate_sql, (before, *hold_params, limit))
+                delete_sql = "DELETE FROM usage_events WHERE rowid IN (" + batch_sql + ")"
                 cursor = await self._conn.execute(
                     delete_sql,
                     (before, *hold_params, limit),
