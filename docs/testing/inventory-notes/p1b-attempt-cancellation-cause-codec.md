@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +36
+  packages/maistro-core/tests: +38
 ---
 
 # P1b Attempt cancellation-cause codec (#1885)
@@ -185,11 +185,15 @@ record) only.
 ## Scope
 
 Test-only leaf: no production code, store, adapter, migration, lifecycle,
-writer seam or producer-default change. Typed REQUESTED/RECOVERED fixtures are
-model/codec inputs only and authorize no writer. PG/SQLite JSONB round trips,
-archive cold hydration and SQLite reopen remain separate persistence units in
-#232/#1151. Old-reader `extra=forbid` incompatibility with non-null causes
-remains until the separately reviewed cutover.
+writer seam or producer-default change in the codec deliverable itself. Typed
+REQUESTED/RECOVERED fixtures are model/codec inputs only and authorize no
+writer. PG/SQLite JSONB round trips, archive cold hydration and SQLite reopen
+remain separate persistence units in #232/#1151. Old-reader `extra=forbid`
+incompatibility with non-null causes remains until the separately reviewed
+cutover. The one production file this branch carries outside that boundary is
+the `durable-events` CI-repair to `pg_audit.py` documented below — a gate
+repair, not codec work, and proved against live PostgreSQL in the latest
+round.
 
 ## 2026-10-20 CI-repair round (head `eb732ba7a`)
 
@@ -245,3 +249,76 @@ proof-column backfill statements and their exact SQL are unchanged, so
 `test_ensure_schema_adds_proof_columns_idempotently` still passes. This is
 the only production file touched by this repair round; the codec test and
 its inventory delta are unchanged.
+
+## 2026-10-20 second repair round (head `1e1086f9` → this commit)
+
+The previous round's exception-based `ensure_schema` rewrite passed the
+driver's focused checks but failed CI gates; this round repairs that
+implementation and records the evidence:
+
+1. **`ensure_schema` reimplemented on the canonical existence probe.** The
+   interim version's `try: import asyncpg / asyncpg = None  # type: ignore`
+   dance failed `mypy --strict` (`pg_audit.py:53: Unused "type: ignore"`, the
+   exact `Quality / Mypy strict` CI failure) and its broad
+   `except Exception` + error-message string matching classified failures by
+   server message text. The replacement asks
+   `SELECT to_regclass('public.audit_log') IS NOT NULL` before any ALTER —
+   the same probe `maistro.runs.wiring`, `maistro.workspaces.wiring` and
+   `maistro.container` already use — so no exception path exists to classify.
+2. **Live PostgreSQL evidence, both directions (pgvector:pg18 containers,
+   ports 15432):** with `ensure_schema` reverted to base (worktree at
+   `e20e9f52e`), the durable-events leg against a fresh unmigrated database
+   with `MAISTRO_REQUIRE_PG_LEGS=1` fails exactly as CI's pre-repair runs did:
+   `asyncpg.exceptions.UndefinedTableError: relation "audit_log" does not
+   exist` (5 failed in `tests/events`). At this head the same fresh-database
+   run passes **383 passed**; against the migrated database
+   (`alembic upgrade head`) `test_pg_audit.py` is **21 passed, 0 skipped**
+   (was 18 passed + 1 skipped), and without a DSN **19 passed, 2 skipped**.
+3. **New tests (+2, recorded in this note's delta, now +38):**
+   `test_ensure_schema_on_unmigrated_database_is_a_no_op` pins the unit
+   contract (probe first, zero ALTERs when absent, no message-text
+   classification) and
+   `test_real_postgres_ensure_schema_tolerates_unmigrated_database` pins the
+   real-server behavior (rename-away probe → no-op, restore → idempotent
+   backfill, columns asserted via `information_schema`).
+   `FakeConnection` gained a queueable `fetchval` double;
+   `test_container_wiring.py`'s `_AuditFakeConnection` gained the same probe
+   (its expected statement list now leads with it).
+   **Mutation evidence (both applied and reverted byte-identical, verified
+   with `git diff` after restore):** (A) probe removed so the method always
+   ALTERs — `test_ensure_schema_adds_proof_columns_idempotently` and
+   `test_ensure_schema_on_unmigrated_database_is_a_no_op` fail (2 failed,
+   17 passed, 2 skipped); (B) probe inverted so the backfill never runs —
+   the same two rows fail. The suite passes untouched in the clean state.
+4. **Codec test: three `# type: ignore[attr-defined]` comments removed.**
+   `Attempt.cancellation_cause` exists (`runs/model.py:543`); mypy with the
+   repo's `strict = true` config flags the comments as unused
+   `[unused-ignore]`. After removal the codec file's standalone mypy output
+   matches its untouched sibling `test_attempt_cancellation_cause_model.py`
+   (only the pre-existing `import-untyped` notes of a non-strict standalone
+   run; CI's mypy gates check `src/` trees only, and both pass — see 5).
+5. **Gate evidence re-executed this round:** `uv sync --locked
+   --all-extras` ok; `uv run ruff check .` / `uv run ruff format --check .`
+   green; `uv run mypy --strict packages/maistro-core/src` — **796 files, 0
+   errors**; CI's full `lint-and-type-check` mypy argument set (all ten src
+   trees) — **1066 files, 0 errors**; codec 36 + model 34 both passed;
+   vulture with CI's exact arguments (`RATCHET_BASE_REV=origin/develop`)
+   **1326 == 1326, rc=0**.
+
+**Remaining red gates are inherited from develop, not from this branch**, and
+are outside this lane's authority: `maistro.runs.admission_identity` (merged
+to develop in #1936/`e20e9f52e` as an unwired #1851 contract leaf) is
+unreachable-from-nothing debt with no `quality/reachability-baseline.json`
+row and no landed reachability authorization. Verified at the base commit
+itself in a detached worktree: `scripts/check-reachability.py` reports the
+identical "1 module(s) are NEWLY UNREACHABLE" and exits 1; the root suite's
+`test_reachability_baseline_identity.py`/`test_check_reachability.py` fail
+the same three tests at base and at this head (full root run at this head:
+**3 failed, 5393 passed, 138 skipped** — every failure is one of those three);
+`scripts/check-ratchet-provenance.py` fails its reachability step with the
+same identity as "NEW unreachable module absent from trusted base and not
+previously authorized" (the `exact-debt-ledger` failure). The two-merge rule
+(`scripts/ratchet_provenance.py`) means a candidate-side grant or baseline row
+cannot authorize the debt — `load_authorizations` reads only the base — so the
+repair is an owner-held grant plus baseline row on develop, as #1851's own
+notes anticipated ("structural gates owner-held").

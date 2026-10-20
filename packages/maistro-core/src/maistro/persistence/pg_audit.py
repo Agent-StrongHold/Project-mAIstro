@@ -40,40 +40,32 @@ class PgAuditLog:
     async def ensure_schema(self) -> None:
         """Add proof columns to databases created before signed audit records.
 
-        The audit table itself is owned by the migration chain (revision 005);
-        on a database that has never run migrations (for example the
-        durable-events CI leg's fresh server) it does not exist yet. Treat
-        that as "nothing to backfill" instead of crashing container wiring,
-        so the audit store degrades to the migrated/absent state the rest of
-        the container already tolerates for optional durable stores.
+        ALTER-only, no CREATE TABLE: the table itself is owned by the migration
+        chain (revision 005), the same owner `PgLearningStore.ensure_schema`
+        records for `learnings`. On a database that has never run migrations
+        (for example the durable-events CI leg's fresh server) `audit_log` does
+        not exist yet, so this is a no-op rather than a crash: the container
+        wires the audit store before any migration has run there, and the rest
+        of that container already tolerates the migrated/absent state for the
+        other optional durable stores.
+
+        The existence probe is the same `to_regclass` guard the run and
+        workspace wiring use (`maistro.runs.wiring`, `maistro.container`) —
+        asked before any ALTER, so no exception path exists to classify and no
+        error-message text is load-bearing.
         """
-        try:
-            import asyncpg
-        except Exception:  # pragma: no cover - asyncpg is a core dependency
-            asyncpg = None  # type: ignore[assignment]
-        try:
-            async with self._pool.acquire() as conn:
-                await conn.execute(
-                    "ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS signature TEXT NOT NULL DEFAULT ''"
-                )
-                await conn.execute(
-                    "ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS signing_key_id TEXT NOT NULL DEFAULT ''"
-                )
-                await conn.execute(
-                    "ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS proof_type TEXT NOT NULL DEFAULT ''"
-                )
-        except Exception as exc:  # broad: real backend may raise UndefinedTableError or others
-            missing = False
-            if asyncpg is not None:
-                try:
-                    missing = isinstance(exc, asyncpg.exceptions.UndefinedTableError)
-                except Exception:  # pragma: no cover
-                    missing = False
-            if not missing:
-                msg = str(exc).lower()
-                missing = "audit_log" in msg and "does not exist" in msg
-            if not missing:
-                raise
+        async with self._pool.acquire() as conn:
+            if not await conn.fetchval("SELECT to_regclass('public.audit_log') IS NOT NULL"):
+                return
+            await conn.execute(
+                "ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS signature TEXT NOT NULL DEFAULT ''"
+            )
+            await conn.execute(
+                "ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS signing_key_id TEXT NOT NULL DEFAULT ''"
+            )
+            await conn.execute(
+                "ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS proof_type TEXT NOT NULL DEFAULT ''"
+            )
 
     async def log(self, entry: AuditEntry) -> None:
         """Sign and record an audit entry."""

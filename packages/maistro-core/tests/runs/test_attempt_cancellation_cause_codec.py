@@ -455,7 +455,7 @@ def test_nested_durable_record_preserves_cause_and_lineage(
 
     if cause is not None:
         typed = model_of(DurableRunRecord, json_of(record)).attempts[0]
-        assert typed.cancellation_cause is cause  # type: ignore[attr-defined]
+        assert typed.cancellation_cause is cause
 
 
 @pytest.mark.parametrize("cause", _CAUSE_PARAMS)
@@ -506,7 +506,7 @@ def test_cause_round_trip_preserves_nonfinite_physical_evidence(
     assert evidence_values_equal(restored.metrics, _NON_FINITE_METRICS)
     assert restored == attempt
     if cause is not None:
-        assert restored.cancellation_cause is cause  # type: ignore[attr-defined]
+        assert restored.cancellation_cause is cause
 
 
 @pytest.mark.parametrize("cause", _CAUSE_PARAMS)
@@ -534,7 +534,7 @@ def test_codec_transport_shapes_preserve_identical_attempt(
     if cause is not None:
         for transport in _TRANSPORT_IDS:
             restored = _codec_round_trip(Attempt, attempt, transport)
-            assert restored.cancellation_cause is cause  # type: ignore[attr-defined]
+            assert restored.cancellation_cause is cause
 
 
 _INVALID_PAYLOAD_CASES: list[tuple[str, dict[str, Any]]] = [
