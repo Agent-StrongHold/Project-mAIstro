@@ -1,7 +1,8 @@
 ---
 inventory-delta:
   packages/maistro-core/tests: +8
-  packages/maistro-server/tests: +4
+  packages/maistro-server/tests: +8
+  packages/hive-conductor/backend/tests: +3
 ---
 # Issue 1150: Workspace/Project authorization at the store boundary
 
@@ -168,3 +169,80 @@ Repair round 2 validation:
   rows the earlier work eliminated from `quality/vulture-baseline.json`
   (617 -> 614 findings in the core-public-api-surface rule; 1326 reviewed
   identities -> 1323 findings overall)
+
+## Repair round 3: the Workspace routes must render the boundary's refusals
+
+Rounds 1 and 2 covered the Project *read* seams and the Project membership
+*write* seams. The Workspace routes had the same disease and were left
+behind: passing the acting principal into the store turned
+`get`/`update`/`delete`/`list_memberships`/`set_membership`/`remove_membership`
+into calls that can be *refused*, and none of the seven Workspace route
+surfaces in `packages/maistro-server/src/maistro_server/api/workspaces.py`
+rendered that refusal. `WorkspaceAuthorizationDenied` escaped them as an
+unhandled exception (a 500 in production) instead of the answer the route
+already gives for the same situation:
+
+* a member who lost ADMINISTER between the route's own owner check and the
+  boundary check got a 500 instead of the route's 403 "Workspace owner
+  permission required";
+* a principal who is no longer a member got a 500 instead of the route's 404
+  "Workspace not found", which is also the answer that does not disclose
+  Workspace existence.
+
+Hive's Workspace routes had the same three unguarded calls
+(`routes/workspaces.py`: `set_member`, `remove_member`,
+`delete_canonical_workspace`), where a canonical store refusal escaped as a
+500 instead of the route's 403.
+
+Both seams now translate the store's refusal into the route's own shape:
+`maistro_server.api.workspace_access.authorized` maps the refusal with the
+same rule the route's own check uses (a member who lost the action -> 403; a
+principal who is no longer a member -> 404), and Hive's
+`routes/workspaces.py::_workspace_denial` does the same with the route's own
+wording. The refusal is still *decided* by the canonical store; only its
+rendering moved back to the route.
+
+`packages/maistro-server/tests/api/test_workspaces_api.py` gains four cases
+(+4, counted in the +8 above):
+
+* `test_a_write_refusal_at_the_boundary_is_the_routes_403_not_a_500` --
+  update, delete and membership write, all refused at the boundary after the
+  route's owner check.
+* `test_a_read_refusal_at_the_boundary_is_a_404_not_a_500` -- fetch and roster
+  read after the requester's membership is revoked.
+* `test_a_membership_removal_refusal_at_the_boundary_is_a_403_not_a_500` --
+  the removal seam, with the membership left in place.
+* `test_a_removal_refusal_after_a_membership_loss_is_a_404_not_a_500` -- the
+  non-disclosing answer for a principal who is no longer a member.
+
+`packages/hive-conductor/backend/tests/test_workspaces.py` gains three cases
+(+3): the membership write, the membership removal and the Workspace delete,
+each refused by the canonical store after the route's own owner check.
+
+All seven cases fail on the branch before this repair (the refusal escapes as
+an unhandled `WorkspaceAuthorizationDenied`) and pass with it.
+
+Repair round 3 validation:
+
+* `pytest packages/maistro-server/tests/api/test_workspaces_api.py -q` ->
+  20 passed (16 + the four new cases)
+* `pytest packages/hive-conductor/backend/tests/test_workspaces.py -q` ->
+  71 passed (68 + the three new cases)
+* `pytest packages/maistro-server/tests -q` -> 579 passed, 8 skipped
+* `pytest packages/hive-conductor/backend/tests -q` -> 3771 passed, 24 skipped
+* `pytest packages/maistro-core/tests -q` -> 15654 passed, 1131 skipped,
+  7 xfailed
+* `ruff check` / `ruff format --check` over the tree -> clean
+* `mypy` over the AGENTS.md package list -> Success: no issues found in 906
+  source files
+* `check-suite-inventory.py --show --compact` -> 21 suites match the recorded
+  inventory: core 16792, maistro-server 587, hive-conductor backend 3795,
+  total 32404
+* `MAISTRO_TEST_PG_DSN=... MAISTRO_REQUIRE_PG_LEGS=1 pytest
+  packages/maistro-core/tests/workspaces -q` -> 342 passed, 2 skipped -- the
+  store-boundary conformance cases collected on the memory, SQLite *and*
+  PostgreSQL legs, so the two-principal/two-Workspace refusal is proven on
+  every supported backend
+* `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'` -> exit 0 (1326 reviewed identities -> 1323 findings,
+  0 unclassified, 0 never-allowlist)

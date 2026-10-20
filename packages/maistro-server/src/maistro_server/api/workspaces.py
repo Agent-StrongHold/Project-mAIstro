@@ -23,6 +23,7 @@ from maistro.workspaces import (
 from maistro_server.api import backlog_history, campaigns, projects
 from maistro_server.api.auth import RequireAuth
 from maistro_server.api.workspace_access import (
+    authorized,
     configure_workspace_store,
     get_workspace_store,
     require_workspace_membership,
@@ -113,7 +114,7 @@ async def get_workspace(
     """
     requester = authenticated_user_id(auth)
     await require_workspace_membership(store, workspace_id, requester)
-    workspace = await store.get(workspace_id, principal_id=requester)
+    workspace = await authorized(store.get(workspace_id, principal_id=requester))
     if workspace is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Workspace not found")
     return workspace
@@ -133,7 +134,7 @@ async def update_workspace(
     """
     requester = authenticated_user_id(auth)
     await require_workspace_owner(store, workspace_id, requester)
-    workspace = await store.get(workspace_id, principal_id=requester)
+    workspace = await authorized(store.get(workspace_id, principal_id=requester))
     if workspace is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Workspace not found")
     updates: dict[str, object] = {}
@@ -141,7 +142,9 @@ async def update_workspace(
         updates["name"] = body.name
     if body.description is not None:
         updates["description"] = body.description
-    return await store.update(workspace.model_copy(update=updates), principal_id=requester)
+    return await authorized(
+        store.update(workspace.model_copy(update=updates), principal_id=requester)
+    )
 
 
 @router.delete("/{workspace_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -158,7 +161,7 @@ async def delete_workspace(
     requester = authenticated_user_id(auth)
     await require_workspace_owner(store, workspace_id, requester)
     try:
-        await store.delete(workspace_id, principal_id=requester)
+        await authorized(store.delete(workspace_id, principal_id=requester))
     except WorkspaceOwnershipError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
@@ -175,7 +178,7 @@ async def list_members(
     """
     requester = authenticated_user_id(auth)
     await require_workspace_membership(store, workspace_id, requester)
-    return await store.list_memberships(workspace_id, principal_id=requester)
+    return await authorized(store.list_memberships(workspace_id, principal_id=requester))
 
 
 @router.put("/{workspace_id}/members/{user_id}", response_model=WorkspaceMembership)
@@ -195,8 +198,10 @@ async def set_member(
     requester = authenticated_user_id(auth)
     await require_workspace_owner(store, workspace_id, requester)
     try:
-        return await store.set_membership(
-            workspace_id, user_id=user_id, role=body.role, principal_id=requester
+        return await authorized(
+            store.set_membership(
+                workspace_id, user_id=user_id, role=body.role, principal_id=requester
+            )
         )
     except WorkspaceAccessDenied as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
@@ -223,7 +228,9 @@ async def remove_member(
             detail="Workspace owner permission required",
         )
     try:
-        await store.remove_membership(workspace_id, user_id=user_id, principal_id=requester)
+        await authorized(
+            store.remove_membership(workspace_id, user_id=user_id, principal_id=requester)
+        )
     except WorkspaceAccessDenied as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
