@@ -255,6 +255,9 @@ _engine_singleton: Any = None
 _store_singleton: Any = None
 _renderer_registry_singleton: Any = None
 _canonical_execution_singleton: Any = None
+# Adapters cached per authorized Workspace (#52 review): admission scope is
+# resolved from the request principal, never from the startup binding.
+_canonical_execution_adapters: dict[str, Any] = {}
 _status: DesignServiceStatus = DesignServiceStatus(cause="start_design_service() has not run")
 
 
@@ -283,8 +286,52 @@ def get_design_engine() -> Any:
 
 
 def get_design_canonical_execution() -> Any | None:
-    """Return the canonical Design execution adapter, if the spine is wired."""
+    """Return the startup wiring probe, if the spine is wired.
+
+    Not an admission scope. The singleton exists to decide, once, whether the
+    Run/NodeRun/Attempt spine is reachable; its Workspace binding is the
+    deployment's own default and must never stand in for a caller's
+    authorization. Route admission resolves scope per principal via
+    `get_design_canonical_execution_for_principal`.
+    """
     return _canonical_execution_singleton
+
+
+async def get_design_canonical_execution_for_principal(principal_id: str) -> Any | None:
+    """The canonical Design adapter bound to the caller's authorized Workspace.
+
+    Design offers no caller-named Workspace selection, so the caller's own
+    default Workspace — which `resolve_default_workspace` guarantees they own,
+    the same fallback chat admission applies — is the scope every Run files
+    into. A principal is never filed into a Workspace they hold no membership
+    in, and the adapter is cached per Workspace like chat's admitters.
+    """
+    if not isinstance(principal_id, str) or not principal_id.strip():
+        return None
+    from services.default_workspace import resolve_default_workspace
+    from services.engine import get_engine
+
+    try:
+        core_engine = get_engine()
+    except RuntimeError:
+        return None
+    run_store = getattr(core_engine, "run_store", None)
+    scope_store = getattr(core_engine, "project_scope_store", None)
+    if run_store is None or scope_store is None:
+        return None
+    workspace_id = (await resolve_default_workspace(principal_id)).id
+    adapter = _canonical_execution_adapters.get(workspace_id)
+    if adapter is None:
+        from maistro_design.canonical_execution import DesignCanonicalExecution
+
+        root = await scope_store.create_root(workspace_id)
+        adapter = DesignCanonicalExecution(
+            run_store,
+            workspace_id=workspace_id,
+            project_id=root.project_id,
+        )
+        _canonical_execution_adapters[workspace_id] = adapter
+    return adapter
 
 
 def get_design_store() -> Any:
@@ -409,10 +456,11 @@ async def start_design_service(settings: Settings) -> None:
             scope_store = core_engine.project_scope_store
             workspace_id = str(getattr(settings, "hive_default_workspace_id", "") or "")
             if run_store is not None and scope_store is not None and workspace_id:
-                # The canonical Root Project is the authorized Workspace/Project
-                # scope; `create_root` is idempotent (create-or-return), the
-                # same admission pattern chat runs use. Design never derives
-                # scope from its own org/team identifiers.
+                # A wiring probe, not an admission scope (#52 review): this
+                # proves the spine answers (`create_root` is idempotent
+                # create-or-return) before the status claims availability.
+                # Per-caller scope is resolved from the request principal at
+                # admission time, never from this deployment-wide binding.
                 root = await scope_store.create_root(workspace_id)
                 _canonical_execution_singleton = DesignCanonicalExecution(
                     run_store,
@@ -536,6 +584,7 @@ async def stop_design_service() -> None:
     _store_singleton = None
     _renderer_registry_singleton = None
     _canonical_execution_singleton = None
+    _canonical_execution_adapters.clear()
     _get_async_engine.cache_clear()
     _get_async_session_factory.cache_clear()
     try:

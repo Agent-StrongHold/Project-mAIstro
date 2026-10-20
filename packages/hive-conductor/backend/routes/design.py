@@ -15,7 +15,7 @@ from typing import Any, cast
 
 from fastapi import APIRouter, HTTPException, Request
 from services.design_service import (
-    get_design_canonical_execution,
+    get_design_canonical_execution_for_principal,
     get_design_engine,
     get_design_status,
     get_design_store,
@@ -193,7 +193,10 @@ async def create_design_project(request: Request, discovery: DiscoveryResult) ->
     # authorization decision behind a 500.
     org_id = _get_org_id(request)
     principal_id = _request_principal_id(request)
-    canonical = get_design_canonical_execution()
+    # Admission scope is the caller's, resolved per request (#52 review): the
+    # startup binding is a wiring probe, so a personal-default-Workspace user
+    # never files Runs into a Workspace they hold no membership in.
+    canonical = await get_design_canonical_execution_for_principal(principal_id)
     if canonical is None:
         raise HTTPException(
             status_code=503,

@@ -329,6 +329,7 @@ class TestTheRoutesPassItDown:
         the route resolved has to be the one the engine is told to use — this
         is where a project's `org_id` actually comes from."""
         seen: dict[str, Any] = {}
+        resolved: list[str] = []
 
         class _Engine:
             @staticmethod
@@ -350,18 +351,35 @@ class TestTheRoutesPassItDown:
 
         monkeypatch.setattr(design_routes, "get_design_engine", lambda: _Engine())
         monkeypatch.setattr(design_routes, "get_design_store", lambda: object())
-        monkeypatch.setattr(design_routes, "get_design_canonical_execution", lambda: _Canonical())
+
+        async def _canonical_for(principal_id: str) -> Any:
+            resolved.append(principal_id)
+            return _Canonical()
+
+        monkeypatch.setattr(
+            design_routes, "get_design_canonical_execution_for_principal", _canonical_for
+        )
         answer = await design_routes.create_design_project(
             _Request(org_id="org-7", principal=Principal(user_id="user-1")), object()
         )
         assert seen == {"org_id": "org-7", "team_id": None}
         assert answer["org_id"] == "org-7"
+        # The adapter is resolved from the request principal (#52 review), not
+        # from the startup's deployment-wide binding.
+        assert resolved == ["user-1"]
 
     @pytest.mark.ac("SPEC-083026-6bc5/AC-6")
     async def test_creation_is_unavailable_without_canonical_execution(
         self, ready: None, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setattr(design_routes, "get_design_canonical_execution", lambda: None)
+        monkeypatch.setattr(design_routes, "get_design_store", lambda: object())
+
+        async def _canonical_for(principal_id: str) -> Any:
+            return None
+
+        monkeypatch.setattr(
+            design_routes, "get_design_canonical_execution_for_principal", _canonical_for
+        )
         with pytest.raises(HTTPException) as raised:
             await design_routes.create_design_project(
                 _Request(org_id="org-7", principal=Principal(user_id="user-1")), object()
@@ -375,7 +393,14 @@ class TestTheRoutesPassItDown:
     ) -> None:
         """The canonical spine records who asked; an anonymous request must
         not fall back to a fabricated actor identity."""
-        monkeypatch.setattr(design_routes, "get_design_canonical_execution", lambda: object())
+        monkeypatch.setattr(design_routes, "get_design_store", lambda: object())
+
+        async def _canonical_for(principal_id: str) -> Any:
+            raise AssertionError("an anonymous request must never reach scope resolution")
+
+        monkeypatch.setattr(
+            design_routes, "get_design_canonical_execution_for_principal", _canonical_for
+        )
         with pytest.raises(HTTPException) as raised:
             await design_routes.create_design_project(_Request(org_id="org-7"), object())
         assert raised.value.status_code == 401
@@ -400,7 +425,13 @@ class TestTheRoutesPassItDown:
 
         monkeypatch.setattr(design_routes, "get_design_store", lambda: None)
         monkeypatch.setattr(design_routes, "get_design_engine", lambda: _Engine())
-        monkeypatch.setattr(design_routes, "get_design_canonical_execution", lambda: _Canonical())
+
+        async def _canonical_for(principal_id: str) -> Any:
+            return _Canonical()
+
+        monkeypatch.setattr(
+            design_routes, "get_design_canonical_execution_for_principal", _canonical_for
+        )
         with pytest.raises(HTTPException) as raised:
             await design_routes.create_design_project(
                 _Request(org_id="org-7", principal=Principal(user_id="user-1")), object()
@@ -430,7 +461,13 @@ class TestTheRoutesPassItDown:
 
         monkeypatch.setattr(design_routes, "get_design_store", lambda: object())
         monkeypatch.setattr(design_routes, "get_design_engine", lambda: _Engine())
-        monkeypatch.setattr(design_routes, "get_design_canonical_execution", lambda: _Canonical())
+
+        async def _canonical_for(principal_id: str) -> Any:
+            return _Canonical()
+
+        monkeypatch.setattr(
+            design_routes, "get_design_canonical_execution_for_principal", _canonical_for
+        )
         with pytest.raises(HTTPException) as raised:
             await design_routes.create_design_project(
                 _Request(org_id="org-7", principal=Principal(user_id="user-1")), object()
