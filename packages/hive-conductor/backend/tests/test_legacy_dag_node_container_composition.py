@@ -287,15 +287,23 @@ async def test_unconfigured_gateway_fails_the_legacy_node_closed_without_fabrica
         "LITELLM_MASTER_KEY",
     ):
         monkeypatch.delenv(key, raising=False)
-    # get_settings is lru_cached suite-wide; pin the attributes `_endpoint`
-    # and `stub_llm_allowed` read so the unconfigured refusal is
-    # deterministic here.
+    # get_settings is lru_cached suite-wide; pin the attributes the governed
+    # path reads so the unconfigured refusal is deterministic here. The
+    # effective-key contract (`services.secrets.effective_llm_gateway_key`)
+    # reads `settings.maistro_llm_api_key` first, so the stub must carry that
+    # field too — a SimpleNamespace without it is not a faithful Settings and
+    # raises AttributeError instead of failing closed.
     import config as hive_config
 
     monkeypatch.setattr(
         hive_config,
         "get_settings",
-        lambda: SimpleNamespace(litellm_api_base=None, litellm_api_key=None, allow_stub_llm=False),
+        lambda: SimpleNamespace(
+            litellm_api_base=None,
+            litellm_api_key=None,
+            maistro_llm_api_key=None,
+            allow_stub_llm=False,
+        ),
     )
     calls = _fake_transport(monkeypatch)
     ledger = container.usage_log
