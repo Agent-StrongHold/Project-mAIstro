@@ -165,6 +165,24 @@ unclassified 0); `coverage report --fail-under=87` 94%;
 `check-diff-coverage.py` ok; builders/cli/retention lane suites 69 passed,
 9 skipped.
 
+Independently re-executed at the repair commit (the round above, committed):
+CI's own commands — `check-radon-baseline.py` 129 -> 129, EXIT=0; xenon
+129 blocks / 0 module / 0 average with no `interactive.py` row;
+`check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+'*/third_party/*'` 1321 -> 1320, unclassified 0 (no ledger amendment — the
+repair removed the debt instead of banking it); mypy strict clean over CI's
+seven-package list (920 files); ruff check/format clean; lane suites 69
+passed, 9 skipped; `check-suite-inventory.py --suite
+packages/maistro-core/tests` ok (17188 collected, delta unchanged at +20).
+Diff coverage for the changed file, measured from CI's own maistro-core
+producer (`coverage run --branch --source=packages/maistro-core/src/maistro
+-m pytest packages/maistro-core/tests --timeout=30 -q`: 16018 passed,
+1163 skipped, 7 xfailed) and scored with `check-diff-coverage.py`'s own audit
+math: `interactive.py` 100.0% of 115 changed executable lines (floor 90) and
+100.0% of 12 changed branch arcs (floor 80); every `_join_content` line
+executed. The full combine-level gate is CI-green at the parent head
+(39606400250) and this delta adds eight covered statements to the publish set.
+
 ## Review-findings repair round (delta +17 -> +20)
 
 Codex review on the shipped path flagged two P1 behaviours this adapter owned.
