@@ -543,6 +543,37 @@ class TestWorkspaceMembers:
         )
         assert r.status_code == 403
 
+    def test_a_store_refusal_from_a_non_member_on_add_member_is_the_routes_404_not_a_500(
+        self, admin_client, monkeypatch
+    ) -> None:
+        """A store refusal from a principal off the roster is the route's 404 (#1150).
+
+        The non-disclosing branch of `_workspace_denial`: when the canonical
+        store's refusal carries no membership the route answers with the same
+        404 an invisible Workspace gets, not the 403 a member who lost the
+        action gets. The roster is replaced so `admin` is no longer a member,
+        then the route's own checks are let through so the refusal is the
+        store's to render.
+        """
+        from routes import workspaces as ws_routes
+
+        ws_id = self._create(admin_client)
+        _set_members(ws_id, {})
+
+        async def _visible(*args: object, **kwargs: object) -> object:
+            return object()
+
+        async def _owner_at_the_route_check(*args: object, **kwargs: object) -> str:
+            return "owner"
+
+        monkeypatch.setattr(ws_routes, "visible_view", _visible)
+        monkeypatch.setattr(ws_routes, "member_role", _owner_at_the_route_check)
+
+        r = admin_client.post(
+            f"/v1/workspaces/{ws_id}/members", json={"user_id": "user", "role": "viewer"}
+        )
+        assert r.status_code == 404
+
     def test_a_store_refusal_on_remove_member_is_the_routes_403_not_a_500(
         self, admin_client, monkeypatch
     ) -> None:
