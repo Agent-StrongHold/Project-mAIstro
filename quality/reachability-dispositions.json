@@ -591,15 +591,6 @@
         "maistro.graph.executor",
         "maistro.graph.run"
       ]
-    },
-    {
-      "id": "runs-admission-identity-leaf",
-      "subsystem": "Run / NodeRun / Attempt lifecycle",
-      "disposition": "LIBRARY",
-      "rationale": "Immutable root-admission identity types (#1851, parent #1845). This module is an inactive contract leaf: nothing in production imports it yet, and a later, separately reviewed integration lands the runtime consumer (prospective C2 classifier and backend wiring) before these types become wired. maistro-core is a published library (AGENTS.md) and these are its importable surfaces for downstream importers; unreachable from a process entry point by construction, and honestly so until that integration lands.",
-      "modules": [
-        "maistro.runs.admission_identity"
-      ]
     }
   ]
 }
