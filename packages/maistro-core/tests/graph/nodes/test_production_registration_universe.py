@@ -149,7 +149,7 @@ def test_the_governed_design_wave_kinds_are_production_kinds_through_their_own_m
     for kind, module in (
         ("design.explore", "maistro_design.explore"),
         ("design.thesis", "maistro_design.explore"),
-        ("design.judge", "maistro_design.judge"),
+        ("design.judge", "maistro_design.model_judge"),
     ):
         assert report.production_kinds[kind] == module
         assert module in report.loaded

@@ -122,9 +122,9 @@ def test_no_module_performs_raw_model_egress() -> None:
 def test_governed_egress_is_the_only_model_seam() -> None:
     """Positive control: explore/judge reach models through ModelChatEgress."""
 
-    from maistro_design import explore, governance, judge
+    from maistro_design import explore, governance, model_judge
 
-    for module in (explore, judge):
+    for module in (explore, model_judge):
         assert module.build_model_egress is governance.build_model_egress
         assert module.resolve_design_binding is governance.resolve_design_binding
     source = (DESIGN_SRC / "governance.py").read_text(encoding="utf-8")

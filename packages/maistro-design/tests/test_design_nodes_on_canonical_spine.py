@@ -66,7 +66,7 @@ def test_judge_composes_through_the_production_resolver(governed: Any) -> None:
     """The Container's authorities are enough to build the judge."""
 
     from maistro.container import build_node_resolver
-    from maistro_design.judge import DesignJudgeNode
+    from maistro_design.model_judge import DesignJudgeNode
 
     resolver = build_node_resolver(
         run_store=governed.run_store,

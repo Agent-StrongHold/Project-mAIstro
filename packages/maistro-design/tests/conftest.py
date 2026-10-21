@@ -297,7 +297,7 @@ def _design_nodes(governed: GovernedDesign) -> dict[str, Any]:
 
 
 def _judge_node(governed: GovernedDesign) -> Any:
-    from maistro_design.judge import DesignJudgeNode
+    from maistro_design.model_judge import DesignJudgeNode
 
     return DesignJudgeNode(
         effect_context=governed.effects,

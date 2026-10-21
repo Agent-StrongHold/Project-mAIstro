@@ -90,6 +90,23 @@ _DESIGN_FORBIDDEN_DEF_RE = re.compile(
 #: provenance record the banked ``EvaluationProvenance`` class models, built by
 #: pure construction from the frozen snapshot, with no I/O, no score and no
 #: promotion — and was re-reviewed and re-banked in the PR that merged it.
+#: The ``#987`` governed model-judge is a second reviewed exception. Its
+#: ``model_judge`` dimensions are the canonical in-Run Rubric eval's
+#: ``model_judge`` method (#791/#792), which #796's map names as the one
+#: sanctioned scoring loop — not a second loop, and not promotion (#21 keeps
+#: promotion). Every ``model_judge`` pair crosses the one governed model
+#: boundary (``ModelChatEgress``), so each call persists a canonical
+#: Invocation correlated to the Run/NodeRun/Attempt, and the eval record it
+#: writes names that Invocation; the node persists through the canonical
+#: ``RunStore`` and reads completeness back via ``maistro.runs.eval``.
+#: ``deterministic`` dimensions score in-process like persona ``RubricEval``,
+#: and ``human`` dimensions are refused loudly (they wait on #794). The
+#: module is named ``model_judge`` — the canonical #791/#792 term — rather
+#: than the bare ``judge`` the module-name scan forbids; the def names below
+#: are banked by exact ``(path, name)`` identity. As with #779, banking is
+#: not authorizing: a banked name at another path, or any new judge-like
+#: name, still trips.
+#:
 #: Banking is path-pinned on purpose: the same
 #: name in any other module still trips, and any *new* scorer/evaluator/critic
 #: name anywhere in the package trips. A bank row whose file or definition
@@ -118,6 +135,40 @@ _DESIGN_SURFACE_BANK: frozenset[tuple[str, str]] = frozenset(
             "_evaluation_provenance",
         ),
         ("packages/maistro-design/src/maistro_design/packs/service.py", "_evaluate_upgrade"),
+        # #987 governed model-judge: the canonical model_judge Rubric method
+        # (#791/#792) on the governed Invocation path, not a second loop.
+        (
+            "packages/maistro-design/src/maistro_design/model_judge.py",
+            "HumanJudgeNotResolvedError",
+        ),
+        (
+            "packages/maistro-design/src/maistro_design/model_judge.py",
+            "DesignJudgeThesis",
+        ),
+        (
+            "packages/maistro-design/src/maistro_design/model_judge.py",
+            "DesignJudgeDimension",
+        ),
+        (
+            "packages/maistro-design/src/maistro_design/model_judge.py",
+            "DesignJudgeIn",
+        ),
+        (
+            "packages/maistro-design/src/maistro_design/model_judge.py",
+            "DesignJudgeOut",
+        ),
+        (
+            "packages/maistro-design/src/maistro_design/model_judge.py",
+            "DesignJudgeNode",
+        ),
+        (
+            "packages/maistro-design/src/maistro_design/model_judge.py",
+            "_judge_prompt",
+        ),
+        (
+            "packages/maistro-design/src/maistro_design/model_judge.py",
+            "_model_judge_record",
+        ),
     }
 )
 
@@ -376,10 +427,13 @@ def test_maistro_design_declares_no_scoring_or_promotion_surface() -> None:
     belongs to #21, not to the loop. The one acknowledged exception is #779's
     project-quality consistency evaluator (listed as Related in #796):
     deterministic, read-only, "not a self-improvement authority" — banked by
-    exact ``(path, name)`` identity in ``_DESIGN_SURFACE_BANK``, never by name
-    alone. Anything else matching the def-name net — including a banked name in
-    a new module — trips here. Bank rows are kept live: a row whose code moved
-    or vanished is stale and fails until re-reviewed in the PR that moved it.
+    exact ``(path, name)`` identity in ``_DESIGN_SURFACE_BANK``, never by
+    name alone. #987's governed model-judge is the second reviewed exception:
+    the canonical ``model_judge`` Rubric method on the governed Invocation
+    path, banked the same way. Anything else matching the def-name net —
+    including a banked name in a new module — trips here. Bank rows are kept
+    live: a row whose code moved or vanished is stale and fails until
+    re-reviewed in the PR that moved it.
     """
     files = _iter_py(_DESIGN_SRC)
     assert files, "maistro_design inventory is empty — path drift broke this tripwire"

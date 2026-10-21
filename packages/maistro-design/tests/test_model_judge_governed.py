@@ -406,7 +406,7 @@ async def test_judge_without_the_canonical_run_store_refuses(
     """Without the canonical Run store there is nowhere to persist evidence."""
 
     from maistro.graph.nodes.base import NodeContext
-    from maistro_design.judge import DesignJudgeIn, DesignJudgeNode
+    from maistro_design.model_judge import DesignJudgeIn, DesignJudgeNode
 
     node = DesignJudgeNode(
         effect_context=governed.effects,

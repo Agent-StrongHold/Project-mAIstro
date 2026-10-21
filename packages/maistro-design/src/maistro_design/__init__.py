@@ -39,7 +39,7 @@ from maistro_design.explore import (
     DesignThesisOut,
 )
 from maistro_design.governance import DESIGN_MODEL_CAPABILITY
-from maistro_design.judge import (
+from maistro_design.model_judge import (
     DesignEvalRecord,
     DesignJudgeDimension,
     DesignJudgeNode,
