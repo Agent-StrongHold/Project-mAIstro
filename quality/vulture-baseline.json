@@ -1288,7 +1288,6 @@
       ],
       "rationale": "Ports and protocol members define supported extension contracts even when concrete use is indirect.",
       "findings": [
-        "packages/maistro-bootstrap/src/maistro_bootstrap/builders/session.py::unused method 'add_user'",
         "packages/maistro-bootstrap/src/maistro_bootstrap/builders/session.py::unused method 'clear_history'",
         "packages/maistro-bootstrap/src/maistro_bootstrap/schema.py::unused method '_coerce_provider_accounts'",
         "packages/maistro-bootstrap/src/maistro_bootstrap/schema.py::unused method '_coerce_str_lists'",
