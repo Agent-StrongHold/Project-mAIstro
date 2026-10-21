@@ -708,3 +708,84 @@ that shape set (and no such string exists anywhere in the design loop today).
 block (`GH006`, merge-queue contention) is likewise not a code defect and cannot be cleared
 from a lane worker. Coverage publish-set floor and full `--all-extras` `pip-audit` were not
 re-run locally; diff coverage is vacuous for this branch (no `packages/*/src` delta).
+
+## Round 9 (2026-10-20, head `a57dca433`): develop sync to `8a9139bc5` (pip-audit deps unblock)
+
+Round 8 left the branch green at `1226a5a86` with the only open block being GitHub
+merge-queue contention (`GH006`, dispatcher-owned). In the interim `origin/develop`
+advanced to `8a9139bc5` — `fix(deps): trunk CI unblock — certifi 2026.10.19, pillow
+13.0.0, npm audit fix (launch-editor)` — a dependency-only fix for the current
+supply-chain advisory set (`certifi 2026.4.22 -> 2026.10.19`, `GHSA-6q48-6c7w-9gw2`;
+`pillow >=12.3.0,<13 -> >=13.0.0,<14`, 9 CVEs; canvas `package-lock.json` npm fix).
+Syncing it onto the branch makes the supply-chain gate green against the live advisory
+set rather than against the older `uv.lock` the branch carried forward from
+`c2d7209f1`.
+
+`a57dca433` — `Merge commit '8a9139bc5…' into auto-796'` — is conflict-free and
+introduces **no** production-code or ledger delta:
+
+```
+$ git diff --numstat origin/develop...HEAD -- 'packages/*/src'    # empty
+$ git diff --numstat origin/develop...HEAD -- quality/             # empty
+$ git diff --numstat origin/develop...HEAD -- docs/testing/inventory  # empty
+$ git merge-base --is-ancestor origin/develop HEAD && echo synced     # synced
+```
+
+The branch's delta against `develop` is still the five issue surfaces only; the develop
+sync moved no count (`check-suite-inventory.py` reports 21 suites ok;
+`inventory-notes/auto-796-develop-sync-8a9139bc-resolution.md` records `+0`).
+
+### Validation re-run at `a57dca433` (all exit 0)
+
+| Command (CI's exact arguments where they exist) | Outcome |
+| --- | --- |
+| `uv run pytest packages/maistro-core/tests/fitness/test_m7_a7_eval_consumer_map.py -v` | 7/7 pass |
+| `uv run pytest packages/maistro-core/tests/fitness -q` | 34 passed |
+| `uv run pytest packages/maistro-rsi/tests/test_non_production_reachability.py -q` | 13 passed (M5 invariant) |
+| `uv run pytest packages/maistro-design/tests -q` | 575 passed, 1 skipped |
+| `uv run pytest tests/test_branch_independence_repository.py -q` | 1 passed (clean tree; no `ac-state.json` artifact) |
+| `uv run ruff check .` | All checks passed |
+| `uv run ruff format --check .` | 3370 files already formatted |
+| `uv run mypy packages/maistro-core/src packages/maistro-server/src packages/maistro-turing/src packages/maistro-canvas/src packages/maistro-bootstrap/src packages/maistro-registry/src packages/maistro-ext-sdk/src` | Success: no issues found in 908 source files |
+| `RATCHET_BASE_REV=origin/develop uv run python scripts/check-ratchet-provenance.py` | exit 0 — 0 -> 0 lifecycle violations, no candidate-approved expansion; 53 quality consumers have provenance |
+| `RATCHET_BASE_REV=origin/develop uv run python scripts/check-shipped-surface-truth.py` | exit 0 — matrix complete |
+| `uv run python scripts/check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'` | exit 0 — 1326 -> 1326 |
+| `uv run python scripts/check-reachability.py` | exit 0 — 1420 modules, 168 unreachable (unchanged since round 6) |
+| `uv run python scripts/check-suite-inventory.py` | ok — 21 suites match |
+| `uv run python scripts/check-convergence-matrix.py` | OK — 52 subsystems / 1420 modules |
+| `uv run python scripts/check-doc-links.py` | 0 broken links |
+| `uv run python scripts/check-contract-markers.py` / `check-merge-markers.py` | OK / ok |
+| `uv run python scripts/check-backlog-consistency.py` | OK — 167 items |
+| `uvx pip-audit --strict --format=json -r deps.txt` + `uv run python scripts/pip_audit_gate.py pip-audit.json` | exit 0 — `pip-audit OK (1 known, all triaged in ALLOWED)`; the only finding is `ecdsa==0.19.2 PYSEC-2026-1325` (P-256 timing side channel, no fix, not reachable as used); the `certifi`/`pillow` advisory set that develop's bump fixes is gone |
+
+The exact-debt-ledger's three leaves (vulture, ratchet-provenance,
+shipped-surface-truth) all pass against the develop base; `quality/` is byte-identical to
+`origin/develop`, so no row was amended.
+
+### Acceptance criteria re-checked
+
+- **M7-A7 contract (7/7)**: unchanged by the deps-only sync — the contract test's own
+  scanners are deterministic and the sync touched none of their source. The in-tree
+  liveness probes planted in round 8 (Design Studio importing RSI/Evolve, a
+  `design_quality_score` field outside the canonical homes, the def-name scorer, Evolve/
+  RSI reaching the design Rubric domain) remain valid: their assertions still fire on the
+  forbidden shapes and the real tree passes clean.
+- **Map is written and anchored in reality** (`CONVERGENCE-MATRIX.md` "One scoring loop",
+  `rubric.py:34` `RubricEval` -> `RunEvalScore` rows; `runs/eval.py:1-33,116`), unchanged by
+  the sync.
+- **Bank audit**: re-scan of `packages/maistro-design/src` yields exactly the six
+  `_DESIGN_SURFACE_BANK` identities; `grep -rn score` over the design loop is empty — not
+  affected by the sync.
+- **Ownership untouched** (no second loop; #21 keeps promotion, #552 keeps RSI) —
+  `packages/*/src` and `quality/` are empty-delta vs `origin/develop`.
+
+### Residuals (unchanged)
+
+The issue's acceptance line "PR is `feat/m7-a7-eval-consumer-map` off `develop`" is
+dispatcher-owned GitHub state (campaign branch is `auto-796`); lane workers may not push
+or open PRs. The branch *is* off `develop` (`git merge-base --is-ancestor
+origin/develop HEAD` -> true; the single commit ahead of `origin/develop` is the sync
+merge `a57dca433` itself). The coverage publish-set floor (87%) and full `--all-extras`
+`pip-audit` need CI's coverage producers' artefacts and are not re-run locally;
+diff-coverage is vacuous for this branch (no `packages/*/src` delta) and the supply-chain
+fixes are verified by the pip-audit gate in this round.
