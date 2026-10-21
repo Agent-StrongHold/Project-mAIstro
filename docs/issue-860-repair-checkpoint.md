@@ -66,3 +66,21 @@ Required next input/work: select immutable RC images and normalized supported ru
 
 Progress: `{checked: 1, done: 0, skipped: 0, errors: 0, next: exact-RC production soak}`. The single assigned issue was checked; no claim of completed issue acceptance.
 
+## Follow-up validation — assigned head d43c0088d205
+
+The frozen dispatch identifies starting HEAD `d43c0088d205c208309541a5d7c424884162aae0` and base `f0fb5c83db8610f6f2aea4ae36ece0dac199bb4d`; the worktree was clean. The current job directory had no `check-*.log` files, so no verifier logs were available to treat as evidence. I reread the issue acceptance, profile, prior result, relevant accepted execution/lease ADRs (ADR-081226-69ee, ADR-081626-f383, ADR-082526-b36a), and the runner's explicit artifact gate.
+
+Fresh commands in this worktree:
+
+| Command | Outcome |
+|---|---|
+| `uv run pytest tests/test_soak_promotion_gates.py packages/maistro-server/tests/api/test_tasks_concurrency_backpressure.py packages/maistro-core/tests/runs/test_execution_fencing.py packages/maistro-core/tests/graph/durable_runs/test_recovery_disposition.py -x -q` | 105 passed |
+| `uv run ruff check .` | Passed |
+| `uv run ruff format --check .` | Passed: 3401 files already formatted |
+| `uv run python scripts/check-backlog-consistency.py` | Passed: 168 backlog items |
+| `uv run python scripts/check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'` | Passed: 1321 reviewed identities / 1321 findings, zero unclassified or never-allowlist identities; baseline base f0fb5c83db86 |
+
+The initial scanner invocation quoted the `packages/*/src` glob and failed because the literal path did not exist; rerunning with the exact unquoted CI glob above passed. No source or inventory change was justified. The 105 tests are component/regression evidence only. `docs/testing/soak/evidence/m3a-round109-shakedown.json` records 420.05 seconds, while the profile requires 14400 seconds; its `exact_rc_artifact` check is false with topology `host-uvicorn-preflight`. The live RC/configuration, representative deployed workload, and production telemetry required by acceptance remain unavailable. No soak was started because this host-process runner cannot satisfy the exact-artifact gate, regardless of duration.
+
+Acceptance remains **BLOCKED**: these local tests do not establish deployed multi-replica correctness, physical-work uniqueness during failure, replica-selection security, a four-hour exact-RC soak, or hash-bound production evidence. No tests were added, therefore inventory delta is zero. Preserve the canonical `Goal -> Graph -> Run -> NodeRun -> Attempt` and lease-fencing model; do not weaken the evidence gate or manufacture artifact identity. Required next input remains a designated immutable RC and normalized config, followed by the representative >=4-hour production soak and evidence pack. This commit is the local validation checkpoint, not integration approval.
+
