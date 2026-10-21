@@ -1,19 +1,30 @@
-vulnerabilities:
-  - id: GHSA-6v7p-g79w-8964
-    purls:
-      - pkg:pypi/msgpack@1.1.2
-    expired_at: 2026-09-30
+# Trivy suppressions for the "Container scan + SBOM + cosign" gate
+# (.github/workflows/security.yml) and the release re-scan
+# (.github/workflows/release.yml). Every entry is a named, documented finding
+# with an expiry: an entry that has lapsed or whose subject is gone must be
+# removed rather than silently renewed. Expired entries are inert — trivy
+# drops them.
+vulnerabilities: []
+secrets:
+  - id: aws-access-key-id
+    path: moto/
+    expired_at: 2027-01-31
     statement: >-
-      The base-image SBOM may report msgpack 1.1.2 from its pre-overlay Python
-      environment. The final runtime venv contains msgpack 1.2.1 or newer and
-      CI verifies the live installed version immediately before Trivy runs.
-      This suppresses only the stale package/version tuple.
-  - id: CVE-2025-47273
-    purls:
-      - pkg:pypi/setuptools@70.3.0
-    expired_at: 2026-09-30
+      moto is the AWS-mock library the RSI runner installs as part of its
+      locked dev dependency set (Dockerfile.rsi-runner `uv sync --frozen`), and
+      its own source ships fixture/example key material (e.g.
+      moto/ec2/models/elastic_network_interfaces.py docstrings). These are not
+      credentials and not ours; they ship wherever moto ships. Scope is limited
+      to moto's own package tree, so a real key anywhere else still fails the
+      gate. Remove this entry if moto stops shipping the fixture or leaves the
+      dependency set.
+  - id: private-key
+    path: moto/moto_proxy/
+    expired_at: 2027-01-31
     statement: >-
-      The base-image SBOM may report setuptools 70.3.0 from its pre-overlay
-      Python environment. The final runtime venv contains setuptools 78.1.1 or
-      newer and CI verifies the live installed version immediately before Trivy
-      runs. This suppresses only the stale package/version tuple.
+      moto_proxy's ca.key/cert.key are the library's own local-MITM test
+      fixtures, generated and shipped upstream inside the moto wheel — again
+      part of the RSI runner's locked dev dependency set, not secret material
+      of this repository. Scope is limited to moto_proxy's directory so any
+      other private key still fails the gate. Remove this entry if moto drops
+      the fixtures or the dependency.
