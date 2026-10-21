@@ -25,9 +25,6 @@ dependencies = [
     "pydantic-settings>=2.7",
     "structlog>=24.4",
     "httpx>=0.28",
-    # CVE-2026-111063, CVE-2026-111064, GHSA-2g87-pp6c-29x5: cosmic-ray pulls
-    # aiohttp transitively; add a direct constraint to force the fixed version.
-    "aiohttp>=3.14.4",
     "pyyaml>=6.0",
     "bcrypt>=4.0",
     "argon2-cffi>=23.1",
