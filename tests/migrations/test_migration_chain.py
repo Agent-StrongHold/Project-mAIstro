@@ -144,6 +144,9 @@ EXPECTED_TABLES = frozenset(
         "elevation_grants",
         "episodic_memories",
         "event_log",
+        # The durable legacy replay acknowledgement (#836, 066): one row per
+        # replay consumer, mirroring `consumer_cursors`' shape and rationale.
+        "event_replay_cursors",
         "graph_continuations",
         "graph_templates",
         "handler_invocations",

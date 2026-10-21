@@ -409,7 +409,11 @@ def _assert_losslessly_migrated() -> None:
         ("evt-default", "conductor"),
     ]
 
-    assert _versions() == {"065"}
+    # The chain tip once the replay-cursor revision (#836) renumbered past
+    # 065 at the develop sync: 064 is this file's subject, 065 the Persona
+    # revision, 066 the current head (test_goal_installed_base_upgrade
+    # carries the same constant).
+    assert _versions() == {"066"}
 
 
 class TestMixedDataMigratesLosslessly:
