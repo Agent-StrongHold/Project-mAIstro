@@ -80,7 +80,7 @@ route from the live app and must find each one backed by its registered handler.
 with no scanner wired is pinned to an explicit `501` refusal, never a `clean` result, and the
 test parses `routes/` and `services/` to forbid the unconditional
 `{"findings": [], "status": "clean"}` literal anywhere in production code — the shape the
-agent scan used to answer before #418 and the MCP server-record scan answered until #288.
+agent scan used to answer before #418 and the MCP server-record scan answered until #389.
 
 ### Account credential storage
 
