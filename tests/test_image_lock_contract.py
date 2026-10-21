@@ -110,9 +110,7 @@ class TestLockedInstalls:
         offenders = [
             line
             for line in _commands(_read(dockerfile))
-            if "uv pip install" in line
-            and "--require-hashes" in line
-            and "--no-config" not in line
+            if "uv pip install" in line and "--require-hashes" in line and "--no-config" not in line
         ]
         assert not offenders, f"{dockerfile.name} reads the project at install time: {offenders}"
 

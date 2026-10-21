@@ -91,6 +91,14 @@ per image Dockerfile.
 - The new contract test fails when `--no-config` is removed from
   `Dockerfile.research` ("reads the project at install time") and passes when
   it is restored.
+- AC-6: `uv build packages/*/` produced all 12 member wheels, and
+  `scripts/verify-wheel-imports.py --dist <dir> --python 3.12` imported every
+  one of them from a clean venv (maistro-core[all] 807 checks, maistro-server
+  31, maistro-design 65, maistro-evolve[ifeval] 71, maistro-rsi 45, … — all
+  green). `scripts/verify-minimum-dependencies.py --package
+  packages/maistro-core --python 3.12` also passes: all 12 declared floors
+  install and import, pyjwt resolves 2.14.0, and the PyJWT-removal refusal is
+  intact.
 - Gates: `check-merge-markers`, `check-build-context`, `check-image-inventory`,
   `check-image-pins`, `check-uv-setup`, `check-workflow-inventory`,
   `check-suite-inventory`, `check-backlog-consistency`, `check-required-checks`,
@@ -98,6 +106,32 @@ per image Dockerfile.
 - `scripts/check-vulture-baseline.py packages/*/src --min-confidence 60
   --exclude '*/third_party/*'` → exit 0 (1321 findings against 1326 reviewed
   identities, 0 unclassified).
+
+## Inherited from develop (not introduced by this merge)
+
+Develop's own push of the merge base (`5647c34b`, run 39578393654) is red:
+the `SAST / Gitleaks` job failed there. This branch carries the same
+history, so it inherits that failure; nothing in this merge adds a secret.
+
+The container-scan job passed on that develop run, but today's Trivy
+database adds a finding the develop run's database did not have. Running
+the CI's exact flags against the image this merge builds:
+
+    trivy image --scanners vuln --severity HIGH,CRITICAL --exit-code 1 \
+      --ignore-unfixed --ignorefile .trivyignore.yaml maistro-engine:verify-348
+    → /usr/local/bin/docker (gobinary): stdlib CVE-2026-111943 (HIGH,
+      fixed in 1.27.3), installed v1.27.2        exit 1
+
+The finding is in the static Docker CLI that develop's `dockerclibuild`
+stage builds from `golang:1.27.2-alpine` — a stage this merge carries over
+byte-for-byte (same image, same digest, same `DOCKER_CLI_VERSION=29.9.1`).
+`ignore-unfixed` does not suppress it, because a fix exists. The remedy is
+to bump the Go toolchain pin to ≥ 1.27.3, which is a `quality/image-pins.json`
+edit (Dependabot-managed) and therefore outside #348's scope; until that
+lands, every branch that builds these images — develop included — fails the
+Trivy gate. The Python dependency set this issue is about is not involved:
+the scanned package set is the lock's, and the one HIGH finding is in a
+Go binary, not in a Python distribution.
 
 ## Residual
 
