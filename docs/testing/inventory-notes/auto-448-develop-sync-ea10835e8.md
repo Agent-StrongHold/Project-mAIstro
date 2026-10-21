@@ -2,14 +2,15 @@
 inventory-delta:
   packages/maistro-core/tests: +0
 ---
-# auto-448 — third develop sync (origin/develop 0179dfabe) and conflict resolution
+# auto-448 — third + fourth develop syncs (0179dfabe, ea10835e8) and conflict resolution
 
 Lane L448 (issue #448), CI-repair round. The branch head `b7f796e27` was
 **behind `origin/develop` (`0179dfabe`)**, and the merge queue carried an
 **in-progress `git merge` with one unresolved conflict** preserved in the
 worktree (`MERGE_HEAD = 0179dfabe`, `deploy/scripts/verify-restore.sh` both
-modified). This note records the resolution and the evidence that the
-`integration-scope` red is green at the merged head.
+modified). This note records the resolution, the follow-up sync to the then-
+current `origin/develop` (`ea10835e8`), and the evidence that the
+`integration-scope` red is green at the final merged head.
 
 ## Why the red was a sync artifact, not branch code
 
@@ -28,10 +29,14 @@ At the last merge-queue evaluation (`34379a1660c39f445fa143bcedb422022daa9007`)
 the subsequent develop syncs closed that. The remaining block was the
 unresolved sync conflict itself, which this round resolves in place.
 
-## The merge and its single conflict
+## The merges and the single conflict
 
-`git merge --no-ff origin/develop` (local commit `ded032ece0bc`, parents
-`b7f796e2746` + `0179dfabe5e7`). One file conflicted.
+`git merge --no-ff origin/develop` against the preserved `0179dfabe` (local
+commit `ded032ece0bc`, parents `b7f796e2746` + `0179dfabe5e7`). One file
+conflicted. After resolving it, `origin/develop` had advanced to `ea10835e8`
+(three WIP commits: extension scaffold CLI, reactor state authority, and the
+API-gate temporary-disposition contract); a `git merge-tree` simulation showed
+the follow-up merge was clean, so it was taken as commit `32e46bdaa59e`.
 
 ### `deploy/scripts/verify-restore.sh` — the scratch-postgres readiness loop
 
@@ -62,11 +67,11 @@ post-loop `fail_verifier … < pg_restore` ordering.
 
 ## Counts
 
-This round authored **no new test node**: the merge carried develop's own
+This round authored **no new test node**: the merges carried develop's own
 tests, which develop's own notes already account for. The lane's own
-contribution to `packages/maistro-core/tests` is `+0`. Measured at the merged
-head: `scripts/check-suite-inventory.py` reports **21 suites match; 32681
-collected = 32681 unique; 0 duplicates**.
+contribution to `packages/maistro-core/tests` is `+0`. Measured at the final
+merged head (`32e46bdaa59e`): `scripts/check-suite-inventory.py` reports
+**21 suites match; 32778 collected = 32778 unique; 0 duplicates**.
 
 ## Evidence at the merged head (`ded032ece0bc`)
 
@@ -76,21 +81,23 @@ collected = 32681 unique; 0 duplicates**.
 | postgres (pg18) | full `ci.yml` postgres leg sequence on `pgvector/pgvector:pg18` | identical pass counts — **all pass** |
 | wheel-imports | `scripts/verify-wheel-imports.py --dist dist/ --python 3.12` | all 12 wheels import from a clean venv |
 | min-dep floors | `scripts/verify-minimum-dependencies.py --package packages/maistro-core` | 24 checks passed, all 12 declared deps at floors |
-| vulture ledger | `scripts/check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'` | 1324 reviewed identities → 1324 findings, OK |
+| vulture ledger | `scripts/check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'` | 1324 reviewed identities → 1324 findings, OK (base `ea10835e8`, candidate `32e46bdaa`) |
 | ratchet provenance | `scripts/check-ratchet-provenance.py` | OK (candidate `ded032ece0bc`, 53 quality JSON consumers) |
 | shipped-surface truth | `scripts/check-shipped-surface-truth.py` | complete |
-| reachability | `scripts/check-reachability.py` | 1428 modules, 168 unreachable, **no newly unreachable** |
+| reachability | `scripts/check-reachability.py` | 1430 modules, 168 unreachable, **no newly unreachable** |
 | route permissions | `scripts/check-route-permissions.py` | 41 declared, 0 undeclared |
 | radon ratchet | `scripts/check-radon-baseline.py` | 134 reviewed, 0 new/regressed/stale |
-| suite inventory | `scripts/check-suite-inventory.py` | 21/21 suites match, 32681 collected, 0 duplicates |
+| suite inventory | `scripts/check-suite-inventory.py` | 21/21 suites match, 32778 collected, 0 duplicates |
 | merge markers | `scripts/check-merge-markers.py` | ok: no conflict markers in any tracked file |
 | restore oracle | `pytest tests/test_backup_restore_oracle.py` | 17 passed |
 | restore characterization | `pytest tests/test_restore_oracle_characterization.py` | 6 passed (incl. live `test_real_verify_restore_drill_passes_end_to_end`) |
 | readiness gate | `pytest tests/test_restore_oracle_readiness_gate.py` | 4 passed |
-| root suite | `pytest tests/ --ignore=tests/tools/registry` | 5400 passed, 138 skipped |
+| root suite | `pytest tests/ --ignore=tests/tools/registry` | 5403 passed, 138 skipped |
 | server | `pytest packages/maistro-server/tests` | 596 passed, 8 skipped |
 | hive backend | `pytest packages/hive-conductor/backend/tests` | 3846 passed, 24 skipped |
 | core changed areas | `pytest packages/maistro-core/tests/{extensions,runs,tools/sandbox,capabilities,fitness,sandbox}` | 3598 passed, 384 skipped |
+
+| new develop commits | `pytest packages/maistro-core/tests/{reactor,extensions/test_extension_scaffold.py} packages/hive-conductor/backend/tests/test_foundation_reactor_state.py tests/test_check_api_route_contracts.py` | 177 passed, 5 skipped |
 
 Not re-run locally (time-bound, and not among the failing gates):
 `docker-build` (45-min cold-path build job) and `hive-conductor-e2e(-ui)`
