@@ -32,6 +32,8 @@ from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 from .._canonical_helpers import durable_record, hitl_authorization
 
+from .._canonical_helpers import durable_record, hitl_authorization
+
 
 class _StepIn(BaseModel):
     pass
@@ -142,9 +144,7 @@ async def test_a_workspace_scoped_listing_walks_the_spine_first() -> None:
     store = CanonicalDurableRunStore(run_store, InMemoryGraphContinuationStore())
 
     graph = _graph(workspace_id, project_id)
-    admitted = await run_store.create_run(
-        graph, initial_status=RunStatus.QUEUED, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
-    )
+    admitted = await run_store.create_run(graph, initial_status=RunStatus.QUEUED)
     await store.create(
         durable_record(
             {"id": "d1", "nodes": [{"id": "n1"}], "edges": []},
@@ -426,6 +426,9 @@ async def test_resuming_a_pre_convergence_record_takes_the_old_path() -> None:
         store=store,
         node_resolver=lambda node_id, _graph: _Ask(),
         actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
+    await store.submit_hitl_answer(
+        paused.run_id, "ask", {"answer": "yes"}, authorization=hitl_authorization()
     )
     await store.submit_hitl_answer(
         paused.run_id, "ask", {"answer": "yes"}, authorization=hitl_authorization()

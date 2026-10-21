@@ -8,7 +8,23 @@ from __future__ import annotations
 
 from typing import Any
 
-from maistro.identity.principal import Principal
+# Declared by the `identity` extra, not the base dependencies. Deployments that
+# select this capability must install the extra; raise loudly and name the fix
+# rather than degrading silently to a partial identity module.
+try:
+    from bip_utils import (
+        Base58Encoder,
+        Bip32Slip10Ed25519,
+        Bip32Slip10Secp256k1,
+        Bip39MnemonicGenerator,
+        Bip39SeedGenerator,
+    )
+    from nacl.signing import SigningKey, VerifyKey
+except ModuleNotFoundError as exc:  # covered by tests/identity/test_extra_guard.py
+    raise ImportError(
+        f"maistro.identity requires the 'identity' extra (missing: {exc.name}). "
+        "Install it with:  pip install 'maistro-core[identity]'"
+    ) from exc
 
 # Populated lazily by ``__getattr__``; declared for mypy strict.
 ConductorSeed: Any

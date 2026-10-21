@@ -74,9 +74,8 @@ class PgAuditLog:
             await conn.execute(
                 """INSERT INTO audit_log
                    (boundary, user_id, org_id, team_id, agent_id,
-                    tool_name, verdict, detail, trace_id, request_id,
-                    signature, signing_key_id, proof_type)
-                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)""",
+                    tool_name, verdict, detail, trace_id, request_id)
+                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)""",
                 entry.boundary,
                 entry.user_id,
                 getattr(entry, "org_id", "") or "",

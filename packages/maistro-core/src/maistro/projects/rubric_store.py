@@ -36,18 +36,14 @@ from pydantic import BaseModel, ConfigDict, Field
 from maistro.ontology.protocols import Ontology
 from maistro.ontology.rubric import (
     RUBRIC_KIND,
-    RUBRIC_RUN_BINDING_KIND,
     PackRubricCatalog,
-    ProvenanceOrigin,
     RubricAggregation,
     RubricDimension,
     RubricGate,
     RubricProvenance,
-    RubricRunBindingSemantic,
     RubricSemantic,
     register_rubric_kind,
     rubric_entity_id,
-    rubric_run_binding_entity_id,
 )
 from maistro.ontology.types import OntologyEntity
 
@@ -81,6 +77,22 @@ class GoalRevisionCatalog(Protocol):
         ...
 
 
+class InMemoryGoalRevisionCatalog:
+    """Dict-backed :class:`GoalRevisionCatalog` for tests and engine boot."""
+
+    def __init__(self) -> None:
+        self._goals: dict[tuple[str, int], GoalRevisionSnapshot] = {}
+
+    def register_goal(self, snapshot: GoalRevisionSnapshot) -> GoalRevisionSnapshot:
+        """Publish one live Goal revision (test/boot helper)."""
+        self._goals[(snapshot.goal_id, snapshot.goal_revision)] = snapshot.model_copy(deep=True)
+        return snapshot
+
+    def resolve(self, goal_id: str, goal_revision: int) -> GoalRevisionSnapshot | None:
+        snap = self._goals.get((goal_id, goal_revision))
+        return snap.model_copy(deep=True) if snap is not None else None
+
+
 class RubricError(Exception):
     """Base class for Rubric store errors."""
 
@@ -99,10 +111,6 @@ class RubricScopeMismatchError(RubricError):
 
 class RubricRevisionConflictError(RubricError):
     """The revision already exists with different content (immutability guard)."""
-
-
-class RubricRunBindingConflictError(RubricError):
-    """The Run already has a binding naming different revisions (one binding per Run)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -128,6 +136,7 @@ class RubricStore:
     def __init__(self, ontology: Ontology, goals: GoalRevisionCatalog) -> None:
         self._ontology = ontology
         self._goals = goals
+        self._bindings: dict[str, RubricRunBinding] = {}
         register_rubric_kind(ontology)
 
     # -- create / revise ---------------------------------------------------
@@ -223,9 +232,7 @@ class RubricStore:
             gate=catalog.gate or RubricGate(pass_threshold=80.0),
             aggregation=catalog.aggregation or RubricAggregation(),
             provenance=RubricProvenance(
-                authored_by=adopted_by,
-                origin=ProvenanceOrigin.PACK,
-                pack_id=catalog.pack_id,
+                authored_by=adopted_by, origin="pack", pack_id=catalog.pack_id
             ),
             rubric_id=rubric_id,
         )
@@ -250,6 +257,16 @@ class RubricStore:
         found = self._ontology.query(RUBRIC_KIND, rubric_id=rubric_id)
         semantics = [RubricSemantic.model_validate(e.get_semantic()) for e in found]
         return sorted(semantics, key=lambda s: s.revision)
+
+    async def list_for_goal(self, goal_id: str) -> list[RubricSemantic]:
+        """All Rubric revisions (latest per rubric_id) bound to a Goal."""
+        found = self._ontology.query(RUBRIC_KIND, goal_id=goal_id)
+        latest: dict[str, RubricSemantic] = {}
+        for entity in found:
+            sem = RubricSemantic.model_validate(entity.get_semantic())
+            if sem.rubric_id not in latest or sem.revision > latest[sem.rubric_id].revision:
+                latest[sem.rubric_id] = sem
+        return sorted(latest.values(), key=lambda s: (s.rubric_id, s.revision))
 
     # -- run bindings --------------------------------------------------------
 
@@ -276,55 +293,12 @@ class RubricStore:
             goal_id=semantic.goal_id,
             goal_revision=semantic.goal_revision,
         )
-        record = RubricRunBindingSemantic(
-            run_id=binding.run_id,
-            rubric_id=binding.rubric_id,
-            rubric_revision=binding.rubric_revision,
-            goal_id=binding.goal_id,
-            goal_revision=binding.goal_revision,
-        )
-        entity = OntologyEntity(
-            id=rubric_run_binding_entity_id(run_id), kind=RUBRIC_RUN_BINDING_KIND, revision=1
-        ).with_semantic(record.model_dump(mode="json"))
-        existing = self._ontology.get(entity.id)
-        if existing is not None:
-            prior = RubricRunBindingSemantic.model_validate(existing.get_semantic())
-            if (
-                prior.rubric_id,
-                prior.rubric_revision,
-                prior.goal_id,
-                prior.goal_revision,
-            ) != (
-                record.rubric_id,
-                record.rubric_revision,
-                record.goal_id,
-                record.goal_revision,
-            ):
-                raise RubricRunBindingConflictError(
-                    f"run {run_id!r} already bound to rubric {prior.rubric_id!r}"
-                    f"@{prior.rubric_revision}; one binding per Run"
-                )
-        self._ontology.upsert(entity)
+        self._bindings[run_id] = binding
         return binding
 
     async def binding_for_run(self, run_id: str) -> RubricRunBinding | None:
-        """The binding a Run recorded, or ``None``.
-
-        Read from the durable ontology (deterministic per-Run entity id),
-        not from process memory, so a restarted or newly constructed store
-        over the same ontology still resolves historical bindings.
-        """
-        entity = self._ontology.get(rubric_run_binding_entity_id(run_id))
-        if entity is None:
-            return None
-        record = RubricRunBindingSemantic.model_validate(entity.get_semantic())
-        return RubricRunBinding(
-            run_id=record.run_id,
-            rubric_id=record.rubric_id,
-            rubric_revision=record.rubric_revision,
-            goal_id=record.goal_id,
-            goal_revision=record.goal_revision,
-        )
+        """The binding a Run recorded, or ``None``."""
+        return self._bindings.get(run_id)
 
     # -- internals -----------------------------------------------------------
 
@@ -368,21 +342,23 @@ class RubricStore:
             provenance=provenance,
         )
 
-        entity = OntologyEntity(
-            id=rubric_entity_id(rubric_id, revision), kind=RUBRIC_KIND, revision=revision
-        ).with_semantic(semantic.model_dump(mode="json"))
-        existing = self._ontology.get(entity.id)
+        # Idempotent-write guard: a retried create()/update_dimensions() rebuilds
+        # identical caller-controlled content, but mints a fresh `created_at`
+        # default. Adopt the stored revision's timestamp before comparing so the
+        # retry is recognized as idempotent (and the stored timestamp is never
+        # rewritten), while any content difference still conflicts.
+        entity_id = rubric_entity_id(rubric_id, revision)
+        existing = self._ontology.get(entity_id)
         if existing is not None:
             prior = RubricSemantic.model_validate(existing.get_semantic())
-            # ``created_at`` is store-assigned, not caller content: adopt the
-            # persisted timestamp before comparing so a retried identical
-            # write stays idempotent (deterministic entity id, same payload).
             semantic = semantic.model_copy(update={"created_at": prior.created_at})
             if prior != semantic:
                 raise RubricRevisionConflictError(
                     f"rubric {rubric_id!r} revision {revision} already exists with "
                     "different content; revisions are immutable"
                 )
-            return prior
+        entity = OntologyEntity(id=entity_id, kind=RUBRIC_KIND, revision=revision).with_semantic(
+            semantic.model_dump(mode="json")
+        )
         self._ontology.upsert(entity)
         return semantic

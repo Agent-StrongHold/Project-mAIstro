@@ -66,10 +66,8 @@ from maistro.runs.store import (
     require_repairable_attempt,
     validate_accepted_outcome_against_attempt,
     validate_child_scope,
-    validate_effect_claim_parent,
     validate_eval_score_spine,
 )
-from maistro.runs.store_boundary import RunStoreBoundary, require_admitted_actor
 from maistro.sqlite_schema import execute_schema_script, serialized_schema_upgrade
 
 if TYPE_CHECKING:
@@ -411,12 +409,10 @@ class SqliteRunStore:
         conn: aiosqlite.Connection,
         *,
         project_store: ProjectScopeStore,
-        workspace_store: WorkspaceStore | None = None,
         concurrency_limits: RunConcurrencyLimits | None = None,
     ) -> None:
         self._conn = conn
         self._project_store = project_store
-        self._workspace_store = workspace_store
         self._concurrency_limits = concurrency_limits or RunConcurrencyLimits.configured()
         # One connection, and now more than one caller: the task runner drives
         # four workers against this store (#143), and `create_attempt` opens an
@@ -541,34 +537,30 @@ class SqliteRunStore:
                 if occurrence is None or "idx_canonical_runs_occurrence" not in str(exc):
                     raise
                 raise DuplicateOccurrence(*occurrence) from exc
-            await self._admit_root(run, connection=self._conn)
+            await self._admit_root(run)
             await self._conn.commit()
             return run
 
-    async def _admit_root(self, run: Run, *, connection: aiosqlite.Connection) -> None:
+    async def _admit_root(self, run: Run) -> None:
         """Hold a just-inserted root Run to the active ceilings (#1182).
 
         Counted after the insert, under `_write_lock`, so a duplicate
-        occurrence is refused as a duplicate rather than as backpressure. Every
-        statement runs on the `connection` its caller supplies -- `create_run`
-        passes its own, so admission behaves exactly as before -- and a
-        refusal, or any failure to count, rolls back to the savepoint
-        `create_run` opened before the insert on that same connection, never
-        the whole transaction and never a commit: the connection is shared
-        with sibling stores, and either would discard or commit their
-        unfinished writes along with this one. No `BEGIN IMMEDIATE` for the
-        same reason -- the SQLite tier is one process, and `_write_lock` is
-        what serializes its admissions.
+        occurrence is refused as a duplicate rather than as backpressure. A
+        refusal, or any failure to count, rolls back to the savepoint `create_run` opened before the
+        insert, never the whole transaction and never a commit: this
+        connection is shared with sibling stores, and either would discard or
+        commit their unfinished writes along with this one. No `BEGIN
+        IMMEDIATE` for the same reason -- the SQLite tier is one process, and
+        `_write_lock` is what serializes its admissions.
         """
         if run.parent_run_id is not None:
             return
         principal = run.actor_principal_id or None
         try:
-            cursor = await connection.execute(
+            row = await self._fetchone(
                 _ACTIVE_ROOT_COUNTS_SQL,
                 (run.workspace_id, principal),
             )
-            row = await cursor.fetchone()
             assert row is not None  # nosec B101 - a scalar SELECT always yields a row
             self._concurrency_limits.check(
                 workspace_active=int(row[0]) - 1,
@@ -578,11 +570,11 @@ class SqliteRunStore:
             # A refusal, or a count that could not be read: either way the row
             # is not admitted, and a savepoint left open would let the next
             # writer's commit persist it.
-            await connection.execute(f"ROLLBACK TO SAVEPOINT {_ROOT_ADMISSION_SAVEPOINT}")
-            await connection.execute(f"RELEASE SAVEPOINT {_ROOT_ADMISSION_SAVEPOINT}")
+            await self._conn.execute(f"ROLLBACK TO SAVEPOINT {_ROOT_ADMISSION_SAVEPOINT}")
+            await self._conn.execute(f"RELEASE SAVEPOINT {_ROOT_ADMISSION_SAVEPOINT}")
             raise
 
-    async def get_run(self, run_id: str, *, principal_id: str | None = None) -> Run | None:
+    async def get_run(self, run_id: str) -> Run | None:
         row = await self._fetchone(
             "SELECT payload FROM canonical_runs WHERE run_id = ?",
             (run_id,),
@@ -679,6 +671,120 @@ class SqliteRunStore:
                         parent_node_run_id=parent_node_run_id,
                         persona_id=persona_id,
                         actor_principal_id=require_admitted_actor(actor_principal_id),
+                        provenance={**dict(provenance or {}), "effect_key": effect_key},
+                        retention_expires_at=retention_expires_at,
+                    ),
+                    initial_status,
+                )
+                await self._conn.execute(
+                    """INSERT INTO canonical_runs
+                       (run_id, workspace_id, project_id, parent_run_id,
+                        parent_node_run_id, status, payload)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        run.run_id,
+                        run.workspace_id,
+                        run.project_id,
+                        run.parent_run_id,
+                        run.parent_node_run_id,
+                        run.status.value,
+                        json_of(run),
+                    ),
+                )
+                await self._conn.commit()
+                return RunEffectClaim(run, True)
+            except sqlite3.IntegrityError as exc:
+                await self._conn.rollback()
+                if "idx_canonical_runs_effect" not in str(exc):
+                    raise
+                existing = await self.find_run_by_effect(effect_key)
+                if existing is None:
+                    raise
+                return RunEffectClaim(existing, False)
+            except BaseException:
+                await self._conn.rollback()
+                raise
+
+    async def find_run_by_effect(self, effect_key: str) -> Run | None:
+        row = await self._fetchone(
+            """SELECT payload FROM canonical_runs
+               WHERE json_extract(payload, '$.provenance.effect_key') = ?
+               LIMIT 1""",
+            (effect_key,),
+        )
+        return model_of_json(Run, row[0]) if row is not None else None
+
+    async def _require_locked_parent_scope(
+        self,
+        graph: Graph,
+        *,
+        parent_run_id: str | None,
+        parent_node_run_id: str | None,
+        allow_cross_project: bool,
+    ) -> None:
+        """Validate the optional parent chain inside the claim transaction."""
+        if parent_node_run_id is not None and parent_run_id is None:
+            raise RunIntegrityError("parent_node_run_id requires parent_run_id")
+        parent = await self._require_run(parent_run_id) if parent_run_id else None
+        if parent is None:
+            return
+        validate_child_scope(
+            parent,
+            workspace_id=graph.workspace_id,
+            project_id=graph.project_id,
+            allow_cross_project=allow_cross_project,
+        )
+        if parent_node_run_id is None:
+            return
+        parent_node_run = await self._require_node_run(parent_node_run_id)
+        if parent_node_run.run_id != parent_run_id:
+            raise RunIntegrityError("parent_node_run_id does not belong to parent_run_id")
+
+    async def claim_run_by_effect(
+        self,
+        graph: Graph,
+        *,
+        effect_key: str,
+        parent_run_id: str | None = None,
+        parent_node_run_id: str | None = None,
+        allow_cross_project: bool = False,
+        persona_id: str | None = None,
+        actor_principal_id: str | None = None,
+        provenance: dict[str, Any] | None = None,
+        retention_expires_at: datetime | None = None,
+        initial_status: RunStatus = RunStatus.CREATED,
+    ) -> RunEffectClaim:
+        """Atomically insert or recover one logical effect."""
+        if not effect_key:
+            raise ValueError("effect_key must be non-empty")
+        async with self._write_lock:
+            await self._validate_graph_scope(graph)
+            await self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                row = await self._fetchone(
+                    """SELECT payload FROM canonical_runs
+                       WHERE json_extract(payload, '$.provenance.effect_key') = ?
+                       LIMIT 1""",
+                    (effect_key,),
+                )
+                if row is not None:
+                    await self._conn.commit()
+                    return RunEffectClaim(model_of_json(Run, row[0]), False)
+                await self._require_locked_parent_scope(
+                    graph,
+                    parent_run_id=parent_run_id,
+                    parent_node_run_id=parent_node_run_id,
+                    allow_cross_project=allow_cross_project,
+                )
+                run = admit_in_state(
+                    Run(
+                        workspace_id=graph.workspace_id,
+                        project_id=graph.project_id,
+                        graph=GraphSnapshot.from_graph(graph.model_copy(deep=True)),
+                        parent_run_id=parent_run_id,
+                        parent_node_run_id=parent_node_run_id,
+                        persona_id=persona_id,
+                        actor_principal_id=actor_principal_id,
                         provenance={**dict(provenance or {}), "effect_key": effect_key},
                         retention_expires_at=retention_expires_at,
                     ),
@@ -1131,33 +1237,6 @@ class SqliteRunStore:
                 continuations=continuations,
                 backlog_remaining=len(doomed) > limit,
             )
-
-    async def cancel_unstarted_chat_run(self, expected: Run, *, error: str) -> bool:
-        async with self._write_lock:
-            current, snapshot = await self._require_run_snapshot(expected.run_id)
-            if not matches_chat_admission_snapshot(current, expected):
-                return False
-            updated = transition_run(current, RunStatus.CANCELLED, error=error)
-            # One SQL statement owns the decision: other stores share this
-            # connection, so a Python lock or BEGIN across awaits cannot
-            # establish exclusive transaction ownership. No new rollback
-            # may erase an unrelated sibling's pending write.
-            cursor = await self._conn.execute(
-                """UPDATE canonical_runs SET status = ?, payload = ?
-                   WHERE run_id = ? AND payload = ?
-                     AND NOT EXISTS (
-                         SELECT 1 FROM canonical_node_runs WHERE run_id = ?
-                     )""",
-                (
-                    updated.status.value,
-                    json_of(updated),
-                    expected.run_id,
-                    snapshot,
-                    expected.run_id,
-                ),
-            )
-            await self._conn.commit()
-            return cursor.rowcount == 1
 
     async def transition_run(
         self,

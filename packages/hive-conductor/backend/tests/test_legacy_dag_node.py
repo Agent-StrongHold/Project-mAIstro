@@ -198,10 +198,7 @@ async def test_legacy_tool_uses_the_canonical_governed_invocation_boundary(
 
     calls: list[str] = []
 
-    async def fake_search(
-        query: str, *, max_results: int = 5, model_call: Any = None
-    ) -> dict[str, Any]:
-        assert callable(model_call)
+    async def fake_search(query: str, *, max_results: int = 5) -> dict[str, Any]:
         calls.append(query)
         return {"query": query}
 

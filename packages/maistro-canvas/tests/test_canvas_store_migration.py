@@ -266,19 +266,7 @@ async def _round_trip(url: str, *, reorder: bool = True) -> None:
     assert rows == [(b"pixels", "png", {"layer": "sky"})]
 
 
-@pytest.mark.timeout(120)
 class TestTheChainRunsTheStore:
-    """Each leg owns a throwaway database: the fixture's CREATE and
-    `DROP ... WITH (FORCE)` and every `_alembic` subprocess run inside the
-    test's timeout window, and pytest-timeout kills the whole item at the
-    suite's 30s default. Under a loaded server the teardown drop has
-    observably exceeded that window (the drop blocks until terminated
-    backends exit), reding the PostgreSQL coverage producer intermittently
-    on an unchanged tree — measured round trips take a few seconds bare, so
-    the override leaves real hangs a 120s leash without loosening any other
-    test.
-    """
-
     async def test_upgrade_head_on_an_empty_database_serves_the_store(
         self, empty_database: str
     ) -> None:
@@ -331,13 +319,9 @@ class TestTheChainRunsTheStore:
         )
         _alembic(empty_database, "upgrade", "head")
 
-        assert {
-            "attempts",
-            "max_attempts",
-            "leased_by",
-            "lease_expires_at",
-            "next_retry_at",
-        } <= _columns(empty_database, "generation_jobs")
+        assert {"attempts", "max_attempts", "leased_by", "lease_expires_at"} <= _columns(
+            empty_database, "generation_jobs"
+        )
         assert "canvas_blobs" in _tables(empty_database)
         assert _execute(empty_database, "SELECT id, org_id, layer_count FROM canvases") == [
             ("legacy", "", 0)

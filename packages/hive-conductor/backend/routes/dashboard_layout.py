@@ -28,6 +28,8 @@ from services.request_principal import require_actor_id
 
 _DEMO_ID = re.compile(r"[A-Za-z0-9_-]{1,64}")
 
+_DEMO_ID = re.compile(r"[A-Za-z0-9_-]{1,64}")
+
 router = APIRouter(prefix="/v1/dashboard", tags=["dashboard"])
 logger = logging.getLogger("hive.dashboard")
 

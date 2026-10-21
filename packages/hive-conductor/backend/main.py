@@ -21,7 +21,6 @@ from middleware.request_log import RequestLogMiddleware
 from middleware.security_headers import SecurityHeadersMiddleware
 from routes import (
     agents,
-    api_docs,
     attention,
     audit,
     auth,
@@ -69,11 +68,6 @@ from services import foundation as foundation_service
 from services.oauth_login import close_oauth_login_service
 from services.settings_store import SettingsPersistenceError
 
-from maistro.api_versioning import (
-    API_VERSIONS,
-    DEFAULT_API_VERSION,
-    VersionNegotiationMiddleware,
-)
 from maistro.observability.middleware import REQUEST_ID_HEADER, RequestIDMiddleware
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -176,7 +170,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     import asyncio
     import logging as _logging
 
-    from services.audit_bridge import bind_audit_event_loop
     from settings_defaults import apply_default_settings_if_needed
 
     from maistro.security.transport import assert_session_transport_is_safe
@@ -330,20 +323,6 @@ def create_app() -> FastAPI:
     # (see `maistro.observability.middleware`), never an unvalidated pass-through.
     app.add_middleware(RequestIDMiddleware)
 
-    # API version negotiation (ADR-076) — the same maistro-core middleware
-    # maistro-server wires: the negotiated version is selected by Accept
-    # media type / api_version query / api_version JSON body field, the
-    # default is advertised on every response, and an unsupported selector
-    # is a 406 that never reaches a route handler. Infrastructure paths
-    # (health, docs) pass through untouched. Added before the security
-    # headers so it stays inside them: even a 406 carries the header set.
-    app.add_middleware(
-        VersionNegotiationMiddleware,
-        versions=API_VERSIONS,
-        default_version=DEFAULT_API_VERSION,
-        skip_prefixes=("/health", "/docs", "/redoc", "/openapi.json"),
-    )
-
     # Security headers — the true outermost middleware (added last), so
     # headers land on every response, including early rejections from the
     # middlewares added above (e.g. 401s from AuthMiddleware).
@@ -384,10 +363,6 @@ def create_app() -> FastAPI:
     app.include_router(backlog.router)
     app.include_router(workspaces.router, prefix="/v1/workspaces")
     app.include_router(attention.router, prefix="/v1/workspaces")
-    # Workspace Home (#1048): same /v1/workspaces prefix as Attention, so the
-    # route-permissions registry's existing entry covers it — no new prefix,
-    # no new exemption.
-    app.include_router(home.router, prefix="/v1/workspaces")
     app.include_router(mcp.router, prefix="/v1/mcp")
     app.include_router(cli.router, prefix="/v1/cli")
     app.include_router(containers.router, prefix="/v1/containers")
@@ -423,15 +398,6 @@ def create_app() -> FastAPI:
     app.include_router(messages.router, prefix="/v1/messages")
     app.include_router(audit.router, prefix="/v1/audit")
     app.include_router(quotas.router, prefix="/v1/quotas")
-    # Perceived-load telemetry collector (#1420). The route exists even when
-    # ingest is disabled so an enabled client gets a bounded 202 instead of a
-    # 404 churn loop; services/rum_store.py decides whether anything is kept.
-    app.include_router(rum.router, prefix="/v1/rum")
-    # The ingest handler reads its body manually (byte cap before parsing),
-    # so the OpenAPI document needs the router's help to keep describing it;
-    # without this the generated client types silently lose the contract
-    # (#1048 drift gate).
-    rum.ensure_openapi_contract(app)
     # Optional feature slices degrade explicitly: a missing dependency may keep
     # the base API available, but it must never make an entire route family
     # disappear without an actionable startup log.

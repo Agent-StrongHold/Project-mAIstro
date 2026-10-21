@@ -216,15 +216,8 @@ async def resume_durable_graph(
     run_store: RunStore | None = None,
     events: RecoveryEventSink | None = None,
     max_steps: int = DEFAULT_MAX_STEPS,
-    now: datetime | None = None,
 ) -> DurableRunRecord:
-    """Claim and resume persisted Graph work through canonical physical evidence.
-
-    ``now`` is the calling tick's moment: a recovery claim is live or expired
-    by the same clock the due scan used, not by this process's wall clock
-    (a fixed/simulated tick clock must keep judging claims it lists). Direct
-    resumes omit it and judge by the wall clock.
-    """
+    """Claim and resume persisted Graph work through canonical physical evidence."""
     # A direct resume can be the first process to observe a crash between the
     # continuation write and its canonical lifecycle mirror. Repair that
     # narrow split before interpreting the spine's status.
@@ -597,11 +590,7 @@ async def _walk_frontier(
         # the record or terminalizing the Run would itself go through the
         # broken store. Let it reach the recovery boundary untouched.
         raise
-    except RuntimeDeadlineExceeded as exc:
-        # The canonical ExecutionRuntime deadline the node's declared policy
-        # asked for expired. The Attempt row already carries TIMED_OUT plus its
-        # deadline_at; the Run names the same fact so "why did this stop" is
-        # answerable from the Run alone.
+    except Exception as exc:
         latest = await _reload_record(record.run_id, store=store, cause=exc)
         return await traversal._mark_failed(
             latest,
@@ -744,7 +733,9 @@ async def _execute_frontier(
         prior_completion_accepted = False
         logical_effect_key = _node_logical_effect_key(node, inputs, ctx)
         attempts = await execution_store.list_attempts(node_run.node_run_id)
-        semantics = _node_replay_semantics(node)
+        semantics = ReplaySemantics(
+            getattr(node, "replay_semantics", ReplaySemantics.NON_RETRYABLE)
+        )
         if attempts and attempts[-1].status is AttemptStatus.COMPLETED:
             persisted_result = NodeResult.model_validate(attempts[-1].result)
             prior_completion_accepted = _requires_continuation_redispatch(
@@ -759,10 +750,7 @@ async def _execute_frontier(
                     node_run,
                     ctx,
                     persisted_result,
-                    ReplaySemantics(
-                        getattr(node, "replay_semantics", ReplaySemantics.NON_RETRYABLE)
-                    ),
-                    logical_effect_key,
+                    semantics,
                 )
 
         # A prior Attempt that never completed means this NodeRun's work was
@@ -790,12 +778,7 @@ async def _execute_frontier(
             if interrupted and not semantics.retryable:
                 raw_result = _replay_refused(node_id, attempts[-1], semantics)
                 return raw_result
-            # Nested capability Invocations inherit this stable scope when
-            # their node omits an explicit one. Without the binding, their
-            # default per-NodeRun scope turns each graph retry into a fresh
-            # external effect despite this node's EFFECT_KEY contract (#1194).
-            with bind_logical_effect_scope(logical_effect_key):
-                result: NodeResult = await node.run(work_item, execution_context)
+            result: NodeResult = await node.run(work_item, execution_context)
             raw_result = result
             return result
 
@@ -839,9 +822,8 @@ async def _execute_frontier(
             spec,
             node_run,
             ctx,
-            _require_node_result(raw_result, node_id),
+            raw_result,
             semantics,
-            logical_effect_key,
         )
 
     return tuple(

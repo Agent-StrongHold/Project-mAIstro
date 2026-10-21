@@ -112,12 +112,6 @@ class GuestPeerManager:
     ) -> None:
         self._peers: dict[str, PeerTrust] = {}
         self._audit = audit or InMemoryAuditLogger()
-        # A peer response is untrusted even after transport authentication. The
-        # default is the canonical detector; an explicitly unavailable policy
-        # is handled fail-closed by scan_inbound.
-        self._warden = (
-            default_warden() if warden is _WARDEN_UNSET else cast(InboundWarden | None, warden)
-        )
         # This is a process-local receipt cache only. The key is still sent to
         # the peer so a peer that supports idempotent admission remains safe
         # across replicas; a cache must never be mistaken for remote truth.
@@ -198,93 +192,6 @@ class GuestPeerManager:
             )
         return None
 
-    async def _refused_dispatch(
-        self, peer_name: str, agent_id: str, context: DelegationContext | None
-    ) -> DelegationResult | None:
-        """The admission refusal for a context-less or incoherent dispatch.
-
-        The transport is the last boundary an external Agent call crosses, so
-        it is where issue #959's gate lives: no request leaves without a
-        canonical :class:`DelegationContext` (caller principal, Workspace and
-        Project scope, the delegating Run/NodeRun, and the effect identity),
-        and the caller named on the envelope matches the context. A refusal
-        here happens before any bytes reach the peer, so it is a *rejected*
-        admission — never an uncertain remote effect.
-        """
-        if context is None:
-            await self._audit.log_delegation(
-                peer_name,
-                agent_id,
-                "refused: external delegation without canonical caller/workspace context",
-            )
-            return DelegationResult(
-                task_id="",
-                peer_name=peer_name,
-                status="rejected",
-                error=(
-                    "external Agent delegation requires a canonical caller and "
-                    "Workspace scope (delegation context)"
-                ),
-            )
-        if context.delegating_agent != agent_id:
-            await self._audit.log_delegation(
-                peer_name,
-                agent_id,
-                "refused: envelope agent does not match the delegation context",
-            )
-            return DelegationResult(
-                task_id="",
-                peer_name=peer_name,
-                status="rejected",
-                error=(
-                    f"delegation names agent {agent_id!r} but its canonical context "
-                    f"binds {context.delegating_agent!r}"
-                ),
-            )
-        # The receiver files sender-authored Goal evidence verbatim, so the
-        # sending boundary is the last place an incoherent Goal/Subgoal
-        # binding (goal_id without goal_revision, subgoal_of without a Goal)
-        # can be refused instead of admitted as if it were evidence. The
-        # dispatching node validates too; this re-check closes the bypass.
-        try:
-            validate_goal_binding(context)
-        except DelegationContextError as exc:
-            await self._audit.log_delegation(
-                peer_name,
-                agent_id,
-                "refused: incoherent Goal/Subgoal binding on the delegation context",
-            )
-            return DelegationResult(
-                task_id="",
-                peer_name=peer_name,
-                status="rejected",
-                error=f"delegation context has an incoherent Goal binding: {exc}",
-            )
-        return None
-
-    def _narrowed_for_peer(
-        self,
-        peer: PeerTrust,
-        peer_name: str,
-        agent_id: str,
-        context: DelegationContext,
-    ) -> tuple[DelegationContext | None, DelegationResult | None]:
-        """Narrow the scope envelope at the boundary, or refuse it.
-
-        The dispatching node attenuates before admission; re-checking here
-        means a caller that bypassed the node still cannot claim more
-        authority than the peer's declared ceiling.
-        """
-        try:
-            return context.narrowed(peer.allowed_scopes), None
-        except DelegationContextError as exc:
-            return None, DelegationResult(
-                task_id="",
-                peer_name=peer_name,
-                status="rejected",
-                error=str(exc),
-            )
-
     async def delegate(
         self,
         peer_name: str,
@@ -292,39 +199,12 @@ class GuestPeerManager:
         messages: list[dict[str, str]],
         *,
         idempotency_key: str | None = None,
-        context: DelegationContext | None = None,
     ) -> DelegationResult:
-        """Delegate a task to an external A2A peer.
-
-        The key is sent at the transport boundary so a remote admission service
-        can deduplicate a request whose caller lost its lease after dispatch.
-        """
-        refused = await self._refused_dispatch(peer_name, agent_id, context)
-        if refused is not None:
-            return refused
-        assert context is not None  # refused above when absent
-
-        # One canonical key: the transport Idempotency-Key (what the receiver
-        # claims its Run by) must be the context's ``delegation_key`` (the
-        # persisted evidence), or recovery and provenance would name different
-        # logical effects. Derive it from the validated context; never accept
-        # a divergent caller-supplied key.
-        if idempotency_key is None:
-            idempotency_key = context.delegation_key
-        elif idempotency_key != context.delegation_key:
-            await self._audit.log_delegation(
-                peer_name, agent_id, "refused: idempotency_key != context.delegation_key"
-            )
-            return DelegationResult(
-                task_id="",
-                peer_name=peer_name,
-                status="rejected",
-                error="idempotency_key does not match context.delegation_key",
-            )
-
-        cached = self._idempotent_receipts.get((peer_name, idempotency_key))
-        if cached is not None:
-            return cached
+        """Delegate a task to an external A2A peer."""
+        if idempotency_key is not None:
+            cached = self._idempotent_receipts.get((peer_name, idempotency_key))
+            if cached is not None:
+                return cached
 
         peer = self.get_peer(peer_name)
         rejection = self._admission_rejection(peer, agent_id)
@@ -338,32 +218,7 @@ class GuestPeerManager:
                 error=error,
             )
         assert peer is not None  # an admitted peer exists by construction
-        narrowed, scope_refusal = self._narrowed_for_peer(peer, peer_name, agent_id, context)
-        if scope_refusal is not None:
-            await self._audit.log_delegation(peer_name, agent_id, f"refused: {scope_refusal.error}")
-            return scope_refusal
-        assert narrowed is not None  # a refusal returned above otherwise
-        return await self._post_delegation_task(
-            peer, agent_id, messages, narrowed, idempotency_key=idempotency_key
-        )
 
-    async def _post_delegation_task(
-        self,
-        peer: PeerTrust,
-        agent_id: str,
-        messages: list[dict[str, str]],
-        narrowed: DelegationContext,
-        *,
-        idempotency_key: str | None,
-    ) -> DelegationResult:
-        """The one physical POST of an admitted delegation, then its receipt.
-
-        The body carries the canonical delegation context (issue #959) beside
-        the idempotency key; the response may report remote Agent/protocol
-        versions, which travel as provenance on the result. Any transport
-        failure is returned as an uncertain `failed` outcome -- the peer's
-        acceptance is unknown, never assumed absent.
-        """
         headers: dict[str, str] = {
             "Content-Type": "application/json",
             **self._peer_auth_headers(peer),
@@ -382,34 +237,25 @@ class GuestPeerManager:
                         # endpoint's `A2ATaskCreate.idempotency_key`; a durable
                         # receiver dedupes the physical POST by this key.
                         "idempotency_key": idempotency_key,
-                        # The canonical caller/scope/Goal/Run binding (issue
-                        # #959). Evidence for the receiving admission; the
-                        # receiver's own guards remain its authorization.
-                        "delegation_context": narrowed.as_payload(),
                     },
                     headers=headers,
                 )
                 resp.raise_for_status()
                 data = resp.json()
 
-            # A peer response is untrusted even after transport authentication
-            # (issue #1137): Warden scans the exact representation before it
-            # can reach trusted context; an unavailable policy fails closed.
-            verdict = await scan_inbound(self._warden, data)
-            if not verdict.clean:
-                await self._audit.log_delegation(
-                    peer.peer_name,
-                    agent_id,
-                    "warden refused a2a response",
-                )
-                return DelegationResult(
-                    task_id="",
-                    peer_name=peer.peer_name,
-                    status="rejected",
-                    error="inbound A2A response refused by Warden",
-                    peer_url=peer.peer_url,
-                )
-
+            await self._audit.log_delegation(
+                peer_name,
+                agent_id,
+                f"task_id={data.get('task_id', '')}",
+            )
+            submitted = DelegationResult(
+                task_id=data.get("task_id", ""),
+                peer_name=peer_name,
+                status="submitted",
+            )
+            if idempotency_key:
+                self._idempotent_receipts[(peer_name, idempotency_key)] = submitted
+            return submitted
         except Exception as exc:
             await self._audit.log_delegation(peer.peer_name, agent_id, str(exc))
             return DelegationResult(

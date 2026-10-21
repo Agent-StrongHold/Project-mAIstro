@@ -132,7 +132,7 @@ class RubricAggregation(BaseModel):
 class RubricGate(BaseModel):
     """The pass/fail gate a fence consults.
 
-    The gate is consulted by fences; possessing or satisfying a Rubric
+    The gate is * consulted* by fences; possessing or satisfying a Rubric
     grants no authorization.
     """
 
@@ -143,55 +143,18 @@ class RubricGate(BaseModel):
 
 
 class RubricProvenance(BaseModel):
-    """Who authored a revision and which pack snapshot supplied its defaults.
-
-    ``pack_id`` names the supplier; the optional ``publisher`` /
-    ``pack_version`` / ``manifest_sha256`` / ``asset_id`` / ``asset_version``
-    fields pin the exact registry snapshot and asset the revision was minted
-    from, so rubrics instantiated from different versions of one pack stay
-    provenance-distinguishable (the version-addressable contract). Catalog
-    adoption — which carries no manifest snapshot — records ``pack_id`` only.
-
-    The five detail fields are all-or-nothing — either the full snapshot
-    identity rides along or none of it does — because every one of them
-    comes from the same immutable manifest snapshot, and a half-stamped
-    provenance would be a third state that names no real install.
-    """
+    """Who authored a revision and which pack supplied its defaults."""
 
     model_config = ConfigDict(extra="forbid")
 
     authored_by: str = Field(min_length=1)
     origin: ProvenanceOrigin = ProvenanceOrigin.AUTHORED
     pack_id: str | None = None
-    #: The exact pack snapshot the revision was instantiated from (all set
-    #: together by ``instantiate_rubric_asset``; absent for catalog adoption).
-    #: Blank strings name nothing, so the fields are non-empty when present.
-    publisher: str | None = Field(default=None, min_length=1)
-    pack_version: str | None = Field(default=None, min_length=1)
-    manifest_sha256: str | None = Field(default=None, min_length=1)
-    asset_id: str | None = Field(default=None, min_length=1)
-    asset_version: str | None = Field(default=None, min_length=1)
 
     @model_validator(mode="after")
     def _pack_shape(self) -> RubricProvenance:
         if self.origin is ProvenanceOrigin.PACK and not self.pack_id:
             raise ValueError("pack-origin provenance requires pack_id")
-        details = (
-            self.publisher,
-            self.pack_version,
-            self.asset_id,
-            self.asset_version,
-            self.manifest_sha256,
-        )
-        supplied = [detail is not None for detail in details]
-        if any(supplied) and not all(supplied):
-            raise ValueError(
-                "pack provenance details are all-or-nothing: publisher, pack_version, "
-                "asset_id, asset_version, and manifest_sha256 name one manifest "
-                "snapshot together"
-            )
-        if any(supplied) and self.origin is not ProvenanceOrigin.PACK:
-            raise ValueError("pack provenance details require origin='pack'")
         return self
 
 
@@ -247,46 +210,9 @@ def rubric_entity_id(rubric_id: str, revision: int) -> UUID:
 def register_rubric_kind(ontology: Ontology) -> None:
     """Register the ``rubric`` kind + SEMANTIC model with an ``Ontology``.
 
-    Also registers the ``rubric_run_binding`` kind: the durable record of
-    which exact Rubric revision (and, via it, Goal revision) a historical
-    Run consumed. Bindings are ontology entities, so they survive store
-    restarts exactly like the revisions they name.
-
     Idempotent per the ontology's own registration contract.
     """
     ontology.register(RUBRIC_KIND, RubricSemantic)
-    ontology.register(RUBRIC_RUN_BINDING_KIND, RubricRunBindingSemantic)
-
-
-#: Ontology kind slug for a historical Run's (Goal, Rubric) revision binding.
-RUBRIC_RUN_BINDING_KIND = "rubric_run_binding"
-
-
-class RubricRunBindingSemantic(BaseModel):
-    """SEMANTIC-facet payload for the ``rubric_run_binding`` ontology kind.
-
-    One immutable record per ``run_id``: the exact Rubric revision a Run
-    scored against and the Goal revision that revision binds. Persisted as
-    an ontology entity so it is durable across restarts and reconstructable
-    from the same store the revisions live in.
-    """
-
-    model_config = ConfigDict(extra="forbid")
-
-    run_id: str = Field(min_length=1)
-    rubric_id: str = Field(min_length=1)
-    rubric_revision: int = Field(ge=1)
-    goal_id: str = Field(min_length=1)
-    goal_revision: int = Field(ge=1)
-
-
-def rubric_run_binding_entity_id(run_id: str) -> UUID:
-    """Deterministic entity id for one Run's binding.
-
-    One binding per Run, so ``run_id`` alone maps to a stable UUID: record
-    is idempotent, and the durable read is a direct ``get`` — no index.
-    """
-    return uuid5(NAMESPACE_URL, f"maistro:rubric-run-binding:{run_id}")
 
 
 class PackRubricCatalog(BaseModel):

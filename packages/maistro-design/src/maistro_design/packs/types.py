@@ -23,30 +23,20 @@ contract encodes:
   Canvas pack".
 - **Fence points are declared, not implied.** `fence_points` names the loop
   phases where park/redirect/accept is required; `PackPhase.fenced` marks the
-  gated node inside the Graph shape, and `_PHASE_GATES` is the single
-  phase→gate mapping. (The fence *execution* semantics — the durable HITL
-  park itself — stay with the canonical loop runtime; the pack only declares
-  where the gates sit.)
-- **A pack id can never name a backend.** `PackId` and `ExecuteBackend` are
-  two closed enums with disjoint member values — a manifest declaring
-  `pack_id: canvas` fails enum validation, and the disjointness itself is
-  pinned by test (AC-5), so no validator-side collision check is needed.
+  gated node inside the Graph shape. (The fence *execution* semantics — the
+  durable HITL park itself — stay with the canonical loop runtime; the pack
+  only declares where the gates sit.)
 
 Placement (the A1 documentation hook): this contract lives in ONE place,
 `maistro_design.packs`, because Design Studio hosts all three packs and
 `maistro-design` is its substrate package (ADR-061) which already depends on
 `maistro-core` for canonical Graph/Goal semantics (ADR-081226-034b direction).
-M7-A1 has since landed as ADR-092926-7a01 / SPEC-093026-7a90 and does not
-move it: packs there are data under registry/repertoire supply chains that
-cannot register ontology kinds, own workstate, mint identity, or bypass the
-effect chain (ADR-092926-7a01 §5) — exactly the invariants this module
-enforces. The manifest format itself remains A1 open question Q4; this
-in-repo YAML registry is this lane's answer to it.
+The M7-A1 ADR/spec had not landed when this was written; this module
+docstring is the recorded placement decision until it does.
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from enum import StrEnum
 from typing import TYPE_CHECKING, Literal
 
@@ -61,6 +51,11 @@ if TYPE_CHECKING:
     from maistro_design.packs.rubric import GoalRubricCatalog
 
 _LOOP_PHASES = frozenset({"explore", "execute", "evaluate", "refine"})
+
+
+def _fence_gate_for(phase_name: str) -> str:
+    """The fence point a gated node of `phase_name` must have declared."""
+    return "execute.park" if phase_name == "execute" else f"{phase_name}.accept"
 
 
 def _reachable_from_entry(entry: str, edges: tuple[tuple[str, str], ...]) -> set[str]:
@@ -149,23 +144,6 @@ class FencePoint(StrEnum):
     REFINE_ACCEPT = "refine.accept"
 
 
-#: The fence gate each loop phase closes with, declared as data over the
-#: closed `FencePoint` enum — four phases, four gates, one source of truth.
-#: String surgery (`f"{phase}.accept"`) is how a gate spelling drifts from the
-#: enum the manifests declare; this mapping cannot.
-_PHASE_GATES: Mapping[PackPhaseName, FencePoint] = {
-    "explore": FencePoint.EXPLORE_ACCEPT,
-    "execute": FencePoint.EXECUTE_PARK,
-    "evaluate": FencePoint.EVALUATE_ACCEPT,
-    "refine": FencePoint.REFINE_ACCEPT,
-}
-
-
-def _fence_gate_for(phase_name: PackPhaseName) -> str:
-    """The fence point a gated node of `phase_name` must have declared."""
-    return _PHASE_GATES[phase_name].value
-
-
 class PackPhase(BaseModel):
     """One node of a pack's explore → execute → evaluate → refine shape.
 
@@ -209,7 +187,7 @@ class PackGraphShape(BaseModel):
         missing = _LOOP_PHASES - phases
         if missing:
             raise ValueError(f"pack graph shape is missing loop phases: {sorted(missing)}")
-        fence_gates = {gate.value for gate in _PHASE_GATES.values()}
+        fence_gates = {point.value for point in FencePoint}
         for phase in self.nodes:
             if not phase.fenced:
                 continue
@@ -235,9 +213,6 @@ class PackSummary(BaseModel):
     artifact_kinds: tuple[str, ...]
 
 
-_SEMVER_RE = "^\\d+\\.\\d+\\.\\d+$"
-
-
 class DomainPack(BaseModel):
     """One domain pack manifest (#793 pack contract, minimum).
 
@@ -246,17 +221,11 @@ class DomainPack(BaseModel):
     instance (identity is minted per Goal instantiation — see
     `rubric.GoalRubricCatalog`), a Run/NodeRun/Attempt (minted by the
     canonical executor from the pack's Graph template), or a Design Studio.
-
-    `version` is the pack's own release version (M9-F3, #968): the identity a
-    Workspace activation is recorded against. It is a *pack* version, not a
-    Goal/Graph/Rubric revision — instantiations carry it as provenance and are
-    never rewritten by a later upgrade.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     pack_id: PackId
-    version: str = Field(min_length=1, pattern=_SEMVER_RE)
     name: str = Field(min_length=1)
     summary: str = ""
     explore_focus: tuple[str, ...] = Field(min_length=1)
@@ -273,11 +242,13 @@ class DomainPack(BaseModel):
         dimension_ids = [dimension.dimension_id for dimension in self.rubric_dimensions]
         if len(set(dimension_ids)) != len(dimension_ids):
             raise ValueError("rubric dimension_ids must be unique within a pack")
-        # (A backend name is a binding name, never a pack identity — AC-5. That
-        # invariant needs no validator branch here: `PackId` and
-        # `ExecuteBackend` are two closed enums with disjoint members, so a
-        # colliding manifest fails enum validation before this validator runs.
-        # The disjointness itself is pinned at the enum level by test.)
+        # A backend name is a binding name, never a pack identity (AC: canvas
+        # is a backend binding, never a pack_id).
+        backend_names = {backend.value for backend in ExecuteBackend}
+        if self.pack_id.value in backend_names:
+            raise ValueError(
+                f"pack_id {self.pack_id.value!r} collides with an execute backend name"
+            )
         # Declared fence points must cover every gated node in the shape.
         declared = {point.value for point in self.fence_points}
         for phase in self.graph.nodes:
@@ -313,7 +284,6 @@ class DomainPack(BaseModel):
 
         return GoalRubricCatalog.instantiate(
             pack_id=self.pack_id,
-            pack_version=self.version,
             dimensions=self.rubric_dimensions,
             goal_id=goal_id,
             goal_revision=goal_revision,

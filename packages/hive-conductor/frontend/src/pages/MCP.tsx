@@ -122,7 +122,11 @@ export default function MCP() {
           </a>
         </div>
       </div>
-      <TabList label="MCP views" idPrefix="mcp" tabs={TABS} selected={tab} onSelect={setTab} style={{ marginBottom: 12 }} />
+      <div style={{ display: "flex", gap: 0, borderBottom: "1px solid var(--rule)", marginBottom: 12 }}>
+        {(["servers", "tools"] as const).map((t) => (
+          <div key={t} onClick={() => setTab(t)} style={{ padding: "7px 16px", fontFamily: "var(--mono)", fontSize: 12, cursor: "pointer", borderBottom: tab === t ? "2px solid var(--accent)" : "2px solid transparent", color: tab === t ? "var(--ink)" : "var(--pencil)", textTransform: "capitalize" }}>{t}</div>
+        ))}
+      </div>
 
       {adding && (
         <div className="card" style={{ borderLeft: "3px solid var(--accent)", marginBottom: 10 }}>
@@ -145,26 +149,48 @@ export default function MCP() {
             const open = sel?.id === s.id;
             const detailsId = `mcp-server-${s.id}-details`;
             return (
-              <div key={s.id} className="card">
-                <div style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: 10, alignItems: "center" }}>
-                  <button type="button" aria-expanded={open} aria-controls={detailsId} onClick={() => setSel(open ? null : s)} style={DISCLOSURE_STYLE}>
-                    <span style={{ width: 10, height: 10, borderRadius: "50%", background: s.status === "connected" ? "var(--ok)" : "var(--danger)" }} />
-                    <span>
-                      <span style={{ display: "block", fontFamily: "var(--hand)", fontSize: 15, fontWeight: 600 }}>{s.name}</span>
-                      <span style={{ display: "block", fontFamily: "var(--hand)", fontSize: 12, color: "var(--pencil)" }}>{s.description}</span>
-                    </span>
-                    <span style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", textAlign: "center" }}>{s.tools_count} tools</span>
-                    <Hex variant={s.status === "connected" ? "ok" : "danger"}>{s.status}</Hex>
-                  </button>
-                  <button className="btn" aria-label={`Remove ${s.name}`} style={{ fontSize: 12, padding: "1px 6px", borderColor: "var(--danger)", color: "var(--danger)", opacity: 0.5 }} onClick={() => setDeleteTarget(s)}>remove</button>
+              <div key={s.id} className="card" onClick={() => setSel(sel?.id === s.id ? null : s)} style={{ cursor: "pointer" }}>
+                <div style={{ display: "grid", gridTemplateColumns: "12px 1fr auto auto auto", gap: 10, alignItems: "center" }}>
+                  <div style={{ width: 10, height: 10, borderRadius: "50%", background: s.status === "connected" ? "var(--ok)" : "var(--danger)" }} />
+                  <div>
+                    <div style={{ fontFamily: "var(--hand)", fontSize: 15, fontWeight: 600 }}>{s.name}</div>
+                    <div style={{ fontFamily: "var(--hand)", fontSize: 12, color: "var(--pencil)" }}>{s.description}</div>
+                  </div>
+                  <span style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", textAlign: "center" }}>{s.tools_count} tools</span>
+                  <Hex variant={s.status === "connected" ? "ok" : "danger"}>{s.status}</Hex>
+                  <button className="btn" style={{ fontSize: 12, padding: "1px 6px", borderColor: "var(--danger)", color: "var(--danger)", opacity: 0.5 }} onClick={(e) => { e.stopPropagation(); setDeleteTarget(s); }}>remove</button>
                 </div>
 
-                <div id={detailsId} hidden={!open} style={{ marginTop: 10, paddingTop: 10, borderTop: "1px dotted var(--rule)" }}>
-                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))", gap: 6, marginBottom: 10 }}>
-                    <StatCard label="URL" value={s.url.replace("http://", "").replace("/mcp", "")} />
-                    <StatCard label="Version" value={s.version ?? "—"} />
-                    <StatCard label="Last Ping" value={s.last_ping ? new Date(s.last_ping).toLocaleTimeString() : "never"} />
-                    <StatCard label="Tools" value={`${s.tools_count}`} />
+                {sel?.id === s.id && (
+                  <div style={{ marginTop: 10, paddingTop: 10, borderTop: "1px dotted var(--rule)" }}>
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))", gap: 6, marginBottom: 10 }}>
+                      <StatCard label="URL" value={s.url.replace("http://", "").replace("/mcp", "")} />
+                      <StatCard label="Version" value={s.version ?? "—"} />
+                      <StatCard label="Last Ping" value={s.last_ping ? new Date(s.last_ping).toLocaleTimeString() : "never"} />
+                      <StatCard label="Tools" value={`${s.tools_count}`} />
+                    </div>
+                    {s.capabilities.length > 0 && (
+                      <div style={{ marginBottom: 8 }}>
+                        <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", marginBottom: 3 }}>CAPABILITIES</div>
+                        <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+                          {s.capabilities.map((c) => <Hex key={c}>{c}</Hex>)}
+                        </div>
+                      </div>
+                    )}
+                    {serverTools.length > 0 && (
+                      <div>
+                        <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", marginBottom: 3 }}>TOOLS</div>
+                        {serverTools.map((t) => (
+                          <div key={t.id} style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: 6, padding: "4px 6px", borderBottom: "1px dotted var(--rule)" }}>
+                            <div>
+                              <span style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--accent)" }}>{t.name}</span>
+                              <span style={{ fontFamily: "var(--hand)", fontSize: 12, color: "var(--pencil)", marginLeft: 8 }}>{t.description}</span>
+                            </div>
+                            {t.category && <Hex variant="muted">{t.category}</Hex>}
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
                   {(s.capabilities?.length ?? 0) > 0 && (
                     <div style={{ marginBottom: 8 }}>

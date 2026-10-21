@@ -9,32 +9,14 @@ from dataclasses import replace
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
-from maistro.memory.exposure import Actor, MemoryExposureMode, require_write_authority
-from maistro.memory.learnings.evidence import (
-    DEFAULT_MIN_PROMOTION_CONFIDENCE,
-    merge_applicability,
-    promotion_blockers,
-)
-from maistro.memory.learnings.lifecycle import (
-    InvalidStageTransition,
-    StageTransition,
-    plan_advance,
-)
-from maistro.observability.correlation import ExecutionProvenance, observed_provenance
+from maistro.observability.correlation import observed_provenance
 from maistro.persistence.learning_contract import (
     LEARNING_GENERATED_FIELDS,
     LEARNING_PERSISTED_FIELDS,
 )
 from maistro.persistence.learning_scope import learning_scope_predicate
 from maistro.sqlite_schema import serialized_schema_upgrade
-from maistro.types.memory import (
-    DEFAULT_LEARNING_CONFIDENCE,
-    EPISTEMIC_BONUS,
-    EpistemicType,
-    Learning,
-    LearningStage,
-    MemoryScope,
-)
+from maistro.types.memory import Learning, MemoryScope
 
 if TYPE_CHECKING:
     import aiosqlite
@@ -84,74 +66,18 @@ CREATE TABLE IF NOT EXISTS learnings (
 )
 """
 
-#: Append-only ladder audit trail (ADR-103). One row per accepted transition;
-#: nothing ever updates or deletes from it. `org_id` is copied from the row at
-#: transition time so the audit read can scope exactly like every other read.
-_STAGE_HISTORY_SCHEMA = """
-CREATE TABLE IF NOT EXISTS learning_stage_transitions (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    learning_id INTEGER NOT NULL,
-    org_id TEXT NOT NULL DEFAULT '',
-    from_stage TEXT NOT NULL,
-    to_stage TEXT NOT NULL,
-    actor TEXT NOT NULL,
-    reason TEXT NOT NULL DEFAULT '',
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
-)
-"""
-
-#: One module-level DDL table for every column an older file may lack, in the
-#: order the in-place upgrade adds them. One literal rather than several named
-#: collections because the retention-reference inventory's AST scan resolves a
-#: formatted `ALTER TABLE` only from a loop over a module-level dict literal
-#: (`.items()` shape) — an f-string whose parts it cannot resolve statically
-#: fails the suite rather than being assumed run_id-free. The commented groups
-#: keep the history each collection used to carry.
-_UPGRADE_COLUMNS = {
-    # Legacy scope columns (pre-team/source_query files), no default: existing
-    # rows have unknown scope and must not be silently fabricated.
+#: Columns added to existing SQLite files without a default. NULL preserves the
+#: fact that an older row never recorded a scope/provenance value; the mapper
+#: exposes that absence as the dataclass's empty-string shape.
+_LEGACY_UPGRADE_COLUMNS = {
     "source_query": "TEXT",
     "team_id": "TEXT",
-    # Producer columns (#709), nullable for the same reason migration 026 makes
-    # them nullable in PostgreSQL: a row written with no execution in scope
-    # names none, and '' would name a Run whose id is empty.
-    "run_id": "TEXT",
-    "node_run_id": "TEXT",
-    "attempt_id": "TEXT",
-    # Applicability, confidence and epistemic columns (M4-B3 + the pipeline
-    # epistemics ADR-100126-8c2d). Defaults mirror the dataclass: a pre-epistemics
-    # row lands as the local empirical learning it implicitly was. `confidence`
-    # alone stays nullable: an unmeasured row is stored as NULL, and the decode
-    # maps a legacy NULL to the default — it must never read back as measured,
-    # and promotion blocks it at the floor either way.
-    "epistemic_type": "TEXT NOT NULL DEFAULT 'empirical'",
-    "works_when": "TEXT NOT NULL DEFAULT '[]'",
-    "avoid_in": "TEXT NOT NULL DEFAULT '[]'",
-    "confidence": "REAL",
-    "evidence_run_ids": "TEXT NOT NULL DEFAULT '[]'",
-    "evaluation_ids": "TEXT NOT NULL DEFAULT '[]'",
-    "applicability": "TEXT NOT NULL DEFAULT '{}'",
-    "reinforcement_count": "INTEGER NOT NULL DEFAULT 0",
-    "contradiction_count": "INTEGER NOT NULL DEFAULT 0",
-    "created_at": "TEXT",
-    "last_confirmed_at": "TEXT",
-    # M4-B1 (ADR-103): the stage columns default to the bottom rung with blank
-    # actors. Pre-ladder rows keep `memory` and never gain a fabricated
-    # validation or promotion claim; the ledger starts empty and records only
-    # transitions that actually happened.
-    "stage": "TEXT NOT NULL DEFAULT 'memory'",
-    "validated_by": "TEXT NOT NULL DEFAULT ''",
-    "validated_at": "TEXT",
-    # The Gauntlet's audit trail beyond the ladder's own columns (M4-B2):
-    # defaults, because a pre-Gauntlet row's lack of validation is a known
-    # fact, not a missing one.
-    "validated_evaluator_version": "TEXT NOT NULL DEFAULT ''",
-    "validation_run_ids": "TEXT NOT NULL DEFAULT '[]'",
-    "validation_content_hash": "TEXT NOT NULL DEFAULT ''",
-    "supersedes": "INTEGER",
-    "superseded_by": "INTEGER",
-    "promoted_by": "TEXT NOT NULL DEFAULT ''",
 }
+
+#: The producer columns, nullable for the same reason migration 026 makes them
+#: nullable in PostgreSQL: a row written with no execution in scope names none,
+#: and `''` would name a Run whose id is empty (#709).
+_PROVENANCE_COLUMNS = ("run_id", "node_run_id", "attempt_id")
 
 # Kept next to the SQL so the conformance test can detect a new Learning field
 # that is not represented by both persistence twins.
@@ -177,44 +103,7 @@ _SQLITE_INSERT_FIELDS = (
     "run_id",
     "node_run_id",
     "attempt_id",
-    "epistemic_type",
-    "works_when",
-    "avoid_in",
-    "confidence",
-    "evidence_run_ids",
-    "evaluation_ids",
-    "applicability",
-    "reinforcement_count",
-    "contradiction_count",
-    "created_at",
-    "last_confirmed_at",
-    "stage",
-    "validated_by",
-    "validated_at",
-    "validated_evaluator_version",
-    "validation_run_ids",
-    "validation_content_hash",
-    "promoted_by",
-    "supersedes",
-    "superseded_by",
 )
-
-
-async def _add_missing_columns(
-    conn: aiosqlite.Connection,
-    columns: set[str],
-) -> None:
-    """Add every declared upgrade column an older file does not have yet.
-
-    SQLite has no `ADD COLUMN IF NOT EXISTS`, so the `PRAGMA table_info`
-    column set is passed in and only the missing columns are added. The DDL
-    loop reads `_UPGRADE_COLUMNS` directly — a module-level dict literal — so
-    the retention-reference inventory's AST scan can resolve the formatted
-    `ALTER TABLE` statement statically.
-    """
-    for column, column_type in _UPGRADE_COLUMNS.items():
-        if column not in columns:
-            await conn.execute(f"ALTER TABLE learnings ADD COLUMN {column} {column_type}")
 
 
 class SqliteLearningStore:
@@ -249,8 +138,17 @@ class SqliteLearningStore:
                 await self._conn.execute(
                     "ALTER TABLE learnings ADD COLUMN org_id TEXT NOT NULL DEFAULT ''"
                 )
-            await _add_missing_columns(self._conn, columns)
-            await self._conn.execute(_STAGE_HISTORY_SCHEMA)
+            for column, column_type in _LEGACY_UPGRADE_COLUMNS.items():
+                if column not in columns:
+                    await self._conn.execute(
+                        f"ALTER TABLE learnings ADD COLUMN {column} {column_type}"
+                    )
+            # The same in-place upgrade for the producer columns. A file created
+            # before #709 holds real learnings; recreating the table would be the
+            # only alternative, and it would lose them (#709).
+            for column in _PROVENANCE_COLUMNS:
+                if column not in columns:
+                    await self._conn.execute(f"ALTER TABLE learnings ADD COLUMN {column} TEXT")
             await self._conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_learnings_run_id ON learnings (run_id)"
             )
@@ -278,7 +176,7 @@ class SqliteLearningStore:
             node_run_id=learning.node_run_id,
             attempt_id=learning.attempt_id,
         )
-        dedup_id = await self._bump_dedup_hit(learning, provenance)
+        dedup_id = await self._bump_dedup_hit(learning)
         if dedup_id is not None:
             return dedup_id
 
@@ -288,17 +186,8 @@ class SqliteLearningStore:
                 agent_id, user_id, org_id, team_id, scope, hit_count, status,
                 rca_category, rca_prevention,
                 success_after_use, failure_after_use,
-                run_id, node_run_id, attempt_id,
-                epistemic_type, works_when, avoid_in, confidence,
-                evidence_run_ids, evaluation_ids,
-                applicability, reinforcement_count, contradiction_count,
-                created_at, last_confirmed_at,
-                stage, validated_by, validated_at,
-                validated_evaluator_version, validation_run_ids,
-                validation_content_hash, promoted_by,
-                supersedes, superseded_by)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                       ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                run_id, node_run_id, attempt_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 learning.category,
                 json.dumps(list(learning.trigger_keys)),
@@ -317,38 +206,12 @@ class SqliteLearningStore:
                 learning.success_after_use,
                 learning.failure_after_use,
                 *provenance.as_columns(),
-                learning.epistemic_type,
-                json.dumps(list(learning.works_when)),
-                json.dumps(list(learning.avoid_in)),
-                learning.confidence,
-                json.dumps(list(learning.evidence_run_ids)),
-                json.dumps(list(learning.evaluation_ids)),
-                json.dumps(learning.applicability),
-                learning.reinforcement_count,
-                learning.contradiction_count,
-                _utc_text(learning.created_at),
-                _utc_text(learning.last_confirmed_at)
-                if learning.last_confirmed_at is not None
-                else None,
-                learning.stage,
-                learning.validated_by,
-                _utc_text(learning.validated_at) if learning.validated_at is not None else None,
-                learning.validated_evaluator_version,
-                json.dumps(list(learning.validation_run_ids)),
-                learning.validation_content_hash,
-                learning.promoted_by,
-                learning.supersedes,
-                learning.superseded_by,
             ),
         )
         await self._conn.commit()
         return insert_cursor.lastrowid or 0
 
-    async def _bump_dedup_hit(
-        self,
-        learning: Learning,
-        provenance: ExecutionProvenance,
-    ) -> int | None:
+    async def _bump_dedup_hit(self, learning: Learning) -> int | None:
         """Return the id of the same-scope active row this learning dedupes into.
 
         The probe half of `store`: tool name, org, team, user, agent and
@@ -360,8 +223,7 @@ class SqliteLearningStore:
         stays a straight probe-then-insert.
         """
         cursor = await self._conn.execute(
-            "SELECT id, trigger_keys, works_when, avoid_in, confidence, "
-            "evidence_run_ids, evaluation_ids FROM learnings "
+            "SELECT id, trigger_keys FROM learnings "
             "WHERE tool_name = ? AND org_id = ? AND team_id IS ? "
             "AND user_id IS ? AND agent_id IS ? AND status = 'active'",
             (
@@ -918,37 +780,25 @@ def _lifecycle_fields(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def _row_to_learning(row: dict[str, Any]) -> Learning:
-    return Learning(**_provenance_fields(row), **_lifecycle_fields(row))
-
-
-def _utc_text(moment: datetime) -> str:
-    """An instant as text that sorts in instant order (see sqlite_outcomes)."""
-    if moment.tzinfo is None:
-        return moment.replace(tzinfo=UTC).isoformat()
-    return moment.astimezone(UTC).isoformat()
-
-
-def _load_moment(raw: object) -> datetime | None:
-    """Decode an instant column; NULL or unparseable text names no instant."""
-    if not raw or not isinstance(raw, str):
-        return None
-    try:
-        return datetime.fromisoformat(raw)
-    except ValueError:
-        return None
-
-
-def _load_applicability(raw: object) -> dict[str, list[str]]:
-    """Decode `applicability`, tolerating NULL or malformed text like `trigger_keys`."""
-    if raw is None:
-        return {}
-    if isinstance(raw, dict):
-        return {str(k): [str(v) for v in values] for k, values in raw.items()}
-    if isinstance(raw, str):
-        try:
-            decoded = json.loads(raw)
-        except ValueError:
-            return {}
-        if isinstance(decoded, dict):
-            return {str(k): [str(v) for v in values] for k, values in decoded.items()}
-    return {}
+    return Learning(
+        id=row["id"],
+        category=row.get("category") or "",
+        trigger_keys=json.loads(row.get("trigger_keys") or "[]"),
+        learning=row["learning"],
+        tool_name=row.get("tool_name") or "",
+        source_query=_text(row, "source_query"),
+        agent_id=row.get("agent_id") or None,
+        user_id=row.get("user_id"),
+        org_id=row.get("org_id") or "",
+        team_id=_text(row, "team_id"),
+        scope=MemoryScope(row.get("scope") or "agent"),
+        hit_count=row.get("hit_count", 0),
+        status=row.get("status") or "active",
+        rca_category=row.get("rca_category"),
+        rca_prevention=row.get("rca_prevention") or "",
+        run_id=_text(row, "run_id"),
+        node_run_id=_text(row, "node_run_id"),
+        attempt_id=_text(row, "attempt_id"),
+        success_after_use=row.get("success_after_use", 0),
+        failure_after_use=row.get("failure_after_use", 0),
+    )

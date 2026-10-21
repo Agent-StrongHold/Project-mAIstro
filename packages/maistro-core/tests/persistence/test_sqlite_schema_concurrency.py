@@ -12,7 +12,6 @@ import asyncio
 import aiosqlite
 import pytest
 
-from maistro.memory.exposure import MemoryExposureMode
 from maistro.persistence.sqlite_learnings import SqliteLearningStore
 
 
@@ -23,12 +22,8 @@ async def test_concurrent_learning_schema_upgrades_do_not_race(tmp_path) -> None
     second_conn = await aiosqlite.connect(database)
     try:
         await asyncio.gather(
-            SqliteLearningStore(
-                first_conn, exposure_mode=MemoryExposureMode.AGENT_MANAGED
-            ).ensure_schema(),
-            SqliteLearningStore(
-                second_conn, exposure_mode=MemoryExposureMode.AGENT_MANAGED
-            ).ensure_schema(),
+            SqliteLearningStore(first_conn).ensure_schema(),
+            SqliteLearningStore(second_conn).ensure_schema(),
         )
         cursor = await first_conn.execute("PRAGMA table_info(learnings)")
         columns = {row[1] for row in await cursor.fetchall()}

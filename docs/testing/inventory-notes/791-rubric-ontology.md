@@ -1,20 +1,11 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +44
+  packages/maistro-core/tests: +40
 ---
 # M7-A2 Rubric ontology (#791) inventory
 
 Issue #791 registers `Rubric` as a first-class ontology kind bound to a Goal
 and adds the Project-scoped, ontology-backed Rubric store.
-
-Provenance note: the 18 vulture identities these tests/modules introduce are
-banked in `quality/vulture-baseline.json` (multiplicity-preserving, per the
-Counter comparison in `scripts/check-vulture-baseline.py`) and granted in
-`quality/ratchet-authorizations.json` (18 vulture + 2 reachability entries,
-keyed to the `ontology` CONNECT group and the `projects-rubric-store` LIBRARY
-group in `quality/reachability-dispositions.json`), following the repo's
-two-merge grant doctrine: grants are read from the base revision, so they
-take effect once this branch lands.
 
 New tests under `packages/maistro-core/tests`:
 
@@ -31,13 +22,11 @@ New tests under `packages/maistro-core/tests`:
   `CreativeBrief` class itself is not present at this head, so the contract is
   proven against its documented payload shape (`docs/product/DESIGN-STUDIO.md`)
   rather than a class import.
-- `projects/test_rubric_store.py` (+19): store invariants — creation without a
+- `projects/test_rubric_store.py` (+15): store invariants — creation without a
   live Goal revision fails; cross-Project and cross-Workspace binds are
   structurally rejected; dimension updates mint new revisions with prior
   revisions still readable; one revision binds exactly one Goal revision;
   Run bindings persist `goal_id` + Goal revision + `rubric_id` + Rubric
   revision and keep naming them after newer revisions exist; pack catalogs
   instantiate Rubrics (deep-copied, provenance `origin="pack"`) without
-  owning them and without being persisted. The +4 over the first draft of
-  this note: revision supersession/idempotency/conflict guard tests and a
-  run-binding-restarts-over-the-same-ontology test.
+  owning them and without being persisted.

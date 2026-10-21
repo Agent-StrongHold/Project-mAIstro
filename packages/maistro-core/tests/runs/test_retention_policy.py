@@ -31,7 +31,6 @@ from maistro.runs.retention_scope import (
     WorkspaceRetentionScope,
 )
 from maistro.runs.store import InMemoryRunStore, PurgeOutcome
-from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 NOW = datetime(2026, 8, 22, 12, 0, tzinfo=UTC)
 SCOPE = WorkspaceRetentionScope(workspace_id="workspace-1")
@@ -411,11 +410,7 @@ async def _expired_run(store: InMemoryRunStore, workspace: str, project_id: str)
         name="Retained graph",
         nodes=[Node(node_id="node-1", node_type="agent")],
     )
-    run = await store.create_run(
-        graph,
-        retention_expires_at=NOW - timedelta(seconds=1),
-        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
-    )
+    run = await store.create_run(graph, retention_expires_at=NOW - timedelta(seconds=1))
     await store.transition_run(run.run_id, RunStatus.QUEUED)
     await store.transition_run(run.run_id, RunStatus.RUNNING)
     await store.transition_run(run.run_id, RunStatus.COMPLETED)

@@ -2,6 +2,20 @@
   "_comment": "One disposition and owner for every module in reachability-baseline.json, grouped by coherent subsystem (#33). CONNECT = correct design, no production entry point yet; names the root that would reach it. LIBRARY = published surface or test scaffolding, unreachable by construction and honestly so. RETIRE = superseded; names what replaces it. Checked by scripts/check-reachability-dispositions.py: every baseline module must appear in exactly one group, no group may name a module that is not in the baseline, and every subsystem must be a row in docs/architecture/CONVERGENCE-MATRIX.md. A RETIRE disposition is a decision, not permission to delete -- deletion requires behavioural parity first (#35).",
   "groups": [
     {
+      "id": "design-packs-and-proof",
+      "subsystem": "Open Design integration",
+      "disposition": "LIBRARY",
+      "rationale": "The M7 pack contract (#793) and the M7-A6 proof driver (#795) are consumed exactly where the issues scope them: the checked test suites (test_packs.py, test_design_loop_proof.py) and the documented reproduction path (docs/product/M7-A6-DESIGN-LOOP-PROOF.md) -- deliberately no production import path, no Design Studio route, no second UI product. Production consumption arrives with the Studio cutover surfaces (#95/#286, pack selector #1619), which will reach the same registry and the same lineage read model (maistro.runs.lineage, itself reached via maistro.runs).",
+      "modules": [
+        "maistro_design.packs",
+        "maistro_design.packs.graphs",
+        "maistro_design.packs.registry",
+        "maistro_design.packs.rubric",
+        "maistro_design.packs.types",
+        "maistro_design.proof"
+      ]
+    },
+    {
       "id": "hive-unwired-services",
       "subsystem": "Agent Conductor services",
       "disposition": "CONNECT",
@@ -208,6 +222,20 @@
       ]
     },
     {
+      "id": "ontology",
+      "subsystem": "Ontology",
+      "disposition": "CONNECT",
+      "rationale": "ADR-036's semantic object layer, Accepted with no consumer. OUT-OF-SCOPE.md already excludes its graph-query language, so the registry is the whole of what must be reached. #791 adds the Rubric scored-acceptance kind; its consumers (evals scoring Runs, fences consulting the gate) are later M7 work.",
+      "root": "a subsystem resolving semantic objects through the registry (#34)",
+      "modules": [
+        "maistro.ontology",
+        "maistro.ontology.protocols",
+        "maistro.ontology.registry",
+        "maistro.ontology.rubric",
+        "maistro.ontology.types"
+      ]
+    },
+    {
       "id": "design-node",
       "subsystem": "Open Design integration",
       "disposition": "CONNECT",
@@ -243,6 +271,15 @@
       ]
     },
     {
+      "id": "projects-rubric-store",
+      "subsystem": "Workspace / Project scope",
+      "disposition": "LIBRARY",
+      "rationale": "#791 M7-A2 ships Rubric persistence + ontology only (its stop condition forbids scoring, fences, or UI): a Project-scoped, ontology-backed store for downstream consumers (Runs naming scored revisions, eval scoring, the acceptance fence). Library surface by construction until an M7 follow-up wires the first consumer.",
+      "modules": [
+        "maistro.projects.rubric_store"
+      ]
+    },
+    {
       "id": "prompts-diff",
       "subsystem": "Prompts and personas",
       "disposition": "CONNECT",
@@ -259,6 +296,9 @@
       "rationale": "ADR-085 provider-side quota verification. #718 wired the recording half (maistro.quota.recorder, and the ambient/reconciliation modules it composes) into the canonical Invocation terminalization, so those left this disposition; #1204 wired the SQLite usage-log snapshot behind the sqlite backend of create_container. The explicit verifier half (verify.py + the per-provider verifiers) still has no production caller and remains owed.",
       "root": "the Invocation cost path (#56)",
       "modules": [
+        "maistro.quota.ambient",
+        "maistro.quota.reconciliation",
+        "maistro.quota.recorder",
         "maistro.quota.verifiers",
         "maistro.quota.verifiers.mistral",
         "maistro.quota.verifiers.openrouter",

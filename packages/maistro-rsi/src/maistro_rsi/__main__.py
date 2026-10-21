@@ -598,55 +598,6 @@ def _evolve(args: argparse.Namespace) -> int:
     return 0
 
 
-def _calibrate(args: argparse.Namespace) -> int:
-    """`calibrate` — the offline promotion-evidence surface for #384.
-
-    Drives the real `calibrate_proxy_scorers` harness (held-out narration
-    fixtures that do no work, plus verified fixtures that do) with an
-    OpenAI-compatible provider as the candidate responder, and prints each
-    scorer's `narration_false_positive_rate`. Per benchmarks/calibration.py's
-    contract this REPORTS — it never rewrites scores or gates; the fitness
-    hard gates remain non-tradeable and the candidate cannot touch the
-    scorer (sensitive_paths).
-    """
-    import asyncio
-
-    from maistro_evolve.benchmarks.calibration import calibrate_proxy_scorers
-    from maistro_evolve.providers.openai_compatible import OpenAICompatibleProvider
-    from maistro_rsi.evolve_bridge import open_population
-
-    store = open_population(args.db)
-    genome = store.get(args.genome_id) if args.genome_id else store.get_champion()
-    if genome is None:
-        where = f"id {args.genome_id!r}" if args.genome_id else "no scored champion"
-        print(
-            f"error: no genome to calibrate ({where}); pass --db/--genome-id",
-            file=sys.stderr,
-        )
-        return 2
-    llm_call = OpenAICompatibleProvider(
-        model=args.model,
-        base_url=args.base_url,
-        api_key=args.api_key,
-        allow_unauthenticated=args.allow_unauthenticated_provider,
-    )
-    report = asyncio.run(calibrate_proxy_scorers(genome, llm_call))
-    if args.json:
-        print(json.dumps(report, indent=2, sort_keys=True))
-        return 0
-    print(f"calibration {report['calibration']} against genome {genome.id} ({genome.name})")
-    for scorer, result in report["scorers"].items():
-        fpr = result["narration_false_positive_rate"]
-        vpr = result["verified_positive_rate"]
-        verdict = "LEAK" if fpr > 0 else "clean"
-        print(
-            f"  {scorer}: narration_fpr={fpr} ({result['narration_false_positives_implied']}"
-            f"/{result['narration_fixtures']}) verified_positive={vpr} [{verdict}]"
-        )
-    print("report only — scoring authority stays with fitness.py's non-tradeable gates")
-    return 0
-
-
 def _validated_export(
     export: Path,
     groups: dict[str, list[PromotedPatch]],

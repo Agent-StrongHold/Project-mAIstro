@@ -15,7 +15,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision = "034"
-down_revision = "034_canonical_run_effect_claim"
+down_revision = "033"
 branch_labels = None
 depends_on = None
 

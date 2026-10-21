@@ -44,7 +44,6 @@ from maistro.ontology.protocols import Ontology
 from maistro.ontology.registry import InMemoryOntology
 from maistro.ontology.rubric import (
     RUBRIC_KIND,
-    RUBRIC_RUN_BINDING_KIND,
     NumericScale,
     PackRubricCatalog,
     PassFailScale,
@@ -53,13 +52,11 @@ from maistro.ontology.rubric import (
     RubricDimension,
     RubricGate,
     RubricProvenance,
-    RubricRunBindingSemantic,
     RubricScale,
     RubricSemantic,
     ScoringMethod,
     register_rubric_kind,
     rubric_entity_id,
-    rubric_run_binding_entity_id,
 )
 from maistro.ontology.types import (
     Facet,
@@ -71,7 +68,6 @@ from maistro.ontology.types import (
 
 __all__ = [
     "RUBRIC_KIND",
-    "RUBRIC_RUN_BINDING_KIND",
     "Facet",
     "InMemoryOntology",
     "KindAlreadyRegisteredError",
@@ -87,11 +83,9 @@ __all__ = [
     "RubricDimension",
     "RubricGate",
     "RubricProvenance",
-    "RubricRunBindingSemantic",
     "RubricScale",
     "RubricSemantic",
     "ScoringMethod",
     "register_rubric_kind",
     "rubric_entity_id",
-    "rubric_run_binding_entity_id",
 ]

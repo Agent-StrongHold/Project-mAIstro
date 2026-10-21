@@ -7,7 +7,6 @@ import time
 from typing import Any
 
 import pytest
-from pydantic import ValidationError
 from services.dag_execution_scope import DagExecutionScope
 
 from maistro.runs.model import AttemptStatus
@@ -19,6 +18,13 @@ def execution_scope(canonical_graph_spine) -> DagExecutionScope:
         workspace_id="test-workspace",
         project_id=canonical_graph_spine.project_id,
         user_id="test-user",
+    )
+
+
+@pytest.fixture
+def execution_scope() -> DagExecutionScope:
+    return DagExecutionScope(
+        workspace_id="test-workspace", project_id="test-project", user_id="test-user"
     )
 
 
@@ -355,28 +361,27 @@ async def test_scope_uses_only_the_authorized_immutable_scope(
 ) -> None:
     import services.canonical_dag_runner as runner
 
+    class _Container:
+        run_store = "the-canonical-run-store"
+
     scope = DagExecutionScope(
         workspace_id="ws-authorized", project_id="root-project", user_id="user-1"
     )
-    monkeypatch.setattr(runner, "_container", lambda: None)
+    monkeypatch.setattr(runner, "_container", lambda: _Container())
 
-    workspace, project = await runner._scope(
+    workspace, project, run_store = await runner._scope(
         {"workspace_id": "legacy-injection", "project_id": "legacy-project"},
         scope=scope,
         workspace_id=None,
         project_id=None,
     )
 
-    assert (workspace, project) == (
+    assert (workspace, project, run_store) == (
         "ws-authorized",
         "root-project",
+        "the-canonical-run-store",
     )
-
-    # Read-only scope resolution remains usable without execution authority.
-    assert await runner.resolve_execution_scope(
-        {"workspace_id": "legacy-injection", "project_id": "legacy-project"},
-        scope=scope,
-    ) == (workspace, project)
+    monkeypatch.setattr(runner, "_container", lambda: None)
 
 
 @pytest.mark.asyncio

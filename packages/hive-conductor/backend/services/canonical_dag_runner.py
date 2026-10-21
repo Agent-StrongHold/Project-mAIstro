@@ -25,9 +25,8 @@ from maistro.graph.durable_runs import (
 from maistro.graph.policies import resolve_max_cycles, resolve_node_timeout_s
 from maistro.graph.types import DEFAULT_SYSTEM_PROMPTS, JSON_OUTPUT_SCHEMAS, AgentRole
 from maistro.runs.model import TERMINAL_RUN_STATUSES, Run
-from services.dag_agents import _container, require_graph_execution_spine
+from services.dag_agents import _container, get_run_store
 from services.dag_execution_scope import DagExecutionScope, DagWorkspaceSelectionError
-from services.governed_model import dag_node_runtime
 from services.legacy_dag_node import LegacyConductorNode, OnResponseHook
 from services.node_metrics_store import record_run_completion
 from services.scan_continuations import scan_continuation
@@ -370,7 +369,7 @@ async def _scope(
     scope: DagExecutionScope | None,
     workspace_id: str | None,
     project_id: str | None,
-) -> tuple[str, str]:
+) -> tuple[str, str, Any]:
     del dag_data
     if scope is None:
         raise DagWorkspaceSelectionError("authorized DAG execution scope is required")
@@ -378,7 +377,12 @@ async def _scope(
         raise DagWorkspaceSelectionError("workspace_id does not match authorized scope")
     if project_id is not None and project_id != scope.project_id:
         raise DagWorkspaceSelectionError("project_id does not match authorized scope")
-    return scope.workspace_id, scope.project_id
+    container = _container()
+    return (
+        scope.workspace_id,
+        scope.project_id,
+        container.run_store if container is not None else None,
+    )
 
 
 def _node_env(
@@ -406,8 +410,6 @@ def _resolver(
     on_response: OnResponseHook | None,
     llm_builder: Callable[[OnResponseHook | None], Any] | None,
     effect_context: Any = None,
-    governed_runtime: Any = None,
-    progress: Any = None,
 ):
     def resolve(node_id: str, _graph: Graph) -> LegacyConductorNode:
         try:
@@ -422,8 +424,6 @@ def _resolver(
             on_response=on_response,
             llm_builder=llm_builder,
             effect_context=effect_context,
-            governed_runtime=governed_runtime,
-            progress=progress,
         )
 
     return resolve
@@ -460,8 +460,9 @@ def _recovery_resolver(run: Run):
         execution_mode=execution_mode,
         on_response=None,
         llm_builder=None,
-        effect_context=(getattr(container, "capability_effects", None) if container else None),
-        governed_runtime=dag_node_runtime(container),
+        effect_context=(
+            getattr(_container(), "capability_effects", None) if _container() else None
+        ),
     )
 
 
@@ -574,31 +575,8 @@ async def execute_dag(
     project_id: str | None = None,
     llm_builder: Callable[[OnResponseHook | None], Any] | None = None,
     scope: DagExecutionScope | None = None,
-    on_admitted: Callable[[str], Awaitable[Any]] | None = None,
 ) -> dict[str, Any]:
-    """Run a shipped Hive DAG as one canonical durable Graph Run.
-
-    ``on_event`` (#1183) is an optional live per-node progress sink: it is
-    awaited with one event dict per node transition (``node_started`` /
-    ``node_completed`` / ``node_failed``) carrying the executing NodeRun's
-    canonical identity (``run_id``/``node_run_id``/``attempt_id``). It is a
-    presentation seam only -- it can neither change traversal nor outcomes,
-    and a raising sink is suppressed by the node adapter. Durable recovery
-    never attaches one: there is no live stream to serve.
-
-    ``on_admitted`` (#1332) is the admission seam for producers that opened a
-    projection row under their own execution id before calling this: it is
-    awaited exactly once with the admitted canonical Run id, after
-    ``create_run`` and BEFORE ``run_durable_graph`` starts any physical work,
-    so the producer can persist the projection -> canonical Run correlation
-    while the execution is still cancellable rather than after it settles.
-    Like ``on_event`` it is a presentation seam: a raising sink is suppressed
-    and logged, because the canonical Run is already admitted at that point
-    and aborting execution over a projection write would strand it QUEUED for
-    recovery while the caller is told the DAG failed. Missing canonical authority
-    refuses execution before admission, so the sink never fires and the
-    projection row keeps its honest empty correlation.
-    """
+    """Run a shipped Hive DAG as one canonical durable Graph Run."""
     if scope is None:
         # Keep the user parameter only as a consistency check for old callers;
         # it is never an authorization source.
@@ -606,7 +584,7 @@ async def execute_dag(
     if user_id and user_id != scope.user_id:
         raise DagWorkspaceSelectionError("user_id does not match authorized scope")
     user_id = scope.user_id
-    resolved_workspace, resolved_project = await _scope(
+    resolved_workspace, resolved_project, canonical_run_store = await _scope(
         dag_data,
         scope=scope,
         workspace_id=workspace_id,
@@ -665,15 +643,10 @@ async def execute_dag(
             execution_mode=execution_mode,
             on_response=on_response,
             llm_builder=llm_builder,
-            progress=on_event,
-            effect_context=(getattr(container, "capability_effects", None) if container else None),
-            governed_runtime=dag_node_runtime(container),
-        )
-
-    record = await run_durable_graph(
-        graph,
-        store=container.graph_run_store,
-        node_resolver=_build_resolver(),
+            effect_context=(
+                getattr(_container(), "capability_effects", None) if _container() else None
+            ),
+        ),
         actor_principal_id=user_id or None,
         run_id=admitted_run_id,
         run_store=canonical_run_store,

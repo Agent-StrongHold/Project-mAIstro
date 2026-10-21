@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from itertools import count
 from types import SimpleNamespace
@@ -11,7 +10,6 @@ from typing import Any
 from uuid import UUID
 
 import pytest
-from canvas_testing.job_store_contract import InMemoryJobStore
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -170,15 +168,6 @@ class _ImageClient:
 
     async def refine(self, **_kwargs: object) -> ImageData:
         return ImageData(width=64, height=64, url="image://refined")
-
-
-class _CountingImageClient(_ImageClient):
-    def __init__(self) -> None:
-        self.generate_calls = 0
-
-    async def generate(self, **kwargs: object) -> list[ImageData]:
-        self.generate_calls += 1
-        return await super().generate(**kwargs)
 
 
 class _FailThenSucceedImageClient(_ImageClient):
@@ -381,7 +370,6 @@ async def test_provider_retry_keeps_both_sanitised_attempts_inspectable() -> Non
         canvas_id="canvas-1",
         layer_id="layer-1",
         action=JobAction.GENERATE,
-        actor_principal_id=_TEST_ACTOR,
     )
     job.max_attempts = 2
 
@@ -461,7 +449,6 @@ async def test_restart_reconciles_admission_gap_and_idempotent_retry_reuses_run(
             action=JobAction.GENERATE,
             prompt="safe",
             idempotency_key="generation-1",
-            actor_principal_id=_TEST_ACTOR,
         )
     queued = await runs.list_by_status(RunStatus.QUEUED, limit=10)
     assert len(queued) == 1
@@ -486,7 +473,6 @@ async def test_restart_reconciles_admission_gap_and_idempotent_retry_reuses_run(
         action=JobAction.GENERATE,
         prompt="safe",
         idempotency_key="generation-1",
-        actor_principal_id=_TEST_ACTOR,
     )
     assert retried.id == repaired[0].id
     all_runs = [
@@ -767,7 +753,6 @@ async def test_whitespace_idempotency_key_starts_a_new_operation_each_time() -> 
         action=JobAction.GENERATE,
         prompt="safe",
         idempotency_key="   ",
-        actor_principal_id=_TEST_ACTOR,
     )
     assert "canvas_operation_id" not in first.params
 
@@ -781,7 +766,6 @@ async def test_whitespace_idempotency_key_starts_a_new_operation_each_time() -> 
         action=JobAction.GENERATE,
         prompt="safe",
         idempotency_key="   ",
-        actor_principal_id=_TEST_ACTOR,
     )
 
     assert second.id != first.id
@@ -805,7 +789,6 @@ async def test_retry_of_active_operation_returns_the_active_receipt() -> None:
         action=JobAction.GENERATE,
         prompt="safe",
         idempotency_key="generation-1",
-        actor_principal_id=_TEST_ACTOR,
     )
     retried = await executor.start_job(
         org_id=_CanvasStore.ORG,
@@ -814,7 +797,6 @@ async def test_retry_of_active_operation_returns_the_active_receipt() -> None:
         action=JobAction.GENERATE,
         prompt="safe",
         idempotency_key="generation-1",
-        actor_principal_id=_TEST_ACTOR,
     )
 
     assert retried.id == first.id
@@ -845,7 +827,6 @@ async def test_retry_of_active_operation_with_changed_inputs_is_rejected() -> No
         action=JobAction.GENERATE,
         prompt="safe",
         idempotency_key="generation-mismatch",
-        actor_principal_id=_TEST_ACTOR,
     )
 
     with pytest.raises(RunIntegrityError, match="retried with different inputs"):
@@ -856,7 +837,6 @@ async def test_retry_of_active_operation_with_changed_inputs_is_rejected() -> No
             action=JobAction.GENERATE,
             prompt="a completely different prompt",
             idempotency_key="generation-mismatch",
-            actor_principal_id=_TEST_ACTOR,
         )
 
 
@@ -903,7 +883,6 @@ async def test_terminal_retry_with_a_durable_receipt_skips_a_replacement_admissi
         action=JobAction.GENERATE,
         prompt="safe",
         idempotency_key="generation-durable",
-        actor_principal_id=_TEST_ACTOR,
     )
     assert canonical.admit_calls == 1
     # Terminal, as a completed generation's receipt would be -- and no longer
@@ -917,7 +896,6 @@ async def test_terminal_retry_with_a_durable_receipt_skips_a_replacement_admissi
         action=JobAction.GENERATE,
         prompt="safe",
         idempotency_key="generation-durable",
-        actor_principal_id=_TEST_ACTOR,
     )
 
     assert retried.id == first.id
@@ -954,22 +932,11 @@ class _StallThenSucceedImageClient(_ImageClient):
         return await super().generate(**kwargs)
 
 
-@pytest.mark.parametrize("id_marker", ["401", "403", "429", "503", "402"])
-async def test_execution_deadline_is_a_retryable_timeout_not_a_user_cancellation(
-    monkeypatch: pytest.MonkeyPatch, id_marker: str
-) -> None:
+async def test_execution_deadline_is_a_retryable_timeout_not_a_user_cancellation() -> None:
     """Codex #1560: a stalled provider call hitting ``max_execution_seconds``
     must be recorded canonically as a timed-out Attempt the NodeRun can retry,
     never as a requested cancellation that terminalizes the Run and breaks
     every remaining retry."""
-    sequence = count()
-
-    def controlled_uuid() -> UUID:
-        # #1762: random Attempt IDs containing 401/403 were misclassified as
-        # permanent auth faults. Keep IDs unique, but reproduce the marker.
-        return UUID(f"16e5402cfaec{id_marker}0ba717ef5{next(sequence):08x}")
-
-    monkeypatch.setattr(run_model, "uuid", SimpleNamespace(uuid4=controlled_uuid))
     projects = InMemoryProjectScopeStore()
     root = await projects.create_root("workspace-1")
     runs = InMemoryRunStore(project_store=projects)
@@ -982,30 +949,23 @@ async def test_execution_deadline_is_a_retryable_timeout_not_a_user_cancellation
         run_store=runs,
         workspace_id="workspace-1",
         project_id=root.project_id,
-        # Exercise the real runtime deadline without changing its existing budget.
-        max_execution_seconds=2.0,
+        max_execution_seconds=0.3,
     )
     job = await runtime.executor.start_job(
         org_id=_CanvasStore.ORG,
         canvas_id="canvas-1",
         layer_id="layer-1",
         action=JobAction.GENERATE,
-        actor_principal_id=_TEST_ACTOR,
     )
     job.max_attempts = 2
     runner = runtime.runner
     assert isinstance(runner, CanvasJobRunner)
 
-    assert await asyncio.wait_for(runner.tick_once(), timeout=10) is True
-    assert job.attempts == 1
-    assert job.max_attempts == 2
-    run_id = canonical_run_id(job.params)
-    assert run_id is not None
-    first_nodes = await runs.list_node_runs(run_id)
-    first_attempts = await runs.list_attempts(first_nodes[0].node_run_id)
-    assert [attempt.status for attempt in first_attempts] == [AttemptStatus.TIMED_OUT]
+    assert await asyncio.wait_for(runner.tick_once(), timeout=5) is True
     assert job.status == JobStatus.PENDING
     assert job.error_message is None
+    run_id = canonical_run_id(job.params)
+    assert run_id is not None
     parked = await runs.get_run(run_id)
     assert parked is not None
     assert parked.status is not RunStatus.CANCELLED
@@ -1043,7 +1003,6 @@ async def test_execution_deadline_at_the_retry_ceiling_fails_both_sides_consiste
         canvas_id="canvas-1",
         layer_id="layer-1",
         action=JobAction.GENERATE,
-        actor_principal_id=_TEST_ACTOR,
     )
     job.max_attempts = 1
 

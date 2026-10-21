@@ -158,7 +158,6 @@ async def test_enable_disable_and_max_runs_leave_identical_rows(backend: Backend
             name="hourly",
             cron="0 * * * *",
             graph_template_id=TEMPLATE_ID,
-            actor_principal_id="test-actor-principal",
             max_runs=2,
             created_at=NOON - timedelta(days=30),
             last_fired_at=NOON - timedelta(hours=1),
@@ -228,7 +227,6 @@ async def test_a_not_yet_due_schedule_records_its_cursor_and_leaves_due(
             name="hourly",
             cron="0 * * * *",
             graph_template_id=TEMPLATE_ID,
-            actor_principal_id="test-actor-principal",
             created_at=NOON + timedelta(seconds=1),
         )
     )
@@ -270,7 +268,6 @@ async def test_a_timezone_edit_cannot_re_eligibil_an_already_claimed_instant(
             name="hourly",
             cron="0 * * * *",
             graph_template_id=TEMPLATE_ID,
-            actor_principal_id="test-actor-principal",
             overlap_policy=OverlapPolicy.ALLOW,
             catchup_window_seconds=6 * 3600.0,
             created_at=NOON - timedelta(days=30),
@@ -302,33 +299,3 @@ async def test_a_timezone_edit_cannot_re_eligibil_an_already_claimed_instant(
         "last_fired_at": NOON + timedelta(hours=2),
         "next_due_at": NOON + timedelta(hours=3),
     }
-
-
-async def test_future_manual_markers_are_selected_without_changing_recurrence(
-    backend: Backend,
-) -> None:
-    future = NOON + timedelta(days=365)
-    schedule = await backend.schedules.put(
-        Schedule(
-            schedule_id=SCHEDULE_ID,
-            workspace_id=WORKSPACE,
-            project_id=backend.project_id,
-            name="pending manual",
-            cron="0 * * * *",
-            graph_template_id=TEMPLATE_ID,
-            actor_principal_id="test-actor-principal",
-            next_due_at=future,
-        )
-    )
-    assert await backend.schedules.due(now=NOON) == []
-    reserved = await backend.schedules.reserve_fire(SCHEDULE_ID, fire_id="pending")
-    assert reserved is not None and reserved.next_due_at == future
-    assert [row.schedule_id for row in await backend.schedules.due(now=NOON)] == [SCHEDULE_ID]
-    # Selection cannot itself spend/release a reservation or rewrite the cursor.
-    assert await backend.schedules.get(SCHEDULE_ID) == reserved
-    await backend.schedules.put(schedule.model_copy(update={"enabled": False}))
-    assert await backend.schedules.due(now=NOON) == []
-    await backend.schedules.put(schedule)
-    await backend.schedules.settle_pending_fire(SCHEDULE_ID, "pending", run_id=None)
-    assert await backend.schedules.due(now=NOON) == []
-    assert (await backend.schedules.get(SCHEDULE_ID)).next_due_at == future

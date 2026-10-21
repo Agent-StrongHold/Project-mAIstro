@@ -230,7 +230,8 @@ class DefaultWorkspaceResponse(BaseModel):
 @router.post("/default", response_model=DefaultWorkspaceResponse)
 async def ensure_default_workspace(request: Request) -> DefaultWorkspaceResponse:
     """The caller's default Workspace and its Workspace Agent, created on first need (#1037)."""
-    user_id = require_actor_id(request)
+    user = getattr(request.state, "user", None) or {}
+    user_id = str(user.get("id") or user.get("username") or "")
     if not user_id:
         raise HTTPException(status_code=401, detail="a default workspace needs a known principal")
     try:

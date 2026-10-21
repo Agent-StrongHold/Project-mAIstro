@@ -194,64 +194,6 @@ async def test_log_tool_name_none_becomes_empty_string(
 
 
 @pytest.mark.asyncio
-async def test_persisted_deny_row_verifies_as_reconstructed(
-    log: PgAuditLog, conn: FakeConnection
-) -> None:
-    """The row PgAuditLog writes must verify when read back as a durable row.
-
-    Durable stores never serialize the violations tuple, so the INSERT params
-    are the whole persisted record: rebuilding an AuditEntry from them and
-    verifying is the exact restart contract, exercised for a deny decision
-    that carries violations.
-    """
-    await log.log(
-        SentinelAuditEntry(
-            boundary="tool_call",
-            user_id="u1",
-            tool_name="bash",
-            verdict="denied",
-            violations=(
-                SentinelViolation(
-                    boundary="tool_call", rule="dangerous-command", severity="high", detail="d"
-                ),
-            ),
-        )
-    )
-
-    (
-        boundary,
-        user_id,
-        org_id,
-        team_id,
-        agent_id,
-        tool_name,
-        verdict,
-        detail,
-        trace_id,
-        request_id,
-        signature,
-        signing_key_id,
-        proof_type,
-    ) = conn.calls[0].args
-    row = AuditEntry(
-        boundary=boundary,
-        user_id=user_id,
-        org_id=org_id,
-        team_id=team_id,
-        agent_id=agent_id,
-        tool_name=tool_name or None,
-        verdict=verdict,
-        detail=detail,
-        trace_id=trace_id,
-        request_id=request_id,
-        signature=signature,
-        signing_key_id=signing_key_id,
-        proof_type=proof_type,
-    )
-    assert log.verify(row)
-
-
-@pytest.mark.asyncio
 async def test_log_team_id_passthrough_when_present(log: PgAuditLog, conn: FakeConnection) -> None:
     entry = AuditEntry(boundary="b", user_id="u", team_id="team-9", agent_id="a")
     await log.log(entry)
@@ -425,41 +367,3 @@ async def test_real_postgres_two_org_scope_and_schema(
 
     assert [entry.boundary for entry in entries] == ["org-a"]
     assert all(entry.org_id == "org-a" for entry in entries)
-
-
-@pytest.mark.asyncio
-async def test_real_postgres_ensure_schema_tolerates_unmigrated_database(pg_pool: Any) -> None:
-    """The absent-table branch is real PostgreSQL behavior, not a mock: on a
-    database where `audit_log` does not exist (renamed away here to mirror the
-    fresh server the durable-events leg wires), `ensure_schema` returns without
-    error and without creating anything, and once the table is back it still
-    performs the idempotent proof-column backfill against the live server."""
-    if pg_pool is None:
-        pytest.skip("MAISTRO_TEST_PG_DSN is not set")
-
-    probe = "SELECT to_regclass('public.audit_log') IS NOT NULL"
-    async with pg_pool.acquire() as conn:
-        await conn.execute("ALTER TABLE audit_log RENAME TO audit_log_ensure_probe")
-    try:
-        await PgAuditLog(pg_pool, signer=AuditSigner(bytes(32))).ensure_schema()
-        async with pg_pool.acquire() as conn:
-            assert await conn.fetchval(probe) is False
-    finally:
-        async with pg_pool.acquire() as conn:
-            await conn.execute("ALTER TABLE audit_log_ensure_probe RENAME TO audit_log")
-
-    # Present-table path: the backfill runs and the proof columns really exist.
-    await PgAuditLog(pg_pool, signer=AuditSigner(bytes(32))).ensure_schema()
-    async with pg_pool.acquire() as conn:
-        columns = await conn.fetch(
-            """SELECT column_name
-               FROM information_schema.columns
-               WHERE table_name = 'audit_log'
-                 AND column_name IN ('signature', 'signing_key_id', 'proof_type')
-               ORDER BY column_name"""
-        )
-    assert [row["column_name"] for row in columns] == [
-        "proof_type",
-        "signature",
-        "signing_key_id",
-    ]

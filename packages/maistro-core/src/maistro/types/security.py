@@ -78,10 +78,6 @@ class AuditEntry:
     trace_id: str = ""
     request_id: str = ""
     detail: str = ""
-    # ADR-073 decision proof. The audit store signs before retaining this row.
-    signature: str = ""
-    signing_key_id: str = ""
-    proof_type: str = ""
     # Correlation and route metadata are identifiers only; boundary consumers
     # must never put scanned content in an audit entry. (#1139: the Turing
     # ingress composes these onto the canonical record.)

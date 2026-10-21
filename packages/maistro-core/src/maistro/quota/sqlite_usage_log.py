@@ -109,15 +109,6 @@ class SqliteUsageLog:
             columns = await cursor.fetchall()
             if not any(row[1] == "event_id" for row in columns):
                 await self._conn.execute("ALTER TABLE usage_events ADD COLUMN event_id TEXT")
-            # Additive, nullable, no backfill: rows written before these
-            # columns existed genuinely have no provenance, and a default
-            # would be an invented one.
-            present = {row[1] for row in columns}
-            for column, sql_type in _PROVENANCE_COLUMNS:
-                if column not in present:
-                    await self._conn.execute(
-                        f"ALTER TABLE usage_events ADD COLUMN {column} {sql_type}"
-                    )
             await self._conn.execute(
                 "UPDATE usage_events SET event_id = 'legacy:' || rowid WHERE event_id IS NULL"
             )
@@ -145,10 +136,6 @@ class SqliteUsageLog:
                     event.output_tokens,
                     event.images,
                     event.cost_usd,
-                    event.invocation_id,
-                    event.provider,
-                    event.billing_cycle,
-                    None if event.usage_reported is None else int(event.usage_reported),
                 )
                 for scope_key in log.scope_keys()
                 for event in log.events_for(scope_key)
@@ -157,9 +144,8 @@ class SqliteUsageLog:
                 return
             await self._conn.executemany(
                 "INSERT INTO usage_events "
-                "(event_id, scope_key, timestamp, input_tokens, output_tokens, images, cost_usd, "
-                " invocation_id, provider, billing_cycle, usage_reported) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "(event_id, scope_key, timestamp, input_tokens, output_tokens, images, cost_usd) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?) "
                 "ON CONFLICT (event_id) DO NOTHING",
                 rows,
             )
@@ -175,36 +161,16 @@ class SqliteUsageLog:
         reproduced exactly rather than re-derived.
 
         Event identities are restored along with their usage values, so a
-        later snapshot of the restored log remains idempotent as well -- and
-        so is the canonical Invocation provenance the recorder attaches. It
-        was being dropped: `snapshot` wrote seven columns and `restore` read
-        the same seven, so every SQLite restart silently discarded the
-        invocation identity, the provider, the billing cycle and the
-        reported/unreported distinction, defeating the durable audit value
-        those fields exist for (Codex, #1362).
+        later snapshot of the restored log remains idempotent as well.
         """
         log = InMemoryUsageLog(max_retention_s=max_retention_s)
         async with self._operation_lock:
             cursor = await self._conn.execute(
-                "SELECT event_id, scope_key, timestamp, input_tokens, output_tokens, images, "
-                "cost_usd, invocation_id, provider, billing_cycle, usage_reported "
+                "SELECT event_id, scope_key, timestamp, input_tokens, output_tokens, images, cost_usd "
                 "FROM usage_events ORDER BY timestamp ASC, event_id ASC"
             )
             rows = await cursor.fetchall()
-        for row in rows:
-            (
-                event_id,
-                scope_key,
-                timestamp,
-                input_tokens,
-                output_tokens,
-                images,
-                cost_usd,
-                invocation_id,
-                provider,
-                billing_cycle,
-                usage_reported,
-            ) = row
+        for event_id, scope_key, timestamp, input_tokens, output_tokens, images, cost_usd in rows:
             log.record(
                 scope_key,
                 input_tokens=input_tokens,
@@ -213,10 +179,6 @@ class SqliteUsageLog:
                 cost_usd=cost_usd,
                 now=timestamp,
                 event_id=event_id,
-                invocation_id=invocation_id,
-                provider=provider,
-                billing_cycle=billing_cycle,
-                usage_reported=None if usage_reported is None else bool(usage_reported),
             )
         return log
 

@@ -102,11 +102,6 @@ test.describe("PM Workflow — Full UI Walkthrough", () => {
     await loginAsPM(page);
     await elevateDagWrites(page, "e2e-run-dag");
     const workspaceId = await createWorkspace(page, "E2E Run Test Workspace");
-    // docker-compose.test.yml intentionally configures no core bridge or
-    // gateway. Activation is definition state, not execution authority (#1113).
-    const health = await page.request.get("/health");
-    expect(health.status()).toBe(200);
-    expect((await health.json()).engine.graph_execution_available).toBe(false);
 
     const createResp = await page.request.post("/v1/dags", {
       data: { name: "E2E Run Test", description: "test" },

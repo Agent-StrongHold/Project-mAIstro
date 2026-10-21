@@ -52,9 +52,7 @@ class GatewayEndpoint(BaseModel):
     """Where the one approved model Provider sends traffic; secrets stay here.
 
     ``base_url`` is the gateway root (a ``/v1`` suffix is appended when absent,
-    matching the shipped LiteLLM gateway convention). A consumer holding a
-    configured API prefix opts into ``base_url_is_api_base`` to retain its exact
-    path. This leaves adapter-owned SDK URLs unchanged. The API key never enters
+    matching the shipped LiteLLM gateway convention). The API key never enters
     a Binding, Invocation request, or persisted result. Governed production
     model egress replaces ``api_key`` with the scoped credential selected from
     the resolved Binding before it crosses the physical executor seam.
@@ -161,71 +159,7 @@ class ModelChatRequest(BaseModel):
     temperature: float | None = 0.7
     max_tokens: int | None = None
     tools: list[dict[str, object]] | None = None
-    tool_choice: str | None = None
     response_format: dict[str, object] | None = None
-
-
-def _adapter_request_headers(spec: Any, *, api_key: str) -> dict[str, str]:
-    """Present a resolved credential per the adapter's declared auth style.
-
-    ``spec`` is a :class:`~maistro.capabilities.provider_adapters.ProviderAdapterSpec`;
-    it is typed loosely because importing the SDK at module level would close
-    an import cycle (the SDK imports this module's capability constant). The
-    secret only ever arrives from credential resolution; an adapter declaring
-    a style without a resolved credential sends unauthenticated and fails at
-    the provider, exactly like the gateway path with an empty key.
-    """
-
-    from maistro.capabilities.provider_adapters import AdapterAuthStyle
-
-    headers = {"Content-Type": "application/json"}
-    if not api_key:
-        return headers
-    if spec.auth_style == AdapterAuthStyle.BEARER:
-        headers["Authorization"] = f"{spec.auth_scheme} {api_key}".strip()
-    elif spec.auth_style == AdapterAuthStyle.HEADER:
-        headers[str(spec.auth_header_name)] = f"{spec.auth_scheme} {api_key}".strip()
-    return headers
-
-
-def _adapter_query_params(spec: Any, *, api_key: str) -> dict[str, str] | None:
-    """Query-string credential presentation for the ``query`` auth style."""
-
-    from maistro.capabilities.provider_adapters import AdapterAuthStyle
-
-    if spec.auth_style == AdapterAuthStyle.QUERY and api_key:
-        return {str(spec.auth_query_param): api_key}
-    return None
-
-
-def _adapter_error(spec: Any, adapter: Any, status: int) -> Exception:
-    """Raise the canonical exception the adapter's taxonomy kind selects.
-
-    The adapter maps a status to an :class:`~maistro.capabilities.provider_adapters.
-    AdapterErrorKind` constant; this module owns which canonical exception that
-    kind becomes, so an adapter can classify but never invent an error type the
-    canonical resilience classifier does not know (it reads ``status_code`` off
-    :class:`LlmAuthError`/:class:`LlmHttpError` for cooldown/block decisions).
-    """
-
-    from maistro.capabilities.provider_adapters import AdapterErrorKind
-
-    kind = adapter.error_kind_for(status)
-    if kind == AdapterErrorKind.AUTH:
-        return LlmAuthError(
-            f"llm_auth_failed status={status} (adapter {spec.adapter_id!r} "
-            "rejected the resolved credential)",
-            status_code=status,
-        )
-    if kind == AdapterErrorKind.RATE_LIMITED:
-        return LlmHttpError(
-            f"llm_rate_limited status={status} (adapter {spec.adapter_id!r})",
-            status_code=status,
-        )
-    return LlmHttpError(
-        f"llm_http_error status={status} (adapter {spec.adapter_id!r}, kind={kind!r})",
-        status_code=status,
-    )
 
 
 def _chat_payload(provider: LlmGatewayProvider, request: ModelChatRequest) -> dict[str, object]:
@@ -242,8 +176,6 @@ def _chat_payload(provider: LlmGatewayProvider, request: ModelChatRequest) -> di
         payload["max_tokens"] = request.max_tokens
     if request.tools:
         payload["tools"] = [dict(tool) for tool in request.tools]
-    if request.tool_choice:
-        payload["tool_choice"] = request.tool_choice
     if request.response_format is not None:
         payload["response_format"] = dict(request.response_format)
     return payload
@@ -494,6 +426,5 @@ __all__ = [
     "ModelChatRequest",
     "ProviderRegistrationError",
     "execute_model_chat",
-    "probe_adapter_health",
     "register_provider_models",
 ]

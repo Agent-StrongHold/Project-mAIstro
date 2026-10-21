@@ -497,7 +497,9 @@ def test_a_schedule_firing_mints_its_own_request_id() -> None:
                 _ScheduleRunner()._fire_schedule("s-reqid", stub, scheduled_for=scheduled_for)
             )
 
-        runs = _canonical_fixture_runs()
+        from services.dag_agents import _fallback_run_store
+
+        runs = [r.run for r in _fallback_run_store._rows.values()]  # type: ignore[attr-defined]
         scheduled = [r for r in runs if r.provenance.get("schedule_id") == "s-reqid"]
         assert len(scheduled) == 1
         request_id = scheduled[0].provenance.get("request_id")
@@ -538,7 +540,9 @@ def test_two_firings_of_the_same_schedule_get_different_request_ids() -> None:
             )
         )
 
-        runs = _canonical_fixture_runs()
+        from services.dag_agents import _fallback_run_store
+
+        runs = [r.run for r in _fallback_run_store._rows.values()]  # type: ignore[attr-defined]
         scheduled = [r for r in runs if r.provenance.get("schedule_id") == "s-reqid-2"]
         assert len(scheduled) == 2
         ids = {r.provenance.get("request_id") for r in scheduled}
@@ -1091,7 +1095,9 @@ def test_a_manual_run_preserves_the_http_requests_id(monkeypatch: pytest.MonkeyP
         with bind_execution_context(request_id="http-req-42"):
             run_id = asyncio.run(fire_now("s-man-reqid"))
 
-        run = next(row for row in _canonical_fixture_runs() if row.run_id == run_id)
+        from services.dag_agents import _fallback_run_store
+
+        run = _fallback_run_store._rows[run_id].run  # type: ignore[attr-defined]
         assert run.provenance["request_id"] == "http-req-42"
     finally:
         stores.schedules._data.pop("s-man-reqid", None)  # type: ignore[attr-defined]
@@ -1115,7 +1121,9 @@ def test_a_manual_run_with_no_ambient_request_mints_its_own(
     try:
         run_id = asyncio.run(fire_now("s-man-noreqid"))
 
-        run = next(row for row in _canonical_fixture_runs() if row.run_id == run_id)
+        from services.dag_agents import _fallback_run_store
+
+        run = _fallback_run_store._rows[run_id].run  # type: ignore[attr-defined]
         assert run.provenance.get("request_id")
     finally:
         stores.schedules._data.pop("s-man-noreqid", None)  # type: ignore[attr-defined]

@@ -185,7 +185,7 @@ def workflow_step() -> dict:
     workflow = yaml.safe_load((ROOT / ".github/workflows/quality.yml").read_text(encoding="utf-8"))
     candidates = [
         step
-        for step in workflow["jobs"]["quality-pyright"]["steps"]
+        for step in workflow["jobs"]["quality-gate"]["steps"]
         if str(step.get("name", "")).startswith("pyright (")
     ]
     assert len(candidates) == 1

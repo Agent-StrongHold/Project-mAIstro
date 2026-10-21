@@ -125,7 +125,6 @@ async def test_a_run_claiming_an_occurrence_is_never_archived(spine: Any) -> Non
     claiming = await store.create_run(
         graph,
         provenance={SCHEDULE_ID_KEY: "sched-1", SCHEDULED_FOR_KEY: NOW.isoformat()},
-        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
     store._runs[claiming.run_id] = claiming.model_copy(
         update={"status": RunStatus.COMPLETED, "finished_at": COLD, "retention_expires_at": None}

@@ -109,8 +109,7 @@ COPY pyproject.toml uv.lock README.md ./
 # Static docker CLI (talks to a mounted /var/run/docker.sock) — a single static
 # binary, no daemon. 29-cli ships a binary built with go1.26.8; older 27-cli
 # binaries embedded go1.22.11 (CVE-2025-68121 crypto/tls + 21 HIGHs, trivy).
-# Digest-pinned (#349): the installer/tool image is as immutable as the base.
-COPY --from=docker:29-cli@sha256:018edbc908e08fcc9dbf029c812c34251e9b4719e6f71ca0e5eae2a987d014ca /usr/local/bin/docker /usr/local/bin/docker
+COPY --from=docker:29-cli /usr/local/bin/docker /usr/local/bin/docker
 EXPOSE 8000
 STOPSIGNAL SIGTERM
 # Drop to an unprivileged numeric uid for runtime.

@@ -40,36 +40,6 @@ def validate_permission_preset(value: str) -> str:
     return value
 
 
-def _has_http_origin_authority(parsed: SplitResult) -> bool:
-    """Require a plain HTTP authority, without userinfo or URL components."""
-    port = parsed.port  # May raise for malformed/out-of-range ports.
-    return (
-        parsed.scheme == "http"
-        and parsed.username is None
-        and parsed.password is None
-        and not parsed.netloc.endswith(":")
-        and not any((parsed.path, parsed.query, parsed.fragment))
-        and (port is None or port > 0)
-    )
-
-
-def _is_http_loopback_origin(origin: str) -> bool:
-    """Classify the local HTTP warning exception without trusting URL prefixes."""
-    if any(char in origin for char in "\\?#") or any(
-        ord(char) <= 32 or ord(char) == 127 for char in origin
-    ):
-        return False
-    try:
-        parsed = urlsplit(origin)
-        return _has_http_origin_authority(parsed) and parsed.hostname in {
-            "localhost",
-            "127.0.0.1",
-            "::1",
-        }
-    except ValueError:
-        return False
-
-
 def validate_cors_origins(origins: list[str]) -> list[str]:
     """Reject CORS origins that would defeat the browser's same-origin policy.
 
@@ -331,11 +301,6 @@ class Settings(BaseSettings):
     rate_limit_burst: int = BASELINE_RATE_LIMIT_BURST
     circuit_breaker_failure_threshold: int = BASELINE_CIRCUIT_FAILURE_THRESHOLD
     circuit_breaker_recovery_timeout_s: float = BASELINE_CIRCUIT_RECOVERY_TIMEOUT_S
-    # Upper bound on distinct LLM failure domains tracked by the per-provider
-    # circuit bank (#1203): memory stays bounded for dynamically discovered
-    # providers. Not a resource-security floor — it bounds breaker bookkeeping,
-    # not exposure — so it needs no unsafe override to tune.
-    circuit_breaker_max_domains: int = 64
     # Governed ceilings on concurrently active root Runs (#1182), enforced by
     # every RunStore at admission. Tighten freely; loosening needs the override.
     max_active_root_runs_per_principal: int = BASELINE_MAX_ACTIVE_ROOT_RUNS_PER_PRINCIPAL

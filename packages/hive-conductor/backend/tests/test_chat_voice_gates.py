@@ -24,8 +24,6 @@ from fastapi import HTTPException
 from models.schemas import ChatCompletionRequest
 from routes import chat, voice
 
-from maistro.identity import Principal
-
 # Model-reaching turns are admitted as canonical chat Runs (#1037).
 pytestmark = pytest.mark.usefixtures("chat_run_spine")
 
@@ -815,9 +813,7 @@ async def test_chat_workflow_route_accepts_username_principal_and_omits_empty_go
         return {"run_id": "run-route"}
 
     monkeypatch.setattr(chat, "_execute_workflow_with_approval", run)
-    named = SimpleNamespace(
-        state=SimpleNamespace(principal=Principal(user_id="", username="blake"))
-    )
+    named = SimpleNamespace(state=SimpleNamespace(user={"username": "blake"}))
     result = await chat.run_workflow(chat.RunWorkflowBody(dag_id="dag-2"), named)
 
     assert result["run_id"] == "run-route"

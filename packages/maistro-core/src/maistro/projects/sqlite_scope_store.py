@@ -32,9 +32,6 @@ from maistro.projects.scope import (
 from maistro.sqlite_schema import execute_schema_script, serialized_schema_upgrade
 
 if TYPE_CHECKING:
-    from maistro.workspaces.store import WorkspaceStore
-
-if TYPE_CHECKING:
     import aiosqlite
 
 #: Passes the leaf-first Project purge may take before it gives up. A Workspace

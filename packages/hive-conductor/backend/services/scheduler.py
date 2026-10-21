@@ -1,14 +1,12 @@
 """Background schedule runner — turns due schedules into canonical Runs.
 
 Recurrence and fire semantics live in ``maistro.scheduling``.  A configured
-Hive process selects due definitions from the canonical ``ScheduleStore`` and
-admits each occurrence through ``ScheduleRunAdmitter`` — the same Run spine
-task admission writes (``RunStore.create_run`` at ``QUEUED``, then the
-canonical consumer) — for recurring ticks and manual
-``POST /v1/schedules/{id}/run`` fires alike. The Hive row is a projection of
-that definition, not an execution lifecycle. The historical in-process
-definition/cursor adapter remains readable for compatibility. Without a core
-Container its Graph call refuses; it cannot create a standalone execution (#1113).
+Hive process delegates the complete evaluate -> occurrence claim -> Run admit
+-> cursor advance transaction to ``ScheduleRunAdmitter`` — for recurring
+ticks and manual ``POST /v1/schedules/{id}/run`` fires alike — then ticks
+the canonical consumer for the admitted Runs.  The historical in-process
+path remains only as a compatibility fallback for standalone/demo contexts
+that have no core Container; it is not the production authority.
 """
 
 from __future__ import annotations
@@ -79,9 +77,8 @@ async def fire_now(sid: str, *, fire_id: str | None = None) -> str:
     ``GraphTemplate`` resolution, occurrence claim, and cursor transaction the
     recurring loop uses — so a manual fire and a scheduled fire of one schedule are
     indistinguishable in Run history apart from their provenance.  The
-    compatibility definition path below remains for processes with no core
-    Container, but cannot execute new Graph work (#1113). A Container missing
-    one of its admission collaborators
+    compatibility path below remains only for processes with no core Container
+    at all; a Container that is missing one of its admission collaborators
     raises :class:`ScheduleAdmissionUnavailable` instead of degrading.
 
     ``fire_id`` is the fire's occurrence identity (#1120): an opaque,
@@ -320,9 +317,6 @@ def _definition_drifted(existing: Schedule, definition: Schedule) -> bool:
         or existing.timezone != definition.timezone
         or existing.graph_template_id != definition.graph_template_id
         or existing.max_runs != definition.max_runs
-        # The window is a definition field the routes set (#1200); a PUT that
-        # changed it must reconcile the canonical row, not just the Hive one.
-        or existing.catchup_window_seconds != definition.catchup_window_seconds
         or existing.enabled != definition.enabled
         or existing.workspace_id != definition.workspace_id
         or existing.project_id != definition.project_id
@@ -435,6 +429,18 @@ class _ScheduleRunner:
                         accounting.parked,
                         accounting.skipped,
                     )
+            except Exception as exc:
+                logger.warning("Failed to consume admitted canonical Runs: %s", exc)
+
+        # Admission is the submission for schedule work. The same configured
+        # process owns the bounded canonical consumer tick, so a Run admitted
+        # above cannot remain QUEUED merely because no task receipt exists.
+        container = self._canonical_container()
+        if container is not None:
+            try:
+                executed = await container.execute_admitted_runs()
+                if executed:
+                    logger.info("Consumed %d admitted canonical Run(s)", executed)
             except Exception as exc:
                 logger.warning("Failed to consume admitted canonical Runs: %s", exc)
 
@@ -906,7 +912,7 @@ class _ScheduleRunner:
 
         await self._audit_canonical_admission(
             sid,
-            definition,
+            schedule,
             ScheduleAdmission(run_ids=admission.run_ids),
             container,
         )

@@ -1,12 +1,5 @@
 """Canonical logical and physical execution lifecycle."""
 
-from maistro.runs.admission_identity import (
-    AdmissionBinding,
-    AdmissionRecordV2,
-    CanonicalJsonObject,
-    LegacyAdmissionRecord,
-    RootAdmissionEnvelope,
-)
 from maistro.runs.concurrency import RunConcurrencyExceeded, RunConcurrencyLimits
 from maistro.runs.eval import EvalSummary, eval_summary, open_re_eval_attempt
 from maistro.runs.execution import AttemptExecutionService, AttemptReconciler
@@ -17,6 +10,15 @@ from maistro.runs.lifecycle import (
     transition_attempt,
     transition_node_run,
     transition_run,
+)
+from maistro.runs.lineage import (
+    ArtifactNotInRunLineage,
+    AttemptLineage,
+    NodeRunLineage,
+    RubricRevisionBinding,
+    RunLineage,
+    artifact_lineage,
+    run_lineage,
 )
 from maistro.runs.model import (
     TERMINAL_ATTEMPT_STATUSES,
@@ -57,16 +59,15 @@ __all__ = [
     "TERMINAL_RUN_STATUSES",
     "AcceptedNodeOutcome",
     "ActiveAttemptExists",
-    "AdmissionBinding",
-    "AdmissionRecordV2",
+    "ArtifactNotInRunLineage",
     "Attempt",
     "AttemptExecutionService",
     "AttemptLifecycleReconciler",
+    "AttemptLineage",
     "AttemptNotFound",
     "AttemptReconciler",
     "AttemptResult",
     "AttemptStatus",
-    "CanonicalJsonObject",
     "EvalJudge",
     "EvalMethod",
     "EvalSummary",
@@ -76,8 +77,9 @@ __all__ = [
     "InvalidLifecycleTransition",
     "LegacyAdmissionRecord",
     "NodeRun",
+    "NodeRunLineage",
     "NodeRunNotFound",
-    "RootAdmissionEnvelope",
+    "RubricRevisionBinding",
     "Run",
     "RunConcurrencyExceeded",
     "RunConcurrencyLimits",
@@ -85,13 +87,16 @@ __all__ = [
     "RunEvalScore",
     "RunExecutionService",
     "RunIntegrityError",
+    "RunLineage",
     "RunNotFound",
     "RunStatus",
     "RunStore",
     "SqliteRunStore",
     "StaleExecutionFence",
+    "artifact_lineage",
     "eval_summary",
     "open_re_eval_attempt",
+    "run_lineage",
     "transition_attempt",
     "transition_node_run",
     "transition_run",

@@ -136,7 +136,7 @@ export default function CLI() {
 
   return (
     <div>
-      <PageHeader title="CLI" subtitle="Operational console — status and inspection commands" helpHref="/docs#cli" />
+      <PageHeader title="CLI" subtitle="Command-line interface for quick status checks" helpHref="/docs#dashboard" />
       <div className="card" style={{ fontFamily: "var(--mono)", fontSize: 12, minHeight: 320, background: "var(--ink)", color: "var(--paper)", padding: "12px 14px", borderRadius: 6, lineHeight: 1.7 }}>
         {lines.map((line, i) => (
           <div key={i} style={{ color: line.startsWith("$") ? "var(--pencil)" : line.startsWith("!") ? "var(--danger)" : line.includes("\u2713") ? "var(--ok)" : line.includes("error") ? "var(--danger)" : "var(--paper)", whiteSpace: "pre" }}>{line}</div>

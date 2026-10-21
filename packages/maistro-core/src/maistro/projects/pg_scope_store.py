@@ -86,6 +86,18 @@ class PgProjectScopeStore:
         async with self._pool.acquire() as conn, conn.transaction():
             yield conn
 
+    @asynccontextmanager
+    async def transaction(self) -> AsyncIterator[Any]:
+        """One pooled connection with a transaction open on it.
+
+        The handle `TransactionalProjectScopeStore` names: a Workspace store on
+        the same pool writes its own rows on the yielded connection and passes
+        it to `create_root_in` / `purge_workspace_in`, so both stores' rows
+        commit or roll back as one (#1121).
+        """
+        async with self._pool.acquire() as conn, conn.transaction():
+            yield conn
+
     async def purge_workspace(self, workspace_id: str) -> None:
         """Tear down every Project row this Workspace owns, in a transaction of its own."""
         async with self.transaction() as conn:

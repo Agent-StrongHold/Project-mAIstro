@@ -22,7 +22,7 @@ A **floor** is a fixed minimum/maximum threshold. A **ratchet** records reviewed
 | reachability | identity ratchet | `quality/reachability-baseline.json` | a module built but never wired to any entry point |
 | convergence matrix | identity ratchet | `docs/architecture/CONVERGENCE-MATRIX.md` | a subsystem left unclassified, or a row whose ownership/reachability claim no longer matches the code |
 | reachability dispositions | identity ratchet | `quality/reachability-dispositions.json` | an unreachable module with no disposition, a disposition left behind after its module became reachable, or a CONNECT/RETIRE row with no named root/replacement |
-| backlog consistency | floor + identity ratchet | `BACKLOG.md` legends; `_LEGACY_UNEVIDENCED` in `scripts/check-backlog-consistency.py` | an item using a status or gap marker no legend defines, a duplicate id, an undocumented id prefix, a citation to an ADR/spec that does not exist, an `Implemented` item with no PR/issue link or existing repo path (or citing a path that no longer exists), an `Abandoned` item with no reason, or a legacy id left in the set after it gained evidence, reopened or was removed (#101). After the #102 authority cutover (`quality/backlog-authority.json` says `db`), the file is generated documentation: it must carry the generated banner and match the recorded export digest, so a direct edit fails here instead of silently diverging |
+| backlog consistency | floor + identity ratchet | `BACKLOG.md` legends; `_LEGACY_UNEVIDENCED` in `scripts/check-backlog-consistency.py` | an item using a status or gap marker no legend defines, a duplicate id, an undocumented id prefix, a citation to an ADR/spec that does not exist, an `Implemented` item with no PR/issue link or existing repo path (or citing a path that no longer exists), an `Abandoned` item with no reason, or a legacy id left in the set after it gained evidence, reopened or was removed (#101) |
 | coverage (aggregate) | floor | 86% line + branch, publish set | the repository as a whole rotting |
 | coverage (diff) | floor | per file: 90% lines, 80% branch arcs, on lines the PR touched | a single undertested change the aggregate cannot see |
 | interrogate | ratchet | 38 / 45 / 63 / 46 per tree | missing docstrings, per-subtree floors |
@@ -33,44 +33,7 @@ A **floor** is a fixed minimum/maximum threshold. A **ratchet** records reviewed
 | benchmark provenance | floor | pinned digests | a vendored IFEval/BFCL grader or corpus changing unnoticed |
 | architecture fitness | floor | zero violations | a forbidden cross-layer dependency |
 | execution lifecycles | identity ratchet | `quality/execution-lifecycles.json` | a new work-state Enum or status-shaped Literal alias/field vocabulary nobody classified, or an entry left behind after its identity was deleted |
-| model egress | identity ratchet | `quality/model-egress.json` | a new module performing physical completions-family model HTTP at a call site, or an entry left behind after its egress was migrated |
-
-Ruff lint and formatting have one owner per workflow event (#1357, #1610).
-The `Quality / Ruff` job runs both root commands for ordinary PR activities
-(`opened`, `reopened`, `synchronize`), merge groups, shared protected pushes,
-and accepted topic-branch pushes. CI retains both commands for the two event
-profiles it alone receives: PR `edited` and pushes to
-`merge/main-into-integration`. Both owners use the shared pinned uv setup and
-locked root environment; the rule set, source scope and failure behavior are
-unchanged. `tests/test_ci_ruff_ownership.py` checks the event matrix and rejects
-narrowed, tolerated or duplicated owners. Local contribution checks still run
-both commands. The existing required Quality gate now verifies that this job
-and every other Quality leaf succeeded. This removes a duplicate lint/format pair on common events;
-it is not a measured whole-CI speedup.
-
-Quality's 37 validation jobs and SAST's three scanner jobs run independently,
-so a failing analyzer can be retried without repeating its successful peers.
-The existing required check names remain summaries with explicit dependencies:
-`Quality gate (Pillars 1–4, 7, 8)` and
-`SAST (bandit + semgrep + gitleaks)`. Their verdict script rejects missing,
-unexpected, skipped, cancelled or unsuccessful job results. The leaf names are
-listed as advisory only in the branch-protection manifest because the required
-summaries enforce their success; `gates-ran` also discovers their execution.
-No live required-check configuration change is needed.
-
-This split preserves the original scanner commands, triggers, permissions,
-trusted-base selection and proof profiles. Acceptance criteria and the full
-Quality formal suite each receive their own migrated PostgreSQL 18 service;
-acceptance criteria retain age and age-keygen. The three coverage producers and
-their combined verdict are unchanged. The baseline-derived preservation fixture in
-`tests/fixtures/ci_quality_obligations.json` and the CI contract tests reject
-dropped obligations and detached summary dependencies.
-
-One identical credential-authority invocation is removed. Existing Ruff and
-Pyright deduplication remains in place. Distinct mypy, formal and dependency-audit
-profiles still run; coverage collection and Vulture ownership changes remain
-separate work. More independent jobs add runner setup work, so this change makes
-no claim about total CI cost or elapsed time before measurements are available.
+| model egress | identity ratchet | `quality/model-egress.json` | a new module calling a model endpoint directly, or an entry left behind after one was migrated |
 
 The lifecycle-discovery contract, shared dispositions, metric version, prior-authorization
 boundary and explicit static-analysis limits are recorded in
