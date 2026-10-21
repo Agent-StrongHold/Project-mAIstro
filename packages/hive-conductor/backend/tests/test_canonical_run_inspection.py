@@ -67,6 +67,53 @@ def _point_engine_at(
     )
 
 
+async def test_canonical_event_inspection_reads_past_first_page(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from services.dag_run_inspection import _canonical_events
+
+    class EventPageStore:
+        def __init__(self) -> None:
+            self.calls: list[tuple[int, int]] = []
+
+        async def list_stream(
+            self, stream_id: str, *, after_sequence: int = 0, limit: int = 100
+        ) -> list[Any]:
+            assert stream_id == "workspace:workspace-1"
+            self.calls.append((after_sequence, limit))
+            start = after_sequence + 1
+            end = min(start + limit, 1002)
+            return [
+                SimpleNamespace(
+                    sequence=sequence,
+                    run_id="target-run" if sequence == 1001 else "other-run",
+                    to_dict=lambda sequence=sequence: {"sequence": sequence},
+                )
+                for sequence in range(start, end)
+            ]
+
+    events = EventPageStore()
+    run = SimpleNamespace(workspace_id="workspace-1")
+    reader = SimpleNamespace(get_run=lambda *_args, **_kwargs: _async_value(run))
+    engine = SimpleNamespace(
+        run_reader=reader,
+        agent_port=SimpleNamespace(
+            container=SimpleNamespace(capability_effects=SimpleNamespace(event_store=events))
+        ),
+    )
+    import services.engine as engine_mod
+
+    monkeypatch.setattr(engine_mod, "_singleton", engine)
+    assert await _canonical_events("target-run", "user-1", workspace_id="workspace-1") == [
+        {"sequence": 1001}
+    ]
+    assert events.calls == [(sequence, 100) for sequence in range(0, 1100, 100)]
+
+
+async def _async_value(value: Any) -> Any:
+    return value
+
+
 async def test_a_projectionless_canonical_run_is_inspectable_and_controllable_by_id(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -79,8 +126,8 @@ async def test_a_projectionless_canonical_run_is_inspectable_and_controllable_by
     by its canonical id: detail answers from the Run itself, the cancel route
     cancels through the canonical spine without writing a projection row, and
     a foreign observer gets the identical non-disclosing refusal a missing id
-    gets. Recent-list discovery stays projection-gated by design (#1036's
-    read-contract boundary reserves that for the scoped store capability).
+    gets. Recent-list discovery uses the canonical scoped store capability
+    added for Goal inspection, rather than requiring a projection row.
     """
     from routes.dag_runs import cancel_run as cancel_route
     from services.dag_run_inspection import (
@@ -152,10 +199,11 @@ async def test_a_projectionless_canonical_run_is_inspectable_and_controllable_by
     assert cancelled.finished_at is not None
     assert get_dag_run_store().get_run(run.run_id) is None
 
-    # Recent-list discovery stays projection-gated: the run is absent from
-    # the page by design while the by-id seam answers for it.
+    # Discovery and detail now agree without creating a projection row.
     listed = await list_visible_runs(_USER_ID, limit=25)
-    assert all(row["id"] != run.run_id for row in listed)
+    assert [row["id"] for row in listed] == [run.run_id]
+    assert listed[0]["status"] == "cancelled"
+    assert get_dag_run_store().get_run(run.run_id) is None
 
     # Foreign and random ids get the identical non-disclosing refusal --
     # detail, stream admission and the batch verdict reader all agree.
