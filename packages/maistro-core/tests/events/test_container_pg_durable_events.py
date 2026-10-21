@@ -125,6 +125,47 @@ class TestPoolSelectsThePostgresStores:
         await container.handler_invocation_store.get_or_create("t1", 1)
         assert len(await container.handler_invocation_store.list_for_event(1)) == 1
 
+    async def test_the_pool_selects_the_canonical_event_publisher_store(self, pg_pool, wire):
+        """#1133 on PostgreSQL: recovery dispositions publish through the exact
+        backend-selected canonical EventStore, never a second authority.
+
+        `CanonicalEventPublisher` is a delivery wrapper only, so its store
+        must be the very object injected into the governed effect context,
+        and that object must be the durable PostgreSQL store.
+        """
+        from maistro.events.pg_envelope import PgEventStore
+        from maistro.events.publisher import CanonicalEventPublisher
+
+        container = await wire(_config(), pg_pool=pg_pool)
+
+        publisher = container.canonical_event_publisher
+        assert isinstance(publisher, CanonicalEventPublisher)
+        assert isinstance(publisher.store, PgEventStore)
+        assert publisher.store is container.capability_effects.event_store
+
+        # The wrapper delegates to the durable store: an event published through
+        # it reaches the server with the Workspace sequence only the store can
+        # assign. A fresh workspace makes the expected sequence independent of
+        # any other test that has run against this server.
+        from uuid import uuid4
+
+        from maistro.events.envelope import EventEnvelope
+
+        workspace = f"ws-recovery-{uuid4().hex}"
+        published = await publisher.emit(
+            EventEnvelope(
+                type="run.recovery_disposition",
+                workspace_id=workspace,
+                run_id="run-1",
+            )
+        )
+        assert published.sequence == 1
+        rows = await pg_pool.fetchval(
+            "SELECT count(*) FROM canonical_event_log WHERE workspace_id = $1",
+            workspace,
+        )
+        assert rows == 1
+
 
 class TestTheAuditStoreComesUpToo:
     """The audit store is wired on the same pool, so it fails the same way.
