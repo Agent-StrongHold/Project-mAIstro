@@ -60,6 +60,17 @@ is the new file.
   exporter-encode paths — while an untyped provider failure stays a truthful
   502). All ten regression-naming tests were demonstrated to fail against
   the pre-fix code before landing.
+- CI-repair round (develop sync, no test delta): the named failing gate
+  `integration-scope` was red because of **inherited develop drift**, not
+  because of this branch's change — the pre-sync diff still carried
+  `uv.lock`, so the scope classifier required the `durable-events` leg,
+  and that leg was failing on develop's own defects (`audit_log` schema
+  bootstrap missing in `pg_audit.py`; `verify-restore.sh` probing only
+  `pg_isready` and so racing the target database's creation). `origin/develop`
+  (`cd6559540`) fixes both; it was merged into `auto-393` as `5c109ba5e` and
+  the #393 contract was re-validated on the merged head. Details, the
+  post-merge scope arithmetic, the ledger comparison and the full validation
+  battery are in `auto-393-develop-sync-cd655954-resolution.md`.
 - CI-repair round (`exact-debt-ledger`, no test delta): reverted the
   candidate-authored amendment of `quality/reachability-baseline.json` and
   `quality/reachability-dispositions.json` (commit `cdefe5ec8`) that added an
