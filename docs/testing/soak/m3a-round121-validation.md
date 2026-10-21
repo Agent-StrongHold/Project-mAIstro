@@ -117,3 +117,32 @@ ancestor) and not a failing gate.
 
 Progress: `{checked: 1, done: 0 (externally blocked), skipped: 0, errors: 0,
 next: exact-RC production soak after release-owner RC designation}`.
+
+## Fresh validation at assigned head `871c74ae5`
+
+The dispatched worktree for this repair is at `871c74ae5ec763e476f5805dede545fb7cf56c69`, not the historical round-121 head above. The assigned job directory contained no `check-*.log` files. Checks executed in this worktree:
+
+| Command | Result |
+| --- | --- |
+| `uv run pytest tests/test_soak_promotion_gates.py -q -x` | 84 passed |
+| `uv run pytest packages/maistro-server/tests/api/test_rate_limit.py -q -x` | 26 passed; one Starlette deprecation warning |
+| `uv run ruff check scripts/soak/run_soak.py tests/test_soak_promotion_gates.py` | All checks passed |
+| Fresh evaluation of `docs/testing/soak/evidence/m3a-round109-shakedown.json` via `failed_promotion_checks` | `['sustain_duration', 'exact_rc_artifact']` |
+
+The evidence records 420.05 seconds against the 14,400-second minimum and
+`exact_rc_artifact.ok=false` (`host-uvicorn-preflight`). The production driver
+in `scripts/soak/run_soak.py::preflight_artifact_check` independently returns
+`ok=false`: this host-process runner does not execute the production Compose
+artifact. This gate is intentionally fail-closed.
+
+Acceptance at the assigned head remains unmet or unverified: the profile
+notes missing concurrent Workspaces/users, Graph fan-out, successful tool/model
+calls, Design/Canvas, and Goal/background-worker reconciliation
+(`docs/testing/soak/m3a-load-profile.md`); no exact-RC multi-replica production
+soak, ≥4-hour sustained run, physical-work fencing/recovery proof, complete
+production telemetry, pre-promotion findings disposition, or hash-bound RC
+evidence is established by these checks. The passing rate-limit package tests
+do not prove cross-replica aggregate enforcement. No tests or production code
+were changed; no suite-inventory delta is required. The remaining blocker is
+the designated RC artifact and production soak, not a failing local regression
+gate.
