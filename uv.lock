@@ -3050,6 +3050,7 @@ browser = [
     { name = "playwright" },
 ]
 builders = [
+    { name = "aiosqlite" },
     { name = "anthropic" },
     { name = "maistro-bootstrap", extra = ["builders"] },
     { name = "textual" },
@@ -3089,6 +3090,7 @@ tui = [
 
 [package.metadata]
 requires-dist = [
+    { name = "aiosqlite", marker = "extra == 'builders'", specifier = ">=0.20,<1" },
     { name = "aiosqlite", marker = "extra == 'sqlite'", specifier = ">=0.20,<1" },
     { name = "anthropic", marker = "extra == 'builders'", specifier = ">=0.28,<2" },
     { name = "argon2-cffi", specifier = ">=23.1,<26" },
