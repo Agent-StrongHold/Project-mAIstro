@@ -94,11 +94,46 @@ async def test_admitted_graph_recovers_after_sqlite_reconnect(monkeypatch, tmp_p
         await runs.ensure_schema()
         continuations = SqliteGraphContinuationStore(conn)
         await continuations.ensure_schema()
+        import datetime as _dt
+
+        import stores as _stores
+
+        _stores.users["restart-actor"] = _stores.users._model_class(
+            id="restart-actor",
+            username="restart-actor",
+            password_hash="unused",
+            role="user",
+            is_active=True,
+            permissions=[],
+            created_at=_dt.datetime.now(_dt.UTC),
+        )
+
+        from maistro.capabilities.bootstrap import default_capability_registry
+        from maistro.security.permission_policy import build_permission_table
+        from maistro.security.sentinel.delegation import InMemoryDelegationAuthority
+        from maistro.security.sentinel.permission_source import CapabilityPermissionSource
+        from maistro.security.sentinel.policy import Sentinel
+        from maistro.security.warden.detector import Warden
+
+        _tbl = build_permission_table(
+            preset="none", permissions={"graph.node.execute": ["admin", "user"]}
+        )
+        sentinel = Sentinel(
+            warden=Warden(),
+            permission_table=_tbl,
+            permission_source=CapabilityPermissionSource(
+                base=_tbl, capabilities=default_capability_registry()
+            ),
+            tier_policy={},
+            delegation_authority=InMemoryDelegationAuthority(),
+        )
+
         return SimpleNamespace(
             run_store=runs,
             graph_run_store=CanonicalDurableRunStore(runs, continuations),
             projects=projects,
             event_bus=None,
+            sentinel=sentinel,
         )
 
     class ProcessDied(BaseException):
