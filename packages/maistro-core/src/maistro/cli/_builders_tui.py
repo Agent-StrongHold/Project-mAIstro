@@ -144,7 +144,6 @@ class CodingScreen(Vertical):
         self.canonical_run_ids = list(canonical_run_ids or [])
         self._builder_session: object | None = None
         self._turn_runner: object | None = None
-        self._execution_spine: object | None = None
 
     def compose(self) -> ComposeResult:
         yield Horizontal(
@@ -170,15 +169,6 @@ class CodingScreen(Vertical):
         chat.write("[dim]Session started. Type a task or ask a question.[/dim]")
         self.query_one("#chat-input", Input).focus()
 
-    async def on_unmount(self) -> None:
-        # The spine owns an aiosqlite connection (or a PostgreSQL pool) that
-        # holds a thread/pool user open. Leaving it cached past unmount keeps
-        # the `maistro builders` process from exiting cleanly.
-        spine = self._execution_spine
-        self._execution_spine = None
-        if spine is not None:
-            await spine.close()  # type: ignore[attr-defined]
-
     @on(Input.Submitted, "#chat-input")
     def on_chat_input(self, event: Input.Submitted) -> None:
         text = event.value.strip()
@@ -197,7 +187,7 @@ class CodingScreen(Vertical):
             f"[bold]canonical run:[/bold] {latest}"
         )
 
-    async def _get_execution(self) -> tuple[object, object, object]:
+    async def _get_execution(self) -> tuple[object, object]:
         if self._builder_session is None or self._turn_runner is None:
             from maistro_bootstrap.builders.agent_loop import (  # type: ignore[import-not-found]
                 AgentLoopConfig,
@@ -219,32 +209,38 @@ class CodingScreen(Vertical):
             self._builder_session = session
             self._turn_runner = runner
 
-        if self._execution_spine is None:
-            from maistro.builders.interactive import BuildersExecutionSpine
-
-            self._execution_spine = await BuildersExecutionSpine.open()
-        return self._builder_session, self._turn_runner, self._execution_spine
+        return self._builder_session, self._turn_runner
 
     @work(exclusive=True)
     async def _run_agent_turn(self, text: str) -> None:
         chat = self.query_one("#chat-log", RichLog)
         try:
-            from maistro.builders.interactive import InteractiveTurnResult
+            from maistro.builders.interactive import (
+                BuildersExecutionSpine,
+                InteractiveTurnResult,
+            )
             from maistro.runs.model import RunStatus
 
-            session, runner, spine = await self._get_execution()
+            session, runner = await self._get_execution()
             session.add_user(text)  # type: ignore[attr-defined]
             messages = [
                 {"role": "system", "content": "You are a coding assistant."},
                 *session.messages,  # type: ignore[attr-defined]
             ]
-            result = await spine.executor().execute(  # type: ignore[attr-defined]
-                session_id=self.session_id,
-                repo=str(self.work_dir),
-                prompt=text,
-                messages=messages,
-                runner=runner,
-            )
+            # The spine owns an aiosqlite connection (or a PostgreSQL pool
+            # user). Open it for the turn and release it in `finally` so a
+            # finished or failed turn never keeps the process alive.
+            spine = await BuildersExecutionSpine.open()
+            try:
+                result = await spine.executor().execute(  # type: ignore[attr-defined]
+                    session_id=self.session_id,
+                    repo=str(self.work_dir),
+                    prompt=text,
+                    messages=messages,
+                    runner=runner,
+                )
+            finally:
+                await spine.close()  # type: ignore[attr-defined]
             if not isinstance(result, InteractiveTurnResult):  # pragma: no cover - type guard
                 raise TypeError("canonical Builders executor returned an invalid result")
             self.canonical_run_ids.append(result.run_id)

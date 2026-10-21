@@ -584,7 +584,10 @@ class TestCodingScreenExecutesOnTheCanonicalSpine:
         assert spine.calls[0]["runner"] is screen._turn_runner
         assert len(bootstrap["runners"]) == 1
         assert len(bootstrap["sandboxes"]) == 1
-        assert spine.opens == 1
+        # One spine per turn, released in `finally`: the connection/pool user
+        # never outlives the turn that opened it.
+        assert spine.opens == 2
+        assert spine.closes == 2
 
         assert screen.canonical_run_ids == ["run-1", "run-1"]
         assert recorded_runs == [("session-1", "run-1"), ("session-1", "run-1")]
@@ -621,41 +624,39 @@ class TestCodingScreenExecutesOnTheCanonicalSpine:
         # operator can inspect, not a turn that never happened.
         assert screen.canonical_run_ids == ["run-bad"]
 
-    def test_unmount_closes_the_cached_spine_so_the_process_can_exit(
+    def test_a_turn_releases_its_spine_even_when_the_turn_fails(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        """The spine's connection/pool cannot outlive the screen.
+        """The spine's connection/pool user cannot outlive the turn.
 
-        aiosqlite's helper thread and a PostgreSQL pool user keep the process
-        alive; the cached spine must be closed on unmount, and unmounting a
-        screen that never opened one must stay a no-op.
+        aiosqlite's helper thread (and a PostgreSQL pool user) keep the process
+        alive, so the spine the turn opened must be closed on the failure path
+        too — an exception in canonical admission is the easy case to leak.
         """
         import asyncio
 
         from maistro.builders.interactive import InteractiveTurnResult
         from maistro.runs.model import RunStatus
 
-        spine = _RecordingSpine(
+        class _ExplodingSpine(_RecordingSpine):
+            async def execute(self, **kwargs: object) -> object:
+                self.calls.append(kwargs)
+                raise RuntimeError("canonical admission refused")
+
+        spine = _ExplodingSpine(
             InteractiveTurnResult(
                 run_id="run-1", status=RunStatus.COMPLETED, output="ok", raw_result=None
             )
         )
-        _tui, screen, _chat, _bar, _bootstrap = _drive_coding_screen(
+        _tui, screen, chat, _bar, _bootstrap = _drive_coding_screen(
             monkeypatch, tmp_path, spine=spine, recorded_runs=[]
         )
 
-        asyncio.run(screen.on_unmount())
-        assert spine.closes == 0
-
         asyncio.run(screen._run_agent_turn("edit the file"))
-        assert screen._execution_spine is spine
 
-        asyncio.run(screen.on_unmount())
+        assert spine.opens == 1
         assert spine.closes == 1
-        assert screen._execution_spine is None
-
-        asyncio.run(screen.on_unmount())
-        assert spine.closes == 1
+        assert chat.lines == ["[red]Error: canonical admission refused[/red]"]
 
 
 class TestResumeCarriesTheCanonicalRunIdentity:

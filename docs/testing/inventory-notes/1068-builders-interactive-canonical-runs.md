@@ -145,9 +145,14 @@ Both are now executed by a test rather than assumed:
   Run is `FAILED` (#1068 acceptance: no failure projected as success).
 - `CodingScreen` cached its `BuildersExecutionSpine` and never closed it, so the
   aiosqlite helper thread (or PostgreSQL pool user) outlived the screen.
-  `CodingScreen.on_unmount()` now closes the cached spine once and clears the
-  cache; `test_unmount_closes_the_cached_spine_so_the_process_can_exit` covers
-  the no-op unmount, the close, and the second unmount.
+  The spine is now opened per turn and closed in a `finally`, so no cached
+  connection survives a completed or failed turn;
+  `test_a_turn_releases_its_spine_even_when_the_turn_fails` covers the failure
+  path, and `test_a_turn_is_admitted_with_the_react_runner_as_its_physical_work`
+  asserts one open/close per turn. A lifecycle hook was deliberately not used:
+  a new `on_unmount` identity cannot be banked in `quality/vulture-baseline.json`
+  without a base-merged grant (two-merge rule), and the ledger must not be
+  amended to authorize new debt in this round.
 - `CanonicalInteractiveTurnExecutor` preserved a caller's `actor_principal_id=None`,
   which every RunStore rejects at `create_run`. The optional argument now always
   resolves the local operator principal, proven by
