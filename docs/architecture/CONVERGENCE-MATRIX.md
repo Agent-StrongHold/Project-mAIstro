@@ -183,6 +183,27 @@ A share rather than the `19/62` this column used to carry, because the denominat
 - Relational persistence is fully reached: PostgreSQL is the canonical durable backend, while SQLite remains the explicit single-instance/homelab backend; prompt and audit persistence now follow the selected backend rather than silently falling back to memory.
 - The matrix checker proves structure, reachability counts, reference integrity and — since #378 — that every module named as a current owner is one a product path reaches. What it still cannot prove is a cell that names no module: 31 of the 156 owner cells describe a non-module owner in prose, and that count is itself checked so the gap cannot widen quietly. #31's acceptance-state machinery governs machine-verifiable completion claims, and material ownership changes must update this human-reviewed planning surface.
 
+## One scoring loop: the M7 in-Run eval is the evidence; Evolve/RSI are consumers (#796)
+
+The design loop has exactly one scoring authority, and everything else reads its records. The map frozen by [#796](https://github.com/Agent-StrongHold/Project-mAIstro/issues/796), with ownership left where it is (#21 keeps promotion, #552 keeps RSI):
+
+```
+M7 in-Run Rubric eval (maistro.personas.rubric, scored on Run)  →  evidence object on Run
+        ↓
+M4 #21 independent evaluation (maistro_evolve; hive evolution services)  →  may read those records as historical/held-out evidence
+        ↓
+M5 #552 RSI (maistro_rsi)  →  not production-reachable until containment; if/when enabled, same evidence, same promotion contract
+```
+
+Forbidden shapes — each has a contract test in `packages/maistro-core/tests/fitness/test_m7_a7_eval_consumer_map.py`:
+
+- the Design Studio loop (`maistro_design`, `routes.design`, `services.design*`) importing RSI or Evolve as the in-Run critic — the critic is the Rubric eval scored in-Run, never a second loop;
+- Evolve/RSI fitness reaching into the design Goal/Rubric domain to invent a design-quality score for the same Goal;
+- a design-quality score for a Goal stored outside Run eval records + M4 candidate evaluation;
+- a `maistro_design` private promotion path.
+
+Allowed later, not landed here: an M4 candidate that proposes a better pack Graph or Rubric catalog, evaluated independently against held-out M7 Runs and promoted through #21/#116. RSI's activation invariant stays owned by `packages/maistro-rsi/tests/test_non_production_reachability.py` (#552); product identity, execution-lifecycle names and provider egress stay owned by the #990 fitness suite.
+
 ## Related
 
 - `quality/reachability-baseline.json` — ratcheted unreachable set.
