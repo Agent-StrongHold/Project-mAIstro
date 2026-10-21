@@ -14,6 +14,7 @@ import os
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Any
 
+from maistro.events.publisher import CanonicalEventPublisher
 from maistro.graph.conditions import CONDITION_OPERATORS
 from maistro.graph.definitions import Edge, Graph, Node
 from maistro.graph.durable_runs import (
@@ -25,6 +26,7 @@ from maistro.graph.durable_runs import (
 from maistro.graph.policies import resolve_max_cycles, resolve_node_timeout_s
 from maistro.graph.types import DEFAULT_SYSTEM_PROMPTS, JSON_OUTPUT_SCHEMAS, AgentRole
 from maistro.runs.model import TERMINAL_RUN_STATUSES, Run
+from maistro.runs.recovery_events import CanonicalRecoveryEventSink
 from services.dag_agents import _container, require_graph_execution_spine
 from services.dag_execution_scope import DagExecutionScope, DagWorkspaceSelectionError
 from services.governed_model import dag_node_runtime
@@ -539,7 +541,7 @@ async def recover_stranded_dag_runs(*, limit: int = 100) -> int:
         node_resolver_factory=_recovery_resolver,
         eligible=lambda run: run.provenance.get("admission_source") == "hive_legacy_dag",
         admission_source="hive_legacy_dag",
-        events=container.event_bus,
+        events=_canonical_recovery_events(container),
         limit=limit,
         # Held across ticks: the scan is bounded per call, and only a tick
         # that resumes where the last stopped crosses a foreign-owned QUEUED
@@ -556,8 +558,8 @@ async def wake_due_dag_runs(*, limit: int = 100) -> int:
     its own persisted Run facts, by the same ownership rule the bootstrap
     half uses. The resolver is rebuilt per Run because which legacy node
     implementation may execute is durable Run metadata, not state this
-    process holds. Crash dispositions reach the Container's canonical Event
-    bus exactly as ``recover_abandoned_attempts`` reports them (#62).
+    process holds. Crash dispositions reach the Container's canonical
+    EventStore exactly as ``recover_abandoned_attempts`` reports them (#62).
     """
     container = _container()
     if container is None or container.graph_run_store is None:
@@ -567,10 +569,24 @@ async def wake_due_dag_runs(*, limit: int = 100) -> int:
         run_store=container.run_store,
         node_resolver_factory=_recovery_resolver,
         eligible=lambda run: run.provenance.get("admission_source") == "hive_legacy_dag",
-        events=container.event_bus,
+        events=_canonical_recovery_events(container),
         limit=limit,
         scan=scan_continuation("resume_due_graph_runs", container.graph_run_store),
     )
+
+
+def _canonical_recovery_events(container: Any) -> CanonicalRecoveryEventSink:
+    """Route recovery facts through the Container's canonical Event publisher.
+
+    Persistence lands in the canonical EventStore first; the same publisher
+    then projects each inserted Event onto the legacy ``EventBus``, so the
+    durable-log bridge and configured triggers/subscribers keep firing on
+    recovered and resumed runs exactly as the pre-canonical path did.
+    """
+    publisher = container.canonical_event_publisher
+    if not isinstance(publisher, CanonicalEventPublisher):
+        raise RuntimeError("canonical recovery Event publisher is not configured")
+    return CanonicalRecoveryEventSink(container.run_store, publisher)
 
 
 def _node_results(
