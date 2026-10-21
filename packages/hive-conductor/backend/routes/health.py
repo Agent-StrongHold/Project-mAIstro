@@ -177,13 +177,44 @@ def _degraded_services(
     return services
 
 
+def _reactor_persistence_family() -> str:
+    """The Reactor's persistence authority, in the map's vocabulary (#1178).
+
+    The Reactor writes through the canonical `State` — one writer on the
+    configured state database — so its events land in the Conductor's own
+    state database, not in a store of its own. The write is queued on the
+    State's writer and no durable-success claim comes back to a caller, which
+    is the `fire-and-forget` mode the persistence map
+    (`docs/architecture/CONDACTOR-PERSISTENCE-MAP.md`) names for it. A
+    Reactor with no State bound has no persistence authority at all, and says
+    so instead of wearing a durable label.
+
+    Same defensive contract as the probes above: an unreadable Reactor
+    reports as unavailable, never as durable.
+    """
+    try:
+        from services.foundation import get_foundation
+
+        reactor = get_foundation().reactor
+    except Exception:
+        return "unavailable"
+    if reactor is None:
+        return "unavailable"
+    backend = getattr(reactor, "persistence_backend", None)
+    return "fire-and-forget" if backend is not None else "unavailable"
+
+
 def _persistence_status() -> dict:
-    """Per-family durability/ack mode (#333, #1179).
+    """Per-family durability/ack mode (#333, #1179, #1178).
 
     Every Conductor mutation path acknowledges at the State writer's commit —
     the write APIs raise instead of accepting a command into the queue — so
     the mode a family reports is `durable-ack` (survives restart; 2xx means
     committed) or `ephemeral`/`memory` (process-lifetime, labelled as such).
+    The Reactor is the one family that is not a user-visible mutation surface
+    but does have a persistence authority of its own (#1178): it reports the
+    mode the persistence map gives it, so an operator reads one map instead of
+    inferring the Reactor's store from the code.
     Same defensive contract as the probes above: /health must never fail
     because of this, so an unreadable state reports as `unknown`, never as
     durable.
@@ -201,6 +232,11 @@ def _persistence_status() -> dict:
                 "settings": "durable-ack" if settings_store.durable() else "ephemeral",
                 "profiles": "durable-ack" if profile_store.durable() else "ephemeral",
                 "registration_policy": "durable-ack" if registration_durable() else "ephemeral",
+                # #1178: the Reactor's persistence authority, named where every
+                # other store family's is named — `fire-and-forget` when it
+                # writes through the canonical State, `unavailable` when it has
+                # no store to write through.
+                "reactor": _reactor_persistence_family(),
             },
         }
     except Exception:
