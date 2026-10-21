@@ -191,6 +191,7 @@ def validate_tool_arguments(schema: Mapping[str, Any], arguments: Any, *, path: 
 
     if not isinstance(arguments, dict):
         raise ToolArgumentError(f"{path} must be an object")
+    _reject_wrong_type(schema, arguments, path)
     properties = schema.get("properties", {})
     required = schema.get("required", [])
     if not isinstance(properties, dict) or not isinstance(required, list):
@@ -226,12 +227,13 @@ def _reject_wrong_enum(schema: dict[str, Any], value: Any, path: str) -> None:
         raise ToolArgumentError(f"{path} is not one of the permitted values")
 
 
-def _reject_wrong_type(schema: dict[str, Any], value: Any, path: str) -> None:
-    expected = schema.get("type")
-    if not expected:
+def _reject_wrong_type(schema: Mapping[str, Any], value: Any, path: str) -> None:
+    if "type" not in schema:
         return
-    type_ok = _SCHEMA_TYPE_CHECKS.get(expected, lambda value: True)
-    if not type_ok(value):
+    expected = schema["type"]
+    if not isinstance(expected, str) or expected not in _SCHEMA_TYPE_CHECKS:
+        raise ToolArgumentError(f"{path} has unsupported host-owned schema type {expected!r}")
+    if not _SCHEMA_TYPE_CHECKS[expected](value):
         raise ToolArgumentError(f"{path} must be a {expected}")
 
 

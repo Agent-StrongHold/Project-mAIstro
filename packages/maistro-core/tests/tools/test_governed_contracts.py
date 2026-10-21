@@ -328,6 +328,95 @@ def test_schema_validation_rejects_command_text_and_extra_fields() -> None:
         validate_tool_arguments(schema, {"argv": ["git"], "cmd": "status"})
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("property_schema", "value"),
+    [
+        pytest.param({"type": "integre"}, "not-an-integer", id="unknown-type"),
+        pytest.param({"type": ""}, "unrestricted", id="empty-type"),
+        pytest.param({"type": None}, "unrestricted", id="null-type"),
+        pytest.param({"type": ["string", "null"]}, "text", id="unsupported-union"),
+        pytest.param({"type": {}}, "text", id="invalid-type"),
+        pytest.param(
+            {"type": "object", "properties": {"count": {"type": "integre"}}},
+            {"count": "not-an-integer"},
+            id="nested-object",
+        ),
+        pytest.param(
+            {"type": "array", "items": {"type": "integre"}},
+            ["not-an-integer"],
+            id="nested-array",
+        ),
+    ],
+)
+async def test_unsupported_schema_type_refuses_before_binding_and_provider(
+    property_schema: dict[str, Any], value: Any
+) -> None:
+    effects = new_effect_context(policy_evaluator=binding_scope_policy)
+    await effects.bindings.put(_binding())
+    registry = ToolContractRegistry()
+    registry.register(
+        ToolContract(
+            name="typed_tool",
+            schema={
+                "type": "object",
+                "properties": {"value": property_schema},
+                "required": ["value"],
+                "additionalProperties": False,
+            },
+            capability="ticketing",
+            provider_name="ticket-provider",
+        ),
+        ToolRegistration(name="typed_tool", reversibility=ToolReversibility.INTERNAL),
+    )
+    admissions: list[str] = []
+
+    async def binding_for(_contract: ToolContract, _context: ToolInvocationContext) -> Binding:
+        admissions.append("binding")
+        return _binding()
+
+    async def backend(_name: str, _arguments: dict[str, Any]) -> str:
+        admissions.append("provider")
+        return "executed"
+
+    executor = GovernedToolExecutor(
+        effects=effects, contracts=registry, binding_for=binding_for, backend=backend
+    )
+    with pytest.raises(ToolArgumentError, match="unsupported host-owned schema type"):
+        await executor.execute(
+            "typed_tool", {"value": value}, context=_CONTEXT, authorized_tools={"typed_tool"}
+        )
+    assert admissions == []
+    assert await effects.event_store.list_stream("workspace:ws-1") == []
+
+
+@pytest.mark.parametrize("declared_type", ["integre", "", None, ["object", "null"], {}])
+def test_unsupported_root_schema_type_is_a_typed_refusal(declared_type: Any) -> None:
+    # ReAct/artificer also validate model-facing schemas without constructing a
+    # ToolContract, so the root declaration must not bypass the shared check.
+    with pytest.raises(ToolArgumentError, match="unsupported host-owned schema type"):
+        validate_tool_arguments({"type": declared_type}, {})
+
+
+@pytest.mark.parametrize(
+    ("declared_type", "value"),
+    [
+        ("object", {"context": "kept"}),
+        ("array", ["item"]),
+        ("string", "text"),
+        ("integer", 2),
+        ("number", 2.5),
+        ("boolean", False),
+        ("null", None),
+    ],
+)
+def test_supported_schema_types_remain_valid(declared_type: str, value: Any) -> None:
+    validate_tool_arguments(
+        {"type": "object", "properties": {"value": {"type": declared_type}}},
+        {"value": value},
+    )
+
+
 def test_high_impact_contract_without_expected_effect_fails_closed() -> None:
     """A configured high-impact tool cannot register without prediction inputs.
 
