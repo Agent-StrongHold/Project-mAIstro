@@ -398,6 +398,16 @@ jobs:
         env:
           MAISTRO_REQUIRE_PG_LEGS: "1"
         run: uv run pytest packages/maistro-core/tests/workspaces -v --tb=short
+      # The durable Persona beside that Workspace (#12). Same contract: its
+      # live-PostgreSQL leg (`test_durable_store_pg.py`) gates on
+      # MAISTRO_TEST_PG_DSN, so without a step in the one job matrixed over
+      # the supported majors the store would answer only on pg17 — the
+      # foreign-key cascade and the wired transactional delete are exactly
+      # the claims a second major must also prove.
+      - name: Persona stores conform across memory, SQLite and PostgreSQL
+        env:
+          MAISTRO_REQUIRE_PG_LEGS: "1"
+        run: uv run pytest packages/maistro-core/tests/personas -v --tb=short
       # The canonical Goal store (#1572). Same contract as the Workspace step
       # above: the conformance suite's PostgreSQL leg must not silently skip
       # in the one job that owns a real server, and the canonical_goals tables
