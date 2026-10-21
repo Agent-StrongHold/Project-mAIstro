@@ -2,12 +2,18 @@
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
+import os
+import shlex
+import subprocess
 import sys
+import tarfile
 from pathlib import Path
 
 import pytest
+import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "check-license-inventory.py"
@@ -955,3 +961,188 @@ def test_inventory_records_the_default_policy_when_none_is_supplied(gate, tmp_pa
     sbom = _sbom(tmp_path, licenses=[{"license": {"id": "MIT"}}])
     inventory, _ = _run(gate, tmp_path, policy, sbom)
     assert inventory["policy"]["path"] == "quality/license-policy.json"
+
+
+# Execute the production workflow's shell blocks: stubs replace only network /
+# registry boundaries; the license gate, archive, and checksum commands are real.
+def _release_steps(job):
+    workflow = yaml.safe_load((ROOT / ".github/workflows/release.yml").read_text())
+    return workflow["jobs"][job]["steps"]
+
+
+def _release_workspace(tmp_path, monkeypatch):
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    commands = {
+        "npm": "exit 0\n",
+        "docker": 'echo "docker $*" >> "$CALLS"\n',
+        "gh": 'echo "gh $*" >> "$CALLS"\n',
+        "python": f'exec {shlex.quote(sys.executable)} "$@"\n',
+        "syft": (
+            'echo "syft $*" >> "$CALLS"\n'
+            '[ "${FAIL_SCAN:-0}" = 0 ] || exit 73\n'
+            'if [ "${UNKNOWN_LICENSE:-0}" = 1 ]; then licenses=""; '
+            'else licenses=\',"licenses":[{"license":{"id":"MIT"}}]\'; fi\n'
+            'printf \'{"bomFormat":"CycloneDX","components":[{'
+            '"bom-ref":"probe","purl":"pkg:generic/license-probe@1",'
+            '"name":"license-probe"%s}]}\\n\' "$licenses"\n'
+        ),
+    }
+    for name, body in commands.items():
+        path = bin_dir / name
+        path.write_text("#!/bin/bash\nset -euo pipefail\n" + body)
+        path.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
+    monkeypatch.setenv("CALLS", str(tmp_path / "calls"))
+    monkeypatch.setenv("IMAGE_NAMESPACE", "registry.example/maistro")
+    monkeypatch.setenv("GITHUB_RUN_ID", "363")
+    monkeypatch.setenv("GITHUB_REF_NAME", "v1.0.0")
+    for frontend in ("packages/hive-conductor/frontend", "packages/maistro-canvas/frontend"):
+        (tmp_path / frontend / "dist").mkdir(parents=True)
+    (tmp_path / "scripts").symlink_to(ROOT / "scripts", target_is_directory=True)
+    (tmp_path / "quality").mkdir()
+    (tmp_path / "quality/license-policy.json").write_bytes(
+        (ROOT / "quality/license-policy.json").read_bytes()
+    )
+
+
+def _run_release_step(step, tmp_path):
+    # Resolve only the concrete outputs these blocks consume. An unexpected
+    # expression is a test failure, not a guessed release ref.
+    outputs = {
+        "${{ steps.engine.outputs.digest }}": "sha256:engine",
+        "${{ steps.conductor.outputs.digest }}": "sha256:conductor",
+        "${{ steps.tags.outputs.maistro_engine }}": "registry.example/maistro/maistro-engine:v1.0.0",
+        "${{ steps.tags.outputs.hive_conductor }}": "registry.example/maistro/hive-conductor:v1.0.0",
+        "${{ secrets.GITHUB_TOKEN }}": "test-token",
+        "${{ needs.guard.outputs.prerelease }}": "false",
+    }
+    env = os.environ | {key: outputs[value] for key, value in step.get("env", {}).items()}
+    assert "${{" not in step["run"]
+    return subprocess.run(
+        ["bash", "-e", "-o", "pipefail", "-c", step["run"]],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+
+def _license_and_promotion_steps():
+    return [
+        step
+        for step in _release_steps("images")
+        if step.get("name")
+        in {
+            "Generate release-digest license inventory",
+            "Promote the scanned digests to the release tags",
+        }
+    ]
+
+
+@pytest.mark.parametrize("failure", ["UNKNOWN_LICENSE", "FAIL_SCAN"])
+def test_release_license_failure_never_promotes(tmp_path, monkeypatch, failure):
+    _release_workspace(tmp_path, monkeypatch)
+    monkeypatch.setenv(failure, "1")
+    for step in _license_and_promotion_steps():
+        result = _run_release_step(step, tmp_path)
+        if result.returncode:
+            break  # Actions skips all subsequent ordinary steps on failure.
+    assert result.returncode != 0
+    if failure == "UNKNOWN_LICENSE":
+        assert "requires a reviewed resolution" in result.stdout
+    else:
+        assert result.returncode == 73
+    assert "imagetools create" not in (tmp_path / "calls").read_text()
+    assert not (tmp_path / "license-inventory-release.tar.gz").exists()
+
+
+def test_release_scans_quarantine_and_installed_bundle_before_promotion(tmp_path, monkeypatch):
+    _release_workspace(tmp_path, monkeypatch)
+    for step in _license_and_promotion_steps():
+        result = _run_release_step(step, tmp_path)
+        assert result.returncode == 0, result.stdout + result.stderr
+    calls = (tmp_path / "calls").read_text()
+    assert "syft registry.example/maistro/maistro-engine-rc@sha256:engine" in calls
+    assert "syft registry.example/maistro/hive-conductor-rc@sha256:conductor" in calls
+    assert "docker cp license-release-363:/app/frontend/dist/." in calls
+    assert "syft dir:packages/hive-conductor/frontend/dist" not in calls
+    assert calls.rindex("syft ") < calls.index("imagetools create")
+    inventory = json.loads((tmp_path / "license-inventory-release.json").read_text())
+    assert len(inventory["surfaces"]) == 6
+    for surface in inventory["surfaces"]:
+        assert (
+            surface["components"][0]["bom_ref"] == surface["license_evidence"][0]["component_ref"]
+        )
+    engine = next(s for s in inventory["surfaces"] if s["id"] == "maistro-engine")
+    assert engine["artifact"] == "registry.example/maistro/maistro-engine@sha256:engine"
+    with tarfile.open(tmp_path / "license-inventory-release.tar.gz") as archive:
+        names = archive.getnames()
+        assert "quality/license-policy.json" in names
+        assert len([n for n in names if n.startswith("license-sboms/")]) == 6
+        assert (
+            archive.extractfile("license-inventory-release.json").read()
+            == (tmp_path / "license-inventory-release.json").read_bytes()
+        )
+
+
+def _stage_inputs(tmp_path):
+    for folder, name in (
+        ("dist", "maistro.whl"),
+        ("sboms", "engine.cyclonedx.json"),
+        ("compliance", "release-compliance.json"),
+        ("license-inventory", "license-inventory-release.json"),
+        ("license-inventory", "license-inventory-release.tar.gz"),
+    ):
+        (tmp_path / folder).mkdir(exist_ok=True)
+        (tmp_path / folder / name).write_text(name)
+    for name in ("get.sh", "get.ps1", "install.sh"):
+        (tmp_path / name).write_text(name)
+
+
+def test_release_license_assets_are_downloaded_checksummed_and_attached(tmp_path, monkeypatch):
+    _release_workspace(tmp_path, monkeypatch)
+    _stage_inputs(tmp_path)
+    steps = _release_steps("github-release")
+    upload = next(
+        step
+        for step in _release_steps("images")
+        if step.get("with", {}).get("name") == "license-inventory-${{ github.ref_name }}"
+    )
+    download = next(
+        step for step in steps if step.get("with", {}).get("name") == upload["with"]["name"]
+    )
+    assert download["uses"].startswith("actions/download-artifact@")
+    assert download["with"]["path"] == "license-inventory/"
+    assert set(upload["with"]["path"].split()) == {
+        "license-inventory-release.json",
+        "license-inventory-release.tar.gz",
+    }
+    for step in steps:
+        if step.get("name") in {"Stage artifacts + SHA256SUMS", "Create the release"}:
+            result = _run_release_step(step, tmp_path)
+            assert result.returncode == 0, result.stdout + result.stderr
+    manifest = dict(
+        line.split()[::-1] for line in (tmp_path / "release/SHA256SUMS").read_text().splitlines()
+    )
+    for name in ("license-inventory-release.json", "license-inventory-release.tar.gz"):
+        assert (
+            manifest[name] == hashlib.sha256((tmp_path / "release" / name).read_bytes()).hexdigest()
+        )
+        assert str(Path("release") / name) in (tmp_path / "calls").read_text()
+
+
+@pytest.mark.parametrize("missing", ["json", "tar.gz"])
+def test_release_cannot_stage_without_license_evidence(tmp_path, monkeypatch, missing):
+    _release_workspace(tmp_path, monkeypatch)
+    _stage_inputs(tmp_path)
+    (tmp_path / f"license-inventory/license-inventory-release.{missing}").unlink()
+    stage = next(
+        s
+        for s in _release_steps("github-release")
+        if s.get("name") == "Stage artifacts + SHA256SUMS"
+    )
+    result = _run_release_step(stage, tmp_path)
+    assert result.returncode != 0
+    assert not (tmp_path / "release/SHA256SUMS").exists()
