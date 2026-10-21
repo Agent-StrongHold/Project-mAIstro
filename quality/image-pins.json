@@ -3,20 +3,20 @@
   "pins": [
     {
       "image": "python",
-      "tag": "3.13.15-slim-bookworm",
-      "digest": "sha256:2325bb286ec344af3e5898cc224b5844e2707ac6e26b1632516fd3edc84a5e26",
-      "recorded": "2026-09-30",
-      "recorded_in": "#349",
-      "note": "CPython 3.13.15 on Debian bookworm-slim; the interpreter pin that keeps coincurve building from source only on purpose.",
+      "tag": "3.13.16-slim-bookworm",
+      "digest": "sha256:a1165e272e578941b84abc79e4ab38a0305cd12803a5c4247979ac7655f4d641",
+      "recorded": "2026-10-19",
+      "recorded_in": "#363",
+      "note": "CPython 3.13.16 on Debian bookworm-slim; the interpreter pin that keeps coincurve building from source only on purpose. Refreshed from 3.13.15 (#363): the grype leg of the container gate flags CPython binary HIGH/CRITICAL CVEs (CVE-2026-19445/19553/82049) whose fixes landed in 3.13.16.",
       "used_by": ["Dockerfile", "packages/hive-conductor/Dockerfile"]
     },
     {
       "image": "python",
       "tag": "3.12-slim",
-      "digest": "sha256:f77ac9e44ae96ef2c90b8053ea08c31f8be030f824196b0ae4db6d462c84e51f",
-      "recorded": "2026-09-30",
-      "recorded_in": "#349",
-      "note": "CPython 3.12.x line as of the recording date (research, RSI runner, e2e and sbx-tests images).",
+      "digest": "sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1",
+      "recorded": "2026-10-19",
+      "recorded_in": "#363",
+      "note": "CPython 3.12.x line as of the recording date (resolves to 3.12.15); research, RSI runner, e2e and sbx-tests images. Refreshed (#363): the grype leg of the container gate flags CPython binary HIGH/CRITICAL CVEs fixed in 3.12.15.",
       "used_by": [
         "Dockerfile.research",
         "Dockerfile.rsi-runner",
@@ -45,21 +45,16 @@
     },
     {
       "image": "golang",
-      "tag": "1.25.13-alpine",
-      "digest": "sha256:1e0126852075c9c60731c8ba49088448b91f63e2aed97ca9d1a9791622a05946",
-      "recorded": "2026-09-30",
-      "recorded_in": "#349",
-      "note": "Builds the age static binaries; the tag resolves to b8564ad per the Dockerfile's own verification.",
-      "used_by": ["packages/hive-conductor/Dockerfile"]
-    },
-    {
-      "image": "docker",
-      "tag": "29-cli",
-      "digest": "sha256:018edbc908e08fcc9dbf029c812c34251e9b4719e6f71ca0e5eae2a987d014ca",
-      "recorded": "2026-09-30",
-      "recorded_in": "#349",
-      "note": "Static docker CLI tool image (go1.26.8 binary); copied into engine images for the sandbox tool.",
-      "used_by": ["Dockerfile", "Dockerfile.research"]
+      "tag": "1.27.2-alpine",
+      "digest": "sha256:f92b6ef800e499660581efdabdf25d9d817a9d124eaf900924f0504e7e27e12d",
+      "recorded": "2026-10-19",
+      "recorded_in": "#363",
+      "note": "Builds the age static binaries and the static docker CLI from their pinned upstream release tags (#363): the published docker:29-cli binary embeds go1.26.8 stdlib and the age prebuilt binary go1.25.x, both carrying 2026 stdlib HIGHs (CVE-2026-78667/78669/97031, fixed in go1.26.9/1.27.2) that no released tag of either project ships fixed.",
+      "used_by": [
+        "packages/hive-conductor/Dockerfile",
+        "Dockerfile",
+        "Dockerfile.research"
+      ]
     },
     {
       "image": "ghcr.io/astral-sh/uv",
