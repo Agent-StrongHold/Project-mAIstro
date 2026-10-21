@@ -50,6 +50,27 @@ def test_all_gates_pass_scores_and_accepts() -> None:
     assert {"red_green", "coverage", "assertion_strength", "code_quality"} <= names
 
 
+def test_net_new_test_signal_fires_when_coverage_rises() -> None:
+    """A candidate adding green tests *and* raising coverage earns the
+    ``new_test`` signal row. (#1792: pins the extracted ``_scorecard_scores``
+    append seam — the arc that appends a present signal had no scorecard test
+    taking it, so a refactor that dropped the signal entirely would have
+    passed the suite silently.)"""
+    sc = compose_scorecard(
+        FitnessInputs(
+            tests_passed=True,
+            baseline_coverage=80.0,
+            candidate_coverage=82.0,
+            net_new_tests=2,
+            tdd=TddEvidence(changed_tests=["t.py"], baseline_changed_rc=1, candidate_changed_rc=0),
+        )
+    )
+    new_test = [s for s in sc.scores if s.name == "new_test"]
+    assert len(new_test) == 1
+    assert new_test[0].score == 1.0
+    assert sc.accepted is True
+
+
 def test_syntax_error_vetoes() -> None:
     sc = compose_scorecard(
         FitnessInputs(tests_passed=True, syntax_error_reasons=["bad.py: invalid syntax (line 3)"])
