@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import cast
+
 import pytest
 
 from maistro.capabilities.registry import CapabilityRegistry
@@ -60,3 +62,50 @@ def test_provider_unknown_slot_raises(registry: CapabilityRegistry):
 def test_slots_lists_defined_slot_names(registry: CapabilityRegistry):
     registry.define(SlotSpec(name="approval", fallback_policy=FallbackPolicy.SAFE_NOOP))
     assert set(registry.slots()) == {"web_search", "approval"}
+
+
+def test_host_supplied_tier_and_provenance_are_the_authority(registry: CapabilityRegistry):
+    # Only the host states a tier and names where a provider came from; a
+    # provider's own metadata never reaches this record.
+    registry.register(
+        FakeProvider("tavily", "web_search"), trust_tier="t1", provenance="ops://tavily"
+    )
+    assert registry.provider_trust("web_search", "tavily") == ("t1", "ops://tavily")
+
+
+def test_host_tier_the_host_does_not_recognize_lands_on_the_unvetted_floor(
+    registry: CapabilityRegistry,
+):
+    registry.register(FakeProvider("tavily", "web_search"), trust_tier="t9")
+    assert registry.provider_trust("web_search", "tavily")[0] == "t3"
+
+
+def test_malformed_declared_tier_is_kept_verbatim_not_laundered(registry: CapabilityRegistry):
+    # A declaration the host cannot read is evidence, not a promotion: it is
+    # kept as declared, so the refusal stays visible instead of becoming a
+    # usable tier.
+    registry.register(FakeProvider("tavily", "web_search", tier=""))
+    assert registry.provider_trust("web_search", "tavily")[0] == ""
+
+
+def test_non_string_declared_tier_is_not_laundered_into_a_usable_tier(
+    registry: CapabilityRegistry,
+):
+    # The built-in provider shape with a tier that is not a string at all:
+    # metadata of an unknown shape is refused, never rounded to a tier.
+    registry.register(FakeProvider("tavily", "web_search", tier=cast(str, None)))
+    assert registry.provider_trust("web_search", "tavily")[0] == ""
+
+
+async def test_missing_baseline_provider_resolves_to_none() -> None:
+    # The declared baseline is a provider name, not a promise that the
+    # provider is installed: an absent one is a typed absence, never a crash
+    # and never a different provider in its place.
+    registry = CapabilityRegistry()
+    registry.define(
+        SlotSpec(
+            name="approval", fallback_policy=FallbackPolicy.BASELINE, baseline_provider="inbox"
+        )
+    )
+    registry.register(FakeProvider("push", "approval", healthy=False))
+    assert await registry.resolve("approval") is None

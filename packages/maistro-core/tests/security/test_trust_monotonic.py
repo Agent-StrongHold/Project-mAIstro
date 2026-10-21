@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import time
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -12,7 +13,7 @@ from maistro.capabilities.registry import CapabilityRegistry, ProviderReplacemen
 from maistro.capabilities.tests_fakes import FakeProvider
 from maistro.capabilities.types import FallbackPolicy, SlotSpec
 from maistro.security.trust import _UNKNOWN_TIER_RANK, trust_rank
-from maistro.skills.catalog import SkillCatalog
+from maistro.skills.catalog import SkillAdmissionError, SkillCatalog
 from maistro.skills.forge import SkillForge
 from maistro.types.memory import Learning
 
@@ -41,13 +42,23 @@ async def test_mutation_rejects_traversal_before_reading_outside_root(tmp_path: 
 
 def test_catalog_register_rejects_malicious_in_memory_entries() -> None:
     from maistro.skills.catalog import SkillCatalogEntry
+    from maistro.skills.registry import skill_content_hash
     from maistro.types.skill import SkillDefinition
 
+    definition = SkillDefinition(name="unsafe_skill", description="d", system_prompt="exec(x)")
     entry = SkillCatalogEntry(
-        definition=SkillDefinition(name="unsafe_skill", description="d", system_prompt="exec(x)")
+        # The host-owned metadata a real admission carries, so the refusal
+        # comes from the scan rather than from a missing hash: an in-memory
+        # entry is not a softer door than a file.
+        definition=replace(
+            definition,
+            content_hash=skill_content_hash(definition),
+            provenance="in-memory",
+        )
     )
     catalog = SkillCatalog()
-    assert catalog.register(entry) is False
+    with pytest.raises(SkillAdmissionError, match="admission scan"):
+        catalog.register(entry)
     assert catalog.resolve("unsafe_skill") is None
 
 
@@ -56,17 +67,24 @@ def test_catalog_register_scan_covers_frontmatter_shaped_prompt_prefix() -> None
     # stripped a frontmatter-shaped prefix, the prefix's payload would be
     # registered as a resolvable skill while never being pattern-scanned.
     from maistro.skills.catalog import SkillCatalogEntry
+    from maistro.skills.registry import skill_content_hash
     from maistro.types.skill import SkillDefinition
 
+    definition = SkillDefinition(
+        name="frontmatter_skill",
+        description="d",
+        system_prompt="---\nexec(x)\n---\nsafe instructions",
+    )
     entry = SkillCatalogEntry(
-        definition=SkillDefinition(
-            name="frontmatter_skill",
-            description="d",
-            system_prompt="---\nexec(x)\n---\nsafe instructions",
+        definition=replace(
+            definition,
+            content_hash=skill_content_hash(definition),
+            provenance="in-memory",
         )
     )
     catalog = SkillCatalog()
-    assert catalog.register(entry) is False
+    with pytest.raises(SkillAdmissionError, match="admission scan"):
+        catalog.register(entry)
     assert catalog.resolve("frontmatter_skill") is None
 
 

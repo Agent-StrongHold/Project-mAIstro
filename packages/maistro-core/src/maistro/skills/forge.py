@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -87,6 +88,22 @@ Rules:
 - Do NOT add secrets, exec(), eval(), or dangerous patterns
 
 Output ONLY the complete updated SKILL.md file content."""
+
+
+@dataclass(frozen=True)
+class _MutationInputs:
+    """The resolved inputs one skill mutation needs.
+
+    Produced by :meth:`SkillForge._prepare_mutation` once the mutation target
+    has been resolved and both the existing content and the learning have
+    passed the supply-chain checks. Keeping them together lets ``mutate``
+    stay a linear pipeline instead of a decision tree.
+    """
+
+    filepath: Path
+    current_content: str
+    learning_text: str
+    old_hash: str
 
 
 class SkillForge:
@@ -188,26 +205,13 @@ class SkillForge:
                 "Only T2+ skills support learning-driven mutation.",
             }
 
-        filepath, error = self._resolve_mutation_target(skill_name)
-        if error is not None:
-            return error
-        assert filepath is not None
-
-        current_content = filepath.read_text(encoding="utf-8")
-        current_error = self._scan_current_skill(current_content)
-        if current_error is not None:
-            return current_error
-
-        old_hash = hashlib.sha256(current_content.encode()).hexdigest()[:16]
-
-        learning_text = learning.learning if hasattr(learning, "learning") else str(learning)
-        learning_error = self._validate_learning_text(learning_text, skill_name)
-        if learning_error is not None:
-            return learning_error
+        prepared = self._prepare_mutation(skill_name, learning)
+        if isinstance(prepared, dict):
+            return prepared
 
         prompt = _MUTATE_PROMPT.format(
-            current_content=current_content,
-            learning_text=learning_text,
+            current_content=prepared.current_content,
+            learning_text=prepared.learning_text,
         )
         new_content = await self._call_llm(prompt)
         if not new_content:
@@ -220,28 +224,62 @@ class SkillForge:
         if output_error is not None:
             return output_error
 
-        new_hash = hashlib.sha256(new_content.encode()).hexdigest()[:16]
         full_hash = hashlib.sha256(new_content.encode()).hexdigest()
+        new_hash = full_hash[:16]
         registration_error = self._register_mutated_skill(skill_name, new_content, full_hash)
         if registration_error is not None:
             return registration_error
 
-        persist_error = self._persist_mutated_skill(filepath, skill_name, new_content, full_hash)
+        persist_error = self._persist_mutated_skill(
+            prepared.filepath, skill_name, new_content, full_hash
+        )
         if persist_error is not None:
             return persist_error
         logger.info(
             "Mutated skill '%s' (%s -> %s)",
             skill_name,
-            old_hash,
+            prepared.old_hash,
             new_hash,
         )
 
         return {
             "status": "mutated",
             "skill_name": skill_name,
-            "old_hash": old_hash,
+            "old_hash": prepared.old_hash,
             "new_hash": new_hash,
         }
+
+    def _prepare_mutation(
+        self,
+        skill_name: str,
+        learning: Learning,
+    ) -> _MutationInputs | dict[str, Any]:
+        """Resolve the mutation target and validate what would be rewritten.
+
+        Returns the resolved inputs, or the refusal (``dict``) that stopped the
+        mutation before any content was read back, re-scanned or rewritten.
+        """
+        filepath, error = self._resolve_mutation_target(skill_name)
+        if error is not None:
+            return error
+        assert filepath is not None
+
+        current_content = filepath.read_text(encoding="utf-8")
+        current_error = self._scan_current_skill(current_content)
+        if current_error is not None:
+            return current_error
+
+        learning_text = learning.learning if hasattr(learning, "learning") else str(learning)
+        learning_error = self._validate_learning_text(learning_text, skill_name)
+        if learning_error is not None:
+            return learning_error
+
+        return _MutationInputs(
+            filepath=filepath,
+            current_content=current_content,
+            learning_text=learning_text,
+            old_hash=hashlib.sha256(current_content.encode()).hexdigest()[:16],
+        )
 
     def _resolve_mutation_target(
         self, skill_name: str
@@ -256,6 +294,13 @@ class SkillForge:
                 return None, {"status": "skipped", "reason": f"No SKILL.md for '{skill_name}'"}
         if filepath.is_symlink():
             return None, {"status": "blocked", "reason": "Refusing to mutate symlinked skill"}
+        if not filepath.is_file():
+            return None, {
+                "status": "blocked",
+                "reason": (
+                    f"Skill path for '{skill_name}' is not a file inside the authorized root"
+                ),
+            }
         resolved = filepath.resolve()
         if not resolved.is_relative_to(root):
             return None, {"status": "blocked", "reason": "Skill path escapes skills directory"}
@@ -266,7 +311,7 @@ class SkillForge:
         if not current_safe:
             return {
                 "status": "blocked",
-                "reason": "Existing skill failed supply-chain scan: " + ", ".join(current_findings),
+                "reason": "Existing skill failed the security scan: " + ", ".join(current_findings),
             }
         return None
 
