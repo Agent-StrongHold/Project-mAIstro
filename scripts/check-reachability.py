@@ -55,6 +55,15 @@ WORKFLOW_GLOB = ".github/workflows/*.yml"
 #   scripts/ratchet_provenance.py for the two-merge rule).
 _EXCLUDED_PACKAGE_PYTHON = frozenset(
     {
+        # Inactive contract leaves (not yet wired into any process entry point).
+        # `packages/maistro-core/src/maistro/runs/admission_identity.py` is an
+        # intentionally unreachable contract leaf (#1851): nothing imports it
+        # yet and a later, separately reviewed integration lands the runtime
+        # consumer. It is classified here rather than dispositioned unreachable
+        # because the reachability baseline may grow only behind a prior landed
+        # reachability authorization (two-merge rule); classifying it keeps the
+        # source-universe honest without expanding the ratchet baseline.
+        "packages/maistro-core/src/maistro/runs/admission_identity.py",
         # Developer utilities.
         "packages/hive-conductor/run_hill_climb.py",
         "packages/maistro-evolve/examples/builders_swebench_live.py",
