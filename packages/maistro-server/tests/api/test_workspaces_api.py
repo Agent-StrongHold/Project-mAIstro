@@ -7,7 +7,12 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from maistro.workspaces import InMemoryWorkspaceStore, WorkspaceOwnershipError
+from maistro.workspaces import (
+    InMemoryWorkspaceStore,
+    WorkspaceMembership,
+    WorkspaceOwnershipError,
+    WorkspaceRole,
+)
 from maistro_server.api import workspaces as workspace_api
 from maistro_server.api.auth import verify_api_key
 from maistro_server.api.principal import AuthenticatedPrincipal
@@ -254,3 +259,140 @@ async def test_routes_fail_closed_when_no_workspace_store_is_configured() -> Non
     finally:
         client.close()
         workspace_api.configure_workspace_store(None)
+
+
+async def test_a_write_refusal_at_the_boundary_is_the_routes_403_not_a_500(
+    api, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A Workspace write refused by the store boundary is a 403, not a 500 (#1150).
+
+    The boundary re-resolves the requester's ADMINISTER authority inside the
+    store call. Ownership revoked between the route's own owner check and that
+    boundary check must render as the route's owner-permission 403, not escape
+    as an unhandled ``WorkspaceAuthorizationDenied``.
+    """
+    app, client, store = api
+    _as_user(app, "alice")
+    workspace_id = client.post("/workspaces", json={"name": "Shared"}).json()["workspace_id"]
+    client.put(f"/workspaces/{workspace_id}/members/bob", json={"role": "owner"})
+
+    async def _ownership_revoked_after_the_route_check(*args: object, **kwargs: object) -> None:
+        # A co-owner demotes the requester between the route's owner check
+        # and the store's boundary authorization.
+        await store.set_membership(workspace_id, user_id="alice", role=WorkspaceRole.CONTRIBUTOR)
+
+    monkeypatch.setattr(
+        workspace_api, "require_workspace_owner", _ownership_revoked_after_the_route_check
+    )
+
+    updated = client.patch(f"/workspaces/{workspace_id}", json={"name": "Renamed"})
+    deleted = client.delete(f"/workspaces/{workspace_id}")
+    promoted = client.put(f"/workspaces/{workspace_id}/members/cara", json={"role": "member"})
+
+    assert updated.status_code == 403
+    assert "Workspace owner permission required" in updated.json()["detail"]
+    assert deleted.status_code == 403
+    assert promoted.status_code == 403
+
+
+async def test_a_read_refusal_at_the_boundary_is_a_404_not_a_500(
+    api, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A Workspace read refused by the store boundary is a 404, not a 500 (#1150).
+
+    The route answers a Workspace the requester cannot see with the same 404
+    an unknown Workspace gets, so a refusal that arrives from the boundary
+    keeps that answer instead of becoming a server fault.
+    """
+    app, client, store = api
+    _as_user(app, "alice")
+    workspace_id = client.post("/workspaces", json={"name": "Shared"}).json()["workspace_id"]
+    client.put(f"/workspaces/{workspace_id}/members/bob", json={"role": "owner"})
+
+    async def _membership_revoked_after_the_route_check(*args: object, **kwargs: object) -> None:
+        # The requester leaves the Workspace between the route's membership
+        # check and the store's boundary authorization.
+        await store.remove_membership(workspace_id, user_id="alice")
+
+    monkeypatch.setattr(
+        workspace_api, "require_workspace_membership", _membership_revoked_after_the_route_check
+    )
+
+    fetched = client.get(f"/workspaces/{workspace_id}")
+    listed = client.get(f"/workspaces/{workspace_id}/members")
+
+    assert fetched.status_code == 404
+    assert "Workspace not found" in fetched.json()["detail"]
+    assert listed.status_code == 404
+    assert "Workspace not found" in listed.json()["detail"]
+
+
+async def test_a_membership_removal_refusal_at_the_boundary_is_a_403_not_a_500(
+    api, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Removing another member is refused by the boundary as a 403, not a 500 (#1150).
+
+    ``remove_membership`` re-resolves the requester's ADMINISTER authority in
+    the store, so a revocation that lands after the route's own check is
+    refused there. The route must render that refusal as its own 403 and leave
+    the membership in place.
+    """
+    app, client, store = api
+    _as_user(app, "alice")
+    workspace_id = client.post("/workspaces", json={"name": "Shared"}).json()["workspace_id"]
+    client.put(f"/workspaces/{workspace_id}/members/bob", json={"role": "member"})
+    client.put(f"/workspaces/{workspace_id}/members/cara", json={"role": "owner"})
+
+    async def _ownership_revoked_after_the_route_check(
+        *args: object, **kwargs: object
+    ) -> WorkspaceMembership:
+        await store.set_membership(workspace_id, user_id="alice", role=WorkspaceRole.CONTRIBUTOR)
+        # The route's own check already read the pre-revocation membership.
+        return WorkspaceMembership(
+            workspace_id=workspace_id, user_id="alice", role=WorkspaceRole.OWNER
+        )
+
+    monkeypatch.setattr(
+        workspace_api, "require_workspace_membership", _ownership_revoked_after_the_route_check
+    )
+
+    response = client.delete(f"/workspaces/{workspace_id}/members/bob")
+
+    assert response.status_code == 403
+    assert "Workspace owner permission required" in response.json()["detail"]
+    members = client.get(f"/workspaces/{workspace_id}/members").json()
+    assert "bob" in [item["user_id"] for item in members]
+
+
+async def test_a_removal_refusal_after_a_membership_loss_is_a_404_not_a_500(
+    api, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A requester who left the Workspace gets the 404, not a 500 (#1150).
+
+    The refusal must not disclose more than the route already does: a
+    principal who is no longer a member is answered exactly like an unknown
+    Workspace.
+    """
+    app, client, store = api
+    _as_user(app, "alice")
+    workspace_id = client.post("/workspaces", json={"name": "Shared"}).json()["workspace_id"]
+    client.put(f"/workspaces/{workspace_id}/members/bob", json={"role": "member"})
+    client.put(f"/workspaces/{workspace_id}/members/cara", json={"role": "owner"})
+
+    async def _membership_revoked_after_the_route_check(
+        *args: object, **kwargs: object
+    ) -> WorkspaceMembership:
+        await store.remove_membership(workspace_id, user_id="alice")
+        # The route's own check already read the pre-revocation membership.
+        return WorkspaceMembership(
+            workspace_id=workspace_id, user_id="alice", role=WorkspaceRole.OWNER
+        )
+
+    monkeypatch.setattr(
+        workspace_api, "require_workspace_membership", _membership_revoked_after_the_route_check
+    )
+
+    response = client.delete(f"/workspaces/{workspace_id}/members/bob")
+
+    assert response.status_code == 404
+    assert "Workspace not found" in response.json()["detail"]
