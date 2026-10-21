@@ -89,6 +89,33 @@ class TestLockedInstalls:
             f"{dockerfile.name} names no locked install"
         )
 
+    def test_the_hashed_install_consumes_the_export_and_nothing_else(self, dockerfile):
+        """`uv pip install` run inside the project reads the project.
+
+        The root pyproject.toml carries `constraint-dependencies =
+        ["aiohttp>=3.14.4"]` — the CVE-2026-111064 floor the pip-audit gate
+        needs over the dev environment, where aiohttp arrives through the
+        cosmic-ray tool. `uv pip install` run in the project directory folds
+        that floor into the install request, and `--require-hashes` rejects
+        an unpinned requirement:
+
+            error: In `--require-hashes` mode, all requirements must have
+            their versions pinned with `==`, but found: aiohttp>=3.14.4
+
+        So an install that reads the project fails the build on a floor for
+        a package these images do not ship aiohttp for — every production
+        image, for a constraint that binds where it belongs (the lock).
+        `--no-config` makes the install consume the exported file verbatim.
+        """
+        offenders = [
+            line
+            for line in _commands(_read(dockerfile))
+            if "uv pip install" in line
+            and "--require-hashes" in line
+            and "--no-config" not in line
+        ]
+        assert not offenders, f"{dockerfile.name} reads the project at install time: {offenders}"
+
 
 class TestEngineImage:
     """The root Dockerfile — the image the API server ships in."""

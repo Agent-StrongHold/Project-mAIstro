@@ -18,6 +18,17 @@
 #   --require-hashes
 #             fails the build on an unresolvable locked artifact instead of
 #             silently installing whatever the index serves;
+#   --no-config
+#             the install consumes the export and nothing else. The root
+#             pyproject.toml carries a `constraint-dependencies` floor
+#             (aiohttp>=3.14.4 — the CVE-2026-111064 floor the pip-audit
+#             gate needs over the dev environment), and `uv pip install` run
+#             inside the project folds that floor into the install request.
+#             `--require-hashes` rejects an unpinned requirement, so the
+#             build would fail on a floor for a package this image does not
+#             ship aiohttp for. The floor still binds where it belongs: `uv
+#             lock` and `uv sync` read the manifest, and the lock is what
+#             this image installs;
 #   --no-dev
 #             dev tooling never ships;
 #   --no-emit-workspace
@@ -42,7 +53,7 @@
 # ─── Build stage ───────────────────────────────────────
 # Digest-pinned (#349): python:3.12-slim resolved to this index digest on
 # 2026-09-30; refresh via Dependabot and update quality/image-pins.json.
-FROM python:3.12-slim@sha256:f77ac9e44ae96ef2c90b8053ea08c31f8be030f824196b0ae4db6d462c84e51f AS builder
+FROM python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1 AS builder
 
 WORKDIR /app
 
@@ -76,14 +87,33 @@ RUN uv export --locked --package maistro-server \
       --format requirements-txt --output-file /tmp/lock-requirements.txt \
  && uv venv --python 3.12 /app/venv \
  && uv pip install --python /app/venv/bin/python \
-      --require-hashes --no-cache -r /tmp/lock-requirements.txt \
+      --no-config --require-hashes --no-cache -r /tmp/lock-requirements.txt \
  && uv pip install --python /app/venv/bin/python --no-deps --no-cache \
       ./packages/maistro-core ./packages/maistro-server \
  && uv pip check --python /app/venv/bin/python \
  && /app/venv/bin/python -c "import importlib.metadata as m; assert m.version('browser-use') and m.version('playwright'); import maistro_server.main; print('builder smoke ok')"
 
+# ---- docker CLI build ----
+# Same policy as the root Dockerfile: the published docker:29-cli binary embeds
+# go1.26.8 stdlib (trivy HIGHs fixed in go1.26.9/1.27.2) and no released
+# docker:xx-cli tag ships a newer toolchain, so build the exact immutable
+# release tag ourselves on the patched toolchain. Tag resolves to dfc520d; fail
+# if upstream ever disagrees.
+FROM golang:1.27.2-alpine@sha256:f92b6ef800e499660581efdabdf25d9d817a9d124eaf900924f0504e7e27e12d AS dockerclibuild
+ARG DOCKER_CLI_VERSION=29.9.1
+ARG DOCKER_CLI_COMMIT_SHORT=dfc520d
+RUN apk add --no-cache git && \
+    git clone --branch "v${DOCKER_CLI_VERSION}" --depth 1 https://github.com/docker/cli.git /src/docker-cli && \
+    cd /src/docker-cli && \
+    test "$(git rev-parse --short=7 HEAD)" = "${DOCKER_CLI_COMMIT_SHORT}" && \
+    cp vendor.mod go.mod && cp vendor.sum go.sum && \
+    mkdir -p /out && \
+    CGO_ENABLED=0 go build -trimpath -tags grpcnotrace \
+      -ldflags="-s -w -X github.com/docker/cli/cli/version.Version=v${DOCKER_CLI_VERSION} -X github.com/docker/cli/cli/version.GitCommit=${DOCKER_CLI_COMMIT_SHORT}" \
+      -o /out/docker ./cmd/docker
+
 # ─── Production stage ─────────────────────────────────
-FROM python:3.12-slim@sha256:f77ac9e44ae96ef2c90b8053ea08c31f8be030f824196b0ae4db6d462c84e51f
+FROM python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1
 
 WORKDIR /app
 
@@ -113,10 +143,10 @@ RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-reco
     && rm -rf /var/lib/apt/lists/* /var/cache/apt/* /tmp/*
 
 # Static docker CLI only (talks to a mounted /var/run/docker.sock) — replaces the
-# heavyweight docker.io package and its containerd/runc dependency tree.
-# 29-cli ships a binary built with go1.26.8; older 27-cli
-# binaries embedded go1.22.11 (CVE-2025-68121 crypto/tls + 21 HIGHs, trivy).
-COPY --from=docker:29-cli@sha256:018edbc908e08fcc9dbf029c812c34251e9b4719e6f71ca0e5eae2a987d014ca /usr/local/bin/docker /usr/local/bin/docker
+# heavyweight docker.io package and its containerd/runc dependency tree. Built
+# from the pinned upstream release tag on the patched Go toolchain (stage
+# above) because the published 29-cli binary embeds go1.26.8 stdlib (trivy HIGHs).
+COPY --from=dockerclibuild /out/docker /usr/local/bin/docker
 # The lock-built venv (third-party pins hash-verified, members non-editable).
 COPY --from=builder /app/venv /app/venv
 
@@ -135,6 +165,13 @@ COPY pyproject.toml uv.lock README.md ./
 # resolution happens here. Installed into PLAYWRIGHT_BROWSERS_PATH (set above)
 # so the non-root user can use it.
 RUN python -m playwright install chromium
+
+# Drop the same build tooling the other images drop: pip is not invoked at
+# runtime by anything in the shipped app, and its vendored dependency tree
+# (pip/_vendor/vendor.txt) is trivy surface. The uv binary stays — it ships in
+# the copied /usr/local/bin tool set this image is operated with.
+RUN rm -rf /usr/local/lib/python3.12/site-packages/pip* \
+           /usr/local/bin/pip*
 # Drop root: run as an unprivileged system user and own the app + browser dirs.
 RUN useradd --system --no-create-home --uid 10001 app \
  && chown -R app:app /app /opt/playwright

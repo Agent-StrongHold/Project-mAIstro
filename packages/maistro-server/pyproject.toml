@@ -68,6 +68,13 @@ browser = ["maistro-core[browser]>=0.9.0"]
 #                 canvas's own third-party dependency (Pillow) in the
 #                 exported set, so the member installs with no unmet
 #                 dependency instead of pulling one at build time.
+#   sqlite        the sqlite persistence deployment (2dfd3b97a) wires
+#                 SqliteCampaignStore, SqliteWorkspaceLogStore and the
+#                 backlog history, which import aiosqlite. The extra is named
+#                 here so the image's contract carries it: before #348 the
+#                 Dockerfile's pip line named `maistro-core[...,sqlite]`
+#                 directly, and dropping the name here would have quietly
+#                 shipped an image whose sqlite stores cannot open.
 #   openai        the engine image has shipped openai>=1.40,<2 since before
 #                 the lock existed. It is kept: this extra exists to make
 #                 the image's set reproducible, not to shrink it. The one
@@ -77,7 +84,7 @@ browser = ["maistro-core[browser]>=0.9.0"]
 #                 weight today, and removing it is a deliberate change to
 #                 what the image ships, not a side effect of locking it.
 image = [
-    "maistro-core[identity,llm,sandbox,observability]>=0.9.0",
+    "maistro-core[identity,llm,sandbox,observability,sqlite]>=0.9.0",
     "maistro-canvas>=0.9.0",
     "openai>=1.40,<2",
 ]

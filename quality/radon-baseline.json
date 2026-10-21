@@ -125,12 +125,12 @@
     {
       "key": "packages/maistro-canvas/src/maistro_canvas/canvas/tool.py::execute_canvas",
       "path": "packages/maistro-canvas/src/maistro_canvas/canvas/tool.py",
-      "line": 307,
+      "line": 408,
       "name": "execute_canvas",
       "classname": null,
       "rank": "E",
-      "complexity": 38,
-      "rationale": "Newly visible when the complexity ratchet widened from packages/maistro-core/src to every shipped package (#1682). Recorded at the complexity it already had that day so it cannot get worse; the Boy Scout ratchet is expected to bring it down rather than leave it here."
+      "complexity": 32,
+      "rationale": "Newly visible when the complexity ratchet widened from packages/maistro-core/src to every shipped package (#1682). Recorded at the complexity it already had that day so it cannot get worse; the #393 scale-bound repair extracted the composite spec validation and application loops into _validate_spec_scales/_apply_layer_specs, bringing it to 33, and the composite-projection commit bringing it to 32. The Boy Scout ratchet is expected to bring it down further rather than leave it here."
     },
     {
       "key": "packages/maistro-canvas/src/maistro_canvas/export.py::export_pptx",
@@ -1073,26 +1073,6 @@
       "rationale": "Newly visible when the complexity ratchet widened from packages/maistro-core/src to every shipped package (#1682). Recorded at the complexity it already had that day so it cannot get worse; the Boy Scout ratchet is expected to bring it down rather than leave it here."
     },
     {
-      "key": "packages/maistro-rsi/src/maistro_rsi/candidate_fitness.py::compose_scorecard",
-      "path": "packages/maistro-rsi/src/maistro_rsi/candidate_fitness.py",
-      "line": 459,
-      "name": "compose_scorecard",
-      "classname": null,
-      "rank": "D",
-      "complexity": 23,
-      "rationale": "Regressed by #1730 (2026-10-02), not newly visible. The file dates from the 2026-08-21 initial release; this complexity does not -- #1730 wired the fail-first evidence gate through the block and took it from 21 to 23. It went unmeasured only because the radon scan still covers packages/maistro-core/src alone, so maistro-rsi was never in scope. #1684 brings it in; #1792 tracks bringing the complexity back down, together with the three blocks #1730 added outright."
-    },
-    {
-      "key": "packages/maistro-rsi/src/maistro_rsi/candidate_fitness.py::evaluate_candidate",
-      "path": "packages/maistro-rsi/src/maistro_rsi/candidate_fitness.py",
-      "line": 1131,
-      "name": "evaluate_candidate",
-      "classname": null,
-      "rank": "C",
-      "complexity": 20,
-      "rationale": "Regressed by #1730 (2026-10-02) from 25 to 30; the #108 proven-scenario passthrough and the #109 evaluator-oracle preamble both run through this block. The merge of #108 (proven-scenario objective wiring) and #109 (oracle-integrity preamble before any oracle run) refactored the cost-layered evidence blocks (fail-first TDD, mutation-probe staging, regression-judge attachment, oracle-integrity resolution, refactor-baseline-quality) into named helpers, taking the merged block from the trusted base's D(21) to its measured C(20). #1792 tracks whether the remaining complexity can come down further."
-    },
-    {
       "key": "packages/maistro-rsi/src/maistro_rsi/candidate_fitness.py::protected_inventory_gate",
       "path": "packages/maistro-rsi/src/maistro_rsi/candidate_fitness.py",
       "line": 316,
@@ -1101,36 +1081,6 @@
       "rank": "C",
       "complexity": 15,
       "rationale": "Newly visible when the complexity ratchet widened from packages/maistro-core/src to every shipped package (#1682). Recorded at the complexity it already had that day so it cannot get worse; the Boy Scout ratchet is expected to bring it down rather than leave it here."
-    },
-    {
-      "key": "packages/maistro-rsi/src/maistro_rsi/fail_first.py::_has_related_failure",
-      "path": "packages/maistro-rsi/src/maistro_rsi/fail_first.py",
-      "line": 370,
-      "name": "_has_related_failure",
-      "classname": null,
-      "rank": "C",
-      "complexity": 14,
-      "rationale": "New in #1730 (2026-10-02), in a package the radon scan does not yet cover. Not legacy: this is the fail-first evidence gate, which decides whether an RSI code-improvement objective produced real failing-test evidence. Branch-heavy decision code is where an unreviewed path hides, so #1792 tracks taking it back under the C ceiling; this row pins the value meanwhile."
-    },
-    {
-      "key": "packages/maistro-rsi/src/maistro_rsi/fail_first.py::collect_fail_first_evidence",
-      "path": "packages/maistro-rsi/src/maistro_rsi/fail_first.py",
-      "line": 253,
-      "name": "collect_fail_first_evidence",
-      "classname": null,
-      "rank": "C",
-      "complexity": 12,
-      "rationale": "New in #1730 (2026-10-02), in a package the radon scan does not yet cover. Not legacy: this is the fail-first evidence gate, which decides whether an RSI code-improvement objective produced real failing-test evidence. Branch-heavy decision code is where an unreviewed path hides, so #1792 tracks taking it back under the C ceiling; this row pins the value meanwhile."
-    },
-    {
-      "key": "packages/maistro-rsi/src/maistro_rsi/fail_first.py::fail_first_gate",
-      "path": "packages/maistro-rsi/src/maistro_rsi/fail_first.py",
-      "line": 407,
-      "name": "fail_first_gate",
-      "classname": null,
-      "rank": "C",
-      "complexity": 11,
-      "rationale": "New in #1730 (2026-10-02), in a package the radon scan does not yet cover. Not legacy: this is the fail-first evidence gate, which decides whether an RSI code-improvement objective produced real failing-test evidence. Branch-heavy decision code is where an unreviewed path hides, so #1792 tracks taking it back under the C ceiling; this row pins the value meanwhile."
     },
     {
       "key": "packages/maistro-rsi/src/maistro_rsi/free_router.py::register_gateway_alias",

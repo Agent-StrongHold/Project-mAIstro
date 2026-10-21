@@ -8,11 +8,18 @@
 #
 # Build:  docker build -f Dockerfile.rsi-runner -t maistro-rsi-runner:latest .
 # Run:    see tools/run_rsi_isolated.sh (or the docker run in the session).
-FROM python:3.12-slim@sha256:f77ac9e44ae96ef2c90b8053ea08c31f8be030f824196b0ae4db6d462c84e51f
+FROM python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
     git curl build-essential \
-    && rm -rf /var/lib/apt/lists/*
+    && apt-get autoremove -y --purge \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/* /var/cache/apt/* /tmp/*
+# The upgrade applies the Debian security patches the pinned base digest froze
+# (trivy: libpcre2 + libssl3t64/openssl/openssl-provider-legacy HIGHs on
+# debian 13.7, all fixed in current point releases) — same policy as
+# Dockerfile.research. This image runs agent-authored code, so its OS surface
+# is a containment boundary, not a convenience.
 
 # uv installer image digest-pinned to the 0.12.21 release (#349); `:latest`
 # here previously let a tag move swap the loop's installer with no repo diff.
@@ -101,14 +108,22 @@ RUN find . -type f \( -name '*.py' -o -name '*.md' -o -name '*.txt' -o -name '*.
     && git init -q \
     && git add -A \
     && git -c user.email=rsi@maistro.local -c user.name=RSI commit -qm "rsi baseline snapshot"
-
 # Install the workspace (maistro-core/evolve/rsi/bootstrap + their deps) plus the
 # fitness toolchain, so tests/coverage/lint gates all run in-container.
 #
-# `--locked` with `--extra rsi-fitness` ensures exact dependency versions from the lockfile.
-# This enforces lockfile usage for the workspace and the rsi-fitness extra.
+# `--locked` with `--extra rsi-fitness` ensures exact dependency versions from
+# the lockfile, for the workspace AND for the fitness toolchain (coverage,
+# bandit, radon, interrogate, vulture, pylint are all named by the extra, so
+# the loop's scoring tools are locked too). `--locked` fails the build when
+# uv.lock no longer matches a member's pyproject.toml — lock drift is a red
+# build, not a silent re-resolution.
+#
+# The fitness tools used to be a second, UNPINNED `uv pip install coverage
+# bandit radon interrogate vulture pylint` — a resolution outside the lock, so
+# two RSI runs a month apart could disagree about a fitness score for reasons
+# no commit explains. The extra replaces it: the same tools, at the versions
+# the lock names.
 RUN uv sync --locked --python 3.12 --extra rsi-fitness
-
 
 # #406: the workspace lock installs maistro-core[tui,identity] -> bip-utils ->
 # pytoniq-core-fork, whose wheel ships a generic top-level `examples`
@@ -117,7 +132,13 @@ RUN uv sync --locked --python 3.12 --extra rsi-fitness
 # and so does this one — placed after the last site-packages-mutating install,
 # with the same build-time assertion behind it, so a silent no-op prune fails
 # this build rather than shipping the surface to the loop.
+#
+# The uv wheel cache is cleaned in the same layer: it holds METADATA for every
+# resolved wheel (including vulnerable tuples that are not in the final venv,
+# plus SDK example files the secret scanner flags), and it must never persist
+# into the image the loop runs in.
 RUN .venv/bin/python scripts/prune-dependency-namespaces.py \
-    && .venv/bin/python scripts/check-dependency-namespaces.py --production
+    && .venv/bin/python scripts/check-dependency-namespaces.py --production \
+    && uv cache clean
 
 CMD ["sleep", "infinity"]

@@ -43,7 +43,18 @@ ENV UV_LINK_MODE=copy \
 # carrying hashes; the workspace members are installed from the copied sources
 # with --no-deps — a local wheel build, not a dependency resolution.
 #   --locked          fails the build on lock-vs-pyproject drift;
-#   --require-hashes  fails the build on an unresolvable locked artifact.
+#   --require-hashes  fails the build on an unresolvable locked artifact;
+#   --no-config       the install consumes the export and nothing else. The
+#                     root pyproject.toml carries a `constraint-dependencies`
+#                     floor (aiohttp>=3.14.4 — the CVE-2026-111064 floor the
+#                     pip-audit gate needs over the dev environment), and `uv
+#                     pip install` run inside the project folds that floor
+#                     into the install request. `--require-hashes` rejects an
+#                     unpinned requirement, so the build would fail on a
+#                     floor for a package this image does not ship aiohttp
+#                     for. The floor still binds where it belongs: `uv lock`
+#                     and `uv sync` read the manifest, and the lock is what
+#                     this image installs.
 COPY pyproject.toml uv.lock README.md /opt/maistro-engine/
 COPY packages/ /opt/maistro-engine/packages/
 # The workspace's extension members are not installed here, but their
@@ -60,7 +71,7 @@ RUN cd /opt/maistro-engine \
         --no-emit-workspace \
         --format requirements-txt --output-file /tmp/lock-requirements.txt \
     && uv pip install --system --break-system-packages \
-        --require-hashes --no-cache -r /tmp/lock-requirements.txt \
+        --no-config --require-hashes --no-cache -r /tmp/lock-requirements.txt \
     && uv pip install --system --break-system-packages --no-deps --no-cache \
         /opt/maistro-engine/packages/maistro-core \
         /opt/maistro-engine/packages/maistro-bootstrap \
