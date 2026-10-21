@@ -275,13 +275,17 @@ async def _run_scan_off_loop(
     result: asyncio.Future[dict] = loop.create_future()
 
     def deliver(value: dict | None, error: BaseException | None) -> None:
-        if result.done():
-            return
-        if error is not None:
-            result.set_exception(error)
-        else:
-            assert value is not None
-            result.set_result(value)
+        # A delivery that arrives after the deadline finds the request already
+        # resolved: `set_result`/`set_exception` on a cancelled future raise
+        # `InvalidStateError`, and that is the whole point of the guard -- the
+        # response is already the explicit unknown, so a late delivery is a
+        # no-op rather than a crash.
+        with contextlib.suppress(asyncio.InvalidStateError):
+            if error is not None:
+                result.set_exception(error)
+            else:
+                assert value is not None
+                result.set_result(value)
 
     def worker() -> None:
         try:
