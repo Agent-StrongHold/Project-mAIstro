@@ -327,9 +327,18 @@ main() {
     -e POSTGRES_DB="${PG_DB}" \
     "${PG_IMAGE}" >/dev/null
 
-  # Readiness budget: 120 probes at 1s (see test_verify_readiness_failure_is_diagnosable).
+  # Readiness must mean the TARGET DATABASE answers, not merely that a server
+  # is listening. The image entrypoint starts a temporary bootstrap server that
+  # accepts socket connections BEFORE its init step creates ${PG_DB}, so
+  # pg_isready alone can pass inside that window and pg_restore then dies with
+  # `FATAL: database "${PG_DB}" does not exist` — observed live in CI
+  # (tests/test_restore_oracle_characterization.py, 2026-10-18). The loop
+  # therefore additionally requires one successful query against ${PG_DB}.
+  # Budget: 120 probes at 1s (see test_verify_readiness_failure_is_diagnosable).
   for _ in $(seq 1 120); do
-    if docker exec "${SCRATCH_NAME}" pg_isready -U "${PG_USER}" >/dev/null 2>&1; then
+    if docker exec "${SCRATCH_NAME}" pg_isready -U "${PG_USER}" >/dev/null 2>&1 \
+      && docker exec "${SCRATCH_NAME}" psql -X -q -U "${PG_USER}" -d "${PG_DB}" \
+        -c 'SELECT 1;' >/dev/null 2>&1; then
       break
     fi
     if [[ "$(docker inspect -f '{{.State.Running}}' "${SCRATCH_NAME}" 2>/dev/null)" != "true" ]]; then
@@ -338,10 +347,11 @@ main() {
     fi
     sleep 1
   done
-  docker exec "${SCRATCH_NAME}" pg_isready -U "${PG_USER}" >/dev/null 2>&1 \
+  docker exec "${SCRATCH_NAME}" psql -X -q -U "${PG_USER}" -d "${PG_DB}" \
+    -c 'SELECT 1;' >/dev/null 2>&1 \
     || {
       docker logs "${SCRATCH_NAME}" >&2 2>/dev/null || true
-      fail_verifier "scratch postgres did not become ready within 120s (its logs are above)"
+      fail_verifier "scratch postgres did not become ready with database ${PG_DB} within 120s (its logs are above)"
     }
 
   # ── 3. Restore the custom-format archive ─────────────────────────────────────
