@@ -454,7 +454,7 @@ retiring its ledger row → Phase 2 deletes → epics close by ac-state, never b
 ### Phase 0 progress (re-measured 2026-10-21, L1046 repair round)
 
 Every row was re-run against this branch's merge base in the 2026-10-21 round (after
-merging `origin/develop` at `485392ec`), not copied from the 2026-10-20 one. "Landed" below means: the artifact exists on `develop` and the
+merging `origin/develop` at `2dfd3b97`), not copied from the 2026-10-20 one. "Landed" below means: the artifact exists on `develop` and the
 check is wired where the row says it is. "Green" means the command named in the row exited
 0 in this round.
 
@@ -471,10 +471,16 @@ check is wired where the row says it is. "Green" means the command named in the 
 | P0.6 check | **landed** with [#1807](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1807) (`6f9f1a9e4`); green — `check-cross-package-imports.py` reports `no new flat modules under packages/*/backend/ (6 tolerated)`, shrink-only |
 | P0.7 check | **landed green**: `packages/maistro-core/tests/runs/test_crash_window_invariants.py` ([#1810](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1810), `065c0d5f8`) — one kill per two-write seam on the spine plus one recovery tick. Empty `KNOWN_GAPS`; `pytest -q` → 6 passed |
 | P0.8 check | **landed green**: `packages/maistro-core/tests/workspaces/test_store_boundary_scope_conformance.py` ([#1809](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1809), `fc382542c`; gaps burned by [#1841](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1841), `053f93969`) — 39 passed on the `memory` and `sqlite` legs, and 56 passed once `MAISTRO_TEST_PG_DSN` adds the `postgres` leg, so the criterion's "all three backends" is met rather than silently skipped |
-| P0.9 check | **landed green**: `packages/maistro-core/tests/security/test_scan_what_the_model_sees.py` ([#1812](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1812), `b9f712bb9`) — aggregated-context scan, the spaced/leet/split evasions and the PII redactors. Empty `KNOWN_GAPS`; `pytest -q` → 12 passed. The plan's third clause — `permission_table` non-empty asserted at Workspace deploy — is not in this suite and has no other test in the tree |
+| P0.9 check | **landed green (all three clauses)**: clauses 1–2 via `packages/maistro-core/tests/security/test_scan_what_the_model_sees.py` ([#1812](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1812), `b9f712bb9`) — aggregated-context scan, the spaced/leet/split evasions and the PII redactors; empty `KNOWN_GAPS`; `pytest -q` → 12 passed. Clause 3 — `permission_table` non-empty asserted at Workspace deploy — landed via `tests/security/test_sentinel_permission_table_armed.py` (develop `bf8aa27f1`, "arm Sentinel permission tables on shipped Compose profiles"): it renders every shipped engine-bearing Compose profile through its own config path and asserts the built table is armed, with an empty `KNOWN_GAPS`; `pytest -q` → 11 passed. Both suites re-run green in this round on the merged tree |
 
-The five P0.4/P0.5/P0.7–P0.9 rows are ordinary suites, not `scripts/check-*.py` gates: they run in
-the package test jobs, so a regression in them fails CI without a separate workflow step.
+Four of the five P0.4/P0.5/P0.7–P0.9 rows are ordinary suites, not `scripts/check-*.py` gates: they
+run in the package test jobs, so a regression in them fails CI without a separate workflow step.
+The exception is P0.5's PostgreSQL leg: `test_effect_context_convergence.py` runs in the
+no-services package job, where `test_postgres_url_selects_durable_effect_stores` skips without
+`MAISTRO_TEST_PG_DSN`, and the PostgreSQL selections in `quality.yml`/`ci.yml` name specific
+directories that omit the file. That one case is evidenced by the one-off migrated-PostgreSQL run
+recorded above, not guarded by CI; wiring the file into a PostgreSQL job is owed before the
+P0.5 row can claim CI-enforced green.
 Each keeps a strict `KNOWN_GAPS` set in which a listed case asserts today's miss, and each
 set is now empty — the entries were burned, not deleted as a shortcut.
 
