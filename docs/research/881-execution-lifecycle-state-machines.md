@@ -83,6 +83,18 @@ the low hundreds instead.
 runs, small sample). Timing is exempted (`deadline=None`, as I29) because a
 live database sets the pace.
 
+**Independent re-verification of the battery (repair round 4).** The six
+mutants were re-run from scratch at this head against a freshly migrated
+pgvector:pg18, each as a one-line edit to a `PYTHONPATH`-shadowed copy of
+`packages/maistro-core/src` (the worktree was never edited). All six were
+caught: M1 (machine, 6.6 s), M2 (the earned-completion witness, 4.1 s), M3
+(machine, 6.9 s), M4 (the #1335 witness, 4.0 s), M5 (machine, 30.4 s), M6
+(machine, 21.9 s) — wall-clock for the whole pytest invocation, collection and
+both deterministic witnesses included. The catching test matches the table
+above in every case, including the honest negative in M2 — the *witness* caught
+the earned-completion mutant while the machine alone did not, at the PR
+budget.
+
 **Defects found: none.** The store held every contract the model probed — the
 lifecycle tables, the earned-completion check, the cascade, the #1335 fence
 and the closed-Run guards all behaved exactly as their docstrings claim. That
@@ -157,14 +169,32 @@ here and is the one claim this note does not make.
 
 ## Validation at this head
 
-- Clean runs, seeds 0–3: `3 passed` each (pgvector:pg18 at 127.0.0.1:18881,
-  `alembic upgrade head`, `MAISTRO_TEST_PG_DSN` set).
+Re-measured in repair round 4 at head `afdbeb090` (develop base
+`9cc5d1aca`), against a freshly migrated pgvector:pg18 with
+`MAISTRO_TEST_PG_DSN` set:
+
+- Clean runs, seeds 0–3: `3 passed` each — 3.78 s, 3.90 s, 4.11 s, 5.06 s.
+- 60-example run: 13.5 s. (The 17.6 s quoted above was measured on the
+  authoring machine; the ratio, not the absolute, is what the nightly-budget
+  argument rests on, and the ratio holds here — 4× the examples for ~3.5× the
+  time.)
+- Nightly budget, which the workflow change turns on for the first time: with
+  the nightly's `MAISTRO_FORMAL_PG_EXAMPLES=200` and `--nightly`, this module
+  takes 34.2 s and I29's lease/fence model 23.6 s — under a minute together
+  against a 60-minute job budget and a 1800 s per-test timeout, so the nightly
+  sweep absorbs both Pg-backed models rather than timing out on them.
 - `uv run ruff check formal/` → clean; `uv run ruff format --check formal/` →
-  38 files already formatted.
+  40 files already formatted.
 - `python3 scripts/check-formal-oracle-independence.py --base <merge-base>` →
   OK (no oracle or security-implementation paths touched).
-- `python3 scripts/check-suite-inventory.py --suite formal/` → ok (667
-  collected = 664 before + this change's +3); full check collects 13/14
-  suites ok, with `packages/hive-conductor/backend/tests` failing to collect
-  under bare system python (no `pydantic` installed outside the uv venv) —
-  an environment artifact of this worktree, unrelated to the change.
+- `python3 scripts/check-suite-inventory.py` → ok, 21/21 suites; `formal/`
+  collects 670 nodes at this head against 667 at the base — the base's own
+  count plus this change's three. The recorded baseline and the open
+  per-change deltas (this branch's `formal/: +3` among them) are what the
+  gate checks, and they match. See
+  `docs/testing/inventory-notes/881-execution-lifecycle-state-machine.md`.
+- The `formal/` diff against the base is this one file: `git diff --stat
+  9cc5d1aca...HEAD -- formal/` reports 560 insertions in
+  `formal/models/test_execution_lifecycle_state.py` and nothing else, so the
+  +3 is this module's three collected nodes and no develop-side model moved
+  under it.

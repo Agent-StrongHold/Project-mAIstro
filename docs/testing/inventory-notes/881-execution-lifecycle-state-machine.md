@@ -23,14 +23,21 @@ Three node IDs under `formal/models/test_execution_lifecycle_state.py`:
 and 670 at this head after the develop sync (baseline
 `docs/testing/inventory/baseline.json` formal/ = 664 plus open deltas; the +3
 above is this branch's formal/ delta). The counts moved with develop; the delta
-did not. One additional node lands in `tests/`: `tests/test_postgres_health_checks.py`
+did not, and `git diff --stat 9cc5d1aca...HEAD -- formal/` reports this one
+file (560 insertions, nothing else), so no develop-side model moved underneath
+the delta. One additional node lands in `tests/`: `tests/test_postgres_health_checks.py`
 parametrizes one case per workflow that declares a Postgres service, and
 `formal-conformance-nightly.yml` adds the nightly service
 (`formal-conformance-nightly.yml:formal-nightly:postgres`), hence the
-`tests/: +1` delta above. Like I29, the machine is about the PostgreSQL
-store, so it skips without `MAISTRO_TEST_PG_DSN`; `formal-conformance.yml`
-and the nightly workflow both provision the service, so nothing skips in CI. Runs at the PR budget in ~4-8s; measured
-60-example run 17.6s, so nightly budgets for this module should stay on the
+`tests/: +1` delta above — re-counted in repair round 4: 7 `pg_isready`
+services at the base, 8 at this head, and 10 collected nodes in
+`tests/test_postgres_health_checks.py` against 9 at the base. Like I29, the
+machine is about the PostgreSQL store, so it skips without
+`MAISTRO_TEST_PG_DSN`; `formal-conformance.yml` and the nightly workflow both
+provision the service, so nothing skips in CI. Runs at the PR budget in ~4-8s
+(re-measured in repair round 4: 3.8-5.1s across seeds 0-3); the 60-example run
+measured 17.6s on the authoring machine and 13.5s on the review machine, so
+nightly budgets for this module should stay on the
 `MAISTRO_FORMAL_PG_EXAMPLES` knob rather than the default 10k.
 
 The six-mutant demonstration battery and the research disposition live in
