@@ -205,6 +205,16 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 bypass-selection = true
 
+[tool.uv]
+# Supply-chain floor for the pip-audit gate (security.yml `Supply chain
+# (pip-audit)`). aiohttp is not a production dependency here: it arrives
+# transitively through the cosmic-ray mutation-testing dev tool. The gate
+# nevertheless audits the frozen dev environment (`uv pip freeze`), and the
+# advisories fixed upstream in 3.14.4 (CVE-2026-111064 / GHSA-2g87-pp6c-29x5 /
+# CVE-2026-111063) fail it as shipped. Constrain the floor in the manifest so
+# the lock keeps it instead of drifting back on the next resolve.
+constraint-dependencies = ["aiohttp>=3.14.4"]
+
 [tool.ruff]
 target-version = "py312"
 line-length = 100
@@ -360,7 +370,7 @@ ignore_missing_imports = true
 # type-only dependency on a package the base install deliberately omits would
 # undo the point of making it optional.
 [[tool.mypy.overrides]]
-module = ["yaml", "asyncpg", "asyncpg.pool", "boto3", "botocore", "botocore.*", "PIL", "PIL.*", "pptx", "pptx.*"]
+module = ["yaml", "asyncpg", "asyncpg.pool", "asyncpg.exceptions", "boto3", "botocore", "botocore.*", "PIL", "PIL.*", "pptx", "pptx.*"]
 ignore_missing_imports = true
 
 # bip-utils is a declared runtime dep, but publishes no py.typed marker and has no
