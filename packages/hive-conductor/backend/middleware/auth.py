@@ -160,6 +160,10 @@ _PROTECTED_OPS: dict[str, dict[str, str]] = {
         "/v1/capabilities/approvals": "approvals.resolve",
         # Capability discovery and provider configuration remain config writes.
         "/v1/capabilities": "config.write",
+        # A credential test can send a draft API key to an operator-supplied
+        # endpoint, so it is the same trust decision as saving the credential;
+        # otherwise an ordinary session would gain an SSRF/probe primitive.
+        "/v1/credentials": "credentials.write",
         # Provider activation uses the LiteLLM master key, mutates the global
         # model registry, and can trigger billed calls (SPEC-072726-3439).
         "/v1/providers": "config.write",
@@ -446,6 +450,26 @@ class AuthMiddleware(BaseHTTPMiddleware):
         # can leave it, same posture as dag-runs' pre-existing unrestricted
         # feedback route. The route itself still checks workspace membership.
         if path.endswith("/feedback"):
+            return None
+        # Workspace Home (#1048): /v1/workspaces/{id}/home/... is the member's
+        # presentation surface — saving the layout, pinning a region, composing
+        # adaptive space, dismissing an adaptive candidate. Same posture as
+        # PUT /v1/dashboard/layout (below): a per-member preference write, not
+        # a workspace-identity mutation. The routes check Workspace membership
+        # and refuse viewers themselves, and the Workspace Agent's chat tools
+        # reach the very same services with no HTTP elevation at all — so
+        # gating only the route would break Agent/API parity while protecting
+        # nothing. (Segment-matched, not substring: PUT
+        # /v1/workspaces/{id}/home/* only; /tool-bindings and /members keep
+        # their workspaces.write scope.)
+        _parts = path.split("/")
+        if (
+            request.method in {"PUT", "POST"}
+            and len(_parts) >= 5
+            and _parts[1] == "v1"
+            and _parts[2] == "workspaces"
+            and _parts[4] == "home"
+        ):
             return None
         # DAG-Run inspection — GET /v1/dag-runs (list), GET /v1/dag-runs/{id}
         # (detail), GET /v1/dag-runs/{id}/events (SSE) — and the eval-judge

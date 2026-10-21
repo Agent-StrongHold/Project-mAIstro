@@ -31,7 +31,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import AsyncIterator, Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, ClassVar, Protocol
 from uuid import uuid4
 
@@ -513,6 +513,14 @@ async def test_audit_rows_carry_and_filter_by_org_id(stores: Stores) -> None:
     assert in_system == []
 
 
+def _without_proof(entry: AuditEntry) -> AuditEntry:
+    """Strip the ADR-073 proof fields attached at retention so a stored record
+    compares equal to the entry the caller passed to ``log`` (the store signs
+    its own retained copy; same normalization as
+    tests/security/sentinel/test_audit.py)."""
+    return replace(entry, signature="", signing_key_id="", proof_type="")
+
+
 async def test_sync_audit_append_preserves_existing_rows_and_org_scope() -> None:
     audit = InMemoryAuditLog()
     owner = AuditEntry(org_id="owner", user_id="alice", request_id="shared", detail="original")
@@ -520,7 +528,7 @@ async def test_sync_audit_append_preserves_existing_rows_and_org_scope() -> None
     audit.log_sync(
         AuditEntry(org_id="outsider", user_id="bob", request_id="shared", detail="overwrite")
     )
-    assert await audit.get_entries(org_id="owner") == [owner]
+    assert [_without_proof(e) for e in await audit.get_entries(org_id="owner")] == [owner]
     page = await audit.get_page(org_id="owner")
     assert len(page.records) == 1
     assert page.records[0][0] == 1
@@ -538,10 +546,13 @@ def test_the_audit_log_has_no_by_id_mutation() -> None:
     A by-id update or delete added to an audit store must arrive with its own
     scoped case here rather than inherit the append's answer.
     """
-    allowed = {"log", "get_entries", "ensure_schema", "get_page"}
+    allowed = {"log", "get_entries", "ensure_schema", "get_page", "verify"}
     # get_page (#358) is the bounded keyset read: like get_entries it exposes
     # no by-id mutation path, so it is named here rather than inherited by
     # silence. A future update/delete by id still fails this set.
+    # verify (ADR-073) is the proof check over a retained record's signature:
+    # a pure read like get_entries, admitted by its own scoped case below
+    # (test_audit_verify_is_a_read_not_a_mutation), never by silence.
     for store in (InMemoryAuditLog, SqliteAuditLog, PgAuditLog):
         public = {
             name
@@ -552,6 +563,25 @@ def test_the_audit_log_has_no_by_id_mutation() -> None:
         # its scoped, append-only behavior is independently exercised below.
         expected = allowed | ({"log_sync"} if store is InMemoryAuditLog else set())
         assert public <= expected, (store.__name__, public - expected)
+
+
+async def test_audit_verify_is_a_read_not_a_mutation() -> None:
+    """The scoped case admitting ``verify`` to the append-only surface.
+
+    ADR-073 proofs ride on the retained record, so verification is part of the
+    store's contract — but it must stay a read: it adds no row, removes none,
+    and rewrites none, whatever the proof verdict.
+    """
+    audit = InMemoryAuditLog()
+    owner = AuditEntry(org_id="owner", user_id="alice", detail="original")
+    audit.log_sync(owner)
+    [retained] = await audit.get_entries(org_id="owner")
+
+    assert audit.verify(retained)
+    assert not audit.verify(replace(retained, detail="tampered after retention"))
+
+    # Neither verdict touched the log: still exactly the one retained record.
+    assert [_without_proof(e) for e in await audit.get_entries(org_id="owner")] == [owner]
 
 
 # ── the gap set itself ─────────────────────────────────────────────
