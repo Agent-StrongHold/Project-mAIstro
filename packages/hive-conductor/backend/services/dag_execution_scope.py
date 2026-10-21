@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from maistro.projects.scope import Project
+from maistro.projects.scope import Project, ProjectNotFound, ProjectScopeDenied
 from maistro.workspaces.model import Workspace
 from services import workspace_authority
 
@@ -51,10 +51,15 @@ async def authorize_hive_dag_workspace(*, workspace_id: str, user_id: str) -> Wo
         raise DagWorkspaceSelectionError("authenticated user identity is required")
 
     store = await workspace_authority.canonical_workspace_store()
-    workspace = await store.get(selected)
-    membership = None
-    if workspace is not None:
-        membership = await store.get_membership(selected, user_id=principal)
+    try:
+        workspace = await store.get(selected, principal_id=principal)
+        membership = (
+            await store.get_membership(selected, user_id=principal, principal_id=principal)
+            if workspace is not None
+            else None
+        )
+    except LookupError:
+        raise DagWorkspaceSelectionError("Workspace not found") from None
     presentation = workspace_authority.presentation_store().get(selected)
     if (
         workspace is None
@@ -77,13 +82,21 @@ async def authorize_hive_dag_scope(
     workspace = await authorize_hive_dag_workspace(workspace_id=workspace_id, user_id=user_id)
     store = await workspace_authority.canonical_workspace_store()
     project_store = store.project_store
-    if project_id is None or not project_id.strip():
-        project: Project = await project_store.root_for_workspace(workspace.workspace_id)
-    else:
-        candidate = await project_store.get(project_id.strip())
-        if candidate is None or candidate.workspace_id != workspace.workspace_id:
-            raise DagWorkspaceSelectionError("Project not found")
-        project = candidate
+    try:
+        if project_id is None or not project_id.strip():
+            project: Project = await project_store.root_for_workspace(
+                workspace.workspace_id, principal_id=user_id.strip()
+            )
+        else:
+            candidate = await project_store.get(project_id.strip(), principal_id=user_id.strip())
+            if candidate is None or candidate.workspace_id != workspace.workspace_id:
+                raise DagWorkspaceSelectionError("Project not found")
+            project = candidate
+    except (ProjectNotFound, ProjectScopeDenied) as exc:
+        # The canonical store resolved the acting principal's authority and
+        # refused (#1150). That refusal is a scope refusal, not a server
+        # fault: the caller asked for a Project it may not see.
+        raise DagWorkspaceSelectionError("Project not found") from exc
     return DagExecutionScope(
         workspace_id=workspace.workspace_id,
         project_id=project.project_id,
