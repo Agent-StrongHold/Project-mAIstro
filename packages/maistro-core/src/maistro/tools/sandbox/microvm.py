@@ -20,6 +20,11 @@ from typing import Literal, Protocol, runtime_checkable
 
 from maistro.config.settings import SandboxSettings
 from maistro.security.dangerous_tools import is_dangerous_command
+from maistro.tools.sandbox._capture import (
+    DEFAULT_MAX_OUTPUT_BYTES,
+    clamped_output_limit,
+    truncation_notice,
+)
 from maistro.tools.sandbox.env_sanitize import sanitize_env
 
 NetworkMode = Literal["none", "restricted"]
@@ -46,6 +51,12 @@ class MicroVMConfig:
     network: NetworkMode = "none"
     timeout: int = 300
     backend: str = "firecracker"
+    # Host-selected bound (#1197) on command output retained from one run,
+    # clamped to the protocol ceiling. The launcher seam returns a single
+    # `(exit_code, output)` pair, so `MicroVMSandbox.exec` enforces the bound
+    # on that result; a launcher that buffers internally must respect the
+    # same contract (its spec carries this config).
+    max_output_bytes: int = DEFAULT_MAX_OUTPUT_BYTES
 
     @classmethod
     def from_settings(cls, settings: SandboxSettings) -> MicroVMConfig:
@@ -59,6 +70,7 @@ class MicroVMConfig:
             memory_mib=_parse_mib(settings.memory_limit),
             network="none" if settings.network_disabled else "restricted",
             timeout=settings.timeout,
+            max_output_bytes=settings.max_output_bytes,
         )
 
 
@@ -131,7 +143,13 @@ class MicroVMSandbox:
         return self._config
 
     async def exec(self, command: str, timeout: int = 60) -> tuple[int, str]:
-        """Run ``command`` in a fresh microVM. Refuses obviously-dangerous commands."""
+        """Run ``command`` in a fresh microVM. Refuses obviously-dangerous commands.
+
+        The returned output is bounded (#1197): beyond the config's retained-
+        output limit the string is cut at the byte boundary and a truncation
+        notice is appended, so an unbounded emitter cannot flood the harness
+        caller even when the injected launcher captured more.
+        """
         dangers = is_dangerous_command(command)
         if dangers:
             return _BLOCKED_EXIT_CODE, f"blocked dangerous command: {', '.join(dangers)}"
@@ -143,5 +161,13 @@ class MicroVMSandbox:
             env=dict(self._env),
         )
         if isinstance(self._launcher, VMMLauncher):
-            return await self._launcher.run(spec)
-        return await self._launcher(spec)
+            exit_code, output = await self._launcher.run(spec)
+        else:
+            exit_code, output = await self._launcher(spec)
+        limit = clamped_output_limit(self._config.max_output_bytes)
+        encoded = output.encode()
+        if len(encoded) <= limit:
+            return exit_code, output
+        # The cut can land mid-declaration; the notice makes the partial
+        # result unmistakable to a harness caller reading it as an answer.
+        return exit_code, encoded[:limit].decode(errors="replace") + truncation_notice(limit)

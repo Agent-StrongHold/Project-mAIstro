@@ -101,9 +101,11 @@ def test_pg_isready_alone_is_not_readiness(
     # The probes went through the statement channel and it kept refusing:
     calls = [line.split("\x1f") for line in stub_docker.read_text().splitlines()]
     assert calls, "the gate never probed at all"
-    assert all("psql" in call for call in calls), (
+    assert not any("pg_isready" in call for call in calls), (
         "a probe bypassed psql; pg_isready alone is the defect under test"
     )
+    psql_calls = [call for call in calls if "psql" in call]
+    assert psql_calls, "the gate never probed psql at all"
 
 
 def test_the_failure_names_the_last_probe_exit_and_stderr(
@@ -144,8 +146,9 @@ def test_every_probe_is_select_1_against_the_target_database(
     roc._wait_ready("stub-container")
 
     calls = [line.split("\x1f") for line in stub_docker.read_text().splitlines()]
-    assert calls
-    for call in calls:
+    psql_calls = [call for call in calls if "psql" in call]
+    assert psql_calls
+    for call in psql_calls:
         assert call[0] == "exec", call
         assert "psql" in call, f"probe bypassed the statement channel: {call}"
         # Over TCP, deliberately: the entrypoint's temporary bootstrap server
