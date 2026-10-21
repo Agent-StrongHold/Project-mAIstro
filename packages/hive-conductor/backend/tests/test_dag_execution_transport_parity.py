@@ -356,6 +356,27 @@ def sqlite_member_root_project(monkeypatch: pytest.MonkeyPatch) -> Iterator[str]
     from maistro.runs.store import InMemoryRunStore
 
     runs = InMemoryRunStore(project_store=store.project_store)
+
+    from maistro.capabilities.bootstrap import default_capability_registry
+    from maistro.security.permission_policy import build_permission_table
+    from maistro.security.sentinel.delegation import InMemoryDelegationAuthority
+    from maistro.security.sentinel.permission_source import CapabilityPermissionSource
+    from maistro.security.sentinel.policy import Sentinel
+    from maistro.security.warden.detector import Warden
+
+    _tbl = build_permission_table(
+        preset="none", permissions={"graph.node.execute": ["admin", "user"]}
+    )
+    sentinel = Sentinel(
+        warden=Warden(),
+        permission_table=_tbl,
+        permission_source=CapabilityPermissionSource(
+            base=_tbl, capabilities=default_capability_registry()
+        ),
+        tier_policy={},
+        delegation_authority=InMemoryDelegationAuthority(),
+    )
+
     monkeypatch.setattr(
         get_engine(),
         "_agent_port",
@@ -363,6 +384,7 @@ def sqlite_member_root_project(monkeypatch: pytest.MonkeyPatch) -> Iterator[str]
             container=SimpleNamespace(
                 run_store=runs,
                 graph_run_store=CanonicalDurableRunStore(runs, InMemoryGraphContinuationStore()),
+                sentinel=sentinel,
             )
         ),
     )
@@ -389,6 +411,7 @@ def canonical_run_spine(_chat_spine_container: Any, monkeypatch: pytest.MonkeyPa
         graph_run_store=container.graph_run_store,
         workspace_store=container.workspace_store,
         project_scope_store=container.project_scope_store,
+        sentinel=getattr(container, "sentinel", None),
     )
     monkeypatch.setattr(get_engine(), "_agent_port", SimpleNamespace(container=spine))
     yield container
