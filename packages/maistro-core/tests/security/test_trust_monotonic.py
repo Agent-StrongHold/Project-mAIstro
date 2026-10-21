@@ -51,6 +51,25 @@ def test_catalog_register_rejects_malicious_in_memory_entries() -> None:
     assert catalog.resolve("unsafe_skill") is None
 
 
+def test_catalog_register_scan_covers_frontmatter_shaped_prompt_prefix() -> None:
+    # A direct entry's system_prompt is the raw prompt body. If the scan
+    # stripped a frontmatter-shaped prefix, the prefix's payload would be
+    # registered as a resolvable skill while never being pattern-scanned.
+    from maistro.skills.catalog import SkillCatalogEntry
+    from maistro.types.skill import SkillDefinition
+
+    entry = SkillCatalogEntry(
+        definition=SkillDefinition(
+            name="frontmatter_skill",
+            description="d",
+            system_prompt="---\nexec(x)\n---\nsafe instructions",
+        )
+    )
+    catalog = SkillCatalog()
+    assert catalog.register(entry) is False
+    assert catalog.resolve("frontmatter_skill") is None
+
+
 def test_catalog_security_scans_initial_and_hot_reload_content(tmp_path: Path) -> None:
     path = tmp_path / "safe.md"
     path.write_text(VALID_SKILL, encoding="utf-8")
@@ -113,6 +132,36 @@ async def test_unknown_provider_tier_is_fail_closed_in_auto_selection() -> None:
     assert trust_rank("t-1") > trust_rank("t0")
 
 
+@pytest.mark.asyncio
+async def test_baseline_fallback_validates_tier_before_returning() -> None:
+    # A declared baseline is provider-controlled metadata too. When the live
+    # resolution refuses an unknown-tier provider, the fallback path must not
+    # hand back the same malformed metadata under another name.
+    registry = CapabilityRegistry()
+    registry.define(SlotSpec("tool", FallbackPolicy.BASELINE, baseline_provider="baseline"))
+    registry.register(FakeProvider("attacker", "tool", tier=""))
+    registry.register(FakeProvider("baseline", "tool", tier="  "))
+
+    # Unknown-tier chosen -> _baseline() must refuse the unknown-tier baseline.
+    assert await registry.resolve("tool") is None
+    # The disabled-slot path reaches the same baseline: same refusal.
+    registry.set_enabled("tool", False)
+    assert await registry.resolve("tool") is None
+
+
+def test_boot_validation_requires_an_admissible_hard_required_provider() -> None:
+    # A HARD_REQUIRED slot whose every provider declares an unknown tier can
+    # never resolve; boot must refuse it, not complete and fail later.
+    registry = CapabilityRegistry()
+    registry.define(SlotSpec("llm", FallbackPolicy.HARD_REQUIRED))
+    registry.register(FakeProvider("attacker", "llm", tier=""))
+    with pytest.raises(RuntimeError, match="known trust tier"):
+        registry.validate_boot()
+
+    registry.register(FakeProvider("real", "llm", tier="t1"))
+    registry.validate_boot()  # one admissible provider is enough
+
+
 def test_pi_import_clamps_privileged_foreign_trust_claim() -> None:
     agent = PiAgentImporter().to_agent_config(
         {"kind": "pi.agent", "name": "foreign", "trust_tier": "t0"}
@@ -124,6 +173,18 @@ def test_pi_import_rejects_malicious_instructions() -> None:
     with pytest.raises(ValueError, match="security scan"):
         PiAgentImporter().to_agent_config(
             {"kind": "pi.agent", "name": "foreign", "instructions": "exec(x)"}
+        )
+
+
+def test_pi_import_scan_covers_frontmatter_shaped_instruction_prefix() -> None:
+    # Instructions are a raw prompt body, not a frontmatter document. A
+    # frontmatter-shaped prefix must be scanned as content, not stripped as
+    # metadata: the payload below is retained verbatim in model_constraints,
+    # so scanning only the part after the pseudo-frontmatter would admit it.
+    instructions = "---\nexec(payload)\n---\nbenign instructions"
+    with pytest.raises(ValueError, match="security scan"):
+        PiAgentImporter().to_agent_config(
+            {"kind": "pi.agent", "name": "foreign", "instructions": instructions}
         )
 
 

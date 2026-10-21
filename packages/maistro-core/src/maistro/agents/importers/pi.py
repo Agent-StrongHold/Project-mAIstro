@@ -81,7 +81,9 @@ class PiAgentImporter:
         tools_raw = data.get("tools", [])
         tools = tuple(str(t) for t in tools_raw) if isinstance(tools_raw, list) else ()
         instructions = str(data.get("instructions", ""))
-        safe, findings = security_scan(instructions)
+        # Raw scan: instructions are a prompt body, not a frontmatter document,
+        # so a frontmatter-shaped prefix must not escape the pattern scan.
+        safe, findings = security_scan(instructions, raw=True)
         if not safe:
             raise ValueError(f"Pi agent instructions failed security scan: {', '.join(findings)}")
 

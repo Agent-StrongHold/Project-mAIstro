@@ -53,7 +53,10 @@ class SkillCatalog:
     def register(self, entry: SkillCatalogEntry) -> bool:
         # Direct callers do not necessarily come through load_directory, so
         # the catalog remains a scan boundary even for in-memory entries.
-        safe, findings = security_scan(entry.definition.system_prompt)
+        # Raw scan: system_prompt is the prompt body itself, not a
+        # frontmatter document -- a frontmatter-shaped prefix is content
+        # here and must be scanned, not stripped.
+        safe, findings = security_scan(entry.definition.system_prompt, raw=True)
         if not safe:
             logger.warning("Rejected skill entry failed security scan: %s", ", ".join(findings))
             return False

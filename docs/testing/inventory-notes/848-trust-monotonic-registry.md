@@ -1,7 +1,7 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +18
-  packages/hive-conductor/backend/tests: +12
+  packages/hive-conductor/backend/tests: +13
+  packages/maistro-core/tests: +22
 ---
 # Issue 848: trust-monotonic registry boundaries
 
@@ -120,7 +120,7 @@ change, against PR base fad17a87c341):
   is byte-identical to the same dump at the merge base (235 paths, 140
   schemas), so the #1048 generated-types step cannot fail on this diff.
 - `scripts/check-suite-inventory.py --suite` for both touched suites → ok
-  (deltas in this note updated to +18 core / +12 hive).
+  (deltas in this note updated to +22 core / +13 hive).
 - `uv run ruff check .` / `uv run ruff format --check .` → clean;
   `uv run mypy` (CI's exact package list) → Success, 906 files.
 - Quality gates re-run with CI's exact arguments: xenon 134 blocks (= baseline

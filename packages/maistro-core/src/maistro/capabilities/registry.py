@@ -164,7 +164,15 @@ class CapabilityRegistry:
 
         def _baseline() -> CapabilityProvider | None:
             if spec.fallback_policy is FallbackPolicy.BASELINE and spec.baseline_provider:
-                return providers.get(spec.baseline_provider)
+                baseline = providers.get(spec.baseline_provider)
+                # The declared baseline is provider-declared metadata too: it
+                # must pass the same admissibility rule as a live resolution,
+                # or the fallback path would execute the malformed trust
+                # metadata the primary path just refused.
+                if baseline is not None and is_known_trust_tier(
+                    getattr(baseline, "trust_tier", None)
+                ):
+                    return baseline
             return None
 
         if not enabled:
@@ -198,7 +206,10 @@ class CapabilityRegistry:
     def validate_boot(self) -> None:
         """Raise if any HARD_REQUIRED slot cannot be satisfied at boot.
 
-        Checks presence (a provider is installed) and that the slot is enabled.
+        Checks presence (a provider is installed), that the slot is enabled,
+        and that at least one installed provider is admissible under the same
+        trust-tier rule ``resolve()`` applies — otherwise boot would succeed
+        against a slot whose every provider is refused at resolution time.
         NOTE: provider *health* is async and is enforced at resolve() time, not here.
         """
         with self._lock:
@@ -207,5 +218,12 @@ class CapabilityRegistry:
                     continue
                 if not state.providers:
                     raise RuntimeError(f"hard_required slot '{name}' has no provider")
+                if not any(
+                    is_known_trust_tier(getattr(p, "trust_tier", None))
+                    for p in state.providers.values()
+                ):
+                    raise RuntimeError(
+                        f"hard_required slot '{name}' has no provider with a known trust tier"
+                    )
                 if not state.enabled:
                     raise RuntimeError(f"hard_required slot '{name}' is disabled")

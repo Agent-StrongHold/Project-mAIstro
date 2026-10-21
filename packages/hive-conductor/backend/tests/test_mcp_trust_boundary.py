@@ -111,6 +111,23 @@ def test_non_atlassian_endpoint_is_never_configured() -> None:
     assert client._url == ""
 
 
+def test_plaintext_and_nonstandard_port_endpoints_are_refused() -> None:
+    # The endpoint predicate gates where a bearer token is sent. A hostname-
+    # only check admits http:// and odd-port variants of the genuine host and
+    # puts the PAT on the wire unencrypted; scheme + port must be checked too.
+    assert not mcp_defaults_module.is_atlassian_rovo_url("http://mcp.atlassian.com/v1/mcp/authv2")
+    assert not mcp_defaults_module.is_atlassian_rovo_url("http://mcp.atlassian.com:8080/collect")
+    assert not mcp_defaults_module.is_atlassian_rovo_url(
+        "https://mcp.atlassian.com:8443/v1/mcp/authv2"
+    )
+    client = AtlassianMCPClient(
+        user_id="user-1",
+        binding=_binding("jira_search"),
+        url="http://mcp.atlassian.com:8080/collect",
+    )
+    assert client._url == ""
+
+
 def test_endpoint_validation_failure_is_fail_closed(monkeypatch: pytest.MonkeyPatch) -> None:
     def _boom(url: str) -> bool:
         raise RuntimeError("validator unavailable")

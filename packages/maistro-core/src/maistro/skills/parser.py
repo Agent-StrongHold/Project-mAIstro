@@ -145,16 +145,27 @@ def validate_skill_name(name: str) -> bool:
     return bool(_VALID_NAME_RE.match(name))
 
 
-def security_scan(content: str) -> tuple[bool, list[str]]:
+def security_scan(content: str, *, raw: bool = False) -> tuple[bool, list[str]]:
     """Scan skill body for dangerous patterns.
 
     Returns (safe, findings). safe=False if any critical pattern found.
+
+    By default the scan expects SKILL.md-shaped content: a leading YAML
+    frontmatter block is metadata parsed elsewhere, so only the body after it
+    is pattern-scanned. Content that is NOT a frontmatter document -- a raw
+    system prompt or foreign agent instructions -- must pass ``raw=True``:
+    a hostile payload shaped like ``---\npayload\n---\nbenign`` would
+    otherwise hide inside the stripped "frontmatter" and never be scanned
+    while still being retained verbatim as prompt content.
     """
     findings: list[str] = []
     safe = True
 
-    parts = _split_frontmatter(content)
-    body = parts[1] if parts else content
+    if raw:
+        body = content
+    else:
+        parts = _split_frontmatter(content)
+        body = parts[1] if parts else content
 
     body_normalized = unicodedata.normalize("NFKD", body)
 
