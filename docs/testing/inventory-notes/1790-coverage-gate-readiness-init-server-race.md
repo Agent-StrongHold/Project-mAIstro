@@ -30,14 +30,31 @@ Fixes, all in service of making the failing gate deterministic:
   with `psql -h 127.0.0.1 … -c 'SELECT 1'` — TCP (temp server cannot answer)
   and an executed query (authentication and statement execution proven), the
   two things the statements after the probe rely on.
-- `deploy/scripts/verify-restore.sh` had the same socket-probe race on its
-  scratch restore target; its two `pg_isready` calls now probe
-  `-h 127.0.0.1 -d "${PG_DB}"`, so a lost race cannot surface as a false
-  RESTORE failure in the end-to-end drill.
-- `tests/test_backup_restore_oracle.py` gains
-  `test_container_readiness_probes_require_the_final_server`, pinning both
-  readiness paths to TCP with an executed-query probe in the Python fixture.
-  Shown to fail against the pre-fix tree (socket `pg_isready`, no `-h`).
+- `deploy/scripts/verify-restore.sh`'s scratch readiness loop had the same
+  socket-probe race (`pg_isready` alone passes while the temp server runs); the
+  loop now additionally requires a `psql -d "${PG_DB}"` query that executes
+  `SELECT 1;` against the target database, and its post-loop guard fails as a
+  verifier when the target database never answers. (develop #2185 owns this
+  socket+query shape; its `test_scratch_ready_means_the_target_database_answers`
+  pins it.)
+- `tests/test_backup_restore_oracle.py` re-lands
+  `test_container_readiness_probes_require_the_final_server`, pinning the
+  characterisation fixture's readiness probe to TCP (`-h 127.0.0.1`) and an
+  executed query (`SELECT 1`). The pin was carried by the #1790 readiness
+  repair, dropped when develop #2185 rewrote this file, and re-landed here
+  because the characterisation fixture keeps the TCP probe — the one that
+  actually proves the final server — and was left unpinned by #2185. The drill
+  script's shell readiness is pinned separately by #2185's test. Shown to fail
+  against the pre-fix tree (socket `pg_isready`, no `-h`) and against a
+  socket-only regression of the fixture's probe.
+
+Reconciliation with develop: develop #2185 rewrote this file and replaced the
+original two-path TCP pin with `test_scratch_ready_means_the_target_database_answers`
+(socket `pg_isready` + `psql -d PG_DB` query for the drill script). The
+characterisation fixture's TCP probe was left intact by #2185 but left
+unpinned; re-landing this pin restores the round-4 intent that the structural
+test assert every probe targets `-h 127.0.0.1` so a future sync cannot
+silently lose the TCP half again.
 
 Net count change: one test function added to `tests/`; no test removed or
 parametrized. The live characterisation module's four tests are unchanged in
