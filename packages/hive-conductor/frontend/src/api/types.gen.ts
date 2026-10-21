@@ -992,6 +992,56 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/cli/commands": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Cli Commands
+         * @description The machine-readable CLI-page contract: the supported command set.
+         *
+         *     `GET /v1/cli/commands` is what the page's help output renders and what
+         *     `backend/tests/test_cli_contract.py` holds the frontend to — one registry,
+         *     three consumers.
+         */
+        get: operations["list_cli_commands_v1_cli_commands_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/cli/exec": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Exec Cli Command
+         * @description Execute one CLI-page command through its registered backend capability.
+         *
+         *     Failure is explicit at the backend, never fabricated in the client:
+         *     unregistered commands answer 404 `unsupported_command`, a handler over
+         *     budget answers 504, a capability-authored HTTPException passes through
+         *     with its own status, and a handler that crashes answers 503 — each
+         *     audited.
+         */
+        post: operations["exec_cli_command_v1_cli_exec_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/cli/sessions": {
         parameters: {
             query?: never;
@@ -5525,6 +5575,13 @@ export interface components {
             /** Status */
             status?: string | null;
         };
+        /** CliExecBody */
+        CliExecBody: {
+            /** Command */
+            command: string;
+            /** Session Id */
+            session_id?: string | null;
+        };
         /** Container */
         Container: {
             /**
@@ -9405,6 +9462,63 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["RunWorkflowBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_cli_commands_v1_cli_commands_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+        };
+    };
+    exec_cli_command_v1_cli_exec_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CliExecBody"];
             };
         };
         responses: {
