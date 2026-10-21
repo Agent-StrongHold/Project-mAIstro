@@ -25,6 +25,17 @@ or placeholder-only section.
 
 ### Added
 
+- **`/health` names the Reactor's persistence authority beside every other
+  store family (#1178).** `persistence.families` gains a `reactor` entry:
+  `fire-and-forget` when the Reactor writes through the canonical `State`
+  (one writer on the configured state database; the write is queued and no
+  durable-success claim is returned to a caller), and `unavailable` when
+  there is no Reactor or it has no `State` bound — never a durable label the
+  deployment has not earned. The Reactor's own state writes keep riding the
+  canonical State writer; this makes that authority visible where every
+  other family's already was, and the persistence map
+  (`docs/architecture/CONDACTOR-PERSISTENCE-MAP.md`) records it.
+
 - **Named `cross-product-parity` CI job and M1 closeout strict mode
   (#459, partial).** The #459 cross-product parity suite
   (`tests/cross_product_parity`) now runs as its own required `ci.yml` job
