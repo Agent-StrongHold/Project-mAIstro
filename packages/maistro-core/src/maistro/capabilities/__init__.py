@@ -88,7 +88,7 @@ from maistro.capabilities.providers.subprocess_harness import (
     SandboxExec,
     SubprocessHarnessRunner,
 )
-from maistro.capabilities.registry import CapabilityRegistry
+from maistro.capabilities.registry import CapabilityRegistry, ProviderReplacementDecision
 from maistro.capabilities.slots.harness import (
     HARNESS_RUNNER_SLOT,
     GuardedHarnessRunner,
@@ -157,6 +157,7 @@ __all__ = [
     "PiHarnessRunner",
     "ProviderHealth",
     "ProviderReconciliationAdapter",
+    "ProviderReplacementDecision",
     "ReconciliationDisposition",
     "ResolvedBinding",
     "SafeHarnessRunner",
