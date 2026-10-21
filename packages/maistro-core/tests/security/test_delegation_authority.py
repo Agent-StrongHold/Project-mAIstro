@@ -101,9 +101,10 @@ def _request(*, actions: frozenset[str]) -> DelegationRequest:
     )
 
 
-def test_host_grant_returns_only_the_explicit_action_subset() -> None:
+@pytest.mark.asyncio
+async def test_host_grant_returns_only_the_explicit_action_subset() -> None:
     authority = InMemoryDelegationAuthority([_grant(actions=frozenset({"read_file"}))])
-    decision = authority.authorize(
+    decision = await authority.authorize(
         _request(actions=frozenset({"read_file", "write_file"})), now=datetime.now(UTC)
     )
 
@@ -112,12 +113,13 @@ def test_host_grant_returns_only_the_explicit_action_subset() -> None:
     assert decision.grant_id == "grant-1"
 
 
-def test_an_approval_for_another_artifact_cannot_be_reused() -> None:
+@pytest.mark.asyncio
+async def test_an_approval_for_another_artifact_cannot_be_reused() -> None:
     authority = InMemoryDelegationAuthority([_grant(actions=frozenset({"read_file"}))])
     request = _request(actions=frozenset({"read_file"}))
     mismatched = request.__class__(**{**request.__dict__, "artifact": "different task"})
 
-    decision = authority.authorize(mismatched, now=datetime.now(UTC))
+    decision = await authority.authorize(mismatched, now=datetime.now(UTC))
 
     assert decision.allowed is False
     assert "no host grant" in decision.reason
@@ -134,6 +136,28 @@ def test_auth_context_enforces_the_effective_subset() -> None:
 
     assert auth.can_use_tool("read_file", table) is True
     assert auth.can_use_tool("write_file", table) is False
+
+
+def test_an_expired_delegated_grant_authorizes_no_tool() -> None:
+    """Deliberation past the grant's expiry must not extend authority."""
+    expired = AuthContext(
+        user_id="owner-1",
+        roles=frozenset({"user"}),
+        delegated_actions=frozenset({"read_file"}),
+        delegation_grant_id="grant-1",
+        delegation_expires_at=datetime.now(UTC) - timedelta(seconds=1),
+    )
+    live = AuthContext(
+        user_id="owner-1",
+        roles=frozenset({"user"}),
+        delegated_actions=frozenset({"read_file"}),
+        delegation_grant_id="grant-1",
+        delegation_expires_at=datetime.now(UTC) + timedelta(seconds=60),
+    )
+    table = {"read_file": frozenset({"user"})}
+
+    assert expired.can_use_tool("read_file", table) is False
+    assert live.can_use_tool("read_file", table) is True
 
 
 @pytest.mark.asyncio

@@ -8,6 +8,7 @@ both durable audit stores exchange the same record shape.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any, Protocol, runtime_checkable
 
@@ -39,6 +40,9 @@ class AuthContext:
     # from the owner's roles. ``None`` means this is not a delegated call.
     delegated_actions: frozenset[str] | None = None
     delegation_grant_id: str = ""
+    # When the host grant expires. A delegated call evaluated after this
+    # instant is denied, so deliberation delay cannot extend authority (#845).
+    delegation_expires_at: datetime | None = None
 
     def can_use_tool(self, tool_name: str, permission_table: PermissionTable) -> bool:
         """Fail-closed permission lookup (ADR-072726-0d6b, implemented for #1165).
@@ -57,6 +61,14 @@ class AuthContext:
                 return False
             if tool_name not in self.delegated_actions:
                 return False
+            # An expired grant authorizes nothing, even mid-run (#845 review).
+            if self.delegation_expires_at is not None:
+                now = datetime.now(UTC)
+                expires_at = self.delegation_expires_at
+                if expires_at.tzinfo is None:
+                    expires_at = expires_at.replace(tzinfo=UTC)
+                if now >= expires_at:
+                    return False
         allowed_roles = permission_table.get(tool_name)
         if allowed_roles is None:
             return False

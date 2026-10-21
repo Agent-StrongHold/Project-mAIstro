@@ -202,7 +202,7 @@ class A2ABroker:
                 artifact=artifact or task,
                 requested_at=utc_now(),
             )
-            decision = self._delegation_authority.authorize(request, now=request.requested_at)
+            decision = await self._delegation_authority.authorize(request, now=request.requested_at)
             if not decision.allowed:
                 raise DelegationRefused(f"host delegation refused: {decision.reason}")
             metadata["delegated_actions"] = sorted(decision.effective_actions)

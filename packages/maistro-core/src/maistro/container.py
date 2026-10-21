@@ -184,6 +184,7 @@ if TYPE_CHECKING:
     from maistro.runs.reconciliation import AttemptLifecycleReconciler
     from maistro.runs.store import RunStore
     from maistro.security._types import AuditLog
+    from maistro.security.sentinel.delegation import DelegationAuthority
     from maistro.security.sentinel.elevation import ElevationStore
     from maistro.security.sentinel.policy import Sentinel
     from maistro.skills.import_pipeline import (
@@ -2471,7 +2472,6 @@ async def create_container(
             build_permission_table,
             describe_permission_table,
         )
-        from maistro.security.sentinel.delegation import InMemoryDelegationAuthority
         from maistro.security.sentinel.policy import Sentinel
 
         audit_log = await _wire_audit_log(pg_pool=pg_pool, db_pool=db_pool)
@@ -2502,10 +2502,11 @@ async def create_container(
         from maistro.security.sentinel.permission_source import CapabilityPermissionSource
 
         # Delegated authority is host-owned state, separate from the manifest
-        # roster. A durable deployment can replace this implementation without
-        # changing the Agent or Graph execution paths. The elevation store stays
-        # durable (#845: an approval grant must survive restart where required).
-        delegation_authority = InMemoryDelegationAuthority()
+        # roster. The durable store is wired from the same backend as the other
+        # canonical stores, so a host grant survives a restart (#845); a process
+        # with no relational backend falls back to the in-memory seam without
+        # changing the Agent or Graph execution paths.
+        delegation_authority = await _wire_delegation_authority(pg_pool=pg_pool, db_pool=db_pool)
         capabilities = default_capability_registry()
         sentinel = Sentinel(
             warden=warden,
@@ -2922,6 +2923,13 @@ async def _wire_elevation_store(*, pg_pool: Any, db_pool: Any) -> ElevationStore
     from maistro.security.sentinel.elevation_durable import build_elevation_store
 
     return await build_elevation_store(pg_pool=pg_pool, db_pool=db_pool)
+
+
+async def _wire_delegation_authority(*, pg_pool: Any, db_pool: Any) -> DelegationAuthority:
+    """Host-created delegation grants live beside the other durable stores."""
+    from maistro.security.sentinel.delegation_durable import build_delegation_authority
+
+    return await build_delegation_authority(pg_pool=pg_pool, db_pool=db_pool)
 
 
 def _sqlite_database_path(database_url: str) -> str:

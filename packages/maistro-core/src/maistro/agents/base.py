@@ -1335,6 +1335,10 @@ class Agent:
             auth,
             delegated_actions=decision.effective_actions,
             delegation_grant_id=decision.grant_id,
+            # The grant's expiry rides with the envelope so per-call checks
+            # (Sentinel pre_call -> can_use_tool) can reject a delegated tool
+            # invocation that happens after the grant lapsed (#845 review).
+            delegation_expires_at=decision.expires_at,
             on_behalf_of=self.identity.name,
         )
         return delegated_auth, None

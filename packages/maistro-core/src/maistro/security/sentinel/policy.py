@@ -192,7 +192,7 @@ class Sentinel:
             artifact=artifact,
             requested_at=utc_now(),
         )
-        return self._delegation_authority.authorize(request, now=request.requested_at)
+        return await self._delegation_authority.authorize(request, now=request.requested_at)
 
     def resolve_tier(
         self,

@@ -8,12 +8,14 @@ connected, and reachable on the container.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 import pytest
 
 from maistro.container import Container, create_container
+from maistro.security.sentinel.authz_types import Principal
 from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 from maistro.types.config import AgentConfig
 
@@ -74,6 +76,61 @@ async def test_sqlite_backend_wires_sqlite_durable_event_stores() -> None:
     from maistro.quota.rate_profile import LimitUnit
 
     assert restored.tokens_since("provider:model", 3600, LimitUnit.INPUT_TOKENS, now=1000.0) == 7
+
+
+async def test_container_wires_a_durable_delegation_authority() -> None:
+    """The shipped composition resolves delegation from a durable store (#845).
+
+    Before this wiring the container shipped an empty in-memory authority, so
+    every in-agent delegation was refused unless the operator hand-built a
+    replacement. The authority now reads host grants from the same backend as
+    the elevation store.
+    """
+    container = await _container(database_url="sqlite://")
+    authority = container.sentinel._delegation_authority
+    assert type(authority).__name__ == "DurableDelegationAuthority"
+
+    # A host grant written before the authority is consulted authorizes the
+    # exact delegation and nothing wider.
+    from maistro.security.sentinel.delegation import DelegationGrant, DelegationRequest
+
+    grant = DelegationGrant(
+        grant_id="grant-1",
+        principal_id="low-agent",
+        owner_id="owner-1",
+        delegating_agent_id="low-agent",
+        target_agent_id="writer",
+        goal_id="goal-1",
+        run_id="run-1",
+        invocation_id="inv-1",
+        scope="project-1",
+        action="agent.delegate",
+        actions=frozenset({"read_file"}),
+        artifact="delegate this exact task",
+        expires_at=datetime.now(UTC) + timedelta(minutes=5),
+        granted_by="host-policy",
+        provenance="human-approval:approval-1",
+    )
+    await authority.add_host_grant(grant)
+
+    principal = Principal(id="low-agent", kind="agent", owner="owner-1", scopes=("project-1",))
+    request = DelegationRequest(
+        principal=principal,
+        owner_id="owner-1",
+        delegating_agent_id="low-agent",
+        target_agent_id="writer",
+        goal_id="goal-1",
+        run_id="run-1",
+        invocation_id="inv-1",
+        scope="project-1",
+        action="agent.delegate",
+        requested_actions=frozenset({"read_file", "write_file"}),
+        artifact="delegate this exact task",
+        requested_at=datetime.now(UTC),
+    )
+    decision = await authority.authorize(request, now=datetime.now(UTC))
+    assert decision.allowed is True
+    assert decision.effective_actions == frozenset({"read_file"})
 
 
 async def test_flush_usage_log_is_a_noop_without_persistence() -> None:

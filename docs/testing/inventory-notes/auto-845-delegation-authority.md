@@ -1,7 +1,7 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +12
   packages/hive-conductor/backend/tests: +4
+  packages/maistro-core/tests: +20
 ---
 # #845 host-authorized delegation and execution tiers
 
@@ -31,3 +31,21 @@ adapter's capability floor still forces the sandbox for dangerous nodes. The
 core tests compose the container Sentinel exactly as shipped and prove
 benign-runnable / anonymous-blocked / untrusted-blocked; the Hive adapter
 tests run `LegacyConductorNode._execute` end-to-end against that Sentinel.
+
+## Repair: the shipped delegation authority must be durable and reachable
+
+Validation-round evidence: `create_container` wired an empty
+`InMemoryDelegationAuthority` into Sentinel, so every in-agent delegation
+(`Agent._delegate` consults `Sentinel.authorize_delegation` unconditionally)
+was refused in the shipped composition unless an operator hand-built a
+replacement; `add_host_grant` had no production caller and no restart path.
+The repair wires the durable store from the same backend as the elevation
+store (`_wire_delegation_authority` -> `build_delegation_authority`: PG ->
+SQLite -> in-memory fallback), and `DelegationAuthority.authorize` becomes async
+so a durable implementation can read the canonical backend. The decision logic
+moves into a shared `decide` helper so the in-memory seam and the durable store
+resolve identically. New tests: a SQLite grant authorizes a *new* authority
+instance (restart), expired / wrong-principal grants stay hidden, durable and
+in-memory authorities decide identically, the PG restart contract and pool
+preference, and `create_container` exposes a `DurableDelegationAuthority` that
+authorizes the exact subset from a host grant written before the decision.
