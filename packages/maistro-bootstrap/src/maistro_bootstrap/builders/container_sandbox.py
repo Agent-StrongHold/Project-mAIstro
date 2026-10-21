@@ -36,6 +36,12 @@ import os
 import subprocess
 from pathlib import Path, PurePosixPath
 
+from maistro.tools.sandbox._capture import (
+    DEFAULT_MAX_OUTPUT_BYTES,
+    clamped_output_limit,
+    run_bounded,
+    truncation_notice,
+)
 from maistro_bootstrap.builders.errors import SandboxEscapeError
 
 DEFAULT_IMAGE = "maistro-builders:latest"
@@ -134,6 +140,11 @@ class ContainerBuilderSandbox:
         self._repo_root = Path(repo_root).resolve()
         self._image = image
         self._cid: str | None = None
+        # Host-selected bound (#1197) on retained command output, clamped to
+        # the protocol ceiling: candidate-influenced commands run here, so an
+        # unbounded emitter must not be able to grow host memory through the
+        # very path the isolation depends on.
+        self._output_limit = clamped_output_limit(DEFAULT_MAX_OUTPUT_BYTES)
 
     # -- lifecycle -----------------------------------------------------------
 
@@ -317,13 +328,18 @@ class ContainerBuilderSandbox:
         return f"{_WORKDIR}/{p.as_posix()}"
 
     def _exec(self, argv: list[str], *, timeout: int = _DEFAULT_TIMEOUT) -> tuple[int, str]:
-        proc = subprocess.run(
+        # Bounded capture (#1197): run_bounded retains at most the output
+        # limit per stream and drains the rest, so a candidate command cannot
+        # wedge the loop against a full pipe nor exhaust host memory.
+        run = run_bounded(
             ["docker", *self._exec_prefix(), self._require_cid(), *argv],
-            capture_output=True,
-            text=True,
+            limit=self._output_limit,
             timeout=timeout,
         )
-        return proc.returncode, (proc.stdout or "") + (proc.stderr or "")
+        output = (run.stdout.data + run.stderr.data).decode(errors="replace")
+        if run.stdout.truncated or run.stderr.truncated:
+            output += truncation_notice(self._output_limit)
+        return run.exit_code, output
 
     def _exec_prefix(self) -> list[str]:
         """Docker flags every agent-facing exec carries (#77).
@@ -337,10 +353,33 @@ class ContainerBuilderSandbox:
     # -- BuilderSandbox protocol --------------------------------------------
 
     def read_file(self, path: str) -> str:
-        rc, out = self._exec(["cat", self._safe(path)])
-        if rc != 0:
+        # File transfer deliberately does NOT reuse the command-output
+        # truncation contract (review of #1197): `cat` through the truncating
+        # `_exec` would return "prefix + notice" as if it were the whole file,
+        # and edit_file would then write that string back — permanently
+        # destroying everything past the bound. Same host-side bound, but the
+        # contract ERRORS on overflow instead of truncating: the caller gets
+        # the whole file or an exception, never a doctored view.
+        run = run_bounded(
+            ["docker", *self._exec_prefix(), self._require_cid(), "cat", self._safe(path)],
+            limit=self._output_limit,
+            timeout=_DEFAULT_TIMEOUT,
+        )
+        # `timed_out` must be tested before the exit status: `run_bounded`
+        # kills a timed-out child, whose then-nonzero exit status would
+        # otherwise be misread as "file missing" (FileNotFoundError) — the
+        # wrong verdict and, for an agent deciding what to do next, a wrong
+        # conclusion about the workspace.
+        if run.timed_out:
+            raise RuntimeError(f"timed out reading {path!r} from the sandbox container")
+        if run.exit_code != 0:
             raise FileNotFoundError(path)
-        return out
+        if run.stdout.truncated:
+            raise ValueError(
+                f"{path} exceeds the sandbox read bound ({self._output_limit} bytes); "
+                "read it in chunks with run_command instead."
+            )
+        return run.stdout.data.decode(errors="replace")
 
     def write_file(self, path: str, content: str) -> None:
         target = self._safe(path)
