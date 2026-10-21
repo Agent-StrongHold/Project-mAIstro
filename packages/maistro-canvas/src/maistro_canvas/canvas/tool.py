@@ -11,14 +11,34 @@ generate, refine, reference, composite, text.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import io
 import logging
 import uuid
-from dataclasses import dataclass, field
-from typing import Any
+from dataclasses import dataclass, field, replace
+from typing import TYPE_CHECKING, Any
 
 from maistro.http import shared_client
+from maistro_canvas.types import (
+    CanvasError,
+    LayerPixelBudgetError,
+    validate_canvas_dimensions,
+)
+
+from .limits import (
+    PixelBudget,
+    configure_pillow_decompression_limit,
+    load_image_limits,
+    rotated_dimensions,
+    run_with_resize_timeout,
+    scaled_dimensions,
+    validate_decoded_pixels,
+    validate_scale,
+)
+
+if TYPE_CHECKING:
+    from maistro_canvas.canvas.limits import CanvasImageLimits
 
 logger = logging.getLogger("maistro_canvas.canvas.tool")
 
@@ -82,8 +102,14 @@ def get_or_create_canvas(
     width: int = 1024,
     height: int = 1024,
 ) -> Canvas:
-    """Get existing canvas for session or create a new one."""
+    """Get existing canvas for session or create a new one.
+
+    #393: base dimensions for a *new* canvas are held to the same caps as
+    the HTTP surface (``validate_canvas_dimensions``), so the base
+    allocation itself is bounded before any layer is drawn.
+    """
     if session_id not in _canvases:
+        validate_canvas_dimensions(width, height)
         _canvases[session_id] = Canvas(id=session_id, width=width, height=height)
     return _canvases[session_id]
 
@@ -205,9 +231,28 @@ async def _generate_image(
 # ---------------------------------------------------------------------------
 
 
-def _composite_layers(canvas: Canvas) -> bytes:
-    """Composite all visible layers into a single PNG."""
+def _composite_layers(
+    canvas: Canvas,
+    *,
+    limits: CanvasImageLimits | None = None,
+    budget: PixelBudget | None = None,
+) -> bytes:
+    """Composite all visible layers into a single PNG.
+
+    #393: every layer's scale is validated *before* its bytes are decoded,
+    and the decoded pixel count, the resize target, and the
+    ``rotate(expand=True)`` bounding box are each bounded against the
+    per-image and cumulative per-request pixel caps before the allocation
+    that would exceed them. A rejected layer raises a typed error and no
+    partial output is returned. Pillow's ``DecompressionBombError`` (raised
+    at twice the pinned guard) is translated into the same typed error so a
+    bomb never escapes as a raw PIL exception.
+    """
     from PIL import Image
+
+    bound = limits if limits is not None else load_image_limits()
+    if budget is None:
+        budget = PixelBudget(bound)
 
     base = Image.new("RGBA", (canvas.width, canvas.height), canvas.background_color)
 
@@ -215,16 +260,33 @@ def _composite_layers(canvas: Canvas) -> bytes:
         if not layer.visible or layer.image_data is None:
             continue
 
-        img = Image.open(io.BytesIO(layer.image_data)).convert("RGBA")
+        # Scale first — validating after the decode would mean an invalid
+        # scale still pays for a full pixel decode (#393).
+        scale = validate_scale(layer.scale, bound)
 
-        # Scale
-        if layer.scale != 1.0:
-            new_w = max(1, int(img.width * layer.scale))
-            new_h = max(1, int(img.height * layer.scale))
+        try:
+            img = Image.open(io.BytesIO(layer.image_data)).convert("RGBA")
+        except Image.DecompressionBombError as exc:
+            msg = (
+                f"layer {layer.id!r} decodes above the per-image maximum of "
+                f"{bound.max_layer_pixels} pixels (Pillow decompression guard)"
+            )
+            raise LayerPixelBudgetError(msg) from exc
+        # Pillow's guard only warns at the cap and raises at 2x; this check
+        # enforces the per-image cap exactly on what was actually decoded.
+        validate_decoded_pixels(img.width, img.height, bound, what=f"layer {layer.id!r} source")
+
+        new_w, new_h = scaled_dimensions(img.width, img.height, scale, bound)
+        budget.charge(new_w, new_h)
+        if (new_w, new_h) != img.size:
             img = img.resize((new_w, new_h), Image.Resampling.LANCZOS)
 
-        # Rotate (expand=True keeps the full image after rotation)
+        # Rotate (expand=True keeps the full image after rotation, whose
+        # bounding box can be ~sqrt(2) times the area: bound and charge it
+        # before the rotation allocates (#393)).
         if layer.rotation != 0:
+            rot_w, rot_h = rotated_dimensions(new_w, new_h, layer.rotation, bound)
+            budget.charge(rot_w, rot_h)
             img = img.rotate(-layer.rotation, expand=True, resample=Image.Resampling.BICUBIC)
 
         # Paste at position (using alpha channel as mask)
@@ -297,6 +359,68 @@ def _render_text(
     buf = io.BytesIO()
     img.save(buf, format="PNG")
     return buf.getvalue()
+
+
+def _validate_spec_scales(layers: list[dict[str, Any]], limits: CanvasImageLimits) -> None:
+    """Validate every scale in a composite request before any mutation (#393).
+
+    One bad spec must not leave partially applied transforms behind, so the
+    whole request is checked up front and the first offending scale raises a
+    typed :class:`LayerScaleLimitError`.
+    """
+    for spec in layers:
+        if "scale" in spec:
+            validate_scale(spec["scale"], limits)
+
+
+def _apply_layer_specs(canvas: Canvas, layers: list[dict[str, Any]] | None) -> None:
+    """Apply transform fields from composite layer specs onto their targets.
+
+    A spec that names an unknown layer is skipped rather than rejected: the
+    composite of the remaining layers still proceeds. Omitting the specs is a
+    no-op, which keeps the complexity of the caller flat.
+    """
+    for spec in layers or []:
+        target = canvas.get_layer(spec.get("layer_id", spec.get("image", "")))
+        if target is None:
+            continue
+        if "x" in spec:
+            target.x = spec["x"]
+        if "y" in spec:
+            target.y = spec["y"]
+        if "scale" in spec:
+            target.scale = float(spec["scale"])
+        if "rotation" in spec:
+            target.rotation = spec["rotation"]
+        if "z_index" in spec:
+            target.z_index = spec["z_index"]
+        if "visible" in spec:
+            target.visible = spec["visible"]
+
+
+def _composite_projection(
+    canvas: Canvas, layers: list[dict[str, Any]] | None, limits: CanvasImageLimits
+) -> Canvas:
+    """Return the canvas a composite request should render (#393).
+
+    Every spec's scale is validated before anything is written, and the
+    request's transforms are applied to a *copy*: the live session canvas
+    keeps its current transforms unless the composite succeeds, so a rejection
+    raised mid-render (pixel budget, worker timeout) cannot leave a
+    half-applied transform behind.
+    """
+    if not layers:
+        return canvas
+    _validate_spec_scales(layers, limits)
+    projected = Canvas(
+        id=canvas.id,
+        width=canvas.width,
+        height=canvas.height,
+        layers={layer_id: replace(layer) for layer_id, layer in canvas.layers.items()},
+        background_color=canvas.background_color,
+    )
+    _apply_layer_specs(projected, layers)
+    return projected
 
 
 # ---------------------------------------------------------------------------
@@ -469,26 +593,32 @@ async def execute_canvas(  # noqa: C901
         }
 
     if action == "composite":
-        # Update layer transforms from the provided layer specs
-        if layers:
-            for spec in layers:
-                target = canvas.get_layer(spec.get("layer_id", spec.get("image", "")))
-                if target is None:
-                    continue
-                if "x" in spec:
-                    target.x = spec["x"]
-                if "y" in spec:
-                    target.y = spec["y"]
-                if "scale" in spec:
-                    target.scale = spec["scale"]
-                if "rotation" in spec:
-                    target.rotation = spec["rotation"]
-                if "z_index" in spec:
-                    target.z_index = spec["z_index"]
-                if "visible" in spec:
-                    target.visible = spec["visible"]
+        try:
+            limits = load_image_limits()
+            # The stored layer bytes are decoded here, so Pillow's decode
+            # guard must be pinned to this request's per-image cap before
+            # the worker runs (#393) — not only on the upload path.
+            configure_pillow_decompression_limit(limits)
 
-        result_bytes = _composite_layers(canvas)
+            # Decode/resize runs in a worker thread under the configured
+            # timeout; a typed failure means no output is produced at all.
+            result_bytes = await run_with_resize_timeout(
+                asyncio.to_thread(
+                    _composite_layers,
+                    _composite_projection(canvas, layers, limits),
+                    limits=limits,
+                    budget=PixelBudget(limits),
+                ),
+                limits,
+            )
+        except CanvasError as exc:
+            # Explicit, typed rejection — no composite output is produced or
+            # persisted for a request that violates a resource limit (#393).
+            return {"action": "composite", "error": f"{exc.code}: {exc.detail}"}
+
+        # The request's transforms are committed only now that the composite
+        # succeeded; a rejected render leaves them unapplied (#393).
+        _apply_layer_specs(canvas, layers)
 
         return {
             "action": "composite",
@@ -533,14 +663,38 @@ async def execute_canvas(  # noqa: C901
             return {"error": "upload_image (via source_image param) is required"}
 
         img_bytes = base64.b64decode(upload_image)
-        from PIL import Image
+        limits = load_image_limits()
+        configure_pillow_decompression_limit(limits)
 
-        upload_img = Image.open(io.BytesIO(img_bytes)).convert("RGBA")
+        # #393: decode of untrusted bytes runs in the bounded worker — the
+        # Pillow decompression guard is pinned to the per-image pixel cap
+        # and an over-long decode fails explicitly instead of hanging.
 
-        # Re-encode as PNG for consistent storage
-        buf = io.BytesIO()
-        upload_img.save(buf, format="PNG")
-        png_bytes = buf.getvalue()
+        def _decode_and_reencode() -> tuple[bytes, int, int]:
+            from PIL import Image
+
+            try:
+                decoded = Image.open(io.BytesIO(img_bytes)).convert("RGBA")
+            except Image.DecompressionBombError as exc:
+                msg = (
+                    f"upload decodes above the per-image maximum of "
+                    f"{limits.max_layer_pixels} pixels (Pillow decompression guard)"
+                )
+                raise LayerPixelBudgetError(msg) from exc
+            # Pillow's guard only warns at the cap and raises at 2x; this
+            # check enforces the per-image cap exactly, closing the window
+            # where an upload between the cap and twice it was accepted.
+            validate_decoded_pixels(decoded.width, decoded.height, limits, what="uploaded image")
+            buf = io.BytesIO()
+            decoded.save(buf, format="PNG")
+            return buf.getvalue(), decoded.width, decoded.height
+
+        try:
+            png_bytes, upload_w, upload_h = await run_with_resize_timeout(
+                asyncio.to_thread(_decode_and_reencode), limits
+            )
+        except CanvasError as exc:
+            return {"action": "upload", "error": f"{exc.code}: {exc.detail}"}
 
         layer_id = f"{layer_type}-upload-{uuid.uuid4().hex[:8]}"
         layer = Layer(
@@ -548,8 +702,8 @@ async def execute_canvas(  # noqa: C901
             name=text_content or f"uploaded {layer_type}",  # reuse text_content as name
             layer_type=layer_type,
             image_data=png_bytes,
-            width=img.width,
-            height=img.height,
+            width=upload_w,
+            height=upload_h,
             z_index=10 + len(canvas.layers),
         )
         canvas.add_layer(layer)
@@ -558,8 +712,8 @@ async def execute_canvas(  # noqa: C901
             "action": "upload",
             "layer_id": layer_id,
             "name": layer.name,
-            "width": img.width,
-            "height": img.height,
+            "width": upload_w,
+            "height": upload_h,
             "z_index": layer.z_index,
             "image_b64": base64.b64encode(png_bytes).decode(),
         }
@@ -574,16 +728,21 @@ async def execute_canvas(  # noqa: C901
     if action == "transform":
         layer_id_param = layers[0].get("layer_id", "") if layers else ""
         transform_spec = layers[0] if layers else {}
-        result = transform_layer(
-            session_id,
-            layer_id_param,
-            x=transform_spec.get("x"),
-            y=transform_spec.get("y"),
-            scale=transform_spec.get("scale"),
-            rotation=transform_spec.get("rotation"),
-            z_index=transform_spec.get("z_index"),
-            visible=transform_spec.get("visible"),
-        )
+        try:
+            result = transform_layer(
+                session_id,
+                layer_id_param,
+                x=transform_spec.get("x"),
+                y=transform_spec.get("y"),
+                scale=transform_spec.get("scale"),
+                rotation=transform_spec.get("rotation"),
+                z_index=transform_spec.get("z_index"),
+                visible=transform_spec.get("visible"),
+            )
+        except CanvasError as exc:
+            # #393: explicit typed rejection — the stored transform is left
+            # unchanged when the scale violates a server limit.
+            return {"action": "transform", "error": f"{exc.code}: {exc.detail}"}
         if result is None:
             return {"error": f"Layer not found: {layer_id_param}"}
         return {"action": "transform", **result}
@@ -857,12 +1016,17 @@ def transform_layer(
     if layer is None:
         return None
 
+    # #393: validate the scale *before* any field is written. Rejecting after
+    # x/y had already been assigned would leave a half-applied transform on
+    # the session layer even though the request was reported as failed.
+    checked_scale = validate_scale(scale) if scale is not None else None
+
     if x is not None:
         layer.x = x
     if y is not None:
         layer.y = y
-    if scale is not None:
-        layer.scale = scale
+    if checked_scale is not None:
+        layer.scale = checked_scale
     if rotation is not None:
         layer.rotation = rotation
     if z_index is not None:
