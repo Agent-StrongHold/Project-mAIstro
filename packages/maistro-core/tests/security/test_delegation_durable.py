@@ -28,13 +28,13 @@ _ARTIFACT = "delegate this exact task"
 
 def _grant(
     *,
-    grant_id: str = "grant-1",
+    grant_ref: str = "grant-1",
     principal_id: str = "low-agent",
     expires_in: timedelta = timedelta(minutes=5),
     actions: frozenset[str] = frozenset({"read_file"}),
 ) -> DelegationGrant:
     return DelegationGrant(
-        grant_id=grant_id,
+        grant_ref=grant_ref,
         principal_id=principal_id,
         owner_id="owner-1",
         delegating_agent_id="low-agent",
@@ -89,7 +89,7 @@ async def test_sqlite_delegation_grant_survives_a_new_authority_instance(tmp_pat
         decision = await restarted.authorize(_request(), now=datetime.now(UTC))
         assert decision.allowed is True
         assert decision.effective_actions == frozenset({"read_file"})
-        assert decision.grant_id == "grant-1"
+        assert decision.grant_ref == "grant-1"
     finally:
         await conn.close()
 
@@ -100,12 +100,12 @@ async def test_sqlite_delegation_store_hides_expired_and_wrong_principal_grants(
     try:
         store = SqliteDelegationStore(conn)
         await store.ensure_schema()
-        await store.store(_grant(grant_id="expired", expires_in=timedelta(seconds=-1)))
-        await store.store(_grant(grant_id="other", principal_id="someone-else"))
+        await store.store(_grant(grant_ref="expired", expires_in=timedelta(seconds=-1)))
+        await store.store(_grant(grant_ref="other", principal_id="someone-else"))
 
         now = datetime.now(UTC)
         found = await store.list_valid(now=now)
-        assert [grant.grant_id for grant in found] == ["other"]
+        assert [grant.grant_ref for grant in found] == ["other"]
 
         authority = DurableDelegationAuthority(store)
         assert (await authority.authorize(_request(), now=now)).allowed is False
@@ -130,7 +130,7 @@ async def test_durable_and_in_memory_authorities_decide_identically() -> None:
             _request(actions=frozenset({"write_file"})),
         ):
             durable_decision = await durable.authorize(request, now=now)
-            memory_decision = await memory.authorize(request, now=now)
+            memory_decision = memory.authorize(request, now=now)
             assert durable_decision.allowed == memory_decision.allowed
             assert durable_decision.effective_actions == memory_decision.effective_actions
             assert durable_decision.reason == memory_decision.reason
@@ -170,7 +170,7 @@ async def test_postgres_delegation_grant_survives_a_new_authority(pg_pool) -> No
     await PgDelegationStore(pg_pool).store(_grant())
 
     found = await PgDelegationStore(pg_pool).list_valid(now=datetime.now(UTC))
-    assert [grant.grant_id for grant in found] == ["grant-1"]
+    assert [grant.grant_ref for grant in found] == ["grant-1"]
 
 
 @pytest.mark.asyncio

@@ -71,6 +71,7 @@ from maistro.memory.working_graph.wiring import (
     build_workspace_working_memory,
     working_memory_context_message,
 )
+from maistro.personas.wiring import PERSONA_PG_TABLES, wire_persona_store
 from maistro.projects.scope_store import ProjectScopeStore
 from maistro.quota.default_tracker import set_default_quota_tracker
 from maistro.quota.tracker import InMemoryQuotaTracker
@@ -167,6 +168,7 @@ if TYPE_CHECKING:
     from maistro.observability.tiers import PIIDetector
     from maistro.orchestrator.hierarchy import HarnessRegistry, HierarchicalOrchestrator
     from maistro.personas.golden import GoldenRecordStore
+    from maistro.personas.store import PersonaStore
     from maistro.protocols.embeddings import EmbeddingClient
     from maistro.protocols.memory import (
         ContextAssemblyPolicy,
@@ -259,6 +261,9 @@ class Container:
     #: backend since #132 while the thing its `workspace_id` names had none,
     #: so the only Workspaces that survived a restart were the Conductor's own.
     workspace_store: WorkspaceStore = None  # type: ignore[assignment]
+    #: The live Persona is a Workspace product context, stored beside the
+    #: Project tree rather than in a second product-specific ownership store.
+    persona_store: PersonaStore = None  # type: ignore[assignment]
     #: Append-only BacklogItem history (#101), on the Project store's backend.
     #: References canonical Goals/Runs; never an execution authority itself.
     backlog_history_store: BacklogHistoryStore = None  # type: ignore[assignment]
@@ -499,6 +504,10 @@ class Container:
     # Sentinel so a future request/confirm surface has somewhere to persist a
     # cleared grant; Sentinel reads the same instance.
     elevation_store: ElevationStore = None  # type: ignore[assignment]
+    # Host-authorized delegation authority (#845). Held here as well as inside
+    # Sentinel so a host component can provision grants; Sentinel reads the
+    # same instance.
+    delegation_authority: Any = None  # type: ignore[assignment]
     # Strike ladder (SPEC-012 / security/gate.py). None unless
     # config.security.strike_tracking_enabled -- see create_container.
     strike_tracker: StrikeTracker | None = None
@@ -2412,9 +2421,15 @@ async def create_container(
         # The same `project_scope_store` object the spine just selected, not a
         # second resolution of the same question: a Workspace whose Root Project is
         # filed in another database is a Workspace whose Runs cannot be filed.
+        persona_store = await wire_persona_store(
+            db_pool,
+            project_store=project_scope_store,
+            pg_pool=pg_pool,
+        )
         workspace_store = await wire_workspace_store(
             db_pool,
             project_store=project_scope_store,
+            persona_store=persona_store,
             pg_pool=pg_pool,
         )
         backlog_history_store = await wire_backlog_history_store(
@@ -2510,7 +2525,7 @@ async def create_container(
         # nothing denies recovery actions too until it configures permissions.
         # Graph node execution is a synthetic (non-tool) action, so its host
         # authorization lives in tier records, not in the tool table (#845).
-        tier_policy = _configure_host_tier_policy()
+        tier_policy = _configure_strike_recovery_policy()
         logger.info("Sentinel permission table: %s", describe_permission_table(permission_table))
         # SPEC-247 / ADR-068 §D. Without this, Sentinel._check_elevation_grant is a
         # permanent no-op, so a grant a human/owner already cleared could never be
@@ -2700,6 +2715,7 @@ async def create_container(
             strike_recovery=strike_recovery,
             sentinel=sentinel,
             elevation_store=elevation_store,
+            delegation_authority=delegation_authority,
             context_builder=context_builder,
             intent_registry=intent_registry,
             capabilities=capabilities,
@@ -2707,6 +2723,7 @@ async def create_container(
             project_store=project_scope_store,
             project_scope_store=project_scope_store,
             workspace_store=workspace_store,
+            persona_store=persona_store,
             backlog_history_store=backlog_history_store,
             campaign_store=campaign_store,
             goal_store=goal_store,
@@ -2978,23 +2995,6 @@ def _configure_strike_recovery_policy() -> dict[tuple[str, str], Any]:
     return {(action, "admin"): Tier.ADMIN for action in actions}
 
 
-def _configure_host_tier_policy() -> dict[tuple[str, str], Any]:
-    """Host-owned tier records for synthetic (non-tool) platform actions.
-
-    Graph node execution is not a tool call, so the fail-closed tool table
-    never names it; these records are the host policy that decides its
-    isolation (#845, ADR-068 §B). Only the canonical base role is armed:
-    authenticated human principals may run benign nodes inline, untrusted
-    nodes stay blocked absent an explicit record, and the adapter's
-    capability floor still forces the sandbox for dangerous nodes.
-    """
-    from maistro.security.sentinel.authz_types import Tier
-
-    policy = _configure_strike_recovery_policy()
-    policy[("graph.node.execute", "user")] = Tier.ROLE_AUTO
-    return policy
-
-
 def _wire_strike_recovery(*, tracker: Any, sentinel: Any, audit_log: Any) -> Any:
     """Build the authorized recovery layer beside the canonical tracker."""
     if tracker is None:
@@ -3115,6 +3115,10 @@ _REQUIRED_PG_TABLES: Final = (
     # `postgresql://` deployment that skipped `alembic upgrade head` should hear
     # about it once, at startup, naming every table it lacks.
     *WORKSPACE_PG_TABLES,
+    # The live Persona is the Workspace's product context. It is listed here so
+    # an unmigrated PostgreSQL deployment fails before serving a Workspace that
+    # cannot reload its Persona after restart.
+    *PERSONA_PG_TABLES,
 )
 
 

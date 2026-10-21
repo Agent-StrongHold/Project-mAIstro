@@ -68,6 +68,23 @@ def _principal_auth_context(principal: Principal) -> AuthContext:
     return _AuthContext(user_id=principal.id, roles=frozenset(principal.roles))
 
 
+def _delegation_detail(auth: AuthContext) -> str:
+    """Audit provenance for a delegated call: the host grant it rests on.
+
+    A delegated invocation is authorized by a host grant, not by the agent
+    that asked for it, so the call audit names that grant. Only the host's
+    own reference is recorded -- never request content.
+    """
+    if not auth.delegation_grant_ref:
+        return ""
+    return f"delegation_grant_ref={auth.delegation_grant_ref}"
+
+
+def _join_detail(*parts: str) -> str:
+    """Join audit detail fragments, skipping the empty ones."""
+    return "; ".join(part for part in parts if part)
+
+
 class Sentinel:
     """Policy enforcement at every boundary crossing.
 
@@ -192,7 +209,10 @@ class Sentinel:
             artifact=artifact,
             requested_at=utc_now(),
         )
-        return await self._delegation_authority.authorize(request, now=request.requested_at)
+        result = self._delegation_authority.authorize(request, now=request.requested_at)
+        if hasattr(result, "__await__"):
+            result = await result
+        return result
 
     def resolve_tier(
         self,
@@ -216,53 +236,6 @@ class Sentinel:
         if reversibility == "irreversible":
             return Tier.SELF_ELEVATION
         return Tier.OPEN
-
-    def resolve_execution_mode(
-        self,
-        action: str,
-        principal: Principal,
-        *,
-        reversibility: str = "reversible",
-        default: Tier | None = None,
-    ) -> str:
-        """Map a host-resolved tier to the adapter's isolation floor."""
-        tier = self.resolve_tier(action, principal, reversibility=reversibility, default=default)
-        if tier == Tier.BLOCKED:
-            return "blocked"
-        if tier in (Tier.OPEN, Tier.ROLE_AUTO):
-            return "async"
-        return "sandbox"
-
-    async def resolve_authorized_execution_mode(
-        self,
-        action: str,
-        principal: Principal,
-        *,
-        args: dict[str, Any],
-        reversibility: str = "irreversible",
-        default: Tier | None = None,
-    ) -> str:
-        """Resolve isolation only after the host tier ladder clears the action.
-
-        Graph node actions are synthetic (not tools), so the fail-closed tool
-        capability table never names them and must not gate them here -- the
-        host tier policy (optionally an elevation grant) is the whole
-        decision (#845). Uncleared elevation/approval needs deny.
-        """
-        tier = self.resolve_tier(action, principal, reversibility=reversibility, default=default)
-        needs = self._resolve_needs(tier, principal)
-        if tier == Tier.SELF_ELEVATION:
-            cleared = await self._check_elevation_grant(action, principal, needs, args)
-            if cleared is not None:
-                needs = "none"
-        if tier == Tier.BLOCKED or needs != "none":
-            return "blocked"
-        return self.resolve_execution_mode(
-            action,
-            principal,
-            reversibility=reversibility,
-            default=default,
-        )
 
     async def authorize(
         self,
@@ -405,6 +378,44 @@ class Sentinel:
         )
         return verdict, decision
 
+    async def _deny_expired_delegation(
+        self,
+        *,
+        tool_name: str,
+        auth: AuthContext,
+        detail: str,
+    ) -> SentinelVerdict | None:
+        """Fail closed when the delegated grant lapsed; ``None`` means still live.
+
+        Expiry is re-checked on every tool call, not only when the delegation
+        began, so a grant that lapses mid-run stops authorizing. Kept as its
+        own method so ``pre_call`` does not accumulate another branch.
+        """
+        expires_at = getattr(auth, "delegation_expires_at", None)
+        if expires_at is None or utc_now() < expires_at:
+            return None
+        violations = (
+            Violation(
+                boundary="pre_call",
+                rule="delegation_expired",
+                severity="error",
+                detail=(
+                    f"Delegated authority expired at {expires_at.isoformat()}; denied fail-closed"
+                ),
+            ),
+        )
+        await self._log_audit(
+            boundary="pre_call",
+            user_id=auth.user_id,
+            org_id=auth.org_id,
+            team_id=auth.team_id,
+            tool_name=tool_name,
+            verdict="denied",
+            violations=violations,
+            detail=detail,
+        )
+        return SentinelVerdict(allowed=False, violations=violations)
+
     async def pre_call(
         self,
         tool_name: str,
@@ -415,6 +426,12 @@ class Sentinel:
         violations: list[Violation] = []
 
         table = await self._effective_table()
+        delegation_detail = _delegation_detail(auth)
+        expired = await self._deny_expired_delegation(
+            tool_name=tool_name, auth=auth, detail=delegation_detail
+        )
+        if expired is not None:
+            return expired
         if table is None or not check_permission(
             auth, tool_name, table, allow_on_miss=self._allow_on_miss
         ):
@@ -442,6 +459,7 @@ class Sentinel:
                 tool_name=tool_name,
                 verdict="denied",
                 violations=tuple(violations),
+                detail=delegation_detail,
             )
             return verdict
 
@@ -457,7 +475,7 @@ class Sentinel:
                 tool_name=tool_name,
                 verdict="denied",
                 violations=tuple(violations),
-                detail=limit_violation.detail,
+                detail=_join_detail(delegation_detail, limit_violation.detail),
             )
             return verdict
 
@@ -480,7 +498,10 @@ class Sentinel:
             tool_name=tool_name,
             verdict="allowed" if verdict.allowed else "denied",
             violations=tuple(violations),
-            detail=f"repaired={schema_verdict.repaired}" if schema_verdict.repaired else "",
+            detail=_join_detail(
+                delegation_detail,
+                f"repaired={schema_verdict.repaired}" if schema_verdict.repaired else "",
+            ),
             repaired_data=schema_verdict.repaired_data if schema_verdict.repaired else None,
         )
 

@@ -1,5 +1,6 @@
 ---
 inventory-delta:
+  packages/hive-conductor/backend/tests: +2
   packages/maistro-core/tests: +9
 ---
 # #845 repair: host-resolved principal roles and denied degenerate delegation paths

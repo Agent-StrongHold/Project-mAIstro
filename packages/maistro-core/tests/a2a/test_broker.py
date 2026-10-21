@@ -73,6 +73,35 @@ def _broker() -> A2ABroker:
     return A2ABroker(resolver=_catalog(), local=LocalTransport(_echo_invoker))
 
 
+def _host_authority(*, artifact: str = "write tests") -> InMemoryDelegationAuthority:
+    """A host-owned grant bound to planner -> coder for one exact artifact."""
+    return InMemoryDelegationAuthority(
+        [
+            DelegationGrant(
+                grant_ref="grant-1",
+                principal_id="planner",
+                owner_id="user-1",
+                delegating_agent_id="planner",
+                target_agent_id="coder",
+                goal_id="goal-1",
+                run_id="run-1",
+                invocation_id="inv-1",
+                scope="scope-1",
+                action="agent.delegate",
+                actions=frozenset(),
+                artifact=artifact,
+                expires_at=datetime.now(UTC) + timedelta(minutes=5),
+                granted_by="host-policy",
+                provenance="human-approval:approval-1",
+            )
+        ]
+    )
+
+
+def _principal() -> Principal:
+    return Principal(id="planner", kind="agent", owner="user-1")
+
+
 @pytest.mark.asyncio
 async def test_local_delegate_returns_sub_agent_response() -> None:
     result = await _broker().delegate(
@@ -172,6 +201,83 @@ async def test_unknown_caller_and_target_refused() -> None:
 
 
 @pytest.mark.asyncio
+async def test_delegate_under_host_authority_records_the_grant() -> None:
+    # When a host authority is wired, delegation is authorized by the grant
+    # and the task carries the grant provenance to the transport.
+    broker = A2ABroker(
+        resolver=_catalog(),
+        local=LocalTransport(_echo_invoker),
+        delegation_authority=_host_authority(),
+    )
+
+    result = await broker.delegate(
+        from_agent="planner",
+        to="coder",
+        task="write tests",
+        budget=_budget(),
+        user_id="user-1",
+        principal=_principal(),
+        owner_id="user-1",
+        goal_id="goal-1",
+        run_id="run-1",
+        invocation_id="inv-1",
+        scope="scope-1",
+        artifact="write tests",
+    )
+
+    assert result.status == "completed"
+
+
+@pytest.mark.asyncio
+async def test_delegate_under_host_authority_requires_an_authenticated_principal() -> None:
+    broker = A2ABroker(
+        resolver=_catalog(),
+        local=LocalTransport(_echo_invoker),
+        delegation_authority=_host_authority(),
+    )
+
+    with pytest.raises(DelegationRefused, match="requires an authenticated agent principal"):
+        await broker.delegate(
+            from_agent="planner",
+            to="coder",
+            task="write tests",
+            budget=_budget(),
+            user_id="user-1",
+            owner_id="user-1",
+            goal_id="goal-1",
+            run_id="run-1",
+            invocation_id="inv-1",
+            scope="scope-1",
+            artifact="write tests",
+        )
+
+
+@pytest.mark.asyncio
+async def test_delegate_under_host_authority_is_refused_without_a_matching_grant() -> None:
+    broker = A2ABroker(
+        resolver=_catalog(),
+        local=LocalTransport(_echo_invoker),
+        delegation_authority=_host_authority(artifact="a different task"),
+    )
+
+    with pytest.raises(DelegationRefused, match="host delegation refused"):
+        await broker.delegate(
+            from_agent="planner",
+            to="coder",
+            task="write tests",
+            budget=_budget(),
+            user_id="user-1",
+            principal=_principal(),
+            owner_id="user-1",
+            goal_id="goal-1",
+            run_id="run-1",
+            invocation_id="inv-1",
+            scope="scope-1",
+            artifact="write tests",
+        )
+
+
+@pytest.mark.asyncio
 async def test_sub_agent_failure_returns_failed_result() -> None:
     async def _boom(task: A2ATask, budget: DelegationBudget) -> str:
         raise RuntimeError("kaput")
@@ -196,7 +302,7 @@ def _host_grant(
     from datetime import UTC, datetime, timedelta
 
     return DelegationGrant(
-        grant_id="grant-broker-1",
+        grant_ref="grant-broker-1",
         principal_id=principal_id,
         owner_id="owner-1",
         delegating_agent_id="planner",
@@ -292,4 +398,4 @@ async def test_broker_host_authority_grant_carries_effective_subset() -> None:
     )
     assert result.status == "completed"
     assert captured["metadata"]["delegated_actions"] == ["read_file"]
-    assert captured["metadata"]["delegation_grant_id"] == "grant-broker-1"
+    assert captured["metadata"]["delegation_grant_ref"] == "grant-broker-1"

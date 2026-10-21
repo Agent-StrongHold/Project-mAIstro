@@ -18,14 +18,16 @@ from maistro.security.sentinel.delegation import (
     DelegationDecision,
     DelegationGrant,
     DelegationRequest,
-    decide,
+)
+from maistro.security.sentinel.delegation import (
+    _matches as _grant_matches,
 )
 from maistro.sqlite_schema import serialized_schema_upgrade
 
 _SQLITE_SCHEMA = """
 CREATE TABLE IF NOT EXISTS delegation_grants (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    grant_id TEXT NOT NULL,
+    grant_ref TEXT NOT NULL,
     principal_id TEXT NOT NULL,
     owner_id TEXT NOT NULL,
     delegating_agent_id TEXT NOT NULL,
@@ -46,7 +48,7 @@ CREATE TABLE IF NOT EXISTS delegation_grants (
 POSTGRES_DELEGATION_SCHEMA = """
 CREATE TABLE IF NOT EXISTS delegation_grants (
     id SERIAL PRIMARY KEY,
-    grant_id TEXT NOT NULL,
+    grant_ref TEXT NOT NULL,
     principal_id TEXT NOT NULL,
     owner_id TEXT NOT NULL,
     delegating_agent_id TEXT NOT NULL,
@@ -107,12 +109,12 @@ class SqliteDelegationStore:
     async def store(self, grant: DelegationGrant) -> None:
         await self._conn.execute(
             "INSERT INTO delegation_grants "
-            "(grant_id, principal_id, owner_id, delegating_agent_id, target_agent_id, "
+            "(grant_ref, principal_id, owner_id, delegating_agent_id, target_agent_id, "
             "goal_id, run_id, invocation_id, scope, action, actions, artifact, "
             "expires_at, granted_by, provenance) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
-                grant.grant_id,
+                grant.grant_ref,
                 grant.principal_id,
                 grant.owner_id,
                 grant.delegating_agent_id,
@@ -133,7 +135,7 @@ class SqliteDelegationStore:
 
     async def list_valid(self, *, now: datetime) -> list[DelegationGrant]:
         cursor = await self._conn.execute(
-            "SELECT grant_id, principal_id, owner_id, delegating_agent_id, target_agent_id, "
+            "SELECT grant_ref, principal_id, owner_id, delegating_agent_id, target_agent_id, "
             "goal_id, run_id, invocation_id, scope, action, actions, artifact, "
             "expires_at, granted_by, provenance FROM delegation_grants ORDER BY id ASC"
         )
@@ -153,11 +155,11 @@ class PgDelegationStore:
     async def store(self, grant: DelegationGrant) -> None:
         await self._pool.execute(
             "INSERT INTO delegation_grants "
-            "(grant_id, principal_id, owner_id, delegating_agent_id, target_agent_id, "
+            "(grant_ref, principal_id, owner_id, delegating_agent_id, target_agent_id, "
             "goal_id, run_id, invocation_id, scope, action, actions, artifact, "
             "expires_at, granted_by, provenance) "
             "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)",
-            grant.grant_id,
+            grant.grant_ref,
             grant.principal_id,
             grant.owner_id,
             grant.delegating_agent_id,
@@ -176,7 +178,7 @@ class PgDelegationStore:
 
     async def list_valid(self, *, now: datetime) -> list[DelegationGrant]:
         rows = await self._pool.fetch(
-            "SELECT grant_id, principal_id, owner_id, delegating_agent_id, target_agent_id, "
+            "SELECT grant_ref, principal_id, owner_id, delegating_agent_id, target_agent_id, "
             "goal_id, run_id, invocation_id, scope, action, actions, artifact, "
             "expires_at, granted_by, provenance FROM delegation_grants "
             "WHERE expires_at > $1 ORDER BY id ASC",
@@ -202,7 +204,24 @@ class DurableDelegationAuthority:
         await self._store.store(grant)
 
     async def authorize(self, request: DelegationRequest, *, now: datetime) -> DelegationDecision:
-        return decide(await self._store.list_valid(now=now), request, now=now)
+        if request.principal.kind != "agent":
+            return DelegationDecision(False, reason="delegation principal must be an agent")
+        if request.principal.owner != request.owner_id:
+            return DelegationDecision(False, reason="delegation owner does not match principal")
+        for grant in reversed(await self._store.list_valid(now=now)):
+            if now >= grant.expires_at:
+                continue
+            if not _grant_matches(grant, request):
+                continue
+            return DelegationDecision(
+                True,
+                effective_actions=frozenset(request.requested_actions & grant.actions),
+                grant_ref=grant.grant_ref,
+                expires_at=grant.expires_at,
+                granted_by=grant.granted_by,
+                provenance=grant.provenance,
+            )
+        return DelegationDecision(False, reason="no host grant matches this delegation")
 
 
 def _grant_from_row(row: Any) -> DelegationGrant:
@@ -214,7 +233,7 @@ def _grant_from_row(row: Any) -> DelegationGrant:
     if expires_at.tzinfo is None:
         expires_at = expires_at.replace(tzinfo=UTC)
     return DelegationGrant(
-        grant_id=str(values[0]),
+        grant_ref=str(values[0]),
         principal_id=str(values[1]),
         owner_id=str(values[2]),
         delegating_agent_id=str(values[3]),
@@ -232,21 +251,21 @@ def _grant_from_row(row: Any) -> DelegationGrant:
     )
 
 
-async def build_delegation_authority(*, pg_pool: Any, db_pool: Any) -> DelegationAuthority:
+async def build_delegation_authority(*, pg_pool: Any, db_pool: Any) -> Any:
     """Select delegation persistence from the same backend as the other stores."""
     if pg_pool is not None:
-        store = PgDelegationStore(pg_pool)
+        pg_store: Any = PgDelegationStore(pg_pool)
         # The canonical backend's table is created by the store's idempotent
         # DDL, exactly as `_wire_audit_log` does for the audit store: a
         # deployment that has not applied a delegation migration still gets a
         # usable authority, and the first host grant does not raise
         # "relation does not exist" (#845).
-        await store.ensure_schema()
-        return DurableDelegationAuthority(store)
+        await pg_store.ensure_schema()
+        return DurableDelegationAuthority(pg_store)
     if db_pool is not None:
-        store = SqliteDelegationStore(db_pool)
-        await store.ensure_schema()
-        return DurableDelegationAuthority(store)
+        sqlite_store: Any = SqliteDelegationStore(db_pool)
+        await sqlite_store.ensure_schema()
+        return DurableDelegationAuthority(sqlite_store)
     from maistro.security.sentinel.delegation import InMemoryDelegationAuthority
 
     return InMemoryDelegationAuthority()

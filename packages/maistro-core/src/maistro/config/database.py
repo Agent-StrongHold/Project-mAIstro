@@ -129,6 +129,33 @@ def resolve_database_url(env: Mapping[str, str] | None = None) -> str:
     return ""
 
 
+def resolve_migration_target_url(env: Mapping[str, str] | None = None) -> str:
+    """The PostgreSQL URL the alembic chain must run against.
+
+    Migration target and runtime backend are deliberately independent. The
+    alembic chain is postgres-only (JSONB + the `vector` extension), while
+    `DATABASE_URL` may name a sqlite runtime for the container -- the sqlite
+    stores self-schema at wiring time and carry no migration chain. When the
+    runtime URL is not migratable, the migration target falls back to the
+    `DB_*` composition so postgres schema ownership survives a sqlite
+    deployment (#101/#103/#301: campaigns, working memory and backlog history
+    persist across restarts only under the sqlite runtime).
+
+    Behavior is identical to `require_database_url` whenever DATABASE_URL is
+    postgresql -- which is every deployment that has not opted into a sqlite
+    runtime -- so existing callers and tests see no difference.
+    """
+    environ = os.environ if env is None else env
+    runtime = resolve_database_url(environ)
+    if runtime.startswith(_MIGRATABLE_SCHEMES):
+        return runtime
+    if _db_env_is_set(environ):
+        composed = _compose_from_db_env(environ)
+        if composed.startswith(_MIGRATABLE_SCHEMES):
+            return composed
+    return require_database_url(environ)
+
+
 def require_database_url(env: Mapping[str, str] | None = None) -> str:
     """`resolve_database_url`, but a missing or unmigratable database is an error.
 

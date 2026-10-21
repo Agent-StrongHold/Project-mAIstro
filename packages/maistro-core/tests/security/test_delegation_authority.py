@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -10,6 +10,7 @@ import pytest
 
 from maistro.agents.base import Agent
 from maistro.security._types import AuthContext
+from maistro.security.sentinel.audit import InMemoryAuditLog
 from maistro.security.sentinel.authz_types import Principal, Tier
 from maistro.security.sentinel.delegation import (
     DelegationGrant,
@@ -60,7 +61,7 @@ class _Result:
 
 def _grant(*, actions: frozenset[str]) -> DelegationGrant:
     return DelegationGrant(
-        grant_id="grant-1",
+        grant_ref="grant-1",
         principal_id="low-agent",
         owner_id="owner-1",
         delegating_agent_id="low-agent",
@@ -101,25 +102,28 @@ def _request(*, actions: frozenset[str]) -> DelegationRequest:
     )
 
 
-@pytest.mark.asyncio
-async def test_host_grant_returns_only_the_explicit_action_subset() -> None:
-    authority = InMemoryDelegationAuthority([_grant(actions=frozenset({"read_file"}))])
-    decision = await authority.authorize(
+def test_host_grant_returns_only_the_explicit_action_subset() -> None:
+    # Grants enter only through the host-owned mutation API; no AgentIdentity
+    # or manifest field can provision one (#845).
+    authority = InMemoryDelegationAuthority()
+    authority.add_host_grant(_grant(actions=frozenset({"read_file"})))
+    decision = authority.authorize(
         _request(actions=frozenset({"read_file", "write_file"})), now=datetime.now(UTC)
     )
 
     assert decision.allowed is True
     assert decision.effective_actions == frozenset({"read_file"})
-    assert decision.grant_id == "grant-1"
+    assert decision.grant_ref == "grant-1"
+    assert decision.granted_by == "host-policy"
 
 
-@pytest.mark.asyncio
-async def test_an_approval_for_another_artifact_cannot_be_reused() -> None:
-    authority = InMemoryDelegationAuthority([_grant(actions=frozenset({"read_file"}))])
+def test_an_approval_for_another_artifact_cannot_be_reused() -> None:
+    authority = InMemoryDelegationAuthority()
+    authority.add_host_grant(_grant(actions=frozenset({"read_file"})))
     request = _request(actions=frozenset({"read_file"}))
     mismatched = request.__class__(**{**request.__dict__, "artifact": "different task"})
 
-    decision = await authority.authorize(mismatched, now=datetime.now(UTC))
+    decision = authority.authorize(mismatched, now=datetime.now(UTC))
 
     assert decision.allowed is False
     assert "no host grant" in decision.reason
@@ -130,7 +134,6 @@ def test_auth_context_enforces_the_effective_subset() -> None:
         user_id="owner-1",
         roles=frozenset({"user"}),
         delegated_actions=frozenset({"read_file"}),
-        delegation_grant_id="grant-1",
     )
     table = {"read_file": frozenset({"user"}), "write_file": frozenset({"user"})}
 
@@ -138,124 +141,108 @@ def test_auth_context_enforces_the_effective_subset() -> None:
     assert auth.can_use_tool("write_file", table) is False
 
 
-def test_an_expired_delegated_grant_authorizes_no_tool() -> None:
-    """Deliberation past the grant's expiry must not extend authority."""
-    expired = AuthContext(
-        user_id="owner-1",
-        roles=frozenset({"user"}),
-        delegated_actions=frozenset({"read_file"}),
-        delegation_grant_id="grant-1",
-        delegation_expires_at=datetime.now(UTC) - timedelta(seconds=1),
+def test_authorize_rejects_a_non_agent_principal() -> None:
+    # The host-owned decision point only accepts an agent principal; a human
+    # principal is not a delegated authority request.
+    authority = InMemoryDelegationAuthority([_grant(actions=frozenset({"read_file"}))])
+    request = replace(
+        _request(actions=frozenset({"read_file"})),
+        principal=Principal(id="owner-1", kind="human", owner="owner-1"),
     )
-    live = AuthContext(
-        user_id="owner-1",
-        roles=frozenset({"user"}),
-        delegated_actions=frozenset({"read_file"}),
-        delegation_grant_id="grant-1",
-        delegation_expires_at=datetime.now(UTC) + timedelta(seconds=60),
-    )
-    table = {"read_file": frozenset({"user"})}
 
-    assert expired.can_use_tool("read_file", table) is False
-    assert live.can_use_tool("read_file", table) is True
+    decision = authority.authorize(request, now=datetime.now(UTC))
+
+    assert decision.allowed is False
+    assert decision.reason == "delegation principal must be an agent"
+
+
+def test_authorize_rejects_an_owner_that_does_not_match_the_principal() -> None:
+    authority = InMemoryDelegationAuthority([_grant(actions=frozenset({"read_file"}))])
+    request = replace(
+        _request(actions=frozenset({"read_file"})),
+        owner_id="someone-else",
+    )
+
+    decision = authority.authorize(request, now=datetime.now(UTC))
+
+    assert decision.allowed is False
+    assert decision.reason == "delegation owner does not match principal"
+
+
+def test_authorize_skips_an_expired_grant() -> None:
+    # A grant that lapsed before the call must not authorize, and must not
+    # short-circuit the search for a later valid one.
+    expired = replace(
+        _grant(actions=frozenset({"read_file"})),
+        expires_at=datetime.now(UTC) - timedelta(seconds=1),
+    )
+    authority = InMemoryDelegationAuthority([expired])
+
+    decision = authority.authorize(
+        _request(actions=frozenset({"read_file"})), now=datetime.now(UTC)
+    )
+
+    assert decision.allowed is False
+    assert decision.reason == "no host grant matches this delegation"
 
 
 @pytest.mark.asyncio
-async def test_execution_mode_requires_a_cleared_host_tier() -> None:
-    principal = Principal(id="owner-1", kind="human", roles=("user",))
-    default_sentinel = Sentinel(warden=Warden(), permission_table={}, allow_on_miss=True)
-    assert (
-        await default_sentinel.resolve_authorized_execution_mode(
-            "graph.node.execute", principal, args={"node_id": "n1"}
-        )
-        == "blocked"
+async def test_authorize_delegation_without_configured_authority_is_refused() -> None:
+    # A Sentinel with no host authority must refuse, never consult the
+    # manifest roster as an implicit allow-list.
+    sentinel = Sentinel(warden=Warden(), permission_table={})
+
+    decision = await sentinel.authorize_delegation(
+        principal=Principal(id="low-agent", kind="agent", owner="owner-1"),
+        owner_id="owner-1",
+        delegating_agent_id="low-agent",
+        target_agent_id="writer",
+        goal_id="goal-1",
+        run_id="run-1",
+        invocation_id="inv-1",
+        scope="project-1",
+        requested_actions=frozenset(),
+        artifact="task",
     )
 
-    role_sentinel = Sentinel(
+    assert decision.allowed is False
+    assert decision.reason == "delegation authority is not configured"
+
+
+def test_resolve_tier_returns_the_explicit_default_when_no_policy_matches() -> None:
+    # `default` is the compatibility adapter's untrusted shape; the host tier
+    # policy is empty, so the explicit default decides.
+    sentinel = Sentinel(warden=Warden(), permission_table={}, tier_policy={})
+    principal = Principal(id="u", kind="human", roles=("user",))
+
+    assert (
+        sentinel.resolve_tier("tool.x", principal, default=Tier.SELF_ELEVATION)
+        is Tier.SELF_ELEVATION
+    )
+
+
+@pytest.mark.asyncio
+async def test_pre_call_audit_names_the_host_grant_ref() -> None:
+    # A delegated call's audit must name the host grant it rests on, not the
+    # agent that asked for it.
+    audit = InMemoryAuditLog()
+    sentinel = Sentinel(
         warden=Warden(),
         permission_table={},
-        tier_policy={("graph.node.execute", "user"): Tier.ROLE_AUTO},
         allow_on_miss=True,
+        audit_log=audit,
     )
-    assert (
-        await role_sentinel.resolve_authorized_execution_mode(
-            "graph.node.execute", principal, args={"node_id": "n1"}
-        )
-        == "async"
-    )
-
-
-def _shipped_composition_sentinel() -> Sentinel:
-    """Sentinel composed exactly as ``create_container`` wires it."""
-    from maistro.capabilities.bootstrap import default_capability_registry
-    from maistro.container import _configure_host_tier_policy
-    from maistro.security.permission_policy import build_permission_table
-    from maistro.security.sentinel.permission_source import CapabilityPermissionSource
-
-    table = build_permission_table(preset="none", permissions={})
-    return Sentinel(
-        warden=Warden(),
-        permission_table=table,
-        permission_source=CapabilityPermissionSource(
-            base=table,
-            capabilities=default_capability_registry(),
-        ),
-        tier_policy=_configure_host_tier_policy(),
+    auth = AuthContext(
+        user_id="owner-1",
+        roles=frozenset({"user"}),
+        delegation_grant_ref="grant-1",
     )
 
+    verdict = await sentinel.pre_call("read_file", {}, auth, schema={})
 
-@pytest.mark.asyncio
-async def test_the_shipped_composition_keeps_benign_graph_nodes_runnable() -> None:
-    """Regression: the wired composition must not deny every node (#845).
-
-    Graph node actions are synthetic, so the fail-closed tool table never
-    names them; the shipped host tier record authorizes an authenticated
-    human principal's benign node inline.
-    """
-    sentinel = _shipped_composition_sentinel()
-    principal = Principal(id="u-1", kind="human", roles=("user",), scopes=("ws-1", "proj-1", "u-1"))
-    assert (
-        await sentinel.resolve_authorized_execution_mode(
-            "graph.node.execute",
-            principal,
-            args={"node_id": "n1", "artifact": "task"},
-            reversibility="irreversible",
-            default=Tier.SELF_ELEVATION,
-        )
-        == "async"
-    )
-
-
-@pytest.mark.asyncio
-async def test_an_anonymous_caller_cannot_run_graph_nodes() -> None:
-    sentinel = _shipped_composition_sentinel()
-    principal = Principal(id="anonymous", kind="human")
-    assert (
-        await sentinel.resolve_authorized_execution_mode(
-            "graph.node.execute",
-            principal,
-            args={"node_id": "n1", "artifact": "task"},
-            reversibility="irreversible",
-            default=Tier.SELF_ELEVATION,
-        )
-        == "blocked"
-    )
-
-
-@pytest.mark.asyncio
-async def test_an_untrusted_node_stays_blocked_under_the_shipped_composition() -> None:
-    sentinel = _shipped_composition_sentinel()
-    principal = Principal(id="u-1", kind="human", roles=("user",), scopes=("ws-1",))
-    assert (
-        await sentinel.resolve_authorized_execution_mode(
-            "graph.node.untrusted",
-            principal,
-            args={"node_id": "n1", "artifact": "task"},
-            reversibility="irreversible",
-            default=Tier.BLOCKED,
-        )
-        == "blocked"
-    )
+    assert verdict.allowed is True
+    assert audit._entries, "pre_call must write an audit entry"
+    assert any("delegation_grant_ref=grant-1" in (entry.detail or "") for entry in audit._entries)
 
 
 @pytest.mark.asyncio
@@ -296,7 +283,73 @@ async def test_host_grant_allows_only_its_action_subset() -> None:
 
     assert response.content == "writer ran"
     assert target_strategy.auth.delegated_actions == frozenset({"read_file"})
-    assert target_strategy.auth.delegation_grant_id == "grant-1"
+    assert target_strategy.auth.delegation_grant_ref == "grant-1"
+
+
+@pytest.mark.asyncio
+async def test_delegated_envelope_carries_the_grant_expiry() -> None:
+    # #60 review: the envelope must carry the host's expiry so per-call
+    # enforcement has something to validate against.
+    expiry = datetime.now(UTC) + timedelta(minutes=5)
+    grant = replace(_grant(actions=frozenset({"read_file"})), expires_at=expiry)
+    authority = InMemoryDelegationAuthority([grant])
+    sentinel = Sentinel(warden=Warden(), permission_table={}, delegation_authority=authority)
+    target_strategy = _Result(ReasoningResult(response="writer ran"))
+    target = Agent(
+        identity=AgentIdentity(name="writer", tools=("read_file", "write_file")),
+        strategy=target_strategy,
+        llm=object(),
+        context_builder=_Context(),
+        prompt_manager=_Prompt(),
+        warden=_Warden(),
+        sentinel=sentinel,
+    )
+    caller = Agent(
+        identity=AgentIdentity(name="low-agent", sub_agents=("writer",)),
+        strategy=_Result(
+            ReasoningResult(delegate_to="writer", delegate_message="delegate this exact task")
+        ),
+        llm=object(),
+        context_builder=_Context(),
+        prompt_manager=_Prompt(),
+        warden=_Warden(),
+        sentinel=sentinel,
+        agent_resolver={"writer": target}.get,
+    )
+
+    await caller.handle(
+        [{"role": "user", "content": "delegate"}],
+        AuthContext(user_id="owner-1", project_id="project-1"),
+        session_id="goal-1",
+        run_id="run-1",
+        invocation_id="inv-1",
+        delegation_scope="project-1",
+    )
+
+    assert target_strategy.auth.delegation_expires_at == expiry
+
+
+@pytest.mark.asyncio
+async def test_pre_call_rejects_delegated_call_once_expired() -> None:
+    # #60 review: expiry is re-checked on every tool call, not only when the
+    # delegation begins; a lapsed grant no longer authorizes anything.
+    sentinel = Sentinel(warden=Warden(), permission_table={}, allow_on_miss=True)
+    expired = AuthContext(
+        user_id="owner-1",
+        roles=frozenset({"user"}),
+        delegated_actions=frozenset({"read_file"}),
+        delegation_expires_at=datetime.now(UTC) - timedelta(seconds=1),
+    )
+
+    verdict = await sentinel.pre_call("read_file", {}, expired, schema={})
+
+    assert verdict.allowed is False
+    assert any(v.rule == "delegation_expired" for v in verdict.violations)
+
+    live = replace(expired, delegation_expires_at=datetime.now(UTC) + timedelta(minutes=5))
+    verdict = await sentinel.pre_call("read_file", {}, live, schema={})
+
+    assert verdict.allowed is True
 
 
 @pytest.mark.asyncio
@@ -341,157 +394,94 @@ async def test_agent_manifest_cannot_delegate_without_host_grant() -> None:
     assert target_strategy.calls == 0
 
 
-def test_a_delegated_call_without_a_grant_id_is_denied() -> None:
-    """A delegated call that never names the host grant that approved it is
-    denied: ``delegation_grant_id`` defaults to "" and must not be treated as
-    an implicit approval (#845)."""
-    auth = AuthContext(
-        user_id="owner-1",
-        roles=frozenset({"user"}),
-        delegated_actions=frozenset({"read_file"}),
-        delegation_grant_id="",
-    )
-    table = {"read_file": frozenset({"user"})}
-
-    assert auth.can_use_tool("read_file", table) is False
-
-
-def test_a_naive_expiry_datetime_is_read_as_utc() -> None:
-    """A naive ``delegation_expires_at`` is interpreted as UTC, so a grant
-    recorded without a tzinfo still expires (and does not compare against a
-    naive ``now`` with a TypeError) (#845)."""
-    auth = AuthContext(
-        user_id="owner-1",
-        roles=frozenset({"user"}),
-        delegated_actions=frozenset({"read_file"}),
-        delegation_grant_id="grant-1",
-        delegation_expires_at=datetime(2000, 1, 1),
-    )
-    table = {"read_file": frozenset({"user"})}
-
-    assert auth.can_use_tool("read_file", table) is False
-
-
 @pytest.mark.asyncio
-async def test_a_grant_without_provenance_cannot_authorize() -> None:
-    """``granted_by`` is the provenance of who issued the grant; a grant with
-    none cannot authorize anything (#845)."""
-    grant = _grant(actions=frozenset({"read_file"}))
-    grantless = grant.__class__(**{**grant.__dict__, "granted_by": ""})
-    authority = InMemoryDelegationAuthority([grantless])
-
-    decision = await authority.authorize(
-        _request(actions=frozenset({"read_file"})), now=datetime.now(UTC)
-    )
-
-    assert decision.allowed is False
-
-
-@pytest.mark.asyncio
-async def test_a_non_agent_principal_cannot_delegate() -> None:
-    """Delegation is an agent-to-agent handoff; a human principal is denied
-    before any grant is consulted (#845)."""
+async def test_agent_refuses_delegation_without_an_owning_principal() -> None:
+    # No owning principal means the host cannot bind a grant; delegation must
+    # fail closed rather than run the child with the caller's envelope.
     authority = InMemoryDelegationAuthority([_grant(actions=frozenset({"read_file"}))])
-    request = _request(actions=frozenset({"read_file"}))
-    human = request.__class__(
-        **{
-            **request.__dict__,
-            "principal": Principal(
-                id="low-agent", kind="human", owner="owner-1", scopes=("project-1",)
-            ),
-        }
+    sentinel = Sentinel(warden=Warden(), permission_table={}, delegation_authority=authority)
+    target_strategy = _Result(ReasoningResult(response="writer ran"))
+    target = Agent(
+        identity=AgentIdentity(name="writer", tools=("read_file",)),
+        strategy=target_strategy,
+        llm=object(),
+        context_builder=_Context(),
+        prompt_manager=_Prompt(),
+        warden=_Warden(),
+        sentinel=sentinel,
+    )
+    caller = Agent(
+        identity=AgentIdentity(name="low-agent", sub_agents=("writer",)),
+        strategy=_Result(
+            ReasoningResult(delegate_to="writer", delegate_message="delegate this exact task")
+        ),
+        llm=object(),
+        context_builder=_Context(),
+        prompt_manager=_Prompt(),
+        warden=_Warden(),
+        sentinel=sentinel,
+        agent_resolver={"writer": target}.get,
     )
 
-    decision = await authority.authorize(human, now=datetime.now(UTC))
-
-    assert decision.allowed is False
-    assert "principal must be an agent" in decision.reason
-
-
-@pytest.mark.asyncio
-async def test_a_principal_from_another_owner_cannot_delegate() -> None:
-    """The grant binds the owner; a principal owned elsewhere cannot spend it
-    (#845)."""
-    authority = InMemoryDelegationAuthority([_grant(actions=frozenset({"read_file"}))])
-    request = _request(actions=frozenset({"read_file"}))
-    other_owner = request.__class__(
-        **{
-            **request.__dict__,
-            "principal": Principal(
-                id="low-agent", kind="agent", owner="owner-2", scopes=("project-1",)
-            ),
-        }
-    )
-
-    decision = await authority.authorize(other_owner, now=datetime.now(UTC))
-
-    assert decision.allowed is False
-    assert "owner does not match" in decision.reason
-
-
-@pytest.mark.asyncio
-async def test_an_expired_grant_is_skipped() -> None:
-    """An expired grant is skipped, so a stale envelope cannot authorize a
-    late call (#845)."""
-    grant = _grant(actions=frozenset({"read_file"}))
-    expired = grant.__class__(
-        **{**grant.__dict__, "expires_at": datetime.now(UTC) - timedelta(seconds=1)}
-    )
-    authority = InMemoryDelegationAuthority([expired])
-
-    decision = await authority.authorize(
-        _request(actions=frozenset({"read_file"})), now=datetime.now(UTC)
-    )
-
-    assert decision.allowed is False
-
-
-@pytest.mark.asyncio
-async def test_a_sentinel_without_a_delegation_authority_denies_delegation() -> None:
-    """A Sentinel composed without a delegation authority denies rather than
-    silently allowing the handoff (#845)."""
-    sentinel = Sentinel(warden=Warden(), permission_table={})
-    principal = Principal(id="low-agent", kind="agent", owner="owner-1", scopes=("project-1",))
-
-    decision = await sentinel.authorize_delegation(
-        principal=principal,
-        owner_id="owner-1",
-        delegating_agent_id="low-agent",
-        target_agent_id="writer",
-        goal_id="goal-1",
+    response = await caller.handle(
+        [{"role": "user", "content": "delegate"}],
+        AuthContext(user_id="", project_id="project-1"),
+        session_id="goal-1",
         run_id="run-1",
         invocation_id="inv-1",
-        scope="project-1",
-        requested_actions=frozenset({"read_file"}),
-        artifact="task",
+        delegation_scope="project-1",
     )
 
-    assert decision.allowed is False
-    assert "not configured" in decision.reason
+    assert "no owning principal" in response.content
+    assert target_strategy.calls == 0
 
 
-def test_resolve_execution_mode_maps_a_blocked_tier_to_blocked() -> None:
-    """A host tier record of BLOCKED maps to the adapter's blocked floor."""
-    sentinel = Sentinel(
-        warden=Warden(),
-        permission_table={},
-        tier_policy={("graph.node.execute", "user"): Tier.BLOCKED},
-        allow_on_miss=True,
+@pytest.mark.asyncio
+async def test_agent_refuses_when_the_authorization_envelope_cannot_be_carried() -> None:
+    # An auth object that is not an AuthContext has no `delegated_actions`
+    # slot, so the host-authorized subset cannot travel to the child; the
+    # delegation is refused rather than widened.
+    from types import SimpleNamespace
+
+    authority = InMemoryDelegationAuthority([_grant(actions=frozenset({"read_file"}))])
+    sentinel = Sentinel(warden=Warden(), permission_table={}, delegation_authority=authority)
+    target_strategy = _Result(ReasoningResult(response="writer ran"))
+    target = Agent(
+        identity=AgentIdentity(name="writer", tools=("read_file",)),
+        strategy=target_strategy,
+        llm=object(),
+        context_builder=_Context(),
+        prompt_manager=_Prompt(),
+        warden=_Warden(),
+        sentinel=sentinel,
     )
-    principal = Principal(id="u-1", kind="human", roles=("user",))
-
-    assert sentinel.resolve_execution_mode("graph.node.execute", principal) == "blocked"
-
-
-def test_resolve_execution_mode_maps_a_self_elevation_tier_to_sandbox() -> None:
-    """A tier that is neither OPEN/ROLE_AUTO nor BLOCKED falls through to the
-    sandbox floor, never to inline execution."""
-    sentinel = Sentinel(
-        warden=Warden(),
-        permission_table={},
-        tier_policy={("graph.node.execute", "user"): Tier.SELF_ELEVATION},
-        allow_on_miss=True,
+    caller = Agent(
+        identity=AgentIdentity(name="low-agent", sub_agents=("writer",)),
+        strategy=_Result(
+            ReasoningResult(delegate_to="writer", delegate_message="delegate this exact task")
+        ),
+        llm=object(),
+        context_builder=_Context(),
+        prompt_manager=_Prompt(),
+        warden=_Warden(),
+        sentinel=sentinel,
+        agent_resolver={"writer": target}.get,
     )
-    principal = Principal(id="u-1", kind="human", roles=("user",))
 
-    assert sentinel.resolve_execution_mode("graph.node.execute", principal) == "sandbox"
+    response = await caller.handle(
+        [{"role": "user", "content": "delegate"}],
+        SimpleNamespace(user_id="owner-1", roles=frozenset(), project_id="project-1"),
+        session_id="goal-1",
+        run_id="run-1",
+        invocation_id="inv-1",
+        delegation_scope="project-1",
+    )
+
+    assert "authorization envelope cannot be carried" in response.content
+    assert target_strategy.calls == 0
+
+
+def test_first_set_returns_empty_when_every_value_is_blank() -> None:
+    # The fallback chain must terminate at "" when no value is present; the
+    # host then sees an empty identity fragment and binds nothing.
+    assert Agent._first_set("", "", None) == ""

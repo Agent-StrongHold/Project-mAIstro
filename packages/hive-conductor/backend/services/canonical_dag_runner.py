@@ -44,25 +44,26 @@ def _host_principal_roles(user_id: str) -> tuple[str, ...]:
     the deployment's fail-closed permission table (#1165), so the principal a
     node presents must carry the roles the host actually assigned -- resolved
     here, server-side, from the user record keyed by the authenticated user
-    id. Never a request field. Unknown user (or a store that cannot be read)
-    resolves to no roles, and the fail-closed gate denies.
+    id. Never a request field: a caller-declared role would be exactly the
+    request-declared authority #845 forbids. Unknown user (or a store that
+    cannot be read) resolves to no roles, and the fail-closed gate denies --
+    a standalone boot without a user store stays deny-by-default.
     """
     if not user_id:
         return ()
     try:
-        import stores as _stores
+        from services import registration_policy
 
-        user = _stores.users[user_id]
+        role = registration_policy.host_user_role(user_id)
     except Exception:  # pragma: no cover - store unavailable in isolation
         return ()
-    role = getattr(user, "role", None)
-    if not role:
-        return ()
-    roles = [str(role)]
+    roles: list[str] = []
+    if role:
+        roles.append(str(role))
     # Every authenticated human carries the canonical base role, so the
     # shipped host tier record (armed for "user") applies to admins too
     # without widening the tier policy to every stored role (#845).
-    if "user" not in roles:
+    if roles and "user" not in roles:
         roles.append("user")
     return tuple(roles)
 
@@ -465,6 +466,36 @@ def _resolver(
     return resolve
 
 
+def _host_execution_authority(container: Any) -> tuple[Any, str | None]:
+    """Pair the Sentinel with the host mode Sentinel actually produced.
+
+    ``host_mode`` is a Sentinel verdict, never a default. A container that
+    wires the canonical stores but no Sentinel yields ``(None, None)`` so
+    node classification fails closed to sandbox (untrusted nodes block)
+    instead of inheriting an authorized inline mode Sentinel never granted.
+    """
+
+    if container is None:
+        # No container at all: standalone / test execution keeps the historical
+        # inline floor. A container that wires canonical stores but no Sentinel
+        # is the fail-closed case below.
+        return None, "async"
+    sentinel = getattr(container, "sentinel", None)
+    if sentinel is not None:
+        return sentinel, "async"
+    # A container that carries the canonical stores but no Sentinel never
+    # received host authorization: fail closed to (None, None) so node
+    # classification lands on the sandbox floor instead of an unearned inline
+    # mode. Containers without the spine (test doubles, partial fakes) keep
+    # the compatibility inline floor.
+    if (
+        getattr(container, "run_store", None) is not None
+        or getattr(container, "graph_run_store", None) is not None
+    ):
+        return None, None
+    return None, "async"
+
+
 def _recovery_resolver(run: Run):
     """Rebuild one legacy-node resolver entirely from durable canonical Run facts."""
     graph = run.graph.materialize()
@@ -482,6 +513,7 @@ def _recovery_resolver(run: Run):
         raise ValueError(f"Run {run.run_id!r} has invalid legacy execution_mode {execution_mode!r}")
     legacy_dag_id = str(graph.metadata.get("legacy_dag_id") or graph.graph_id)
     container = _container()
+    sentinel, host_mode = _host_execution_authority(container)
     return _resolver(
         raw_by_id,
         task_desc=graph.description or graph.name,
@@ -496,11 +528,11 @@ def _recovery_resolver(run: Run):
         execution_mode=execution_mode,
         on_response=None,
         llm_builder=None,
-        sentinel=getattr(container, "sentinel", None),
-        host_mode="sandbox",
-        principal_roles=_host_principal_roles(run.actor_principal_id or ""),
         effect_context=(getattr(container, "capability_effects", None) if container else None),
         governed_runtime=dag_node_runtime(container),
+        sentinel=sentinel,
+        host_mode=host_mode,
+        principal_roles=_host_principal_roles(run.actor_principal_id or ""),
     )
 
 
@@ -653,6 +685,7 @@ async def execute_dag(
     )
     container = _container()
     require_graph_execution_spine(container)
+    sentinel, host_mode = _host_execution_authority(container)
     canonical_run_store = container.run_store
     graph = graph_from_legacy_dag(
         dag_data,
@@ -707,13 +740,8 @@ async def execute_dag(
             progress=on_event,
             effect_context=(getattr(container, "capability_effects", None) if container else None),
             governed_runtime=dag_node_runtime(container),
-            # Execution-tier authority (#845) comes from the host-owned
-            # Sentinel on the live Container; the request's declared tier is
-            # metadata only. "sandbox" is the fail-closed default for
-            # sentinel-less compatibility callers; untrusted nodes still
-            # fail closed.
-            sentinel=(getattr(container, "sentinel", None) if container else None),
-            host_mode="sandbox",
+            sentinel=sentinel,
+            host_mode=host_mode,
             principal_roles=_host_principal_roles(user_id),
         )
 

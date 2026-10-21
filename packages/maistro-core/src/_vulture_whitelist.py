@@ -27,6 +27,7 @@ from maistro.cli._backlog import cutover as backlog_cutover_command
 from maistro.cli._backlog import import_cmd as backlog_import_command
 from maistro.cli._backlog import revert as backlog_revert_command
 from maistro.cli._connectors import connectors_describe, connectors_verify
+from maistro.cli._extension_authoring import extension_new
 from maistro.cli._extensions import (
     extensions_certify,
     extensions_compat,
@@ -67,6 +68,13 @@ from maistro.extensions.metering import (
     ExtensionUsageEvent,
 )
 from maistro.extensions.packs import InstallablePackRegistry
+from maistro.extensions.quarantine import (
+    ActorKind,
+    AdmissionDecision,
+    ExtensionGovernanceService,
+    GovernanceDecision,
+    InFlightDisposition,
+)
 from maistro.extensions.resolution import LockState
 from maistro.extensions.sqlite_health_store import SqliteExtensionHealthStore
 from maistro.extensions.sqlite_store import SqliteExtensionInstallStore
@@ -445,6 +453,7 @@ _VULTURE_WHITELIST = (
     ExtensionInstallStore.all_installs,
     InMemoryExtensionInstallStore.all_installs,
     SqliteExtensionInstallStore.all_installs,
+    extension_new,
     extensions_history,
     extensions_preflight,
     extensions_show,
@@ -609,6 +618,26 @@ _VULTURE_WHITELIST = (
     # (packages/maistro-core/tests/extensions/test_effective_authority.py) — the
     # same contract-ships-first posture as the seams above.
     EffectiveAuthority.with_execution_context,
+    # Extension quarantine/suspension (M9-G4, #972). The governance service is
+    # the single admission gate and the only writer of suspension state; hosts
+    # call it from their invocation seams and consume decisions
+    # (`AdmissionDecision.governing_state`), leases, and the TERMINATE
+    # disposition policy; the EXTENSION actor kind exists to be refused. Its
+    # in-tree callers are the quarantine suite
+    # (packages/maistro-core/tests/extensions/test_extension_quarantine.py)
+    # until host wiring lands — the same contract-ships-first posture.
+    ExtensionGovernanceService.begin_invocation,
+    ExtensionGovernanceService.finish_invocation,
+    ExtensionGovernanceService.disable_version,
+    ExtensionGovernanceService.quarantine_package,
+    ExtensionGovernanceService.quarantine_publisher,
+    ExtensionGovernanceService.re_enable_version,
+    ExtensionGovernanceService.re_enable_package,
+    ExtensionGovernanceService.re_enable_publisher,
+    AdmissionDecision.governing_state,
+    GovernanceDecision.suspended,
+    ActorKind.EXTENSION,
+    InFlightDisposition.TERMINATE,
     # Strike-tracker admin verb (M3 lockout ladder, #134). The protocol
     # (maistro.protocols.strikes) deliberately keeps `enable` off the DI seam:
     # it "exist[s] on the in-memory implementation and [is] admin surface

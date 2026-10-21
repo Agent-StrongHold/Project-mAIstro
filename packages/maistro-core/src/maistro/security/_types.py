@@ -8,7 +8,7 @@ both durable audit stores exchange the same record shape.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import datetime
 from enum import StrEnum
 from typing import Any, Protocol, runtime_checkable
 
@@ -39,9 +39,14 @@ class AuthContext:
     # A delegated invocation carries the host-authorized subset separately
     # from the owner's roles. ``None`` means this is not a delegated call.
     delegated_actions: frozenset[str] | None = None
-    delegation_grant_id: str = ""
-    # When the host grant expires. A delegated call evaluated after this
-    # instant is denied, so deliberation delay cannot extend authority (#845).
+    # The host grant reference the delegated envelope was issued from. It is
+    # recorded on the call audit so a delegated action names the decision it
+    # rests on, not just the principal it runs as.
+    delegation_grant_ref: str = ""
+    # The expiry the host stamped on the delegation decision. Carried so
+    # authority is re-checked on every tool call, not only when the
+    # delegation begins: a grant that lapses mid-run must stop authorizing.
+    # ``None`` means this is not a delegated call (or the host set no expiry).
     delegation_expires_at: datetime | None = None
 
     def can_use_tool(self, tool_name: str, permission_table: PermissionTable) -> bool:
@@ -54,21 +59,8 @@ class AuthContext:
         explicit ``Sentinel(allow_on_miss=True)`` construction, intended for
         non-production/test/demo wiring, and no configuration surface arms it.
         """
-        if self.delegated_actions is not None:
-            # A delegated call must carry the host grant that authorized the
-            # subset; an absent grant id can never satisfy approval (#845).
-            if not self.delegation_grant_id:
-                return False
-            if tool_name not in self.delegated_actions:
-                return False
-            # An expired grant authorizes nothing, even mid-run (#845 review).
-            if self.delegation_expires_at is not None:
-                now = datetime.now(UTC)
-                expires_at = self.delegation_expires_at
-                if expires_at.tzinfo is None:
-                    expires_at = expires_at.replace(tzinfo=UTC)
-                if now >= expires_at:
-                    return False
+        if self.delegated_actions is not None and tool_name not in self.delegated_actions:
+            return False
         allowed_roles = permission_table.get(tool_name)
         if allowed_roles is None:
             return False

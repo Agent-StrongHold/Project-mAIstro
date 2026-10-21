@@ -181,12 +181,16 @@ def _install_canonical_spine(monkeypatch: pytest.MonkeyPatch, canonical: Any) ->
     `services.engine.get_engine()`. A wired deployment composes them from the
     same Container, and so does this suite.
     """
-    import datetime as _dt
-
     import services.canonical_dag_runner as runner
     import services.engine as engine_mod
-    import stores as _stores
     from services.workspace_authority import canonical_store_for_tests
+
+    workspaces = canonical_store_for_tests()
+    projects = workspaces.project_store
+
+    import datetime as _dt
+
+    import stores as _stores
 
     _stores.users[_USER_ID] = _stores.users._model_class(
         id=_USER_ID,
@@ -198,32 +202,30 @@ def _install_canonical_spine(monkeypatch: pytest.MonkeyPatch, canonical: Any) ->
         created_at=_dt.datetime.now(_dt.UTC),
     )
 
-    workspaces = canonical_store_for_tests()
-    projects = workspaces.project_store
-
     from maistro.capabilities.bootstrap import default_capability_registry
-    from maistro.container import _configure_host_tier_policy
     from maistro.security.permission_policy import build_permission_table
     from maistro.security.sentinel.delegation import InMemoryDelegationAuthority
     from maistro.security.sentinel.permission_source import CapabilityPermissionSource
     from maistro.security.sentinel.policy import Sentinel
     from maistro.security.warden.detector import Warden
 
-    _tbl = build_permission_table(preset="none", permissions={})
-    _sentinel = Sentinel(
+    _tbl = build_permission_table(
+        preset="none", permissions={"graph.node.execute": ["admin", "user"]}
+    )
+    sentinel = Sentinel(
         warden=Warden(),
         permission_table=_tbl,
         permission_source=CapabilityPermissionSource(
             base=_tbl, capabilities=default_capability_registry()
         ),
-        tier_policy=_configure_host_tier_policy(),
+        tier_policy={},
         delegation_authority=InMemoryDelegationAuthority(),
     )
 
     container = SimpleNamespace(
         run_store=canonical,
         graph_run_store=CanonicalDurableRunStore(canonical, InMemoryGraphContinuationStore()),
-        sentinel=_sentinel,
+        sentinel=sentinel,
     )
     monkeypatch.setattr(runner, "_container", lambda: container)
     reader = ScopedRunReader(canonical, workspaces, projects)
@@ -515,37 +517,36 @@ class TestTheAdmissionSinkItself:
     ) -> dict[str, Any]:
         import datetime as _dt
 
+        import services.canonical_dag_runner as runner
         import stores as _stores
 
-        if _USER_ID not in _stores.users:
-            _stores.users[_USER_ID] = _stores.users._model_class(
-                id=_USER_ID,
-                username=_USER_ID,
-                password_hash="unused",
-                role="user",
-                is_active=True,
-                permissions=[],
-                created_at=_dt.datetime.now(_dt.UTC),
-            )
-
-        import services.canonical_dag_runner as runner
+        _stores.users[_USER_ID] = _stores.users._model_class(
+            id=_USER_ID,
+            username=_USER_ID,
+            password_hash="unused",
+            role="user",
+            is_active=True,
+            permissions=[],
+            created_at=_dt.datetime.now(_dt.UTC),
+        )
 
         from maistro.capabilities.bootstrap import default_capability_registry
-        from maistro.container import _configure_host_tier_policy
         from maistro.security.permission_policy import build_permission_table
         from maistro.security.sentinel.delegation import InMemoryDelegationAuthority
         from maistro.security.sentinel.permission_source import CapabilityPermissionSource
         from maistro.security.sentinel.policy import Sentinel
         from maistro.security.warden.detector import Warden
 
-        _tbl = build_permission_table(preset="none", permissions={})
-        _sentinel = Sentinel(
+        _tbl = build_permission_table(
+            preset="none", permissions={"graph.node.execute": ["admin", "user"]}
+        )
+        sentinel = Sentinel(
             warden=Warden(),
             permission_table=_tbl,
             permission_source=CapabilityPermissionSource(
                 base=_tbl, capabilities=default_capability_registry()
             ),
-            tier_policy=_configure_host_tier_policy(),
+            tier_policy={},
             delegation_authority=InMemoryDelegationAuthority(),
         )
 
@@ -556,7 +557,7 @@ class TestTheAdmissionSinkItself:
                 if canonical_run_store is not None
                 else None
             ),
-            sentinel=_sentinel,
+            sentinel=sentinel,
         )
         monkeypatch.setattr(runner, "_container", lambda: container)
         return await runner.execute_dag(

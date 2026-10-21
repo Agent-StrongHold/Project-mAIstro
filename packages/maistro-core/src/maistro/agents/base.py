@@ -158,7 +158,6 @@ if TYPE_CHECKING:
     from maistro.protocols.prompts import PromptManager
     from maistro.protocols.quota import QuotaTracker
     from maistro.protocols.tracing import TracingBackend
-    from maistro.security.sentinel.authz_types import Principal
     from maistro.types.agent import AgentIdentity
 
 
@@ -1224,23 +1223,20 @@ class Agent:
         # When Sentinel is wired (the production composition root), the
         # manifest's roster is only a request. Host policy must issue the
         # exact grant and the child receives only its effective action subset.
-        delegated_auth = auth
-        authorize_delegation = getattr(self._sentinel, "authorize_delegation", None)
-        if authorize_delegation is not None:
-            delegated_auth, refusal = await self._authorize_delegate(
-                authorize_delegation,
-                auth,
-                target=target,
-                delegate_message=delegate_text,
-                session_id=session_id,
-                turn_id=turn_id,
-                goal_id=goal_id,
-                run_id=run_id,
-                invocation_id=invocation_id,
-                delegation_scope=delegation_scope,
-            )
-            if refusal is not None:
-                return refusal
+        delegated_auth, refusal = await self._authorize_delegation(
+            auth=auth,
+            target=target,
+            delegate_text=delegate_text,
+            session_id=session_id,
+            turn_id=turn_id,
+            goal_id=goal_id,
+            run_id=run_id,
+            invocation_id=invocation_id,
+            delegation_scope=delegation_scope,
+            log=log,
+        )
+        if refusal is not None:
+            return refusal
 
         delegate_messages = [{"role": "user", "content": delegate_text}]
 
@@ -1275,45 +1271,75 @@ class Agent:
             delegation_chain=(self.identity.name, *delegated.delegation_chain),
         )
 
-    async def _authorize_delegate(
+    async def _authorize_delegation(
         self,
-        authorize_delegation: Any,
-        auth: Any,
         *,
+        auth: Any,
         target: Agent,
-        delegate_message: str,
+        delegate_text: str,
         session_id: str | None,
         turn_id: str | None,
         goal_id: str | None,
         run_id: str | None,
         invocation_id: str | None,
         delegation_scope: str | None,
+        log: Any,
     ) -> tuple[Any, AgentResponse | None]:
-        """Consult host policy before this delegation may run.
+        """Resolve delegated authority from host policy (#845, ADR-068).
 
-        The manifest's roster is only a request; the Sentinel seam is what
-        turns it into authority.  Returns the (possibly narrowed) auth the
-        delegate must run under, plus a refusal response when host policy
-        denies -- ``None`` means the delegation is cleared.
+        The manifest's roster is only a request. Sentinel (when wired) must
+        issue the exact grant; the child receives only its effective action
+        subset. Returns ``(auth_for_target, refusal)`` — ``refusal`` is set
+        exactly when host policy denies the delegation.
         """
-        log = _logging.getLogger("maistro.agent")
+        authorize_delegation = getattr(self._sentinel, "authorize_delegation", None)
+        if authorize_delegation is None:
+            return auth, None
+        from dataclasses import replace as replace_dataclass
+
+        from maistro.security.sentinel.authz_types import Principal
+
         owner_id = str(getattr(auth, "user_id", "") or "")
         if not owner_id:
             return auth, AgentResponse(
                 content="Delegation refused: no owning principal.",
                 agent_name=self.identity.name,
             )
+        principal = Principal(
+            id=self.identity.name,
+            kind="agent",
+            roles=tuple(getattr(auth, "roles", ()) or ()),
+            scopes=tuple(
+                value
+                for value in (
+                    getattr(auth, "org_id", ""),
+                    getattr(auth, "team_id", ""),
+                    getattr(auth, "project_id", ""),
+                    f"agent:{self.identity.name}",
+                )
+                if value
+            ),
+            owner=owner_id,
+        )
         decision = await authorize_delegation(
-            principal=self._delegation_principal(auth, owner_id),
+            principal=principal,
             owner_id=owner_id,
             delegating_agent_id=self.identity.name,
             target_agent_id=target.identity.name,
-            goal_id=self._delegation_goal(goal_id, auth, session_id),
-            run_id=self._delegation_run(run_id, auth, turn_id),
-            invocation_id=self._delegation_invocation(invocation_id, auth, turn_id),
-            scope=self._delegation_scope(delegation_scope, auth, owner_id),
+            goal_id=self._first_set(goal_id, getattr(auth, "goal_id", ""), session_id),
+            run_id=self._first_set(run_id, getattr(auth, "run_id", ""), turn_id),
+            invocation_id=self._first_set(
+                invocation_id, getattr(auth, "invocation_id", ""), turn_id
+            ),
+            scope=self._first_set(
+                delegation_scope,
+                getattr(auth, "project_id", ""),
+                getattr(auth, "team_id", ""),
+                getattr(auth, "org_id", ""),
+                owner_id,
+            ),
             requested_actions=frozenset(self._delegated_target_actions(target)),
-            artifact=delegate_message,
+            artifact=delegate_text,
         )
         if not decision.allowed:
             log.warning(
@@ -1331,63 +1357,29 @@ class Agent:
                 content="Delegation refused: authorization envelope cannot be carried.",
                 agent_name=self.identity.name,
             )
-        delegated_auth = replace(
+        log.info(
+            "Delegation authorized by host policy: agent=%s target=%s grant_ref=%s granted_by=%s",
+            self.identity.name,
+            target.identity.name,
+            decision.grant_ref,
+            decision.granted_by,
+        )
+        delegated_auth = replace_dataclass(
             auth,
             delegated_actions=decision.effective_actions,
-            delegation_grant_id=decision.grant_id,
-            # The grant's expiry rides with the envelope so per-call checks
-            # (Sentinel pre_call -> can_use_tool) can reject a delegated tool
-            # invocation that happens after the grant lapsed (#845 review).
+            delegation_grant_ref=decision.grant_ref,
             delegation_expires_at=decision.expires_at,
             on_behalf_of=self.identity.name,
         )
         return delegated_auth, None
 
-    def _delegation_principal(self, auth: Any, owner_id: str) -> Principal:
-        """Build the canonical delegating principal from carrier auth."""
-        from maistro.security.sentinel.authz_types import Principal
-
-        return Principal(
-            id=self.identity.name,
-            kind="agent",
-            roles=tuple(getattr(auth, "roles", ()) or ()),
-            scopes=tuple(
-                value
-                for value in (
-                    getattr(auth, "org_id", ""),
-                    getattr(auth, "team_id", ""),
-                    getattr(auth, "project_id", ""),
-                    f"agent:{self.identity.name}",
-                )
-                if value
-            ),
-            owner=owner_id,
-        )
-
     @staticmethod
-    def _delegation_goal(goal_id: str | None, auth: Any, session_id: str | None) -> str:
-        """Bind the delegation to the Goal scope it was authorized for."""
-        return goal_id or str(getattr(auth, "goal_id", "") or session_id or "")
-
-    @staticmethod
-    def _delegation_run(run_id: str | None, auth: Any, turn_id: str | None) -> str:
-        """Bind the delegation to one Run identity."""
-        return run_id or str(getattr(auth, "run_id", "") or turn_id or "")
-
-    @staticmethod
-    def _delegation_invocation(invocation_id: str | None, auth: Any, turn_id: str | None) -> str:
-        """Bind the delegation to one Invocation identity."""
-        return invocation_id or str(getattr(auth, "invocation_id", "") or turn_id or "")
-
-    @staticmethod
-    def _delegation_scope(delegation_scope: str | None, auth: Any, owner_id: str) -> str:
-        """Resolve the scope string the host grant must name."""
-        return delegation_scope or str(
-            getattr(auth, "project_id", "")
-            or getattr(auth, "team_id", "")
-            or getattr(auth, "org_id", "")
-            or owner_id
-        )
+    def _first_set(*values: str | None) -> str:
+        """First non-empty string, mirroring the ``a or b or c`` fallbacks."""
+        for value in values:
+            if value:
+                return value
+        return ""
 
     @staticmethod
     def _delegated_target_actions(target: Agent) -> tuple[str, ...]:
