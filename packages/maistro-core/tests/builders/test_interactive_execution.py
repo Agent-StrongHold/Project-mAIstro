@@ -50,6 +50,21 @@ async def _executor() -> tuple[CanonicalInteractiveTurnExecutor, InMemoryRunStor
     )
 
 
+def _executor_sync() -> tuple[CanonicalInteractiveTurnExecutor, InMemoryRunStore]:
+    """Executor over in-memory stores, without the async fixture's async work."""
+    runs = InMemoryRunStore(project_store=InMemoryProjectScopeStore())
+    durable = CanonicalDurableRunStore(runs, InMemoryGraphContinuationStore())
+    return (
+        CanonicalInteractiveTurnExecutor(
+            run_store=runs,
+            durable_store=durable,
+            workspace_id="builders-cli",
+            project_id="project-1",
+        ),
+        runs,
+    )
+
+
 @pytest.mark.contract("behavioral")
 @pytest.mark.asyncio
 async def test_react_turn_is_admitted_as_one_canonical_run_and_physical_attempt() -> None:
@@ -247,6 +262,46 @@ async def test_cancellation_is_not_converted_into_a_turn_failure() -> None:
             messages=[],
             runner=_RaisingRunner(asyncio.CancelledError()),
         )
+
+
+@pytest.mark.contract("behavioral")
+@pytest.mark.asyncio
+async def test_a_truncated_turn_settles_the_canonical_run_as_failed() -> None:
+    """A token-limit stop is unfinished work, not a successful turn.
+
+    `finish_reason="length"` means the model ran out of budget mid-answer.
+    Recording that canonical Run COMPLETED would project a failed turn as
+    success (#1068 acceptance), and the operator would never know the edit
+    was truncated.
+    """
+    executor, runs = await _executor()
+    runner = _Runner({"content": "partial edi", "stop_reason": "length"})
+
+    result = await executor.execute(
+        session_id="session-1",
+        repo="/tmp/repo",
+        prompt="finish the refactor",
+        messages=[],
+        runner=runner,
+    )
+
+    assert result.status is RunStatus.FAILED
+    assert result.error == "interactive turn truncated: length"
+    stored = await runs.get_run(result.run_id)
+    assert stored is not None
+    assert stored.status is RunStatus.FAILED
+
+
+@pytest.mark.contract("behavioral")
+def test_the_exported_executor_resolves_a_principal_when_the_caller_omits_one() -> None:
+    """Direct callers cannot hand canonical admission a `None` principal.
+
+    Every production RunStore rejects `create_run` without an actor principal;
+    the optional argument is for tests and embedding, not for admission.
+    """
+    executor, _runs = _executor_sync()
+    assert executor._actor_principal_id
+    assert executor._actor_principal_id.startswith("builders-local")
 
 
 @pytest.mark.contract("behavioral")

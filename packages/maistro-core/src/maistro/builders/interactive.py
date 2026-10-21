@@ -32,6 +32,13 @@ _DEFAULT_DATABASE_PATH = Path.home() / ".maistro" / "builders.db"
 _TURN_NODE_NAME = "interactive-turn"
 _ACTOR_PRINCIPAL_ENV = "MAISTRO_BUILDERS_ACTOR_PRINCIPAL"
 
+#: Stop reasons that mean the strategy gave up rather than producing an answer.
+_FAILED_TURN_STOP_REASONS = frozenset({"error", "max_turns"})
+
+#: Stop reasons that mean the model ran out of budget mid-answer. The turn is
+#: incomplete work, so it settles the canonical Run as failed.
+_TRUNCATED_TURN_STOP_REASONS = frozenset({"length", "max_tokens"})
+
 
 def resolve_local_operator_principal(override: str | None = None) -> str:
     """Actor identity for the local ``maistro builders`` operator.
@@ -97,10 +104,18 @@ class _ReActDispatcher:
 
         self.raw_result = result
         stop_reason = result.get("stop_reason")
-        if stop_reason in {"error", "max_turns"}:
+        if stop_reason in _FAILED_TURN_STOP_REASONS:
             return DispatchResult(
                 ok=False,
                 error=str(result.get("error") or f"interactive turn stopped: {stop_reason}"),
+            )
+        if stop_reason in _TRUNCATED_TURN_STOP_REASONS:
+            # A truncated turn did not finish the work the operator asked for.
+            # Recording it COMPLETED would project a failed turn as success
+            # (#1068 acceptance: no failure projected as a successful turn).
+            return DispatchResult(
+                ok=False,
+                error=str(result.get("error") or f"interactive turn truncated: {stop_reason}"),
             )
         content = result.get("content", "")
         if isinstance(content, list):
@@ -129,11 +144,11 @@ class CanonicalInteractiveTurnExecutor:
         self._durable_store = durable_store
         self._workspace_id = workspace_id
         self._project_id = project_id
-        self._actor_principal_id = (
-            resolve_local_operator_principal(actor_principal_id)
-            if actor_principal_id is not None
-            else actor_principal_id
-        )
+        # Canonical Run admission requires an actor principal on every store
+        # backend. A direct caller that leaves the optional argument unset
+        # still gets the local operator audit identity rather than a None that
+        # every store rejects.
+        self._actor_principal_id = resolve_local_operator_principal(actor_principal_id)
 
     async def execute(
         self,

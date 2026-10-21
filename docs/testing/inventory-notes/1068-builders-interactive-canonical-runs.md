@@ -5,7 +5,7 @@ Issue: #1068
 Parent: #49
 
 inventory-delta:
-  packages/maistro-core/tests: +17
+  packages/maistro-core/tests: +20
 ---
 
 ## Claim and collision boundary
@@ -131,3 +131,29 @@ Repair — twelve tests that drive the shipped path (delta +5 -> +17):
 
 Post-repair diff coverage (same command, same base): `ok: every measured file
 this change touches is at or above 90% lines / 80% branch arcs`.
+
+## Review-findings repair round (delta +17 -> +20)
+
+Codex review on the shipped path flagged two P1 behaviours this adapter owned.
+Both are now executed by a test rather than assumed:
+
+- `_ReActDispatcher` treated a `finish_reason="length"` stop as a successful
+  turn, so a truncated answer settled the canonical Run `COMPLETED`. Truncated
+  stops (`length`/`max_tokens`) now fail the turn with
+  `interactive turn truncated: <reason>`, and
+  `test_a_truncated_turn_settles_the_canonical_run_as_failed` proves the stored
+  Run is `FAILED` (#1068 acceptance: no failure projected as success).
+- `CodingScreen` cached its `BuildersExecutionSpine` and never closed it, so the
+  aiosqlite helper thread (or PostgreSQL pool user) outlived the screen.
+  `CodingScreen.on_unmount()` now closes the cached spine once and clears the
+  cache; `test_unmount_closes_the_cached_spine_so_the_process_can_exit` covers
+  the no-op unmount, the close, and the second unmount.
+- `CanonicalInteractiveTurnExecutor` preserved a caller's `actor_principal_id=None`,
+  which every RunStore rejects at `create_run`. The optional argument now always
+  resolves the local operator principal, proven by
+  `test_the_exported_executor_resolves_a_principal_when_the_caller_omits_one`.
+
+Still open after this round (not #1068 acceptance, reported as residual): the
+CLI's SQLite file/dir permissions (0644/0755 under a 022 umask) and the
+`sqlite://` / `memory://` ephemeral URLs in `DATABASE_URL` are not normalised by
+`BuildersExecutionSpine.open`.

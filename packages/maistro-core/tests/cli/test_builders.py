@@ -488,6 +488,7 @@ class _RecordingSpine:
         self.result = result
         self.calls: list[dict[str, object]] = []
         self.opens = 0
+        self.closes = 0
 
     async def open(self) -> _RecordingSpine:
         self.opens += 1
@@ -499,6 +500,9 @@ class _RecordingSpine:
     async def execute(self, **kwargs: object) -> object:
         self.calls.append(kwargs)
         return self.result
+
+    async def close(self) -> None:
+        self.closes += 1
 
 
 def _drive_coding_screen(
@@ -616,6 +620,42 @@ class TestCodingScreenExecutesOnTheCanonicalSpine:
         # The canonical identity is still recorded: a failed Run is evidence the
         # operator can inspect, not a turn that never happened.
         assert screen.canonical_run_ids == ["run-bad"]
+
+    def test_unmount_closes_the_cached_spine_so_the_process_can_exit(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """The spine's connection/pool cannot outlive the screen.
+
+        aiosqlite's helper thread and a PostgreSQL pool user keep the process
+        alive; the cached spine must be closed on unmount, and unmounting a
+        screen that never opened one must stay a no-op.
+        """
+        import asyncio
+
+        from maistro.builders.interactive import InteractiveTurnResult
+        from maistro.runs.model import RunStatus
+
+        spine = _RecordingSpine(
+            InteractiveTurnResult(
+                run_id="run-1", status=RunStatus.COMPLETED, output="ok", raw_result=None
+            )
+        )
+        _tui, screen, _chat, _bar, _bootstrap = _drive_coding_screen(
+            monkeypatch, tmp_path, spine=spine, recorded_runs=[]
+        )
+
+        asyncio.run(screen.on_unmount())
+        assert spine.closes == 0
+
+        asyncio.run(screen._run_agent_turn("edit the file"))
+        assert screen._execution_spine is spine
+
+        asyncio.run(screen.on_unmount())
+        assert spine.closes == 1
+        assert screen._execution_spine is None
+
+        asyncio.run(screen.on_unmount())
+        assert spine.closes == 1
 
 
 class TestResumeCarriesTheCanonicalRunIdentity:

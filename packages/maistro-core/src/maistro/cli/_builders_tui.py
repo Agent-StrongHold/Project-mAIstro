@@ -170,6 +170,15 @@ class CodingScreen(Vertical):
         chat.write("[dim]Session started. Type a task or ask a question.[/dim]")
         self.query_one("#chat-input", Input).focus()
 
+    async def on_unmount(self) -> None:
+        # The spine owns an aiosqlite connection (or a PostgreSQL pool) that
+        # holds a thread/pool user open. Leaving it cached past unmount keeps
+        # the `maistro builders` process from exiting cleanly.
+        spine = self._execution_spine
+        self._execution_spine = None
+        if spine is not None:
+            await spine.close()  # type: ignore[attr-defined]
+
     @on(Input.Submitted, "#chat-input")
     def on_chat_input(self, event: Input.Submitted) -> None:
         text = event.value.strip()
