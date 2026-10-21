@@ -119,3 +119,18 @@ was rewritten as a superseded note with a **+0** delta (its original +43
 zeroed by `check-suite-inventory.py --update --note …`); develop's suite is
 accounted for by `972-extension-quarantine.md` (+33). `check-suite-inventory.py`
 exits 0 across all 21 suites.
+
+## Merge 4: `origin/develop` `a4fb8a30e448` (reach the job base)
+
+After `f0fb5c83db86` the branch sat one develop epoch behind the job base. The
+job base was `5647c34bf`; a `git fetch` showed `origin/develop` had advanced
+exactly one commit past it to `a4fb8a30e448` ("WIP: [EPIC M1-E] One event,
+recovery, memory-provenance, and live-inspection plane (#2205)"). That commit
+does not touch issue #972, `quality/vulture-baseline.json`, or any file the
+#972 resolution chose, so the merge applied cleanly (no conflicts, no manual
+resolution) and the merge base is now `a4fb8a30e448`.
+
+Post-merge gate state, unchanged from merge 3: `check-vulture-baseline.py
+packages/*/src --min-confidence 60 --exclude '*/third_party/*'` reports
+`1321 reviewed identities -> 1321 findings`, exit 0, and
+`check-suite-inventory.py` reports 21/21 suites matching, exit 0.
