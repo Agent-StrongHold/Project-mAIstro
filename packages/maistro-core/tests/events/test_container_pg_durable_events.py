@@ -125,6 +125,128 @@ class TestPoolSelectsThePostgresStores:
         await container.handler_invocation_store.get_or_create("t1", 1)
         assert len(await container.handler_invocation_store.list_for_event(1)) == 1
 
+    async def test_the_pool_selects_the_canonical_event_publisher_store(self, pg_pool, wire):
+        """#1133 on PostgreSQL: recovery dispositions publish through the exact
+        backend-selected canonical EventStore, never a second authority.
+
+        `CanonicalEventPublisher` is a delivery wrapper only, so its store
+        must be the very object injected into the governed effect context,
+        and that object must be the durable PostgreSQL store.
+        """
+        from maistro.events.pg_envelope import PgEventStore
+        from maistro.events.publisher import CanonicalEventPublisher
+
+        container = await wire(_config(), pg_pool=pg_pool)
+
+        publisher = container.canonical_event_publisher
+        assert isinstance(publisher, CanonicalEventPublisher)
+        assert isinstance(publisher.store, PgEventStore)
+        assert publisher.store is container.capability_effects.event_store
+
+        # The wrapper delegates to the durable store: an event published through
+        # it reaches the server with the Workspace sequence only the store can
+        # assign. A fresh workspace makes the expected sequence independent of
+        # any other test that has run against this server.
+        from uuid import uuid4
+
+        from maistro.events.envelope import EventEnvelope
+
+        workspace = f"ws-recovery-{uuid4().hex}"
+        published = await publisher.emit(
+            EventEnvelope(
+                type="run.recovery_disposition",
+                workspace_id=workspace,
+                run_id="run-1",
+            )
+        )
+        assert published.sequence == 1
+        rows = await pg_pool.fetchval(
+            "SELECT count(*) FROM canonical_event_log WHERE workspace_id = $1",
+            workspace,
+        )
+        assert rows == 1
+
+
+class TestTheAuditStoreComesUpToo:
+    """The audit store is wired on the same pool, so it fails the same way.
+
+    The `durable-events` job is the only CI job that wires a Container against
+    a PostgreSQL database that has never run the migration chain, so this is
+    where the audit half of the wiring contract is proved.
+    """
+
+    async def test_wiring_creates_the_audit_table_it_needs(self, pg_pool, wire):
+        """Wiring must create the schema it needs, for the audit store too.
+
+        The Container wires the PostgreSQL audit store on the pool (#122) and
+        runs its schema upgrade on every start. That upgrade used to *alter*
+        a table it never created, so a database without the audit migrations
+        killed the whole Container on startup with `relation "audit_log" does
+        not exist` — before the durable event stores were even reached.
+        """
+        from maistro.persistence.pg_audit import PgAuditLog
+        from maistro.types.security import AuditEntry
+
+        await pg_pool.execute("DROP TABLE IF EXISTS audit_log")
+        container = await wire(_config(), pg_pool=pg_pool)
+
+        assert isinstance(container.audit_log, PgAuditLog)
+
+        await container.audit_log.log(
+            AuditEntry(
+                boundary="tool_call",
+                user_id="u1",
+                agent_id="a1",
+                tool_name="bash",
+                verdict="allowed",
+                detail="ok",
+                trace_id="t1",
+                request_id="r1",
+            )
+        )
+        rows = await pg_pool.fetch(
+            "SELECT verdict, user_id, org_id, signing_key_id FROM audit_log WHERE trace_id = $1",
+            "t1",
+        )
+        assert [
+            (r["verdict"], r["user_id"], r["org_id"], bool(r["signing_key_id"])) for r in rows
+        ] == [("allowed", "u1", "", True)]
+
+        # The table this bootstrap created is never migrated afterwards, so
+        # every index the read paths rely on has to be here now. `get_page`
+        # names one ordered index per filter shape (audit_pages.page_query).
+        from maistro.persistence.audit_pages import AUDIT_PAGE_INDEXES
+
+        present = {
+            r["indexname"]
+            for r in await pg_pool.fetch(
+                "SELECT indexname FROM pg_indexes WHERE tablename = 'audit_log'"
+            )
+        }
+        expected = {
+            "audit_log_pkey",
+            "ix_audit_log_scope",
+            "ix_audit_log_timestamp",
+            "ix_audit_log_user",
+            "ix_audit_log_agent",
+            *AUDIT_PAGE_INDEXES,
+        }
+        assert expected <= present
+
+    async def test_the_audit_table_is_readable_after_the_wiring(self, pg_pool, wire):
+        """The store reads back what it wrote, on the table it just created."""
+        from maistro.types.security import AuditEntry
+
+        await pg_pool.execute("DROP TABLE IF EXISTS audit_log")
+        container = await wire(_config(), pg_pool=pg_pool)
+
+        await container.audit_log.log(
+            AuditEntry(boundary="tool_call", user_id="u2", agent_id="a2", verdict="denied")
+        )
+        entries = await container.audit_log.get_entries(user_id="u2")
+
+        assert [(e.user_id, e.verdict) for e in entries] == [("u2", "denied")]
+
 
 class TestTheOtherTwoBackendsAreUnchanged:
     """#135 must not move the SQLite or in-memory selection it sits in front of."""
