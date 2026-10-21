@@ -46,6 +46,12 @@ from pathlib import Path
 import structlog
 
 from maistro_evolve._candidate_env import candidate_env
+from maistro_rsi.sandbox._capture import (
+    DEFAULT_MAX_OUTPUT_BYTES,
+    clamped_output_limit,
+    communicate_bounded,
+    truncation_notice,
+)
 
 logger = structlog.get_logger()
 
@@ -58,10 +64,17 @@ _REAP_GRACE_SECONDS = 1.0
 class LocalSandbox:
     """Run RSI commands on the local filesystem (already inside an sbx microVM)."""
 
-    def __init__(self, workspace: str, *, grants: Mapping[str, str] | None = None) -> None:
+    def __init__(
+        self,
+        workspace: str,
+        *,
+        grants: Mapping[str, str] | None = None,
+        max_output_bytes: int = DEFAULT_MAX_OUTPUT_BYTES,
+    ) -> None:
         self._workspace = workspace
         self._grants: Mapping[str, str] | None = grants
         self._snapshots: dict[str, str] = {}
+        self._output_limit = clamped_output_limit(max_output_bytes)
         Path(workspace).mkdir(parents=True, exist_ok=True)
         self._root = Path(workspace).resolve()
 
@@ -98,7 +111,14 @@ class LocalSandbox:
             env=candidate_env(self._grants),
         )
         try:
-            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+            # Bounded capture (#1197): retain at most the output limit of the
+            # merged stream; the rest is drained and discarded, so a runaway
+            # candidate command cannot flood the harness host's memory (this
+            # backend's isolation is the *outer* sbx microVM — an inner
+            # unbounded capture would still be this process's own memory).
+            captured, _ = await asyncio.wait_for(
+                communicate_bounded(proc, self._output_limit), timeout=timeout
+            )
         except TimeoutError:
             # Kill the entire process group — test runners and agents spawn
             # children (servers, `cmd & wait`) that would otherwise outlive the
@@ -110,7 +130,10 @@ class LocalSandbox:
             with contextlib.suppress(Exception):
                 await asyncio.wait_for(proc.wait(), timeout=_REAP_GRACE_SECONDS)
             return _TIMEOUT_EXIT_CODE, f"timeout after {timeout}s"
-        return proc.returncode or 0, stdout.decode(errors="replace")
+        output = captured.data.decode(errors="replace")
+        if captured.truncated:
+            output += truncation_notice(self._output_limit)
+        return proc.returncode or 0, output
 
     async def read_file(self, path: str) -> str:
         return self._resolve(path).read_text(encoding="utf-8")
