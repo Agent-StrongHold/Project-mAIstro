@@ -11,7 +11,7 @@ import psycopg
 from alembic import command
 from alembic.config import Config
 
-from maistro.config.database import require_database_url
+from maistro.config.database import resolve_migration_target_url
 
 _MIGRATION_LOCK_ID = 0x4D41495354524F  # ASCII-ish "MAISTRO", within signed bigint.
 
@@ -49,8 +49,14 @@ def _wait_for_migration_lock(
 
 
 def run_migrations() -> None:
-    """Upgrade to head while holding a session-level PostgreSQL advisory lock."""
-    database_url = require_database_url()
+    """Upgrade to head while holding a session-level PostgreSQL advisory lock.
+
+    Lock and upgrade both target `resolve_migration_target_url()`: postgresql
+    whenever the runtime is postgresql, else the `DB_*` composition when
+    DATABASE_URL names a sqlite/memory runtime (whose stores self-schema at
+    wiring time and carry no alembic chain).
+    """
+    database_url = resolve_migration_target_url()
     timeout_s = float(os.environ.get("MAISTRO_MIGRATION_LOCK_TIMEOUT", "120"))
     with psycopg.connect(_psycopg_dsn(database_url), autocommit=True) as connection:
         _wait_for_migration_lock(connection, timeout_s=timeout_s)
