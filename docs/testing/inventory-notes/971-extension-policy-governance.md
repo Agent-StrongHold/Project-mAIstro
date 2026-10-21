@@ -4,6 +4,12 @@ inventory-delta:
 ---
 # 971-extension-policy-governance
 
+> **Superseded by the develop-sync merge**: develop landed this feature as
+> PR #2211 (`1bdc32dc1`), so the branch's `policy.py` and the
+> `test_extension_policy_governance.py` module described below were replaced
+> by develop's engine and its own suites during the develop sync. The
+> removal is recorded in `944-develop-sync-merge-resolution.md`.
+
 Lands the M9-G3 organization/Workspace extension-policy governance layer
 (`packages/maistro-core/src/maistro/extensions/policy.py`): org allow/deny
 and publisher approval resolved over Workspace enablement in a fixed,

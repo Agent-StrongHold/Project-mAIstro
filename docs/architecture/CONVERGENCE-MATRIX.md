@@ -121,7 +121,7 @@ A share rather than the `19/62` this column used to carry, because the denominat
 <!-- matrix:disposition -->
 | Subsystem | Real entry point | Unreachable | Disposition | Governing ADR/spec | Acceptance evidence | Dependencies |
 |---|---|---|---|---|---|---|
-| Run / NodeRun / Attempt lifecycle | reached via `maistro.graph.durable_runs` from `services.dag_agents` | `few` — `runs.admission_identity` is the #1851 inactive contract leaf: banked unreachable until #1845's admission backend wires it, so the row is one module short of `none` | KEEP — canonical | ADR-081226-a66b, ADR-081426-1f7c, ADR-081626-f383, ADR-082826-b601 | property/conformance tests in `formal/` plus core lifecycle suites | #42, #43, #45, #251, #1845 |
+| Run / NodeRun / Attempt lifecycle | reached via `maistro.graph.durable_runs` from `services.dag_agents` | `none` | KEEP — canonical | ADR-081226-a66b, ADR-081426-1f7c, ADR-081626-f383, ADR-082826-b601 | property/conformance tests in `formal/` plus core lifecycle suites | #42, #43, #45, #251 |
 | Graph execution | `services.dag_agents.run_registered_dag`; `maistro.container` node resolver | `few` | MIGRATE — traversal state must separate from lifecycle state | ADR-062, ADR-081226-69ee | a durable graph execution whose Run/NodeRun/Attempt records reproduce the traversal | #44, #34 |
 | Request front door and DI | `maistro.container.route_request` | `none` | MIGRATE — Conduit is constructed but no shipped product routes through it | ADR-019, ADR-096 | a real Conductor chat turn that traverses Conduit and yields a `run_id` | #41, #53 |
 | Task queue and runner | `maistro_server.main`, `adapters.task_backend` | `none` | MIGRATE — becomes an admission receipt over a canonical Run; with a database, admission already commits the Run first and restart recovers it (#91) | ADR-018, ADR-056, ADR-097 | task submission returns a `run_id`; `TaskRecord` no longer holds terminal truth | #41, #43 |
@@ -160,7 +160,7 @@ A share rather than the `19/62` this column used to carry, because the denominat
 | Reactor loop | `maistro.reactor` (installer-launched) | `none` | KEEP | — | loop timing tests | — |
 | Prompts and personas | `maistro.container`, `routes.agents` | `few` | KEEP | ADR-081226-e626 | persona seed/eval protocol tests | — |
 | Codebase analysis | `maistro.tools` call sites | `none` | KEEP | ADR-065 | tool-level tests | — |
-| Core CLI | `maistro.cli` console script | `some` | KEEP — thin client, no local lifecycle | ADR-096 | CLI commands hit Conductor API only | — |
+| Core CLI | `maistro.cli` console script | `few` | KEEP — thin client, no local lifecycle | ADR-096 | CLI commands hit Conductor API only | — |
 | Shared contracts and config | imported by every package | `none` | LIBRARY | ADR-019, ADR-081226-034b | dependency-direction + compatibility-owner fitness checks | #36 |
 | Test scaffolding | test suites only | `all` | LIBRARY — unreachable by construction | ADR-065, ADR-032 | used by checked test suites | — |
 | maistro-server HTTP app | `maistro_server.main` | `none` | MIGRATE — task queue is receipt; chat front door now uses Container/Conduit | ADR-076, ADR-096, ADR-082426-2192 | `/v1/tasks` and `/v1/chat/completions` both yield canonical Run identity | #43, #234 |
@@ -182,6 +182,27 @@ A share rather than the `19/62` this column used to carry, because the denominat
 - Core scheduling owns occurrence identity and exact-one Run claims (#229). The **live Hive scheduler** now sends both its recurring ticks (#231) and its manual `fire_now` surface (#1120) through that seam — manual fires carry a first-class `schedule_fire_id` occurrence identity so a retried or concurrent double submit reconciles to one Run — with registered-DAG execution refusing when the canonical Container, RunStore or Graph continuation owner is absent (#1113).
 - Relational persistence is fully reached: PostgreSQL is the canonical durable backend, while SQLite remains the explicit single-instance/homelab backend; prompt and audit persistence now follow the selected backend rather than silently falling back to memory.
 - The matrix checker proves structure, reachability counts, reference integrity and — since #378 — that every module named as a current owner is one a product path reaches. What it still cannot prove is a cell that names no module: 31 of the 156 owner cells describe a non-module owner in prose, and that count is itself checked so the gap cannot widen quietly. #31's acceptance-state machinery governs machine-verifiable completion claims, and material ownership changes must update this human-reviewed planning surface.
+
+## One scoring loop: the M7 in-Run eval is the evidence; Evolve/RSI are consumers (#796)
+
+The design loop has exactly one scoring authority, and everything else reads its records. The map frozen by [#796](https://github.com/Agent-StrongHold/Project-mAIstro/issues/796), with ownership left where it is (#21 keeps promotion, #552 keeps RSI):
+
+```
+M7 in-Run Rubric eval (maistro.personas.rubric, scored on Run)  →  evidence object on Run
+        ↓
+M4 #21 independent evaluation (maistro_evolve; hive evolution services)  →  may read those records as historical/held-out evidence
+        ↓
+M5 #552 RSI (maistro_rsi)  →  not production-reachable until containment; if/when enabled, same evidence, same promotion contract
+```
+
+Forbidden shapes — each has a contract test in `packages/maistro-core/tests/fitness/test_m7_a7_eval_consumer_map.py`:
+
+- the Design Studio loop (`maistro_design`, `routes.design`, `services.design*`) importing RSI or Evolve as the in-Run critic — the critic is the Rubric eval scored in-Run, never a second loop;
+- Evolve/RSI fitness reaching into the design Goal/Rubric domain to invent a design-quality score for the same Goal;
+- a design-quality score for a Goal stored outside Run eval records + M4 candidate evaluation;
+- a `maistro_design` private promotion path.
+
+Allowed later, not landed here: an M4 candidate that proposes a better pack Graph or Rubric catalog, evaluated independently against held-out M7 Runs and promoted through #21/#116. RSI's activation invariant stays owned by `packages/maistro-rsi/tests/test_non_production_reachability.py` (#552); product identity, execution-lifecycle names and provider egress stay owned by the #990 fitness suite.
 
 ## Related
 

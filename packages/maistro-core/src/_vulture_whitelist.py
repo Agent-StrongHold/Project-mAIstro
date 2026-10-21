@@ -27,6 +27,7 @@ from maistro.cli._backlog import cutover as backlog_cutover_command
 from maistro.cli._backlog import import_cmd as backlog_import_command
 from maistro.cli._backlog import revert as backlog_revert_command
 from maistro.cli._connectors import connectors_describe, connectors_verify
+from maistro.cli._extension_authoring import extension_new
 from maistro.cli._extensions import (
     extensions_certify,
     extensions_compat,
@@ -67,12 +68,6 @@ from maistro.extensions.metering import (
     ExtensionUsageEvent,
 )
 from maistro.extensions.packs import InstallablePackRegistry
-from maistro.extensions.policy import (
-    ExtensionPolicyLedger,
-    ResolvedExtensionPolicy,
-    TenantScopedExtensionState,
-    TenantStateView,
-)
 from maistro.extensions.quarantine import (
     ActorKind,
     AdmissionDecision,
@@ -86,6 +81,10 @@ from maistro.extensions.sqlite_store import SqliteExtensionInstallStore
 from maistro.extensions.store import (
     ExtensionInstallStore,
     InMemoryExtensionInstallStore,
+)
+from maistro.extensions.tenancy import (
+    ScopeBoundExtensionState,
+    TenantScopedExtensionState,
 )
 from maistro.extensions.tool_skill.registration import ExtensionToolCatalog
 from maistro.extensions.ui import (
@@ -452,6 +451,7 @@ _VULTURE_WHITELIST = (
     ExtensionInstallStore.all_installs,
     InMemoryExtensionInstallStore.all_installs,
     SqliteExtensionInstallStore.all_installs,
+    extension_new,
     extensions_history,
     extensions_preflight,
     extensions_show,
@@ -543,6 +543,24 @@ _VULTURE_WHITELIST = (
     ExternalAgentRegistry.refresh_descriptor,
     ExternalAgentRegistry.report_availability,
     ExternalAgentRegistry.eligible_specialists,
+    # Tenant-scoped extension runtime state (#971, M9-G3). Configuration is
+    # served over the operator API (GET/PUT /v1/extensions/state); the cache
+    # and checkpoint namespaces are the host/runtime substrate — the
+    # activation substrate (M9-B2's ExtensionCodeLoader hosts) and the
+    # quarantine flow (#972) bind them through
+    # ExtensionInstallService.extension_state, so their in-tree callers are
+    # the cross-tenant noninterference suites
+    # (packages/maistro-core/tests/extensions/test_org_workspace_policy.py)
+    # until those hosts land. Same contract-ships-first posture as the store
+    # seams above.
+    ScopeBoundExtensionState.delete_config,
+    ScopeBoundExtensionState.cache_set,
+    ScopeBoundExtensionState.cache_get,
+    ScopeBoundExtensionState.cache_delete,
+    ScopeBoundExtensionState.checkpoint_save,
+    ScopeBoundExtensionState.checkpoint_load,
+    ScopeBoundExtensionState.checkpoint_names,
+    TenantScopedExtensionState.clear_scope,
     # Pre-publication extension certification (M9-H3, #975). The
     # `maistro extensions certify` / `verify-certification` commands are
     # typer-dispatched like the lock commands above: their production caller
@@ -598,26 +616,6 @@ _VULTURE_WHITELIST = (
     # (packages/maistro-core/tests/extensions/test_effective_authority.py) — the
     # same contract-ships-first posture as the seams above.
     EffectiveAuthority.with_execution_context,
-    # Organization/Workspace extension policy governance (M9-G3, #971). The
-    # ledger's mutation surface is the admin/operator API: org allow/deny,
-    # Workspace overrides, and server-side version pinning, resolved into the
-    # #969 Workspace layer through `ResolvedExtensionPolicy.workspace_layer`.
-    # Hosts wire these to policy administration and the #976 identity
-    # propagation; until then the callers are the governance suite
-    # (packages/maistro-core/tests/extensions/test_extension_policy_governance.py)
-    # — the same contract-ships-first posture as the seams above.
-    ExtensionPolicyLedger.set_org_policy,
-    ExtensionPolicyLedger.set_workspace_override,
-    ExtensionPolicyLedger.pin_version,
-    ExtensionPolicyLedger.table_digest,
-    ResolvedExtensionPolicy.workspace_layer,
-    # Tenant-scoped extension state (#971): caches/checkpoints/config keyed by
-    # (org, workspace); the view factory is the only way in, and the view is
-    # the tenant-facing seam until host wiring lands.
-    TenantScopedExtensionState.view,
-    TenantStateView.put,
-    TenantStateView.pop,
-    TenantStateView.keys,
     # Extension quarantine/suspension (M9-G4, #972). The governance service is
     # the single admission gate and the only writer of suspension state; hosts
     # call it from their invocation seams and consume decisions

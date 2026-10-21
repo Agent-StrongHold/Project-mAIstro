@@ -1,554 +1,784 @@
-"""Organization/Workspace extension policy, pinning, and tenancy (#971, M9-G3).
+"""Organization/Workspace extension policy, pinning, and audit (#971, M9-G3).
 
-One server-side authority answers "may this org/Workspace run this extension
-at all, and under which ceilings" — before #969's intersection narrows what
-an enabled extension may do. The layers, resolved in a fixed order:
+The server-side policy layer over the governed install machine (M9-B2): an
+organization states which extensions may run at all — and, once running,
+exactly which publisher/version identity is pinned — and each Workspace may
+only *narrow* that: opt-in enablement and permission ceilings.
 
-1. **organization registration** — an org unknown to extension policy is
-   deny-by-default: canonical policy is server-side state, not UI truth,
-   so a scope nobody configured enables nothing.
-2. **org allowlist** — when the org states one, only listed extensions are
-   eligible, regardless of Workspace enablement.
-3. **org deny list** — an org deny overrides any Workspace enable request.
-4. **publisher approval** — when the org names approved publishers, packages
-   from any other publisher are refused.
-5. **version pinning** — a pin is an exact-version requirement enforced
-   server-side under concurrent callers: every resolution reads one
-   immutable policy snapshot, so a caller can never observe a torn policy
-   (half the pin swap, half the old table).
-6. **Workspace enablement** — the Workspace-level allowlist; a Workspace
-   that never enabled an extension runs nothing, and the org ceiling and
-   the Workspace ceiling compose by intersection.
+Resolution is a fixed rule order, evaluated top to bottom, with every rule's
+outcome recorded on the decision trace:
 
-The result (:class:`ResolvedExtensionPolicy`) is a pure function of the
-policy table and the requested identity: deterministic, explainable (every
-refusal carries the layer reason, in the fixed order), and stable. Its
-:meth:`ResolvedExtensionPolicy.workspace_layer` projects the resolution onto
-the #969 :class:`~maistro.extensions.effective_authority.
-WorkspaceExtensionPolicy` input, so an org deny becomes the intersection's
-package blocker and an org ceiling can only narrow effective authority.
+1. ``org.deny-list`` — an organization denial cannot be overridden by any
+   Workspace request (the acceptance rule "org deny overrides Workspace
+   enablement");
+2. ``org.allow-list`` — when configured, everything not on it is denied;
+3. ``org.approved-publishers`` — when configured, other publishers are denied;
+4. ``org.version-pin`` / ``org.publisher-pin`` — a pin binds the exact
+   publisher (and optionally version) an extension may install under;
+5. ``workspace.deny-list``;
+6. ``workspace.enablement`` — a Workspace *with* a policy must have enabled
+   the extension; a Workspace *without* one inherits the organization layer
+   unchanged;
+7. ``workspace.permission-ceiling`` — requested permissions outside the
+   extension's ceiling fail closed; nothing is silently truncated.
 
-Two guarantees make cross-tenant noninterference structural rather than
-hoped-for:
+A layer with no configured policy imposes nothing and says so on the trace,
+so every decision is explainable from its own record. Every evaluation and
+every policy change is appended to a :class:`PolicyAuditLog` — the admin
+inspection and policy audit trail the issue requires.
 
-- the ledger swaps whole immutable snapshots (:class:`ExtensionPolicyTable`)
-  and never mutates one in place — concurrent readers hold a consistent
-  table, and tenants only ever read rows keyed by their own scope;
-- per-tenant extension state (caches, checkpoints, configuration) lives in
-  :class:`TenantScopedExtensionState`, keyed by ``(org_id, workspace_id)``
-  with views that cannot reach another view's values.
-
-Every ledger mutation appends an :class:`ExtensionPolicyAuditEvent` with
-actor, scope, reason, and the digest of the table state it produced — the
-admin inspection and policy audit trail the issue requires.
+Concurrency: policy mutations and the install machine's enforcement critical
+sections serialize on a per-organization :class:`asyncio.Lock` (see
+:meth:`ExtensionPolicyEngine.enforcement_window`). A pin change therefore
+either lands entirely before an install's decision (the install is refused)
+or entirely after it (the install ran while the pin did not exist) —
+version/publisher pinning is enforced server-side under concurrent callers,
+never checked-then-raced.
 """
 
 from __future__ import annotations
 
-import hashlib
-import json
-from collections.abc import Callable, Iterable, Mapping
+import asyncio
+from collections.abc import AsyncIterator, Callable, Mapping
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
+from enum import StrEnum
 from types import MappingProxyType
 
-from maistro.extensions.effective_authority import WorkspaceExtensionPolicy
-from maistro.extensions.types import ExtensionRegistryError, ExtensionScope
-
-
-class ExtensionPolicyError(ExtensionRegistryError):
-    """A policy mutation or resolution was malformed or unauthorized."""
+from maistro.extensions.authority import normalize_permission
+from maistro.extensions.types import ExtensionScope
 
 
 def _utc_now() -> datetime:
     return datetime.now(UTC)
 
 
-def _require_id(value: str, *, label: str) -> str:
-    if not isinstance(value, str) or not value.strip():
-        raise ExtensionPolicyError(f"{label} is required")
-    return value
+class PolicyLayer(StrEnum):
+    """Which policy layer produced a trace entry."""
+
+    ORG = "org"
+    WORKSPACE = "workspace"
 
 
-def _as_frozen(tokens: Iterable[str] | None) -> frozenset[str] | None:
-    return frozenset(tokens) if tokens is not None else None
+class PolicyVerdict(StrEnum):
+    """The outcome of a policy evaluation."""
+
+    ALLOW = "allow"
+    DENY = "deny"
 
 
-def _table_digest(table: ExtensionPolicyTable) -> str:
-    """Stable digest over a policy snapshot — the audit row's table identity."""
-    payload = {
-        "orgs": {
-            org_id: {
-                "allowed": sorted(policy.allowed_extensions)
-                if policy.allowed_extensions is not None
-                else None,
-                "ceiling": sorted(policy.permission_ceiling)
-                if policy.permission_ceiling is not None
-                else None,
-                "denied": sorted(policy.denied_extensions),
-                "pins": dict(sorted(policy.version_pins.items())),
-                "publishers": sorted(policy.approved_publishers)
-                if policy.approved_publishers is not None
-                else None,
-            }
-            for org_id, policy in sorted(table.orgs.items())
-        },
-        "workspaces": {
-            # JSON-encoded [org_id, workspace_id] pair: delimiter-free, so
-            # IDs containing "/" cannot collide across distinct scopes.
-            json.dumps([org_id, workspace_id]): {
-                "ceiling": sorted(ov.permission_ceiling)
-                if ov.permission_ceiling is not None
-                else None,
-                "enabled": sorted(ov.enabled_extensions),
-            }
-            for (org_id, workspace_id), ov in sorted(table.workspaces.items())
-        },
-    }
-    return hashlib.sha256(
-        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
-    ).hexdigest()
+class PolicyConfigurationError(ValueError):
+    """A policy would be recorded in a form that cannot be evaluated."""
 
 
 @dataclass(frozen=True)
-class OrgExtensionPolicy:
-    """The organization's extension policy stance.
+class ExtensionPin:
+    """An organization's approved identity for one extension.
 
-    ``allowed_extensions``/``approved_publishers`` use ``None`` to mean "no
-    org-wide list" — ``None`` is *not* an empty allow-all, it is the absence
-    of that layer. An org that states neither constrains enablement only
-    through ``denied_extensions`` and ``version_pins``.
+    ``publisher_id`` is always pinned: only that publisher may ship the
+    extension. ``version``, when set, additionally pins the exact version —
+    upgrades require an organization policy change, not a Workspace request.
     """
 
-    org_id: str
-    #: Extensions denied outright; overrides any Workspace enable request.
-    denied_extensions: frozenset[str] = frozenset()
-    #: Org-wide allowlist; ``None`` defers eligibility to Workspace enablement.
-    allowed_extensions: frozenset[str] | None = None
-    #: Approved publishers; ``None`` admits any publisher trust admits.
-    approved_publishers: frozenset[str] | None = None
-    #: extension id -> exact semantic version the org pins the extension to.
-    version_pins: Mapping[str, str] = field(default_factory=lambda: MappingProxyType({}))
-    #: Org-wide permission ceiling composed under every Workspace ceiling.
-    permission_ceiling: frozenset[str] | None = None
-
-    def __post_init__(self) -> None:
-        _require_id(self.org_id, label="org_id")
-        object.__setattr__(self, "denied_extensions", frozenset(self.denied_extensions))
-        object.__setattr__(self, "allowed_extensions", _as_frozen(self.allowed_extensions))
-        object.__setattr__(self, "approved_publishers", _as_frozen(self.approved_publishers))
-        object.__setattr__(self, "permission_ceiling", _as_frozen(self.permission_ceiling))
-        object.__setattr__(self, "version_pins", MappingProxyType(dict(self.version_pins)))
+    publisher_id: str
+    version: str | None = None
 
 
 @dataclass(frozen=True)
-class WorkspacePolicyOverride:
-    """One Workspace's enablement and ceiling, under its org's policy."""
-
-    org_id: str
-    workspace_id: str
-    #: Extensions this Workspace enabled — empty enables nothing.
-    enabled_extensions: frozenset[str] = frozenset()
-    #: Workspace permission ceiling; ``None`` inherits the org ceiling (and
-    #: no ceiling at all when the org states none either).
-    permission_ceiling: frozenset[str] | None = None
-
-    def __post_init__(self) -> None:
-        _require_id(self.org_id, label="org_id")
-        _require_id(self.workspace_id, label="workspace_id")
-        object.__setattr__(self, "enabled_extensions", frozenset(self.enabled_extensions))
-        object.__setattr__(self, "permission_ceiling", _as_frozen(self.permission_ceiling))
-
-
-@dataclass(frozen=True)
-class ExtensionPolicyTable:
-    """One immutable policy snapshot; resolution is a pure function of it.
-
-    The ledger never mutates a table: every mutation swaps this whole
-    snapshot, so a concurrent reader holds either the old or the new policy —
-    never a torn one.
-    """
-
-    orgs: Mapping[str, OrgExtensionPolicy] = field(default_factory=lambda: MappingProxyType({}))
-    workspaces: Mapping[tuple[str, str], WorkspacePolicyOverride] = field(
-        default_factory=lambda: MappingProxyType({})
-    )
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "orgs", MappingProxyType(dict(self.orgs)))
-        object.__setattr__(self, "workspaces", MappingProxyType(dict(self.workspaces)))
-
-
-@dataclass(frozen=True)
-class ExtensionPolicyAuditEvent:
-    """One appended policy change, with the table state it produced."""
-
-    seq: int
-    action: str
-    org_id: str
-    workspace_id: str
-    actor: str
-    reason: str
-    at: datetime
-    #: Digest of the policy table this event produced — joins audit rows to
-    #: the exact policy every concurrent resolution around them read.
-    table_digest: str
-
-
-@dataclass(frozen=True)
-class ResolvedExtensionPolicy:
-    """The explainable answer for one extension identity in one scope.
-
-    ``enabled`` is true exactly when no layer refused; ``reasons`` is empty
-    exactly then, and otherwise lists every refusing layer in the fixed
-    resolution order. ``permission_ceiling`` is the org ∩ Workspace ceiling,
-    or ``None`` when neither level states one.
-    """
+class ExtensionCandidate:
+    """The manifest-derived facts a policy decision is about."""
 
     extension_id: str
     version: str
     publisher: str
-    scope: ExtensionScope
-    enabled: bool
-    reasons: tuple[str, ...] = ()
-    #: The org pin this resolution was checked against, when one exists.
-    pin: str | None = None
-    #: The composed org ∩ Workspace permission ceiling; ``None`` = unstated.
-    permission_ceiling: frozenset[str] | None = None
-
-    def workspace_layer(self, requested: Iterable[str]) -> WorkspaceExtensionPolicy:
-        """Project this resolution onto the #969 Workspace-policy layer.
-
-        ``requested`` is the manifest's requested permission universe (what
-        the caller has from the manifest snapshot). A resolution without a
-        configured ceiling yields exactly the request — matching a
-        deployment that states no Workspace ceiling — and a configured
-        ceiling intersects it. A denied resolution yields an empty
-        enablement, which #969 turns into a package blocker.
-        """
-        requested_set = frozenset(requested)
-        if not self.enabled:
-            return WorkspaceExtensionPolicy(
-                scope=self.scope,
-                enabled_extensions=frozenset(),
-                permission_ceiling=requested_set,
-            )
-        ceiling = (
-            requested_set & self.permission_ceiling
-            if self.permission_ceiling is not None
-            else requested_set
-        )
-        return WorkspaceExtensionPolicy(
-            scope=self.scope,
-            enabled_extensions=frozenset({self.extension_id}),
-            permission_ceiling=ceiling,
-        )
-
-
-_FIXED_RESOLUTION_LAYERS = (
-    "org registration",
-    "org allowlist",
-    "org deny",
-    "publisher approval",
-    "version pin",
-    "workspace enablement",
-)
-
-
-def _org_layer_reasons(
-    org: OrgExtensionPolicy, *, extension_id: str, publisher: str, version: str
-) -> tuple[list[str], str | None]:
-    """The org layers' refusals, in the fixed order, plus the pin if any."""
-    reasons: list[str] = []
-    pin: str | None = None
-    if org.allowed_extensions is not None and extension_id not in org.allowed_extensions:
-        reasons.append(f"org {org.org_id!r} allowlist excludes {extension_id!r}")
-    if extension_id in org.denied_extensions:
-        reasons.append(
-            f"org {org.org_id!r} denies {extension_id!r} (overrides workspace enablement)"
-        )
-    if org.approved_publishers is not None and publisher not in org.approved_publishers:
-        reasons.append(f"publisher {publisher!r} is not approved by org {org.org_id!r}")
-    pinned = org.version_pins.get(extension_id)
-    if pinned is not None:
-        pin = pinned
-        if version != pinned:
-            reasons.append(
-                f"org {org.org_id!r} pins {extension_id!r} to {pinned!r}, not {version!r}"
-            )
-    return reasons, pin
-
-
-def resolve_extension_policy(
-    table: ExtensionPolicyTable,
-    *,
-    extension_id: str,
-    version: str,
-    publisher: str,
-    org_id: str,
-    workspace_id: str,
-) -> ResolvedExtensionPolicy:
-    """Resolve one extension identity against one immutable policy table.
-
-    Pure function: the same table and identity always produce an equal
-    result, which is what makes policy inheritance deterministic and the
-    resolution safely re-derivable from audit evidence. The org pin, when
-    present, is enforced here — server-side, before any caller-specific
-    logic can run.
-    """
-    _require_id(extension_id, label="extension_id")
-    _require_id(version, label="version")
-    _require_id(publisher, label="publisher")
-    _require_id(org_id, label="org_id")
-    _require_id(workspace_id, label="workspace_id")
-
-    scope = ExtensionScope(org_id=org_id, workspace_id=workspace_id)
-    reasons: list[str] = []
-    pin: str | None = None
-
-    org = table.orgs.get(org_id)
-    if org is None:
-        reasons.append(f"org {org_id!r} is not registered with extension policy")
-    else:
-        org_reasons, pin = _org_layer_reasons(
-            org, extension_id=extension_id, publisher=publisher, version=version
-        )
-        reasons.extend(org_reasons)
-
-    override = table.workspaces.get((org_id, workspace_id))
-    if override is None:
-        reasons.append(f"workspace {scope.describe} is not registered with extension policy")
-    elif extension_id not in override.enabled_extensions:
-        reasons.append(f"{extension_id!r} is not enabled in {scope.describe}")
-
-    ceiling: frozenset[str] | None = None
-    if org is not None and org.permission_ceiling is not None:
-        ceiling = frozenset(org.permission_ceiling)
-    if override is not None and override.permission_ceiling is not None:
-        ceiling = (
-            frozenset(override.permission_ceiling)
-            if ceiling is None
-            else ceiling & override.permission_ceiling
-        )
-
-    return ResolvedExtensionPolicy(
-        extension_id=extension_id,
-        version=version,
-        publisher=publisher,
-        scope=scope,
-        enabled=not reasons,
-        reasons=tuple(reasons),
-        pin=pin,
-        permission_ceiling=ceiling,
-    )
-
-
-class ExtensionPolicyLedger:
-    """Server-side authority for org/Workspace extension policy (#971).
-
-    Holds the current immutable :class:`ExtensionPolicyTable` and an
-    append-only audit trail. Mutations are synchronous table swaps — no
-    await between reading and replacing — so under concurrent asyncio
-    callers every :meth:`resolve` observes exactly one whole table, and
-    pinning is enforced against a consistent snapshot however the callers
-    interleave. Readers cannot mutate: resolution takes only the table, and
-    the ledger exposes no in-place edit of a published snapshot.
-    """
-
-    def __init__(self, *, clock: Callable[[], datetime] = _utc_now) -> None:
-        self._clock = clock
-        self._table = ExtensionPolicyTable()
-        self._audit: list[ExtensionPolicyAuditEvent] = []
-        self._seq = 0
-
-    @property
-    def table(self) -> ExtensionPolicyTable:
-        """The current policy snapshot."""
-        return self._table
-
-    @property
-    def table_digest(self) -> str:
-        """Digest of the current policy snapshot."""
-        return _table_digest(self._table)
-
-    def set_org_policy(self, policy: OrgExtensionPolicy, *, actor: str, reason: str) -> int:
-        """Record the org's policy, replacing any previous one, and audit it."""
-        _require_id(actor, label="actor")
-        _require_id(reason, label="reason")
-        table = ExtensionPolicyTable(
-            orgs={**self._table.orgs, policy.org_id: policy},
-            workspaces=self._table.workspaces,
-        )
-        return self._swap(
-            table,
-            action="org_policy_set",
-            org_id=policy.org_id,
-            workspace_id="",
-            actor=actor,
-            reason=reason,
-        )
-
-    def set_workspace_override(
-        self, override: WorkspacePolicyOverride, *, actor: str, reason: str
-    ) -> int:
-        """Record one Workspace's enablement/ceiling, replacing any previous."""
-        _require_id(actor, label="actor")
-        _require_id(reason, label="reason")
-        if override.org_id not in self._table.orgs:
-            raise ExtensionPolicyError(
-                f"org {override.org_id!r} is not registered; set its policy first"
-            )
-        table = ExtensionPolicyTable(
-            orgs=self._table.orgs,
-            workspaces={
-                **self._table.workspaces,
-                (override.org_id, override.workspace_id): override,
-            },
-        )
-        return self._swap(
-            table,
-            action="workspace_override_set",
-            org_id=override.org_id,
-            workspace_id=override.workspace_id,
-            actor=actor,
-            reason=reason,
-        )
-
-    def pin_version(
-        self, *, org_id: str, extension_id: str, version: str, actor: str, reason: str
-    ) -> int:
-        """Pin one extension to an exact version under an org's policy."""
-        _require_id(actor, label="actor")
-        _require_id(reason, label="reason")
-        _require_id(version, label="version")
-        org = self._table.orgs.get(org_id)
-        if org is None:
-            raise ExtensionPolicyError(f"org {org_id!r} is not registered")
-        updated = replace(org, version_pins={**org.version_pins, extension_id: version})
-        table = ExtensionPolicyTable(
-            orgs={**self._table.orgs, org_id: updated}, workspaces=self._table.workspaces
-        )
-        return self._swap(
-            table,
-            action="version_pinned",
-            org_id=org_id,
-            workspace_id="",
-            actor=actor,
-            reason=reason,
-        )
-
-    def resolve(
-        self,
-        *,
-        extension_id: str,
-        version: str,
-        publisher: str,
-        org_id: str,
-        workspace_id: str,
-    ) -> ResolvedExtensionPolicy:
-        """Resolve against the current snapshot (see the module function)."""
-        return resolve_extension_policy(
-            self._table,
-            extension_id=extension_id,
-            version=version,
-            publisher=publisher,
-            org_id=org_id,
-            workspace_id=workspace_id,
-        )
-
-    def audit(self, *, org_id: str | None = None) -> tuple[ExtensionPolicyAuditEvent, ...]:
-        """The retained audit trail, optionally narrowed to one org."""
-        if org_id is None:
-            return tuple(self._audit)
-        return tuple(event for event in self._audit if event.org_id == org_id)
-
-    def _swap(
-        self,
-        table: ExtensionPolicyTable,
-        *,
-        action: str,
-        org_id: str,
-        workspace_id: str,
-        actor: str,
-        reason: str,
-    ) -> int:
-        self._seq += 1
-        event = ExtensionPolicyAuditEvent(
-            seq=self._seq,
-            action=action,
-            org_id=org_id,
-            workspace_id=workspace_id,
-            actor=actor,
-            reason=reason,
-            at=self._clock(),
-            table_digest=_table_digest(table),
-        )
-        self._table = table
-        self._audit.append(event)
-        return self._seq
-
-
-def tenant_scope_key(org_id: str, workspace_id: str) -> tuple[str, str]:
-    """The tenant key every tenant-scoped extension seam must be namespaced by.
-
-    The org is mandatory (an install nobody is the authority for cannot be
-    recorded — :class:`~maistro.extensions.types.ExtensionScope`); the
-    Workspace may be blank for org-wide scope, but the key still separates
-    org-wide from per-Workspace state.
-    """
-    _require_id(org_id, label="org_id")
-    if not isinstance(workspace_id, str):
-        raise ExtensionPolicyError("workspace_id must be a string")
-    return (org_id, workspace_id)
-
-
-class TenantScopedExtensionState:
-    """Tenant-keyed extension state: caches, checkpoints, configuration (#971).
-
-    All state is namespaced by ``(org_id, workspace_id)``. A view handed to
-    one tenant can only touch that tenant's slice — there is no API by which
-    a view names another scope, and no shared default bucket two Workspaces
-    could collide in. Two Workspaces enabling the same extension therefore
-    cannot observe each other's state, whatever key they use inside their
-    own slice.
-    """
-
-    def __init__(self) -> None:
-        self._buckets: dict[tuple[str, str], dict[str, object]] = {}
-
-    def view(self, org_id: str, workspace_id: str) -> TenantStateView:
-        """The isolated state view for exactly this tenant scope."""
-        key = tenant_scope_key(org_id, workspace_id)
-        bucket = self._buckets.setdefault(key, {})
-        return TenantStateView(key, bucket)
+    permissions: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
-class _ViewKey:
+class OrgExtensionPolicy:
+    """The organization layer: absolute gates no Workspace can widen.
+
+    ``allowed_extensions=None`` means default-allow (the deny-list alone
+    governs); a set means default-deny outside it. The same ``None``-vs-set
+    duality applies to ``approved_publishers``.
+    """
+
+    org_id: str
+    allowed_extensions: frozenset[str] | None = None
+    denied_extensions: frozenset[str] = frozenset()
+    approved_publishers: frozenset[str] | None = None
+    pins: Mapping[str, ExtensionPin] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class WorkspaceExtensionPolicy:
+    """The Workspace layer: enablement and ceilings that only narrow.
+
+    The presence of a Workspace policy switches that Workspace to opt-in
+    enablement: extensions it has not enabled are denied there even when the
+    organization allows them. A Workspace without a policy inherits the
+    organization layer unchanged.
+    """
+
     org_id: str
     workspace_id: str
+    enabled_extensions: frozenset[str] = frozenset()
+    denied_extensions: frozenset[str] = frozenset()
+    #: extension_id -> the maximum permission set the Workspace will hold.
+    #: A requested permission outside the ceiling fails closed.
+    permission_ceilings: Mapping[str, frozenset[str]] = field(default_factory=dict)
 
 
-class TenantStateView:
-    """One tenant's isolated slice of :class:`TenantScopedExtensionState`."""
+@dataclass(frozen=True)
+class PolicyRuleOutcome:
+    """One rule's result on one decision — the decision's explanation unit."""
 
-    def __init__(self, key: tuple[str, str], bucket: dict[str, object]) -> None:
-        self._key = _ViewKey(org_id=key[0], workspace_id=key[1])
-        self._bucket = bucket
+    layer: PolicyLayer
+    rule: str
+    denied: bool
+    detail: str
+
+
+@dataclass(frozen=True)
+class PolicyDecision:
+    """The deterministic, explainable answer for one candidate in one scope."""
+
+    org_id: str
+    workspace_id: str
+    extension_id: str
+    version: str
+    publisher: str
+    requested_permissions: tuple[str, ...]
+    verdict: PolicyVerdict
+    trace: tuple[PolicyRuleOutcome, ...]
 
     @property
-    def scope(self) -> ExtensionScope:
-        return ExtensionScope(org_id=self._key.org_id, workspace_id=self._key.workspace_id)
+    def allowed(self) -> bool:
+        """Whether the request may proceed."""
+        return self.verdict is PolicyVerdict.ALLOW
 
-    def get(self, key: str, default: object = None) -> object:
-        return self._bucket.get(key, default)
+    @property
+    def explanation(self) -> str:
+        """A one-line, self-contained reason for the verdict."""
+        if self.verdict is PolicyVerdict.DENY:
+            return "; ".join(outcome.detail for outcome in self.trace if outcome.denied)
+        evaluated = ", ".join(outcome.rule for outcome in self.trace)
+        return f"no policy rule denied the request (evaluated: {evaluated})"
 
-    def put(self, key: str, value: object) -> None:
-        _require_id(key, label="state key")
-        self._bucket[key] = value
 
-    def pop(self, key: str, default: object = None) -> object:
-        return self._bucket.pop(key, default)
+@dataclass(frozen=True)
+class PolicyAuditEvent:
+    """One appended row of the policy audit trail."""
 
-    def keys(self) -> tuple[str, ...]:
-        return tuple(sorted(self._bucket))
+    seq: int
+    at: datetime
+    actor: str
+    #: ``org-policy-set``, ``workspace-policy-set``, or ``decision``.
+    kind: str
+    org_id: str
+    workspace_id: str
+    extension_id: str
+    detail: str
+
+
+class PolicyAuditLog:
+    """Append-only in-memory policy audit trail (#971).
+
+    Decisions and policy changes are evidence: rows are never rewritten or
+    removed, only appended and read back filtered.
+    """
+
+    def __init__(self) -> None:
+        self._events: list[PolicyAuditEvent] = []
+        self._seq = 0
+
+    def append(
+        self,
+        *,
+        at: datetime,
+        actor: str,
+        kind: str,
+        org_id: str,
+        workspace_id: str = "",
+        extension_id: str = "",
+        detail: str,
+    ) -> PolicyAuditEvent:
+        """Append one event and return it (the durable form of what happened)."""
+        self._seq += 1
+        event = PolicyAuditEvent(
+            seq=self._seq,
+            at=at,
+            actor=actor,
+            kind=kind,
+            org_id=org_id,
+            workspace_id=workspace_id,
+            extension_id=extension_id,
+            detail=detail,
+        )
+        self._events.append(event)
+        return event
+
+    def events(
+        self,
+        org_id: str,
+        *,
+        workspace_id: str | None = None,
+        kind: str | None = None,
+    ) -> tuple[PolicyAuditEvent, ...]:
+        """The trail for one organization, newest last, optionally filtered.
+
+        ``workspace_id=None`` spans every Workspace in the organization —
+        the org-admin inspection view.
+        """
+        selected = [
+            event
+            for event in self._events
+            if event.org_id == org_id
+            and (workspace_id is None or event.workspace_id == workspace_id)
+            and (kind is None or event.kind == kind)
+        ]
+        return tuple(selected)
+
+
+#: The deterministic layer model, in evaluation order — the static half of
+#: "policy inheritance/override result is deterministic and explainable".
+#: Served verbatim by the admin policy-inspection surface.
+INHERITANCE_SEMANTICS: tuple[str, ...] = (
+    "1. the organization deny-list denies an extension everywhere; no "
+    "Workspace request can override it",
+    "2. a configured organization allow-list admits only the listed "
+    "extensions; Workspaces may enable a subset of them",
+    "3. configured organization approved-publishers gate every install "
+    "regardless of Workspace enablement",
+    "4. an organization pin binds one publisher (and optionally one exact "
+    "version) per extension for every Workspace",
+    "5. a Workspace policy may only narrow: opt-in enablement and "
+    "permission ceilings; it cannot re-enable a denied extension, admit an "
+    "unapproved publisher, or escape a pin",
+    "6. a Workspace without a policy inherits the organization layer unchanged",
+    "7. every rule outcome is recorded on the decision trace, in this order",
+)
+
+
+def _require_non_blank(value: str, label: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise PolicyConfigurationError(f"{label} is required")
+    return value
+
+
+def _validate_org_policy(policy: OrgExtensionPolicy) -> None:
+    """Fail closed on an organization policy that could never evaluate."""
+    _require_non_blank(policy.org_id, "org_id")
+    for extension_id in policy.denied_extensions:
+        _require_non_blank(extension_id, "denied extension id")
+    for extension_id in policy.allowed_extensions or ():
+        _require_non_blank(extension_id, "allowed extension id")
+    for publisher in policy.approved_publishers or ():
+        _require_non_blank(publisher, "approved publisher id")
+    for extension_id, pin in policy.pins.items():
+        _require_non_blank(extension_id, "pinned extension id")
+        _require_non_blank(pin.publisher_id, "pin publisher id")
+        if pin.version is not None:
+            _require_non_blank(pin.version, f"pin version for {extension_id}")
+
+
+def _validate_workspace_policy(policy: WorkspaceExtensionPolicy) -> None:
+    """Fail closed on a Workspace policy that could never evaluate."""
+    _require_non_blank(policy.org_id, "org_id")
+    _require_non_blank(policy.workspace_id, "workspace_id")
+    for extension_id in policy.enabled_extensions:
+        _require_non_blank(extension_id, "enabled extension id")
+    for extension_id in policy.denied_extensions:
+        _require_non_blank(extension_id, "denied extension id")
+    for extension_id, ceiling in policy.permission_ceilings.items():
+        _require_non_blank(extension_id, "ceiling extension id")
+        for token in ceiling:
+            try:
+                normalize_permission(token)
+            except ValueError as exc:
+                raise PolicyConfigurationError(str(exc)) from exc
+
+
+def _frozen_org_policy(policy: OrgExtensionPolicy) -> OrgExtensionPolicy:
+    """An equal policy whose every collection is caller-proof.
+
+    The dataclass is frozen but its ``pins`` mapping (and any ``set`` a caller
+    passed where a ``frozenset`` is declared) is caller-owned: publishing it
+    as-is would let a retained reference change a pin *after* ``set_org_policy``
+    returned — outside the organization lock, with no audit row, and possibly
+    while :meth:`ExtensionPolicyEngine.enforcement_window` is held, which is
+    precisely the linearization that window promises. ``None`` stays ``None``:
+    it is the declared default-allow, not an empty allow-list.
+    """
+    return replace(
+        policy,
+        allowed_extensions=(
+            None if policy.allowed_extensions is None else frozenset(policy.allowed_extensions)
+        ),
+        denied_extensions=frozenset(policy.denied_extensions),
+        approved_publishers=(
+            None if policy.approved_publishers is None else frozenset(policy.approved_publishers)
+        ),
+        pins=MappingProxyType(dict(policy.pins)),
+    )
+
+
+def _frozen_workspace_policy(policy: WorkspaceExtensionPolicy) -> WorkspaceExtensionPolicy:
+    """An equal Workspace policy whose enablement and ceilings are caller-proof."""
+    return replace(
+        policy,
+        enabled_extensions=frozenset(policy.enabled_extensions),
+        denied_extensions=frozenset(policy.denied_extensions),
+        permission_ceilings=MappingProxyType(
+            {
+                extension_id: frozenset(ceiling)
+                for extension_id, ceiling in policy.permission_ceilings.items()
+            }
+        ),
+    )
+
+
+class ExtensionPolicyEngine:
+    """Holds organization/Workspace policies and evaluates candidates.
+
+    Reads (``evaluate``, ``explain``, the policy getters) are pure and
+    synchronous over immutable snapshots. Mutations are async and serialize
+    with enforcement critical sections through
+    :meth:`enforcement_window`, so a policy change can never split a
+    check-then-act sequence in the install machine.
+    """
+
+    def __init__(
+        self,
+        *,
+        clock: Callable[[], datetime] | None = None,
+        audit: PolicyAuditLog | None = None,
+    ) -> None:
+        self._clock = clock if clock is not None else _utc_now
+        self._audit = audit if audit is not None else PolicyAuditLog()
+        self._org_policies: dict[str, OrgExtensionPolicy] = {}
+        self._workspace_policies: dict[tuple[str, str], WorkspaceExtensionPolicy] = {}
+        self._locks: dict[str, asyncio.Lock] = {}
+
+    # -- mutation ----------------------------------------------------------
+
+    async def set_org_policy(self, policy: OrgExtensionPolicy, *, actor: str) -> None:
+        """Install the organization layer wholesale and audit the change.
+
+        What is published is an immutable snapshot of the submitted policy:
+        the caller keeps no reference that could add or drop a pin after this
+        returns, so enforcement can only change through this method — inside
+        the organization lock, with an audit row.
+        """
+        _require_non_blank(actor, "actor")
+        _validate_org_policy(policy)
+        published = _frozen_org_policy(policy)
+        async with self._org_lock(published.org_id):
+            self._org_policies[published.org_id] = published
+            self._audit.append(
+                at=self._clock(),
+                actor=actor,
+                kind="org-policy-set",
+                org_id=published.org_id,
+                detail=_summarize_org_policy(published),
+            )
+
+    async def set_workspace_policy(self, policy: WorkspaceExtensionPolicy, *, actor: str) -> None:
+        """Install one Workspace's narrowing layer wholesale and audit it.
+
+        Published as an immutable snapshot, exactly like the organization
+        layer: a retained ceiling ``set`` cannot widen authority behind the
+        engine's back.
+        """
+        _require_non_blank(actor, "actor")
+        _validate_workspace_policy(policy)
+        published = _frozen_workspace_policy(policy)
+        async with self._org_lock(published.org_id):
+            self._workspace_policies[(published.org_id, published.workspace_id)] = published
+            self._audit.append(
+                at=self._clock(),
+                actor=actor,
+                kind="workspace-policy-set",
+                org_id=policy.org_id,
+                workspace_id=published.workspace_id,
+                detail=_summarize_workspace_policy(published),
+            )
+
+    # -- reads -------------------------------------------------------------
+
+    def org_policy(self, org_id: str) -> OrgExtensionPolicy | None:
+        """The organization layer for ``org_id``, or ``None``."""
+        return self._org_policies.get(org_id)
+
+    def workspace_policy(self, org_id: str, workspace_id: str) -> WorkspaceExtensionPolicy | None:
+        """The Workspace layer for the scope, or ``None``."""
+        return self._workspace_policies.get((org_id, workspace_id))
+
+    def audit_events(
+        self,
+        org_id: str,
+        *,
+        workspace_id: str | None = None,
+        kind: str | None = None,
+    ) -> tuple[PolicyAuditEvent, ...]:
+        """The policy audit trail for admin inspection."""
+        return self._audit.events(org_id, workspace_id=workspace_id, kind=kind)
+
+    # -- evaluation ----------------------------------------------------------
+
+    def evaluate(
+        self,
+        candidate: ExtensionCandidate,
+        scope: ExtensionScope,
+        *,
+        actor: str = "system:policy-enforcement",
+    ) -> PolicyDecision:
+        """Evaluate the candidate and append the decision to the audit trail.
+
+        This is the enforcement entry point the install machine calls at
+        inspection, authorization, and activation; every call is evidence.
+        """
+        decision = self.explain(candidate, scope)
+        self._audit.append(
+            at=self._clock(),
+            actor=actor,
+            kind="decision",
+            org_id=scope.org_id,
+            workspace_id=scope.workspace_id,
+            extension_id=candidate.extension_id,
+            detail=f"{candidate.extension_id}@{candidate.version}: "
+            f"{decision.verdict.value} — {decision.explanation}",
+        )
+        return decision
+
+    def explain(self, candidate: ExtensionCandidate, scope: ExtensionScope) -> PolicyDecision:
+        """Evaluate the candidate without writing an audit row (dry-run).
+
+        The rule order is fixed, so the same policy state always yields the
+        same verdict and trace for the same candidate and scope.
+        """
+        org = self._org_policies.get(scope.org_id)
+        workspace = self._workspace_policies.get((scope.org_id, scope.workspace_id))
+
+        trace: list[PolicyRuleOutcome] = []
+        denials: list[str] = []
+        _org_layer(org, candidate, trace, denials)
+        if denials:
+            trace.append(
+                PolicyRuleOutcome(
+                    layer=PolicyLayer.WORKSPACE,
+                    rule="workspace.skipped",
+                    denied=False,
+                    detail="the organization layer denied; Workspace rules are not consulted",
+                )
+            )
+        else:
+            _workspace_layer(workspace, candidate, trace, denials)
+
+        verdict = PolicyVerdict.DENY if denials else PolicyVerdict.ALLOW
+        return PolicyDecision(
+            org_id=scope.org_id,
+            workspace_id=scope.workspace_id,
+            extension_id=candidate.extension_id,
+            version=candidate.version,
+            publisher=candidate.publisher,
+            requested_permissions=tuple(candidate.permissions),
+            verdict=verdict,
+            trace=tuple(trace),
+        )
+
+    # -- concurrency ---------------------------------------------------------
+
+    @asynccontextmanager
+    async def enforcement_window(self, org_id: str) -> AsyncIterator[None]:
+        """Hold the organization's enforcement window.
+
+        The install machine wraps its authorization/activation critical
+        sections in this window; policy mutations take the same per-org lock.
+        Within a window the policy state cannot change, so a decision and the
+        action it authorizes are linearized against every policy change.
+        """
+        async with self._org_lock(org_id):
+            yield
+
+    def _org_lock(self, org_id: str) -> asyncio.Lock:
+        # No await between the check and the set, so lazy creation is safe
+        # under a single event loop (same discipline as the install service).
+        lock = self._locks.get(org_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._locks[org_id] = lock
+        return lock
+
+
+# -- layer evaluators (module-level so the engine stays a thin shell) -------
+
+
+def _org_layer(
+    policy: OrgExtensionPolicy | None,
+    candidate: ExtensionCandidate,
+    trace: list[PolicyRuleOutcome],
+    denials: list[str],
+) -> None:
+    """Evaluate the organization layer, in fixed rule order, into ``trace``."""
+    if policy is None:
+        trace.append(
+            PolicyRuleOutcome(
+                layer=PolicyLayer.ORG,
+                rule="org.default",
+                denied=False,
+                detail="no organization policy is configured; "
+                "the organization layer imposes nothing",
+            )
+        )
+        return
+
+    _org_deny_list_gate(policy, candidate, trace, denials)
+    _org_allow_list_gate(policy, candidate, trace, denials)
+    _org_publishers_gate(policy, candidate, trace, denials)
+    _org_pin_gate(policy, candidate, trace, denials)
+
+
+def _org_deny_list_gate(
+    policy: OrgExtensionPolicy,
+    candidate: ExtensionCandidate,
+    trace: list[PolicyRuleOutcome],
+    denials: list[str],
+) -> None:
+    """Rule 1: the organization deny-list denies everywhere."""
+    if candidate.extension_id in policy.denied_extensions:
+        detail = f"extension {candidate.extension_id} is denied by the organization deny-list"
+        trace.append(PolicyRuleOutcome(PolicyLayer.ORG, "org.deny-list", True, detail))
+        denials.append(detail)
+    else:
+        trace.append(
+            PolicyRuleOutcome(
+                layer=PolicyLayer.ORG,
+                rule="org.deny-list",
+                denied=False,
+                detail="not on the organization deny-list",
+            )
+        )
+
+
+def _org_allow_list_gate(
+    policy: OrgExtensionPolicy,
+    candidate: ExtensionCandidate,
+    trace: list[PolicyRuleOutcome],
+    denials: list[str],
+) -> None:
+    """Rule 2: a configured allow-list admits only the listed extensions."""
+    if policy.allowed_extensions is not None and candidate.extension_id not in (
+        policy.allowed_extensions
+    ):
+        detail = f"extension {candidate.extension_id} is not on the organization allow-list"
+        trace.append(PolicyRuleOutcome(PolicyLayer.ORG, "org.allow-list", True, detail))
+        denials.append(detail)
+    else:
+        detail = (
+            "the organization allow-list admits it"
+            if policy.allowed_extensions is not None
+            else "no organization allow-list is configured"
+        )
+        trace.append(PolicyRuleOutcome(PolicyLayer.ORG, "org.allow-list", False, detail))
+
+
+def _org_publishers_gate(
+    policy: OrgExtensionPolicy,
+    candidate: ExtensionCandidate,
+    trace: list[PolicyRuleOutcome],
+    denials: list[str],
+) -> None:
+    """Rule 3: configured approved-publishers gate every install."""
+    if policy.approved_publishers is not None and candidate.publisher not in (
+        policy.approved_publishers
+    ):
+        detail = f"publisher {candidate.publisher!r} is not approved by the organization"
+        trace.append(PolicyRuleOutcome(PolicyLayer.ORG, "org.approved-publishers", True, detail))
+        denials.append(detail)
+    else:
+        detail = (
+            f"publisher {candidate.publisher!r} is organization-approved"
+            if policy.approved_publishers is not None
+            else "no organization publisher restriction is configured"
+        )
+        trace.append(PolicyRuleOutcome(PolicyLayer.ORG, "org.approved-publishers", False, detail))
+
+
+def _org_pin_gate(
+    policy: OrgExtensionPolicy,
+    candidate: ExtensionCandidate,
+    trace: list[PolicyRuleOutcome],
+    denials: list[str],
+) -> None:
+    """Rule 4: the organization pin binds the publisher (and exact version)."""
+    pin = policy.pins.get(candidate.extension_id)
+    if pin is None:
+        trace.append(
+            PolicyRuleOutcome(
+                layer=PolicyLayer.ORG,
+                rule="org.pin",
+                denied=False,
+                detail="no organization pin for this extension",
+            )
+        )
+        return
+
+    if candidate.publisher != pin.publisher_id:
+        detail = (
+            f"organization pin requires publisher {pin.publisher_id!r}; "
+            f"candidate declares {candidate.publisher!r}"
+        )
+        trace.append(PolicyRuleOutcome(PolicyLayer.ORG, "org.publisher-pin", True, detail))
+        denials.append(detail)
+    else:
+        trace.append(
+            PolicyRuleOutcome(
+                layer=PolicyLayer.ORG,
+                rule="org.publisher-pin",
+                denied=False,
+                detail=f"publisher {candidate.publisher!r} matches the organization pin",
+            )
+        )
+
+    if pin.version is not None and candidate.version != pin.version:
+        detail = (
+            f"organization pin requires version {pin.version}; "
+            f"candidate declares {candidate.version}"
+        )
+        trace.append(PolicyRuleOutcome(PolicyLayer.ORG, "org.version-pin", True, detail))
+        denials.append(detail)
+    else:
+        detail = (
+            f"version {candidate.version} matches the organization pin"
+            if pin.version is not None
+            else "the organization pin constrains the publisher only"
+        )
+        trace.append(PolicyRuleOutcome(PolicyLayer.ORG, "org.version-pin", False, detail))
+
+
+def _workspace_layer(
+    policy: WorkspaceExtensionPolicy | None,
+    candidate: ExtensionCandidate,
+    trace: list[PolicyRuleOutcome],
+    denials: list[str],
+) -> None:
+    """Evaluate the Workspace layer; it may only ever add denials."""
+    if policy is None:
+        trace.append(
+            PolicyRuleOutcome(
+                layer=PolicyLayer.WORKSPACE,
+                rule="workspace.default",
+                denied=False,
+                detail="no Workspace policy is configured; "
+                "the Workspace inherits the organization layer unchanged",
+            )
+        )
+        return
+
+    if candidate.extension_id in policy.denied_extensions:
+        detail = (
+            f"extension {candidate.extension_id} is denied by the "
+            f"{policy.workspace_id} Workspace deny-list"
+        )
+        trace.append(PolicyRuleOutcome(PolicyLayer.WORKSPACE, "workspace.deny-list", True, detail))
+        denials.append(detail)
+    else:
+        trace.append(
+            PolicyRuleOutcome(
+                layer=PolicyLayer.WORKSPACE,
+                rule="workspace.deny-list",
+                denied=False,
+                detail="not on the Workspace deny-list",
+            )
+        )
+
+    if candidate.extension_id not in policy.enabled_extensions:
+        detail = (
+            f"extension {candidate.extension_id} is not enabled for Workspace {policy.workspace_id}"
+        )
+        trace.append(PolicyRuleOutcome(PolicyLayer.WORKSPACE, "workspace.enablement", True, detail))
+        denials.append(detail)
+    else:
+        trace.append(
+            PolicyRuleOutcome(
+                layer=PolicyLayer.WORKSPACE,
+                rule="workspace.enablement",
+                denied=False,
+                detail=f"enabled for Workspace {policy.workspace_id}",
+            )
+        )
+
+    ceiling = policy.permission_ceilings.get(candidate.extension_id)
+    if ceiling is None:
+        trace.append(
+            PolicyRuleOutcome(
+                layer=PolicyLayer.WORKSPACE,
+                rule="workspace.permission-ceiling",
+                denied=False,
+                detail="no permission ceiling for this extension in this Workspace",
+            )
+        )
+        return
+
+    requested = set(candidate.permissions)
+    beyond = requested - set(ceiling)
+    if beyond:
+        detail = "requested permissions exceed the Workspace permission ceiling: " + ", ".join(
+            sorted(beyond)
+        )
+        trace.append(
+            PolicyRuleOutcome(PolicyLayer.WORKSPACE, "workspace.permission-ceiling", True, detail)
+        )
+        denials.append(detail)
+    else:
+        trace.append(
+            PolicyRuleOutcome(
+                layer=PolicyLayer.WORKSPACE,
+                rule="workspace.permission-ceiling",
+                denied=False,
+                detail="requested permissions are within the Workspace ceiling",
+            )
+        )
+
+
+def _summarize_org_policy(policy: OrgExtensionPolicy) -> str:
+    """A stable one-line summary for the audit trail."""
+
+    def names(values: frozenset[str] | None) -> str:
+        if values is None:
+            return "unrestricted"
+        if not values:
+            return "none"
+        return ", ".join(sorted(values))
+
+    pins = (
+        "; ".join(
+            f"{extension_id}->{pin.publisher_id}"
+            + (f"@{pin.version}" if pin.version is not None else "")
+            for extension_id, pin in sorted(policy.pins.items())
+        )
+        or "none"
+    )
+    return (
+        f"allow={names(policy.allowed_extensions)}; "
+        f"deny={names(policy.denied_extensions)}; "
+        f"publishers={names(policy.approved_publishers)}; pins: {pins}"
+    )
+
+
+def _summarize_workspace_policy(policy: WorkspaceExtensionPolicy) -> str:
+    """A stable one-line summary for the audit trail."""
+    ceilings = (
+        "; ".join(
+            f"{extension_id}<={', '.join(sorted(ceiling))}"
+            for extension_id, ceiling in sorted(policy.permission_ceilings.items())
+        )
+        or "none"
+    )
+    return (
+        f"enabled={', '.join(sorted(policy.enabled_extensions)) or 'none'}; "
+        f"deny={', '.join(sorted(policy.denied_extensions)) or 'none'}; "
+        f"ceilings: {ceilings}"
+    )
