@@ -220,6 +220,13 @@
       "rationale": "On-demand #929 / epic #903 M8-D5 Graph-pattern induction/reuse benchmark (mining successful Runs into versioned canonical Graph candidates per ADR-082926-65bf, naive/guarded reuse vs from-scratch planning on held-out Goals with a latent validation-drift phase); deterministic and offline, run when the corpus model, the induction bar, or the planners change — a measurement, not a gate. Wires no reuse path into production; the research disposition lives in docs/research/929-graph-pattern-induction-reuse.md."
     },
     {
+      "id": "m4i-adaptive-vs-fixed-bench",
+      "file": ".github/workflows/m4i-adaptive-vs-fixed-bench.yml",
+      "disposition": "MANUAL_DIAGNOSTIC",
+      "triggers": ["workflow_dispatch"],
+      "rationale": "On-demand #106 / epic M4-I adaptive-vs-fixed routing benchmark (scripts/bench_m4i_adaptive_vs_fixed.py: quality-triggered escalation plus text/image observation selection vs fixed single-alias baselines on one shared workload, through the real llm.summarize node, the governed model egress, and the durable executor's supervision fold, against a deterministic stub gateway); deterministic and offline, re-measured when the escalation/routing contracts or the quality heuristic change — a measurement, not a gate. The recorded numbers live in docs/benchmarks/m4i-adaptive-vs-fixed-baseline.json; the behavioral assertions live in packages/maistro-core/tests/graph/verification/test_adaptive_vs_fixed_baseline.py."
+    },
+    {
       "id": "soak-pressure",
       "file": ".github/workflows/soak-pressure.yml",
       "disposition": "MANUAL_DIAGNOSTIC",
