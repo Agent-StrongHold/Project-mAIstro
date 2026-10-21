@@ -178,7 +178,7 @@ class AdmissionRowHeader:
                 "scope_key must match lowercase [0-9a-f]{64} exactly",
                 code=AdmissionDecodeCode.INVALID_HEADER,
                 scope_key=None,
-            )
+            ) from None
         if (
             not isinstance(self.format_version, int)
             or isinstance(self.format_version, bool)
@@ -188,20 +188,20 @@ class AdmissionRowHeader:
                 "format_version must be exactly 1 or 2",
                 code=AdmissionDecodeCode.INVALID_HEADER,
                 scope_key=scope_key,
-            )
+            ) from None
         if not _hex64(self.fingerprint):
             raise AdmissionRowDecodeError(
                 "fingerprint must match lowercase [0-9a-f]{64} exactly",
                 code=AdmissionDecodeCode.INVALID_HEADER,
                 scope_key=scope_key,
-            )
+            ) from None
         for name in ("created_at_us", "expires_at_us", "lease_expires_at_us"):
             if not _int64(getattr(self, name)):
                 raise AdmissionRowDecodeError(
                     f"{name} must be a signed 64-bit int",
                     code=AdmissionDecodeCode.INVALID_HEADER,
                     scope_key=scope_key,
-                )
+                ) from None
 
 
 def decode_admission_header(row: Mapping[str, object]) -> AdmissionRowHeader:
