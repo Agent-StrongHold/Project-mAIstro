@@ -54,9 +54,11 @@ only exported surfaces:
   after an upgrade and after removal; history is never reattributed or
   dropped.
 
-Develop sync: this head merges `origin/develop` (e20e9f52e) — the merge was
-clean, and the merged tree differs from develop only in this note and the
-proof file.
+Develop sync: this head merges `origin/develop` (first e20e9f52e in the
+previous round, now again at 252950bdbdc2 — 19 further commits including the
+aiohttp 3.14.5 trunk unblock and the #2223 publication of the
+`admission_identity` vocabulary from `maistro.runs`). Both merges were clean;
+the tree now differs from develop's tip only in this note and the proof file.
 
 Fail-before evidence, re-verified independently on this head with a
 mutation harness (each mutation applied to production source, the targeted
@@ -103,44 +105,44 @@ Validation: extensions suite green with this file's 8 tests; `ruff check` /
 vulture scan (`packages/*/src --min-confidence 60 --exclude
 '*/third_party/*'`) reports exactly the banked identities.
 
-Known inherited gate conditions (not caused by this change). This head is a
-test-only diff against develop plus a locked-environment CVE bump
-(`uv.lock` only: aiohttp 3.14.3 → 3.14.5); `packages/*/src`,
-`quality/reachability-baseline.json`, and `quality/vulture-baseline.json` are
-byte-identical to develop's tip e20e9f52e), so every red merge-queue gate
-below reproduces on a clean checkout of develop and none is introduced here:
+Gate repairs this round (merge with origin/develop 252950bdbdc2):
 
 - **Quality / Reachability**, **exact-debt-ledger**, and the
-  **Quality gate (Pillars 1–4, 7, 8)** share one root cause:
-  `maistro.runs.admission_identity` is a newly-unreachable module (169 vs the
-  168 banked). It was introduced by #1851 and reached develop via PR #1936
-  (e20e9f52e); running `scripts/check-reachability.py` on a clean checkout of
-  e20e9f52e reports the identical failure (`maistro.runs.admission_identity …
-  NEWLY UNREACHABLE`). `exact-debt-ledger` fails at its
-  `check-ratchet-provenance.py` step, which calls
-  `check-reachability-provenance.py` on the same module; its vulture step is
-  green (`1326 reviewed identities -> 1326 findings`). The Pillars aggregate
-  fails only through its `quality-reachability` dependency — every other
-  Quality sub-gate (Radon, Vulture, Mypy strict, Pyright, Xenon, Acceptance
-  state, Docstring coverage, Wiring reads, …) is green at this head. Repair
-  needs #1851 to wire `admission_identity` (or an owner amendment of
-  `quality/reachability-baseline.json`); neither is the authorized
-  vulture-ledger amendment, and both are out of scope for this lane.
-- **Supply chain (pip-audit)** and the **security** workflow: repaired in
-  this round by upgrading `aiohttp` 3.14.3 → 3.14.5 in `uv.lock` (CVE-2026-111063,
-  CVE-2026-111064, GHSA-2g87-pp6c-29x5; fixed in 3.14.4). The pip-audit gate
-  is now green against this head's frozen environment
-  (`scripts/pip_audit_gate.py` → `1 known, all triaged in ALLOWED`;
-  dependency-usage OK). The `security` workflow's SAST scanners (bandit /
-  semgrep / gitleaks) are green.
-- **test** and **Coverage gate**: the `test` job executes the server / Turing
-  / design / ext-harness / ext-sdk / root / Hive suites, none of which this
-  change touches (the maistro-core suite — this proof's home — is the
-  `coverage (no services)` producer and is green here). The publish-set floor
-  is a whole-tree measure with no production delta from a test-only change.
+  **Quality gate (Pillars 1–4, 7, 8)**: resolved by the sync. develop's
+  #2223 now re-exports the `admission_identity` vocabulary from
+  `maistro.runs`, so the module is reachable: `scripts/check-reachability.py`
+  with `RATCHET_BASE_REV=origin/develop` reports 168 unreachable with zero
+  newly-unreachable (was 169 with `maistro.runs.admission_identity`), and the
+  exact vulture scan (`packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'`) reports 1324 reviewed identities -> 1324 findings,
+  matching develop's banked ledger. The Pillars aggregate fails only through
+  its now-green `quality-reachability` dependency.
+- **Supply chain (pip-audit)** and the **security** workflow: repaired in the
+  previous round by upgrading `aiohttp` 3.14.3 → 3.14.5 in `uv.lock`
+  (CVE-2026-111063, CVE-2026-111064, GHSA-2g87-pp6c-29x5; fixed in 3.14.4);
+  the sync made this byte-identical to develop's own lock. The pip-audit gate
+  is green against this head's frozen environment
+  (`scripts/pip_audit_gate.py` → `pip-audit OK (1 known, all triaged in
+  ALLOWED)`; direct-dependency usage OK).
+- **test** and **Coverage gate**: proven green locally on the merged tree —
+  root suite 5400 passed / 138 skipped (`tests/` minus registry tools, with
+  `RATCHET_BASE_REV=origin/develop` so the seven ratchet self-checks compare
+  against develop), maistro-core 15869 passed / 1154 skipped / 7 xfailed,
+  server/Turing/design/ext-harness/ext-sdk 1903 passed / 9 skipped, and
+  `check-suite-inventory.py` green (21 suites, 32741 node ids, no duplicate
+  evidence). A test-only change adds no production lines, so diff coverage
+  has no new surface to score.
 
-The earlier `design_coverage` acceptance-state note no longer reproduces: the
-`Quality / Acceptance state` check is green at this head.
+Local-environment note (not branch content): this shared worktree carried a
+generated, gitignored `quality/ac-state.json` (produced by
+`scripts/check-ac-state.py`) that made
+`tests/test_branch_independence_repository.py` fail on an untracked file no
+checkout of this branch contains; the artifact was moved out of the tree
+(preserved in the job directory) and the test passes. A full-suite run in
+this container also intermittently raised mass `tmp_path` setup errors that
+tracked the container's `/tmp` inode exhaustion (`df -i` at 100%); after
+clearing this session's own `/tmp/pytest-of-dev` debris the same suite ran
+fully green, so neither condition exists on CI.
 
 Residual review risk (owner): the proof drives the canonical
 `Graph → Run → NodeRun → Attempt` seam and asserts real host evidence (effect
