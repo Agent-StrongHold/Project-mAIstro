@@ -358,6 +358,17 @@ async def _pinned_composite(request: Request, store: Any, design_id: str, org_id
         except HTTPException:
             raise
         except Exception as exc:
+            code = getattr(exc, "code", None)
+            typed_status = _COMPOSITOR_LIMIT_STATUS.get(code) if isinstance(code, str) else None
+            if typed_status is not None:
+                # A #393 image-limit rejection: the caller's payload violates
+                # a server-configured cap (422) or the bounded worker timed
+                # out (504) — not a downstream provider failure, so 502 would
+                # misreport it (and the retry it invites would never help).
+                raise HTTPException(
+                    status_code=typed_status,
+                    detail={"code": code, "reason": str(exc)},
+                ) from exc
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
                 detail=f"Composite failed: {exc}",
@@ -372,6 +383,21 @@ async def _pinned_composite(request: Request, store: Any, design_id: str, org_id
                     detail=f"Composite persistence failed: {exc}",
                 ) from exc
     return composite
+
+
+# ── Typed canvas image-limit errors (#393) ────────────────────────────
+
+# The compositor's typed rejections are recognized by their stable ``code``
+# attribute — the same surface ``_map_export_error`` uses — because
+# maistro-server carries no maistro-canvas dependency. A scale/pixel-cap
+# rejection describes the caller's payload (422, matching the canvas
+# routes' own mapping in maistro_canvas.canvas.routes); a worker timeout is
+# 504. Anything unrecognized stays a downstream failure (502).
+_COMPOSITOR_LIMIT_STATUS: dict[str, int] = {
+    "LAYER_SCALE_OUT_OF_RANGE": status.HTTP_422_UNPROCESSABLE_ENTITY,
+    "LAYER_PIXEL_BUDGET_EXCEEDED": status.HTTP_422_UNPROCESSABLE_ENTITY,
+    "COMPOSITE_TIMEOUT": status.HTTP_504_GATEWAY_TIMEOUT,
+}
 
 
 def _map_export_error(exc: Exception) -> HTTPException:
@@ -392,6 +418,12 @@ def _map_export_error(exc: Exception) -> HTTPException:
             status_code=status.HTTP_501_NOT_IMPLEMENTED,
             detail={"code": code, "reason": str(exc)},
         )
+    typed_status = _COMPOSITOR_LIMIT_STATUS.get(code) if code is not None else None
+    if typed_status is not None:
+        # A #393 image-limit rejection that reached the exporter (its encode
+        # step shares the compositor's limits): same truthful status as the
+        # composite path, so the publish/export contract is uniform.
+        return HTTPException(status_code=typed_status, detail={"code": code, "reason": str(exc)})
     invocation_id = getattr(exc, "invocation_id", None)
     if invocation_id is not None:
         # An ExportFailed-shaped error: the governed Invocation settled
