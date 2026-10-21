@@ -423,6 +423,13 @@ jobs:
       # diff gate scored the new store's 238 changed lines at 25.6% while the
       # same arcs passed against a real server in the `postgres` job — the
       # exact shape #231 documented for scheduling.
+      #
+      # `personas` joins by that same rule (#12): `personas/pg_store.py` is a
+      # new PostgreSQL store whose durable contract gates its legs on
+      # MAISTRO_TEST_PG_DSN, so everywhere else the PostgreSQL half skips and
+      # the store scores as untested code. The suite is self-contained (its
+      # stores create their own schema tables on the migrated chain applied
+      # above) and shares this job's service only.
       - name: Apply the chain, then the suites that need a schema (under coverage)
         run: |
           uv run alembic upgrade head
@@ -435,6 +442,7 @@ jobs:
             packages/maistro-core/tests/graph \
             packages/maistro-core/tests/projects \
             packages/maistro-core/tests/workspaces \
+            packages/maistro-core/tests/personas \
             packages/maistro-core/tests/goals \
             packages/maistro-core/tests/scheduling \
             packages/maistro-core/tests/tasks/test_idempotency_purge_driven.py \
