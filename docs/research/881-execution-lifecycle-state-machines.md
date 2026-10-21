@@ -119,11 +119,12 @@ None introduced; the artifact is test-only, per the research guardrails:
   only the published transition tables and `PgRunStore`, and
   `scripts/check-formal-oracle-independence.py` verifies it touches no oracle
   or security-implementation path.
-- **The private import is read-only and test-scoped.** `_ACTIVE_ATTEMPT_STATUSES`
-  is read from a PYTHONPATH-shadowed copy of `packages/maistro-core/src` (the
-  same mechanism as the mutant battery); the shipped module is never modified,
-  and the machine fails loudly if the live set drifts rather than silently
-  widening what it treats as authoritative.
+- **The private import is read-only and test-scoped.** The test imports
+  `_ACTIVE_ATTEMPT_STATUSES` straight from the installed `maistro.runs.pg_store`;
+  the shipped module is never modified, and the machine fails loudly if the
+  live set drifts rather than silently widening what it treats as
+  authoritative. (The mutant battery is the thing that shadows
+  `packages/maistro-core/src` on `PYTHONPATH`; the test itself does not.)
 - **No new authority surface.** The machine drives only public store mutators
   against a throwaway, migrated PostgreSQL (local pgvector container via
   `MAISTRO_TEST_PG_DSN`); it holds no credentials, bypasses no gate, and

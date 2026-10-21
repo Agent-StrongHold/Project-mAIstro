@@ -23,10 +23,10 @@ Three node IDs under `formal/models/test_execution_lifecycle_state.py`:
 and 670 at this head after the develop sync (baseline
 `docs/testing/inventory/baseline.json` formal/ = 664 plus open deltas; the +3
 above is this branch's formal/ delta). The counts moved with develop; the delta
-did not. One additional node lands in `tests/`: `tests/
-te_postgres_health_checks.py` parametrizes one case per workflow that declares
-a Postgres service, and `formal-conformance-nightly.yml` adds the nightly
-service (`formal-conformance-nightly.yml:formal-nightly:postgres`), hence the
+did not. One additional node lands in `tests/`: `tests/test_postgres_health_checks.py`
+parametrizes one case per workflow that declares a Postgres service, and
+`formal-conformance-nightly.yml` adds the nightly service
+(`formal-conformance-nightly.yml:formal-nightly:postgres`), hence the
 `tests/: +1` delta above. Like I29, the machine is about the PostgreSQL
 store, so it skips without `MAISTRO_TEST_PG_DSN`; `formal-conformance.yml`
 and the nightly workflow both provision the service, so nothing skips in CI. Runs at the PR budget in ~4-8s; measured
