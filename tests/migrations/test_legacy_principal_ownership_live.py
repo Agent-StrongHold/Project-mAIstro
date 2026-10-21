@@ -409,7 +409,7 @@ def _assert_losslessly_migrated() -> None:
         ("evt-default", "conductor"),
     ]
 
-    assert _versions() == {"064"}
+    assert _versions() == {"065"}
 
 
 class TestMixedDataMigratesLosslessly:
