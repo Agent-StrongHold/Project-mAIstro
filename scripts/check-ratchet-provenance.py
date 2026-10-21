@@ -42,6 +42,10 @@ CANDIDATE_AUTHORED: dict[tuple[str, str], str] = {
         "each Dockerfile's disposition and named build/scan jobs rather than comparing "
         "against a tolerated prior-state oracle"
     ),
+    ("check-license-inventory.py", "quality/license-policy.json"): (
+        "license policy is the reviewed legal classification and resolution specification; "
+        "the checker derives component evidence from immutable final-artifact SBOMs"
+    ),
     ("check-workflow-inventory.py", "quality/workflow-inventory.json"): (
         "the workflow inventory is the reviewed current-tree specification: the checker validates "
         "each workflow's disposition, declared triggers and reference liveness rather than "
