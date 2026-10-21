@@ -1346,17 +1346,53 @@ jobs:
           # Re-measured on develop: 137 block identities, xenon and the ledger
           # one-for-one, module and average axes clean.
           #
-          # 137 -> 134 (#1791, developed in parallel with the waves above and
-          # merged here): the three consistency-evaluator blocks in
-          # maistro-design (consistency.py::_build_refinement,
-          # _check_sibling_contradictions, evaluate_project_snapshot) went
-          # from C (17/16/15) to B (8/6/6), and the radon ledger dropped the
-          # same three rows together with their #1682 grants -- the same move
-          # #1674 made for tau_bench. A divergence between this count and the
-          # ledger's length is itself a signal that one of the two instruments
-          # stopped looking; tests/test_complexity_gate_scope.py pins them
-          # together.
-          XENON_BASELINE: 133
+          # 137 -> 136 (#106): the M4-I verification-aware executor refactor
+          # took durable_runs/executor.py::_build_ctx (and nine further
+          # blocks) below the ledger threshold; quality/radon-baseline.json
+          # banked the improvements and the pin test
+          # (tests/test_complexity_gate_scope.py::
+          # test_xenon_block_ceiling_equals_the_radon_ledger_length) requires
+          # this ceiling to follow the ledger down in the same PR.
+          #
+          # 136 -> 133 (#1791, developed in parallel on develop and merged
+          # here): the three consistency-evaluator blocks in maistro-design
+          # (consistency.py::_build_refinement, _check_sibling_contradictions,
+          # evaluate_project_snapshot) went from C (17/16/15) to B (8/6/6),
+          # and the radon ledger dropped the same three rows together with
+          # their #1682 grants -- the same move #1674 made for tau_bench. A
+          # divergence between this count and the ledger's length is itself a
+          # signal that one of the two instruments stopped looking;
+          # tests/test_complexity_gate_scope.py pins them together.
+          # Re-measured on the merged branch: 133 block identities, xenon and
+          # the ledger one-for-one; module and average axes clean.
+          #
+          # 133 -> 128 (#1792, synced from develop): the six blocks #1730
+          # created or regressed in maistro-rsi went under the C ceiling --
+          # fail_first.py's _has_related_failure, collect_fail_first_evidence
+          # and fail_first_gate (C 14/12/11 -> B 9/6/6) and
+          # candidate_fitness.py's evaluate_candidate and compose_scorecard
+          # (C (20) and D (23) at this branch's landing base -> B (8) and A (2));
+          # LocalRsiLoop._fitness_decision was already B (10) here, so it has
+          # no ledger row to drop. The radon ledger dropped the same five rows
+          # and all nine of their #1682/#1793 grant entries (both grant
+          # generations for the three callers). The xenon re-run at the merge
+          # commit reports 128 block identities matching the ledger
+          # one-for-one; module and average axes clean.
+          
+          #
+          # 128 -> 127 (#59): the supply-chain hardening of the skill mutation
+          # path (SkillForge.mutate) put the block over the C ceiling while
+          # this branch's work was in flight, and the Boy Scout repair that
+          # followed (the mutation prologue extracted into
+          # SkillForge._prepare_mutation) brought it back under the ceiling.
+          # #59's marketplace work had already taken
+          # SkillMarketplace.install (C 11) below the ceiling by splitting it
+          # into _build_installed_skill/_repair_skill_content/
+          # _persist_installed_skill, and the radon ledger dropped that row.
+          # The xenon re-run reports the block identities matching the
+          # ledger one-for-one; module and average axes clean.
+          XENON_BASELINE: 127
+
           # Module rank was never gated at all. The old count matched only
           # '^ERROR:xenon:block', so a whole module drifting to C passed in
           # silence; widening the scope surfaced one.
