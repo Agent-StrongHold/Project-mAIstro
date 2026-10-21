@@ -109,7 +109,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from maistro.extensions.tool_skill import ExtensionContract
     from maistro.extensions.types import InstallRecord
 
-console = Console()
+console = Console(soft_wrap=True)
 app = Typer(help="Inspect install records (publisher, digest, trust); preflight contract compat.")
 
 
