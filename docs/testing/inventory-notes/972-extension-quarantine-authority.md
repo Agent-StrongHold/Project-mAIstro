@@ -1,56 +1,56 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +43
+  packages/maistro-core/tests: +0
 ---
+# 972-extension-quarantine-authority
 
-# Extension quarantine/health-response authority (#972, M9-G4)
+> **Superseded by the develop-sync merge**: develop landed this feature in the
+> M9-G EPIC commit `f0fb5c83db86` ("[EPIC M9-G] Enforce extension isolation,
+> permissions, tenancy, and policy governance (#2226)"), which is an ancestor
+> of `origin/develop`. The merge of that commit into `auto-972` replaced the
+> branch's independent `ExtensionQuarantineAuthority` implementation
+> (`packages/maistro-core/src/maistro/extensions/quarantine.py`), its
+> `Container.ensure_extension_quarantine_authority` wiring, and its
+> acceptance suite (`packages/maistro-core/tests/extensions/
+> test_quarantine_authority.py`) with develop's canonical
+> `maistro.extensions.quarantine` engine (`ExtensionGovernanceService` and the
+> `SandboxViolationBridge`) and develop's own suite. Develop's coverage is
+> recorded in `972-extension-quarantine.md`; the removal is recorded in
+> `auto-972-develop-sync-resolution.md`.
 
-New acceptance suite `packages/maistro-core/tests/extensions/test_quarantine_authority.py`
-adds **43 node IDs** to `packages/maistro-core/tests` (verified with
-`pytest --collect-only -q` and `scripts/check-suite-inventory.py` before and
-after). No other suite moves; no existing test was removed or renamed.
+Original note (the branch's independent implementation, now removed):
 
-The tests drive the new `maistro.extensions.quarantine` authority (and its
-`Container.ensure_extension_quarantine_authority` wiring) against the issue's
-acceptance criteria, one test class per criterion:
+Lands the M9-G4 quarantine/health-response authority (`ExtensionQuarantineAuthority`)
+— canonical security/health evidence with threshold-driven quarantine or
+version disable, the extension structurally unable to write or clear its own
+state, in-flight work dispositioned by policy, and an append-only evidence
+ledger that re-enable never erases. Forty-three node IDs in
+`packages/maistro-core/tests/extensions/test_quarantine_authority.py`, mapped
+one test class per issue #972 acceptance criterion
+(`TestQuarantineBlocksNewInvocations`, `TestExtensionCannotWriteOrClearItsOwnState`,
+`TestThresholdsAndStateDistinction`, `TestInFlightDisposition`,
+`TestReenableAndEvidenceRetention`, `TestRaceQuarantineVersusInvocation`,
+`TestContainerWiring`, `TestCanonicalVocabulary`,
+`TestSuspensionRecordsKeptAfterLift`).
 
-- `TestQuarantineBlocksNewInvocations` (5) — a package quarantine refuses
-  every version, a version disable refuses only that version, refusal is
-  immediate with no grace window, a version re-enable cannot undercut a
-  package quarantine, and scopes are independent.
-- `TestExtensionCannotWriteOrClearItsOwnState` (7) — reserved
-  `extension:`-namespace actors are refused for quarantine and re-enable
-  (including case/whitespace games), extension-controlled sources cannot mint
-  security or health evidence, state changes demand accountable actor and
-  reason, the admission token is frozen plain data, and the store seam has no
-  delete/rewrite method.
-- `TestThresholdsAndStateDistinction` (8) — transient health failure records
-  evidence without blocking; the strike limit auto-disables exactly the
-  failing version; strikes age out of the window while the event ledger keeps
-  them; sub-floor security evidence suspends nothing; at-floor security
-  disables one version; `publisher_wide_on_severe` is the explicit
-  publisher-wide policy choice; repeated auto-quarantine lands one
-  transition; degenerate thresholds are refused.
-- `TestInFlightDisposition` (5) — suspension dispositions every open
-  admission (cancel by default, let-finish by policy), completion is evidence
-  that cannot lift state, an invocation completes at most once, and only
-  terminal canonical invocation statuses are accepted as receipts.
-- `TestReenableAndEvidenceRetention` (4) — re-enable requires an active
-  suspension, erases no strike/violation evidence (and a relapse inside the
-  strike window re-suspends immediately), history stays queryable across
-  quarantine, and records carry extension/version/publisher attribution.
-- `TestRaceQuarantineVersusInvocation` (5) — deterministic, gate-driven race
-  proofs: 50 concurrent admissions after the authoritative change all lose;
-  25 before it all land; an admission paused *inside* the per-identity lock
-  cannot be interleaved by a quarantine (the suspension serializes behind it
-  and then dispositions the in-flight work); concurrent health failures land
-  exactly one auto-quarantine transition; re-affirming a suspension never
-  re-dispositions. The bite was verified: with the per-identity lock neutered
-  in a throwaway harness, the interleave occurs (state reads between the
-  admission's two reads) and the committed assertions fail.
-- `TestContainerWiring` (3) — lazy build/caching, default in-memory store,
-  pre-wired store preserved.
-- `TestCanonicalVocabulary` (4) / `TestSuspensionRecordsKeptAfterLift` (2) —
-  canonical source set excludes extension-controlled reporters, frozen
-  records refuse writes, admission fields stay plain data, lifted targets
-  keep their row with true `from_state` on re-suspension.
+## Why the develop-sync merge adopts develop's engine
+
+Both sides implemented the same issue #972 feature independently: the branch's
+`ExtensionQuarantineAuthority` (1063 lines, container-wired) and develop's
+`ExtensionGovernanceService` + `SandboxViolationBridge` (canonical engine, not
+container-wired). Keeping both would put two competing suspension authorities
+in the tree — two paths that can refuse or lift a quarantine — which the
+repo's single-authority rule forbids. The resolution follows the established
+develop-sync pattern (`971-extension-policy-governance.md`,
+`944-develop-sync-merge-resolution.md`): when develop has landed the feature,
+the branch's duplicate is superseded by develop's canonical implementation and
+the branch's own test module is removed.
+
+## Inventory consequence
+
+The branch's suite contributed +43 node IDs to `packages/maistro-core/tests`.
+It is gone in the merged tree, so this note's `inventory-delta` is **+0**
+(the original +43 was zeroed by `check-suite-inventory.py --update`). Develop's
+suite is accounted for by `972-extension-quarantine.md`. Canonical collection
+after the sync returns 17104 node IDs for `packages/maistro-core/tests`, and
+`check-suite-inventory.py` exits 0 across all 21 suites.

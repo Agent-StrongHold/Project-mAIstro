@@ -69,10 +69,11 @@ from maistro.extensions.metering import (
 )
 from maistro.extensions.packs import InstallablePackRegistry
 from maistro.extensions.quarantine import (
-    ExtensionQuarantineAuthority,
-    HealthVerdict,
+    ActorKind,
+    AdmissionDecision,
+    ExtensionGovernanceService,
+    GovernanceDecision,
     InFlightDisposition,
-    InvocationAdmission,
 )
 from maistro.extensions.resolution import LockState
 from maistro.extensions.sqlite_health_store import SqliteExtensionHealthStore
@@ -542,28 +543,6 @@ _VULTURE_WHITELIST = (
     ExternalAgentRegistry.refresh_descriptor,
     ExternalAgentRegistry.report_availability,
     ExternalAgentRegistry.eligible_specialists,
-    # Extension quarantine/health-response authority (M9-G4, #972). Same
-    # contract-ships-first posture as the M9-B1 store seams above: the
-    # authority's operator/evidence/admission surfaces are consumed in-tree
-    # by the acceptance suite (packages/maistro-core/tests/extensions/
-    # test_quarantine_authority.py); the HTTP admin routes and the runtime
-    # admission call site are the M9-G slices that follow. Evidence fields
-    # are read back through the same suite's history queries.
-    Container.ensure_extension_quarantine_authority,
-    ExtensionQuarantineAuthority.admit_invocation,
-    ExtensionQuarantineAuthority.complete_invocation,
-    ExtensionQuarantineAuthority.record_security_violation,
-    ExtensionQuarantineAuthority.record_health_failure,
-    ExtensionQuarantineAuthority.reenable,
-    ExtensionQuarantineAuthority.violation_history,
-    ExtensionQuarantineAuthority.transition_history,
-    ExtensionQuarantineAuthority.invocation_history,
-    InvocationAdmission.admitted_at,  # type: ignore[misc]
-    InvocationAdmission.quarantined_at,
-    HealthVerdict.strikes_in_window,  # type: ignore[misc]
-    HealthVerdict.cumulative_failures,  # type: ignore[misc]
-    HealthVerdict.quarantined,  # type: ignore[misc]
-    InFlightDisposition.LET_FINISH,
     # Tenant-scoped extension runtime state (#971, M9-G3). Configuration is
     # served over the operator API (GET/PUT /v1/extensions/state); the cache
     # and checkpoint namespaces are the host/runtime substrate — the
@@ -637,6 +616,26 @@ _VULTURE_WHITELIST = (
     # (packages/maistro-core/tests/extensions/test_effective_authority.py) — the
     # same contract-ships-first posture as the seams above.
     EffectiveAuthority.with_execution_context,
+    # Extension quarantine/suspension (M9-G4, #972). The governance service is
+    # the single admission gate and the only writer of suspension state; hosts
+    # call it from their invocation seams and consume decisions
+    # (`AdmissionDecision.governing_state`), leases, and the TERMINATE
+    # disposition policy; the EXTENSION actor kind exists to be refused. Its
+    # in-tree callers are the quarantine suite
+    # (packages/maistro-core/tests/extensions/test_extension_quarantine.py)
+    # until host wiring lands — the same contract-ships-first posture.
+    ExtensionGovernanceService.begin_invocation,
+    ExtensionGovernanceService.finish_invocation,
+    ExtensionGovernanceService.disable_version,
+    ExtensionGovernanceService.quarantine_package,
+    ExtensionGovernanceService.quarantine_publisher,
+    ExtensionGovernanceService.re_enable_version,
+    ExtensionGovernanceService.re_enable_package,
+    ExtensionGovernanceService.re_enable_publisher,
+    AdmissionDecision.governing_state,
+    GovernanceDecision.suspended,
+    ActorKind.EXTENSION,
+    InFlightDisposition.TERMINATE,
     # Strike-tracker admin verb (M3 lockout ladder, #134). The protocol
     # (maistro.protocols.strikes) deliberately keeps `enable` off the DI seam:
     # it "exist[s] on the in-memory implementation and [is] admin surface
@@ -648,19 +647,4 @@ _VULTURE_WHITELIST = (
     # admin API, so it is named here as retained surface rather than banked as
     # unclassified debt.
     InMemoryStrikeTracker.enable,
-    # Installable domain-pack contracts (M9-F1, #966). The pack contract
-    # ships first by design, the same posture as the M9-B1 store seams and
-    # the M9-D1 registry above: its in-tree consumers are the conformance
-    # suite (packages/maistro-core/tests/extensions/test_pack_contracts.py),
-    # and the Workspace-scoped activation/configuration lifecycle that drives
-    # these verbs in production is M9-F3 (#968). `activate` is the disable
-    # gate's reversal (new use only — nothing was deleted; named activate,
-    # not enable, so the scanner's name-level matching cannot un-bank the
-    # unrelated security-store `enable` rows); the three `instantiate_*`
-    # methods are the gated instantiation entrypoints that compose the
-    # module-level pure functions behind the registry's active check.
-    InstallablePackRegistry.activate,
-    InstallablePackRegistry.instantiate_graph,
-    InstallablePackRegistry.instantiate_persona,
-    InstallablePackRegistry.instantiate_rubric,
 )

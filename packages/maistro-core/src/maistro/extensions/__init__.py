@@ -35,12 +35,6 @@ This package carries the extension surface of epic #938, in four layers:
   this package ever imports extension code; activation runs only through the
   host-supplied :class:`ExtensionCodeLoader`, and only after explicit
   authorization.
-- **M9-G4 quarantine/health response (issue #972)**: the suspension
-  authority (:mod:`maistro.extensions.quarantine`) that turns canonical
-  security/health evidence into immediate, policy-driven quarantine or
-  version disable — with the extension structurally unable to write or clear
-  its own state, in-flight work dispositioned by policy, and an append-only
-  evidence ledger that re-enable never erases.
 - **M9-B3 post-install lifecycle (issue #954)**: pin, resume, rollback,
   disable and remove on the same records and the same audit trail. A
   displaced version becomes ``SUPERSEDED`` (rollback-eligible, grant frozen);
@@ -97,6 +91,20 @@ This package carries the extension surface of epic #938, in four layers:
   that project canonical state through a closed binding allowlist, route
   mutating actions to governed server seams only, enforce availability
   server-side, and carry sandbox policy and provenance on every render.
+- **M9-G3 governance policy (issue #971, :mod:`maistro.extensions.policy`)**:
+  organization/Workspace extension policy — org allow/deny and publisher
+  approval over Workspace enablement, server-side exact-version pinning
+  enforced under concurrent callers, deterministic explainable resolution
+  projected onto the #969 Workspace-policy layer, tenant-keyed extension
+  state with structurally isolated views, and an append-only policy audit
+  trail.
+- **M9-G4 quarantine (issue #972, :mod:`maistro.extensions.quarantine`)**:
+  the suspension flow for misbehaving extensions — canonical
+  security/sandbox/health evidence with threshold-driven package quarantine,
+  version disable and optional publisher-wide action as distinct responses,
+  immediate admission refusal after the authoritative state change,
+  in-flight drain/terminate disposition, and an append-only ledger no
+  extension actor can write or clear.
 
 No layer executes extension code: verification, evaluation, authorization,
 resolution, contract negotiation, certification, metering and policy
@@ -383,28 +391,25 @@ from maistro.extensions.preflight import (
     run_preflight,
 )
 from maistro.extensions.quarantine import (
-    CANONICAL_VIOLATION_SOURCES,
-    ExtensionQuarantineAuthority,
-    ExtensionQuarantined,
-    ExtensionQuarantineError,
-    ExtensionViolationEvent,
-    HealthVerdict,
+    GOVERNANCE_ACTOR_KINDS,
+    ActorKind,
+    AdmissionDecision,
+    EvidenceKind,
+    ExtensionEvidence,
+    ExtensionGovernanceLedger,
+    ExtensionGovernancePolicy,
+    ExtensionGovernanceService,
+    GovernanceActor,
+    GovernanceDecision,
+    GovernanceEvent,
+    GovernanceState,
+    GovernanceTarget,
     InFlightDisposition,
-    InMemoryQuarantineStore,
-    InvocationAdmission,
-    NonCanonicalViolationSource,
-    QuarantineNotActive,
-    QuarantinePolicy,
-    QuarantineRecord,
-    QuarantineState,
-    QuarantineStore,
-    QuarantineTransition,
-    UnauthorizedQuarantineActor,
-    ViolationSeverity,
-    severity_at_least,
-)
-from maistro.extensions.quarantine import (
-    ViolationKind as QuarantineViolationKind,
+    InvocationLease,
+    QuarantineAuthorityError,
+    SandboxViolationBridge,
+    health_evidence,
+    security_evidence,
 )
 from maistro.extensions.resolution import (
     LOCK_FORMAT,
@@ -537,7 +542,6 @@ from maistro.extensions.ui import (
 
 __all__ = [
     "BUNDLE_FORMAT",
-    "CANONICAL_VIOLATION_SOURCES",
     "CATALOG_FORMAT",
     "CERTIFICATION_FORMAT",
     "CERTIFIER_VERSION",
@@ -552,6 +556,7 @@ __all__ = [
     "FEATURE_SUPPORTED",
     "FILESYSTEM_READ_PERMISSION",
     "FILESYSTEM_WRITE_PERMISSION",
+    "GOVERNANCE_ACTOR_KINDS",
     "HEALTHY_STATES",
     "HEALTH_WINDOW",
     "HOST_FEATURES",
@@ -577,6 +582,8 @@ __all__ = [
     "ActionAvailability",
     "ActionUnavailable",
     "ActivationCallback",
+    "ActorKind",
+    "AdmissionDecision",
     "ArtifactMismatch",
     "AttributionDimension",
     "AuthorityBaseline",
@@ -623,6 +630,7 @@ __all__ = [
     "EffectiveAuthority",
     "EntryPointPresenceCheck",
     "EventStoreProgressSink",
+    "EvidenceKind",
     "ExtensionAuthorityEvidence",
     "ExtensionAuthorityInputs",
     "ExtensionBundle",
@@ -641,6 +649,10 @@ __all__ = [
     "ExtensionEntryPoint",
     "ExtensionErrorKind",
     "ExtensionErrorRecord",
+    "ExtensionEvidence",
+    "ExtensionGovernanceLedger",
+    "ExtensionGovernancePolicy",
+    "ExtensionGovernanceService",
     "ExtensionHealth",
     "ExtensionHealthService",
     "ExtensionHealthStore",
@@ -670,9 +682,6 @@ __all__ = [
     "ExtensionPolicyEngine",
     "ExtensionPolicyViolation",
     "ExtensionProgress",
-    "ExtensionQuarantineAuthority",
-    "ExtensionQuarantineError",
-    "ExtensionQuarantined",
     "ExtensionQuotaBalance",
     "ExtensionQuotaConflict",
     "ExtensionQuotaDenied",
@@ -696,13 +705,16 @@ __all__ = [
     "ExtensionUsageConflict",
     "ExtensionUsageDigest",
     "ExtensionUsageEvent",
-    "ExtensionViolationEvent",
     "FeatureStatus",
     "FeatureSupport",
+    "GovernanceActor",
+    "GovernanceDecision",
+    "GovernanceEvent",
+    "GovernanceState",
+    "GovernanceTarget",
     "GovernedActionCall",
     "GovernedEffectRoute",
     "GovernedRoute",
-    "HealthVerdict",
     "HostContractMetadata",
     "HostExtensionPolicy",
     "ImportPolicy",
@@ -710,9 +722,9 @@ __all__ = [
     "InMemoryExtensionHealthStore",
     "InMemoryExtensionInstallStore",
     "InMemoryExtensionStore",
-    "InMemoryQuarantineStore",
     "InProcessExtensionLoader",
     "IncompatibleContract",
+    "InspectionConflict",
     "InspectionConflict",
     "InstallRecord",
     "InstallRequest",
@@ -720,7 +732,7 @@ __all__ = [
     "InvalidSemanticVersion",
     "InvalidTransition",
     "InvalidVersionRange",
-    "InvocationAdmission",
+    "InvocationLease",
     "InvocationScope",
     "LoadedExtension",
     "LockArtifacts",
@@ -732,7 +744,6 @@ __all__ = [
     "ManifestRejected",
     "ManifestSnapshot",
     "MissingLockArtifacts",
-    "NonCanonicalViolationSource",
     "ObservationOutcome",
     "OperatorDecision",
     "OrgExtensionPolicy",
@@ -774,13 +785,7 @@ __all__ = [
     "PublisherIdentity",
     "PublisherKeyConflict",
     "PublisherTrust",
-    "QuarantineNotActive",
-    "QuarantinePolicy",
-    "QuarantineRecord",
-    "QuarantineState",
-    "QuarantineStore",
-    "QuarantineTransition",
-    "QuarantineViolationKind",
+    "QuarantineAuthorityError",
     "RankingMetric",
     "RegistryProvenance",
     "RejectedCandidate",
@@ -792,6 +797,7 @@ __all__ = [
     "RootRequest",
     "RouteParam",
     "SandboxPolicy",
+    "SandboxViolationBridge",
     "SandboxViolationLog",
     "ScopeBoundExtensionState",
     "ScopeMismatch",
@@ -816,7 +822,6 @@ __all__ = [
     "UiComponentManifest",
     "UiExtensionError",
     "UiProjectionService",
-    "UnauthorizedQuarantineActor",
     "UnboundCheckError",
     "UngrantedProgressReporter",
     "UnknownAction",
@@ -830,7 +835,6 @@ __all__ = [
     "Verdict",
     "VersionRange",
     "ViolationKind",
-    "ViolationSeverity",
     "WorkspaceExtensionEnablementPolicy",
     "WorkspaceExtensionPolicy",
     "assert_snapshot_intact",
@@ -853,6 +857,7 @@ __all__ = [
     "evaluate_pack_compatibility",
     "evaluate_trust",
     "extension_family",
+    "health_evidence",
     "identity_key",
     "inspect_manifest",
     "inspect_pack_manifest",
@@ -889,8 +894,8 @@ __all__ = [
     "run_preflight",
     "seal_from_json",
     "seal_to_json",
+    "security_evidence",
     "select_isolation_profile",
-    "severity_at_least",
     "sha256_hex",
     "sign_certification",
     "slo_position",

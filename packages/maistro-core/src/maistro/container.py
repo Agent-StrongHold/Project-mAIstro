@@ -150,10 +150,6 @@ if TYPE_CHECKING:
     from maistro.extensions.catalog_service import CatalogService, InMemoryCatalogStore
     from maistro.extensions.health import ExtensionHealthService, InMemoryExtensionHealthStore
     from maistro.extensions.policy import ExtensionPolicyEngine
-    from maistro.extensions.quarantine import (
-        ExtensionQuarantineAuthority,
-        InMemoryQuarantineStore,
-    )
     from maistro.extensions.service import ExtensionInstallService
     from maistro.extensions.sqlite_health_store import SqliteExtensionHealthStore
     from maistro.extensions.store import ExtensionStore
@@ -521,11 +517,6 @@ class Container:
     # service so every reader observes the one canonical record.
     extension_install_store: ExtensionStore | None = None
     extension_install_service: ExtensionInstallService | None = None
-    # Quarantine/health-response authority (#972, M9-G4). Process-lifetime
-    # in-memory evidence and suspension state; a records-and-authority store
-    # with no execution authority of its own.
-    extension_quarantine_store: InMemoryQuarantineStore | None = None
-    extension_quarantine_authority: ExtensionQuarantineAuthority | None = None
     # Organization/Workspace extension policy + tenant-scoped runtime state
     # (#971, M9-G3). The default engine configures nothing, which leaves the
     # machine's behavior unchanged while still recording decision evidence.
@@ -2132,26 +2123,6 @@ class Container:
             self.extension_install_store = self.extension_install_service.store
         return self.extension_install_service
 
-    def ensure_extension_quarantine_authority(self) -> ExtensionQuarantineAuthority:
-        """Return the extension quarantine/health-response authority (#972).
-
-        Lazily built over the process-lifetime in-memory store with the
-        default policy. Hosts that hold the canonical install registry wire
-        ``publisher_for`` (publisher attribution) and may replace
-        ``extension_quarantine_authority`` wholesale with one built over
-        their own store and policy.
-        """
-        from maistro.extensions.quarantine import (
-            ExtensionQuarantineAuthority,
-            InMemoryQuarantineStore,
-        )
-
-        if self.extension_quarantine_authority is None:
-            self.extension_quarantine_authority = ExtensionQuarantineAuthority(
-                self.extension_quarantine_store or InMemoryQuarantineStore(),
-            )
-        return self.extension_quarantine_authority
-
     def ensure_extension_health_service(self) -> ExtensionHealthService:
         """Return the extension operational-view facade (#978, M9-I3).
 
@@ -2556,6 +2527,12 @@ async def create_container(
         # can therefore never flip authorized False -> True, only needs
         # "self_elevation"/"scoped_2fa" -> "none".
         elevation_store = await _wire_elevation_store(pg_pool=pg_pool, db_pool=db_pool)
+        # Delegated authority is host-owned state, separate from the manifest
+        # roster (#845, #60). A durable deployment can replace this
+        # implementation without changing the Agent or Graph execution paths.
+        from maistro.security.sentinel.delegation import InMemoryDelegationAuthority
+
+        delegation_authority = InMemoryDelegationAuthority()
         # Canonical capability state is created BEFORE Sentinel so the permission
         # source can hold the same registry the container exposes (#1165,
         # ADR-072726-0d6b): a runtime capability disable (set_enabled) must reach
@@ -2574,6 +2551,7 @@ async def create_container(
             audit_log=audit_log,
             tier_policy=tier_policy,
             elevation_store=elevation_store,
+            delegation_authority=delegation_authority,
         )
         strike_recovery = _wire_strike_recovery(
             tracker=strike_tracker,

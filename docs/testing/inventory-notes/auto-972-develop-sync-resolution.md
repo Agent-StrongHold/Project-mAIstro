@@ -61,3 +61,61 @@ added; no grant consumed or required.
   recorded inventory (required `uv sync --locked --all-extras` first: the
   merged uv.lock adds the reference-gallery packs as workspace members, and a
   stale venv surfaces as a collection error, not inventory drift)
+
+## Merge 3: `f0fb5c83db86` (the M9-G EPIC WIP) — the direction flips
+
+The merge preserved in this worktree was `f0fb5c83db86` ("WIP: [EPIC M9-G]
+Enforce extension isolation, permissions, tenancy, and policy governance
+(#2226)"), which is an **ancestor of `origin/develop`** (`5647c34`). Unlike the
+earlier syncs, this commit independently landed **issue #972 itself**: develop's
+`maistro.extensions.quarantine` ships `ExtensionGovernanceService`,
+`GovernanceActor`, `SandboxViolationBridge`, `security_evidence` and
+`health_evidence`, plus its own acceptance suite
+(`test_extension_quarantine.py`, recorded in `972-extension-quarantine.md`).
+
+Three conflicts, all additive-on-both-sides, and all resolved by adopting
+**develop's canonical engine** and superseding the branch's duplicate — the
+same pattern as #971:
+
+- `packages/maistro-core/src/maistro/extensions/quarantine.py` (both-added,
+  HEAD 1063 lines vs develop 815): took develop's `ExtensionGovernanceService`
+  module in full.
+- `packages/maistro-core/src/maistro/extensions/__init__.py`: kept develop's
+  `maistro.extensions.quarantine` import block and `__all__`; dropped the
+  branch's `ExtensionQuarantineAuthority` re-exports and the branch's
+  M9-G4 docstring bullet (develop's own bullet covers the module).
+- `packages/maistro-core/src/_vulture_whitelist.py`: kept develop's #972
+  quarantine whitelist block; dropped the branch's `ExtensionQuarantineAuthority`
+  / `InvocationAdmission` / `HealthVerdict` / `InFlightDisposition` rows.
+
+The branch's container wiring (`Container.extension_quarantine_store`,
+`extension_quarantine_authority`, `ensure_extension_quarantine_authority`)
+and its acceptance suite (`test_quarantine_authority.py`, 43 node IDs) were
+removed in the same resolution; they referenced the deleted branch API and
+are superseded by develop's engine, which is deliberately not container-wired
+(the M9-G host call sites are the follow-up slice). No competing suspension
+authority remains: `maistro.extensions.quarantine` is the single writer of
+quarantine state.
+
+### Ledger reconciliation (quality/vulture-baseline.json)
+
+The auto-merged ledger was diffed against both parents before trusting it
+(AGENTS.md warns that `quality/*.json` merge cleanly while losing rows):
+git's hunk merge produced **1319 rows while the merge base
+`b664e9a362` carried 1321** — the branch's earlier repair had pruned the two
+`…::unused variable 'LOW'` rows on the strength of a *pre-`e02534da3`*
+merge, but the merged tree (which now carries the M9-A3 enum members) really
+does produce them. `check-vulture-baseline.py` named exactly those two as
+unbanked candidate identities, so the ledger was restored to the merge base's
+1321-row blob (`05b1261b0`) via the gate's own `--update` writer. The gate now
+reports `1321 reviewed identities -> 1321 findings`, exit 0. No debt added;
+no grant consumed or required.
+
+### Inventory reconciliation
+
+The branch's deleted 43-test suite left `packages/maistro-core/tests` at
+17104 collected vs 17147 expected (−43). `972-extension-quarantine-authority.md`
+was rewritten as a superseded note with a **+0** delta (its original +43
+zeroed by `check-suite-inventory.py --update --note …`); develop's suite is
+accounted for by `972-extension-quarantine.md` (+33). `check-suite-inventory.py`
+exits 0 across all 21 suites.
