@@ -173,7 +173,9 @@ def _load_lock(lock_path: Path) -> LockState:
     try:
         return LockState.from_json(raw)
     except LockFormatError as exc:
-        console.print(f"[red]{lock_path} is not a valid extension lock: {exc}[/red]")
+        console.print(
+            f"[red]{lock_path} is not a valid extension lock: {exc}[/red]", soft_wrap=True
+        )
         raise Exit(code=1) from exc
 
 

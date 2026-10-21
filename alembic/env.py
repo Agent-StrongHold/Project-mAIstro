@@ -27,9 +27,9 @@ def _get_url() -> str:
     empty environment reports "no database configured" instead of a connection
     error against a `localhost` nobody asked for.
     """
-    from maistro.config.database import require_database_url, to_sync_url
+    from maistro.config.database import resolve_migration_target_url, to_sync_url
 
-    return to_sync_url(require_database_url())
+    return to_sync_url(resolve_migration_target_url())
 
 
 def run_migrations_offline() -> None:
