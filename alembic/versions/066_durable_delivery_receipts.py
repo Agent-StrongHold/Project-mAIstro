@@ -23,8 +23,8 @@ reviewed remote-commit contract (#1060) into PostgreSQL:
   delivery keys are invented, attempts are never reset, and no full Events
   are copied into receipts.
 
-Revision ID: 065
-Revises: 064
+Revision ID: 066
+Revises: 065
 Create Date: 2026-10-18
 """
 
@@ -32,8 +32,8 @@ from __future__ import annotations
 
 from alembic import op
 
-revision = "065"
-down_revision = "064"
+revision = "066"
+down_revision = "065"
 branch_labels = None
 depends_on = None
 
