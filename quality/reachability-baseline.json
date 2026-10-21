@@ -126,7 +126,6 @@
     "maistro.repertoire.types",
     "maistro.resilience.context_probe",
     "maistro.resilience.rate_coordination",
-    "maistro.runs.admission_identity",
     "maistro.resilience.retry_policy",
     "maistro.security.auth_composite",
     "maistro.security.auth_cookie",

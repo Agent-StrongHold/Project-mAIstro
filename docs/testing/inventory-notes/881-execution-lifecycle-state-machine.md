@@ -19,9 +19,11 @@ Three node IDs under `formal/models/test_execution_lifecycle_state.py`:
   deterministic witness for the #1335 fence and the closed-Run-refuses-work
   guards.
 
-`pytest formal/models --collect-only -q` collects 664 nodes before and 667
-after (baseline `docs/testing/inventory/baseline.json` formal/ = 417 plus open
-deltas). One additional node lands in `tests/`: `tests/
+`pytest formal/models --collect-only -q` collects 667 nodes at `origin/develop`
+and 670 at this head after the develop sync (baseline
+`docs/testing/inventory/baseline.json` formal/ = 664 plus open deltas; the +3
+above is this branch's formal/ delta). The counts moved with develop; the delta
+did not. One additional node lands in `tests/`: `tests/
 te_postgres_health_checks.py` parametrizes one case per workflow that declares
 a Postgres service, and `formal-conformance-nightly.yml` adds the nightly
 service (`formal-conformance-nightly.yml:formal-nightly:postgres`), hence the
