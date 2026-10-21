@@ -8,11 +8,18 @@
 #
 # Build:  docker build -f Dockerfile.rsi-runner -t maistro-rsi-runner:latest .
 # Run:    see tools/run_rsi_isolated.sh (or the docker run in the session).
-FROM python:3.12-slim@sha256:f77ac9e44ae96ef2c90b8053ea08c31f8be030f824196b0ae4db6d462c84e51f
+FROM python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
     git curl build-essential \
-    && rm -rf /var/lib/apt/lists/*
+    && apt-get autoremove -y --purge \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/* /var/cache/apt/* /tmp/*
+# The upgrade applies the Debian security patches the pinned base digest froze
+# (trivy: libpcre2 + libssl3t64/openssl/openssl-provider-legacy HIGHs on
+# debian 13.7, all fixed in current point releases) — same policy as
+# Dockerfile.research. This image runs agent-authored code, so its OS surface
+# is a containment boundary, not a convenience.
 
 # uv installer image digest-pinned to the 0.12.21 release (#349); `:latest`
 # here previously let a tag move swap the loop's installer with no repo diff.
@@ -90,7 +97,6 @@ RUN find . -type f \( -name '*.py' -o -name '*.md' -o -name '*.txt' -o -name '*.
     && git init -q \
     && git add -A \
     && git -c user.email=rsi@maistro.local -c user.name=RSI commit -qm "rsi baseline snapshot"
-
 # Install the workspace (maistro-core/evolve/rsi/bootstrap + their deps) plus the
 # fitness toolchain, so tests/coverage/lint gates all run in-container.
 #
@@ -102,24 +108,16 @@ RUN find . -type f \( -name '*.py' -o -name '*.md' -o -name '*.txt' -o -name '*.
 # silently shipped a dependency set nobody declared, into the container where
 # agent-authored code runs (#351). A drifted lock is now a red build, which is
 # a `uv lock` away from fixed.
-RUN uv sync --python 3.12 --frozen
-
-# Left unpinned deliberately, and it is a known gap rather than an oversight:
-# these drift independently of uv.lock, so two RSI runs a month apart can
-# disagree about a fitness score for reasons no commit explains. Pinning them
-# means choosing versions and proving the image still builds, which needs a
-# Docker build this change cannot run -- so it is #348's to do alongside the
-# lock-enforced installs, not something to guess at here.
-RUN uv pip install coverage bandit radon interrogate vulture pylint
-
-# #406: the workspace lock installs maistro-core[tui,identity] -> bip-utils ->
-# pytoniq-core-fork, whose wheel ships a generic top-level `examples`
-# namespace. This container runs AGENT-AUTHORED code, so a stray importable
-# `examples` tree is surface an agent can reach; the shipped images prune it,
-# and so does this one — placed after the last site-packages-mutating install,
-# with the same build-time assertion behind it, so a silent no-op prune fails
-# this build rather than shipping the surface to the loop.
-RUN .venv/bin/python scripts/prune-dependency-namespaces.py \
-    && .venv/bin/python scripts/check-dependency-namespaces.py --production
+#
+# Combine all installation and cache cleanup in one layer so the uv wheel
+# cache (which holds METADATA for every resolved wheel, including vulnerable
+# tuples not in the final venv, plus SDK example files the secret scanner
+# flags) never persists to the final image. Mirrors the cleanup in
+# Dockerfile.research and the main Dockerfile.
+RUN uv sync --python 3.12 --frozen \
+    && uv pip install coverage bandit radon interrogate vulture pylint \
+    && .venv/bin/python scripts/prune-dependency-namespaces.py \
+    && .venv/bin/python scripts/check-dependency-namespaces.py --production \
+    && uv cache clean
 
 CMD ["sleep", "infinity"]

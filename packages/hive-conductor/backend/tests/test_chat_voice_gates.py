@@ -871,7 +871,11 @@ async def test_chat_workflow_route_waits_on_shared_inbox_then_executes(
         resolved = cap_routes.resolve_approval(
             pending[0].request_id,
             cap_routes.ResolveApprovalBody(approved=True, actor="forged"),
-            SimpleNamespace(state=SimpleNamespace(user={"id": "admin-1", "role": "admin"})),
+            SimpleNamespace(
+                state=SimpleNamespace(
+                    principal=Principal(user_id="admin-1", roles=frozenset({"admin"}))
+                )
+            ),
         )
         assert resolved["resolved"] is True
         result = await asyncio.wait_for(task, timeout=1.0)
@@ -911,12 +915,12 @@ def test_workflow_approval_route_rejects_config_editor_as_approver(
             cap_routes.ResolveApprovalBody(approved=True, actor="forged"),
             SimpleNamespace(
                 state=SimpleNamespace(
-                    user={
-                        "id": "editor-1",
-                        "role": "user",
-                        "permissions": ["config.write"],
-                        "elevated_permissions": ["config.write"],
-                    }
+                    principal=Principal(
+                        user_id="editor-1",
+                        roles=frozenset({"user"}),
+                        permissions=frozenset({"config.write"}),
+                        elevated_permissions=frozenset({"config.write"}),
+                    )
                 )
             ),
         )
