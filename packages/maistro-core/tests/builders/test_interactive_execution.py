@@ -165,3 +165,209 @@ def test_local_operator_principal_resolution_precedence(
     fallback = resolve_local_operator_principal()
     assert fallback.startswith("builders-local:")
     assert fallback.removeprefix("builders-local:").strip() != ""
+
+
+@pytest.mark.contract("behavioral")
+def test_principal_degrades_to_bare_identity_when_the_os_user_is_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unresolvable OS user must still yield an admissible principal.
+
+    The fallback is what keeps the shipped CLI able to admit a turn on a box
+    where `getpass.getuser()` raises (no LOGNAME/USER/`pwd` entry) — returning
+    an empty string would trip the #364 store admission and make
+    `maistro builders` unable to run a single turn.
+    """
+    import maistro.builders.interactive as interactive
+
+    monkeypatch.delenv("MAISTRO_BUILDERS_ACTOR_PRINCIPAL", raising=False)
+
+    def _no_user() -> str:
+        raise OSError("no login name")
+
+    monkeypatch.setattr(interactive.getpass, "getuser", _no_user)
+
+    assert resolve_local_operator_principal() == "builders-local"
+
+
+class _RaisingRunner:
+    """A TurnRunner whose physical work raises."""
+
+    def __init__(self, exc: BaseException) -> None:
+        self._exc = exc
+
+    async def execute_turn(self, *, messages: list[dict[str, Any]]) -> dict[str, Any]:
+        raise self._exc
+
+
+@pytest.mark.contract("behavioral")
+@pytest.mark.asyncio
+async def test_react_dispatcher_error_settles_the_canonical_run_as_failed() -> None:
+    """An exception inside the ReAct strategy is physical work that failed.
+
+    It must become a failed canonical Run carrying the real error — not a
+    raised exception that leaves the Run open, and not a success projection.
+    """
+    executor, runs = await _executor()
+
+    result = await executor.execute(
+        session_id="session-1",
+        repo="/tmp/repo",
+        prompt="explode",
+        messages=[],
+        runner=_RaisingRunner(RuntimeError("provider refused")),
+    )
+
+    assert result.status is RunStatus.FAILED
+    assert result.error == "provider refused"
+    stored = await runs.get_run(result.run_id)
+    assert stored is not None
+    assert stored.status is RunStatus.FAILED
+
+
+@pytest.mark.contract("behavioral")
+@pytest.mark.asyncio
+async def test_cancellation_is_not_converted_into_a_turn_failure() -> None:
+    """Task cancellation stays cancellation.
+
+    `run_durable_graph` owns the cancellation contract; a dispatcher that
+    swallowed `CancelledError` into a failed NodeResult would make an
+    operator's Ctrl-C look like a failed model call and would suppress the
+    teardown that settles open physical work.
+    """
+    import asyncio
+
+    executor, _runs = await _executor()
+
+    with pytest.raises(asyncio.CancelledError):
+        await executor.execute(
+            session_id="session-1",
+            repo="/tmp/repo",
+            prompt="cancel me",
+            messages=[],
+            runner=_RaisingRunner(asyncio.CancelledError()),
+        )
+
+
+@pytest.mark.contract("behavioral")
+@pytest.mark.asyncio
+async def test_structured_content_blocks_are_joined_into_the_turn_output() -> None:
+    """A block-structured ReAct reply reaches the TUI as readable text."""
+    executor, _runs = await _executor()
+    runner = _Runner(
+        {
+            "content": [
+                {"type": "text", "text": "first"},
+                {"type": "tool_use", "name": "no_text"},
+                {"type": "text", "text": "second"},
+            ],
+            "stop_reason": "end_turn",
+        }
+    )
+
+    result = await executor.execute(
+        session_id="session-1",
+        repo="/tmp/repo",
+        prompt="say two things",
+        messages=[],
+        runner=runner,
+    )
+
+    assert result.status is RunStatus.COMPLETED
+    assert result.output == "first\nsecond"
+
+
+@pytest.mark.contract("behavioral")
+@pytest.mark.asyncio
+async def test_unconfigured_spine_opens_the_private_file_backed_sqlite_scope(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With no deployment database the CLI uses its own SQLite *file*.
+
+    The scope must be a file, not `:memory:`: session resume and inspection
+    read the same Run identity after this process exits. A future change that
+    "simplified" the fallback to an in-memory store would keep every other
+    test here green and silently break that promise.
+    """
+    import maistro.builders.interactive as interactive
+
+    database_path = tmp_path / "state" / "builders.db"
+    monkeypatch.setattr(interactive, "_DEFAULT_DATABASE_PATH", database_path)
+    monkeypatch.setattr(interactive, "resolve_database_url", lambda: "")
+
+    spine = await BuildersExecutionSpine.open(workspace_id="builders-cli")
+    try:
+        assert spine.actor_principal_id.startswith("builders-local")
+        assert database_path.is_file(), "the fallback scope must be a real SQLite file"
+        result = await spine.executor().execute(
+            session_id="session-1",
+            repo="/tmp/repo",
+            prompt="default scope",
+            messages=[],
+            runner=_Runner({"content": "ok", "stop_reason": "end_turn"}),
+        )
+        stored = await spine.run_store.get_run(result.run_id)
+        assert stored is not None
+        assert stored.status is RunStatus.COMPLETED
+    finally:
+        await spine.close()
+
+
+@pytest.mark.contract("behavioral")
+@pytest.mark.asyncio
+async def test_configured_postgres_url_opens_the_pooled_spine_and_releases_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A configured PostgreSQL URL selects the pooled backend, not SQLite.
+
+    The DSN is normalised for asyncpg and the pool this spine took is the pool
+    it gives back on close — without either, the shipped CLI would either fail
+    to connect or leak a pool per TUI session.
+    """
+    from types import SimpleNamespace
+
+    import maistro.builders.interactive as interactive
+    import maistro.persistence as persistence
+
+    pool = object()
+    calls: dict[str, Any] = {}
+
+    async def _get_pool(dsn: str) -> object:
+        calls["dsn"] = dsn
+        return pool
+
+    async def _release_pool(released: object) -> None:
+        calls["released"] = released
+
+    async def _wire(conn: object, **kwargs: Any) -> tuple[Any, ...]:
+        calls["wire"] = {"conn": conn, **kwargs}
+
+        class _Projects:
+            async def root_for_workspace(self, workspace_id: str) -> Any:
+                return SimpleNamespace(project_id=f"root-{workspace_id}")
+
+        projects = _Projects()
+        return (projects, InMemoryRunStore(project_store=projects), None, None, None, None)
+
+    monkeypatch.setattr(persistence, "get_pool", _get_pool)
+    monkeypatch.setattr(persistence, "release_pool", _release_pool)
+    monkeypatch.setattr(interactive, "wire_execution_spine", _wire)
+
+    spine = await BuildersExecutionSpine.open(
+        workspace_id="builders-cli",
+        database_url="postgresql+asyncpg://operator@db:5432/maistro",
+        actor_principal_id="builders-local:operator",
+    )
+    try:
+        # SQLAlchemy's `+asyncpg` spelling is not an asyncpg DSN; the spine
+        # normalises it before opening the pool.
+        assert calls["dsn"] == "postgresql://operator@db:5432/maistro"
+        assert calls["wire"]["conn"] is None
+        assert calls["wire"]["pg_pool"] is pool
+        assert calls["wire"]["workspace_id"] == "builders-cli"
+        assert spine.project_id == "root-builders-cli"
+        assert spine.run_store is not None
+    finally:
+        await spine.close()
+
+    assert calls["released"] is pool

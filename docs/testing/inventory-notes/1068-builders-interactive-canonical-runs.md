@@ -5,7 +5,7 @@ Issue: #1068
 Parent: #49
 
 inventory-delta:
-  packages/maistro-core/tests: +5
+  packages/maistro-core/tests: +17
 ---
 
 ## Claim and collision boundary
@@ -76,3 +76,58 @@ packages/*/src --min-confidence 60 --exclude '*/third_party/*'` OK;
 `check-convergence-matrix.py` OK (52 subsystems, 1414 modules);
 `maistro-registry lint . --strict` OK; registry job unit battery 194 passed;
 builders/cli/retention lane suites 54 passed, 9 skipped.
+
+## Coverage repair round (CI `Coverage gate` at `1507e635`, base `origin/develop`)
+
+The gate's failure was reproduced locally before any change, with CI's own
+producer arguments (`coverage run --branch
+--source=packages/maistro-core/src/maistro -m pytest
+packages/maistro-core/tests`) and `scripts/check-diff-coverage.py
+coverage.xml --base origin/develop`:
+
+    FAIL: 3 file(s) below the diff-coverage floor
+      builders/interactive.py: 86.4% of 110 changed lines (need 90%)
+      cli/_builders_sessions.py: 15.4% of 13 changed lines (need 90%)
+      cli/_builders_tui.py: 15.0% of 40 changed lines (need 90%)
+
+Root cause, not a threshold: the shipped TUI's turn path, its session-run
+correlation, and the adapter's own failure/teardown branches were asserted by
+**source-text greps** (`test_shipped_tui_admits_turns_through_canonical_adapter`
+reads the file and checks for `BuildersExecutionSpine`) and never executed.
+That is the shape the diff gate exists to reject: a change whose behavior is
+claimed in prose while nothing runs it.
+
+Repair — twelve tests that drive the shipped path (delta +5 -> +17):
+
+`packages/maistro-core/tests/builders/test_interactive_execution.py` (+6)
+
+- `test_principal_degrades_to_bare_identity_when_the_os_user_is_unavailable`
+- `test_react_dispatcher_error_settles_the_canonical_run_as_failed` — a raising
+  ReAct runner produces a FAILED canonical Run carrying the real error.
+- `test_cancellation_is_not_converted_into_a_turn_failure` — `CancelledError`
+  propagates; `run_durable_graph` keeps ownership of cancellation.
+- `test_structured_content_blocks_are_joined_into_the_turn_output`
+- `test_unconfigured_spine_opens_the_private_file_backed_sqlite_scope` — proves
+  the no-URL fallback is a real SQLite *file*, not `:memory:`.
+- `test_configured_postgres_url_opens_the_pooled_spine_and_releases_it` —
+  configured URL selects the pooled wire (asyncpg DSN normalised) and `close()`
+  returns that same pool.
+
+`packages/maistro-core/tests/cli/test_builders.py` (+6)
+
+- `test_run_ids_accumulate_deduplicate_and_survive_a_re_record`,
+  `test_an_unknown_session_is_not_created_by_a_run_notification` — session
+  history keeps exact canonical `run_id`s and does not invent sessions.
+- `test_a_turn_is_admitted_with_the_react_runner_as_its_physical_work` — drives
+  `CodingScreen._run_agent_turn` twice through `BuildersExecutionSpine` and
+  asserts the canonical admission receives the session's ReAct messages, the
+  *same cached* `TurnRunner` (one execution path, one spine open, one sandbox),
+  the run-id bar update and the `record_session_run` call.
+- `test_a_failed_canonical_run_is_reported_with_its_run_id` — the failed-status
+  branch names the canonical Run instead of reporting a successful turn.
+- `test_open_coding_screen_mounts_the_session_with_its_run_ids`,
+  `test_resuming_a_recorded_session_passes_its_canonical_run_ids` — resume
+  carries the session's canonical Run ids into the coding screen.
+
+Post-repair diff coverage (same command, same base): `ok: every measured file
+this change touches is at or above 90% lines / 80% branch arcs`.
