@@ -214,3 +214,43 @@ Final checks: `uv run ruff check .` PASS; `uv run ruff format --check .`
 PASS (3270 files); `git diff --check` PASS. Ruff logs are
 `worker-ruff-check.log` and `worker-ruff-format.log` in the job directory.
 Only this handoff changed; no new tests require an inventory note.
+
+## Revalidation at assigned head `9b9079a6e62d` — job `ec68a820b1b143d69f3cb9962c0b9e60`
+
+The assigned worktree was clean at the exact dispatched HEAD. `origin/develop`
+(`a4fb8a30e448`) is an ancestor of HEAD, so the reported prior BLOCKED
+attention is not a develop-sync conflict; no merge was appropriate. The job
+directory contains no `check-*.log` files, so no driver validation is assumed.
+Issue #860 and the accepted release/rate-limit ADRs were re-read, along with
+the current profile, evidence, driver, production Compose topology, limiter
+implementation, and existing promotion-gate tests.
+
+Fresh validation in this worktree:
+
+| Command | Outcome |
+| --- | --- |
+| `uv run pytest tests/test_soak_promotion_gates.py packages/maistro-server/tests/api/test_rate_limit.py packages/maistro-server/tests/api/test_tasks_concurrency_backpressure.py -x -q` | 111 passed, 1 existing Starlette deprecation warning. These are focused harness/middleware/router regressions, not production multi-replica soak evidence. |
+| `uv run ruff check .` | PASS |
+| `uv run ruff format --check .` | PASS: 3413 files already formatted |
+| `uv run python scripts/check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'` | PASS: 1321 reviewed identities / 1321 findings; unclassified=0, never_allowlist=0; no ledger change justified. |
+
+Rechecked acceptance against reachable behavior: the preserved round-109
+artifact is bound to `5a59c724…` rather than this HEAD and records 420.05
+seconds, while the profile requires 14,400 seconds. The current evaluator
+unconditionally returns `ok: false` for the host-uvicorn topology. Production
+Compose does describe two `maistro-server` services, but no exact immutable RC
+image/configuration was provided or executed. Production middleware owns an
+`InMemoryRateLimiter` per instance, and its source explicitly documents the
+aggregate allowance as replica-count × configured limit; this does not satisfy
+the issue's requirement that replica selection cannot bypass the allowance.
+The prior schedule-probe evidence creates then cancels an admission Run and does
+not establish physical Attempt uniqueness, Goal convergence, or recovery.
+
+Disposition remains **BLOCKED**: representative RC workloads, exact-RC four-hour
+soak, cluster-level rate-limit criterion, physical-work fencing/recovery, and
+complete RC telemetry are not established. No source behavior or tests were
+changed, so inventory delta is zero and no inventory note is required. No
+GitHub mutations performed. This checkpoint records the fresh evidence; it is
+not promotion or integration approval.
+
+Progress: `{checked: 1, done: 0, skipped: 0, errors: 0, next: immutable RC/config designation and qualifying production soak}`.
