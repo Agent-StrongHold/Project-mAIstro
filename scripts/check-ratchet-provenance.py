@@ -138,6 +138,16 @@ CANDIDATE_AUTHORED: dict[tuple[str, str], str] = {
         "so a prior-tree oracle would predate the routes this tree ships; a changed "
         "disposition or contract is the substantive change reviewers read"
     ),
+    ("check-route-permissions.py", "quality/route-permissions.json"): (
+        "the route-permissions registry is the reviewed authenticated-route permission "
+        "specification being changed: declaring a prefix permission or an exempt_reason "
+        "is the substantive security review (#1790 correction 3)"
+    ),
+    ("check-route-permissions.py", "quality/public-routes.json"): (
+        "public-routes.json is read only to exclude already-declared unauthenticated paths "
+        "from the authenticated census; check-public-routes.py owns that registry's own ratchet "
+        "(#1790 correction 3)"
+    ),
     ("bench_fleet_routing.py", "quality/model-egress.json"): (
         "measurement input, not a comparison oracle: the #934 fleet bench reports "
         "the frozen egress inventory's row count and the approved provider's "
