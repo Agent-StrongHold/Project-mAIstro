@@ -71,6 +71,7 @@ from maistro.memory.working_graph.wiring import (
     build_workspace_working_memory,
     working_memory_context_message,
 )
+from maistro.personas.wiring import PERSONA_PG_TABLES, wire_persona_store
 from maistro.projects.scope_store import ProjectScopeStore
 from maistro.quota.default_tracker import set_default_quota_tracker
 from maistro.quota.tracker import InMemoryQuotaTracker
@@ -148,9 +149,11 @@ if TYPE_CHECKING:
     from maistro.events.trigger_store import TriggerDefinition, TriggerStore
     from maistro.extensions.catalog_service import CatalogService, InMemoryCatalogStore
     from maistro.extensions.health import ExtensionHealthService, InMemoryExtensionHealthStore
+    from maistro.extensions.policy import ExtensionPolicyEngine
     from maistro.extensions.service import ExtensionInstallService
     from maistro.extensions.sqlite_health_store import SqliteExtensionHealthStore
     from maistro.extensions.store import ExtensionStore
+    from maistro.extensions.tenancy import TenantScopedExtensionState
     from maistro.graph.harness import HarnessAdapter
     from maistro.identity.lifecycle import (
         AgentIdentity as LifecycleIdentity,
@@ -165,6 +168,7 @@ if TYPE_CHECKING:
     from maistro.observability.tiers import PIIDetector
     from maistro.orchestrator.hierarchy import HarnessRegistry, HierarchicalOrchestrator
     from maistro.personas.golden import GoldenRecordStore
+    from maistro.personas.store import PersonaStore
     from maistro.protocols.embeddings import EmbeddingClient
     from maistro.protocols.memory import (
         ContextAssemblyPolicy,
@@ -256,6 +260,9 @@ class Container:
     #: backend since #132 while the thing its `workspace_id` names had none,
     #: so the only Workspaces that survived a restart were the Conductor's own.
     workspace_store: WorkspaceStore = None  # type: ignore[assignment]
+    #: The live Persona is a Workspace product context, stored beside the
+    #: Project tree rather than in a second product-specific ownership store.
+    persona_store: PersonaStore = None  # type: ignore[assignment]
     #: Append-only BacklogItem history (#101), on the Project store's backend.
     #: References canonical Goals/Runs; never an execution authority itself.
     backlog_history_store: BacklogHistoryStore = None  # type: ignore[assignment]
@@ -510,6 +517,11 @@ class Container:
     # service so every reader observes the one canonical record.
     extension_install_store: ExtensionStore | None = None
     extension_install_service: ExtensionInstallService | None = None
+    # Organization/Workspace extension policy + tenant-scoped runtime state
+    # (#971, M9-G3). The default engine configures nothing, which leaves the
+    # machine's behavior unchanged while still recording decision evidence.
+    extension_policy_engine: ExtensionPolicyEngine | None = None
+    extension_runtime_state: TenantScopedExtensionState | None = None
     # Extension operational views (#978, M9-I3): health evidence, operator
     # decisions, and the projection facade over the SAME install store —
     # never a second lifecycle authority, only a read/projection layer.
@@ -1205,6 +1217,13 @@ class Container:
             a2a_delegator=self.a2a_delegator,
             guest_peers=self.guest_peers,
             run_store=self.run_store,
+            # The inbound A2A warden and the security audit log (#1137): the
+            # delegate node scans peer-controlled payloads at the canonical
+            # boundary and records verdicts beside the canonical audit trail,
+            # so resolver-composed delegation carries the same policy the
+            # rest of the Container is wired with.
+            warden=self.warden,
+            audit_log=self.audit_log,
             effect_context=self.capability_effects,
             graph_run_store=self.graph_run_store,
             provider_registry=self.provider_registry,
@@ -2058,6 +2077,21 @@ class Container:
             id_token_verifier=default_id_token_verifier(),
         )
 
+    def ensure_extension_policy_engine(self) -> ExtensionPolicyEngine:
+        """Return the organization/Workspace extension policy engine (#971).
+
+        The default engine configures nothing: evaluation passes every
+        candidate with an explicit "the layer imposes nothing" trace, so
+        wiring the policy layer changes no behavior until an operator sets a
+        policy — but every install decision gains audit evidence from then
+        on. Hosts with a policy backend replace ``extension_policy_engine``.
+        """
+        from maistro.extensions.policy import ExtensionPolicyEngine
+
+        if self.extension_policy_engine is None:
+            self.extension_policy_engine = ExtensionPolicyEngine()
+        return self.extension_policy_engine
+
     def ensure_extension_install_service(self) -> ExtensionInstallService:
         """Return the governed extension install lifecycle service (#953).
 
@@ -2074,6 +2108,7 @@ class Container:
         """
         from maistro.extensions.service import ExtensionInstallService, UnwiredExtensionLoader
         from maistro.extensions.store import InMemoryExtensionStore
+        from maistro.extensions.tenancy import TenantScopedExtensionState
 
         if self.extension_install_service is None:
             if self.extension_install_store is None:
@@ -2081,6 +2116,8 @@ class Container:
             self.extension_install_service = ExtensionInstallService(
                 self.extension_install_store,
                 loader=UnwiredExtensionLoader(),
+                policy_engine=self.ensure_extension_policy_engine(),
+                runtime_state=self.extension_runtime_state or TenantScopedExtensionState(),
             )
         else:
             self.extension_install_store = self.extension_install_service.store
@@ -2291,469 +2328,488 @@ async def create_container(
     usage_log = get_default_usage_log()
     usage_log_persistence: Any = None
     stores_memory_backed = False
-    if config.database_url.startswith("sqlite:"):
-        # A pathless `sqlite://` selects SQLite's in-memory database: the
-        # store classes are the durable twins, but nothing survives restart.
-        # Recorded so health reports the real disposition (#72).
-        stores_memory_backed = _sqlite_database_path(config.database_url) == ":memory:"
-        (
-            db_pool,
-            session_conn,
-            schedule_conn,
-            history_conn,
-            quota_tracker,
-            learning_store,
-            outcome_store,
-            session_store,
-        ) = await _wire_sqlite_backend(config.database_url, exposure_mode=exposure_mode)
-        # All four connections were opened for this container (#1161);
-        # `aclose` closes them. The pg branch below sets its flag for the same
-        # reason.
-        holds_db_pool = True
-        from maistro.quota.sqlite_usage_log import SqliteUsageLog
+    try:
+        if config.database_url.startswith("sqlite:"):
+            # A pathless `sqlite://` selects SQLite's in-memory database: the
+            # store classes are the durable twins, but nothing survives restart.
+            # Recorded so health reports the real disposition (#72).
+            stores_memory_backed = _sqlite_database_path(config.database_url) == ":memory:"
+            (
+                db_pool,
+                session_conn,
+                schedule_conn,
+                history_conn,
+                quota_tracker,
+                learning_store,
+                outcome_store,
+                session_store,
+            ) = await _wire_sqlite_backend(config.database_url, exposure_mode=exposure_mode)
+            # All four connections were opened for this container (#1161);
+            # `aclose` closes them. The pg branch below sets its flag for the same
+            # reason.
+            holds_db_pool = True
+            from maistro.quota.sqlite_usage_log import SqliteUsageLog
 
-        usage_log_persistence = SqliteUsageLog(db_pool)
-        await usage_log_persistence.ensure_schema()
-        usage_log = await usage_log_persistence.restore()
-    elif config.database_url.startswith(POSTGRES_SCHEMES):
-        (
-            pg_pool,
-            quota_tracker,
-            learning_store,
-            outcome_store,
-            session_store,
-        ) = await _wire_postgres_backend(
-            config.database_url,
-            embeddings,
-            supplied_pool=supplied_pg_pool,
+            usage_log_persistence = SqliteUsageLog(db_pool)
+            await usage_log_persistence.ensure_schema()
+            usage_log = await usage_log_persistence.restore()
+        elif config.database_url.startswith(POSTGRES_SCHEMES):
+            (
+                pg_pool,
+                quota_tracker,
+                learning_store,
+                outcome_store,
+                session_store,
+            ) = await _wire_postgres_backend(
+                config.database_url,
+                embeddings,
+                supplied_pool=supplied_pg_pool,
+                exposure_mode=exposure_mode,
+            )
+            holds_pg_pool = supplied_pg_pool is None
+        else:
+            _require_ephemeral_is_deliberate(config.database_url)
+            quota_tracker = InMemoryQuotaTracker()
+            learning_store = InMemoryLearningStore(exposure_mode=exposure_mode)
+            outcome_store = InMemoryOutcomeStore(exposure_mode=exposure_mode)
+            session_store = InMemorySessionStore()
+        pg_pool = _resolve_pg_pool(supplied=supplied_pg_pool, from_url=pg_pool)
+
+        usage_log, usage_log_persistence = await _wire_usage_log(db_pool)
+
+        # Prompt persistence is selected by the same backend decision as the
+        # rest of the Container, but kept out of this composition function so adding a
+        # backend does not grow the orchestration branch count (#122).
+        prompt_manager = await _wire_prompt_manager(pg_pool=pg_pool, db_pool=db_pool)
+
+        episodic_store = await _wire_episodic_store(
+            database_url=config.database_url,
+            pg_pool=pg_pool,
+            db_pool=db_pool,
             exposure_mode=exposure_mode,
         )
-        holds_pg_pool = supplied_pg_pool is None
-    else:
-        _require_ephemeral_is_deliberate(config.database_url)
-        quota_tracker = InMemoryQuotaTracker()
-        learning_store = InMemoryLearningStore(exposure_mode=exposure_mode)
-        outcome_store = InMemoryOutcomeStore(exposure_mode=exposure_mode)
-        session_store = InMemorySessionStore()
-    pg_pool = _resolve_pg_pool(supplied=supplied_pg_pool, from_url=pg_pool)
+        archive_store = build_archive_store(config.archive_url)
+        # Built here rather than below, because the admission seam routes on it: a
+        # separately-constructed default registry would disagree with the one the
+        # rest of the container uses (POC mode, or any custom table).
+        intent_registry = build_intent_registry()
+        (
+            project_scope_store,
+            run_store,
+            task_admitter,
+            graph_template_store,
+            schedule_store,
+            graph_continuations,
+        ) = await wire_execution_spine(
+            db_pool,
+            workspace_id=config.workspace_id,
+            intents=intent_registry,
+            pg_pool=pg_pool,
+            schedule_conn=schedule_conn,
+            # The same archive tier the Container holds, handed to the one
+            # subsystem that writes to it (#273). Until this line the field was
+            # built, stored, and read by nothing -- the defect
+            # `quality/wiring-reads-baseline.json` recorded as "Retirement or a
+            # reader is its own issue". This is the reader.
+            archive_store=archive_store,
+        )
+        # The same `project_scope_store` object the spine just selected, not a
+        # second resolution of the same question: a Workspace whose Root Project is
+        # filed in another database is a Workspace whose Runs cannot be filed.
+        persona_store = await wire_persona_store(
+            db_pool,
+            project_store=project_scope_store,
+            pg_pool=pg_pool,
+        )
+        workspace_store = await wire_workspace_store(
+            db_pool,
+            project_store=project_scope_store,
+            persona_store=persona_store,
+            pg_pool=pg_pool,
+        )
+        backlog_history_store = await wire_backlog_history_store(
+            history_conn,
+            project_store=project_scope_store,
+            pg_pool=pg_pool,
+        )
+        # Campaigns ride the SQLite pool when there is one; a PostgreSQL
+        # deployment gets the in-memory fallback plus a startup warning naming
+        # the cost, rather than a silent durability lie (#103, AC-5).
+        campaign_store: CampaignStore | None = await _wire_campaign_backend(db_pool)
+        # The canonical Goal store rides the same backend decision, upgraded where
+        # the deployment offers it: a PostgreSQL pool always selects the durable
+        # PgGoalStore, creating the migration-063 tables when the database has not
+        # run `alembic upgrade head` yet — the event stores' "wiring creates the
+        # schema it needs" contract, never a second (in-process) backend (#1572).
+        # Without a PG pool, SQLite selects its twin and no database selects memory
+        # with a warning.
+        # The authorized `goal_reader` seam is derived on
+        # the Container from this store and the Workspace store.
+        goal_store = await wire_goal_store(db_pool, pg_pool=pg_pool)
+        working_log = await _wire_working_memory_backend(db_pool)
+        node_template_store = await wire_node_template_store(db_pool, pg_pool=pg_pool)
+        # Same backend the spine just chose (#1176): claims beside the Runs they
+        # reconcile, or the tiers cannot answer a restart the same way.
+        task_idempotency = await wire_task_idempotency(db_pool, pg_pool=pg_pool)
+        schedule_admitter = _wire_schedule_admission(
+            run_store, graph_template_store, schedule_store
+        )
+        chat_admitter = wire_chat_admission(
+            run_store,
+            project_scope_store,
+            workspace_id=config.workspace_id,
+            intents=intent_registry,
+        )
+        # Per-Workspace working-memory projection (ADR-082226-5104 §5): a lazy,
+        # evictable, disposable hot layer hydrated from the authoritative
+        # episodic store. The manager is bound to this instance's Workspace —
+        # one instance is one Workspace — so the policy's Layer 1/Layer 4 can
+        # never address another Workspace's graph, structurally. Backs Layer 1
+        # indexed recall (BM25 + stored embeddings) and the Layer 4 entity
+        # graph; every failure degrades loudly to the durable path.
+        hot_working_memory = HotWorkingMemoryManager(
+            workspace_id=config.workspace_id,
+            episodic_store=episodic_store,
+            # The same client #188 wires for durable memory similarity.
+            embedding_client=embeddings,
+        )
+        context_assembly_policy = DefaultContextAssemblyPolicy(
+            episodic_store=episodic_store,
+            outcome_store=outcome_store,
+            project_store=project_scope_store,
+            # The same client #188 wires for durable memory similarity. Absent, the
+            # hybrid score is its lexical term alone rather than a second formula.
+            embedding_client=embeddings,
+            working_memory=hot_working_memory,
+        )
+        # The per-Workspace working-memory projection (#776), over the same
+        # durable stores everything else in this container reads: episodic memory
+        # through each Workspace's own Project tree, Run provenance through the
+        # Run store's workspace axis. The projection is disposable process-local
+        # state and holds no durable truth, so it needs no shutdown write.
+        working_memory = build_workspace_working_memory(
+            episodic=episodic_store,
+            projects=project_scope_store,
+            runs=run_store,
+        )
 
-    # The Container is the process's one composition root, so its ledger is
-    # the process default (#718): the conductor's raw-gateway fallback — the
-    # single call class that crosses no canonical Invocation authority —
-    # marks its ungoverned evidence there instead of leaving a
-    # ledger-carrying process presenting complete quota percentages while
-    # omitting that call. Authoritative recording stays on the canonical
-    # effect path above; this default only receives the fallback's
-    # non-Invocation evidence.
-    set_default_quota_tracker(quota_tracker)
+        router = RouterEngine()
+        classifier = ClassifierEngine()
+        context_builder = ContextBuilder()
 
-    usage_log, usage_log_persistence = await _wire_usage_log(db_pool)
+        strike_tracker = _wire_strike_tracker(
+            enabled=config.security.strike_tracking_enabled, pg_pool=pg_pool
+        )
 
-    # Prompt persistence is selected by the same backend decision as the
-    # rest of the Container, but kept out of this composition function so adding a
-    # backend does not grow the orchestration branch count (#122).
-    prompt_manager = await _wire_prompt_manager(pg_pool=pg_pool, db_pool=db_pool)
+        gate = Gate(warden=warden, strike_tracker=strike_tracker)
 
-    episodic_store = await _wire_episodic_store(
-        database_url=config.database_url,
-        pg_pool=pg_pool,
-        db_pool=db_pool,
-        exposure_mode=exposure_mode,
-    )
-    archive_store = build_archive_store(config.archive_url)
-    # Built here rather than below, because the admission seam routes on it: a
-    # separately-constructed default registry would disagree with the one the
-    # rest of the container uses (POC mode, or any custom table).
-    intent_registry = build_intent_registry()
-    (
-        project_scope_store,
-        run_store,
-        task_admitter,
-        graph_template_store,
-        schedule_store,
-        graph_continuations,
-    ) = await wire_execution_spine(
-        db_pool,
-        workspace_id=config.workspace_id,
-        intents=intent_registry,
-        pg_pool=pg_pool,
-        schedule_conn=schedule_conn,
-        # The same archive tier the Container holds, handed to the one
-        # subsystem that writes to it (#273). Until this line the field was
-        # built, stored, and read by nothing -- the defect
-        # `quality/wiring-reads-baseline.json` recorded as "Retirement or a
-        # reader is its own issue". This is the reader.
-        archive_store=archive_store,
-    )
-    # The same `project_scope_store` object the spine just selected, not a
-    # second resolution of the same question: a Workspace whose Root Project is
-    # filed in another database is a Workspace whose Runs cannot be filed.
-    workspace_store = await wire_workspace_store(
-        db_pool,
-        project_store=project_scope_store,
-        pg_pool=pg_pool,
-    )
-    backlog_history_store = await wire_backlog_history_store(
-        history_conn,
-        project_store=project_scope_store,
-        pg_pool=pg_pool,
-    )
-    # Campaigns ride the SQLite pool when there is one; a PostgreSQL
-    # deployment gets the in-memory fallback plus a startup warning naming
-    # the cost, rather than a silent durability lie (#103, AC-5).
-    campaign_store: CampaignStore | None = await _wire_campaign_backend(db_pool)
-    # The canonical Goal store rides the same backend decision, upgraded where
-    # the deployment offers it: a PostgreSQL pool always selects the durable
-    # PgGoalStore, creating the migration-063 tables when the database has not
-    # run `alembic upgrade head` yet — the event stores' "wiring creates the
-    # schema it needs" contract, never a second (in-process) backend (#1572).
-    # Without a PG pool, SQLite selects its twin and no database selects memory
-    # with a warning.
-    # The authorized `goal_reader` seam is derived on
-    # the Container from this store and the Workspace store.
-    goal_store = await wire_goal_store(db_pool, pg_pool=pg_pool)
-    working_log = await _wire_working_memory_backend(db_pool)
-    node_template_store = await wire_node_template_store(db_pool, pg_pool=pg_pool)
-    # Same backend the spine just chose (#1176): claims beside the Runs they
-    # reconcile, or the tiers cannot answer a restart the same way.
-    task_idempotency = await wire_task_idempotency(db_pool, pg_pool=pg_pool)
-    schedule_admitter = _wire_schedule_admission(run_store, graph_template_store, schedule_store)
-    chat_admitter = wire_chat_admission(
-        run_store,
-        project_scope_store,
-        workspace_id=config.workspace_id,
-        intents=intent_registry,
-    )
-    # Per-Workspace working-memory projection (ADR-082226-5104 §5): a lazy,
-    # evictable, disposable hot layer hydrated from the authoritative
-    # episodic store. The manager is bound to this instance's Workspace —
-    # one instance is one Workspace — so the policy's Layer 1/Layer 4 can
-    # never address another Workspace's graph, structurally. Backs Layer 1
-    # indexed recall (BM25 + stored embeddings) and the Layer 4 entity
-    # graph; every failure degrades loudly to the durable path.
-    hot_working_memory = HotWorkingMemoryManager(
-        workspace_id=config.workspace_id,
-        episodic_store=episodic_store,
-        # The same client #188 wires for durable memory similarity.
-        embedding_client=embeddings,
-    )
-    context_assembly_policy = DefaultContextAssemblyPolicy(
-        episodic_store=episodic_store,
-        outcome_store=outcome_store,
-        project_store=project_scope_store,
-        # The same client #188 wires for durable memory similarity. Absent, the
-        # hybrid score is its lexical term alone rather than a second formula.
-        embedding_client=embeddings,
-        working_memory=hot_working_memory,
-    )
-    # The per-Workspace working-memory projection (#776), over the same
-    # durable stores everything else in this container reads: episodic memory
-    # through each Workspace's own Project tree, Run provenance through the
-    # Run store's workspace axis. The projection is disposable process-local
-    # state and holds no durable truth, so it needs no shutdown write.
-    working_memory = build_workspace_working_memory(
-        episodic=episodic_store,
-        projects=project_scope_store,
-        runs=run_store,
-    )
+        from maistro.security.permission_policy import (
+            build_permission_table,
+            describe_permission_table,
+        )
+        from maistro.security.sentinel.policy import Sentinel
 
-    router = RouterEngine()
-    classifier = ClassifierEngine()
-    context_builder = ContextBuilder()
+        audit_log = await _wire_audit_log(pg_pool=pg_pool, db_pool=db_pool)
+        extension_health_store = await _wire_extension_health_store(db_pool=db_pool)
+        permission_table = build_permission_table(
+            preset=config.security.permission_preset,
+            permissions=config.security.permissions,
+        )
+        # Recovery is an administrative capability; its capability check goes
+        # through the same fail-closed table below, so a deployment that arms
+        # nothing denies recovery actions too until it configures permissions.
+        tier_policy = _configure_strike_recovery_policy()
+        logger.info("Sentinel permission table: %s", describe_permission_table(permission_table))
+        # SPEC-247 / ADR-068 §D. Without this, Sentinel._check_elevation_grant is a
+        # permanent no-op, so a grant a human/owner already cleared could never be
+        # honoured. Starts empty, and is only consulted AFTER the capability check,
+        # the budget check and the BLOCKED check have all already passed -- a grant
+        # can therefore never flip authorized False -> True, only needs
+        # "self_elevation"/"scoped_2fa" -> "none".
+        elevation_store = await _wire_elevation_store(pg_pool=pg_pool, db_pool=db_pool)
+        # Delegated authority is host-owned state, separate from the manifest
+        # roster (#845, #60). A durable deployment can replace this
+        # implementation without changing the Agent or Graph execution paths.
+        from maistro.security.sentinel.delegation import InMemoryDelegationAuthority
 
-    strike_tracker = _wire_strike_tracker(
-        enabled=config.security.strike_tracking_enabled, pg_pool=pg_pool
-    )
+        delegation_authority = InMemoryDelegationAuthority()
+        # Canonical capability state is created BEFORE Sentinel so the permission
+        # source can hold the same registry the container exposes (#1165,
+        # ADR-072726-0d6b): a runtime capability disable (set_enabled) must reach
+        # Sentinel's next decision through this live source, without a restart.
+        from maistro.capabilities.bootstrap import default_capability_registry
+        from maistro.security.sentinel.permission_source import CapabilityPermissionSource
 
-    gate = Gate(warden=warden, strike_tracker=strike_tracker)
+        capabilities = default_capability_registry()
+        sentinel = Sentinel(
+            warden=warden,
+            permission_table=permission_table,
+            permission_source=CapabilityPermissionSource(
+                base=permission_table,
+                capabilities=capabilities,
+            ),
+            audit_log=audit_log,
+            tier_policy=tier_policy,
+            elevation_store=elevation_store,
+            delegation_authority=delegation_authority,
+        )
+        strike_recovery = _wire_strike_recovery(
+            tracker=strike_tracker,
+            sentinel=sentinel,
+            audit_log=audit_log,
+        )
 
-    from maistro.security.permission_policy import (
-        build_permission_table,
-        describe_permission_table,
-    )
-    from maistro.security.sentinel.policy import Sentinel
+        # --- P1 resilience policies (ADR-066) --------------------------------
+        from maistro.resilience.p1 import InMemoryResiliencePolicyStore, default_policies
 
-    audit_log = await _wire_audit_log(pg_pool=pg_pool, db_pool=db_pool)
-    extension_health_store = await _wire_extension_health_store(db_pool=db_pool)
-    permission_table = build_permission_table(
-        preset=config.security.permission_preset,
-        permissions=config.security.permissions,
-    )
-    # Recovery is an administrative capability; its capability check goes
-    # through the same fail-closed table below, so a deployment that arms
-    # nothing denies recovery actions too until it configures permissions.
-    tier_policy = _configure_strike_recovery_policy()
-    logger.info("Sentinel permission table: %s", describe_permission_table(permission_table))
-    # SPEC-247 / ADR-068 §D. Without this, Sentinel._check_elevation_grant is a
-    # permanent no-op, so a grant a human/owner already cleared could never be
-    # honoured. Starts empty, and is only consulted AFTER the capability check,
-    # the budget check and the BLOCKED check have all already passed -- a grant
-    # can therefore never flip authorized False -> True, only needs
-    # "self_elevation"/"scoped_2fa" -> "none".
-    elevation_store = await _wire_elevation_store(pg_pool=pg_pool, db_pool=db_pool)
-    # Canonical capability state is created BEFORE Sentinel so the permission
-    # source can hold the same registry the container exposes (#1165,
-    # ADR-072726-0d6b): a runtime capability disable (set_enabled) must reach
-    # Sentinel's next decision through this live source, without a restart.
-    from maistro.capabilities.bootstrap import default_capability_registry
-    from maistro.security.sentinel.permission_source import CapabilityPermissionSource
+        resilience_policies = InMemoryResiliencePolicyStore(
+            default_policies(), include_defaults=False
+        )
 
-    capabilities = default_capability_registry()
-    sentinel = Sentinel(
-        warden=warden,
-        permission_table=permission_table,
-        permission_source=CapabilityPermissionSource(
-            base=permission_table,
+        # --- Durable events (ADR-086) ----------------------------------------
+        from maistro.events.bus import EventBus
+        from maistro.events.durable_log import append_from_bus_event
+        from maistro.events.processing import HTTPHandlerCaller
+
+        (
+            durable_event_log,
+            trigger_store,
+            handler_invocation_store,
+            consumer_cursor_store,
+        ) = await _wire_durable_events(pg_pool, db_pool)
+        handler_caller = HTTPHandlerCaller()
+
+        event_bus = EventBus()
+
+        async def _persist_bus_event(event: Any) -> None:
+            # Bridge: every in-memory bus event is appended to the durable log.
+            await durable_event_log.append(**append_from_bus_event(event))
+
+        event_bus.subscribe(_persist_bus_event)
+
+        # --- LLM provider registry + cost-aware router (SPEC-070226-cb8d) ----
+        from maistro.providers.config import load_provider_registry
+        from maistro.providers.registry import InMemoryProviderRegistry
+        from maistro.providers.router import CostAwareRouter
+
+        provider_registry = (
+            load_provider_registry(config.provider_config_path)
+            if config.provider_config_path
+            else InMemoryProviderRegistry()
+        )
+        llm_router = CostAwareRouter(provider_registry)
+
+        # --- Observability record/replay + PII tiers (ADR-055) ---------------
+        from maistro.observability.replay import InMemoryRecordStore
+        from maistro.observability.tiers import PIIDetector
+
+        record_store = InMemoryRecordStore()
+        pii_detector = PIIDetector(mode="prod")
+
+        # --- Identity lifecycle (ADR-084) -------------------------------------
+        identity_store, token_store, secret_store = _identity_lifecycle_stores()
+
+        # --- Skill registry + import pipeline (ADR-083) ----------------------
+        from maistro.skills.import_pipeline import InMemoryPolicyAttachmentStore
+        from maistro.skills.registry import InMemorySkillRegistry
+
+        skill_registry = InMemorySkillRegistry()
+        policy_attachment_store = InMemoryPolicyAttachmentStore()
+
+        # The live agent map every wiring closure below reads. Populated later by
+        # `create_agents`; the closures capture the dict, not its contents.
+        agents: dict[str, Agent] = {}
+
+        # --- Hierarchical orchestration (ADR-101) ------------------------------
+        harness_registry, hierarchy = _wire_hierarchy(agents, skill_registry)
+
+        # --- Canonical capability effects (#55/#1133) --------------------------
+        # Use the same database authority as the Container so a recovered Attempt
+        # cannot repeat an effect merely because this process restarted. A caller
+        # may inject a fully composed context when its deployment owns the stores.
+        capability_effects = await _wire_capability_effects(
+            effect_context=effect_context,
+            pg_pool=pg_pool,
+            db_pool=db_pool,
+            database_url=config.database_url,
+            capability_bindings=capability_bindings,
+            capability_credentials=capability_credentials,
+            quota_tracker=quota_tracker,
+            usage_log=usage_log,
+            provider_registry=provider_registry,
+        )
+
+        # --- Agent-harness DAG node adapters (ADR-062 spawn_harness) -----------
+        wired_harness_adapters = _wire_harness_adapters(harness_adapters)
+        # Operator-declared model.chat Bindings (#1079/#1522) load into the same
+        # canonical Binding authority the provisioning seam above built, so model
+        # egress and PM polling egress share one fail-closed door.
+        from maistro.capabilities.model_binding_bootstrap import bootstrap_model_bindings
+
+        await bootstrap_model_bindings(config, capability_effects)
+        # Registered provider-adapter packages (M9-E1, #961) join the same door:
+        # each configured entry registers its models into the canonical registry
+        # (so the cost-aware router selects them without a core routing edit),
+        # provisions its operator-supplied credential into the scoped pool, and
+        # loads its own model.chat Binding. The catalog publishes as the process
+        # default so every governed model egress — agents, graph nodes, server —
+        # resolves adapter models without a second wiring path; an unconfigured
+        # deployment keeps the gateway-only behavior exactly as before.
+        from maistro.capabilities.provider_adapters import (
+            ProviderAdapterCatalog,
+            bootstrap_provider_adapters,
+            configure_default_adapter_catalog,
+        )
+
+        # A host-supplied catalog carries its already-registered out-of-tree
+        # adapters; a fresh one self-registers only the reference adapter.
+        adapter_catalog = (
+            provider_adapter_catalog
+            if provider_adapter_catalog is not None
+            else ProviderAdapterCatalog()
+        )
+        await bootstrap_provider_adapters(
+            config, capability_effects, provider_registry, adapter_catalog
+        )
+        configure_default_adapter_catalog(adapter_catalog)
+        spawn_harness_node = AgentSpawnHarnessNode(
+            adapters=wired_harness_adapters, effect_context=capability_effects
+        )
+
+        # --- Personas golden records (SPEC-192) --------------------------------
+        from maistro.personas.golden import InMemoryGoldenRecordStore
+
+        golden_record_store = InMemoryGoldenRecordStore()
+
+        # --- OAuth (ADR-059) ----------------------------------------------------
+        from maistro.auth.oauth import IdentityLinker, InMemoryIdentityLinkStore, InMemoryStateStore
+
+        oauth_state_store = InMemoryStateStore()
+        identity_linker = IdentityLinker(store=InMemoryIdentityLinkStore())
+        # Both are dependency-free: A2ADelegator() takes no arguments and
+        # GuestPeerManager defaults its own audit logger. There is no configuration
+        # decision behind either, so neither is made optional (ADR-082526-3ca6).
+        a2a_delegator = A2ADelegator()
+        guest_peers = GuestPeerManager(warden=warden)
+
+        container = Container(
+            config=config,
+            router=router,
+            classifier=classifier,
+            quota_tracker=quota_tracker,
+            learning_store=learning_store,
+            learning_extractor=learning_extractor,
+            outcome_store=outcome_store,
+            session_store=session_store,
+            prompt_manager=prompt_manager,
+            warden=warden,
+            gate=gate,
+            strike_tracker=strike_tracker,
+            strike_recovery=strike_recovery,
+            sentinel=sentinel,
+            elevation_store=elevation_store,
+            context_builder=context_builder,
+            intent_registry=intent_registry,
             capabilities=capabilities,
-        ),
-        audit_log=audit_log,
-        tier_policy=tier_policy,
-        elevation_store=elevation_store,
-    )
-    strike_recovery = _wire_strike_recovery(
-        tracker=strike_tracker,
-        sentinel=sentinel,
-        audit_log=audit_log,
-    )
-
-    # --- P1 resilience policies (ADR-066) --------------------------------
-    from maistro.resilience.p1 import InMemoryResiliencePolicyStore, default_policies
-
-    resilience_policies = InMemoryResiliencePolicyStore(default_policies(), include_defaults=False)
-
-    # --- Durable events (ADR-086) ----------------------------------------
-    from maistro.events.bus import EventBus
-    from maistro.events.consumer_cursor import InMemoryConsumerCursorStore
-    from maistro.events.durable_log import InMemoryEventLog, append_from_bus_event
-    from maistro.events.invocations import InMemoryInvocationStore
-    from maistro.events.processing import HTTPHandlerCaller
-    from maistro.events.trigger_store import InMemoryTriggerStore
-
-    durable_event_log: EventLogStore
-    trigger_store: TriggerStore
-    handler_invocation_store: InvocationStore
-    consumer_cursor_store: ConsumerCursorStore
-    # PostgreSQL first: a caller who supplied a pool asked for the durable
-    # backend, and `db_pool` (SQLite) may be set at the same time because the
-    # two cover different stores. Silently preferring SQLite here would give
-    # that caller in-memory-shaped durability on the one backend that can
-    # actually be shared between workers.
-    if pg_pool is not None:
-        (
-            durable_event_log,
-            trigger_store,
-            handler_invocation_store,
-            consumer_cursor_store,
-        ) = await _wire_pg_durable_events(pg_pool)
-    elif db_pool is not None:
-        (
-            durable_event_log,
-            trigger_store,
-            handler_invocation_store,
-            consumer_cursor_store,
-        ) = await _wire_sqlite_durable_events(db_pool)
-    else:
-        durable_event_log = InMemoryEventLog()
-        trigger_store = InMemoryTriggerStore()
-        handler_invocation_store = InMemoryInvocationStore()
-        consumer_cursor_store = InMemoryConsumerCursorStore()
-    handler_caller = HTTPHandlerCaller()
-
-    event_bus = EventBus()
-
-    async def _persist_bus_event(event: Any) -> None:
-        # Bridge: every in-memory bus event is appended to the durable log.
-        await durable_event_log.append(**append_from_bus_event(event))
-
-    event_bus.subscribe(_persist_bus_event)
-
-    # --- LLM provider registry + cost-aware router (SPEC-070226-cb8d) ----
-    from maistro.providers.config import load_provider_registry
-    from maistro.providers.registry import InMemoryProviderRegistry
-    from maistro.providers.router import CostAwareRouter
-
-    provider_registry = (
-        load_provider_registry(config.provider_config_path)
-        if config.provider_config_path
-        else InMemoryProviderRegistry()
-    )
-    llm_router = CostAwareRouter(provider_registry)
-
-    # --- Observability record/replay + PII tiers (ADR-055) ---------------
-    from maistro.observability.replay import InMemoryRecordStore
-    from maistro.observability.tiers import PIIDetector
-
-    record_store = InMemoryRecordStore()
-    pii_detector = PIIDetector(mode="prod")
-
-    # --- Identity lifecycle (ADR-084) -------------------------------------
-    identity_store, token_store, secret_store = _identity_lifecycle_stores()
-
-    # --- Skill registry + import pipeline (ADR-083) ----------------------
-    from maistro.skills.import_pipeline import InMemoryPolicyAttachmentStore
-    from maistro.skills.registry import InMemorySkillRegistry
-
-    skill_registry = InMemorySkillRegistry()
-    policy_attachment_store = InMemoryPolicyAttachmentStore()
-
-    # The live agent map every wiring closure below reads. Populated later by
-    # `create_agents`; the closures capture the dict, not its contents.
-    agents: dict[str, Agent] = {}
-
-    # --- Hierarchical orchestration (ADR-101) ------------------------------
-    harness_registry, hierarchy = _wire_hierarchy(agents, skill_registry)
-
-    # --- Canonical capability effects (#55/#1133) --------------------------
-    # Use the same database authority as the Container so a recovered Attempt
-    # cannot repeat an effect merely because this process restarted. A caller
-    # may inject a fully composed context when its deployment owns the stores.
-    capability_effects = await _wire_capability_effects(
-        effect_context=effect_context,
-        pg_pool=pg_pool,
-        db_pool=db_pool,
-        database_url=config.database_url,
-        capability_bindings=capability_bindings,
-        capability_credentials=capability_credentials,
-        quota_tracker=quota_tracker,
-        usage_log=usage_log,
-        provider_registry=provider_registry,
-    )
-    configure_default_effect_context(capability_effects)
-
-    # --- Agent-harness DAG node adapters (ADR-062 spawn_harness) -----------
-    wired_harness_adapters = _wire_harness_adapters(harness_adapters)
-    # Operator-declared model.chat Bindings (#1079/#1522) load into the same
-    # canonical Binding authority the provisioning seam above built, so model
-    # egress and PM polling egress share one fail-closed door.
-    from maistro.capabilities.model_binding_bootstrap import bootstrap_model_bindings
-
-    await bootstrap_model_bindings(config, capability_effects)
-    # Registered provider-adapter packages (M9-E1, #961) join the same door:
-    # each configured entry registers its models into the canonical registry
-    # (so the cost-aware router selects them without a core routing edit),
-    # provisions its operator-supplied credential into the scoped pool, and
-    # loads its own model.chat Binding. The catalog publishes as the process
-    # default so every governed model egress — agents, graph nodes, server —
-    # resolves adapter models without a second wiring path; an unconfigured
-    # deployment keeps the gateway-only behavior exactly as before.
-    from maistro.capabilities.provider_adapters import (
-        ProviderAdapterCatalog,
-        bootstrap_provider_adapters,
-        configure_default_adapter_catalog,
-    )
-
-    # A host-supplied catalog carries its already-registered out-of-tree
-    # adapters; a fresh one self-registers only the reference adapter.
-    adapter_catalog = (
-        provider_adapter_catalog
-        if provider_adapter_catalog is not None
-        else ProviderAdapterCatalog()
-    )
-    await bootstrap_provider_adapters(
-        config, capability_effects, provider_registry, adapter_catalog
-    )
-    configure_default_adapter_catalog(adapter_catalog)
-    spawn_harness_node = AgentSpawnHarnessNode(
-        adapters=wired_harness_adapters, effect_context=capability_effects
-    )
-
-    # --- Personas golden records (SPEC-192) --------------------------------
-    from maistro.personas.golden import InMemoryGoldenRecordStore
-
-    golden_record_store = InMemoryGoldenRecordStore()
-
-    # --- OAuth (ADR-059) ----------------------------------------------------
-    from maistro.auth.oauth import IdentityLinker, InMemoryIdentityLinkStore, InMemoryStateStore
-
-    oauth_state_store = InMemoryStateStore()
-    identity_linker = IdentityLinker(store=InMemoryIdentityLinkStore())
-    # Both are dependency-free: A2ADelegator() takes no arguments and
-    # GuestPeerManager defaults its own audit logger. There is no configuration
-    # decision behind either, so neither is made optional (ADR-082526-3ca6).
-    a2a_delegator = A2ADelegator()
-    guest_peers = GuestPeerManager()
-
-    container = Container(
-        config=config,
-        router=router,
-        classifier=classifier,
-        quota_tracker=quota_tracker,
-        learning_store=learning_store,
-        learning_extractor=learning_extractor,
-        outcome_store=outcome_store,
-        session_store=session_store,
-        prompt_manager=prompt_manager,
-        warden=warden,
-        gate=gate,
-        strike_tracker=strike_tracker,
-        strike_recovery=strike_recovery,
-        sentinel=sentinel,
-        elevation_store=elevation_store,
-        context_builder=context_builder,
-        intent_registry=intent_registry,
-        capabilities=capabilities,
-        episodic_store=episodic_store,
-        project_store=project_scope_store,
-        project_scope_store=project_scope_store,
-        workspace_store=workspace_store,
-        backlog_history_store=backlog_history_store,
-        campaign_store=campaign_store,
-        goal_store=goal_store,
-        working_log=working_log,
-        run_store=run_store,
-        run_reader=ScopedRunReader(run_store, workspace_store, project_scope_store),
-        task_admitter=task_admitter,
-        chat_admitter=chat_admitter,
-        template_store=graph_template_store,
-        node_template_store=node_template_store,
-        graph_run_store=CanonicalDurableRunStore(run_store, graph_continuations),
-        schedule_store=schedule_store,
-        schedule_admitter=schedule_admitter,
-        task_idempotency=task_idempotency,
-        context_assembly_policy=context_assembly_policy,
-        working_memory=working_memory,
-        agents=agents,
-        audit_log=audit_log,
-        extension_health_store=extension_health_store,
-        db_pool=db_pool,
-        session_conn=session_conn,
-        schedule_conn=schedule_conn,
-        history_conn=history_conn,
-        pg_pool=pg_pool,
-        holds_pg_pool=holds_pg_pool,
-        holds_db_pool=holds_db_pool,
-        usage_log=usage_log,
-        usage_log_persistence=usage_log_persistence,
-        stores_memory_backed=stores_memory_backed,
-        resilience_policies=resilience_policies,
-        event_bus=event_bus,
-        durable_event_log=durable_event_log,
-        trigger_store=trigger_store,
-        invocation_store=capability_effects.invocation_store,
-        handler_invocation_store=handler_invocation_store,
-        handler_caller=handler_caller,
-        consumer_cursor_store=consumer_cursor_store,
-        provider_registry=provider_registry,
-        llm_router=llm_router,
-        record_store=record_store,
-        pii_detector=pii_detector,
-        identity_store=identity_store,
-        token_store=token_store,
-        secret_store=secret_store,
-        harness_registry=harness_registry,
-        hierarchy=hierarchy,
-        harness_adapters=wired_harness_adapters,
-        spawn_harness_node=spawn_harness_node,
-        capability_effects=capability_effects,
-        provider_adapter_catalog=adapter_catalog,
-        golden_record_store=golden_record_store,
-        skill_registry=skill_registry,
-        policy_attachment_store=policy_attachment_store,
-        oauth_state_store=oauth_state_store,
-        identity_linker=identity_linker,
-        a2a_delegator=a2a_delegator,
-        guest_peers=guest_peers,
-    )
+            episodic_store=episodic_store,
+            project_store=project_scope_store,
+            project_scope_store=project_scope_store,
+            workspace_store=workspace_store,
+            persona_store=persona_store,
+            backlog_history_store=backlog_history_store,
+            campaign_store=campaign_store,
+            goal_store=goal_store,
+            working_log=working_log,
+            run_store=run_store,
+            run_reader=ScopedRunReader(run_store, workspace_store, project_scope_store),
+            task_admitter=task_admitter,
+            chat_admitter=chat_admitter,
+            template_store=graph_template_store,
+            node_template_store=node_template_store,
+            graph_run_store=CanonicalDurableRunStore(run_store, graph_continuations),
+            schedule_store=schedule_store,
+            schedule_admitter=schedule_admitter,
+            task_idempotency=task_idempotency,
+            context_assembly_policy=context_assembly_policy,
+            working_memory=working_memory,
+            agents=agents,
+            audit_log=audit_log,
+            extension_health_store=extension_health_store,
+            db_pool=db_pool,
+            session_conn=session_conn,
+            schedule_conn=schedule_conn,
+            history_conn=history_conn,
+            pg_pool=pg_pool,
+            holds_pg_pool=holds_pg_pool,
+            holds_db_pool=holds_db_pool,
+            usage_log=usage_log,
+            usage_log_persistence=usage_log_persistence,
+            stores_memory_backed=stores_memory_backed,
+            resilience_policies=resilience_policies,
+            event_bus=event_bus,
+            durable_event_log=durable_event_log,
+            trigger_store=trigger_store,
+            invocation_store=capability_effects.invocation_store,
+            handler_invocation_store=handler_invocation_store,
+            handler_caller=handler_caller,
+            consumer_cursor_store=consumer_cursor_store,
+            provider_registry=provider_registry,
+            llm_router=llm_router,
+            record_store=record_store,
+            pii_detector=pii_detector,
+            identity_store=identity_store,
+            token_store=token_store,
+            secret_store=secret_store,
+            harness_registry=harness_registry,
+            hierarchy=hierarchy,
+            harness_adapters=wired_harness_adapters,
+            spawn_harness_node=spawn_harness_node,
+            capability_effects=capability_effects,
+            provider_adapter_catalog=adapter_catalog,
+            golden_record_store=golden_record_store,
+            skill_registry=skill_registry,
+            policy_attachment_store=policy_attachment_store,
+            oauth_state_store=oauth_state_store,
+            identity_linker=identity_linker,
+            a2a_delegator=a2a_delegator,
+            guest_peers=guest_peers,
+        )
+        # Both process-default publications (#718) happen here, after every
+        # construction step that can reject: the Container is the process's
+        # one composition root, so its ledger and effect context are the
+        # process defaults — the conductor's raw-gateway fallback, the single
+        # call class that crosses no canonical Invocation authority, marks its
+        # ungoverned evidence on the ledger instead of leaving a
+        # ledger-carrying process presenting complete quota percentages while
+        # omitting that call. Authoritative recording stays on the canonical
+        # effect path; these defaults only receive the fallback's
+        # non-Invocation evidence. Publishing late keeps the previous
+        # process defaults intact through a failed startup (Codex, #1856):
+        # a candidate that never escapes this function must not leave its
+        # SQLite-backed tracker — a connection the handler below closes —
+        # installed as the process default.
+        set_default_quota_tracker(quota_tracker)
+        configure_default_effect_context(capability_effects)
+    except BaseException:
+        # A startup that failed before the Container escaped owns the
+        # resources it opened: `aclose` is only reachable through a returned
+        # Container, so waiting for it would leak four SQLite worker threads
+        # or a registered pool against a database the operator is about to
+        # reconfigure (#1856). Ownership is unchanged from `aclose`, and
+        # nothing has been published yet -- late publication (tracker and
+        # effect context together, immediately above) is what keeps the
+        # previous process defaults intact through the failure, so there is
+        # no publication to roll back here.
+        await _release_failed_startup_resources(
+            holds_pg_pool=holds_pg_pool,
+            pg_pool=pg_pool,
+            holds_db_pool=holds_db_pool,
+            db_pool=db_pool,
+            session_conn=session_conn,
+            schedule_conn=schedule_conn,
+            history_conn=history_conn,
+        )
+        raise
 
     # One word again, and only because this change is what makes it true.
     #
@@ -2865,17 +2921,23 @@ async def _wire_audit_log(*, pg_pool: Any, db_pool: Any) -> Any:
     if pg_pool is not None:
         from maistro.persistence.pg_audit import PgAuditLog
 
-        return PgAuditLog(pg_pool)
+        pg_audit = PgAuditLog(pg_pool)
+        await pg_audit.ensure_schema()
+        return pg_audit
     if db_pool is not None:
         from maistro.persistence.sqlite_audit import SqliteAuditLog
 
-        audit = SqliteAuditLog(db_pool)
-        await audit.ensure_schema()
-        return audit
+        sqlite_audit = SqliteAuditLog(db_pool)
+        await sqlite_audit.ensure_schema()
+        return sqlite_audit
 
     from maistro.security.sentinel.audit import InMemoryAuditLog
+    from maistro.security.sentinel.signing import AuditSigner
 
-    return InMemoryAuditLog()
+    # A configured external seed keeps proofs verifiable across restarts. The
+    # generated fallback remains useful for explicitly ephemeral deployments,
+    # but every in-memory decision is still signed before retention.
+    return InMemoryAuditLog(signer=AuditSigner.from_environment())
 
 
 async def _wire_usage_log(db_pool: Any) -> tuple[InMemoryUsageLog, Any]:
@@ -3038,6 +3100,10 @@ _REQUIRED_PG_TABLES: Final = (
     # `postgresql://` deployment that skipped `alembic upgrade head` should hear
     # about it once, at startup, naming every table it lacks.
     *WORKSPACE_PG_TABLES,
+    # The live Persona is the Workspace's product context. It is listed here so
+    # an unmigrated PostgreSQL deployment fails before serving a Workspace that
+    # cannot reload its Persona after restart.
+    *PERSONA_PG_TABLES,
 )
 
 
@@ -3271,6 +3337,59 @@ def _require_ephemeral_is_deliberate(database_url: str) -> None:
     raise ConfigError(msg)
 
 
+async def _release_failed_startup_resources(
+    *,
+    holds_pg_pool: bool,
+    pg_pool: Any,
+    holds_db_pool: bool,
+    db_pool: Any,
+    session_conn: Any,
+    schedule_conn: Any,
+    history_conn: Any,
+) -> None:
+    """Release what one failed `create_container` call opened (#1856).
+
+    The startup twin of `Container.aclose`, with the same ownership rules: a
+    PostgreSQL pool goes back to the registry, which closes it when the last
+    holder lets go, and a close that failed half way is forgotten rather than
+    handed out again (`release_pool`/`forget_pool`). Only connections and
+    pools this call opened are released -- `holds_pg_pool`/`holds_db_pool`
+    are False for anything the caller supplied. The four SQLite connections
+    were opened for this call alone, so they close here exactly as `aclose`
+    would have closed them, each guarded so one failure does not strand the
+    rest.
+    """
+    if holds_pg_pool and pg_pool is not None:
+        from maistro.persistence import forget_pool, release_pool
+
+        try:
+            await release_pool(pg_pool)
+        except Exception:
+            logger.exception("container: the PostgreSQL pool did not close cleanly")
+            # The registry must not keep handing out a pool whose close
+            # failed half way (same rule as `aclose`).
+            forget_pool(pg_pool)
+    if holds_db_pool:
+        await _close_startup_sqlite_connections(db_pool, session_conn, schedule_conn, history_conn)
+
+
+async def _close_startup_sqlite_connections(*connections: Any) -> None:
+    """Close SQLite connections a failed `create_container` opened (#1856).
+
+    The startup twin of `Container._close_owned_sqlite_connections`: a close
+    that raises must not strand the others, and aiosqlite's `close()` spends
+    the connection even when it raises. Runs only when no Container was
+    returned, so these connections have no `aclose` path to wait for.
+    """
+    for connection in connections:
+        if connection is None:
+            continue
+        try:
+            await connection.close()
+        except Exception:
+            logger.exception("container: the SQLite connection did not close cleanly")
+
+
 async def _wire_sqlite_backend(
     database_url: str,
     *,
@@ -3333,31 +3452,49 @@ async def _wire_sqlite_backend(
     # `sqlite://` they are two in-memory databases, which is sound because
     # nothing but this store reads `sessions` or `session_turns`, and that URL
     # is already warned about above as non-durable.
-    session_conn = await aiosqlite.connect(path)
-    # The schedule store's, for the same reason (#1199): its `record_fire`
-    # and `put` hold `BEGIN IMMEDIATE` across a read and a write, and the
-    # spine stores it would otherwise share `conn` with commit and roll back
-    # on their own cadence. Same pathless-`sqlite://` caveat as above: only
-    # the schedule store reads `schedules`.
-    schedule_conn = await aiosqlite.connect(path)
-    # The BacklogItem history journal's, for the same reason (#101): its
-    # `append` holds `BEGIN IMMEDIATE` across its sequence read and its
-    # insert, and the spine stores it would otherwise share `conn` with --
-    # `ClaimingSqliteRunStore` foremost -- hold transactions of their own
-    # under their own locks, so a sibling's commit or rollback would land
-    # inside the journal's while `append` reported success. Same
-    # pathless-`sqlite://` caveat as above: only the journal reads
-    # `workspace_backlog_history`.
-    history_conn = await aiosqlite.connect(path)
+    # Held aside before the wiring below runs, so a failure mid-way knows
+    # exactly which of the four this call must close (#1856).
+    session_conn: Any = None
+    schedule_conn: Any = None
+    history_conn: Any = None
+    try:
+        session_conn = await aiosqlite.connect(path)
+        # The schedule store's, for the same reason (#1199): its `record_fire`
+        # and `put` hold `BEGIN IMMEDIATE` across a read and a write, and the
+        # spine stores it would otherwise share `conn` with commit and roll back
+        # on their own cadence. Same pathless-`sqlite://` caveat as above: only
+        # the schedule store reads `schedules`.
+        schedule_conn = await aiosqlite.connect(path)
+        # The BacklogItem history journal's, for the same reason (#101): its
+        # `append` holds `BEGIN IMMEDIATE` across its sequence read and its
+        # insert, and the spine stores it would otherwise share `conn` with --
+        # `ClaimingSqliteRunStore` foremost -- hold transactions of their own
+        # under their own locks, so a sibling's commit or rollback would land
+        # inside the journal's while `append` reported success. Same
+        # pathless-`sqlite://` caveat as above: only the journal reads
+        # `workspace_backlog_history`.
+        history_conn = await aiosqlite.connect(path)
 
-    sqlite_quota_tracker = SqliteQuotaTracker(conn)
-    sqlite_learning_store = SqliteLearningStore(conn, exposure_mode=exposure_mode)
-    sqlite_outcome_store = SqliteOutcomeStore(conn, exposure_mode=exposure_mode)
-    sqlite_session_store = SqliteSessionStore(session_conn)
-    await sqlite_quota_tracker.ensure_schema()
-    await sqlite_learning_store.ensure_schema()
-    await sqlite_outcome_store.ensure_schema()
-    await sqlite_session_store.ensure_schema()
+        sqlite_quota_tracker = SqliteQuotaTracker(conn)
+        sqlite_learning_store = SqliteLearningStore(conn, exposure_mode=exposure_mode)
+        sqlite_outcome_store = SqliteOutcomeStore(conn, exposure_mode=exposure_mode)
+        sqlite_session_store = SqliteSessionStore(session_conn)
+        await sqlite_quota_tracker.ensure_schema()
+        await sqlite_learning_store.ensure_schema()
+        await sqlite_outcome_store.ensure_schema()
+        await sqlite_session_store.ensure_schema()
+    except BaseException:
+        # Mirrors `_wire_postgres_backend`: a failure before this function
+        # returns leaves connections nobody owns, and `create_container`
+        # cannot close them -- it never saw them. Close the ones opened so
+        # far, then let the failure propagate unchanged.
+        for opened in (conn, session_conn, schedule_conn, history_conn):
+            if opened is not None:
+                try:
+                    await opened.close()
+                except Exception:
+                    logger.exception("container: the SQLite connection did not close cleanly")
+        raise
 
     quota_tracker: QuotaTracker = sqlite_quota_tracker
     learning_store: LearningStore = sqlite_learning_store
@@ -3551,6 +3688,34 @@ async def _wire_capability_invocations(
     return InMemoryInvocationStore()
 
 
+async def _wire_durable_events(
+    pg_pool: Any, db_pool: Any
+) -> tuple[EventLogStore, TriggerStore, InvocationStore, ConsumerCursorStore]:
+    """Select the durable-events backend the caller already chose (#135, ADR-086).
+
+    PostgreSQL first: a caller who supplied a pool asked for the durable
+    backend, and `db_pool` (SQLite) may be set at the same time because the
+    two cover different stores. Silently preferring SQLite here would give
+    that caller in-memory-shaped durability on the one backend that can
+    actually be shared between workers.
+    """
+    from maistro.events.consumer_cursor import InMemoryConsumerCursorStore
+    from maistro.events.durable_log import InMemoryEventLog
+    from maistro.events.invocations import InMemoryInvocationStore
+    from maistro.events.trigger_store import InMemoryTriggerStore
+
+    if pg_pool is not None:
+        return await _wire_pg_durable_events(pg_pool)
+    if db_pool is not None:
+        return await _wire_sqlite_durable_events(db_pool)
+    return (
+        InMemoryEventLog(),
+        InMemoryTriggerStore(),
+        InMemoryInvocationStore(),
+        InMemoryConsumerCursorStore(),
+    )
+
+
 async def _wire_sqlite_durable_events(
     conn: Any,
 ) -> tuple[EventLogStore, TriggerStore, InvocationStore, ConsumerCursorStore]:
@@ -3670,6 +3835,8 @@ def build_node_resolver(
     a2a_delegator: Any = None,
     guest_peers: Any = None,
     run_store: RunStore | None = None,
+    warden: Any = None,
+    audit_log: Any = None,
     effect_context: CapabilityEffectContext | None = None,
     provider_registry: LLMProviderRegistry | None = None,
     llm_router: LLMRouter | None = None,
@@ -3742,6 +3909,12 @@ def build_node_resolver(
         "a2a_delegator": a2a_delegator,
         "guest_peers": guest_peers,
         "run_store": run_store,
+        # Inbound-content policy and its audit trail (#1137): composed
+        # delegation nodes scan peer payloads and record verdicts with the
+        # same warden/audit authorities the Container itself holds. Bare
+        # callers keep `None`, which `scan_inbound` fails closed on.
+        "warden": warden,
+        "audit_log": audit_log,
         "graph_run_store": graph_run_store,
         "effect_context": resolved_effect_context,
         # The Container's populated model authorities (#1079): a resolver-built

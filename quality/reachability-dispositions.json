@@ -311,16 +311,6 @@
       ]
     },
     {
-      "id": "config-loader",
-      "subsystem": "Shared contracts and config",
-      "disposition": "CONNECT",
-      "rationale": "ADR-078's file-based config loader; shipped processes construct settings directly instead.",
-      "root": "maistro.config.settings construction",
-      "modules": [
-        "maistro.config.loader"
-      ]
-    },
-    {
       "id": "supply-chain-unwired",
       "subsystem": "Skills, code registry, repertoire",
       "disposition": "CONNECT",

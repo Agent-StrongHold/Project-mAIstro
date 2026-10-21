@@ -547,6 +547,17 @@ class RunStore(Protocol):
 
     async def non_terminal_run_stats(self) -> tuple[int, datetime | None]: ...
 
+    async def list_recent_runs(
+        self, workspace_id: str, *, limit: int = 100, offset: int = 0
+    ) -> list[Run]:
+        """Retained hot Runs in one Workspace, newest first (created_at, run_id).
+
+        Filters scope before pagination. Cold archive payloads are outside
+        discovery, as with list_by_status; by-id inspection remains available.
+        Product readers use ScopedRunReader for authorization.
+        """
+        ...
+
     async def get_run(self, run_id: str, *, principal_id: str | None = None) -> Run | None: ...
 
     async def find_run_by_task_receipt(self, task_id: str) -> Run | None:
@@ -1261,6 +1272,22 @@ class InMemoryRunStore:
         )
         if after is not None:
             matching = [run for run in matching if run_cursor_key(run) > after]
+        return [run.model_copy(deep=True) for run in matching[offset : offset + limit]]
+
+    async def list_recent_runs(
+        self, workspace_id: str, *, limit: int = 100, offset: int = 0
+    ) -> list[Run]:
+        if limit <= 0 or offset < 0:
+            raise ValueError("limit must be positive and offset non-negative")
+        matching = sorted(
+            (
+                run
+                for run in self._runs.values()
+                if run.workspace_id == workspace_id and run.run_id not in self._archived
+            ),
+            key=run_cursor_key,
+            reverse=True,
+        )
         return [run.model_copy(deep=True) for run in matching[offset : offset + limit]]
 
     async def get_run(self, run_id: str, *, principal_id: str | None = None) -> Run | None:

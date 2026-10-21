@@ -30,8 +30,8 @@ Honesty notes. The boundary denies whole categories (undeclared egress, host
 paths outside the profile's mounts, processes beyond the PID ceiling) by
 construction; what it cannot do is attribute a workload's *own* failed
 connection attempt inside a deny-by-default sandbox to "network violation" —
-a nonzero exit is reported on the outcome, and only kernel-evidenced kills
-(signals, timeouts) become violations. And per ADR-093 a bubblewrap-tier
+a nonzero exit is reported on the outcome, and only host-evidenced kills
+(signals, timeouts, output-limit terminations) become violations. And per ADR-093 a bubblewrap-tier
 boundary is a guardrail, not a containment guarantee for hostile code; the
 tier ladder and mode floors in :mod:`maistro.sandbox.policy` govern how much
 boundary an execution mode demands, and this module never selects below them.
@@ -65,7 +65,13 @@ from maistro.sandbox.network import (
     EgressNotEnforceableError,
 )
 from maistro.sandbox.policy import ExecutionMode, IsolationTier, WorkloadPolicy
-from maistro.sandbox.protocol import ExecResult, SandboxConfig, SandboxInstance, SandboxProtocol
+from maistro.sandbox.protocol import (
+    OUTPUT_LIMIT_EXIT_CODE,
+    ExecResult,
+    SandboxConfig,
+    SandboxInstance,
+    SandboxProtocol,
+)
 from maistro.sandbox.selector import NoSuitableBackendError, SandboxSelector
 
 logger = logging.getLogger("maistro.extensions.isolation")
@@ -650,11 +656,27 @@ class ExtensionSandboxOutcome:
     timed_out: bool
     duration_ms: int
     egress_mode: EgressMode
+    #: Host-enforced output policy termination, mirrored from the backend's
+    #: :class:`~maistro.sandbox.protocol.ExecResult` (it kills at
+    #: ``OUTPUT_LIMIT_EXIT_CODE``): dropped here, an output-limit death would
+    #: be indistinguishable from an ordinary nonzero workload exit. The
+    #: truncation flags and retained byte counts keep the truthful prefix
+    #: auditable rather than pretending the strings are complete output.
+    output_limit_exceeded: bool = False
+    stdout_truncated: bool = False
+    stderr_truncated: bool = False
+    stdout_bytes_retained: int = 0
+    stderr_bytes_retained: int = 0
     violations: tuple[ExtensionSandboxViolation, ...] = ()
 
     @property
     def succeeded(self) -> bool:
-        return self.exit_code == 0 and not self.timed_out and not self.violations
+        return (
+            self.exit_code == 0
+            and not self.timed_out
+            and not self.output_limit_exceeded
+            and not self.violations
+        )
 
 
 #: Repeated violations at which the operational log escalates from a per-event
@@ -798,6 +820,11 @@ class ExtensionSandboxRunner:
             stdout=result.stdout,
             stderr=result.stderr,
             timed_out=result.timed_out,
+            output_limit_exceeded=result.output_limit_exceeded,
+            stdout_truncated=result.stdout_truncated,
+            stderr_truncated=result.stderr_truncated,
+            stdout_bytes_retained=result.stdout_bytes_retained,
+            stderr_bytes_retained=result.stderr_bytes_retained,
             duration_ms=int((time.monotonic() - started) * 1000),
             egress_mode=config.egress.mode,
             violations=violations,
@@ -884,9 +911,13 @@ class ExtensionSandboxRunner:
     ) -> tuple[ExtensionSandboxViolation, ...]:
         """Kernel-evidenced boundary events, recorded and attributed.
 
-        Only evidence counts: a signal the kernel sent for a ceiling, or the
-        wall-clock timeout. A workload's ordinary nonzero exit is its own
-        business and is reported on the outcome, not recorded as a violation.
+        Only evidence counts: a signal the kernel sent for a ceiling, the
+        wall-clock timeout, or the backend's output-limit kill (it returns
+        ``OUTPUT_LIMIT_EXIT_CODE`` with ``output_limit_exceeded`` set — the
+        flag is the evidence, so a workload exiting 125 on its own is still
+        just an ordinary nonzero exit). A workload's ordinary nonzero exit is
+        its own business and is reported on the outcome, not recorded as a
+        violation.
 
         The *effective* ``config`` is classified, not the profile: per-run
         overrides may have tightened the ceilings, and the evidence must name
@@ -896,6 +927,15 @@ class ExtensionSandboxRunner:
         if result.timed_out:
             violations.append(
                 self._limit_violation(profile, config, instance, "wall-clock timeout")
+            )
+        if result.output_limit_exceeded:
+            violations.append(
+                self._limit_violation(
+                    profile,
+                    config,
+                    instance,
+                    f"output capture limit exceeded (exit {OUTPUT_LIMIT_EXIT_CODE})",
+                )
             )
         # Signal death arrives in either convention: negative (the subprocess
         # wait convention, when the harness sees the process itself die) or

@@ -38,6 +38,14 @@ services:
       - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY:?Set LITELLM_MASTER_KEY in .env}
       - LITELLM_API_KEY=${LITELLM_API_KEY:-${LITELLM_MASTER_KEY:?Set LITELLM_MASTER_KEY in .env}}
       - LITELLM_PROXY_KEY=${LITELLM_API_KEY:-${LITELLM_MASTER_KEY:?Set LITELLM_MASTER_KEY in .env}}
+      # Documented YAML configuration (#1824): the uvicorn worker loads and
+      # validates this file before the Container is built, so operator-stated
+      # `model_bindings:` / `security:` declarations reach the runtime. The
+      # default path does not exist in the image -> empty, fail-closed model
+      # authorization. To state Bindings, bind-mount a maistro.yaml (e.g. a
+      # compose.override.yml volume `- ./maistro.yaml:/app/maistro.yaml:ro`)
+      # and set MAISTRO_CONFIG=/app/maistro.yaml in .env.
+      - MAISTRO_CONFIG=${MAISTRO_CONFIG:-config/maistro.yaml}
       # Langfuse coordinates for the Langfuse service's own UI/API. Trace
       # export from this stack is not driven by these: spans leave only over
       # OTLP, and nothing here sets OTEL_EXPORTER_OTLP_ENDPOINT (see the
@@ -81,6 +89,11 @@ services:
       litellm:
         condition: service_started
     stop_grace_period: 30s
+    # Service-level limits are enforced by Docker/Podman Compose (not Swarm-only deploy.resources).
+    mem_limit: 2g
+    memswap_limit: 2g
+    pids_limit: 512
+    cpus: 2.0
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health/live')"]
@@ -108,6 +121,10 @@ services:
         fi
     volumes:
       - pgdata:/var/lib/postgresql:ro
+    mem_limit: 256m
+    memswap_limit: 256m
+    pids_limit: 128
+    cpus: 0.25
     restart: "no"
 
   postgres:
@@ -132,6 +149,10 @@ services:
     depends_on:
       postgres-layout-check:
         condition: service_completed_successfully
+    mem_limit: 2g
+    memswap_limit: 2g
+    pids_limit: 512
+    cpus: 2.0
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U maistro"]
       interval: 5s
@@ -174,6 +195,10 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+    mem_limit: 1g
+    memswap_limit: 1g
+    pids_limit: 256
+    cpus: 1.0
     restart: unless-stopped
 
   langfuse:
@@ -189,6 +214,10 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+    mem_limit: 1g
+    memswap_limit: 1g
+    pids_limit: 256
+    cpus: 1.0
     restart: unless-stopped
 
   # Agent Conductor app: chat UI, DAG views, and deck builder (React SPA + FastAPI).
@@ -220,6 +249,18 @@ services:
       - LITELLM_API_KEY=${LITELLM_API_KEY:-${LITELLM_MASTER_KEY:?Set LITELLM_MASTER_KEY in .env}}
       - LITELLM_PROXY_URL=${LITELLM_BASE_URL:-${LITELLM_URL:-http://litellm:4000}}  # DevSkim: ignore DS137138 until 2027-12-31
       - LITELLM_PROXY_KEY=${LITELLM_API_KEY:-${LITELLM_MASTER_KEY:?Set LITELLM_MASTER_KEY in .env}}
+      # The deployment's own model key (#1824). Unset/empty falls through to
+      # LITELLM_API_KEY above per the effective-key precedence contract, so
+      # Hive authenticates to the same gateway with the same credential the
+      # engine resolves -- not to a second, silently different one.
+      - MAISTRO_LLM_API_KEY=${MAISTRO_LLM_API_KEY:-}
+      # Operator-declared `model.chat` Binding authorizations (#1079, #1824),
+      # a JSON list of {binding_id, project_id, provider_name, ...} objects.
+      # Empty stays fail-closed: no declaration authorizes no Binding. Passed
+      # through so the installed path carries explicit Workspace/Project model
+      # authorization into Hive's embedded Container the same way .env states
+      # it.
+      - MAISTRO_MODEL_BINDINGS=${MAISTRO_MODEL_BINDINGS:-[]}
       - CHAT_DEFAULT_MODEL=${CHAT_DEFAULT_MODEL:-${DEFAULT_MODEL:-gemini/gemini-2.5-flash}}
       # Engine router for DAG execution. Settings.maistro_base_url /
       # maistro_router_api_key (config.py) read these MAISTRO_* names directly;
@@ -253,6 +294,17 @@ services:
       - OAUTH_PUBLIC_ORIGIN=${OAUTH_PUBLIC_ORIGIN:-}
       - OAUTH_SUCCESS_PATH=${OAUTH_SUCCESS_PATH:-/}
       - HARDWARE_PRESET=${HARDWARE_PRESET:-laptop}
+      # The embedded Container's Sentinel table (ADR-072726-0d6b, #66). Fail-
+      # closed at "none"; this stack arms the preset matching the tools the
+      # Conductor's dispatch_tool can actually execute, so agents hold usable
+      # tool authority in dev without a second config file.
+      - MAISTRO_PERMISSION_PRESET=hive_conductor_tools
+      # Graph-node execution is a host capability, not a dispatchable tool:
+      # the node adapter's Sentinel gate authorizes "graph.node.execute"
+      # against the acting user's host role. The preset above names only
+      # dispatch_tool's executables, so without this grant the fail-closed
+      # table denies every node and no DAG can run (#60, #845).
+      - 'MAISTRO_PERMISSIONS={"graph.node.execute": ["admin", "user"]}'
     volumes:
       - conductor-data:/data
     depends_on:
@@ -264,6 +316,12 @@ services:
       # serves, so healthy means migrated.
       maistro-engine:
         condition: service_healthy
+    # Chromium/worker subprocesses need headroom, but the whole Conductor tree
+    # remains bounded by this container ceiling.
+    mem_limit: 1g
+    memswap_limit: 1g
+    pids_limit: 256
+    cpus: 1.0
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8101/health/ready')"]

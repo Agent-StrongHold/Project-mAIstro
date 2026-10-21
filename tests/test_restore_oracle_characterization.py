@@ -107,16 +107,66 @@ def _bash(script: str) -> subprocess.CompletedProcess[str]:
     return _run(["bash", "-c", script])
 
 
+#: Bounded readiness for the characterization containers. The official
+#: docker-entrypoint serves initdb and `docker_process_init_files` through a
+#: *temporary* server on the same Unix socket the real one later uses, so
+#: `pg_isready` answers "accepting connections" while the target database is
+#: not being served yet or the socket is mid-swap — a probe that lands there
+#: lets the first `psql` statement fail with exit status 2 ("connection to
+#: server went bad"), which is exactly how the `test` CI job's
+#: `pg_source_container` setup errored all four characterization tests at
+#: 6e2eca944ddbac50631b4ca7d92598a16c01d112 (run 39177311554, job
+#: 117822537422, 2026-10-18) and, via the coverage-gate root producer, all
+#: four again at run 39130160694. `pg_isready` is a server-liveness ping, not
+#: a statement channel; readiness here means one successful `SELECT 1`
+#: round-trip on the target database, the same lesson #689 recorded for the
+#: workflow service health checks. The probe goes over TCP (`-h 127.0.0.1`)
+#: because the temporary server answers *socket* queries too — even
+#: authenticated `SELECT 1`s for the target database once `docker_setup_db`
+#: has run — while it never listens on TCP; only a TCP round-trip proves the
+#: final server this module actually talks to is up. Both knobs are module
+#: constants so the stub-docker tests in test_restore_oracle_readiness_gate.py
+#: can shrink them.
+_READY_TIMEOUT_S = 90.0
+_READY_POLL_S = 1.0
+
+
 def _wait_ready(container: str) -> None:
-    for _ in range(60):
-        probe = subprocess.run(
-            ["docker", "exec", container, "pg_isready", "-U", PG_USER],
-            capture_output=True,
-        )
-        if probe.returncode == 0:
+    """Wait until the container's *final* server answers `SELECT 1` with `1`.
+
+    Re-raises the last probe's exit code and stderr tail on timeout so a wedged
+    container is diagnosable from the failure alone.
+    """
+    probe_cmd = [
+        "docker",
+        "exec",
+        container,
+        "psql",
+        "-h",
+        "127.0.0.1",
+        "-X",
+        "-Atq",
+        "-v",
+        "ON_ERROR_STOP=1",
+        "-U",
+        PG_USER,
+        "-d",
+        PG_DB,
+        "-c",
+        "SELECT 1",
+    ]
+    deadline = time.monotonic() + _READY_TIMEOUT_S
+    while True:
+        probe = subprocess.run(probe_cmd, capture_output=True, text=True)
+        if probe.returncode == 0 and probe.stdout.strip() == "1":
             return
-        time.sleep(1)
-    pytest.fail(f"characterization PostgreSQL {container} did not become ready")
+        if time.monotonic() >= deadline:
+            pytest.fail(
+                f"characterization PostgreSQL {container} did not become ready "
+                f"within {_READY_TIMEOUT_S:.0f}s; last `SELECT 1` probe "
+                f"exited {probe.returncode}: {probe.stderr.strip()[-400:]}"
+            )
+        time.sleep(_READY_POLL_S)
 
 
 def _source_lib() -> str:
@@ -286,6 +336,13 @@ def _run_drill(backup_root: Path, date: str) -> subprocess.CompletedProcess[str]
         PG_IMAGE=PG_IMAGE,
         POSTGRES_USER=PG_USER,
         POSTGRES_DB=PG_DB,
+        # Merge reconciliation (#88 + #1881): the lib-driver artifact below
+        # carries PostgreSQL state only, while the production drill hard-fails
+        # on a missing conductor-data capture (the D-18 gap). This harness
+        # exercises the PostgreSQL oracle, so it opts out exactly the way
+        # Conductor-less stacks do — the same SKIP_CONDUCTOR_BACKUP=1 contract
+        # as backup.sh and verify-restore.sh.
+        SKIP_CONDUCTOR_BACKUP="1",
     )
     return subprocess.run(
         ["bash", str(VERIFY_SH), date],

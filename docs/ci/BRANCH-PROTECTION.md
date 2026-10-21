@@ -50,8 +50,48 @@ is also required live on both branches; because it is produced by
 | `Coverage gate (publish-set floor + diff coverage)` | ● | ● |
 | `DevSkim` | adv | ○ |
 | `Gate C — canonical clean install` | ● | ● |
+| `Quality / Acceptance state` | adv | adv |
+| `Quality / Agent store writes` | adv | adv |
+| `Quality / Architecture fitness` | adv | adv |
+| `Quality / BFCL provenance` | adv | adv |
+| `Quality / Backlog consistency` | adv | adv |
+| `Quality / Contract markers` | adv | adv |
+| `Quality / Convergence matrix` | adv | adv |
+| `Quality / Credential authority` | adv | adv |
+| `Quality / Docstring coverage` | adv | adv |
+| `Quality / Documentation links` | adv | adv |
+| `Quality / Enumeration coverage` | adv | adv |
+| `Quality / Execution lifecycles` | adv | adv |
+| `Quality / Foreign-harness egress` | adv | adv |
+| `Quality / Frontend typed client` | adv | adv |
+| `Quality / Hypothesis` | adv | adv |
+| `Quality / IFEval provenance` | adv | adv |
+| `Quality / Image inventory` | adv | adv |
+| `Quality / Image pins` | adv | adv |
+| `Quality / Installed proof CLI` | adv | adv |
+| `Quality / Model egress` | adv | adv |
+| `Quality / Mypy strict` | adv | adv |
+| `Quality / Principal identity` | adv | adv |
+| `Quality / Pyright` | adv | adv |
+| `Quality / Radon` | adv | adv |
+| `Quality / Reachability` | adv | adv |
+| `Quality / Reachability dispositions` | adv | adv |
+| `Quality / Release consistency` | adv | adv |
+| `Quality / Route permissions` | adv | adv |
+| `Quality / Ruff` | adv | adv |
+| `Quality / Security inventory` | adv | adv |
+| `Quality / Selected model-call CLI` | adv | adv |
+| `Quality / Version consistency` | adv | adv |
+| `Quality / Vulture` | adv | adv |
+| `Quality / Wiring reads` | adv | adv |
+| `Quality / Workflow inventory` | adv | adv |
+| `Quality / Workspace retirement` | adv | adv |
+| `Quality / Xenon` | adv | adv |
 | `Quality gate (Pillars 1–4, 7, 8)` | ● | ● |
 | `SAST (bandit + semgrep + gitleaks)` | ● | ● |
+| `SAST / Bandit` | adv | adv |
+| `SAST / Gitleaks` | adv | adv |
+| `SAST / Semgrep` | adv | adv |
 | `Supply chain (pip-audit)` | ● | ● |
 | `Validate ADR/spec front-matter` | ● | ● |
 | `block` | ● | ● |

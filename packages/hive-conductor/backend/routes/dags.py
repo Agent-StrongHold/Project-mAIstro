@@ -15,6 +15,8 @@ from services.dag_execution_scope import (
 from services.edit_lock import diff_dag_snapshots, mark_edited
 from services.request_principal import optional_actor_id
 
+from maistro.runs.chat_refusal import CHAT_TURN_RETRY_AFTER_S
+from maistro.runs.concurrency import RunConcurrencyExceeded
 from routes.audit import log_audit
 
 
@@ -31,6 +33,34 @@ def _public_failure(exc: BaseException) -> str:
 
 router = APIRouter(tags=["dags"])
 logger = logging.getLogger("hive.dags")
+
+# OpenAPI contract for canonical admission backpressure (#1182): the shape of
+# the HTTPException raised by `run_dag` and `run_champion` when a concurrency
+# ceiling is reached. Declared on both routes so generated clients can type
+# the retry path, including the `Retry-After` header they must honor.
+_ADMISSION_429_RESPONSES: dict[int | str, dict[str, Any]] = {
+    429: {
+        "description": (
+            "Admission backpressure: too many active runs for this scope; "
+            "retry after the interval named by Retry-After"
+        ),
+        "headers": {
+            "Retry-After": {
+                "description": "Seconds to wait before retrying the request",
+                "schema": {"type": "integer"},
+            }
+        },
+        "content": {
+            "application/json": {
+                "schema": {
+                    "type": "object",
+                    "properties": {"detail": {"type": "string"}},
+                    "required": ["detail"],
+                }
+            }
+        },
+    }
+}
 
 
 class DAGNode(BaseModel):
@@ -366,7 +396,7 @@ def remove_edge(dag_id: str, edge_id: str) -> dict:
     return removed[0].model_dump(mode="json")
 
 
-@router.post("/{dag_id}/run")
+@router.post("/{dag_id}/run", responses=_ADMISSION_429_RESPONSES)
 async def run_dag(
     dag_id: str,
     request: Request,
@@ -399,6 +429,17 @@ async def run_dag(
             scope=scope,
             execution_mode="interactive",
         )
+    except RunConcurrencyExceeded as exc:
+        # Canonical admission backpressure (#1182), not a DAG failure: the
+        # RunStore refused a new root before any execution existed, so there
+        # is no run receipt to return and the same request is admissible once
+        # a slot frees. Same contract as the chat transport's 429: scoped
+        # detail (the ceiling kind, never the exception text) and Retry-After.
+        raise HTTPException(
+            status_code=429,
+            detail=f"too many active runs for this {exc.scope}; retry shortly",
+            headers={"Retry-After": str(CHAT_TURN_RETRY_AFTER_S)},
+        ) from exc
     except CanonicalDagExecutionError as exc:
         result = exc.result
         await _record_run_projection(dag_id=dag_id, user_id=actor, result=result)
@@ -424,7 +465,7 @@ async def run_dag(
     }
 
 
-@router.post("/run-champion")
+@router.post("/run-champion", responses=_ADMISSION_429_RESPONSES)
 async def run_champion(
     request: Request,
     body: DagRunRequest | None = None,
@@ -444,6 +485,15 @@ async def run_champion(
         result = await execute_champion(scope=scope)
         run_id = result.get("run_id")
         return {"execution_id": run_id, "run_id": run_id, "result": result}
+    except RunConcurrencyExceeded as exc:
+        # Same canonical admission backpressure mapping as `run_dag` (#1182):
+        # the champion never reached a Run, so a retryable 429 -- not a
+        # success-shaped receipt -- is the truthful answer.
+        raise HTTPException(
+            status_code=429,
+            detail=f"too many active runs for this {exc.scope}; retry shortly",
+            headers={"Retry-After": str(CHAT_TURN_RETRY_AFTER_S)},
+        ) from exc
     except Exception as exc:
         logger.warning("Champion execution failed", exc_info=exc)
         return {"status": "failed", "error": _public_failure(exc)}
