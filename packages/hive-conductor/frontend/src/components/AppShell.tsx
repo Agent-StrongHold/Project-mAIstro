@@ -12,6 +12,7 @@ import {
   MessageCircle,
   LayoutDashboard,
   Target,
+  Flag,
   Brain,
   Plug,
   KeyRound,
@@ -35,6 +36,7 @@ import {
 const fullNav = [
   { to: "/chat", icon: MessageCircle, label: "Chat" },
   { to: "/dashboard", icon: LayoutDashboard, label: "Dashboard" },
+  { to: "/goals", icon: Flag, label: "Goals" },
   // #95: Design Studio is the parent creative-production surface, so it is a
   // first-class nav destination at its canonical route. Canvas is a tool it
   // consumes, not a sibling studio; the implementation-era /cli/canvas path is
@@ -142,7 +144,7 @@ export function AppShell({ children }: { children?: ReactNode }) {
           </div>
         )}
         <div className="drawer-nav">
-          {fullNav.map((item) => (
+          {visibleNav(user).map((item) => (
             <NavLink
               key={item.to}
               to={item.to}
@@ -163,7 +165,7 @@ export function AppShell({ children }: { children?: ReactNode }) {
       </nav>
 
       <nav className="icon-sidebar">
-        {fullNav.map((item) => (
+        {visibleNav(user).map((item) => (
           <NavLink
             key={item.to}
             to={item.to}

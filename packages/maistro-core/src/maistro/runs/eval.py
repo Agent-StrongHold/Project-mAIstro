@@ -4,7 +4,9 @@ Scoring a design artifact is part of the same execution that produced it. The
 score is a `RunEvalScore` row on the producing `Run` — naming the NodeRun and
 Attempt that produced the scored evidence, the exact Goal revision, and the
 exact Rubric revision — never a sidecar job, never a client-side critic, and
-never a second execution identity (`EvalRun`/`EvalJob` would read as one).
+never a second execution identity — a parallel eval lifecycle would read as
+one, and the M7-A14 tripwire (test_no_second_design_product) forbids naming
+one anywhere in production source.
 
 This module is the seam over the store for the two things a consumer needs
 beyond append:
@@ -76,6 +78,41 @@ class EvalSummary:
         return self.complete and not self.failed_dimensions
 
 
+def _validate_dimensions(dimensions: tuple[str, ...]) -> frozenset[str]:
+    """The dimension set a summary is asked about must be real and distinct."""
+    if not dimensions:
+        raise ValueError("dimension_ids must not be empty")
+    wanted = frozenset(dimensions)
+    if len(wanted) != len(dimensions):
+        raise ValueError("dimension_ids must not contain duplicates")
+    return wanted
+
+
+def _row_matches(
+    record: RunEvalScore,
+    *,
+    rubric_id: str,
+    rubric_revision: int,
+    wanted: frozenset[str],
+) -> bool:
+    """A row counts toward this summary only for the exact Rubric revision."""
+    return (
+        record.rubric_id == rubric_id
+        and record.rubric_revision == rubric_revision
+        and record.dimension_id in wanted
+    )
+
+
+def _latest_by_dimension(
+    records: tuple[RunEvalScore, ...],
+) -> dict[str, RunEvalScore]:
+    """The latest record per dimension; later scores supersede, never delete."""
+    latest: dict[str, RunEvalScore] = {}
+    for record in sorted(records, key=lambda r: (r.scored_at, r.eval_id)):
+        latest[record.dimension_id] = record
+    return latest
+
+
 async def eval_summary(
     store: RunStore,
     run_id: str,
@@ -92,21 +129,18 @@ async def eval_summary(
     `missing`.
     """
     dimensions = tuple(dimension_ids)
-    if not dimensions:
-        raise ValueError("dimension_ids must not be empty")
-    wanted = frozenset(dimensions)
-    if len(wanted) != len(dimensions):
-        raise ValueError("dimension_ids must not contain duplicates")
+    wanted = _validate_dimensions(dimensions)
     records = tuple(
         record
         for record in await store.list_eval_scores(run_id)
-        if record.rubric_id == rubric_id
-        and record.rubric_revision == rubric_revision
-        and record.dimension_id in wanted
+        if _row_matches(
+            record,
+            rubric_id=rubric_id,
+            rubric_revision=rubric_revision,
+            wanted=wanted,
+        )
     )
-    latest: dict[str, RunEvalScore] = {}
-    for record in sorted(records, key=lambda r: (r.scored_at, r.eval_id)):
-        latest[record.dimension_id] = record
+    latest = _latest_by_dimension(records)
     missing = tuple(d for d in dimensions if d not in latest)
     failed = tuple(d for d, record in sorted(latest.items()) if not record.passed)
     return EvalSummary(

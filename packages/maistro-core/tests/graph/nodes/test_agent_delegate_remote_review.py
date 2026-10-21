@@ -66,6 +66,21 @@ def _delegator() -> A2ADelegator:
     return delegator
 
 
+async def _governed_external(
+    store: InMemoryRunStore, project_id: str, peers: GuestPeerManager
+) -> AgentDelegateRemoteNode:
+    """The node with the issue #959 wiring: run store, Binding, effects."""
+    return AgentDelegateRemoteNode(
+        guest_peers=peers,
+        run_store=store,
+        effect_context=await delegation_effects(workspace_id="workspace-1", project_id=project_id),
+    )
+
+
+def _external_inputs() -> dict[str, Any]:
+    return {"from_agent": "planner", "task": "x", "peer_name": "hub", "binding_id": "binding-hub"}
+
+
 class _ReceiptFailingStore(InMemoryRunStore):
     """Inject the crash window between transport acceptance and receipt attach."""
 
@@ -328,7 +343,8 @@ class TestAdmissionAndTransportConverge:
         )
         store = _ReceiptFailingStore(project_store=project_store)
         parent = await store.create_run(
-            _graph(workspace_id="workspace-1", project_id=project.project_id)
+            _graph(workspace_id="workspace-1", project_id=project.project_id),
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         )
         node_run = await store.create_node_run(parent.run_id, node_id="delegate-1")
         delegator = _recording_delegator()
@@ -369,7 +385,8 @@ class TestAdmissionAndTransportConverge:
     ) -> None:
         store, project = await _spine()
         parent = await store.create_run(
-            _graph(workspace_id="workspace-1", project_id=project.project_id)
+            _graph(workspace_id="workspace-1", project_id=project.project_id),
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         )
         node_run = await store.create_node_run(parent.run_id, node_id="delegate-1")
         delegator = _recording_delegator()
@@ -398,7 +415,8 @@ class TestAdmissionAndTransportConverge:
         )
         store = _ReservationFailingStore(project_store=project_store)
         parent = await store.create_run(
-            _graph(workspace_id="workspace-1", project_id=project.project_id)
+            _graph(workspace_id="workspace-1", project_id=project.project_id),
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         )
         delegator = _recording_delegator()
         node = AgentDelegateRemoteNode(a2a_delegator=delegator, run_store=store)
@@ -414,7 +432,8 @@ class TestAdmissionAndTransportConverge:
     async def test_restart_after_child_reservation_can_claim_and_dispatch_once(self) -> None:
         store, project = await _spine()
         parent = await store.create_run(
-            _graph(workspace_id="workspace-1", project_id=project.project_id)
+            _graph(workspace_id="workspace-1", project_id=project.project_id),
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         )
         node_run = await store.create_node_run(parent.run_id, node_id="delegate-1")
         first_delegator = _recording_delegator()
@@ -452,7 +471,8 @@ class TestAdmissionAndTransportConverge:
         pause, which re-enters the node to look for the receipt again."""
         store, project = await _spine()
         parent = await store.create_run(
-            _graph(workspace_id="workspace-1", project_id=project.project_id)
+            _graph(workspace_id="workspace-1", project_id=project.project_id),
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         )
         node_run = await store.create_node_run(parent.run_id, node_id="delegate-1")
         first_delegator = _FailingDelegator()
@@ -523,14 +543,17 @@ class TestAdmissionAndTransportConverge:
         )
         store = InMemoryRunStore(project_store=project_store)
         parent = await store.create_run(
-            _graph(workspace_id="workspace-1", project_id=project.project_id)
+            _graph(workspace_id="workspace-1", project_id=project.project_id),
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         )
         node_run = await store.create_node_run(parent.run_id, node_id="delegate-1")
         peers = GuestPeerManager()
         peers.register_peer(peer)
-        node = AgentDelegateRemoteNode(guest_peers=peers, run_store=store)
-        inputs = {"from_agent": "planner", "task": "x", "peer_name": "hub"}
-        ctx = _ctx(run_id=parent.run_id, node_run_id=node_run.node_run_id)
+        node = await _governed_external(store, project.project_id, peers)
+        inputs = _external_inputs()
+        ctx = _ctx(run_id=parent.run_id, node_run_id=node_run.node_run_id).model_copy(
+            update={"attempt_id": "attempt-1", "workspace_id": "workspace-1"}
+        )
 
         first = await node.run(inputs, ctx)
         assert first.status == "paused"
@@ -560,7 +583,8 @@ class TestAdmissionAndTransportConverge:
         child stops claiming `created` forever."""
         store, project = await _spine()
         parent = await store.create_run(
-            _graph(workspace_id="workspace-1", project_id=project.project_id)
+            _graph(workspace_id="workspace-1", project_id=project.project_id),
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         )
         node_run = await store.create_node_run(parent.run_id, node_id="delegate-1")
         first_delegator = _FailingDelegator()
@@ -626,14 +650,17 @@ class TestAdmissionAndTransportConverge:
         )
         store = InMemoryRunStore(project_store=project_store)
         parent = await store.create_run(
-            _graph(workspace_id="workspace-1", project_id=project.project_id)
+            _graph(workspace_id="workspace-1", project_id=project.project_id),
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         )
         node_run = await store.create_node_run(parent.run_id, node_id="delegate-1")
         peers = GuestPeerManager()
         peers.register_peer(peer)
-        node = AgentDelegateRemoteNode(guest_peers=peers, run_store=store)
-        inputs = {"from_agent": "planner", "task": "x", "peer_name": "hub"}
-        ctx = _ctx(run_id=parent.run_id, node_run_id=node_run.node_run_id)
+        node = await _governed_external(store, project.project_id, peers)
+        inputs = _external_inputs()
+        ctx = _ctx(run_id=parent.run_id, node_run_id=node_run.node_run_id).model_copy(
+            update={"attempt_id": "attempt-1", "workspace_id": "workspace-1"}
+        )
 
         first = await node.run(inputs, ctx)
 
@@ -680,7 +707,8 @@ class TestAdmissionAndTransportConverge:
         )
         store = _DelegationKeyConflictStore(project_store=project_store)
         parent = await store.create_run(
-            _graph(workspace_id="workspace-1", project_id=project.project_id)
+            _graph(workspace_id="workspace-1", project_id=project.project_id),
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         )
         node_run = await store.create_node_run(parent.run_id, node_id="delegate-1")
         delegator = _recording_delegator()
@@ -692,6 +720,7 @@ class TestAdmissionAndTransportConverge:
             _graph(workspace_id="workspace-1", project_id=project.project_id),
             parent_run_id=parent.run_id,
             provenance={"delegation_key": key, "source": "winner-replica"},
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         )
 
         child_id = await node._reserve_child(
@@ -752,7 +781,8 @@ class TestScopeIsCheckedBeforeDispatch:
         """A child without its admitting NodeRun would lose physical provenance."""
         store, project = await _spine()
         parent = await store.create_run(
-            _graph(workspace_id="workspace-1", project_id=project.project_id)
+            _graph(workspace_id="workspace-1", project_id=project.project_id),
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         )
         delegator = _recording_delegator()
         node = AgentDelegateRemoteNode(a2a_delegator=delegator, run_store=store)
@@ -899,15 +929,18 @@ async def test_guest_peer_recovery_reconciles_without_a_second_post() -> None:
     )
     store = _ReceiptFailingStore(project_store=project_store)
     parent = await store.create_run(
-        _graph(workspace_id="workspace-1", project_id=project.project_id)
+        _graph(workspace_id="workspace-1", project_id=project.project_id),
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
     node_run = await store.create_node_run(parent.run_id, node_id="delegate-1")
 
     first_peers = GuestPeerManager()
     first_peers.register_peer(peer)
-    first_node = AgentDelegateRemoteNode(guest_peers=first_peers, run_store=store)
-    inputs = {"from_agent": "planner", "task": "x", "peer_name": "hub"}
-    ctx = _ctx(run_id=parent.run_id, node_run_id=node_run.node_run_id)
+    first_node = await _governed_external(store, project.project_id, first_peers)
+    inputs = _external_inputs()
+    ctx = _ctx(run_id=parent.run_id, node_run_id=node_run.node_run_id).model_copy(
+        update={"attempt_id": "attempt-1", "workspace_id": "workspace-1"}
+    )
 
     first = await first_node.run(inputs, ctx)
     assert first.status == "failed"
@@ -916,7 +949,7 @@ async def test_guest_peer_recovery_reconciles_without_a_second_post() -> None:
     # peer's reconciliation endpoint instead of issuing a second POST.
     second_peers = GuestPeerManager()
     second_peers.register_peer(peer)
-    second_node = AgentDelegateRemoteNode(guest_peers=second_peers, run_store=store)
+    second_node = await _governed_external(store, project.project_id, second_peers)
     second = await second_node.run(inputs, ctx)
 
     assert second.status == "paused"

@@ -25,6 +25,17 @@ CREATE TABLE IF NOT EXISTS quota_usage (
 )
 """
 
+_EVIDENCE_SCHEMA = """
+CREATE TABLE IF NOT EXISTS quota_invocation_evidence (
+    invocation_id TEXT PRIMARY KEY,
+    provider TEXT NOT NULL,
+    cycle_key TEXT NOT NULL,
+    input_tokens INTEGER NOT NULL DEFAULT 0,
+    output_tokens INTEGER NOT NULL DEFAULT 0,
+    usage_reported INTEGER NOT NULL
+)
+"""
+
 _EVENT_SCHEMA = """
 CREATE TABLE IF NOT EXISTS quota_usage_events (
     event_id TEXT PRIMARY KEY,
@@ -44,14 +55,55 @@ class SqliteQuotaTracker:
         self._record_lock = asyncio.Lock()
 
     async def ensure_schema(self) -> None:
-        """Create the quota_usage and quota_usage_events tables.
+        """Create quota aggregates, canonical Invocation evidence, and durable
+        event-identity tables.
 
         `quota_usage_events` carries the durable event identities that make
         `record_usage` retries (and crash-ambiguous commits) harmless.
         """
         async with serialized_schema_upgrade(self._conn):
             await self._conn.execute(_SCHEMA)
+            # Existing SQLite deployments predate the evidence projection; make
+            # the additive column safe for those databases before recording.
+            cursor = await self._conn.execute("PRAGMA table_info(quota_usage)")
+            columns = {row[1] for row in await cursor.fetchall()}
+            if "unreported_count" not in columns:
+                await self._conn.execute(
+                    "ALTER TABLE quota_usage ADD COLUMN unreported_count INTEGER NOT NULL DEFAULT 0"
+                )
+            await self._conn.execute(_EVIDENCE_SCHEMA)
             await self._conn.execute(_EVENT_SCHEMA)
+
+    async def _project_usage_locked(
+        self, provider: str, ck: str, input_tokens: int, output_tokens: int
+    ) -> None:
+        """Fold measured usage into the aggregate. Lock held; does not commit."""
+
+        await self._conn.execute(
+            """INSERT INTO quota_usage
+               (provider, cycle_key, input_tokens, output_tokens, total_tokens, request_count)
+               VALUES (?, ?, ?, ?, ?, 1)
+               ON CONFLICT (provider, cycle_key) DO UPDATE SET
+                 input_tokens = input_tokens + excluded.input_tokens,
+                 output_tokens = output_tokens + excluded.output_tokens,
+                 total_tokens = total_tokens + excluded.total_tokens,
+                 request_count = request_count + 1""",
+            (provider, ck, input_tokens, output_tokens, input_tokens + output_tokens),
+        )
+
+    async def _project_unreported_locked(self, provider: str, ck: str) -> None:
+        """Count a call whose usage never arrived. Lock held; does not commit."""
+
+        await self._conn.execute(
+            """INSERT INTO quota_usage
+               (provider, cycle_key, input_tokens, output_tokens, total_tokens,
+                request_count, unreported_count)
+               VALUES (?, ?, 0, 0, 0, 1, 1)
+               ON CONFLICT (provider, cycle_key) DO UPDATE SET
+                 request_count = request_count + 1,
+                 unreported_count = unreported_count + 1""",
+            (provider, ck),
+        )
 
     async def record_usage(
         self,
@@ -64,7 +116,6 @@ class SqliteQuotaTracker:
         """Record one event, making retries harmless by ``event_id``."""
         event_id = event_id or uuid4().hex
         ck = cycle_key(billing_cycle)
-        total = input_tokens + output_tokens
         async with self._record_lock:
             cursor = await self._conn.execute(
                 "INSERT OR IGNORE INTO quota_usage_events "
@@ -81,17 +132,7 @@ class SqliteQuotaTracker:
                 if stored is None or stored != (provider, ck, input_tokens, output_tokens):
                     raise ValueError(f"event_id {event_id!r} was reused with different usage")
             else:
-                await self._conn.execute(
-                    """INSERT INTO quota_usage
-                       (provider, cycle_key, input_tokens, output_tokens, total_tokens, request_count)
-                       VALUES (?, ?, ?, ?, ?, 1)
-                       ON CONFLICT (provider, cycle_key) DO UPDATE SET
-                         input_tokens = input_tokens + excluded.input_tokens,
-                         output_tokens = output_tokens + excluded.output_tokens,
-                         total_tokens = total_tokens + excluded.total_tokens,
-                         request_count = request_count + 1""",
-                    (provider, ck, input_tokens, output_tokens, total),
-                )
+                await self._project_usage_locked(provider, ck, input_tokens, output_tokens)
             await self._conn.commit()
             cursor = await self._conn.execute(
                 "SELECT input_tokens, output_tokens, total_tokens, request_count "

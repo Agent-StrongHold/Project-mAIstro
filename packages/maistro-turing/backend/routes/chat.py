@@ -60,7 +60,7 @@ def _reply_from_record(record: DurableRunRecord) -> str:
 async def chat(
     body: ChatBody,
     request: Request,
-    user: dict = Depends(require_user),
+    user: Principal = Depends(require_user),
 ) -> dict:
     message = body.message.strip()
     if not message:
@@ -99,7 +99,7 @@ async def chat(
                 message,
                 boundary="user_input",
                 context=TuringSecurityContext(
-                    principal=str(user["id"]),
+                    principal=user.user_id,
                     route="/v1/chat",
                     action="chat",
                     workspace_id=record.run.workspace_id,

@@ -16,6 +16,7 @@ import os
 from dataclasses import dataclass
 from typing import Any
 
+from maistro.agents.types import LLMProviderError
 from maistro.capabilities.binding import Binding
 from maistro.capabilities.binding_store import BindingResolutionError
 from maistro.capabilities.effect_context import CapabilityEffectContext
@@ -23,6 +24,7 @@ from maistro.capabilities.governed_invocation import (
     InvocationApprovalRequired,
     InvocationDenied,
 )
+from maistro.capabilities.invocation import CapabilityUnavailable
 from maistro.capabilities.model_chat import ModelCallResult, ModelChatEgress
 from maistro.capabilities.providers.llm_gateway import (
     DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,
@@ -35,6 +37,7 @@ from maistro.capabilities.providers.llm_gateway import (
 )
 from maistro.credentials.types import CredentialRecord
 from maistro.graph.definitions import Graph, Node
+from maistro.graph.nodes.base import NodeContext
 from maistro.providers.protocols import LLMProviderRegistry, LLMRouter
 from maistro.runs.lifecycle import transition_path
 from maistro.runs.model import (
@@ -43,6 +46,7 @@ from maistro.runs.model import (
     AttemptStatus,
     RunStatus,
 )
+from maistro.runs.store_boundary import require_admitted_actor
 
 
 class ProviderActivationError(RuntimeError):
@@ -87,6 +91,8 @@ def _runtime() -> GovernedModelRuntime:
 def _endpoint() -> GatewayEndpoint:
     from config import get_settings
 
+    from services.secrets import effective_llm_gateway_key
+
     settings = get_settings()
     base_url = (
         os.environ.get("MAISTRO_LLM_BASE_URL")
@@ -95,18 +101,11 @@ def _endpoint() -> GatewayEndpoint:
         or settings.litellm_api_base
         or ""
     ).strip()
-    api_key = (
-        os.environ.get("MAISTRO_LLM_API_KEY")
-        or os.environ.get("LITELLM_API_KEY")
-        or os.environ.get("LITELLM_PROXY_KEY")
-        or os.environ.get("LITELLM_MASTER_KEY")
-        or (
-            settings.litellm_api_key.get_secret_value()
-            if settings.litellm_api_key is not None
-            else ""
-        )
-        or ""
-    )
+    # The one effective-key contract (#1824), not a private alias chain: the
+    # governed egress and the embedded runtime's roster clients must resolve
+    # the deployment's credential the same way, or the two doors drift onto
+    # different credentials.
+    api_key = effective_llm_gateway_key(settings) or ""
     if not base_url:
         raise ProviderActivationError("LLM gateway is not configured")
     return GatewayEndpoint(base_url=base_url, api_key=api_key)
@@ -154,6 +153,167 @@ def control_plane_binding(
         provider_name=provider_name,
         credential_refs=(DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,),
     )
+
+
+def dag_node_runtime(container: Any) -> GovernedModelRuntime | None:
+    """Compose the authorities a legacy-DAG node model call needs, or None.
+
+    Legacy DAG LLM nodes route their physical completion through the canonical
+    Binding -> Invocation egress (#718) whenever the bridge Container is live
+    and the deployment gateway is configured. None — which makes the node fall
+    back to its compatibility builder — means no canonical authority exists to
+    compose (standalone tests, direct construction, unconfigured gateway); it
+    never means a second gateway is fabricated here. Precedence lives with the
+    node: the governed egress wins over any injected raw builder, because the
+    canonical effect path owns the authoritative recording hook once.
+    """
+
+    if container is None:
+        return None
+    effects = getattr(container, "capability_effects", None)
+    registry = getattr(container, "provider_registry", None)
+    router = getattr(container, "llm_router", None)
+    if effects is None or registry is None or router is None:
+        return None
+    try:
+        endpoint = _endpoint()
+    except ProviderActivationError:
+        return None
+    return GovernedModelRuntime(
+        effects=effects,
+        registry=registry,
+        router=router,
+        endpoint=endpoint,
+    )
+
+
+async def dag_node_completion(
+    runtime: GovernedModelRuntime,
+    *,
+    run_id: str,
+    node_run_id: str,
+    attempt_id: str,
+    node_id: str,
+    workspace_id: str,
+    project_id: str,
+    system: str,
+    user: str,
+    model: str,
+) -> str:
+    """Run one legacy-DAG node completion across canonical Binding -> Invocation.
+
+    The physical call is the governed model egress, so its usage evidence lands
+    on the quota ledger through the Invocation authority's single
+    terminalization recorder (#718) — no per-node callback, no second ledger.
+    The request shape (JSON response format, temperature 0.3) preserves what the
+    legacy raw builder sent, so node outputs do not change with the cutover.
+    The Binding names the deployment's registered default gateway key; the
+    credential is added to this Run's own Workspace/Project scope idempotently
+    and without discarding health state (#1248), exactly as control-plane
+    effects do.
+    """
+
+    runtime.effects.credentials.add(
+        workspace_id=workspace_id,
+        project_id=project_id,
+        record=CredentialRecord(
+            key_id=DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,
+            provider=MODEL_GATEWAY_CREDENTIAL_PROVIDER,
+            api_key=runtime.endpoint.api_key,
+        ),
+    )
+    result = await ModelChatEgress(
+        runtime.effects,
+        registry=runtime.registry,
+        router=runtime.router,
+        endpoint=runtime.endpoint,
+    ).complete(
+        binding=Binding(
+            workspace_id=workspace_id,
+            project_id=project_id,
+            node_id=node_id,
+            capability=MODEL_CHAT_CAPABILITY,
+            # Pin the node's requested model: the persisted Binding/Invocation
+            # then names exactly which provider/model the physical call used,
+            # which is the attribution the quota ledger rows carry.
+            provider_name=model,
+            credential_refs=(DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,),
+        ),
+        run_id=run_id,
+        node_run_id=node_run_id,
+        attempt_id=attempt_id,
+        effect_key=f"dag-llm-{node_id}-{attempt_id}",
+        request=ModelChatRequest(
+            model=model,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            temperature=0.3,
+            response_format={"type": "json_object"},
+        ),
+    )
+    choices = result.body.get("choices")
+    message = (
+        choices[0].get("message")
+        if isinstance(choices, list) and choices and isinstance(choices[0], dict)
+        else None
+    )
+    content = message.get("content") if isinstance(message, dict) else None
+    if not isinstance(content, str):
+        raise LLMProviderError("dag node: governed gateway returned no content")
+    return content
+
+
+async def dag_tool_completion(
+    runtime: GovernedModelRuntime,
+    *,
+    ctx: NodeContext,
+    binding_id: str,
+    effect_key: str,
+    request: ModelChatRequest,
+    timeout_s: float,
+) -> str:
+    """Execute a tool's model sub-effect using its existing canonical Attempt.
+
+    The DAG only references an operator-declared model Binding. It cannot
+    register a credential or authorize its requested model by constructing a
+    new Binding. The outer tool Invocation retains tool policy/lifecycle;
+    this distinct model Invocation owns model selection, credentials and usage.
+    """
+    if not binding_id.strip():
+        raise BindingResolutionError("model-backed DAG tools require a model_binding_id")
+    binding = await runtime.effects.bindings.resolve(
+        binding_id,
+        workspace_id=str(ctx.workspace_id or ""),
+        project_id=str(ctx.project_id or ""),
+        node_id=ctx.node_id,
+        capability=MODEL_CHAT_CAPABILITY,
+    )
+    result = await ModelChatEgress(
+        runtime.effects,
+        registry=runtime.registry,
+        router=runtime.router,
+        endpoint=runtime.endpoint.model_copy(update={"timeout_s": timeout_s}),
+    ).complete(
+        binding=binding,
+        run_id=ctx.run_id,
+        node_run_id=ctx.node_run_id,
+        attempt_id=ctx.attempt_id,
+        actor_id=str(ctx.user_id or ""),
+        effect_key=effect_key,
+        request=request,
+    )
+    choices = result.body.get("choices")
+    message = (
+        choices[0].get("message")
+        if isinstance(choices, list) and choices and isinstance(choices[0], dict)
+        else None
+    )
+    content = message.get("content") if isinstance(message, dict) else None
+    if not isinstance(content, str):
+        raise LLMProviderError("DAG tool model returned no text content")
+    return content
 
 
 async def ensure_binding(runtime: GovernedModelRuntime, binding: Binding) -> Binding:
@@ -236,7 +396,10 @@ async def register_and_health_check(
     instead of registering models before being told no. The billable/diagnostic
     completion crosses the canonical model egress so its outcome and usage are
     auditable, and the transient registration key never enters the Invocation
-    record.
+    record. The health model is a Binding pin: its metadata must already be
+    registered by the configured ProviderRegistry (``provider_config_path``).
+    This hook registers gateway transport names, not trusted cost metadata.
+    An unknown pin refuses before setup and must remain an actionable error.
     """
 
     async def register_then_probe() -> None:
@@ -263,6 +426,10 @@ async def register_and_health_check(
         )
     except ProviderActivationError:
         raise
+    except CapabilityUnavailable as exc:
+        raise ProviderHealthError(
+            f"provider health selection unavailable for {provider_name}: {exc}"
+        ) from exc
     except (BindingResolutionError, InvocationDenied, InvocationApprovalRequired) as exc:
         raise ProviderAuthorizationError(
             f"provider health authorization failed for {provider_name}"
@@ -295,6 +462,7 @@ async def mint_operation_identity(
     workspace_id: str,
     project_id: str,
     parent_run_id: str = "",
+    actor_principal_id: str | None = None,
     provenance: dict[str, Any] | None = None,
 ) -> OperationIdentity:
     """Mint the canonical Run -> NodeRun -> Attempt identity for one operation.
@@ -311,8 +479,10 @@ async def mint_operation_identity(
             "canonical run correlation is unavailable without the core Container run store"
         )
     parent_run_id = parent_run_id.strip()
-    if parent_run_id and await store.get_run(parent_run_id) is None:
+    parent_run = await store.get_run(parent_run_id) if parent_run_id else None
+    if parent_run_id and parent_run is None:
         raise LookupError(f"canonical Run {parent_run_id!r} does not exist")
+    resolved_actor = parent_run.actor_principal_id if parent_run is not None else actor_principal_id
     graph = Graph(
         workspace_id=workspace_id,
         project_id=project_id,
@@ -323,6 +493,7 @@ async def mint_operation_identity(
         graph,
         parent_run_id=parent_run_id or None,
         initial_status=RunStatus.QUEUED,
+        actor_principal_id=require_admitted_actor(resolved_actor),
         provenance={
             "admission_source": "control-plane-operation",
             "operation": operation,

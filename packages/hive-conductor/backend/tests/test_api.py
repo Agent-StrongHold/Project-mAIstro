@@ -369,6 +369,7 @@ def test_mission_create_dispatches_task() -> None:
                 "name": "Write hello world",
                 "description": "Write hello world",
                 "user_id": "bob",
+                "assigned_agents": ["ghost"],
             },
         )
 

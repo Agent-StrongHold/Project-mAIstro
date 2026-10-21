@@ -74,7 +74,11 @@ def _dag() -> dict[str, Any]:
 
 
 async def _boot_container(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, register_model: bool
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    register_model: bool,
+    security: Any,
 ) -> Container:
     """Boot the real Container over the shipped configuration path.
 
@@ -83,6 +87,10 @@ async def _boot_container(
     does it — the ``provider_config_path`` yaml, not a registry stand-in.
     The gateway endpoint is configured through the deployment env that
     ``services.governed_model._endpoint`` reads.
+
+    ``security`` is the deployment's own authority statement (the shipped
+    profile's grant); a container built without it denies every graph node,
+    which is the fail-closed posture of #1165, not a bug to work around.
     """
     provider_config: Path | None = None
     if register_model:
@@ -111,6 +119,7 @@ async def _boot_container(
             router_api_key="test-router-key",
             database_url=database_url,
             workspace_id=_WORKSPACE,
+            security=security,
             # Omitting the registration (register_model=False) is the
             # missing-collaborator case: the ProviderRegistry boots empty,
             # so the pinned model resolves nothing.
@@ -163,7 +172,10 @@ async def _execute(container: Container) -> dict[str, Any]:
 
 
 async def test_legacy_llm_node_reaches_the_pinned_provider_and_records_canonical_correlation(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    shipped_deployment_security: Any,
+    host_user_actor: Any,
 ) -> None:
     """The migrated node executes through the real Container path.
 
@@ -175,7 +187,12 @@ async def test_legacy_llm_node_reaches_the_pinned_provider_and_records_canonical
     wiring and this test fails — there is no manufactured node, registry,
     Binding, or resolver in the test to keep it green.
     """
-    container = await _boot_container(tmp_path, monkeypatch, register_model=True)
+    # The acting user is a host user with a role: the node adapter's Sentinel
+    # gate resolves the principal's roles from the host's user store.
+    host_user_actor(_ACTOR, role="user")
+    container = await _boot_container(
+        tmp_path, monkeypatch, register_model=True, security=shipped_deployment_security
+    )
     calls = _fake_transport(monkeypatch)
     ledger = container.usage_log
 
@@ -246,7 +263,10 @@ async def test_legacy_llm_node_reaches_the_pinned_provider_and_records_canonical
 
 
 async def test_unconfigured_gateway_fails_the_legacy_node_closed_without_fabricated_success(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    shipped_deployment_security: Any,
+    host_user_actor: Any,
 ) -> None:
     """No gateway endpoint: the node refuses, nothing succeeds, nothing is invented.
 
@@ -276,7 +296,10 @@ async def test_unconfigured_gateway_fails_the_legacy_node_closed_without_fabrica
     # The unconfigured-but-booted deployment: the same real Container the
     # happy path uses, with the model metadata registered, and then every
     # gateway endpoint/credential source removed.
-    container = await _boot_container(tmp_path, monkeypatch, register_model=True)
+    host_user_actor(_ACTOR, role="user")
+    container = await _boot_container(
+        tmp_path, monkeypatch, register_model=True, security=shipped_deployment_security
+    )
     for key in (
         "MAISTRO_LLM_BASE_URL",
         "MAISTRO_LLM_API_KEY",
@@ -287,15 +310,23 @@ async def test_unconfigured_gateway_fails_the_legacy_node_closed_without_fabrica
         "LITELLM_MASTER_KEY",
     ):
         monkeypatch.delenv(key, raising=False)
-    # get_settings is lru_cached suite-wide; pin the attributes `_endpoint`
-    # and `stub_llm_allowed` read so the unconfigured refusal is
-    # deterministic here.
+    # get_settings is lru_cached suite-wide; pin the attributes the governed
+    # path reads so the unconfigured refusal is deterministic here. The
+    # effective-key contract (`services.secrets.effective_llm_gateway_key`)
+    # reads `settings.maistro_llm_api_key` first, so the stub must carry that
+    # field too — a SimpleNamespace without it is not a faithful Settings and
+    # raises AttributeError instead of failing closed.
     import config as hive_config
 
     monkeypatch.setattr(
         hive_config,
         "get_settings",
-        lambda: SimpleNamespace(litellm_api_base=None, litellm_api_key=None, allow_stub_llm=False),
+        lambda: SimpleNamespace(
+            litellm_api_base=None,
+            litellm_api_key=None,
+            maistro_llm_api_key=None,
+            allow_stub_llm=False,
+        ),
     )
     calls = _fake_transport(monkeypatch)
     ledger = container.usage_log
@@ -325,7 +356,10 @@ async def test_unconfigured_gateway_fails_the_legacy_node_closed_without_fabrica
 
 
 async def test_unregistered_model_metadata_fails_the_real_container_path_closed(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    shipped_deployment_security: Any,
+    host_user_actor: Any,
 ) -> None:
     """The Binding pin requires registry metadata the shipped config registers.
 
@@ -336,7 +370,10 @@ async def test_unregistered_model_metadata_fails_the_real_container_path_closed(
     collaborator gone, the container-path proof fails instead of quietly
     succeeding through some fallback.
     """
-    container = await _boot_container(tmp_path, monkeypatch, register_model=False)
+    host_user_actor(_ACTOR, role="user")
+    container = await _boot_container(
+        tmp_path, monkeypatch, register_model=False, security=shipped_deployment_security
+    )
     calls = _fake_transport(monkeypatch)
     ledger = container.usage_log
 

@@ -201,7 +201,9 @@ async def test_stalled_turns_cannot_grow_the_store_past_the_window(spine) -> Non
 
     admitted = []
     for index in range(3):
-        run = await admitter.admit(_turn(f"turn {index}"))
+        run = await admitter.admit(
+            _turn(f"turn {index}"), actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+        )
         await runs.transition_run(run.run_id, RunStatus.QUEUED)
         await runs.transition_run(run.run_id, RunStatus.RUNNING)
         admitted.append(run.run_id)
@@ -216,7 +218,9 @@ async def test_an_attempt_whose_lease_lapsed_no_longer_shields_its_run(spine) ->
     _projects, runs, root = spine
     admitter = ChatRunAdmitter(runs, workspace_id="w1", project_id=root.project_id, max_retained=1)
 
-    stalled = await admitter.admit(_turn("holder died"))
+    stalled = await admitter.admit(
+        _turn("holder died"), actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+    )
     await runs.transition_run(stalled.run_id, RunStatus.QUEUED)
     await runs.transition_run(stalled.run_id, RunStatus.RUNNING)
     node_run = await runs.create_node_run(
@@ -226,7 +230,9 @@ async def test_an_attempt_whose_lease_lapsed_no_longer_shields_its_run(spine) ->
         node_run.node_run_id, lease_holder="chat", lease_ttl=timedelta(microseconds=1)
     )
 
-    later = await admitter.admit(_turn("next turn"))
+    later = await admitter.admit(
+        _turn("next turn"), actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+    )
 
     assert await runs.get_run(stalled.run_id) is None
     assert await runs.get_run(later.run_id) is not None
@@ -237,7 +243,9 @@ async def test_a_finished_attempt_under_an_open_run_does_not_shield_it(spine) ->
     _projects, runs, root = spine
     admitter = ChatRunAdmitter(runs, workspace_id="w1", project_id=root.project_id, max_retained=1)
 
-    stalled = await admitter.admit(_turn("executor died at the close"))
+    stalled = await admitter.admit(
+        _turn("executor died at the close"), actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+    )
     await runs.transition_run(stalled.run_id, RunStatus.QUEUED)
     await runs.transition_run(stalled.run_id, RunStatus.RUNNING)
     node_run = await runs.create_node_run(
@@ -247,7 +255,9 @@ async def test_a_finished_attempt_under_an_open_run_does_not_shield_it(spine) ->
     await runs.transition_attempt(attempt.attempt_id, AttemptStatus.RUNNING)
     await runs.transition_attempt(attempt.attempt_id, AttemptStatus.COMPLETED)
 
-    later = await admitter.admit(_turn("next turn"))
+    later = await admitter.admit(
+        _turn("next turn"), actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+    )
 
     assert await runs.get_run(stalled.run_id) is None
     assert await runs.get_run(later.run_id) is not None
@@ -535,23 +545,29 @@ async def test_retention_walks_past_a_terminal_parent_with_a_child(spine) -> Non
     """One undeletable parent must not strand younger eligible chat Runs."""
     _projects, runs, root = spine
     admitter = ChatRunAdmitter(runs, workspace_id="w1", project_id=root.project_id, max_retained=2)
-    parent = await admitter.admit(_turn("parent"))
+    parent = await admitter.admit(
+        _turn("parent"), actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+    )
     await runs.transition_run(parent.run_id, RunStatus.QUEUED)
     await runs.transition_run(parent.run_id, RunStatus.RUNNING)
     child_graph = parent.graph.materialize().model_copy(
         update={"graph_id": "child-graph"}, deep=True
     )
-    child = await runs.create_run(child_graph, parent_run_id=parent.run_id)
+    child = await runs.create_run(
+        child_graph, parent_run_id=parent.run_id, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+    )
     await runs.transition_run(child.run_id, RunStatus.QUEUED)
     await runs.transition_run(child.run_id, RunStatus.RUNNING)
     await runs.transition_run(child.run_id, RunStatus.COMPLETED)
     await runs.transition_run(parent.run_id, RunStatus.COMPLETED)
 
-    second = await admitter.admit(_turn("second"))
+    second = await admitter.admit(
+        _turn("second"), actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+    )
     await runs.transition_run(second.run_id, RunStatus.QUEUED)
     await runs.transition_run(second.run_id, RunStatus.RUNNING)
     await runs.transition_run(second.run_id, RunStatus.COMPLETED)
-    third = await admitter.admit(_turn("third"))
+    third = await admitter.admit(_turn("third"), actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
 
     assert admitter.retained == 2
     assert await runs.get_run(parent.run_id) is not None

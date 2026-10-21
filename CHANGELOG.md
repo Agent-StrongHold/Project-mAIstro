@@ -25,6 +25,17 @@ or placeholder-only section.
 
 ### Added
 
+- **`/health` names the Reactor's persistence authority beside every other
+  store family (#1178).** `persistence.families` gains a `reactor` entry:
+  `fire-and-forget` when the Reactor writes through the canonical `State`
+  (one writer on the configured state database; the write is queued and no
+  durable-success claim is returned to a caller), and `unavailable` when
+  there is no Reactor or it has no `State` bound — never a durable label the
+  deployment has not earned. The Reactor's own state writes keep riding the
+  canonical State writer; this makes that authority visible where every
+  other family's already was, and the persistence map
+  (`docs/architecture/CONDACTOR-PERSISTENCE-MAP.md`) records it.
+
 - **Named `cross-product-parity` CI job and M1 closeout strict mode
   (#459, partial).** The #459 cross-product parity suite
   (`tests/cross_product_parity`) now runs as its own required `ci.yml` job
@@ -280,6 +291,106 @@ or placeholder-only section.
 
 ### Security
 
+- **Protected-branch secret scans recognize two historical soak false positives (#860).**
+  Preserve full-history scanning and the default rules while carrying over the
+  exact commit/path/rule/line fingerprints for a synthetic local-stack fixture
+  and a recorded task-deduplication ID already documented on the soak lane.
+
+- **Boot Agent model tools retain governed admission and logical identity** (#1954 follow-up; [review finding](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1954#discussion_r4189499393)).
+  Clarification and model-fallback search use the persisted Run actor/scope and
+  configured model Binding through the existing Provider/Invocation boundary.
+  Agent, delegation, response-round and ToolCall identity distinguish intentional
+  calls while preserving replay. Ambiguous outcomes stop the strategy. The tool
+  deadline also bounds third-party adapters, without replacing their catalog or
+  retry authority. Hive's configured API prefix and omitted sampling are retained.
+
+- **Hive DAG model-backed tools use governed model egress (#1085, #1370).**
+  `clarify` and the model fallback of `web_search` require a configured
+  `model.chat` Binding referenced by the DAG node's `model_binding_id`
+  (top-level or under `config`). Provider selection, scoped credentials,
+  actor/execution correlation, quota and usage use the existing canonical
+  effect authority. Missing authority and malformed model answers fail the
+  node instead of dispatching with ambient credentials or inventing answers.
+  The generic tool Invocation remains in place. Ordinary legacy model and
+  sandbox callers and Agent tool composition remain separate convergence work.
+
+- **Unknown model Binding pins refuse before gateway setup or dispatch (#56).**
+  Pinned models must have metadata in the configured ProviderRegistry before
+  use; registered-but-unavailable pins continue to refuse without fallback.
+  Unregistered request aliases retain gateway passthrough with absent cost
+  metadata. Hive activation now reports the registration prerequisite clearly:
+  supply trusted model metadata through `provider_config_path` before activating
+  a pinned health model; LiteLLM `/model/new` registration alone is insufficient.
+  Unavailable request-alias diagnostics no longer describe aliases as pins.
+
+
+- **PostgreSQL quota JSON writes are independent of asyncpg JSON codecs
+  (#1362).** Serialized budget definitions, reservation identities, and usage
+  evidence are bound as text before PostgreSQL parses JSONB, preventing a
+  configured JSON encoder from double-encoding them. Immutable budget checks
+  and idempotent evidence comparisons retain their existing semantics. This
+  repairs new writes only: existing double-encoded JSONB evidence is not
+  migrated and its replay limitation remains. This does not supply missing
+  provider-enforced numeric usage bounds (#1196).
+
+- **Default Invocation quota wiring refuses unknown token and monetary bounds
+  before provider dispatch (#1362).** Character-count guesses omit byte-level
+  tokenization, full message fields, tool and response schemas, and multimodal
+  billing; absent output limits cannot be priced as zero. The gateway currently
+  has no proven complete-request bound, so default token/micro-USD budgets now
+  fail closed even for priced models with `max_tokens`. Request-count policies,
+  unconfigured quota admission, and explicitly injected adapter-backed quota
+  contexts are unchanged. Numeric-budget usability remains incomplete until an
+  adapter enforces a full physical-request bound (#1196).
+
+- **Project wisdom respects GLOBAL organization boundaries (#1247).**
+  Project-only `list_by_scope` refuses organization-bound GLOBAL rows without
+  caller organization context. Layer 3
+  keeps existing project-only AGENT/USER/TEAM changelog rows while including
+  only public or same-organization GLOBAL memories. Missing organization context
+  cannot expose organization-bound wisdom; authorized same-organization recall
+  remains available across the in-memory, SQLite and PostgreSQL store paths.
+
+- **Every base/tool image in every Dockerfile is pinned by immutable digest
+  (#349).** Build stages no longer float on mutable tags and the uv installer
+  is no longer copied from a `:latest` image, so a registry tag move cannot
+  change the code that installs every dependency without a repository diff.
+  Each reference is pinned `name:tag@sha256:<digest>` — the digest is the
+  resolution authority (a manifest-list index digest, so a fixed target
+  platform always resolves the same per-arch artifact), the tag the
+  human-readable version annotation. All nine pins are registered in
+  `quality/image-pins.json`; the new `check-image-pins` gate (quality.yml)
+  rejects `:latest` anywhere and fails any unregistered digest or unpinned
+  base without an owned, issue-numbered exemption, so base updates land only
+  as reviewable registry-plus-Dockerfile changes — refreshed automatically by
+  Dependabot's docker ecosystem, whose PRs carry the changelog, scan, rebuild
+  and smoke evidence of the ordinary PR gates. Release images publish with
+  SLSA provenance in mode=max and release.yml refuses a release whose
+  provenance attestation does not name every pinned base digest.
+
+- **Memory write authority (ADR-057) is enforced at every memory store
+  boundary (#390, partial).** Every production memory store — learnings
+  (in-memory, SQLite, PostgreSQL and the hybrid-search wrapper's inner store),
+  episodic, outcomes and skill mutations — now calls the exposure-mode gate as
+  the first statement of each mutating method. A store constructed without a
+  declared `MemoryExposureMode` refuses to mutate at all
+  (`MemoryUndeclaredModeError`, fail-closed; SPEC-062126-6a31's no-implicit-
+  default rule), an agent-actor write or promotion under `system_managed`
+  raises `MemoryWriteDenied` before any state changes (denied writes leave no
+  partial durable state), and a system actor writes under every mode. The
+  decision reads only the declared mode, the actor and the per-block tag —
+  never model or persona content. The container declares the deployment's
+  posture from the new `AgentConfig.memory.exposure_mode` setting
+  (`agent_managed` default — the engine's existing behavior, now explicit;
+  set `system_managed` for curated-context deployments). The M4-B lifecycle
+  mutations added by the develop sync — `supersede`, `consolidate` and the
+  store-level `advance_stage` on all three learning-store backends — are
+  gated by the same decision as first statements, behind an explicit ADR-057
+  principal kept distinct from the ADR-103 attribution string, so a denied
+  supersede retires nothing and stores nothing. Not yet wired, and
+  disclosed in KNOWN-GAPS until then: per-call read gating, `hybrid` per-block
+  tags (agent writes fail closed under `hybrid`), `memory.write.denied` event
+  emission, and a product-reachable E2E proving a denied write.
 - **Active root Runs are capped per principal and per Workspace (#1182,
   partial).** Every `RunStore.create_run` (in-memory, SQLite, PostgreSQL) now
   refuses a new root Run with `RunConcurrencyExceeded` once 8 are active for
@@ -331,6 +442,15 @@ or placeholder-only section.
   for tool …` and logs why. The standalone ReAct and Artificer strategy paths
   apply the same rule. Callers that construct Agents directly must wire a
   Sentinel whose permission table grants the tools they need.
+- **Layer-1 episodic recall is scoped to the current Project (#1047,
+  partial).** `DefaultContextAssemblyPolicy.layer1` filtered by `agent_id`
+  only, so an agent id used in two Projects/Workspaces recalled Project A's
+  AGENT-scope memories inside Project B. `layer1` (and the
+  `ContextAssemblyPolicy` protocol) now take a keyword-only `project_id`,
+  which `assemble` passes through to the working-memory hot projection and
+  both ranked and unranked durable fallback reads; a memory with no project
+  is not guessed into one. An empty `project_id` keeps the agent-wide recall;
+  nonempty values, including whitespace, remain exact filters.
 
 - **Retired the process-local Home Assistant confirmation store and
   `/v1/confirms` (#48, partial).** `GET /v1/confirms`, `GET
@@ -589,6 +709,49 @@ or placeholder-only section.
   explicitly does not claim.
 
 ### Added
+
+- **Workspace BacklogItem history service (#101).**
+  `maistro.workspaces.backlog_history` records each BacklogItem's life as an
+  append-only journal: field and priority edits as before/after pairs, BACKLOG.md
+  status moves, claims (#100's reserved fields), blockers and their clearing,
+  partial progress that implies no status, decomposition receipts that snapshot
+  the parent's acceptance criteria, discovered prerequisites/defects pinned to
+  a PROPOSED initial status, exact Goal identity/revision links (#458),
+  reconciliation decision references, and Run/evaluation evidence. Closure is
+  refused without evidence refs — a completed Run alone is never closure — and
+  reopening requires a reason. An in-memory reference store and a SQLite store
+  (writing inside the paired Project store's transaction, assigning a
+  per-item sequence) share one store contract; the Container wires it on the
+  Project store's backend and maistro-server serves member-only reads at
+  `GET /v1/workspaces/{workspace_id}/backlog/{item_id}/history`.
+- **Governed `image.generate` Capability for Canvas/Design Studio generation
+  (#286, partial).** `maistro.capabilities.ImageGenerationEgress.generate`
+  runs one image generation through the canonical Binding → policy →
+  Binding-scoped credential → Invocation path, via the approved
+  `LlmGatewayImageProvider` (`POST {gateway}/v1/images/generations`,
+  `response_format=b64_json`, same LiteLLM gateway and credential pool as
+  `model.chat`). The Invocation carries Run/NodeRun/Attempt correlation and
+  returns decoded image bytes, with usage recorded in `images`; a replayed
+  effect key returns the recorded result without a second call. The Binding
+  must match its registered record, so a caller-built or altered Binding is
+  refused before any HTTP. A gateway error, an empty `data[]`, or a payload
+  that is not base64 PNG/JPEG/GIF/WebP is a `FAILED` Invocation plus
+  `ImageGenerationError`, never an empty success, and a later Attempt may
+  retry it. Generated bytes never enter the Invocation row: the egress writes
+  each image to an `ImageBlobStore` port and records only a reference, its
+  SHA-256 and its size, because `capability_invocations` has no deletion path
+  (`quality/durable-table-retention.json`) and a result carrying the images
+  would grow the database, its WAL and every backup by megabytes per call.
+  Replay reads the bytes back by reference and checks them against the
+  recorded digest; a blob the store no longer holds, or bytes that no longer
+  match, raise `ImageBlobUnavailable` rather than regenerating under a
+  `COMPLETED` effect key. A store that cannot keep an image raises
+  `ImageStorageError` (an `EffectNotApplied`), so the Invocation terminalizes
+  `FAILED` and may be retried. `InMemoryImageBlobStore` is the content-addressed
+  reference implementation; the durable home, `canvas_blobs`, belongs to
+  maistro-canvas, which depends on core, so the store is a port rather than a
+  table here. Nothing ships a caller yet: the hive `ImageGenClient` adapter and
+  the book-maker POC convergence (#52) will be its consumers.
 
 - **Proposed spec for Workspace work campaigns (#103, partial).**
   SPEC-092626-1831 (Proposed), with its boundary decision ADR-092626-c1e7
@@ -852,6 +1015,30 @@ or placeholder-only section.
 
 ### Changed
 
+- **Evolve proxy fitness no longer credits text narration (#384).** The
+  `proxy_gaia` scorer lost its fuzzy fallbacks (0.9 raw-substring, 0.85
+  digit-set, 0.7 word-overlap, and the `max(exact, judged)` merge): only a
+  normalized/numeric exact match earns unjudged score, everything else is
+  verified solely by the LLM judge (fail-closed 0.0 on judge failure), with an
+  optional `judge_llm_call` to verify with a different model than the candidate
+  answered with. The `proxy_ragas` scorer's word-overlap primary score, its
+  `>= 0.6` judge-skip and its `max(static, judged)` merge are gone — the judge
+  runs for every sample and is the only credit path; the static overlap is
+  reported as an explicitly uncredited diagnostic. `proxy_bfcl` and
+  `proxy_tau_bench` (already structured-call-only since #852) and the two fixed
+  scorers now record evidence provenance in `EvalResult.metadata["evidence"]`,
+  folded into the new `PipelineGenome.eval_evidence` and surfaced by the new
+  `PopulationStore.champion_provenance()`. Stored genomes gain an
+  `eval_evidence` field (defaults to `{`). New `benchmarks/calibration.py`
+  measures each scorer's narration false-positive rate against held-out
+  adversarial fixtures (`calibrate_proxy_scorers`). Serialized-genome consumers
+  that rejected unknown fields must tolerate the new key. Both acceptance
+  surfaces are operator-reachable: `python -m maistro_rsi evolve` prints the
+  champion's per-benchmark score→evidence provenance, and a new
+  `python -m maistro_rsi calibrate` runs the harness offline against a stored
+  genome and reports each scorer's narration false-positive rate (reporting
+  only — the fitness hard gates stay the only scoring authority).
+
 - **Terminal BACKLOG.md items must carry closure evidence (#101, partial).**
   `scripts/check-backlog-consistency.py` now fails an `Implemented` item with
   no PR/issue link or existing repo file, a cited repo path that no longer
@@ -1048,6 +1235,55 @@ or placeholder-only section.
 
 ### Fixed
 
+- **The live scheduler selects durable canonical due state (#46, #1199).**
+  Configured Hive ticks now enumerate `ScheduleStore.due()` and re-read each
+  definition under the existing route/manual-fire lock before admission.
+  A stale selection cannot undo a concurrent edit or resurrect a deletion;
+  the per-tick Hive insertion path is retired, while startup backfill and
+  canonical route write-through remain. Selection failures still allow
+  already-QUEUED Runs to reach the accounting consumer. Admission audits use
+  the canonical definition and materialized Run template, rather than a
+  drifted Hive projection. Real-tick tests cover no-fire due-cursor
+  persistence, one occurrence/Attempt, queued recovery, cursor-crash restart,
+  manual/tick serialization and SQLite/PostgreSQL parity. Enabled pending
+  manual-fire markers remain selectable even with a future recurrence cursor,
+  so lease-checked recovery retains its next-tick cadence without creating an
+  extra Run; disabled-marker policy is unchanged. Immediate in-window recovery
+  after a recurring cursor-write crash still preserves the same Run without
+  crediting the dead winner's count, an existing core limitation under #46.
+
+- **Mission detail does not name an agent the Run did not record (no linked issue: task detail must not name an agent a Run never had).** Hive mission
+  rows are a queue, not a Run. Seeded missions and steps named `agent-1`, and
+  the stub create path stored `assigned_agents` from the request, which the
+  Missions page rendered as an assignment and offered an Assign Agent control
+  for. List, detail, steps, status, and create now report no agent, the seed
+  names none, and Assign Agent is disabled with that reason. This does not
+  read a canonical Run agent; nothing is shown until a response does.
+- **Schedules and MCP work from the keyboard alone (#370, partial).** The
+  Schedules and MCP view tabs are now ARIA tabs (arrow keys, Home and End); a
+  schedule's enable toggle is a labelled switch, so a keyboard user can enable
+  or disable a schedule; cron presets are toggle buttons; and an MCP server
+  expands through a disclosure button, with its remove button a separate
+  control. For pointer users, an MCP server now expands or collapses only
+  from its header row, not from its details area or the card's padding.
+- **The Agent's dashboard-widget edit no longer overwrites a concurrent UI save (#1048).**
+  `create_dashboard_widget` now saves against the revision it read; on a conflict it
+  re-reads and re-applies the insertion once (via the pure
+  `dashboard_layouts.with_widget`), and on a second conflict reports `created: false`
+  instead of erasing the `PUT /v1/dashboard/layout` that landed in between. Partial: the rest
+  of #1048 (Workspace-scoped Home, pinned regions, projections) remains.
+
+- **Turing's synchronous bridge no longer blocks the event loop (#397).**
+  The provider bridge used to answer event-loop callers by blocking on an
+  unbounded `Future.result()`, so one stuck LLM call froze every coroutine on
+  that loop. Sync callers now run through a dedicated thread/loop boundary
+  (`SyncLoopRunner`) with a bounded timeout (default 120s, configurable via
+  `TuringProviderBridge(sync_timeout_seconds=...)`), cancellation propagation
+  on timeout/shutdown, and rejection of reentrant calls from the boundary's
+  own loop; `TuringProviderBridge.close()` cancels outstanding work. The
+  production async paths (chat session, producers) now await the
+  `acomplete` seam, so the owning loop keeps progressing during model calls.
+
 - **The Run purge's dependent-reference inventory names every `run_id` table
   (#1175, partial).** `maistro.runs.retention_scope` now records a policy for
   `capability_invocations`, `capability_approvals` and `task_idempotency`
@@ -1092,7 +1328,9 @@ or placeholder-only section.
   maistro-server response stalled every coroutine in the worker. The
   `TaskBackend` port gains `async get_async`, which the stream now awaits over
   the pooled async client, so a stalled probe no longer pins the loop and
-  cancelling the stream takes effect immediately. The remaining synchronous
+  cancelling the stream takes effect immediately. The async
+  `DELETE /v1/missions/{id}` cancel path probes ownership through `get_async`
+  too — it ran the same sync `get` on the loop. The remaining synchronous
   `get`/`list_tasks` (threadpool routes only) reuse one owned,
   outbound-guarded client closed by `stop()` instead of building one per call.
 
@@ -2003,6 +2241,49 @@ or placeholder-only section.
   application role cannot create tables, and ADR-086 carries a dated
   amendment recording the cursor's ownership, lease, fencing and gap
   semantics.
+
+- **Canvas retry-budget recovery regression coverage (#1550).** Exercise
+  repeated simulated pre-stage worker losses through the real executor,
+  canonical adapter and runner, including claim refusal, fenced reaper
+  terminalization and a fresh-job dispatch control. The existing retry and
+  lease-ownership behavior is unchanged.
+
+### Dependencies
+
+- **Pillow and certifi move past their open advisories (#363).** The
+  installed `pillow` 12.3.0 carried eight advisories with fixes only in
+  13.0.0, and `certifi` 2026.4.22 carried GHSA-6q48-6c7w-9gw2 with its
+  fix in 2026.10.19; the supply-chain gate therefore failed on both.
+  `maistro-canvas` now requires `pillow>=13.0.0,<14` — the floor is raised
+  past the advisories so a fresh resolve cannot pick a vulnerable release
+  again, and the `<14` ceiling keeps the next major Pillow release an
+  explicit, reviewable decision — and `uv.lock` resolves `pillow` 13.0.0
+  and `certifi` 2026.10.19. No code path changes; both distributions keep
+  the licenses the license inventory already recorded (MIT-CMU and MPL-2.0).
+
+### Fixed
+
+- **The license inventory gate stops accepting missing license metadata as a
+  license, and stops hiding licensed shipped assets (#363).** Four defects in
+  `scripts/check-license-inventory.py` are fixed against the acceptance
+  criteria of the license-inventory issue. A producer placeholder
+  (`NOASSERTION`, `NONE`, `UNKNOWN`, `LicenseRef-Unknown`) is missing
+  metadata, not a license: such a component now requires a reviewed
+  resolution instead of passing as `known` (real effect: `pkg:pypi/x25519`,
+  whose METADATA declares `License: UNKNOWN`, is now resolved by a reviewed
+  record). A file component that carries explicit license evidence (a
+  shipped script, a font, a vendored asset) keeps that evidence and its
+  copyleft class instead of being rewritten to `not-applicable`; a file
+  component with no license at all is still provenance. The copyleft
+  classifier now recognises the families the frontend trees actually ship —
+  `OFL`, `EUPL` and `CC-BY-SA` — so the three OFL fonts in the conductor's
+  npm tree are surfaced for legal review instead of being reported as
+  benign (the copyleft count on the same SBOMs moves 423 → 426). The
+  inventory also records the policy file it was actually produced with,
+  rather than always naming the default. The reviewed resolutions in
+  `quality/license-policy.json` are bound to the versions actually reviewed
+  (`wcwidth` 0.7.0 / 0.9.2 / 0.9.3), so a later unreviewed release needs
+  its own review.
 
 ## [1.0.0] - TBD
 

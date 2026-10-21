@@ -32,6 +32,7 @@ import pytest
 #: actually holds an unreported call — the false-complete failure the parent
 #: suite's list (#563 note) already warns about. The two lists must not drift.
 _SCRATCH_TABLES = (
+    "quota_invocation_evidence",
     "quota_usage_events",
     "quota_usage",
     "sessions",

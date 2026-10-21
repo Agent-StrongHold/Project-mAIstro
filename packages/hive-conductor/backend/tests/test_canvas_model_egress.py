@@ -31,10 +31,12 @@ from maistro.capabilities.providers.llm_gateway import (
 )
 from maistro.credentials.types import CredentialRecord
 from maistro.graph.definitions import Graph, Node
+from maistro.identity import Principal
 from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.providers.registry import InMemoryProviderRegistry
 from maistro.providers.router import CostAwareRouter
 from maistro.providers.types import ModelMetadata
+from maistro.runs.model import GraphSnapshot, Run
 from maistro.runs.store import InMemoryRunStore
 
 
@@ -546,16 +548,26 @@ def _seed_run(
     """Seed one canonical Canvas execution with the requested shape."""
 
     async def _create() -> tuple[Any, Any | None, Any | None]:
-        run = await run_store.create_run(
-            Graph(
-                graph_id=f"canvas-graph-{node_type}-{actor_principal_id}",
+        graph = Graph(
+            graph_id=f"canvas-graph-{node_type}-{actor_principal_id}",
+            workspace_id=workspace_id,
+            project_id=project_id,
+            name="Canvas quality",
+            nodes=[Node(node_id="canvas-quality", node_type=node_type)],
+        )
+        if actor_principal_id is None:
+            run = Run.model_construct(
                 workspace_id=workspace_id,
                 project_id=project_id,
-                name="Canvas quality",
-                nodes=[Node(node_id="canvas-quality", node_type=node_type)],
-            ),
-            actor_principal_id=actor_principal_id,
-        )
+                graph=GraphSnapshot.from_graph(graph),
+                actor_principal_id=None,
+            )
+            run_store._runs[run.run_id] = run
+        else:
+            run = await run_store.create_run(
+                graph,
+                actor_principal_id=actor_principal_id,
+            )
         node_run = attempt = None
         if with_node_run:
             node_run = await run_store.create_node_run(run.run_id, node_id="canvas-quality")
@@ -879,7 +891,7 @@ def test_trusted_canvas_context_resolves_supplied_execution_identity(
     monkeypatch.setattr(app.state, "canvas_model_egress", egress, raising=False)
     request = _request_with_state(
         {
-            "user": {"id": "user", "role": "user"},
+            "principal": Principal(user_id="user", roles=frozenset({"user"})),
             "canvas_execution_context": {
                 "binding_id": context["binding_id"],
                 "run_id": context["run_id"],
@@ -914,7 +926,7 @@ def test_trusted_canvas_context_refuses_run_mismatch(
     monkeypatch.setattr(app.state, "canvas_model_egress", egress, raising=False)
     request = _request_with_state(
         {
-            "user": {"id": "user", "role": "user"},
+            "principal": Principal(user_id="user", roles=frozenset({"user"})),
             "canvas_execution_context": {"run_id": context["run_id"]},
         }
     )
@@ -933,7 +945,7 @@ def test_trusted_canvas_context_refuses_unknown_quality_node(
     monkeypatch.setattr(app.state, "canvas_model_egress", egress, raising=False)
     request = _request_with_state(
         {
-            "user": {"id": "user", "role": "user"},
+            "principal": Principal(user_id="user", roles=frozenset({"user"})),
             "canvas_execution_context": {
                 "run_id": context["run_id"],
                 "node_id": "not-a-quality-node",
@@ -955,7 +967,7 @@ def test_trusted_canvas_context_refuses_unknown_node_run(
     monkeypatch.setattr(app.state, "canvas_model_egress", egress, raising=False)
     request = _request_with_state(
         {
-            "user": {"id": "user", "role": "user"},
+            "principal": Principal(user_id="user", roles=frozenset({"user"})),
             "canvas_execution_context": {
                 "run_id": context["run_id"],
                 "node_run_id": "no-such-node-run",
@@ -984,7 +996,7 @@ def test_trusted_canvas_context_refuses_foreign_node_run(
     monkeypatch.setattr(app.state, "canvas_model_egress", egress, raising=False)
     request = _request_with_state(
         {
-            "user": {"id": "user", "role": "user"},
+            "principal": Principal(user_id="user", roles=frozenset({"user"})),
             "canvas_execution_context": {
                 "run_id": context["run_id"],
                 "node_run_id": other_node_run.node_run_id,
@@ -1012,7 +1024,7 @@ def test_trusted_canvas_context_refuses_foreign_attempt(
     monkeypatch.setattr(app.state, "canvas_model_egress", egress, raising=False)
     request = _request_with_state(
         {
-            "user": {"id": "user", "role": "user"},
+            "principal": Principal(user_id="user", roles=frozenset({"user"})),
             "canvas_execution_context": {
                 "run_id": context["run_id"],
                 "node_run_id": context["node_run_id"],

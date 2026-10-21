@@ -144,7 +144,11 @@ def _apply_auth_env(raw: dict[str, Any]) -> None:
 
 
 def load_yaml_config(path: str | Path | None = None) -> MaistroYamlConfig:
-    config_path = path or os.getenv("MAISTRO_CONFIG", "config/maistro.yaml")
+    # A set-but-empty MAISTRO_CONFIG (compose `:-` defaults emit exactly that)
+    # means unset, not "load the CWD as a file" -- the documented default path
+    # applies. An explicitly passed missing path still returns {} per the
+    # parser contract pinned in TestLoadRawYaml.
+    config_path = path or os.getenv("MAISTRO_CONFIG") or "config/maistro.yaml"
     config_path = Path(str(config_path))
 
     raw = _load_raw_yaml(config_path)

@@ -194,7 +194,7 @@ async def test_self_repair_policy_failure_denies_without_provider_call() -> None
         raise RuntimeError("policy store unavailable")
 
     effects = new_effect_context(policy_evaluator=broken_policy)
-    _register_self_repair(reg, _cfg(), effects)
+    await _register_self_repair(reg, _cfg(), effects)
     repair = reg.provider("self_repair", "rule_based_repair")
     assert repair is not None
 
@@ -218,7 +218,7 @@ async def test_self_repair_wiring_uses_canonical_invocation() -> None:
     reg.register(action)
     effects = new_effect_context(policy_evaluator=binding_scope_policy)
 
-    _register_self_repair(reg, _cfg(), effects)
+    await _register_self_repair(reg, _cfg(), effects)
     repair = reg.provider("self_repair", "rule_based_repair")
     assert repair is not None
     cycle = await repair.run_once()
@@ -286,43 +286,152 @@ async def test_engine_exposes_a_capability_registry_in_stub_mode() -> None:
 # --- #846: self_repair registration must fail closed on a hostile composition
 
 
-class _NoBootSeamStore:
-    """A BindingStore without the composition-time registration seam."""
+class _UnwritableStore:
+    """A BindingStore whose boot write fails, however it is called."""
 
     async def resolve(self, binding_id, *, workspace_id, project_id, node_id, capability):
         raise NotImplementedError
 
-    def register(self, binding):
-        raise NotImplementedError
+    async def put(self, binding):
+        raise RuntimeError("binding store is unavailable")
+
+    async def get(self, binding_id):
+        return None
 
     async def revoke(self, binding_id):
         raise NotImplementedError
 
 
-def test_no_self_repair_registered_without_monitor_provider() -> None:
+async def test_no_self_repair_registered_without_monitor_provider() -> None:
     # A monitor provider is a hard precondition: without it the actor would
     # hold an invoker with nothing to observe, so nothing is registered.
     reg = default_capability_registry(entry_points=[])
     effects = new_effect_context(policy_evaluator=binding_scope_policy)
 
-    _register_self_repair(reg, _cfg(), effects)
+    await _register_self_repair(reg, _cfg(), effects)
 
     assert reg.installed("self_repair") == []
     assert reg.provider("self_repair", "rule_based_repair") is None
 
 
-def test_self_repair_disabled_when_binding_store_lacks_boot_seam() -> None:
+async def test_self_repair_disabled_when_the_boot_write_fails() -> None:
+    """A Binding that could not be written authorizes nothing, so nothing runs.
+
+    Registering the actor anyway would leave it holding an invoker whose
+    identity the store has never heard of -- every repair it attempted would
+    be refused at resolve time, after the actor had already decided to act.
+    """
+
     import dataclasses
 
     reg = default_capability_registry(entry_points=[])
     reg.register(_WiringMonitor())
     effects = new_effect_context(policy_evaluator=binding_scope_policy)
-    degraded = dataclasses.replace(effects, bindings=_NoBootSeamStore())
+    degraded = dataclasses.replace(effects, bindings=_UnwritableStore())
 
-    _register_self_repair(reg, _cfg(), degraded)
+    await _register_self_repair(reg, _cfg(), degraded)
 
     assert reg.installed("self_repair") == []
     assert reg.provider("self_repair", "rule_based_repair") is None
+
+
+async def test_self_repair_registers_against_a_durable_binding_store() -> None:
+    """The point of #1133: persistence must not switch self_repair off.
+
+    Boot registration used to go through the in-memory store's synchronous
+    `register`, so the wiring narrowed to that concrete class and skipped
+    registration entirely on SQLite or PostgreSQL -- exactly the deployments
+    that keep anything across a restart. `put` is on every backend, so the
+    durable store registers the identity and the actor comes up.
+    """
+
+    import dataclasses
+
+    import aiosqlite
+
+    from maistro.capabilities.binding_store import SqliteBindingStore
+
+    async with aiosqlite.connect(":memory:") as conn:
+        durable = SqliteBindingStore(conn)
+        await durable.ensure_schema()
+        reg = default_capability_registry(entry_points=[])
+        reg.register(_WiringMonitor())
+        effects = new_effect_context(policy_evaluator=binding_scope_policy)
+        persisted = dataclasses.replace(effects, bindings=durable)
+
+        await _register_self_repair(reg, _cfg(), persisted)
+
+        assert reg.provider("self_repair", "rule_based_repair") is not None
+        # Registered in the durable store itself, not merely in the registry:
+        # the invoker resolves this identity on every repair it attempts.
+        assert await durable.get("builtin:self-repair:infra-action") is not None
+
+
+async def test_self_repair_survives_a_restart_against_the_same_database() -> None:
+    """The second boot must behave like the first, or persistence breaks it.
+
+    A durable store compares the whole Binding, and each process builds its
+    boot Binding with a fresh `created_at`. Registering with a plain `put`
+    therefore worked once and raised `ValueError` on every restart after,
+    which left `self_repair` disabled on exactly the deployments that keep
+    anything -- the opposite of what #1759 set out to fix (Codex, #1760).
+    """
+
+    import dataclasses
+
+    import aiosqlite
+
+    from maistro.capabilities.binding_store import SqliteBindingStore
+
+    async with aiosqlite.connect(":memory:") as conn:
+        durable = SqliteBindingStore(conn)
+        await durable.ensure_schema()
+
+        for boot in (1, 2):
+            # A fresh registry each time: a new process, same database.
+            reg = default_capability_registry(entry_points=[])
+            reg.register(_WiringMonitor())
+            effects = new_effect_context(policy_evaluator=binding_scope_policy)
+            persisted = dataclasses.replace(effects, bindings=durable)
+
+            await _register_self_repair(reg, _cfg(), persisted)
+
+            assert reg.provider("self_repair", "rule_based_repair") is not None, (
+                f"self_repair did not register on boot {boot}"
+            )
+
+
+async def test_a_revocation_that_outlived_a_restart_still_disables_self_repair() -> None:
+    """Revocation is durable, so boot must not re-grant across a restart.
+
+    The tombstone in `capability_binding_revocations` is the whole reason that
+    table exists apart from `capability_bindings` (#846). A new process that
+    re-registered the identity would quietly undo an operator's revocation --
+    the failure mode that made boot registration worth gating in the first
+    place, and the one that must survive opening the seam.
+    """
+
+    import dataclasses
+
+    import aiosqlite
+
+    from maistro.capabilities.binding_store import SqliteBindingStore
+
+    async with aiosqlite.connect(":memory:") as conn:
+        durable = SqliteBindingStore(conn)
+        await durable.ensure_schema()
+        await durable.revoke("builtin:self-repair:infra-action")
+
+        # A fresh process: same database, new registry, boot wiring runs again.
+        reg = default_capability_registry(entry_points=[])
+        reg.register(_WiringMonitor())
+        effects = new_effect_context(policy_evaluator=binding_scope_policy)
+        persisted = dataclasses.replace(effects, bindings=durable)
+
+        await _register_self_repair(reg, _cfg(), persisted)
+
+        assert reg.installed("self_repair") == []
+        assert await durable.get("builtin:self-repair:infra-action") is None
 
 
 async def test_self_repair_disabled_when_boot_binding_was_revoked() -> None:
@@ -331,7 +440,7 @@ async def test_self_repair_disabled_when_boot_binding_was_revoked() -> None:
     effects = new_effect_context(policy_evaluator=binding_scope_policy)
     await effects.bindings.revoke("builtin:self-repair:infra-action")
 
-    _register_self_repair(reg, _cfg(), effects)
+    await _register_self_repair(reg, _cfg(), effects)
 
     # A revoked identity is never re-granted by boot wiring: the actor that
     # would have held the invoker is not registered at all.

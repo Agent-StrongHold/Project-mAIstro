@@ -87,7 +87,7 @@ from maistro.capabilities.providers.subprocess_harness import (
     SandboxExec,
     SubprocessHarnessRunner,
 )
-from maistro.capabilities.registry import CapabilityRegistry
+from maistro.capabilities.registry import CapabilityRegistry, ProviderReplacementDecision
 from maistro.capabilities.slots.harness import (
     HARNESS_RUNNER_SLOT,
     GuardedHarnessRunner,
@@ -118,6 +118,8 @@ __all__ = [
     "CapabilityProvider",
     "CapabilityRegistry",
     "CapabilityUnavailable",
+    "CodexAppServerHarnessRunner",
+    "CodexTurnError",
     "DenyAllGate",
     "DurableApproval",
     "EffectNotApplied",
@@ -148,9 +150,12 @@ __all__ = [
     "InvocationStatus",
     "OpenClawHarnessRunner",
     "OpencodeHarnessRunner",
+    "PgBindingStore",
     "PgInvocationStore",
+    "PiHarnessRunner",
     "ProviderHealth",
     "ProviderReconciliationAdapter",
+    "ProviderReplacementDecision",
     "ReconciliationDisposition",
     "ResolvedBinding",
     "SafeHarnessRunner",
@@ -164,6 +169,8 @@ __all__ = [
     "Unavailable",
     "UnsafeEffectRetry",
     "approval_signing_secret",
+    "codex_app_server_microvm_factory",
+    "codex_app_server_microvm_runner",
     "default_capability_registry",
     "discover_into",
     "openclaw_microvm_factory",

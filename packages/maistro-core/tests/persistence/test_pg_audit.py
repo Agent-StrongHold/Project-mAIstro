@@ -13,6 +13,7 @@ from typing import Any
 
 import pytest
 
+from maistro.persistence.audit_pages import AUDIT_PAGE_INDEXES
 from maistro.persistence.pg_audit import PgAuditLog
 from maistro.security._types import AuditEntry as SentinelAuditEntry
 from maistro.security._types import Violation as SentinelViolation
@@ -31,25 +32,30 @@ class Call:
         self.args = args
 
 
+class _FakeTransaction:
+    """Stand-in for ``asyncpg.Connection.transaction()``."""
+
+    async def __aenter__(self) -> None:
+        return None
+
+    async def __aexit__(self, *exc: Any) -> None:
+        return None
+
+
 class FakeConnection:
     def __init__(self) -> None:
         self.calls: list[Call] = []
         self._fetch_results: list[list[FakeRecord]] = []
-        self._fetchval_results: list[Any] = []
+
+    def transaction(self) -> _FakeTransaction:
+        return _FakeTransaction()
 
     def queue_fetch(self, rows: list[dict[str, Any]]) -> None:
         self._fetch_results.append([FakeRecord(r) for r in rows])
 
-    def queue_fetchval(self, value: Any) -> None:
-        self._fetchval_results.append(value)
-
     async def fetch(self, query: str, *args: Any) -> list[FakeRecord]:
         self.calls.append(Call("fetch", query, args))
         return self._fetch_results.pop(0) if self._fetch_results else []
-
-    async def fetchval(self, query: str, *args: Any) -> Any:
-        self.calls.append(Call("fetchval", query, args))
-        return self._fetchval_results.pop(0) if self._fetchval_results else None
 
     async def execute(self, query: str, *args: Any) -> str:
         self.calls.append(Call("execute", query, args))
@@ -109,33 +115,53 @@ def test_supplied_signing_key_does_not_warn_on_a_durable_store(
 
 
 @pytest.mark.asyncio
-async def test_ensure_schema_adds_proof_columns_idempotently(conn: FakeConnection) -> None:
-    """Databases created before signed audit records lack the proof columns;
-    wiring runs this upgrade on every start, so it must be the idempotent
-    ADD COLUMN IF NOT EXISTS form covering all three proof columns."""
-    conn.queue_fetchval("public.audit_log")  # to_regclass: the table exists
+async def test_ensure_schema_creates_the_table_and_adds_proof_columns(
+    conn: FakeConnection,
+) -> None:
+    """A container wired against a PostgreSQL database that never ran the
+    migration chain must still come up: `ensure_schema` creates the table
+    when it is missing, and it keeps the idempotent ADD COLUMN IF NOT EXISTS
+    upgrade for the databases created before signed audit records existed."""
     await PgAuditLog(FakePool(conn), signer=AuditSigner(bytes(32))).ensure_schema()
 
-    assert [call.query for call in conn.calls] == [
-        "SELECT to_regclass('public.audit_log') IS NOT NULL",
+    statements = [call.query for call in conn.calls]
+    creates = [s for s in statements if "CREATE TABLE IF NOT EXISTS audit_log" in s]
+    assert len(creates) == 1
+    for column in ("id", "timestamp", "org_id", "signature", "signing_key_id", "proof_type"):
+        assert column in creates[0]
+    # The indexes 005 builds are part of the shape this bootstrap claims to
+    # copy: nothing migrates a bootstrapped database afterwards.
+    for index in ("ix_audit_log_timestamp", "ix_audit_log_user", "ix_audit_log_agent"):
+        assert f"CREATE INDEX IF NOT EXISTS {index}" in creates[0]
+    assert statements[2:6] == [
+        "ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS org_id TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS signature TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS signing_key_id TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS proof_type TEXT NOT NULL DEFAULT ''",
     ]
+    assert statements[6] == (
+        "CREATE INDEX IF NOT EXISTS ix_audit_log_scope ON audit_log (org_id, timestamp)"
+    )
+    # GET_PAGE shapes: `page_query` names one ordered index per filter
+    # combination, and the SQLite sibling's bootstrap creates the same set.
+    assert statements[7:] == [
+        f"CREATE INDEX IF NOT EXISTS {name} ON audit_log ({', '.join(fields)})"
+        for name, fields in AUDIT_PAGE_INDEXES.items()
+    ]
 
 
 @pytest.mark.asyncio
-async def test_ensure_schema_on_unmigrated_database_is_a_no_op(conn: FakeConnection) -> None:
-    """A database that never ran the migration chain has no `audit_log` table
-    (the durable-events leg wires the container on a fresh server); the
-    belt-and-braces backfill must answer the same `to_regclass` probe the run
-    and workspace wiring ask and emit no ALTER at all — not crash wiring and
-    not classify server error-message text."""
-    conn.queue_fetchval(None)  # to_regclass: no such table
+async def test_ensure_schema_takes_the_bootstrap_lock(conn: FakeConnection) -> None:
+    """Two workers bootstrapping the table at once must not both run the DDL:
+    the advisory lock serialises them, and it is taken before the CREATE."""
     await PgAuditLog(FakePool(conn), signer=AuditSigner(bytes(32))).ensure_schema()
 
-    assert [call.method for call in conn.calls] == ["fetchval"]
-    assert conn.calls[0].query == "SELECT to_regclass('public.audit_log') IS NOT NULL"
+    statements = [call.query for call in conn.calls]
+    assert statements[0] == "SELECT pg_advisory_xact_lock($1)"
+    assert "CREATE TABLE IF NOT EXISTS audit_log" in statements[1]
+    # Every statement in the bootstrap must stay inside the locked
+    # transaction, including the index DDL added after the CREATE.
+    assert len(conn.calls) == 7 + len(AUDIT_PAGE_INDEXES)
 
 
 @pytest.mark.asyncio
@@ -191,6 +217,64 @@ async def test_log_tool_name_none_becomes_empty_string(
     await log.log(entry)
     call = conn.calls[0]
     assert call.args[5] == ""
+
+
+@pytest.mark.asyncio
+async def test_persisted_deny_row_verifies_as_reconstructed(
+    log: PgAuditLog, conn: FakeConnection
+) -> None:
+    """The row PgAuditLog writes must verify when read back as a durable row.
+
+    Durable stores never serialize the violations tuple, so the INSERT params
+    are the whole persisted record: rebuilding an AuditEntry from them and
+    verifying is the exact restart contract, exercised for a deny decision
+    that carries violations.
+    """
+    await log.log(
+        SentinelAuditEntry(
+            boundary="tool_call",
+            user_id="u1",
+            tool_name="bash",
+            verdict="denied",
+            violations=(
+                SentinelViolation(
+                    boundary="tool_call", rule="dangerous-command", severity="high", detail="d"
+                ),
+            ),
+        )
+    )
+
+    (
+        boundary,
+        user_id,
+        org_id,
+        team_id,
+        agent_id,
+        tool_name,
+        verdict,
+        detail,
+        trace_id,
+        request_id,
+        signature,
+        signing_key_id,
+        proof_type,
+    ) = conn.calls[0].args
+    row = AuditEntry(
+        boundary=boundary,
+        user_id=user_id,
+        org_id=org_id,
+        team_id=team_id,
+        agent_id=agent_id,
+        tool_name=tool_name or None,
+        verdict=verdict,
+        detail=detail,
+        trace_id=trace_id,
+        request_id=request_id,
+        signature=signature,
+        signing_key_id=signing_key_id,
+        proof_type=proof_type,
+    )
+    assert log.verify(row)
 
 
 @pytest.mark.asyncio

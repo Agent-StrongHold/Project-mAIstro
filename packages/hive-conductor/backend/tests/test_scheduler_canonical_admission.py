@@ -254,6 +254,9 @@ def test_scheduler_tick_executes_the_admitted_run_to_completion(
             _ScheduleRunner, "_canonical_container", staticmethod(lambda: container)
         )
         try:
+            from services.scheduler import backfill_canonical_definitions
+
+            await backfill_canonical_definitions()
             await _ScheduleRunner()._tick()
             recorded = await container.schedule_store.get("s-1")
             assert recorded is not None and recorded.last_run_id
@@ -278,7 +281,7 @@ def test_scheduler_tick_logs_consumer_failure(
     from services.scheduler import _ScheduleRunner
 
     class _FailingContainer:
-        async def execute_admitted_runs(self) -> int:
+        async def execute_admitted_runs_accounting(self) -> int:
             raise RuntimeError("consumer unavailable")
 
     async def scenario() -> None:
@@ -298,11 +301,16 @@ def test_scheduler_tick_skips_missing_or_empty_consumer(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Standalone ticks and empty consumer queues remain successful no-ops."""
+    from types import SimpleNamespace
+
     from services.scheduler import _ScheduleRunner
 
+    def _quiet() -> SimpleNamespace:
+        return SimpleNamespace(attempted=0, succeeded=0, failed=0, skipped=0)
+
     class _EmptyContainer:
-        async def execute_admitted_runs(self) -> int:
-            return 0
+        async def execute_admitted_runs_accounting(self) -> SimpleNamespace:
+            return _quiet()
 
     async def scenario() -> None:
         monkeypatch.setattr(_ScheduleRunner, "_canonical_container", staticmethod(lambda: None))

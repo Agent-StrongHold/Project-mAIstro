@@ -8,6 +8,7 @@ from typing import Any
 
 import yaml
 
+from maistro.security.trust import UNVETTED_TRUST_TIER
 from maistro.types.skill import SkillDefinition
 
 
@@ -25,13 +26,8 @@ _VALID_NAME_RE = re.compile(r"^[a-z][a-z0-9_]{1,50}$")
 MAX_SKILL_BODY_LENGTH = 50000
 
 # Trust tier is never self-declared. A skill's own frontmatter is
-# attacker-controlled content -- a malicious skill could otherwise just
-# write `trust_tier: t0` and claim the most-trusted tier with zero
-# vetting. Every freshly parsed skill starts at the lowest tier (t3, same
-# floor `import_pipeline.IMPORT_TRUST_TIER` and `forge.py` already enforce
-# for their own outputs); only a separate, authenticated promotion step
-# (e.g. SPEC-005 signing) may raise it.
-UNVETTED_TRUST_TIER = "t3"
+# attacker-controlled content -- only a separate, authenticated promotion
+# step may raise the host-selected unvetted tier.
 
 _DIRECTIONAL_CHARS = frozenset(
     {
@@ -139,7 +135,7 @@ def parse_skill_file(content: str, source: str = "") -> SkillDefinition | None:
         auth_key_env=str(frontmatter.get("auth_key_env", "")),
         system_prompt=body,
         source=source,
-        # Ignore any trust_tier the frontmatter claims -- see UNVETTED_TRUST_TIER.
+        # Ignore any trust_tier the frontmatter claims.
         trust_tier=UNVETTED_TRUST_TIER,
     )
 
@@ -149,16 +145,27 @@ def validate_skill_name(name: str) -> bool:
     return bool(_VALID_NAME_RE.match(name))
 
 
-def security_scan(content: str) -> tuple[bool, list[str]]:
+def security_scan(content: str, *, raw: bool = False) -> tuple[bool, list[str]]:
     """Scan skill body for dangerous patterns.
 
     Returns (safe, findings). safe=False if any critical pattern found.
+
+    By default the scan expects SKILL.md-shaped content: a leading YAML
+    frontmatter block is metadata parsed elsewhere, so only the body after it
+    is pattern-scanned. Content that is NOT a frontmatter document -- a raw
+    system prompt or foreign agent instructions -- must pass ``raw=True``:
+    a hostile payload shaped like ``---\npayload\n---\nbenign`` would
+    otherwise hide inside the stripped "frontmatter" and never be scanned
+    while still being retained verbatim as prompt content.
     """
     findings: list[str] = []
     safe = True
 
-    parts = _split_frontmatter(content)
-    body = parts[1] if parts else content
+    if raw:
+        body = content
+    else:
+        parts = _split_frontmatter(content)
+        body = parts[1] if parts else content
 
     body_normalized = unicodedata.normalize("NFKD", body)
 

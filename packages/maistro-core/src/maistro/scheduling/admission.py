@@ -113,6 +113,8 @@ from maistro.runs.sources import (
 )
 from maistro.runs.store import DuplicateOccurrence, RunIntegrityError
 from maistro.scheduling.engine import (
+    DEFAULT_ENUMERATION_LIMITS,
+    EnumerationLimits,
     FireDecision,
     SkippedFire,
     SkipReason,
@@ -180,8 +182,27 @@ class ManualFireRefused(Exception):
 
 
 def _owes(decision: ScheduleEvaluation) -> bool:
-    """Whether the evaluation left an occurrence that still has to run."""
-    return any(skip.reason in _UNCONSUMED_SKIPS for skip in decision.skipped)
+    """Whether the evaluation left work that still has to happen.
+
+    Two kinds of owing, and both keep the due cursor where it is so the next
+    tick comes back (#1199):
+
+    - an occurrence that still has to run: BUFFERED says the cursor does not
+      advance because "run one queued occurrence afterwards" is what
+      BUFFER_ONE means, and TRUNCATED says a caller advancing on it "would
+      otherwise lose the occurrence with no record of it";
+    - a range that was never examined (#1200): an incomplete catch-up walk —
+      budget or step bound reached — considered neither the occurrences in the
+      unexamined range nor their absence. Advancing the due cursor past it
+      would hide the schedule from `due()` until long after that range should
+      have been looked at, so an incomplete walk owes a re-examination.
+
+    Every other reason is a decision not to run that occurrence at all, and
+    the cursor consumes it.
+    """
+    return decision.enumeration_incomplete or any(
+        skip.reason in _UNCONSUMED_SKIPS for skip in decision.skipped
+    )
 
 
 #: Skips whose occurrences the policy never acts on, so their claims are not
@@ -499,57 +520,6 @@ class ScheduleRunAdmitter:
             fires=fires,
         )
 
-    async def _record_fire(
-        self,
-        schedule_id: str,
-        *,
-        fired_at: datetime | None,
-        run_id: str | None,
-        next_due_at: datetime | None,
-        fires: int | None,
-        recovered: frozenset[datetime],
-    ) -> Schedule | None:
-        """`ScheduleStore.record_fire`, naming `recovered=` only when there
-        is something to credit.
-
-        `record_fire` grew `recovered` with a default value (`frozenset()`,
-        #1059), which is exactly what protects a downstream `ScheduleStore`
-        implementation that predates the parameter — *as long as nothing
-        calls it by name*. This admitter used to name it on every call
-        regardless, so an external implementation using the previously valid
-        signature — `record_fire(self, schedule_id, *, fired_at, run_id,
-        next_due_at, fires=None, disable=False)`, no `recovered` parameter
-        at all — raised `TypeError: unexpected keyword argument 'recovered'`
-        on every ordinary recurring fire after upgrading, not merely a
-        recovering one (Codex review, #1533).
-
-        Two literal calls rather than one built from `**kwargs`: a
-        conditionally-assembled kwargs dict cannot be checked against
-        `record_fire`'s mixed-type keyword signature under `mypy --strict`,
-        and this reads exactly as directly. The common, no-recovery case
-        stays compatible with an old implementation; a genuinely recovered
-        claim still names the keyword, and still fails loudly against a
-        store that cannot accept it — the correct outcome, since silently
-        omitting it there would silently drop the credit, reintroducing the
-        exact under-counting bug `recovered` exists to close (#1059, #1533).
-        """
-        if recovered:
-            return await self._schedules.record_fire(
-                schedule_id,
-                fired_at=fired_at,
-                run_id=run_id,
-                next_due_at=next_due_at,
-                fires=fires,
-                recovered=recovered,
-            )
-        return await self._schedules.record_fire(
-            schedule_id,
-            fired_at=fired_at,
-            run_id=run_id,
-            next_due_at=next_due_at,
-            fires=fires,
-        )
-
     async def admit_due(
         self,
         schedule: Schedule,
@@ -583,7 +553,7 @@ class ScheduleRunAdmitter:
             # actually holds markers triggers the reconciliation read.
             schedule = await self._reconcile_pending_fires(schedule.schedule_id) or schedule
 
-        decision = evaluate(schedule, now=now, active_run=active_run)
+        decision = evaluate(schedule, now=now, active_run=active_run, limits=self._limits)
         decision, claims, active_run_id, recovered_moments = await self._reconcile_claims(
             schedule, decision, now=now, active_run=active_run
         )
@@ -667,6 +637,9 @@ class ScheduleRunAdmitter:
                 cancel_active_run=decision.cancel_active_run,
                 active_run_id=active_run_id,
                 failures=tuple(failures),
+                enumeration_incomplete=decision.enumeration_incomplete,
+                enumeration_stopped_at=decision.enumeration_stopped_at,
+                window_clamped=decision.window_clamped,
             )
 
         # `next_due_at` is recomputed only when the whole batch landed and
@@ -708,6 +681,9 @@ class ScheduleRunAdmitter:
             active_run_id=active_run_id,
             already_fired=tuple(sorted(already_fired)),
             failures=tuple(failures),
+            enumeration_incomplete=decision.enumeration_incomplete,
+            enumeration_stopped_at=decision.enumeration_stopped_at,
+            window_clamped=decision.window_clamped,
         )
 
     async def _admit_batch(
@@ -918,7 +894,9 @@ class ScheduleRunAdmitter:
                 claims[moment] = run
         claims.update(await self._lookup_truncated_claims(schedule, decision))
         walk: list[datetime] = []
-        for moment in self._claims_before(schedule, enumeration_start(schedule, now=now)):
+        for moment in self._claims_before(
+            schedule, enumeration_start(schedule, now=now, limits=self._limits)
+        ):
             run = await self._lookup_claim(schedule, moment)
             if run is not None:
                 claims[moment] = run
@@ -1396,6 +1374,9 @@ class ScheduleRunAdmitter:
                 cancel_active_run=decision.cancel_active_run,
                 active_run_id=active_run_id,
                 already_fired=tuple(claimed),
+                enumeration_incomplete=decision.enumeration_incomplete,
+                enumeration_stopped_at=decision.enumeration_stopped_at,
+                window_clamped=decision.window_clamped,
             )
         if _due_cursor_changed(schedule, next_due_at):
             # Nothing fired and nothing was dropped, but the evaluation still
@@ -1417,6 +1398,9 @@ class ScheduleRunAdmitter:
             next_due_at=decision.next_due_at,
             cancel_active_run=decision.cancel_active_run,
             active_run_id=active_run_id,
+            enumeration_incomplete=decision.enumeration_incomplete,
+            enumeration_stopped_at=decision.enumeration_stopped_at,
+            window_clamped=decision.window_clamped,
         )
 
     async def _admit_one(

@@ -42,6 +42,10 @@ CANDIDATE_AUTHORED: dict[tuple[str, str], str] = {
         "each Dockerfile's disposition and named build/scan jobs rather than comparing "
         "against a tolerated prior-state oracle"
     ),
+    ("check-license-inventory.py", "quality/license-policy.json"): (
+        "license policy is the reviewed legal classification and resolution specification; "
+        "the checker derives component evidence from immutable final-artifact SBOMs"
+    ),
     ("check-workflow-inventory.py", "quality/workflow-inventory.json"): (
         "the workflow inventory is the reviewed current-tree specification: the checker validates "
         "each workflow's disposition, declared triggers and reference liveness rather than "
@@ -114,6 +118,14 @@ CANDIDATE_AUTHORED: dict[tuple[str, str], str] = {
         "table the tree creates, so a prior-tree oracle would predate this tree's schema; "
         "a changed retention claim is the substantive change reviewers read"
     ),
+    ("check-backlog-consistency.py", "quality/backlog-authority.json"): (
+        "the authority marker is the reviewed operator-owned declaration of which work "
+        "source is authoritative (#102), not a prior-tree oracle: the gate reads it to "
+        "decide whether hand-edited BACKLOG.md content is still permitted or must match "
+        "the database digest. The marker moves only via the shipped `maistro backlog` "
+        "CLI (maistro.cli._backlog), so comparing it against the base revision would "
+        "measure a cutover that has not happened instead of the one this tree ships"
+    ),
     ("check-shipped-surface-truth.py", "quality/shipped-surface-truth.json"): (
         "the shipped-surface matrix is the reviewed per-surface truth specification being "
         "changed: every discovered route must carry an exact disposition, so comparing "
@@ -125,6 +137,16 @@ CANDIDATE_AUTHORED: dict[tuple[str, str], str] = {
         "changed: every entry must resolve to a live handler in this tree's route table, "
         "so a prior-tree oracle would predate the routes this tree ships; a changed "
         "disposition or contract is the substantive change reviewers read"
+    ),
+    ("check-route-permissions.py", "quality/route-permissions.json"): (
+        "the route-permissions registry is the reviewed authenticated-route permission "
+        "specification being changed: declaring a prefix permission or an exempt_reason "
+        "is the substantive security review (#1790 correction 3)"
+    ),
+    ("check-route-permissions.py", "quality/public-routes.json"): (
+        "public-routes.json is read only to exclude already-declared unauthenticated paths "
+        "from the authenticated census; check-public-routes.py owns that registry's own ratchet "
+        "(#1790 correction 3)"
     ),
     ("bench_fleet_routing.py", "quality/model-egress.json"): (
         "measurement input, not a comparison oracle: the #934 fleet bench reports "

@@ -22,13 +22,20 @@ from maistro.memory.learnings.lifecycle import (
     plan_advance,
 )
 from maistro.memory.vectors import EMBEDDING_DIMENSIONS, to_pgvector_literal
-from maistro.observability.correlation import observed_provenance
+from maistro.observability.correlation import ExecutionProvenance, observed_provenance
 from maistro.persistence.learning_contract import (
     LEARNING_GENERATED_FIELDS,
     LEARNING_PERSISTED_FIELDS,
 )
 from maistro.persistence.learning_scope import learning_scope_predicate
-from maistro.types.memory import Learning, MemoryScope
+from maistro.types.memory import (
+    DEFAULT_LEARNING_CONFIDENCE,
+    EPISTEMIC_BONUS,
+    EpistemicType,
+    Learning,
+    LearningStage,
+    MemoryScope,
+)
 
 if TYPE_CHECKING:
     import asyncpg
@@ -65,6 +72,52 @@ _PG_INSERT_FIELDS = (
     "run_id",
     "node_run_id",
     "attempt_id",
+    "epistemic_type",
+    "works_when",
+    "avoid_in",
+    "confidence",
+    "evidence_run_ids",
+    "evaluation_ids",
+    "applicability",
+    "reinforcement_count",
+    "contradiction_count",
+    "created_at",
+    "last_confirmed_at",
+    "stage",
+    "validated_by",
+    "validated_at",
+    # The Gauntlet's audit trail beyond the ladder's own columns (M4-B2).
+    "validated_evaluator_version",
+    "validation_run_ids",
+    "validation_content_hash",
+    "promoted_by",
+    "supersedes",
+    "superseded_by",
+)
+
+#: The belt-and-braces upgrade adds these in `ensure_schema`, mirroring what
+#: the applicability/lifecycle migrations declare. `confidence` stays nullable
+#: on disk — an unmeasured row is stored as NULL — while the decode maps a
+#: pre-lifecycle NULL to the dataclass default, so a legacy row reads back as
+#: the local empirical learning at default confidence it implicitly was
+#: (never as measured, and promotion still blocks it at the floor).
+_EPISTEMIC_COLUMNS = (
+    ("epistemic_type", "TEXT NOT NULL DEFAULT 'empirical'"),
+    ("works_when", "JSONB NOT NULL DEFAULT '[]'::jsonb"),
+    ("avoid_in", "JSONB NOT NULL DEFAULT '[]'::jsonb"),
+    ("confidence", "DOUBLE PRECISION"),
+    ("evidence_run_ids", "JSONB NOT NULL DEFAULT '[]'::jsonb"),
+    ("evaluation_ids", "JSONB NOT NULL DEFAULT '[]'::jsonb"),
+    ("applicability", "JSONB NOT NULL DEFAULT '{}'::jsonb"),
+    ("reinforcement_count", "INTEGER NOT NULL DEFAULT 0"),
+    ("contradiction_count", "INTEGER NOT NULL DEFAULT 0"),
+    ("last_confirmed_at", "TIMESTAMPTZ"),
+    ("validated_at", "TIMESTAMPTZ"),
+    ("validated_evaluator_version", "TEXT NOT NULL DEFAULT ''"),
+    ("validation_run_ids", "JSONB NOT NULL DEFAULT '[]'::jsonb"),
+    ("validation_content_hash", "TEXT NOT NULL DEFAULT ''"),
+    ("supersedes", "BIGINT"),
+    ("superseded_by", "BIGINT"),
 )
 
 
@@ -213,7 +266,7 @@ class PgLearningStore:
             attempt_id=learning.attempt_id,
         )
         async with self._pool.acquire() as conn:
-            dedup_id = await self._bump_dedup_hit(conn, learning)
+            dedup_id = await self._bump_dedup_hit(conn, learning, provenance)
             if dedup_id is not None:
                 return dedup_id
 
@@ -291,6 +344,7 @@ class PgLearningStore:
         self,
         conn: asyncpg.pool.PoolConnectionProxy,
         learning: Learning,
+        provenance: ExecutionProvenance,
     ) -> int | None:
         """Return the id of the same-scope active row this learning dedupes into.
 
@@ -302,7 +356,8 @@ class PgLearningStore:
         probe-then-insert.
         """
         existing = await conn.fetch(
-            """SELECT id, trigger_keys FROM learnings
+            """SELECT id, trigger_keys, works_when, avoid_in, confidence,
+                      evidence_run_ids, evaluation_ids FROM learnings
                WHERE tool_name = $1 AND org_id = $2
                  AND team_id = $3 AND user_id IS NOT DISTINCT FROM $4
                  AND agent_id = $5 AND status = 'active'""",
@@ -318,6 +373,40 @@ class PgLearningStore:
             if new_keys and existing_keys:
                 overlap = len(new_keys & existing_keys) / len(new_keys)
                 if overlap >= 0.5:
+                    # Dedup consolidates: the reworded claim replaces the text,
+                    # never the evidence or applicability beneath it (M4-B3).
+                    # `merge_applicability` stays the one rule; a throwaway
+                    # Learning carries the row's current values through it.
+                    prior = Learning(
+                        works_when=_load_keys(row["works_when"]),
+                        avoid_in=_load_keys(row["avoid_in"]),
+                        confidence=row["confidence"],
+                        evidence_run_ids=_load_keys(row["evidence_run_ids"]),
+                        evaluation_ids=_load_keys(row["evaluation_ids"]),
+                    )
+                    # The merge folds `incoming.run_id` into the evidence list,
+                    # so it must see the ids `store` resolved, not the blank
+                    # fields of a learning that leaned on the ambient context
+                    # — otherwise a deduplicated write silently drops the
+                    # very execution the consolidation should retain.
+                    incoming = replace(
+                        learning,
+                        run_id=provenance.run_id,
+                        node_run_id=provenance.node_run_id,
+                        attempt_id=provenance.attempt_id,
+                    )
+                    merge_applicability(prior, incoming)
+                    await conn.execute(
+                        """UPDATE learnings SET works_when = $1, avoid_in = $2,
+                           confidence = $3, evidence_run_ids = $4,
+                           evaluation_ids = $5 WHERE id = $6""",
+                        _dump_keys(prior.works_when),
+                        _dump_keys(prior.avoid_in),
+                        prior.confidence,
+                        _dump_keys(prior.evidence_run_ids),
+                        _dump_keys(prior.evaluation_ids),
+                        row["id"],
+                    )
                     await conn.execute(
                         "UPDATE learnings SET hit_count = hit_count + 1 WHERE id = $1",
                         row["id"],
@@ -881,27 +970,28 @@ def _load_keys(raw: object) -> list[str]:
     return []
 
 
-def _row_to_learning(row: asyncpg.Record) -> Learning:
-    return Learning(
-        id=row["id"],
-        category=row.get("category") or "",
-        trigger_keys=_load_keys(row.get("trigger_keys")),
-        learning=row["learning"],
-        tool_name=row.get("tool_name", ""),
+def _provenance_fields(row: asyncpg.Record) -> dict[str, Any]:
+    """The identity, category, and provenance columns of a learnings row."""
+    return {
+        "id": row["id"],
+        "category": row.get("category") or "",
+        "trigger_keys": _load_keys(row.get("trigger_keys")),
+        "learning": row["learning"],
+        "tool_name": row.get("tool_name", ""),
         # Preserve both the provenance query and team scope on reads; they are
         # part of the Learning contract, not write-only SQL columns.
-        source_query=row.get("source_query", ""),
-        agent_id=row.get("agent_id") or None,
-        user_id=row.get("user_id"),
-        org_id=row.get("org_id") or "",
-        team_id=row.get("team_id") or "",
-        scope=MemoryScope(row.get("scope") or "agent"),
-        hit_count=row.get("hit_count", 0),
-        status=row.get("status", "active"),
-        rca_category=row.get("rca_category"),
-        rca_prevention=row.get("rca_prevention", ""),
-        success_after_use=row.get("success_after_use", 0),
-        failure_after_use=row.get("failure_after_use", 0),
+        "source_query": row.get("source_query", ""),
+        "agent_id": row.get("agent_id") or None,
+        "user_id": row.get("user_id"),
+        "org_id": row.get("org_id") or "",
+        "team_id": row.get("team_id") or "",
+        "scope": MemoryScope(row.get("scope") or "agent"),
+        "hit_count": row.get("hit_count", 0),
+        "status": row.get("status", "active"),
+        "rca_category": row.get("rca_category"),
+        "rca_prevention": row.get("rca_prevention", ""),
+        "success_after_use": row.get("success_after_use", 0),
+        "failure_after_use": row.get("failure_after_use", 0),
         # `or ""` because the columns are nullable and the dataclass fields are
         # not: a row with no producer comes back as a Learning naming none,
         # which is the same fact in the shape the caller expects (#709).

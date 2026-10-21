@@ -30,6 +30,7 @@ from maistro.runs.store import (
     RunIntegrityError,
     RunNotFound,
 )
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 GOAL_ID = "goal-homestead"
 GOAL_REVISION = 4
@@ -55,7 +56,9 @@ async def _produce(spine: Any) -> tuple[Any, Any, Any, Any]:
     Attempt completes but before the graph moves on.
     """
     store, workspace, project_id = spine
-    run = await store.create_run(_graph(workspace, project_id))
+    run = await store.create_run(
+        _graph(workspace, project_id), actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+    )
     node_run = await store.create_node_run(run.run_id, node_id="node-1")
     attempt = await store.create_attempt(node_run.node_run_id)
     await store.transition_attempt(attempt.attempt_id, AttemptStatus.RUNNING)
@@ -225,7 +228,9 @@ async def test_a_reeval_waits_for_the_prior_attempt_and_stays_on_its_own_run(
     """A retry opens only where the spine allows one: same Run, no live Attempt."""
     store, run, node_run, _attempt = await _produce(spine)
 
-    other = await store.create_run(_graph(*spine[1:]))
+    other = await store.create_run(
+        _graph(*spine[1:]), actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+    )
     other_node_run = await store.create_node_run(other.run_id, node_id="node-1")
     with pytest.raises(NodeRunNotFound):
         await open_re_eval_attempt(store, run.run_id, other_node_run.node_run_id)
@@ -330,7 +335,9 @@ async def test_eval_complete_is_a_property_of_persisted_records_not_of_intention
 async def test_an_eval_record_cannot_dangle_off_the_spine(spine: Any) -> None:
     """Run, NodeRun, Attempt must be one connected triple, or the store refuses."""
     store, run, node_run, attempt = await _produce(spine)
-    other_run = await store.create_run(_graph(*spine[1:]))
+    other_run = await store.create_run(
+        _graph(*spine[1:]), actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+    )
     other_node_run = await store.create_node_run(other_run.run_id, node_id="node-1")
     other_attempt = await store.create_attempt(other_node_run.node_run_id)
 
@@ -473,3 +480,31 @@ def test_the_judge_names_whatever_scored_when_it_is_not_deterministic() -> None:
     )
     assert human.judge is not None
     assert human.judge.identity == "reviewer-7"
+
+
+async def test_a_summary_over_no_dimensions_is_a_question_that_means_nothing(
+    spine: Any,
+) -> None:
+    """Completeness over an empty dimension set would vacuously read complete."""
+    store, run, _node_run, _attempt = await _produce(spine)
+    with pytest.raises(ValueError, match="must not be empty"):
+        await eval_summary(
+            store,
+            run.run_id,
+            rubric_id=RUBRIC_ID,
+            rubric_revision=RUBRIC_REVISION,
+            dimension_ids=(),
+        )
+
+
+async def test_a_summary_cannot_ask_twice_for_the_same_dimension(spine: Any) -> None:
+    """A duplicated dimension would silently answer one record for two asks."""
+    store, run, _node_run, _attempt = await _produce(spine)
+    with pytest.raises(ValueError, match="must not contain duplicates"):
+        await eval_summary(
+            store,
+            run.run_id,
+            rubric_id=RUBRIC_ID,
+            rubric_revision=RUBRIC_REVISION,
+            dimension_ids=("contrast", "contrast"),
+        )

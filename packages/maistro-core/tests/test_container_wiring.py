@@ -14,6 +14,7 @@ from typing import Any
 import pytest
 
 from maistro.container import Container, create_container
+from maistro.persistence.audit_pages import AUDIT_PAGE_INDEXES
 from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 from maistro.types.config import AgentConfig
 
@@ -100,6 +101,26 @@ async def test_context_assembly_uses_the_canonical_scope_store() -> None:
     assert await container.context_assembly_policy.layer0(root.project_id) == ""
 
 
+async def test_aclose_releases_working_memory_projections_but_never_the_log() -> None:
+    """The graphs are process-local caches over the durable log (#301).
+
+    Shutdown releases what the container took — the live projections — and
+    the observation log they were hydrated from stays exactly where it is.
+    """
+    container = await _container(database_url="sqlite://")
+    manager = container.working_log
+    assert manager is not None
+    await manager.observe("ws-shutdown", cycle=1, text="durable across shutdown")
+    await manager.projection("ws-shutdown")
+    assert manager.hot("ws-shutdown") is not None
+    # The entry is in the log, not only in the graph.
+    assert len(await manager.store.list_entries("ws-shutdown")) == 1
+
+    await container.aclose()
+
+    assert manager.hot("ws-shutdown") is None
+
+
 # --- Resilience (ADR-066) ----------------------------------------------------
 
 
@@ -146,6 +167,20 @@ async def test_process_durable_events_delivers_to_matching_trigger() -> None:
     assert [t.trigger_id for t in triggers] == ["t1"]
     await container.set_durable_trigger_enabled("t1", False)
     assert not (await container.trigger_store.get("t1")).enabled  # type: ignore[union-attr]
+
+
+async def test_durable_bridge_failure_is_explicit() -> None:
+    from maistro.events.bus import Event, EventSubscriberFailure
+
+    container = await _container()
+
+    async def fail_append(**_kwargs: object) -> None:
+        raise OSError("event store unavailable")
+
+    container.durable_event_log.append = fail_append  # type: ignore[method-assign]
+    with pytest.raises(EventSubscriberFailure, match="event store unavailable"):
+        await container.event_bus.emit(Event(event_type="agent.created"))
+    assert container.event_bus.get_history() == []
 
 
 def _record_ids_caller(sink: list[int]):
@@ -257,6 +292,66 @@ async def test_a_tick_with_nothing_new_does_not_advance_the_stored_cursor() -> N
     assert lease.position == 0
 
 
+class TestReplayAcknowledgementOnTheLog:
+    """#836: `process_durable_events` must also acknowledge the settled
+    position on the durable log itself (`EventLogStore.acknowledge_replay`).
+    The `event_replay_cursors` table ships beside `event_log` on every
+    backend and revision 064 manages it in PostgreSQL; a bridge tick that
+    never wrote it left the log's replay acknowledgement dead in production
+    and the table permanently empty.
+    """
+
+    async def test_a_settled_tick_acknowledges_the_log_and_an_empty_tick_does_not(self) -> None:
+        container = await _container()
+        from maistro.events.consumer_cursor import LEGACY_BRIDGE_CONSUMER_ID
+
+        # Nothing settled yet: neither cursor store is written.
+        assert await container.process_durable_events() == 0
+        assert await container.durable_event_log.get_replay_cursor(LEGACY_BRIDGE_CONSUMER_ID) == 0
+
+        await container.durable_event_log.append("agent.created")
+        cursor = await container.process_durable_events()
+
+        # The settled position is acknowledged on the log, under the same
+        # consumer identity the cursor store uses.
+        assert cursor > 0
+        assert (
+            await container.durable_event_log.get_replay_cursor(LEGACY_BRIDGE_CONSUMER_ID) == cursor
+        )
+
+    async def test_the_acknowledgement_holds_below_a_hole_and_agrees_with_the_cursor_store(
+        self,
+    ) -> None:
+        from maistro.events.consumer_cursor import LEGACY_BRIDGE_CONSUMER_ID
+        from maistro.events.trigger_store import TriggerDefinition
+
+        container = await _container()
+        delivered: list[int] = []
+        container.handler_caller = _record_ids_caller(delivered)  # type: ignore[assignment]
+        await container.trigger_store.add(
+            TriggerDefinition(trigger_id="t1", event_pattern="agent.*")
+        )
+        log = _HidingLog(container.durable_event_log, hidden={2})
+        container.durable_event_log = log  # type: ignore[assignment]
+        for _ in range(3):
+            await log.append("agent.created")
+
+        cursor = await container.process_durable_events()
+
+        # The log acknowledgement stops at the same gap-safe position the
+        # cursor store persists: id 2 is not settled, so neither store may
+        # claim past it.
+        assert cursor == 1
+        assert await _durable_position(container) == 1
+        assert await log.get_replay_cursor(LEGACY_BRIDGE_CONSUMER_ID) == 1
+
+        log.hidden.clear()
+        cursor = await container.process_durable_events()
+
+        assert cursor == 3
+        assert await log.get_replay_cursor(LEGACY_BRIDGE_CONSUMER_ID) == 3
+
+
 class _HidingLog:
     """A durable log whose reads skip chosen ids -- PostgreSQL between a
     `BIGSERIAL` allocation and that append's commit."""
@@ -345,6 +440,41 @@ async def test_a_hole_that_outlives_the_grace_is_an_aborted_append() -> None:
     assert cursor == container.durable_event_cursor == 3
     assert await _durable_position(container) == 3
     assert delivered == [1, 3]
+
+
+async def test_the_log_replay_acknowledgement_survives_a_restart(tmp_path: Path) -> None:
+    """#836: the log's replay acknowledgement is written to the shared store,
+    not to the ticking process. A fresh `Container` over the same database
+    must read the previous container's settled position straight off the log
+    before it has ticked anything itself.
+    """
+    from maistro.events.consumer_cursor import LEGACY_BRIDGE_CONSUMER_ID
+    from maistro.events.trigger_store import TriggerDefinition
+
+    db_url = f"sqlite:///{tmp_path / 'events.db'}"
+
+    container1 = await _container(database_url=db_url)
+    try:
+        container1.handler_caller = _record_ids_caller([])  # type: ignore[assignment]
+        await container1.trigger_store.add(
+            TriggerDefinition(trigger_id="t1", event_pattern="agent.*")
+        )
+        await container1.durable_event_log.append("agent.created")
+        await container1.durable_event_log.append("agent.created")
+        assert await container1.process_durable_events() == 2
+    finally:
+        if container1.db_pool is not None:
+            await container1.db_pool.close()
+
+    container2 = await _container(database_url=db_url)
+    try:
+        # Fresh process: the in-process mirror is still zero, but the log
+        # itself answers with the settled position.
+        assert container2.durable_event_cursor == 0
+        assert await container2.durable_event_log.get_replay_cursor(LEGACY_BRIDGE_CONSUMER_ID) == 2
+    finally:
+        if container2.db_pool is not None:
+            await container2.db_pool.close()
 
 
 async def test_each_hole_gets_its_own_grace() -> None:
@@ -1043,6 +1173,16 @@ async def test_wiring_declines_to_build_an_admitter_with_no_template_store() -> 
 # --- Audit log backend selection (ADR-073, #122) ----------------------------
 
 
+class _AuditFakeTransaction:
+    """Stand-in for ``asyncpg.Connection.transaction()``."""
+
+    async def __aenter__(self) -> None:
+        return None
+
+    async def __aexit__(self, *exc: Any) -> None:
+        return None
+
+
 class _AuditFakeConnection:
     """Minimal asyncpg double: records executed SQL so a wiring test can prove
     `ensure_schema` ran against the selected backend."""
@@ -1050,9 +1190,8 @@ class _AuditFakeConnection:
     def __init__(self) -> None:
         self.statements: list[str] = []
 
-    async def fetchval(self, query: str, *args: Any) -> Any:
-        self.statements.append(query)
-        return "public.audit_log"  # to_regclass: the table exists
+    def transaction(self) -> _AuditFakeTransaction:
+        return _AuditFakeTransaction()
 
     async def execute(self, query: str, *args: Any) -> str:
         self.statements.append(query)
@@ -1094,11 +1233,22 @@ async def test_audit_log_wiring_prefers_postgres_and_upgrades_its_schema() -> No
         audit = await _wire_audit_log(pg_pool=_AuditFakePool(conn), db_pool=sqlite_conn)
 
         assert type(audit) is PgAuditLog
-        assert conn.statements == [
-            "SELECT to_regclass('public.audit_log') IS NOT NULL",
+        creates = [s for s in conn.statements if "CREATE TABLE IF NOT EXISTS audit_log" in s]
+        assert len(creates) == 1
+        assert conn.statements[2:6] == [
+            "ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS org_id TEXT NOT NULL DEFAULT ''",
             "ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS signature TEXT NOT NULL DEFAULT ''",
             "ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS signing_key_id TEXT NOT NULL DEFAULT ''",
             "ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS proof_type TEXT NOT NULL DEFAULT ''",
+        ]
+        assert conn.statements[6] == (
+            "CREATE INDEX IF NOT EXISTS ix_audit_log_scope ON audit_log (org_id, timestamp)"
+        )
+        # The page indexes `get_page` needs: wiring is the only thing that can
+        # create them on a database the migration chain never touched.
+        assert conn.statements[7:] == [
+            f"CREATE INDEX IF NOT EXISTS {name} ON audit_log ({', '.join(fields)})"
+            for name, fields in AUDIT_PAGE_INDEXES.items()
         ]
     finally:
         await sqlite_conn.close()

@@ -76,7 +76,11 @@ _FENCED_KINDS: dict[str, tuple[type[BaseModel], type[BaseModel]]] = {
 }
 
 
+# ADR-032 axis: the fence is a *boundary* (which module owns the kind) with a
+# *behavioral* post-condition (a competing claim must fail loudly), so the
+# stimulus/response tests carry both markers.
 @pytest.mark.contract("boundary")
+@pytest.mark.contract("behavioral")
 @pytest.mark.ac("SPEC-092926-7a01/AC-1")
 @pytest.mark.parametrize("kind", sorted(_FENCED_KINDS))
 def test_fenced_kind_rejects_product_module_registration(kind: str) -> None:
@@ -95,6 +99,7 @@ def test_fenced_kind_rejects_product_module_registration(kind: str) -> None:
 
 
 @pytest.mark.contract("boundary")
+@pytest.mark.contract("behavioral")
 @pytest.mark.parametrize("kind", sorted(_FENCED_KINDS))
 def test_canonical_owner_re_registration_is_idempotent(kind: str) -> None:
     """The fence blocks competing claims, not the canonical owner itself."""
@@ -124,6 +129,7 @@ def test_goal_has_exactly_one_canonical_identity() -> None:
 
 
 @pytest.mark.contract("boundary")
+@pytest.mark.contract("behavioral")
 @pytest.mark.ac("SPEC-092926-7a01/AC-3")
 def test_goal_projection_requires_canonical_identity_and_revision() -> None:
     """A Goal projection carries goal_id + goal_revision — nothing else counts.
@@ -163,6 +169,7 @@ def test_persona_module_owns_no_scoring_kind() -> None:
 
 
 @pytest.mark.contract("boundary")
+@pytest.mark.contract("behavioral")
 @pytest.mark.ac("SPEC-092926-7a01/AC-4")
 def test_persona_rubric_eval_class_cannot_claim_goal_rubric_kind() -> None:
     """The persona scorer is not a Rubric semantic, even accidentally."""
@@ -191,6 +198,7 @@ def test_no_sidecar_eval_kind_in_shared_ontology() -> None:
 
 
 @pytest.mark.contract("boundary")
+@pytest.mark.contract("behavioral")
 def test_ontology_registry_rejects_unknown_kind_upsert() -> None:
     """Kinds only enter the registry through registration — not through upsert."""
     from maistro.ontology.types import KindNotRegisteredError, OntologyEntity

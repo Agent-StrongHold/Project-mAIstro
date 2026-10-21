@@ -37,8 +37,8 @@ is also required live on both branches; because it is produced by
 
 | Branch | PR | Approvals | Linear history | Force-push | Deletion | Required checks |
 |---|:--:|:--:|:--:|:--:|:--:|:--:|
-| `develop` | yes | **0** | yes | no | no | **18** |
-| `main` | yes | **1** | no | no | no | **30** |
+| `develop` | yes | **0** | yes | no | no | **19** |
+| `main` | yes | **1** | no | no | no | **31** |
 
 | Check | `develop` | `main` |
 |---|:--:|:--:|

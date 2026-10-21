@@ -51,9 +51,25 @@ from services.workspace_authority import (
 
 from maistro.personas.checklist import CapabilityItem, capability_checklist, default_checklist_ids
 from maistro.personas.schema import InterviewQuestionSpec, SpawnSpec
+from maistro.workspaces.authorization import WorkspaceAuthorizationDenied
 from maistro.workspaces.model import WorkspaceAccessDenied
 
 router = APIRouter(tags=["workspaces"])
+
+
+def _workspace_denial(exc: WorkspaceAuthorizationDenied, detail: str) -> HTTPException:
+    """Render a canonical Workspace refusal as this route's own answer (#1150).
+
+    The canonical store re-resolves the acting principal's authority inside
+    the store call, so an ownership revocation that lands between the route's
+    own check and the store call arrives here as a refusal. A principal who
+    is no longer a member gets the same 404 an invisible Workspace gets; a
+    member who lost the action gets the route's own 403. The refusal never
+    escapes as a 500.
+    """
+    if exc.membership is None:
+        return HTTPException(status_code=404, detail="workspace not found")
+    return HTTPException(status_code=403, detail=detail)
 
 
 def _now() -> datetime:
@@ -230,8 +246,7 @@ class DefaultWorkspaceResponse(BaseModel):
 @router.post("/default", response_model=DefaultWorkspaceResponse)
 async def ensure_default_workspace(request: Request) -> DefaultWorkspaceResponse:
     """The caller's default Workspace and its Workspace Agent, created on first need (#1037)."""
-    user = getattr(request.state, "user", None) or {}
-    user_id = str(user.get("id") or user.get("username") or "")
+    user_id = require_actor_id(request)
     if not user_id:
         raise HTTPException(status_code=401, detail="a default workspace needs a known principal")
     try:
@@ -297,7 +312,12 @@ async def add_workspace_member(
         raise HTTPException(status_code=404, detail="workspace not found")
     if await member_role(requester, workspace_id) != "owner":
         raise HTTPException(status_code=403, detail="only an owner can add workspace members")
-    return await set_member(workspace_id, user_id=body.user_id, role=body.role)
+    try:
+        return await set_member(
+            workspace_id, user_id=body.user_id, role=body.role, principal_id=requester
+        )
+    except WorkspaceAuthorizationDenied as exc:
+        raise _workspace_denial(exc, "only an owner can add workspace members") from exc
 
 
 @router.delete("/{workspace_id}/members/{user_id}", response_model=Workspace)
@@ -315,11 +335,13 @@ async def remove_workspace_member(workspace_id: str, user_id: str, request: Requ
         raise HTTPException(status_code=403, detail="only an owner can remove other members")
 
     try:
-        return await remove_member(workspace_id, user_id=user_id)
+        return await remove_member(workspace_id, user_id=user_id, principal_id=requester)
     except WorkspaceAccessDenied as exc:
         raise HTTPException(
             status_code=400, detail="cannot remove the workspace's last owner"
         ) from exc
+    except WorkspaceAuthorizationDenied as exc:
+        raise _workspace_denial(exc, "only an owner can remove other members") from exc
 
 
 class WorkspaceFeedbackBody(BaseModel):
@@ -403,7 +425,10 @@ async def delete_workspace(workspace_id: str, request: Request) -> None:
         raise HTTPException(status_code=404, detail="workspace not found")
     if await member_role(requester, workspace_id) != "owner":
         raise HTTPException(status_code=403, detail="only an owner can delete this workspace")
-    await delete_canonical_workspace(workspace_id)
+    try:
+        await delete_canonical_workspace(workspace_id, principal_id=requester)
+    except WorkspaceAuthorizationDenied as exc:
+        raise _workspace_denial(exc, "only an owner can delete this workspace") from exc
     # The workspaces store's pop hook (registered in
     # `services.agent_materialization`) already cascades this deletion; call
     # it explicitly rather than re-implementing the pop inline -- a second

@@ -116,11 +116,21 @@ class TriggerActionFailure(Exception):
 
     def __init__(self, failures: list[tuple[Trigger, Exception]]) -> None:
         self.failures = failures
+        self.subscriber_failures: list[tuple[Callable[..., Any], Exception]] = []
         detail = "; ".join(
             f"trigger {t.name or t.trigger_id} (action_type={t.action_type!r}): {exc!r}"
             for t, exc in failures
         )
         super().__init__(f"{len(failures)} trigger action handler(s) failed: {detail}")
+
+
+class EventSubscriberFailure(Exception):
+    """A bus subscriber failed; delivery evidence must not be silently lost."""
+
+    def __init__(self, failures: list[tuple[Callable[..., Any], Exception]]) -> None:
+        self.failures = failures
+        detail = "; ".join(f"{callback!r}: {exc!r}" for callback, exc in failures)
+        super().__init__(f"{len(failures)} event subscriber(s) failed: {detail}")
 
 
 def _project_legacy_event(event: Event | LegacyEventProjector) -> Event:
@@ -144,7 +154,7 @@ class EventBus:
         self._handlers: dict[str, ActionHandler] = {}
         self._history: list[Event] = []
         self._max_history = max_history
-        self._subscribers: list[Callable[[Event], Coroutine[Any, Any, None]]] = []
+        self._subscribers: list[tuple[Callable[[Event], Coroutine[Any, Any, None]], bool]] = []
 
     def register_handler(self, action_type: str, handler: ActionHandler) -> None:
         self._handlers[action_type] = handler
@@ -155,8 +165,50 @@ class EventBus:
     def remove_trigger(self, trigger_id: str) -> None:
         self._triggers = [t for t in self._triggers if t.trigger_id != trigger_id]
 
-    def subscribe(self, callback: Callable[[Event], Coroutine[Any, Any, None]]) -> None:
-        self._subscribers.append(callback)
+    def subscribe(
+        self,
+        callback: Callable[[Event], Coroutine[Any, Any, None]],
+        *,
+        before_handlers: bool = False,
+    ) -> None:
+        """Register an async subscriber.
+
+        ``before_handlers`` is for authoritative adapters such as the durable
+        event-log bridge. A failure there aborts emission before any trigger can
+        claim success. Ordinary subscribers remain post-handler notifications.
+        """
+        self._subscribers.append((callback, before_handlers))
+
+    async def _notify_before_handlers(self, projected: Event) -> None:
+        """Run authoritative subscribers before trigger matching."""
+        failures: list[tuple[Callable[..., Any], Exception]] = []
+        for sub, before_handlers in self._subscribers:
+            if not before_handlers:
+                continue
+            try:
+                await sub(projected)
+            except Exception as exc:
+                logger.exception(
+                    "Authoritative event subscriber failed for event %s", projected.event_id
+                )
+                failures.append((sub, exc))
+        if failures:
+            raise EventSubscriberFailure(failures) from failures[0][1]
+
+    async def _notify_after_handlers(
+        self, projected: Event
+    ) -> list[tuple[Callable[..., Any], Exception]]:
+        """Run notification subscribers and retain failures for emit."""
+        failures: list[tuple[Callable[..., Any], Exception]] = []
+        for sub, before_handlers in self._subscribers:
+            if before_handlers:
+                continue
+            try:
+                await sub(projected)
+            except Exception as exc:
+                logger.exception("Subscriber failed for event %s", projected.event_id)
+                failures.append((sub, exc))
+        return failures
 
     async def _fire_if_matched(
         self,
@@ -218,6 +270,8 @@ class EventBus:
           advance the success cooldown/counters as if the action ran.
         """
         projected = _project_legacy_event(event)
+        await self._notify_before_handlers(projected)
+
         self._history.append(projected)
         if len(self._history) > self._max_history:
             self._history = self._history[-self._max_history :]
@@ -229,11 +283,7 @@ class EventBus:
             if fired_trigger is not None:
                 fired.append(fired_trigger)
 
-        for sub in self._subscribers:
-            try:
-                await sub(projected)
-            except Exception:
-                logger.exception("Subscriber failed for event %s", projected.event_id)
+        subscriber_failures = await self._notify_after_handlers(projected)
 
         if fired:
             logger.info(
@@ -244,7 +294,14 @@ class EventBus:
             )
 
         if failures:
-            raise TriggerActionFailure(failures) from failures[0][1]
+            failure = TriggerActionFailure(failures)
+            if subscriber_failures:
+                # Preserve the established trigger exception type while making
+                # a post-handler subscriber failure inspectable as well.
+                failure.subscriber_failures = subscriber_failures
+            raise failure from failures[0][1]
+        if subscriber_failures:
+            raise EventSubscriberFailure(subscriber_failures) from subscriber_failures[0][1]
 
         return fired
 

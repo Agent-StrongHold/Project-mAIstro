@@ -205,6 +205,16 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 bypass-selection = true
 
+[tool.uv]
+# Supply-chain floor for the pip-audit gate (security.yml `Supply chain
+# (pip-audit)`). aiohttp is not a production dependency here: it arrives
+# transitively through the cosmic-ray mutation-testing dev tool. The gate
+# nevertheless audits the frozen dev environment (`uv pip freeze`), and the
+# advisories fixed upstream in 3.14.4 (CVE-2026-111064 / GHSA-2g87-pp6c-29x5 /
+# CVE-2026-111063) fail it as shipped. Constrain the floor in the manifest so
+# the lock keeps it instead of drifting back on the next resolve.
+constraint-dependencies = ["aiohttp>=3.14.4"]
+
 [tool.ruff]
 target-version = "py312"
 line-length = 100
@@ -246,7 +256,13 @@ select = ["E", "F", "I", "UP", "B", "SIM", "RUF", "C90", "C4"]
 ignore = ["E501", "UP046", "UP047"]
 # Vulture owns these suppression codes; Ruff must preserve the inline review
 # markers without treating its external analyzer's codes as malformed.
-external = ["V102", "V106", "V107"]
+# V105 (unused method) backs the Pydantic-dispatched ClaimRule
+# _require_evidence_backing validator marker that PR #1663 landed in
+# maistro_design/consistency.py; the round-4 merge resolution dropped it
+# believing only the removed creative_brief.py used it. It also covers
+# #773's CreativeBrief contract API: retained, test-consumed now,
+# production consumers arrive with #774/#775.
+external = ["V102", "V105", "V106", "V107"]
 
 [tool.ruff.lint.mccabe]
 max-complexity = 10
