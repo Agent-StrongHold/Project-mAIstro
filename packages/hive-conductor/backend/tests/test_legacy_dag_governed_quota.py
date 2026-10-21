@@ -169,6 +169,7 @@ def _install_container(monkeypatch: pytest.MonkeyPatch, tracker: _RecordingTrack
         llm_router=SimpleNamespace(),
         run_store=spine.run_store,
         graph_run_store=spine.graph_run_store,
+        sentinel=getattr(spine, "sentinel", None),
     )
     monkeypatch.setattr(runner, "_container", lambda: container)
     return container, usage_log, effects.invocation_store
@@ -343,6 +344,7 @@ async def test_dag_node_without_effect_authority_falls_back_and_records_nothing(
         lambda: SimpleNamespace(
             run_store=canonical_graph_spine.run_store,
             graph_run_store=canonical_graph_spine.graph_run_store,
+            sentinel=getattr(canonical_graph_spine, "sentinel", None),
         ),
     )
     _FakeGatewayClient.seen = []

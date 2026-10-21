@@ -440,6 +440,7 @@ jobs:
             packages/maistro-core/tests/tasks/test_idempotency_purge_driven.py \
             packages/maistro-core/tests/tasks/test_pg_admission_atomicity_live.py \
             packages/maistro-core/tests/security/test_elevation_durable.py \
+            packages/maistro-core/tests/security/test_delegation_durable.py \
             packages/maistro-core/tests/memory/user_model \
             packages/maistro-core/tests/quota -v --tb=short
           # The backlog suite runs as its own invocation, not appended to the

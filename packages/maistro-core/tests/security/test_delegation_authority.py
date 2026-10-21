@@ -339,3 +339,159 @@ async def test_agent_manifest_cannot_delegate_without_host_grant() -> None:
 
     assert response.content.startswith("Delegation refused:")
     assert target_strategy.calls == 0
+
+
+def test_a_delegated_call_without_a_grant_id_is_denied() -> None:
+    """A delegated call that never names the host grant that approved it is
+    denied: ``delegation_grant_id`` defaults to "" and must not be treated as
+    an implicit approval (#845)."""
+    auth = AuthContext(
+        user_id="owner-1",
+        roles=frozenset({"user"}),
+        delegated_actions=frozenset({"read_file"}),
+        delegation_grant_id="",
+    )
+    table = {"read_file": frozenset({"user"})}
+
+    assert auth.can_use_tool("read_file", table) is False
+
+
+def test_a_naive_expiry_datetime_is_read_as_utc() -> None:
+    """A naive ``delegation_expires_at`` is interpreted as UTC, so a grant
+    recorded without a tzinfo still expires (and does not compare against a
+    naive ``now`` with a TypeError) (#845)."""
+    auth = AuthContext(
+        user_id="owner-1",
+        roles=frozenset({"user"}),
+        delegated_actions=frozenset({"read_file"}),
+        delegation_grant_id="grant-1",
+        delegation_expires_at=datetime(2000, 1, 1),
+    )
+    table = {"read_file": frozenset({"user"})}
+
+    assert auth.can_use_tool("read_file", table) is False
+
+
+@pytest.mark.asyncio
+async def test_a_grant_without_provenance_cannot_authorize() -> None:
+    """``granted_by`` is the provenance of who issued the grant; a grant with
+    none cannot authorize anything (#845)."""
+    grant = _grant(actions=frozenset({"read_file"}))
+    grantless = grant.__class__(**{**grant.__dict__, "granted_by": ""})
+    authority = InMemoryDelegationAuthority([grantless])
+
+    decision = await authority.authorize(
+        _request(actions=frozenset({"read_file"})), now=datetime.now(UTC)
+    )
+
+    assert decision.allowed is False
+
+
+@pytest.mark.asyncio
+async def test_a_non_agent_principal_cannot_delegate() -> None:
+    """Delegation is an agent-to-agent handoff; a human principal is denied
+    before any grant is consulted (#845)."""
+    authority = InMemoryDelegationAuthority([_grant(actions=frozenset({"read_file"}))])
+    request = _request(actions=frozenset({"read_file"}))
+    human = request.__class__(
+        **{
+            **request.__dict__,
+            "principal": Principal(
+                id="low-agent", kind="human", owner="owner-1", scopes=("project-1",)
+            ),
+        }
+    )
+
+    decision = await authority.authorize(human, now=datetime.now(UTC))
+
+    assert decision.allowed is False
+    assert "principal must be an agent" in decision.reason
+
+
+@pytest.mark.asyncio
+async def test_a_principal_from_another_owner_cannot_delegate() -> None:
+    """The grant binds the owner; a principal owned elsewhere cannot spend it
+    (#845)."""
+    authority = InMemoryDelegationAuthority([_grant(actions=frozenset({"read_file"}))])
+    request = _request(actions=frozenset({"read_file"}))
+    other_owner = request.__class__(
+        **{
+            **request.__dict__,
+            "principal": Principal(
+                id="low-agent", kind="agent", owner="owner-2", scopes=("project-1",)
+            ),
+        }
+    )
+
+    decision = await authority.authorize(other_owner, now=datetime.now(UTC))
+
+    assert decision.allowed is False
+    assert "owner does not match" in decision.reason
+
+
+@pytest.mark.asyncio
+async def test_an_expired_grant_is_skipped() -> None:
+    """An expired grant is skipped, so a stale envelope cannot authorize a
+    late call (#845)."""
+    grant = _grant(actions=frozenset({"read_file"}))
+    expired = grant.__class__(
+        **{**grant.__dict__, "expires_at": datetime.now(UTC) - timedelta(seconds=1)}
+    )
+    authority = InMemoryDelegationAuthority([expired])
+
+    decision = await authority.authorize(
+        _request(actions=frozenset({"read_file"})), now=datetime.now(UTC)
+    )
+
+    assert decision.allowed is False
+
+
+@pytest.mark.asyncio
+async def test_a_sentinel_without_a_delegation_authority_denies_delegation() -> None:
+    """A Sentinel composed without a delegation authority denies rather than
+    silently allowing the handoff (#845)."""
+    sentinel = Sentinel(warden=Warden(), permission_table={})
+    principal = Principal(id="low-agent", kind="agent", owner="owner-1", scopes=("project-1",))
+
+    decision = await sentinel.authorize_delegation(
+        principal=principal,
+        owner_id="owner-1",
+        delegating_agent_id="low-agent",
+        target_agent_id="writer",
+        goal_id="goal-1",
+        run_id="run-1",
+        invocation_id="inv-1",
+        scope="project-1",
+        requested_actions=frozenset({"read_file"}),
+        artifact="task",
+    )
+
+    assert decision.allowed is False
+    assert "not configured" in decision.reason
+
+
+def test_resolve_execution_mode_maps_a_blocked_tier_to_blocked() -> None:
+    """A host tier record of BLOCKED maps to the adapter's blocked floor."""
+    sentinel = Sentinel(
+        warden=Warden(),
+        permission_table={},
+        tier_policy={("graph.node.execute", "user"): Tier.BLOCKED},
+        allow_on_miss=True,
+    )
+    principal = Principal(id="u-1", kind="human", roles=("user",))
+
+    assert sentinel.resolve_execution_mode("graph.node.execute", principal) == "blocked"
+
+
+def test_resolve_execution_mode_maps_a_self_elevation_tier_to_sandbox() -> None:
+    """A tier that is neither OPEN/ROLE_AUTO nor BLOCKED falls through to the
+    sandbox floor, never to inline execution."""
+    sentinel = Sentinel(
+        warden=Warden(),
+        permission_table={},
+        tier_policy={("graph.node.execute", "user"): Tier.SELF_ELEVATION},
+        allow_on_miss=True,
+    )
+    principal = Principal(id="u-1", kind="human", roles=("user",))
+
+    assert sentinel.resolve_execution_mode("graph.node.execute", principal) == "sandbox"

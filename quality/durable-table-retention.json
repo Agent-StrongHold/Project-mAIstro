@@ -668,6 +668,19 @@
       "notes": "No DELETE anywhere in the tree; rows accumulate for the life of the deployment."
     },
     {
+      "table": "delegation_grants",
+      "backends": [
+        "postgres",
+        "sqlite"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/security/sentinel/delegation_durable.py",
+      "data_class": "security_evidence",
+      "retention": "undecided",
+      "deletion_path": null,
+      "issue": "#72",
+      "notes": "Host-signed delegation grants (#845), created by ensure_schema on both backends (no alembic migration; the store's idempotent DDL runs at container startup). Validity is TTL-filtered at read time in the shared decide() path; no DELETE anywhere, so expired rows accumulate. A driven expiry sweep is the same open owner decision as elevation_grants."
+    },
+    {
       "table": "elevation_grants",
       "backends": [
         "postgres",

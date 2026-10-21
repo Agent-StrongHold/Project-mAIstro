@@ -37,6 +37,36 @@ _SCOUT_NODE_ID = "__hive_legacy_scout__"
 _SCOUT_EDGE_ID = "__hive_legacy_scout_to_entry__"
 
 
+def _host_principal_roles(user_id: str) -> tuple[str, ...]:
+    """The acting user's host-assigned role, read from the user store.
+
+    The node adapter's Sentinel permission gate is a role intersection over
+    the deployment's fail-closed permission table (#1165), so the principal a
+    node presents must carry the roles the host actually assigned -- resolved
+    here, server-side, from the user record keyed by the authenticated user
+    id. Never a request field. Unknown user (or a store that cannot be read)
+    resolves to no roles, and the fail-closed gate denies.
+    """
+    if not user_id:
+        return ()
+    try:
+        import stores as _stores
+
+        user = _stores.users[user_id]
+    except Exception:  # pragma: no cover - store unavailable in isolation
+        return ()
+    role = getattr(user, "role", None)
+    if not role:
+        return ()
+    roles = [str(role)]
+    # Every authenticated human carries the canonical base role, so the
+    # shipped host tier record (armed for "user") applies to admins too
+    # without widening the tier policy to every stored role (#845).
+    if "user" not in roles:
+        roles.append("user")
+    return tuple(roles)
+
+
 def _raw_nodes(dag_data: Mapping[str, Any]) -> list[dict[str, Any]]:
     nodes = dag_data.get("nodes", [])
     if not isinstance(nodes, list) or not nodes:
@@ -410,6 +440,7 @@ def _resolver(
     progress: Any = None,
     sentinel: Any = None,
     host_mode: str | None = None,
+    principal_roles: tuple[str, ...] = (),
 ):
     def resolve(node_id: str, _graph: Graph) -> LegacyConductorNode:
         try:
@@ -428,6 +459,7 @@ def _resolver(
             progress=progress,
             sentinel=sentinel,
             host_mode=host_mode,
+            principal_roles=principal_roles,
         )
 
     return resolve
@@ -466,6 +498,7 @@ def _recovery_resolver(run: Run):
         llm_builder=None,
         sentinel=getattr(container, "sentinel", None),
         host_mode="sandbox",
+        principal_roles=_host_principal_roles(run.actor_principal_id or ""),
         effect_context=(getattr(container, "capability_effects", None) if container else None),
         governed_runtime=dag_node_runtime(container),
     )
@@ -681,6 +714,7 @@ async def execute_dag(
             # fail closed.
             sentinel=(getattr(container, "sentinel", None) if container else None),
             host_mode="sandbox",
+            principal_roles=_host_principal_roles(user_id),
         )
 
     record = await run_durable_graph(

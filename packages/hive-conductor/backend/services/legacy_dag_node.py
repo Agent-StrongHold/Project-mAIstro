@@ -727,6 +727,7 @@ class LegacyConductorNode(BaseNode[_LegacyInputs, _LegacyOutput]):
         progress: RunProgressHook | None = None,
         sentinel: Any = None,
         host_mode: str | None = None,
+        principal_roles: tuple[str, ...] = (),
     ) -> None:
         self._raw_node = dict(raw_node)
         self._task_desc = task_desc
@@ -745,6 +746,7 @@ class LegacyConductorNode(BaseNode[_LegacyInputs, _LegacyOutput]):
         # ``execution_tier``/``tier_approved_by``.
         self._sentinel = sentinel
         self._host_mode = host_mode
+        self._principal_roles = principal_roles
 
     async def _emit_progress(self, event: dict[str, Any]) -> None:
         """Publish one live node transition; never fail the node for it.
@@ -773,9 +775,12 @@ class LegacyConductorNode(BaseNode[_LegacyInputs, _LegacyOutput]):
             principal = Principal(
                 id=ctx.user_id or "anonymous",
                 kind="human",
-                # ADR-068's base role for an authenticated human; an anonymous
-                # caller holds no role, so no host policy record can match.
-                roles=("user",) if ctx.user_id else (),
+                # Host-resolved roles (#845): prefer the server-side user
+                # record over anything on the request. Fall back to the base
+                # role only when a compatibility caller did not supply one.
+                roles=self._principal_roles
+                if self._principal_roles
+                else (("user",) if ctx.user_id else ()),
                 scopes=tuple(
                     value for value in (ctx.workspace_id, ctx.project_id, ctx.user_id) if value
                 ),
