@@ -74,6 +74,10 @@ from maistro.extensions.store import (
     ExtensionInstallStore,
     InMemoryExtensionInstallStore,
 )
+from maistro.extensions.tenancy import (
+    ScopeBoundExtensionState,
+    TenantScopedExtensionState,
+)
 from maistro.extensions.tool_skill.registration import ExtensionToolCatalog
 from maistro.extensions.ui import (
     GovernedActionCall,
@@ -532,6 +536,24 @@ _VULTURE_WHITELIST = (
     ExternalAgentRegistry.refresh_descriptor,
     ExternalAgentRegistry.report_availability,
     ExternalAgentRegistry.eligible_specialists,
+    # Tenant-scoped extension runtime state (#971, M9-G3). Configuration is
+    # served over the operator API (GET/PUT /v1/extensions/state); the cache
+    # and checkpoint namespaces are the host/runtime substrate — the
+    # activation substrate (M9-B2's ExtensionCodeLoader hosts) and the
+    # quarantine flow (#972) bind them through
+    # ExtensionInstallService.extension_state, so their in-tree callers are
+    # the cross-tenant noninterference suites
+    # (packages/maistro-core/tests/extensions/test_org_workspace_policy.py)
+    # until those hosts land. Same contract-ships-first posture as the store
+    # seams above.
+    ScopeBoundExtensionState.delete_config,
+    ScopeBoundExtensionState.cache_set,
+    ScopeBoundExtensionState.cache_get,
+    ScopeBoundExtensionState.cache_delete,
+    ScopeBoundExtensionState.checkpoint_save,
+    ScopeBoundExtensionState.checkpoint_load,
+    ScopeBoundExtensionState.checkpoint_names,
+    TenantScopedExtensionState.clear_scope,
     # Pre-publication extension certification (M9-H3, #975). The
     # `maistro extensions certify` / `verify-certification` commands are
     # typer-dispatched like the lock commands above: their production caller

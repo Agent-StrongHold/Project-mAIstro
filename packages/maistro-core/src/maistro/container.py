@@ -148,9 +148,11 @@ if TYPE_CHECKING:
     from maistro.events.trigger_store import TriggerDefinition, TriggerStore
     from maistro.extensions.catalog_service import CatalogService, InMemoryCatalogStore
     from maistro.extensions.health import ExtensionHealthService, InMemoryExtensionHealthStore
+    from maistro.extensions.policy import ExtensionPolicyEngine
     from maistro.extensions.service import ExtensionInstallService
     from maistro.extensions.sqlite_health_store import SqliteExtensionHealthStore
     from maistro.extensions.store import ExtensionStore
+    from maistro.extensions.tenancy import TenantScopedExtensionState
     from maistro.graph.harness import HarnessAdapter
     from maistro.identity.lifecycle import (
         AgentIdentity as LifecycleIdentity,
@@ -511,6 +513,11 @@ class Container:
     # service so every reader observes the one canonical record.
     extension_install_store: ExtensionStore | None = None
     extension_install_service: ExtensionInstallService | None = None
+    # Organization/Workspace extension policy + tenant-scoped runtime state
+    # (#971, M9-G3). The default engine configures nothing, which leaves the
+    # machine's behavior unchanged while still recording decision evidence.
+    extension_policy_engine: ExtensionPolicyEngine | None = None
+    extension_runtime_state: TenantScopedExtensionState | None = None
     # Extension operational views (#978, M9-I3): health evidence, operator
     # decisions, and the projection facade over the SAME install store —
     # never a second lifecycle authority, only a read/projection layer.
@@ -2066,6 +2073,21 @@ class Container:
             id_token_verifier=default_id_token_verifier(),
         )
 
+    def ensure_extension_policy_engine(self) -> ExtensionPolicyEngine:
+        """Return the organization/Workspace extension policy engine (#971).
+
+        The default engine configures nothing: evaluation passes every
+        candidate with an explicit "the layer imposes nothing" trace, so
+        wiring the policy layer changes no behavior until an operator sets a
+        policy — but every install decision gains audit evidence from then
+        on. Hosts with a policy backend replace ``extension_policy_engine``.
+        """
+        from maistro.extensions.policy import ExtensionPolicyEngine
+
+        if self.extension_policy_engine is None:
+            self.extension_policy_engine = ExtensionPolicyEngine()
+        return self.extension_policy_engine
+
     def ensure_extension_install_service(self) -> ExtensionInstallService:
         """Return the governed extension install lifecycle service (#953).
 
@@ -2082,6 +2104,7 @@ class Container:
         """
         from maistro.extensions.service import ExtensionInstallService, UnwiredExtensionLoader
         from maistro.extensions.store import InMemoryExtensionStore
+        from maistro.extensions.tenancy import TenantScopedExtensionState
 
         if self.extension_install_service is None:
             if self.extension_install_store is None:
@@ -2089,6 +2112,8 @@ class Container:
             self.extension_install_service = ExtensionInstallService(
                 self.extension_install_store,
                 loader=UnwiredExtensionLoader(),
+                policy_engine=self.ensure_extension_policy_engine(),
+                runtime_state=self.extension_runtime_state or TenantScopedExtensionState(),
             )
         else:
             self.extension_install_store = self.extension_install_service.store
