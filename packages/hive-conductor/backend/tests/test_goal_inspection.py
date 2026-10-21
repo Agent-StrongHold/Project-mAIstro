@@ -959,6 +959,28 @@ async def test_canonical_only_run_detail_preserves_goal_backlink(
     assert await visible_run_detail("not-a-member", run.run_id) is None
 
 
+def test_engine_goal_reader_degrades_without_a_container_bridge() -> None:
+    """The `goal_reader` seam is None — never a fabricated store — when the
+    agent port carries no container or the container carries no Goal reader,
+    mirroring the `run_reader` seam it was modeled on (#1572). Goal
+    inspection fail-closes on None; it must not invent a reader that would
+    answer without Workspace scoping."""
+    from types import SimpleNamespace as NS
+
+    from services.engine import EngineService
+
+    engine = EngineService()
+    # No port bound at all: both getattrs take their defaults.
+    assert engine.goal_reader is None
+    # A container without the Goal reader: still None.
+    engine._agent_port = NS(container=NS())
+    assert engine.goal_reader is None
+    # A container that carries one: exactly that object, no wrapper.
+    reader = object()
+    engine._agent_port = NS(container=NS(goal_reader=reader))
+    assert engine.goal_reader is reader
+
+
 # ─── HTTP door ───────────────────────────────────────────────────────────────
 
 

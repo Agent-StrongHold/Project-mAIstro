@@ -62,6 +62,8 @@ class _Tree:
 class _World:
     reader: ScopedRunReader
     runs: RunStore
+    workspaces: Any
+    projects: ProjectScopeStore
     a: _Tree
     b: _Tree
 
@@ -100,6 +102,8 @@ async def world(stores: Any) -> _World:
     return _World(
         reader=ScopedRunReader(runs, workspaces, projects),
         runs=runs,
+        workspaces=workspaces,
+        projects=projects,
         a=await _tree(runs, projects, ws_a.workspace_id, "alice"),
         b=await _tree(runs, projects, ws_b.workspace_id, "bob"),
     )
@@ -138,6 +142,47 @@ async def test_recent_discovery_uses_membership_not_actor(world: _World) -> None
             await world.reader.list_recent_runs(workspace, principal_id=principal)
         refusals.append(str(caught.value))
     assert len(set(refusals)) == 1
+
+
+async def test_recent_discovery_refilters_rows_answered_out_of_scope(
+    world: _World,
+) -> None:
+    """A store that stops pre-filtering by Workspace cannot leak a foreign Run.
+
+    `list_recent_runs` re-checks every row's Workspace itself: the reader,
+    not the store, is the boundary. No shipped store answers discovery out
+    of scope (admission refuses cross-Workspace graphs, and every store
+    filters before pagination), so the test wraps one — a store that drops
+    the filter must lose nothing but the foreign row it leaks, and the
+    member still sees exactly their own history.
+    """
+
+    class UnscopedStore:
+        """Answers every stored Run for every Workspace, as if scopeless."""
+
+        def __init__(self, inner: RunStore, runs: list[Run]) -> None:
+            self._inner = inner
+            self._runs = runs
+
+        async def list_recent_runs(
+            self, workspace_id: str, *, limit: int = 100, offset: int = 0
+        ) -> list[Run]:
+            del workspace_id, limit, offset
+            return [await self._inner.get_run(run.run_id) for run in self._runs]
+
+    # Carol belongs to BOTH Workspaces, so Project admission would admit the
+    # foreign row too: the only filter left to drop it is the row's own
+    # Workspace check. The reader — not the store — is the boundary.
+    await world.workspaces.set_membership(
+        world.b.run.workspace_id, user_id="carol", role=WorkspaceRole.MEMBER
+    )
+    reader = ScopedRunReader(
+        UnscopedStore(world.runs, [world.a.run, world.b.run]),
+        world.workspaces,
+        world.projects,
+    )
+    visible = await reader.list_recent_runs(world.a.run.workspace_id, principal_id="carol")
+    assert [run.run_id for run in visible] == [world.a.run.run_id]
 
 
 async def _denials(reader: ScopedRunReader, tree: _Tree, principal: str) -> list[RunNotVisible]:
