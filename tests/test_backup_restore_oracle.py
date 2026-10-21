@@ -164,43 +164,35 @@ def test_security_defaults_preserved_no_restrict_key() -> None:
         assert "--restrict-key" not in code, f"{path.name} must not set --restrict-key"
 
 
-def test_container_readiness_probes_require_the_final_server() -> None:
-    """Readiness must be probed over TCP, which the init server cannot answer.
+def test_scratch_ready_means_the_target_database_answers() -> None:
+    """The drill must wait for ${PG_DB} itself, not just for a listening server.
 
-    The image's entrypoint initialises the cluster under a temporary server
-    bound to the unix socket only (`listen_addresses=''`). That server answers
-    a socket `pg_isready` — and even an authenticated socket `psql` query —
-    before it is stopped and the real server starts, so a socket probe can
-    report ready while the first real statement races the restart and dies
-    with psql exit 2, "connection went bad". That is not hypothetical: it
-    errored all four live characterisation tests through the module fixture in
-    the coverage gate's root producer (CI run 39130160694), reding a PR whose
-    diff was two test files. A probe over `-h 127.0.0.1` stays unanswered
-    until the final server listens, which is the server every consumer of the
-    readiness signal actually talks to.
-
-    Pinned on both live-container readiness paths: the drill script's scratch
-    server (its two `pg_isready` calls in the shell) and the characterisation
-    fixture (its Python probe). The fixture's probe is additionally an
-    authenticated `SELECT 1`, which the shell probes do not need — pg_isready
-    never authenticates — but which proves the fixture can run statements
-    before it starts issuing them.
+    The postgres image entrypoint runs a temporary bootstrap server that
+    accepts socket connections before its init step creates POSTGRES_DB.
+    Readiness gated on pg_isready alone let pg_restore race into that window
+    and die with `FATAL: database "maistro" does not exist` — observed live
+    in CI inside test_real_verify_restore_drill_passes_end_to_end after the
+    same test had passed in the same job. The loop must therefore require one
+    successful query against the target database before pg_restore runs.
     """
     verify = _read(VERIFY_SH)
-    assert verify.count("pg_isready -h 127.0.0.1") == 2, (
-        "verify-restore.sh must probe scratch readiness over TCP: a socket probe is "
-        "answered by the entrypoint's temporary init server and races the restart "
-        "(psql exit 2 in CI run 39130160694)"
+    # The DB-answering condition, not pg_isready alone, is what breaks the
+    # loop; and the post-loop guard falls into the verifier class when the
+    # target database never becomes ready.
+    loop_body = verify.split("for _ in $(seq 1 60); do", 1)[-1].split("done", 1)[0]
+    assert "pg_isready" in loop_body, "the scratch loop must still probe the server"
+    assert "psql" in loop_body and '-d "${PG_DB}"' in loop_body, (
+        "the scratch loop must require the target database to answer, "
+        "not just a listening server (entrypoint temp-server race)"
     )
-    characterization = _read(REPO / "tests" / "test_restore_oracle_characterization.py")
-    assert '"-h",\n        "127.0.0.1",' in characterization, (
-        "the characterization fixture's readiness probe must target TCP "
-        "(-h 127.0.0.1): the temporary init server answers socket probes"
+    tail = verify.split("done", 1)[-1]
+    assert 'fail_verifier "scratch postgres did not become ready' in tail, (
+        "a never-ready scratch database must fail as a verifier failure"
     )
-    assert '"-c",\n        "SELECT 1"' in characterization, (
-        "the characterization fixture's readiness probe must execute a query, "
-        "not merely confirm the server is accepting connections"
-    )
+    # pg_restore must come after the database-level readiness guard.
+    assert tail.find('fail_verifier "scratch postgres did not become ready') < tail.find(
+        "pg_restore"
+    ), "pg_restore must run only after the target database answered"
 
 
 # ── Fail-before: the old scripts violate every pinned property ───────────────
