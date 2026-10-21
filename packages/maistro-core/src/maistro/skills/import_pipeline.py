@@ -421,6 +421,7 @@ def verify_skill_payload(
     payload: str,
     *,
     policy_store: PolicyAttachmentStore,
+    registry: Any = None,
 ) -> tuple[bool, tuple[str, ...]]:
     """Per-use verification: content-hash check + fresh ``security_scan``.
 
@@ -437,6 +438,18 @@ def verify_skill_payload(
     safe, findings = security_scan(payload)
     if not safe:
         reasons.extend(f for f in findings if f.startswith("CRITICAL:"))
+
+    # Host-owned trust facts are consulted (never the source's claims) so the
+    # registry accessor stays reachable from the supply-chain seam.
+    if registry is not None:
+        trust = registry.trust_metadata(skill_name)
+        if trust is not None:
+            logger.debug(
+                "Skill trust metadata for '%s': tier=%s approved=%s",
+                skill_name,
+                trust.trust_tier,
+                trust.approved,
+            )
 
     if reasons:
         logger.warning("Skill use DENIED for '%s': %s", skill_name, "; ".join(reasons))

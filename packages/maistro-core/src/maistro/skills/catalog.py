@@ -216,38 +216,42 @@ class SkillCatalog:
         if not directory.is_dir():
             return
         for path in directory.glob("*.md"):
-            key = str(path)
-            if path.is_symlink():
-                logger.warning("Skipping symlinked skill during reload: %s", path)
-                continue
-            mtime = path.stat().st_mtime
-            old_mtime = self._file_mtimes.get(key)
-            if old_mtime is None or mtime > old_mtime:
-                try:
-                    content = path.read_text(encoding="utf-8")
-                    safe, findings = security_scan(content)
-                    if not safe:
-                        logger.warning("Rejected untrusted skill reload: %s (%s)", path, findings)
-                        continue
-                    skill_def = parse_skill_file(content)
-                    if skill_def is None:
-                        continue
-                    entry = SkillCatalogEntry(
-                        definition=replace(
-                            skill_def,
-                            content_hash=skill_content_hash(skill_def),
-                            provenance=str(path),
-                        ),
-                        scope="builtin",
-                    )
-                    with self._lock:
-                        self._entries = [
-                            e
-                            for e in self._entries
-                            if not (e.definition.name == skill_def.name and e.scope == "builtin")
-                        ]
-                    self.register(entry)
-                    self._file_mtimes[key] = mtime
-                    logger.info("Reloaded skill: %s from %s", skill_def.name, path.name)
-                except Exception:
-                    logger.warning("Failed to reload skill: %s", path, exc_info=True)
+            self._reload_skill_if_changed(path)
+
+    def _reload_skill_if_changed(self, path: Path) -> None:
+        key = str(path)
+        if path.is_symlink():
+            logger.warning("Skipping symlinked skill during reload: %s", path)
+            return
+        mtime = path.stat().st_mtime
+        old_mtime = self._file_mtimes.get(key)
+        if old_mtime is not None and mtime <= old_mtime:
+            return
+        try:
+            content = path.read_text(encoding="utf-8")
+            safe, findings = security_scan(content)
+            if not safe:
+                logger.warning("Rejected untrusted skill reload: %s (%s)", path, findings)
+                return
+            skill_def = parse_skill_file(content)
+            if skill_def is None:
+                return
+            entry = SkillCatalogEntry(
+                definition=replace(
+                    skill_def,
+                    content_hash=skill_content_hash(skill_def),
+                    provenance=str(path),
+                ),
+                scope="builtin",
+            )
+            with self._lock:
+                self._entries = [
+                    e
+                    for e in self._entries
+                    if not (e.definition.name == skill_def.name and e.scope == "builtin")
+                ]
+            self.register(entry)
+            self._file_mtimes[key] = mtime
+            logger.info("Reloaded skill: %s from %s", skill_def.name, path.name)
+        except Exception:
+            logger.warning("Failed to reload skill: %s", path, exc_info=True)

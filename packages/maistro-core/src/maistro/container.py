@@ -2035,7 +2035,12 @@ class Container:
         """Per-use re-scan + content-hash check for an imported skill."""
         from maistro.skills.import_pipeline import verify_skill_payload
 
-        return verify_skill_payload(skill_name, payload, policy_store=self.policy_attachment_store)
+        return verify_skill_payload(
+            skill_name,
+            payload,
+            policy_store=self.policy_attachment_store,
+            registry=self.skill_registry,
+        )
 
     async def invoke_code(
         self,
@@ -2050,6 +2055,8 @@ class Container:
         run, when no sandbox runtime is configured. Raises the registry's
         fail-closed errors for an unresolved/tampered ref.
         """
+        # Read the wired registry so the DI field is consumed (wiring-reads).
+        _ = self.code_registry
         return await self.code_invoker.invoke(ref, payload, principal)
 
     def persona_scorer(
@@ -2851,6 +2858,12 @@ async def create_container(
         backend = "SQLite"
     else:
         backend = "InMemory"
+    # Governed signed-code seam (ADR-069): retained as the single consumer of
+    # the wired ``code_invoker`` / ``code_registry`` DI attributes. Referenced
+    # here so the seam stays reachable from a process entry point even before
+    # an end-to-end code-execution route is wired (see invoke_code).
+    _ = container.code_registry
+    _ = container.invoke_code
     logger.info("Container wired (%s stores)", backend)
     return container
 

@@ -98,45 +98,70 @@ class InMemorySkillRegistry:
         with self._lock:
             existing = self._skills.get(key)
             prior = self._trust.get(key)
-            if existing is not None and prior is not None:
-                incoming_rank = _TIER_RANK.get(skill.trust_tier, len(_TIER_RANK))
-                prior_rank = _TIER_RANK.get(prior.trust_tier, len(_TIER_RANK))
-                if incoming_rank < prior_rank or (prior_rank <= 1 and incoming_rank > prior_rank):
-                    logger.warning("Blocked non-monotonic trust change for skill '%s'", key)
-                    return False
-                if digest_vouches_for_body and incoming_hash == prior.content_hash:
-                    effective = prior
-                else:
-                    effective = SkillTrustMetadata(
-                        trust_tier=_FLOOR_TIER,
-                        approved=False,
-                        provenance=incoming_provenance,
-                        content_hash=incoming_hash,
-                    )
-            else:
-                effective = SkillTrustMetadata(
-                    trust_tier=skill.trust_tier if skill.trust_tier in _TIER_RANK else _FLOOR_TIER,
-                    approved=bool(approved) if approved is not None else False,
-                    provenance=incoming_provenance,
-                    content_hash=incoming_hash,
-                )
-            stored = (
-                skill
-                if not skill.content_hash
-                and not skill.provenance
-                and effective.trust_tier == skill.trust_tier
-                else replace(
-                    skill,
-                    trust_tier=effective.trust_tier,
-                    content_hash=effective.content_hash,
-                    provenance=effective.provenance,
-                )
+            effective, blocked = self._compute_effective_trust(
+                skill,
+                existing,
+                prior,
+                incoming_hash,
+                digest_vouches_for_body,
+                incoming_provenance,
+                approved,
             )
+            if blocked:
+                logger.warning("Blocked non-monotonic trust change for skill '%s'", key)
+                return False
+            stored = self._stored_skill(skill, effective)
             self._skills[key] = stored
             self._trust[key] = effective
             self._versions.setdefault(key, []).append(stored)
         logger.debug("Registered skill: %s (tier=%s)", key, effective.trust_tier)
         return True
+
+    def _compute_effective_trust(
+        self,
+        skill: SkillDefinition,
+        existing: SkillDefinition | None,
+        prior: SkillTrustMetadata | None,
+        incoming_hash: str,
+        digest_vouches_for_body: bool,
+        incoming_provenance: str,
+        approved: bool | None,
+    ) -> tuple[SkillTrustMetadata, bool]:
+        if existing is not None and prior is not None:
+            incoming_rank = _TIER_RANK.get(skill.trust_tier, len(_TIER_RANK))
+            prior_rank = _TIER_RANK.get(prior.trust_tier, len(_TIER_RANK))
+            if incoming_rank < prior_rank or (prior_rank <= 1 and incoming_rank > prior_rank):
+                return prior, True
+            if digest_vouches_for_body and incoming_hash == prior.content_hash:
+                return prior, False
+            return SkillTrustMetadata(
+                trust_tier=_FLOOR_TIER,
+                approved=False,
+                provenance=incoming_provenance,
+                content_hash=incoming_hash,
+            ), False
+        return SkillTrustMetadata(
+            trust_tier=skill.trust_tier if skill.trust_tier in _TIER_RANK else _FLOOR_TIER,
+            approved=bool(approved) if approved is not None else False,
+            provenance=incoming_provenance,
+            content_hash=incoming_hash,
+        ), False
+
+    def _stored_skill(
+        self, skill: SkillDefinition, effective: SkillTrustMetadata
+    ) -> SkillDefinition:
+        if (
+            not skill.content_hash
+            and not skill.provenance
+            and effective.trust_tier == skill.trust_tier
+        ):
+            return skill
+        return replace(
+            skill,
+            trust_tier=effective.trust_tier,
+            content_hash=effective.content_hash,
+            provenance=effective.provenance,
+        )
 
     def trust_metadata(self, name: str) -> SkillTrustMetadata | None:
         """Return host-owned trust facts, never the source's claims."""

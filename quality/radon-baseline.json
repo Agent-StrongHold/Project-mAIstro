@@ -713,16 +713,6 @@
       "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
     },
     {
-      "key": "packages/maistro-core/src/maistro/skills/marketplace.py::SkillMarketplace.install",
-      "path": "packages/maistro-core/src/maistro/skills/marketplace.py",
-      "line": 79,
-      "name": "install",
-      "classname": "SkillMarketplace",
-      "rank": "C",
-      "complexity": 11,
-      "rationale": "Security remediation added a salvage pass to the install path: fix_content() then a re-scan of the repaired text, with distinct rejections for unfixable findings and for residual CRITICALs. Each added branch is a refusal to persist content that has not been re-verified, so the complexity is the control itself. Tracked under SPEC-264 with the rest of the C-rank backlog."
-    },
-    {
       "key": "packages/maistro-core/src/maistro/skills/parser.py::parse_skill_file",
       "path": "packages/maistro-core/src/maistro/skills/parser.py",
       "line": 90,
@@ -1060,7 +1050,7 @@
       "classname": null,
       "rank": "C",
       "complexity": 18,
-      "rationale": "M5-B stall-intervention change (#111): the per-cycle learnings recall and the intervention-record merge moved into _recall_prior_learnings/_extend_interventions_unique (D(22) -> C(17)), then the autorun-15 policy-state round added the ObjectiveParked step-checkpoint and intervention-merge handling, re-measured at C(18) — still below the merge-base D(22); recorded at the exact measured complexity so the ledger matches the scan."
+      "rationale": "M5-B stall-intervention change (#111): the per-cycle learnings recall and the intervention-record merge moved into _recall_prior_learnings/_extend_interventions_unique (D(22) -> C(17)), then the autorun-15 policy-state round added the ObjectiveParked step-checkpoint and intervention-merge handling, re-measured at C(18) \u2014 still below the merge-base D(22); recorded at the exact measured complexity so the ledger matches the scan."
     },
     {
       "key": "packages/maistro-rsi/src/maistro_rsi/candidate_fitness.py::_uncollectable_tests",

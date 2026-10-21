@@ -88,47 +88,48 @@ class SkillMarketplace:
         """
         _block_ssrf(url)
 
+        content = await self._fetch_skill_content(url)
+        fixed = self._repair_skill_content(content)
+        skill = self._build_installed_skill(fixed, url)
+        self._persist_installed_skill(skill, fixed)
+
+        logger.info("Installed skill '%s' from %s", skill.name, url)
+
+        return skill
+
+    async def _fetch_skill_content(self, url: str) -> str:
         try:
             resp = await self._http.get(url)
         except Exception as e:
             msg = f"Failed to fetch skill from {url}: {e}"
             raise ValueError(msg) from e
-
         if resp.status_code != 200:
             msg = f"Skill fetch returned {resp.status_code} from {url}"
             raise ValueError(msg)
+        return resp.text
 
-        content = resp.text
-
+    def _repair_skill_content(self, content: str) -> str:
         safe, findings = security_scan(content)
         if not safe:
             msg = f"Skill rejected by security scan: {', '.join(findings)}"
             raise ValueError(msg)
-
-        # Salvage pass (same primitive the ADR-083 import pipeline composes):
-        # even content that clears the raw scan can carry fixable issues
-        # (hidden unicode markers, shell commands, a self-declared trust tier
-        # claim). Re-scan the salvaged output before trusting it, and persist
-        # *that* content -- never the untouched fetched text.
-        fixed, fixes, unfixable = fix_content(content)
+        fixed, _fixes, unfixable = fix_content(content)
         if unfixable:
             msg = f"Skill rejected after security repair: {', '.join(unfixable)}"
             raise ValueError(msg)
-
         safe_after, residual = security_scan(fixed)
         if not safe_after:
             critical = [f for f in residual if f.startswith("CRITICAL:")]
             msg = f"Skill rejected by security scan after repair: {', '.join(critical)}"
             raise ValueError(msg)
+        return fixed
 
+    def _build_installed_skill(self, fixed: str, url: str) -> SkillDefinition:
         skill = parse_skill_file(fixed, source=url)
         if skill is None:
             msg = f"Failed to parse skill from {url}"
             raise ValueError(msg)
-
-        # Marketplace metadata is untrusted and cannot choose an effective
-        # tier. Imported content always enters at the registry floor.
-        skill = SkillDefinition(
+        return SkillDefinition(
             name=skill.name,
             description=skill.description,
             groups=skill.groups,
@@ -142,6 +143,7 @@ class SkillMarketplace:
             content_hash=hashlib.sha256(fixed.encode("utf-8")).hexdigest(),
         )
 
+    def _persist_installed_skill(self, skill: SkillDefinition, fixed: str) -> None:
         self._skills_dir.mkdir(parents=True, exist_ok=True)
         root = self._skills_dir.resolve()
         candidate = root / f"{skill.name}.md"
@@ -157,17 +159,6 @@ class SkillMarketplace:
         ):
             raise ValueError(f"Skill trust policy rejected registration for {skill.name!r}")
         filepath.write_text(fixed, encoding="utf-8")
-
-        logger.info(
-            "Installed skill '%s' from %s (tier=%s, warnings=%d, fixes=%d)",
-            skill.name,
-            url,
-            trust_tier,
-            len([f for f in findings if f.startswith("WARNING:")]),
-            len(fixes),
-        )
-
-        return skill
 
     def uninstall(self, name: str) -> None:
         """Uninstall a community skill by name."""

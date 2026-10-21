@@ -1340,7 +1340,7 @@ jobs:
           # ledger's length is itself a signal that one of the two instruments
           # stopped looking; tests/test_complexity_gate_scope.py pins them
           # together.
-          XENON_BASELINE: 134
+          XENON_BASELINE: 133
           # Module rank was never gated at all. The old count matched only
           # '^ERROR:xenon:block', so a whole module drifting to C passed in
           # silence; widening the scope surfaced one.

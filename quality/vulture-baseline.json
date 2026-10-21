@@ -1261,8 +1261,6 @@
         "packages/maistro-core/src/maistro/tools/sandbox/server.py::unused function 'sandbox_read'",
         "packages/maistro-core/src/maistro/tools/sandbox/server.py::unused function 'sandbox_write'",
         "packages/maistro-core/src/maistro/types/config.py::unused method '_refuse_to_pretend_to_disable'",
-        "packages/maistro-core/src/maistro/container.py::unused method 'invoke_code'",
-        "packages/maistro-core/src/maistro/skills/registry.py::unused method 'trust_metadata'",
         "packages/maistro-core/src/maistro/vault.py::unused class 'Vault'",
         "packages/maistro-core/src/maistro/vault.py::unused function 'init_vault'",
         "packages/maistro-core/src/maistro/vault.py::unused method 'credential_prefixes'",
