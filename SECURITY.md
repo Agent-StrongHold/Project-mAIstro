@@ -48,11 +48,12 @@ clean. The MCP server-record scan has no scanner wired and is the explicit-unsup
 (`501`, #389) rather than a fabricated verdict:
 
 - **clean** — the analysis *completed* and found nothing. Scan-route results say what ran and
-  on what: `scanner.name` / `scanner.policy_version` (the Warden `WARDEN_POLICY_VERSION`),
-  `target` (kind and id of the artifact walked), `scanned_at` (completion timestamp), and
-  `scanned_values` (how many strings the walk judged). Agent definitions written through a
-  scanned write path (CRUD, Forge, chat-tool) persist the same stamp in
-  `config["provenance"]["scan"]` — and Forge's artifact records it again in
+  on what: `scanner.name` / `scanner.policy_version` (Warden's `WARDEN_POLICY_VERSION` for the
+  agent and HITL scans; the skills content scanner's `SKILL_SECURITY_SCAN_VERSION` for
+  `POST /v1/skills/scan`), `target` (kind and id of the artifact walked), `scanned_at`
+  (completion timestamp), and `scanned_values` (how many strings the walk judged). Agent
+  definitions written through a scanned write path (CRUD, Forge, chat-tool) persist the same
+  stamp in `config["provenance"]["scan"]` — and Forge's artifact records it again in
   `config["forge"]["scan"]` — so a stored `clean` row can always show the completed analysis
   behind it. (Persona-spawn and canonical-roster materialization are not scanned write paths;
   they project trusted internal content and carry no scan stamp rather than a fabricated one.)
@@ -61,11 +62,12 @@ clean. The MCP server-record scan has no scanner wired and is the explicit-unsup
 - **unknown / failed** — the scanner could not run, raised, or timed out. The HTTP scan routes
   answer `503` with *no findings list* (a client must not be able to mistake a failed scan for
   an empty one); each route also bounds the whole walk at `SCAN_TIMEOUT_SECONDS` (the same wall
-  the chat gate uses), so a detector that hangs produces the same explicit unknown instead of a
-  hung request. Definition writes fail closed with nothing stored (`AgentScannerUnavailable`,
-  surfaced as `503` on the Forge route); the chat gate refuses the turn with its scanner-error
-  / scanner-timeout reasons. Warden's per-pattern regex timeout fails closed too: it becomes a
-  `regex_error:` finding, i.e. flagged — never silently clean.
+  the chat gate uses) and runs the synchronous Warden walk on a worker thread, so a CPU-bound
+  detector cannot starve the deadline: a detector that hangs produces the same explicit unknown
+  instead of a hung request. Definition writes fail closed with nothing stored
+  (`AgentScannerUnavailable`, surfaced as `503` on the Forge route); the chat gate refuses the
+  turn with its scanner-error / scanner-timeout reasons. Warden's per-pattern regex timeout
+  fails closed too: it becomes a `regex_error:` finding, i.e. flagged — never silently clean.
 - **unsupported** — no scanner is wired for the target, so the surface refuses with `501`
   (the MCP server-record scan) instead of reporting a verdict it did not compute.
 - **over-budget** — the target exceeds the bounded walk (nesting depth, value count, string

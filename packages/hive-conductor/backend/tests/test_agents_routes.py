@@ -666,6 +666,45 @@ class TestTheScanStatesAreExplicit:
         assert r.status_code == 503
         assert r.json().get("findings") is None
 
+    @pytest.mark.parametrize("path", ["/v1/agents/scan", "/v1/agents/a1/scan"])
+    def test_a_cpu_bound_scanner_cannot_outrun_the_deadline(
+        self, admin_client: Any, monkeypatch: Any, path: str
+    ) -> None:
+        """A synchronous Warden walk must not starve the timeout (#288).
+
+        The hung-scanner case above awaits, so `wait_for` can cancel it. Warden's
+        user_input layers are synchronous, though: on the request loop that work
+        keeps the timer from ever firing. The scan must run off-loop, or this
+        blocking detector returns a clean verdict after the deadline instead of
+        the explicit unknown. No timing assertion: the *status* distinguishes the
+        two implementations, because the pre-fix route answers 200 once the
+        blocking call returns.
+        """
+        import time
+
+        import services.agent_materialization as materialization
+
+        class _CpuBoundWarden:
+            async def scan(self, text: str, boundary: str) -> Any:
+                # Non-yielding synchronous work, the shape a regex/heuristic walk
+                # takes on the request loop.
+                deadline = time.monotonic() + 0.4
+                while time.monotonic() < deadline:
+                    pass
+
+                class _Verdict:
+                    clean = True
+                    flags: tuple[str, ...] = ()
+
+                return _Verdict()
+
+        monkeypatch.setattr(materialization, "_warden_instance", _CpuBoundWarden())
+        monkeypatch.setattr(materialization, "SCAN_TIMEOUT_SECONDS", 0.05)
+        stores.agents["a1"] = _make_agent()
+        r = admin_client.post(path, json={"description": "clean"})
+        assert r.status_code == 503
+        assert r.json().get("findings") is None
+
     def test_a_saved_agent_scan_names_its_target(self, admin_client: Any) -> None:
         """The by-id route's result is about a specific stored artifact; its
         provenance says which one, so two scans are comparable."""

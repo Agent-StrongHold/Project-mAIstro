@@ -37,9 +37,11 @@ a persona declares (tools, checklist, theme) -- there's nothing to wait on.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import re
-from collections.abc import Iterator, Mapping, Sequence
+import threading
+from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -255,6 +257,49 @@ async def scan_config(
 SCAN_TIMEOUT_SECONDS = 10.0
 
 
+async def _run_scan_off_loop(
+    factory: Callable[[], Awaitable[dict]],
+) -> dict:
+    """Run one scan on a daemon thread so its deadline is enforceable.
+
+    Warden's `user_input` layers do normalization, regex, heuristics, and
+    semantic checks synchronously; awaiting that walk on the request loop
+    keeps the loop from running the `wait_for` timer, so a CPU-bound scan could
+    outlive `SCAN_TIMEOUT_SECONDS` and hang the endpoint (Codex P1 on #2235).
+    The worker gets its own loop and the request loop stays free to enforce the
+    deadline. On timeout the daemon thread is abandoned rather than joined --
+    the response is already the explicit unknown, and a hung scan must not keep
+    the process alive at shutdown.
+    """
+    loop = asyncio.get_running_loop()
+    result: asyncio.Future[dict] = loop.create_future()
+
+    def deliver(value: dict | None, error: BaseException | None) -> None:
+        if result.done():
+            return
+        if error is not None:
+            result.set_exception(error)
+        else:
+            assert value is not None
+            result.set_result(value)
+
+    def worker() -> None:
+        try:
+            value = asyncio.run(factory())
+        except BaseException as exc:  # re-raised on the request loop
+            with contextlib.suppress(RuntimeError):
+                # The request loop may have closed after the deadline; the
+                # response is already the explicit unknown, so a late deliver
+                # is a no-op rather than a crash.
+                loop.call_soon_threadsafe(deliver, None, exc)
+        else:
+            with contextlib.suppress(RuntimeError):
+                loop.call_soon_threadsafe(deliver, value, None)
+
+    threading.Thread(target=worker, name="warden-scan", daemon=True).start()
+    return await result
+
+
 async def scan_config_bounded(
     config: object,
     *,
@@ -265,11 +310,13 @@ async def scan_config_bounded(
 
     The HTTP scan routes use this so a detector that hangs cannot hang the
     request: past `SCAN_TIMEOUT_SECONDS` the caller gets `TimeoutError` -- an
-    explicit unknown, the same state a raising detector produces. The constant
-    is read at call time so tests (and deployments) can tighten it.
+    explicit unknown, the same state a raising detector produces. The walk runs
+    off the request event loop (`_run_scan_off_loop`) because Warden's CPU-bound
+    layers otherwise starve the `wait_for` timer; the constant is read at call
+    time so tests (and deployments) can tighten it.
     """
     return await asyncio.wait_for(
-        scan_config(config, boundary=boundary, target=target),
+        _run_scan_off_loop(lambda: scan_config(config, boundary=boundary, target=target)),
         timeout=SCAN_TIMEOUT_SECONDS,
     )
 
