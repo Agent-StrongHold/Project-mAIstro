@@ -235,7 +235,14 @@ def _grant_from_row(row: Any) -> DelegationGrant:
 async def build_delegation_authority(*, pg_pool: Any, db_pool: Any) -> DelegationAuthority:
     """Select delegation persistence from the same backend as the other stores."""
     if pg_pool is not None:
-        return DurableDelegationAuthority(PgDelegationStore(pg_pool))
+        store = PgDelegationStore(pg_pool)
+        # The canonical backend's table is created by the store's idempotent
+        # DDL, exactly as `_wire_audit_log` does for the audit store: a
+        # deployment that has not applied a delegation migration still gets a
+        # usable authority, and the first host grant does not raise
+        # "relation does not exist" (#845).
+        await store.ensure_schema()
+        return DurableDelegationAuthority(store)
     if db_pool is not None:
         store = SqliteDelegationStore(db_pool)
         await store.ensure_schema()

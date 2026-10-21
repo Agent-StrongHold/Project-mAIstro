@@ -182,3 +182,6 @@ async def test_build_delegation_authority_prefers_the_canonical_pg_pool(pg_pool)
     authority = await build_delegation_authority(pg_pool=pg_pool, db_pool=object())
     assert isinstance(authority, DurableDelegationAuthority)
     assert isinstance(authority._store, PgDelegationStore)
+    # The canonical table exists before any host grant is written, so the first
+    # delegation does not raise "relation delegation_grants does not exist".
+    assert await authority._store.list_valid(now=datetime.now(UTC)) == []
