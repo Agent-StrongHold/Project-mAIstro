@@ -38,7 +38,7 @@ is also required live on both branches; because it is produced by
 | Branch | PR | Approvals | Linear history | Force-push | Deletion | Required checks |
 |---|:--:|:--:|:--:|:--:|:--:|:--:|
 | `develop` | yes | **0** | yes | no | no | **19** |
-| `main` | yes | **1** | no | no | no | **31** |
+| `main` | yes | **1** | no | no | no | **32** |
 
 | Check | `develop` | `main` |
 |---|:--:|:--:|
@@ -100,6 +100,7 @@ is also required live on both branches; because it is produced by
 | `coverage (no services)` | ● | ● |
 | `cross-product-parity` | ● | ● |
 | `docker-build` | adv | ● |
+| `docker-rebuild-compare` | adv | ● |
 | `durable-events` | adv | ● |
 | `exact-debt-ledger` | ● | ● |
 | `formal-conformance` | ● | ● |

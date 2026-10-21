@@ -102,6 +102,7 @@ wait forever for an `Expected` result.
 | CI | `Compliance registry` | every PR |
 | CI | `cross-product-parity` | every PR |
 | CI | `docker-build` | every PR |
+| CI | `docker-rebuild-compare` | every PR |
 | CI | `durable-events` | every PR |
 | CI | `hive-conductor-e2e` | every PR |
 | CI | `hive-conductor-e2e-ui` | every PR |
