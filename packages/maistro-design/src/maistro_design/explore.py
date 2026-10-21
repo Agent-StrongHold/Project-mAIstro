@@ -69,13 +69,35 @@ class DesignExploreIn(BaseModel):
     ``goal_revision``, ``rubric_id`` + integer ``rubric_revision``), so the
     theses this wave produces can be judged against exactly the Goal and
     Rubric revision the Run was admitted for — and the judge's ``#792`` eval
-    rows can name them.
+    rows can name them. Each wave also carries the immutable *content*
+    snapshots for those exact revisions (``goal_desired_state``,
+    ``goal_success_conditions``, ``rubric_criteria``): revision numbers alone
+    would make two unrelated Goals with the same revision number produce
+    identical prompts, so the thesis slots must receive what they are
+    actually exploring toward and against.
     """
 
     goal_id: str = Field(description="Canonical Goal identity this wave explores against")
     goal_revision: int = Field(ge=1, description="Goal revision this wave explores against")
     rubric_id: str = Field(description="Canonical Rubric identity theses will be judged against")
     rubric_revision: int = Field(ge=1, description="Rubric revision theses will be judged against")
+    #: Immutable content snapshots of the exact revisions named above, so the
+    #: thesis prompt carries the Goal and Rubric themselves, not just pointers
+    #: to them. Callers resolve them before admitting the wave (e.g. the Goal
+    #: revision chain and ``RubricStore.get_revision``); the nodes never
+    #: re-resolve, so a prompt cannot silently drift to a newer revision.
+    goal_desired_state: str = Field(
+        min_length=1,
+        description="desired_state of the exact Goal revision this wave explores toward (immutable snapshot)",
+    )
+    goal_success_conditions: tuple[str, ...] = Field(
+        default_factory=tuple,
+        description="Success conditions of that Goal revision (immutable snapshot)",
+    )
+    rubric_criteria: str = Field(
+        min_length=1,
+        description="Rendered immutable criteria of the exact Rubric revision: dimensions, weights, methods, gate",
+    )
     width: int = Field(
         default=2,
         ge=1,
@@ -117,6 +139,9 @@ class DesignExploreOut(BaseModel):
     goal_revision: int
     rubric_id: str
     rubric_revision: int
+    goal_desired_state: str
+    goal_success_conditions: tuple[str, ...]
+    rubric_criteria: str
     exploration_policy: str
     redirect: str
     rejected_theses: list[str]
@@ -182,6 +207,9 @@ class DesignExploreNode(BaseNode[DesignExploreIn, DesignExploreOut]):
             goal_revision=inputs.goal_revision,
             rubric_id=inputs.rubric_id,
             rubric_revision=inputs.rubric_revision,
+            goal_desired_state=inputs.goal_desired_state,
+            goal_success_conditions=tuple(inputs.goal_success_conditions),
+            rubric_criteria=inputs.rubric_criteria,
             exploration_policy=inputs.exploration_policy,
             redirect=inputs.redirect,
             rejected_theses=list(inputs.rejected_theses),
@@ -203,13 +231,26 @@ class DesignThesisIn(BaseModel):
     is a registered production node kind, so a graph that reaches a slot with
     incomplete fan-in must fail validation before any authorized model call,
     never produce a success-shaped thesis untied to the revisions the Run was
-    admitted for.
+    admitted for. The immutable content snapshots (``goal_desired_state``,
+    ``goal_success_conditions``, ``rubric_criteria``) ride the same fan-out:
+    a slot prompt must name the Goal and Rubric themselves, because revision
+    numbers alone cannot distinguish two unrelated Goals admitted at the
+    same revision number.
     """
 
     goal_id: str = Field(description="Canonical Goal identity this wave explores against")
     goal_revision: int = Field(ge=1, description="Goal revision this wave explores against")
     rubric_id: str = Field(description="Canonical Rubric identity theses will be judged against")
     rubric_revision: int = Field(ge=1, description="Rubric revision theses will be judged against")
+    goal_desired_state: str = Field(
+        min_length=1,
+        description="desired_state of the exact Goal revision (immutable snapshot)",
+    )
+    goal_success_conditions: tuple[str, ...] = Field(default_factory=tuple)
+    rubric_criteria: str = Field(
+        min_length=1,
+        description="Rendered immutable criteria of the exact Rubric revision",
+    )
     exploration_policy: str = "diverse"
     redirect: str = ""
     rejected_theses: list[str] = Field(default_factory=list)
@@ -370,12 +411,15 @@ class DesignThesisNode(BaseNode[DesignThesisIn, DesignThesisOut]):
 
 def _thesis_prompt(inputs: DesignThesisIn) -> str:
     parts = [
-        f"Goal revision: {inputs.goal_revision}",
-        f"Rubric revision: {inputs.rubric_revision}",
+        f"Goal (revision {inputs.goal_revision}): {inputs.goal_desired_state}",
+        f"Rubric (revision {inputs.rubric_revision}) the thesis must satisfy: {inputs.rubric_criteria}",
         f"Exploration policy: {inputs.exploration_policy}",
         f"Thesis slot {inputs.thesis_index + 1} of {inputs.width}.",
         f"The thesis payload kind must be: {inputs.artifact_kind}.",
     ]
+    if inputs.goal_success_conditions:
+        conditions = "\n".join(f"- {item}" for item in inputs.goal_success_conditions)
+        parts.insert(1, f"Goal success conditions:\n{conditions}")
     if inputs.redirect.strip():
         parts.append(f"Operator redirect (obey): {inputs.redirect}")
     if inputs.rejected_theses:
