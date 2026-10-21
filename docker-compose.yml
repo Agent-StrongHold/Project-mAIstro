@@ -300,6 +300,12 @@ services:
       # Conductor's dispatch_tool can actually execute, so agents hold usable
       # tool authority in dev without a second config file.
       - MAISTRO_PERMISSION_PRESET=hive_conductor_tools
+      # Graph-node execution is a host capability, not a dispatchable tool:
+      # the node adapter's Sentinel gate authorizes "graph.node.execute"
+      # against the acting user's host role. The preset above names only
+      # dispatch_tool's executables, so without this grant the fail-closed
+      # table denies every node and no DAG can run (#60, #845).
+      - 'MAISTRO_PERMISSIONS={"graph.node.execute": ["admin", "user"]}'
     volumes:
       - conductor-data:/data
     depends_on:

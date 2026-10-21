@@ -29,6 +29,7 @@ members = [
     "maistro-workspace",
     "reference-greeter",
 ]
+constraints = [{ name = "aiohttp", specifier = ">=3.14.4" }]
 
 [[package]]
 name = "absl-py"

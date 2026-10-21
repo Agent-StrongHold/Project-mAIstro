@@ -20,6 +20,12 @@ from maistro.security._types import (
 from maistro.security.sentinel.approver_graph import ApproverGraph
 from maistro.security.sentinel.argument_limits import ToolArgumentLimits, check_argument_limits
 from maistro.security.sentinel.authz_types import AuthzDecision, Principal, Tier
+from maistro.security.sentinel.delegation import (
+    DelegationAuthority,
+    DelegationDecision,
+    DelegationRequest,
+    utc_now,
+)
 from maistro.security.sentinel.elevation import ElevationStore, hash_args
 from maistro.security.sentinel.permission_source import PermissionSource, resolve_live_table
 from maistro.security.sentinel.pii_filter import scan_and_redact
@@ -62,6 +68,23 @@ def _principal_auth_context(principal: Principal) -> AuthContext:
     return _AuthContext(user_id=principal.id, roles=frozenset(principal.roles))
 
 
+def _delegation_detail(auth: AuthContext) -> str:
+    """Audit provenance for a delegated call: the host grant it rests on.
+
+    A delegated invocation is authorized by a host grant, not by the agent
+    that asked for it, so the call audit names that grant. Only the host's
+    own reference is recorded -- never request content.
+    """
+    if not auth.delegation_grant_ref:
+        return ""
+    return f"delegation_grant_ref={auth.delegation_grant_ref}"
+
+
+def _join_detail(*parts: str) -> str:
+    """Join audit detail fragments, skipping the empty ones."""
+    return "; ".join(part for part in parts if part)
+
+
 class Sentinel:
     """Policy enforcement at every boundary crossing.
 
@@ -83,6 +106,7 @@ class Sentinel:
         rlphd_threshold_store: RlphdThresholdStore | None = None,
         argument_limits: ToolArgumentLimits | None = None,
         allow_on_miss: bool = False,
+        delegation_authority: DelegationAuthority | None = None,
     ) -> None:
         self._warden = warden
         self._permission_table = permission_table
@@ -102,6 +126,10 @@ class Sentinel:
         self._rlphd_model = rlphd_model
         self._rlphd_threshold_store = rlphd_threshold_store
         self._argument_limits = argument_limits or ToolArgumentLimits.from_environment()
+        # AgentIdentity manifests are requests, never grants. A missing host
+        # authority therefore refuses delegation rather than consulting roster
+        # state as an implicit allow-list.
+        self._delegation_authority = delegation_authority
         # Fail-closed default (ADR-072726-0d6b, #1165): a tool absent from the
         # permission table is DENIED. allow_on_miss=True is the explicit
         # compatibility mode for non-production/test/demo wiring; it is never
@@ -150,19 +178,58 @@ class Sentinel:
             return f"principal '{principal.id}' lacks capability for '{action}'"
         return None
 
+    async def authorize_delegation(
+        self,
+        *,
+        principal: Principal,
+        owner_id: str,
+        delegating_agent_id: str,
+        target_agent_id: str,
+        goal_id: str,
+        run_id: str,
+        invocation_id: str,
+        scope: str,
+        requested_actions: frozenset[str],
+        artifact: str,
+    ) -> DelegationDecision:
+        """Resolve delegated authority from host policy, never agent metadata."""
+        if self._delegation_authority is None:
+            return DelegationDecision(False, reason="delegation authority is not configured")
+        request = DelegationRequest(
+            principal=principal,
+            owner_id=owner_id,
+            delegating_agent_id=delegating_agent_id,
+            target_agent_id=target_agent_id,
+            goal_id=goal_id,
+            run_id=run_id,
+            invocation_id=invocation_id,
+            scope=scope,
+            action="agent.delegate",
+            requested_actions=requested_actions,
+            artifact=artifact,
+            requested_at=utc_now(),
+        )
+        return self._delegation_authority.authorize(request, now=request.requested_at)
+
     def resolve_tier(
         self,
         action: str,
         principal: Principal,
         *,
         reversibility: str = "reversible",
+        default: Tier | None = None,
     ) -> Tier:
-        """Most-specific static policy entry for (action, principal scope/role); else
-        falls back to the ADR-050 reversibility default (SPEC-245 §Decision)."""
+        """Resolve host policy; caller declarations are never inputs.
+
+        ``default`` is used for compatibility adapters whose untrusted shape
+        must be denied unless a host policy entry explicitly opts it in.
+        """
         for scope in (*principal.scopes, *principal.roles):
             tier = self._tier_policy.get((action, scope))
             if tier is not None:
                 return tier
+        if default is not None:
+            return default
         if reversibility == "irreversible":
             return Tier.SELF_ELEVATION
         return Tier.OPEN
@@ -308,6 +375,44 @@ class Sentinel:
         )
         return verdict, decision
 
+    async def _deny_expired_delegation(
+        self,
+        *,
+        tool_name: str,
+        auth: AuthContext,
+        detail: str,
+    ) -> SentinelVerdict | None:
+        """Fail closed when the delegated grant lapsed; ``None`` means still live.
+
+        Expiry is re-checked on every tool call, not only when the delegation
+        began, so a grant that lapses mid-run stops authorizing. Kept as its
+        own method so ``pre_call`` does not accumulate another branch.
+        """
+        expires_at = getattr(auth, "delegation_expires_at", None)
+        if expires_at is None or utc_now() < expires_at:
+            return None
+        violations = (
+            Violation(
+                boundary="pre_call",
+                rule="delegation_expired",
+                severity="error",
+                detail=(
+                    f"Delegated authority expired at {expires_at.isoformat()}; denied fail-closed"
+                ),
+            ),
+        )
+        await self._log_audit(
+            boundary="pre_call",
+            user_id=auth.user_id,
+            org_id=auth.org_id,
+            team_id=auth.team_id,
+            tool_name=tool_name,
+            verdict="denied",
+            violations=violations,
+            detail=detail,
+        )
+        return SentinelVerdict(allowed=False, violations=violations)
+
     async def pre_call(
         self,
         tool_name: str,
@@ -318,6 +423,12 @@ class Sentinel:
         violations: list[Violation] = []
 
         table = await self._effective_table()
+        delegation_detail = _delegation_detail(auth)
+        expired = await self._deny_expired_delegation(
+            tool_name=tool_name, auth=auth, detail=delegation_detail
+        )
+        if expired is not None:
+            return expired
         if table is None or not check_permission(
             auth, tool_name, table, allow_on_miss=self._allow_on_miss
         ):
@@ -345,6 +456,7 @@ class Sentinel:
                 tool_name=tool_name,
                 verdict="denied",
                 violations=tuple(violations),
+                detail=delegation_detail,
             )
             return verdict
 
@@ -360,7 +472,7 @@ class Sentinel:
                 tool_name=tool_name,
                 verdict="denied",
                 violations=tuple(violations),
-                detail=limit_violation.detail,
+                detail=_join_detail(delegation_detail, limit_violation.detail),
             )
             return verdict
 
@@ -383,7 +495,10 @@ class Sentinel:
             tool_name=tool_name,
             verdict="allowed" if verdict.allowed else "denied",
             violations=tuple(violations),
-            detail=f"repaired={schema_verdict.repaired}" if schema_verdict.repaired else "",
+            detail=_join_detail(
+                delegation_detail,
+                f"repaired={schema_verdict.repaired}" if schema_verdict.repaired else "",
+            ),
             repaired_data=schema_verdict.repaired_data if schema_verdict.repaired else None,
         )
 
