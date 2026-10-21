@@ -1,11 +1,11 @@
 # Issue #860 — bounded repair handoff
 
 Scope: issue #860 only; branch `auto-860`; dispatched HEAD
-`4342ccb89a77b6cadf9b855a574876df185a0b52`. The worktree was clean on
-arrival. The job directory supplied no `check-*.log` files. Prior result
-`ec68a820b1b143d69f3cb9962c0b9e60/result.json` was reviewed; it reports a
-BLOCKED acceptance state, not a develop-sync conflict. No GitHub action or
-branch sync was performed.
+`bf9bd42c638174e78b4e1b0af4cdc714553e0bd2`. The job directory supplied no
+`check-*.log` files. Prior result
+`/home/dev/maistro/jobs/928848cf5e7b41b29b57a56631022da0/result.json` was
+reviewed; it reports a BLOCKED acceptance state, not a develop-sync conflict.
+No GitHub action or branch sync was performed.
 
 ## Validation run here
 
