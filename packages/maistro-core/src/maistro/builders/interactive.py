@@ -40,6 +40,22 @@ _FAILED_TURN_STOP_REASONS = frozenset({"error", "max_turns"})
 _TRUNCATED_TURN_STOP_REASONS = frozenset({"length", "max_tokens"})
 
 
+def _join_content(content: Any) -> str:
+    """Flatten a model answer into the single text the turn reports.
+
+    A Responses-style ``content`` may be a plain string or a list of blocks,
+    each carrying its own ``text``. Only blocks that actually carry text are
+    joined; anything else is a non-text block and is skipped.
+    """
+    if isinstance(content, list):
+        return "\n".join(
+            str(block.get("text", ""))
+            for block in content
+            if isinstance(block, dict) and block.get("text")
+        )
+    return str(content)
+
+
 def resolve_local_operator_principal(override: str | None = None) -> str:
     """Actor identity for the local ``maistro builders`` operator.
 
@@ -117,14 +133,7 @@ class _ReActDispatcher:
                 ok=False,
                 error=str(result.get("error") or f"interactive turn truncated: {stop_reason}"),
             )
-        content = result.get("content", "")
-        if isinstance(content, list):
-            content = "\n".join(
-                str(block.get("text", ""))
-                for block in content
-                if isinstance(block, dict) and block.get("text")
-            )
-        self.output = str(content)
+        self.output = _join_content(result.get("content", ""))
         return DispatchResult(ok=True, output=self.output)
 
 

@@ -132,6 +132,39 @@ Repair — twelve tests that drive the shipped path (delta +5 -> +17):
 Post-repair diff coverage (same command, same base): `ok: every measured file
 this change touches is at or above 90% lines / 80% branch arcs`.
 
+## Complexity repair round (CI `Quality / Radon` + `Quality / Xenon` at `5209a6524`, base `origin/develop`)
+
+The `Coverage gate` is green at this head (publish-set floor 94% >= 87%;
+diff coverage 100% changed lines on every measured file), but the quality
+workflow at the same head failed `Quality / Radon`, `Quality / Xenon`, and
+their aggregate `Quality gate (Pillars 1–4, 7, 8)`. Reproduced locally with
+CI's own commands before any change:
+
+    $ uv run python scripts/check-radon-baseline.py
+    New complexity vs. TRUSTED baseline:
+      packages/maistro-core/src/maistro/builders/interactive.py:85 run -> C (12)
+    ratchet: radon ... 129 reviewed -> 130 C-or-worse blocks   (EXIT=1)
+
+`_ReActDispatcher.run` was the one new C-ranked block the Builders change
+added; it also pushed the Xenon block count 129 -> 130 (baseline 129), which
+is a regression on every branch (Boy Scout Rule), not a floor raise.
+
+Repair — no threshold change, no ledger amendment: flatten a model `content`
+into the reported text with a module-level `_join_content` helper instead of
+the inline `isinstance`/`and` comprehension inside `run`. The dispatcher's
+result classification is unchanged: `CancelledError` still propagates,
+`error`/`max_turns` stops still fail the turn, `length`/`max_tokens` stops
+still settle the canonical Run `FAILED`, and text blocks still join. `run`
+is now B (8) and `_join_content` A (5).
+
+Post-repair evidence at this head: `check-radon-baseline.py` OK (129 -> 129,
+0 new / 0 regressed / 0 stale); `uv run xenon --max-absolute B --max-modules B
+--max-average A -i third_party ...` reports 129 block violations (baseline
+129), 0 module, 0 average; `check-vulture-baseline.py` OK (1321 -> 1320,
+unclassified 0); `coverage report --fail-under=87` 94%;
+`check-diff-coverage.py` ok; builders/cli/retention lane suites 69 passed,
+9 skipped.
+
 ## Review-findings repair round (delta +17 -> +20)
 
 Codex review on the shipped path flagged two P1 behaviours this adapter owned.
