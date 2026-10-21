@@ -35,6 +35,7 @@ cognitive state, and it is bounded in count and payload size.
 
 from __future__ import annotations
 
+import math
 import threading
 from collections import OrderedDict
 from collections.abc import Callable
@@ -493,6 +494,10 @@ class TuringState:
             scores = dict(current.facet_scores) if current is not None else _default_facet_scores()
             if facet_id not in scores:
                 raise KeyError(facet_id)
+            if isinstance(score, bool) or not isinstance(score, (int, float)):
+                raise TypeError(f"score must be a real number, got {type(score).__name__}")
+            if not math.isfinite(score):
+                raise ValueError(f"facet score out of range: {score}")
             if not 1.0 <= score <= 5.0:
                 raise ValueError(f"facet score out of range: {score}")
             scores[facet_id] = float(score)
