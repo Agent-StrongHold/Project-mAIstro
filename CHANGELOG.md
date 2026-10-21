@@ -2248,6 +2248,43 @@ or placeholder-only section.
   terminalization and a fresh-job dispatch control. The existing retry and
   lease-ownership behavior is unchanged.
 
+### Dependencies
+
+- **Pillow and certifi move past their open advisories (#363).** The
+  installed `pillow` 12.3.0 carried eight advisories with fixes only in
+  13.0.0, and `certifi` 2026.4.22 carried GHSA-6q48-6c7w-9gw2 with its
+  fix in 2026.10.19; the supply-chain gate therefore failed on both.
+  `maistro-canvas` now requires `pillow>=13.0.0,<14` — the floor is raised
+  past the advisories so a fresh resolve cannot pick a vulnerable release
+  again, and the `<14` ceiling keeps the next major Pillow release an
+  explicit, reviewable decision — and `uv.lock` resolves `pillow` 13.0.0
+  and `certifi` 2026.10.19. No code path changes; both distributions keep
+  the licenses the license inventory already recorded (MIT-CMU and MPL-2.0).
+
+### Fixed
+
+- **The license inventory gate stops accepting missing license metadata as a
+  license, and stops hiding licensed shipped assets (#363).** Four defects in
+  `scripts/check-license-inventory.py` are fixed against the acceptance
+  criteria of the license-inventory issue. A producer placeholder
+  (`NOASSERTION`, `NONE`, `UNKNOWN`, `LicenseRef-Unknown`) is missing
+  metadata, not a license: such a component now requires a reviewed
+  resolution instead of passing as `known` (real effect: `pkg:pypi/x25519`,
+  whose METADATA declares `License: UNKNOWN`, is now resolved by a reviewed
+  record). A file component that carries explicit license evidence (a
+  shipped script, a font, a vendored asset) keeps that evidence and its
+  copyleft class instead of being rewritten to `not-applicable`; a file
+  component with no license at all is still provenance. The copyleft
+  classifier now recognises the families the frontend trees actually ship —
+  `OFL`, `EUPL` and `CC-BY-SA` — so the three OFL fonts in the conductor's
+  npm tree are surfaced for legal review instead of being reported as
+  benign (the copyleft count on the same SBOMs moves 423 → 426). The
+  inventory also records the policy file it was actually produced with,
+  rather than always naming the default. The reviewed resolutions in
+  `quality/license-policy.json` are bound to the versions actually reviewed
+  (`wcwidth` 0.7.0 / 0.9.2 / 0.9.3), so a later unreviewed release needs
+  its own review.
+
 ## [1.0.0] - TBD
 
 First tagged release. Prior to this, the repository had no tags, no release
