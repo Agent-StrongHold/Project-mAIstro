@@ -132,6 +132,7 @@ verify_conductor_backup() {
     echo "[verify-restore] no secrets.age / user_credentials.enc captured — vault and per-user credentials were never provisioned at backup time; nothing ciphertext to verify"
   fi
 
+
   # state.db must be a usable SQLite database: intact, and carrying the
   # canonical spine (Workspaces, Runs/NodeRuns/Attempts), the graph
   # continuations with their fencing version, sessions, and the audit log.
@@ -333,17 +334,25 @@ main() {
   # `FATAL: database "${PG_DB}" does not exist` — observed live in CI
   # (tests/test_restore_oracle_characterization.py, 2026-10-18). The loop
   # therefore additionally requires one successful query against ${PG_DB}.
-  for _ in $(seq 1 60); do
+  # Budget: 120 probes at 1s (see test_verify_readiness_failure_is_diagnosable).
+  for _ in $(seq 1 120); do
     if docker exec "${SCRATCH_NAME}" pg_isready -U "${PG_USER}" >/dev/null 2>&1 \
       && docker exec "${SCRATCH_NAME}" psql -X -q -U "${PG_USER}" -d "${PG_DB}" \
         -c 'SELECT 1;' >/dev/null 2>&1; then
       break
     fi
+    if [[ "$(docker inspect -f '{{.State.Running}}' "${SCRATCH_NAME}" 2>/dev/null)" != "true" ]]; then
+      docker logs "${SCRATCH_NAME}" >&2 2>/dev/null || true
+      fail_verifier "scratch postgres exited before becoming ready (its logs are above)"
+    fi
     sleep 1
   done
   docker exec "${SCRATCH_NAME}" psql -X -q -U "${PG_USER}" -d "${PG_DB}" \
     -c 'SELECT 1;' >/dev/null 2>&1 \
-    || fail_verifier "scratch postgres did not become ready with database ${PG_DB}"
+    || {
+      docker logs "${SCRATCH_NAME}" >&2 2>/dev/null || true
+      fail_verifier "scratch postgres did not become ready with database ${PG_DB} within 120s (its logs are above)"
+    }
 
   # ── 3. Restore the custom-format archive ─────────────────────────────────────
   if ! docker exec -i "${SCRATCH_NAME}" pg_restore -U "${PG_USER}" -d "${PG_DB}" \
