@@ -32,3 +32,27 @@ execution requirements in this validation-only environment. Do not treat this
 note or prior host-process evidence as release approval; run a new soak against
 an immutable, identified RC image/configuration and resolve each failed
 acceptance before promotion.
+
+## Revalidation at assigned head `65f9efd09c3aac46f5de12b678c7ea7fe14c60c6`
+
+- `uv run pytest tests/test_soak_promotion_gates.py -x -q`: **84 passed**;
+  includes `test_replica_selection_has_an_independent_production_allowance`,
+  which confirms the middleware's per-instance `InMemoryRateLimiter` permits
+  `[200, 200, 429]` on each replica for the same identity. This is a reproduced
+  cross-replica budget bypass, not a passing cluster-wide rate-limit criterion.
+- Executed `preflight_artifact_check()` and `failed_promotion_checks()` against
+  `m3a-round109-shakedown.json`: preflight is `ok: false` with topology
+  `host-uvicorn-preflight`; failures are `sustain_duration` and
+  `exact_rc_artifact`; recorded duration is 420.05 seconds and recorded Git
+  head is `5a59c724a20ef1241d57c048df90758f2c2e1e25`.
+- `uv run ruff check scripts/soak/run_soak.py tests/test_soak_promotion_gates.py`:
+  passed. `uv run ruff format --check scripts/soak/run_soak.py tests/test_soak_promotion_gates.py`:
+  passed.
+- The assigned job directory has no `check-*.log` files; there were therefore
+  no deterministic driver logs available to inspect. No new tests were added,
+  so no inventory delta is required.
+
+This revalidation changes no acceptance disposition: the four-hour exact-RC
+multi-replica run, broad representative workload, and active physical-work
+fencing/recovery proof remain unverified. Do not weaken the promotion gate or
+claim this report as soak evidence.
