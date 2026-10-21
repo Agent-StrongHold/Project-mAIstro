@@ -269,3 +269,55 @@ gitignored `quality/ac-state.json`, and while that file exists in a worktree
 fails ("unclassified quality state"). It does not exist in a CI checkout — the
 root-suite run above was taken with it moved aside; do not read it as a
 regression.
+
+## Develop sync: merge of `8a9139bc5` (trunk CI unblock) — the last two red gates
+
+Fresh check-runs captured for head `39bfe2aa2` show the section above
+resolved on the candidate: `test`, `exact-debt-ledger`, `Quality /
+Reachability` and `Quality / Vulture` all report success (the three
+`admission_identity` reachability nodes pass at this head — re-verified
+locally). The only remaining reds were `security` and `Supply chain
+(pip-audit)`, and develop's next commit is exactly their fix:
+`8a9139bc5` bumps certifi 2026.4.22 → 2026.10.19 (GHSA-6q48-6c7w-9gw2),
+pillow → 13.0.0, and npm-audit-fixes the canvas frontend's launch-editor.
+This round merges `origin/develop` into the branch (merge commit
+`f9a15e30f0ce`, clean — the branch touches none of the three files the
+commit changes, so no conflict resolution was needed).
+
+Post-merge validation, all on the merged tree:
+
+- ci.yml `security` job shape: `uv sync --locked --extra dev`, `uv pip
+  install pip-audit`, `uv pip freeze --exclude-editable`, `pip-audit
+  --strict --format=json` → only the pre-allowlisted `ecdsa==0.19.2
+  PYSEC-2026-1325`; `scripts/pip_audit_gate.py` → exit 0. Same for the
+  security.yml `Supply chain (pip-audit)` shape (`uv sync --locked
+  --all-extras` first). `scripts/check-dependency-namespaces.py` → exit 0.
+- `uv run ruff check .` / `ruff format --check .` clean; vulture ratchet
+  1326/1326 exit 0; `check-ratchet-provenance.py`,
+  `check-shipped-surface-truth.py`, `check-reachability.py`,
+  `check-reachability-dispositions.py` all OK with base now `8a9139bc5`.
+- Targeted suites: hive `test_effective_gateway_key.py` +
+  `test_governed_model_consumers.py` + `test_graph_runner.py` +
+  `test_legacy_dag_governed_quota.py` +
+  `test_legacy_dag_node_container_composition.py` +
+  `test_provider_pin_registration.py` → 72 passed; server
+  `test_startup.py` + `test_worker_yaml_config_startup.py` → 21 passed;
+  core `test_admitted_model_calls.py` + `test_model_chat_egress.py` +
+  `test_credential_routing.py` → 99 passed; `test_loader.py` +
+  `providers/test_config.py` + `test_model_config_process_startup.py` →
+  40 passed.
+- Full root `test` gate (`pytest tests/ --ignore=tests/tools/registry`,
+  CI env shape): 5396 passed, 138 skipped, and the single failure is the
+  documented `quality/ac-state.json` worktree artifact — reproduced
+  passing with the gitignored file moved aside (restored byte-identical;
+  worktree clean). `check-suite-inventory.py` → ok, 21 suites.
+- Compose rendering (`docker compose config` with required install vars
+  set): an external-key stack renders `LITELLM_API_KEY`/`LITELLM_PROXY_KEY`
+  = the external key on **both** `hive-conductor` and `maistro-engine`, and
+  `MAISTRO_LLM_API_KEY` on the conductor; a bundled-only stack derives both
+  services' `LITELLM_API_KEY` from `LITELLM_MASTER_KEY` with
+  `MAISTRO_LLM_API_KEY` empty — the two compositions the issue's
+  precedence matrix must survive.
+
+No node IDs added, removed or renamed by this round; the front-matter
+deltas are unchanged.
