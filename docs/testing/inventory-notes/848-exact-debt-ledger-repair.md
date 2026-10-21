@@ -104,3 +104,67 @@ ok: every measured file this change touches is at or above 90% lines / 80% branc
 The aggregate publish-set floor and the pip-audit advisories (aiohttp, ecdsa)
 remain inherited develop-side debt with owning lanes, reproduced against
 pristine e20e9f52e and out of scope for this lane.
+
+## CI-repair round at b4eaab95b4a7 (develop sync resolution)
+
+The merge-queue failure was an exact-debt-ledger stale-ledger failure, not a
+new production identity. The branch had been cut at `c2d7209f1dbc`, and
+`origin/develop` advanced to `780f1d340de8` with `ac1e2f955` (personas durable
+store, #2158). That commit removed two reviewed `personas/store.py::
+get_for_workspace` rows from `quality/vulture-baseline.json` after wiring the
+method into the durable store, while this branch still carried the pre-removal
+ledger. Against the old merge base the candidate and base both counted 1326
+identities, so the failure only appeared once CI evaluated the synthetic merge
+with the current develop tip.
+
+Repair: merged `origin/develop` into `auto-848` at `b4eaab95b4a7`, resolving
+the sole conflict in `packages/maistro-canvas/pyproject.toml` by keeping the
+branch's `pillow>=13.0.0,<14` security-floor comment on develop's identical
+constraint. The merge takes develop's source wiring and its two-row ledger
+removal together; no ledger row was hand-edited and no test count changed in
+this repair round (so this note still carries no `inventory-delta:` block).
+
+CI-exact gate evidence against the actual develop base (`RATCHET_BASE_REV=origin/develop`,
+which resolves to `780f1d340de8`):
+
+```console
+$ uv sync --locked --extra dev
+$ RATCHET_BASE_REV=origin/develop uv run python scripts/check-vulture-baseline.py \
+    packages/*/src --min-confidence 60 --exclude '*/third_party/*'
+ratchet: vulture [vulture (tool version: 2.16), metric v1]
+  baseline: base 780f1d340de8
+  candidate: b4eaab95b4a7
+  1324 reviewed identities  ->  1324 findings          # exit 0
+$ RATCHET_BASE_REV=origin/develop uv run python scripts/check-ratchet-provenance.py
+OK: 53 quality JSON consumer(s) have explicit provenance (inventory + delegated gates)
+$ RATCHET_BASE_REV=origin/develop uv run python scripts/check-shipped-surface-truth.py
+Shipped-surface truth matrix is complete.
+```
+
+Focused behavioral re-validation after the merge:
+
+```console
+$ uv run ruff check .                                  # All checks passed!
+$ uv run ruff format --check .                         # 3389 files already formatted
+$ uv run pytest packages/maistro-core/tests/harness/test_importers.py \
+    packages/maistro-core/tests/security/test_trust_monotonic.py -q -x
+44 passed
+$ uv run pytest packages/maistro-core/tests/security \
+    packages/maistro-core/tests/capabilities \
+    packages/maistro-core/tests/skills packages/maistro-core/tests/agents -q
+3300 passed, 29 skipped
+$ uv run pytest packages/hive-conductor/backend/tests/test_mcp_defaults_and_manifest.py \
+    packages/hive-conductor/backend/tests/test_mcp_trust_boundary.py -q
+33 passed
+$ uv run python scripts/check-suite-inventory.py \
+    --suite packages/maistro-core/tests --suite packages/hive-conductor/backend/tests
+ok     packages/maistro-core/tests: 16952
+ok     packages/hive-conductor/backend/tests: 3883
+```
+
+That covers the merge-relevant acceptance boundary: rediscovery idempotence,
+governed replacement, fail-closed unknown/blank provider tiers, traversal and
+symlink-safe skill mutation/catalog reload, imported Pi trust clamping and
+instruction scanning, and Binding-scoped MCP tool authorization (arbitrary
+tool names, missing/malformed allowlists, wrong server, non-Atlassian or
+plaintext endpoints).
