@@ -71,6 +71,7 @@ from maistro.memory.working_graph.wiring import (
     build_workspace_working_memory,
     working_memory_context_message,
 )
+from maistro.personas.wiring import PERSONA_PG_TABLES, wire_persona_store
 from maistro.projects.scope_store import ProjectScopeStore
 from maistro.quota.default_tracker import set_default_quota_tracker
 from maistro.quota.tracker import InMemoryQuotaTracker
@@ -148,9 +149,11 @@ if TYPE_CHECKING:
     from maistro.events.trigger_store import TriggerDefinition, TriggerStore
     from maistro.extensions.catalog_service import CatalogService, InMemoryCatalogStore
     from maistro.extensions.health import ExtensionHealthService, InMemoryExtensionHealthStore
+    from maistro.extensions.policy import ExtensionPolicyEngine
     from maistro.extensions.service import ExtensionInstallService
     from maistro.extensions.sqlite_health_store import SqliteExtensionHealthStore
     from maistro.extensions.store import ExtensionStore
+    from maistro.extensions.tenancy import TenantScopedExtensionState
     from maistro.graph.harness import HarnessAdapter
     from maistro.identity.lifecycle import (
         AgentIdentity as LifecycleIdentity,
@@ -165,6 +168,7 @@ if TYPE_CHECKING:
     from maistro.observability.tiers import PIIDetector
     from maistro.orchestrator.hierarchy import HarnessRegistry, HierarchicalOrchestrator
     from maistro.personas.golden import GoldenRecordStore
+    from maistro.personas.store import PersonaStore
     from maistro.protocols.embeddings import EmbeddingClient
     from maistro.protocols.memory import (
         ContextAssemblyPolicy,
@@ -256,6 +260,9 @@ class Container:
     #: backend since #132 while the thing its `workspace_id` names had none,
     #: so the only Workspaces that survived a restart were the Conductor's own.
     workspace_store: WorkspaceStore = None  # type: ignore[assignment]
+    #: The live Persona is a Workspace product context, stored beside the
+    #: Project tree rather than in a second product-specific ownership store.
+    persona_store: PersonaStore = None  # type: ignore[assignment]
     #: Append-only BacklogItem history (#101), on the Project store's backend.
     #: References canonical Goals/Runs; never an execution authority itself.
     backlog_history_store: BacklogHistoryStore = None  # type: ignore[assignment]
@@ -510,6 +517,11 @@ class Container:
     # service so every reader observes the one canonical record.
     extension_install_store: ExtensionStore | None = None
     extension_install_service: ExtensionInstallService | None = None
+    # Organization/Workspace extension policy + tenant-scoped runtime state
+    # (#971, M9-G3). The default engine configures nothing, which leaves the
+    # machine's behavior unchanged while still recording decision evidence.
+    extension_policy_engine: ExtensionPolicyEngine | None = None
+    extension_runtime_state: TenantScopedExtensionState | None = None
     # Extension operational views (#978, M9-I3): health evidence, operator
     # decisions, and the projection facade over the SAME install store —
     # never a second lifecycle authority, only a read/projection layer.
@@ -2065,6 +2077,21 @@ class Container:
             id_token_verifier=default_id_token_verifier(),
         )
 
+    def ensure_extension_policy_engine(self) -> ExtensionPolicyEngine:
+        """Return the organization/Workspace extension policy engine (#971).
+
+        The default engine configures nothing: evaluation passes every
+        candidate with an explicit "the layer imposes nothing" trace, so
+        wiring the policy layer changes no behavior until an operator sets a
+        policy — but every install decision gains audit evidence from then
+        on. Hosts with a policy backend replace ``extension_policy_engine``.
+        """
+        from maistro.extensions.policy import ExtensionPolicyEngine
+
+        if self.extension_policy_engine is None:
+            self.extension_policy_engine = ExtensionPolicyEngine()
+        return self.extension_policy_engine
+
     def ensure_extension_install_service(self) -> ExtensionInstallService:
         """Return the governed extension install lifecycle service (#953).
 
@@ -2081,6 +2108,7 @@ class Container:
         """
         from maistro.extensions.service import ExtensionInstallService, UnwiredExtensionLoader
         from maistro.extensions.store import InMemoryExtensionStore
+        from maistro.extensions.tenancy import TenantScopedExtensionState
 
         if self.extension_install_service is None:
             if self.extension_install_store is None:
@@ -2088,6 +2116,8 @@ class Container:
             self.extension_install_service = ExtensionInstallService(
                 self.extension_install_store,
                 loader=UnwiredExtensionLoader(),
+                policy_engine=self.ensure_extension_policy_engine(),
+                runtime_state=self.extension_runtime_state or TenantScopedExtensionState(),
             )
         else:
             self.extension_install_store = self.extension_install_service.store
@@ -2386,9 +2416,15 @@ async def create_container(
         # The same `project_scope_store` object the spine just selected, not a
         # second resolution of the same question: a Workspace whose Root Project is
         # filed in another database is a Workspace whose Runs cannot be filed.
+        persona_store = await wire_persona_store(
+            db_pool,
+            project_store=project_scope_store,
+            pg_pool=pg_pool,
+        )
         workspace_store = await wire_workspace_store(
             db_pool,
             project_store=project_scope_store,
+            persona_store=persona_store,
             pg_pool=pg_pool,
         )
         backlog_history_store = await wire_backlog_history_store(
@@ -2491,6 +2527,12 @@ async def create_container(
         # can therefore never flip authorized False -> True, only needs
         # "self_elevation"/"scoped_2fa" -> "none".
         elevation_store = await _wire_elevation_store(pg_pool=pg_pool, db_pool=db_pool)
+        # Delegated authority is host-owned state, separate from the manifest
+        # roster (#845, #60). A durable deployment can replace this
+        # implementation without changing the Agent or Graph execution paths.
+        from maistro.security.sentinel.delegation import InMemoryDelegationAuthority
+
+        delegation_authority = InMemoryDelegationAuthority()
         # Canonical capability state is created BEFORE Sentinel so the permission
         # source can hold the same registry the container exposes (#1165,
         # ADR-072726-0d6b): a runtime capability disable (set_enabled) must reach
@@ -2509,6 +2551,7 @@ async def create_container(
             audit_log=audit_log,
             tier_policy=tier_policy,
             elevation_store=elevation_store,
+            delegation_authority=delegation_authority,
         )
         strike_recovery = _wire_strike_recovery(
             tracker=strike_tracker,
@@ -2672,6 +2715,7 @@ async def create_container(
             project_store=project_scope_store,
             project_scope_store=project_scope_store,
             workspace_store=workspace_store,
+            persona_store=persona_store,
             backlog_history_store=backlog_history_store,
             campaign_store=campaign_store,
             goal_store=goal_store,
@@ -3056,6 +3100,10 @@ _REQUIRED_PG_TABLES: Final = (
     # `postgresql://` deployment that skipped `alembic upgrade head` should hear
     # about it once, at startup, naming every table it lacks.
     *WORKSPACE_PG_TABLES,
+    # The live Persona is the Workspace's product context. It is listed here so
+    # an unmigrated PostgreSQL deployment fails before serving a Workspace that
+    # cannot reload its Persona after restart.
+    *PERSONA_PG_TABLES,
 )
 
 
