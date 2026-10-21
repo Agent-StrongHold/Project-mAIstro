@@ -142,6 +142,15 @@ def validate_hive_tool_arguments(name: str, arguments: dict[str, Any]) -> None:
         raise EffectNotApplied(str(exc)) from exc
 
 
+def hive_tool_reversibility(name: str) -> ToolReversibility:
+    """Resolve legacy admission from the same host registry as Agent/chat tools.
+
+    A raw dispatcher entry is not a contract: unregistered names must fail
+    closed instead of acquiring a tier (and authority) from node metadata.
+    """
+    return _registry().reversibility_of(name)
+
+
 def hive_tool_names() -> frozenset[str]:
     """The host-owned exposure: the only names this seam will admit."""
     return _registry().names()

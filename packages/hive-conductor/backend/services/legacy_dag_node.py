@@ -27,7 +27,7 @@ from maistro.capabilities.effect_context import (
 from maistro.graph.nodes.base import BaseNode, NodeContext
 from maistro.graph.policies import DEFAULT_NODE_TIMEOUT_S, resolve_node_timeout_s
 from maistro.http import shared_client
-from services.governed_tools import validate_hive_tool_arguments
+from services.governed_tools import hive_tool_reversibility, validate_hive_tool_arguments
 from services.tool_executor import ModelCall
 
 logger = logging.getLogger(__name__)
@@ -403,6 +403,10 @@ async def _run_tool_node(
                 )
             workspace_id = str(ctx.workspace_id or "hive-standalone-compat")
             project_id = str(ctx.project_id or "hive-standalone-compat")
+            # Dispatcher membership is not a contract or an authorization
+            # grant. Use the same host registry as Agent/chat admission and
+            # refuse names with no schema before entering any provider code.
+            reversibility = hive_tool_reversibility(tool_name)
             binding = Binding(
                 workspace_id=workspace_id,
                 project_id=project_id,
@@ -440,7 +444,12 @@ async def _run_tool_node(
                 node_run_id=ctx.node_run_id,
                 attempt_id=ctx.attempt_id,
                 effect_key=f"legacy-tool:{tool_name}",
-                request={"task": task_desc, "tool_config": node.get("tool_config", {})},
+                request={
+                    "_tool_name": tool_name,
+                    "_tool_reversibility": reversibility.value,
+                    "task": task_desc,
+                    "tool_config": node.get("tool_config", {}),
+                },
                 resolver=resolve,
                 executor=execute,
                 actor_id=str(ctx.user_id or ""),

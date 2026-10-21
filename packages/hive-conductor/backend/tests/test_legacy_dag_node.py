@@ -414,8 +414,136 @@ async def test_legacy_tool_uses_the_canonical_governed_invocation_boundary(
     assert invocations[0].binding.capability == "legacy_tool:web_search"
 
 
+@pytest.mark.parametrize(
+    ("tool_name", "tool_config"),
+    [
+        ("web_search", {}),
+        ("browse_url", {"url": "https://example.com"}),
+        ("clarify", {"questions": ["why?"]}),
+    ],
+)
+async def test_legacy_tools_record_the_shared_host_registry_tier(
+    monkeypatch: pytest.MonkeyPatch, tool_name: str, tool_config: dict[str, Any]
+) -> None:
+    import services.legacy_dag_node as adapter
+    import services.tool_executor as tools
+
+    from maistro.capabilities.effect_context import binding_scope_policy, new_effect_context
+
+    calls: list[tuple[Any, ...]] = []
+
+    async def backend(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        calls.append(args)
+        return {"1": "answer"}
+
+    monkeypatch.setattr(tools, tool_name, backend)
+    effects = new_effect_context(policy_evaluator=binding_scope_policy)
+    ctx = _compat_ctx()
+    results: dict[str, dict[str, Any]] = {}
+    await adapter._run_tool_node(
+        {
+            "id": "n1",
+            "tool": tool_name,
+            "_tool_reversibility": "irreversible",
+            "tool_config": {**tool_config, "_tool_reversibility": "irreversible"},
+        },
+        "n1",
+        {},
+        results,
+        "task",
+        effect_context=effects,
+        ctx=ctx,
+    )
+
+    assert results["n1"]["success"] is True
+    assert len(calls) == 1
+    rows = await effects.invocation_store.list_effect(
+        run_id=ctx.run_id,
+        node_run_id=ctx.node_run_id,
+        binding_id=f"legacy-tool:ws-1:proj-1:n1:{tool_name}",
+        effect_key=f"legacy-tool:{tool_name}",
+    )
+    assert len(rows) == 1
+    assert rows[0].request["_tool_name"] == tool_name
+    assert rows[0].request["_tool_reversibility"] == "internal"
+    assert rows[0].status.value == "completed"
+
+
+async def test_legacy_registry_reclassification_reaches_canonical_effect_policy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A read-only-looking name and caller strings cannot downgrade host policy."""
+    import services.governed_tools as governed
+    import services.legacy_dag_node as adapter
+    import services.tool_executor as tools
+
+    from maistro.capabilities.effect_context import binding_scope_policy, new_effect_context
+    from maistro.tools.contracts import ToolRegistration, ToolReversibility
+
+    registry = governed.hive_tool_contracts()
+    registry.register(
+        registry.require("web_search"),
+        ToolRegistration(name="web_search", reversibility=ToolReversibility.IRREVERSIBLE),
+    )
+    monkeypatch.setattr(governed, "_REGISTRY", registry)
+    calls: list[str] = []
+
+    async def backend(query: str, **kwargs: Any) -> dict[str, Any]:
+        calls.append(query)
+        return {"query": query}
+
+    monkeypatch.setattr(tools, "web_search", backend)
+    effects = new_effect_context(policy_evaluator=binding_scope_policy)
+    ctx = _compat_ctx()
+    results: dict[str, dict[str, Any]] = {}
+    await adapter._run_tool_node(
+        {
+            "id": "n1",
+            "tool": "web_search",
+            "_tool_reversibility": "internal",
+            "tool_config": {"_tool_reversibility": "internal"},
+        },
+        "n1",
+        {},
+        results,
+        "task",
+        effect_context=effects,
+        ctx=ctx,
+    )
+
+    assert calls == []
+    assert results["n1"]["success"] is False
+    assert "approval" in results["n1"]["response"].lower()
+    events = await effects.event_store.list_stream("workspace:ws-1")
+    assert len(events) == 1
+    assert events[0].payload["decision"] == "require_approval"
+    assert events[0].payload["rule"] == "tool.reversibility"
+    assert events[0].payload["effect_key"] == "legacy-tool:web_search"
+
+
+@pytest.fixture
+def registered_mutating_tool(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An explicitly registered test tool cannot bypass the legacy effect floor."""
+    import services.governed_tools as governed
+
+    from maistro.tools.contracts import ToolContract, ToolRegistration, ToolReversibility
+
+    registry = governed.hive_tool_contracts()
+    registry.register(
+        ToolContract(
+            name="jira_write",
+            schema={"type": "object"},
+            capability=governed.HIVE_TOOL_CAPABILITY,
+            provider_name="hive.jira_write",
+        ),
+        ToolRegistration(name="jira_write", reversibility=ToolReversibility.INTERNAL),
+    )
+    monkeypatch.setattr(governed, "_REGISTRY", registry)
+
+
 async def test_legacy_mutation_is_refused_by_independent_effect_policy(
     monkeypatch: pytest.MonkeyPatch,
+    registered_mutating_tool: None,
 ) -> None:
     import services.legacy_dag_node as adapter
     import services.tool_executor as tools
@@ -468,6 +596,7 @@ async def test_legacy_mutation_is_refused_by_independent_effect_policy(
 
 async def test_standalone_canonical_node_cannot_bypass_effect_policy(
     monkeypatch: pytest.MonkeyPatch,
+    registered_mutating_tool: None,
 ) -> None:
     """A canonical NodeContext is governed even without a Container wiring."""
     import services.legacy_dag_node as adapter
@@ -505,13 +634,16 @@ async def test_standalone_canonical_node_cannot_bypass_effect_policy(
     assert "approval" in results["n1"]["response"].lower()
 
 
-async def test_a_generic_tool_result_is_json_encoded(
+async def test_a_raw_tool_without_a_host_schema_is_refused(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import services.legacy_dag_node as adapter
     import services.tool_executor as tools
 
+    calls: list[str] = []
+
     async def fake_tool(task_desc: str) -> dict[str, Any]:
+        calls.append(task_desc)
         return {"did": task_desc}
 
     monkeypatch.setattr(tools, "TOOLS", {"custom": fake_tool})
@@ -526,11 +658,9 @@ async def test_a_generic_tool_result_is_json_encoded(
         ctx=_compat_ctx(run="run-generic"),
     )
 
-    assert results["n1"] == {
-        "role": "worker",
-        "response": '{"did": "the task"}',
-        "success": True,
-    }
+    assert calls == []
+    assert results["n1"]["success"] is False
+    assert "no host-owned schema" in results["n1"]["response"]
 
 
 async def test_a_failing_tool_becomes_a_failed_node_result(
@@ -539,14 +669,14 @@ async def test_a_failing_tool_becomes_a_failed_node_result(
     import services.legacy_dag_node as adapter
     import services.tool_executor as tools
 
-    async def boom(task_desc: str) -> dict[str, Any]:
+    async def boom(url: str, task: str) -> dict[str, Any]:
         raise RuntimeError("tool exploded")
 
-    monkeypatch.setattr(tools, "TOOLS", {"custom": boom})
+    monkeypatch.setattr(tools, "browse_url", boom)
     results: dict[str, dict[str, Any]] = {}
 
     await adapter._run_tool_node(
-        {"id": "n1", "tool": "custom"},
+        {"id": "n1", "tool": "browse_url", "tool_config": {"url": "https://example.com"}},
         "n1",
         {},
         results,
@@ -555,7 +685,7 @@ async def test_a_failing_tool_becomes_a_failed_node_result(
     )
 
     assert results["n1"]["success"] is False
-    assert "Tool error" in results["n1"]["response"]
+    assert "tool exploded" in results["n1"]["response"]
 
 
 async def test_run_llm_node_dispatches_a_tool_node_without_touching_the_llm(
@@ -569,14 +699,16 @@ async def test_run_llm_node_dispatches_a_tool_node_without_touching_the_llm(
     def _unexpected_builder(*_args: Any, **_kwargs: Any) -> None:  # pragma: no cover
         raise AssertionError("llm builder must not be consulted for a tool node")
 
-    async def fake_tool(task_desc: str) -> str:
-        return f"tool:{task_desc}"
+    async def fake_tool(
+        query: str, *, max_results: int = 5, model_call: Any = None
+    ) -> dict[str, Any]:
+        return {"query": query}
 
-    monkeypatch.setattr(tools, "TOOLS", {"custom": fake_tool})
+    monkeypatch.setattr(tools, "web_search", fake_tool)
     results: dict[str, dict[str, Any]] = {}
 
     await adapter._run_llm_node(
-        {"id": "n1", "tool": "custom"},
+        {"id": "n1", "tool": "web_search"},
         "n1",
         {},
         results,
