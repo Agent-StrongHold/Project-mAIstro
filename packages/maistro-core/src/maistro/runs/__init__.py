@@ -1,6 +1,7 @@
 """Canonical logical and physical execution lifecycle."""
 
 from maistro.runs.admission_identity import (
+    AdmissionAssessment,
     AdmissionBinding,
     AdmissionRecordV2,
     CanonicalJsonObject,
@@ -57,6 +58,7 @@ __all__ = [
     "TERMINAL_RUN_STATUSES",
     "AcceptedNodeOutcome",
     "ActiveAttemptExists",
+    "AdmissionAssessment",
     "AdmissionBinding",
     "AdmissionRecordV2",
     "Attempt",
