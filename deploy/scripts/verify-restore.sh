@@ -338,9 +338,12 @@ main() {
   #
   # The probe is pg_isready AND a real query. pg_isready alone also answers
   # during initdb's temporary-server window (it checks the socket, not the
-  # final server), so a loop keyed on it alone can break mid-init, and the
-  # restore that follows then fails as RESTORE instead of waiting out the
-  # restart. Only the final server answers the query.
+  # final server; the entrypoint's bootstrap server even answers before
+  # ${PG_DB} exists, which produced `FATAL: database "${PG_DB}" does not
+  # exist` in tests/test_restore_oracle_characterization.py, 2026-10-18), so a
+  # loop keyed on it alone can break mid-init, and the restore that follows
+  # then fails as RESTORE instead of waiting out the restart. Only the final
+  # server answering the query proves readiness.
   scratch_ready() {
     docker exec "${SCRATCH_NAME}" pg_isready -U "${PG_USER}" >/dev/null 2>&1 \
       && docker exec "${SCRATCH_NAME}" psql -X -Atq -U "${PG_USER}" -d "${PG_DB}" -c 'SELECT 1' >/dev/null 2>&1

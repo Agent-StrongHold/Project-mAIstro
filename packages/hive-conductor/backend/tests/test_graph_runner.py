@@ -67,6 +67,10 @@ def _set_allow_stub_llm(monkeypatch: pytest.MonkeyPatch, allowed: bool) -> None:
         allow_stub_llm = allowed
         litellm_api_base = ""
         litellm_api_key = SecretStr("")
+        # The real Settings carries this (#1824): the governed `_endpoint`
+        # resolves the effective key through it. Unconfigured here — the
+        # "misconfigured deployment" state this suite pins.
+        maistro_llm_api_key = SecretStr("")
 
     monkeypatch.setattr(config, "get_settings", lambda: _S())
 
