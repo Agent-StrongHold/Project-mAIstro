@@ -54,6 +54,23 @@ def _parse_api_key_entry(entry: str) -> tuple[str, str, frozenset[str]] | None:
     return principal.strip(), secret, frozenset({"user"})
 
 
+def _entry_defect(entry: str) -> str:
+    """Classify why ``entry`` fails canonical parsing, without echoing secrets."""
+    stripped = entry.strip()
+    if not stripped:
+        return "empty"
+    if stripped.startswith("sk-"):
+        return "secret-shaped key with no principal prefix"
+    if ":" not in stripped:
+        return "plain secret-only key"
+    parts = stripped.split(":")
+    if not parts[0].strip():
+        return "missing principal before ':'"
+    if len(parts) == 3 and parts[1].strip().lower() == "admin" and not parts[2].strip():
+        return "empty secret after legacy admin marker"
+    return "missing secret after ':'"
+
+
 def invalid_api_key_entries(settings: Settings) -> list[str]:
     """Describe invalid entries using the canonical parser, without secrets."""
     problems: list[str] = []
@@ -64,24 +81,7 @@ def invalid_api_key_entries(settings: Settings) -> list[str]:
         for position, entry in enumerate(entries, start=1):
             if _parse_api_key_entry(entry) is not None:
                 continue
-            stripped = entry.strip()
-            if not stripped:
-                defect = "empty"
-            elif stripped.startswith("sk-"):
-                defect = "secret-shaped key with no principal prefix"
-            elif ":" not in stripped:
-                defect = "plain secret-only key"
-            elif not stripped.split(":", 1)[0].strip():
-                defect = "missing principal before ':'"
-            elif (
-                len(stripped.split(":")) == 3
-                and stripped.split(":")[1].strip().lower() == "admin"
-                and not stripped.split(":")[2].strip()
-            ):
-                defect = "empty secret after legacy admin marker"
-            else:
-                defect = "missing secret after ':'"
-            problems.append(f"{setting_name} {position}: {defect}")
+            problems.append(f"{setting_name} {position}: {_entry_defect(entry)}")
     return problems
 
 
