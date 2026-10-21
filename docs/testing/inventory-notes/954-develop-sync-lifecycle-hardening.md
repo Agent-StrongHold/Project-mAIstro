@@ -201,3 +201,45 @@ lock-output fix. The lifecycle acceptance rests on develop's canonical suites.
   (1326 reviewed identities -> 1326 findings), `check-ratchet-provenance.py`,
   `check-shipped-surface-truth.py`, `check-test-duplicates.py`,
   `check-backlog-consistency.py` — all ok.
+
+## Sixth develop sync (ac1e2f955, this repair round): merge finished, delta +0
+
+`git fetch origin develop` advanced the develop tip again, from `8a9139bc5`
+to `ac1e2f955` (four commits: #2158 canonical ownership/reusable definitions,
+#2232 Codex App Server harness provider, #2149 public/private catalog
+distribution, #2208 Evolve/RSI eval-consumer mapping). The shared
+`refs/remotes/origin/develop` moved between the fifth sync's fetch and this
+round's, so the fifth sync's evidence below is superseded by the final evidence
+in this section; the branch is synced to the live develop tip.
+
+The merge was clean (`git merge-tree --write-tree` reported no conflicts; the
+ort merge brought no markers) and brought no conflict markers;
+`quality/` remains byte-identical to develop
+(`git diff --numstat origin/develop HEAD -- quality/` empty) and
+`scripts/check-suite-inventory.py` reports 21/21 suites matching the recorded
+baseline (32555 collected node IDs). No production code unique to this lane
+changed in this round; the lane's only surviving contribution remains the
+already-landed `soft_wrap=True` CLI lock-output fix. The lifecycle acceptance
+rests on develop's canonical suites.
+
+### Evidence recorded for this round (final head `5b26ba4127800a61ae4d8957b6d4f53d34dcb7cd`)
+
+- merge resolution: no conflict markers (`scripts/check-merge-markers.py` ok);
+  `quality/` byte-identical to develop; `scripts/check-suite-inventory.py`
+  21/21 suites match the recorded baseline.
+- failing gates reproduced and cleared:
+  `packages/maistro-canvas/frontend`: `npm ci` (0 vulnerabilities) then
+  `npm audit --audit-level=high` exit 0; `uv pip freeze` + `uv run pip-audit
+  --strict --format=json -r /tmp/deps2.txt` produced a usable report and
+  `scripts/pip_audit_gate.py` exit 0 (`1 known, all triaged in ALLOWED`);
+  `scripts/check-dependency-namespaces.py` exit 0.
+- acceptance: `scripts/extension_lifecycle_proof.py --out …` PROVED 10/10
+  stages, 42/42 checks; `packages/maistro-core/tests/extensions/` 1156 passed;
+  `packages/maistro-server/tests/api/test_extensions_api.py` +
+  `test_extensions_policy_api.py` + `test_extensions_health_api.py` 57 passed.
+- suites: `packages/maistro-core/tests` 15759 passed / 1145 skipped / 7 xfailed;
+  `packages/maistro-server/tests` 591 passed / 8 skipped.
+- gates: `ruff check .`, `ruff format --check .`, `check-vulture-baseline.py`
+  (1324 reviewed identities -> 1324 findings, base ac1e2f9556f1),
+  `check-ratchet-provenance.py`, `check-shipped-surface-truth.py`,
+  `check-test-duplicates.py`, `check-backlog-consistency.py` — all ok.
