@@ -9,10 +9,13 @@ is rendered from the compose file as `docker compose` would, then fed through
 that service's own config path.
 
 Sentinel is fail-closed on a table miss (ADR-072726-0d6b, #1165), so an empty
-table denies every tool rather than allowing it -- but "armed" means the
-deployment states some tool authority, and today none does. Every profile is
-in `KNOWN_GAPS`, asserting the empty table, so arming one fails this test
-until its entry is deleted.
+table denies every tool rather than allowing it. "Armed" means the deployment
+states tool authority the runtime can actually execute: Conductor profiles
+must grant at least one of `services.tool_executor`'s tools (the old
+dangerous-tools preset passed a truthiness check while every name it granted
+was absent from dispatch_tool's registry). Profiles still building an empty
+table belong in `KNOWN_GAPS`, asserting the miss, so arming one fails this
+test until its entry is deleted.
 """
 
 from __future__ import annotations
@@ -29,7 +32,7 @@ import yaml
 from maistro.config import settings as settings_module
 from maistro.config.loader import load_yaml_config
 from maistro.security._types import PermissionTable
-from maistro.security.permission_policy import build_permission_table
+from maistro.security.permission_policy import PERMISSION_PRESETS, build_permission_table
 from maistro_server.main import _security_config
 from tests._compose_render import MissingRequired, _environment
 
@@ -38,6 +41,7 @@ sys.path.insert(
 )
 
 from config import Settings as HiveSettings
+from services.tool_executor import TOOLS
 
 ROOT = Path(__file__).resolve().parents[2]
 DEV = ROOT / "docker-compose.yml"
@@ -46,17 +50,21 @@ PROD = ROOT / "deploy" / "docker-compose.prod.yml"
 PROD_ENV_EXAMPLE = ROOT / "deploy" / ".env.example"
 HIVE_STANDALONE = ROOT / "packages" / "hive-conductor" / "docker-compose.yml"
 
-#: Every profile builds an empty table today. Refs #66 (Sentinel armed on every
+#: Profiles that still build an empty table. Refs #66 (Sentinel armed on every
 #: real path); the Workspace deploy (#804) inherits whichever profile it ships on.
-KNOWN_GAPS: frozenset[str] = frozenset(
+KNOWN_GAPS: frozenset[str] = frozenset()
+
+#: Conductor profiles. Their runtime dispatches exactly `TOOLS`, so an armed
+#: table that grants none of them is armed in name only: every entry the
+#: preset granted returns "Tool ... not available" while Sentinel fail-closed
+#: denies every real tool. That is how `dangerous_tools_admin` passed the old
+#: truthiness-only assertion here while granting Hive no usable authority.
+HIVE_PROFILES: frozenset[str] = frozenset(
     {
-        "dev:maistro-engine",  # Refs #66
-        "dev:hive-conductor",  # Refs #66
-        "pm-poc:maistro-engine",  # Refs #66
-        "pm-poc:hive-conductor",  # Refs #66
-        "cloud-prod:maistro-server-1",  # Refs #66
-        "cloud-prod:maistro-server-2",  # Refs #66
-        "hive-standalone:hive-conductor",  # Refs #66
+        "dev:hive-conductor",
+        "pm-poc:hive-conductor",
+        "hive-standalone:hive-conductor",
+        "cloud-prod:hive-conductor",
     }
 )
 
@@ -153,6 +161,12 @@ PROFILES: dict[str, tuple[tuple[Path, ...], Callable[[], dict[str, str]], str, _
         "maistro-server-2",
         _server_table,
     ),
+    "cloud-prod:hive-conductor": (
+        (PROD,),
+        lambda: _example_env(PROD_ENV_EXAMPLE),
+        "hive-conductor",
+        _hive_table,
+    ),
     "hive-standalone:hive-conductor": ((HIVE_STANDALONE,), dict, "hive-conductor", _hive_table),
 }
 
@@ -183,3 +197,47 @@ def test_permission_table_is_armed(profile: str, monkeypatch: pytest.MonkeyPatch
         assert table == {}, f"{profile} arms {sorted(table)} now; delete it from KNOWN_GAPS"
     else:
         assert table, f"{profile} builds an empty Sentinel permission table"
+        if profile in HIVE_PROFILES:
+            granted = set(table) & set(TOOLS)
+            assert granted, (
+                f"{profile} arms {sorted(table)}, none of which its dispatch_tool "
+                f"registry {sorted(TOOLS)} can execute"
+            )
+
+
+def test_hive_preset_tracks_the_executable_registry() -> None:
+    """`hive_conductor_tools` must name exactly what dispatch_tool routes.
+
+    The preset lives in maistro-core while the registry lives in the
+    Conductor; this parity check is what keeps a registry change from
+    silently re-arming a table of unusable grants.
+    """
+    assert PERMISSION_PRESETS["hive_conductor_tools"] == frozenset(TOOLS)
+
+
+@pytest.mark.parametrize("profile", sorted(HIVE_PROFILES))
+def test_shipped_profiles_authorize_graph_node_execution(
+    profile: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every shipped Conductor profile states graph-node execution authority.
+
+    The Conductor's node adapter asks Sentinel to authorize the
+    ``graph.node.execute`` capability before a node runs (#60, #845). The
+    tool preset cannot carry that grant -- it names only the executables
+    `dispatch_tool` routes -- so the deployment states it in
+    `MAISTRO_PERMISSIONS`. Without it the fail-closed table denies every
+    node and no DAG can run at all.
+    """
+    files, host_env, service, build_table = PROFILES[profile]
+    env = _render_services(files, host_env())[service]
+
+    table = build_table(env, monkeypatch)
+
+    assert "graph.node.execute" in table, (
+        f"{profile} arms {sorted(table)}; the node adapter's Sentinel gate "
+        f"denies every node without a graph.node.execute grant"
+    )
+    assert table["graph.node.execute"] == frozenset({"admin", "user"}), (
+        f"{profile} grants graph.node.execute to {sorted(table['graph.node.execute'])}; "
+        f"the host roles the Conductor assigns to a user record are admin and user"
+    )

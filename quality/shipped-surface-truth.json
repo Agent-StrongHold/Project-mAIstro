@@ -449,8 +449,18 @@
       "handler": "create_cli_session",
       "disposition": "domain-state",
       "production_enabled": true,
-      "reason": "creates a CLI session record; the CLI page contract is tracked in #292",
+      "reason": "creates a CLI session record; the page contract it serves is defined in docs/architecture/CONDUCTOR-CLI-PAGE-CONTRACT.md (#292)",
       "effect_owner": "stores.cli_sessions"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/cli.py",
+      "method": "POST",
+      "route": "/exec",
+      "handler": "exec_cli_command",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "executes one registered CLI-page command through its backend capability (services/cli_commands.py), sanitizes output, appends durable session history, and audits the execution; unregistered commands answer 404",
+      "effect_owner": "services.cli_commands.cli_registry handlers (routes/health.py, routes/agents.py, stores.cli_sessions, routes/audit.log_audit)"
     },
     {
       "source": "packages/hive-conductor/backend/routes/containers.py",
@@ -521,6 +531,16 @@
       "production_enabled": true,
       "reason": "deletes the stored secret for a provider",
       "effect_owner": "services.user_credentials.UserCredentialStore + audit log"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/credentials.py",
+      "method": "POST",
+      "route": "/{provider_id}/test",
+      "handler": "test_credential",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "performs a real model-discovery probe against the operator-supplied OpenAI-compatible endpoint without persisting input, through the shared outbound guard",
+      "effect_owner": "maistro.http.sync_client under maistro.security.outbound explicit-endpoint policy (#67); the gateway's GET /models is the external effect"
     },
     {
       "source": "packages/hive-conductor/backend/routes/credentials.py",
@@ -802,6 +822,46 @@
       "production_enabled": true,
       "reason": "requests canonical cancellation of one durable human pause",
       "effect_owner": "hitl store settles the cancelled pause"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/home.py",
+      "method": "PUT",
+      "route": "/{workspace_id}/home/layout",
+      "handler": "save_home_layout",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "persists the Workspace's durable Home layout with optimistic-concurrency revision; viewer members are refused",
+      "effect_owner": "stores.home_layouts"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/home.py",
+      "method": "POST",
+      "route": "/{workspace_id}/home/regions/{region_id}/pin",
+      "handler": "pin_home_region",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "persists one region's pinned flag; presentation only, the referenced resource is neither copied nor forked",
+      "effect_owner": "stores.home_layouts"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/home.py",
+      "method": "POST",
+      "route": "/{workspace_id}/home/adaptive/dismiss",
+      "handler": "dismiss_home_adaptive",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "records a counted, backend-side adaptive dismissal as negative reinforcement; viewer members are refused",
+      "effect_owner": "stores.home_adaptive_dismissals"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/home.py",
+      "method": "POST",
+      "route": "/{workspace_id}/home/adaptive/compose",
+      "handler": "compose_home_adaptive",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "persists the Agent's composition of the unpinned space; the service refuses pinned writes to Agent and API alike",
+      "effect_owner": "stores.home_layouts"
     },
     {
       "source": "packages/hive-conductor/backend/routes/install.py",
@@ -2005,6 +2065,26 @@
     },
     {
       "source": "packages/maistro-server/src/maistro_server/api/extensions.py",
+      "method": "PUT",
+      "route": "/policy/orgs/{org_id}",
+      "handler": "set_organization_extension_policy",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "installs the organization extension layer wholesale (#971): allow/deny lists, approved publishers and publisher/version pins that no Workspace can widen",
+      "effect_owner": "extension policy engine + policy audit trail"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/extensions.py",
+      "method": "PUT",
+      "route": "/policy/orgs/{org_id}/workspaces/{workspace_id}",
+      "handler": "set_workspace_extension_policy",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "installs one Workspace's narrowing layer (#971): opt-in enablement, denials and permission ceilings under the org layer",
+      "effect_owner": "extension policy engine + policy audit trail"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/extensions.py",
       "method": "POST",
       "route": "/health/{extension_id}/operator",
       "handler": "decide_extension_operator_state",
@@ -2012,6 +2092,26 @@
       "production_enabled": true,
       "reason": "applies the durable operator admission decision (enable/disable/quarantine/release) with the authenticated actor and a required reason; append-only evidence whose newest row is the restart-surviving runtime state",
       "effect_owner": "extension health store (operator decisions) + health projections"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/extensions.py",
+      "method": "POST",
+      "route": "/policy/orgs/{org_id}/workspaces/{workspace_id}/decisions",
+      "handler": "explain_extension_policy_decision",
+      "disposition": "local-only",
+      "production_enabled": true,
+      "reason": "deterministic policy dry run for admin inspection (#971): same fixed rule order as enforcement, no record, no audit row",
+      "truth_contract": "stateless policy evaluation; persists nothing — the side-effect-free twin of the enforcement decision"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/extensions.py",
+      "method": "PUT",
+      "route": "/state",
+      "handler": "set_extension_configuration",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "writes one tenant-scoped extension configuration value (#971) under the full (org, workspace, extension) key behind Workspace-ownership authority",
+      "effect_owner": "tenant-scoped extension runtime state"
     },
     {
       "source": "packages/maistro-server/src/maistro_server/api/extensions.py",

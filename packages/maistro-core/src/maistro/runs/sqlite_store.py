@@ -233,6 +233,13 @@ CREATE TABLE IF NOT EXISTS canonical_runs (
     FOREIGN KEY (parent_node_run_id) REFERENCES canonical_node_runs(node_run_id)
 );
 
+-- Recovery enumerates the bounded live prefix from this index, matching the
+-- PostgreSQL `ix_canonical_runs_live` partial index. The ordering expressions
+-- follow `status` so `list_by_status` walks the index in `(created_at,
+-- run_id)` order instead of building a temporary B-tree over the whole live
+-- population on every recovery tick.
+CREATE INDEX IF NOT EXISTS idx_canonical_runs_status
+    ON canonical_runs(status, json_extract(payload, '$.created_at'), run_id);
 CREATE INDEX IF NOT EXISTS idx_canonical_runs_workspace_project
     ON canonical_runs(workspace_id, project_id);
 CREATE INDEX IF NOT EXISTS idx_canonical_runs_parent
@@ -574,6 +581,20 @@ class SqliteRunStore:
             await connection.execute(f"ROLLBACK TO SAVEPOINT {_ROOT_ADMISSION_SAVEPOINT}")
             await connection.execute(f"RELEASE SAVEPOINT {_ROOT_ADMISSION_SAVEPOINT}")
             raise
+
+    async def list_recent_runs(
+        self, workspace_id: str, *, limit: int = 100, offset: int = 0
+    ) -> list[Run]:
+        if limit <= 0 or offset < 0:
+            raise ValueError("limit must be positive and offset non-negative")
+        async with self._conn.execute(
+            """SELECT payload FROM canonical_runs WHERE workspace_id = ?
+               ORDER BY json_extract(payload, '$.created_at') DESC, run_id DESC
+               LIMIT ? OFFSET ?""",
+            (workspace_id, limit, offset),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return [model_of_json(Run, row[0]) for row in rows]
 
     async def get_run(self, run_id: str, *, principal_id: str | None = None) -> Run | None:
         row = await self._fetchone(

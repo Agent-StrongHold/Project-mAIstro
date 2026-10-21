@@ -126,21 +126,63 @@ wait forever for an `Expected` result.
 | Registry CI | `Validate ADR/spec front-matter` | every PR |
 | Vulture Ratchet | `exact-debt-ledger` | every PR |
 | quality | `Coverage gate (publish-set floor + diff coverage)` | every PR |
+| quality | `Quality / Acceptance state` | every PR |
+| quality | `Quality / Agent store writes` | every PR |
+| quality | `Quality / Architecture fitness` | every PR |
+| quality | `Quality / BFCL provenance` | every PR |
+| quality | `Quality / Backlog consistency` | every PR |
+| quality | `Quality / Contract markers` | every PR |
+| quality | `Quality / Convergence matrix` | every PR |
+| quality | `Quality / Credential authority` | every PR |
+| quality | `Quality / Docstring coverage` | every PR |
+| quality | `Quality / Documentation links` | every PR |
+| quality | `Quality / Enumeration coverage` | every PR |
+| quality | `Quality / Execution lifecycles` | every PR |
+| quality | `Quality / Foreign-harness egress` | every PR |
+| quality | `Quality / Frontend typed client` | every PR |
+| quality | `Quality / Hypothesis` | every PR |
+| quality | `Quality / IFEval provenance` | every PR |
+| quality | `Quality / Image inventory` | every PR |
+| quality | `Quality / Image pins` | every PR |
+| quality | `Quality / Installed proof CLI` | every PR |
+| quality | `Quality / Model egress` | every PR |
+| quality | `Quality / Mypy strict` | every PR |
+| quality | `Quality / Principal identity` | every PR |
+| quality | `Quality / Pyright` | every PR |
+| quality | `Quality / Radon` | every PR |
+| quality | `Quality / Reachability` | every PR |
+| quality | `Quality / Reachability dispositions` | every PR |
+| quality | `Quality / Release consistency` | every PR |
+| quality | `Quality / Route permissions` | every PR |
+| quality | `Quality / Ruff` | every PR |
+| quality | `Quality / Security inventory` | every PR |
+| quality | `Quality / Selected model-call CLI` | every PR |
+| quality | `Quality / Version consistency` | every PR |
+| quality | `Quality / Vulture` | every PR |
+| quality | `Quality / Wiring reads` | every PR |
+| quality | `Quality / Workflow inventory` | every PR |
+| quality | `Quality / Workspace retirement` | every PR |
+| quality | `Quality / Xenon` | every PR |
 | quality | `Quality gate (Pillars 1–4, 7, 8)` | every PR |
 | quality | `coverage (MinIO)` | every PR |
 | quality | `coverage (PostgreSQL)` | every PR |
 | quality | `coverage (no services)` | every PR |
 | security | `Container scan + SBOM + cosign` | every PR, job `if:` on base_ref |
 | security | `SAST (bandit + semgrep + gitleaks)` | every PR |
+| security | `SAST / Bandit` | every PR |
+| security | `SAST / Gitleaks` | every PR |
+| security | `SAST / Semgrep` | every PR |
 | security | `Supply chain (pip-audit)` | every PR |
 
 <!-- /checks:table -->
 
 ## Deliberate base-coupled checks
 
-`Analyze (actions)`, `Analyze (javascript-typescript)`, `Analyze (python)`, and
-`Container scan + SBOM + cosign` are required on `main` only. They do not report
-as real executed checks on a `develop`-based PR or develop merge group.
+`Analyze (actions)`, `Analyze (javascript-typescript)`, and `Analyze (python)` are
+required on `main` only. `Container scan + SBOM + cosign` also runs for
+`develop`-based PRs and develop merge groups (and on pushes to `develop`) so
+license and final-filesystem evidence exists before release promotion; branch
+protection still requires the check on `main`.
 
 `DevSkim` is a documented advisory check for `develop`-based PRs. It is
 intentionally excluded from both protected required-check sets until the owner

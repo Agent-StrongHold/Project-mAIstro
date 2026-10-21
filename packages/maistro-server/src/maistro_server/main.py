@@ -25,6 +25,7 @@ from maistro.api_versioning import (
     VersionNegotiationMiddleware,
 )
 from maistro.config.database import resolve_database_url, to_asyncpg_dsn
+from maistro.config.loader import load_yaml_config
 from maistro.config.settings import Settings, get_settings
 from maistro.container import POSTGRES_SCHEMES, create_container
 from maistro.graph.concurrency import configure_graph_concurrency
@@ -234,6 +235,24 @@ def _router_api_key() -> str:
     return os.getenv("ROUTER_API_KEY", "")
 
 
+def _gateway_credential(settings: Settings) -> str:
+    """The credential the deployment's gateway actually authenticates (#1824).
+
+    The bundled proxy authenticates with its master key; an external gateway
+    (LITELLM_BASE_URL pointed off-stack) authenticates with the key the
+    operator states for it, `LITELLM_API_KEY` — the same derivation the
+    shipped compose file applies when it fills the containers' environment:
+    `LITELLM_API_KEY=${LITELLM_API_KEY:-${LITELLM_MASTER_KEY}}`. Server
+    construction used to read only the bundled `LITELLM_MASTER_KEY` setting,
+    so a stack switched to an external gateway kept presenting the bundled
+    proxy's key to it and every governed call came back 401. The physical key
+    registered as the scoped `model.chat` gateway credential and the one the
+    roster-facing endpoint carries are resolved here, once, together — the
+    two doors cannot disagree (and neither value is ever logged).
+    """
+    return os.getenv("LITELLM_API_KEY") or settings.litellm.master_key
+
+
 def _agents_dir() -> str:
     """`agents_dir`, from the same place, for the same reason."""
     yaml_config = settings_module.get_yaml_config()
@@ -261,7 +280,7 @@ def _agent_config(settings: Settings) -> AgentConfig:
     return AgentConfig(
         router_api_key=_router_api_key(),
         litellm_url=settings.litellm.base_url,
-        litellm_key=settings.litellm.master_key,
+        litellm_key=_gateway_credential(settings),
         agents_dir=_agents_dir(),
         database_url=resolve_database_url(),
         workspace_id=settings.workspace_id,
@@ -312,6 +331,45 @@ def _model_bindings() -> list[ModelBindingConfig]:
     return list(yaml_config.model_bindings)
 
 
+def _load_operator_yaml() -> None:
+    """Load the operator YAML inside this worker process (#1880).
+
+    `maistro_server.entrypoint.main` runs the migrations and then `os.execvp`s
+    uvicorn, so the parent that may have read `maistro.yaml` no longer exists
+    when the worker starts: `load_yaml_config`'s process-wide singleton dies
+    with the exec'd-away interpreter, and every reader below —
+    `_validate_startup`'s `_router_api_key`, then `_agent_config`'s
+    `_security_config` and `_model_bindings` on the way into
+    `create_container` — would see `None` and silently ship the fail-closed
+    defaults no matter what the operator declared. Loading here, before those
+    consumers, is what makes the declarations reach the Container the worker
+    actually builds.
+
+    A file that parses but violates the schema — and a malformed one — must
+    stop startup rather than degrade into those defaults, so the loader's
+    exception is logged sanitized and re-raised without its cause: parser
+    errors embed raw file contents (`_load_raw_yaml`'s "Invalid YAML in ...")
+    and a type-invalid value echoes the operator's input, so the event carries
+    only the config path and the exception type, and `from None` cuts the
+    chained traceback that would otherwise publish them to stderr.
+    """
+    config_path = os.getenv("MAISTRO_CONFIG", "config/maistro.yaml")
+    try:
+        load_yaml_config()
+    except Exception as exc:
+        logger.error(
+            "operator_yaml_config_invalid",
+            config_path=config_path,
+            reason=type(exc).__name__,
+        )
+        msg = (
+            f"Operator YAML configuration is invalid; refusing to start "
+            f"({config_path}). See the operator_yaml_config_invalid startup "
+            f"log event."
+        )
+        raise RuntimeError(msg) from None
+
+
 async def _build_container(settings: Settings, pg_pool: Any) -> tuple[Any, ModelChatEgress]:
     """The process's one Container and the governed egress it comes with.
 
@@ -351,7 +409,7 @@ async def _build_container(settings: Settings, pg_pool: Any) -> tuple[Any, Model
         router=container.llm_router,
         endpoint=GatewayEndpoint(
             base_url=settings.litellm.base_url,
-            api_key=settings.litellm.master_key,
+            api_key=_gateway_credential(settings),
         ),
     )
     # `Container.agents` is typed `dict[str, Agent]`, and `Agent` is a concrete
@@ -399,6 +457,17 @@ async def _runtime_lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Configure structured logging (JSON in production, console in debug)
     settings = get_settings()
     configure_logging(debug=settings.debug, json_output=not settings.debug)
+
+    # The worker loads the operator YAML itself (#1880, carrying #1824): the
+    # entrypoint parent exec'd uvicorn away, taking any preload with it, and
+    # every consumer below — `_validate_startup` through `_router_api_key`,
+    # then `_agent_config` through `_security_config`/`_model_bindings` on the
+    # way into `create_container` — reads the singleton this sets. An invalid
+    # file stops startup here rather than bringing the server up as if the
+    # operator had declared nothing. Loading only in the entrypoint parent
+    # cannot work — `os.execvp` replaces that process — and tests injecting
+    # the singleton do not prove the shipped path.
+    _load_operator_yaml()
 
     # Fail-fast startup validation
     _validate_startup(settings)

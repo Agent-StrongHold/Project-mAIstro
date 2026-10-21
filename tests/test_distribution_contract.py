@@ -68,16 +68,42 @@ def test_image_pins_supported_python_and_installs_identity() -> None:
     dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
     python_tags = re.findall(r"^FROM python:(3\.\d+\.\d+)-slim-bookworm", dockerfile, re.MULTILINE)
 
-    assert python_tags == ["3.13.15", "3.13.15"]
-    assert "maistro-core[identity,llm,sandbox,observability]" in dockerfile
+    assert python_tags == ["3.13.16", "3.13.16"]
+    # The sqlite extra is runtime-required since the sqlite persistence
+    # deployment (2dfd3b97a): the container wires SqliteCampaignStore,
+    # SqliteWorkspaceLogStore and backlog history, which import aiosqlite.
+    assert "maistro-core[identity,llm,sandbox,observability,sqlite]" in dockerfile
     assert 'ENTRYPOINT ["python", "-m", "maistro_server.entrypoint"]' in dockerfile
 
 
+def test_research_reasserts_pillow_security_floor_after_browser_install() -> None:
+    dockerfile = (ROOT / "Dockerfile.research").read_text(encoding="utf-8")
+    browser_install = dockerfile.index('"browser-use>=0.1.40"')
+    patched_install = dockerfile.index("&& uv pip install --system", browser_install)
+    cache_cleanup = dockerfile.index("&& rm -rf /root/.cache/uv", patched_install)
+    final_install = dockerfile[patched_install:cache_cleanup]
+    assert '"pillow>=13.0.0"' in final_install
+    # Lexical comparison would accept 9.x as newer than 13.x; use PEP 440.
+    assert "Version(version('pillow')) >= Version('13.0.0')" in final_install
+    assert "PIL.Image" in final_install
+    assert "browser_use" in final_install
+
+
 def test_docker_build_job_boots_the_image_it_built() -> None:
+    """The job that builds maistro-engine:test must boot that exact image.
+
+    Since #1825 the boot itself lives in scripts/smoke-engine-canvas.sh —
+    shared with release.yml, which runs the same proof against the pushed
+    digest — so the workflow-side half asserts the invocation follows the
+    build, and the script-side half asserts the boot order (liveness before
+    readiness) that used to be pinned inline here.
+    """
     workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
     build = workflow.index("-t maistro-engine:test")
-    boot = workflow.index("maistro-engine:test", build + 1)
-    live = workflow.index("/health/live", boot)
-    ready = workflow.index("/health/ready", live)
+    boot = workflow.index("scripts/smoke-engine-canvas.sh maistro-engine:test", build + 1)
+    assert build < boot
 
-    assert build < boot < live < ready
+    script = (ROOT / "scripts/smoke-engine-canvas.sh").read_text(encoding="utf-8")
+    live = script.index("/health/live")
+    ready = script.index("/health/ready", live)
+    assert live < ready
