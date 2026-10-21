@@ -1,7 +1,7 @@
 """Canonical public surface of the ``maistro.extensions`` package: the
 governed registry, activation flow, dependency resolution, contract
-negotiation, preflight, and certification (M9-B/M9-C/M9-H3, issues
-#952/#953/#956/#975).
+negotiation, preflight, certification, and organization/Workspace policy
+(M9-B/M9-C/M9-G/M9-H3, issues #952/#953/#956/#971/#975).
 
 This package carries the extension surface of epic #938, in four layers:
 
@@ -51,6 +51,16 @@ This package carries the extension surface of epic #938, in four layers:
   (``semver``), a deterministic resolver producing a reproducible
   :class:`LockState` (``resolution``), and lock-driven reinstall through the
   install store (:func:`materialize_lock`).
+- **M9-G3 governance (issue #971)**: the organization/Workspace extension
+  policy (``policy``) — org allow/deny with Workspace enablement ceilings,
+  approved-publisher/version pins, deterministic fixed-order inheritance
+  with a per-rule decision trace, a per-org enforcement window and an audit
+  trail — plus tenant-scoped extension configuration, caches and checkpoints
+  (``tenancy``), so shared extension infrastructure cannot leak state across
+  Workspaces. The root exports this layer's Workspace policy as
+  :class:`WorkspaceExtensionEnablementPolicy`; the name
+  ``WorkspaceExtensionPolicy`` stays with the #969 effective-authority
+  input of the same shape but different seam.
 - **M9-I3 operational views (issue #978)**: the truthful health projection
   (``health``) — error taxonomy with provenance, host-recorded invocation
   evidence, durable operator enable/disable/quarantine state, per-version
@@ -83,8 +93,8 @@ This package carries the extension surface of epic #938, in four layers:
   server-side, and carry sandbox policy and provenance on every render.
 
 No layer executes extension code: verification, evaluation, authorization,
-resolution, contract negotiation, certification and metering all operate on
-bytes, declarations, identity and amounts alone.
+resolution, contract negotiation, certification, metering and policy
+evaluation all operate on bytes, declarations, identity and amounts alone.
 
 Naming note: ``ExtensionLifecycleError`` is the governed-install failure base
 (#952/#953). The #950 hook-failure wrapper — the error raised when an
@@ -342,6 +352,23 @@ from maistro.extensions.packs import (
     instantiate_rubric_asset,
     pack_extension_view,
 )
+from maistro.extensions.policy import (
+    INHERITANCE_SEMANTICS,
+    ExtensionCandidate,
+    ExtensionPin,
+    ExtensionPolicyEngine,
+    OrgExtensionPolicy,
+    PolicyAuditEvent,
+    PolicyAuditLog,
+    PolicyConfigurationError,
+    PolicyDecision,
+    PolicyLayer,
+    PolicyRuleOutcome,
+    PolicyVerdict,
+)
+from maistro.extensions.policy import (
+    WorkspaceExtensionPolicy as WorkspaceExtensionEnablementPolicy,
+)
 from maistro.extensions.preflight import (
     ExtensionStatus,
     PreflightPolicy,
@@ -386,6 +413,7 @@ from maistro.extensions.semver import (
 from maistro.extensions.service import (
     ExtensionCodeLoader,
     ExtensionInstallService,
+    ExtensionPolicyViolation,
     LoadedExtension,
     OwnedResourceJanitor,
     RetainAllJanitor,
@@ -400,6 +428,11 @@ from maistro.extensions.store import (
     ExtensionStore,
     InMemoryExtensionInstallStore,
     InMemoryExtensionStore,
+)
+from maistro.extensions.tenancy import (
+    ScopeBoundExtensionState,
+    TenantScopedExtensionState,
+    tenant_scope_key,
 )
 from maistro.extensions.trust import TrustPolicy, TrustReport, evaluate_trust
 
@@ -491,6 +524,7 @@ __all__ = [
     "HEALTHY_STATES",
     "HEALTH_WINDOW",
     "HOST_FEATURES",
+    "INHERITANCE_SEMANTICS",
     "LOCK_FORMAT",
     "MANIFEST_PROFILE",
     "NETWORK_OUTBOUND_PERMISSION",
@@ -563,6 +597,7 @@ __all__ = [
     "ExtensionBundle",
     "ExtensionCancellation",
     "ExtensionCancelled",
+    "ExtensionCandidate",
     "ExtensionCatalog",
     "ExtensionCodeLoader",
     "ExtensionCompatMetadata",
@@ -599,7 +634,10 @@ __all__ = [
     "ExtensionOperatorAction",
     "ExtensionOperatorState",
     "ExtensionPackage",
+    "ExtensionPin",
     "ExtensionPinned",
+    "ExtensionPolicyEngine",
+    "ExtensionPolicyViolation",
     "ExtensionProgress",
     "ExtensionQuotaBalance",
     "ExtensionQuotaConflict",
@@ -657,6 +695,7 @@ __all__ = [
     "MissingLockArtifacts",
     "ObservationOutcome",
     "OperatorDecision",
+    "OrgExtensionPolicy",
     "OwnedResourceJanitor",
     "PackAsset",
     "PackAssetKind",
@@ -680,6 +719,13 @@ __all__ = [
     "PackageStructureCheck",
     "ParsedCatalogSnapshot",
     "PermissionDenial",
+    "PolicyAuditEvent",
+    "PolicyAuditLog",
+    "PolicyConfigurationError",
+    "PolicyDecision",
+    "PolicyLayer",
+    "PolicyRuleOutcome",
+    "PolicyVerdict",
     "PreflightPolicy",
     "PreflightReport",
     "ProgressReporter",
@@ -700,6 +746,7 @@ __all__ = [
     "RouteParam",
     "SandboxPolicy",
     "SandboxViolationLog",
+    "ScopeBoundExtensionState",
     "ScopeMismatch",
     "SecurityScanCheck",
     "SelectionExplanation",
@@ -711,6 +758,7 @@ __all__ = [
     "SqliteExtensionInstallStore",
     "TargetHostContract",
     "TelemetryExport",
+    "TenantScopedExtensionState",
     "TrustClaim",
     "TrustEvidence",
     "TrustPolicy",
@@ -734,6 +782,7 @@ __all__ = [
     "Verdict",
     "VersionRange",
     "ViolationKind",
+    "WorkspaceExtensionEnablementPolicy",
     "WorkspaceExtensionPolicy",
     "assert_snapshot_intact",
     "assert_ui_snapshot_intact",
@@ -796,6 +845,7 @@ __all__ = [
     "sign_certification",
     "slo_position",
     "state_for_action",
+    "tenant_scope_key",
     "verify_certification",
     "verify_certified_package",
     "verify_component_asset",
