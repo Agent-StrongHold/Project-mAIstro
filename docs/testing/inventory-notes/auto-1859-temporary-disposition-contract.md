@@ -1,12 +1,11 @@
 ---
 inventory-delta:
   tests/: +3
-  packages/maistro-core/tests: +3
 ---
 
 # auto-1859 — the API gate's temporary-disposition contract (#1859)
 
-## Status: resolved on the owner-accepted exception contract, reconciled with develop `e20e9f52`; `exact-debt-ledger` green at `43361b8ed`
+## Status: resolved on the owner-accepted exception contract, reconciled with develop `ac1e2f955` (merge `c5251a299`); the assigned `durable-events` red is repaired and green locally; `exact-debt-ledger` green at the merged head
 
 ## The contradiction (characterized before anything changed)
 
@@ -134,6 +133,18 @@ and the shipped registry holds **zero** `temporary` entries (9 implemented /
 (The first attempt's note claimed `tests/: +9`; those tests pinned the
 superseded tracking-only contract and were withdrawn with it. Net lane
 delta against develop is +3.)
+
+The note's front matter records **only** `tests/: +3`. It used to record
+`packages/maistro-core/tests: +3` as well, for the three node IDs in
+`packages/maistro-core/tests/runs/test_runs_admission_identity_publication.py`.
+That file is **byte-identical to develop's** (`git diff origin/develop --
+packages/maistro-core/tests/runs/test_runs_admission_identity_publication.py`
+is empty), and develop's own note `auto-292-admission-identity-publication.md`
+already records those same +3 node IDs. After the develop sync below, keeping
+this lane's copy would have counted the same three node IDs twice: the gate
+reported `DRIFT packages/maistro-core/tests: expected 16914, collected 16911`
+(a net −3). Dropping the duplicate is the fix; no node ID was added or
+removed by this lane's develop sync.
 
 ### Fail-before proof (re-run this round, outside the repository tree)
 
@@ -495,3 +506,150 @@ behaviour, not by documentation.
 - `pip-audit`/`ecdsa` and the coverage-combine red reported by the sibling
   lanes are inherited develop-side debt, reproduced on pristine `e20e9f52`
   and owned by their lanes.
+
+## Repair round (job `07744019ef25460299e43da268ac80f8`, head `205cc511f`) — the assigned red was `durable-events`, and its cause was a trunk regression develop had already repaired
+
+### What the evaluation reported
+
+- `durable-events` — **failure**. `integration-scope` — **failure**,
+  downstream only: the aggregator waits for each path-scoped specialized leg
+  to conclude `success` and fails the moment one concludes `failure`, so it
+  is a consequence of the `durable-events` red, not an independent defect.
+- Everything else in the driver battery was green at `205cc511f`:
+  `uv sync --locked --extra dev`, `uv run ruff check .`,
+  `uv run ruff format --check .`,
+  `packages/maistro-core/tests/runs/test_runs_admission_identity_publication.py`
+  (3 passed) and `scripts/check-suite-inventory.py --suite packages/maistro-core/tests`
+  (`ok: 1 suite(s) match the recorded inventory`).
+
+### Root cause of the `durable-events` red (not this lane's code)
+
+`packages/maistro-core/tests/events/test_container_pg_durable_events.py` died
+with `asyncpg.exceptions.UndefinedTableError: relation "audit_log" does not
+exist` (and the same for `handler_invocations`). The cause is in production
+code, not in the test: `PgAuditLog.ensure_schema()`
+(`packages/maistro-core/src/maistro/persistence/pg_audit.py`) issued
+`ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS ...` against a database that
+has **never run the migration chain** — exactly the state of the
+`durable-events` CI leg, whose service container is a fresh `postgres:17` with
+no `alembic upgrade`. The `ALTER` therefore raised on a missing relation
+instead of degrading to a no-op.
+
+The regression entered trunk at `d32ddff76` and was inherited by this
+branch's pre-merge base. **Develop had already repaired it**: `9417bb2f4`
+guards the `ALTER` behind
+`SELECT to_regclass('public.audit_log') IS NOT NULL`, so on a never-migrated
+database `ensure_schema()` is a no-op (the same guard
+`maistro.runs.wiring` and `maistro.container` already use).
+
+### The repair: a develop sync, and why that is the repair
+
+`git merge --no-ff origin/develop` (base `ac1e2f955`) — merge commit
+`c5251a299`, **conflict-free**; the working tree was clean afterwards.
+`git diff --numstat origin/develop -- quality/` is **empty** after the merge,
+so no ratchet ledger row was lost. The merged tree carries the
+`to_regclass` guard, and this lane's own source surfaces
+(`scripts/check-api-route-contracts.py`,
+`docs/api/route-contract-inventory.md`, `quality/api-route-contracts.json`)
+remain **byte-identical to develop** — the sync brought the *repair*, not a
+competing contract.
+
+### Fail-before proof (reproduced locally, before the sync)
+
+Plain `postgres:17` container, fresh database, CI's exact environment
+(`MAISTRO_TEST_DATABASE_URL`, `MAISTRO_REQUIRE_PG_LEGS=1`,
+`REQUIRE_AUTH=false`, `MAISTRO_DRY_RUN=1`):
+
+| state | command | result |
+| --- | --- | --- |
+| pre-sync (`205cc511f`) | `uv run pytest packages/maistro-core/tests/events -q` | **5 failed** — `UndefinedTableError: relation "audit_log" does not exist` |
+| post-sync (`c5251a299`) | same command, database **dropped and recreated** | **383 passed** |
+| post-sync | `uv run pytest tests/migrations/test_event_schema_agreement.py -q` | **5 passed** |
+
+The post-sync database was inspected afterwards: `audit_log` **does not
+exist**, `alembic_version` **does not exist**, `handler_invocations` does.
+So the pass came from the guard on a never-migrated database — the same
+condition the CI leg runs in — and not from a database that had been
+migrated behind the test's back.
+
+### Scope consequence of the sync (the aggregator will no longer require the leg)
+
+`git diff --no-renames --name-only origin/develop...HEAD` is now exactly two
+paths — this note and `tests/test_check_api_route_contracts.py` — and
+`python3 scripts/ci_merge_group_scope.py --json` on those paths returns
+`{"docker_build": true, "durable_events": false, ...}`. The `durable-events`
+leg is therefore no longer *required* by the scope classifier for this
+candidate, and `docker_build` is. This is a consequence of the candidate's
+diff no longer touching `packages/maistro-core/src`, **not** a way to dodge
+the red: the leg is green on its own terms above, and on develop itself
+(`ci.yml` run `39522310849` at `ac1e2f955` — success, `quality.yml`
+`39522310874` — success, `vulture-ratchet.yml` `39522311113` — success).
+
+### Inventory-delta correction (the one bookkeeping change this round)
+
+Merging develop brought develop's own note
+`auto-292-admission-identity-publication.md` (+3 for
+`packages/maistro-core/tests`) for the same three node IDs this lane had
+recorded. Both notes folded in would have counted them twice; the gate said
+so exactly:
+
+```
+DRIFT  packages/maistro-core/tests: expected 16914, collected 16911
+FAIL: 1 suite(s) drifted from the recorded inventory (net -3 node IDs).
+```
+
+This lane's front matter now records only `tests/: +3`; the
+`packages/maistro-core/tests: +3` line is develop's to carry, because the
+file is byte-identical to develop's. `uv run python
+scripts/check-suite-inventory.py` → **ok: 21 suite(s) match the recorded
+inventory** (32 558 collected node IDs, 32 558 unique identities, 0
+duplicates).
+
+### Fail-before proof re-run for this lane's three negatives (at the merged head)
+
+Re-run from outside the repository tree (scratch harness at
+`/tmp/auto1859-failbefore`: the shipped gate copied to `/tmp` and mutated
+there; the repository tree was not modified). Control: **4 passed**.
+
+| mutation injected into the shipped gate | negative that must catch it | result |
+| --- | --- | --- |
+| A — `_temporary_exempt_identities()` stops requiring a tracking issue | `test_main_temporary_disposition_without_issue_does_not_excuse` | **1 failed**, 3 passed |
+| B — `_temporary_expired()` treats an unparseable review date as unexpired | `test_main_temporary_disposition_with_malformed_date_does_not_excuse` | **1 failed**, 3 passed |
+| C — one valid temporary entry excuses **every** canned handler | `test_main_temporary_disposition_under_foreign_identity_does_not_excuse` | **1 failed**, 3 passed |
+
+Each mutation is caught by exactly the negative that names it, and only by
+it — the develop-owned valid-disposition test stays green under A and B, and
+the #389 exact-identity keying is enforced by behaviour, not documentation.
+
+### Validation battery at the merged head `c5251a299`
+
+| check | result |
+| --- | --- |
+| `uv run ruff check .` | `All checks passed!` |
+| `uv run ruff format --check .` | `3379 files already formatted` |
+| `uv run mypy` (the 10 source trees CI checks) | `Success: no issues found in 1072 source files` |
+| `uv run pytest packages/maistro-core/tests/events -q` (fresh DB) | **383 passed** |
+| `uv run pytest tests/migrations/test_event_schema_agreement.py -q` | **5 passed** |
+| `uv run pytest tests/ --ignore=tests/tools/registry -q` (`RATCHET_BASE_REV=origin/develop`) | **5398 passed, 139 skipped** |
+| `uv run pytest tests/test_check_api_route_contracts.py packages/maistro-core/tests/runs/test_runs_admission_identity_publication.py -q` | **67 passed** |
+| `uv run python scripts/check-suite-inventory.py` | **ok: 21 suite(s) match the recorded inventory** |
+| `uv run python scripts/check-test-duplicates.py` | `ok: no byte-identical test files` |
+| `uv run python scripts/check-api-route-contracts.py` | exit 0 — `297 handlers scanned, 15 audited routes registered, 0 canned` |
+| `uv run python scripts/check-merge-markers.py` | `ok: no conflict markers in any tracked file` |
+| `uv run python scripts/check-cross-package-imports.py` | `ok: 3366 file(s) import only modules and names that exist` |
+| `uv run python scripts/check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'` (`RATCHET_BASE_REV=origin/develop`) | **1324 reviewed identities → 1324 findings**, RC 0 |
+| `uv run python scripts/check-ratchet-provenance.py` (`RATCHET_BASE_REV=origin/develop`) | passed — 168 unreachable modules, no candidate-approved expansion |
+| `uv run python scripts/check-shipped-surface-truth.py` | `Shipped-surface truth matrix is complete.` |
+
+### What this round does not claim
+
+- It does not claim the `durable-events` leg as *this lane's* fix: the guard
+  is develop's (`9417bb2f4`), and the repair here is the sync that brings it
+  in. The claim is only that the leg is green on the merged head against a
+  never-migrated database, proved above.
+- It does not claim #1859 is closed, and it creates no new exemption
+  instance: `quality/api-route-contracts.json` still holds **zero**
+  `temporary` entries, and nothing here closes #389.
+- It does not claim anything about the sibling lanes' inherited develop-side
+  debt (`pip-audit`, the coverage combine); those are develop-side and
+  outside this lane's scope.
