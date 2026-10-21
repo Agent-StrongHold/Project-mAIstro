@@ -57,7 +57,7 @@ COPY packages/maistro-canvas packages/maistro-canvas
 # the codebase (zero src imports) and the CVE-2026-25580 fix line (>=1.56.0)
 # requires openai>=2, which cannot co-install with the openai pin below.
 RUN pip install --no-cache-dir \
-      "./packages/maistro-core[identity,llm,sandbox,observability]" \
+      "./packages/maistro-core[identity,llm,sandbox,observability,sqlite]" \
       "./packages/maistro-server" \
       "./packages/maistro-canvas" \
       "alembic>=1.14" \
