@@ -121,3 +121,36 @@ in-tree addresses or needs to address it.
 - `langfuse/langfuse:2` and `pgvector/pgvector:pg18` remain mutable
   major tags; the same deletion mode would break Gate C through them. Not
   repaired here (no evidence of breakage; minimal-change discipline).
+
+## Independent re-verification (writer round, 2026-10-21, head f7ff9efb)
+
+Re-derived on this tree; none of the above inherited.
+
+- Driver's deterministic checks passed: `uv sync --locked --extra dev`,
+  `ruff check .`, `ruff format --check .`, quarantine suite
+  (38 passed), `check-suite-inventory.py --suite packages/maistro-core/tests`
+  (17170 match), `check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` (rc=0, 1321 == 1321).
+- Digest provenance, independent of this note: `docker manifest inspect
+  ghcr.io/berriai/litellm@sha256:af8050ea…` → OCI image index with
+  linux/amd64 + linux/arm64 (+ attestations). The locally cached
+  `ghcr.io/berriai/litellm:main-latest` inspects to
+  `Id=sha256:af8050ea45707c42a0572c5cceaa5cebaa89cee4c5cd0585cf879a529804b898`,
+  i.e. the pinned digest is the exact image this stack already runs.
+- `docker compose config` renders `litellm.image` as the pinned digest;
+  `docker compose pull litellm` → `Pulled` (the exact operation Gate C
+  failed on). `check-compose-resources.py`, `check-compose-secrets.py`, and
+  `check-deployment-claims.py` all pass.
+- Full local Gate C re-run in an isolated stack. The override used
+  `ports: !override` and unique container names, because Compose *appends*
+  port lists by default: a plain override leaves the base
+  `127.0.0.1:5433:5432` postgres mapping in place and collides with another
+  lane's stack (`Bind for 0.0.0.0:5433 failed: port is already allocated`).
+  With the fix: `./install.sh --skip-wizard --no-cli --no-open` (gate-c.yml's
+  exact env, ports shifted to 18000/18101/14000/13100/15433) → exit 0;
+  engine `/health/live` + `/health/ready` ready; conductor `/health/ready`
+  ready; `alembic_version` = `065` (matches the `^[0-9a-z_]+$` fail-closed
+  grep); litellm runs `ghcr.io/berriai/litellm@sha256:af8050ea…`,
+  `/health/liveliness` 200, unauthenticated `/v1/models` 401. Teardown
+  `down -v --remove-orphans` clean; the temporary override was removed and
+  the tree left clean.
