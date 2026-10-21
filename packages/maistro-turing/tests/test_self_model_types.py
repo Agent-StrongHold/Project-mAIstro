@@ -505,6 +505,40 @@ class TestMood:
                 last_tick_at=_now(),
             )
 
+    @pytest.mark.parametrize("bad_value", ["0.5", None, True, [0.5]])
+    def test_non_real_values_raise_type_error(self, bad_value: object) -> None:
+        """The type constraint is enforced at the authoritative seam (#859).
+
+        A mood value that is not a real number must fail the write rather than
+        be coerced: a string, a boolean or ``None`` would otherwise pass a
+        naive comparison and land in persisted state looking like a value.
+        """
+        with pytest.raises(TypeError, match="must be a real number"):
+            Mood(
+                self_id="self-1",
+                valence=bad_value,  # type: ignore[arg-type]
+                arousal=0.5,
+                focus=0.5,
+                last_tick_at=_now(),
+            )
+
+    @pytest.mark.parametrize("bad_value", [float("nan"), float("inf"), float("-inf")])
+    def test_non_finite_values_raise_value_error(self, bad_value: float) -> None:
+        """NaN and infinities are refused, never clamped into a plausible value.
+
+        ``-1.0 <= nan <= 1.0`` is False, so a range check alone would refuse a
+        NaN — but only the finite check can say *why*, and a weight or mood
+        that launders itself into an endpoint is worse than one that fails.
+        """
+        with pytest.raises(ValueError, match="valence out of range"):
+            Mood(
+                self_id="self-1",
+                valence=bad_value,
+                arousal=0.5,
+                focus=0.5,
+                last_tick_at=_now(),
+            )
+
 
 # ------------------------------------------------------------ ActivationContributor
 

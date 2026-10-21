@@ -224,38 +224,59 @@ class TuringChatSession:
             raise TuringContentBlocked("user input refused by Warden")
 
         self._history.append({"role": "user", "content": message})
+        # The declared bound holds from this point on, not only after a
+        # successful turn (#859): a turn that fails between here and the
+        # assistant entry must not leave the session's stored state growing
+        # past MAX_HISTORY_TURNS.
+        self._trim_history()
 
-        await self._classifier.classify_message(message)
+        try:
+            await self._classifier.classify_message(message)
 
-        prompt_parts = [f"User: {message}"]
-        if self._history[:-1]:
-            prompt_parts.insert(0, "Previous context:")
-            for turn in self._history[-6:]:
-                prompt_parts.insert(
-                    len(prompt_parts) - 1, f"  {turn['role']}: {turn['content'][:200]}"
-                )
-        prompt_parts.append("Respond naturally as yourself.")
+            prompt_parts = [f"User: {message}"]
+            if self._history[:-1]:
+                prompt_parts.insert(0, "Previous context:")
+                for turn in self._history[-6:]:
+                    prompt_parts.insert(
+                        len(prompt_parts) - 1, f"  {turn['role']}: {turn['content'][:200]}"
+                    )
+            prompt_parts.append("Respond naturally as yourself.")
 
-        # Async seam (#397): the model call is awaited on the owning loop;
-        # the sync path is reserved for non-loop callers.
-        reply = await self._provider.acomplete(
-            "\n".join(prompt_parts),
-            max_tokens=1000,
-        )
-        result_scan = await self._security.scan_tool_result(reply, tool_name="turing-model")
-        if result_scan.get("verdict") != "allowed":
-            # Do not append or persist a model result until Warden has cleared
-            # it; provider choice must not change the trust boundary.
+            # Async seam (#397): the model call is awaited on the owning loop;
+            # the sync path is reserved for non-loop callers.
+            reply = await self._provider.acomplete(
+                "\n".join(prompt_parts),
+                max_tokens=1000,
+            )
+            result_scan = await self._security.scan_tool_result(reply, tool_name="turing-model")
+            if result_scan.get("verdict") != "allowed":
+                # Do not append or persist a model result until Warden has
+                # cleared it; provider choice must not change the trust
+                # boundary.
+                raise TuringContentBlocked("model result refused by Warden")
+        except Exception:
+            # A failed turn leaves no half-written history: the unpaired user
+            # entry is rolled back, so repeated failures cannot grow the
+            # session's stored state, and a failed turn never reaches the next
+            # turn's model context as if it had been answered.
             self._history.pop()
-            raise TuringContentBlocked("model result refused by Warden")
+            raise
 
         self._history.append({"role": "assistant", "content": reply})
-        if len(self._history) > MAX_HISTORY_TURNS:
-            del self._history[:-MAX_HISTORY_TURNS]
+        self._trim_history()
 
         await self._capture_chat_episode(message, reply)
 
         return reply
+
+    def _trim_history(self) -> None:
+        """Hold the stored history to the declared bound.
+
+        Oldest turns fall off first. The durable trace of a conversation is
+        the episodic chat capture, not this in-memory list (#859).
+        """
+        if len(self._history) > MAX_HISTORY_TURNS:
+            del self._history[:-MAX_HISTORY_TURNS]
 
     async def _capture_chat_episode(self, message: str, reply: str) -> None:
         """Persist the turn as an episodic chat capture (best-effort).

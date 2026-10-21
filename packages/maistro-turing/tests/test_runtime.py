@@ -531,6 +531,78 @@ class TestTuringChatSession:
         assert session._history[0] == {"role": "user", "content": f"turn {first_kept_turn}"}
         assert {"role": "user", "content": "turn 0"} not in session._history
 
+    async def test_failed_turns_do_not_grow_the_stored_history(self) -> None:
+        """A failed turn leaves no half-written history (#859).
+
+        The bound on session state must hold on every exit path, not only on
+        the successful one: a classifier or provider failure used to leave the
+        user entry behind, so repeated failures grew the session's stored
+        state without limit and injected unanswered turns into the next
+        turn's model context.
+        """
+        from maistro_turing.runtime import MAX_HISTORY_TURNS
+
+        class FailingClassifier(FakeClassifierBridge):
+            async def classify_message(
+                self, message: str, *, task_types: dict[str, Any] | None = None
+            ) -> dict[str, Any]:
+                raise RuntimeError("classifier unavailable")
+
+        session = TuringChatSession(
+            memory=FakeMemoryBridge(),  # type: ignore[arg-type]
+            provider=FakeChatProvider(reply="ok"),  # type: ignore[arg-type]
+            classifier=FailingClassifier(),  # type: ignore[arg-type]
+            security=FakeSecurityBridge(),  # type: ignore[arg-type]
+            self_id="self-1",
+        )
+
+        for turn in range(MAX_HISTORY_TURNS + 8):
+            with pytest.raises(RuntimeError, match="classifier unavailable"):
+                await session.handle_message(f"turn {turn}")
+
+        # Nothing was retained: no failed turn grew the stored state.
+        assert session._history == []
+
+    async def test_a_failed_turn_never_reaches_the_next_turns_context(self) -> None:
+        """A rolled-back turn is not model context for the next turn."""
+        provider = FakeChatProvider(reply="ok")
+
+        class FlakyClassifier(FakeClassifierBridge):
+            def __init__(self) -> None:
+                super().__init__()
+                self.fail = True
+
+            async def classify_message(
+                self, message: str, *, task_types: dict[str, Any] | None = None
+            ) -> dict[str, Any]:
+                self.messages.append(message)
+                if self.fail:
+                    self.fail = False
+                    raise RuntimeError("classifier unavailable")
+                return {"task_type": "general", "complexity": 0.5, "priority": "normal"}
+
+        session = TuringChatSession(
+            memory=FakeMemoryBridge(),  # type: ignore[arg-type]
+            provider=provider,  # type: ignore[arg-type]
+            classifier=FlakyClassifier(),  # type: ignore[arg-type]
+            security=FakeSecurityBridge(),  # type: ignore[arg-type]
+            self_id="self-1",
+        )
+
+        with pytest.raises(RuntimeError, match="classifier unavailable"):
+            await session.handle_message("failed turn")
+
+        await session.handle_message("successful turn")
+
+        # The failed turn left no trace in the prompt the next turn built.
+        second_prompt = provider.prompts[-1]
+        assert "failed turn" not in second_prompt
+        assert "Previous context:" not in second_prompt
+        assert session._history == [
+            {"role": "user", "content": "successful turn"},
+            {"role": "assistant", "content": "ok"},
+        ]
+
     async def test_handle_message_includes_previous_context_on_second_turn(self) -> None:
         provider = FakeChatProvider(reply="ok")
         session = TuringChatSession(
