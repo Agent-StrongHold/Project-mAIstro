@@ -2672,6 +2672,11 @@ jobs:
       - name: model egress (the direct-caller set may only shrink)
         run: uv run python scripts/check-model-egress.py
 
+      # M7-A11: design explore/judge egress is Capability -> Provider ->
+      # Binding -> Invocation on the Run (ADR-081226-6b46).
+      - name: design model egress (governed Invocation path only)
+        run: uv run python scripts/check-design-model-egress.py
+
   quality-harness-egress:
     name: Quality / Foreign-harness egress
     runs-on: ubuntu-latest

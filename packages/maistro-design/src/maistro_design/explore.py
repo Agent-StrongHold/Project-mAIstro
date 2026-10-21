@@ -265,7 +265,7 @@ class DesignThesisIn(BaseModel):
 class DesignThesisOut(BaseModel):
     """One thesis payload plus the Invocation that produced it."""
 
-    thesis_id: str
+    thesis_id: str  # noqa: V107
     thesis_index: int
     artifact_kind: str
     title: str

@@ -122,13 +122,38 @@ def test_the_unreachable_registration_module_stays_out_of_the_proof() -> None:
     assert "maistro_design.nodes" not in report.loaded
     assert "maistro_design.nodes" in unreachable_identities(_REPO_ROOT)
     assert "maistro_design.nodes" in dispositioned_modules(_REPO_ROOT)
-    assert not {kind for kind in report.production_kinds if kind.startswith("design.")}
+    # The unreachable module's own kinds stay out of the proof. (The design
+    # wave kinds are a different matter — #987 moved them onto the canonical
+    # spine through their own reachable modules, which the next test proves.)
+    assert not {"design.orchestrate", "design.consistency_eval"} & set(report.production_kinds)
     # And the kinds stay unregistered in a process that only loads production
     # modules: nothing above ever imported the unreachable module.
     import pytest
 
     with pytest.raises(KeyError):
         get_node("design.orchestrate")
+
+
+def test_the_governed_design_wave_kinds_are_production_kinds_through_their_own_modules() -> None:
+    """#987 put the design wave on the canonical spine, so these kinds are
+    production kinds — proven through their own loaded source identity.
+
+    Before #987 every `design.*` kind came from the unreachable
+    `maistro_design.nodes` module, so the proof was "no `design.*` kind is
+    registered at all". The governed explore/judge kinds are registered by
+    reachable production modules instead, and the reconciled universe has to
+    say so: each one is attributed to the module that defines it, and that
+    module is one the guard actually loaded."""
+    report = _real_reconciliation()
+
+    for kind, module in (
+        ("design.explore", "maistro_design.explore"),
+        ("design.thesis", "maistro_design.explore"),
+        ("design.judge", "maistro_design.judge"),
+    ):
+        assert report.production_kinds[kind] == module
+        assert module in report.loaded
+        assert module in report.registration_modules
 
 
 def test_the_composition_sweeps_use_this_universe() -> None:
@@ -286,10 +311,14 @@ def test_a_registration_outside_a_packaged_src_root_fails_closed(tmp_path: Path)
 
 def test_a_bare_core_import_misses_what_loading_adds() -> None:
     """The audited selection difference, executed: a process that only imports
-    the core catalog registers 19 kinds and no `creative.*`; importing the
-    real design registration module is what adds them. Unrelated test
+    the core catalog registers the core kinds and no `creative.*`; importing
+    the real design registration module is what adds them. Unrelated test
     collection order therefore cannot change what the guards prove — the
-    helper performs the loading itself."""
+    helper performs the loading itself.
+
+    Since #987 the design package's own import chain also registers the
+    governed wave kinds, so "what loading adds" is the design package's
+    production kinds as a whole — the creative ones and the wave ones."""
     design_src = _REPO_ROOT / "packages" / "maistro-design" / "src"
     env = dict(os.environ)
     env["PYTHONPATH"] = os.pathsep.join(
@@ -315,17 +344,18 @@ def test_a_bare_core_import_misses_what_loading_adds() -> None:
     observed: dict[str, Any] = json.loads(proc.stdout)
 
     bare, added = set(observed["bare"]), set(observed["added"])
-    assert not {kind for kind in bare if kind.startswith("creative.")}
-    assert len(added) == 11
+    assert not {kind for kind in bare if kind.startswith(("creative.", "design."))}
     # What loading adds is exactly what the reconciled universe attributes to
-    # the design registration module.
-    from_design = {
-        kind
-        for kind, module in _real_reconciliation().production_kinds.items()
-        if module == _CREATIVE_MODULE
+    # the design package's production registration modules.
+    production_kinds = _real_reconciliation().production_kinds
+    from_design = {kind for kind, module in production_kinds.items() if module == _CREATIVE_MODULE}
+    from_design_package = {
+        kind for kind, module in production_kinds.items() if module.startswith("maistro_design.")
     }
-    assert added == from_design
-    assert from_design <= {kind for kind in list_kinds() if not kind.startswith("test.")}
+    assert len(from_design) == 11, sorted(from_design)
+    assert added == from_design_package
+    assert from_design <= added
+    assert from_design_package <= {kind for kind in list_kinds() if not kind.startswith("test.")}
 
 
 def test_the_loaded_registration_modules_are_importable_production_modules() -> None:

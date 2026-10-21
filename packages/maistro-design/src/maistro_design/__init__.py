@@ -30,6 +30,23 @@ from maistro_design.brief import (
     RequiredFact,
 )
 from maistro_design.engine import DesignEngine
+from maistro_design.explore import (
+    EXPLORE_NODE_KIND,
+    THESIS_NODE_KIND,
+    DesignExploreNode,
+    DesignExploreOut,
+    DesignThesisNode,
+    DesignThesisOut,
+)
+from maistro_design.governance import DESIGN_MODEL_CAPABILITY
+from maistro_design.judge import (
+    DesignEvalRecord,
+    DesignJudgeDimension,
+    DesignJudgeNode,
+    DesignJudgeOut,
+    DesignJudgeThesis,
+    HumanJudgeNotResolvedError,
+)
 from maistro_design.protocols import (
     DesignEngineProtocol,
     DesignProjectStore,
@@ -115,7 +132,10 @@ from maistro_design.versions import (
 )
 
 __all__ = [
+    "DESIGN_MODEL_CAPABILITY",
+    "EXPLORE_NODE_KIND",
     "NATIVE_SLOTS",
+    "THESIS_NODE_KIND",
     "AgentWorkInputs",
     "ArtifactKind",
     "ArtifactLock",
@@ -147,6 +167,13 @@ __all__ = [
     "DesignEngine",
     "DesignEngineProtocol",
     "DesignError",
+    "DesignEvalRecord",
+    "DesignExploreNode",
+    "DesignExploreOut",
+    "DesignJudgeDimension",
+    "DesignJudgeNode",
+    "DesignJudgeOut",
+    "DesignJudgeThesis",
     "DesignOutput",
     "DesignOutputShapeError",
     "DesignProject",
@@ -157,12 +184,15 @@ __all__ = [
     "DesignSystemLoader",
     "DesignSystemNotFoundError",
     "DesignSystemRegistry",
+    "DesignThesisNode",
+    "DesignThesisOut",
     "DiscoveryField",
     "DiscoveryIncompleteError",
     "DiscoveryResult",
     "EvidenceReference",
     "GuidanceRecord",
     "HTMLRenderer",
+    "HumanJudgeNotResolvedError",
     "InMemoryDesignSkillRegistry",
     "InMemoryDesignSystemRegistry",
     "InMemoryTrustBanishList",

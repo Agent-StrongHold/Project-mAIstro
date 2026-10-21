@@ -494,7 +494,6 @@
         "packages/maistro-core/src/maistro/orchestrator/waves/types.py::unused variable 'head_sha'",
         "packages/maistro-core/src/maistro/orchestrator/waves/types.py::unused variable 'wave_a'",
         "packages/maistro-core/src/maistro/orchestrator/waves/types.py::unused variable 'wave_b'",
-        "packages/maistro-core/src/maistro/personas/expander.py::unused variable 'criterion'",
         "packages/maistro-core/src/maistro/personas/expander.py::unused variable 'soul_prompt'",
         "packages/maistro-core/src/maistro/privilege.py::unused attribute '_initialized'",
         "packages/maistro-core/src/maistro/privilege.py::unused attribute '_initialized'",
