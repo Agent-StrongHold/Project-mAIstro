@@ -8,17 +8,22 @@ HTTPHandlerCaller, and the durable fake-receiver fault-injection phases.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 
 import httpx
 import pytest
 
+from maistro.events import processing
 from maistro.events.durable_log import InMemoryEventLog, LoggedEvent
 from maistro.events.invocations import (
     MAX_ATTEMPTS,
+    DeliveryAlreadyStarted,
     DeliveryAttemptLimitReached,
     DeliveryDisposition,
     DeliveryIdentity,
+    DeliveryIdentityMismatch,
     HandlerCallOutcome,
+    HandlerInvocation,
     InMemoryInvocationStore,
     InvocationStatus,
     ReplaySafety,
@@ -435,6 +440,70 @@ class TestHTTPHandlerCaller:
         assert outcome.disposition is DeliveryDisposition.NOT_APPLIED
         assert outcome.reason_code == "delivery_key_missing"
 
+    async def test_refuses_when_the_receipt_target_moved(self) -> None:
+        """The frozen receipt names a destination the current trigger no
+        longer has: the caller refuses to send to either URL."""
+        invocations = InMemoryInvocationStore()
+        trigger, event, _ = await self._prepared_receipt(invocations)
+        moved = TriggerDefinition(
+            trigger_id=trigger.trigger_id,
+            handler_url="http://handlers.local/moved",
+            replay_safety=ReplaySafety.IDEMPOTENT,
+            contract_ref="contract-v1",
+        )
+        calls: list[httpx.Request] = []
+
+        def handle(request: httpx.Request) -> httpx.Response:
+            calls.append(request)
+            return httpx.Response(200)
+
+        transport = httpx.MockTransport(handle)
+        async with httpx.AsyncClient(transport=transport) as client:
+            caller = HTTPHandlerCaller(invocations, client=client)
+            outcome = await caller(moved, event)
+        assert outcome is not None
+        assert outcome.disposition is DeliveryDisposition.NOT_APPLIED
+        assert outcome.reason_code == "handler_url_mismatch"
+        assert calls == []
+
+    async def test_a_4xx_is_indeterminate_never_not_applied(self) -> None:
+        """A status line alone proves nothing about the remote commit: a 4xx
+        is the same possibly-applied evidence as a transport loss."""
+        invocations = InMemoryInvocationStore()
+        transport = httpx.MockTransport(lambda _: httpx.Response(404, text="missing"))
+        async with httpx.AsyncClient(transport=transport) as client:
+            caller = HTTPHandlerCaller(invocations, client=client)
+            trigger, event, _ = await self._prepared_receipt(invocations)
+            outcome = await caller(trigger, event)
+        assert outcome is not None
+        assert outcome.disposition is DeliveryDisposition.INDETERMINATE
+        assert outcome.reason_code == "http_error_status"
+
+    async def test_the_shared_client_is_used_when_none_is_injected(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Without an injected client the caller sends through the pooled
+        shared client, not a per-call allocation."""
+        sent: list[httpx.Request] = []
+
+        def handle(request: httpx.Request) -> httpx.Response:
+            sent.append(request)
+            return httpx.Response(200)
+
+        @contextlib.asynccontextmanager
+        async def fake_shared_client(**_kwargs: object):
+            async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
+                yield client
+
+        monkeypatch.setattr(processing, "shared_client", fake_shared_client)
+        invocations = InMemoryInvocationStore()
+        caller = HTTPHandlerCaller(invocations)  # no injected client
+        trigger, event, key = await self._prepared_receipt(invocations)
+        outcome = await caller(trigger, event)
+        assert outcome is None  # acknowledged
+        assert len(sent) == 1
+        assert sent[0].headers["Idempotency-Key"] == key
+
 
 class TestClassificationTable:
     """The #1060 §4 classification table, one row at a time."""
@@ -752,6 +821,331 @@ class TestClassificationTable:
         assert receipt is not None
         assert receipt.status is InvocationStatus.UNKNOWN  # not auto-retried
         assert receipt.replay_safety is ReplaySafety.UNPROVEN
+
+
+class _TakeoverSettleStore:
+    """Proxy whose ``settle`` loses the row to a takeover first.
+
+    A worker that stalls between ``begin_dispatch`` and its settlement can be
+    overtaken once its lease lapses; when its own CAS then lands, the store
+    returns ``None``. ``_settle_and_report`` must reread the receipt instead
+    of assuming the event is unsettled — this pins the reread both ways.
+    """
+
+    def __init__(self, inner: InMemoryInvocationStore, *, takeover: InvocationStatus) -> None:
+        self._inner = inner
+        self._takeover = takeover
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._inner, name)
+
+    async def settle(
+        self, trigger_id, event_id, *, claim_token, expected_revision, status, outcome
+    ):
+        raw = await self._inner.get(trigger_id, event_id)
+        assert raw is not None
+        expired = raw.__class__(**{**raw.__dict__, "lease_expires_at": 0.0})
+        await self._inner.save(expired)
+        delivery = DeliveryIdentity(
+            handler_url=raw.handler_url,
+            request_digest=raw.request_digest,
+            replay_safety=raw.replay_safety,
+            contract_ref=raw.contract_ref,
+        )
+        takeover = await self._inner.claim(trigger_id, event_id, delivery=delivery)
+        assert takeover is not None
+        begun = await self._inner.begin_dispatch(
+            trigger_id,
+            event_id,
+            claim_token=takeover.claim_token,
+            expected_revision=takeover.revision,
+            delivery=delivery,
+        )
+        assert begun is not None
+        if self._takeover is InvocationStatus.SUCCESS:
+            await self._inner.settle(
+                trigger_id,
+                event_id,
+                claim_token=begun.claim_token,
+                expected_revision=begun.revision,
+                status=InvocationStatus.SUCCESS,
+                outcome=HandlerCallOutcome(DeliveryDisposition.ACKNOWLEDGED, "committed"),
+            )
+        else:
+            await self._inner.settle(
+                trigger_id,
+                event_id,
+                claim_token=begun.claim_token,
+                expected_revision=begun.revision,
+                status=InvocationStatus.RETRYING,
+                outcome=HandlerCallOutcome(DeliveryDisposition.NOT_APPLIED, "proven_absent"),
+            )
+        return None
+
+
+class _BeginRefusalStore:
+    """Proxy that injects a ``begin_dispatch`` refusal after a real claim.
+
+    ``_dispatch`` must classify each refusal the durable store can raise
+    between claim and send; a real store only produces them under a race, so
+    the proxy pins the handler side deterministically.
+    """
+
+    def __init__(
+        self,
+        inner: InMemoryInvocationStore,
+        *,
+        exc: Exception | None = None,
+        returns_none: bool = False,
+    ) -> None:
+        self._inner = inner
+        self._exc = exc
+        self._returns_none = returns_none
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._inner, name)
+
+    async def begin_dispatch(self, *args: object, **kwargs: object):
+        if self._exc is not None:
+            raise self._exc
+        return None
+
+
+class TestLostClaimSettlement:
+    """A settlement that loses its CAS rereads the receipt (#1060 §4)."""
+
+    @staticmethod
+    def _stack():
+        log = InMemoryEventLog()
+        triggers = InMemoryTriggerStore()
+        invocations = InMemoryInvocationStore()
+        trigger = TriggerDefinition(trigger_id="t-lost", event_pattern="a.b", **SAFE_TRIGGER_KWARGS)
+        return log, triggers, invocations, trigger
+
+    async def test_a_lost_settle_rereads_a_terminal_receipt(self) -> None:
+        log, triggers, invocations, trigger = self._stack()
+        await triggers.add(trigger)
+        event = await log.append("a.b")
+        store = _TakeoverSettleStore(invocations, takeover=InvocationStatus.SUCCESS)
+
+        cursor = await process_events(log, triggers, store, RecordingCaller())
+
+        receipt = await invocations.get(trigger.trigger_id, event.id)
+        assert receipt is not None and receipt.is_successful_delivery
+        assert cursor == event.id  # the reread saw the takeover's terminal settle
+
+    async def test_a_lost_settle_holds_the_cursor_when_not_settled(self) -> None:
+        log, triggers, invocations, trigger = self._stack()
+        await triggers.add(trigger)
+        event = await log.append("a.b")
+        store = _TakeoverSettleStore(invocations, takeover=InvocationStatus.RETRYING)
+
+        cursor = await process_events(log, triggers, store, RecordingCaller())
+
+        receipt = await invocations.get(trigger.trigger_id, event.id)
+        assert receipt is not None and receipt.status is InvocationStatus.RETRYING
+        assert cursor == 0  # an unsettled reread never advances the cursor
+
+
+class TestDispatchStoreRefusals:
+    """The refusals ``begin_dispatch`` can raise between claim and send."""
+
+    @staticmethod
+    def _stack():
+        log = InMemoryEventLog()
+        triggers = InMemoryTriggerStore()
+        invocations = InMemoryInvocationStore()
+        trigger = TriggerDefinition(
+            trigger_id="t-refuse", event_pattern="a.b", **SAFE_TRIGGER_KWARGS
+        )
+        return log, triggers, invocations, trigger
+
+    @staticmethod
+    def _delivery(trigger: TriggerDefinition, event: LoggedEvent) -> DeliveryIdentity:
+        return DeliveryIdentity(
+            handler_url=trigger.handler_url,
+            request_digest=request_digest_v1(trigger.handler_url, event),
+            replay_safety=trigger.effective_replay_safety,
+            contract_ref=trigger.contract_ref,
+        )
+
+    async def test_a_cap_refusal_with_inherited_uncertainty_settles_unknown(self) -> None:
+        log, triggers, invocations, trigger = self._stack()
+        await triggers.add(trigger)
+        event = await log.append("a.b")
+        delivery = self._delivery(trigger, event)
+        claimed = await invocations.claim(trigger.trigger_id, event.id, delivery=delivery)
+        assert claimed is not None
+        begun = await invocations.begin_dispatch(
+            trigger.trigger_id,
+            event.id,
+            claim_token=claimed.claim_token,
+            expected_revision=claimed.revision,
+            delivery=delivery,
+        )
+        assert begun is not None
+        raw = await invocations.get(trigger.trigger_id, event.id)
+        assert raw is not None
+        expired = raw.__class__(**{**raw.__dict__, "lease_expires_at": 0.0})
+        await invocations.save(expired)
+
+        store = _BeginRefusalStore(invocations, exc=DeliveryAttemptLimitReached("cap"))
+        cursor = await process_events(log, triggers, store, RecordingCaller())
+
+        receipt = await invocations.get(trigger.trigger_id, event.id)
+        assert receipt is not None
+        assert receipt.status is InvocationStatus.UNKNOWN
+        assert receipt.last_error_code == "attempt_limit_with_uncertainty"
+        assert cursor == event.id
+
+    async def test_a_cap_refusal_without_uncertainty_settles_failed(self) -> None:
+        log, triggers, invocations, trigger = self._stack()
+        await triggers.add(trigger)
+        event = await log.append("a.b")
+        # A marker whose last settled call was a proven absence: the takeover
+        # does not inherit uncertainty, so a cap refusal is a pre-send fact.
+        await invocations.save(
+            HandlerInvocation(
+                trigger_id=trigger.trigger_id,
+                event_id=event.id,
+                status=InvocationStatus.RETRYING,
+                attempts=MAX_ATTEMPTS,
+                delivery_key="dead-worker-key",
+                handler_url=trigger.handler_url,
+                request_digest=request_digest_v1(trigger.handler_url, event),
+                replay_safety=ReplaySafety.IDEMPOTENT,
+                contract_ref="contract-v1",
+                claim_token="dead-worker",
+                revision=7,
+                dispatch_started_at=1.0,
+                last_outcome=DeliveryDisposition.NOT_APPLIED,
+                lease_expires_at=0.0,
+            )
+        )
+
+        store = _BeginRefusalStore(invocations, exc=DeliveryAttemptLimitReached("cap"))
+        cursor = await process_events(log, triggers, store, RecordingCaller())
+
+        receipt = await invocations.get(trigger.trigger_id, event.id)
+        assert receipt is not None
+        assert receipt.status is InvocationStatus.FAILED
+        assert receipt.last_error_code == "attempt_limit_reached"
+        failed = await log.query(event_type=HANDLER_FAILED_EVENT)
+        assert len(failed) == 1
+        assert failed[0].payload["event_id"] == event.id
+        assert cursor == event.id
+
+    async def test_a_begin_identity_mismatch_settles_a_visible_refusal(self) -> None:
+        log, triggers, invocations, trigger = self._stack()
+        await triggers.add(trigger)
+        event = await log.append("a.b")
+        store = _BeginRefusalStore(invocations, exc=DeliveryIdentityMismatch("moved"))
+
+        cursor = await process_events(log, triggers, store, RecordingCaller())
+
+        receipt = await invocations.get(trigger.trigger_id, event.id)
+        assert receipt is not None
+        assert receipt.status is InvocationStatus.FAILED
+        assert receipt.last_error_code == "delivery_identity_changed"
+        assert cursor == event.id
+
+    async def test_a_begin_already_started_does_not_settle_the_event(self) -> None:
+        log, triggers, invocations, trigger = self._stack()
+        await triggers.add(trigger)
+        await log.append("a.b")
+        store = _BeginRefusalStore(invocations, exc=DeliveryAlreadyStarted("in flight"))
+
+        cursor = await process_events(log, triggers, store, RecordingCaller())
+
+        receipt = await invocations.get(trigger.trigger_id, 1)
+        assert receipt is not None
+        assert receipt.status is InvocationStatus.PENDING  # the marker's owner settles
+        assert cursor == 0
+
+    async def test_a_begin_returning_none_holds_the_cursor(self) -> None:
+        log, triggers, invocations, trigger = self._stack()
+        await triggers.add(trigger)
+        await log.append("a.b")
+        store = _BeginRefusalStore(invocations, returns_none=True)
+
+        cursor = await process_events(log, triggers, store, RecordingCaller())
+
+        receipt = await invocations.get(trigger.trigger_id, 1)
+        assert receipt is not None
+        assert receipt.status is InvocationStatus.PENDING
+        assert cursor == 0
+
+
+class TestPriorUncertainUnsafeRecipient:
+    """A possibly-applied send to a recipient that cannot deduplicate is
+    never automatically replayed (#1060 §2)."""
+
+    async def test_prior_uncertainty_on_an_unproven_recipient_settles_unknown(self) -> None:
+        log = InMemoryEventLog()
+        triggers = InMemoryTriggerStore()
+        invocations = InMemoryInvocationStore()
+        trigger = TriggerDefinition(
+            trigger_id="t-unproven", event_pattern="a.b", handler_url="http://h"
+        )
+        await triggers.add(trigger)
+        event = await log.append("a.b")
+        delivery = DeliveryIdentity(
+            handler_url=trigger.handler_url,
+            request_digest=request_digest_v1(trigger.handler_url, event),
+            replay_safety=trigger.effective_replay_safety,
+            contract_ref=trigger.contract_ref,
+        )
+        claimed = await invocations.claim(trigger.trigger_id, event.id, delivery=delivery)
+        assert claimed is not None
+        begun = await invocations.begin_dispatch(
+            trigger.trigger_id,
+            event.id,
+            claim_token=claimed.claim_token,
+            expected_revision=claimed.revision,
+            delivery=delivery,
+        )
+        assert begun is not None
+        raw = await invocations.get(trigger.trigger_id, event.id)
+        assert raw is not None
+        expired = raw.__class__(**{**raw.__dict__, "lease_expires_at": 0.0})
+        await invocations.save(expired)
+
+        caller = RecordingCaller()
+        cursor = await process_events(log, triggers, invocations, caller)
+
+        receipt = await invocations.get(trigger.trigger_id, event.id)
+        assert receipt is not None
+        assert receipt.status is InvocationStatus.UNKNOWN
+        assert receipt.last_error_code == "prior_uncertain_dispatch"
+        assert caller.calls == []  # the redelivery was refused before any HTTP
+        assert cursor == event.id
+
+
+class TestCancellationSettlement:
+    """Cancellation is indeterminate evidence, settled under a bounded shield
+    before the cancellation is re-raised (#1060 §4)."""
+
+    async def test_cancellation_settles_indeterminate_then_reraises(self) -> None:
+        log = InMemoryEventLog()
+        triggers = InMemoryTriggerStore()
+        invocations = InMemoryInvocationStore()
+        trigger = TriggerDefinition(
+            trigger_id="t-cancel", event_pattern="a.b", **SAFE_TRIGGER_KWARGS
+        )
+        await triggers.add(trigger)
+        event = await log.append("a.b")
+
+        async def cancelling(tr, ev):
+            raise asyncio.CancelledError
+
+        with pytest.raises(asyncio.CancelledError):
+            await process_events(log, triggers, invocations, cancelling)
+
+        receipt = await invocations.get(trigger.trigger_id, event.id)
+        assert receipt is not None
+        assert receipt.status is InvocationStatus.RETRYING  # safe contract, budget remains
+        assert receipt.last_error_code == "handler_cancelled"
+        assert receipt.uncertain_prior_dispatch
 
 
 class TestCrashPhases:

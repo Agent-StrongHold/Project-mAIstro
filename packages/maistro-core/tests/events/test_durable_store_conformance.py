@@ -695,6 +695,78 @@ class TestDeliveryReceiptContract:
         assert current is not None
         assert current.claim_token == takeover.claim_token
 
+    async def test_begin_and_settle_reject_an_empty_token_or_negative_revision(self, invocations):
+        identity = _identity()
+        await invocations.claim("t1", 1, delivery=identity)
+        with pytest.raises(ValueError):
+            await invocations.begin_dispatch(
+                "t1", 1, claim_token="", expected_revision=0, delivery=identity
+            )
+        with pytest.raises(ValueError):
+            await invocations.begin_dispatch(
+                "t1", 1, claim_token="token", expected_revision=-1, delivery=identity
+            )
+        with pytest.raises(ValueError):
+            await invocations.settle(
+                "t1",
+                1,
+                claim_token="",
+                expected_revision=0,
+                status=InvocationStatus.FAILED,
+                outcome=HandlerCallOutcome(DeliveryDisposition.NOT_APPLIED, "x"),
+            )
+        with pytest.raises(ValueError):
+            await invocations.settle(
+                "t1",
+                1,
+                claim_token="token",
+                expected_revision=-1,
+                status=InvocationStatus.FAILED,
+                outcome=HandlerCallOutcome(DeliveryDisposition.NOT_APPLIED, "x"),
+            )
+
+    async def test_a_stale_begin_is_not_misread_as_a_fact_about_the_owner(self, invocations):
+        """A begin that lost its claim reports ``None``, never an identity or
+        budget fact about the receipt the current owner holds."""
+        identity = _identity()
+        _first, begun = await _claim_and_begin(invocations, identity)
+        raw = await invocations.get("t1", 1)
+        assert raw is not None
+        expired = raw.__class__(**{**raw.__dict__, "lease_expires_at": 0.0})
+        await invocations.save(expired)
+        takeover = await invocations.claim("t1", 1, delivery=identity)
+        assert takeover is not None
+        stale = await invocations.begin_dispatch(
+            "t1",
+            1,
+            claim_token=_first.claim_token,
+            expected_revision=begun.revision,
+            delivery=identity,
+        )
+        assert stale is None
+
+    async def test_an_expired_lease_begin_returns_none_without_a_fact(self, invocations):
+        """A begin whose lease lapsed (no takeover yet) is stale, not a cap or
+        identity fact: the store reports ``None`` and changes nothing."""
+        identity = _identity()
+        claimed = await invocations.claim("t1", 1, delivery=identity)
+        assert claimed is not None
+        raw = await invocations.get("t1", 1)
+        assert raw is not None
+        expired = raw.__class__(**{**raw.__dict__, "lease_expires_at": 0.0})
+        await invocations.save(expired)
+        refused = await invocations.begin_dispatch(
+            "t1",
+            1,
+            claim_token=claimed.claim_token,
+            expected_revision=claimed.revision,
+            delivery=identity,
+        )
+        assert refused is None
+        current = await invocations.get("t1", 1)
+        assert current is not None
+        assert current.attempts == 0  # the refusal did not consume an attempt
+
     async def test_indeterminate_then_not_applied_stays_unknown_on_exhaustion(self, invocations):
         identity = _identity()
         claimed, begun = await _claim_and_begin(invocations, identity)
