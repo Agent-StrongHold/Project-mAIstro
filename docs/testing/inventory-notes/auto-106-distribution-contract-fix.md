@@ -1,5 +1,6 @@
 ---
-inventory-delta: {}
+inventory-delta:
+  tests/: +0
 ---
 # auto-106-distribution-contract-fix
 
