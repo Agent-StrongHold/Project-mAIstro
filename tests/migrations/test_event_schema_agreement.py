@@ -43,7 +43,7 @@ EVENT_TABLES = ("consumer_cursors", "event_log", "handler_invocations", "trigger
 EVENT_REVISION_RANGES = (
     "003:004",
     "035_outcome_scope_thumb_index:036_consumer_cursors",
-    "063:064",
+    "064:065",
 )
 
 

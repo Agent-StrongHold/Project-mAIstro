@@ -199,9 +199,9 @@ async def ensure_event_schema(pool: asyncpg.Pool) -> None:
     transaction ends, including by crash, so a worker killed mid-bootstrap does
     not lock the rest out.
 
-    Migrations 004 + 064 remain the real path for a managed deployment; this is
+    Migrations 004 + 065 remain the real path for a managed deployment; this is
     what lets tests and single-command dev runs work without one. The upgrade
-    statements mirror migration 064 (see `tests/migrations/…agreement`).
+    statements mirror migration 065 (see `tests/migrations/…agreement`).
     """
     async with pool.acquire() as conn, conn.transaction():
         await conn.execute("SELECT pg_advisory_xact_lock($1)", _SCHEMA_LOCK_KEY)

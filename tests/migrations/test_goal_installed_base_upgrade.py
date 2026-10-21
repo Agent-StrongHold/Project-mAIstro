@@ -62,15 +62,17 @@ HITL_FILE = "alembic/versions/061_hitl_pause_kind_index.py"
 USER_MODEL_FILE = "alembic/versions/056_user_model_facts.py"
 PLANNER_FILE = "alembic/versions/057_run_store_planner_stability.py"
 
-#: The single linear head after HITL ``061``, audit ``062`` and the Goal store;
-#: ``064`` (durable delivery receipts, #1060) appends after it.
+#: The Goal revision: the single linear head after HITL ``061``, audit
+#: ``062``. Personas (#12, 064) and durable delivery receipts (#1060, 065)
+#: append past it; they do not change the Goal identity this file protects.
 GOAL_REVISION = "063"
 CHAIN_TIP = "064"
 
-#: The chain tip once the live-Workspace-Persona revision (#12) appends past it.
+#: The chain head once the live-Workspace-Persona revision (#12, 064) and
+#: the durable delivery receipts (#1060, 065) append past the Goal store.
 #: The Goal revision above stays the installed-base identity this file protects;
 #: the head moves every time a reviewed revision lands after it.
-CHAIN_HEAD = "064"
+CHAIN_HEAD = "065"
 
 GOAL_TABLES = ("canonical_goals", "canonical_goal_revisions", "canonical_goal_transitions")
 USER_MODEL_TABLES = ("user_model_facts", "user_model_statement_keys")
@@ -417,7 +419,8 @@ class TestTheMergedIdentities:
         assert revisions["061"].down_revision == "060"
         assert revisions[GOAL_REVISION].down_revision == "062"
         assert script_directory.get_heads() == [CHAIN_HEAD]
-        assert revisions[CHAIN_HEAD].down_revision == GOAL_REVISION
+        assert revisions["064"].down_revision == GOAL_REVISION
+        assert revisions[CHAIN_HEAD].down_revision == "064"
         # The filenames carry the merged identities too — a renamed file
         # and a moved id are the same silent reassignment in two clothes.
         assert (VERSIONS / "056_user_model_facts.py").is_file()

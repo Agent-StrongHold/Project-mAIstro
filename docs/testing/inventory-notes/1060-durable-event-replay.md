@@ -17,8 +17,8 @@ protocol and is what ships on this branch:
   `uncertain_prior_dispatch`, and the fail-closed SQLite legacy-row upgrade
   (`legacy_unkeyed_attempt` / `legacy_failed_unproven`).
 - `pg_stores.py`: the same protocol on PostgreSQL, plus the idempotent
-  `_SCHEMA_UPGRADES` mirror of migration `064`
-  (`alembic/versions/064_durable_delivery_receipts.py`).
+  `_SCHEMA_UPGRADES` mirror of migration `065`
+  (`alembic/versions/065_durable_delivery_receipts.py`).
 - `processing.py`: the receipt-reading `HTTPHandlerCaller` (persisted
   `Idempotency-Key`, digest validation, indeterminate classification for
   transport/4xx/5xx), the §4 classification table, prior-uncertainty
@@ -35,8 +35,8 @@ during the in-flight marker / after remote commit before SUCCESS persistence
 via `_CrashBeforeSettleStore` / after SUCCESS before cursor save, against the
 atomic key+digest-committing `FakeReceiver`), `TestAttemptBudgetCannotBeEvaded`,
 the receipt-reading `TestHTTPHandlerCaller` refusals, trigger-store enrollment
-fail-closed tests, and migration-chain updates (schema agreement `063:064`,
-installed-base chain tip `064`). The m8a8 replay-equivalence research fixtures
+fail-closed tests, and migration-chain updates (schema agreement `064:065`,
+installed-base chain tip `065`). The m8a8 replay-equivalence research fixtures
 and the container-wiring cursor tests migrated from
 `HandlerDeliveryContract.AT_LEAST_ONCE_IDEMPOTENT` to the new enrollment
 fields — same node counts, no semantics change for what they measure.
@@ -59,10 +59,10 @@ Real PostgreSQL 18 (`pgvector/pgvector:pg18`, dedicated container), CI shape
   snapshots, one-key-winner, immutability, begin/send cap, stale CAS, delayed
   old sender, indeterminate+not_applied exhaustion, UNKNOWN visibility,
   changed-target refusal, legacy fail-closed migration, and the
-  `063:064` schema-agreement render.
+  `064:065` schema-agreement render.
 - `tests/migrations` against a fresh database: 168 passed (chain upgrade,
   reversibility, episodic/goal/capability migrations, event schema
-  agreement, installed-base upgrades to `064`).
+  agreement, installed-base upgrades to `065`).
 
 A non-CI ordering (events suite against a *never-migrated* database, then
 `tests/migrations`) fails at migration 004 because `ensure_event_schema`

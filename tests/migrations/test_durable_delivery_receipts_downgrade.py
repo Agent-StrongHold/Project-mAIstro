@@ -128,7 +128,7 @@ def chain_database():
     """
     assert _alembic("downgrade", "base").returncode == 0
     _drop_public_tables()
-    assert _alembic("upgrade", "064").returncode == 0
+    assert _alembic("upgrade", "065").returncode == 0
     _execute(
         """
         INSERT INTO handler_invocations
@@ -205,7 +205,7 @@ class TestDowngrade064LeavesReadableReceipts:
 
     def test_reupgrade_rederives_unknown_fail_closed(self, chain_database: None) -> None:
         assert _alembic("downgrade", "063").returncode == 0
-        assert _alembic("upgrade", "064").returncode == 0
+        assert _alembic("upgrade", "065").returncode == 0
         receipts = _receipts()
         extensions = _receipt_extensions()
 
