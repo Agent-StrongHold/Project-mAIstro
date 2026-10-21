@@ -73,7 +73,11 @@ contribution to `packages/maistro-core/tests` is `+0`. Measured at the final
 merged head (`32e46bdaa59e`): `scripts/check-suite-inventory.py` reports
 **21 suites match; 32778 collected = 32778 unique; 0 duplicates**.
 
-## Evidence at the merged head (`ded032ece0bc`)
+## Evidence at the merged head (`ded032ece0bc`), re-validated at `3aaf6735d`
+
+The ledger, reachability, suite inventory, root suite, and the postgres legs
+were re-run at `32e46bdaa59e` / `3aaf6735d` after the `ea10835e8` sync; the
+rows below carry the final-head numbers.
 
 | check | command | result |
 |---|---|---|
@@ -96,10 +100,13 @@ merged head (`32e46bdaa59e`): `scripts/check-suite-inventory.py` reports
 | server | `pytest packages/maistro-server/tests` | 596 passed, 8 skipped |
 | hive backend | `pytest packages/hive-conductor/backend/tests` | 3846 passed, 24 skipped |
 | core changed areas | `pytest packages/maistro-core/tests/{extensions,runs,tools/sandbox,capabilities,fitness,sandbox}` | 3598 passed, 384 skipped |
-
 | new develop commits | `pytest packages/maistro-core/tests/{reactor,extensions/test_extension_scaffold.py} packages/hive-conductor/backend/tests/test_foundation_reactor_state.py tests/test_check_api_route_contracts.py` | 177 passed, 5 skipped |
+| docker-build (engine leg) | `docker build -f Dockerfile` + `scripts/smoke-engine-canvas.sh maistro-engine:repair448` | image built; import probe `maistro-canvas 0.9.0 PgCanvasStore`; control failed as expected; **canvas design created/read through `/v2/canvas` and verified in PostgreSQL — PASS** |
+| structural gates | `scripts/check-backlog-consistency.py`, `pytest tests/test_unit_suite_execution_partition.py` | 167 items OK; 6 passed |
 
 Not re-run locally (time-bound, and not among the failing gates):
-`docker-build` (45-min cold-path build job) and `hive-conductor-e2e(-ui)`
-(browser e2e). Both are required by `integration-scope` for this branch; neither
-was in the failing-leg list at `34379a166`.
+the `docker-build` canvas/hive/docs image legs (45-min cold-path build job)
+and `hive-conductor-e2e(-ui)` (browser e2e). The engine image leg **was**
+rebuilt and its Canvas smoke passed (above). Both are required by
+`integration-scope` for this branch; neither was in the failing-leg list at
+`34379a166`.
