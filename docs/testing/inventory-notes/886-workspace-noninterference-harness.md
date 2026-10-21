@@ -48,3 +48,9 @@ by reconnecting the orphaned `maistro.runs.admission_identity` re-export in
 `maistro/runs/__init__.py` (pure re-export; reachability 168→168, vulture
 1326→1326, zero ledger rows changed). No test node IDs moved in this round, so
 the +17 delta above remains the recorded inventory.
+
+Develop-sync merge `c96b0bc7c` (2026-10-20, resolves the durable-events →
+integration-scope merge-queue red by carrying develop's `to_regclass` guard in
+`PgAuditLog.ensure_schema`): the suite now collects 3890 node IDs (develop's
+3873 + this lane's +17) and the inventory gate matches; the harness module
+reports 17 passed on the merged tree.

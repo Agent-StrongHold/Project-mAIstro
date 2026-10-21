@@ -146,6 +146,33 @@ repair; and the `Coverage gate` combine job failed while all three of its
 coverage producer jobs succeeded at the same SHA, consistent with the
 documented timeout/cancellation history of that job rather than this diff.
 
+### Develop-sync merge for the 2026-10-20 merge-queue round (head `c96b0bc7c`)
+
+The merge queue red `durable-events` → `integration-scope` (its log names only
+"durable-events ... concluded failure", so the aggregator fell with it) and the
+`Coverage gate`. Local reproduction on the pre-merge tree with
+`MAISTRO_REQUIRE_PG_LEGS=1` against a real postgres:17 showed the durable-events
+leg's five `test_container_pg_durable_events.py` cases failing on
+`UndefinedTableError: relation "audit_log" does not exist`: this branch predated
+develop's `to_regclass` guard in `PgAuditLog.ensure_schema`, which makes the
+ALTER-only probe a no-op on a never-migrated database. Merged `origin/develop`
+(`2dfd3b97a`, 17 commits; only `uv.lock` overlapped and auto-resolved) — which
+also independently landed the identical `runs/__init__.py` re-export (same
+blob), so this lane's residual diff is the two notes and the harness module
+only, and aiohttp 3.14.5 arrived from develop's own supply-chain commit.
+Post-merge evidence on the merged tree: durable-events legs green (events suite
+383 passed, event-schema agreement 5 passed), harness 17 passed, product
+backend suite 3866 passed / 24 skipped (3890 collected, inventory gate ok),
+ruff clean, `mypy --strict packages/maistro-core/src` clean under CI's
+all-extras sync, vulture ledger green (1324 = develop's own row count after its
+security commits). The `Coverage gate` failure is develop-inherited Docker-infra
+flake, not this diff: its log shows the root-suite producer dying in
+`test_restore_oracle_characterization.py::test_semantic_loss_is_rejected` on
+"[verify-restore] VERIFIER FAIL: scratch postgres did not become ready" (a
+60-second `pg_isready` loop in `deploy/scripts/verify-restore.sh` on a loaded
+runner) — the test, untouched by this lane, passes locally with Docker
+(4/4 in ~19s) on the merged tree.
+
 **Oracle validation by mutation** (injected, run, reverted; not committed):
 
 - `delete_workspace_agents` ignoring its workspace argument (the delete
