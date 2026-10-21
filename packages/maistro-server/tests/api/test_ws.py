@@ -154,6 +154,20 @@ class TestWsOwnerId:
         settings = Settings(api_keys=["legacy-plain"])
         assert _ws_owner_id("legacy-plain", settings) is None
 
+    def test_admin_only_deployment_is_auth_enabled(self) -> None:
+        """#1095: ``API_KEYS=[]`` with ``ADMIN_API_KEYS`` set is auth-enabled,
+        so the WS owner is the resolved admin principal — never the
+        auth-disabled ``dev`` identity, and an absent/invalid bearer is
+        rejected rather than served as ``dev``.
+
+        Distinguishes the gate from the pre-#1095 rule
+        (``if not settings.api_keys`` -> ``"dev"``), under which every
+        assertion here would return ``"dev"`` instead."""
+        settings = Settings(api_keys=[], admin_api_keys=["ops:secret"])
+        assert _ws_owner_id("secret", settings) == "ops"
+        assert _ws_owner_id("wrong", settings) is None
+        assert _ws_owner_id(None, settings) is None
+
 
 class TestStreamTaskEndpoint:
     def test_rejects_connection_when_no_token_and_auth_required(self) -> None:
