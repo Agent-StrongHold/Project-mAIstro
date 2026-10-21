@@ -169,6 +169,37 @@ async def _goal(backend, *, workspace_id: str = "ws-1", project_id: str = "prj-1
     )
 
 
+async def test_goal_discovery_is_scoped_ordered_and_survives_reopen(backend) -> None:
+    from datetime import UTC, datetime
+    from uuid import uuid4
+
+    workspace = f"discovery-{uuid4().hex}"
+    at = datetime(2026, 1, 1, tzinfo=UTC)
+    store = await backend.store()
+    goals = [
+        await store.create_goal(
+            workspace_id=workspace,
+            project_id="project-discovery",
+            agent_id="agent-7",
+            draft=_draft(),
+            goal_id=f"{workspace}-{suffix}",
+            created_at=at,
+        )
+        for suffix in ("a", "b")
+    ]
+    await _goal(backend, workspace_id=f"foreign-{workspace}")
+    reopened = await backend.store()
+    assert await reopened.list_goals(workspace, limit=1) == [goals[1]]
+    assert await reopened.list_goals(workspace, limit=1, offset=1) == [goals[0]]
+    assert await reopened.list_goals(workspace, offset=2) == []
+    assert await reopened.list_goals("missing-workspace") == []
+    for kwargs in ({"limit": 0}, {"offset": -1}):
+        with pytest.raises(ValueError):
+            await reopened.list_goals(workspace, **kwargs)
+    goals[1].agent_id = "not-persisted"
+    assert (await reopened.list_goals(workspace))[0].agent_id == "agent-7"
+
+
 async def test_goal_round_trips_through_the_backend(backend) -> None:
     """Create, reopen, read back: the Goal, its revision and its history are
     the records that were written, not similar ones."""
@@ -475,6 +506,22 @@ async def test_two_principals_cannot_reach_each_other_s_goals(scoped) -> None:
         draft=_draft(),
     )
     assert isinstance(created, Goal)
+
+
+async def test_goal_discovery_uses_the_existing_workspace_authority(scoped) -> None:
+    store, seam = scoped
+    workspace = await seam.workspace_store.create(creator_user_id="alice", name="Discovery")
+    workspace_id = workspace.workspace_id
+    goal = await store.create_goal(
+        workspace_id=workspace_id, project_id="prj-1", agent_id="agent-7", draft=_draft()
+    )
+    assert await seam.list_goals(workspace_id, principal_id="alice") == [goal]
+    refusals = [
+        await _refusal_of(seam.list_goals(scope, principal_id=principal))
+        for scope, principal in ((workspace_id, "bob"), ("missing", "alice"), (workspace_id, ""))
+    ]
+    assert all(type(refusal) is GoalNotVisible for refusal in refusals)
+    assert len({str(refusal) for refusal in refusals}) == 1
 
 
 async def test_a_foreign_goal_answers_exactly_like_a_missing_one(scoped) -> None:
