@@ -789,3 +789,92 @@ merge `a57dca433` itself). The coverage publish-set floor (87%) and full `--all-
 `pip-audit` need CI's coverage producers' artefacts and are not re-run locally;
 diff-coverage is vacuous for this branch (no `packages/*/src` delta) and the supply-chain
 fixes are verified by the pip-audit gate in this round.
+
+## Round 10 (2026-10-21, head `53ab6bc5a`): develop sync to `252950bdb` — the canonical #2208 landed, conflicts resolved
+
+Round 9 left the branch green at `9ad293a4aa7e` with the only open block being GitHub
+merge-queue contention (`GH006`, dispatcher-owned). In the interim `origin/develop`
+advanced to `252950bdb` — and that advance **carries the canonical M7-A7
+implementation**: `22f5dc4e2` (`WIP: [M7-A7] Map Evolve/RSI as consumers of the same
+eval; forbid a second loop (#2208)`) added the same `CONVERGENCE-MATRIX` section, the
+same contract test, the same inventory note and `REPAIR-NOTES` rounds 1-5. This
+campaign's branch had already been partially merged (that is why develop also carries
+`REPAIR-NOTES-796.md` and the `2658c27c`/`9417bb2f` sync notes).
+
+### The conflict, and the resolution
+
+`git merge-tree --write-tree HEAD origin/develop` reported three `add/add` conflicts —
+`REPAIR-NOTES-796.md`, `docs/testing/inventory-notes/m7-a7-eval-consumer-map.md`, and
+`packages/maistro-core/tests/fitness/test_m7_a7_eval_consumer_map.py`. `CONVERGENCE-MATRIX.md`
+auto-merged cleanly (both sides carry the identical section).
+
+Each conflicted pair was diffed before resolving: this branch's copy is a **strict
+superset** of develop's in all three cases. The contract test adds the round-8
+dynamic-import fix — `_dynamic_import_callable_names` resolves the builtin `__import__`,
+`from importlib import import_module [as im]`, and `im = importlib.import_module`, so the
+bare `ast.Name` call that an attribute-only scan silently dropped is caught (negative
+control grew from ×3 to ×6 loop imports). The inventory note carries the matching
+wording, and `REPAIR-NOTES-796.md` carries rounds 6-9. The resolution keeps this
+branch's copies; nothing of develop's is lost because develop's copies are subsets.
+
+Commit `53ab6bc5a` (`Merge commit 'origin/develop' (252950bdb) into auto-796`).
+`git merge-base --is-ancestor origin/develop HEAD` -> true; `git rev-list --count
+HEAD..origin/develop` -> 0. The branch delta against develop is exactly four files:
+`REPAIR-NOTES-796.md` (+346), `auto-796-develop-sync-8a9139bc-resolution.md` (+122),
+`m7-a7-eval-consumer-map.md` (+6/-2) and `test_m7_a7_eval_consumer_map.py` (+59/-5).
+`git diff --numstat origin/develop...HEAD -- 'packages/*/src' quality/` is empty: no
+production code and no per-identity ledger row changes, so #21 keeps promotion and #552
+keeps RSI.
+
+### Validation at the merged tree (all exit 0)
+
+| Command (CI's exact arguments where they exist) | Outcome |
+| --- | --- |
+| `uv run pytest packages/maistro-core/tests/fitness/test_m7_a7_eval_consumer_map.py -v` | 7/7 pass |
+| `uv run pytest packages/maistro-core/tests/fitness -q` | 34 pass |
+| `uv run pytest packages/maistro-rsi/tests/test_non_production_reachability.py -q` | 13 pass (M5 invariant) |
+| `uv run pytest tests/test_check_reachability.py tests/test_reachability_baseline_identity.py tests/test_reachability_scanner.py tests/test_reachability_source_universe.py -q` | 54 pass |
+| `uv run ruff check .` / `uv run ruff format --check .` | clean / 3389 files already formatted |
+| `uv run python scripts/check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'` | exit 0 — 1324 findings, unclassified 0, never_allowlist 0 (the trusted ledger's 1326 rows carry 2 duplicate multiset entries that collapse to the same 1324 identities; no unbanked finding, nothing eliminated) |
+| `uv run python scripts/check-reachability.py` | exit 0 — 1428 production modules, 168 unreachable |
+| `RATCHET_BASE_REV=origin/develop uv run python scripts/check-ratchet-provenance.py` | exit 0 — 0 lifecycle violations, no candidate-approved expansion |
+| `RATCHET_BASE_REV=origin/develop uv run python scripts/check-shipped-surface-truth.py` | exit 0 |
+| `uv run python scripts/check-suite-inventory.py` | ok — 21 suites match |
+| `uv run python scripts/check-convergence-matrix.py` | OK — 52 subsystems / 1428 modules, 168 unreachable attributed |
+| `uv run python scripts/check-doc-links.py` | 0 broken links |
+| `uv run python scripts/check-contract-markers.py` / `check-merge-markers.py` | OK / ok |
+| `uv run python scripts/check-test-duplicates.py` / `check-promotion-surface.py` / `check-execution-lifecycles.py` / `check-branch-independence.py` / `check-radon-baseline.py` / `check-retired-guidance.py` | all exit 0 |
+| `uv pip freeze --exclude-editable \| uvx pip-audit --strict --format=json` + `scripts/pip_audit_gate.py` | exit 0 — only `ecdsa==0.19.2 PYSEC-2026-1325`, triaged in `ALLOWED`; `aiohttp==3.14.5` |
+
+No vulture-ledger amendment was needed: the CI-exact scan reports no unbanked identity
+and no identity this branch eliminated. The merge brought develop's own forward-evolved
+`quality/vulture-baseline.json`; `quality/` is byte-identical to `origin/develop`.
+
+### Independent re-checks of the acceptance criteria
+
+- **Map is written and anchored in reality** (`CONVERGENCE-MATRIX.md` "One scoring loop",
+  `maistro/personas/rubric.py` `RubricEval` -> `RunEvalScore` rows on the canonical Run;
+  `runs/eval.py` "eval-on-Run … evidence on the execution spine") — unchanged by the
+  sync; `check-convergence-matrix.py` classifies all 1428 modules.
+- **Contract test fails on the forbidden shapes**: the merged test's negative control
+  feeds all six loop-import shapes and both consumer-import shapes from `tmp_path` and
+  asserts the scanners catch them; on the real tree 7/7 pass.
+- **No design-quality score is stored outside the canonical homes**: `grep` over
+  `maistro-design/src` and the Hive `routes/design*.py` / `services/design*.py` surfaces
+  finds `score` only in catalog `design-tokens.json` data, never a Goal score field.
+- **No second loop in evolve/rsi**: the only `maistro_design`/`maistro.personas` strings
+  under `maistro-evolve/src`/`maistro-rsi/src` are benchmark-corpus JSON data and a
+  comment — no import, which is what the contract scans for.
+- **Ownership untouched**: `packages/*/src` and `quality/` are empty-delta vs
+  `origin/develop`; #21 keeps promotion, #552 keeps RSI.
+
+### Residuals (unchanged)
+
+The issue's acceptance line "PR is `feat/m7-a7-eval-consumer-map` off `develop`" is
+dispatcher-owned GitHub state (campaign branch is `auto-796`); lane workers may not push
+or open PRs. The branch *is* off `develop` (`origin/develop` is a direct ancestor). The
+coverage publish-set floor (87%) and full `--all-extras` `pip-audit` need CI's coverage
+producers' artefacts and are not re-run locally; diff-coverage is vacuous for this branch
+(no `packages/*/src` delta) and the supply-chain fixes are verified by the pip-audit gate
+in this round. The `GH006` merge-queue block is dispatcher-owned and cannot be cleared
+from a lane worker.
