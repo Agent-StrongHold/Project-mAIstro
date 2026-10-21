@@ -14,6 +14,7 @@ from typing import Any
 import pytest
 
 from maistro.container import Container, create_container
+from maistro.persistence.audit_pages import AUDIT_PAGE_INDEXES
 from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 from maistro.types.config import AgentConfig
 
@@ -1165,6 +1166,16 @@ async def test_wiring_declines_to_build_an_admitter_with_no_template_store() -> 
 # --- Audit log backend selection (ADR-073, #122) ----------------------------
 
 
+class _AuditFakeTransaction:
+    """Stand-in for ``asyncpg.Connection.transaction()``."""
+
+    async def __aenter__(self) -> None:
+        return None
+
+    async def __aexit__(self, *exc: Any) -> None:
+        return None
+
+
 class _AuditFakeConnection:
     """Minimal asyncpg double: records executed SQL so a wiring test can prove
     `ensure_schema` ran against the selected backend."""
@@ -1172,9 +1183,8 @@ class _AuditFakeConnection:
     def __init__(self) -> None:
         self.statements: list[str] = []
 
-    async def fetchval(self, query: str, *args: Any) -> Any:
-        self.statements.append(query)
-        return "public.audit_log"  # to_regclass: the table exists
+    def transaction(self) -> _AuditFakeTransaction:
+        return _AuditFakeTransaction()
 
     async def execute(self, query: str, *args: Any) -> str:
         self.statements.append(query)
@@ -1216,11 +1226,22 @@ async def test_audit_log_wiring_prefers_postgres_and_upgrades_its_schema() -> No
         audit = await _wire_audit_log(pg_pool=_AuditFakePool(conn), db_pool=sqlite_conn)
 
         assert type(audit) is PgAuditLog
-        assert conn.statements == [
-            "SELECT to_regclass('public.audit_log') IS NOT NULL",
+        creates = [s for s in conn.statements if "CREATE TABLE IF NOT EXISTS audit_log" in s]
+        assert len(creates) == 1
+        assert conn.statements[2:6] == [
+            "ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS org_id TEXT NOT NULL DEFAULT ''",
             "ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS signature TEXT NOT NULL DEFAULT ''",
             "ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS signing_key_id TEXT NOT NULL DEFAULT ''",
             "ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS proof_type TEXT NOT NULL DEFAULT ''",
+        ]
+        assert conn.statements[6] == (
+            "CREATE INDEX IF NOT EXISTS ix_audit_log_scope ON audit_log (org_id, timestamp)"
+        )
+        # The page indexes `get_page` needs: wiring is the only thing that can
+        # create them on a database the migration chain never touched.
+        assert conn.statements[7:] == [
+            f"CREATE INDEX IF NOT EXISTS {name} ON audit_log ({', '.join(fields)})"
+            for name, fields in AUDIT_PAGE_INDEXES.items()
         ]
     finally:
         await sqlite_conn.close()

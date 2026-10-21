@@ -243,7 +243,9 @@ class SkillForge:
             "new_hash": new_hash,
         }
 
-    def _resolve_mutation_target(self, skill_name: str) -> tuple[Path | None, dict[str, Any] | None]:
+    def _resolve_mutation_target(
+        self, skill_name: str
+    ) -> tuple[Path | None, dict[str, Any] | None]:
         if not validate_skill_name(skill_name):
             return None, {"status": "blocked", "reason": f"Invalid skill name: {skill_name!r}"}
         root = self._skills_dir.resolve()

@@ -79,12 +79,33 @@ FILESYSTEM_TOOLS: tuple[dict[str, str], ...] = (
 )
 
 
+# The concrete counter-examples this predicate refuses (the genuine host over
+# a plaintext scheme, and the genuine host on an odd port) are written out in
+# backend/tests/test_mcp_trust_boundary.py rather than here: a URL written in
+# a docstring is a string literal in the source, and the insecure-URL rule
+# (DS137138) reads code scope, so it annotates the documentation and fails
+# the scan on it.
 def is_atlassian_rovo_url(url: str) -> bool:
-    """Whether ``url`` is the Atlassian Rovo MCP host, by hostname, not substring."""
+    """Whether ``url`` is the Atlassian Rovo MCP origin, safely.
+
+    Hostname-based, never substring — and transport-checked: this predicate
+    gates where a bearer token may be sent, so a plaintext scheme (anything
+    but ``https``) and a non-standard port are refused even when the
+    hostname is genuine. A hostname-only check would admit the genuine host
+    on a plaintext scheme and on an odd port, and put the PAT on the wire
+    unencrypted.
+    """
     try:
-        host = (urlparse(url or "").hostname or "").lower()
+        parsed = urlparse(url or "")
+        host = (parsed.hostname or "").lower()
+        port = parsed.port
     except ValueError:
-        # A malformed URL (an unbalanced IPv6 literal, say) is not Rovo's.
+        # A malformed URL (an unbalanced IPv6 literal, an invalid port, say)
+        # is not Rovo's.
+        return False
+    if parsed.scheme.lower() != "https":
+        return False
+    if port not in (None, 443):
         return False
     return host == "mcp.atlassian.com" or host.endswith(".mcp.atlassian.com")
 

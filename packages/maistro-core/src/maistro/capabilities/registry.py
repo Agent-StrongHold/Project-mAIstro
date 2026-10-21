@@ -30,6 +30,24 @@ class _SlotState:
 _TIER_RANK = {"t0": 0, "t1": 1, "t2": 2, "t3": 3, "t4": 4, "t5": 5}
 
 
+@dataclass(frozen=True)
+class ProviderReplacementDecision:
+    """Authenticated, human-readable authority to replace a provider.
+
+    Discovery has no way to construct this decision. The composition root or
+    an admin workflow must supply both an actor and a reason explicitly.
+    """
+
+    approved_by: str
+    reason: str
+
+    def __post_init__(self) -> None:
+        if not self.approved_by.strip():
+            raise ValueError("approved_by must be a non-empty string")
+        if not self.reason.strip():
+            raise ValueError("reason must be a non-empty string")
+
+
 class CapabilityRegistry:
     """Holds slot definitions + provider state. Thread-safe via reentrant lock."""
 
@@ -82,6 +100,26 @@ class CapabilityRegistry:
             trust_tier,
         )
         return True
+
+    def replace(
+        self,
+        provider: CapabilityProvider,
+        *,
+        decision: ProviderReplacementDecision,
+    ) -> None:
+        """Replace a provider only through an explicit governed decision."""
+        with self._lock:
+            state = self._slot(provider.slot)
+            if provider.name not in state.providers:
+                raise KeyError(f"Provider '{provider.name}' is not installed")
+            state.providers[provider.name] = provider
+        logger.info(
+            "Replaced provider %s -> slot %s by %s: %s",
+            provider.name,
+            provider.slot,
+            decision.approved_by,
+            decision.reason,
+        )
 
     def provider_trust(self, slot: str, name: str) -> tuple[str, str] | None:
         """Return host-owned trust and provenance for an installed provider."""
