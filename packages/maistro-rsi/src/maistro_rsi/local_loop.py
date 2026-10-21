@@ -773,8 +773,11 @@ def make_builders_apply_patch(
     ``isolation`` selects the BuilderSandbox:
       - ``"local"``    — `LocalWorktreeSandbox`, edits run on the host (fast).
       - ``"container"``— `ContainerBuilderSandbox`, the agent's edits and commands
-        run inside an ephemeral Docker container (ADR-093), then sync back to the
-        worktree for the loop to commit. Requires ``image`` to be built.
+        run inside a sandbox selected by the canonical `maistro.sandbox`
+        selector under the builders policy (ADR-093/#76 — hardware-VM tier;
+        a host that cannot evidence such a backend refuses), then sync back
+        to the worktree for the loop to commit. Requires ``image`` to be
+        preloaded on the deployment.
 
     Model resolution is left to `ResponsesAPICallable` (``model=None`` →
     ``MAISTRO_BUILDERS_MODEL``/``DEFAULT_MODEL`` from the loaded ``.env``).

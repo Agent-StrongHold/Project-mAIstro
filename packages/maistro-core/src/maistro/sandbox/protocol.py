@@ -82,8 +82,15 @@ class SandboxConfig:
     #: Best-effort process ceiling. Set as `RLIMIT_NPROC`, which the kernel
     #: does not enforce for a privileged parent -- see `resource_limits`.
     max_processes: int = 128
+    # Legacy callers must use ``egress`` for network authority.  The field is
+    # retained only as a mechanically rejected compatibility input; it cannot
+    # silently widen a policy.
     network: bool = False
     writable_paths: list[str] = field(default_factory=list)
+    #: Optional host workspace bind-mounted by backends that support it.
+    workspace_host: str | None = None
+    #: Preloaded OCI image selected by deployment configuration.
+    image: str | None = None
     #: Host paths bound read-only into the sandbox, beyond the backend's
     #: standard system binds. Mounts, never copies: the workload reads the
     #: host files in place, and cannot write them.
@@ -94,6 +101,7 @@ class SandboxConfig:
     #: frozen with the rest of the config so nothing can widen it after the
     #: sandbox is running.
     egress: EgressGrant = DENY_ALL
+
     #: The Attempt fence this sandbox executes under (#79). Injected into
     #: the sandbox environment so anything it publishes can prove it is
     #: still the current execution. `None` for work with nothing to commit.
@@ -105,6 +113,8 @@ class SandboxConfig:
     max_stderr_bytes: int = DEFAULT_OUTPUT_CAPTURE_BYTES
 
     def __post_init__(self) -> None:
+        if self.network:
+            raise ValueError("SandboxConfig.network is unsupported; use an explicit egress grant")
         stdout_bytes, stderr_bytes = output_capture_limits(
             self.max_stdout_bytes, self.max_stderr_bytes
         )

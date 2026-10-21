@@ -22,6 +22,7 @@ from maistro.sandbox.network import (
 from maistro.sandbox.policy import (
     BENCHMARK_EVAL,
     BROWSER_AUTOMATION,
+    BUILDER_AGENT,
     DEV_ONLY,
     MODE_FLOORS,
     TRUSTED_TOOL,
@@ -50,6 +51,7 @@ from maistro.sandbox.wiring import build_selector
 __all__ = [
     "BENCHMARK_EVAL",
     "BROWSER_AUTOMATION",
+    "BUILDER_AGENT",
     "CANDIDATE_BASE_ENV",
     "DEFAULT_OUTPUT_CAPTURE_BYTES",
     "DENY_ALL",

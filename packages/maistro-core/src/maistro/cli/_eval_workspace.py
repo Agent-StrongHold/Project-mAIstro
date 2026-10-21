@@ -41,8 +41,8 @@ from maistro.eval_workspace.model import (
 from maistro.eval_workspace.pool import WorkspacePool
 from maistro.eval_workspace.service import EvalWorkspaceService, OwnershipError, WorkspaceStateError
 from maistro.eval_workspace.store import InMemoryEvalWorkspaceStore
-from maistro.sandbox.backends.fake import FakeSandboxBackend
-from maistro.sandbox.policy import ExecutionMode, WorkloadPolicy
+from maistro.sandbox.detect import HostCapabilities
+from maistro.sandbox.policy import DEV_ONLY, ExecutionMode, WorkloadPolicy
 from maistro.sandbox.protocol import SandboxConfig, SandboxInstance, SandboxProtocol
 from maistro.sandbox.selector import NoSuitableBackendError, SandboxSelector
 from maistro.sandbox.wiring import build_selector
@@ -172,14 +172,17 @@ def _pick_backend(
 
     The real path asks the selector for the strongest backend an interactive,
     operator-watched run may use (ADR-093's tier-3 allowance). The fake is
-    used directly and only under an explicit `--allow-fake`: `select()` never
-    returns it, which is the point — a fake proves protocol shape, not
-    isolation, and the report says so.
+    selected from an explicitly fake-only registry under `--allow-fake`.
+    It proves protocol shape, not isolation, and the report says so.
     """
     if allow_fake:
         if "fake" not in selector.available_tiers:
             return None
-        return "FakeSandboxBackend", "fake", FakeSandboxBackend()
+        fake_only = build_selector(
+            capabilities=HostCapabilities(tiers=(), notes={}), allow_fake=True
+        )
+        tier, backend = fake_only.select(DEV_ONLY)
+        return type(backend).__name__, tier, backend
     policy = WorkloadPolicy(
         min_tier="bubblewrap",
         mode=ExecutionMode.INTERACTIVE,

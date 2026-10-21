@@ -131,8 +131,8 @@ class TestNoSilentDowngrade:
 
 
 class TestBuildConfigClamping:
-    """`WorkloadPolicy` names its fields `max_memory_mb`, `max_timeout_s` and
-    `network_allowed` — ceilings and a permission. They were being used as
+    """`WorkloadPolicy` names `max_memory_mb` and `max_timeout_s` as ceilings,
+    and fixes network egress as the policy's grant. They were being used as
     defaults that any override replaced, which let a caller hand
     model-generated code a networked sandbox against a policy that forbids it.
     Overrides may only tighten.
@@ -143,7 +143,7 @@ class TestBuildConfigClamping:
         assert cfg.network is False
 
     def test_network_override_can_still_drop_network(self) -> None:
-        assert TRUSTED_TOOL.network_allowed is True
+        assert TRUSTED_TOOL.egress.grants_network is True
         cfg = SandboxSelector().build_config(TRUSTED_TOOL, network=False)
         assert cfg.network is False
 

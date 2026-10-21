@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import stat
 from pathlib import Path
 
 import pytest
@@ -191,6 +192,62 @@ def test_host_transfer_write_creates_missing_intermediate_directories(
     assert (root / "new" / "nested" / "leaf").read_bytes() == b"created"
     assert ((root / "new").stat().st_mode & 0o777) == 0o700
     assert ((root / "new" / "nested").stat().st_mode & 0o777) == 0o700
+
+
+def test_guest_readable_widening_covers_the_written_chain(tmp_path: Path) -> None:
+    """Kata's virtiofs share enforces host mode bits against the guest's id
+    mapping, so the 0700/0600 transfer defaults are invisible to guest root.
+    The widening opens exactly the written chain — file and provisioned
+    parents — through the same no-follow walk, and nothing else (#76)."""
+    from maistro.sandbox.paths import make_beneath_guest_readable
+
+    root = tmp_path / "work"
+    root.mkdir()
+    outside = tmp_path / "outside-secret"
+    outside.write_bytes(b"host-only")
+
+    write_beneath(root, "new/nested/leaf", b"created")
+    (root / "kept").write_bytes(b"untouched")
+    os.chmod(root / "kept", 0o600)
+
+    # The Kata backend hands over an inherited workdir descriptor, not a
+    # path; widen through the fd the way the backend does.
+    fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        make_beneath_guest_readable(fd, "new/nested/leaf", mount="/work")
+    finally:
+        os.close(fd)
+
+    assert ((root / "new").stat().st_mode & 0o777) == 0o755
+    assert ((root / "new" / "nested").stat().st_mode & 0o777) == 0o755
+    leaf_mode = (root / "new" / "nested" / "leaf").stat().st_mode
+    assert stat.S_IMODE(leaf_mode) == 0o644
+    assert (root / "new" / "nested" / "leaf").read_bytes() == b"created"
+    # Sibling writes keep their private mode; widening is per-write.
+    assert stat.S_IMODE((root / "kept").stat().st_mode) == 0o600
+    assert outside.read_bytes() == b"host-only"
+
+
+def test_guest_readable_widening_refuses_a_swapped_symlink(tmp_path: Path) -> None:
+    """A symlink swapped onto the written path after the transfer aborts the
+    widening with the kernel's own error — the mode change must not follow it
+    onto a host object outside the sandbox root (#76)."""
+    from maistro.sandbox.paths import make_beneath_guest_readable
+
+    root = tmp_path / "work"
+    root.mkdir()
+    outside = tmp_path / "outside-secret"
+    outside.write_bytes(b"host-only")
+    os.chmod(outside, 0o600)
+
+    write_beneath(root, "leaf", b"created")
+    (root / "leaf").unlink()
+    (root / "leaf").symlink_to(outside)
+
+    with pytest.raises(OSError):
+        make_beneath_guest_readable(root, "leaf", mount="/work")
+    assert stat.S_IMODE(outside.stat().st_mode) == 0o600
+    assert outside.read_bytes() == b"host-only"
 
 
 def test_host_transfer_walk_failure_surfaces_the_os_error_and_leaves_no_descriptor(

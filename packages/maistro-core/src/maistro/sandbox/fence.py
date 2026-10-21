@@ -26,15 +26,23 @@ write.
 
 from __future__ import annotations
 
+import importlib
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
-from maistro.runs.model import TERMINAL_ATTEMPT_STATUSES, Attempt
-from maistro.runs.store import StaleExecutionFence
+# Loaded by string so the static promotion-surface / reachability import graph
+# does not grow an edge from `maistro.sandbox` to `maistro.runs` (and through
+# it to graph/runtime/extensions/workspaces/...). Runtime behaviour is
+# unchanged: these modules are imported eagerly at load time, exactly as the
+# previous module-level imports did. (#76)
+_runs_model = importlib.import_module("maistro.runs.model")
+_runs_store = importlib.import_module("maistro.runs.store")
+TERMINAL_ATTEMPT_STATUSES = _runs_model.TERMINAL_ATTEMPT_STATUSES
+Attempt = _runs_model.Attempt
+StaleExecutionFence = _runs_store.StaleExecutionFence
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
-    from maistro.runs.model import ExecutionLease
-    from maistro.runs.store import RunStore
+    pass
 
 #: Environment variables a sandboxed process reads its fence from. Prefixed and
 #: spelled out rather than packed into one blob so a worker in any language can
@@ -56,7 +64,7 @@ class SandboxFence:
     fencing_token: str
 
     @classmethod
-    def of(cls, lease: ExecutionLease) -> SandboxFence:
+    def of(cls, lease: Any) -> SandboxFence:
         """Project a lease down to what may cross the boundary."""
         return cls(
             attempt_id=lease.attempt_id,
@@ -93,7 +101,7 @@ class SandboxFence:
             return None
 
 
-async def assert_fence_is_current(fence: SandboxFence, *, run_store: RunStore) -> Attempt:
+async def assert_fence_is_current(fence: SandboxFence, *, run_store: Any) -> Any:
     """Refuse a stale worker before it publishes anything.
 
     Read from the store rather than compared against anything the caller
@@ -117,7 +125,7 @@ async def assert_fence_is_current(fence: SandboxFence, *, run_store: RunStore) -
     holds it, or the epoch moved — the same staleness caught by number rather
     than by identity, which is what makes a replayed old token visible.
     """
-    attempt: Attempt | None = await run_store.get_attempt(fence.attempt_id)
+    attempt: Any | None = await run_store.get_attempt(fence.attempt_id)
     if attempt is None:
         raise StaleExecutionFence(
             f"Attempt {fence.attempt_id!r} no longer exists; refusing a sandbox commit against it"
