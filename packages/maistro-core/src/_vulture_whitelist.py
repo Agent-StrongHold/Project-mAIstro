@@ -128,6 +128,7 @@ from maistro.runs.sqlite_store import SqliteRunStore
 from maistro.runs.store import InMemoryRunStore, RunStore
 from maistro.security.sentinel.audit import InMemoryAuditLog
 from maistro.security.strikes import InMemoryStrikeTracker
+from maistro.skills.parser import SKILL_SECURITY_SCAN_VERSION
 from maistro.state import PersistedStore
 from maistro.workspaces.campaigns.model import (
     Actor,
@@ -680,4 +681,10 @@ _VULTURE_WHITELIST = (
     WakeReason.SAFETY_SWEEP,
     ReconciliationOutcome.skipped_asleep,
     ReconciliationOutcome.slept_as,
+    # #288 scan-surface provenance: `security_scan` (maistro.skills.parser) is a
+    # public content scanner, but its policy-version identity is surfaced only
+    # by the HTTP scan route (packages/hive-conductor/backend/routes/skills.py),
+    # which this packages/*/src scan does not walk. Whitelist the identity, not
+    # a stub -- the route names the rule set a `clean` verdict was judged by.
+    SKILL_SECURITY_SCAN_VERSION,
 )
