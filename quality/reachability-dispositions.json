@@ -591,6 +591,15 @@
         "maistro.graph.executor",
         "maistro.graph.run"
       ]
+    },
+    {
+      "id": "runs-admission-identity",
+      "subsystem": "Run / NodeRun / Attempt lifecycle",
+      "disposition": "LIBRARY",
+      "rationale": "Inactive contract leaf from #1851 (parent #1845): defines typed admission-identity vocabulary (generation/owner fencing, canonical JSON snapshots, claim/mutation results) with no production consumer yet. Published library surface; runtime consumer lands in a separately reviewed integration before these types become reachable. Listed here so the baseline and ledger cannot drift.",
+      "modules": [
+        "maistro.runs.admission_identity"
+      ]
     }
   ]
 }
