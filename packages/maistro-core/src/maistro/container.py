@@ -39,6 +39,7 @@ from maistro.events.consumer_cursor import (
     DEFAULT_HOLE_GRACE_SECONDS,
     LEGACY_BRIDGE_CONSUMER_ID,
 )
+from maistro.events.publisher import CanonicalEventPublisher
 from maistro.goals.authorization import ScopedGoalStore
 from maistro.goals.store import GoalStore
 from maistro.goals.wiring import wire_goal_store
@@ -71,6 +72,7 @@ from maistro.memory.working_graph.wiring import (
     build_workspace_working_memory,
     working_memory_context_message,
 )
+from maistro.personas.wiring import PERSONA_PG_TABLES, wire_persona_store
 from maistro.projects.scope_store import ProjectScopeStore
 from maistro.quota.default_tracker import set_default_quota_tracker
 from maistro.quota.tracker import InMemoryQuotaTracker
@@ -167,6 +169,7 @@ if TYPE_CHECKING:
     from maistro.observability.tiers import PIIDetector
     from maistro.orchestrator.hierarchy import HarnessRegistry, HierarchicalOrchestrator
     from maistro.personas.golden import GoldenRecordStore
+    from maistro.personas.store import PersonaStore
     from maistro.protocols.embeddings import EmbeddingClient
     from maistro.protocols.memory import (
         ContextAssemblyPolicy,
@@ -258,6 +261,9 @@ class Container:
     #: backend since #132 while the thing its `workspace_id` names had none,
     #: so the only Workspaces that survived a restart were the Conductor's own.
     workspace_store: WorkspaceStore = None  # type: ignore[assignment]
+    #: The live Persona is a Workspace product context, stored beside the
+    #: Project tree rather than in a second product-specific ownership store.
+    persona_store: PersonaStore = None  # type: ignore[assignment]
     #: Append-only BacklogItem history (#101), on the Project store's backend.
     #: References canonical Goals/Runs; never an execution authority itself.
     backlog_history_store: BacklogHistoryStore = None  # type: ignore[assignment]
@@ -453,6 +459,11 @@ class Container:
     resilience_policies: ResiliencePolicyStore = None  # type: ignore[assignment]
     # Durable events (ADR-086): bus bridge + log/trigger/invocation stores.
     event_bus: EventBus = None  # type: ignore[assignment]
+    # Canonical Event authority shared by governed effects and recovery. The
+    # publisher wraps the exact EventStore selected by the effect context and
+    # projects each inserted Event onto `event_bus`, so the durable log bridge
+    # and legacy triggers/subscribers keep observing recovery facts.
+    canonical_event_publisher: CanonicalEventPublisher = None  # type: ignore[assignment]
     durable_event_log: EventLogStore = None  # type: ignore[assignment]
     trigger_store: TriggerStore = None  # type: ignore[assignment]
     invocation_store: Any = None
@@ -502,6 +513,9 @@ class Container:
     # config.security.strike_tracking_enabled -- see create_container.
     strike_tracker: StrikeTracker | None = None
     strike_recovery: Any = None
+    # One durable cursor identifies this reactor consumer across restarts. The
+    # authoritative position lives in the consumer-cursor store (#1163); this
+    # field is the in-process view of what this container's last tick advanced.
     durable_event_cursor: int = 0
     # Governed extension install lifecycle (#953, M9-B2). Process-lifetime
     # in-memory records until the B1 signing/identity substrate (#952) lands;
@@ -1144,7 +1158,11 @@ class Container:
         crash between "processed" and "cursor written" costs at most a replay
         of already-settled, already-idempotent work; it never skips an event
         still in flight. Nor does it skip an event whose id the log handed
-        out but has not committed yet: see `_gap_safe_position`.
+        out but has not committed yet: see `_gap_safe_position`. The same
+        settled position is also acknowledged on the log itself
+        (`EventLogStore.acknowledge_replay`, #836), so the per-consumer
+        replay cursor stored beside the events stays truthful for readers
+        of the log.
         """
         lease = await self.consumer_cursor_store.claim(
             LEGACY_BRIDGE_CONSUMER_ID, holder=self._durable_events_holder
@@ -1171,6 +1189,17 @@ class Container:
                 fencing_token=lease.fencing_token,
                 position=new_cursor,
             )
+            # The log's own replay acknowledgement (#836) records the same
+            # settlement keyed to this consumer, so `get_replay_cursor`
+            # answers from the store the events live in rather than only
+            # from the bridge's separate cursor store. Both writes are
+            # monotonic and neither is the correctness backstop -- that is
+            # `InvocationStore.claim` -- so a crash between them costs a
+            # replay of already-settled, idempotent work, never a skip. The
+            # gap-safe position is acknowledged, not the raw batch cursor:
+            # a hole is not settled yet, and this acknowledgement must not
+            # claim otherwise.
+            await self.durable_event_log.acknowledge_replay(LEGACY_BRIDGE_CONSUMER_ID, new_cursor)
         self.durable_event_cursor = new_cursor
         return new_cursor
 
@@ -2411,9 +2440,15 @@ async def create_container(
         # The same `project_scope_store` object the spine just selected, not a
         # second resolution of the same question: a Workspace whose Root Project is
         # filed in another database is a Workspace whose Runs cannot be filed.
+        persona_store = await wire_persona_store(
+            db_pool,
+            project_store=project_scope_store,
+            pg_pool=pg_pool,
+        )
         workspace_store = await wire_workspace_store(
             db_pool,
             project_store=project_scope_store,
+            persona_store=persona_store,
             pg_pool=pg_pool,
         )
         backlog_history_store = await wire_backlog_history_store(
@@ -2516,6 +2551,12 @@ async def create_container(
         # can therefore never flip authorized False -> True, only needs
         # "self_elevation"/"scoped_2fa" -> "none".
         elevation_store = await _wire_elevation_store(pg_pool=pg_pool, db_pool=db_pool)
+        # Delegated authority is host-owned state, separate from the manifest
+        # roster (#845, #60). A durable deployment can replace this
+        # implementation without changing the Agent or Graph execution paths.
+        from maistro.security.sentinel.delegation import InMemoryDelegationAuthority
+
+        delegation_authority = InMemoryDelegationAuthority()
         # Canonical capability state is created BEFORE Sentinel so the permission
         # source can hold the same registry the container exposes (#1165,
         # ADR-072726-0d6b): a runtime capability disable (set_enabled) must reach
@@ -2534,6 +2575,7 @@ async def create_container(
             audit_log=audit_log,
             tier_policy=tier_policy,
             elevation_store=elevation_store,
+            delegation_authority=delegation_authority,
         )
         strike_recovery = _wire_strike_recovery(
             tracker=strike_tracker,
@@ -2567,7 +2609,9 @@ async def create_container(
             # Bridge: every in-memory bus event is appended to the durable log.
             await durable_event_log.append(**append_from_bus_event(event))
 
-        event_bus.subscribe(_persist_bus_event)
+        # Durable persistence is an authoritative pre-handler adapter: a failed
+        # append aborts emission instead of manufacturing trigger success.
+        event_bus.subscribe(_persist_bus_event, before_handlers=True)
 
         # --- LLM provider registry + cost-aware router (SPEC-070226-cb8d) ----
         from maistro.providers.config import load_provider_registry
@@ -2623,6 +2667,15 @@ async def create_container(
 
         # --- Agent-harness DAG node adapters (ADR-062 spawn_harness) -----------
         wired_harness_adapters = _wire_harness_adapters(harness_adapters)
+        # Governed effects hold the backend-selected canonical EventStore chosen
+        # by `_wire_capability_effects` (#1133); the recovery publisher below is
+        # only a delivery wrapper over that exact object (#16) — never a second
+        # sequencing authority. It projects each inserted Event onto `event_bus`
+        # so the durable-log bridge and legacy trigger/notification fan-out keep
+        # firing on recovery facts, as the pre-canonical path delivered them.
+        canonical_event_publisher = CanonicalEventPublisher(
+            capability_effects.event_store, legacy_bus=event_bus
+        )
         # Operator-declared model.chat Bindings (#1079/#1522) load into the same
         # canonical Binding authority the provisioning seam above built, so model
         # egress and PM polling egress share one fail-closed door.
@@ -2697,6 +2750,7 @@ async def create_container(
             project_store=project_scope_store,
             project_scope_store=project_scope_store,
             workspace_store=workspace_store,
+            persona_store=persona_store,
             backlog_history_store=backlog_history_store,
             campaign_store=campaign_store,
             goal_store=goal_store,
@@ -2728,6 +2782,7 @@ async def create_container(
             stores_memory_backed=stores_memory_backed,
             resilience_policies=resilience_policies,
             event_bus=event_bus,
+            canonical_event_publisher=canonical_event_publisher,
             durable_event_log=durable_event_log,
             trigger_store=trigger_store,
             invocation_store=capability_effects.invocation_store,
@@ -3081,6 +3136,10 @@ _REQUIRED_PG_TABLES: Final = (
     # `postgresql://` deployment that skipped `alembic upgrade head` should hear
     # about it once, at startup, naming every table it lacks.
     *WORKSPACE_PG_TABLES,
+    # The live Persona is the Workspace's product context. It is listed here so
+    # an unmigrated PostgreSQL deployment fails before serving a Workspace that
+    # cannot reload its Persona after restart.
+    *PERSONA_PG_TABLES,
 )
 
 

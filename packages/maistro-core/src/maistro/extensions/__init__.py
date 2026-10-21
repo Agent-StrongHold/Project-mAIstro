@@ -91,6 +91,20 @@ This package carries the extension surface of epic #938, in four layers:
   that project canonical state through a closed binding allowlist, route
   mutating actions to governed server seams only, enforce availability
   server-side, and carry sandbox policy and provenance on every render.
+- **M9-G3 governance policy (issue #971, :mod:`maistro.extensions.policy`)**:
+  organization/Workspace extension policy — org allow/deny and publisher
+  approval over Workspace enablement, server-side exact-version pinning
+  enforced under concurrent callers, deterministic explainable resolution
+  projected onto the #969 Workspace-policy layer, tenant-keyed extension
+  state with structurally isolated views, and an append-only policy audit
+  trail.
+- **M9-G4 quarantine (issue #972, :mod:`maistro.extensions.quarantine`)**:
+  the suspension flow for misbehaving extensions — canonical
+  security/sandbox/health evidence with threshold-driven package quarantine,
+  version disable and optional publisher-wide action as distinct responses,
+  immediate admission refusal after the authoritative state change,
+  in-flight drain/terminate disposition, and an append-only ledger no
+  extension actor can write or clear.
 
 No layer executes extension code: verification, evaluation, authorization,
 resolution, contract negotiation, certification, metering and policy
@@ -376,6 +390,27 @@ from maistro.extensions.preflight import (
     TargetHostContract,
     run_preflight,
 )
+from maistro.extensions.quarantine import (
+    GOVERNANCE_ACTOR_KINDS,
+    ActorKind,
+    AdmissionDecision,
+    EvidenceKind,
+    ExtensionEvidence,
+    ExtensionGovernanceLedger,
+    ExtensionGovernancePolicy,
+    ExtensionGovernanceService,
+    GovernanceActor,
+    GovernanceDecision,
+    GovernanceEvent,
+    GovernanceState,
+    GovernanceTarget,
+    InFlightDisposition,
+    InvocationLease,
+    QuarantineAuthorityError,
+    SandboxViolationBridge,
+    health_evidence,
+    security_evidence,
+)
 from maistro.extensions.resolution import (
     LOCK_FORMAT,
     ROOT_REQUEST_ORIGIN,
@@ -521,6 +556,7 @@ __all__ = [
     "FEATURE_SUPPORTED",
     "FILESYSTEM_READ_PERMISSION",
     "FILESYSTEM_WRITE_PERMISSION",
+    "GOVERNANCE_ACTOR_KINDS",
     "HEALTHY_STATES",
     "HEALTH_WINDOW",
     "HOST_FEATURES",
@@ -546,6 +582,8 @@ __all__ = [
     "ActionAvailability",
     "ActionUnavailable",
     "ActivationCallback",
+    "ActorKind",
+    "AdmissionDecision",
     "ArtifactMismatch",
     "AttributionDimension",
     "AuthorityBaseline",
@@ -592,6 +630,7 @@ __all__ = [
     "EffectiveAuthority",
     "EntryPointPresenceCheck",
     "EventStoreProgressSink",
+    "EvidenceKind",
     "ExtensionAuthorityEvidence",
     "ExtensionAuthorityInputs",
     "ExtensionBundle",
@@ -610,6 +649,10 @@ __all__ = [
     "ExtensionEntryPoint",
     "ExtensionErrorKind",
     "ExtensionErrorRecord",
+    "ExtensionEvidence",
+    "ExtensionGovernanceLedger",
+    "ExtensionGovernancePolicy",
+    "ExtensionGovernanceService",
     "ExtensionHealth",
     "ExtensionHealthService",
     "ExtensionHealthStore",
@@ -664,17 +707,24 @@ __all__ = [
     "ExtensionUsageEvent",
     "FeatureStatus",
     "FeatureSupport",
+    "GovernanceActor",
+    "GovernanceDecision",
+    "GovernanceEvent",
+    "GovernanceState",
+    "GovernanceTarget",
     "GovernedActionCall",
     "GovernedEffectRoute",
     "GovernedRoute",
     "HostContractMetadata",
     "HostExtensionPolicy",
     "ImportPolicy",
+    "InFlightDisposition",
     "InMemoryExtensionHealthStore",
     "InMemoryExtensionInstallStore",
     "InMemoryExtensionStore",
     "InProcessExtensionLoader",
     "IncompatibleContract",
+    "InspectionConflict",
     "InspectionConflict",
     "InstallRecord",
     "InstallRequest",
@@ -682,6 +732,7 @@ __all__ = [
     "InvalidSemanticVersion",
     "InvalidTransition",
     "InvalidVersionRange",
+    "InvocationLease",
     "InvocationScope",
     "LoadedExtension",
     "LockArtifacts",
@@ -734,6 +785,7 @@ __all__ = [
     "PublisherIdentity",
     "PublisherKeyConflict",
     "PublisherTrust",
+    "QuarantineAuthorityError",
     "RankingMetric",
     "RegistryProvenance",
     "RejectedCandidate",
@@ -745,6 +797,7 @@ __all__ = [
     "RootRequest",
     "RouteParam",
     "SandboxPolicy",
+    "SandboxViolationBridge",
     "SandboxViolationLog",
     "ScopeBoundExtensionState",
     "ScopeMismatch",
@@ -804,6 +857,7 @@ __all__ = [
     "evaluate_pack_compatibility",
     "evaluate_trust",
     "extension_family",
+    "health_evidence",
     "identity_key",
     "inspect_manifest",
     "inspect_pack_manifest",
@@ -840,6 +894,7 @@ __all__ = [
     "run_preflight",
     "seal_from_json",
     "seal_to_json",
+    "security_evidence",
     "select_isolation_profile",
     "sha256_hex",
     "sign_certification",
