@@ -69,7 +69,7 @@ def test_image_pins_supported_python_and_installs_identity() -> None:
     python_tags = re.findall(r"^FROM python:(3\.\d+\.\d+)-slim-bookworm", dockerfile, re.MULTILINE)
 
     assert python_tags == ["3.13.15", "3.13.15"]
-    assert "maistro-core[identity,llm,sandbox,observability]" in dockerfile
+    assert "maistro-core[identity,llm,sandbox,observability,sqlite]" in dockerfile
     assert 'ENTRYPOINT ["python", "-m", "maistro_server.entrypoint"]' in dockerfile
 
 
