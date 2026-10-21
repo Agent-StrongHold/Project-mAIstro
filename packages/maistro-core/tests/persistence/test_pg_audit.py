@@ -13,6 +13,7 @@ from typing import Any
 
 import pytest
 
+from maistro.persistence.audit_pages import AUDIT_PAGE_INDEXES
 from maistro.persistence.pg_audit import PgAuditLog
 from maistro.security._types import AuditEntry as SentinelAuditEntry
 from maistro.security._types import Violation as SentinelViolation
@@ -31,25 +32,30 @@ class Call:
         self.args = args
 
 
+class _FakeTransaction:
+    """Stand-in for ``asyncpg.Connection.transaction()``."""
+
+    async def __aenter__(self) -> None:
+        return None
+
+    async def __aexit__(self, *exc: Any) -> None:
+        return None
+
+
 class FakeConnection:
     def __init__(self) -> None:
         self.calls: list[Call] = []
         self._fetch_results: list[list[FakeRecord]] = []
-        self._fetchval_results: list[Any] = []
+
+    def transaction(self) -> _FakeTransaction:
+        return _FakeTransaction()
 
     def queue_fetch(self, rows: list[dict[str, Any]]) -> None:
         self._fetch_results.append([FakeRecord(r) for r in rows])
 
-    def queue_fetchval(self, value: Any) -> None:
-        self._fetchval_results.append(value)
-
     async def fetch(self, query: str, *args: Any) -> list[FakeRecord]:
         self.calls.append(Call("fetch", query, args))
         return self._fetch_results.pop(0) if self._fetch_results else []
-
-    async def fetchval(self, query: str, *args: Any) -> Any:
-        self.calls.append(Call("fetchval", query, args))
-        return self._fetchval_results.pop(0) if self._fetchval_results else None
 
     async def execute(self, query: str, *args: Any) -> str:
         self.calls.append(Call("execute", query, args))
@@ -109,33 +115,53 @@ def test_supplied_signing_key_does_not_warn_on_a_durable_store(
 
 
 @pytest.mark.asyncio
-async def test_ensure_schema_adds_proof_columns_idempotently(conn: FakeConnection) -> None:
-    """Databases created before signed audit records lack the proof columns;
-    wiring runs this upgrade on every start, so it must be the idempotent
-    ADD COLUMN IF NOT EXISTS form covering all three proof columns."""
-    conn.queue_fetchval("public.audit_log")  # to_regclass: the table exists
+async def test_ensure_schema_creates_the_table_and_adds_proof_columns(
+    conn: FakeConnection,
+) -> None:
+    """A container wired against a PostgreSQL database that never ran the
+    migration chain must still come up: `ensure_schema` creates the table
+    when it is missing, and it keeps the idempotent ADD COLUMN IF NOT EXISTS
+    upgrade for the databases created before signed audit records existed."""
     await PgAuditLog(FakePool(conn), signer=AuditSigner(bytes(32))).ensure_schema()
 
-    assert [call.query for call in conn.calls] == [
-        "SELECT to_regclass('public.audit_log') IS NOT NULL",
+    statements = [call.query for call in conn.calls]
+    creates = [s for s in statements if "CREATE TABLE IF NOT EXISTS audit_log" in s]
+    assert len(creates) == 1
+    for column in ("id", "timestamp", "org_id", "signature", "signing_key_id", "proof_type"):
+        assert column in creates[0]
+    # The indexes 005 builds are part of the shape this bootstrap claims to
+    # copy: nothing migrates a bootstrapped database afterwards.
+    for index in ("ix_audit_log_timestamp", "ix_audit_log_user", "ix_audit_log_agent"):
+        assert f"CREATE INDEX IF NOT EXISTS {index}" in creates[0]
+    assert statements[2:6] == [
+        "ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS org_id TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS signature TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS signing_key_id TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS proof_type TEXT NOT NULL DEFAULT ''",
     ]
+    assert statements[6] == (
+        "CREATE INDEX IF NOT EXISTS ix_audit_log_scope ON audit_log (org_id, timestamp)"
+    )
+    # GET_PAGE shapes: `page_query` names one ordered index per filter
+    # combination, and the SQLite sibling's bootstrap creates the same set.
+    assert statements[7:] == [
+        f"CREATE INDEX IF NOT EXISTS {name} ON audit_log ({', '.join(fields)})"
+        for name, fields in AUDIT_PAGE_INDEXES.items()
+    ]
 
 
 @pytest.mark.asyncio
-async def test_ensure_schema_on_unmigrated_database_is_a_no_op(conn: FakeConnection) -> None:
-    """A database that never ran the migration chain has no `audit_log` table
-    (the durable-events leg wires the container on a fresh server); the
-    belt-and-braces backfill must answer the same `to_regclass` probe the run
-    and workspace wiring ask and emit no ALTER at all — not crash wiring and
-    not classify server error-message text."""
-    conn.queue_fetchval(None)  # to_regclass: no such table
+async def test_ensure_schema_takes_the_bootstrap_lock(conn: FakeConnection) -> None:
+    """Two workers bootstrapping the table at once must not both run the DDL:
+    the advisory lock serialises them, and it is taken before the CREATE."""
     await PgAuditLog(FakePool(conn), signer=AuditSigner(bytes(32))).ensure_schema()
 
-    assert [call.method for call in conn.calls] == ["fetchval"]
-    assert conn.calls[0].query == "SELECT to_regclass('public.audit_log') IS NOT NULL"
+    statements = [call.query for call in conn.calls]
+    assert statements[0] == "SELECT pg_advisory_xact_lock($1)"
+    assert "CREATE TABLE IF NOT EXISTS audit_log" in statements[1]
+    # Every statement in the bootstrap must stay inside the locked
+    # transaction, including the index DDL added after the CREATE.
+    assert len(conn.calls) == 7 + len(AUDIT_PAGE_INDEXES)
 
 
 @pytest.mark.asyncio
@@ -425,41 +451,3 @@ async def test_real_postgres_two_org_scope_and_schema(
 
     assert [entry.boundary for entry in entries] == ["org-a"]
     assert all(entry.org_id == "org-a" for entry in entries)
-
-
-@pytest.mark.asyncio
-async def test_real_postgres_ensure_schema_tolerates_unmigrated_database(pg_pool: Any) -> None:
-    """The absent-table branch is real PostgreSQL behavior, not a mock: on a
-    database where `audit_log` does not exist (renamed away here to mirror the
-    fresh server the durable-events leg wires), `ensure_schema` returns without
-    error and without creating anything, and once the table is back it still
-    performs the idempotent proof-column backfill against the live server."""
-    if pg_pool is None:
-        pytest.skip("MAISTRO_TEST_PG_DSN is not set")
-
-    probe = "SELECT to_regclass('public.audit_log') IS NOT NULL"
-    async with pg_pool.acquire() as conn:
-        await conn.execute("ALTER TABLE audit_log RENAME TO audit_log_ensure_probe")
-    try:
-        await PgAuditLog(pg_pool, signer=AuditSigner(bytes(32))).ensure_schema()
-        async with pg_pool.acquire() as conn:
-            assert await conn.fetchval(probe) is False
-    finally:
-        async with pg_pool.acquire() as conn:
-            await conn.execute("ALTER TABLE audit_log_ensure_probe RENAME TO audit_log")
-
-    # Present-table path: the backfill runs and the proof columns really exist.
-    await PgAuditLog(pg_pool, signer=AuditSigner(bytes(32))).ensure_schema()
-    async with pg_pool.acquire() as conn:
-        columns = await conn.fetch(
-            """SELECT column_name
-               FROM information_schema.columns
-               WHERE table_name = 'audit_log'
-                 AND column_name IN ('signature', 'signing_key_id', 'proof_type')
-               ORDER BY column_name"""
-        )
-    assert [row["column_name"] for row in columns] == [
-        "proof_type",
-        "signature",
-        "signing_key_id",
-    ]
