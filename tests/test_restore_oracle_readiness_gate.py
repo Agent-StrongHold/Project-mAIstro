@@ -151,5 +151,13 @@ def test_every_probe_is_select_1_against_the_target_database(
     for call in psql_calls:
         assert call[0] == "exec", call
         assert "psql" in call, f"probe bypassed the statement channel: {call}"
+        # Over TCP, deliberately: the entrypoint's temporary bootstrap server
+        # answers *socket* queries (even authenticated SELECT 1s for PG_DB)
+        # until it is stopped, and never listens on TCP — so only a `-h
+        # 127.0.0.1` round-trip proves the final server is the one answering.
+        # Seen live in the coverage-gate root producer (run 39130160694):
+        # a socket-gated fixture raced the temp→final restart and every
+        # statement after "ready" died with psql exit status 2.
+        assert call[call.index("-h") + 1] == "127.0.0.1", call
         assert call[call.index("-d") + 1] == roc.PG_DB, call
         assert call[call.index("-c") + 1] == "SELECT 1", call

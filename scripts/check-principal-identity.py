@@ -133,14 +133,38 @@ def _is_state_user(node: ast.AST) -> bool:
     )
 
 
+def _is_state_getter(node: ast.AST) -> bool:
+    """``x.state``, spelled directly or through a defensive ``getattr``.
+
+    Routes that cannot assume the request object carries ``state`` at all read
+    it as ``getattr(request, "state", None)``; the dict-shaped-user census must
+    see through that spelling or it certifies a surface it never measured
+    (#1790 correction 5).
+    """
+    if isinstance(node, ast.Attribute):
+        return node.attr == "state"
+    return (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "getattr"
+        and len(node.args) >= 2
+        and isinstance(node.args[1], ast.Constant)
+        and node.args[1].value == "state"
+    )
+
+
 def _is_state_attr_call(node: ast.Call) -> bool:
-    """``getattr(x.state, "user", ...)`` / ``setattr(x.state, "user", ...)``."""
+    """``getattr(x.state, "user", ...)`` / ``setattr(x.state, "user", ...)``,
+
+    including the defensive spelling ``getattr(getattr(x, "state", None),
+    "user", ...)`` — e.g. hive-conductor's capabilities routes, where a direct
+    provider test may pass an object without ``state``.
+    """
     return (
         isinstance(node.func, ast.Name)
         and node.func.id in {"getattr", "setattr", "hasattr"}
         and len(node.args) >= 2
-        and isinstance(node.args[0], ast.Attribute)
-        and node.args[0].attr == "state"
+        and _is_state_getter(node.args[0])
         and isinstance(node.args[1], ast.Constant)
         and node.args[1].value == "user"
     )

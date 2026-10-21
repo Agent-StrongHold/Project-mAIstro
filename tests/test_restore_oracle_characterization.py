@@ -117,17 +117,23 @@ def _bash(script: str) -> subprocess.CompletedProcess[str]:
 #: server went bad"), which is exactly how the `test` CI job's
 #: `pg_source_container` setup errored all four characterization tests at
 #: 6e2eca944ddbac50631b4ca7d92598a16c01d112 (run 39177311554, job
-#: 117822537422, 2026-10-18). `pg_isready` is a server-liveness ping, not a
-#: statement channel; readiness here means one successful `SELECT 1`
+#: 117822537422, 2026-10-18) and, via the coverage-gate root producer, all
+#: four again at run 39130160694. `pg_isready` is a server-liveness ping, not
+#: a statement channel; readiness here means one successful `SELECT 1`
 #: round-trip on the target database, the same lesson #689 recorded for the
-#: workflow service health checks. Both knobs are module constants so the
-#: stub-docker tests in test_restore_oracle_readiness_gate.py can shrink them.
+#: workflow service health checks. The probe goes over TCP (`-h 127.0.0.1`)
+#: because the temporary server answers *socket* queries too — even
+#: authenticated `SELECT 1`s for the target database once `docker_setup_db`
+#: has run — while it never listens on TCP; only a TCP round-trip proves the
+#: final server this module actually talks to is up. Both knobs are module
+#: constants so the stub-docker tests in test_restore_oracle_readiness_gate.py
+#: can shrink them.
 _READY_TIMEOUT_S = 90.0
 _READY_POLL_S = 1.0
 
 
 def _wait_ready(container: str) -> None:
-    """Wait until `psql` on the target database answers `SELECT 1` with `1`.
+    """Wait until the container's *final* server answers `SELECT 1` with `1`.
 
     `pg_isready` alone is not readiness for this image: the official postgres
     entrypoint runs a temporary server during init that accepts connections
@@ -143,6 +149,8 @@ def _wait_ready(container: str) -> None:
         "exec",
         container,
         "psql",
+        "-h",
+        "127.0.0.1",
         "-X",
         "-Atq",
         "-v",
