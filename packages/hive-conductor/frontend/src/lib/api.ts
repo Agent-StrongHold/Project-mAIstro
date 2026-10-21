@@ -8,16 +8,12 @@ export const API_BASE = "";
 /** Thrown by a failed request. `message` is human copy safe to show a user
  * (#1436); `status`/`path` carry the raw transport detail for developer
  * diagnostics (also already logged to the console by `debugApi`) without
- * putting it in front of someone who can't act on a route string. `detail`
- * is the backend's structured error payload, when it sent one (FastAPI's
- * `HTTPException.detail`), for callers that branch on a machine-readable
- * error code rather than prose (#292). */
+ * putting it in front of someone who can't act on a route string. */
 export class ApiError extends Error {
   constructor(
     message: string,
     readonly status: number,
     readonly path: string,
-    readonly detail?: unknown,
   ) {
     super(message);
     this.name = "ApiError";
@@ -114,20 +110,9 @@ async function request<T>(
   if (!r.ok) {
     const detailObj =
       parsed && typeof parsed === "object" && "detail" in parsed
-        ? (parsed as { detail: unknown }).detail
+        ? String((parsed as { detail: unknown }).detail)
         : undefined;
-    // Human copy: a string detail verbatim, a structured detail's message/error
-    // code, otherwise the status fallback — never "[object Object]".
-    let detail: string | undefined;
-    if (typeof detailObj === "string") {
-      detail = detailObj;
-    } else if (detailObj && typeof detailObj === "object") {
-      const code =
-        (detailObj as { message?: unknown }).message ??
-        (detailObj as { error?: unknown }).error;
-      if (typeof code === "string") detail = code;
-    }
-    throw new ApiError(detail || fallbackMessage(r.status), r.status, path, detailObj);
+    throw new ApiError(detail || fallbackMessage(r.status), r.status, path);
   }
   return { data: parsed as T, status: r.status };
 }

@@ -72,16 +72,6 @@ class GoalStore(Protocol):
         """
         ...
 
-    async def list_goals(
-        self, workspace_id: str, *, limit: int = 100, offset: int = 0
-    ) -> list[Goal]:
-        """Workspace Goals, newest-created first with goal_id as the tie-breaker.
-
-        Scope filtering precedes pagination, including Goals with no Runs.
-        Product callers must use ScopedGoalStore, not this raw store.
-        """
-        ...
-
     async def get_goal(self, goal_id: str) -> Goal | None:
         """The Goal with this id, or ``None``. Authorization is not this
         method's job — reads go through `maistro.goals.authorization`."""
@@ -194,19 +184,6 @@ class InMemoryGoalStore:
             self._revisions[goal.goal_id] = [revision]
             self._transitions[goal.goal_id] = []
             return goal.model_copy(deep=True)
-
-    async def list_goals(
-        self, workspace_id: str, *, limit: int = 100, offset: int = 0
-    ) -> list[Goal]:
-        if limit <= 0 or offset < 0:
-            raise ValueError("limit must be positive and offset non-negative")
-        async with self._lock:
-            matching = sorted(
-                (goal for goal in self._goals.values() if goal.workspace_id == workspace_id),
-                key=lambda goal: (goal.created_at, goal.goal_id),
-                reverse=True,
-            )
-            return [goal.model_copy(deep=True) for goal in matching[offset : offset + limit]]
 
     async def get_goal(self, goal_id: str) -> Goal | None:
         async with self._lock:

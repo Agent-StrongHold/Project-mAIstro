@@ -326,90 +326,6 @@ def _base_has(cwd: Path, baseline_ref: str, rel: str) -> bool:
     return proc.returncode == 0
 
 
-def _resolve_evidence_shas(ex: ProbeExecutor, baseline_ref: str) -> tuple[str, str] | None:
-    """(base, candidate) SHAs anchoring the evidence record.
-
-    ``None`` when either revision cannot be resolved: without both SHAs the
-    record is not replayable by an auditor, so there is no evidence to
-    collect. (#1792: extracted from ``collect_fail_first_evidence``.) The
-    lookups ride the probe executor (#614).
-    """
-    base_sha = ex.rev_parse(baseline_ref)
-    candidate_sha = ex.rev_parse("HEAD")
-    if not base_sha or not candidate_sha:
-        return None
-    return base_sha, candidate_sha
-
-
-def _tree_states(
-    cwd: Path, src: list[str], baseline_ref: str, ex: ProbeExecutor
-) -> tuple[dict[str, bool], dict[str, bool]]:
-    """Per-file presence maps, (candidate, base), captured BEFORE any revert.
-
-    The candidate snapshot must precede the base reconstruction so the restore
-    can rebuild even candidate DELETIONS (a plain ``git checkout HEAD --``
-    would silently resurrect a deleted file). The base probe rides the
-    executor (#614). (#1792 extraction.)
-    """
-    candidate_present = {rel: (cwd / rel).is_file() for rel in src}
-    base_present = {rel: ex.base_has(baseline_ref, rel) for rel in src}
-    return candidate_present, base_present
-
-
-def _reconstruct_tree(
-    src: list[str], present: dict[str, bool], from_ref: str | None, ex: ProbeExecutor
-) -> None:
-    """Force ``src`` to a recorded presence state.
-
-    A file marked present is checked out of ``from_ref`` (``HEAD`` when no
-    ref is given); a file marked absent is removed — its base state is
-    absence, which is exactly how a test written FIRST for a new module
-    proves fail-first. Both moves ride the executor (#614). (#1792: the
-    probe's restore closure, hoisted to a module function so both tree flips
-    share it.)
-    """
-    for rel in src:
-        if present[rel]:
-            ex.checkout(from_ref or "HEAD", rel)
-        else:
-            ex.remove(rel)
-
-
-def _run_base_probes(
-    src: list[str],
-    tests: list[str],
-    timeout: int,
-    baseline_ref: str,
-    base_present: dict[str, bool],
-    ex: ProbeExecutor,
-) -> tuple[int | None, int | None, list[str], list[str]] | None:
-    """Run the changed-test selection on the reconstructed base state.
-
-    A red first run is probed a second time for reproducibility; a green one
-    stops early (the evidence is already-passing and a second run cannot
-    change that). Returns ``(rc1, rc2, failing1, failing2)`` — ``rc2`` is
-    ``None`` when no second run happened — or ``None`` when the base state
-    cannot be constructed or run, which is no trustworthy evidence. The
-    caller still restores the candidate tree. (#1792 extraction.)
-    """
-    base_rc2: int | None = None
-    failing2: list[str] = []
-    try:
-        _reconstruct_tree(src, base_present, baseline_ref, ex)
-        base_rc1, failing1 = _probe(ex, tests, timeout)
-        if failing1:
-            base_rc2, failing2 = _probe(ex, tests, timeout)
-    except (OSError, subprocess.SubprocessError):
-        return None
-    return base_rc1, base_rc2, failing1, failing2
-
-
-def _reproducible(failing1: list[str], failing2: list[str], base_rc2: int | None) -> bool:
-    """The red must reproduce: the second base probe fails with the identical
-    test set, else the evidence is flaky noise. (#1792 extraction.)"""
-    return bool(failing1) and base_rc2 is not None and failing1 == failing2
-
-
 def collect_fail_first_evidence(
     cwd: str | Path,
     baseline_ref: str,
@@ -456,25 +372,41 @@ def collect_fail_first_evidence(
         return None
     cwd = Path(cwd)
     ex = _resolve_executor(executor, cwd)
-    resolved = _resolve_evidence_shas(ex, baseline_ref)
-    if resolved is None:
+    base_sha = ex.rev_parse(baseline_ref)
+    candidate_sha = ex.rev_parse("HEAD")
+    if not base_sha or not candidate_sha:
         return None
-    base_sha, candidate_sha = resolved
 
     cand_rc, _ = ex.probe(tests, timeout)
 
-    candidate_present, base_present = _tree_states(cwd, src, baseline_ref, ex)
-    probed: tuple[int | None, int | None, list[str], list[str]] | None = None
+    # Exact candidate state per source file, captured BEFORE any revert, so
+    # the restore can reconstruct it even for candidate DELETIONS (a plain
+    # ``git checkout HEAD --`` would silently resurrect a deleted file).
+    candidate_present = {rel: (cwd / rel).is_file() for rel in src}
+    base_present = {rel: ex.base_has(baseline_ref, rel) for rel in src}
+
+    def _reconstruct(state: dict[str, bool], from_ref: str | None) -> None:
+        for rel in src:
+            if state[rel]:
+                ex.checkout(from_ref or "HEAD", rel)
+            else:
+                ex.remove(rel)
+
+    base_rc1: int | None = None
+    base_rc2: int | None = None
+    failing1: list[str] = []
+    failing2: list[str] = []
     try:
-        probed = _run_base_probes(src, tests, timeout, baseline_ref, base_present, ex)
-    finally:
-        # Restore the exact candidate state on every path out of the probe.
-        _reconstruct_tree(src, candidate_present, "HEAD", ex)
-    if probed is None:
+        _reconstruct(base_present, baseline_ref)
+        base_rc1, failing1 = _probe(ex, tests, timeout)
+        if failing1:
+            base_rc2, failing2 = _probe(ex, tests, timeout)
+    except (OSError, subprocess.SubprocessError):
         # Cannot construct (or run against) the base state — no trustworthy
-        # evidence; the gate fails the behavior contract closed.
+        # evidence. The restore below still runs.
         return None
-    base_rc1, base_rc2, failing1, failing2 = probed
+    finally:
+        _reconstruct(candidate_present, "HEAD")
 
     return FailFirstEvidence(
         base_sha=base_sha,
@@ -484,7 +416,7 @@ def collect_fail_first_evidence(
         passing_on_candidate=cand_rc == 0,
         candidate_changed_rc=cand_rc,
         baseline_changed_rc=base_rc1,
-        reproducible=_reproducible(failing1, failing2, base_rc2),
+        reproducible=bool(failing1) and base_rc2 is not None and failing1 == failing2,
         config_tainted=bool(config_files_changed),
         related=_has_related_failure(ex.read_text, failing1, src),
     )
@@ -512,35 +444,6 @@ def _imported_names(tree: ast.AST) -> set[str]:
                 names.update(f"{node.module}.{alias.name}" for alias in node.names)
             names.update(alias.name for alias in node.names)
     return names
-
-
-def _test_module_imports(text: str) -> set[str]:
-    """Every name one test file's source imports.
-
-    The AST parse is primary; an unparsable file (``SyntaxError``), null
-    bytes (``ValueError``) or pathologically nested source
-    (``RecursionError``) falls back to a textual import-line match, so a
-    syntactically broken test still gets the attribution check. Transport
-    failures are the caller's concern — an unreadable file has no import
-    surface at all, not a textual one. (#1792: extracted from
-    ``_has_related_failure``; ``text`` arrives through the probe executor's
-    ``read_text`` transport, #614.)
-    """
-    try:
-        return _imported_names(ast.parse(text))
-    except (SyntaxError, ValueError, RecursionError):
-        return set(re.findall(r"(?:from|import)\s+([\w.]+)", text))
-
-
-def _references_changed_module(text: str, suffixes: list[set[str]], stems: set[str]) -> bool:
-    """Whether ONE test file's source statically references any changed
-    module: either an import that intersects a module's dotted suffixes, or
-    any mention of a module's file stem. (#1792: extracted from
-    ``_has_related_failure``.)
-    """
-    if any(_test_module_imports(text) & s for s in suffixes):
-        return True
-    return any(re.search(rf"\b{re.escape(stem)}\b", text) for stem in stems)
 
 
 def _has_related_failure(
@@ -571,7 +474,18 @@ def _has_related_failure(
         except (OSError, RuntimeError):
             # Unreadable through this side's transport: same answer.
             continue
-        if _references_changed_module(text, suffixes, stems):
+        try:
+            imported = _imported_names(ast.parse(text))
+        except SyntaxError:
+            # Unparsable test file: fall back to a textual import-line match.
+            imported = set(re.findall(r"(?:from|import)\s+([\w.]+)", text))
+        except (ValueError, RecursionError):
+            # ast.parse raises ValueError on null bytes and RecursionError on
+            # pathologically nested source — the textual fallback covers both.
+            imported = set(re.findall(r"(?:from|import)\s+([\w.]+)", text))
+        if any(imported & s for s in suffixes):
+            return True
+        if any(re.search(rf"\b{re.escape(stem)}\b", text) for stem in stems):
             return True
     return False
 
@@ -602,108 +516,82 @@ def fail_first_gate(
     refactor's alternative evidence cannot be verified, so it doesn't count.
     """
     if evidence is not None and evidence.status == "valid":
-        return _valid_evidence_result(evidence)
+        return GateResult(
+            "fail_first_evidence",
+            True,
+            (
+                f"{len(evidence.failing_tests)} changed test(s) red on base "
+                f"{evidence.base_sha[:12]} → green on candidate "
+                f"{evidence.candidate_sha[:12]} (reproducible)"
+            ),
+            detail=evidence.to_dict(),
+        )
+
     if contract is EvidenceContract.BEHAVIOR:
-        return _behavior_contract_result(evidence)
+        if evidence is None:
+            return GateResult(
+                "fail_first_evidence",
+                False,
+                "missing fail-first evidence: a behavior-changing candidate must add or "
+                "extend a test that fails on the base revision for the intended reason",
+                detail={"contract": contract.value},
+            )
+        return GateResult(
+            "fail_first_evidence",
+            False,
+            f"fail-first evidence rejected: {_REJECTION_TEXT[evidence.status]}",
+            detail=evidence.to_dict(),
+        )
+
     if contract is EvidenceContract.REFACTOR:
-        return _refactor_contract_result(quality_delta)
+        if quality_delta is None:
+            return GateResult(
+                "fail_first_evidence",
+                False,
+                "refactor contract unmet: no baseline code-quality composite to "
+                "prove the improvement against (fail closed)",
+                detail={"contract": contract.value},
+            )
+        if quality_delta <= 0:
+            return GateResult(
+                "fail_first_evidence",
+                False,
+                f"refactor contract unmet: code-quality composite did not improve "
+                f"over baseline (delta {quality_delta:+.4f})",
+                detail={"contract": contract.value, "quality_delta": quality_delta},
+            )
+        return GateResult(
+            "fail_first_evidence",
+            True,
+            f"refactor contract met: code-quality composite improved (delta {quality_delta:+.4f})",
+            detail={"contract": contract.value, "quality_delta": quality_delta},
+        )
+
     if contract is EvidenceContract.CHARACTERIZATION:
-        return _characterization_contract_result(net_new_tests, assertion_score)
+        if net_new_tests <= 0 and assertion_score is None:
+            return GateResult(
+                "fail_first_evidence",
+                False,
+                "characterization contract unmet: no net-new test and no measurable "
+                "assertion-strength score — the test change verifies nothing new",
+                detail={"contract": contract.value},
+            )
+        return GateResult(
+            "fail_first_evidence",
+            True,
+            "characterization contract met: test-only diff judged by net-new tests "
+            "and assertion strength (never fail-first credit)",
+            detail={
+                "contract": contract.value,
+                "net_new_tests": net_new_tests,
+                "assertion_score": assertion_score,
+            },
+        )
+
     return GateResult(
         "fail_first_evidence",
         True,
         "documentation contract: non-code diff — doc-regression veto and spec "
         "signals are the evidence",
         detail={"contract": EvidenceContract.DOCUMENTATION.value},
-    )
-
-
-def _valid_evidence_result(evidence: FailFirstEvidence) -> GateResult:
-    """The pass verdict for valid fail-first evidence — the strongest proof
-    available, honored under EVERY contract. (#1792 extraction.)"""
-    return GateResult(
-        "fail_first_evidence",
-        True,
-        (
-            f"{len(evidence.failing_tests)} changed test(s) red on base "
-            f"{evidence.base_sha[:12]} → green on candidate "
-            f"{evidence.candidate_sha[:12]} (reproducible)"
-        ),
-        detail=evidence.to_dict(),
-    )
-
-
-def _behavior_contract_result(evidence: FailFirstEvidence | None) -> GateResult:
-    """Reject a BEHAVIOR candidate with the specific status reason (missing,
-    already passing, not green, non-reproducible, config-tainted, unrelated).
-    (#1792 extraction.)"""
-    if evidence is None:
-        return GateResult(
-            "fail_first_evidence",
-            False,
-            "missing fail-first evidence: a behavior-changing candidate must add or "
-            "extend a test that fails on the base revision for the intended reason",
-            detail={"contract": EvidenceContract.BEHAVIOR.value},
-        )
-    return GateResult(
-        "fail_first_evidence",
-        False,
-        f"fail-first evidence rejected: {_REJECTION_TEXT[evidence.status]}",
-        detail=evidence.to_dict(),
-    )
-
-
-def _refactor_contract_result(quality_delta: float | None) -> GateResult:
-    """The REFACTOR alternative: the measured code-quality delta must exist
-    (fail closed when the baseline composite is absent) and be > 0 — "I
-    improved clarity" must be visible in the static composite vs base.
-    (#1792 extraction.)"""
-    if quality_delta is None:
-        return GateResult(
-            "fail_first_evidence",
-            False,
-            "refactor contract unmet: no baseline code-quality composite to "
-            "prove the improvement against (fail closed)",
-            detail={"contract": EvidenceContract.REFACTOR.value},
-        )
-    if quality_delta <= 0:
-        return GateResult(
-            "fail_first_evidence",
-            False,
-            f"refactor contract unmet: code-quality composite did not improve "
-            f"over baseline (delta {quality_delta:+.4f})",
-            detail={"contract": EvidenceContract.REFACTOR.value, "quality_delta": quality_delta},
-        )
-    return GateResult(
-        "fail_first_evidence",
-        True,
-        f"refactor contract met: code-quality composite improved (delta {quality_delta:+.4f})",
-        detail={"contract": EvidenceContract.REFACTOR.value, "quality_delta": quality_delta},
-    )
-
-
-def _characterization_contract_result(
-    net_new_tests: int, assertion_score: float | None
-) -> GateResult:
-    """The CHARACTERIZATION alternative: a net-new test or a measurable
-    assertion-strength score — some verification delta beyond a bare
-    snapshot. (#1792 extraction.)"""
-    if net_new_tests <= 0 and assertion_score is None:
-        return GateResult(
-            "fail_first_evidence",
-            False,
-            "characterization contract unmet: no net-new test and no measurable "
-            "assertion-strength score — the test change verifies nothing new",
-            detail={"contract": EvidenceContract.CHARACTERIZATION.value},
-        )
-    return GateResult(
-        "fail_first_evidence",
-        True,
-        "characterization contract met: test-only diff judged by net-new tests "
-        "and assertion strength (never fail-first credit)",
-        detail={
-            "contract": EvidenceContract.CHARACTERIZATION.value,
-            "net_new_tests": net_new_tests,
-            "assertion_score": assertion_score,
-        },
     )

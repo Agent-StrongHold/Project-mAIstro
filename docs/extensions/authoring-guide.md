@@ -13,22 +13,6 @@ reference extension (`extensions/reference-greeter/`) as the worked example.
   boundary gate (`scripts/check-extension-imports.py`) and the isolation
   fixture (`scripts/check-reference-extension.py`).
 
-## 0.5 Or start from the scaffold
-
-`maistro extension new` (M9-H1) writes this whole layout for you — manifest,
-family-shaped entrypoint, packaging metadata, and self-contract tests — for
-any of the five families, with the manifest validated against the documented
-schema before a byte lands:
-
-```bash
-maistro extension new my-weather-tool --family tool --publisher you
-```
-
-Everything this guide says about the reference extension applies verbatim to
-a scaffolded project: it builds and tests in a clean environment with zero
-dependencies, and the manifest declares the least authority that works.
-The rest of this guide explains what the scaffold generated.
-
 ## 1. The package layout
 
 An extension is its own buildable project. Recommended layout:

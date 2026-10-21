@@ -158,7 +158,7 @@ async def _construct_runtime(settings: Settings) -> EmbeddedRuntime:
     """
     import os
 
-    from services.secrets import effective_llm_gateway_key
+    from services.secrets import maistro_llm_api_key
     from services.tool_executor import admitted_tool_executor
 
     from maistro.agents.factory import _load_preamble, create_agents
@@ -225,10 +225,7 @@ async def _construct_runtime(settings: Settings) -> EmbeddedRuntime:
     gateway_base = llm_base or _BUNDLED_GATEWAY_BASE
     llm_client = _HttpOpenAILLMClient(
         base_url=gateway_base,
-        # No ``or "sk-noop"`` (#1824): an unconfigured credential must reach
-        # the gateway as a sanitized refusal before dispatch, not as a fake
-        # bearer token a real gateway can only answer with a 401.
-        api_key=llm_key,
+        api_key=llm_key or "sk-noop",
         model=model,
     )
     model_endpoint = GatewayEndpoint(

@@ -56,11 +56,6 @@ def _run_backup(tmp_path: Path) -> tuple[subprocess.CompletedProcess[str], Path,
         "POSTGRES_DB": "fixture",
         "REMOTE_TARGET": "",
         "RETENTION_DAYS": "14",
-        # Merge reconciliation (#88 + #1881): this harness stubs docker, so no
-        # Conductor volume exists to capture. The real backup.sh writes the
-        # Conductor durable state + escrow unless a stack explicitly opts out
-        # with SKIP_CONDUCTOR_BACKUP=1 — the same opt-out the drill honors.
-        "SKIP_CONDUCTOR_BACKUP": "1",
     }
     result = subprocess.run(
         ["bash", str(_SCRIPT)],
@@ -82,9 +77,6 @@ def test_new_backup_is_private_under_permissive_umask(tmp_path: Path) -> None:
     # The #1881 artifact contract: the custom-format archive, its provenance,
     # the semantic evidence (schema inventory + row counts) and a sha256 side
     # car for each — plus the deployed ref. Every one of them must be private.
-    # Merge reconciliation (#88 + #1881): backup.sh additionally seals every
-    # component with an integrity manifest that verify-restore.sh re-checks
-    # before restoring anything, so the manifest is part of the artifact set.
     assert {p.name for p in files} == {
         "postgres-fixture.dump",
         "postgres-fixture.dump.sha256",
@@ -94,7 +86,6 @@ def test_new_backup_is_private_under_permissive_umask(tmp_path: Path) -> None:
         "postgres-fixture.rowcounts",
         "postgres-fixture.rowcounts.sha256",
         "deployed-git-ref.txt",
-        "manifest.sha256",
     }
     assert all(stat.S_IMODE(p.stat().st_mode) == 0o600 for p in files)
 

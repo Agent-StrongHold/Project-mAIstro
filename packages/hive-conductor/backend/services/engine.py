@@ -217,17 +217,6 @@ class EngineService:
         return getattr(container, "run_reader", None)
 
     @property
-    def goal_reader(self) -> Any:
-        """The core Container's Workspace-scoped Goal reader, or None (#1572).
-
-        Goal inspection uses this principal-carrying seam rather than reading
-        the raw Goal store, just as Run inspection uses ``run_reader``.  It is
-        absent only when this process has no embedded core Container.
-        """
-        container = getattr(self._agent_port, "container", None)
-        return getattr(container, "goal_reader", None)
-
-    @property
     def graph_run_store(self) -> Any:
         """The core Container's durable graph-continuation store, or None.
 

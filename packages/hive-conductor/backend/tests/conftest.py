@@ -253,19 +253,9 @@ def _legacy_registration_implementation_tests(request: pytest.FixtureRequest):
 def _chat_spine_container():
     from maistro.container import create_container
     from maistro.types import AgentConfig
-    from maistro.types.config import SecurityConfig
 
     return asyncio.run(
-        create_container(
-            AgentConfig(
-                router_api_key="test-key",
-                database_url="memory://",
-                security=SecurityConfig(
-                    permission_preset="none",
-                    permissions={"graph.node.execute": ["admin", "user"]},
-                ),
-            )
-        )
+        create_container(AgentConfig(router_api_key="test-key", database_url="memory://"))
     )
 
 
@@ -289,7 +279,6 @@ def chat_run_spine(_chat_spine_container, monkeypatch: pytest.MonkeyPatch):
         intent_registry=c.intent_registry,
         _close_chat_run=c._close_chat_run,
         _cancel_incomplete_admission=c._cancel_incomplete_admission,
-        sentinel=getattr(c, "sentinel", None),
     )
     monkeypatch.setattr(get_engine(), "_agent_port", SimpleNamespace(container=spine))
     chat_runs.reset_for_tests()
@@ -391,45 +380,6 @@ def canonical_graph_spine(monkeypatch: pytest.MonkeyPatch):
     project = asyncio.run(projects.create_root("test-workspace"))
     runs = InMemoryRunStore(project_store=projects)
     providers = InMemoryProviderRegistry()
-
-    # Host user record for the acting principal (role intersection, #60/#845).
-    import datetime as _dt
-
-    import stores as _stores
-
-    _stores.users["test-user"] = _stores.users._model_class(
-        id="test-user",
-        username="test-user",
-        password_hash="unused",
-        role="user",
-        is_active=True,
-        permissions=[],
-        created_at=_dt.datetime.now(_dt.UTC),
-    )
-
-    # Sentinel with the shipped graph-node grant, so ordinary (reversible)
-    # nodes run inline and world-reaching nodes sandbox -- the floors a shipped
-    # deployment produces. Containers without a Sentinel stay fail-closed.
-    from maistro.capabilities.bootstrap import default_capability_registry
-    from maistro.security.permission_policy import build_permission_table
-    from maistro.security.sentinel.delegation import InMemoryDelegationAuthority
-    from maistro.security.sentinel.permission_source import CapabilityPermissionSource
-    from maistro.security.sentinel.policy import Sentinel
-    from maistro.security.warden.detector import Warden
-
-    _table = build_permission_table(
-        preset="none", permissions={"graph.node.execute": ["admin", "user"]}
-    )
-    sentinel = Sentinel(
-        warden=Warden(),
-        permission_table=_table,
-        permission_source=CapabilityPermissionSource(
-            base=_table, capabilities=default_capability_registry()
-        ),
-        tier_policy={},
-        delegation_authority=InMemoryDelegationAuthority(),
-    )
-
     container = SimpleNamespace(
         run_store=runs,
         graph_run_store=CanonicalDurableRunStore(runs, InMemoryGraphContinuationStore()),
@@ -443,70 +393,6 @@ def canonical_graph_spine(monkeypatch: pytest.MonkeyPatch):
         capability_effects=new_in_memory_effect_context(),
         provider_registry=providers,
         llm_router=CostAwareRouter(providers),
-        sentinel=sentinel,
     )
     monkeypatch.setattr(get_engine(), "_agent_port", SimpleNamespace(container=container))
-    yield container
-    _stores.users.pop("test-user", None)
-
-
-@pytest.fixture
-def shipped_deployment_security():
-    """The Sentinel authority the shipped Conductor profile states (#60, #845).
-
-    Read from the shipped profile instead of restated here: the profile IS the
-    deployment's authority statement, and a test that hard-codes the grant
-    would keep proving an authority the product no longer ships. A profile
-    that states no graph-node grant fails the DAG-execution proofs loudly (the
-    node is blocked), which is the alarm the deployment contract wants.
-    """
-    import json
-
-    import yaml
-
-    from maistro.types.config import SecurityConfig
-
-    profile_path = Path(__file__).resolve().parents[2] / "docker-compose.yml"
-    profile = yaml.safe_load(profile_path.read_text(encoding="utf-8"))
-    environment = profile["services"]["hive-conductor"]["environment"]
-    stated = dict(item.split("=", 1) for item in environment if "=" in item)
-    return SecurityConfig(
-        permission_preset=stated.get("MAISTRO_PERMISSION_PRESET", "none"),
-        permissions=json.loads(stated.get("MAISTRO_PERMISSIONS", "{}")),
-    )
-
-
-@pytest.fixture
-def host_user_actor():
-    """Register the acting user as the host knows it, for one test.
-
-    The node adapter's Sentinel gate resolves the principal's roles from the
-    host's user store (``services.canonical_dag_runner._host_principal_roles``),
-    so a DAG run needs an actor the host can resolve a role for -- exactly
-    what an authenticated Conductor session provides in production. The record
-    is removed again so the session-scoped store keeps the shape other tests
-    see.
-    """
-    import stores
-
-    registered: list[str] = []
-
-    def _register(user_id: str, *, role: str = "user") -> str:
-        from datetime import UTC, datetime
-
-        stores.users[user_id] = stores.users._model_class(
-            id=user_id,
-            username=user_id,
-            password_hash="unused",
-            role=role,
-            is_active=True,
-            permissions=[],
-            created_at=datetime.now(UTC),
-        )
-        registered.append(user_id)
-        return user_id
-
-    yield _register
-
-    for user_id in registered:
-        stores.users.pop(user_id, None)
+    return container

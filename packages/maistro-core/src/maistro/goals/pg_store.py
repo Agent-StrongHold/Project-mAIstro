@@ -214,21 +214,6 @@ class PgGoalStore:
             await self._insert_revision(conn, goal.goal_id, revision)
         return goal
 
-    async def list_goals(
-        self, workspace_id: str, *, limit: int = 100, offset: int = 0
-    ) -> list[Goal]:
-        if limit <= 0 or offset < 0:
-            raise ValueError("limit must be positive and offset non-negative")
-        async with self._pool.acquire() as conn:
-            rows = await conn.fetch(
-                """SELECT payload FROM canonical_goals WHERE workspace_id = $1
-                   ORDER BY created_at DESC, goal_id DESC LIMIT $2 OFFSET $3""",
-                workspace_id,
-                limit,
-                offset,
-            )
-        return [model_of(Goal, row["payload"]) for row in rows]
-
     async def get_goal(self, goal_id: str) -> Goal | None:
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(

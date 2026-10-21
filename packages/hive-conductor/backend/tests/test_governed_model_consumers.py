@@ -635,17 +635,7 @@ async def test_runtime_wires_container_authorities(
     monkeypatch.setenv("MAISTRO_LLM_BASE_URL", "http://env-gateway")
     monkeypatch.setenv("MAISTRO_LLM_API_KEY", "env-key")
 
-    # The endpoint's key now resolves through the effective-key contract
-    # (#1824), which reads the cached `get_settings`; the cache must be built
-    # from the env THIS test states, and dropped again so the monkeypatched
-    # values cannot outlive it.
-    import config
-
-    config.get_settings.cache_clear()
-    try:
-        runtime = _runtime()
-    finally:
-        config.get_settings.cache_clear()
+    runtime = _runtime()
 
     assert runtime.effects is effects
     assert runtime.registry is registry
@@ -675,17 +665,7 @@ async def test_endpoint_refuses_without_gateway_configuration(
         "LITELLM_MASTER_KEY",
     ):
         monkeypatch.delenv(var, raising=False)
-    settings = type(
-        "Settings",
-        (),
-        {
-            "litellm_api_base": None,
-            "litellm_api_key": None,
-            # The effective-key contract (#1824) also reads the deployment's
-            # own model key off settings; the stand-in models the real shape.
-            "maistro_llm_api_key": None,
-        },
-    )()
+    settings = type("Settings", (), {"litellm_api_base": None, "litellm_api_key": None})()
     monkeypatch.setattr(config, "get_settings", lambda: settings)
 
     with pytest.raises(ProviderActivationError, match="LLM gateway is not configured"):

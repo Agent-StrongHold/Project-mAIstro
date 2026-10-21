@@ -251,7 +251,7 @@
       "permission": "workspaces.write",
       "owner": "@BlakeMatthews-dev",
       "disposition": "permanent",
-      "reason": "Membership, persona authoring, tool bindings and archive/delete gate on workspaces.write; POST /v1/workspaces tab creation is explicitly exempt in middleware. GET reads under the prefix (listing/detail, Home #1048, Attention #1049, Goal inspection #65) are authenticated-only and scoped in-route to the caller's membership: not a member and not a Workspace are the same 404."
+      "reason": "Membership, persona authoring, tool bindings and archive/delete gate on workspaces.write; POST /v1/workspaces tab creation is explicitly exempt in middleware."
     }
   }
 }

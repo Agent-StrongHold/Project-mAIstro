@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
-import threading
 import time
 from datetime import date, datetime
 from enum import Enum
@@ -59,7 +58,6 @@ class _RecordingWarden:
 #: file because the parent must not parse the child's stderr to learn it.
 _PEER_SERVER = """
 import json
-import os
 import sys
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -84,14 +82,8 @@ class _Peer(BaseHTTPRequestHandler):
 
 
 server = ThreadingHTTPServer(("127.0.0.1", 0), _Peer)
-# Publish the port atomically: open(path, "w") makes the file visible while
-# still empty, and a parent poll landing in that window used to read '' and
-# crash on int(''). Write a sibling temp file and rename it over the final
-# path so the announced name only ever exists with complete content.
-_tmp_port_file = sys.argv[2] + ".tmp"
-with open(_tmp_port_file, "w", encoding="ascii") as port_file:
+with open(sys.argv[2], "w", encoding="ascii") as port_file:
     port_file.write(str(server.server_address[1]))
-os.replace(_tmp_port_file, sys.argv[2])
 server.timeout = 0.25
 while time.monotonic() < deadline:
     server.handle_request()
@@ -117,14 +109,8 @@ class _CrossProcessPeer:
         assert self._proc is not None
         deadline = time.monotonic() + 15
         while time.monotonic() < deadline:
-            # The child creates the port file before the port bytes land, so a
-            # poll can observe it while still empty; CI hit exactly that
-            # interleaving (int('') ValueError). Treat an unparseable read as
-            # not-ready and keep polling until the deadline instead.
             if self._port_file.exists():
-                text = self._port_file.read_text(encoding="ascii").strip()
-                if text.isdigit():
-                    return f"http://127.0.0.1:{int(text)}"
+                return f"http://127.0.0.1:{int(self._port_file.read_text().strip())}"
             if self._proc.poll() is not None:
                 raise RuntimeError("peer process exited before announcing its port")
             time.sleep(0.05)
@@ -165,61 +151,6 @@ class _CrossProcessPeer:
         except subprocess.TimeoutExpired:
             self._proc.kill()
             self._proc.wait(timeout=10)
-
-
-class _AliveProc:
-    """Stand-in for the peer subprocess: alive, has not announced a port."""
-
-    def poll(self) -> int | None:
-        return None
-
-
-def test_base_url_tolerates_a_transiently_empty_port_file(tmp_path: Path) -> None:
-    """Regression: CI saw `exists()` win the race against the child's write.
-
-    The peer child creates the port file (mode "w") before the port bytes are
-    flushed, and a parent poll landing inside that window read `''` and crashed
-    the helper with `ValueError: invalid literal for int() with base 10: ''`
-    instead of waiting for the announcement. Freeze that interleaving: the file
-    exists but is empty when the first poll lands, and the port arrives only
-    afterwards. The helper must treat an unparseable read as not-ready.
-    """
-    peer = _CrossProcessPeer({}, tmp_path)
-    port_file = tmp_path / "peer-port"
-    port_file.write_text("", encoding="ascii")  # the race window, frozen
-    peer._proc = _AliveProc()  # type: ignore[assignment]
-
-    def _announce() -> None:
-        time.sleep(0.2)
-        port_file.write_text("45678", encoding="ascii")
-
-    announcer = threading.Thread(target=_announce)
-    announcer.start()
-    try:
-        assert peer._base_url() == "http://127.0.0.1:45678"
-    finally:
-        announcer.join()
-
-
-def test_peer_port_announcement_tolerates_the_empty_creation_window(tmp_path: Path) -> None:
-    """An existing-but-empty port file is 'not yet announced', never a port.
-
-    The peer's ``open(path, "w")`` creates the file before the port is
-    written. Announcing through ``exists()`` alone parsed that window as a
-    port and crashed with ``ValueError: invalid literal for int() with base
-    10: ''`` under CI load (coverage gate, 2026-10-18). Pre-creating the
-    empty file makes the window deterministic: the old reader fails on the
-    first poll, the current one waits for the real write. With the atomic
-    child publish (sibling ``.tmp`` plus ``os.replace``) the pre-created
-    empty file is the frozen window the tolerant reader must wait out
-    before the rename lands the real port.
-    """
-    peer = _CrossProcessPeer({"delegationReceived": True}, tmp_path)
-    peer._port_file.write_text("")
-    with peer as base_url:
-        port = base_url.rsplit(":", 1)[1]
-        assert port.isdigit()
-        assert int(port) > 0
 
 
 def _context(

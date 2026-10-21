@@ -37,12 +37,7 @@ from maistro.extensions.types import ExtensionInstallRecord, ExtensionState
 from maistro.sandbox.backends.fake import FakeSandboxBackend
 from maistro.sandbox.network import EgressGrant, EgressMode
 from maistro.sandbox.policy import ExecutionMode
-from maistro.sandbox.protocol import (
-    OUTPUT_LIMIT_EXIT_CODE,
-    ExecResult,
-    SandboxConfig,
-    SandboxInstance,
-)
+from maistro.sandbox.protocol import ExecResult, SandboxConfig, SandboxInstance
 from maistro.sandbox.selector import SandboxSelector
 
 TRUSTED = TrustReport(trusted=True)
@@ -395,45 +390,6 @@ class TestViolationAttribution:
         (violation,) = outcome.violations
         assert "wall-clock timeout" in violation.detail
 
-    async def test_an_output_limit_kill_is_propagated_and_recorded(self) -> None:
-        """A host-enforced output-limit death is neither dropped nor mistaken
-        for an ordinary nonzero exit: the outcome carries the backend's status
-        (flag, truncation evidence, retained counts), and the kill lands in the
-        violation log as a resource-limit event — so repeated output-limit
-        violations feed the quarantine escalation like any other ceiling hit."""
-
-        class _OutputLimitBackend(_StubBackend):
-            async def exec(
-                self, instance: SandboxInstance, command: list[str], *, timeout_s: int = 120
-            ) -> ExecResult:
-                return ExecResult(
-                    exit_code=OUTPUT_LIMIT_EXIT_CODE,
-                    stdout="partial output",
-                    stderr="",
-                    duration_ms=5,
-                    output_limit_exceeded=True,
-                    stdout_truncated=True,
-                    stdout_bytes_retained=len("partial output"),
-                )
-
-        log = SandboxViolationLog()
-        outcome = await _runner(_OutputLimitBackend(), violations=log).exec(
-            _profile(), ["flood-stdout"]
-        )
-        assert outcome.exit_code == OUTPUT_LIMIT_EXIT_CODE
-        assert outcome.output_limit_exceeded is True
-        assert outcome.stdout_truncated is True
-        assert outcome.stdout_bytes_retained == len("partial output")
-        assert outcome.succeeded is False
-        assert len(outcome.violations) == 1
-        violation = outcome.violations[0]
-        assert violation.kind is ViolationKind.RESOURCE_LIMIT_EXCEEDED
-        assert violation.extension_id == "acme.chart_tools"
-        assert violation.version == "1.4.0"
-        assert violation.sandbox_id == outcome.sandbox_id
-        assert "output capture limit exceeded" in violation.detail
-        assert log.violations_for("acme.chart_tools", "1.4.0") == (violation,)
-
     async def test_the_violation_log_is_bounded(self) -> None:
         log = SandboxViolationLog(capacity=2)
         profile = _profile()
@@ -450,21 +406,6 @@ class _KilledOnceBackend(_StubBackend):
         return ExecResult(exit_code=-9, stdout="", stderr="killed", duration_ms=1)
 
 
-class _OutputLimitOnceBackend(_StubBackend):
-    async def exec(
-        self, instance: SandboxInstance, command: list[str], *, timeout_s: int = 120
-    ) -> ExecResult:
-        return ExecResult(
-            exit_code=OUTPUT_LIMIT_EXIT_CODE,
-            stdout="partial",
-            stderr="",
-            duration_ms=1,
-            output_limit_exceeded=True,
-            stdout_truncated=True,
-            stdout_bytes_retained=len("partial"),
-        )
-
-
 class TestRepeatedViolationEscalation:
     async def test_repeated_violations_escalate_to_a_named_operational_warning(
         self, caplog: pytest.LogCaptureFixture
@@ -473,22 +414,6 @@ class TestRepeatedViolationEscalation:
         boundary event for one extension/version stops being a per-event line
         and becomes a named candidate-for-quarantine warning."""
         runner = _runner(_KilledOnceBackend())
-        with caplog.at_level(logging.WARNING, logger="maistro.extensions.isolation"):
-            for _ in range(3):
-                await runner.exec(_profile(), ["x"])
-        escalated = [
-            r for r in caplog.records if "extension_repeated_sandbox_violations" in r.getMessage()
-        ]
-        assert len(escalated) == 1
-        assert "acme.chart_tools" in escalated[0].getMessage()
-        assert "M9-G4" in escalated[0].getMessage()
-
-    async def test_repeated_output_limit_violations_escalate_the_same_way(
-        self, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        """Output-limit kills are resource-limit violations, so they count
-        toward the repeated-violation quarantine threshold like signal kills."""
-        runner = _runner(_OutputLimitOnceBackend())
         with caplog.at_level(logging.WARNING, logger="maistro.extensions.isolation"):
             for _ in range(3):
                 await runner.exec(_profile(), ["x"])

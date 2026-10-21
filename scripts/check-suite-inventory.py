@@ -162,17 +162,6 @@ RECIPES: dict[str, Recipe] = {
     # (scripts/check-extension-imports.py) keeps it free of repo-relative
     # repair that could make collection checkout-dependent.
     "extensions/reference-greeter/tests": Recipe(args=[]),
-    # The reference gallery's four package suites (#980, M9-J2). Same story
-    # as the greeter's row: not in the root testpaths (the clean-environment
-    # proof is the isolation fixture's, run under the gallery's own policy),
-    # but part of the repository's test surface — the root dev env installs
-    # the gallery packages via workspace membership, so plain collection
-    # sees them. A vanishing or unimportable gallery suite is inventory
-    # drift like any other.
-    "extensions/reference-gallery/packages/gallery-weather-connector/tests": Recipe(args=[]),
-    "extensions/reference-gallery/packages/gallery-unit-skill/tests": Recipe(args=[]),
-    "extensions/reference-gallery/packages/gallery-model-adapter/tests": Recipe(args=[]),
-    "extensions/reference-gallery/packages/gallery-renderer-pack/tests": Recipe(args=[]),
     # The extension host harness's own suite (#974). A packages/ workspace
     # member installed by the root `dev` extra (like reference-greeter), so
     # plain collection sees it with no PYTHONPATH repair: its runtime is

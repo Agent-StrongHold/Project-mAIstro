@@ -106,7 +106,6 @@ class Sentinel:
         rlphd_threshold_store: RlphdThresholdStore | None = None,
         argument_limits: ToolArgumentLimits | None = None,
         allow_on_miss: bool = False,
-        delegation_authority: DelegationAuthority | None = None,
     ) -> None:
         self._warden = warden
         self._permission_table = permission_table
@@ -126,10 +125,6 @@ class Sentinel:
         self._rlphd_model = rlphd_model
         self._rlphd_threshold_store = rlphd_threshold_store
         self._argument_limits = argument_limits or ToolArgumentLimits.from_environment()
-        # AgentIdentity manifests are requests, never grants. A missing host
-        # authority therefore refuses delegation rather than consulting roster
-        # state as an implicit allow-list.
-        self._delegation_authority = delegation_authority
         # Fail-closed default (ADR-072726-0d6b, #1165): a tool absent from the
         # permission table is DENIED. allow_on_miss=True is the explicit
         # compatibility mode for non-production/test/demo wiring; it is never
@@ -177,39 +172,6 @@ class Sentinel:
         if not authorized:
             return f"principal '{principal.id}' lacks capability for '{action}'"
         return None
-
-    async def authorize_delegation(
-        self,
-        *,
-        principal: Principal,
-        owner_id: str,
-        delegating_agent_id: str,
-        target_agent_id: str,
-        goal_id: str,
-        run_id: str,
-        invocation_id: str,
-        scope: str,
-        requested_actions: frozenset[str],
-        artifact: str,
-    ) -> DelegationDecision:
-        """Resolve delegated authority from host policy, never agent metadata."""
-        if self._delegation_authority is None:
-            return DelegationDecision(False, reason="delegation authority is not configured")
-        request = DelegationRequest(
-            principal=principal,
-            owner_id=owner_id,
-            delegating_agent_id=delegating_agent_id,
-            target_agent_id=target_agent_id,
-            goal_id=goal_id,
-            run_id=run_id,
-            invocation_id=invocation_id,
-            scope=scope,
-            action="agent.delegate",
-            requested_actions=requested_actions,
-            artifact=artifact,
-            requested_at=utc_now(),
-        )
-        return self._delegation_authority.authorize(request, now=request.requested_at)
 
     def resolve_tier(
         self,
@@ -423,12 +385,6 @@ class Sentinel:
         violations: list[Violation] = []
 
         table = await self._effective_table()
-        delegation_detail = _delegation_detail(auth)
-        expired = await self._deny_expired_delegation(
-            tool_name=tool_name, auth=auth, detail=delegation_detail
-        )
-        if expired is not None:
-            return expired
         if table is None or not check_permission(
             auth, tool_name, table, allow_on_miss=self._allow_on_miss
         ):

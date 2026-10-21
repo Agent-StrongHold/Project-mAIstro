@@ -368,14 +368,6 @@
         "quality/frontend-typed-client-baseline.json"
       ],
       "reason": "Workspace cutover P0.3: raw fetch and hand-typed frontend entity debt is measured on the candidate and compared against the ledger resolved from the trusted base."
-    },
-    {
-      "id": "license-policy",
-      "kind": "specification",
-      "paths": [
-        "quality/license-policy.json"
-      ],
-      "reason": "Reviewed legal license policy (#363): dependency-class evidence requirements, surface classifications, and per-component reviewed resolutions are policy whose change is the substantive, reviewable legal decision; the inventory gate reads the candidate copy as the landing state, so a prior-tree oracle would predate the review it must not substitute for."
     }
   ]
 }

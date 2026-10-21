@@ -256,6 +256,27 @@ if [[ ${#ANSWERS_PROBLEMS[@]} -gt 0 ]]; then
     exit 1
 fi
 
+ensure_python() {
+    if [[ ${#PYTHON_CMD[@]} -gt 0 ]]; then
+        return
+    fi
+    if [[ -d "$ANSWERS_FILE" ]]; then
+        ANSWERS_PROBLEMS+=(
+            "answers file '$ANSWERS_FILE' is a directory. Pass the YAML file itself (template: docs/install/examples/answers-v1-minimal.yaml)."
+        )
+    elif [[ ! -f "$ANSWERS_FILE" ]]; then
+        ANSWERS_PROBLEMS+=(
+            "answers file '$ANSWERS_FILE' does not exist (cwd: $PWD). Pass the path to a v1 answers file (template: docs/install/examples/answers-v1-minimal.yaml), or drop --answers-file to install interactively."
+        )
+    fi
+fi
+if [[ ${#ANSWERS_PROBLEMS[@]} -gt 0 ]]; then
+    for problem in "${ANSWERS_PROBLEMS[@]}"; do
+        echo -e "${RED}[error]${NC} $problem" >&2
+    done
+    exit 1
+fi
+
 # The user-owned Python/uv bootstrap contract (#1821): uv first (its official
 # standalone installer needs neither Python nor pip), then a helper interpreter
 # (3.11+ floor) reused from the host or provisioned by uv — with the wizard

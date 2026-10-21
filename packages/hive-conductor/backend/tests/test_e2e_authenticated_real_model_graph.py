@@ -71,8 +71,7 @@ from maistro.credentials.types import CredentialRecord  # noqa: E402
 from maistro.graph import Graph, Node  # noqa: E402
 from maistro.graph.durable_runs import RunStatus, run_durable_graph  # noqa: E402
 from maistro.graph.durable_runs.stores import InMemoryDurableRunStore  # noqa: E402
-from maistro.graph.nodes.base import NodeContext  # noqa: E402
-from maistro.graph.nodes.llm_summarize import LlmSummarizeIn, LlmSummarizeNode  # noqa: E402
+from maistro.graph.nodes.llm_summarize import LlmSummarizeNode  # noqa: E402
 from maistro.providers.registry import InMemoryProviderRegistry  # noqa: E402
 from maistro.providers.router import CostAwareRouter  # noqa: E402
 from maistro.providers.types import ModelMetadata  # noqa: E402
@@ -360,24 +359,6 @@ def _summarize_graph() -> Graph:
     )
 
 
-def _summarize_effect_key(node: LlmSummarizeNode, *, run_id: str) -> str:
-    """The exact logical effect key the shipped node files under this Run.
-
-    `llm.summarize` derives its key from Run + graph node identity + an input
-    digest (#106 review repair), not from the model alias, so a second
-    ``llm.summarize`` node sharing the Binding and model can never adopt this
-    node's completed effect. Asking the node keeps the expectation on the
-    production derivation instead of a re-spelled literal.
-    """
-    graph = _summarize_graph()
-    key = node.logical_effect_key(
-        LlmSummarizeIn(**graph.nodes[0].inputs),
-        NodeContext(run_id=run_id, dag_id=graph.graph_id, node_id="summarize"),
-    )
-    assert key is not None, "an EFFECT_KEY node must expose a logical key"
-    return key
-
-
 def _governed_effects() -> Any:
     """The in-memory composition of the canonical effect boundary, with the
     explicit ``binding_scope_policy`` baseline (#846: an omitted evaluator
@@ -455,18 +436,12 @@ async def test_canonical_llm_node_crosses_the_governed_invocation_seam(
     assert output.get("tokens_in") == 11 and output.get("tokens_out") == 7, output
 
     # Invocation evidence: one completed canonical Invocation beneath this
-    # Attempt, with the full usage telemetry attached. The key is Run/node/input
-    # scoped and is therefore not the model-only spelling.
-    effect_key = _summarize_effect_key(node, run_id=record.run_id)
-    assert effect_key.startswith(f"llm.summarize.complete:{record.run_id}:summarize:")
-    assert effect_key != f"llm.summarize.complete:{GATEWAY_MODEL}", (
-        "a model-only key would be shared by every summarize node on this Binding"
-    )
+    # Attempt, with the full usage telemetry attached.
     invocations = await effects.invocation_store.list_effect(
         run_id=record.run_id,
         node_run_id=None,
         binding_id=binding.binding_id,
-        effect_key=effect_key,
+        effect_key=f"llm.summarize.complete:{GATEWAY_MODEL}",
     )
     assert len(invocations) == 1, invocations
     invocation = invocations[0]
@@ -493,7 +468,7 @@ async def test_canonical_llm_node_crosses_the_governed_invocation_seam(
     assert policy_event.payload["rule"] == "m1.binding-scope", policy_event.payload
     assert policy_event.payload["binding_id"] == binding.binding_id
     assert policy_event.payload["capability"] == MODEL_CHAT_CAPABILITY
-    assert policy_event.payload["effect_key"] == effect_key
+    assert policy_event.payload["effect_key"] == f"llm.summarize.complete:{GATEWAY_MODEL}"
     assert policy_event.run_id == record.run_id
     assert policy_event.node_run_id == node_run.node_run_id
     assert policy_event.attempt_id in {attempt.attempt_id for attempt in record.attempts}
@@ -539,9 +514,7 @@ async def test_unauthorized_model_node_fails_closed_before_any_gateway_call(
         run_id=record.run_id,
         node_run_id=None,
         binding_id="model-chat-e2e",
-        # The exact key this node would file under had it been admitted: a
-        # refusal that still left an Invocation behind would be found here.
-        effect_key=_summarize_effect_key(node, run_id=record.run_id),
+        effect_key=f"llm.summarize.complete:{GATEWAY_MODEL}",
     )
     assert invocations == [], "a refused node must leave no Invocation evidence"
     # And the seam recorded nothing at all: the refusal is Binding resolution

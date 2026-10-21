@@ -58,6 +58,7 @@ async def _fixture(
     *,
     template: bool = True,
     max_runs: int | None = None,
+    workspace: bool = False,
 ) -> tuple[Any, Any, Any]:
     from maistro.graph.definitions import GraphTemplate, Node
     from maistro.graph.templates import InMemoryGraphTemplateStore
@@ -67,7 +68,25 @@ async def _fixture(
     from maistro.scheduling.store import InMemoryScheduleStore
 
     projects = InMemoryProjectScopeStore()
-    root = await projects.create_root("ws-1")
+    workspace_store: Any = None
+    if workspace:
+        from maistro.workspaces.store import InMemoryWorkspaceStore
+
+        # The canonical workspace provisions ws-1's Root Project itself, so
+        # identity and membership come from the one authority the scheduler's
+        # scope resolution consults.
+        workspace_store = InMemoryWorkspaceStore(project_store=projects)
+        await workspace_store.create(
+            creator_user_id="ws-admin", name="Schedule WS", workspace_id="ws-1"
+        )
+        from maistro.workspaces.model import WorkspaceRole
+
+        await workspace_store.set_membership(
+            "ws-1", user_id="user-1", role=WorkspaceRole.CONTRIBUTOR
+        )
+    else:
+        await projects.create_root("ws-1")
+    root = await projects.root_for_workspace("ws-1")
     runs = InMemoryRunStore(project_store=projects)
     templates = InMemoryGraphTemplateStore()
     schedules = InMemoryScheduleStore()
@@ -95,6 +114,7 @@ async def _fixture(
         schedule_store=schedules,
         schedule_admitter=ScheduleRunAdmitter(runs, templates, schedules),
         project_scope_store=projects,
+        workspace_store=workspace_store,
     )
     row = _Row(
         "s-1",
@@ -117,6 +137,42 @@ def _remove_row(row: Any) -> None:
     stores.schedules._data.pop(row.id, None)  # type: ignore[attr-defined]
 
 
+def test_a_schedule_whose_actor_lost_workspace_membership_is_not_admitted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Revocation is explicit on the production canonical path, not just the
+    standalone fallback: the scope resolution refuses an actor whose Workspace
+    membership is gone, so a persisted schedule cannot keep spending authority
+    its owner no longer holds."""
+    from services.scheduler import _ScheduleRunner
+
+    async def scenario() -> None:
+        container, row, _root = await _fixture(workspace=True)
+        _install_row(row)
+        monkeypatch.setattr(
+            _ScheduleRunner, "_canonical_container", staticmethod(lambda: container)
+        )
+        runner = _ScheduleRunner()
+
+        await runner._evaluate_schedule("s-1", row, now=datetime(2026, 8, 21, 12, 5, tzinfo=UTC))
+        recorded = await container.schedule_store.get("s-1")
+        assert recorded is not None
+        assert recorded.runs_so_far == 1
+        assert recorded.actor_principal_id == "user-1"
+
+        await container.workspace_store.remove_membership("ws-1", user_id="user-1")
+
+        with pytest.raises(ValueError, match="no longer a Workspace member"):
+            await runner._evaluate_schedule(
+                "s-1", row, now=datetime(2026, 8, 21, 13, 5, tzinfo=UTC)
+            )
+        still = await container.schedule_store.get("s-1")
+        assert still is not None
+        assert still.runs_so_far == 1, "revocation stops future automatic fires"
+
+    asyncio.run(scenario())
+
+
 def test_two_live_runners_claim_one_occurrence(monkeypatch: pytest.MonkeyPatch) -> None:
     from services.scheduler import _ScheduleRunner
 
@@ -136,6 +192,9 @@ def test_two_live_runners_claim_one_occurrence(monkeypatch: pytest.MonkeyPatch) 
             assert recorded is not None
             assert recorded.runs_so_far == 1
             assert recorded.last_run_id
+            assert recorded.workspace_id == "ws-1"
+            assert recorded.project_id == root.project_id
+            assert recorded.actor_principal_id == "user-1"
 
             run = await container.run_store.get_run(recorded.last_run_id)
             assert run is not None
@@ -143,6 +202,8 @@ def test_two_live_runners_claim_one_occurrence(monkeypatch: pytest.MonkeyPatch) 
             assert run.project_id == root.project_id
             assert run.provenance["admission_source"] == "schedule"
             assert run.provenance["schedule_id"] == "s-1"
+            assert run.actor_principal_id == "user-1"
+            assert run.provenance["scheduler_service_id"] == "hive-scheduler"
             assert (
                 run.provenance["scheduled_for"]
                 == datetime(2026, 8, 21, 12, 0, tzinfo=UTC).isoformat()
@@ -228,7 +289,8 @@ def test_scheduler_tick_executes_the_admitted_run_to_completion(
         container = await create_container(
             AgentConfig(router_api_key="test-key", workspace_id="ws-1")
         )
-        root = await container.project_scope_store.create_root("ws-1")
+        await container.workspace_store.create(creator_user_id="user-1", name="Schedule WS", workspace_id="ws-1")
+        root = await container.project_scope_store.root_for_workspace("ws-1")
         await container.template_store.put(
             GraphTemplate(
                 template_id="scheduled-template",

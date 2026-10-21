@@ -26,7 +26,6 @@ from maistro.graph.durable_runs import (
 from maistro.graph.policies import resolve_max_cycles, resolve_node_timeout_s
 from maistro.graph.types import DEFAULT_SYSTEM_PROMPTS, JSON_OUTPUT_SCHEMAS, AgentRole
 from maistro.runs.model import TERMINAL_RUN_STATUSES, Run
-from maistro.runs.recovery_events import CanonicalRecoveryEventSink
 from services.dag_agents import _container, require_graph_execution_spine
 from services.dag_execution_scope import DagExecutionScope, DagWorkspaceSelectionError
 from services.governed_model import dag_node_runtime
@@ -433,9 +432,6 @@ def _resolver(
     effect_context: Any = None,
     governed_runtime: Any = None,
     progress: Any = None,
-    sentinel: Any = None,
-    host_mode: str | None = None,
-    principal_roles: tuple[str, ...] = (),
 ):
     def resolve(node_id: str, _graph: Graph) -> LegacyConductorNode:
         try:
@@ -452,9 +448,6 @@ def _resolver(
             effect_context=effect_context,
             governed_runtime=governed_runtime,
             progress=progress,
-            sentinel=sentinel,
-            host_mode=host_mode,
-            principal_roles=principal_roles,
         )
 
     return resolve
@@ -507,7 +500,6 @@ def _recovery_resolver(run: Run):
         raise ValueError(f"Run {run.run_id!r} has invalid legacy execution_mode {execution_mode!r}")
     legacy_dag_id = str(graph.metadata.get("legacy_dag_id") or graph.graph_id)
     container = _container()
-    sentinel, host_mode = _host_execution_authority(container)
     return _resolver(
         raw_by_id,
         task_desc=graph.description or graph.name,
@@ -524,9 +516,6 @@ def _recovery_resolver(run: Run):
         llm_builder=None,
         effect_context=(getattr(container, "capability_effects", None) if container else None),
         governed_runtime=dag_node_runtime(container),
-        sentinel=sentinel,
-        host_mode=host_mode,
-        principal_roles=_host_principal_roles(run.actor_principal_id or ""),
     )
 
 
@@ -541,7 +530,7 @@ async def recover_stranded_dag_runs(*, limit: int = 100) -> int:
         node_resolver_factory=_recovery_resolver,
         eligible=lambda run: run.provenance.get("admission_source") == "hive_legacy_dag",
         admission_source="hive_legacy_dag",
-        events=_canonical_recovery_events(container),
+        events=container.event_bus,
         limit=limit,
         # Held across ticks: the scan is bounded per call, and only a tick
         # that resumes where the last stopped crosses a foreign-owned QUEUED
@@ -693,7 +682,6 @@ async def execute_dag(
     )
     container = _container()
     require_graph_execution_spine(container)
-    sentinel, host_mode = _host_execution_authority(container)
     canonical_run_store = container.run_store
     graph = graph_from_legacy_dag(
         dag_data,
@@ -748,9 +736,6 @@ async def execute_dag(
             progress=on_event,
             effect_context=(getattr(container, "capability_effects", None) if container else None),
             governed_runtime=dag_node_runtime(container),
-            sentinel=sentinel,
-            host_mode=host_mode,
-            principal_roles=_host_principal_roles(user_id),
         )
 
     record = await run_durable_graph(

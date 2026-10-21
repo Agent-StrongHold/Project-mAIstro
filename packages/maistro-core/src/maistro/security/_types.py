@@ -59,8 +59,6 @@ class AuthContext:
         explicit ``Sentinel(allow_on_miss=True)`` construction, intended for
         non-production/test/demo wiring, and no configuration surface arms it.
         """
-        if self.delegated_actions is not None and tool_name not in self.delegated_actions:
-            return False
         allowed_roles = permission_table.get(tool_name)
         if allowed_roles is None:
             return False

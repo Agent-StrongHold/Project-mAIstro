@@ -361,13 +361,7 @@ class TestRunnerImageParity:
         """The scorecard's required analyzer set must be installed in the
         shipped runner image, or every dispatched run dies in a not_run veto
         for an environment reason. Two install sources count:
-        - the image's explicit ``uv pip install`` invocation inside a RUN
-          instruction (bandit, coverage, ...): a dedicated ``RUN uv pip
-          install ...`` line, or the same invocation chained into the combined
-          ``RUN uv sync ... && uv pip install ... && uv cache clean`` layer —
-          the chain exists so the uv wheel cache (which keeps METADATA for
-          vulnerable tuples the secret scanner would flag) never persists to
-          the final image, and must not be un-merged to satisfy this test;
+        - the image's explicit ``uv pip install`` line (bandit, coverage, ...),
         - the locked dev group ``uv sync --frozen`` installs (ruff, mypy are
           root dev-group members, so they ride the locked sync).
         A required tool in NEITHER source is the #304 defect: a gate the image
@@ -375,26 +369,10 @@ class TestRunnerImageParity:
         import tomllib
 
         dockerfile = (_REPO_ROOT / "Dockerfile.rsi-runner").read_text(encoding="utf-8")
-        # Join backslash continuations first: the analyzer install lives inside
-        # the combined ``RUN uv sync ... && uv pip install ... && uv cache clean``
-        # layer, so the invocation only appears on a continuation line.
-        instructions: list[str] = []
-        current = ""
-        for raw in dockerfile.splitlines():
-            line = raw.strip()
-            continued = line.endswith("\\")
-            if continued:
-                line = line[:-1].strip()
-            current = f"{current} {line}" if current else line
-            if not continued:
-                instructions.append(current)
-                current = ""
-        if current:
-            instructions.append(current)
         install_lines = [
-            instruction
-            for instruction in instructions
-            if instruction.startswith("RUN") and "uv pip install" in instruction
+            ln.strip()
+            for ln in dockerfile.splitlines()
+            if ln.strip().startswith("RUN uv pip install")
         ]
         assert install_lines, "runner image lost its analyzer install line"
         explicit = " ".join(install_lines)

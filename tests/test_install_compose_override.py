@@ -40,10 +40,9 @@ ROOT = Path(__file__).resolve().parents[1]
 INSTALL_SH = ROOT / "install.sh"
 
 #: compose_files and everything it (or show_compose_plan) calls, lifted
-#: verbatim from install.sh. ensure_python is not in this list: it moved to
-#: scripts/bootstrap-runtime.sh (#1821), which the harness sources below so
-#: the probe test still exercises the real resolver.
+#: verbatim from install.sh.
 _FUNCTIONS = (
+    "ensure_python",
     "delivery_mode",
     "effective_delivery_mode",
     "override_file_is_safe",
@@ -78,7 +77,6 @@ PLAN_DIR="${{MAISTRO_INSTALL_PLAN_DIR:-.maistro-install}}"
 MAISTRO_IMAGE_TAG="test-tag"
 COMPOSE_CMD=("docker" "compose")
 source <(sed -n {extract!r} {install})
-source "{ROOT / "scripts" / "bootstrap-runtime.sh"}"
 """
 
 

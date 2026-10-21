@@ -13,7 +13,7 @@ import importlib
 import inspect
 import json
 import os
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -21,19 +21,10 @@ from typing import Any, Final
 
 REPO_ROOT: Final = Path(__file__).resolve().parents[2]
 _STRICT_ENV_VAR: Final = "MAISTRO_PARITY_STRICT"
-_MODE_ENV_VAR: Final = "MAISTRO_PARITY_MODE"
 
 
 def _strict_mode_enabled() -> bool:
-    """True when the fail-closed M1 closeout mode is selected.
-
-    One strict concept, two spellings: ``MAISTRO_PARITY_MODE=m1-closeout`` is
-    the explicit closeout invocation switch (scripts/run-m1-closeout.py) and
-    ``MAISTRO_PARITY_STRICT=1`` is the equivalent env spelling kept so existing
-    strict invocations and ``dependency_assessment``'s fail-closed contract
-    agree on a single mode authority.
-    """
-    return parity_mode() is ParityMode.M1_CLOSEOUT
+    return os.environ.get(_STRICT_ENV_VAR) == "1"
 
 
 class DependencyUnavailable(AssertionError):
@@ -299,9 +290,15 @@ DEPENDENCIES: Final = {dependency.key: dependency for dependency in _DEPENDENCY_
 def _assess_dependencies(*dependencies: Dependency) -> DependencyAssessment:
     """Non-raising dependency state; the strict wrapper adds the fail-closed raise.
 
-    ``execute_scenario`` must see the raw blockers so strict closeout evidence
-    can name them per scenario (EXECUTED/PASSED or FAILED per required
-    scenario) instead of short-circuiting before any evidence is emitted.
+    A blocked scenario is only accepted when every blocker is tied to a named
+    issue/PR and a concrete missing/legacy source seam. This is intentionally
+    not a pytest skip or expected-failure mechanism. Once the probes pass the
+    caller must execute the scenario's real assertions.
+
+    Under ``MAISTRO_PARITY_STRICT=1`` (M1 closeout mode) a blocker is not a
+    named, evidence-backed state to report and continue past: it raises
+    ``DependencyUnavailable`` instead, so a scenario that only proved its
+    dependency missing cannot register as a pass.
     """
     blockers: list[str] = []
     for dependency in dependencies:
@@ -317,6 +314,9 @@ def _assess_dependencies(*dependencies: Dependency) -> DependencyAssessment:
         assert failures, f"{dependency.label} cannot be unavailable without probe evidence"
         detail = "; ".join(failures)
         blockers.append(f"{dependency.key}: waiting on {owner}: {detail}")
+
+    if blockers and _strict_mode_enabled():
+        raise DependencyUnavailable(" | ".join(blockers))
 
     assessment = DependencyAssessment(ready=not blockers, blockers=tuple(blockers))
     assert assessment.ready is (not assessment.blockers)

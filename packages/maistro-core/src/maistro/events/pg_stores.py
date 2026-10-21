@@ -120,7 +120,7 @@ _SCHEMA_LOCK_KEY = 0x6D61_6973  # "mais"
 
 
 async def ensure_event_schema(pool: asyncpg.Pool) -> None:
-    """Create all five tables. Idempotent, and safe to call concurrently.
+    """Create all four tables. Idempotent, and safe to call concurrently.
 
     `CREATE TABLE IF NOT EXISTS` is idempotent but **not** serialised: two
     workers that both observe the table as absent can both run the DDL, and one

@@ -392,14 +392,16 @@ def _validate_requirement_shapes(manifest: ExtensionManifest) -> None:
             )
 
 
-def _validate_capability_requires_scope(manifest: ExtensionManifest) -> None:
-    """Every declared capability must name its concrete requirement block.
+def _validate_least_authority(manifest: ExtensionManifest) -> None:
+    """Capability and requirement block must exist together — both ways.
 
     Asking for an authority without saying what exactly you need it for
-    (hosts, paths, secrets) is an error — authority without a scope is not
-    grantable.
+    (hosts, paths, secrets) is an error, and naming hosts/paths/secrets
+    without the matching capability is an error too.
     """
     caps = set(manifest.capabilities)
+
+    # capability -> its concrete requirement block must be present.
     if "network.outbound" in caps and not manifest.network.allow:
         raise AuthorityError(
             "capability 'network.outbound' declared but no network hosts allowed: "
@@ -416,15 +418,8 @@ def _validate_capability_requires_scope(manifest: ExtensionManifest) -> None:
             "'secrets' entries — authority without a scope is not grantable"
         )
 
-
-def _validate_scope_requires_capability(manifest: ExtensionManifest) -> None:
-    """Every declared requirement block must be backed by its capability.
-
-    Naming hosts/paths/secrets without the matching capability is undeclared
-    authority — scope creep by omission, the mirror image of an unscoped
-    capability.
-    """
-    caps = set(manifest.capabilities)
+    # ...and a requirement block without its capability is undeclared
+    # authority in the other direction (scope creep by omission).
     if manifest.network.allow and "network.outbound" not in caps:
         raise AuthorityError(
             f"network hosts {list(manifest.network.allow)} declared without the "
@@ -440,17 +435,6 @@ def _validate_scope_requires_capability(manifest: ExtensionManifest) -> None:
             f"secrets {[s.name for s in manifest.secrets]} declared without the "
             f"'secrets.read' capability"
         )
-
-
-def _validate_least_authority(manifest: ExtensionManifest) -> None:
-    """Capability and requirement block must exist together — both ways.
-
-    Asking for an authority without saying what exactly you need it for
-    (hosts, paths, secrets) is an error, and naming hosts/paths/secrets
-    without the matching capability is an error too.
-    """
-    _validate_capability_requires_scope(manifest)
-    _validate_scope_requires_capability(manifest)
 
 
 def _validate_filesystem_mode_pairing(manifest: ExtensionManifest) -> None:

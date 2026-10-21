@@ -152,22 +152,6 @@ class SqliteGoalStore:
             await self._conn.commit()
             return goal
 
-    async def list_goals(
-        self, workspace_id: str, *, limit: int = 100, offset: int = 0
-    ) -> list[Goal]:
-        if limit <= 0 or offset < 0:
-            raise ValueError("limit must be positive and offset non-negative")
-        async with (
-            self._lock,
-            self._conn.execute(
-                """SELECT payload FROM canonical_goals WHERE workspace_id = ?
-               ORDER BY created_at DESC, goal_id DESC LIMIT ? OFFSET ?""",
-                (workspace_id, limit, offset),
-            ) as cursor,
-        ):
-            rows = await cursor.fetchall()
-        return [Goal.model_validate_json(row[0]) for row in rows]
-
     async def get_goal(self, goal_id: str) -> Goal | None:
         async with self._lock:
             return await self._get_goal_row(goal_id)

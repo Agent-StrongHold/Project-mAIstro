@@ -705,11 +705,6 @@ def test_chat_route_handles_a_request_without_middleware_verdict(monkeypatch):
             return record
 
     class StubState:
-        def __init__(self) -> None:
-            from ..state import ChatSessionRegistry
-
-            self.chat_sessions = ChatSessionRegistry(factory=lambda: object())
-
         def new_chat_session(self) -> Any:
             return object()
 

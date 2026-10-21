@@ -133,8 +133,6 @@ resource mount with negotiated behavior — and the canvas
 `application/vnd.canvas+json;version=2` media-type check stays a canvas-local
 mechanism, distinct from the general scheme.
 
-### Recurring schedules created through the API survive a restart (was: did not)
-
 Recurrence is correct and durable:
 [ADR-082126-f69c](docs/adr/ADR-082126-f69c-recurrence-produces-runs.md)
 replaced the two disagreeing cron matchers with one verified POSIX dialect,

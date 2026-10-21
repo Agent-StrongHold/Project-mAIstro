@@ -68,33 +68,13 @@ def test_fixture_and_gate_share_one_policy_file(
     assert fixture.DEFAULT_POLICY == gate.DEFAULT_POLICY
     assert fixture.DEFAULT_POLICY.is_file()
     policy = fixture.load_policy(POLICY)
-    # The product-side policy governs the first-party reference extension;
-    # the reference gallery (#980) carries its own policy, which the same
-    # gates read via --policy in CI. One policy per repository-style tree,
-    # so required_artifacts applies without per-tree exceptions.
-    assert policy["extension_trees"] == ["extensions/reference-greeter"]
+    assert policy["extension_trees"] == ["extensions/*"]
     assert policy["required_artifacts"] == ["extension.json"]
 
 
 def test_discover_finds_the_reference_extension(fixture: types.ModuleType) -> None:
     projects = fixture.discover_extension_projects(ROOT, fixture.load_policy(POLICY))
     assert [p.name for p in projects] == ["reference-greeter"]
-    assert all((p / "pyproject.toml").is_file() for p in projects)
-
-
-def test_discover_finds_the_gallery_under_its_own_policy(
-    fixture: types.ModuleType,
-) -> None:
-    """The same discovery logic, pointed at the gallery's policy (#980): the
-    reusable tooling covers an external-style repository unchanged."""
-    gallery_policy = ROOT / "extensions" / "reference-gallery" / "namespace-policy.json"
-    projects = fixture.discover_extension_projects(ROOT, fixture.load_policy(gallery_policy))
-    assert [p.name for p in projects] == [
-        "gallery-model-adapter",
-        "gallery-renderer-pack",
-        "gallery-unit-skill",
-        "gallery-weather-connector",
-    ]
     assert all((p / "pyproject.toml").is_file() for p in projects)
 
 

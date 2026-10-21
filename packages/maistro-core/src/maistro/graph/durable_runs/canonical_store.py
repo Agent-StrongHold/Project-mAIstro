@@ -482,8 +482,6 @@ class CanonicalDurableRunStore:
                 continuation.version,
             )
             return await self._continuations.delete(run_id)
-        if await self._reconcile_terminal_spine(continuation, canonical):
-            return True
         if await self._reconcile_answered_hitl(continuation, canonical):
             return True
         if await self._reconcile_terminal_hitl(continuation, canonical):
@@ -495,31 +493,6 @@ class CanonicalDurableRunStore:
         if await self._reconcile_unstarted_claim(continuation, canonical, moment):
             return True
         return await self._reconcile_parked_graph(continuation, canonical)
-
-    async def _reconcile_terminal_spine(
-        self,
-        continuation: GraphContinuation,
-        canonical: Run,
-    ) -> bool:
-        """Repair a stale continuation projection from settled canonical history.
-
-        A terminal Run is the lifecycle authority. Its continuation cannot
-        remain recovery-visible and thereby offer already-settled traversal to
-        a later resume or due scan. This changes only the continuation lookup
-        projection; its graph history remains intact. Optimistic concurrency
-        lets a concurrent writer win, after which the next tick rereads the
-        actual canonical terminal state.
-        """
-        if canonical.status not in TERMINAL_RUN_STATUSES or continuation.status is canonical.status:
-            return False
-        repaired = continuation.model_copy(
-            update={"status": canonical.status, "version": continuation.version + 1}
-        )
-        try:
-            await self._continuations.update(repaired)
-        except ValueError:
-            return False
-        return True
 
     async def _reconcile_parked_graph(
         self, continuation: GraphContinuation, canonical: Run

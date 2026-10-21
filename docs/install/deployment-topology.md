@@ -111,58 +111,9 @@ All of this is one script: [`deploy/scripts/backup.sh`](../../deploy/scripts/bac
 (cron it daily). It writes a self-contained backup under `${BACKUP_ROOT}/YYYY-MM-DD/`
 including the custom-format archive, semantic verification evidence (schema inventory
 + exact per-table row counts, all bound to one exported snapshot — see the #1881
-oracle), provenance (snapshot id, server and tool versions), `sha256` integrity
-hashes, and an integrity manifest over every component (including the Conductor
-capture) that the verify drill re-checks before restoring anything, and optionally
-ships off-host (`REMOTE_TARGET` — rsync/S3/wal-g, per the ADR-081
-pluggable-connector rule).
-
-### 2.1 Conductor durable state and the credential escrow
-
-The backup above is not only the engine's PostgreSQL/Redis/file-store: the
-Conductor's own authoritative state rides the `conductor-data` volume
-(`CONDUCTOR_DATA_DIR=/data` in `deploy/docker-compose.prod.yml`) and **cannot
-be reconstructed from the PostgreSQL/Redis/file-store backups**:
-
-| File | What it holds | Restored from |
-|---|---|---|
-| `state.db` | SQLite: canonical Workspaces/Memberships, Runs/NodeRuns/Attempts, graph continuations (fencing versions), sessions, schedules, audit log | the backup's consistent snapshot |
-| `secrets.age` | age-encrypted secrets vault (SPEC-011) | the backup (ciphertext) |
-| `user_credentials.enc` | Fernet-encrypted per-user provider tokens (Jira, GitHub, …) | the backup (ciphertext) |
-| `admin.key` | the age/X25519 identity — **the only key that decrypts `secrets.age`** | the credential escrow, **not** the backup |
-| `credential_master.key` | Fernet root for `user_credentials.enc` | the credential escrow, **not** the backup |
-
-The decrypting identity must never live only beside the ciphertext it opens, so
-`backup.sh` writes the keys to a separate escrow root (`ESCROW_ROOT`, default
-`/var/lib/maistro-escrow`), dated and `0600`, with its own `manifest.sha256`.
-The off-host backup stream carries ciphertext only; replicate the escrow off-host
-through your secret manager by a separate path.
-
-**What becomes unrecoverable if the escrow is lost:** every value in
-`secrets.age` is gone permanently — age/X25519 has no recovery path, so a
-restored Conductor fails closed on its vault (`SECRET_MISSING`) — and every
-provider token in `user_credentials.enc` must be re-entered by hand. `state.db`
-survives (it is not key-protected), but identities tied to vault material are
-broken. There is no fallback: this is the documented cost of losing the escrow.
-
-**Validate the escrow before a disaster, not during one:** the weekly drill
-below decrypts the backed-up vault with the escrowed key. Run it (or the
-one-liner `age --decrypt -i <escrow>/admin.key <backup>/conductor-data/secrets.age`)
-whenever `admin.key` or the vault changes, and confirm it prints the decrypt
-proof. An escrow that has never proven a decrypt is a hope, not an escrow.
-
-**Fencing survives restore as data.** Continuation versions, attempt ordinals
-and lease epochs live in `state.db` and restore byte-for-byte, so resumed work
-is bounded by the same compare-and-set fences as before the incident. Do not
-"reset" or renumber those columns during a restore — a fresh-looking fence
-value is how a stale replica wins a race it already lost.
-
-**Retired compatibility stores do not come back.** The PostgREST
-`user_profiles` table was retired (#699): profiles live only in `state.db`, and
-the backup contains no PostgREST data, so a restore cannot resurrect the old
-duplicate lifecycle as canonical. Anything still sitting in a leftover
-`user_profiles` table stays dead after restore, exactly as the
-`PROFILE_STORE_CUTOVER` warning says.
+oracle), provenance (snapshot id, server and tool versions) and `sha256` integrity
+hashes, and optionally ships off-host (`REMOTE_TARGET` — rsync/S3/wal-g, per the
+ADR-081 pluggable-connector rule).
 
 Monitoring: alert on backup-script failure (non-zero exit / missing today's directory)
 and on replication lag > 5s:
@@ -193,20 +144,7 @@ Run [`deploy/scripts/verify-restore.sh`](../../deploy/scripts/verify-restore.sh)
    failed), `semantic` (restored schema/row counts differ from the backup evidence),
    `verifier` (the drill itself could not run). Limits: the oracle proves structure
    and cardinality, not cell-level content.
-4. Checks the backup's integrity manifest — any missing or corrupt component
-   (including an empty Conductor capture) fails the drill before anything restores.
-5. Verifies the Conductor durable state: `state.db` integrity + canonical tables,
-   historical Run IDs printed as inspectable, fencing versions present. `secrets.age`
-   and `user_credentials.enc` are optional stores — the vault is provisioned lazily and
-   `user_credentials.enc` appears with the first persisted credential — so each is
-   verified, together with its escrow root, only when it was actually captured: when
-   `secrets.age` is captured, the decrypt proof demands the escrowed `admin.key` actually
-   decrypt it (set `EXPECTED_SECRET_NAME` to pin a known secret), and when
-   `user_credentials.enc` is captured, `credential_master.key` must be escrowed. A
-   captured ciphertext without its escrow root is a hard failure (`artifact` class, as
-   is a missing or empty `state.db`; set `SKIP_CONDUCTOR_BACKUP=1` only for stacks that
-   run no Conductor).
-6. (staging extension) Point a staging maistro-server at the scratch DB and check
+4. (staging extension) Point a staging maistro-server at the scratch DB and check
    `GET /health/ready` + a smoke request.
 
 A failing drill is a paging alert: your backups are not restorable.

@@ -27,7 +27,7 @@ recorded below as URL-only with their owning issues.
 
 ## Canonical surfaces (primary/grouped navigation entry)
 
-22 destinations, each reachable from both the desktop icon rail and the
+21 destinations, each reachable from both the desktop icon rail and the
 narrow-screen drawer (asserted by
 `tests/e2e/navigation-coverage.spec.ts`):
 
@@ -35,7 +35,6 @@ narrow-screen drawer (asserted by
 |---|---|---|---|---|
 | `/chat` | Chat | Chat | PROJECT → Workspace Agent chat | #1037 (M3-D) |
 | `/dashboard` | Dashboard | Dashboard | DELETE v1.0 → Workspace Home | #1048 |
-| `/goals` | Goals | Goals | PROJECT → Goal/Run inspection | #65/#1036 |
 | `/design-studio` | Design Studio | Design Studio | KEEP / PROJECT v1.0 (blocker) | #95, #286, #773 |
 | `/dags` | DAG Builder | DAG Builder | PROJECT → Graph editing over canonical Graph | #65/#1036 |
 | `/dag-runs` | DAG Runs | DAG Runs | PROJECT → Goal/Run inspection | #65/#1036, #251 |

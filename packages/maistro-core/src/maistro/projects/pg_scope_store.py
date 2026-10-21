@@ -74,64 +74,6 @@ class PgProjectScopeStore:
             raise ProjectScopeDenied("Project not found")
         await require_project_view(project, workspace_store, principal_id)
 
-    async def _require_project_administer(self, project: Project, principal_id: str) -> None:
-        from maistro.workspaces.store_boundary import (
-            is_blank_principal,
-            require_project_administer,
-        )
-
-        workspace_store = self._workspace_store
-        if workspace_store is None:
-            raise ProjectScopeDenied("Project not found")
-        if is_blank_principal(principal_id):
-            raise ProjectScopeDenied("Project not found")
-        await require_project_administer(project, workspace_store, principal_id)
-
-    async def _resolve_for_authorization(
-        self, project_id: str, principal_id: str | None
-    ) -> Project:
-        """Resolve the Project, collapsing not-found into the scoped denial.
-
-        The store boundary must not be an existence oracle: with an acting
-        principal, an unknown Project and one in a foreign Workspace are
-        indistinguishable, so both surface as the same `ProjectScopeDenied`.
-        """
-        try:
-            return await self._require(project_id)
-        except ProjectNotFound:
-            if principal_id is None:
-                raise
-            raise ProjectScopeDenied("Project not found") from None
-
-    async def _authorize_view(self, project_id: str, principal_id: str | None) -> Project:
-        project = await self._resolve_for_authorization(project_id, principal_id)
-        if principal_id is not None:
-            await self._require_project_view(project, principal_id)
-        return project
-
-    async def _authorize_administer(self, project_id: str, principal_id: str | None) -> Project:
-        project = await self._resolve_for_authorization(project_id, principal_id)
-        if principal_id is not None:
-            await self._require_project_administer(project, principal_id)
-        return project
-
-    async def _authorize_membership_write(
-        self, membership: ProjectMembership, principal_id: str | None, *, replacement: bool
-    ) -> Project:
-        project = await self._authorize_view(membership.project_id, principal_id)
-        if principal_id is not None and self._workspace_store is not None:
-            from maistro.projects.authorization import authorize_membership_write
-
-            await authorize_membership_write(
-                self,
-                project=project,
-                workspace_store=self._workspace_store,
-                membership=membership,
-                principal_id=principal_id,
-                replacement=replacement,
-            )
-        return project
-
     @asynccontextmanager
     async def transaction(self) -> AsyncIterator[Any]:
         """One pooled connection with a transaction open on it.
@@ -379,7 +321,9 @@ class PgProjectScopeStore:
         defaults: dict[str, Any],
         principal_id: str | None = None,
     ) -> Project:
-        project = await self._authorize_administer(project_id, principal_id)
+        project = await self._require(project_id)
+        if principal_id is not None:
+            await self._require_project_view(project, principal_id)
         updated = project.model_copy(
             deep=True,
             update={"defaults": dict(defaults), "updated_at": datetime.now(UTC)},
@@ -491,12 +435,7 @@ class PgProjectScopeStore:
             )
         return model_of(ProjectMembership, row["payload"])
 
-    async def merge_membership(
-        self,
-        membership: ProjectMembership,
-        *,
-        principal_id: str | None = None,
-    ) -> ProjectMembership:
+    async def merge_membership(self, membership: ProjectMembership) -> ProjectMembership:
         """Merge a delegated re-grant into the canonical row atomically.
 
         The existing row is read under `FOR UPDATE` inside the same
@@ -505,13 +444,9 @@ class PgProjectScopeStore:
         to preserve if it commits first) -- an upsert fed by a separately
         read row could resurrect a revoked principal with stale grants
         (#1148). As in `set_membership`, the row is read back from the
-        `RETURNING` clause rather than trusting a pre-computed value. A
-        supplied ``principal_id`` is the acting principal whose
-        membership-write authority is enforced (#1150).
+        `RETURNING` clause rather than trusting a pre-computed value.
         """
-        project = await self._authorize_membership_write(
-            membership, principal_id, replacement=False
-        )
+        project = await self._require(membership.project_id)
         if project.workspace_id != membership.workspace_id:
             raise ProjectIntegrityError("ProjectMembership Workspace does not match Project")
         async with self._pool.acquire() as conn, conn.transaction():
@@ -551,13 +486,7 @@ class PgProjectScopeStore:
             )
         return model_of(ProjectMembership, row["payload"])
 
-    async def remove_membership(
-        self,
-        project_id: str,
-        *,
-        principal_id: str,
-        acting_principal_id: str | None = None,
-    ) -> None:
+    async def remove_membership(self, project_id: str, *, principal_id: str) -> None:
         """Revoke a principal's membership at one Project, if any exists."""
 
         await self._authorize_administer(project_id, acting_principal_id)

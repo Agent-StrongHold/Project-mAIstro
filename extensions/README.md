@@ -10,9 +10,8 @@ repairing).
 
 | Path | What it is |
 |------|------------|
-| [`namespace-policy.json`](namespace-policy.json) | The machine-readable public package namespace policy. Declares which first-party import roots are public SDK and which are product-private. Governs the first-party reference extension; extension repositories carry their own policy. |
-| [`reference-greeter/`](reference-greeter/) | The first-party reference extension: a minimal, buildable, out-of-tree package with its own `pyproject.toml`, manifest, entrypoint, and tests. |
-| [`reference-gallery/`](reference-gallery/) | The out-of-tree reference extension **repository** (#980): four packages spanning the extension families (tool connector, skill, provider adapter, UI pack) with a shared publish/sign/catalog workflow, governed by its own [`reference-gallery/namespace-policy.json`](reference-gallery/namespace-policy.json). |
+| [`namespace-policy.json`](namespace-policy.json) | The machine-readable public package namespace policy. Declares which first-party import roots are public SDK and which are product-private. |
+| [`reference-greeter/`](reference-greeter/) | The reference extension: a minimal, buildable, out-of-tree package with its own `pyproject.toml`, manifest, entrypoint, and tests. |
 
 ## How the boundary is enforced
 

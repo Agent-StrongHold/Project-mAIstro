@@ -21,7 +21,6 @@ from maistro.graph.durable_runs.executor import (
     _node_spec,
     resume_durable_graph,
 )
-from maistro.graph.durable_runs.failure import sanitize_failure_message
 from maistro.graph.execution_state import GraphExecutionState
 from maistro.graph.nodes import BaseNode, NodeContext, ReplaySemantics
 from maistro.graph.nodes.base import NodeResult
@@ -319,96 +318,6 @@ class TestStepBudgetExhaustion:
         assert result.run.error is not None
         assert result.run.error.startswith("StepBudgetExhausted:")
         assert "max_steps=3" in result.run.error
-
-
-class TestPersistedFailureRedaction:
-    """A node failure must not write credential-shaped text into canonical state.
-
-    ``_fold_failures`` and ``_walk_frontier`` sanitize every failure through
-    ``_mark_failed`` before it is persisted, so a failed Run's durable evidence
-    stays inspectable without carrying provider secrets or unbounded text
-    (#837 truthful recovery evidence).
-    """
-
-    @staticmethod
-    def _boom_dag(kind: str) -> dict[str, Any]:
-        return {
-            "id": "d-boom",
-            "nodes": [{"id": "n1", "kind": kind, "inputs": {"text": "hello"}}],
-            "edges": [],
-        }
-
-    async def test_node_failure_persists_redacted_error(self) -> None:
-        store = InMemoryDurableRunStore()
-        record = _record_for(
-            "r-boom",
-            dag=self._boom_dag(_BoomNode.kind),
-            active_node_id="n1",
-        )
-        await store.create(record)
-        result = await _walk(
-            record,
-            store=store,
-            node_resolver=lambda _node_id, _graph: _BoomNode(),
-            runtime=PythonExecutionRuntime(),
-        )
-        assert result.status is RunStatus.FAILED
-        error = result.run.error or ""
-        assert error == (
-            "RuntimeError: provider rejected api_key=[REDACTED_SECRET_ASSIGNMENT] for tenant 42"
-        )
-        assert "sk-proj-ABCdef123456" not in error
-
-    async def test_persisted_error_is_bounded(self) -> None:
-        store = InMemoryDurableRunStore()
-        record = _record_for(
-            "r-boom-long",
-            dag=self._boom_dag(_LongBoomNode.kind),
-            active_node_id="n1",
-        )
-        await store.create(record)
-        result = await _walk(
-            record,
-            store=store,
-            node_resolver=lambda _node_id, _graph: _LongBoomNode(),
-            runtime=PythonExecutionRuntime(),
-        )
-        assert result.status is RunStatus.FAILED
-        error = result.run.error or ""
-        assert error.startswith("RuntimeError: provider 500 detail ")
-        assert len(error) <= 512
-
-    async def test_redaction_survives_a_second_sanitizing_pass(self) -> None:
-        """Both failure writers sanitize; double-sanitizing cannot corrupt evidence."""
-        once = sanitize_failure_message(_BoomNode.message)
-        assert sanitize_failure_message(once) == once
-        assert "sk-proj-ABCdef123456" not in once
-
-    async def test_node_run_error_is_sanitized(self) -> None:
-        """The NodeRun.error must not contain credential-shaped text."""
-        store = InMemoryDurableRunStore()
-        record = _record_for(
-            "r-boom-noderun",
-            dag=self._boom_dag(_BoomNode.kind),
-            active_node_id="n1",
-        )
-        await store.create(record)
-        result = await _walk(
-            record,
-            store=store,
-            node_resolver=lambda _node_id, _graph: _BoomNode(),
-            runtime=PythonExecutionRuntime(),
-        )
-        assert result.status is RunStatus.FAILED
-        # There should be exactly one node run
-        assert len(result.node_runs) == 1
-        node_run = result.node_runs[0]
-        assert node_run.error is not None
-        error = node_run.error
-        assert error == (
-            "RuntimeError: provider rejected api_key=[REDACTED_SECRET_ASSIGNMENT] for tenant 42"
-        )
-        assert "sk-proj-ABCdef123456" not in error
 
 
 class TestCanonicalNodeRunPersistence:

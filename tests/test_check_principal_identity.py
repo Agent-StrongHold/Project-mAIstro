@@ -37,35 +37,6 @@ def test_dict_shaped_user_access_is_one_entry_per_file(gate) -> None:
     assert violation.detail.startswith("3 ")
 
 
-def test_defensive_nested_getattr_user_read_is_counted(gate) -> None:
-    """#1790 correction 5: the census must see through the defensive spelling.
-
-    Routes that cannot assume ``request`` carries ``state`` at all read it as
-    ``getattr(getattr(request, "state", None), "user", None)``. The original
-    matcher required ``args[0]`` to be a ``.state`` attribute, so this form was
-    invisible: capabilities.py carried a live dict-shaped read the ratchet
-    certified as clean.
-    """
-    source = (
-        "def handler(request):\n"
-        "    user = getattr(getattr(request, 'state', None), 'user', None) or {}\n"
-        "    probed = hasattr(getattr(request, 'state', None), 'user')\n"
-    )
-    [violation] = gate.scan_source(ROUTE, source)
-    assert violation.key() == f"state_user_access::{ROUTE}"
-    assert violation.detail.startswith("2 ")
-
-
-def test_defensive_nested_getattr_non_user_attribute_is_not_a_violation(gate) -> None:
-    """Only ``user`` is the dict-shaped principal; other state keys stay clean."""
-    source = (
-        "def handler(request):\n"
-        "    rid = getattr(getattr(request, 'state', None), 'request_id', None)\n"
-        "    org = getattr(getattr(request, 'state', None), 'org_id', None)\n"
-    )
-    assert gate.scan_source(ROUTE, source) == []
-
-
 def test_principal_carrier_is_not_a_violation(gate) -> None:
     source = "def handler(request):\n    return request.state.principal.user_id\n"
     assert gate.scan_source(ROUTE, source) == []

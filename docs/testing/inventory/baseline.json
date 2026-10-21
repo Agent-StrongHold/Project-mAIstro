@@ -17,11 +17,7 @@
     "packages/maistro-ext-harness/tests": 0,
     "formal/": 664,
     "packages/hive-conductor/backend/tests": 2937,
-    "packages/hive-conductor/tests/e2e": 23,
-    "extensions/reference-gallery/packages/gallery-weather-connector/tests": 0,
-    "extensions/reference-gallery/packages/gallery-unit-skill/tests": 0,
-    "extensions/reference-gallery/packages/gallery-model-adapter/tests": 0,
-    "extensions/reference-gallery/packages/gallery-renderer-pack/tests": 0
+    "packages/hive-conductor/tests/e2e": 23
   },
   "folded": [
     "1040-egress-diff-coverage-closers",

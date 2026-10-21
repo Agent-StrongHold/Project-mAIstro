@@ -129,7 +129,7 @@ A share rather than the `19/62` this column used to carry, because the denominat
 | Recurrence / schedules | `services.scheduler` background loop | `none` | KEEP — converging: the cursor is canonical and durable, execution is not | ADR-082126-f69c (supersedes ADR-046) | `services/scheduler.py` advances the canonical `ScheduleStore` only after a Run exists (#231). Recurring ticks and manual `fire_now` both admit through the canonical spine (#231, #1120): a manual fire claims `(schedule_id, "manual:" + fire_id)` as a first-class occurrence instead of executing through `run_registered_dag`, which now also requires the canonical Run/continuation owners and refuses without a Container (#1113). Admitted Runs execute via the #251 consumer tick, which manual fire triggers promptly; multi-node Runs still wait on durable Graph traversal — #44/#34 | #46, #62, #231, #251, #1120 |
 | Repo tooling | the `.github/workflows/*.yml` step that executes the script | `few` | KEEP — the 43 rooted scripts are the gate set; the 19 unrooted are dispositioned, 10 of them behind a disabled workflow and 1 reached only through a shell installer | ADR-082526-aef8 | `scripts/check-reachability.py` roots tooling at the workflow steps that run it; `tests/test_check_reachability.py` | #33, #236, #249 |
 | Planning and wave orchestration | `maistro.orchestrator` exported API | `some` | MIGRATE — wave fan-out/fan-in belongs to Graph nodes | — | a wave plan that executes as a Graph with per-branch NodeRuns | #44, #34 |
-| Builders pipeline | `maistro builders` -> Textual `CodingScreen` -> canonical interactive adapter | `some` | MIGRATE — shipped ReAct turns use canonical Run/NodeRun/Attempt; five-stage definitions remain domain composition and the legacy executor is parity/reference-only | ADR-090, SPEC-201 | a real TUI-backed turn retains a canonical `run_id` and records one physical NodeRun/Attempt; strict #459/#1036 inspection remains follow-up evidence | #49, #56, #459, #1036 |
+| Builders pipeline | none | `all` | MIGRATE — wholly unreachable and owns a duplicate executor | ADR-090 | Builders stages appear as NodeRuns; `builders.graph_executor` deleted | #49, #35 |
 | Workspace / Project scope | `routes.projects`, `routes.workspaces` | `none` — the M7-A2 Project-scoped Rubric store (`projects.rubric_store`) is exported public API of `maistro.projects` (import-reachable; its scoring/fence consumers are later M7 work) | CONNECT — the shipped compose stack has one durable Workspace/Membership owner: Hive's embedded runtime and maistro-server share `canonical_workspaces` in maistro-engine's PostgreSQL, and Hive's `stores.workspaces` mirror is only imported once on that path. Hive's Workspace views still need a Hive presentation record, so a Workspace created only through maistro-server authorizes in Hive but is not listed there. All three Run stores validate Graph scope in `create_run`. Still open: the Turing backend's per-process `InMemoryWorkspaceStore`; `WorkspaceRoutingAdmitter` minting Root Projects for Workspace ids with no `canonical_workspaces` row; no `canonical_projects -> canonical_workspaces` FK | ADR-081226-9944, ADR-081426-b1d3, ADR-092326-97c4 | every Run carries a Project id enforced at the store boundary; every Root Project's Workspace exists in the one canonical store | #37, #38 |
 | Agents | `maistro.container` factory; `services.agent_materialization` | `some` | MIGRATE — agents become Node implementations behind Providers | ADR-004, ADR-035 | agent invocation creates an Invocation record; per-agent event emission retired | #55, #56, #34 |
 | Capability / Provider / Binding / Invocation | `services.capabilities_wiring`, `routes.capabilities` | `few` | KEEP — canonical effect path, incompletely adopted | ADR-081226-6b46 | every shipped model/tool effect has an Invocation row | #55, #56, #57 |
@@ -182,27 +182,6 @@ A share rather than the `19/62` this column used to carry, because the denominat
 - Core scheduling owns occurrence identity and exact-one Run claims (#229). The **live Hive scheduler** now sends both its recurring ticks (#231) and its manual `fire_now` surface (#1120) through that seam — manual fires carry a first-class `schedule_fire_id` occurrence identity so a retried or concurrent double submit reconciles to one Run — with registered-DAG execution refusing when the canonical Container, RunStore or Graph continuation owner is absent (#1113).
 - Relational persistence is fully reached: PostgreSQL is the canonical durable backend, while SQLite remains the explicit single-instance/homelab backend; prompt and audit persistence now follow the selected backend rather than silently falling back to memory.
 - The matrix checker proves structure, reachability counts, reference integrity and — since #378 — that every module named as a current owner is one a product path reaches. What it still cannot prove is a cell that names no module: 31 of the 156 owner cells describe a non-module owner in prose, and that count is itself checked so the gap cannot widen quietly. #31's acceptance-state machinery governs machine-verifiable completion claims, and material ownership changes must update this human-reviewed planning surface.
-
-## One scoring loop: the M7 in-Run eval is the evidence; Evolve/RSI are consumers (#796)
-
-The design loop has exactly one scoring authority, and everything else reads its records. The map frozen by [#796](https://github.com/Agent-StrongHold/Project-mAIstro/issues/796), with ownership left where it is (#21 keeps promotion, #552 keeps RSI):
-
-```
-M7 in-Run Rubric eval (maistro.personas.rubric, scored on Run)  →  evidence object on Run
-        ↓
-M4 #21 independent evaluation (maistro_evolve; hive evolution services)  →  may read those records as historical/held-out evidence
-        ↓
-M5 #552 RSI (maistro_rsi)  →  not production-reachable until containment; if/when enabled, same evidence, same promotion contract
-```
-
-Forbidden shapes — each has a contract test in `packages/maistro-core/tests/fitness/test_m7_a7_eval_consumer_map.py`:
-
-- the Design Studio loop (`maistro_design`, `routes.design`, `services.design*`) importing RSI or Evolve as the in-Run critic — the critic is the Rubric eval scored in-Run, never a second loop;
-- Evolve/RSI fitness reaching into the design Goal/Rubric domain to invent a design-quality score for the same Goal;
-- a design-quality score for a Goal stored outside Run eval records + M4 candidate evaluation;
-- a `maistro_design` private promotion path.
-
-Allowed later, not landed here: an M4 candidate that proposes a better pack Graph or Rubric catalog, evaluated independently against held-out M7 Runs and promoted through #21/#116. RSI's activation invariant stays owned by `packages/maistro-rsi/tests/test_non_production_reachability.py` (#552); product identity, execution-lifecycle names and provider egress stay owned by the #990 fitness suite.
 
 ## Related
 

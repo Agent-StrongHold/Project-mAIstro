@@ -25,18 +25,9 @@
     "                        extension code never imports it, exactly as a",
     "                        test subject does not import its grader.",
     "extension_trees         Glob patterns (repo-relative) of directories that",
-    "                        are extension packages subject to THIS policy.",
+    "                        are extension packages subject to this policy.",
     "                        Each matched directory must hold a pyproject.toml,",
-    "                        i.e. it must be buildable on its own. Extension",
-    "                        repositories carry their own policy file: this one",
-    "                        governs the first-party reference extension; the",
-    "                        reference gallery (#980) is an out-of-tree-style",
-    "                        repository governed by its own",
-    "                        extensions/reference-gallery/namespace-policy.json,",
-    "                        which the same reusable gates read via --policy.",
-    "                        CI runs one gate pair per policy, so every tree is",
-    "                        covered by exactly one policy and its required",
-    "                        artifacts rule applies without per-tree exceptions.",
+    "                        i.e. it must be buildable on its own.",
     "test_only_namespaces    Import roots a test file may use without declaring",
     "                        them as runtime dependencies (test tooling is not",
     "                        a shipped dependency). Outside a tests/ directory",
@@ -69,7 +60,7 @@
     "maistro_turing"
   ],
   "extension_trees": [
-    "extensions/reference-greeter"
+    "extensions/*"
   ],
   "test_only_namespaces": [
     "pytest"

@@ -100,16 +100,8 @@ async def _configured_container(
         )
         monkeypatch.setenv("MAISTRO_LLM_BASE_URL", "https://gateway.invalid")
         monkeypatch.setenv("MAISTRO_LLM_API_KEY", "test-only-gateway-key")
-        # Mirror the real Settings: pydantic-settings populates
-        # `maistro_llm_api_key` from the env above, and the one-contract
-        # effective key (#1824) reads this field via services.secrets.
         monkeypatch.setattr(
-            config,
-            "get_settings",
-            lambda: SimpleNamespace(
-                hive_default_workspace_id="default",
-                maistro_llm_api_key="test-only-gateway-key",
-            ),
+            config, "get_settings", lambda: SimpleNamespace(hive_default_workspace_id="default")
         )
         monkeypatch.setattr(providers, "_vault", _Vault)
         activated: list[str] = []

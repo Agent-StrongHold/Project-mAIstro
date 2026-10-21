@@ -8,7 +8,7 @@
 #
 # Build:  docker build -f Dockerfile.rsi-runner -t maistro-rsi-runner:latest .
 # Run:    see tools/run_rsi_isolated.sh (or the docker run in the session).
-FROM python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1
+FROM python:3.12-slim@sha256:f77ac9e44ae96ef2c90b8053ea08c31f8be030f824196b0ae4db6d462c84e51f
 
 RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
     git curl build-essential \
@@ -119,5 +119,15 @@ RUN uv sync --python 3.12 --frozen \
     && .venv/bin/python scripts/prune-dependency-namespaces.py \
     && .venv/bin/python scripts/check-dependency-namespaces.py --production \
     && uv cache clean
+
+# #406: the workspace lock installs maistro-core[tui,identity] -> bip-utils ->
+# pytoniq-core-fork, whose wheel ships a generic top-level `examples`
+# namespace. This container runs AGENT-AUTHORED code, so a stray importable
+# `examples` tree is surface an agent can reach; the shipped images prune it,
+# and so does this one — placed after the last site-packages-mutating install,
+# with the same build-time assertion behind it, so a silent no-op prune fails
+# this build rather than shipping the surface to the loop.
+RUN .venv/bin/python scripts/prune-dependency-namespaces.py \
+    && .venv/bin/python scripts/check-dependency-namespaces.py --production
 
 CMD ["sleep", "infinity"]

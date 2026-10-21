@@ -738,9 +738,6 @@ class LegacyConductorNode(BaseNode[_LegacyInputs, _LegacyOutput]):
         effect_context: CapabilityEffectContext | None = None,
         governed_runtime: Any | None = None,
         progress: RunProgressHook | None = None,
-        sentinel: Any = None,
-        host_mode: str | None = None,
-        principal_roles: tuple[str, ...] = (),
     ) -> None:
         self._raw_node = dict(raw_node)
         self._task_desc = task_desc
@@ -754,15 +751,6 @@ class LegacyConductorNode(BaseNode[_LegacyInputs, _LegacyOutput]):
         # and ``_llm_builder``/``_on_response`` stay compatibility fallbacks.
         self._governed_runtime = governed_runtime
         self._progress = progress
-        self._sentinel = sentinel
-        self._host_mode = host_mode
-        # Host-resolved roles for the acting principal, resolved by the runner
-        # from host records (the user store) keyed by the authenticated
-        # user id -- never from request/manifest fields. Without them the
-        # Sentinel permission gate (role intersection, fail-closed) denies
-        # every node no matter what the deployment configures, so the gate
-        # this adapter consults would be unsatisfiable rather than strict.
-        self._principal_roles = tuple(principal_roles)
 
     async def _emit_progress(self, event: dict[str, Any]) -> None:
         """Publish one live node transition; never fail the node for it.
@@ -782,42 +770,9 @@ class LegacyConductorNode(BaseNode[_LegacyInputs, _LegacyOutput]):
 
     async def _execute(self, inputs: _LegacyInputs, ctx: NodeContext) -> _LegacyOutput:
         node_id = ctx.node_id
-        host_mode: str | None = self._host_mode
-        if self._sentinel is not None:
-            from maistro.security.sentinel.authz_types import Principal, Tier
-            from services.execution_mode import resolve_authorized_execution_mode
-
-            config = self._raw_node.get("config", {})
-            untrusted = bool(config.get("untrusted", False))
-            principal = Principal(
-                id=ctx.user_id or "anonymous",
-                kind="human",
-                roles=self._principal_roles,
-                scopes=tuple(
-                    value for value in (ctx.workspace_id, ctx.project_id, ctx.user_id) if value
-                ),
-            )
-            host_mode = await resolve_authorized_execution_mode(
-                self._sentinel,
-                "graph.node.untrusted" if untrusted else "graph.node.execute",
-                principal,
-                args={"node_id": node_id, "artifact": self._task_desc},
-                # The host's own reading of the node decides the floor it is
-                # resolved at: a node whose declared capabilities can reach the
-                # world is irreversible (the host tier resolves to an
-                # elevation tier, so it runs sandboxed), and a node that
-                # declares none of them is reversible (the host tier resolves
-                # to the inline floor). The caller's ``execution_tier`` label
-                # is not an input to either.
-                reversibility="irreversible" if _node_reaches_the_world(config) else "reversible",
-                # An untrusted node stays blocked unless the host states a tier
-                # record for it; a trusted node takes the tier the host
-                # policy resolves (no blanket elevation default).
-                default=Tier.BLOCKED if untrusted else None,
-            )
-        tier = _classify_node_execution(self._raw_node, node_id, host_mode=host_mode)
+        tier = _classify_node_execution(self._raw_node, node_id)
         if tier == "blocked":
-            raise PermissionError("Execution blocked: host policy did not authorize this node")
+            raise PermissionError("Execution blocked: untrusted node requires admin approval")
 
         role = str(self._raw_node.get("role", "worker"))
         await self._emit_progress(

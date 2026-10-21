@@ -1097,6 +1097,33 @@ def test_a_manual_run_preserves_the_http_requests_id(monkeypatch: pytest.MonkeyP
         stores.schedules._data.pop("s-man-reqid", None)  # type: ignore[attr-defined]
 
 
+def test_manual_fire_records_requester_separately_from_schedule_actor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import stores
+    from services.scheduler import fire_now
+
+    from maistro.scheduling import InMemoryScheduleStore
+
+    _register("sched-manual-provenance")
+    stub = _schedule_stub("s-man-provenance", "sched-manual-provenance")
+    stores.schedules._data["s-man-provenance"] = stub  # type: ignore[attr-defined]
+    _with_store(monkeypatch, InMemoryScheduleStore())
+    try:
+        run_id = asyncio.run(fire_now("s-man-provenance", requester_id="requesting-human"))
+        from services.dag_agents import _container
+
+        run = asyncio.run(_container().run_store.get_run(run_id))
+        assert run.actor_principal_id == "u1"
+        assert run.provenance["manual_requesting_principal_id"] == "requesting-human"
+        assert run.provenance["scheduler_service_id"] == "hive-scheduler"
+    finally:
+        stores.schedules._data.pop("s-man-provenance", None)  # type: ignore[attr-defined]
+        from services.dag_agents import get_registry
+
+        get_registry().deregister("sched-manual-provenance")
+
+
 def test_a_manual_run_with_no_ambient_request_mints_its_own(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

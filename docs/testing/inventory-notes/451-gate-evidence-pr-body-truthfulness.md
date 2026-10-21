@@ -27,23 +27,3 @@ success-shaped sentence renders as a pass.
 maistro-evolve's count is unchanged: `GateState` support in
 `maistro_evolve.scorecard` is exercised from the rsi suite, which imports the
 evolve package by design (`_EVOLVE_RSI` pythonpath).
-
-## Addendum (issue #363 repair round: runner-image parity vs the combined
-install layer)
-
-Count unchanged (+0): `test_runner_image_declares_every_required_analyzer`
-was repaired to match Dockerfile.rsi-runner's real shape, not relaxed on
-intent. The image's analyzer install moved from a dedicated
-`RUN uv pip install ...` line into the combined
-`RUN uv sync ... && uv pip install ... && uv cache clean` layer (so the uv
-wheel cache — which keeps METADATA for vulnerable tuples the secret scanner
-flags — never persists to the final image), leaving the old
-`startswith("RUN uv pip install")` filter empty and the parity gate red
-(CI run 39400043178, coverage job, 1 failed / 1717 passed). The test now
-joins backslash continuations into whole RUN instructions and accepts any RUN
-instruction that invokes `uv pip install`; the assertions themselves are
-touched not at all (required-analyzer coverage, locked-dev-group sync,
-`coverage` in the explicit install). Mutation-checked in all four directions:
-the merged-layer form matches, a dedicated line still matches, a Dockerfile
-without the install fails, and a comment mentioning `uv pip install` does not
-count.

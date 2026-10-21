@@ -112,9 +112,8 @@ async def get_workspace(
     Membership is checked before the fetch, so a non-member gets the access
     error rather than a 404 that would confirm the Workspace exists.
     """
-    requester = authenticated_user_id(auth)
-    await require_workspace_membership(store, workspace_id, requester)
-    workspace = await authorized(store.get(workspace_id, principal_id=requester))
+    await require_workspace_membership(store, workspace_id, authenticated_user_id(auth))
+    workspace = await store.get(workspace_id)
     if workspace is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Workspace not found")
     return workspace
@@ -132,9 +131,8 @@ async def update_workspace(
     Absent fields are left alone rather than cleared, so a caller sending one
     field does not blank the other.
     """
-    requester = authenticated_user_id(auth)
-    await require_workspace_owner(store, workspace_id, requester)
-    workspace = await authorized(store.get(workspace_id, principal_id=requester))
+    await require_workspace_owner(store, workspace_id, authenticated_user_id(auth))
+    workspace = await store.get(workspace_id)
     if workspace is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Workspace not found")
     updates: dict[str, object] = {}
@@ -158,8 +156,7 @@ async def delete_workspace(
     Refuses with 409 when the store reports the Workspace still owns something
     that would be orphaned by removing it.
     """
-    requester = authenticated_user_id(auth)
-    await require_workspace_owner(store, workspace_id, requester)
+    await require_workspace_owner(store, workspace_id, authenticated_user_id(auth))
     try:
         await authorized(store.delete(workspace_id, principal_id=requester))
     except WorkspaceOwnershipError as exc:
@@ -176,9 +173,8 @@ async def list_members(
 
     Members can see who else belongs; changing membership is owner-only.
     """
-    requester = authenticated_user_id(auth)
-    await require_workspace_membership(store, workspace_id, requester)
-    return await authorized(store.list_memberships(workspace_id, principal_id=requester))
+    await require_workspace_membership(store, workspace_id, authenticated_user_id(auth))
+    return await store.list_memberships(workspace_id)
 
 
 @router.put("/{workspace_id}/members/{user_id}", response_model=WorkspaceMembership)
@@ -195,8 +191,7 @@ async def set_member(
     error. 409 when the store refuses the change -- removing the last owner
     through a role downgrade is the case that matters.
     """
-    requester = authenticated_user_id(auth)
-    await require_workspace_owner(store, workspace_id, requester)
+    await require_workspace_owner(store, workspace_id, authenticated_user_id(auth))
     try:
         return await authorized(
             store.set_membership(

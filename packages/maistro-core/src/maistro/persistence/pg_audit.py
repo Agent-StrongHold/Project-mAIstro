@@ -5,13 +5,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
-from maistro.persistence.audit_pages import (
-    AUDIT_PAGE_INDEXES,
-    AuditPage,
-    make_page,
-    page_query,
-)
-from maistro.security.sentinel.signing import SIGNING_KEY_ENV, AuditSigner
+from maistro.persistence.audit_pages import AuditPage, make_page, page_query
 from maistro.types.security import AuditEntry
 
 if TYPE_CHECKING:
@@ -137,9 +131,8 @@ class PgAuditLog:
             await conn.execute(
                 """INSERT INTO audit_log
                    (boundary, user_id, org_id, team_id, agent_id,
-                    tool_name, verdict, detail, trace_id, request_id,
-                    signature, signing_key_id, proof_type)
-                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)""",
+                    tool_name, verdict, detail, trace_id, request_id)
+                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)""",
                 entry.boundary,
                 entry.user_id,
                 getattr(entry, "org_id", "") or "",

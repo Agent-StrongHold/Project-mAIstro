@@ -200,6 +200,38 @@ async def test_ensure_schema_upgrades_legacy_table_with_scope_index() -> None:
 
 
 @pytest.mark.asyncio
+async def test_ensure_schema_upgrades_legacy_table_with_scope_index() -> None:
+    conn = await aiosqlite.connect(":memory:")
+    try:
+        await conn.execute(
+            """CREATE TABLE audit_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT NOT NULL,
+                boundary TEXT NOT NULL DEFAULT '',
+                user_id TEXT NOT NULL DEFAULT '',
+                team_id TEXT NOT NULL DEFAULT '',
+                agent_id TEXT NOT NULL DEFAULT '',
+                tool_name TEXT,
+                verdict TEXT NOT NULL DEFAULT 'allowed',
+                detail TEXT NOT NULL DEFAULT '',
+                trace_id TEXT NOT NULL DEFAULT '',
+                request_id TEXT NOT NULL DEFAULT ''
+            )"""
+        )
+        await conn.commit()
+
+        await SqliteAuditLog(conn).ensure_schema()
+
+        cursor = await conn.execute("PRAGMA table_info(audit_log)")
+        assert "org_id" in {row[1] for row in await cursor.fetchall()}
+        cursor = await conn.execute("PRAGMA index_list(audit_log)")
+        indexes = {row[1] for row in await cursor.fetchall()}
+        assert "ix_audit_log_scope" in indexes
+    finally:
+        await conn.close()
+
+
+@pytest.mark.asyncio
 async def test_log_tool_name_none_stored_as_empty(log: SqliteAuditLog) -> None:
     await log.log(AuditEntry(boundary="b", user_id="u", agent_id="a", tool_name=None))
     entries = await log.get_entries(user_id="u")

@@ -1,10 +1,8 @@
-"""Migrations 004 + 036 + 065 and `pg_stores._SCHEMA` must describe the same tables.
+"""Migrations 004 + 036 and `pg_stores._SCHEMA` must describe the same four tables.
 
 `PgEventLog`/`PgTriggerStore`/`PgInvocationStore`/`PgConsumerCursorStore`
-create their tables two ways. Alembic revisions 004 (the first three), 036
-(`consumer_cursors`, #1163) and 065 (`event_replay_cursors`, #836; renumbered
-from 064 when the live-Persona revision claimed the id on the trunk first) are
-what a real deployment applies;
+create their tables two ways. Alembic revisions 004 (the first three) and
+036 (`consumer_cursors`, #1163) are what a real deployment applies;
 `ensure_event_schema()` is what tests and single-process dev runs call. The
 DDL is written out twice on purpose — a migration has to keep creating what it
 created on the day it ran, so it cannot import live application code — and
@@ -33,25 +31,15 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 DATABASE_URL = os.environ.get("MAISTRO_TEST_DATABASE_URL", "")
 
 #: The tables the event revisions create: three by 004, `consumer_cursors` by
-#: 036, `event_replay_cursors` by 065. Spelled out rather than derived from the catalogue: a test that asks
+#: 036. Spelled out rather than derived from the catalogue: a test that asks
 #: "are the tables that exist equal?" passes vacuously when neither side
 #: creates anything.
-EVENT_TABLES = (
-    "consumer_cursors",
-    "event_log",
-    "event_replay_cursors",
-    "handler_invocations",
-    "trigger_definitions",
-)
+EVENT_TABLES = ("consumer_cursors", "event_log", "handler_invocations", "trigger_definitions")
 
 #: Each event revision rendered on its own: `alembic upgrade a:b --sql` renders
 #: the revisions strictly between the two, so rendering ``003:036`` would drag
 #: every unrelated table from 005 to 035 into the comparison.
-EVENT_REVISION_RANGES = (
-    "003:004",
-    "035_outcome_scope_thumb_index:036_consumer_cursors",
-    "064:065",
-)
+EVENT_REVISION_RANGES = ("003:004", "035_outcome_scope_thumb_index:036_consumer_cursors")
 
 
 def _require_postgres() -> str:
@@ -73,13 +61,13 @@ def _require_postgres() -> str:
 
 
 def _migration_ddl() -> str:
-    """Render revisions 004, 036 and 065 with `alembic --sql`, which does not connect.
+    """Render revisions 004 and 036 with `alembic --sql`, which does not connect.
 
     Offline mode still builds a URL through `DatabaseSettings`, so the DB_* vars
     below only have to parse — nothing dials them. Rendering the real migrations
     rather than re-typing their DDL is the point: a change to
-    `alembic/versions/004_durable_events.py`, `036_consumer_cursors.py` or
-    `065_event_replay_cursors.py` reaches this test.
+    `alembic/versions/004_durable_events.py` or `036_consumer_cursors.py`
+    reaches this test.
     """
     env = {
         **os.environ,
@@ -212,7 +200,7 @@ async def built_schemas():
 
 
 class TestMigrationMatchesEnsureSchema:
-    def test_the_migrations_create_all_five_tables(self, built_schemas):
+    def test_the_migrations_create_all_four_tables(self, built_schemas):
         """Guards the comparison itself: equal-and-empty is not agreement."""
         migration, _ = built_schemas
         created = {table for table, *_ in migration["columns"]}

@@ -23,7 +23,7 @@
 # Digest-pinned (#349): a tag move must not change what installs every
 # dependency without a repository diff. Refresh via Dependabot's docker
 # ecosystem and record the new digest in quality/image-pins.json.
-FROM python:3.13.16-slim-bookworm@sha256:a1165e272e578941b84abc79e4ab38a0305cd12803a5c4247979ac7655f4d641 AS builder
+FROM python:3.13.15-slim-bookworm@sha256:2325bb286ec344af3e5898cc224b5844e2707ac6e26b1632516fd3edc84a5e26 AS builder
 WORKDIR /app
 # CI evidence (run 36835563311, job 110282105809): both buildx attempts of the
 # sibling research image died inside pip on `files.pythonhosted.org` read
@@ -80,36 +80,13 @@ RUN python /tmp/prune-dependency-namespaces.py \
     && python /tmp/check-dependency-namespaces.py --production \
     && rm -rf /tmp/check-dependency-namespaces.py /tmp/prune-dependency-namespaces.py
 
-# ---- docker CLI build ----
-# The published docker:29-cli binary is built with go1.26.8 (trivy: stdlib
-# CVE-2026-78667/78669/97031 HIGH, fixed in go1.26.9/1.27.2) and no released
-# docker:xx-cli tag ships a newer toolchain (29.1/29.2 ship older ones). Build
-# the exact same immutable release tag ourselves on the patched toolchain --
-# the same policy as the age stage in packages/hive-conductor/Dockerfile. The
-# tag resolves to dfc520d; fail if upstream ever disagrees. docker/cli has no
-# root go.mod (vendor.mod + vendor/ instead); renaming them is the module-mode
-# build the vendored tree is designed for.
-FROM golang:1.27.2-alpine@sha256:f92b6ef800e499660581efdabdf25d9d817a9d124eaf900924f0504e7e27e12d AS dockerclibuild
-ARG DOCKER_CLI_VERSION=29.9.1
-ARG DOCKER_CLI_COMMIT_SHORT=dfc520d
-RUN apk add --no-cache git && \
-    git clone --branch "v${DOCKER_CLI_VERSION}" --depth 1 https://github.com/docker/cli.git /src/docker-cli && \
-    cd /src/docker-cli && \
-    test "$(git rev-parse --short=7 HEAD)" = "${DOCKER_CLI_COMMIT_SHORT}" && \
-    cp vendor.mod go.mod && cp vendor.sum go.sum && \
-    mkdir -p /out && \
-    CGO_ENABLED=0 go build -trimpath -tags grpcnotrace \
-      -ldflags="-s -w -X github.com/docker/cli/cli/version.Version=v${DOCKER_CLI_VERSION} -X github.com/docker/cli/cli/version.GitCommit=${DOCKER_CLI_COMMIT_SHORT}" \
-      -o /out/docker ./cmd/docker
-
-# ─── Thin Debian runtime: apt keeps `git` available ─────────────────────
-# Provides the `git` binary the orchestrator's git tools (maistro.tools.git —
-# used by orchestrator/waves/fan_in.py) exec directly; the previous distroless
-# runtime shed git and broke those tools. This image IS vuln-gated like the
-# rest (#346): security.yml/release.yml scan it, so the apt layer also applies
-# the security patches the pinned base digest froze (trivy: libpcre2 HIGH on
-# debian 12.15), matching Dockerfile.research's hardening.
-FROM python:3.13.16-slim-bookworm@sha256:a1165e272e578941b84abc79e4ab38a0305cd12803a5c4247979ac7655f4d641
+# ─── Wolfi runtime (-dev variant): low-CVE, has apk so `git` is available ───
+# This image is NOT vuln-gated (only the hive-conductor image is trivy/grype
+# scanned), so the -dev variant's slightly larger surface has no gate cost. It
+# stays Wolfi (low-CVE) while providing the `git` binary the orchestrator's git
+# tools (maistro.tools.git — used by orchestrator/waves/fan_in.py) exec directly;
+# the previous distroless runtime shed git and broke those tools.
+FROM python:3.13.15-slim-bookworm@sha256:2325bb286ec344af3e5898cc224b5844e2707ac6e26b1632516fd3edc84a5e26
 WORKDIR /app
 RUN apt-get update \
     && apt-get install -y --no-install-recommends git \
@@ -135,20 +112,11 @@ COPY alembic/ alembic/
 COPY alembic.ini .
 COPY config/ config/
 COPY pyproject.toml uv.lock README.md ./
-# Static docker CLI built from the pinned upstream release tag on the patched
-# Go toolchain (stage above) — talks to a mounted /var/run/docker.sock, a single
-# static binary, no daemon. Historically: 29-cli's published binary embedded
-# go1.26.8 stdlib (trivy HIGHs); before that 27-cli embedded go1.22.11
-# (CVE-2025-68121 crypto/tls + 21 HIGHs, trivy).
-COPY --from=dockerclibuild /out/docker /usr/local/bin/docker
-# pip (and its vendored dependency tree — trivy flagged msgpack 1.1.2,
-# urllib3 2.7.0 and setuptools 70.3.0 from pip/_vendor/vendor.txt in both the
-# venv's pip and the base interpreter's) is build tooling; nothing in the
-# shipped app invokes it at runtime.
-RUN rm -rf /app/venv/lib/python3.13/site-packages/pip* \
-           /app/venv/bin/pip* \
-           /usr/local/lib/python3.13/site-packages/pip* \
-           /usr/local/bin/pip*
+# Static docker CLI (talks to a mounted /var/run/docker.sock) — a single static
+# binary, no daemon. 29-cli ships a binary built with go1.26.8; older 27-cli
+# binaries embedded go1.22.11 (CVE-2025-68121 crypto/tls + 21 HIGHs, trivy).
+# Digest-pinned (#349): the installer/tool image is as immutable as the base.
+COPY --from=docker:29-cli@sha256:018edbc908e08fcc9dbf029c812c34251e9b4719e6f71ca0e5eae2a987d014ca /usr/local/bin/docker /usr/local/bin/docker
 EXPOSE 8000
 STOPSIGNAL SIGTERM
 # Drop to an unprivileged numeric uid for runtime.

@@ -28,14 +28,9 @@ from tests.cross_product_parity.harness import (
     REAL_GOLDEN_PRODUCT_OBSERVATION,
     REAL_SCHEDULE_CONDUCTOR_SCENARIO,
     SCHEDULER,
-    CloseoutFailure,
     Dependency,
     DependencyUnavailable,
     ParityContractError,
-    ParityMode,
-    ParityScenario,
-    ScenarioAbstained,
-    ScenarioExecution,
     SourceProbe,
     assert_identity_projection,
     assert_matches_golden,
@@ -644,40 +639,11 @@ def test_strict_mode_turns_synthetic_unavailable_dependency_into_a_failure(
         dependency_assessment(synthetic)
 
 
-def test_conflicting_strict_and_mode_env_is_rejected(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Codex review: MAISTRO_PARITY_STRICT=1 must not be silently downgraded.
-
-    The two spellings name one strict concept, so inheriting
-    ``MAISTRO_PARITY_MODE=development`` alongside ``MAISTRO_PARITY_STRICT=1``
-    is a configuration error and must fail loudly instead of selecting
-    development mode (which would return blockers for callers to early-return
-    past rather than raising).
-    """
-    monkeypatch.setenv("MAISTRO_PARITY_STRICT", "1")
-    monkeypatch.setenv("MAISTRO_PARITY_MODE", "development")
-
-    with pytest.raises(ValueError, match="conflicts"):
-        parity_mode()
-
-
-def test_strict_spelling_agrees_with_explicit_m1_closeout_mode(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The run-m1-closeout.py combination stays a valid strict invocation."""
-    monkeypatch.setenv("MAISTRO_PARITY_STRICT", "1")
-    monkeypatch.setenv("MAISTRO_PARITY_MODE", "m1-closeout")
-
-    assert parity_mode() is ParityMode.M1_CLOSEOUT
-
-
 def test_non_strict_mode_still_reports_named_blockers(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Development mode (#459) keeps naming blockers instead of failing closed."""
     monkeypatch.delenv("MAISTRO_PARITY_STRICT", raising=False)
-    monkeypatch.delenv("MAISTRO_PARITY_MODE", raising=False)
     synthetic = Dependency(
         key="synthetic unavailable dependency",
         issue=1036,

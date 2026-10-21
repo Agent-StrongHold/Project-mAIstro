@@ -71,7 +71,7 @@ class ScheduleAdmissionUnavailable(RuntimeError):
     """
 
 
-async def fire_now(sid: str, *, fire_id: str | None = None) -> str:
+async def fire_now(sid: str, *, fire_id: str | None = None, requester_id: str | None = None) -> str:
     """Fire a schedule now through the one canonical admission authority.
 
     Configured production enters ``ScheduleRunAdmitter.admit_due(manual=True)`` —
@@ -90,6 +90,11 @@ async def fire_now(sid: str, *, fire_id: str | None = None) -> str:
     logical request reconciles to the Run the first call created instead of
     minting a fresh identity per call.  A call carrying no token gets a
     server-minted one, making each request's own deliberate firing.
+
+    ``requester_id`` is the authenticated principal that asked for this fire
+    (#1201), recorded on the Run separately from the schedule's acting
+    principal: the fire consumes the actor's authority, and provenance names
+    the caller that spent it.
 
     Takes the same per-schedule ``definition_lock`` the routes and the tick
     hold (Codex, #1199): without it, a manual fire that read the Hive row
@@ -111,7 +116,12 @@ async def fire_now(sid: str, *, fire_id: str | None = None) -> str:
             assert container is not None  # for the type checker; the gate proved it
             token = fire_id if fire_id else uuid.uuid4().hex
             return await runner._fire_manual_canonical(
-                sid, schedule, container=container, admitter=admitter, fire_id=token
+                sid,
+                schedule,
+                container=container,
+                admitter=admitter,
+                fire_id=token,
+                requested_by=requester_id,
             )
         if container is not None:
             raise ScheduleAdmissionUnavailable(
@@ -120,7 +130,17 @@ async def fire_now(sid: str, *, fire_id: str | None = None) -> str:
             )
 
         store = runner._canonical_store()
-        definition = await runner._definition_for(sid, schedule, store=store)
+        # The standalone path still fires inside the row's own scope (#1201):
+        # a row created by the scoped API carries its Workspace/Project, and
+        # only a truly scopeless legacy row falls back to the synthetic
+        # identities this compatibility path was written with. (A configured
+        # Container never reaches here: the guard above refused it.)
+        scope: tuple[str, str] | None = None
+        row_workspace = str(getattr(schedule, "workspace_id", "") or "").strip()
+        row_project = str(getattr(schedule, "project_id", "") or "").strip()
+        if row_workspace and row_project:
+            scope = (row_workspace, row_project)
+        definition = await runner._definition_for(sid, schedule, store=store, scope=scope)
         if definition is None:
             raise ScheduleNotFireable(
                 f"schedule {sid} names no mission template, so there is nothing to run"
@@ -140,7 +160,12 @@ async def fire_now(sid: str, *, fire_id: str | None = None) -> str:
         # else is running and cannot make the same claim.
         request_id = current_execution_context().request_id or None
         run_id = await runner._fire_schedule(
-            sid, schedule, scheduled_for=now, catchup=False, request_id=request_id
+            sid,
+            schedule,
+            scheduled_for=now,
+            catchup=False,
+            request_id=request_id,
+            requester_id=requester_id,
         )
         if run_id is None:
             raise ScheduleNotFireable(
@@ -561,9 +586,32 @@ class _ScheduleRunner:
         """
         from config import get_settings
 
+        actor = str(
+            getattr(schedule, "actor_principal_id", "") or getattr(schedule, "user_id", "") or ""
+        ).strip()
+        if not actor:
+            # A schedule whose actor cannot be determined must not fire at
+            # all (#1201): admission would stamp the Run with no principal,
+            # exactly the None-actor default this surface exists to make
+            # impossible.
+            raise ValueError("schedule has no actor principal")
         workspace_id = str(
             getattr(schedule, "workspace_id", "") or get_settings().hive_default_workspace_id
         )
+        # Membership is re-checked at every fire (#1201): persistence is not
+        # an authority grant, so a schedule whose actor has since left the
+        # Workspace loses eligibility here rather than at read time alone.
+        workspace_store = getattr(container, "workspace_store", None)
+        if workspace_store is not None:
+            workspace = await workspace_store.get(workspace_id)
+            membership = (
+                await workspace_store.get_membership(workspace_id, user_id=actor)
+                if workspace is not None
+                else None
+            )
+            if workspace is None or membership is None:
+                raise ValueError("schedule actor is no longer a Workspace member")
+
         explicit_project = str(getattr(schedule, "project_id", "") or "")
         if explicit_project:
             project = await container.project_scope_store.get(explicit_project)
@@ -812,6 +860,7 @@ class _ScheduleRunner:
         container: Any,
         admitter: ScheduleRunAdmitter,
         fire_id: str,
+        requested_by: str | None = None,
     ) -> str:
         """Configured Hive manual fire: the recurring path's authority, once.
 
@@ -853,7 +902,9 @@ class _ScheduleRunner:
         await self._prime_template(definition, container)
         now = datetime.now(UTC)
         try:
-            admission = await admitter.admit_due(definition, now=now, manual=True, fire_id=fire_id)
+            admission = await admitter.admit_due(
+                definition, now=now, manual=True, fire_id=fire_id, requested_by=requested_by
+            )
         except GraphTemplateNotFound as exc:
             # The durable template is the authority; the registry was only ever
             # a migration source above. Nothing was created, so the schedule's
@@ -1024,6 +1075,18 @@ class _ScheduleRunner:
         # a configured-but-unwired Container, because unlike the tick — which
         # can simply wait for the next one — a manual fire is a caller holding
         # a request that must either become a canonical Run or say why not.
+        # Rows created by the scoped API still retain the same revocation gate
+        # even when this process has no embedded core bridge (#1201).
+        scoped_workspace = str(getattr(schedule, "workspace_id", "") or "").strip()
+        scoped_actor = str(
+            getattr(schedule, "actor_principal_id", "") or getattr(schedule, "user_id", "") or ""
+        ).strip()
+        if scoped_workspace:
+            from services.workspace_authority import is_member
+
+            if not scoped_actor or not await is_member(scoped_actor, scoped_workspace):
+                logger.info("Schedule %s is no longer eligible for its Workspace", sid)
+                return
         store = self._canonical_store()
         definition = await self._definition_for(sid, schedule, store=store)
         if definition is None:
@@ -1112,6 +1175,7 @@ class _ScheduleRunner:
         scheduled_for: datetime | None = None,
         catchup: bool = False,
         request_id: str | None = None,
+        requester_id: str | None = None,
     ) -> str | None:
         """Compatibility immediate execution path, standalone/demo contexts only.
 
@@ -1119,6 +1183,11 @@ class _ScheduleRunner:
         ``_fire_manual_canonical`` and refuses a half-wired Container outright;
         this method stays reachable from the tick's no-Container branch and
         from the tests that exercise it without a Container.
+
+        Even here the Run stays inside the row's own scope and names every
+        provenance principal (#1201): the schedule's actor is the authority
+        consumed, the scheduler is a service distinct from that actor, and a
+        manual fire additionally names the principal that asked for it.
         """
         t = datetime.now(UTC)
 
@@ -1155,8 +1224,18 @@ class _ScheduleRunner:
             )
             return None
 
-        scope_id = f"hive:schedule:{sid}"
-        user_id = str(getattr(schedule, "user_id", "") or "") or None
+        # Real scope when the row carries one (#1201); the synthetic identity
+        # remains the fallback for scopeless legacy rows only.
+        scope_workspace_id = str(getattr(schedule, "workspace_id", "") or f"hive:schedule:{sid}")
+        scope_project_id = str(getattr(schedule, "project_id", "") or scope_workspace_id)
+        user_id = (
+            str(
+                getattr(schedule, "actor_principal_id", "")
+                or getattr(schedule, "user_id", "")
+                or ""
+            )
+            or None
+        )
         try:
             # Always a clean slate (#1063): this path shares an event loop
             # with whatever else is running (the tick loop) and cannot tell a
@@ -1170,8 +1249,8 @@ class _ScheduleRunner:
                 with bind_execution_context(request_id=effective_request_id):
                     graph, record = await run_registered_dag(
                         str(template_id),
-                        workspace_id=scope_id,
-                        project_id=scope_id,
+                        workspace_id=scope_workspace_id,
+                        project_id=scope_project_id,
                         user_id=user_id,
                         provenance={
                             "admission_source": "schedule",
@@ -1184,6 +1263,15 @@ class _ScheduleRunner:
                             "scheduled_for": canonical_occurrence_instant(scheduled_for or t),
                             "catchup": catchup,
                             "request_id": effective_request_id,
+                            # The background service that fired this is not
+                            # the principal whose authority it consumed
+                            # (#1201): both facts are on the Run, distinct.
+                            "scheduler_service_id": "hive-scheduler",
+                            **(
+                                {"manual_requesting_principal_id": requester_id}
+                                if requester_id
+                                else {}
+                            ),
                         },
                     )
         except Exception as exc:

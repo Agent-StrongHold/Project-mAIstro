@@ -272,14 +272,10 @@ class BubblewrapSandboxBackend:
         # The sandbox's writable surface is exactly its own workdir, mounted at
         # a fixed path so a command does not need to know the host layout.
         argv += ["--bind", str(workdir), "/work", "--chdir", "/work"]
-        for index, extra in enumerate(self._authorized_mounts(config)):
-            # Expose a stable guest name, not the host pathname. The source is
-            # canonicalized under an explicit host-owned root first (#1198).
-            argv += ["--bind", str(extra), f"/work-extra-{index}"]
-        for ro in config.read_paths:
-            # Read-only host exposure from a host-owned profile (#2014); never
-            # a writable bind, so it cannot widen the sandbox's write surface.
-            argv += ["--ro-bind", ro, ro]
+        for extra in config.writable_paths:
+            argv += ["--bind", extra, extra]
+        for extra in config.read_paths:
+            argv += ["--ro-bind", extra, extra]
         if config.egress.mode is EgressMode.HOST:
             # `--unshare-all` already removed the network namespace; sharing it
             # back is the only way this backend can grant egress, and it grants

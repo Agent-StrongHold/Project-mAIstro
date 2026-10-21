@@ -100,7 +100,8 @@ async def configured(database_url: str, monkeypatch: pytest.MonkeyPatch) -> Asyn
             )
         else:
             assert isinstance(container.schedule_store, SqliteScheduleStore)
-        root = await container.project_scope_store.create_root("tick-parity")
+        await container.workspace_store.create(creator_user_id="tick-actor", name="Tick WS", workspace_id="tick-parity")
+        root = await container.project_scope_store.root_for_workspace("tick-parity")
         await container.template_store.put(
             GraphTemplate(
                 template_id="tick-template",

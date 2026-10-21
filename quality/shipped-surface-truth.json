@@ -534,16 +534,6 @@
     },
     {
       "source": "packages/hive-conductor/backend/routes/credentials.py",
-      "method": "POST",
-      "route": "/{provider_id}/test",
-      "handler": "test_credential",
-      "disposition": "canonical",
-      "production_enabled": true,
-      "reason": "performs a real model-discovery probe against the operator-supplied OpenAI-compatible endpoint without persisting input, through the shared outbound guard",
-      "effect_owner": "maistro.http.sync_client under maistro.security.outbound explicit-endpoint policy (#67); the gateway's GET /models is the external effect"
-    },
-    {
-      "source": "packages/hive-conductor/backend/routes/credentials.py",
       "method": "PUT",
       "route": "/{provider_id}",
       "handler": "save_credential",
@@ -2065,26 +2055,6 @@
     },
     {
       "source": "packages/maistro-server/src/maistro_server/api/extensions.py",
-      "method": "PUT",
-      "route": "/policy/orgs/{org_id}",
-      "handler": "set_organization_extension_policy",
-      "disposition": "domain-state",
-      "production_enabled": true,
-      "reason": "installs the organization extension layer wholesale (#971): allow/deny lists, approved publishers and publisher/version pins that no Workspace can widen",
-      "effect_owner": "extension policy engine + policy audit trail"
-    },
-    {
-      "source": "packages/maistro-server/src/maistro_server/api/extensions.py",
-      "method": "PUT",
-      "route": "/policy/orgs/{org_id}/workspaces/{workspace_id}",
-      "handler": "set_workspace_extension_policy",
-      "disposition": "domain-state",
-      "production_enabled": true,
-      "reason": "installs one Workspace's narrowing layer (#971): opt-in enablement, denials and permission ceilings under the org layer",
-      "effect_owner": "extension policy engine + policy audit trail"
-    },
-    {
-      "source": "packages/maistro-server/src/maistro_server/api/extensions.py",
       "method": "POST",
       "route": "/health/{extension_id}/operator",
       "handler": "decide_extension_operator_state",
@@ -2092,26 +2062,6 @@
       "production_enabled": true,
       "reason": "applies the durable operator admission decision (enable/disable/quarantine/release) with the authenticated actor and a required reason; append-only evidence whose newest row is the restart-surviving runtime state",
       "effect_owner": "extension health store (operator decisions) + health projections"
-    },
-    {
-      "source": "packages/maistro-server/src/maistro_server/api/extensions.py",
-      "method": "POST",
-      "route": "/policy/orgs/{org_id}/workspaces/{workspace_id}/decisions",
-      "handler": "explain_extension_policy_decision",
-      "disposition": "local-only",
-      "production_enabled": true,
-      "reason": "deterministic policy dry run for admin inspection (#971): same fixed rule order as enforcement, no record, no audit row",
-      "truth_contract": "stateless policy evaluation; persists nothing — the side-effect-free twin of the enforcement decision"
-    },
-    {
-      "source": "packages/maistro-server/src/maistro_server/api/extensions.py",
-      "method": "PUT",
-      "route": "/state",
-      "handler": "set_extension_configuration",
-      "disposition": "domain-state",
-      "production_enabled": true,
-      "reason": "writes one tenant-scoped extension configuration value (#971) under the full (org, workspace, extension) key behind Workspace-ownership authority",
-      "effect_owner": "tenant-scoped extension runtime state"
     },
     {
       "source": "packages/maistro-server/src/maistro_server/api/extensions.py",

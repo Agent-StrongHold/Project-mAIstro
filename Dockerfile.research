@@ -13,7 +13,7 @@
 # ─── Build stage ───────────────────────────────────────
 # Digest-pinned (#349): python:3.12-slim resolved to this index digest on
 # 2026-09-30; refresh via Dependabot and update quality/image-pins.json.
-FROM python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1 AS builder
+FROM python:3.12-slim@sha256:f77ac9e44ae96ef2c90b8053ea08c31f8be030f824196b0ae4db6d462c84e51f AS builder
 
 WORKDIR /app
 
@@ -66,7 +66,7 @@ RUN apk add --no-cache git && \
       -o /out/docker ./cmd/docker
 
 # ─── Production stage ─────────────────────────────────
-FROM python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1
+FROM python:3.12-slim@sha256:f77ac9e44ae96ef2c90b8053ea08c31f8be030f824196b0ae4db6d462c84e51f
 
 WORKDIR /app
 
@@ -100,10 +100,10 @@ RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-reco
     && rm -rf /var/lib/apt/lists/* /var/cache/apt/* /tmp/*
 
 # Static docker CLI only (talks to a mounted /var/run/docker.sock) — replaces the
-# heavyweight docker.io package and its containerd/runc dependency tree. Built
-# from the pinned upstream release tag on the patched Go toolchain (stage
-# above) because the published 29-cli binary embeds go1.26.8 stdlib (trivy HIGHs).
-COPY --from=dockerclibuild /out/docker /usr/local/bin/docker
+# heavyweight docker.io package and its containerd/runc dependency tree.
+# 29-cli ships a binary built with go1.26.8; older 27-cli embedded go1.22.11
+# (CVE-2025-68121 crypto/tls + 21 HIGHs, trivy).
+COPY --from=docker:29-cli@sha256:018edbc908e08fcc9dbf029c812c34251e9b4719e6f71ca0e5eae2a987d014ca /usr/local/bin/docker /usr/local/bin/docker
 
 # Copy installed packages from builder
 COPY --from=builder /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages

@@ -6,17 +6,11 @@ import pytest
 
 from maistro.projects.scope import Project, ProjectScopeDenied
 from maistro.projects.scope_store import InMemoryProjectScopeStore
-from maistro.workspaces.authorization import WorkspaceAction, WorkspaceAuthorizationDenied
-from maistro.workspaces.model import WorkspaceRole
+from maistro.workspaces.authorization import WorkspaceAuthorizationDenied
 from maistro.workspaces.store import InMemoryWorkspaceStore
 from maistro.workspaces.store_boundary import (
-    authorize_membership_removal,
     is_blank_principal,
-    require_membership_removal_on,
-    require_project_administer,
-    require_project_administer_on,
     require_project_view,
-    require_workspace_action_on,
     require_workspace_view,
 )
 
@@ -74,57 +68,3 @@ async def test_require_workspace_view_denies_outsider() -> None:
     workspace = await workspaces.create(creator_user_id="owner", name="WS")
     with pytest.raises(WorkspaceAuthorizationDenied):
         await require_workspace_view(workspaces, workspace.workspace_id, "outsider")
-
-
-async def test_authorize_membership_removal_refuses_a_blank_principal() -> None:
-    """A blank principal is a refusal, not the absent/internal shape (#1150)."""
-    stores = InMemoryWorkspaceStore()
-    with pytest.raises(WorkspaceAuthorizationDenied):
-        await authorize_membership_removal(stores, "ws", user_id="user", principal_id="  ")
-
-
-async def test_require_workspace_action_on_treats_none_as_internal() -> None:
-    """`None` is the internal/system shape and returns without consulting the store."""
-    stores = InMemoryWorkspaceStore()
-    assert (
-        await require_workspace_action_on(stores, None, "ws", None, WorkspaceAction.ADMINISTER)
-        is None
-    )
-
-
-async def test_require_workspace_action_on_refuses_a_blank_principal() -> None:
-    stores = InMemoryWorkspaceStore()
-    with pytest.raises(WorkspaceAuthorizationDenied):
-        await require_workspace_action_on(stores, None, "ws", "   ", WorkspaceAction.ADMINISTER)
-
-
-async def test_require_membership_removal_on_treats_none_as_internal() -> None:
-    stores = InMemoryWorkspaceStore()
-    await require_membership_removal_on(stores, None, "ws", user_id="user", principal_id=None)
-
-
-async def test_require_membership_removal_on_refuses_a_blank_principal() -> None:
-    stores = InMemoryWorkspaceStore()
-    with pytest.raises(WorkspaceAuthorizationDenied):
-        await require_membership_removal_on(stores, None, "ws", user_id="user", principal_id="")
-
-
-async def test_require_project_administer_refuses_a_blank_principal() -> None:
-    stores = InMemoryWorkspaceStore(project_store=InMemoryProjectScopeStore())
-    project = Project(workspace_id="ws-1", name="Scoped", parent_project_id="root-1")
-    with pytest.raises(ProjectScopeDenied, match="Project not found"):
-        await require_project_administer(project, stores, "  ")
-
-
-async def test_require_project_administer_on_refuses_a_member_on_the_writing_connection() -> None:
-    """The in-transaction re-check answers with the pre-write refusal (#1150)."""
-    projects = InMemoryProjectScopeStore()
-    workspaces = InMemoryWorkspaceStore(project_store=projects)
-    projects.bind_workspace_store(workspaces)
-    workspace = await workspaces.create(creator_user_id="owner", name="WS")
-    await workspaces.set_membership(
-        workspace.workspace_id, user_id="member", role=WorkspaceRole.MEMBER, principal_id="owner"
-    )
-    project = Project(workspace_id=workspace.workspace_id, name="Scoped", parent_project_id="root")
-    with pytest.raises(ProjectScopeDenied, match="Project not found"):
-        await require_project_administer_on(project, workspaces, None, "member")

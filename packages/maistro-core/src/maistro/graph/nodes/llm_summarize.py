@@ -59,32 +59,10 @@ from maistro.providers.registry import InMemoryProviderRegistry
 from maistro.providers.router import CostAwareRouter
 
 from . import register_node
-from .base import BaseNode, NodeContext, ReplaySemantics, replay_effect_key
+from .base import BaseNode, NodeContext, ReplaySemantics
 
 if TYPE_CHECKING:
     from maistro.providers.protocols import LLMProviderRegistry, LLMRouter
-
-
-def _scoped_effect_key(ctx: NodeContext, inputs: LlmSummarizeIn, supervised_rung: str) -> str:
-    """The Run/node-scoped logical key for one governed completion.
-
-    Two ``llm.summarize`` nodes sharing a Binding and model must not file the
-    same keyed effect: the durable executor binds this key as the Invocation
-    ``effect_scope``, so a model-only key let the second node adopt the
-    first's completed summary. Run + graph node identity, an input digest
-    (so re-work with new source is new work), and the escalation rung keep
-    every distinct completion distinct while retries of one visit reconcile.
-    A blank rung (unsupervised visit) and ``inputs.model`` agree by
-    construction, so the scope bound at frontier preparation and the key
-    passed inside ``_execute`` can never diverge.
-    """
-
-    rung = supervised_rung.strip() or inputs.model
-    return replay_effect_key(
-        ctx,
-        "llm.summarize.complete",
-        {"rung": rung, "inputs": inputs.model_dump(mode="json")},
-    )
 
 
 class LlmSummarizeIn(BaseModel):
@@ -171,14 +149,9 @@ class LlmSummarizeNode(BaseNode[LlmSummarizeIn, LlmSummarizeOut]):
     input_schema: ClassVar[type[BaseModel]] = LlmSummarizeIn
     output_schema: ClassVar[type[BaseModel]] = LlmSummarizeOut
     cost_hint: ClassVar[float] = 3.0  # billable LLM call
-    # Retryable under an effect key (epic M4-I): the governed completion
-    # already files its Invocation under the stable key
-    # ``llm.summarize.complete:{rung}``, so a re-visit is a *new* keyed effect,
-    # never a blind replay of an unbilled one. The default visit budget is
-    # still one attempt, so nothing changes for graphs that declare neither
-    # ``max_attempts`` nor an ``escalation_ladder`` — the semantics only open
-    # the door the executor's quality supervision walks through.
-    replay_semantics: ClassVar[ReplaySemantics] = ReplaySemantics.EFFECT_KEY
+    replay_semantics: ClassVar[ReplaySemantics] = (
+        ReplaySemantics.NON_RETRYABLE
+    )  # LLM output varies; not safe to retry blindly
     external_io: ClassVar[bool] = True
     display_name: ClassVar[str] = "LLM: summarize"
     description: ClassVar[str] = (
@@ -205,22 +178,6 @@ class LlmSummarizeNode(BaseNode[LlmSummarizeIn, LlmSummarizeOut]):
         )
         self._router: LLMRouter = router if router is not None else CostAwareRouter(self._registry)
 
-    def logical_effect_key(self, inputs: LlmSummarizeIn, ctx: NodeContext) -> str | None:
-        """The rung-scoped logical key for one governed completion.
-
-        Epic M4-I escalation re-visits a quality shortfall at the next ladder
-        rung; the node's Invocation for that re-visit files under a *new*
-        keyed effect (``llm.summarize.complete:{rung}``), never a blind
-        replay of an unbilled one — so the node-level key is rung-scoped too.
-        Within one visit the key is stable, so a lease-loss retry reconciles
-        against the same claim. Developing the key from the visit's effective
-        rung (``escalated_model``, else the seeded ladder start) keeps the
-        fail-closed executor contract (#1194): an EFFECT_KEY node proves
-        replay safety with a concrete key, it does not merely label itself
-        retryable.
-        """
-        return _scoped_effect_key(ctx, inputs, _effective_rung(ctx))
-
     async def _execute(self, inputs: LlmSummarizeIn, ctx: NodeContext) -> LlmSummarizeOut:
         # Gateway configuration is read before the Binding is resolved, as it
         # always was: a deployment with no gateway configured should be told
@@ -228,30 +185,6 @@ class LlmSummarizeNode(BaseNode[LlmSummarizeIn, LlmSummarizeOut]):
         # for the complexity ratchet must not reorder them.
         endpoint = _gateway_endpoint(timeout_s=inputs.timeout_s)
         binding = await self._authorized_binding(inputs, ctx)
-
-        # Verification-aware escalation (epic M4-I): when the executor's
-        # supervision withheld a prior visit for missing its quality floor,
-        # the re-visit is told which ladder rung to run. A declared ladder's
-        # cheapest rung is seeded for the first visit, so cheap-first starts
-        # the ladder rather than this node's ambient ``model`` input — which
-        # stays the default only where no ladder is declared.
-        supervised_rung = str(ctx.metadata.get(ESCALATED_MODEL_CONTEXT_KEY) or "").strip()
-        ladder_start = str(ctx.metadata.get(LADDER_START_CONTEXT_KEY) or "").strip()
-
-        # Observation routing (epic M4-I): upstream payloads are classified
-        # text-or-image, routed to the alias configured for their modality,
-        # and encoded into the content-part shape the routed model accepts.
-        # Precedence is explicit: a supervision-chosen rung outranks the
-        # modality floor (the ladder is declared by the same graph author who
-        # knows the observations' modalities); otherwise an image observation
-        # lifts the request to the vision alias, because feeding an image
-        # content part to a text-only alias fails at the provider and
-        # re-encoding it as text would discard exactly what it carried; the
-        # seeded ladder start governs text-only visits over ``inputs.model``.
-        observations = list(inputs.observations or [])
-        routes = _observation_routes(inputs, observations)
-        model_alias = _chosen_model_alias(inputs, supervised_rung, ladder_start, routes)
-        user_content = _observation_user_content(inputs, observations, routes)
         egress = ModelChatEgress(
             self._effects,
             registry=self._registry,
@@ -263,36 +196,19 @@ class LlmSummarizeNode(BaseNode[LlmSummarizeIn, LlmSummarizeOut]):
             run_id=ctx.run_id,
             node_run_id=ctx.node_run_id,
             attempt_id=ctx.attempt_id,
-            effect_key=_scoped_effect_key(ctx, inputs, supervised_rung or ladder_start),
+            effect_key=f"llm.summarize.complete:{inputs.model}",
             request=ModelChatRequest(
-                model=model_alias,
+                model=inputs.model,
                 messages=[
                     {"role": "system", "content": _system_prompt(inputs)},
-                    {"role": "user", "content": user_content},
+                    {"role": "user", "content": inputs.text},
                 ],
                 temperature=inputs.temperature,
                 max_tokens=inputs.max_tokens,
             ),
             actor_id=str(ctx.user_id or ""),
         )
-        out = _summarized(result.body, fallback_model=model_alias)
-
-        # Quality self-report (epic M4-I): the deterministic score the
-        # executor's escalation ladder supervises. Measured against everything
-        # the model was shown as source — the text input plus the text half of
-        # any observations — so a summary cannot score well by ignoring the
-        # payloads it was handed. Written through the per-visit result-metadata
-        # channel; graphs that declare no ladder simply carry it as evidence.
-        text_payloads = [
-            payload if isinstance(payload, str) else str(payload)
-            for payload, route in zip(observations, routes, strict=False)
-            if route.modality == ObservationModality.TEXT
-        ]
-        source_for_quality = "\n\n".join([*text_payloads, inputs.text]).strip()
-        ctx.result_metadata[QUALITY_METADATA_KEY] = summarize_quality(
-            source_for_quality, out.summary
-        )
-        return out
+        return _summarized(result.body, fallback_model=inputs.model)
 
     async def _authorized_binding(self, inputs: LlmSummarizeIn, ctx: NodeContext) -> Any:
         """The model.chat Binding this call runs under, refused before any call."""
@@ -346,86 +262,6 @@ def _system_prompt(inputs: LlmSummarizeIn) -> str:
     if inputs.system_prompt_extra:
         return prompt + "\n\n" + inputs.system_prompt_extra
     return prompt
-
-
-def _observation_routes(
-    inputs: LlmSummarizeIn, observations: list[Any]
-) -> tuple[ObservationRoute, ...]:
-    """Route the declared observations; an image with no vision alias refuses.
-
-    Re-encoding an image as text would discard exactly what the observation
-    carried, so the misconfiguration is refused before any model call.
-    """
-    if not observations:
-        return ()
-    image_alias = inputs.image_model.strip()
-    has_image = any(
-        classify_observation(payload) == ObservationModality.IMAGE for payload in observations
-    )
-    if has_image and not image_alias:
-        raise RuntimeError(
-            "llm.summarize received an image observation but no image_model "
-            "alias is configured; refusing to re-encode an image as text "
-            "(epic M4-I observation routing)"
-        )
-    return route_observations(
-        observations,
-        text_model=inputs.text_model.strip() or inputs.model,
-        image_model=image_alias or inputs.model,
-    )
-
-
-def _effective_rung(ctx: NodeContext) -> str:
-    """The rung this visit is governed by: the escalation, else the seeded start."""
-    escalation_rung = str(ctx.metadata.get(ESCALATED_MODEL_CONTEXT_KEY) or "").strip()
-    if escalation_rung:
-        return escalation_rung
-    return str(ctx.metadata.get(LADDER_START_CONTEXT_KEY) or "").strip()
-
-
-def _chosen_model_alias(
-    inputs: LlmSummarizeIn,
-    supervised_rung: str,
-    ladder_start: str,
-    routes: tuple[ObservationRoute, ...],
-) -> str:
-    """The alias this completion runs on.
-
-    A supervision escalation is final and outranks everything. Below it, the
-    modality floor (an image observation's vision alias) outranks the seeded
-    ladder start — a text-only cheapest rung cannot carry an image content
-    part — and the ladder start outranks the node's ambient ``model`` input,
-    so a declared ladder is genuinely cheap-first from visit one. For
-    text-only observations the configured ``text_model`` alias is the route
-    the request must actually take; falling back to ``model`` would make the
-    input dead configuration.
-    """
-    if supervised_rung:
-        return supervised_rung
-    if any(route.modality == ObservationModality.IMAGE for route in routes):
-        return inputs.image_model.strip()
-    if ladder_start:
-        return ladder_start
-    if routes:
-        return routes[0].model
-    return inputs.model
-
-
-def _observation_user_content(
-    inputs: LlmSummarizeIn,
-    observations: list[Any],
-    routes: tuple[ObservationRoute, ...],
-) -> str | list[dict[str, Any]]:
-    """Observations as content parts (plus the text input, when it speaks too)."""
-    if not observations:
-        return inputs.text
-    content_parts: list[dict[str, Any]] = [
-        encode_observation(payload, route)
-        for payload, route in zip(observations, routes, strict=False)
-    ]
-    if inputs.text.strip():
-        content_parts.append({"type": "text", "text": inputs.text})
-    return content_parts
 
 
 def _summarized(data: dict[str, Any], *, fallback_model: str) -> LlmSummarizeOut:
