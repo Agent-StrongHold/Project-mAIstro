@@ -61,6 +61,12 @@ async def resolve_design_binding(
     prompt is assembled and before any thesis or eval record could exist. A
     caller that gets past this function has an authorized route; one that does
     not gets an exception, never a canned payload shaped like success.
+
+    The scope is this node's own: ``node_id=ctx.node_id``, the same rule every
+    canonical model node applies (``llm.summarize`` and the rest). A
+    node-restricted Binding therefore admits the node it names and refuses the
+    rest — an explore wave's slots do not borrow the coordinator's scope, and
+    the judge does not borrow either.
     """
 
     if not binding_id.strip():

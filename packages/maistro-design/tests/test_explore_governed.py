@@ -168,6 +168,106 @@ async def test_a_retried_thesis_slot_replays_its_invocation(
     assert len(sent) == 1, "a retry must not dispatch a second physical model call"
 
 
+async def test_a_node_scoped_binding_does_not_leak_into_the_wave_slots(
+    monkeypatch: pytest.MonkeyPatch,
+    patch_gateway: Any,
+    governed: Any,
+    governed_kit: Any,
+) -> None:
+    """A Binding scoped to the coordinator does not authorize the wave's slots.
+
+    Node-scoped authorization stays node-scoped, exactly as it does for every
+    other canonical model node (``llm.summarize`` and the rest resolve a
+    Binding against ``ctx.node_id``). The coordinator owns the scope it names,
+    so it passes; the thesis slot does not own it, so it refuses — before any
+    prompt is assembled and before the gateway is reached. A wave therefore
+    runs on a Binding whose scope admits the nodes that use it (a
+    project-scoped Binding), and never on one slot borrowing the
+    coordinator's authority.
+    """
+
+    from maistro.capabilities.binding import Binding
+    from maistro.capabilities.model_chat import (
+        DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,
+        MODEL_CHAT_CAPABILITY,
+    )
+    from maistro.runs.model import RunStatus
+
+    scoped = Binding(
+        binding_id="binding-explore-node",
+        workspace_id=governed.workspace_id,
+        project_id=governed.project_id,
+        node_id="explore",
+        capability=MODEL_CHAT_CAPABILITY,
+        credential_refs=(DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,),
+    )
+    governed.effects.bindings.register(scoped)
+    sent = patch_gateway([_thesis_body("Should never run", governed_kit.model_alias)])
+
+    graph = governed_kit.wave_graph(governed, width=1, binding_id=scoped.binding_id)
+    record = await governed_kit.run_wave(
+        governed, graph, nodes_by_kind=governed_kit.design_nodes(governed)
+    )
+
+    # The coordinator owns the scope it names, so it ran.
+    explore_run = next(nr for nr in record.node_runs if nr.node_id == "explore")
+    assert explore_run.status is RunStatus.COMPLETED
+
+    # The slot does not own it: it fails closed, with no thesis and no call.
+    thesis_run = next(nr for nr in record.node_runs if nr.node_id == "thesis-0")
+    assert thesis_run.status is RunStatus.FAILED
+    assert thesis_run.error is not None
+    assert "thesis-0" in thesis_run.error
+    assert "BindingScopeDenied" in thesis_run.error
+    assert thesis_run.result is None, "a refused slot must not publish a thesis"
+    assert sent == [], "an unauthorized slot must not reach the gateway"
+    assert record.run.status is RunStatus.FAILED
+
+
+async def test_binding_scoped_to_a_foreign_node_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+    patch_gateway: Any,
+    governed: Any,
+    governed_kit: Any,
+) -> None:
+    """A Binding restricted to a node outside the wave authorizes nothing.
+
+    The refusal happens at the coordinator, before any slot runs and before
+    the gateway is reached: a scope the wave's own nodes do not hold admits
+    nobody in it.
+    """
+
+    from maistro.capabilities.binding import Binding
+    from maistro.capabilities.model_chat import (
+        DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,
+        MODEL_CHAT_CAPABILITY,
+    )
+    from maistro.runs.model import RunStatus
+
+    foreign_node = Binding(
+        binding_id="binding-other-node",
+        workspace_id=governed.workspace_id,
+        project_id=governed.project_id,
+        node_id="somewhere-else",
+        capability=MODEL_CHAT_CAPABILITY,
+        credential_refs=(DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,),
+    )
+    governed.effects.bindings.register(foreign_node)
+    sent = patch_gateway([_thesis_body("Should never run", governed_kit.model_alias)])
+
+    graph = governed_kit.wave_graph(governed, width=2, binding_id=foreign_node.binding_id)
+    record = await governed_kit.run_wave(
+        governed, graph, nodes_by_kind=governed_kit.design_nodes(governed)
+    )
+
+    assert record.run.status is RunStatus.FAILED
+    explore_run = next(nr for nr in record.node_runs if nr.node_id == "explore")
+    assert explore_run.error is not None
+    assert "somewhere-else" in explore_run.error
+    assert [nr for nr in record.node_runs if nr.node_id.startswith("thesis-")] == []
+    assert sent == []
+
+
 async def test_wave_binding_scope_is_resolved_per_workspace(
     monkeypatch: pytest.MonkeyPatch,
     patch_gateway: Any,

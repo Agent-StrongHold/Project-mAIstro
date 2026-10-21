@@ -343,7 +343,17 @@ class DesignThesisNode(BaseNode[DesignThesisIn, DesignThesisOut]):
         return replay_effect_key(ctx, f"{THESIS_NODE_KIND}.slot", inputs.model_dump(mode="json"))
 
     async def _execute(self, inputs: DesignThesisIn, ctx: NodeContext) -> DesignThesisOut:
-        binding = await resolve_design_binding(self._effects, binding_id=inputs.binding_id, ctx=ctx)
+        # The slot resolves the Binding against *its own* node scope, exactly
+        # like every other canonical model node (llm.summarize and the rest).
+        # A node-restricted Binding stays restricted to the node it names: the
+        # wave coordinator's scope is not a licence for its slots, so a
+        # Binding scoped to the coordinator refuses in the slot instead of
+        # borrowing an authorization the slot does not hold.
+        binding = await resolve_design_binding(
+            self._effects,
+            binding_id=inputs.binding_id,
+            ctx=ctx,
+        )
 
         request = ModelChatRequest(
             model=inputs.model,
