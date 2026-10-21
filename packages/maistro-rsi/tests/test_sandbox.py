@@ -192,6 +192,44 @@ class TestLocalSandbox:
         code, output = await LocalSandbox(str(tmp_path)).exec("sleep 30", timeout=1)
         assert code == 124 and "timeout" in output
 
+    @posix_exec_only
+    @pytest.mark.asyncio
+    async def test_exec_output_is_bounded_at_the_retained_limit(self, tmp_path):
+        """#1197: a runaway emitter cannot flood this process's memory even
+        though its isolation is the outer sbx microVM — retained output is cut
+        at the limit and the truncation is declared in the output."""
+        from maistro_rsi.sandbox.local import LocalSandbox
+
+        sandbox = LocalSandbox(str(tmp_path), max_output_bytes=1000)
+        code, output = await sandbox.exec(
+            "python3 -c \"import sys; sys.stdout.write('x' * 50000)\""
+        )
+        assert code == 0
+        assert output[:1000] == "x" * 1000
+        assert output.endswith("[maistro: output truncated at 1000 bytes; the rest was discarded]")
+
+    @posix_exec_only
+    @pytest.mark.asyncio
+    async def test_exec_drains_both_streams_simultaneously(self, tmp_path):
+        """The mirror's drain must stay concurrent: a child filling both pipes
+        deadlocks a sequential drain. This child writes 16 MiB to each stream
+        before exiting; the bounded exec must reap it with the real exit code."""
+        from maistro_rsi.sandbox.local import LocalSandbox
+
+        emit = (
+            "import sys; sys.stdout.write('a' * 16000000); sys.stdout.flush(); "
+            "sys.stderr.write('b' * 16000000); sys.stderr.flush()"
+        )
+        start = time.monotonic()
+        code, output = await LocalSandbox(str(tmp_path), max_output_bytes=4096).exec(
+            f'python3 -c "{emit}"'
+        )
+        elapsed = time.monotonic() - start
+        assert code == 0
+        assert output.startswith("a" * 4096)
+        assert "truncated at 4096 bytes" in output
+        assert elapsed < 60  # a deadlocked drain would hang, not run slow
+
     @pytest.mark.asyncio
     async def test_write_read_round_trip_relative_path_stays_in_workspace(self, tmp_path):
         """sandbox-10: write/read round-trip; relative paths resolve under the workspace."""
