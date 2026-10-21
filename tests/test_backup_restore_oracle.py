@@ -202,6 +202,37 @@ def test_security_defaults_preserved_no_restrict_key() -> None:
         assert "--restrict-key" not in code, f"{path.name} must not set --restrict-key"
 
 
+def test_scratch_ready_means_the_target_database_answers() -> None:
+    """The drill must wait for ${PG_DB} itself, not just for a listening server.
+
+    The postgres image entrypoint runs a temporary bootstrap server that
+    accepts socket connections before its init step creates POSTGRES_DB.
+    Readiness gated on pg_isready alone let pg_restore race into that window
+    and die with `FATAL: database "maistro" does not exist` — observed live
+    in CI inside test_real_verify_restore_drill_passes_end_to_end after the
+    same test had passed in the same job. The loop must therefore require one
+    successful query against the target database before pg_restore runs.
+    """
+    verify = _read(VERIFY_SH)
+    # The DB-answering condition, not pg_isready alone, is what breaks the
+    # loop; and the post-loop guard falls into the verifier class when the
+    # target database never becomes ready.
+    loop_body = verify.split("for _ in $(seq 1 60); do", 1)[-1].split("done", 1)[0]
+    assert "pg_isready" in loop_body, "the scratch loop must still probe the server"
+    assert "psql" in loop_body and '-d "${PG_DB}"' in loop_body, (
+        "the scratch loop must require the target database to answer, "
+        "not just a listening server (entrypoint temp-server race)"
+    )
+    tail = verify.split("done", 1)[-1]
+    assert 'fail_verifier "scratch postgres did not become ready' in tail, (
+        "a never-ready scratch database must fail as a verifier failure"
+    )
+    # pg_restore must come after the database-level readiness guard.
+    assert tail.find('fail_verifier "scratch postgres did not become ready') < tail.find(
+        "pg_restore"
+    ), "pg_restore must run only after the target database answered"
+
+
 # ── Fail-before: the old scripts violate every pinned property ───────────────
 
 

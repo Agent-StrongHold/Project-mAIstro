@@ -326,30 +326,24 @@ main() {
     -e POSTGRES_DB="${PG_DB}" \
     "${PG_IMAGE}" >/dev/null
 
-  # Readiness must target what pg_restore actually needs: the FINAL server
-  # accepting queries on the TARGET database. The image's init entrypoint runs
-  # a *temporary* server on the unix socket first (created before the target
-  # database exists and shut down again before the real one starts), so a
-  # socket `pg_isready -U ...` can report ready inside that window and the
-  # restore then dies with `FATAL: database "maistro" does not exist` or
-  # `FATAL: the database system is shutting down` — both measured in CI
-  # (tests/test_restore_oracle_characterization.py). The temporary server
-  # starts with `listen_addresses=''`, so probing over TCP loopback never sees
-  # it; the target database only answers once init has actually created it.
-  scratch_ready() {
-    docker exec "${SCRATCH_NAME}" psql -X -h 127.0.0.1 -U "${PG_USER}" -d "${PG_DB}" \
-      -c 'SELECT 1' >/dev/null 2>&1
-  }
-
-  ready=0
+  # Readiness must mean the TARGET DATABASE answers, not merely that a server
+  # is listening. The image entrypoint starts a temporary bootstrap server that
+  # accepts socket connections BEFORE its init step creates ${PG_DB}, so
+  # pg_isready alone can pass inside that window and pg_restore then dies with
+  # `FATAL: database "${PG_DB}" does not exist` — observed live in CI
+  # (tests/test_restore_oracle_characterization.py, 2026-10-18). The loop
+  # therefore additionally requires one successful query against ${PG_DB}.
   for _ in $(seq 1 60); do
-    if scratch_ready; then
-      ready=1
+    if docker exec "${SCRATCH_NAME}" pg_isready -U "${PG_USER}" >/dev/null 2>&1 \
+      && docker exec "${SCRATCH_NAME}" psql -X -q -U "${PG_USER}" -d "${PG_DB}" \
+        -c 'SELECT 1;' >/dev/null 2>&1; then
       break
     fi
     sleep 1
   done
-  [[ "${ready}" == 1 ]] || fail_verifier "scratch postgres did not become ready"
+  docker exec "${SCRATCH_NAME}" psql -X -q -U "${PG_USER}" -d "${PG_DB}" \
+    -c 'SELECT 1;' >/dev/null 2>&1 \
+    || fail_verifier "scratch postgres did not become ready with database ${PG_DB}"
 
   # ── 3. Restore the custom-format archive ─────────────────────────────────────
   if ! docker exec -i "${SCRATCH_NAME}" pg_restore -U "${PG_USER}" -d "${PG_DB}" \
