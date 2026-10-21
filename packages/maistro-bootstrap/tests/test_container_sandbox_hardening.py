@@ -33,7 +33,9 @@ from maistro_bootstrap.builders.container_sandbox import (
 
 
 class _Recording:
-    """A `subprocess.run` stand-in that records argv and never touches Docker."""
+    """Stand-in for the two seams where container calls leave this module:
+    `subprocess.run` (provisioning: run/rm/seed tar) and `run_bounded` (the
+    #1197 bounded exec path — same argv contract, bounded result)."""
 
     def __init__(self) -> None:
         self.calls: list[list[str]] = []
@@ -49,11 +51,19 @@ class _Recording:
             stdout = b"SEED-ARCHIVE"  # binary pipe (no text=True)
         return subprocess.CompletedProcess(argv, 0, stdout=stdout, stderr="")
 
+    def run_bounded(self, argv: list[str], *, limit: int, timeout: float | None = None):
+        from maistro.tools.sandbox._capture import BoundedCapture, BoundedRun
+
+        self.calls.append(list(argv))
+        self.envs.append(None)
+        return BoundedRun(0, BoundedCapture(b"", False), BoundedCapture(b"", False))
+
 
 @pytest.fixture()
 def recorder(monkeypatch: pytest.MonkeyPatch) -> _Recording:
     rec = _Recording()
     monkeypatch.setattr(csbx_mod.subprocess, "run", rec)
+    monkeypatch.setattr(csbx_mod, "run_bounded", rec.run_bounded)
     return rec
 
 
