@@ -575,6 +575,43 @@ def test_package_lift_under_quarantined_publisher_reports_effective_state() -> N
     )
 
 
+def test_version_re_enable_reports_the_effective_governing_state() -> None:
+    """``re_enable_version`` audits the *effective* governing state — the
+    same authority admission and disposition use — not the version layer
+    alone. A version re-enabled while its package stays quarantined is
+    still suspended, so the audit row must not claim it is active."""
+    service = _service()
+    service.quarantine_package(
+        extension_id=EXT, publisher=PUBLISHER, actor=ADMIN, reason="bad package"
+    )
+    decision = service.re_enable_version(
+        extension_id=EXT, version=VERSION, publisher=PUBLISHER, actor=ADMIN, reason="reviewed"
+    )
+    assert decision.state_after is GovernanceState.QUARANTINED
+    assert decision.suspended
+    assert not _admit(service).allowed
+    (event,) = [
+        e for e in service.ledger.history(extension_id=EXT) if e.action == "version_re_enabled"
+    ]
+    assert event.state_after is GovernanceState.QUARANTINED
+
+
+def test_version_disable_under_a_quarantined_package_reports_the_effective_state() -> None:
+    """A version disabled while its package is quarantined is governed by
+    the quarantine (the broader scope wins), so the audited state is the
+    effective one rather than the version layer's ``disabled``."""
+    service = _service()
+    service.quarantine_package(
+        extension_id=EXT, publisher=PUBLISHER, actor=ADMIN, reason="bad package"
+    )
+    decision = service.disable_version(
+        extension_id=EXT, version=SIBLING, publisher=PUBLISHER, actor=ADMIN, reason="also bad"
+    )
+    assert decision.state_after is GovernanceState.QUARANTINED
+    assert decision.suspended
+    assert not _admit(service, version=SIBLING).allowed
+
+
 def test_history_is_append_only_and_narrowable() -> None:
     service = _service()
     service.record(

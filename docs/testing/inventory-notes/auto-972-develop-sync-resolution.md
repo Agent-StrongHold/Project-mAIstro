@@ -134,3 +134,75 @@ Post-merge gate state, unchanged from merge 3: `check-vulture-baseline.py
 packages/*/src --min-confidence 60 --exclude '*/third_party/*'` reports
 `1321 reviewed identities -> 1321 findings`, exit 0, and
 `check-suite-inventory.py` reports 21/21 suites matching, exit 0.
+
+## Merge 5: `origin/develop` `9cc5d1aca` (reach the job base)
+
+The job base for this round was `9cc5d1aca141` ("WIP: [M3][Conductor][UX] No
+styled skeleton screens; content pops in after a spinner (#2221)"), one commit
+past the `a4fb8a30e448` the branch had merged in merge 4. A `git fetch origin
+develop` confirmed `origin/develop` was exactly that commit. It touches only
+frontend/e2e/docs files (`packages/hive-conductor/frontend/**`,
+`packages/hive-conductor/tests/e2e/**`, one inventory note) and nothing issue
+#972 resolved, so the merge applied cleanly — no conflicts, no manual
+resolution — and the merge base is now `9cc5d1aca141`.
+
+### Ledger reconciliation (quality/vulture-baseline.json)
+
+None needed. The ledger was not touched by the merge (the incoming commit adds
+zero `quality/` rows), and the gate agrees with both parents:
+
+`uv run python scripts/check-vulture-baseline.py packages/*/src --min-confidence 60
+--exclude '*/third_party/*'` → `1321 reviewed identities -> 1321 findings`,
+`unclassified: 0`, exit 0, with `baseline: base 9cc5d1aca141` and
+`candidate: ee374873990d` — i.e. the candidate matches the recorded baseline
+exactly, so no row was lost or added by the merge.
+
+## Round repair: version-scoped actions audit the effective governing state
+
+Evidence (not a scanner finding): the M9-G4 engine's audit rows must record the
+state an identity *actually* has. Develop's EPIC commit established that
+invariant for `re_enable_package`, and the below-threshold `record()` path
+already reports the effective state through `_governing`. The two
+version-scoped actions still hardcoded their own layer:
+
+- `re_enable_version` reported `state_after=ACTIVE` while a package (or
+  publisher) quarantine still governed the identity — and `decision.suspended`
+  was therefore `False` for a still-suspended identity.
+- `disable_version` reported `state_after=DISABLED` while the broader quarantine
+  governed the identity.
+
+Admission was already refused in both cases (the broader scope wins in
+`_governing`), so only the recorded state was untruthful — the identical
+defect class develop fixed for the package path, one layer over. Both methods
+now derive `state_after` from the same `_governing` authority that admission
+and in-flight disposition use, so the ledger, the decision and the admission
+gate cannot disagree.
+
+Pinned by two new node IDs in
+`packages/maistro-core/tests/extensions/test_extension_quarantine.py`
+(`test_version_re_enable_reports_the_effective_governing_state`,
+`test_version_disable_under_a_quarantined_package_reports_the_effective_state`),
+both of which fail against the pre-fix code (see
+`auto-972-quarantine-effective-state.md`). That note carries the
+`packages/maistro-core/tests: +2` inventory delta; this note's delta stays `+0`
+(no test added or removed here).
+
+## Validation on the merged head (all green)
+
+- `uv run ruff check .` → All checks passed; `uv run ruff format --check .` →
+  3409 files already formatted.
+- `uv run pytest packages/maistro-core/tests/extensions -q` → 1285 passed,
+  5 skipped (includes the 38 #972 quarantine node IDs).
+- `uv run pytest packages/maistro-core/tests/extensions/test_extension_quarantine.py -q`
+  → 38 passed.
+- `uv run python scripts/check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` → exit 0
+  (1321 reviewed identities → 1321 findings).
+- `uv run python scripts/check-suite-inventory.py` → 21/21 suites match.
+- `uv run python scripts/check-shipped-surface-truth.py`,
+  `check-ratchet-provenance.py`, `check-promotion-surface.py`,
+  `check-radon-baseline.py`, `check-backlog-consistency.py`,
+  `check-execution-lifecycles.py`, `check-enumerations-provenance.py`,
+  `check-reachability.py`, `check-compliance.py`, `check-contract-markers.py`,
+  `check-doc-links.py` → exit 0 each.
+
