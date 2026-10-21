@@ -1,6 +1,3 @@
----
-inventory-delta: {}
----
 
 # Issue #1893 B2 — CI-repair validation at 8d4202b0
 
