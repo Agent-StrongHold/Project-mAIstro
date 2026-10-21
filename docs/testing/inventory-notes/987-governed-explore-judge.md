@@ -1,7 +1,7 @@
 ---
 inventory-delta:
   packages/maistro-core/tests: +17
-  packages/maistro-design/tests: +44
+  packages/maistro-design/tests: +47
   tests/: +13
 ---
 
@@ -11,7 +11,7 @@ The design package's explore and model-judge paths become governed Invocations
 on the canonical Run spine, and the tests prove the seam rather than the
 snapshot.
 
-`test_explore_governed.py` (+8) drives a width=2 explore wave through the
+`test_explore_governed.py` (+10) drives a width=2 explore wave through the
 canonical durable Graph walker against real InMemory Project/Run/NodeRun/Attempt
 stores and the canonical effect context, with only the gateway HTTP faked at
 the shared-client seam: two thesis NodeRuns on one Run, each accepting an
@@ -27,9 +27,15 @@ asserted: a slot declares `EFFECT_KEY` replay semantics, so it exposes a
 logical effect key, its Invocation carries that key as its effect scope (not
 the NodeRun that executed it), and re-entering the slot with the same logical
 work under a fresh Attempt/NodeRun replays the recorded Invocation instead of
-dispatching a second physical model call (#1194).
+dispatching a second physical model call (#1194). Two of the ten are the scope
+questions the wave's own authorizations raise: a Binding scoped to the
+coordinator node is proven *not* to leak into the wave's slots (the slot fails
+closed with `BindingScopeDenied` before the gateway is reached, publishing no
+thesis), and a Binding scoped to a node outside the wave is proven to fail the
+wave closed at the coordinator. Node-scoped authorization stays node-scoped,
+which is the rule every other canonical model node already follows.
 
-`test_model_judge_governed.py` (+10) proves one Invocation per (thesis x
+`test_model_judge_governed.py` (+11) proves one Invocation per (thesis x
 model_judge dimension), eval records naming Goal revision, Rubric revision,
 NodeRun/Attempt, judge identity and Invocation, records persisted as the judge
 NodeRun's Attempt evidence (no second eval lifecycle), deterministic dimensions
@@ -97,6 +103,17 @@ ratchet baseline. The same rules ship as `scripts/check-design-model-egress.py`
 (wired into quality.yml beside the model-egress gate), so a raw explore/judge
 chat completion fails CI even where the suite does not run.
 
+`test_governed_cancellation.py` (+1) is the contract bullet the wave needed and
+no test covered: cancellation/pause. A wave cancelled while its thesis
+Invocation is in flight leaves the canonical Run `CANCELLED` and the in-flight
+Invocation `UNKNOWN` — `maistro.capabilities.invocation` terminalizes a
+cancelled provider call as "provider invocation cancelled with unknown
+external outcome" rather than pretending the call vanished, and the Run
+publishes no thesis the call never returned. The assertion is on production
+behaviour, not on a fixture: the test drives the real graph walker and the
+real capability effect context, and it fails if the fence ever starts
+reporting a cancelled call as a clean success.
+
 Making the wave a production Graph node also moved the design kinds into the
 canonical production registration universe, which the core graph guards
 observe. `packages/maistro-core/tests/graph/nodes/test_idempotent_replay_conformance.py`
@@ -124,5 +141,9 @@ the production-kind sweeps gained when `design.explore` / `design.thesis` /
 `test_container_node_composition.py` (2 sweeps x 3 kinds = 6) and
 `test_node_composition.py` (3 sweeps x 3 kinds = 9). `develop` itself is
 consistent (16784 collected against 16784 expected), so there is no inherited
-drift to disclaim. The shared baseline is not edited: the delta lives in this
+drift to disclaim. The `packages/maistro-design/tests` count moves by +47 on
+this branch, and every one of the forty-seven is this change's: six new test
+files (ten explore-wave cases, eleven judge cases, twelve fail-closed cases,
+four canonical-spine cases, nine architecture-fitness cases and one
+cancellation case). The shared baseline is not edited: the delta lives in this
 note, which is where the ledger reads it from.
