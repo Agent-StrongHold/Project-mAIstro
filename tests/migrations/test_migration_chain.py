@@ -117,6 +117,9 @@ EXPECTED_TABLES = frozenset(
         # until migration 019 gave the Workspace a table of its own.
         "canonical_workspaces",
         "canonical_workspace_memberships",
+        # The live Persona beside that Workspace (#12, 064): one row per
+        # Workspace, removed by the foreign key when the owner row goes.
+        "canonical_personas",
         # NOTE: tables the runtime provisions at wire time (capability
         # approvals/bindings/invocation effects, canonical_workspace_lifecycle)
         # are deliberately absent: they are not chain-owned, and a clean

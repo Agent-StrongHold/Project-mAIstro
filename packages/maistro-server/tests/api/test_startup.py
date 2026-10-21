@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+import maistro.config.settings as settings_module
 from maistro.config.settings import Settings
 from maistro_server.main import _validate_startup
 
@@ -186,6 +187,11 @@ class TestRouterApiKeyValidation:
     def test_an_unset_router_api_key_refuses_to_start(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        # These two tests pin the *environment* check, so the documented YAML
+        # must not answer for the key: since #1824 the worker loads maistro.yaml
+        # into the process singleton during every lifespan boot, and an earlier
+        # boot's env overlay would otherwise shadow the delenv here.
+        monkeypatch.setattr(settings_module, "get_yaml_config", lambda: None)
         monkeypatch.delenv("ROUTER_API_KEY", raising=False)
         with pytest.raises(RuntimeError, match="ROUTER_API_KEY"):
             _validate_startup(Settings(api_keys=["ops:k"], require_auth=True))
@@ -196,6 +202,7 @@ class TestRouterApiKeyValidation:
         """The shape a .env file produces from `ROUTER_API_KEY= `. Accepting it
         would move the failure back into container wiring, which is the thing
         this check exists to prevent."""
+        monkeypatch.setattr(settings_module, "get_yaml_config", lambda: None)
         monkeypatch.setenv("ROUTER_API_KEY", "   ")
         with pytest.raises(RuntimeError, match="ROUTER_API_KEY"):
             _validate_startup(Settings(api_keys=["ops:k"], require_auth=True))

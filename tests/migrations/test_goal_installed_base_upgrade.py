@@ -66,11 +66,12 @@ PLANNER_FILE = "alembic/versions/057_run_store_planner_stability.py"
 #: merged identities' ancestry (062 parents it) intact.
 GOAL_REVISION = "063"
 
-#: The single linear head after HITL ``061``, audit ``062``, the Goal store,
-#: and #1095's legacy-principal ownership migration, which appends after the
-#: integrated Goal head under the next unused id.
+#: #1095's legacy-principal ownership migration appends after the Goal store
+#: as ``064``; the live-Workspace-Persona revision (#12) appends after it as
+#: ``065``.  The Goal revision above stays the installed-base identity this
+#: file protects; the head moves every time a reviewed revision lands after it.
 HEAD_REVISION = "064"
-
+CHAIN_HEAD = "065"
 GOAL_TABLES = ("canonical_goals", "canonical_goal_revisions", "canonical_goal_transitions")
 USER_MODEL_TABLES = ("user_model_facts", "user_model_statement_keys")
 
@@ -302,7 +303,7 @@ def _assert_planner_artifacts_present() -> None:
 
 def _assert_goal_upgrade_completed() -> None:
     """The assertions every installed-base fixture makes at the candidate head."""
-    assert _stamp() == HEAD_REVISION
+    assert _stamp() == CHAIN_HEAD
     tables = _tables()
     missing = set(GOAL_TABLES) - tables
     assert not missing, f"the Goal DDL did not apply: {missing}"
@@ -416,7 +417,7 @@ class TestTheMergedIdentities:
         assert revisions["061"].down_revision == "060"
         assert revisions[GOAL_REVISION].down_revision == "062"
         assert revisions[HEAD_REVISION].down_revision == GOAL_REVISION
-        assert script_directory.get_heads() == [HEAD_REVISION]
+        assert script_directory.get_heads() == [CHAIN_HEAD]
         # The filenames carry the merged identities too — a renamed file
         # and a moved id are the same silent reassignment in two clothes.
         assert (VERSIONS / "056_user_model_facts.py").is_file()
