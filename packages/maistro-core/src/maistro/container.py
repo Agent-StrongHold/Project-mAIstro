@@ -71,6 +71,7 @@ from maistro.memory.working_graph.wiring import (
     build_workspace_working_memory,
     working_memory_context_message,
 )
+from maistro.personas.wiring import PERSONA_PG_TABLES, wire_persona_store
 from maistro.projects.scope_store import ProjectScopeStore
 from maistro.quota.default_tracker import set_default_quota_tracker
 from maistro.quota.tracker import InMemoryQuotaTracker
@@ -167,6 +168,7 @@ if TYPE_CHECKING:
     from maistro.observability.tiers import PIIDetector
     from maistro.orchestrator.hierarchy import HarnessRegistry, HierarchicalOrchestrator
     from maistro.personas.golden import GoldenRecordStore
+    from maistro.personas.store import PersonaStore
     from maistro.protocols.embeddings import EmbeddingClient
     from maistro.protocols.memory import (
         ContextAssemblyPolicy,
@@ -258,6 +260,9 @@ class Container:
     #: backend since #132 while the thing its `workspace_id` names had none,
     #: so the only Workspaces that survived a restart were the Conductor's own.
     workspace_store: WorkspaceStore = None  # type: ignore[assignment]
+    #: The live Persona is a Workspace product context, stored beside the
+    #: Project tree rather than in a second product-specific ownership store.
+    persona_store: PersonaStore = None  # type: ignore[assignment]
     #: Append-only BacklogItem history (#101), on the Project store's backend.
     #: References canonical Goals/Runs; never an execution authority itself.
     backlog_history_store: BacklogHistoryStore = None  # type: ignore[assignment]
@@ -2411,9 +2416,15 @@ async def create_container(
         # The same `project_scope_store` object the spine just selected, not a
         # second resolution of the same question: a Workspace whose Root Project is
         # filed in another database is a Workspace whose Runs cannot be filed.
+        persona_store = await wire_persona_store(
+            db_pool,
+            project_store=project_scope_store,
+            pg_pool=pg_pool,
+        )
         workspace_store = await wire_workspace_store(
             db_pool,
             project_store=project_scope_store,
+            persona_store=persona_store,
             pg_pool=pg_pool,
         )
         backlog_history_store = await wire_backlog_history_store(
@@ -2704,6 +2715,7 @@ async def create_container(
             project_store=project_scope_store,
             project_scope_store=project_scope_store,
             workspace_store=workspace_store,
+            persona_store=persona_store,
             backlog_history_store=backlog_history_store,
             campaign_store=campaign_store,
             goal_store=goal_store,
@@ -3088,6 +3100,10 @@ _REQUIRED_PG_TABLES: Final = (
     # `postgresql://` deployment that skipped `alembic upgrade head` should hear
     # about it once, at startup, naming every table it lacks.
     *WORKSPACE_PG_TABLES,
+    # The live Persona is the Workspace's product context. It is listed here so
+    # an unmigrated PostgreSQL deployment fails before serving a Workspace that
+    # cannot reload its Persona after restart.
+    *PERSONA_PG_TABLES,
 )
 
 
