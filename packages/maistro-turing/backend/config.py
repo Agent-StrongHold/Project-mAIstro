@@ -1,19 +1,8 @@
 """Backend settings — CORS origins and the Turing-internal service identity.
 
-Turing has NO built-in service credential (#858). The service key registry is
-seeded only from an explicitly operator-provisioned key: TURING_SERVICE_KEY
-(env), or the first line of the secret file named by TURING_SERVICE_KEY_FILE
-(the container-secret pattern, so rotation/revocation never touches source or
-image bytes). Absent both, the backend refuses to start — Turing stays
-unavailable and authenticates nobody — rather than enabling a known shared
-value.
-
-The identity's authority is expressed in the canonical maistro.auth model: the
-concrete Scope values of ``ScopeCategory.TURING``, expanded by the canonical
-``expand_scopes()``. No free-form wildcard string is trusted by convention, and
-at registration the expanded set must equal the middleware's fixed
-TURING_INTERNAL_SCOPES route allowlist — configuration drift (or a wider
-operator-supplied category) fails startup instead of widening the identity.
+The service key registry is seeded from TURING_SERVICE_KEY (env) so Turing's own
+reactor/producers can authenticate. The backend refuses to start unless the key
+is explicitly configured; it must never silently accept a shared public default.
 """
 
 from __future__ import annotations
@@ -25,10 +14,6 @@ from functools import lru_cache
 from pathlib import Path
 
 from maistro.auth import Scope, ScopeCategory, ServiceKeyRegistry, expand_scopes
-
-from .middleware.auth import TURING_INTERNAL_SCOPES
-
-logger = logging.getLogger("turing.config")
 
 TURING_SERVICE_NAME = "turing-internal"
 
@@ -62,37 +47,10 @@ def _read_key_file(path: Path) -> str:
 
 
 def turing_service_key() -> str:
-    """The explicitly configured service key, or a startup failure.
-
-    Sources, in order: TURING_SERVICE_KEY, then the file named by
-    TURING_SERVICE_KEY_FILE. There is no default value and no fallback
-    credential: absence raises, leaving Turing unavailable rather than
-    enabled. Rotation/revocation is an env or secret-file change plus a
-    restart — never a source or image change.
-    """
-    key = os.environ.get("TURING_SERVICE_KEY", "").strip()
+    key = os.environ.get("TURING_SERVICE_KEY")
     if not key:
-        key_file = os.environ.get("TURING_SERVICE_KEY_FILE", "").strip()
-        if key_file:
-            key = _read_key_file(Path(key_file))
-    if not key:
-        raise RuntimeError(
-            "TURING_SERVICE_KEY must be set (directly, or via TURING_SERVICE_KEY_FILE) "
-            "before starting the Turing backend: without an explicitly governed "
-            "service identity Turing stays unavailable and authenticates nobody"
-        )
+        raise RuntimeError("TURING_SERVICE_KEY must be set before starting the Turing backend")
     return key
-
-
-def canonical_turing_scopes() -> frozenset[Scope]:
-    """The identity's authority, in the canonical permission model.
-
-    The canonical Turing category, expanded by the canonical expander into
-    concrete Scope values — the same principal/permission model every other
-    service identity uses. The category string is never trusted by itself:
-    build_registry() pins the result to the fixed route allowlist below.
-    """
-    return expand_scopes([f"{ScopeCategory.TURING.value}:*"])
 
 
 @lru_cache(maxsize=1)

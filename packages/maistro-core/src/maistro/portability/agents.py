@@ -155,6 +155,10 @@ class AgentImporterRegistry:
     def formats(self) -> list[str]:
         return [imp.format for imp in self._importers]
 
+    def detect(self, source: Any) -> bool:
+        """Whether any registered importer recognizes ``source``."""
+        return any(imp.detect(source) for imp in self._importers)
+
     def import_agent(self, source: Any) -> AgentCard | None:
         for importer in self._importers:
             if importer.detect(source):

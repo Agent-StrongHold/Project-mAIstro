@@ -512,29 +512,15 @@ jobs:
       # to `develop` the resolver's local fallback degenerates to HEAD and the
       # #534 self-reference refusal fires, reding this job for "cannot
       # compare" rather than any coverage regression (#1235). Name the event's
-      # own base, exactly as vulture-ratchet.yml does, so the trusted baseline is
-      # the revision this push replaces. tests/conftest.py captures this value
-      # and keeps it away from every test except the gate self-checks that opt in.
-      #
-      # `before` is right only for a protected-branch push, which really does
-      # replace that revision. A topic branch's `before` is its own previous
-      # tip, orphaned by any rebase and therefore unfetchable even at
-      # `fetch-depth: 0`, so the ratchet refuses with "base revision could not
-      # be resolved" and this job reds on a candidate whose pull-request run is
-      # green on identical content. Topic pushes use the integration base their
-      # PR run uses.
+      # own base, exactly as vulture-ratchet.yml does. tests/conftest.py
+      # captures this value and keeps it away from every test except the gate
+      # self-checks that opt in.
       RATCHET_BASE_REV: >-
         ${{ github.event_name == 'pull_request'
             && format('origin/{0}', github.base_ref)
             || github.event_name == 'merge_group'
             && github.event.merge_group.base_sha
-            || github.ref == 'refs/heads/develop'
-            && github.event.before
-            || github.ref == 'refs/heads/integration'
-            && github.event.before
-            || github.ref == 'refs/heads/main'
-            && github.event.before
-            || 'origin/develop' }}
+            || github.event.before }}
     steps:
       - uses: actions/checkout@v7
         with:

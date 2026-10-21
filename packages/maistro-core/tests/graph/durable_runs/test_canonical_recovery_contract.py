@@ -225,9 +225,7 @@ async def test_retry_adopts_node_run_created_before_checkpoint_failure() -> None
     """Canonical NodeRun identity survives a failed aggregate checkpoint exactly once."""
     run_store, workspace_id, project_id = await _spine()
     graph = _graph(workspace_id, project_id)
-    admitted = await run_store.create_run(
-        graph, initial_status=RunStatus.QUEUED, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
-    )
+    admitted = await run_store.create_run(graph, initial_status=RunStatus.QUEUED)
 
     class FailFrontierCheckpoint(InMemoryDurableRunStore):
         fail_frontier = True

@@ -342,7 +342,6 @@ def graph_from_legacy_dag(
 async def resolve_execution_scope(
     dag_data: Mapping[str, Any],
     *,
-    scope: DagExecutionScope | None = None,
     workspace_id: str | None = None,
     project_id: str | None = None,
 ) -> tuple[str, str]:
@@ -355,9 +354,8 @@ async def resolve_execution_scope(
     (#1174). This is the resolver `execute_dag` itself uses -- a second call,
     never a second mapping.
     """
-    resolved_workspace, resolved_project = await _scope(
+    resolved_workspace, resolved_project, _ = await _scope(
         dag_data,
-        scope=scope,
         workspace_id=workspace_id,
         project_id=project_id,
     )

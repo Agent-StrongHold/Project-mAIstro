@@ -287,9 +287,6 @@ class TestSubscribersAreNotHistory:
             # The canonical scope the run was admitted into (#1174).
             "workspace_id",
             "project_id",
-            # The run's total event counter, the resume cursor stream consumers
-            # detect gaps against (#1183).
-            "event_seq",
             "events",
         }
 

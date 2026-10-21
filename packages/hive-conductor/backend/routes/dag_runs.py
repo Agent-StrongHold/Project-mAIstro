@@ -16,12 +16,6 @@ Workspace boundary — the same authority the workspace/agents routes use —
 before any metadata, event, existence signal, or stream is served. A run
 outside that boundary is indistinguishable from a run that does not exist.
 Authentication happens in AuthMiddleware; it is not authorization.
-
-The routes hold no import of the projection storage at all (#65, the
-`Conductor canonical inspection plane` parity dependency): the list, the
-detail, the cancel control, the retention bounds, and the SSE subscription
-all go through the inspection seam, so there is exactly one authorization
-door and no second path a future handler could take around it.
 """
 
 from __future__ import annotations
@@ -32,15 +26,8 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
-from services.dag_run_inspection import (
-    can_inspect_run,
-    close_event_subscription,
-    event_subscription,
-    list_visible_runs,
-    retention_bounds,
-    visible_run_detail,
-)
-from services.request_principal import require_actor_id
+from services.dag_run_inspection import can_inspect_run, list_visible_runs, visible_run_detail
+from services.dag_run_store import get_dag_run_store
 
 router = APIRouter(tags=["dag-runs"])
 
@@ -52,7 +39,11 @@ def _user_id(request: Request) -> str:
     name its principal must fail closed rather than guess, because every
     response below is scoped to that principal's Workspace universe (#1174).
     """
-    return require_actor_id(request)
+    user = getattr(request.state, "user", None) or {}
+    uid = str(user.get("id") or user.get("username") or "")
+    if not uid:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    return uid
 
 
 @router.get("")
@@ -76,6 +67,12 @@ def retention() -> dict[str, Any]:
     Declared before `/{run_id}`: FastAPI matches in definition order, so the
     parameterised route would otherwise swallow this path and answer
     "run not found" for it.
+
+    Deployment-level constants, not run data: no principal is read and no
+    per-run scoping applies, exactly as before (#1174 scoped the run-bearing
+    routes, not this description of the store's bounds).
+    """
+    from services.dag_run_store import MAX_EVENTS_PER_RUN, MAX_RUNS
 
     Deployment-level constants, not run data: no principal is read and no
     per-run scoping applies, exactly as before (#1174 scoped the run-bearing
@@ -229,11 +226,35 @@ async def stream_run_events(run_id: str, request: Request) -> StreamingResponse:
     uid = _user_id(request)
     # Scope authorization happens HERE, before the subscription queue exists
     # and before anything is streamed or replayed into it (#1174). An
-    # out-of-scope id gets the same 404 a missing run gets. The generator
-    # re-checks when it actually subscribes, so the queue can outlive neither
-    # the admission decision nor a membership revocation in between.
+    # out-of-scope id gets the same 404 a missing run gets.
     if not await can_inspect_run(uid, run_id):
         raise HTTPException(status_code=404, detail="run not found")
+
+    store = get_dag_run_store()
+    q = store.subscribe(run_id)
+
+    async def event_gen():
+        # Helpful preamble + keepalive comment so corp proxies don't kill idle SSE.
+        yield ": connected\n\n"
+        try:
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    ev = await asyncio.wait_for(q.get(), timeout=15.0)
+                except TimeoutError:
+                    yield ": keepalive\n\n"  # SSE comment line; ignored by clients
+                    continue
+                payload = {
+                    "event_type": ev.event_type,
+                    "role": ev.role,
+                    "capability": ev.capability,
+                    "payload": ev.payload,
+                    "timestamp": ev.timestamp,
+                }
+                yield f"event: {ev.event_type}\ndata: {json.dumps(payload)}\n\n"
+        finally:
+            store.unsubscribe(run_id, q)
 
     return StreamingResponse(
         _event_generator(uid=uid, run_id=run_id, request=request),

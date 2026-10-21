@@ -27,7 +27,6 @@ from maistro.runs.model import (
     Run,
     RunStatus,
 )
-from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 LegacyResolver = Callable[[str, dict[str, Any]], BaseNode[Any, Any]]
 

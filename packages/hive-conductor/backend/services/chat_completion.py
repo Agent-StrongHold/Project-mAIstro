@@ -1700,28 +1700,21 @@ async def _tool_run_workflow(
     # whether the graph itself finished, so only that decides the status.
     executed = False
     try:
-        from services.dag_execution_scope import authorize_hive_dag_scope
+        from services.canonical_dag_runner import resolve_execution_scope
         from services.dag_run_store import get_dag_run_store
         from services.graph_runner import execute_dag
 
-        scope = await authorize_hive_dag_scope(workspace_id=workspace_id, user_id=user_id)
-        project_id = scope.project_id
+        # The projection row opens before execution, so it must already carry
+        # the scope the execution will resolve -- resolved here by the same
+        # resolver `execute_dag` uses, never a second mapping (#1174).
+        workspace_id, project_id = await resolve_execution_scope(dag_data)
         store = get_dag_run_store()
         await store.start_run(
             run_id=exec_id,
             workspace_id=workspace_id,
             project_id=project_id,
         )
-
-        async def _record_admission(canonical_run_id: str) -> None:
-            # Persist the projection -> canonical Run correlation at canonical
-            # admission, not after execution settles (#1332). The canonical
-            # executor awaits this before any physical node work, so a live
-            # Recent Runs entry cancels through the exact canonical Run while
-            # the DAG is still running instead of 404-ing the projection id.
-            await store.record_canonical_run(exec_id, canonical_run_id=canonical_run_id)
-
-        result = await execute_dag(dag_data, scope=scope, on_admitted=_record_admission)
+        result = await execute_dag(dag_data, user_id=user_id)
         executed = True
 
         # Store events

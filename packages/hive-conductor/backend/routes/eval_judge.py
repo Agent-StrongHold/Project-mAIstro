@@ -39,7 +39,11 @@ router = APIRouter(tags=["eval-judge"])
 
 def _user_id(request: Request) -> str:
     """Principal for this request — set by AuthMiddleware (see routes/feedback.py)."""
-    return require_actor_id(request)
+    user = getattr(request.state, "user", None) or {}
+    uid = str(user.get("id") or user.get("username") or "")
+    if not uid:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    return uid
 
 
 @router.get("/{run_id}")

@@ -163,6 +163,7 @@ class PipelineRun:
     failed_stage_error: str = ""
     revisions: dict[str, int] = field(default_factory=dict)
     gate_exhausted: list[str] = field(default_factory=list)
+    canonical_run_id: str | None = None
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     # Identity of the canonical Run that owns lifecycle evidence for this
     # compatibility receipt. Builders domain state remains local to this run.
@@ -460,7 +461,13 @@ class RuntimeDispatcher:
 
 
 class BuilderPipeline:
-    """Executes the full issue-to-merge pipeline on the canonical run spine.
+    """Executes the five-stage pipeline through canonical Run evidence.
+
+    The old ``GraphPipelineExecutor`` remains available as a parity oracle for
+    focused domain tests, but this public product adapter always admits work
+    through ``CanonicalGraphPipelineExecutor``. Callers with a deployed spine
+    should inject its stores; the default exists for library tests and uses the
+    canonical in-memory stores rather than a Builders-private lifecycle.
 
     Usage:
         pipeline = BuilderPipeline(dispatcher)
@@ -480,17 +487,20 @@ class BuilderPipeline:
         spec_verifier: Any | None = None,
         code_index: Any | None = None,
         nodes: list[PipelineNode] | None = None,
-        run_store: RunStore | None = None,
-        durable_store: DurableRunStore | None = None,
-        workspace_id: str | None = None,
+        run_store: Any | None = None,
+        durable_store: Any | None = None,
+        workspace_id: str = "default",
         project_id: str | None = None,
-        actor_principal_id: str | None = None,
     ) -> None:
         self._dispatcher = dispatcher
         self._spec_store = spec_store
         self._spec_verifier = spec_verifier
         self._code_index = code_index
         self._nodes = list(nodes) if nodes is not None else list(BUILDER_PIPELINE)
+        self._run_store = run_store
+        self._durable_store = durable_store
+        self._workspace_id = workspace_id
+        self._project_id = project_id
         self._runs: dict[str, PipelineRun] = {}
         self._canonical_executor = CanonicalGraphPipelineExecutor(
             dispatcher,
@@ -499,6 +509,39 @@ class BuilderPipeline:
             workspace_id=workspace_id,
             project_id=project_id,
             actor_principal_id=actor_principal_id,
+        )
+
+    async def _canonical_executor(self) -> CanonicalGraphPipelineExecutor:
+        if (self._run_store is None) != (self._durable_store is None):
+            raise ValueError("run_store and durable_store must be injected together")
+        if self._run_store is None and self._durable_store is None:
+            from maistro.graph.durable_runs import (
+                CanonicalDurableRunStore,
+                InMemoryGraphContinuationStore,
+            )
+            from maistro.projects.scope_store import InMemoryProjectScopeStore
+            from maistro.runs.store import InMemoryRunStore
+
+            projects = InMemoryProjectScopeStore()
+            await projects.create_root(self._workspace_id)
+            project = await projects.root_for_workspace(self._workspace_id)
+            self._run_store = InMemoryRunStore(project_store=projects)
+            self._durable_store = CanonicalDurableRunStore(
+                self._run_store,
+                InMemoryGraphContinuationStore(),
+            )
+            self._project_id = project.project_id
+        if self._project_id is None:
+            raise ValueError("project_id is required when injecting a canonical Run store")
+        run_store = self._run_store
+        durable_store = self._durable_store
+        assert run_store is not None and durable_store is not None
+        return CanonicalGraphPipelineExecutor(
+            self._dispatcher,
+            run_store=run_store,
+            durable_store=durable_store,
+            workspace_id=self._workspace_id,
+            project_id=self._project_id,
         )
 
     async def execute(
@@ -565,13 +608,10 @@ class BuilderPipeline:
         # Wrap each node's on_complete with spec verification if configured
         nodes = self._wrap_nodes_with_verification(self._nodes)
         graph = PipelineGraph(nodes)
-        errors = graph.validate()
-        if errors:
-            # Preserve the legacy invalid-graph receipt without admitting a
-            # canonical Run for work that must never start.
-            run.status = f"invalid graph: {'; '.join(errors)}"
-            return run
-        await self._canonical_executor.execute(graph, run)
+        executor = await self._canonical_executor()
+        await executor.execute(graph, run)
+
+        self._reconcile_stages(run)
         return run
 
     def _wrap_nodes_with_verification(self, nodes: list[PipelineNode]) -> list[PipelineNode]:

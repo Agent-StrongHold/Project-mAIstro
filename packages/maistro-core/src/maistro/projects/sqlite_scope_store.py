@@ -102,7 +102,6 @@ class SqliteProjectScopeStore:
 
         self._conn = conn
         self._owns_runs: Callable[[str], Awaitable[bool]] | None = None
-        self._workspace_store: WorkspaceStore | None = None
         # One connection, so this orders same-process writers; `BEGIN
         # IMMEDIATE` is what protects a second process sharing this file.
         # Every writer takes it through `_serialized_write` (#1147, #1148,
@@ -113,23 +112,10 @@ class SqliteProjectScopeStore:
         # transaction" the moment their awaits interleaved.
         self._write_lock = asyncio.Lock()
 
-    def bind_workspace_store(self, workspace_store: WorkspaceStore) -> None:
-        self._workspace_store = workspace_store
-
     def set_run_owner(self, owns_runs: Callable[[str], Awaitable[bool]]) -> None:
         """Register the predicate `delete()` consults for Run ownership."""
 
         self._owns_runs = owns_runs
-
-    async def _require_project_view(self, project: Project, principal_id: str) -> None:
-        from maistro.workspaces.store_boundary import is_blank_principal, require_project_view
-
-        workspace_store = self._workspace_store
-        if workspace_store is None:
-            raise ProjectScopeDenied("Project not found")
-        if is_blank_principal(principal_id):
-            raise ProjectScopeDenied("Project not found")
-        await require_project_view(project, workspace_store, principal_id)
 
     @asynccontextmanager
     async def _serialized_write(self) -> AsyncIterator[None]:
@@ -151,26 +137,12 @@ class SqliteProjectScopeStore:
             else:
                 await self._conn.commit()
 
-    @asynccontextmanager
-    async def transaction(self) -> AsyncIterator[aiosqlite.Connection]:
-        """`_serialized_write`, with the connection it guards yielded.
-
-        The handle `TransactionalProjectScopeStore` names. A Workspace store
-        on this connection writes its rows inside this block and passes the
-        connection to `create_root_in` / `purge_workspace_in`; the lock is
-        this store's because the connection is, and there must be exactly one
-        (#1121).
-        """
-        async with self._serialized_write():
-            yield self._conn
-
     async def ensure_schema(self) -> None:
         """Create canonical Project tables and integrity indexes."""
 
-        await self._conn.execute("PRAGMA foreign_keys = ON")
-        async with serialized_schema_upgrade(self._conn):
-            await self._migrate_legacy_membership_primary_key()
-            await execute_schema_script(self._conn, _SCHEMA)
+        await self._migrate_legacy_membership_primary_key()
+        await self._conn.executescript(_SCHEMA)
+        await self._conn.commit()
 
     async def _migrate_legacy_membership_primary_key(self) -> None:
         """Upgrade a pre-#1148 `canonical_project_memberships` table in place.
@@ -194,7 +166,7 @@ class SqliteProjectScopeStore:
             "ALTER TABLE canonical_project_memberships "
             "RENAME TO canonical_project_memberships_legacy_pk"
         )
-        await execute_schema_script(self._conn, _SCHEMA)
+        await self._conn.executescript(_SCHEMA)
         await self._conn.execute(
             """INSERT INTO canonical_project_memberships
                    (project_id, principal_id, workspace_id, membership_id, payload)
@@ -211,6 +183,7 @@ class SqliteProjectScopeStore:
                 )"""
         )
         await self._conn.execute("DROP TABLE canonical_project_memberships_legacy_pk")
+        await self._conn.commit()
 
     async def purge_workspace(self, workspace_id: str) -> None:
         """Tear down every Project row this Workspace owns, in a transaction of its own."""
@@ -232,32 +205,33 @@ class SqliteProjectScopeStore:
         fail it, and a loop whose termination depends on an invariant enforced
         somewhere else should say so out loud when the invariant breaks.
         """
-        await conn.execute(
-            "DELETE FROM canonical_project_resources WHERE workspace_id = ?",
-            (workspace_id,),
-        )
-        await conn.execute(
-            "DELETE FROM canonical_project_memberships WHERE workspace_id = ?",
-            (workspace_id,),
-        )
-        for _ in range(_MAX_PURGE_PASSES):
-            cursor = await conn.execute(
-                """DELETE FROM canonical_projects
-                    WHERE workspace_id = ?
-                      AND project_id NOT IN (
-                          SELECT parent_project_id
-                            FROM canonical_projects
-                           WHERE workspace_id = ?
-                             AND parent_project_id IS NOT NULL)""",
-                (workspace_id, workspace_id),
+        async with self._serialized_write():
+            await self._conn.execute(
+                "DELETE FROM canonical_project_resources WHERE workspace_id = ?",
+                (workspace_id,),
             )
-            if cursor.rowcount == 0:
-                return
-        msg = (
-            f"Project tree for workspace {workspace_id} did not drain in "
-            f"{_MAX_PURGE_PASSES} passes; it is deeper than that or cyclic"
-        )
-        raise ProjectIntegrityError(msg)
+            await self._conn.execute(
+                "DELETE FROM canonical_project_memberships WHERE workspace_id = ?",
+                (workspace_id,),
+            )
+            for _ in range(_MAX_PURGE_PASSES):
+                cursor = await self._conn.execute(
+                    """DELETE FROM canonical_projects
+                        WHERE workspace_id = ?
+                          AND project_id NOT IN (
+                              SELECT parent_project_id
+                                FROM canonical_projects
+                               WHERE workspace_id = ?
+                                 AND parent_project_id IS NOT NULL)""",
+                    (workspace_id, workspace_id),
+                )
+                if cursor.rowcount == 0:
+                    return
+            msg = (
+                f"Project tree for workspace {workspace_id} did not drain in "
+                f"{_MAX_PURGE_PASSES} passes; it is deeper than that or cyclic"
+            )
+            raise ProjectIntegrityError(msg)
 
     async def create_root(self, workspace_id: str) -> Project:
         """Create or return the Workspace's durable Root Project, in a transaction of its own."""
@@ -281,12 +255,13 @@ class SqliteProjectScopeStore:
             parent_project_id=None,
             is_root=True,
         )
-        await conn.execute(
-            """INSERT OR IGNORE INTO canonical_projects
-               (project_id, workspace_id, parent_project_id, is_root, payload)
-               VALUES (?, ?, NULL, 1, ?)""",
-            (root.project_id, root.workspace_id, root.model_dump_json()),
-        )
+        async with self._serialized_write():
+            await self._conn.execute(
+                """INSERT OR IGNORE INTO canonical_projects
+                   (project_id, workspace_id, parent_project_id, is_root, payload)
+                   VALUES (?, ?, NULL, 1, ?)""",
+                (root.project_id, root.workspace_id, root.model_dump_json()),
+            )
         return await self.root_for_workspace(workspace_id)
 
     async def root_for_workspace(self, workspace_id: str) -> Project:
@@ -502,56 +477,6 @@ class SqliteProjectScopeStore:
                     "updated_at": datetime.now(UTC),
                 }
             )
-            await self._conn.execute(
-                """INSERT INTO canonical_project_memberships
-                   (project_id, principal_id, workspace_id, membership_id, payload)
-                   VALUES (?, ?, ?, ?, ?)
-                   ON CONFLICT(project_id, principal_id) DO UPDATE SET
-                     workspace_id = excluded.workspace_id,
-                     membership_id = excluded.membership_id,
-                     payload = excluded.payload""",
-                (
-                    updated.project_id,
-                    updated.principal_id,
-                    updated.workspace_id,
-                    updated.membership_id,
-                    updated.model_dump_json(),
-                ),
-            )
-        return updated
-
-    async def merge_membership(self, membership: ProjectMembership) -> ProjectMembership:
-        """Merge a delegated re-grant into the canonical row atomically.
-
-        Locked the same way `set_membership` is: the read that decides what
-        to preserve and the write that stores it share one `_serialized_write`
-        critical section, so an owner's `remove_membership` either commits
-        entirely before it (leaving no row to preserve -- no resurrection of
-        revoked grants) or is ordered after it (#1148).
-        """
-        async with self._serialized_write():
-            project = await self._require(membership.project_id)
-            if project.workspace_id != membership.workspace_id:
-                raise ProjectIntegrityError("ProjectMembership Workspace does not match Project")
-            existing = await self._membership_or_none(
-                membership.project_id, membership.principal_id
-            )
-            if existing is None:
-                updated = membership.model_copy(update={"updated_at": datetime.now(UTC)})
-            else:
-                updated = membership.model_copy(
-                    update={
-                        "membership_id": existing.membership_id,
-                        "created_at": existing.created_at,
-                        "role": existing.role,
-                        "grants": existing.grants | membership.grants,
-                        "denies": existing.denies,
-                        "delegable_grants": (
-                            existing.delegable_grants | membership.delegable_grants
-                        ),
-                        "updated_at": datetime.now(UTC),
-                    }
-                )
             await self._conn.execute(
                 """INSERT INTO canonical_project_memberships
                    (project_id, principal_id, workspace_id, membership_id, payload)

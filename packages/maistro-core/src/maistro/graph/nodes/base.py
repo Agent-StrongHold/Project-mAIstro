@@ -14,13 +14,10 @@ human.ask_question, ...) live in sibling modules and self-register via
 from __future__ import annotations
 
 import contextlib
-import hashlib
-import json
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
-from enum import StrEnum
-from typing import Any, ClassVar, Generic, Literal, NoReturn, Protocol, TypeVar, runtime_checkable
+from typing import Any, ClassVar, Generic, Literal, Protocol, TypeVar, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, SerializeAsAny
 
@@ -482,18 +479,6 @@ def pause_until(
 def now_utc() -> datetime:
     """Single source of truth for "now" so tests can monkeypatch."""
     return datetime.now(UTC)
-
-
-def replay_effect_key(ctx: NodeContext, operation: str, identity: Any = None) -> str:
-    """Derive one logical effect key across physical Attempt retries.
-
-    A retry gets a new Attempt (and may get a new NodeRun visit), so neither is
-    sufficient as the effect identity. Run + graph node is the logical scope;
-    the input digest distinguishes explicit new work at the same node.
-    """
-    payload = json.dumps(identity, sort_keys=True, separators=(",", ":"), default=str)
-    digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()[:24]
-    return f"{operation}:{ctx.run_id}:{ctx.node_id}:{digest}"
 
 
 def preserved_hitl_deadline(resumed: dict[str, Any] | None, *, timeout_seconds: int) -> datetime:

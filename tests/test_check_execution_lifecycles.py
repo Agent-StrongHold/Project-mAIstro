@@ -365,11 +365,7 @@ def test_a_missing_rationale_fails(gate) -> None:
     assert "pkg.jobs::JobStatus: needs a rationale" in failures
 
 
-@pytest.mark.timeout(180)
 def test_the_shipped_ledger_matches_the_shipped_code(
     gate, real_repository_ratchet_base: None
 ) -> None:
-    # Same whole-repository scan through gate.main(); measured 31.5s bare
-    # locally, past the 30s suite default the moment coverage traces the
-    # script. Same stated-margin rationale as the discovery test above.
     assert gate.main() == 0

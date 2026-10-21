@@ -94,6 +94,14 @@ class SkillImporterRegistry:
     def formats(self) -> list[str]:
         return [imp.format for imp in self._importers]
 
+    def detect(self, source: Any) -> bool:
+        """Whether any registered importer recognizes ``source``.
+
+        Distinguishable from an empty import: an MCP manifest whose every tool
+        name sanitizes away is recognized and legitimately yields ``[]``.
+        """
+        return any(imp.detect(source) for imp in self._importers)
+
     def import_skills(self, source: Any) -> list[SkillDefinition]:
         for importer in self._importers:
             if importer.detect(source):

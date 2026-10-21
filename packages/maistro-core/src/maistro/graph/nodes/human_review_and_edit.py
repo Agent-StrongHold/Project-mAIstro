@@ -18,9 +18,8 @@ from .base import (
     PAUSE_AWAITING_HUMAN_REVIEW,
     BaseNode,
     NodeContext,
-    ReplaySemantics,
-    hitl_resume_at,
     pause_until,
+    preserved_hitl_deadline,
 )
 
 
@@ -87,7 +86,7 @@ class HumanReviewAndEditNode(BaseNode[ReviewAndEditIn, ReviewAndEditOut]):
                     timed_out=bool(resumed.get("timed_out", False)),
                 )
 
-        resume_at = hitl_resume_at(ctx, inputs.timeout_seconds, resumed=resumed)
+        resume_at = preserved_hitl_deadline(resumed, timeout_seconds=inputs.timeout_seconds)
         pause_until(
             PAUSE_AWAITING_HUMAN_REVIEW,
             resume_at=resume_at,
