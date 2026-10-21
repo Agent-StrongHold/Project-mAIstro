@@ -326,14 +326,24 @@ main() {
     -e POSTGRES_DB="${PG_DB}" \
     "${PG_IMAGE}" >/dev/null
 
+  # Readiness must mean the TARGET DATABASE answers, not merely that a server
+  # is listening. The image entrypoint starts a temporary bootstrap server that
+  # accepts socket connections BEFORE its init step creates ${PG_DB}, so
+  # pg_isready alone can pass inside that window and pg_restore then dies with
+  # `FATAL: database "${PG_DB}" does not exist` — observed live in CI
+  # (tests/test_restore_oracle_characterization.py, 2026-10-18). The loop
+  # therefore additionally requires one successful query against ${PG_DB}.
   for _ in $(seq 1 60); do
-    if docker exec "${SCRATCH_NAME}" pg_isready -U "${PG_USER}" >/dev/null 2>&1; then
+    if docker exec "${SCRATCH_NAME}" pg_isready -U "${PG_USER}" >/dev/null 2>&1 \
+      && docker exec "${SCRATCH_NAME}" psql -X -q -U "${PG_USER}" -d "${PG_DB}" \
+        -c 'SELECT 1;' >/dev/null 2>&1; then
       break
     fi
     sleep 1
   done
-  docker exec "${SCRATCH_NAME}" pg_isready -U "${PG_USER}" >/dev/null 2>&1 \
-    || fail_verifier "scratch postgres did not become ready"
+  docker exec "${SCRATCH_NAME}" psql -X -q -U "${PG_USER}" -d "${PG_DB}" \
+    -c 'SELECT 1;' >/dev/null 2>&1 \
+    || fail_verifier "scratch postgres did not become ready with database ${PG_DB}"
 
   # ── 3. Restore the custom-format archive ─────────────────────────────────────
   if ! docker exec -i "${SCRATCH_NAME}" pg_restore -U "${PG_USER}" -d "${PG_DB}" \
