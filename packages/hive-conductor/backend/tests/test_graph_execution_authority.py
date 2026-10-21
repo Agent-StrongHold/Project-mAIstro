@@ -82,6 +82,9 @@ async def test_admitted_graph_recovers_after_sqlite_reconnect(monkeypatch, tmp_p
     from services.registered_dag_recovery import recover_stranded_registered_dag_runs
 
     from maistro.container import build_node_resolver
+    from maistro.events.bus import EventBus
+    from maistro.events.envelope import InMemoryEventStore
+    from maistro.events.publisher import CanonicalEventPublisher
     from maistro.graph.durable_runs import CanonicalDurableRunStore, SqliteGraphContinuationStore
     from maistro.projects.sqlite_scope_store import SqliteProjectScopeStore
     from maistro.runs.model import RunStatus
@@ -133,6 +136,12 @@ async def test_admitted_graph_recovers_after_sqlite_reconnect(monkeypatch, tmp_p
             graph_run_store=CanonicalDurableRunStore(runs, continuations),
             projects=projects,
             event_bus=None,
+            # Recovery reports crash dispositions through the canonical
+            # EventStore (#16/#1133); a container driving legacy recovery must
+            # wire the publisher exactly as create_container does.
+            canonical_event_publisher=CanonicalEventPublisher(
+                InMemoryEventStore(), legacy_bus=EventBus()
+            ),
             sentinel=sentinel,
         )
 
