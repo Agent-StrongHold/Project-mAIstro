@@ -1,0 +1,245 @@
+---
+inventory-delta:
+  packages/maistro-core/tests: +0
+---
+
+# #954 develop-sync round — lifecycle hardening carried across the #952 merge
+
+This round resolved the develop sync conflict on `auto-954`: upstream's #952
+registry persistence (PR #1988: `InstallRecord`, `ExtensionInstallStore`,
+`SqliteExtensionInstallStore`, `verify`, CLI read surface) landed in
+`maistro.extensions` alongside the B2/B3 lifecycle implementation
+(`ExtensionInstallRecord`, `ExtensionStore`, the `service` state machine). The
+two halves are name-disjoint except one deliberate rename: the lifecycle's
+operator-asserted evidence is now `OperatorTrustEvidence`, so the durable #952
+`TrustEvidence` keeps the name develop already shipped. Suite count impact of
+the merge itself is zero (upstream's +41 is already in the recorded baseline
+via `952-extension-install-records.md`).
+
+## Second develop sync (420d503d4, this round): salvage superseded, delta zeroed
+
+The second develop sync (history-rewritten develop tip `420d503d4`) brought
+develop's own evolved B3 implementation for the same files this lane had
+drafted (TrustClaim, `ExtensionStore` protocol, health/catalog services,
+`pinned_record`, expired-authorization sweep). The sync resolution takes
+develop's side for every conflicted path, which supersedes the +3 salvage
+tests this note previously carried; their delta is now **+0**:
+
+- `test_install_lifecycle.py::TestRemovedVersionBytesStayAnchored` (2) —
+  dropped: develop's `_reinspection_outcome` treats terminal records
+  (including REMOVED) as non-gating, so a removed `(scope, extension,
+  version)` key may be re-inspected with different bytes. The stricter
+  removed-version byte anchoring the draft enforced is not part of develop's
+  semantics; the draft tests are preserved in history at `139018eb5` and in
+  the merge parents, not in this tree.
+- `test_post_install_lifecycle.py::TestRollback::test_later_activations_preserve_the_original_installer`
+  (1) — dropped: develop's service attributes `installed_by` at install time
+  and names later operators on the transition trail; the first-installer
+  freeze the draft implemented is not develop's contract.
+
+The branch-only HTTP surface file
+`packages/maistro-server/tests/api/test_extensions_lifecycle_api.py` (13
+cases, declared +13 by the pre-sync draft of
+`954-extension-post-install-lifecycle.md`) tested draft-only routes
+(`/pins`, `/upgrades`, `/resolution`, `/reconciliation`) that develop's
+canonical API replaces with `/installations/{id}/pin|unpin|resume|remove`,
+`/rollback` and the transitions audit endpoint; it is removed with this
+round. Every behavior it pinned over HTTP is pinned by develop's
+`test_extensions_api.py::TestPostInstallLifecycleHttp` against the live
+routes.
+
+Net inventory effect of this round: `packages/maistro-core/tests` +0,
+`packages/maistro-server/tests` −13 relative to the pre-sync branch tree,
+both accounted by the union of notes now in the tree (develop's
+`954-extension-post-install-lifecycle.md` declares the canonical suite).
+
+## Third develop sync (e20e9f52, current develop tip): merge finished, delta +0
+
+The preserved conflict state resolved here was a third `origin/develop` sync,
+`git fetch origin develop` -> `e20e9f52` (unchanged from `MERGE_HEAD`). It was
+a **criss-cross** merge: `git merge-base --all HEAD e20e9f52` returns two
+unrelated bases (`420d503d4` from the previous sync and `94781cf6b`), so git's
+recursive strategy merged the bases into a virtual ancestor and wrote
+`<<<<<<< Temporary merge branch 1/2` markers **into that ancestor** — the
+index stages carried markers that never existed on either tip. The marker text
+in the conflicted worktree files was therefore not trustworthy as a record of
+"ours" vs "theirs", and the resolution re-derived it per path instead:
+
+    git diff 420d503d4 HEAD -- <path>   # empty for all 13 conflicted paths
+
+The lane has **no own change** in any conflicted path (it is byte-identical to
+the previous sync point, which is itself on develop's history), so each
+resolution takes the develop tip blob verbatim:
+
+`.github/workflows/quality.yml`, `.gitleaksignore`,
+`deploy/scripts/verify-restore.sh`, `docs/install/deployment-topology.md`,
+`packages/maistro-core/src/maistro/container.py`,
+`packages/maistro-core/src/maistro/persistence/{pg_audit,sqlite_audit}.py`,
+`packages/maistro-core/src/maistro/sandbox/backends/bubblewrap.py`,
+`packages/maistro-core/src/maistro/security/sentinel/audit.py`,
+`packages/maistro-core/tests/workspaces/test_store_boundary_scope_conformance.py`,
+`pyproject.toml`, `tests/cross_product_parity/harness.py`,
+`tests/security/test_sentinel_permission_table_armed.py`.
+
+No test was added or removed by this round, so the front-matter delta stays
+**+0**; `scripts/check-suite-inventory.py` reports 21/21 suites matching the
+recorded baseline.
+
+### Post-merge contribution of this lane
+
+`git diff --stat e20e9f52 HEAD` after the merge lists **only this note**. The
+M9-B3 lifecycle (pin / upgrade preflight / authority delta / explicit
+reauthorization / rollback / disable / resume / remove) is develop's canonical
+implementation — `maistro/extensions/service.py`,
+`maistro/extensions/authority.py`, the store seam and the server routes in
+`maistro_server/api/extensions.py` — and it is wired into production through
+`Container.ensure_extension_install_service()` (the `get_extension_service`
+dependency every lifecycle route uses). This lane's surviving contribution is
+therefore the sync record and the evidence below, not new production code;
+the epic's acceptance is proven against develop's implementation rather than
+against a branch-local draft that the syncs superseded.
+
+### Evidence recorded for this round
+
+- merge resolution: no conflict markers anywhere (`scripts/check-merge-markers.py`
+  ok); `quality/` is byte-identical to develop
+  (`git diff --numstat e20e9f52 HEAD -- quality/` empty).
+- acceptance, by node id, all passing:
+  `TestUpgradeAuthority::test_same_authority_upgrade_changes_exactly_the_snapshot`,
+  `TestUpgradeAuthority::test_broader_upgrade_parks_until_reauthorized`,
+  `TestRollback` (broadened-authority refusal before any state change,
+  incompatible target, wrong payload records nothing, retry idempotent),
+  `TestDisableResume::test_disable_stops_new_use_immediately_and_keeps_evidence`,
+  `TestRemove::test_remove_stops_use_and_preserves_historical_evidence` /
+  `test_default_policy_is_retain_all` /
+  `test_janitor_failure_aborts_removal_with_the_record_untouched` /
+  `test_remove_twice_is_idempotent`,
+  `TestConcurrentActivation::test_concurrent_installs_of_one_extension_leave_exactly_one_active`,
+  plus restart durability
+  (`test_install_store_conformance.py::test_restart_reads_the_same_records_with_the_same_evidence`)
+  and `scripts/extension_lifecycle_proof.py` (PROVED 10/10 stages, 42/42 checks).
+- suites: `packages/maistro-core/tests` 15646 passed / 1131 skipped / 7 xfailed;
+  `packages/maistro-server/tests` 571 passed / 8 skipped; extensions subset
+  1115 passed.
+- gates: `ruff check .`, `ruff format --check .`, mypy over CI's ten package
+  sources (1066 files, no issues), `check-vulture-baseline.py`
+  (1326 identities), `check-suite-inventory.py`, `check-shipped-surface-truth.py`,
+  `check-backlog-consistency.py`, `check-execution-lifecycles.py`,
+  `check-api-route-contracts.py`, `check-extension-imports.py`,
+  `check-cross-package-imports.py`, `check-dependency-namespaces.py` — all ok.
+
+### Residual risk
+
+- This round changes no production code, so it cannot regress behavior — but
+  it also adds no new acceptance test of its own: the lifecycle acceptance
+  rests entirely on develop's suites, which this lane now inherits unchanged.
+- `test_post_install_lifecycle.py::TestDisableResume` proves "new use stops
+  immediately" at the resolution seam (`ExtensionInstallService.active()` and
+  `installed_versions()`, both consulted by the operational views). There is no
+  dispatch-level check to bypass today: `ExtensionHost` — the only seam that
+  runs extension code — is not yet wired into a production invocation loop
+  (`grep -rn 'ExtensionHost\(' packages/*/src` only finds the ext-harness's own
+  unrelated class in `maistro_ext_harness`; the canonical
+  `maistro.extensions.host.ExtensionHost` has no construction site outside
+  `__init__` re-export and the vulture whitelist), so the pointer is the whole
+  of the enforcement. Wiring the host into a run loop later must keep
+  resolving through `ExtensionInstallService.active()`, or a disabled record
+  would stay invocable.
+
+
+## Fourth develop sync (c2d7209f1, this repair round): merge finished, delta +0
+
+`git fetch origin develop` advanced the develop tip from `e20e9f52` to `c2d7209f1`
+(three new commits: #2228 attempt-cancellation-cause codec, #2211 org/Workspace
+extension policy, #2223 conductor CLI page contract). The merge was clean and
+brought no conflict markers; `quality/` remains byte-identical to develop
+(`git diff --numstat origin/develop -- quality/` empty) and
+`scripts/check-suite-inventory.py` reports 21/21 suites matching the recorded
+baseline. No production code unique to this lane changed beyond the already-landed
+`soft_wrap=True` CLI lock-output fix; the lifecycle acceptance rests on develop's
+canonical suites, all of which pass on this head (extensions 1145 passed,
+events 383 passed, migration chain 18 passed, org-workspace policy 32 passed,
+attempt-cancellation codec/model 70 passed, CLI contract 37 passed).
+
+## Fifth develop sync (8a9139bc5, this repair round): merge finished, delta +0
+
+`git fetch origin develop` advanced the develop tip from `c2d7209f1` to
+`8a9139bc5` (trunk CI unblock: certifi 2026.10.19, pillow 13.0.0, canvas
+`npm audit fix` for the `launch-editor` advisories). The merge was clean (ort
+strategy) and brought no conflict markers; `quality/` remains byte-identical to
+develop (`git diff --numstat origin/develop HEAD -- quality/` empty) and
+`scripts/check-suite-inventory.py` reports 21/21 suites matching the recorded
+baseline. This commit is the upstream fix for the three CI gates that were red on
+the previous head: its message explicitly lists L954/#2245 among the lanes it
+unblocks, and it lands the canvas `package-lock.json` repair that makes
+`npm audit --audit-level=high` exit 0 and the certifi/pillow upgrades that let
+`scripts/pip_audit_gate.py` pass.
+
+No production code unique to this lane changed in this round; the lane's only
+surviving contribution remains the already-landed `soft_wrap=True` CLI
+lock-output fix. The lifecycle acceptance rests on develop's canonical suites.
+
+### Evidence recorded for this round
+
+- merge resolution: no conflict markers (`scripts/check-merge-markers.py` ok);
+  `quality/` byte-identical to develop; `scripts/check-suite-inventory.py`
+  21/21 suites match the recorded baseline.
+- failing gates reproduced and cleared on the merged head
+  (`3fef6870ab94cc081399ac0fd33e48a76702ad6d`):
+  `packages/maistro-canvas/frontend`: `npm ci` (0 vulnerabilities) then
+  `npm audit --audit-level=high` exit 0; `uv pip freeze` + `uv run pip-audit
+  --strict --format=json -r /tmp/deps.txt` produced a usable report and
+  `scripts/pip_audit_gate.py` exit 0 (`1 known, all triaged in ALLOWED`);
+  `scripts/check-dependency-namespaces.py` exit 0.
+- acceptance: `scripts/extension_lifecycle_proof.py --out …` PROVED 10/10
+  stages, 42/42 checks; `packages/maistro-core/tests/extensions/` 1145 passed;
+  `packages/maistro-server/tests/api/test_extensions_api.py` +
+  `test_extensions_policy_api.py` + `test_extensions_health_api.py` 57 passed.
+- suites: `packages/maistro-core/tests` 15680 passed / 1132 skipped / 7 xfailed;
+  `packages/maistro-server/tests` 591 passed / 8 skipped.
+- gates: `ruff check .`, `ruff format --check .`, `check-vulture-baseline.py`
+  (1326 reviewed identities -> 1326 findings), `check-ratchet-provenance.py`,
+  `check-shipped-surface-truth.py`, `check-test-duplicates.py`,
+  `check-backlog-consistency.py` — all ok.
+
+## Sixth develop sync (ac1e2f955, this repair round): merge finished, delta +0
+
+`git fetch origin develop` advanced the develop tip again, from `8a9139bc5`
+to `ac1e2f955` (four commits: #2158 canonical ownership/reusable definitions,
+#2232 Codex App Server harness provider, #2149 public/private catalog
+distribution, #2208 Evolve/RSI eval-consumer mapping). The shared
+`refs/remotes/origin/develop` moved between the fifth sync's fetch and this
+round's, so the fifth sync's evidence below is superseded by the final evidence
+in this section; the branch is synced to the live develop tip.
+
+The merge was clean (`git merge-tree --write-tree` reported no conflicts; the
+ort merge brought no markers) and brought no conflict markers;
+`quality/` remains byte-identical to develop
+(`git diff --numstat origin/develop HEAD -- quality/` empty) and
+`scripts/check-suite-inventory.py` reports 21/21 suites matching the recorded
+baseline (32555 collected node IDs). No production code unique to this lane
+changed in this round; the lane's only surviving contribution remains the
+already-landed `soft_wrap=True` CLI lock-output fix. The lifecycle acceptance
+rests on develop's canonical suites.
+
+### Evidence recorded for this round (final head `5b26ba4127800a61ae4d8957b6d4f53d34dcb7cd`)
+
+- merge resolution: no conflict markers (`scripts/check-merge-markers.py` ok);
+  `quality/` byte-identical to develop; `scripts/check-suite-inventory.py`
+  21/21 suites match the recorded baseline.
+- failing gates reproduced and cleared:
+  `packages/maistro-canvas/frontend`: `npm ci` (0 vulnerabilities) then
+  `npm audit --audit-level=high` exit 0; `uv pip freeze` + `uv run pip-audit
+  --strict --format=json -r /tmp/deps2.txt` produced a usable report and
+  `scripts/pip_audit_gate.py` exit 0 (`1 known, all triaged in ALLOWED`);
+  `scripts/check-dependency-namespaces.py` exit 0.
+- acceptance: `scripts/extension_lifecycle_proof.py --out …` PROVED 10/10
+  stages, 42/42 checks; `packages/maistro-core/tests/extensions/` 1156 passed;
+  `packages/maistro-server/tests/api/test_extensions_api.py` +
+  `test_extensions_policy_api.py` + `test_extensions_health_api.py` 57 passed.
+- suites: `packages/maistro-core/tests` 15759 passed / 1145 skipped / 7 xfailed;
+  `packages/maistro-server/tests` 591 passed / 8 skipped.
+- gates: `ruff check .`, `ruff format --check .`, `check-vulture-baseline.py`
+  (1324 reviewed identities -> 1324 findings, base ac1e2f9556f1),
+  `check-ratchet-provenance.py`, `check-shipped-surface-truth.py`,
+  `check-test-duplicates.py`, `check-backlog-consistency.py` — all ok.

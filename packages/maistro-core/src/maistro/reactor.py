@@ -74,6 +74,21 @@ class Reactor:
     def is_running(self) -> bool:
         return self._running
 
+    @property
+    def persistence_backend(self) -> State | None:
+        """The store this Reactor's state writes land in (#1178).
+
+        Every state mutation the Reactor makes routes through the canonical
+        `maistro.state.State` — one writer on the configured state database —
+        so a non-None backend means "the Reactor's events are persisted in the
+        Conductor's own state database, by that one writer". `None` means the
+        Reactor has no persistence authority at all: `state_submit` drops the
+        write instead of writing it somewhere else, which is exactly what a
+        health report has to say out loud rather than let a reader assume a
+        durable store is behind it.
+        """
+        return self._state
+
     def register_source(self, name: str, handler: Callable[[Any], Awaitable[None]]) -> None:
         self._handlers[name] = handler
 
@@ -86,9 +101,10 @@ class Reactor:
         if self._owned_state_path is not None:
             # A closed State cannot reopen its writer, so each start owns a fresh one.
             self._state = State(db_path=self._owned_state_path)
-        if self._state is not None:
+        backend = self.persistence_backend
+        if backend is not None:
             try:
-                self._state.run_migration("reactor_log_001", _REACTOR_LOG_MIGRATION)
+                backend.run_migration("reactor_log_001", _REACTOR_LOG_MIGRATION)
             except Exception:
                 self._release_owned_state()
                 raise
@@ -174,13 +190,15 @@ class Reactor:
         return min(cpu_elapsed / wall_elapsed, 1.0)
 
     def state_submit(self, fn: Callable[[sqlite3.Connection], None]) -> None:
-        if self._state is not None:
-            self._state.submit(fn)
+        backend = self.persistence_backend
+        if backend is not None:
+            backend.submit(fn)
 
     def state_query(self, sql: str) -> list[tuple[Any, ...]]:
-        if self._state is None:
+        backend = self.persistence_backend
+        if backend is None:
             return []
-        reader = self._state.open_reader()
+        reader = backend.open_reader()
         try:
             return reader.execute(sql).fetchall()
         finally:
