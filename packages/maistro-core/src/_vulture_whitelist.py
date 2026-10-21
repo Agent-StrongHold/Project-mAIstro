@@ -27,6 +27,7 @@ from maistro.cli._backlog import cutover as backlog_cutover_command
 from maistro.cli._backlog import import_cmd as backlog_import_command
 from maistro.cli._backlog import revert as backlog_revert_command
 from maistro.cli._connectors import connectors_describe, connectors_verify
+from maistro.cli._extension_authoring import extension_new
 from maistro.cli._extensions import (
     extensions_certify,
     extensions_compat,
@@ -79,6 +80,10 @@ from maistro.extensions.sqlite_store import SqliteExtensionInstallStore
 from maistro.extensions.store import (
     ExtensionInstallStore,
     InMemoryExtensionInstallStore,
+)
+from maistro.extensions.tenancy import (
+    ScopeBoundExtensionState,
+    TenantScopedExtensionState,
 )
 from maistro.extensions.tool_skill.registration import ExtensionToolCatalog
 from maistro.extensions.ui import (
@@ -445,6 +450,7 @@ _VULTURE_WHITELIST = (
     ExtensionInstallStore.all_installs,
     InMemoryExtensionInstallStore.all_installs,
     SqliteExtensionInstallStore.all_installs,
+    extension_new,
     extensions_history,
     extensions_preflight,
     extensions_show,
@@ -558,6 +564,24 @@ _VULTURE_WHITELIST = (
     HealthVerdict.cumulative_failures,  # type: ignore[misc]
     HealthVerdict.quarantined,  # type: ignore[misc]
     InFlightDisposition.LET_FINISH,
+    # Tenant-scoped extension runtime state (#971, M9-G3). Configuration is
+    # served over the operator API (GET/PUT /v1/extensions/state); the cache
+    # and checkpoint namespaces are the host/runtime substrate — the
+    # activation substrate (M9-B2's ExtensionCodeLoader hosts) and the
+    # quarantine flow (#972) bind them through
+    # ExtensionInstallService.extension_state, so their in-tree callers are
+    # the cross-tenant noninterference suites
+    # (packages/maistro-core/tests/extensions/test_org_workspace_policy.py)
+    # until those hosts land. Same contract-ships-first posture as the store
+    # seams above.
+    ScopeBoundExtensionState.delete_config,
+    ScopeBoundExtensionState.cache_set,
+    ScopeBoundExtensionState.cache_get,
+    ScopeBoundExtensionState.cache_delete,
+    ScopeBoundExtensionState.checkpoint_save,
+    ScopeBoundExtensionState.checkpoint_load,
+    ScopeBoundExtensionState.checkpoint_names,
+    TenantScopedExtensionState.clear_scope,
     # Pre-publication extension certification (M9-H3, #975). The
     # `maistro extensions certify` / `verify-certification` commands are
     # typer-dispatched like the lock commands above: their production caller
