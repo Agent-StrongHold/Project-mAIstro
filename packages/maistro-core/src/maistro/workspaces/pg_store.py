@@ -65,6 +65,7 @@ from maistro.workspaces.model import (
 if TYPE_CHECKING:  # pragma: no cover - typing only
     import asyncpg
 
+    from maistro.personas.store import PersonaStore
     from maistro.projects.scope_store import ProjectScopeStore
 
 
@@ -79,7 +80,13 @@ class _WorkspaceCreateKwargs(TypedDict):
 class PgWorkspaceStore:
     """Durable Workspace identity and membership store."""
 
-    def __init__(self, pool: asyncpg.Pool, *, project_store: ProjectScopeStore) -> None:
+    def __init__(
+        self,
+        pool: asyncpg.Pool,
+        *,
+        project_store: ProjectScopeStore,
+        persona_store: PersonaStore | None = None,
+    ) -> None:
         if not isinstance(project_store, TransactionalProjectScopeStore):
             msg = (
                 "PgWorkspaceStore needs a Project store that can join its transaction "
@@ -93,6 +100,7 @@ class PgWorkspaceStore:
         # Workspace store so scoped Project reads cannot run unauthorized
         # (#1150).
         self._project_store.bind_workspace_store(self)
+        self.persona_store = persona_store
 
     @property
     def project_store(self) -> ProjectScopeStore:
@@ -206,13 +214,17 @@ class PgWorkspaceStore:
         await authorize_workspace_administer(self, workspace_id, principal_id)
         # Purge first, then the Workspace row, in one transaction (#1121).
         # `WorkspaceNotFound` from the row delete rolls the purge back with
-        # it, so deleting an absent Workspace touches nothing.
+        # it, so deleting an absent Workspace touches nothing. The live
+        # Persona leaves through its canonical store in the same window, so a
+        # Persona or Project failure rolls the whole delete back.
         async with self._project_store.transaction() as conn:
             await self._lock_workspace(conn, workspace_id)
             await require_workspace_action_on(
                 self, conn, workspace_id, principal_id, WorkspaceAction.ADMINISTER
             )
             await self._project_store.purge_workspace_in(conn, workspace_id)
+            if self.persona_store is not None:
+                await self.persona_store.delete_for_workspace_in(conn, workspace_id)
             await self._delete_workspace_row(conn, workspace_id)
 
     async def list_for_user(self, user_id: str) -> list[Workspace]:

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Any, NotRequired, Protocol, TypedDict, runtime_checkable
+from typing import TYPE_CHECKING, Any, NotRequired, Protocol, TypedDict, runtime_checkable
 
 from maistro.projects.scope_store import InMemoryProjectScopeStore, ProjectScopeStore
 from maistro.workspaces.model import (
@@ -11,6 +11,9 @@ from maistro.workspaces.model import (
     WorkspaceNotFound,
     WorkspaceRole,
 )
+
+if TYPE_CHECKING:
+    from maistro.personas.store import PersonaStore
 
 
 class _WorkspaceCreateKwargs(TypedDict):
@@ -114,7 +117,12 @@ class WorkspaceStore(Protocol):
 class InMemoryWorkspaceStore:
     """Reference Workspace store that atomically provisions the Root Project."""
 
-    def __init__(self, *, project_store: ProjectScopeStore | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        project_store: ProjectScopeStore | None = None,
+        persona_store: PersonaStore | None = None,
+    ) -> None:
         self._workspaces: dict[str, Workspace] = {}
         self._memberships: dict[tuple[str, str], WorkspaceMembership] = {}
         self.project_store: ProjectScopeStore = project_store or InMemoryProjectScopeStore()
@@ -122,6 +130,7 @@ class InMemoryWorkspaceStore:
         # through this Workspace store, so binding here means a caller cannot
         # construct the canonical pair and leave the boundary unwired (#1150).
         self.project_store.bind_workspace_store(self)
+        self.persona_store = persona_store
 
     async def create(
         self,
@@ -218,11 +227,26 @@ class InMemoryWorkspaceStore:
         # optional form meant the Projects were purged in tests, where the
         # store was the in-memory reference, and left orphaned on every durable
         # deployment, where no implementation defined it (Codex, #516).
+        # The live Persona is a separate ownership boundary, so it leaves
+        # through its canonical store inside the same compensation. The
+        # snapshot goes first because the compensation contract is all-or-
+        # nothing: a Project failure mid-delete must put the Persona back, not
+        # leave a surviving Workspace without its product context. The durable
+        # stores need no snapshot — their delete joins the one transaction.
+        persona = (
+            await self.persona_store.get_for_workspace(workspace_id)
+            if self.persona_store is not None
+            else None
+        )
         try:
+            if self.persona_store is not None:
+                await self.persona_store.delete_for_workspace(workspace_id)
             await self.project_store.purge_workspace(workspace_id)
         except Exception:
             self._workspaces[workspace_id] = workspace
             self._memberships.update(memberships)
+            if persona is not None and self.persona_store is not None:
+                await self.persona_store.create(persona)
             raise
 
     async def _delete_workspace_row(
