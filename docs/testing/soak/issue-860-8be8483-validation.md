@@ -33,3 +33,17 @@ The accepted ADR-062 keeps Graph execution on the GraphRun/NodeRun protocol. Acc
 | Machine/human evidence tied to candidate artifacts | NOT MET for this candidate. |
 
 **Disposition: BLOCKED for issue #860 acceptance.** The runnable local gate checks pass, but they cannot substitute for the required production RC soak; the Compose prerequisite is unavailable in this environment. No tests were added, so no test inventory delta is required. No issue or GitHub actions were taken.
+
+## Revalidation on assigned head `7429311bd409`
+
+The assigned job supplied no `check-*.log` files; no verifier claim was treated as evidence. I read the complete acceptance body from the frozen dispatch snapshot, the profile's remaining gaps, and accepted ADR-081226-a66b (Run/NodeRun/Attempt lifecycle), ADR-081626-f383 (durable Attempt lease/fencing), and ADR-082526-b36a (lease renewal and reclamation). These preserve the canonical `Goal -> Graph -> Run -> NodeRun -> Attempt` execution spine; none allows inferring production soak acceptance from component tests.
+
+Fresh checks on the assigned head:
+
+- `uv run pytest tests/test_soak_promotion_gates.py packages/maistro-server/tests/api/test_tasks_concurrency_backpressure.py -x -q` — PASS, 85 tests.
+- `uv run python scripts/check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'` — PASS, 1321 reviewed identities match 1321 findings; zero unclassified/never-allowlisted.
+- `git status --short` — clean before this report update.
+
+The production behavior remains explicitly fail-closed: `scripts/soak/run_soak.py:744-755` always reports `exact_rc_artifact.ok=false` for its host-Uvicorn preflight. The checked existing profile (`docs/testing/soak/m3a-load-profile.md`, “Remaining representative-profile gaps”) says it lacks concurrent user/Workspace populations, Graph fan-out, successful tool/model calls, Design/Canvas, Goal/background-worker reconciliation, and complete production telemetry/physical Attempt recovery proof. The supplied prior result reports no selected immutable RC/configuration and a 420.05-second host preflight versus the required 14,400 seconds. No production topology run can be claimed from these checks.
+
+All ten issue acceptance criteria remain UNVERIFIED or NOT MET at production acceptance grade: representative workloads; two deployed replicas; sustained saturation/reclaim/leak observations; no duplicate physical work/reconciliation; replica-independent rate/security; required telemetry with thresholds; kill/restart drain/fencing/recovery; exact-RC >=4-hour soak; complete finding classification; candidate-hash-bound machine/human evidence. No tests or product code were changed, so no inventory delta is required. Disposition remains **BLOCKED** pending an owner-designated immutable RC/configuration and a new qualifying production soak; this report commit is not promotion approval.
