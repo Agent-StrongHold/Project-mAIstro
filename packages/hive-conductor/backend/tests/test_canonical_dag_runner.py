@@ -555,6 +555,28 @@ def test_host_mode_exists_only_when_a_sentinel_produced_it() -> None:
     assert host_mode == "async"
 
 
+def test_host_mode_keeps_the_inline_floor_without_the_canonical_spine() -> None:
+    """A container that wires neither the canonical stores nor a Sentinel is a
+    partial fake (standalone/test execution): it keeps the historical inline
+    floor, and only a container that carries the stores but no Sentinel fails
+    closed to the sandbox floor."""
+    from services.canonical_dag_runner import _host_execution_authority
+
+    class PartialContainer:
+        pass
+
+    assert _host_execution_authority(PartialContainer()) == (None, "async")
+    assert _host_execution_authority(None) == (None, "async")
+
+
+def test_host_principal_roles_resolves_no_roles_for_an_anonymous_actor() -> None:
+    """An empty actor id resolves to no roles: the fail-closed permission gate
+    then denies instead of inheriting an unearned role from a request field."""
+    from services.canonical_dag_runner import _host_principal_roles
+
+    assert _host_principal_roles("") == ()
+
+
 def test_recovery_refuses_a_run_whose_nodes_lack_durable_legacy_metadata() -> None:
     """A Run admitted by some other seam has no legacy node facts to rebuild
     from; guessing defaults here would execute work nobody admitted."""
