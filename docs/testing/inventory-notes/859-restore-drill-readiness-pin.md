@@ -25,3 +25,15 @@ both previously-failing cases pass against real containers (20/20 in
 `tests/test_restore_oracle_characterization.py` +
 `tests/test_backup_restore_oracle.py` on the auto-859 host). No node was
 removed or renamed; the only delta is the one added pin.
+
+## Follow-up (union round, head bb93d6cd0)
+
+Trunk independently landed a different fix for the same race
+(`pg_isready` + socket `psql -d "${PG_DB}"`, test
+`test_scratch_ready_means_the_target_database_answers`). The merge `6c5663de1`
+took trunk's script while keeping this pin, which redded `test` and the
+`Coverage gate`. `verify-restore.sh` now carries the **union** probe: the loop
+requires `pg_isready` **and** a TCP-loopback `psql -h 127.0.0.1 -d "${PG_DB}"
+-c 'SELECT 1'`, then `fail_verifier`s. Both landed tests pass on the one script;
+the pin's assertions (`-h 127.0.0.1`, `SELECT 1`) and the fail-before fixture are
+unchanged. See `.cursor/context/repair-859-union-readiness-round.md`.
