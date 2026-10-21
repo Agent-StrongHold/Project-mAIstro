@@ -139,6 +139,10 @@ EXPECTED_TABLES = frozenset(
         # a restart still answers `find_valid` instead of silently failing
         # closed and re-prompting. Lives at the end of the chain (039).
         "elevation_grants",
+        # Host-authorized delegation grants (#845): the durable backing of the
+        # delegation authority a Sentinel consults before honoring any
+        # agent-to-agent handoff. Lives at the end of the chain (064).
+        "delegation_grants",
         "episodic_memories",
         "event_log",
         "graph_continuations",

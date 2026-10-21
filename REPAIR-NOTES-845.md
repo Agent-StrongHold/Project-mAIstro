@@ -33,6 +33,18 @@ and completed rather than restarted.
    entry mirrors `elevation_grants` (security_evidence, retention undecided,
    expiry-sweep owner decision #72). This is the completeness declaration the
    gate requires for a new durable table — no ratchet/grant mechanics involved.
+6. **Alembic migration 064 creates `delegation_grants` on PostgreSQL.** The
+   runtime store's `ensure_delegation_schema` docstring already claimed
+   "managed deployments also apply the Alembic revision", but no revision
+   existed; the committed `pg_pool` fixture (and CI's coverage PostgreSQL
+   producer) truncates a *migrated* database, so the runtime-only table broke
+   every PG-leg suite at setup with `UndefinedTableError`. 064 carries the
+   guarded DDL byte-identical to `POSTGRES_DELEGATION_SCHEMA` on parent 063
+   (single head verified). Verified against a real pgvector:pg18 server:
+   chain downgrade base -> upgrade head walks clean, `tests/migrations/`
+   23 passed (chain test's `EXPECTED_TABLES` updated with #845's table),
+   `test_delegation_durable.py` 6/6 including the PG restart contract, and
+   the persistence + schema-parity suites 838 passed.
 
 ## Gate evidence (all run at the final tree)
 
@@ -50,7 +62,11 @@ and completed rather than restarted.
   `check-workflow-inventory`, `check-ratchet-provenance`,
   `check-backlog-consistency` — all exit 0.
 - Tests: maistro-core security + a2a + container wiring 1745 passed / 24
-  skipped; hive legacy-DAG/graph-runner/authority/quota/cancel suites 99 passed.
+  skipped; hive legacy-DAG/graph-runner/authority/quota/cancel suites 99
+  passed; against a real PostgreSQL (pgvector:pg18, migrated):
+  delegation-durable + elevation-durable 12 passed, persistence +
+  sqlite/alembic parity 838 passed, migration chain + head + revision
+  metadata 23 passed.
 
 ## Known environment failure (not a regression; pre-existing on develop here)
 
