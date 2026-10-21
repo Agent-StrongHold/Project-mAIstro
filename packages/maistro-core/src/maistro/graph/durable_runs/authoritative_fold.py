@@ -8,6 +8,7 @@ TraversalCommit in the same optimistic durable checkpoint.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping
 from typing import Any
 
@@ -36,44 +37,81 @@ from .types import DurableRunRecord
 
 
 def _plan_mismatch_error(
+    record: DurableRunRecord,
     graph: Graph,
     completed: tuple[traversal._FrontierItem, ...],
+    paused: tuple[traversal._FrontierItem, ...],
 ) -> str | None:
-    """Supervise completed nodes against the plan queue's predicted post-states.
+    """Supervise accepted nodes against the plan queue's predicted post-states.
 
-    A plan is a claim about the future (epic M4-I). When a completed node's
-    actual post-state contradicts its declared
+    A plan is a claim about the future (epic M4-I). When a node's actual
+    post-state contradicts its declared
     ``policies[\"expect_post_state\"]`` prediction, the Run halts here with
     ``PlanPostStateMismatch`` instead of routing the contradicted state
     onward — the same visible-stop contract the blackboard halt uses, and
     deliberately a failure rather than a pause: nothing external is owed an
     answer, and resuming without new work would only re-read the same world.
+
+    Paused completions are supervised on their result-state claim only: the
+    state exists now (a human pause is ACTIONABLE), while output assertions
+    belong to the resumed completion. Prior completed NodeRuns seed queue
+    consumption so the durable "still awaiting" evidence never lists a step
+    that finished in an earlier fold.
     """
-    if not completed:
+    if not completed and not paused:
         return None
     queue = PlanExpectationQueue.from_graph(graph)
     if not queue.expectations:
         return None
-    for item in completed:
-        verdict = queue.supervise(
-            item.node_id,
-            output=traversal._result_output(item.result),
-            result_state=classify_result_state(item.result),
-        )
-        if verdict is not None and not verdict.matched:
-            suffix = (
-                f" [{item.spec.policies['expect_post_state'].get('description')}]"
-                if isinstance(item.spec.policies.get("expect_post_state"), Mapping)
-                and item.spec.policies["expect_post_state"].get("description")
-                else ""
-            )
-            # The halt names what the plan still awaited: the durable
-            # explanation covers not just the contradicted prediction but the
-            # work the plan predicted had not happened yet.
-            pending = queue.pending_node_ids
-            pending_note = f" (plan still awaiting: {', '.join(pending)})" if pending else ""
-            return f"{verdict.describe()}{suffix}{pending_note}"
+    _seed_expectation_progress(queue, record)
+    for item, check_output in (
+        *((item, True) for item in completed),
+        *((item, False) for item in paused),
+    ):
+        mismatch = _supervise_expectation(queue, item, check_output=check_output)
+        if mismatch is not None:
+            return mismatch
     return None
+
+
+def _seed_expectation_progress(queue: PlanExpectationQueue, record: DurableRunRecord) -> None:
+    """Mark plan steps already completed in earlier frontier folds."""
+    for node_run in record.node_runs:
+        if node_run.status is RunStatus.COMPLETED:
+            queue.mark_completed(node_run.node_id)
+
+
+def _supervise_expectation(
+    queue: PlanExpectationQueue,
+    item: traversal._FrontierItem,
+    *,
+    check_output: bool,
+) -> str | None:
+    """Return durable mismatch text for one node, or ``None`` when it matches."""
+    verdict = queue.supervise(
+        item.node_id,
+        output=traversal._result_output(item.result),
+        result_state=classify_result_state(item.result),
+        check_output=check_output,
+    )
+    if verdict is None or verdict.matched:
+        return None
+    suffix = _expectation_description(item)
+    # The halt names what the plan still awaited: the durable explanation
+    # covers not just the contradicted prediction but the work the plan
+    # predicted had not happened yet.
+    pending = queue.pending_node_ids
+    pending_note = f" (plan still awaiting: {', '.join(pending)})" if pending else ""
+    return f"{verdict.describe()}{suffix}{pending_note}"
+
+
+def _expectation_description(item: traversal._FrontierItem) -> str:
+    """The node's optional human description, rendered for the error suffix."""
+    declared = item.spec.policies.get("expect_post_state")
+    if not isinstance(declared, Mapping):
+        return ""
+    description = declared.get("description")
+    return f" [{description}]" if description else ""
 
 
 def _visit_quality(item: traversal._FrontierItem) -> float | None:
@@ -81,9 +119,17 @@ def _visit_quality(item: traversal._FrontierItem) -> float | None:
     from maistro.graph.verification.escalation import QUALITY_METADATA_KEY
 
     raw_quality = (item.result.metadata or {}).get(QUALITY_METADATA_KEY)
-    if isinstance(raw_quality, (int, float)) and not isinstance(raw_quality, bool):
-        return float(raw_quality)
-    return None
+    if not isinstance(raw_quality, (int, float)) or isinstance(raw_quality, bool):
+        return None
+    quality = float(raw_quality)
+    # The contract is 0.0..1.0 and a finite JSON number. A malformed report
+    # must not bypass the floor (the old ``> 1`` path did) or poison durable
+    # metadata (``NaN`` did when the escalation checkpoint was built), so it
+    # is scored as the lowest quality: escalate while a rung remains, then
+    # accept the finite shortfall.
+    if not math.isfinite(quality) or not 0.0 <= quality <= 1.0:
+        return 0.0
+    return quality
 
 
 def _escalate_one_visit(
@@ -453,7 +499,13 @@ async def fold_authoritative_frontier(
     # frontiers: a retryable failure in one branch must not waive plan
     # post-state supervision or the quality ladder for a completed sibling,
     # so both contracts run before the failure path routes advancement.
-    mismatch = _plan_mismatch_error(graph, completed)
+    #
+    # Escalation runs first: a sub-floor cheap visit is not the final world.
+    # Judging it against the plan would halt a Run whose stronger rung would
+    # satisfy the prediction. Only the visits accepted for advancement are
+    # post-state supervised; a paused visit is checked on result-state alone.
+    record, completed, escalated_ids = _escalate_quality_shortfalls(record, completed)
+    mismatch = _plan_mismatch_error(record, graph, completed, paused)
     if mismatch is not None:
         return await traversal._mark_failed(
             record,
@@ -461,8 +513,6 @@ async def fold_authoritative_frontier(
             error_message=mismatch,
             store=store,
         )
-
-    record, completed, escalated_ids = _escalate_quality_shortfalls(record, completed)
 
     if failures:
         return await _fold_failures(

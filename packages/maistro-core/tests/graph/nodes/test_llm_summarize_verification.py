@@ -273,6 +273,32 @@ async def test_text_observations_encode_as_text_parts(
     assert seen["body"]["model"] == "gemini-3.1-flash-lite"
 
 
+async def test_text_observations_route_to_the_configured_text_alias(
+    monkeypatch: pytest.MonkeyPatch,
+    llm_env: tuple[LlmSummarizeNode, str],
+) -> None:
+    """When all observations are textual, the configured text alias governs
+    the request; falling back to ``model`` would make ``text_model`` dead
+    configuration."""
+    llm_node, llm_binding_id = llm_env
+    monkeypatch.setenv("MAISTRO_LLM_BASE_URL", "http://fake-litellm:4000")
+    monkeypatch.setenv("MAISTRO_LLM_API_KEY", "fake-key")
+    seen: dict[str, Any] = {}
+    _fake_gateway(monkeypatch, seen)
+
+    out = await llm_node.run(
+        {
+            "text": "frame these",
+            "observations": ["JIRA-101 moved to Done"],
+            "text_model": "vision-pro",
+            "binding_id": llm_binding_id,
+        },
+        _ctx(),
+    )
+    assert out.success
+    assert seen["body"]["model"] == "vision-pro"
+
+
 async def test_image_observation_routes_to_the_vision_alias(
     monkeypatch: pytest.MonkeyPatch,
     llm_env: tuple[LlmSummarizeNode, str],

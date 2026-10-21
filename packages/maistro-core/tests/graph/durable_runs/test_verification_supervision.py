@@ -9,6 +9,7 @@ spine, never around it.
 
 from __future__ import annotations
 
+import math
 from typing import ClassVar
 
 import pytest
@@ -17,7 +18,7 @@ from pydantic import BaseModel
 from maistro.graph import Edge, Graph, Node
 from maistro.graph.durable_runs import InMemoryDurableRunStore, run_durable_graph
 from maistro.graph.nodes import BaseNode, NodeContext, NodeResult
-from maistro.graph.nodes.base import ReplaySemantics
+from maistro.graph.nodes.base import PAUSE_AWAITING_HUMAN_REVIEW, ReplaySemantics
 from maistro.graph.verification.escalation import ESCALATION_STATE_METADATA_KEY
 from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.runs import InMemoryRunStore
@@ -47,8 +48,14 @@ class _ReportingNode(BaseNode[_In, _Out]):
     input_schema: ClassVar[type[BaseModel]] = _In
     output_schema: ClassVar[type[BaseModel]] = _Out
 
-    def __init__(self, *, quality_by_visit: list[float | None]) -> None:
+    def __init__(
+        self,
+        *,
+        quality_by_visit: list[float | None],
+        status_by_visit: list[str] | None = None,
+    ) -> None:
         self._quality_by_visit = quality_by_visit
+        self._status_by_visit = status_by_visit
         self.visit: int = 0
         self.models_seen: list[str | None] = []
 
@@ -58,10 +65,15 @@ class _ReportingNode(BaseNode[_In, _Out]):
         quality = (
             self._quality_by_visit[self.visit] if self.visit < len(self._quality_by_visit) else None
         )
+        status = (
+            self._status_by_visit[self.visit]
+            if self._status_by_visit is not None and self.visit < len(self._status_by_visit)
+            else "done"
+        )
         self.visit += 1
         return NodeResult(
             success=True,
-            output=_Out(),
+            output=_Out(status=status),
             latency_ms=1,
             status="completed",
             metadata={"quality": quality} if quality is not None else {},
@@ -436,3 +448,194 @@ async def test_production_self_report_channel_drives_escalation() -> None:
         RunStatus.COMPLETED,
     ]
     assert record.node_runs[0].node_run_id != record.node_runs[1].node_run_id
+
+
+async def test_escalation_defers_post_state_until_the_accepted_visit() -> None:
+    """A withheld cheap visit is not judged as the final world.
+
+    Review-finding regression: enforcing the plan before escalation failed a
+    Run whose cheap visit missed both the quality floor and the predicted
+    output, even though the ladder's stronger rung would have satisfied the
+    plan. Escalation runs first; only the visit accepted for advancement is
+    supervised against the post-state.
+    """
+    node = _ReportingNode(
+        quality_by_visit=[0.2, 0.9],
+        status_by_visit=["draft", "done"],
+    )
+    record, _ = await _run(
+        node,
+        policies={
+            "max_attempts": 2,
+            "escalation_ladder": {"models": ["flash", "pro"], "quality_floor": 0.7},
+            "expect_post_state": {"expected_output": {"status": "done"}},
+        },
+        workspace="ws-verify-escalate-before-plan",
+    )
+    assert record.status is RunStatus.COMPLETED
+    assert node.visit == 2
+    assert node.models_seen == ["flash", "pro"]
+
+
+async def test_post_state_is_still_enforced_on_the_accepted_visit() -> None:
+    """Escalation defers the plan check; it does not waive it. After the
+    ladder produces an accepted visit, a contradicted post-state still halts."""
+    node = _ReportingNode(
+        quality_by_visit=[0.2, 0.9],
+        status_by_visit=["draft", "draft"],
+    )
+    record, _ = await _run(
+        node,
+        policies={
+            "max_attempts": 2,
+            "escalation_ladder": {"models": ["flash", "pro"], "quality_floor": 0.7},
+            "expect_post_state": {"expected_output": {"status": "done"}},
+        },
+        workspace="ws-verify-escalated-still-mismatched",
+    )
+    assert record.status is RunStatus.FAILED
+    assert record.run.error is not None
+    assert record.run.error.startswith("PlanPostStateMismatch:")
+    assert node.visit == 2
+
+
+async def test_non_finite_quality_is_a_finite_shortfall_not_a_crash() -> None:
+    """A malformed quality report cannot poison durable graph state.
+
+    ``NaN`` fails the floor comparison but used to be copied into the
+    escalation metadata, where JSON construction rejected it after the fold
+    had already decided to re-queue. Supervision treats it as the lowest
+    score, so the visit escalates (or accepts the shortfall when the ladder
+    is exhausted) and every persisted number stays finite.
+    """
+    node = _ReportingNode(quality_by_visit=[math.nan, 0.9])
+    record, _ = await _run(
+        node,
+        policies={
+            "max_attempts": 2,
+            "escalation_ladder": {"models": ["flash", "pro"], "quality_floor": 0.7},
+        },
+        workspace="ws-verify-nonfinite-quality",
+    )
+    assert record.status is RunStatus.COMPLETED
+    assert node.visit == 2
+    assert node.models_seen == ["flash", "pro"]
+
+
+class _PausingNode(BaseNode[_In, _Out]):
+    """A successful human-gated pause: the taxonomy calls it ACTIONABLE."""
+
+    kind: ClassVar[str] = "test.verification_pausing"
+    kind_category: ClassVar = "sync.transform"
+    input_schema: ClassVar[type[BaseModel]] = _In
+    output_schema: ClassVar[type[BaseModel]] = _Out
+
+    async def run(self, inputs: BaseModel, ctx: NodeContext) -> NodeResult:
+        del inputs, ctx
+        return NodeResult(
+            success=True,
+            output=_Out(),
+            latency_ms=1,
+            status="paused",
+            metadata={"paused_reason": PAUSE_AWAITING_HUMAN_REVIEW},
+        )
+
+
+async def test_paused_actionable_visit_matches_an_actionable_expectation() -> None:
+    """A human pause is supervised where it happens, so a plan that predicts
+    ACTIONABLE is verified against the pause rather than only after a resume
+    changes the result the actor was answering."""
+    node = _PausingNode()
+    record, _ = await _run(
+        node,
+        policies={"expect_post_state": {"expect_result_state": "actionable"}},
+        workspace="ws-verify-pause-matches",
+    )
+    assert record.status is RunStatus.PAUSED
+
+
+async def test_paused_visit_that_contradicts_the_predicted_state_halts() -> None:
+    """Result-state supervision on a pause is real: predicting TERMINAL while
+    the node parks on a person is a contradiction, not a deferral."""
+    node = _PausingNode()
+    record, _ = await _run(
+        node,
+        policies={"expect_post_state": {"expect_result_state": "terminal"}},
+        workspace="ws-verify-pause-mismatch",
+    )
+    assert record.status is RunStatus.FAILED
+    assert record.run.error is not None
+    assert record.run.error.startswith("PlanPostStateMismatch:")
+    assert "result_state" in record.run.error
+
+
+class _ByNodeReportingNode(BaseNode[_In, _Out]):
+    """Reports a per-node output status so a multi-node plan can be mismatched
+    on its second node after the first matched."""
+
+    kind: ClassVar[str] = "test.verification_by_node"
+    kind_category: ClassVar = "sync.transform"
+    input_schema: ClassVar[type[BaseModel]] = _In
+    output_schema: ClassVar[type[BaseModel]] = _Out
+
+    def __init__(self, outputs: dict[str, str]) -> None:
+        self._outputs = outputs
+
+    async def run(self, inputs: BaseModel, ctx: NodeContext) -> NodeResult:
+        del inputs
+        return NodeResult(
+            success=True,
+            output=_Out(status=self._outputs[ctx.node_id]),
+            latency_ms=1,
+            status="completed",
+        )
+
+
+async def _run_two_node_plan(*, workspace: str) -> tuple[object, _ByNodeReportingNode]:
+    projects = InMemoryProjectScopeStore()
+    root = await projects.create_root(workspace)
+    project = await projects.create(
+        workspace_id=workspace,
+        parent_project_id=root.project_id,
+        name=workspace,
+    )
+    run_store = InMemoryRunStore(project_store=projects)
+    policy = {"expect_post_state": {"expected_output": {"status": "done"}}}
+    node = _ByNodeReportingNode({"first": "done", "second": "draft"})
+    graph = Graph(
+        workspace_id=workspace,
+        project_id=project.project_id,
+        name=workspace,
+        nodes=[
+            Node(node_id="first", node_type=node.kind, policies=policy),
+            Node(node_id="second", node_type=node.kind, policies=policy),
+        ],
+        edges=[Edge(edge_id="first-second", from_node="first", to_node="second")],
+        metadata={"entry_node": "first"},
+    )
+    admitted = await run_store.create_run(
+        graph,
+        initial_status=RunStatus.QUEUED,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
+    record = await run_durable_graph(
+        graph,
+        store=InMemoryDurableRunStore(),
+        node_resolver=lambda _node_id, _graph: node,
+        run_id=admitted.run_id,
+        run_store=run_store,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
+    return record, node
+
+
+async def test_plan_progress_spans_frontier_folds() -> None:
+    """A mismatch on a later node does not report an already-matched earlier
+    node as still awaited. Plan consumption is derived from durable completed
+    NodeRuns, not from the current fold's slice."""
+    record, _ = await _run_two_node_plan(workspace="ws-verify-plan-progress")
+    assert record.run.status is RunStatus.FAILED
+    assert record.run.error is not None
+    assert record.run.error.startswith("PlanPostStateMismatch:")
+    assert "node 'second'" in record.run.error
+    assert "still awaiting: first" not in record.run.error

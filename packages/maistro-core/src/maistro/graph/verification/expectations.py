@@ -89,15 +89,22 @@ class PostStateExpectation(BaseModel):
         *,
         output: object,
         result_state: ResultState | None,
+        check_output: bool = True,
     ) -> ExpectationVerdict:
-        """Compare an actual post-state against this prediction."""
+        """Compare an actual post-state against this prediction.
+
+        ``check_output=False`` supervises only the result-state claim. A paused
+        completion has a state but not the final output the plan predicted, so
+        output assertions are deferred until the resumed visit completes.
+        """
         mapping = output if isinstance(output, Mapping) else None
         state_violation = _result_state_violation(self, result_state)
         violations: list[ExpectationViolation] = (
             [] if state_violation is None else [state_violation]
         )
-        violations.extend(_output_violations(self, mapping, output))
-        violations.extend(_contains_violations(self, mapping))
+        if check_output:
+            violations.extend(_output_violations(self, mapping, output))
+            violations.extend(_contains_violations(self, mapping))
         return ExpectationVerdict(
             node_id=self.node_id,
             matched=not violations,
@@ -273,12 +280,23 @@ class PlanExpectationQueue:
             if expectation.node_id not in self._consumed
         )
 
+    def mark_completed(self, node_id: str) -> None:
+        """Record that a node completed in an earlier fold.
+
+        The queue is rebuilt per frontier, so durable supervision must seed
+        consumption from the Run's completed NodeRuns; otherwise a later
+        mismatch reports already-finished plan steps as still awaited.
+        """
+        if node_id in self._by_node_id:
+            self._consumed.add(node_id)
+
     def supervise(
         self,
         node_id: str,
         *,
         output: object,
         result_state: ResultState | None,
+        check_output: bool = True,
     ) -> ExpectationVerdict | None:
         """Consume one node's completion against its expectation, if any.
 
@@ -288,7 +306,11 @@ class PlanExpectationQueue:
         if expectation is None:
             return None
         self._consumed.add(node_id)
-        return expectation.evaluate(output=output, result_state=result_state)
+        return expectation.evaluate(
+            output=output,
+            result_state=result_state,
+            check_output=check_output,
+        )
 
 
 def _drain_ready_order(

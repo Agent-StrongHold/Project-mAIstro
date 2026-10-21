@@ -395,7 +395,10 @@ def _chosen_model_alias(
     modality floor (an image observation's vision alias) outranks the seeded
     ladder start — a text-only cheapest rung cannot carry an image content
     part — and the ladder start outranks the node's ambient ``model`` input,
-    so a declared ladder is genuinely cheap-first from visit one.
+    so a declared ladder is genuinely cheap-first from visit one. For
+    text-only observations the configured ``text_model`` alias is the route
+    the request must actually take; falling back to ``model`` would make the
+    input dead configuration.
     """
     if supervised_rung:
         return supervised_rung
@@ -403,6 +406,8 @@ def _chosen_model_alias(
         return inputs.image_model.strip()
     if ladder_start:
         return ladder_start
+    if routes:
+        return routes[0].model
     return inputs.model
 
 

@@ -106,3 +106,21 @@ def test_encode_empty_observation_is_visible_not_silent() -> None:
         "type": "image_url",
         "image_url": {"url": ""},
     }
+
+
+def test_encode_image_bearing_content_part_list_preserves_the_nested_reference() -> None:
+    """A tool payload that carries its image as a nested provider content part
+    keeps that part's URL; classification already saw the nested image, so
+    encoding must not emit an empty reference."""
+    payload = {
+        "role": "tool",
+        "content": [
+            {"type": "text", "text": "see attachment"},
+            {"type": "image_url", "image_url": {"url": "https://x/y.png"}},
+        ],
+    }
+    assert classify_observation(payload) == "image"
+    assert encode_observation(payload, ObservationRoute(modality="image", model="i")) == {
+        "type": "image_url",
+        "image_url": {"url": "https://x/y.png"},
+    }

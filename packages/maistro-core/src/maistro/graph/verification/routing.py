@@ -144,7 +144,17 @@ def _image_reference(payload: object) -> str:
 
 
 def _reference_from_mapping(payload: Mapping[str, Any]) -> str:
-    """The image URL/base64 reference a mapping payload carries, if any."""
+    """The image URL/base64 reference a mapping payload carries, if any.
+
+    Classification already scans content-part lists for an image; encoding
+    must find that same nested reference rather than emitting an empty URL.
+    Direct fields win, then the first image-bearing nested part.
+    """
+    return _direct_image_reference(payload) or _nested_image_reference(payload)
+
+
+def _direct_image_reference(payload: Mapping[str, Any]) -> str:
+    """A reference on the payload itself: URL, inline data, or bare base64."""
     for key in ("url", "image_url"):
         nested = payload.get(key)
         if isinstance(nested, str):
@@ -155,6 +165,21 @@ def _reference_from_mapping(payload: Mapping[str, Any]) -> str:
     if inline is not None:
         return inline
     return _base64_reference(payload)
+
+
+def _nested_image_reference(payload: Mapping[str, Any]) -> str:
+    """The first reference carried by an image-bearing nested content part."""
+    for value in payload.values():
+        candidates = value if isinstance(value, (list, tuple)) else (value,)
+        for candidate in candidates:
+            if (
+                isinstance(candidate, Mapping)
+                and classify_observation(candidate) == ObservationModality.IMAGE
+            ):
+                reference = _image_reference(candidate)
+                if reference:
+                    return reference
+    return ""
 
 
 def _inline_data_reference(inline: object) -> str | None:

@@ -75,13 +75,21 @@ as `policies["expect_post_state"]`:
   extra fields.
 - `expected_output_contains` asserts substrings on string output fields.
 - `expect_result_state` asserts the classified result state (§2).
-- The executor's authoritative fold supervises every completed frontier
-  against the plan queue. A violation **halts the Run** with error code
-  `PlanPostStateMismatch` and the verdict's `describe()` text as durable
-  error evidence. The physical Attempt stays completed — the halt is
+- The executor's authoritative fold supervises every accepted completed
+  frontier against the plan queue. A violation **halts the Run** with error
+  code `PlanPostStateMismatch` and the verdict's `describe()` text as
+  durable error evidence. The physical Attempt stays completed — the halt is
   logical, never a rewrite of evidence. Mismatch halts rather than pauses
   because nothing external owes an answer; resuming without new work would
   only re-read the same world.
+- Quality escalation runs before the plan check: a withheld sub-floor visit
+  is not the final world, so only the visits accepted for advancement are
+  judged against the prediction. A paused completion is checked on its
+  result-state claim alone (`expect_result_state`); output assertions are
+  deferred to the resumed completion.
+- Plan consumption spans folds: the queue is seeded from the Run's
+  completed NodeRuns, so a later mismatch does not report an earlier step as
+  still awaited.
 - Graphs that declare no expectations execute exactly as before.
 
 ### 2. Result-state taxonomy and its mapping to lifecycle contracts
@@ -176,15 +184,18 @@ routed model accepts (`encode_observation`). Rules:
 - An image observation with no `image_model` alias **refuses loudly**:
   feeding an image part to a text-only alias fails at the provider, and
   re-encoding it as text discards exactly what the observation carried.
-- Text observations never change the model alias — they encode as text
-  content parts.
+- Text observations encode as text content parts and route to the
+  configured `text_model`; absent an explicit text alias they leave the
+  alias unchanged (the node's own `model` applies).
 - Precedence when both apply: a supervision-chosen rung (§3) outranks the
   modality floor, because the ladder is declared by the same graph author
   who knows the observations' modalities; otherwise an image observation
   lifts the request to the vision alias.
 - Quality is measured against everything the model was shown as source (the
   text input plus the text half of the observations), so a summary cannot
-  score well by ignoring the payloads it was handed.
+  score well by ignoring the payloads it was handed. A reported score outside
+  `0.0..1.0`, or a non-finite one, is treated as the lowest score rather than
+  copied into durable state.
 
 ## Consequences
 
