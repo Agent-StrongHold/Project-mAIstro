@@ -1348,7 +1348,20 @@ jobs:
           # ledger's length is itself a signal that one of the two instruments
           # stopped looking; tests/test_complexity_gate_scope.py pins them
           # together.
-          XENON_BASELINE: 134
+          #
+          # 134 -> 129 (#1792): the six blocks #1730 created or regressed in
+          # maistro-rsi went under the C ceiling -- fail_first.py's
+          # _has_related_failure, collect_fail_first_evidence and
+          # fail_first_gate (C 14/12/11 -> B 9/6/6) and candidate_fitness.py's
+          # evaluate_candidate and compose_scorecard (C (20) and D (23) at
+          # this branch's landing base -> B (8) and A (2));
+          # LocalRsiLoop._fitness_decision was already B (10) here, so it has
+          # no ledger row to drop. The radon ledger dropped the same five rows
+          # and all nine of their #1682/#1793 grant entries (both grant
+          # generations for the three callers). The xenon re-run at the merge
+          # commit reports 129 block identities matching the ledger
+          # one-for-one; module and average axes clean.
+          XENON_BASELINE: 129
           # Module rank was never gated at all. The old count matched only
           # '^ERROR:xenon:block', so a whole module drifting to C passed in
           # silence; widening the scope surfaced one.
