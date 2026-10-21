@@ -1009,8 +1009,6 @@
         "packages/maistro-core/src/maistro/personas/model.py::unused method 'exposes_surface'",
         "packages/maistro-core/src/maistro/personas/schema.py::unused method '_accept_department_shape'",
         "packages/maistro-core/src/maistro/personas/schema.py::unused method '_validate_bindings'",
-        "packages/maistro-core/src/maistro/personas/store.py::unused method 'get_for_workspace'",
-        "packages/maistro-core/src/maistro/personas/store.py::unused method 'get_for_workspace'",
         "packages/maistro-core/src/maistro/portability/agents.py::unused method 'import_agent'",
         "packages/maistro-core/src/maistro/portability/skills.py::unused method 'import_skills'",
         "packages/maistro-core/src/maistro/privilege.py::unused class 'PrivilegeGuard'",
