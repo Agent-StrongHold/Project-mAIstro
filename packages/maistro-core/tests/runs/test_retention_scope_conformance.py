@@ -150,7 +150,7 @@ async def scope_world(request: pytest.FixtureRequest, pg_pool: Any) -> Any:
             a=scoped["a"],
             b=scoped["b"],
         )
-        return
+        return  # async-generator teardown must not fall into the sqlite leg
 
     projects = InMemoryProjectScopeStore()
     scoped: dict[str, tuple[str, str]] = {}
@@ -175,7 +175,7 @@ async def scope_world(request: pytest.FixtureRequest, pg_pool: Any) -> Any:
             a=scoped["a"],
             b=scoped["b"],
         )
-        return
+        return  # async-generator teardown must not fall into the sqlite leg
 
     conn = await aiosqlite.connect(":memory:")
     from maistro.runs.sqlite_store import SqliteRunStore
