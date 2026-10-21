@@ -114,7 +114,7 @@ from maistro.persistence.pg_audit import PgAuditLog
 from maistro.persistence.sqlite_audit import SqliteAuditLog
 from maistro.projects.rubric_store import RubricStore
 from maistro.protocols.memory import AuditLog
-from maistro.runs.admission_identity import AdmissionAssessment
+from maistro.runs import AdmissionAssessment  # published surface, not the submodule
 from maistro.runs.model import EvalJudge, EvalMethod, RunEvalScore
 from maistro.runs.pg_store import PgRunStore
 from maistro.runs.scoped_reads import ScopedRunReader

@@ -64,7 +64,12 @@ from enum import StrEnum
 from typing import Literal, TypeGuard
 from uuid import UUID
 
-from maistro.runs.admission_identity import (
+# Consume the identity vocabulary through the published ``maistro.runs``
+# surface, not the submodule: the #1851 publication sentinel pins the
+# package ``__init__`` as the leaf's only production edge, so a direct
+# ``maistro.runs.admission_identity`` import here would make the leaf a
+# runtime consumer and fail that contract.
+from maistro.runs import (
     AdmissionBinding,
     AdmissionRecordV2,
     CanonicalJsonObject,
