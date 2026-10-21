@@ -22,8 +22,13 @@ an earlier `ensure_event_schema()` on a role that could create tables) is
 adopted untouched; a fresh one is built to exactly the definition the store
 reads.
 
-Revision ID: 064
-Revises: 063
+Renumbered from 064 to 065 at the develop sync that landed the live-
+Workspace-Persona revision (#12) first: a landed trunk migration never
+moves, so this one re-parents onto it and takes the next id, exactly as
+064_canonical_personas itself renumbered from 034.
+
+Revision ID: 065
+Revises: 064
 Create Date: 2026-10-17
 """
 
@@ -31,8 +36,8 @@ from __future__ import annotations
 
 from alembic import op
 
-revision = "064"
-down_revision = "063"
+revision = "065"
+down_revision = "064"
 branch_labels = None
 depends_on = None
 

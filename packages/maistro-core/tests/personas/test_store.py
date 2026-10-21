@@ -1,9 +1,16 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 import pytest
 
 from maistro.personas.model import Persona
-from maistro.personas.store import InMemoryPersonaStore, WorkspacePersonaAlreadyExists
+from maistro.personas.store import (
+    InMemoryPersonaStore,
+    PersonaAlreadyExists,
+    PersonaNotFound,
+    WorkspacePersonaAlreadyExists,
+)
 
 
 def _persona(persona_id: str, workspace_id: str, *, name: str = "Default") -> Persona:
@@ -69,6 +76,30 @@ async def test_deleting_persona_allows_replacement_for_workspace() -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_naive_timestamp_is_read_as_utc_never_host_local() -> None:
+    """Legacy naive Persona timestamps normalize to UTC (#1149's rule).
+
+    A payload written before the model required awareness must not re-read as
+    a different instant depending on the host's timezone: the validator pins
+    naive values to UTC, so `03:00` written on a UTC-5 host reads as 03:00Z,
+    not 08:00Z.
+    """
+    naive = datetime(2026, 1, 1, 3, 0, 0)
+    persona = Persona(
+        id="p-naive",
+        workspace_id="ws-naive",
+        name="Voice",
+        created_at=naive,
+        updated_at=naive,
+    )
+
+    assert persona.created_at.tzinfo is not None
+    assert persona.created_at.utcoffset() == UTC.utcoffset(None)
+    assert persona.created_at.hour == 3
+    assert persona.updated_at == persona.created_at
+
+
+@pytest.mark.asyncio
 async def test_a_returned_persona_is_a_snapshot_not_a_live_view() -> None:
     """What `create` and `update` hand back must not track later edits.
 
@@ -99,3 +130,74 @@ async def test_a_returned_persona_is_a_snapshot_not_a_live_view() -> None:
     assert removed.node_template_ids == []
     assert added.node_template_ids == ["node-template-frank"]
     assert created.node_template_ids == []
+
+
+@pytest.mark.asyncio
+async def test_a_second_persona_with_a_used_id_is_rejected() -> None:
+    """The id index, not just the Workspace index, is a uniqueness boundary."""
+    store = InMemoryPersonaStore()
+    await store.create(_persona("p-1", "ws-1"))
+
+    with pytest.raises(PersonaAlreadyExists):
+        await store.create(_persona("p-1", "ws-2"))
+
+
+@pytest.mark.asyncio
+async def test_updating_an_absent_persona_is_a_domain_error() -> None:
+    store = InMemoryPersonaStore()
+
+    with pytest.raises(PersonaNotFound):
+        await store.update(_persona("p-absent", "ws-1"))
+
+
+@pytest.mark.asyncio
+async def test_a_reparent_update_frees_the_workspace_it_left() -> None:
+    """Moving the Persona to another Workspace releases the old one.
+
+    The occupancy index must follow the update, or the Workspace the Persona
+    left stays permanently unownable — the compensation contract's other half.
+    """
+    store = InMemoryPersonaStore()
+    await store.create(_persona("p-1", "ws-1"))
+
+    moved = await store.update(_persona("p-1", "ws-2"))
+    assert moved.workspace_id == "ws-2"
+
+    successor = await store.create(_persona("p-2", "ws-1"))
+    assert successor.workspace_id == "ws-1"
+
+
+@pytest.mark.asyncio
+async def test_deleting_an_absent_persona_is_a_domain_error() -> None:
+    store = InMemoryPersonaStore()
+
+    with pytest.raises(PersonaNotFound):
+        await store.delete("p-absent")
+
+
+@pytest.mark.asyncio
+async def test_deleting_an_unknown_workspace_leaves_nothing_behind() -> None:
+    """The Workspace-delete path is a purge, not a lookup: an absent
+    Workspace is already in the wanted state."""
+    store = InMemoryPersonaStore()
+    await store.create(_persona("p-1", "ws-1"))
+
+    await store.delete_for_workspace("ws-unknown")
+
+    assert await store.get_for_workspace("ws-1") is not None
+
+
+@pytest.mark.asyncio
+async def test_the_transactional_delete_path_matches_the_plain_one() -> None:
+    """`delete_for_workspace_in` is the wired Workspace delete's entry point.
+
+    The reference store has no transaction to join, so it must behave exactly
+    like `delete_for_workspace` — the durable twins prove the join itself.
+    """
+    store = InMemoryPersonaStore()
+    await store.create(_persona("p-1", "ws-1"))
+
+    await store.delete_for_workspace_in(conn=None, workspace_id="ws-1")
+
+    assert await store.get("p-1") is None
+    assert await store.get_for_workspace("ws-1") is None

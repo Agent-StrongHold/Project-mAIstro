@@ -12,7 +12,7 @@ scanner noise. This branch originally shipped `process_durable_events`
 acknowledging the settled position on the durable log (#836), but the develop
 syncs that brought #1163's `ConsumerCursorStore` (claim lease + fencing)
 replaced that loop wholesale, leaving `event_replay_cursors` — a table revision
-064 deliberately manages in PostgreSQL — with no production writer at all.
+065 deliberately manages in PostgreSQL — with no production writer at all.
 
 The repair restores the write inside the #1163 loop rather than banking the
 debt: after a tick settles real progress, the same gap-safe position is
