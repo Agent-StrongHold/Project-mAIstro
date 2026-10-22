@@ -8,6 +8,7 @@ from httpx import ASGITransport, AsyncClient
 
 from maistro.config.settings import get_settings
 from maistro.observability.middleware import REQUEST_ID_HEADER
+from maistro.runs.model import RunStatus
 from maistro.runs.store_boundary import RunStoreBoundary
 from maistro.runs.wiring import wire_execution_spine
 from maistro.tasks import queue as queue_module
@@ -167,6 +168,58 @@ async def test_delegated_users_keep_distinct_task_and_run_ownership(
         f"/tasks/{alice_body['task_id']}", headers=_delegation_headers("bob")
     )
     assert cross_cancel.status_code == 404
+
+
+async def test_cancel_stays_with_the_initiator_or_an_administrator(
+    durable_spine, client: AsyncClient, monkeypatch
+) -> None:
+    """View-level Workspace membership admits reads, never lifecycle mutation.
+
+    Bob reads Alice's Run as an ordinary member, yet cancelling it would let a
+    peer terminate work they did not start, so it is refused with the same 404
+    the read seam answers. The initiating principal suffices without any
+    elevated role, and a Workspace administrator (who never initiated) also
+    suffices.
+    """
+    _scope_store, run_store = durable_spine
+    monkeypatch.setenv("API_KEYS", '["conductor:service-secret"]')
+    monkeypatch.setenv("TASK_DELEGATION_KEY", DELEGATION_KEY)
+    get_settings.cache_clear()
+
+    alice = await client.post(
+        "/tasks",
+        headers=_delegation_headers("alice"),
+        json={"description": "Alice task", "workspace": TASK_WORKSPACE},
+    )
+    member_run = await client.post(
+        "/tasks",
+        headers=_delegation_headers("bob"),
+        json={"description": "Bob task", "workspace": TASK_WORKSPACE},
+    )
+    assert alice.status_code == 202 and member_run.status_code == 202
+    alice_run_id = alice.json()["run_id"]
+    bob_run_id = member_run.json()["run_id"]
+
+    peer_cancel = await client.post(
+        f"/runs/{alice_run_id}/cancel", headers=_delegation_headers("bob")
+    )
+    assert peer_cancel.status_code == 404
+    persisted = await run_store.get_run(alice_run_id)
+    assert persisted is not None and persisted.status is not RunStatus.CANCELLED
+
+    initiator_cancel = await client.post(
+        f"/runs/{alice_run_id}/cancel", headers=_delegation_headers("alice")
+    )
+    assert initiator_cancel.status_code == 200
+    assert initiator_cancel.json()["status"] == "cancelled"
+
+    # The Workspace's creator ("dev") is its owner: an administrator who did
+    # not initiate Bob's Run may still cancel it.
+    admin_cancel = await client.post(
+        f"/runs/{bob_run_id}/cancel", headers=_delegation_headers("dev")
+    )
+    assert admin_cancel.status_code == 200
+    assert admin_cancel.json()["status"] == "cancelled"
 
 
 async def test_a_forged_originating_principal_is_rejected(

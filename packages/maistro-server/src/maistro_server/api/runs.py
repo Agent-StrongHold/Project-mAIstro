@@ -122,7 +122,14 @@ async def cancel_run(
 ) -> RunSummary:
     """Request cancellation through the canonical physical execution seam."""
     owner, _, _, _ = resolve_delegated_identity(auth, delegation)
-    await _require_visible_run(run_id, owner)
+    # View-level membership admits reads, never lifecycle mutation: only the
+    # initiating principal or a Workspace administrator may cancel (#1152
+    # review). The refusal is the seam's one 404, so nothing about existence
+    # or authority is disclosed to a peer member.
+    try:
+        await get_run_boundary().require_run_mutation(run_id, principal_id=owner)
+    except RunNotVisible:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found") from None
     run = await RunExecutionService(
         store=store,
         runtime=PythonExecutionRuntime(),
