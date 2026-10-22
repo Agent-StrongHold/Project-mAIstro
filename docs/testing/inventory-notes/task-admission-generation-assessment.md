@@ -7222,3 +7222,88 @@ touched. The leaf remains **not independently mergeable** while unwired:
 activation and the runtime consumer belong to the separately reviewed
 #1845 integration head, which must prune the `_EXCLUDED_PACKAGE_PYTHON`
 classification in the same change that wires the module.
+
+## Round 88 follow-up (CI-repair round, job d9c3153a61304926b36ecaceecfe414a):
+## develop sync conflict discharged — merge of origin/develop (774ae42fc) into
+## auto-1852 resolved and committed at 8d53b7ba0; full battery re-proven
+## first-hand on the merged head
+
+The lane block "develop sync conflict preserved in worktree" is discharged.
+The preserved merge of `origin/develop` (`774ae42fc120`, the lane's declared
+develop base: the Playwright 1.64.0 sync #2097 plus the M2-A run-read-scoping
+WIP #2227) carried exactly four conflicted paths — `Dockerfile`,
+`Dockerfile.research`, `packages/hive-conductor/Dockerfile`,
+`quality/image-pins.json` — all the same collision: this branch (round 88)
+and develop (#1152) independently bumped the golang builder
+1.27.2-alpine -> 1.27.3-alpine (CVE-2026-111943) **to the identical index
+digest** `sha256:b8c9b82affbbb82a020bbcf998dad2ba9516944ac7e883524642a481a9505e9c`;
+only comment/provenance text differed. Resolved in place taking trunk's
+canonical `#1152` record for all four files (functional FROM lines
+byte-identical on both sides, verified before resolving); no conflict marker
+remains, `image-pins.json` parses, and the merge committed as `8d53b7ba0`
+(tree clean afterwards). No third content variant was invented.
+
+**Vulture ledger merge audit (the AGENTS.md multiset hazard, checked and
+benign).** `git diff --numstat origin/develop -- quality/` = `0 5
+quality/vulture-baseline.json`; the five develop-side rows are exactly
+`runs/admission_identity.py::unused variable '{LEGACY_UNRESOLVED, MISMATCH,
+REPLACE_EXPIRED, REPLAYED, TAKEOVER}'`. They are present at develop's tip
+(5 rows) and absent at this branch's pre-merge head `93a01bc6b` (0 rows,
+round 86's documented prune): on this branch the leaf's classifier *uses*
+those five enum names, so Vulture 2.16 no longer reports them and the stale
+banks were pruned — the issue's own C2-caveat mechanism, inverse direction.
+The prune predates the merge (not merge damage), and both legs agree at the
+merged head: `check-vulture-baseline.py` with CI's exact argv -> rc=0
+(1314 reviewed identities -> 1309 findings, base `774ae42fc120`, candidate
+`8d53b7ba0f97`), and `check-ratchet-provenance.py` -> rc=0 (every
+sub-ratchet OK, no candidate-approved expansion). A debt *reduction* needs
+no grant.
+
+**Container gate (the round's named red) re-proven fixed at this head.**
+With the CI-pinned trivy v0.73.0: the round-88 before-image (built from the
+old `golang:1.27.2-alpine` pin) flags exactly CVE-2026-111943 (HIGH, stdlib
+v1.27.2, fixed 1.26.10/1.27.3, crypto/x509 MITM) — the red finding; the
+round-88 after-images (age, dockercli, hive) scan clean at HIGH/CRITICAL
+ignore-unfixed. Tied to this exact tree: the `agebuild` stage and the root
+`dockerclibuild` stage were rebuilt from the merged head's Dockerfiles and
+the emitted binaries (`age`, `age-keygen`, `docker`) rootfs-scanned with
+trivy -> rc=0, zero HIGH/CRITICAL fixed findings. The Dockerfile pin content
+at this head is byte-identical to develop's #1152 landing (the trunk gate's
+own fix), so the container red is fixed by the same change trunk shipped.
+
+**Full battery re-executed first-hand at `8d53b7ba0`** (all rc=0 unless
+noted): focused leaf trio 268 passed (assessment 132 + publication +
+pack-contracts); `test_root_admission_identity.py` + `test_idempotency.py`
+146 passed; reachability meta-tests + `test_pinned_digest_references.py` 57
+passed; whole-tree `ruff check .` and `ruff format --check .` clean; mypy on
+the module Success and the AGENTS.md seven-package typecheck Success (929
+files); `check-suite-inventory.py` ok (21 suites, 33729 unique IDs — no
+inventory change); pip-audit reproduced end-to-end at this head
+(`pip-audit --strict` over the merged lockfile -> usable report;
+`pip_audit_gate.py` -> rc=0, ecdsa PYSEC-2026-1325 the only advisory, still
+triaged — round 88's gitpython/graphql-core upgrades survive the merge);
+`check-reachability.py` rc=0 (1449 production modules, 157 unreachable —
+the base set, leaf still classified in `_EXCLUDED_PACKAGE_PYTHON`);
+`check-reachability-dispositions.py` rc=0 (47 groups/157);
+`check-promotion-surface.py` rc=0; `check-image-pins.py` rc=0;
+`check-image-inventory.py` rc=0; `check-shipped-surface-truth.py` rc=0;
+`check-dependency-namespaces.py` rc=0.
+
+**Four-mutation battery re-killed in-memory** (zero tree writes; `-p` plugin
+exec()s the mutated source into `sys.modules` before collection; anchors
+asserted unique; byte-identical control registered the same way -> 132
+passed): swap TAKEOVER/REPLACE_EXPIRED -> **50 failed**; lease row before
+binding -> **14 failed**; LEGACY_UNRESOLVED row deleted (legacy treated as
+v2) -> **10 failed**; mismatch row before expiry -> **22 failed** — matching
+the round-19 line-level formulations exactly.
+
+Scope containment re-verified on the merged head: no production module
+imports `admission_generation` (only its own `__pycache__` artifact matches);
+`quality/`, `tasks/idempotency.py`, `tasks/queue.py`, `tasks/__init__.py`,
+and `runs/admission_identity.py` are zero-diff vs `origin/develop` except the
+five-row prune audited above. No test was added, moved, or deleted this
+round; both recorded inventory deltas are unchanged. The leaf remains **not
+independently mergeable** while unwired: activation and the runtime consumer
+belong to the separately reviewed #1845 integration head, which must prune
+the `_EXCLUDED_PACKAGE_PYTHON` classification in the same change that wires
+the module.
