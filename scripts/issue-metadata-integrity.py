@@ -127,7 +127,13 @@ def analyze(snapshot: dict[str, Any]) -> dict[str, Any]:
         gaps = []
         if not labels:
             gaps.append("labels")
-        parent = issues.get(declared[0]) if len(declared) == 1 else None
+        if len(declared) == 1:
+            parent = issues.get(declared[0])
+        else:
+            # No prose declaration (e.g. native_only children): inherit the
+            # milestone check from the native parent discovered via sub-issue
+            # edges so milestone-owned families are still covered.
+            parent = issues.get(actual) if actual is not None else None
         if not milestone and (tags or (parent and parent.get("milestone"))):
             gaps.append("milestone")
         if milestone and not tags:
