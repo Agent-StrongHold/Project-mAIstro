@@ -81,15 +81,20 @@ RUN python /tmp/prune-dependency-namespaces.py \
     && rm -rf /tmp/check-dependency-namespaces.py /tmp/prune-dependency-namespaces.py
 
 # ---- docker CLI build ----
-# The published docker:29-cli binary is built with go1.26.8 (trivy: stdlib
-# CVE-2026-78667/78669/97031 HIGH, fixed in go1.26.9/1.27.2) and no released
-# docker:xx-cli tag ships a newer toolchain (29.1/29.2 ship older ones). Build
-# the exact same immutable release tag ourselves on the patched toolchain --
-# the same policy as the age stage in packages/hive-conductor/Dockerfile. The
+# The published docker:29-cli binary ships an unpatched Go stdlib (trivy:
+# published go1.26.8 hit CVE-2026-78667/78669/97031 HIGH, fixed in
+# go1.26.9/1.27.2; 1.27.2 itself then hit CVE-2026-111943 HIGH in
+# crypto, fixed in go1.26.10/1.27.3) and no released docker:xx-cli tag
+# ships a newer toolchain (29.1/29.2 ship older ones). Build the exact
+# same immutable release tag ourselves on the patched toolchain -- the
+# same policy as the age stage in packages/hive-conductor/Dockerfile. The
 # tag resolves to dfc520d; fail if upstream ever disagrees. docker/cli has no
 # root go.mod (vendor.mod + vendor/ instead); renaming them is the module-mode
 # build the vendored tree is designed for.
-FROM golang:1.27.2-alpine@sha256:f92b6ef800e499660581efdabdf25d9d817a9d124eaf900924f0504e7e27e12d AS dockerclibuild
+# Toolchain treadmill log: go1.26.8 -> 1.27.2 (2026-10-21, CVE-2026-78667/
+# 78669/97031) -> 1.27.3 (2026-10-22, CVE-2026-111943 crypto HIGH). Bump
+# the pin (tag+digest) whenever trivy's DB flags the embedded stdlib again.
+FROM golang:1.27.3-alpine@sha256:d530cf60723abf1ffae0cd16bb546b379ec0550d2f3815e5b16ed69dbc00fba4 AS dockerclibuild
 ARG DOCKER_CLI_VERSION=29.9.1
 ARG DOCKER_CLI_COMMIT_SHORT=dfc520d
 RUN apk add --no-cache git && \
@@ -138,8 +143,8 @@ COPY pyproject.toml uv.lock README.md ./
 # Static docker CLI built from the pinned upstream release tag on the patched
 # Go toolchain (stage above) — talks to a mounted /var/run/docker.sock, a single
 # static binary, no daemon. Historically: 29-cli's published binary embedded
-# go1.26.8 stdlib (trivy HIGHs); before that 27-cli embedded go1.22.11
-# (CVE-2025-68121 crypto/tls + 21 HIGHs, trivy).
+# go1.26.8 stdlib (trivy HIGHs), then our 1.27.2 rebuild (CVE-2026-111943);
+# before that 27-cli embedded go1.22.11 (CVE-2025-68121 crypto/tls + 21 HIGHs, trivy).
 COPY --from=dockerclibuild /out/docker /usr/local/bin/docker
 # pip (and its vendored dependency tree — trivy flagged msgpack 1.1.2,
 # urllib3 2.7.0 and setuptools 70.3.0 from pip/_vendor/vendor.txt in both the
