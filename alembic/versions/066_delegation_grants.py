@@ -22,8 +22,8 @@ from __future__ import annotations
 
 from alembic import op
 
-revision = "064"
-down_revision = "063"
+revision = "066"
+down_revision = "065"
 branch_labels = None
 depends_on = None
 
@@ -33,7 +33,7 @@ def upgrade() -> None:
         """
         CREATE TABLE IF NOT EXISTS delegation_grants (
             id SERIAL PRIMARY KEY,
-            grant_id TEXT NOT NULL,
+            grant_ref TEXT NOT NULL,
             principal_id TEXT NOT NULL,
             owner_id TEXT NOT NULL,
             delegating_agent_id TEXT NOT NULL,
