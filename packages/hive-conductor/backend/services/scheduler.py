@@ -778,7 +778,9 @@ class _ScheduleRunner:
         ``loaded`` is canonical state re-read under the definition lock after due selection.
         When the tick has one, it is the authority and is not rebuilt from
         the Hive row — that rebuild is what let the product dictionary decide
-        a schedule the store had already judged.
+        a schedule the store had already judged. It is still not an authority
+        grant: both branches re-run ``_canonical_scope`` so the membership
+        gate (#1201) holds wherever the definition came from.
         """
         definition = loaded
         if definition is None:
@@ -789,6 +791,15 @@ class _ScheduleRunner:
             if definition is None:
                 logger.debug("Schedule %s names no mission template; nothing to run", sid)
                 return
+        else:
+            # The locked definition decides what would run, but persistence
+            # is not an authorization grant (#1201): the automatic tick
+            # re-runs the same scope resolution the first put went through,
+            # so an actor who has since lost Workspace membership loses
+            # eligibility on this path too, not only where the row is rebuilt
+            # from its Hive projection. Refusal raises before the admitter
+            # sees the definition; ``_tick_due`` logs and moves on.
+            await self._canonical_scope(definition, container)
 
         await self._prime_template(definition, container)
         admission = await admitter.admit_due(

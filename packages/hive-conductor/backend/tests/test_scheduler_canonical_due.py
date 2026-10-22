@@ -25,6 +25,7 @@ from maistro.types.config import AgentConfig
 
 NOW = datetime(2026, 8, 21, 12, 5, tzinfo=UTC)
 NOON = NOW.replace(minute=0)
+LATER = NOON + timedelta(hours=1, minutes=5)
 ROOT = pathlib.Path(__file__).resolve().parents[4]
 
 
@@ -94,10 +95,18 @@ async def configured(database_url: str, monkeypatch: pytest.MonkeyPatch) -> Asyn
     try:
         if database_url.startswith("postgres"):
             assert isinstance(container.schedule_store, PgScheduleStore)
-            # Only our freshly created database, never the configured test server's DB.
-            await container.pg_pool.execute(
-                "TRUNCATE canonical_projects, schedules, graph_templates RESTART IDENTITY CASCADE"
+            # Only our freshly created database, never the configured test
+            # server's DB. Reset every table the scratch database owns, not
+            # just the schedule ones: the fixture writes canonical Workspaces
+            # and memberships here and the spine writes Runs, so a narrow
+            # truncate left duplicate-key errors on the CI postgres leg.
+            tables = await container.pg_pool.fetch(
+                "SELECT tablename FROM pg_tables WHERE schemaname = 'public' "
+                "AND tablename <> 'alembic_version'"
             )
+            assert tables, "the migrated scratch database has no tables to reset"
+            listed = ", ".join(f'"{row["tablename"]}"' for row in tables)
+            await container.pg_pool.execute(f"TRUNCATE {listed} RESTART IDENTITY CASCADE")
         else:
             assert isinstance(container.schedule_store, SqliteScheduleStore)
         await container.workspace_store.create(
@@ -342,6 +351,56 @@ async def test_tick_never_backfills_an_orphan_hive_row(configured: Any) -> None:
     await _ScheduleRunner()._tick()
     assert await configured.schedule_store.get("orphan") is None
     assert len(await runs(configured)) == 1
+
+
+async def test_tick_stops_firing_when_the_actor_loses_membership(
+    configured: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Revocation holds on the production tick entry, end to end (#1201).
+
+    The first tick fires the schedule's owed occurrence; after the actor's
+    Workspace membership is removed the schedule becomes due again and must
+    not admit a second Run — persisting the definition was never an authority
+    grant, so the actor who lost membership stops spending the Workspace's.
+    """
+    import logging
+
+    import services.scheduler as sched_mod
+    from services.scheduler import _ScheduleRunner
+
+    from maistro.workspaces.model import WorkspaceRole
+
+    await configured.workspace_store.set_membership(
+        "tick-parity", user_id="tick-guest", role=WorkspaceRole.CONTRIBUTOR
+    )
+    current = await configured.schedule_store.get("tick-schedule")
+    await configured.schedule_store.put(
+        current.model_copy(update={"actor_principal_id": "tick-guest"})
+    )
+
+    await _ScheduleRunner()._tick()
+    [first] = await runs(configured)
+    assert first.status is RunStatus.COMPLETED
+    assert first.actor_principal_id == "tick-guest"
+
+    await configured.workspace_store.remove_membership("tick-parity", user_id="tick-guest")
+
+    class LaterClock:
+        @staticmethod
+        def now(tz: object = None) -> datetime:
+            return LATER
+
+    monkeypatch.setattr(sched_mod, "datetime", LaterClock)
+    with caplog.at_level(logging.WARNING, logger="services.scheduler"):
+        await _ScheduleRunner()._tick()
+    assert "no longer a Workspace member" in caplog.text
+    assert [item.run_id for item in await runs(configured)] == [first.run_id]
+    recorded = await configured.schedule_store.get("tick-schedule")
+    assert recorded is not None
+    assert recorded.runs_so_far == 1
+    assert recorded.next_due_at == NOON + timedelta(hours=1)
 
 
 @pytest.mark.parametrize("cursor_failure", [False, True])
