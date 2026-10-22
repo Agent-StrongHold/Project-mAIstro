@@ -84,6 +84,7 @@ Every child research epic/leaf defines:
 
 | Note | Family | Epic / leaf | Disposition at this head |
 |---|---|---|---|
+| [881 — execution-lifecycle state machines](881-execution-lifecycle-state-machines.md) | M8-A1 | leaf [#881](https://github.com/Agent-StrongHold/Project-mAIstro/issues/881), epic #880 | INCUBATE |
 | [882 — invocation effect/idempotency stateful testing](882-invocation-effect-idempotency-stateful-testing.md) | M8-A2 | leaf [#882](https://github.com/Agent-StrongHold/Project-mAIstro/issues/882), epic #880 | GRADUATE |
 | [891 — direct Z3/SMT modeling of the schedule fire decision](891-z3-smt-fire-decision.md) | M8-A11 | leaf [#891](https://github.com/Agent-StrongHold/Project-mAIstro/issues/891), epic #880 | WATCH |
 | [894 — critical-zone mutation strategy](894-critical-zone-mutation-strategy.md) | M8-A14 | leaf [#894](https://github.com/Agent-StrongHold/Project-mAIstro/issues/894), epic #880 | INCUBATE |
@@ -120,9 +121,9 @@ Every child research epic/leaf defines:
 | [897 — Lean/Leanstral + Rust/Aeneas correctness kernel](897-lean-leanstral-rust-aeneas-correctness-kernel.md) | M8-A | leaf [#897](https://github.com/Agent-StrongHold/Project-mAIstro/issues/897), epic #880 | WATCH |
 
 One leaf holds a GRADUATE disposition (invocation effect/idempotency stateful testing
-#882, scoped to its seam); six are INCUBATE (critical-zone
-mutation #894, fuzzing leaf #896, model-routing leaves #914 and #916, plan-search leaf
-#928, and graph-pattern reuse leaf #929) and the rest are WATCH. Dispositions are owned by
+#882, scoped to its seam); seven are INCUBATE (execution-lifecycle state machines #881,
+critical-zone mutation #894, fuzzing leaf #896, model-routing leaves #914 and #916,
+plan-search leaf #928, and graph-pattern reuse leaf #929) and the rest are WATCH. Dispositions are owned by
 the individual notes —
 update the note first, then this table.
 
@@ -130,14 +131,15 @@ The initial research family, M8-A advanced software verification and assurance
 ([#880](https://github.com/Agent-StrongHold/Project-mAIstro/issues/880), leaves #881–#897), is
 tracked on GitHub with its in-repo evidence infrastructure in [`formal/`](../../formal/)
 ([INVARIANTS](../../formal/INVARIANTS.md), [README](../../formal/README.md)); its leaves that
-have produced research notes keep them in this folder ([#882](882-invocation-effect-idempotency-stateful-testing.md),
+have produced research notes keep them in this folder ([#881](881-execution-lifecycle-state-machines.md),
+[#882](882-invocation-effect-idempotency-stateful-testing.md),
 [#884](884-tla-plus-model-checking-execution-concurrency.md), [#885](885-differential-reference-model-testing.md),
 [#887](887-postgresql-concurrency-race-harness.md), [#888](888-replay-checkpoint-equivalence.md),
 [#889](889-metamorphic-testing.md), [#890](890-crosshair-symbolic-execution-pure-invariants.md),
 [#891](891-z3-smt-fire-decision.md), [#894](894-critical-zone-mutation-strategy.md),
 [#896](896-coverage-guided-fuzzing-parser-surfaces.md),
 [#897](897-lean-leanstral-rust-aeneas-correctness-kernel.md), [#918](918-concurrency-model-checking-tla-apalache.md));
-#882, #891, #894, #896, #918, and #897 are registered in the index above.
+#881, #882, #891, #894, #896, #918, and #897 are registered in the index above.
 
 ## Milestone object note
 
