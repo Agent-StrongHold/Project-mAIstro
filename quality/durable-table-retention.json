@@ -734,6 +734,19 @@
       "notes": "No DELETE anywhere in the tree; rows accumulate for the life of the deployment."
     },
     {
+      "table": "event_replay_cursors",
+      "backends": [
+        "postgres",
+        "sqlite"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/events/durable_log.py",
+      "data_class": "runtime_state",
+      "retention": "undecided",
+      "deletion_path": null,
+      "issue": "#325",
+      "notes": "One row per replay consumer (#836); bounded by the consumer count, not by time. Same shape as consumer_cursors."
+    },
+    {
       "table": "feature_corrections",
       "backends": [
         "postgres"

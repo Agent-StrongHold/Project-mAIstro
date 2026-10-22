@@ -424,6 +424,13 @@ jobs:
       # same arcs passed against a real server in the `postgres` job — the
       # exact shape #231 documented for scheduling.
       #
+      # `capabilities/test_backend_effect_context.py` joins by that same rule
+      # (#16/#1133): its PostgreSQL leg selects the canonical EventStore through
+      # `new_backend_effect_context(pg_pool=...)`, and no other producer runs
+      # `tests/capabilities` against a server. Without it here the `pg_pool`
+      # branch scores 0% in this producer while `coverage (no services)` skips
+      # the leg, so the diff gate read the new selection seam as untested code.
+      #
       # `personas` joins by that same rule (#12): `personas/pg_store.py` is a
       # new PostgreSQL store whose durable contract gates its legs on
       # MAISTRO_TEST_PG_DSN, so everywhere else the PostgreSQL half skips and
@@ -438,6 +445,7 @@ jobs:
             -m pytest packages/maistro-core/tests/persistence \
             packages/maistro-core/tests/test_container_postgres.py \
             packages/maistro-core/tests/events \
+            packages/maistro-core/tests/capabilities/test_backend_effect_context.py \
             packages/maistro-core/tests/runs \
             packages/maistro-core/tests/graph \
             packages/maistro-core/tests/projects \
@@ -1339,30 +1347,39 @@ jobs:
           # Re-measured on develop: 137 block identities, xenon and the ledger
           # one-for-one, module and average axes clean.
           #
-          # 137 -> 134 (#1791, developed in parallel with the waves above and
-          # merged here): the three consistency-evaluator blocks in
-          # maistro-design (consistency.py::_build_refinement,
-          # _check_sibling_contradictions, evaluate_project_snapshot) went
-          # from C (17/16/15) to B (8/6/6), and the radon ledger dropped the
-          # same three rows together with their #1682 grants -- the same move
-          # #1674 made for tau_bench. A divergence between this count and the
-          # ledger's length is itself a signal that one of the two instruments
-          # stopped looking; tests/test_complexity_gate_scope.py pins them
-          # together.
+          # 137 -> 136 (#106): the M4-I verification-aware executor refactor
+          # took durable_runs/executor.py::_build_ctx (and nine further
+          # blocks) below the ledger threshold; quality/radon-baseline.json
+          # banked the improvements and the pin test
+          # (tests/test_complexity_gate_scope.py::
+          # test_xenon_block_ceiling_equals_the_radon_ledger_length) requires
+          # this ceiling to follow the ledger down in the same PR.
           #
-          # 134 -> 129 (#1792): the six blocks #1730 created or regressed in
-          # maistro-rsi went under the C ceiling -- fail_first.py's
-          # _has_related_failure, collect_fail_first_evidence and
-          # fail_first_gate (C 14/12/11 -> B 9/6/6) and candidate_fitness.py's
-          # evaluate_candidate and compose_scorecard (C (20) and D (23) at
-          # this branch's landing base -> B (8) and A (2));
+          # 136 -> 133 (#1791, developed in parallel on develop and merged
+          # here): the three consistency-evaluator blocks in maistro-design
+          # (consistency.py::_build_refinement, _check_sibling_contradictions,
+          # evaluate_project_snapshot) went from C (17/16/15) to B (8/6/6),
+          # and the radon ledger dropped the same three rows together with
+          # their #1682 grants -- the same move #1674 made for tau_bench. A
+          # divergence between this count and the ledger's length is itself a
+          # signal that one of the two instruments stopped looking;
+          # tests/test_complexity_gate_scope.py pins them together.
+          # Re-measured on the merged branch: 133 block identities, xenon and
+          # the ledger one-for-one; module and average axes clean.
+          #
+          # 133 -> 128 (#1792, synced from develop): the six blocks #1730
+          # created or regressed in maistro-rsi went under the C ceiling --
+          # fail_first.py's _has_related_failure, collect_fail_first_evidence
+          # and fail_first_gate (C 14/12/11 -> B 9/6/6) and
+          # candidate_fitness.py's evaluate_candidate and compose_scorecard
+          # (C (20) and D (23) at this branch's landing base -> B (8) and A (2));
           # LocalRsiLoop._fitness_decision was already B (10) here, so it has
           # no ledger row to drop. The radon ledger dropped the same five rows
           # and all nine of their #1682/#1793 grant entries (both grant
           # generations for the three callers). The xenon re-run at the merge
-          # commit reports 129 block identities matching the ledger
+          # commit reports 128 block identities matching the ledger
           # one-for-one; module and average axes clean.
-          XENON_BASELINE: 129
+          XENON_BASELINE: 128
           # Module rank was never gated at all. The old count matched only
           # '^ERROR:xenon:block', so a whole module drifting to C passed in
           # silence; widening the scope surfaced one.

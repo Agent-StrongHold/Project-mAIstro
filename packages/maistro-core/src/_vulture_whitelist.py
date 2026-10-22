@@ -123,6 +123,7 @@ from maistro.security.sentinel.audit import InMemoryAuditLog
 from maistro.security.sentinel.delegation import InMemoryDelegationAuthority
 from maistro.security.sentinel.policy import Sentinel
 from maistro.security.strikes import InMemoryStrikeTracker
+from maistro.skills.parser import SKILL_SECURITY_SCAN_VERSION
 from maistro.state import PersistedStore
 from maistro.workspaces.campaigns.model import (
     Actor,
@@ -670,4 +671,10 @@ _VULTURE_WHITELIST = (
     InstallablePackRegistry.instantiate_graph,
     InstallablePackRegistry.instantiate_persona,
     InstallablePackRegistry.instantiate_rubric,
+    # #288 scan-surface provenance: `security_scan` (maistro.skills.parser) is a
+    # public content scanner, but its policy-version identity is surfaced only
+    # by the HTTP scan route (packages/hive-conductor/backend/routes/skills.py),
+    # which this packages/*/src scan does not walk. Whitelist the identity, not
+    # a stub -- the route names the rule set a `clean` verdict was judged by.
+    SKILL_SECURITY_SCAN_VERSION,
 )
