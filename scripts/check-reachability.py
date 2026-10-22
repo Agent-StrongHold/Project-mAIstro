@@ -64,6 +64,18 @@ _EXCLUDED_PACKAGE_PYTHON = frozenset(
         # reachability authorization (two-merge rule); classifying it keeps the
         # source-universe honest without expanding the ratchet baseline.
         "packages/maistro-core/src/maistro/runs/admission_identity.py",
+        # `packages/maistro-core/src/maistro/tasks/admission_generation.py` is
+        # the same class of leaf one layer up (#1852, parent #1845): a pure,
+        # deliberately inactive replay-generation classifier whose sole
+        # function `_assess` gets a runtime consumer only from the separately
+        # reviewed #1845 integration; until then no import, initializer
+        # export, baseline entry, or grant may exist for it. Classified here
+        # for the same reason as its #1851 sibling: the baseline may grow only
+        # behind a prior landed reachability authorization (two-merge rule);
+        # classifying it keeps the source-universe honest without expanding
+        # the ratchet baseline. Removing this classification while the module
+        # is still unwired fails this gate again, by construction.
+        "packages/maistro-core/src/maistro/tasks/admission_generation.py",
         # Developer utilities.
         "packages/hive-conductor/run_hill_climb.py",
         "packages/maistro-evolve/examples/builders_swebench_live.py",

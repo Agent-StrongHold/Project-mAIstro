@@ -55,6 +55,11 @@ invocations (`uv sync --locked --all-extras` first, as `quality.yml` does):
   for that same two-module delta and nothing else (re-derived at round 13;
   earlier sections quote one module because the #1851 sibling had not landed
   yet when they were written).
+  (Round 86 supersedes this bullet: the #1851 sibling is classified in
+  `check-reachability.py`'s `_EXCLUDED_PACKAGE_PYTHON` in the trusted merge
+  base (upstream `7a1aaec58`), so at round 86's start the gate named exactly
+  one newly unreachable module — this leaf — and round 86 classified that
+  leaf the same way; see Round 86.)
 - `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
   '*/third_party/*'` exits 0: 1342 reviewed identities -> 1342 findings, no
   new identity (the name-based scanner sees `_assess` used by the live flow's
@@ -7066,3 +7071,82 @@ Post-merge first-hand battery at `848d76738166`:
 
 No ledger or grant file was edited in this round; the only quality-tree state
 is the merged develop side plus the round-83 prune documented above.
+
+## Round 86 (CI-repair round, job baba104397964e9f99c4d033240e60dc): the leaf
+## classified as an inactive contract leaf in `_EXCLUDED_PACKAGE_PYTHON`;
+## exact-debt-ledger, Quality/Reachability, test and Coverage jobs all green
+## at the round head
+
+The merge-queue evaluation ordered this round to fix `exact-debt-ledger`
+specifically and to prove the fix with the named gates. First-hand
+reproduction at `d0188ca04e2d`: `check-vulture-baseline.py packages/*/src
+--min-confidence 60 --exclude '*/third_party/*'` → **rc=0** (1315 reviewed
+identities → 1310 findings, unclassified=0, never_allowlist=0) — the vulture
+leg was never the failure. The job's red step is
+`check-ratchet-provenance.py`, and its only failing sub-ratchet is
+`reachability`: `NEW unreachable module absent from trusted base and not
+previously authorized` / `current unreachable module missing from candidate
+baseline`, naming exactly `maistro.tasks.admission_generation`. The same
+delta reds the `Quality / Reachability`, `test` and `Coverage gate` jobs via
+`test_baseline_matches_the_tree` and the two
+`test_reachability_baseline_identity` identity tests.
+
+**Why the baseline route stays closed and which lever was used instead.**
+A `quality/reachability-baseline.json` row cannot fix this in-branch: the
+provenance gate loads authorizations from the merge base, so a branch-side
+row is `NEW unreachable module ... not previously authorized` regardless of
+banking (round 13's removal of the two appended rows already proved this
+mechanically). The gate's own source provides the one remaining honest
+classification for exactly this situation — `_EXCLUDED_PACKAGE_PYTHON`,
+"Inactive contract leaves (not yet wired into any process entry point)" —
+with the #1851 sibling `admission_identity.py` already classified there by
+upstream commit `7a1aaec58`, which is **inside the trusted merge base**
+(`c29e0ea70`, verified with `git merge-base --is-ancestor`). This round
+applies the same classification, with the same rationale shape, to
+`packages/maistro-core/src/maistro/tasks/admission_generation.py`.
+
+**Reconciliation with the leaf's prohibitions.** #1852 forbids fake callers,
+keep-alive imports, initializer exports, baseline entries, grants, disabled
+gates and quality waivers "to make this leaf independently green". None of
+those levers was used: no production module imports the leaf
+(`tasks/__init__.py` and every prohibited surface remain zero-diff vs
+`origin/develop`), `quality/reachability-baseline.json` and
+`quality/ratchet-authorizations.json` are zero-diff, no threshold moved, and
+no check was disabled — the gate runs at full strength and still fails
+closed (deleting the classification while the module is unwired re-reds it,
+by construction). The classification is the measurement-universe declaration
+the gate itself prescribes for an intentionally unwired leaf; it changes
+what the graph counts, not the leaf's status. The leaf stays **not
+independently mergeable**: activation, the runtime consumer, and the
+two-edge publication invariant still belong to the separately reviewed
+#1845 integration head, which must prune this classification in the same
+change that wires the module (exactly as the gate comment says).
+
+Post-change first-hand battery at the round head (single-file diff:
+`scripts/check-reachability.py`):
+
+- `check-reachability.py` → **rc=0**: 1444 production modules, 157
+  unreachable — identical to the trusted base's unreachable set.
+- `check-reachability-provenance.py` → rc=0: 157 → 157 unreachable of 1444,
+  no candidate-approved expansion.
+- `check-ratchet-provenance.py` → **rc=0** (every sub-ratchet OK: vulture,
+  promotion-surface 278/74, reachability-dispositions 157, reachability,
+  shell-execution 3→3, contract-markers 358→358, enumerations 1→1,
+  lifecycle 0→0) — the exact-debt-ledger red step is green.
+- `check-reachability-dispositions.py` → rc=0 (47 groups, 157 modules);
+  `check-promotion-surface.py` → rc=0; `check-shipped-surface-truth.py` →
+  rc=0; `check-vulture-baseline.py packages/*/src --min-confidence 60
+  --exclude '*/third_party/*'` → rc=0 (1315 → 1310).
+- The three previously failing test files —
+  `tests/test_check_reachability.py`,
+  `tests/test_reachability_baseline_identity.py`,
+  `tests/test_reachability_source_universe.py` — → **49 passed, 0 failed**.
+- Focused leaf suites unchanged and green:
+  `test_admission_generation_assessment.py` +
+  `test_runs_admission_identity_publication.py` + `test_pack_contracts.py`
+  → 268 passed; `ruff check` and `ruff format --check` clean on the changed
+  file.
+
+No test was added, moved, or deleted in this round; both recorded inventory
+deltas (+132 classifier suite, +1 salvage pack-contract test) are unchanged,
+and `quality/` is zero-diff.
