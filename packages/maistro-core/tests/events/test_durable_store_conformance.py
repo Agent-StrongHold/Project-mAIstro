@@ -24,17 +24,26 @@ from __future__ import annotations
 
 import asyncio
 import os
+from typing import ClassVar
 
 import aiosqlite
 import pytest
 
 from maistro.events.consumer_cursor import InMemoryConsumerCursorStore, SqliteConsumerCursorStore
-from maistro.events.durable_log import InMemoryEventLog, SqliteEventLog
+from maistro.events.durable_log import InMemoryEventLog, LoggedEvent, SqliteEventLog
 from maistro.events.invocations import (
+    DeliveryAlreadyStarted,
+    DeliveryAttemptLimitReached,
+    DeliveryDisposition,
+    DeliveryIdentity,
+    DeliveryIdentityMismatch,
+    HandlerCallOutcome,
     HandlerInvocation,
     InMemoryInvocationStore,
     InvocationStatus,
+    ReplaySafety,
     SqliteInvocationStore,
+    request_digest_v1,
 )
 from maistro.events.trigger_store import (
     InMemoryTriggerStore,
@@ -251,6 +260,18 @@ class TestEventLog:
         assert read is not None
         assert read.payload == payload
 
+    async def test_append_rejects_non_strict_json_payloads(self, event_log):
+        """NaN would persist but raise in `request_digest_v1` (allow_nan=False)
+        before the receipt claim — no receipt could ever settle, so the cursor
+        would wedge on that event forever. Append is the gate, for non-finite
+        floats and for values `json` cannot encode at all."""
+        with pytest.raises(ValueError, match="strictly JSON-encodable"):
+            await event_log.append("e", payload={"score": float("nan")})
+        with pytest.raises(ValueError, match="strictly JSON-encodable"):
+            await event_log.append("e", payload={"bad": [float("inf")]})
+        with pytest.raises(ValueError, match="strictly JSON-encodable"):
+            await event_log.append("e", payload={"s": {1, 2}})
+
     async def test_get_returns_none_for_an_unknown_id(self, event_log):
         assert await event_log.get(999_999) is None
 
@@ -348,16 +369,31 @@ async def test_pg_replay_cursor_survives_a_pool_restart():
 class TestTriggerStore:
     async def test_add_then_get_round_trips(self, trigger_store):
         trigger = TriggerDefinition(
-            trigger_id="t1", name="n", event_pattern="task.*", handler_url="http://h", enabled=True
+            trigger_id="t1",
+            name="n",
+            event_pattern="task.*",
+            handler_url="http://h",
+            enabled=True,
+            replay_safety=ReplaySafety.IDEMPOTENT,
+            contract_ref="contract-v1",
         )
         await trigger_store.add(trigger)
         read = await trigger_store.get("t1")
         assert read is not None
-        assert (read.name, read.event_pattern, read.handler_url, read.enabled) == (
+        assert (
+            read.name,
+            read.event_pattern,
+            read.handler_url,
+            read.enabled,
+            read.replay_safety,
+            read.contract_ref,
+        ) == (
             "n",
             "task.*",
             "http://h",
             True,
+            ReplaySafety.IDEMPOTENT,
+            "contract-v1",
         )
 
     async def test_get_returns_none_for_an_unknown_id(self, trigger_store):
@@ -453,76 +489,571 @@ class TestInvocationStore:
         assert len(await invocations.list_for_event(2)) == 1
 
 
-class TestDispatchIsLeasedToOneWorker:
-    """The composite key deduplicates rows. It does not deduplicate *dispatch*
-    (Codex review, #181).
+def _identity(
+    url: str = "http://h",
+    digest: str = "v1:d",
+    safety: ReplaySafety = ReplaySafety.IDEMPOTENT,
+    ref: str = "contract-v1",
+) -> DeliveryIdentity:
+    return DeliveryIdentity(
+        handler_url=url, request_digest=digest, replay_safety=safety, contract_ref=ref
+    )
 
-    `get_or_create` hands every racing worker the same non-terminal row, and
-    `process_events` reads "not terminal" as permission to call the handler — so
-    one event fired the side effect once per worker while the bookkeeping showed
-    a single tidy invocation. ADR-086 says a handler is invoked "at most once
-    successfully per event"; one row and two handler calls is not that.
+
+async def _claim_and_begin(invocations, identity, *, trigger_id="t1", event_id=1):
+    claimed = await invocations.claim(trigger_id, event_id, delivery=identity)
+    assert claimed is not None
+    begun = await invocations.begin_dispatch(
+        trigger_id,
+        event_id,
+        claim_token=claimed.claim_token,
+        expected_revision=claimed.revision,
+        delivery=identity,
+    )
+    assert begun is not None
+    return claimed, begun
+
+
+class TestDeliveryReceiptContract:
+    """The #1060 §6 conformance body over memory, SQLite and PostgreSQL.
+
+    One contract, three backends: detached snapshots, one key winner, exact
+    immutable context, the begin/send cap including kill loops, stale CAS
+    never sends or settles, a delayed old sender after takeover, the UNKNOWN
+    oracle for inherited uncertainty, and fail-closed legacy migration.
     """
 
-    async def test_only_one_of_many_racing_claims_succeeds(self, invocations):
-        claims = await asyncio.gather(*(invocations.claim("t1", 42) for _ in range(16)))
+    async def test_reads_are_detached_snapshots(self, invocations):
+        identity = _identity()
+        claimed = await invocations.claim("t1", 1, delivery=identity)
+        assert claimed is not None
+        claimed.status = InvocationStatus.SUCCESS  # mutate the snapshot...
+        reread = await invocations.get("t1", 1)
+        assert reread is not None
+        assert reread.status is InvocationStatus.PENDING  # ...the store kept its truth
 
+    async def test_one_claim_wins_and_allocates_exactly_one_key(self, invocations):
+        identity = _identity()
+        claims = await asyncio.gather(
+            *(invocations.claim("t1", 42, delivery=identity) for _ in range(16))
+        )
         winners = [c for c in claims if c is not None]
-        assert len(winners) == 1, f"{len(winners)} workers would have called the handler"
+        assert len(winners) == 1, f"{len(winners)} workers would have sent"
+        assert winners[0].delivery_key is not None
         assert len(await invocations.list_for_event(42)) == 1
+        # The loser gets None, never a dispatchable row.
+        assert await invocations.claim("t1", 42, delivery=identity) is None
 
-    async def test_the_loser_gets_none_rather_than_a_dispatchable_row(self, invocations):
-        """The distinction the bug turned on: a non-terminal row reads as
-        permission to dispatch, so the loser must not receive one."""
-        assert await invocations.claim("t1", 1) is not None
-        assert await invocations.claim("t1", 1) is None
+    async def test_a_live_lease_or_settled_row_refuses_the_claim(self, invocations):
+        identity = _identity()
+        _, begun = await _claim_and_begin(invocations, identity)
+        # Live lease: refused (covered above too, but this pins the in-flight
+        # marker case, where a crash has left the receipt mid-dispatch).
+        assert await invocations.claim("t1", 1, delivery=identity) is None
+        settled = await invocations.settle(
+            "t1",
+            1,
+            claim_token=begun.claim_token,
+            expected_revision=begun.revision,
+            status=InvocationStatus.SUCCESS,
+            outcome=HandlerCallOutcome(DeliveryDisposition.ACKNOWLEDGED),
+        )
+        assert settled is not None
+        # Cursor-settled: refused forever after.
+        assert await invocations.claim("t1", 1, delivery=identity) is None
 
-    async def test_a_terminal_invocation_is_never_reclaimed(self, invocations):
-        invocation = await invocations.claim("t1", 1)
-        assert invocation is not None
-        invocation.status = InvocationStatus.SUCCESS
-        invocation.lease_expires_at = 0.0
-        await invocations.save(invocation)
-
-        assert await invocations.claim("t1", 1) is None
-
-    async def test_a_released_lease_can_be_reclaimed(self, invocations):
-        """The normal retry path: a handler failed, the worker released the
-        lease, the next tick must be able to pick the event up again. Without
-        this the retry waits out the whole lease window instead."""
-        first = await invocations.claim("t1", 1)
+    async def test_the_prepared_identity_is_immutable_across_claims(self, invocations):
+        """A takeover with a different destination keeps the frozen context —
+        the owning processor settles the mismatch visibly, without HTTP."""
+        first = await invocations.claim("t1", 1, delivery=_identity())
         assert first is not None
-        first.status = InvocationStatus.RETRYING
-        first.lease_expires_at = 0.0
-        await invocations.save(first)
-
-        second = await invocations.claim("t1", 1)
-        assert second is not None
-        assert second.attempts == 2
-
-    async def test_an_expired_lease_is_reclaimable(self, invocations):
-        """A worker killed between claiming and finishing releases nothing. The
-        lease has to lapse on its own, or one dead process strands the event
-        forever — trading a double-dispatch bug for a stuck-queue one."""
-        assert await invocations.claim("t1", 1, lease_seconds=-1.0) is not None
-
-        reclaimed = await invocations.claim("t1", 1)
+        await invocations.settle(
+            "t1",
+            1,
+            claim_token=first.claim_token,
+            expected_revision=first.revision,
+            status=InvocationStatus.RETRYING,
+            outcome=HandlerCallOutcome(DeliveryDisposition.NOT_APPLIED, "pre_send_refusal"),
+        )
+        changed = _identity(url="http://other", digest="v1:other", ref="contract-v2")
+        reclaimed = await invocations.claim("t1", 1, delivery=changed)
         assert reclaimed is not None
-        assert reclaimed.attempts == 2
+        assert reclaimed.delivery_key == first.delivery_key
+        assert (reclaimed.handler_url, reclaimed.request_digest, reclaimed.contract_ref) == (
+            "http://h",
+            "v1:d",
+            "contract-v1",
+        )
+        # begin with the changed identity is an identity mismatch, not a send.
+        with pytest.raises(DeliveryIdentityMismatch):
+            await invocations.begin_dispatch(
+                "t1",
+                1,
+                claim_token=reclaimed.claim_token,
+                expected_revision=reclaimed.revision,
+                delivery=changed,
+            )
 
-    async def test_claiming_counts_attempts_so_retries_still_converge(self, invocations):
-        """`process_events` used to increment `attempts` itself. Now the claim
-        does, inside the same statement — otherwise a handler that keeps dying
-        is retried forever by whichever worker wins each round."""
-        for expected in (1, 2, 3):
-            invocation = await invocations.claim("t1", 1, lease_seconds=-1.0)
-            assert invocation is not None
-            assert invocation.attempts == expected
+    async def test_begin_consumes_the_sole_send_permission(self, invocations):
+        identity = _identity()
+        claimed = await invocations.claim("t1", 1, delivery=identity)
+        assert claimed is not None
+        begun = await invocations.begin_dispatch(
+            "t1",
+            1,
+            claim_token=claimed.claim_token,
+            expected_revision=claimed.revision,
+            delivery=identity,
+        )
+        assert begun is not None
+        assert begun.attempts == 1
+        assert begun.dispatch_started_at is not None
+        assert begun.revision == claimed.revision + 1
+        # A second begin for one claim is refused.
+        with pytest.raises(DeliveryAlreadyStarted):
+            await invocations.begin_dispatch(
+                "t1",
+                1,
+                claim_token=claimed.claim_token,
+                expected_revision=begun.revision,
+                delivery=identity,
+            )
 
-    async def test_claims_on_different_keys_do_not_block_each_other(self, invocations):
-        assert await invocations.claim("t1", 1) is not None
-        assert await invocations.claim("t2", 1) is not None
-        assert await invocations.claim("t1", 2) is not None
+    async def test_the_cap_survives_repeated_death_and_reclaim(self, invocations):
+        """Kill loops cannot buy a fourth send: begin, not claim, spends budget."""
+        identity = _identity()
+        for expected in (1, 2):
+            claimed, begun = await _claim_and_begin(invocations, identity)
+            assert begun.attempts == expected
+            await invocations.settle(
+                "t1",
+                1,
+                claim_token=claimed.claim_token,
+                expected_revision=begun.revision,
+                status=InvocationStatus.RETRYING,
+                outcome=HandlerCallOutcome(DeliveryDisposition.NOT_APPLIED, "pre_send_refusal"),
+            )
+        # Third send: consumed, then the worker dies without settling.
+        await _claim_and_begin(invocations, identity)
+        assert (await invocations.get("t1", 1)).attempts == 3
+        # Lease lapse, takeover, one more begin attempt: refused at the cap.
+        raw = await invocations.get("t1", 1)
+        assert raw is not None
+        expired = raw.__class__(**{**raw.__dict__, "lease_expires_at": 0.0})
+        await invocations.save(expired)
+        exhausted = await invocations.claim("t1", 1, delivery=identity)
+        assert exhausted is not None  # a claim may still settle the receipt...
+        with pytest.raises(DeliveryAttemptLimitReached):
+            await invocations.begin_dispatch(
+                "t1",
+                1,
+                claim_token=exhausted.claim_token,
+                expected_revision=exhausted.revision,
+                delivery=identity,
+            )
+
+    async def test_stale_cas_never_settles(self, invocations):
+        identity = _identity()
+        claimed, _begun = await _claim_and_begin(invocations, identity)
+        stale = await invocations.settle(
+            "t1",
+            1,
+            claim_token=claimed.claim_token,
+            expected_revision=claimed.revision,  # the begin bumped it
+            status=InvocationStatus.SUCCESS,
+            outcome=HandlerCallOutcome(DeliveryDisposition.ACKNOWLEDGED),
+        )
+        assert stale is None
+        current = await invocations.get("t1", 1)
+        assert current is not None
+        assert current.status is InvocationStatus.PENDING  # nothing changed
+
+    async def test_a_delayed_old_sender_cannot_settle_after_takeover(self, invocations):
+        """The old sender stalled mid-dispatch; its lease lapsed, a new worker
+        took over — the old owner's late settlement is a no-op."""
+        identity = _identity()
+        first, begun = await _claim_and_begin(invocations, identity)
+        # Lease lapse + takeover (simulated expiry write, standing in for time).
+        raw = await invocations.get("t1", 1)
+        assert raw is not None
+        expired = raw.__class__(**{**raw.__dict__, "lease_expires_at": 0.0})
+        await invocations.save(expired)
+        takeover = await invocations.claim("t1", 1, delivery=identity)
+        assert takeover is not None
+        assert takeover.uncertain_prior_dispatch  # the marker folded
+        # The old sender finally answers with an ack — too late.
+        late = await invocations.settle(
+            "t1",
+            1,
+            claim_token=first.claim_token,
+            expected_revision=begun.revision,
+            status=InvocationStatus.SUCCESS,
+            outcome=HandlerCallOutcome(DeliveryDisposition.ACKNOWLEDGED),
+        )
+        assert late is None
+        current = await invocations.get("t1", 1)
+        assert current is not None
+        assert current.claim_token == takeover.claim_token
+
+    async def test_begin_and_settle_reject_an_empty_token_or_negative_revision(self, invocations):
+        identity = _identity()
+        await invocations.claim("t1", 1, delivery=identity)
+        with pytest.raises(ValueError):
+            await invocations.begin_dispatch(
+                "t1", 1, claim_token="", expected_revision=0, delivery=identity
+            )
+        with pytest.raises(ValueError):
+            await invocations.begin_dispatch(
+                "t1", 1, claim_token="token", expected_revision=-1, delivery=identity
+            )
+        with pytest.raises(ValueError):
+            await invocations.settle(
+                "t1",
+                1,
+                claim_token="",
+                expected_revision=0,
+                status=InvocationStatus.FAILED,
+                outcome=HandlerCallOutcome(DeliveryDisposition.NOT_APPLIED, "x"),
+            )
+        with pytest.raises(ValueError):
+            await invocations.settle(
+                "t1",
+                1,
+                claim_token="token",
+                expected_revision=-1,
+                status=InvocationStatus.FAILED,
+                outcome=HandlerCallOutcome(DeliveryDisposition.NOT_APPLIED, "x"),
+            )
+
+    async def test_a_stale_begin_is_not_misread_as_a_fact_about_the_owner(self, invocations):
+        """A begin that lost its claim reports ``None``, never an identity or
+        budget fact about the receipt the current owner holds."""
+        identity = _identity()
+        _first, begun = await _claim_and_begin(invocations, identity)
+        raw = await invocations.get("t1", 1)
+        assert raw is not None
+        expired = raw.__class__(**{**raw.__dict__, "lease_expires_at": 0.0})
+        await invocations.save(expired)
+        takeover = await invocations.claim("t1", 1, delivery=identity)
+        assert takeover is not None
+        stale = await invocations.begin_dispatch(
+            "t1",
+            1,
+            claim_token=_first.claim_token,
+            expected_revision=begun.revision,
+            delivery=identity,
+        )
+        assert stale is None
+
+    async def test_an_expired_lease_begin_returns_none_without_a_fact(self, invocations):
+        """A begin whose lease lapsed (no takeover yet) is stale, not a cap or
+        identity fact: the store reports ``None`` and changes nothing."""
+        identity = _identity()
+        claimed = await invocations.claim("t1", 1, delivery=identity)
+        assert claimed is not None
+        raw = await invocations.get("t1", 1)
+        assert raw is not None
+        expired = raw.__class__(**{**raw.__dict__, "lease_expires_at": 0.0})
+        await invocations.save(expired)
+        refused = await invocations.begin_dispatch(
+            "t1",
+            1,
+            claim_token=claimed.claim_token,
+            expected_revision=claimed.revision,
+            delivery=identity,
+        )
+        assert refused is None
+        current = await invocations.get("t1", 1)
+        assert current is not None
+        assert current.attempts == 0  # the refusal did not consume an attempt
+
+    async def test_indeterminate_then_not_applied_stays_unknown_on_exhaustion(self, invocations):
+        identity = _identity()
+        claimed, begun = await _claim_and_begin(invocations, identity)
+        settled = await invocations.settle(
+            "t1",
+            1,
+            claim_token=claimed.claim_token,
+            expected_revision=begun.revision,
+            status=InvocationStatus.RETRYING,
+            outcome=HandlerCallOutcome(DeliveryDisposition.INDETERMINATE, "conn_lost"),
+        )
+        assert settled is not None and settled.uncertain_prior_dispatch
+        # A later proven not-applied call never clears the uncertainty, and
+        # FAILED is refused while it exists.
+        second, begun2 = await _claim_and_begin(invocations, identity)
+        assert second.claim_token != claimed.claim_token
+        with pytest.raises(ValueError):
+            await invocations.settle(
+                "t1",
+                1,
+                claim_token=second.claim_token,
+                expected_revision=begun2.revision,
+                status=InvocationStatus.FAILED,
+                outcome=HandlerCallOutcome(DeliveryDisposition.NOT_APPLIED, "proven_absent"),
+            )
+        unknown = await invocations.settle(
+            "t1",
+            1,
+            claim_token=second.claim_token,
+            expected_revision=begun2.revision,
+            status=InvocationStatus.UNKNOWN,
+            outcome=HandlerCallOutcome(DeliveryDisposition.NOT_APPLIED, "proven_absent"),
+        )
+        assert unknown is not None
+        assert unknown.uncertain_prior_dispatch  # never cleared
+        assert unknown.settled_for_cursor
+
+    async def test_unknown_is_inspectable_and_never_reclaimed(self, invocations):
+        identity = _identity()
+        claimed, begun = await _claim_and_begin(invocations, identity)
+        settled = await invocations.settle(
+            "t1",
+            1,
+            claim_token=claimed.claim_token,
+            expected_revision=begun.revision,
+            status=InvocationStatus.UNKNOWN,
+            outcome=HandlerCallOutcome(DeliveryDisposition.INDETERMINATE, "conn_lost"),
+        )
+        assert settled is not None
+        assert settled.last_error_code == "conn_lost"
+        # No automatic claim/replay of a cursor-settled UNKNOWN receipt.
+        assert await invocations.claim("t1", 1, delivery=identity) is None
+
+    async def test_malformed_outcomes_classify_indeterminate_never_acknowledged(self, invocations):
+        identity = _identity()
+        claimed, begun = await _claim_and_begin(invocations, identity)
+        malformed = HandlerCallOutcome(DeliveryDisposition.NOT_APPLIED, "Bad Code!")
+        with pytest.raises(ValueError):
+            await invocations.settle(
+                "t1",
+                1,
+                claim_token=claimed.claim_token,
+                expected_revision=begun.revision,
+                status=InvocationStatus.SUCCESS,
+                outcome=malformed,
+            )
+        unknown = await invocations.settle(
+            "t1",
+            1,
+            claim_token=claimed.claim_token,
+            expected_revision=begun.revision,
+            status=InvocationStatus.UNKNOWN,
+            outcome=malformed,
+        )
+        assert unknown is not None
+        assert unknown.last_outcome is DeliveryDisposition.INDETERMINATE
+        assert unknown.last_error_code == "malformed_outcome"
+
+    async def test_settle_validates_the_evidence_invariants(self, invocations):
+        identity = _identity()
+        claimed, begun = await _claim_and_begin(invocations, identity)
+        token = claimed.claim_token
+        revision = begun.revision
+        # SUCCESS requires acknowledged evidence.
+        with pytest.raises(ValueError):
+            await invocations.settle(
+                "t1",
+                1,
+                claim_token=token,
+                expected_revision=revision,
+                status=InvocationStatus.SUCCESS,
+                outcome=HandlerCallOutcome(DeliveryDisposition.NOT_APPLIED, "absent"),
+            )
+        # FAILED requires an explicit not_applied reason.
+        with pytest.raises(ValueError):
+            await invocations.settle(
+                "t1",
+                1,
+                claim_token=token,
+                expected_revision=revision,
+                status=InvocationStatus.FAILED,
+                outcome=HandlerCallOutcome(DeliveryDisposition.NOT_APPLIED, ""),
+            )
+        # An acknowledged outcome can never settle a non-success status.
+        with pytest.raises(ValueError):
+            await invocations.settle(
+                "t1",
+                1,
+                claim_token=token,
+                expected_revision=revision,
+                status=InvocationStatus.RETRYING,
+                outcome=HandlerCallOutcome(DeliveryDisposition.ACKNOWLEDGED),
+            )
+        # PENDING is not a settle target at all.
+        with pytest.raises(ValueError):
+            await invocations.settle(
+                "t1",
+                1,
+                claim_token=token,
+                expected_revision=revision,
+                status=InvocationStatus.PENDING,
+                outcome=HandlerCallOutcome(DeliveryDisposition.NOT_APPLIED, "x_y"),
+            )
+        # A well-formed uncertainty-bearing RETRYING is allowed here: the
+        # frozen identity enrolled an idempotent contract.
+        retrying = await invocations.settle(
+            "t1",
+            1,
+            claim_token=token,
+            expected_revision=revision,
+            status=InvocationStatus.RETRYING,
+            outcome=HandlerCallOutcome(DeliveryDisposition.INDETERMINATE, "conn_lost"),
+        )
+        assert retrying is not None
+
+    async def test_success_settles_never_bypass_begin_dispatch(self, invocations):
+        """Acknowledged evidence alone cannot terminal-settle a receipt that
+        never began dispatch: zero attempts and no marker would strand the key
+        settled-for-cursor with nothing ever sent (#1060 §3)."""
+        identity = _identity()
+        claimed = await invocations.claim("t1", 1, delivery=identity)
+        assert claimed is not None
+        with pytest.raises(ValueError):
+            await invocations.settle(
+                "t1",
+                1,
+                claim_token=claimed.claim_token,
+                expected_revision=claimed.revision,
+                status=InvocationStatus.SUCCESS,
+                outcome=HandlerCallOutcome(DeliveryDisposition.ACKNOWLEDGED),
+            )
+        # The rejected settlement changes nothing; the claim still holds.
+        current = await invocations.get("t1", 1)
+        assert current is not None
+        assert current.status is InvocationStatus.PENDING
+        assert current.claim_token == claimed.claim_token
+        # After the permission step, the same settlement succeeds.
+        begun = await invocations.begin_dispatch(
+            "t1",
+            1,
+            claim_token=claimed.claim_token,
+            expected_revision=claimed.revision,
+            delivery=identity,
+        )
+        assert begun is not None
+        settled = await invocations.settle(
+            "t1",
+            1,
+            claim_token=begun.claim_token,
+            expected_revision=begun.revision,
+            status=InvocationStatus.SUCCESS,
+            outcome=HandlerCallOutcome(DeliveryDisposition.ACKNOWLEDGED),
+        )
+        assert settled is not None
+        assert settled.status is InvocationStatus.SUCCESS
+        assert settled.attempts == 1
+
+    async def test_uncertainty_bearing_retrying_needs_a_safe_contract(self, invocations):
+        unsafe = _identity(safety=ReplaySafety.UNPROVEN, ref="")
+        claimed, begun = await _claim_and_begin(invocations, unsafe)
+        with pytest.raises(ValueError):
+            await invocations.settle(
+                "t1",
+                1,
+                claim_token=claimed.claim_token,
+                expected_revision=begun.revision,
+                status=InvocationStatus.RETRYING,
+                outcome=HandlerCallOutcome(DeliveryDisposition.INDETERMINATE, "conn_lost"),
+            )
+
+    async def test_the_digest_is_deterministic_for_the_exact_body(self, invocations):
+        """Digest v1 pins the exact destination and Event body: any change
+        is a different delivery identity."""
+        event = LoggedEvent(id=1, event_type="a.b", payload={"k": [1, 2]})
+        d1 = request_digest_v1("http://h", event)
+        assert d1.startswith("v1:")
+        assert d1 == request_digest_v1("http://h", LoggedEvent(**{**event.__dict__}))
+        assert d1 != request_digest_v1("http://h2", event)
+        mutated = LoggedEvent(id=1, event_type="a.b", payload={"k": [2, 1]})
+        assert d1 != request_digest_v1("http://h", mutated)
+
+    async def test_a_truly_unattempted_legacy_row_gets_a_key_on_first_claim(self, invocations):
+        identity = _identity()
+        # Bookkeeping-only row: pending, attempts=0, no lease, no marker.
+        await invocations.get_or_create("t1", 1)
+        claimed = await invocations.claim("t1", 1, delivery=identity)
+        assert claimed is not None
+        assert claimed.delivery_key is not None
+        assert claimed.handler_url == "http://h"
+
+
+class TestLegacyRowMigration:
+    """§5 fail-closed reclassification, exercised through ensure_schema.
+
+    The reclassification lives in the schema-upgrade path (SQLite) and the
+    bootstrap/migration path (PostgreSQL), so these tests seed pre-contract
+    rows by hand and re-run the upgrade, exactly as an operator's database
+    would cross the 064 boundary.
+    """
+
+    BACKENDS: ClassVar[list[str]] = ["sqlite", "postgres"]
+
+    @pytest.fixture(params=BACKENDS)
+    async def upgraded_store(self, request):
+        if request.param == "sqlite":
+            conn = await aiosqlite.connect(":memory:")
+            try:
+                store = SqliteInvocationStore(conn)
+                await store.ensure_schema()
+                await conn.execute(
+                    "INSERT INTO handler_invocations "
+                    "(trigger_id, event_id, status, attempts, last_error, created_at, lease_expires_at) "
+                    "VALUES ('t',1,'failed',2,'boom',1.0,0),"
+                    "       ('t',2,'success',1,'',1.0,0),"
+                    "       ('t',3,'pending',0,'',1.0,0),"
+                    "       ('t',4,'retrying',1,'x',1.0,0),"
+                    "       ('t',5,'pending',1,'x',1.0,0)"
+                )
+                await conn.commit()
+                await store.ensure_schema()
+                await store.ensure_schema()  # idempotent
+                yield store
+            finally:
+                await conn.close()
+        else:
+            from maistro.events.pg_stores import PgInvocationStore, ensure_event_schema
+
+            pool = await _pg_pool()
+            try:
+                await pool.execute(
+                    "INSERT INTO handler_invocations "
+                    "(trigger_id, event_id, status, attempts, last_error, created_at, lease_expires_at) "
+                    "VALUES ('t',1,'failed',2,'boom',1.0,0),"
+                    "       ('t',2,'success',1,'',1.0,0),"
+                    "       ('t',3,'pending',0,'',1.0,0),"
+                    "       ('t',4,'retrying',1,'x',1.0,0),"
+                    "       ('t',5,'pending',1,'x',1.0,0)"
+                )
+                await ensure_event_schema(pool)
+                await ensure_event_schema(pool)  # idempotent
+                yield PgInvocationStore(pool)
+            finally:
+                await pool.close()
+
+    async def test_legacy_rows_fail_closed(self, upgraded_store):
+        expected = {
+            1: (InvocationStatus.UNKNOWN, "legacy_failed_unproven", True),
+            2: (InvocationStatus.SUCCESS, "", False),  # preserved acknowledgment
+            3: (InvocationStatus.PENDING, "", False),  # truly unattempted
+            4: (InvocationStatus.UNKNOWN, "legacy_unkeyed_attempt", True),
+            5: (InvocationStatus.UNKNOWN, "legacy_unkeyed_attempt", True),
+        }
+        for event_id, (status, code, uncertain) in expected.items():
+            row = await upgraded_store.get("t", event_id)
+            assert row is not None, f"row {event_id} vanished"
+            assert row.status is status, f"row {event_id}: {row.status}"
+            assert row.last_error_code == code, f"row {event_id}: {row.last_error_code}"
+            assert row.uncertain_prior_dispatch is uncertain, f"row {event_id} uncertainty"
+            assert row.delivery_key is None  # never invented
+
+    async def test_the_unattempted_legacy_row_can_still_be_claimed(self, upgraded_store):
+        identity = _identity()
+        claimed = await upgraded_store.claim("t", 3, delivery=identity)
+        assert claimed is not None
+        assert claimed.delivery_key is not None
+        assert claimed.handler_url == "http://h"
+        assert claimed.revision == 1
 
 
 class TestIdempotencyUnderConcurrency:
