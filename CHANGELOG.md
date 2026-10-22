@@ -179,6 +179,14 @@ or placeholder-only section.
 
 ### Fixed
 
+- **Reusable CI check discovery resolves optional string defaults (#1609).**
+  The required-check contract discovers single-level local reusable workflow
+  names, including both same-revision local path syntaxes, date-shaped names,
+  and omitted optional string inputs with an implicit empty value. Conditional
+  or dependency-bound callers, ambiguous names and unsupported nested, matrix, or conditional callee jobs
+  fail closed; production check names and branch-protection requirements stay
+  unchanged.
+
 - **Hive Graph execution refuses missing canonical authority (#1113).**
   Registered and stored DAGs now require the Container's RunStore and Graph
   continuation owner before admission or execution. Stub/degraded mode reports
