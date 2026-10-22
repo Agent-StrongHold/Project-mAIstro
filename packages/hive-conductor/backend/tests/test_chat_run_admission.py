@@ -2,8 +2,8 @@
 
 Driven through the shipped routes on a real embedded Container (in-memory
 stores) bound where the bridge binds it. The model is faked only at its HTTP
-boundary: `build_llm_port` builds the real `HttpOpenAIProtocolLLM`, and the
-socket underneath it is an `httpx.MockTransport`.
+boundary: `build_llm_port` uses the Container's configured AdmittedModelCalls,
+and the socket underneath the canonical Provider is an `httpx.MockTransport`.
 """
 
 from __future__ import annotations
@@ -17,19 +17,25 @@ from typing import Any
 
 import httpx
 import pytest
+from config import get_settings
 from services import chat_runs, default_workspace, workspace_agent, workspace_authority
 
+from maistro.capabilities.admitted_model import AdmittedModelCalls
+from maistro.capabilities.model_binding_bootstrap import bootstrap_model_bindings
+from maistro.capabilities.providers.llm_gateway import GatewayEndpoint
 from maistro.container import Container, create_container
 from maistro.graph import Graph, Node
 from maistro.http import override_transport
 from maistro.identity import Principal
+from maistro.providers.types import ModelMetadata
 from maistro.runs.chat_admission import ChatRunAdmitter
-from maistro.runs.chat_execution import ChatAttemptExecutor, ChatDispatchUnrecorded
+from maistro.runs.chat_execution import ChatAttemptExecutor
 from maistro.runs.concurrency import RunConcurrencyLimits
 from maistro.runs.lifecycle import transition_path
 from maistro.runs.model import AttemptStatus, RunStatus
 from maistro.runs.store import RunIntegrityError
 from maistro.types import AgentConfig
+from maistro.types.config import ModelBindingConfig
 
 USER = "user"
 
@@ -39,14 +45,60 @@ def container(monkeypatch: pytest.MonkeyPatch) -> Iterator[Container]:
     from services.engine import get_engine
 
     built = asyncio.run(
-        create_container(AgentConfig(router_api_key="test-key", database_url="memory://"))
+        create_container(
+            AgentConfig(
+                router_api_key="test-key",
+                database_url="memory://",
+                litellm_url="https://gateway.invalid",
+                litellm_key="fixture-scoped-key",
+            )
+        )
     )
-    monkeypatch.setattr(get_engine(), "_agent_port", SimpleNamespace(container=built))
+    built.provider_registry.register_model(
+        ModelMetadata(
+            name="m",
+            provider="fixture",
+            cost_per_1k_input=0,
+            cost_per_1k_output=0,
+            latency_p50_ms=1,
+        )
+    )
+    bridge = SimpleNamespace(container=built, admitted_calls=None)
+    monkeypatch.setattr(get_engine(), "_agent_port", bridge)
+    monkeypatch.setattr(get_settings(), "llm_http_variant", "chat_completions")
+    original_create = workspace_authority.create_workspace
+
+    async def configured_workspace(**kwargs: Any) -> Any:
+        workspace = await original_create(**kwargs)
+        project = await built.project_scope_store.create_root(workspace.id)
+        # Fixture operator configuration declares each test-created Workspace
+        # explicitly. Production callers never create Bindings or credentials.
+        built.config.model_bindings.append(
+            ModelBindingConfig(
+                binding_id=f"fixture:{workspace.id}",
+                workspace_id=workspace.id,
+                project_id=project.project_id,
+                provider_name="m",
+            )
+        )
+        await bootstrap_model_bindings(built.config, built.capability_effects)
+        bridge.admitted_calls = AdmittedModelCalls(
+            built.capability_effects,
+            registry=built.provider_registry,
+            router=built.llm_router,
+            endpoint=GatewayEndpoint(base_url=built.config.litellm_url),
+            run_store=built.run_store,
+            binding_ids=tuple(binding.binding_id for binding in built.config.model_bindings),
+        )
+        return workspace
+
+    monkeypatch.setattr(workspace_authority, "create_workspace", configured_workspace)
     chat_runs.reset_for_tests()
     default_workspace.reset_for_tests()
     yield built
     chat_runs.reset_for_tests()
     default_workspace.reset_for_tests()
+    asyncio.run(built.aclose())
 
 
 class _Gateway:
@@ -300,8 +352,9 @@ def test_model_failure_on_complete_fails_the_run(
     ws = _workspace()
     gateway._status = 500
 
-    with pytest.raises(httpx.HTTPStatusError):
-        _complete(authed_client, workspace_id=ws)
+    response = _complete(authed_client, workspace_id=ws)
+    assert response.status_code == 503
+    assert "choices" not in response.json()
 
     (run,) = _runs_in(container, ws)
     assert run.status is RunStatus.FAILED
@@ -373,19 +426,21 @@ def test_an_answer_the_spine_could_not_record_is_returned_once_with_the_run_left
     authed_client: Any, container: Container, gateway: _Gateway, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """#1108: never a second model call, never a success-shaped terminal Run."""
-    real_execute = ChatAttemptExecutor.execute
+    real_transition = container.run_store.transition_attempt
+    failed_writes = []
 
-    async def _answered_then_unrecorded(
-        self: ChatAttemptExecutor, run_id: str, messages: Any, dispatch: Any
-    ) -> dict[str, Any]:
-        response = await dispatch()
-        raise ChatDispatchUnrecorded(run_id, response=response)
+    async def _answered_then_unrecorded(attempt_id: str, status: AttemptStatus, **kwargs: Any):
+        if status is AttemptStatus.COMPLETED:
+            failed_writes.append(attempt_id)
+            raise RuntimeError("fixture terminal write failed after model dispatch")
+        return await real_transition(attempt_id, status, **kwargs)
 
-    monkeypatch.setattr(ChatAttemptExecutor, "execute", _answered_then_unrecorded)
+    monkeypatch.setattr(container.run_store, "transition_attempt", _answered_then_unrecorded)
 
     r = _complete(authed_client)
 
-    monkeypatch.setattr(ChatAttemptExecutor, "execute", real_execute)
+    monkeypatch.setattr(container.run_store, "transition_attempt", real_transition)
+    assert failed_writes
     assert r.status_code == 200
     assert r.json()["choices"][0]["message"]["content"] == "hello"
     assert len(gateway.requests) == 1

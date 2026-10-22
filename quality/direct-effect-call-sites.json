@@ -1,17 +1,6 @@
 {
   "_comment": "Actual AST call sites at curated direct-effect boundaries for #55. Imports/definitions are not usage. Update with scripts/check_direct_effects.py --update, then review every blank disposition/owner/rationale.",
   "sites": {
-    "packages/hive-conductor/backend/adapters/llm_http.py::HttpOpenAIProtocolLLM.complete::MODEL_EFFECT:openai-compatible-http#1": {
-      "path": "packages/hive-conductor/backend/adapters/llm_http.py",
-      "qualname": "HttpOpenAIProtocolLLM.complete",
-      "line": 129,
-      "category": "MODEL_EFFECT",
-      "entry_point": "openai-compatible-http",
-      "callee": "client.post",
-      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
-      "owner": "#56",
-      "rationale": "Shipped model call bypasses canonical Provider/Binding/Invocation execution; #56 owns governed model egress."
-    },
     "packages/hive-conductor/backend/routes/widgets.py::widget_jira::PM_POLLING_EFFECT:pm-polling-http#1": {
       "path": "packages/hive-conductor/backend/routes/widgets.py",
       "qualname": "widget_jira",
@@ -93,17 +82,6 @@
       "path": "packages/hive-conductor/backend/services/canonical_corpus.py",
       "qualname": "CanonicalCorpus.score",
       "line": 310,
-      "category": "MODEL_EFFECT",
-      "entry_point": "openai-compatible-http",
-      "callee": "client.post",
-      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
-      "owner": "#56",
-      "rationale": "Shipped model call bypasses canonical Provider/Binding/Invocation execution; #56 owns governed model egress."
-    },
-    "packages/hive-conductor/backend/services/chat_completion.py::_tool_analyze_dashboard::MODEL_EFFECT:openai-compatible-http#1": {
-      "path": "packages/hive-conductor/backend/services/chat_completion.py",
-      "qualname": "_tool_analyze_dashboard",
-      "line": 1689,
       "category": "MODEL_EFFECT",
       "entry_point": "openai-compatible-http",
       "callee": "client.post",

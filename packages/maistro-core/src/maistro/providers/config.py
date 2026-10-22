@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import yaml
 
 from maistro.providers.errors import ProviderConfigError
 from maistro.providers.registry import InMemoryProviderRegistry
-from maistro.providers.types import EmbeddingModelMetadata, ModelMetadata, ModelTier
+from maistro.providers.types import EmbeddingModelMetadata, ModelIngress, ModelMetadata, ModelTier
 
 _VALID_TIERS: frozenset[str] = frozenset({"fast", "balanced", "powerful"})
 
@@ -19,6 +19,15 @@ def _require(entry: dict[str, Any], key: str, section: str) -> Any:
         msg = f"{section} entry missing required key {key!r}: {entry}"
         raise ProviderConfigError(msg)
     return entry[key]
+
+
+def _parse_ingresses(value: Any) -> tuple[ModelIngress, ...] | None:
+    if value is None:
+        return None
+    if not isinstance(value, list):
+        raise ProviderConfigError("supported_ingresses must be a list or null")
+    # ModelMetadata validates values, duplicates, and empty declarations.
+    return cast(tuple[ModelIngress, ...], tuple(value))
 
 
 def _parse_model(entry: Any) -> ModelMetadata:
@@ -45,6 +54,7 @@ def _parse_model(entry: Any) -> ModelMetadata:
             reasoning_capable=bool(entry.get("reasoning", False)),
             max_tokens=int(entry.get("max_tokens", 4096)),
             fallback_to=tuple(str(f) for f in fallback),
+            supported_ingresses=_parse_ingresses(entry.get("supported_ingresses")),
         )
     except (TypeError, ValueError) as exc:
         msg = f"invalid model entry {entry.get('name')!r}: {exc}"

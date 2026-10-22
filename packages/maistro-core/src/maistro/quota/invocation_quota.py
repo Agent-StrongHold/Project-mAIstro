@@ -14,15 +14,56 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass
+from decimal import ROUND_CEILING, Decimal
 from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
     from maistro.capabilities.binding import Binding
-    from maistro.capabilities.invocation import Invocation
+    from maistro.capabilities.invocation import Invocation, InvocationUsage
 
 QuotaUnit = Literal["tokens", "micro_usd", "requests"]
 Outcome = Literal["completed", "not_applied", "unknown"]
 SQLITE_MAX_INTEGER = (1 << 63) - 1
+CANONICAL_TERMINAL = "canonical-terminal"
+CANONICAL_RECONCILIATION = "canonical-reconciliation"
+
+
+def canonical_evidence_id(invocation: Invocation) -> str:
+    """Keep ambiguity and its one immutable conclusive settlement distinct.
+
+    Indeterminate audit entries do not change the accounting fact. After a
+    conclusive reconciliation the Invocation is immutable COMPLETED/FAILED,
+    so its settlement has one stable identity even across quota repair/reopen.
+    Its quota revision is allocated by the backend transaction, not borrowed
+    from Invocation.revision or allowed to collide with provider corrections.
+    """
+    if invocation.reconciliation_history and invocation.status.value in {"completed", "failed"}:
+        return CANONICAL_RECONCILIATION
+    return CANONICAL_TERMINAL
+
+
+def measured_usage_amounts(usage: InvocationUsage | None) -> tuple[int | None, int | None]:
+    """Convert reported usage to the same bounded accounting units on every backend.
+
+    Reconciliation also calls this before its immutable lifecycle write, so
+    evidence that cannot be represented must not strand a confirmed outcome.
+    """
+    if usage is None:
+        return None, None
+    tokens = None
+    micro_usd = None
+    if usage.units == "tokens":
+        require_amount(usage.input_units, "input_units")
+        require_amount(usage.output_units, "output_units")
+        tokens = usage.input_units + usage.output_units
+        require_amount(tokens, "tokens")
+    if usage.cost_cents is not None:
+        cents = Decimal(str(usage.cost_cents))
+        if not cents.is_finite() or cents < 0:
+            raise ValueError("cost must be finite and nonnegative")
+        micro_usd = int((cents * 10_000).to_integral_value(rounding=ROUND_CEILING))
+        require_amount(micro_usd, "micro_usd")
+    return tokens, micro_usd
 
 
 def require_identifier(value: str, name: str) -> None:
@@ -106,8 +147,9 @@ EstimateResolver = Callable[["Invocation", "Binding"], Awaitable[QuotaEstimate]]
 class QuotaObservation:
     """An absolute, versioned observation, never an additive usage delta.
 
-    Revision zero belongs to the canonical Invocation terminal record. Positive
-    revisions are for a trusted provider/administrative reconciliation adapter.
+    Revision zero belongs to the original canonical Invocation terminal record.
+    A conclusive canonical reconciliation receives one positive revision under
+    the quota transaction; trusted provider corrections share that ordering.
     Missing dimensions remain held; later revisions cannot erase a measurement
     by substituting None. Corrections may reduce spend only with a newer revision.
     """

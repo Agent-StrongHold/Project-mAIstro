@@ -21,14 +21,15 @@ import math
 import sqlite3
 import time
 from collections.abc import Callable
-from dataclasses import asdict
-from decimal import ROUND_CEILING, Decimal
+from dataclasses import asdict, replace
 from pathlib import Path
 from typing import TypeVar
 
 from maistro.capabilities.binding import Binding
 from maistro.capabilities.invocation import Invocation, InvocationStatus
 from maistro.quota.invocation_quota import (
+    CANONICAL_RECONCILIATION,
+    CANONICAL_TERMINAL,
     EstimateResolver,
     InvocationQuotaDenied,
     Outcome,
@@ -37,7 +38,8 @@ from maistro.quota.invocation_quota import (
     QuotaEstimate,
     QuotaEvidenceConflict,
     QuotaObservation,
-    require_amount,
+    canonical_evidence_id,
+    measured_usage_amounts,
 )
 
 T = TypeVar("T")
@@ -318,25 +320,13 @@ class SqliteInvocationQuota:
             if invocation.status is InvocationStatus.COMPLETED
             else "unknown"
         )
-        tokens: int | None = None
-        micro_usd: int | None = None
-        usage = invocation.usage
-        if outcome == "completed" and usage is not None:
-            if usage.units == "tokens":
-                require_amount(usage.input_units, "input_units")
-                require_amount(usage.output_units, "output_units")
-                tokens = usage.input_units + usage.output_units
-                require_amount(tokens, "tokens")
-            if usage.cost_cents is not None:
-                cents = Decimal(str(usage.cost_cents))
-                if not cents.is_finite() or cents < 0:
-                    raise ValueError("cost must be finite and nonnegative")
-                micro_usd = int((cents * 10_000).to_integral_value(rounding=ROUND_CEILING))
-                require_amount(micro_usd, "micro_usd")
+        tokens, micro_usd = (
+            measured_usage_amounts(invocation.usage) if outcome == "completed" else (None, None)
+        )
         observation = QuotaObservation(
             invocation_id=invocation.invocation_id,
             provider_name=invocation.binding.provider_name,
-            evidence_id="canonical-terminal",
+            evidence_id=canonical_evidence_id(invocation),
             revision=0,
             outcome=outcome,
             tokens=tokens,
@@ -356,35 +346,38 @@ class SqliteInvocationQuota:
         """
         if observation.revision == 0:
             raise ValueError("revision zero is reserved for canonical terminal evidence")
+        if observation.evidence_id in {CANONICAL_TERMINAL, CANONICAL_RECONCILIATION}:
+            raise ValueError("canonical evidence identities are reserved")
         await self._apply(observation, missing_ok=False)
 
     async def _apply(  # noqa: C901 - settlement is one atomic evidence fold
         self, observation: QuotaObservation, *, missing_ok: bool
     ) -> None:
-        payload = _json(observation.payload())
-
         def apply(conn: sqlite3.Connection) -> None:  # noqa: C901 - atomic settlement fold
+            candidate = observation
             reservation = conn.execute(
                 "SELECT * FROM invocation_quota_reservations WHERE invocation_id = ?",
-                (observation.invocation_id,),
+                (candidate.invocation_id,),
             ).fetchone()
             if reservation is None:
                 if missing_ok:
                     return  # Admission may have failed before reserving anything.
                 raise KeyError(
-                    f"unreserved Invocation {observation.invocation_id}: reconcile coverage"
+                    f"unreserved Invocation {candidate.invocation_id}: reconcile coverage"
                 )
             identity = json.loads(reservation["identity_json"])
-            if identity["provider_name"] != observation.provider_name:
+            if identity["provider_name"] != candidate.provider_name:
                 raise QuotaEvidenceConflict("provider evidence does not match Invocation")
             if reservation["state"] == "denied":
-                if observation.outcome != "not_applied":
+                if candidate.outcome != "not_applied":
                     raise QuotaEvidenceConflict("denied Invocation has no provider dispatch")
                 return
+            candidate = _canonical_version(conn, candidate, int(reservation["revision"]))
+            payload = _json(candidate.payload())
             prior = conn.execute(
                 "SELECT payload FROM invocation_quota_evidence WHERE invocation_id = ? "
                 "AND (revision = ? OR evidence_id = ?)",
-                (observation.invocation_id, observation.revision, observation.evidence_id),
+                (candidate.invocation_id, candidate.revision, candidate.evidence_id),
             ).fetchall()
             if prior:
                 if any(row["payload"] != payload for row in prior):
@@ -392,11 +385,11 @@ class SqliteInvocationQuota:
                 return
             conn.execute(
                 "INSERT INTO invocation_quota_evidence VALUES (?, ?, ?, ?)",
-                (observation.invocation_id, observation.revision, observation.evidence_id, payload),
+                (candidate.invocation_id, candidate.revision, candidate.evidence_id, payload),
             )
-            if observation.revision < reservation["revision"]:
+            if candidate.revision < reservation["revision"]:
                 return  # Keep stale evidence, but never roll accounting backwards.
-            if observation.outcome == "unknown" and reservation["state"] in {
+            if candidate.outcome == "unknown" and reservation["state"] in {
                 "settled",
                 "released",
                 "pending_usage",
@@ -405,21 +398,21 @@ class SqliteInvocationQuota:
             rows = conn.execute(
                 "SELECT a.*, b.definition FROM invocation_quota_allocations a "
                 "JOIN invocation_quota_budgets b USING (budget_id) WHERE invocation_id = ?",
-                (observation.invocation_id,),
+                (candidate.invocation_id,),
             ).fetchall()
             pending = False
             for row in rows:
                 unit = json.loads(row["definition"])["unit"]
-                actual = observation.actual(unit)
+                actual = candidate.actual(unit)
                 if actual is None:
-                    if reservation["state"] == "released" and observation.outcome == "completed":
+                    if reservation["state"] == "released" and candidate.outcome == "completed":
                         # A correction retracting not-applied proof also retracts
                         # its zeros. Missing usage becomes held again, not free.
                         conn.execute(
                             "UPDATE invocation_quota_allocations "
                             "SET spent = 0, held = maximum, measured = 0 "
                             "WHERE invocation_id = ? AND budget_id = ?",
-                            (observation.invocation_id, row["budget_id"]),
+                            (candidate.invocation_id, row["budget_id"]),
                         )
                         pending = True
                     else:
@@ -429,13 +422,13 @@ class SqliteInvocationQuota:
                 conn.execute(
                     "UPDATE invocation_quota_allocations SET spent = ?, held = 0, measured = 1 "
                     "WHERE invocation_id = ? AND budget_id = ?",
-                    (actual, observation.invocation_id, row["budget_id"]),
+                    (actual, candidate.invocation_id, row["budget_id"]),
                 )
             state = (
                 "released"
-                if observation.outcome == "not_applied"
+                if candidate.outcome == "not_applied"
                 else "unknown"
-                if observation.outcome == "unknown"
+                if candidate.outcome == "unknown"
                 else "pending_usage"
                 if pending
                 else "settled"
@@ -443,7 +436,22 @@ class SqliteInvocationQuota:
             conn.execute(
                 "UPDATE invocation_quota_reservations SET state = ?, revision = ? "
                 "WHERE invocation_id = ?",
-                (state, observation.revision, observation.invocation_id),
+                (state, candidate.revision, candidate.invocation_id),
             )
 
         await self._run(apply)
+
+
+def _canonical_version(
+    conn: sqlite3.Connection, observation: QuotaObservation, current_revision: int
+) -> QuotaObservation:
+    """Allocate a conclusive canonical settlement once under BEGIN IMMEDIATE."""
+    if observation.evidence_id != CANONICAL_RECONCILIATION:
+        return observation
+    prior = conn.execute(
+        "SELECT revision FROM invocation_quota_evidence "
+        "WHERE invocation_id = ? AND evidence_id = ?",
+        (observation.invocation_id, observation.evidence_id),
+    ).fetchone()
+    revision = int(prior["revision"]) if prior is not None else max(0, current_revision) + 1
+    return replace(observation, revision=revision)

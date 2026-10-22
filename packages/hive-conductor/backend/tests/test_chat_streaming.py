@@ -13,7 +13,7 @@ from contextlib import contextmanager
 from typing import Any
 
 import pytest
-from adapters.llm_http import _responses_event_to_chunk
+from adapters.llm_governed import GovernedModelFailure
 from models.schemas import ChatCompletionRequest
 from services.chat_completion import (
     _complete_turn,
@@ -390,7 +390,7 @@ async def test_complete_turn_uses_non_streaming_telemetry_span(monkeypatch) -> N
     ]
 
 
-async def test_streaming_falls_back_to_complete_on_stream_error(monkeypatch) -> None:
+async def test_streaming_propagates_error_without_another_model_call(monkeypatch) -> None:
     monkeypatch.setattr("services.chat_completion._build_system_prompt", lambda uid: "SYS")
 
     class _BrokenStream:
@@ -402,37 +402,33 @@ async def test_streaming_falls_back_to_complete_on_stream_error(monkeypatch) -> 
 
     class _FailStreamLLM:
         async def complete(self, req: ChatCompletionRequest) -> dict[str, Any]:
-            return {"choices": [{"message": {"content": "recovered via complete"}}]}
+            pytest.fail("an ambiguous stream must not trigger another model call")
 
         def stream(self, req: ChatCompletionRequest) -> _BrokenStream:
             return _BrokenStream()
 
     monkeypatch.setattr("services.chat_completion.build_llm_port", lambda: _FailStreamLLM())
     req = ChatCompletionRequest(messages=[{"role": "user", "content": "hi"}], model="test-model")
-    events = await _collect(run_chat_completion_streaming(req))
-
-    assert events[-1]["type"] == "done"
-    assert events[-1]["content"] == "recovered via complete"
+    with pytest.raises(RuntimeError, match="stream broken"):
+        await _collect(run_chat_completion_streaming(req))
 
 
-async def test_streaming_falls_back_to_complete_when_stream_yields_nothing(
+async def test_streaming_refuses_empty_output_without_another_model_call(
     monkeypatch,
 ) -> None:
     monkeypatch.setattr("services.chat_completion._build_system_prompt", lambda uid: "SYS")
 
     class _EmptyThenCompleteLLM(_FakeLLM):
         async def complete(self, req: ChatCompletionRequest) -> dict[str, Any]:
-            return {"choices": [{"message": {"content": "from non-streaming"}}]}
+            pytest.fail("empty output must not trigger another model call")
 
     monkeypatch.setattr(
         "services.chat_completion.build_llm_port",
         lambda: _EmptyThenCompleteLLM([[]]),
     )
     req = ChatCompletionRequest(messages=[{"role": "user", "content": "hi"}], model="test-model")
-    events = await _collect(run_chat_completion_streaming(req))
-
-    assert events[-1]["type"] == "done"
-    assert events[-1]["content"] == "from non-streaming"
+    with pytest.raises(GovernedModelFailure):
+        await _collect(run_chat_completion_streaming(req))
 
 
 async def test_streaming_retries_non_streaming_when_tool_leaked_as_text(
@@ -463,7 +459,7 @@ async def test_streaming_retries_non_streaming_when_tool_leaked_as_text(
         events = await _collect(run_chat_completion_streaming(req))
 
     assert llm.complete_calls == 1
-    assert "Model leaked tool calls as text" in caplog.text
+    assert "Completed model output needs structured tool correction" in caplog.text
     assert events[-1]["type"] == "done"
     assert events[-1]["content"] == "structured answer"
 
@@ -572,25 +568,3 @@ async def test_streaming_emits_thinking_from_reasoning_content(monkeypatch) -> N
     assert [e["content"] for e in events if e["type"] == "delta"] == ["Answer"]
     assert events[-1]["type"] == "done"
     assert events[-1]["content"] == "Answer"
-
-
-# --------------------------------------------------------------------------- #
-# Lane #2 — Responses-API event normalization (pure)
-# --------------------------------------------------------------------------- #
-
-
-def test_responses_event_normalization() -> None:
-    text = _responses_event_to_chunk({"type": "response.output_text.delta", "delta": "Hi"})
-    assert text["choices"][0]["delta"]["content"] == "Hi"
-
-    reasoning = _responses_event_to_chunk(
-        {"type": "response.reasoning_summary_text.delta", "delta": "hmm"}
-    )
-    assert reasoning["choices"][0]["delta"]["reasoning_content"] == "hmm"
-
-    done = _responses_event_to_chunk({"type": "response.completed"})
-    assert done["choices"][0]["finish_reason"] == "stop"
-
-    # events we don't surface (item bookkeeping, empty deltas) collapse to None
-    assert _responses_event_to_chunk({"type": "response.output_item.added"}) is None
-    assert _responses_event_to_chunk({"type": "response.output_text.delta", "delta": ""}) is None

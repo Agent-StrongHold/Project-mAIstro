@@ -277,9 +277,19 @@ async def stream_complete(req: ChatCompletionRequest, request: Request):
             choice = (result.get("choices") or [{}])[0]
             content = (choice.get("message") or {}).get("content") or ""
             yield f"data: {json.dumps({'type': 'done', 'content': content, 'run_id': run_id})}\n\n"
-        except Exception as exc:
-            content = f"Error: {type(exc).__name__}"
-            yield f"data: {json.dumps({'type': 'done', 'content': content, 'run_id': run_id})}\n\n"
+        except Exception:
+            # Existing clients display a terminal `done` frame. It terminates
+            # the stream, not the Run successfully: execution has failed, and
+            # machine consumers receive explicit bounded failure evidence.
+            message = "Error: governed chat execution failed"
+            failure = {
+                "type": "done",
+                "status": "failed",
+                "content": message,
+                "error": {"code": "chat_execution_failed", "message": message},
+                "run_id": run_id,
+            }
+            yield f"data: {json.dumps(failure)}\n\n"
 
     async def on_finished() -> None:
         if not started:

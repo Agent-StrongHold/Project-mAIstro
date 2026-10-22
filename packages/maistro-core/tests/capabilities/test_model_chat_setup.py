@@ -16,6 +16,8 @@ from typing import Any
 
 import httpx
 import pytest
+from tests._admitted_model_fixture import Setup as AdmittedSetup
+from tests._admitted_model_fixture import setup as admitted_setup
 
 from maistro.capabilities.admitted_model import AdmittedModelCalls
 from maistro.capabilities.binding import Binding
@@ -44,9 +46,6 @@ from maistro.providers.router import CostAwareRouter
 from maistro.providers.types import ModelMetadata
 from maistro.quota.invocation_quota import InvocationQuotaDenied, QuotaBudget, QuotaEstimate
 from maistro.quota.sqlite_invocation_quota import SqliteInvocationQuota
-
-from .test_admitted_model_calls import Setup as AdmittedSetup
-from .test_admitted_model_calls import setup as admitted_setup
 
 _SECRET = "fixture-provider-secret-not-for-evidence"
 _ADMIN = "fixture-admin-key"

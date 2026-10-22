@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncGenerator, Callable, Coroutine
 from contextlib import suppress
+from copy import deepcopy
 from typing import TYPE_CHECKING, Any
 
 from maistro.capabilities.invocation import EffectNotApplied
@@ -35,15 +36,17 @@ class StreamDelivery:
 
 
 def _replay_chunk(body: dict[str, Any]) -> dict[str, Any]:
-    chunk = {key: value for key, value in body.items() if key != "choices"}
+    """Restore stream positions without changing the canonical completed body."""
+    chunk = deepcopy(body)
     chunk["_maistro_replayed"] = True
-    chunk["choices"] = [
-        {
-            **{key: value for key, value in choice.items() if key != "message"},
-            "delta": choice.get("message", {}),
-        }
-        for choice in body.get("choices", [])
-    ]
+    for choice in chunk.get("choices", []):
+        delta = choice.pop("message", {})
+        tools = delta.get("tool_calls")
+        if isinstance(tools, list):
+            # Completed messages have ordered tools, not stream indices. A
+            # consumer must receive the same distinct positions on replay.
+            delta["tool_calls"] = [{**tool, "index": index} for index, tool in enumerate(tools)]
+        choice["delta"] = delta
     return chunk
 
 

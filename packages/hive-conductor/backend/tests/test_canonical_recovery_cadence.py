@@ -75,10 +75,12 @@ async def container(tmp_path: Path) -> AsyncIterator[Container]:
     built = await create_container(
         AgentConfig(router_api_key="test-key", database_url=f"sqlite:///{tmp_path / 'hive.db'}")
     )
-    yield built
-    if built.db_pool is not None:
-        with contextlib.suppress(Exception):
-            await built.db_pool.close()
+    try:
+        yield built
+    finally:
+        # Closing only db_pool leaves its effect context published, so the next
+        # standalone node inherits a closed SQLite store instead of its policy.
+        await built.aclose()
 
 
 @pytest.fixture

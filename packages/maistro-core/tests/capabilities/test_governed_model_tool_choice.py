@@ -108,6 +108,7 @@ async def test_explicit_tool_choice_survives_governed_adapter(
     assert request.tool_choice == choice
     assert request.model_dump(exclude={"tool_choice", "response_format"}) == {
         "model": "fast-model",
+        "api_variant": "chat_completions",
         "messages": messages,
         "temperature": 0.15,
         "max_tokens": 96,

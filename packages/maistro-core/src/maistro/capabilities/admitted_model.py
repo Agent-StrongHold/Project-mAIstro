@@ -16,7 +16,10 @@ from typing import TYPE_CHECKING, Any
 from maistro.capabilities.binding import Binding
 from maistro.capabilities.binding_store import BindingResolutionError
 from maistro.capabilities.model_chat import ModelCallResult, ModelChatEgress
-from maistro.capabilities.providers.llm_gateway import MODEL_CHAT_CAPABILITY
+from maistro.capabilities.providers.llm_gateway import (
+    MODEL_CHAT_CAPABILITY,
+    UnsupportedModelIngress,
+)
 from maistro.observability.correlation import current_execution_context
 
 if TYPE_CHECKING:
@@ -138,16 +141,50 @@ class AdmittedModelCalls:
         setup: Callable[[], Awaitable[None]] | None = None,
     ) -> ModelCallResult:
         binding, actor, selected = await self._authorize(identity, binding_id)
+        try:
+            return await self._with_timeout(timeout_s).complete(
+                binding=binding,
+                run_id=selected[0],
+                node_run_id=selected[1],
+                attempt_id=selected[2],
+                actor_id=actor,
+                effect_key=effect_key,
+                request=request,
+                setup=setup,
+            )
+        except UnsupportedModelIngress as exc:
+            if request.api_variant != "auto" or setup is not None:
+                raise
+            binding, actor, fallback = await self._fallback(
+                request, exc, selected, binding.binding_id
+            )
+        # The rejected physical call has settled FAILED. Re-enter ordinary
+        # admission with the SAME logical effect, never a second HTTP inside
+        # its Invocation or a new key that could escape an UNKNOWN outcome.
         return await self._with_timeout(timeout_s).complete(
             binding=binding,
             run_id=selected[0],
             node_run_id=selected[1],
             attempt_id=selected[2],
             actor_id=actor,
+            request=fallback,
             effect_key=effect_key,
-            request=request,
-            setup=setup,
         )
+
+    async def _fallback(
+        self,
+        request: ModelChatRequest,
+        rejected: UnsupportedModelIngress,
+        identity: tuple[str, str, str],
+        binding_id: str,
+    ) -> tuple[Binding, str, ModelChatRequest]:
+        binding, actor, _selected = await self._authorize(identity, binding_id)
+        if binding.provider_name and binding.provider_name != rejected.model:
+            raise BindingResolutionError("model Binding changed during ingress fallback")
+        fallback = request.model_copy(
+            update={"api_variant": "chat_completions", "model": rejected.model}
+        )
+        return binding, actor, fallback
 
     async def stream(
         self,
@@ -159,6 +196,29 @@ class AdmittedModelCalls:
         timeout_s: float | None = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
         binding, actor, selected = await self._authorize(identity, binding_id)
+        emitted = False
+        try:
+            async with aclosing(
+                self._with_timeout(timeout_s).stream(
+                    binding=binding,
+                    run_id=selected[0],
+                    node_run_id=selected[1],
+                    attempt_id=selected[2],
+                    actor_id=actor,
+                    effect_key=effect_key,
+                    request=request,
+                )
+            ) as chunks:
+                async for chunk in chunks:
+                    emitted = True
+                    yield chunk
+            return
+        except UnsupportedModelIngress as exc:
+            if request.api_variant != "auto" or emitted:
+                raise
+            binding, actor, fallback = await self._fallback(
+                request, exc, selected, binding.binding_id
+            )
         async with aclosing(
             self._with_timeout(timeout_s).stream(
                 binding=binding,
@@ -166,8 +226,8 @@ class AdmittedModelCalls:
                 node_run_id=selected[1],
                 attempt_id=selected[2],
                 actor_id=actor,
+                request=fallback,
                 effect_key=effect_key,
-                request=request,
             )
         ) as chunks:
             async for chunk in chunks:
