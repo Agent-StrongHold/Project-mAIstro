@@ -23,7 +23,7 @@
 # Digest-pinned (#349): a tag move must not change what installs every
 # dependency without a repository diff. Refresh via Dependabot's docker
 # ecosystem and record the new digest in quality/image-pins.json.
-FROM python:3.13.16-slim-bookworm@sha256:a1165e272e578941b84abc79e4ab38a0305cd12803a5c4247979ac7655f4d641 AS builder
+FROM python:3.13.16-slim-bookworm@sha256:73aa5faee130c60da030e105ec971ccf57473fbd22ce73bd6fc9ba99a40b838d AS builder
 WORKDIR /app
 # CI evidence (run 36835563311, job 110282105809): both buildx attempts of the
 # sibling research image died inside pip on `files.pythonhosted.org` read
@@ -110,7 +110,7 @@ RUN apk add --no-cache git && \
 # rest (#346): security.yml/release.yml scan it, so the apt layer also applies
 # the security patches the pinned base digest froze (trivy: libpcre2 HIGH on
 # debian 12.15), matching Dockerfile.research's hardening.
-FROM python:3.13.16-slim-bookworm@sha256:a1165e272e578941b84abc79e4ab38a0305cd12803a5c4247979ac7655f4d641
+FROM python:3.13.16-slim-bookworm@sha256:73aa5faee130c60da030e105ec971ccf57473fbd22ce73bd6fc9ba99a40b838d
 WORKDIR /app
 RUN apt-get update \
     && apt-get install -y --no-install-recommends git \
