@@ -23,7 +23,7 @@
 # Digest-pinned (#349): a tag move must not change what installs every
 # dependency without a repository diff. Refresh via Dependabot's docker
 # ecosystem and record the new digest in quality/image-pins.json.
-FROM python:3.13.16-slim-bookworm@sha256:a1165e272e578941b84abc79e4ab38a0305cd12803a5c4247979ac7655f4d641 AS builder
+FROM python:3.13.16-slim-bookworm@sha256:73aa5faee130c60da030e105ec971ccf57473fbd22ce73bd6fc9ba99a40b838d AS builder
 WORKDIR /app
 # CI evidence (run 36835563311, job 110282105809): both buildx attempts of the
 # sibling research image died inside pip on `files.pythonhosted.org` read
@@ -88,8 +88,11 @@ RUN python /tmp/prune-dependency-namespaces.py \
 # the same policy as the age stage in packages/hive-conductor/Dockerfile. The
 # tag resolves to dfc520d; fail if upstream ever disagrees. docker/cli has no
 # root go.mod (vendor.mod + vendor/ instead); renaming them is the module-mode
-# build the vendored tree is designed for.
-FROM golang:1.27.2-alpine@sha256:f92b6ef800e499660581efdabdf25d9d817a9d124eaf900924f0504e7e27e12d AS dockerclibuild
+# build the vendored tree is designed for. Builder moved to 1.27.3-alpine
+# (#1152): CVE-2026-111943 (crypto/x509 MITM via untrusted intermediates, HIGH,
+# fixed in go1.26.10/1.27.3) flags the 1.27.2 stdlib inside the built binary.
+# Digest-pinned (#349); golang:1.27.3-alpine resolved to this index digest 2026-10-22.
+FROM golang:1.27.3-alpine@sha256:b8c9b82affbbb82a020bbcf998dad2ba9516944ac7e883524642a481a9505e9c AS dockerclibuild
 ARG DOCKER_CLI_VERSION=29.9.1
 ARG DOCKER_CLI_COMMIT_SHORT=dfc520d
 RUN apk add --no-cache git && \
@@ -108,8 +111,10 @@ RUN apk add --no-cache git && \
 # runtime shed git and broke those tools. This image IS vuln-gated like the
 # rest (#346): security.yml/release.yml scan it, so the apt layer also applies
 # the security patches the pinned base digest froze (trivy: libpcre2 HIGH on
-# debian 12.15), matching Dockerfile.research's hardening.
-FROM python:3.13.16-slim-bookworm@sha256:a1165e272e578941b84abc79e4ab38a0305cd12803a5c4247979ac7655f4d641
+# debian 12.15; libexpat1 2.5.0-1+deb12u4 -> deb12u5 for CVE-2025-59375 /
+# CVE-2026-77214 on the 2026-10-22 pin refresh), matching
+# Dockerfile.research's hardening.
+FROM python:3.13.16-slim-bookworm@sha256:73aa5faee130c60da030e105ec971ccf57473fbd22ce73bd6fc9ba99a40b838d
 WORKDIR /app
 RUN apt-get update \
     && apt-get install -y --no-install-recommends git \
