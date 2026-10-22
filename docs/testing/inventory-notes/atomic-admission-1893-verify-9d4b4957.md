@@ -60,3 +60,20 @@ inventory-delta:
   in `quality/reachability-dispositions.json`, which contains no such group —
   stale prose in a reason field; no gate consumes it and the grants authorize
   nothing (umbrellas pass from the base without them).
+
+## Container-gate repair, proven at the failing point (trivy 0.73.0, DB 2026-10-22)
+
+The merge-queue failure was `Container scan + SBOM + cosign` → first Trivy
+step on `hive-conductor`, flagging CVE-2026-111943 (HIGH) in
+`usr/bin/age`/`age-keygen` built on golang:1.27.2. Reproduced the fix at the
+exact failing point: built only the `agebuild` stage of
+`packages/hive-conductor/Dockerfile` (digest-pinned
+golang:1.27.3-alpine@sha256:b8c9b82a…) and Trivy-scanned the produced
+binaries — **CVE-2026-111943 absent from both**; remaining findings are
+CVE-2026-56855 (MEDIUM), CVE-2026-78662 (no HIGH/CRITICAL severity) and
+GO-2026-5932 (UNKNOWN), all below the CI gate's `severity: HIGH,CRITICAL`
+(.github/workflows/security.yml:302). All three Dockerfiles share the same
+digest-pinned go1.27.3 builder, so the docker CLI HIGH is cleared by the same
+toolchain; `check-image-inventory.py` and `check-image-pins.py` both exit 0.
+A green CI run at this head remains the only possible proof of the full job
+(build + SBOM + cosign), and stays UNVERIFIED here by construction.
