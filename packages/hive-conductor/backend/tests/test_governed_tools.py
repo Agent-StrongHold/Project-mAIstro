@@ -372,3 +372,17 @@ def test_hive_tool_registry_is_host_owned() -> None:
     schema = registry.require("web_search").schema
     assert schema["additionalProperties"] is False
     assert governed.hive_tool_names() == registry.names()
+
+
+def test_agent_exposures_project_canonical_contracts_without_mutable_aliases() -> None:
+    import services.governed_tools as governed
+
+    exposures = governed.HiveToolExposureRegistry()
+    assert exposures.get("unregistered-tool") is None
+    for name in governed.hive_tool_names():
+        definition = exposures.get(name)
+        assert definition is not None
+        assert definition.name == name
+        assert definition.parameters == governed._registry().require(name).schema
+        definition.parameters.clear()
+        assert exposures.get(name).parameters["type"] == "object"

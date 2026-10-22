@@ -24,6 +24,7 @@ Fail-closed rules this seam keeps:
 
 from __future__ import annotations
 
+from copy import deepcopy
 from typing import TYPE_CHECKING, Any
 
 from maistro.capabilities.binding import Binding
@@ -41,6 +42,7 @@ from maistro.tools.contracts import (
     ToolReversibility,
     validate_tool_arguments,
 )
+from maistro.types.tool import ToolDefinition
 
 if TYPE_CHECKING:
     from maistro.capabilities.effect_context import CapabilityEffectContext
@@ -125,6 +127,20 @@ def _registry() -> ToolContractRegistry:
     if _REGISTRY is None:
         _REGISTRY = hive_tool_contracts()
     return _REGISTRY
+
+
+class HiveToolExposureRegistry:
+    """Project canonical contracts into model exposures, without separate policy."""
+
+    def get(self, name: str) -> ToolDefinition | None:
+        contract = _registry().get(name)
+        if contract is None:
+            return None
+        return ToolDefinition(
+            name=contract.name,
+            description=f"Run {contract.name}",
+            parameters=deepcopy(contract.schema),
+        )
 
 
 def validate_hive_tool_arguments(name: str, arguments: dict[str, Any]) -> None:

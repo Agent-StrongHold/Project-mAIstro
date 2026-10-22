@@ -158,6 +158,7 @@ async def _construct_runtime(settings: Settings) -> EmbeddedRuntime:
     """
     import os
 
+    from services.governed_tools import HiveToolExposureRegistry
     from services.secrets import effective_llm_gateway_key
     from services.tool_executor import admitted_tool_executor
 
@@ -285,6 +286,9 @@ async def _construct_runtime(settings: Settings) -> EmbeddedRuntime:
         # react's un-guarded branch. ADR-082526-3ca6: the runtime that owns
         # the agents owns their delegation dependencies.
         tool_executor=admitted_tool_executor(admitted_calls, container=container),
+        # Tool declarations do not supply schemas. Project the same host-owned
+        # contracts the Invocation adapter enforces into Agent/model exposure.
+        tool_registry=HiveToolExposureRegistry(),
         # Project the same roster allow-lists into the Container-owned A2A
         # receipt service. Without this, construction was wired but every
         # in-process delegation still refused as "no capabilities" (#147).

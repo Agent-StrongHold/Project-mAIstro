@@ -21,6 +21,7 @@ from maistro.security.sentinel.policy import Sentinel as RealSentinel
 from maistro.security.warden.detector import Warden
 from maistro.sessions.store import InMemorySessionStore
 from maistro.types.agent import AgentIdentity, AgentResponse, ReasoningResult
+from maistro.types.tool import ToolDefinition
 
 
 @dataclass
@@ -83,6 +84,16 @@ class _RecordingStrategy:
         if self._raises is not None:
             raise self._raises
         return self._result
+
+
+class _LookupRegistry:
+    def get(self, name: str) -> ToolDefinition | None:
+        if name == "lookup":
+            return ToolDefinition(
+                name="lookup",
+                parameters={"type": "object", "properties": {"fixed": {"type": "boolean"}}},
+            )
+        return None
 
 
 class _ToolReturningStrategy:
@@ -349,10 +360,8 @@ class TestBuildToolSchema:
         assert schema["type"] == "function"
         assert schema["function"]["name"] == "read_file"
 
-    def test_unknown_tool_gets_generic_schema(self) -> None:
-        schema = _build_tool_schema("mystery_tool")
-        assert schema["function"]["description"] == "Run mystery_tool"
-        assert schema["function"]["parameters"] == {"type": "object", "properties": {}}
+    def test_unknown_tool_is_not_exposed(self) -> None:
+        assert _build_tool_schema("mystery_tool") is None
 
     def test_registry_takes_precedence(self) -> None:
         @dataclass
@@ -389,6 +398,7 @@ class TestHandleCanonicalTrustPipeline:
             strategy,
             identity=_identity(tools=("lookup",)),
             warden=warden,
+            tool_registry=_LookupRegistry(),
             tool_executor=raw_tool,
             sentinel=RealSentinel(warden=warden, permission_table={"lookup": frozenset({"op"})}),
         )
@@ -430,6 +440,7 @@ class TestHandleCanonicalTrustPipeline:
             strategy,
             identity=_identity(tools=("lookup",)),
             warden=warden,
+            tool_registry=_LookupRegistry(),
             tool_executor=raw_tool,
             sentinel=RealSentinel(warden=warden, permission_table={"lookup": frozenset({"op"})}),
         )
@@ -478,6 +489,7 @@ class TestHandleCanonicalTrustPipeline:
             identity=_identity(tools=("lookup",)),
             warden=warden,
             tool_executor=raw_tool,
+            tool_registry=_LookupRegistry(),
             sentinel=sentinel,
         )
 
@@ -508,6 +520,7 @@ class TestHandleCanonicalTrustPipeline:
             _ToolReturningStrategy(),
             identity=_identity(tools=("lookup",)),
             tool_executor=raw_tool,
+            tool_registry=_LookupRegistry(),
             sentinel=Sentinel(),
         )
         await agent.handle(messages=[{"role": "user", "content": "lookup"}], auth=_Auth())
@@ -1833,7 +1846,9 @@ class TestScopedDenialAudit:
             audit_log=audit_log,
         )
 
-        result = await agent._authorize_and_invoke("read_file", {}, _Auth(), None)
+        result = await agent._authorize_and_invoke(
+            "read_file", {"path": "test.txt"}, _Auth(), [_build_tool_schema("read_file")]
+        )
 
         assert result == "read_file ran"
         page = await audit_log.get_page(org_id="org-1", denied=True)
