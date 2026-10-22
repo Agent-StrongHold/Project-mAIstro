@@ -7371,7 +7371,8 @@ only `scripts/check-reachability.py` + these two notes differ from
   trusted state") plus the consequent
   `check-reachability-provenance.py` trusted-base leg — the same single
   blocker manifesting in the rollup, as in the pre-round-86 state.
-- Reachability meta-tests: 3 failed / 46 passed —
+- Reachability meta-tests: 3 failed / 36 passed (39 collected; Round 90
+  recount below) —
   `test_check_reachability.py::test_baseline_matches_the_tree`,
   `test_reachability_baseline_identity.py::test_the_committed_baseline_
   passes_the_gate_it_now_carries` and `::test_the_baseline_is_exactly_the_
@@ -7410,3 +7411,45 @@ test readiness are proven (132-test suite, mutation-killed, live flow
 untouched), the explicit merge blocker (`NEWLY UNREACHABLE`) stands in the
 gate output, and activation plus the runtime consumer belong to the
 separately reviewed #1845 integration head.
+
+## Round 90 (verify round, job d39e0d74d49b4b519f537c7a5cede667):
+## independent re-verification at head 8f5e88793623 — every Round 89 number
+## reproduced; one recorded count corrected (46 -> 36)
+
+No tree edits except this note. Re-executed first-hand at `8f5e88793623`
+(`RATCHET_BASE_REV=origin/develop` where the gate reads it):
+
+- `check-shipped-surface-truth.py` rc=0; `check-vulture-baseline.py` with
+  CI's exact argv rc=0 (1314 -> 1309; empty fix-list — no unbanked
+  identity, nothing genuinely dead, ledger not touched).
+- `check-ratchet-provenance.py` rc=1 whose only red is the reachability
+  sub-ratchet (157 -> 158 unreachable, `maistro.tasks.admission_generation`
+  NEW/missing-from-candidate-baseline) plus its trusted-base leg; all
+  eight other sub-ratchets OK.
+- `check-reachability.py` rc=1 naming exactly the leaf; dispositions
+  rc=0; promotion-surface rc=0 — the issue-predicted explicit merge
+  blocker, standing by design.
+- Meta-tests recount: `pytest tests/test_check_reachability.py
+  tests/test_reachability_baseline_identity.py` collects **39** tests →
+  3 failed / **36** passed, the same single root cause. The Round 89
+  bullet above said "46 passed"; 46 is wrong (39 collected total) and is
+  corrected in place. The prior result.json's "3 failed/36 passed" was
+  accurate.
+- Focused battery: 135 (assessment + publication suites) and 268 (plus
+  pack contracts) all green; `mypy packages/maistro-core/src` Success on
+  818 files under `uv sync --locked --all-extras` (the CLI-sync
+  `--extra dev` env alone reports one pre-existing `maistro_bootstrap.cli`
+  import-not-found in untouched `cli/_install.py` — environment, not
+  code); whole-tree ruff check + format clean;
+  `check-suite-inventory.py --suite packages/maistro-core/tests` ok.
+- Live flow zero-diff vs `774ae42fc12`: `tasks/idempotency.py`,
+  `tasks/queue.py`, `tasks/__init__.py`, `runs/__init__.py`,
+  `runs/admission_identity.py` untouched; branch diff touches no
+  `packages/hive-conductor` file (root/research Dockerfile deltas are
+  comment-only), so the hosted `hive-conductor-e2e-ui` red is not
+  attributable to branch content.
+- Independent mutation re-check of the classifier suite via a /tmp
+  import hook (no tree edits): control 132 passed; swapping the
+  expiry/mismatch decision-order rows → 22 failed; relaxing inclusive
+  expiry `<=` → `<` → 27 failed. The suite discriminates on exactly the
+  branches the issue pins.
