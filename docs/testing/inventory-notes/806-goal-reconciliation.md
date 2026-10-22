@@ -288,3 +288,47 @@ plus check-durable-table-inventory (116 tables) and
 check-workflow-write-safety. The goals suite passes 176/176 against the real
 pgvector/pg18 server with `MAISTRO_TEST_DATABASE_URL` set, including the
 PostgreSQL catalogue-agreement tests the CI postgres service runs.
+
+## 2026-10-22 verification round: exact-debt-ledger green at the union head; queue integration simulated (no test change; delta unchanged: +105)
+
+Re-verification at the current head 2ac6ac05a, after the two merges that
+closed the recorded 863ac572 merge-queue failures: f23a0d7eb absorbed
+develop's 9ef97945e and 2ac6ac05a unioned this lane's `_vulture_whitelist.py`
+#806 block with the #2235 `SKILL_SECURITY_SCAN_VERSION` block, so the
+whitelist carries both lanes' reviewed surface without either side's rows
+being dropped.
+
+- The exact-debt-ledger job, run locally with CI's exact arguments at HEAD:
+  `uv run python scripts/check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` exit 0 (1319 findings vs
+  1320 reviewed identities, unclassified 0, never_allowlist 0),
+  `check-ratchet-provenance.py` exit 0 (all seven ratchets, no
+  candidate-approved expansion; `RATCHET_BASE_REV=origin/develop`),
+  `check-shipped-surface-truth.py` exit 0 (matrix complete).
+- Goals mechanics suite at HEAD: `pytest packages/maistro-core/tests/goals`
+  158 passed / 24 skipped (all skips Postgres-DSN-gated, per the documented
+  SQLite-is-the-durable-backend disposition). `ruff check .`,
+  `ruff format --check .` and `check-suite-inventory --suite
+  packages/maistro-core/tests` green (driver logs, re-run independently).
+- origin/develop advanced one commit past the merge base (c29e0ea70, #2184,
+  durable Event handler replay). Verified for the pending merge-queue
+  integration without mutating this branch: `git merge-tree --write-tree`
+  exits 0 (conflict-free); the synthetic merge prunes exactly the five
+  `credentials` `last_error_code` ledger rows develop dropped, consistently
+  with the new `events/invocations.py` consumers that make those names used.
+  A throwaway `commit-tree` of the merged tree, checked out detached, passes
+  the same trio — vulture exit 0 (1314 findings vs 1315 reviewed identities,
+  0 unclassified, 0 never-allowlist, base c29e0ea70), provenance exit 0,
+  shipped-surface exit 0 — and the goals suite (158 passed / 24 skipped).
+  The actual merge is left to the merge queue per the GH006 block ("reconsider
+  when the queue head clears"); the ledger/candidate consistency that failed
+  at 863ac572 provably survives it on both sides of the integration.
+- Residual unchanged from the 2026-10-20 round: the mechanics ship ahead of
+  their production composition (`EventWakeBridge` banked but not yet
+  subscribed by a shipped consumer; control-plane `goals` row separate from
+  #1572's `canonical_goals`) — #805/#804 activation work. The crash-matrix
+  #1823 sub-item (intake-created Goal discovered after restart) stays bounded
+  by this branch's durable-facts recovery proof
+  (`test_recover_enumerates_from_durable_facts_only` + `record_wake`
+  marks-due); #1823's intake commit path is a separate lane and is not in
+  this tree.
