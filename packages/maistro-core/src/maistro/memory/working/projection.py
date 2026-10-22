@@ -240,6 +240,20 @@ class WorkingMemoryManager:
         self.ttl_seconds = ttl_seconds
         self.max_projections = max_projections
         self._projections: dict[str, WorkspaceWorkingMemory] = {}
+        # Logical LRU order, not clock deltas. Projections hydrate microseconds
+        # apart, and the capacity sweep used to re-read ``idle_seconds`` per
+        # candidate at eviction time: a scheduler preemption between those
+        # reads made a newer projection read as older, evicting the wrong one
+        # (coverage-unit red: ``test_eviction_by_capacity_and_ttl`` evicted
+        # ws-b instead of ws-a). A strictly increasing touch generation makes
+        # "least recently used" exact; the TTL sweep still uses real time.
+        self._touch_clock = 0
+        self._touched_at: dict[str, int] = {}
+
+    def _mark_touch(self, workspace_id: str) -> None:
+        """Record a logical use, ordering evictions without the wall clock."""
+        self._touch_clock += 1
+        self._touched_at[workspace_id] = self._touch_clock
 
     async def _window_entries(
         self,
@@ -310,6 +324,7 @@ class WorkingMemoryManager:
         existing = self._projections.get(workspace_id)
         if existing is not None:
             existing.touch()
+            self._mark_touch(workspace_id)
             return existing
         projection = WorkspaceWorkingMemory(workspace_id)
         reset_marker = await self.store.latest_entry(workspace_id, kinds=(ObservationKind.RESET,))
@@ -319,6 +334,7 @@ class WorkingMemoryManager:
         projection.hydrate(window)
         await self._attach_referenced_results(projection, workspace_id, window)
         self._projections[workspace_id] = projection
+        self._mark_touch(workspace_id)
         self.evict()
         return projection
 
@@ -375,6 +391,7 @@ class WorkingMemoryManager:
             if result is not None:
                 hot.attach_result(result)
             hot.apply(stored)
+            self._mark_touch(workspace_id)
         return stored
 
     def evict(self) -> int:
@@ -387,10 +404,15 @@ class WorkingMemoryManager:
         stale = [ws for ws, p in self._projections.items() if p.idle_seconds > self.ttl_seconds]
         for ws in stale:
             self._projections.pop(ws)
+            self._touched_at.pop(ws, None)
             evicted += 1
         while len(self._projections) > self.max_projections:
-            oldest = max(self._projections.values(), key=lambda p: p.idle_seconds)
-            self._projections.pop(oldest.workspace_id)
+            # Least-recently-used by touch generation. ``min`` over the dict
+            # is insertion-order stable, so the verdict never depends on when
+            # the clock was last read.
+            oldest = min(self._projections, key=lambda ws: self._touched_at.get(ws, 0))
+            self._projections.pop(oldest)
+            self._touched_at.pop(oldest, None)
             evicted += 1
         return evicted
 
@@ -407,8 +429,10 @@ class WorkingMemoryManager:
         """
         released = len(self._projections)
         self._projections.clear()
+        self._touched_at.clear()
         return released
 
     async def dispose(self, workspace_id: str) -> None:
         """Drop one projection. Log untouched (it is the system of record)."""
         self._projections.pop(workspace_id, None)
+        self._touched_at.pop(workspace_id, None)

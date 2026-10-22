@@ -284,7 +284,10 @@ def test_certify_refuses_a_malformed_signing_key(tmp_path: Any) -> None:
     result = _certify(package, out, "--sign-key-file", str(key_file))
 
     assert result.exit_code != 0
-    assert "not a hex Ed25519 private key" in result.output
+    # rich wraps the rendered error at the console width, and the wrap
+    # column depends on the (machine-specific) tmp_path length in the
+    # message prefix — flatten whitespace before matching the phrase.
+    assert "not a hex Ed25519 private key" in " ".join(result.output.split())
 
 
 def test_certify_honors_an_import_policy_file_and_skips_pycache(tmp_path: Any) -> None:

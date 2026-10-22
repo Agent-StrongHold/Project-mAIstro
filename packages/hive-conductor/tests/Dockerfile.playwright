@@ -31,16 +31,30 @@ COPY frontend/src/lib/deckSanitizer.ts /tests/frontend/src/lib/deckSanitizer.ts
 COPY frontend/src/lib/deckTemplates.ts /tests/frontend/src/lib/deckTemplates.ts
 COPY frontend/src/lib/ids.ts /tests/frontend/src/lib/ids.ts
 COPY frontend/src/pages/Dashboard.tsx /tests/frontend/src/pages/Dashboard.tsx
+COPY frontend/src/pages/Backlog.tsx /tests/frontend/src/pages/Backlog.tsx
 COPY frontend/src/lib/widgetCapabilities.ts /tests/frontend/src/lib/widgetCapabilities.ts
 COPY frontend/src/components/SetupChecklist.tsx /tests/frontend/src/components/SetupChecklist.tsx
 COPY frontend/src/components/TemplatePicker.tsx /tests/frontend/src/components/TemplatePicker.tsx
 # #1414's toggle spec mounts the real shared.tsx Toggle (the component has no
 # routed consumer to drive); it imports only react, so this is the only
-# frontend file the harness needs.
+# frontend file the harness needs. The #1421 workspace skeleton specs bundle
+# the shipped WorkspaceTabs/WorkspaceContext against the same shared.tsx.
+COPY frontend/src/components/WorkspaceTabs.tsx /tests/frontend/src/components/WorkspaceTabs.tsx
 COPY frontend/src/components/shared.tsx /tests/frontend/src/components/shared.tsx
 COPY frontend/src/components/RichTooltip.tsx /tests/frontend/src/components/RichTooltip.tsx
+COPY frontend/src/context/WorkspaceContext.tsx /tests/frontend/src/context/WorkspaceContext.tsx
 COPY frontend/src/lib/api.ts /tests/frontend/src/lib/api.ts
+COPY frontend/src/lib/appearance.ts /tests/frontend/src/lib/appearance.ts
 COPY frontend/src/lib/debug.ts /tests/frontend/src/lib/debug.ts
+# The #1421 skeleton specs serve the shipped cascade into the harness page
+# and assert the .skeleton sizing/pulse rules (including the
+# prefers-reduced-motion guard) against the real stylesheet, so the files
+# must ship in the image. index.css only binds token names: the values live
+# in the two theme files main.tsx imports ahead of it, and without them
+# var(--rule) never resolves and the shapes paint transparent.
+COPY frontend/src/themes/workspace-tokens.css /tests/frontend/src/themes/workspace-tokens.css
+COPY frontend/src/themes/workspace-bridge.css /tests/frontend/src/themes/workspace-bridge.css
+COPY frontend/src/index.css /tests/frontend/src/index.css
 # #1420's specs import the shipped RUM modules from Node/the bundled page:
 # rum-telemetry.spec.ts asserts the redaction rules directly against
 # lib/rumSchema.ts, and rum-client-off-switches.spec.ts bundles lib/rum.ts

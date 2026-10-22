@@ -7,9 +7,11 @@ both import the hive app; these tests pin the registry contract without it.
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 from datetime import date
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -69,3 +71,52 @@ def test_declaring_a_prefix_requires_deleting_its_gap(gate) -> None:
     assert gate.compare(set(), {"/v1/x"}, {"/v1/x"}, set(), set()) == [
         "/v1/x: declared now -- delete it from the candidate ledger"
     ]
+
+
+def test_main_reaches_verdicts_through_the_bundled_identity(
+    gate, monkeypatch, tmp_path, capsys
+) -> None:
+    """#319: main() resolves the implementation identity before judging.
+
+    The mounted-prefix census (which imports the live hive app in production)
+    is substituted, the registries are pointed at synthetic files, and the
+    fake provenance namespace carries bundled_implementation_fingerprint
+    like the real one — so the identity resolves inside the trusted-state
+    try block and both a clean pass and an undeclared-prefix fail reach their
+    verdict.
+    """
+    registry = tmp_path / "route-permissions.json"
+    registry.write_text(
+        json.dumps({"prefixes": {"/v1/dags": {**_BASE, "permission": "dags.read"}}}),
+        encoding="utf-8",
+    )
+    public = tmp_path / "public-routes.json"
+    public.write_text(json.dumps({"routes": {}}), encoding="utf-8")
+    baseline = tmp_path / "route-permissions-baseline.json"
+    baseline.write_text(json.dumps({"tolerated": {}}), encoding="utf-8")
+    monkeypatch.setattr(gate, "REGISTRY", registry)
+    monkeypatch.setattr(gate, "PUBLIC_REGISTRY", public)
+    monkeypatch.setattr(gate, "BASELINE", baseline)
+    trusted = SimpleNamespace(base_sha="0" * 40, loads=lambda default=None: {"tolerated": {}})
+    provenance = SimpleNamespace(
+        RatchetProvenanceError=RuntimeError,
+        resolve_baseline=lambda *_a, **_k: trusted,
+        require_measurement=lambda *_a, **_k: None,
+        require_metric_version=lambda *_a, **_k: None,
+        load_authorizations=lambda *_a, **_k: {},
+        head_sha=lambda *_a: "c" * 40,
+        Provenance=lambda **_k: SimpleNamespace(render=lambda: "fixture provenance"),
+        bundled_implementation_fingerprint=lambda *_a, **_k: "bundled-sha256:fake",
+    )
+    monkeypatch.setattr(gate, "_provenance", lambda: provenance)
+    monkeypatch.setattr(sys, "argv", ["check-route-permissions.py"])
+
+    monkeypatch.setattr(gate, "mounted_prefixes", lambda: {"/v1/dags"})
+    assert gate.main() == 0
+    out = capsys.readouterr().out
+    assert "fixture provenance" in out
+    assert "ok: 1 declared, 0 tolerated undeclared prefix(es), none new" in out
+
+    monkeypatch.setattr(gate, "mounted_prefixes", lambda: {"/v1/dags", "/v1/other"})
+    assert gate.main() == 1
+    assert "/v1/other: NEW undeclared route prefix" in capsys.readouterr().err

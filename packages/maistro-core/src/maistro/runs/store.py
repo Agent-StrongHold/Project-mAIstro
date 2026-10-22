@@ -508,7 +508,20 @@ class RunStore(Protocol):
         provenance: dict[str, Any] | None = None,
         retention_expires_at: datetime | None = None,
         initial_status: RunStatus = RunStatus.CREATED,
-    ) -> Run: ...
+        goal_id: str | None = None,
+        goal_revision: int | None = None,
+    ) -> Run:
+        """Admit one Run over ``graph``.
+
+        ``goal_id``/``goal_revision`` bind the Run to the canonical Goal and
+        the exact desired-state revision it was admitted against (#1572). The
+        binding is provenance: written once here, carried in the Run's payload
+        from then on, and accepted from no other call — every later mutation
+        of the Run leaves it untouched, so a historical Run always reads with
+        the revision it used. Set both or neither; the model refuses half a
+        binding.
+        """
+        ...
 
     async def purge_expired_runs(
         self,
@@ -533,6 +546,17 @@ class RunStore(Protocol):
     ) -> list[Run]: ...
 
     async def non_terminal_run_stats(self) -> tuple[int, datetime | None]: ...
+
+    async def list_recent_runs(
+        self, workspace_id: str, *, limit: int = 100, offset: int = 0
+    ) -> list[Run]:
+        """Retained hot Runs in one Workspace, newest first (created_at, run_id).
+
+        Filters scope before pagination. Cold archive payloads are outside
+        discovery, as with list_by_status; by-id inspection remains available.
+        Product readers use ScopedRunReader for authorization.
+        """
+        ...
 
     async def get_run(self, run_id: str, *, principal_id: str | None = None) -> Run | None: ...
 
@@ -895,6 +919,8 @@ class InMemoryRunStore:
         provenance: dict[str, Any] | None = None,
         retention_expires_at: datetime | None = None,
         initial_status: RunStatus = RunStatus.CREATED,
+        goal_id: str | None = None,
+        goal_revision: int | None = None,
     ) -> Run:
         await self._validate_graph_scope(graph)
         if parent_node_run_id is not None and parent_run_id is None:
@@ -921,6 +947,8 @@ class InMemoryRunStore:
             actor_principal_id=require_admitted_actor(actor_principal_id),
             provenance=dict(provenance or {}),
             retention_expires_at=retention_expires_at,
+            goal_id=goal_id,
+            goal_revision=goal_revision,
         )
         run = admit_in_state(run, initial_status)
         self._claim_occurrence(run)
@@ -1244,6 +1272,22 @@ class InMemoryRunStore:
         )
         if after is not None:
             matching = [run for run in matching if run_cursor_key(run) > after]
+        return [run.model_copy(deep=True) for run in matching[offset : offset + limit]]
+
+    async def list_recent_runs(
+        self, workspace_id: str, *, limit: int = 100, offset: int = 0
+    ) -> list[Run]:
+        if limit <= 0 or offset < 0:
+            raise ValueError("limit must be positive and offset non-negative")
+        matching = sorted(
+            (
+                run
+                for run in self._runs.values()
+                if run.workspace_id == workspace_id and run.run_id not in self._archived
+            ),
+            key=run_cursor_key,
+            reverse=True,
+        )
         return [run.model_copy(deep=True) for run in matching[offset : offset + limit]]
 
     async def get_run(self, run_id: str, *, principal_id: str | None = None) -> Run | None:

@@ -13,7 +13,7 @@
 # ─── Build stage ───────────────────────────────────────
 # Digest-pinned (#349): python:3.12-slim resolved to this index digest on
 # 2026-09-30; refresh via Dependabot and update quality/image-pins.json.
-FROM python:3.12-slim@sha256:f77ac9e44ae96ef2c90b8053ea08c31f8be030f824196b0ae4db6d462c84e51f AS builder
+FROM python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1 AS builder
 
 WORKDIR /app
 
@@ -46,8 +46,27 @@ RUN pip install --no-cache-dir \
     "./packages/maistro-server"
 
 
+# ---- docker CLI build ----
+# Same policy as the root Dockerfile: the published docker:29-cli binary embeds
+# go1.26.8 stdlib (trivy HIGHs fixed in go1.26.9/1.27.2) and no released
+# docker:xx-cli tag ships a newer toolchain, so build the exact immutable
+# release tag ourselves on the patched toolchain. Tag resolves to dfc520d; fail
+# if upstream ever disagrees.
+FROM golang:1.27.2-alpine@sha256:f92b6ef800e499660581efdabdf25d9d817a9d124eaf900924f0504e7e27e12d AS dockerclibuild
+ARG DOCKER_CLI_VERSION=29.9.1
+ARG DOCKER_CLI_COMMIT_SHORT=dfc520d
+RUN apk add --no-cache git && \
+    git clone --branch "v${DOCKER_CLI_VERSION}" --depth 1 https://github.com/docker/cli.git /src/docker-cli && \
+    cd /src/docker-cli && \
+    test "$(git rev-parse --short=7 HEAD)" = "${DOCKER_CLI_COMMIT_SHORT}" && \
+    cp vendor.mod go.mod && cp vendor.sum go.sum && \
+    mkdir -p /out && \
+    CGO_ENABLED=0 go build -trimpath -tags grpcnotrace \
+      -ldflags="-s -w -X github.com/docker/cli/cli/version.Version=v${DOCKER_CLI_VERSION} -X github.com/docker/cli/cli/version.GitCommit=${DOCKER_CLI_COMMIT_SHORT}" \
+      -o /out/docker ./cmd/docker
+
 # ─── Production stage ─────────────────────────────────
-FROM python:3.12-slim@sha256:f77ac9e44ae96ef2c90b8053ea08c31f8be030f824196b0ae4db6d462c84e51f
+FROM python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1
 
 WORKDIR /app
 
@@ -81,10 +100,10 @@ RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-reco
     && rm -rf /var/lib/apt/lists/* /var/cache/apt/* /tmp/*
 
 # Static docker CLI only (talks to a mounted /var/run/docker.sock) — replaces the
-# heavyweight docker.io package and its containerd/runc dependency tree.
-# 29-cli ships a binary built with go1.26.8; older 27-cli embedded go1.22.11
-# (CVE-2025-68121 crypto/tls + 21 HIGHs, trivy).
-COPY --from=docker:29-cli@sha256:018edbc908e08fcc9dbf029c812c34251e9b4719e6f71ca0e5eae2a987d014ca /usr/local/bin/docker /usr/local/bin/docker
+# heavyweight docker.io package and its containerd/runc dependency tree. Built
+# from the pinned upstream release tag on the patched Go toolchain (stage
+# above) because the published 29-cli binary embeds go1.26.8 stdlib (trivy HIGHs).
+COPY --from=dockerclibuild /out/docker /usr/local/bin/docker
 
 # Copy installed packages from builder
 COPY --from=builder /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
@@ -132,7 +151,39 @@ RUN pip install --no-cache-dir \
 RUN uv pip install --system \
     "browser-use>=0.1.40" \
     "playwright>=1.49.0" \
- && python -m playwright install chromium
+ && python -m playwright install chromium \
+ && uv pip install --system \
+    "anyio>=4.14.2" \
+    "aiohttp>=3.14.4" \
+    "pypdf>=6.19.0" \
+    "pillow>=13.0.0" \
+ && python -c "from importlib.metadata import version; from packaging.version import Version; import anyio, pypdf, browser_use, PIL.Image; assert Version(version('anyio')) >= Version('4.14.2'), version('anyio'); assert Version(version('aiohttp')) >= Version('3.14.4'), version('aiohttp'); assert Version(version('pypdf')) >= Version('6.19.0'), version('pypdf'); assert Version(version('pillow')) >= Version('13.0.0'), version('pillow')" \
+ && rm -rf /root/.cache/uv
+# The second uv install re-asserts the security floors the first one cannot
+# carry: browser-use 0.13.11 (the latest upstream release) pins
+# anyio==4.12.1 (CVE-2026-63374 CRITICAL, TLS certificate spoofing, fixed
+# 4.14.2), pypdf==6.16.2 (CVE-2026-102993/4/5/8 HIGHs, fixed 6.17-6.19), and
+# aiohttp==3.14.3 (CVE-2026-111064 missing-initial-request-timeout DoS HIGH
+# and GHSA-2g87-pp6c-29x5 unbounded memory/CPU HIGH, both fixed 3.14.4), plus
+# pillow==12.3.0 (CI job 119011434194: seven HIGH/CRITICAL findings including
+# CVE-2026-112403, all fixed in 13.0.0)
+# exactly, so its resolution silently downgrades whatever the first install
+# put in place — CI run 39400043294 shipped aiohttp 3.14.3 to this image that
+# way and the trivy gate failed on it. Every browser-use release to date pins
+# aiohttp exactly, so the pin cannot be satisfied jointly with the CVE floor;
+# the patched aiohttp replaces the pinned one after browser-use is installed.
+# The import assertion above checks browser-use with the patched dependencies,
+# including Pillow's image API after its major security update. The uv wheel
+# cache is dropped in the same layer: its archives keep the METADATA of every
+# wheel uv resolved (the vulnerable tuples again) plus SDK example files the
+# secret scanner flags.
+
+# Drop the same build tooling the other images drop: pip is not invoked at
+# runtime by anything in the shipped app, and its vendored dependency tree
+# (pip/_vendor/vendor.txt) is trivy surface. The uv binary stays — it ships in
+# the copied /usr/local/bin tool set this image is operated with.
+RUN rm -rf /usr/local/lib/python3.12/site-packages/pip* \
+           /usr/local/bin/pip*
 
 # Drop root: run as an unprivileged system user and own the app + browser dirs.
 RUN useradd --system --no-create-home --uid 10001 app \
