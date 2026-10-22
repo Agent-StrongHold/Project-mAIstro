@@ -112,3 +112,27 @@ closed without a count change:
 `packages/maistro-design/tests` remains 614 (38 proof tests × backends) and
 `packages/maistro-core/tests` remains 17417; the suite inventory reports
 `expected == collected` for both.
+
+## pip-audit supply-chain repair (no test-count change)
+
+The merge-queue evaluation at `ead9b9fec` failed `Supply chain (pip-audit)` /
+`security` on three advisories outside the triaged allowlist, all on
+dev-only transitive dependencies: `gitpython==3.1.62` CVE-2026-114145 (via
+cosmic-ray) and `graphql-core==3.2.11` CVE-2026-75507/75508 (via
+`moto[server]`). Per the gate's own instruction — upgrade when a fixed
+version exists — `uv lock --upgrade-package gitpython
+--upgrade-package graphql-core` moved the pins to `gitpython 3.2.1` and
+`graphql-core 3.3.0` (the stable final release, past the rc the advisory
+named). No `ALLOWED` rows were added. Proven locally at CI's exact
+arguments: `pip-audit --strict` over `uv pip freeze --exclude-editable`
+then `scripts/pip_audit_gate.py` exits 0 (only the triaged `ecdsa`
+PYSEC-2026-1325 pair remains); `check-dependency-namespaces.py` passes
+over the bumped set; the moto-server-driven archive conformance suite
+passes 128/128 on graphql-core 3.3.0. No test was added or removed.
+
+The sibling `Container scan + SBOM + cosign` failure was already repaired
+at `ead9b9fec` (go1.27.2 → 1.27.3 stdlib rebuild of the age and docker-CLI
+stages); re-verified locally this round at trivy 0.73.0 (CI's exact
+version): both rebuilt stage binaries embed `go1.27.3` and scan clean at
+HIGH/CRITICAL with `--ignore-unfixed`, and `check-image-pins.py` passes.
+
