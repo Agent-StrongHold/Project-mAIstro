@@ -209,10 +209,13 @@ def test_effect_claim_revision_follows_the_chain_tip() -> None:
     # `062`. The Goal migration appends as `063`; installed-base upgrade
     # tests cover the preserved 056/057/061 identities and forward upgrade.
     # #12's live-Workspace-Persona table appends past the Goal store as
-    # `064`, so the single head is `064`, not the Goal revision itself; a
-    # landed trunk migration never moves, so #836's durable legacy replay
-    # acknowledgement renumbered past it as `065` at that sync.
-    assert directory.get_heads() == ["065"]
+    # `064`, #836's durable legacy replay acknowledgement renumbers past it
+    # as `065`, and the durable delivery receipts (#1060) append past that as
+    # `066`, so the single head is `066`.
+    assert directory.get_heads() == ["066"]
+    assert directory.get_revision("064").down_revision == "063"
+    assert directory.get_revision("065").down_revision == "064"
+    assert directory.get_revision("066").down_revision == "065"
     walked = {item.revision for item in directory.walk_revisions("base", "062")}
     assert {
         "034_canonical_run_effect_claim",
