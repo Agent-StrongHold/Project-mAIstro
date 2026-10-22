@@ -1,0 +1,2 @@
+  NOM             ÉTAT            VERSION
+* Ubuntu          Running         2

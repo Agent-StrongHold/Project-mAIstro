@@ -1,5 +1,14 @@
 """Canonical logical and physical execution lifecycle."""
 
+from maistro.runs.admission_identity import (
+    AdmissionBinding,
+    AdmissionRecordV2,
+    CanonicalJsonObject,
+    LegacyAdmissionRecord,
+    RootAdmissionEnvelope,
+)
+from maistro.runs.concurrency import RunConcurrencyExceeded, RunConcurrencyLimits
+from maistro.runs.eval import EvalSummary, eval_summary, open_re_eval_attempt
 from maistro.runs.execution import AttemptExecutionService, AttemptReconciler
 from maistro.runs.lifecycle import (
     ATTEMPT_TRANSITIONS,
@@ -16,10 +25,13 @@ from maistro.runs.model import (
     Attempt,
     AttemptResult,
     AttemptStatus,
+    EvalJudge,
+    EvalMethod,
     ExecutionLease,
     GraphSnapshot,
     NodeRun,
     Run,
+    RunEvalScore,
     RunStatus,
 )
 from maistro.runs.reconciliation import AttemptLifecycleReconciler
@@ -30,6 +42,7 @@ from maistro.runs.store import (
     AttemptNotFound,
     InMemoryRunStore,
     NodeRunNotFound,
+    RunEffectClaim,
     RunIntegrityError,
     RunNotFound,
     RunStore,
@@ -44,6 +57,8 @@ __all__ = [
     "TERMINAL_RUN_STATUSES",
     "AcceptedNodeOutcome",
     "ActiveAttemptExists",
+    "AdmissionBinding",
+    "AdmissionRecordV2",
     "Attempt",
     "AttemptExecutionService",
     "AttemptLifecycleReconciler",
@@ -51,13 +66,23 @@ __all__ = [
     "AttemptReconciler",
     "AttemptResult",
     "AttemptStatus",
+    "CanonicalJsonObject",
+    "EvalJudge",
+    "EvalMethod",
+    "EvalSummary",
     "ExecutionLease",
     "GraphSnapshot",
     "InMemoryRunStore",
     "InvalidLifecycleTransition",
+    "LegacyAdmissionRecord",
     "NodeRun",
     "NodeRunNotFound",
+    "RootAdmissionEnvelope",
     "Run",
+    "RunConcurrencyExceeded",
+    "RunConcurrencyLimits",
+    "RunEffectClaim",
+    "RunEvalScore",
     "RunExecutionService",
     "RunIntegrityError",
     "RunNotFound",
@@ -65,6 +90,8 @@ __all__ = [
     "RunStore",
     "SqliteRunStore",
     "StaleExecutionFence",
+    "eval_summary",
+    "open_re_eval_attempt",
     "transition_attempt",
     "transition_node_run",
     "transition_run",

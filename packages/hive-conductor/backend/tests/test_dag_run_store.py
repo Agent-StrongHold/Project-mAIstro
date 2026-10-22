@@ -150,3 +150,88 @@ async def test_singleton_get_dag_run_store_returns_same_instance():
     a = get_dag_run_store()
     b = get_dag_run_store()
     assert a is b
+
+
+# --- canonical event sequence identity (#1183) --------------------------
+
+
+@pytest.mark.asyncio
+async def test_append_event_assigns_monotonic_per_run_seq():
+    """Every event carries its 1-based position in the run's TOTAL history.
+
+    The counter must not come from `len(events)`: the buffer is trimmed to
+    `MAX_EVENTS_PER_RUN`, so only a dedicated counter survives trims and can
+    serve as a gap-detecting cursor.
+    """
+    from services.dag_run_store import MAX_EVENTS_PER_RUN
+
+    store = DagRunStore()
+    run = await store.start_run(run_id="seq-1")
+    for index in range(MAX_EVENTS_PER_RUN + 7):
+        ev = await store.append_event(
+            run.id, event_type="pm_node_started", role="intake", capability="c"
+        )
+        assert ev.seq == index + 1
+    # The buffer trimmed; the counter did not.
+    assert len(run.events) == MAX_EVENTS_PER_RUN
+    assert run.event_seq == MAX_EVENTS_PER_RUN + 7
+    detail = store.get_run(run.id)
+    assert detail["events"][-1]["seq"] == MAX_EVENTS_PER_RUN + 7
+
+
+@pytest.mark.asyncio
+async def test_event_seq_survives_record_round_trip():
+    """The counter is durable state: a reloaded store continues the sequence
+    instead of re-numbering history from one."""
+    from services.dag_run_store import DagRunStore
+
+    class _Records(dict):
+        def initialize(self) -> None: ...
+
+    records = _Records()
+    first = DagRunStore(records=records)
+    await first.start_run(run_id="seq-durable")
+    for _ in range(3):
+        await first.append_event(
+            "seq-durable", event_type="pm_node_started", role="a", capability="b"
+        )
+
+    reloaded = DagRunStore(records=records)
+    ev = await reloaded.append_event(
+        "seq-durable", event_type="pm_node_completed", role="a", capability="b"
+    )
+    assert ev.seq == 4
+
+
+@pytest.mark.asyncio
+async def test_slow_subscriber_overflow_is_detectable_not_silent():
+    """#1183: a full bounded subscriber queue drops events, but the seqs make
+    the loss visible. Delivered events stay contiguous; the run's durable
+    history keeps every seq, so a reconnecting consumer can tell exactly what
+    it missed instead of believing a contiguous stream that wasn't."""
+    from services.dag_run_store import MAX_SSE_QUEUE
+
+    store = DagRunStore()
+    run = await store.start_run(run_id="seq-gap")
+    q = store.subscribe(run.id)
+
+    total = MAX_SSE_QUEUE + 5
+    for _ in range(total):
+        await store.append_event("seq-gap", event_type="pm_node_started", role="a", capability="b")
+
+    # The slow consumer drains at its own pace: it gets the first MAX_SSE_QUEUE
+    # events, contiguously.
+    delivered = [await asyncio.wait_for(q.get(), timeout=1.0) for _ in range(MAX_SSE_QUEUE)]
+    assert [ev.seq for ev in delivered] == list(range(1, MAX_SSE_QUEUE + 1))
+    # Nothing more will arrive on this queue: the last five were dropped.
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(q.get(), timeout=0.05)
+    store.unsubscribe(run.id, q)
+
+    # Durable truth kept the whole sequence (bounded to the last
+    # MAX_EVENTS_PER_RUN): a fresh subscriber replays a window that begins
+    # PAST seq 1 — the discontinuity a resync marker announces.
+    fresh = store.subscribe(run.id)
+    first = await asyncio.wait_for(fresh.get(), timeout=1.0)
+    assert first.seq > 1
+    store.unsubscribe(run.id, fresh)

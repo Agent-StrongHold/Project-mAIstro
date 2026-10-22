@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from typing import Any, Literal
 
+from .curriculum import RESERVED_BENCHMARK_PREFIX
 from .types import EvalResult, PipelineGenome
 
 BenchmarkRunner = Callable[[PipelineGenome, Any], Awaitable[EvalResult]]
@@ -28,6 +29,25 @@ Random-noise placeholder scores were removed outright rather than gated,
 because a fitness signal that can silently become noise is worse than no
 signal — see SPEC-202 and the evolve CLAUDE.md stability statement.
 """
+
+
+def evidence_method(result: EvalResult) -> str:
+    """The verified-method provenance for one benchmark result (#384).
+
+    Extracts ``metadata["evidence"]`` into the compact string recorded in
+    ``PipelineGenome.eval_evidence``: the ``method`` field for dict-shaped
+    evidence (what every runner in this package now emits), the string
+    itself for str-shaped evidence, and "unverified" when a result carries
+    no record. Absence is provenance too — recorded, never silently
+    dropped — so champion selection can always name (or flag) the evidence
+    behind every score.
+    """
+    evidence = result.metadata.get("evidence")
+    if isinstance(evidence, dict):
+        return str(evidence.get("method", "unverified"))
+    if isinstance(evidence, str) and evidence:
+        return evidence
+    return "unverified"
 
 
 class EvalHarness:
@@ -80,7 +100,23 @@ class EvalHarness:
         The reverse (a real runner on a proxy harness) is allowed: it makes the
         harness *better* than it claims, and ``EvalResult.metadata["fidelity"]``
         still tells the truth per result.
+
+        The reserved ``self_generated/`` namespace is refused outright (#24,
+        SPEC-282): self-generated curriculum challenges are practice signal
+        behind their own validity gates, not external evaluation — registering
+        one here would let its score read as benchmark evidence alongside real
+        adapters and flow into ``genome.eval_scores`` from there. Practice
+        lives in ``curriculum.Curriculum`` and stays out of harness scoring.
         """
+        if name.startswith(RESERVED_BENCHMARK_PREFIX):
+            raise ValueError(
+                f"benchmark name {name!r} uses the reserved "
+                f"{RESERVED_BENCHMARK_PREFIX!r} namespace: self-generated "
+                "curriculum challenges are practice signal behind their own "
+                "validity gates, not external evaluation (SPEC-282). Register "
+                "them nowhere on a harness — keep them in "
+                "maistro_evolve.curriculum."
+            )
         if self.fidelity == "real" and fidelity != "real":
             raise ValueError(
                 f"cannot register {fidelity}-fidelity benchmark {name!r} on a "

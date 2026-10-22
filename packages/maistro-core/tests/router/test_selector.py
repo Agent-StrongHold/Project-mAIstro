@@ -17,13 +17,8 @@ from maistro.types.intent import Intent
 from maistro.types.model import ModelConfig, ProviderConfig
 
 
-class _StubQuotaTracker:
-    """RouterEngine only stores the tracker; select()/select_with_usage() don't
-    call back into it directly in the sync paths exercised here."""
-
-
 def _engine() -> RouterEngine:
-    return RouterEngine(_StubQuotaTracker())
+    return RouterEngine()
 
 
 def _routing_config(**overrides) -> RoutingConfig:

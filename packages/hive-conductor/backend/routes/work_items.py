@@ -13,6 +13,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
 from services import program_store as prog
 from services.agent_invocation import resolve_agent_task
+from services.request_principal import require_actor_id
 from services.workspace_mode import is_workspace_member, workspace_has_pm_fleet_agents
 
 from maistro.agents.pm_capabilities import WORK_ITEM_LABELS, WorkItemType
@@ -29,11 +30,7 @@ router = APIRouter(tags=["work-items"])
 
 
 def _user_id(request: Request) -> str:
-    user = getattr(request.state, "user", None) or {}
-    uid = user.get("id")
-    if not uid:
-        raise HTTPException(status_code=401, detail="Authentication required")
-    return str(uid)
+    return require_actor_id(request)
 
 
 async def _require_submittable_workspace(user_id: str, workspace_id: str | None) -> None:

@@ -9,28 +9,85 @@ from hypothesis.stateful import RuleBasedStateMachine, rule, invariant
 from maistro.security.warden.semantic import semantic_tool_poisoning_scan
 
 
+# Words describing dangerous actions and sensitive objects that deliberately
+# LACK any prescriptive instruction ("the auth token was disabled in config",
+# not "the auth token should be disabled"). The documented flag logic requires
+# prescriptive AND (action|object), so any sentence built from these words
+# must come back clean — false positives on descriptive security text are the
+# counterexample class the prescriptive-free rule below guards.
+_NO_PRESCRIPTIVE_TEMPLATE_WORDS = {
+    "disable",
+    "bypass",
+    "skip",
+    "allow",
+    "plaintext",
+    "auth",
+    "token",
+    "api",
+    "key",
+    "credentials",
+    "password",
+    "the",
+    "and",
+    "reported",
+    "observed",
+    "found",
+    "in",
+    "config",
+    "endpoint",
+    "logs",
+    "was",
+    "were",
+    "is",
+    "audit",
+    "yesterday",
+}
+
+
 class SemanticScanMachine(RuleBasedStateMachine):
     def __init__(self):
         super().__init__()
-        self.clean_count = 0
-        self.flagged_count = 0
+        self.last_flagged: bool | None = None
+        self.last_flags: list[str] | None = None
 
     @rule(
         text=st.text(min_size=0, max_size=500),
     )
     def scan(self, text):
         flagged, flags = semantic_tool_poisoning_scan(text)
-        if flagged:
-            self.flagged_count += 1
-        else:
-            self.clean_count += 1
         assert isinstance(flagged, bool)
         assert isinstance(flags, list)
+        self.last_flagged = flagged
+        self.last_flags = flags
+
+    @rule(
+        sentence=st.lists(st.sampled_from(sorted(_NO_PRESCRIPTIVE_TEMPLATE_WORDS)), min_size=2, max_size=12),
+    )
+    def scan_prescriptive_free_text(self, sentence):
+        """Safety property: without a prescriptive pattern, nothing flags.
+
+        Counterexample class: flagging on dangerous-action + sensitive-object
+        alone (dropping the prescriptive requirement) flags descriptive text
+        and fails here. (The old `counts_non_negative` invariant counted the
+        machine's own bookkeeping counters and could never fail.)
+        """
+        flagged, flags = semantic_tool_poisoning_scan(" ".join(sentence))
+        assert flagged is False, f"prescriptive-free text flagged: {' '.join(sentence)!r} -> {flags!r}"
+        assert flags == []
 
     @invariant()
-    def counts_non_negative(self):
-        assert self.clean_count >= 0
-        assert self.flagged_count >= 0
+    def flagged_implies_nonempty_flags(self):
+        """Attributeability: a flag verdict must name its reasons.
+
+        Counterexample class: `flagged=True` with an empty flag list (a
+        verdict nobody can act on or audit) fails here.
+        """
+        if self.last_flagged is None:
+            return
+        if self.last_flagged:
+            assert len(self.last_flags) >= 1
+        else:
+            assert self.last_flags == []
 
 
 TestSemanticScanMachine = SemanticScanMachine.TestCase

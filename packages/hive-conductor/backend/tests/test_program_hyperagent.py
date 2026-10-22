@@ -25,6 +25,8 @@ from typing import Any, ClassVar
 import pytest
 from fastapi import HTTPException
 
+from maistro.identity import Principal
+
 _BACKEND = pathlib.Path(__file__).resolve().parents[1]
 if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
@@ -36,7 +38,7 @@ if str(_BACKEND) not in sys.path:
 def test_user_id_from_request_returns_id() -> None:
     from services.program_hyperagent import user_id_from_request
 
-    req = SimpleNamespace(state=SimpleNamespace(user={"id": "u1"}))
+    req = SimpleNamespace(state=SimpleNamespace(principal=Principal(user_id="u1")))
     assert user_id_from_request(req) == "u1"  # type: ignore[arg-type]
 
 

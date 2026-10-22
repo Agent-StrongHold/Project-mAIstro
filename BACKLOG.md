@@ -248,11 +248,27 @@ External-library adoption per [`engine#ADR-039`](docs/adr/ADR-039-external-libra
   `packages/hive-conductor/backend/tests/test_auth_middleware.py`
 - Session log: `docs/exploratory-sessions/2026-06-28-auth-middleware-backfill.md`
 
+### v1.0 Workspaces convergence (ratified 2026-10-01)
+
+**[engine-112] Canonical RunStore unification — Accepted; `gap-impl` — v1.0 M1**
+- [#251](https://github.com/Agent-StrongHold/Project-mAIstro/issues/251): single run browser for chat, tasks, schedules, and DAGs; no new callers of legacy `DurableRunStore`
+- Blocks cutover Phase 1 step 2 (Goal/Run inspection #65, #1036)
+
+**[engine-113] ADR-INDEX covers all ADRs — Implemented — v1.0 M5**
+- Governance release gate: every ADR in `docs/adr/` indexed; `scripts/check-adr-index.py` fails on missing rows
+
+**[engine-114] Memory scopes workspace + user + global — Proposed; `gap-impl` — v1.0 M3**
+- Unified memory protocol; Conductor KB merged in; team axis deferred to v1.1 (#776, #1047)
+- Retrieval and consolidation as graph NodeRuns on the canonical spine
+
+**[engine-115] Default compose OTEL → Langfuse — Proposed; `gap-impl` — v1.0**
+- Default `docker compose up` stack wires observability export per [ADR-037](docs/adr/ADR-037-observability-taxonomy.md)
+
 ---
 
 ## Conductor variant items (`conductor-NNN`)
 
-Single-tenant, multi-user self-hosted deployment — ships as `packages/hive-conductor`.
+Single-tenant, multi-user self-hosted deployment — ships as `packages/hive-conductor`. **v1.0 product surface is Workspaces**, which replaces the legacy Conductor page tree per [WORKSPACE-CUTOVER-PLAN.md](docs/architecture/WORKSPACE-CUTOVER-PLAN.md) and [ROADMAP.md](ROADMAP.md).
 
 ### v1.0 — multi-user with hard isolation + setup wizard
 
@@ -319,6 +335,44 @@ Single-tenant, multi-user self-hosted deployment — ships as `packages/hive-con
 **[conductor-401] Davinci-canvas frontend completion — Proposed; `gap-impl` — v1.1**
 - React + Express POC → production-shape
 - Design tooling, asset library
+
+### Workspaces product v1.0 (replaces legacy Conductor UI)
+
+**[conductor-402] Workspaces cutover epic — Accepted; `gap-impl` — v1.0**
+- [#1046](https://github.com/Agent-StrongHold/Project-mAIstro/issues/1046): Phase 0 contract before surface; ledger-enforced legacy retirement; default route → Workspace Home
+
+**[conductor-403] Workspace Home — Proposed; `gap-impl` — v1.0 M3**
+- [#1048](https://github.com/Agent-StrongHold/Project-mAIstro/issues/1048): v1.0 blocker; replaces Dashboard as default landing
+
+**[conductor-404] Workspace Agent chat — Proposed; `gap-impl` — v1.0 M3-D**
+- [#1037](https://github.com/Agent-StrongHold/Project-mAIstro/issues/1037), [#804](https://github.com/Agent-StrongHold/Project-mAIstro/issues/804): persistent goals + reconciliation; M2 security (#66) follows this path
+
+**[conductor-405] Attention surface — Proposed; `gap-impl` — v1.0**
+- [#1049](https://github.com/Agent-StrongHold/Project-mAIstro/issues/1049): v1.0 blocker
+
+**[conductor-406] Backlog / work items — Proposed; `gap-impl` — v1.0 M3-C**
+- [#82](https://github.com/Agent-StrongHold/Project-mAIstro/issues/82): builders → Backlog wiring; replaces Missions/WorkItems pages
+
+**[conductor-407] Capabilities unified surface — Proposed; `gap-impl` — v1.0 M3**
+- [#59](https://github.com/Agent-StrongHold/Project-mAIstro/issues/59): repertoire → Capabilities; retire Agents/MCP/Skills/Topology pages
+
+**[conductor-408] Legacy Conductor page retirement — Accepted; `gap-impl` — v1.0**
+- Delete (not redirect) legacy routes per cutover plan §9 retirement ledger amendments
+
+**[conductor-409] Design Studio v1.0 scope — Proposed; `gap-impl` — v1.0**
+- Beyond discovery/prompt-only; persona template framework (book-maker skin v1.1)
+
+**[conductor-410] Canvas v2 operable in default compose — Proposed; `gap-impl` — v1.0 M3-B**
+- [#735](https://github.com/Agent-StrongHold/Project-mAIstro/issues/735): `/v2/canvas` not 503 on default `docker compose up`
+
+**[conductor-411] Hide Evolution UI until v1.2 — Proposed — v1.0**
+- Remove Evolution from nav and routes for v1.0; restore in v1.2 when durable population lands
+
+**[conductor-412] Tool binding dispatch wiring — Proposed; `gap-impl` — v1.0**
+- Persona overrides applied at dispatch via `tool_binding.py`; sandbox enforces per Graph NodeRun scope
+
+**[conductor-413] Hive service wiring — Proposed; `gap-impl` — v1.0**
+- Wire `repo_scanner`, `pipeline_orchestrator`, `chatbot_integration` for Workspace product (#34 hive-unwired-services)
 
 ---
 

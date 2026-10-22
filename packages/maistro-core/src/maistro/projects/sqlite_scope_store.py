@@ -32,6 +32,9 @@ from maistro.projects.scope import (
 from maistro.sqlite_schema import execute_schema_script, serialized_schema_upgrade
 
 if TYPE_CHECKING:
+    from maistro.workspaces.store import WorkspaceStore
+
+if TYPE_CHECKING:
     import aiosqlite
 
 #: Passes the leaf-first Project purge may take before it gives up. A Workspace
@@ -99,6 +102,7 @@ class SqliteProjectScopeStore:
 
         self._conn = conn
         self._owns_runs: Callable[[str], Awaitable[bool]] | None = None
+        self._workspace_store: WorkspaceStore | None = None
         # One connection, so this orders same-process writers; `BEGIN
         # IMMEDIATE` is what protects a second process sharing this file.
         # Every writer takes it through `_serialized_write` (#1147, #1148,
@@ -109,10 +113,81 @@ class SqliteProjectScopeStore:
         # transaction" the moment their awaits interleaved.
         self._write_lock = asyncio.Lock()
 
+    def bind_workspace_store(self, workspace_store: WorkspaceStore) -> None:
+        self._workspace_store = workspace_store
+
     def set_run_owner(self, owns_runs: Callable[[str], Awaitable[bool]]) -> None:
         """Register the predicate `delete()` consults for Run ownership."""
 
         self._owns_runs = owns_runs
+
+    async def _require_project_view(self, project: Project, principal_id: str) -> None:
+        from maistro.workspaces.store_boundary import is_blank_principal, require_project_view
+
+        workspace_store = self._workspace_store
+        if workspace_store is None:
+            raise ProjectScopeDenied("Project not found")
+        if is_blank_principal(principal_id):
+            raise ProjectScopeDenied("Project not found")
+        await require_project_view(project, workspace_store, principal_id)
+
+    async def _require_project_administer(self, project: Project, principal_id: str) -> None:
+        from maistro.workspaces.store_boundary import (
+            is_blank_principal,
+            require_project_administer,
+        )
+
+        workspace_store = self._workspace_store
+        if workspace_store is None:
+            raise ProjectScopeDenied("Project not found")
+        if is_blank_principal(principal_id):
+            raise ProjectScopeDenied("Project not found")
+        await require_project_administer(project, workspace_store, principal_id)
+
+    async def _resolve_for_authorization(
+        self, project_id: str, principal_id: str | None
+    ) -> Project:
+        """Resolve the Project, collapsing not-found into the scoped denial.
+
+        The store boundary must not be an existence oracle: with an acting
+        principal, an unknown Project and one in a foreign Workspace are
+        indistinguishable, so both surface as the same `ProjectScopeDenied`.
+        """
+        try:
+            return await self._require(project_id)
+        except ProjectNotFound:
+            if principal_id is None:
+                raise
+            raise ProjectScopeDenied("Project not found") from None
+
+    async def _authorize_view(self, project_id: str, principal_id: str | None) -> Project:
+        project = await self._resolve_for_authorization(project_id, principal_id)
+        if principal_id is not None:
+            await self._require_project_view(project, principal_id)
+        return project
+
+    async def _authorize_administer(self, project_id: str, principal_id: str | None) -> Project:
+        project = await self._resolve_for_authorization(project_id, principal_id)
+        if principal_id is not None:
+            await self._require_project_administer(project, principal_id)
+        return project
+
+    async def _authorize_membership_write(
+        self, membership: ProjectMembership, principal_id: str | None, *, replacement: bool
+    ) -> Project:
+        project = await self._authorize_view(membership.project_id, principal_id)
+        if principal_id is not None and self._workspace_store is not None:
+            from maistro.projects.authorization import authorize_membership_write
+
+            await authorize_membership_write(
+                self,
+                project=project,
+                workspace_store=self._workspace_store,
+                membership=membership,
+                principal_id=principal_id,
+                replacement=replacement,
+            )
+        return project
 
     @asynccontextmanager
     async def _serialized_write(self) -> AsyncIterator[None]:
@@ -272,12 +347,16 @@ class SqliteProjectScopeStore:
         )
         return await self.root_for_workspace(workspace_id)
 
-    async def root_for_workspace(self, workspace_id: str) -> Project:
+    async def root_for_workspace(
+        self, workspace_id: str, *, principal_id: str | None = None
+    ) -> Project:
         """Return the canonical Root Project for a Workspace."""
 
         root = await self._root_or_none(workspace_id)
         if root is None:
             raise ProjectNotFound(f"Root Project for Workspace {workspace_id!r}")
+        if principal_id is not None:
+            await self._authorize_view(root.project_id, principal_id)
         return root
 
     async def create(
@@ -288,10 +367,11 @@ class SqliteProjectScopeStore:
         name: str,
         defaults: dict[str, Any] | None = None,
         metadata: dict[str, Any] | None = None,
+        principal_id: str | None = None,
     ) -> Project:
         """Persist a child Project beneath a same-Workspace parent."""
 
-        parent = await self._require(parent_project_id)
+        parent = await self._authorize_administer(parent_project_id, principal_id)
         if parent.workspace_id != workspace_id:
             raise ProjectIntegrityError("Project parent must belong to the same Workspace")
         project = Project(
@@ -304,19 +384,24 @@ class SqliteProjectScopeStore:
         await self._insert_project(project)
         return project
 
-    async def get(self, project_id: str) -> Project | None:
+    async def get(self, project_id: str, *, principal_id: str | None = None) -> Project | None:
         """Load a Project by ID, or return ``None`` when absent."""
 
         row = await self._fetchone(
             "SELECT payload FROM canonical_projects WHERE project_id = ?",
             (project_id,),
         )
-        return Project.model_validate_json(row[0]) if row is not None else None
+        if row is None:
+            return None
+        project = Project.model_validate_json(row[0])
+        if principal_id is not None:
+            await self._require_project_view(project, principal_id)
+        return project
 
-    async def lineage(self, project_id: str) -> list[Project]:
+    async def lineage(self, project_id: str, *, principal_id: str | None = None) -> list[Project]:
         """Load validated ancestry ordered from Root Project to target."""
 
-        current = await self._require(project_id)
+        current = await self._authorize_view(project_id, principal_id)
         workspace_id = current.workspace_id
         lineage: list[Project] = []
         seen: set[str] = set()
@@ -337,10 +422,12 @@ class SqliteProjectScopeStore:
         lineage.reverse()
         return lineage
 
-    async def list_children(self, project_id: str) -> list[Project]:
+    async def list_children(
+        self, project_id: str, *, principal_id: str | None = None
+    ) -> list[Project]:
         """Load the target Project's direct children in stable order."""
 
-        await self._require(project_id)
+        await self._authorize_view(project_id, principal_id)
         cursor = await self._conn.execute(
             "SELECT payload FROM canonical_projects WHERE parent_project_id = ?",
             (project_id,),
@@ -350,7 +437,13 @@ class SqliteProjectScopeStore:
         children.sort(key=lambda item: (item.created_at, item.project_id))
         return children
 
-    async def move_project(self, project_id: str, *, parent_project_id: str) -> Project:
+    async def move_project(
+        self,
+        project_id: str,
+        *,
+        parent_project_id: str,
+        principal_id: str | None = None,
+    ) -> Project:
         """Move a non-root Project without crossing Workspaces or forming a cycle.
 
         Serializes the ancestry check and the reparent write as one SQLite
@@ -361,6 +454,7 @@ class SqliteProjectScopeStore:
         `BEGIN IMMEDIATE` takes SQLite's write lock before the read, which is
         what a second process sharing this file actually needs.
         """
+        await self._authorize_administer(project_id, principal_id)
         async with self._serialized_write():
             project = await self._require(project_id)
             if project.is_root:
@@ -393,10 +487,11 @@ class SqliteProjectScopeStore:
         project_id: str,
         *,
         defaults: dict[str, Any],
+        principal_id: str | None = None,
     ) -> Project:
         """Replace a Project's defaults and persist its update timestamp."""
 
-        project = await self._require(project_id)
+        project = await self._authorize_administer(project_id, principal_id)
         updated = project.model_copy(
             deep=True,
             update={"defaults": dict(defaults), "updated_at": datetime.now(UTC)},
@@ -404,10 +499,10 @@ class SqliteProjectScopeStore:
         await self._update_project(updated)
         return updated
 
-    async def delete(self, project_id: str) -> None:
+    async def delete(self, project_id: str, *, principal_id: str | None = None) -> None:
         """Delete an empty non-root Project while retaining integrity checks."""
 
-        project = await self._require(project_id)
+        project = await self._authorize_administer(project_id, principal_id)
         if project.is_root:
             raise ProjectIntegrityError("Root Project cannot be deleted")
         if await self._exists(
@@ -452,19 +547,27 @@ class SqliteProjectScopeStore:
             resolved.update(project.defaults)
         return resolved
 
-    async def set_membership(self, membership: ProjectMembership) -> ProjectMembership:
+    async def set_membership(
+        self,
+        membership: ProjectMembership,
+        *,
+        principal_id: str | None = None,
+    ) -> ProjectMembership:
         """Create or update the one canonical membership per (project, principal).
 
         Keyed on `(project_id, principal_id)`, carrying the prior row's
         `membership_id` and `created_at` forward on an update rather than
         minting a second, independent grant (#1148). Locked the same way
         `move_project` is: the read that decides what to preserve must be
-        atomic with the write.
+        atomic with the write. A supplied ``principal_id`` is the acting
+        principal whose membership-write authority is enforced (#1150); this
+        replacement upsert requires ADMINISTER, while `merge_membership`
+        takes the delegable-add path.
         """
+        project = await self._authorize_membership_write(membership, principal_id, replacement=True)
+        if project.workspace_id != membership.workspace_id:
+            raise ProjectIntegrityError("ProjectMembership Workspace does not match Project")
         async with self._serialized_write():
-            project = await self._require(membership.project_id)
-            if project.workspace_id != membership.workspace_id:
-                raise ProjectIntegrityError("ProjectMembership Workspace does not match Project")
             existing = await self._membership_or_none(
                 membership.project_id, membership.principal_id
             )
@@ -495,19 +598,28 @@ class SqliteProjectScopeStore:
             )
         return updated
 
-    async def merge_membership(self, membership: ProjectMembership) -> ProjectMembership:
+    async def merge_membership(
+        self,
+        membership: ProjectMembership,
+        *,
+        principal_id: str | None = None,
+    ) -> ProjectMembership:
         """Merge a delegated re-grant into the canonical row atomically.
 
         Locked the same way `set_membership` is: the read that decides what
         to preserve and the write that stores it share one `_serialized_write`
         critical section, so an owner's `remove_membership` either commits
         entirely before it (leaving no row to preserve -- no resurrection of
-        revoked grants) or is ordered after it (#1148).
+        revoked grants) or is ordered after it (#1148). A supplied
+        ``principal_id`` is the acting principal whose membership-write
+        authority (owner, or a delegable grant) is enforced (#1150).
         """
+        project = await self._authorize_membership_write(
+            membership, principal_id, replacement=False
+        )
+        if project.workspace_id != membership.workspace_id:
+            raise ProjectIntegrityError("ProjectMembership Workspace does not match Project")
         async with self._serialized_write():
-            project = await self._require(membership.project_id)
-            if project.workspace_id != membership.workspace_id:
-                raise ProjectIntegrityError("ProjectMembership Workspace does not match Project")
             existing = await self._membership_or_none(
                 membership.project_id, membership.principal_id
             )
@@ -550,10 +662,11 @@ class SqliteProjectScopeStore:
         project_id: str,
         *,
         principal_id: str | None = None,
+        acting_principal_id: str | None = None,
     ) -> list[ProjectMembership]:
         """Load memberships at one Project, optionally for one principal."""
 
-        await self._require(project_id)
+        await self._authorize_view(project_id, acting_principal_id)
         sql = "SELECT payload FROM canonical_project_memberships WHERE project_id = ?"
         params: tuple[str, ...] = (project_id,)
         if principal_id is not None:
@@ -565,9 +678,16 @@ class SqliteProjectScopeStore:
         memberships.sort(key=lambda item: (item.created_at, item.membership_id))
         return memberships
 
-    async def remove_membership(self, project_id: str, *, principal_id: str) -> None:
+    async def remove_membership(
+        self,
+        project_id: str,
+        *,
+        principal_id: str,
+        acting_principal_id: str | None = None,
+    ) -> None:
         """Revoke a principal's membership at one Project, if any exists."""
 
+        await self._authorize_administer(project_id, acting_principal_id)
         async with self._serialized_write():
             await self._conn.execute(
                 """DELETE FROM canonical_project_memberships
@@ -575,10 +695,12 @@ class SqliteProjectScopeStore:
                 (project_id, principal_id),
             )
 
-    async def put_resource(self, resource: ProjectScopedResource) -> ProjectScopedResource:
+    async def put_resource(
+        self, resource: ProjectScopedResource, *, principal_id: str | None = None
+    ) -> ProjectScopedResource:
         """Upsert a Project resource without allowing cross-Workspace reuse."""
 
-        project = await self._require(resource.project_id)
+        project = await self._authorize_administer(resource.project_id, principal_id)
         if project.workspace_id != resource.workspace_id:
             raise ProjectIntegrityError("resource Workspace does not match Project")
         existing = await self._resource_or_none(resource.resource_id)
@@ -609,10 +731,11 @@ class SqliteProjectScopeStore:
         project_id: str,
         *,
         resource_type: str | None = None,
+        principal_id: str | None = None,
     ) -> list[ProjectScopedResource]:
         """Load resources owned by the target Project or its ancestors."""
 
-        lineage = await self.lineage(project_id)
+        lineage = await self.lineage(project_id, principal_id=principal_id)
         project_ids = {project.project_id for project in lineage}
         workspace_id = lineage[-1].workspace_id
         cursor = await self._conn.execute(

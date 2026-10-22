@@ -26,11 +26,14 @@ already in two places.
 from __future__ import annotations
 
 import logging
-from typing import Any, Final
+from typing import TYPE_CHECKING, Any, Final
 
 from maistro.projects.scope_store import ProjectScopeStore
 from maistro.types.errors import ConfigError
 from maistro.workspaces.store import WorkspaceStore
+
+if TYPE_CHECKING:
+    from maistro.personas.store import PersonaStore
 
 logger = logging.getLogger(__name__)
 
@@ -59,7 +62,7 @@ async def _workspaces_are_migrated(pg_pool: Any) -> bool:
     return False
 
 
-def _backend_of(project_store: ProjectScopeStore) -> str:
+def backend_of(project_store: ProjectScopeStore) -> str:
     """Which relational backend the Project scope store already committed to.
 
     Read from the object rather than re-derived from configuration: the store
@@ -80,6 +83,7 @@ async def wire_workspace_store(
     conn: Any,
     *,
     project_store: ProjectScopeStore,
+    persona_store: PersonaStore | None = None,
     pg_pool: Any = None,
 ) -> WorkspaceStore:
     """Return the Workspace store on the Project store's own backend.
@@ -88,7 +92,7 @@ async def wire_workspace_store(
     Workspace's Root Project is created in, and every implementation provisions
     that Root Project as part of `create`.
     """
-    backend = _backend_of(project_store)
+    backend = backend_of(project_store)
 
     if backend == "postgres":
         if pg_pool is None:
@@ -112,7 +116,7 @@ async def wire_workspace_store(
         # and #178 had to undo.
         from maistro.workspaces.pg_store import PgWorkspaceStore
 
-        return PgWorkspaceStore(pg_pool, project_store=project_store)
+        return PgWorkspaceStore(pg_pool, project_store=project_store, persona_store=persona_store)
 
     if backend == "sqlite":
         if conn is None:
@@ -124,13 +128,15 @@ async def wire_workspace_store(
             raise ConfigError(msg)
         from maistro.workspaces.sqlite_store import SqliteWorkspaceStore
 
-        sqlite_store = SqliteWorkspaceStore(conn, project_store=project_store)
+        sqlite_store = SqliteWorkspaceStore(
+            conn, project_store=project_store, persona_store=persona_store
+        )
         await sqlite_store.ensure_schema()
         return sqlite_store
 
     from maistro.workspaces.store import InMemoryWorkspaceStore
 
-    return InMemoryWorkspaceStore(project_store=project_store)
+    return InMemoryWorkspaceStore(project_store=project_store, persona_store=persona_store)
 
 
-__all__ = ["WORKSPACE_PG_TABLES", "wire_workspace_store"]
+__all__ = ["WORKSPACE_PG_TABLES", "backend_of", "wire_workspace_store"]

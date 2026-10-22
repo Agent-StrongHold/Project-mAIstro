@@ -18,10 +18,28 @@ import structlog
 
 from maistro.config.settings import SandboxSettings
 from maistro.security.dangerous_tools import is_dangerous_command
+from maistro.tools.sandbox._capture import (
+    DEFAULT_MAX_OUTPUT_BYTES,
+    clamped_output_limit,
+    communicate_bounded,
+    truncation_notice,
+)
 from maistro.tools.sandbox.env_sanitize import sanitize_env
 from maistro.tools.sandbox.workspace import CONTAINER_WORKSPACE, ensure_workspace
 
 logger = structlog.get_logger()
+
+# Upper bound on the docker CLI lifecycle subprocesses that have no timeout of
+# their own (``docker run`` at creation, ``docker rm -f`` at destroy; ``exec``
+# already carries a per-call timeout). Without it a stalled daemon — a slow
+# registry pull on a cold CI runner, a hung daemon mid-restart — blocks the
+# caller forever: every caller-visible timeout in this module keys off these
+# subprocesses completing, so an unbounded wait defeats them all. Observed in
+# CI (#965 repair, quality.yml coverage-unit): a swebench evaluator test died
+# on the 30s pytest-timeout with the event loop parked in selector.poll while
+# ``docker run`` never returned. 120s comfortably covers a cold registry pull
+# of the default image while still failing callers within bounded time.
+_LIFECYCLE_CLI_TIMEOUT_SECONDS = 120.0
 
 
 def _shell_quote(s: str) -> str:
@@ -41,12 +59,17 @@ class SandboxContainer:
         workspace_host: str,
         workspace_container: str = CONTAINER_WORKSPACE,
         ttl: int = 3600,
+        max_output_bytes: int = DEFAULT_MAX_OUTPUT_BYTES,
     ) -> None:
         self.container_id = container_id
         self.workspace_host = workspace_host
         self.workspace_container = workspace_container
         self.created_at = time.monotonic()
         self.ttl = ttl
+        # Host-selected policy (#1197): how much combined command output this
+        # container's execs may retain, clamped to the protocol ceiling so no
+        # settings source can raise the bound.
+        self.max_output_bytes = clamped_output_limit(max_output_bytes)
 
     @property
     def expired(self) -> bool:
@@ -83,8 +106,18 @@ class SandboxContainer:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
             )
-            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-            output = stdout.decode("utf-8", errors="replace") if stdout else ""
+            # Bounded capture (#1197): retain at most `max_output_bytes` of
+            # the merged stream; the rest is drained and discarded so the
+            # workload cannot wedge the executor against a full pipe or grow
+            # host memory while inside its container budget.
+            captured, _ = await asyncio.wait_for(
+                communicate_bounded(proc, self.max_output_bytes), timeout=timeout
+            )
+            output = captured.data.decode("utf-8", errors="replace")
+            if captured.truncated:
+                # The `(exit_code, output)` shape has no room for structured
+                # flags, so truncation is declared in the output itself.
+                output += truncation_notice(self.max_output_bytes)
             return proc.returncode or 0, output
         except TimeoutError:
             return 124, f"Command timed out after {timeout}s"
@@ -137,7 +170,22 @@ class SandboxContainer:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        _, stderr = await proc.communicate()
+        try:
+            _, stderr = await asyncio.wait_for(
+                proc.communicate(), timeout=_LIFECYCLE_CLI_TIMEOUT_SECONDS
+            )
+        except TimeoutError:
+            # Cleanup is best-effort: a daemon too stalled to answer rm must
+            # not turn the context-manager exit (or any caller's cleanup path)
+            # into a hang. The container is leaked by design here — the same
+            # stall would defeat any in-process retry — so record it and move
+            # on; the TTL/expired machinery and external reapers own the rest.
+            await logger.awarn(
+                "sandbox_destroy_timeout",
+                container_id=self.container_id[:12],
+                timeout_s=_LIFECYCLE_CLI_TIMEOUT_SECONDS,
+            )
+            return
         rc = proc.returncode or 0
         if rc != 0:
             err = stderr.decode() if stderr else ""
@@ -203,7 +251,19 @@ async def create_sandbox(
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
-    stdout, stderr = await proc.communicate()
+    try:
+        stdout, stderr = await asyncio.wait_for(
+            proc.communicate(), timeout=_LIFECYCLE_CLI_TIMEOUT_SECONDS
+        )
+    except TimeoutError as exc:
+        # RuntimeError so callers that already fail closed on a failed
+        # ``docker run`` (e.g. benchmarks/sandbox_exec.run_function_checks)
+        # treat an unresponsive daemon exactly like a refused one.
+        raise RuntimeError(
+            f"Failed to create sandbox: docker run did not complete within "
+            f"{_LIFECYCLE_CLI_TIMEOUT_SECONDS:.0f}s (daemon stalled or image "
+            f"{settings.image} pull too slow)"
+        ) from exc
 
     if proc.returncode != 0:
         error = stderr.decode() if stderr else "Unknown error"
@@ -216,4 +276,5 @@ async def create_sandbox(
         container_id=container_id,
         workspace_host=str(host_path),
         ttl=settings.timeout,
+        max_output_bytes=settings.max_output_bytes,
     )

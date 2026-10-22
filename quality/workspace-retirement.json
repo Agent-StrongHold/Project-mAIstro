@@ -1,0 +1,966 @@
+{
+  "$comment": "Workspace cutover retirement ledger (#1046; docs/architecture/WORKSPACE-CUTOVER-PLAN.md section 5). One entry per legacy Conductor page, router and backend/stores.py store, with a disposition (PROJECT: rewritten as a Workspace projection on the generated client; RETIRE: deleted; MERGE: folded into another surface; KEEP: outside the Workspace) and a delete-by milestone. The ledger only shrinks: a PR that proves an entry's replacement deletes its asset and the entry (or marks it deleted: true). Nothing new may import a listed module: `importers` records today's non-test consumers outside the ledger, a new one fails, and one that goes away must be pruned. Store delete_by follows the page that owns the same concept, defaulting to M3. /v1/confirms (#48) is omitted: no routes module for it exists in the tree. Enforced by scripts/check-workspace-retirement.py.",
+  "entries": [
+    {
+      "kind": "page",
+      "path": "packages/hive-conductor/frontend/src/pages/Dashboard.tsx",
+      "disposition": "PROJECT",
+      "replaced_by": "Workspace Home (#1048)",
+      "delete_by": "M3-E",
+      "owner": "#1048",
+      "importers": [
+        "packages/hive-conductor/frontend/src/App.tsx"
+      ]
+    },
+    {
+      "kind": "page",
+      "path": "packages/hive-conductor/frontend/src/pages/DagRuns.tsx",
+      "disposition": "PROJECT",
+      "replaced_by": "Goal/Run inspection (#65/#1036)",
+      "delete_by": "M3",
+      "owner": "#1036",
+      "importers": [
+        "packages/hive-conductor/frontend/src/App.tsx"
+      ]
+    },
+    {
+      "kind": "page",
+      "path": "packages/hive-conductor/frontend/src/pages/DagBuilder.tsx",
+      "disposition": "PROJECT",
+      "replaced_by": "Graph editing over canonical Graph (#65/#1036)",
+      "delete_by": "M3",
+      "owner": "#1036",
+      "importers": [
+        "packages/hive-conductor/frontend/src/App.tsx"
+      ]
+    },
+    {
+      "kind": "page",
+      "path": "packages/hive-conductor/frontend/src/pages/Missions.tsx",
+      "disposition": "MERGE",
+      "replaced_by": "Workspace backlog (#82)",
+      "delete_by": "M3-C",
+      "owner": "#82",
+      "importers": [
+        "packages/hive-conductor/frontend/src/App.tsx"
+      ]
+    },
+    {
+      "kind": "page",
+      "path": "packages/hive-conductor/frontend/src/pages/WorkItems.tsx",
+      "disposition": "MERGE",
+      "replaced_by": "Workspace backlog (#82)",
+      "delete_by": "M3-C",
+      "owner": "#82",
+      "importers": [
+        "packages/hive-conductor/frontend/src/App.tsx"
+      ]
+    },
+    {
+      "kind": "page",
+      "path": "packages/hive-conductor/frontend/src/pages/Chat.tsx",
+      "disposition": "PROJECT",
+      "replaced_by": "Workspace Agent chat (#1037)",
+      "delete_by": "M3-D",
+      "owner": "#1037",
+      "importers": [
+        "packages/hive-conductor/frontend/src/App.tsx"
+      ]
+    },
+    {
+      "kind": "page",
+      "path": "packages/hive-conductor/frontend/src/pages/Memory.tsx",
+      "disposition": "PROJECT",
+      "replaced_by": "user model / Workspace memory (#776/#1047)",
+      "delete_by": "M3-E",
+      "owner": "#1047",
+      "importers": [
+        "packages/hive-conductor/frontend/src/App.tsx"
+      ]
+    },
+    {
+      "kind": "page",
+      "path": "packages/hive-conductor/frontend/src/pages/KnowledgeBase.tsx",
+      "disposition": "PROJECT",
+      "replaced_by": "user model / Workspace memory (#776/#1047)",
+      "delete_by": "M3-E",
+      "owner": "#1047",
+      "importers": [
+        "packages/hive-conductor/frontend/src/App.tsx"
+      ]
+    },
+    {
+      "kind": "page",
+      "path": "packages/hive-conductor/frontend/src/pages/Agents.tsx",
+      "disposition": "PROJECT",
+      "replaced_by": "capabilities projection over the capability registry (#59)",
+      "delete_by": "M3",
+      "owner": "#59",
+      "importers": [
+        "packages/hive-conductor/frontend/src/App.tsx"
+      ]
+    },
+    {
+      "kind": "page",
+      "path": "packages/hive-conductor/frontend/src/pages/Topology.tsx",
+      "disposition": "PROJECT",
+      "replaced_by": "capabilities projection over the capability registry (#59)",
+      "delete_by": "M3",
+      "owner": "#59",
+      "importers": [
+        "packages/hive-conductor/frontend/src/App.tsx"
+      ]
+    },
+    {
+      "kind": "page",
+      "path": "packages/hive-conductor/frontend/src/pages/Skills.tsx",
+      "disposition": "PROJECT",
+      "replaced_by": "capabilities projection over the capability registry (#59)",
+      "delete_by": "M3",
+      "owner": "#59",
+      "importers": [
+        "packages/hive-conductor/frontend/src/App.tsx"
+      ]
+    },
+    {
+      "kind": "page",
+      "path": "packages/hive-conductor/frontend/src/pages/MCP.tsx",
+      "disposition": "PROJECT",
+      "replaced_by": "capabilities projection over the capability registry (#59)",
+      "delete_by": "M3",
+      "owner": "#59",
+      "importers": [
+        "packages/hive-conductor/frontend/src/App.tsx"
+      ]
+    },
+    {
+      "kind": "page",
+      "path": "packages/hive-conductor/frontend/src/pages/Schedules.tsx",
+      "disposition": "PROJECT",
+      "replaced_by": "canonical ScheduleStore (#92)",
+      "delete_by": "M3-B",
+      "owner": "#92",
+      "importers": [
+        "packages/hive-conductor/frontend/src/App.tsx"
+      ]
+    },
+    {
+      "kind": "page",
+      "path": "packages/hive-conductor/frontend/src/pages/Settings.tsx",
+      "disposition": "PROJECT",
+      "replaced_by": "settings service (#1050)",
+      "delete_by": "M3-E",
+      "owner": "#1050",
+      "importers": [
+        "packages/hive-conductor/frontend/src/App.tsx"
+      ]
+    },
+    {
+      "kind": "page",
+      "path": "packages/hive-conductor/frontend/src/pages/Profile.tsx",
+      "disposition": "PROJECT",
+      "replaced_by": "settings service (#1050)",
+      "delete_by": "M3-E",
+      "owner": "#1050",
+      "importers": [
+        "packages/hive-conductor/frontend/src/App.tsx"
+      ]
+    },
+    {
+      "kind": "page",
+      "path": "packages/hive-conductor/frontend/src/pages/AuditLog.tsx",
+      "disposition": "PROJECT",
+      "replaced_by": "core audit store (P0.4)",
+      "delete_by": "M3",
+      "owner": "#1046",
+      "importers": [
+        "packages/hive-conductor/frontend/src/App.tsx"
+      ]
+    },
+    {
+      "kind": "page",
+      "path": "packages/hive-conductor/frontend/src/pages/Credentials.tsx",
+      "disposition": "PROJECT",
+      "replaced_by": "credential router scope (#58 consumers)",
+      "delete_by": "M3",
+      "owner": "#58",
+      "importers": [
+        "packages/hive-conductor/frontend/src/App.tsx"
+      ]
+    },
+    {
+      "kind": "page",
+      "path": "packages/hive-conductor/frontend/src/pages/Quotas.tsx",
+      "disposition": "PROJECT",
+      "replaced_by": "Invocation usage (#718)",
+      "delete_by": "M3",
+      "owner": "#718",
+      "importers": [
+        "packages/hive-conductor/frontend/src/App.tsx"
+      ]
+    },
+    {
+      "kind": "page",
+      "path": "packages/hive-conductor/frontend/src/pages/MessageBoard.tsx",
+      "disposition": "MERGE",
+      "replaced_by": "Attention/Waiting (#1049)",
+      "delete_by": "M3-E",
+      "owner": "#1049",
+      "importers": [
+        "packages/hive-conductor/frontend/src/App.tsx"
+      ]
+    },
+    {
+      "kind": "page",
+      "path": "packages/hive-conductor/frontend/src/pages/OptimizationInbox.tsx",
+      "disposition": "MERGE",
+      "replaced_by": "Attention/Waiting (#1049)",
+      "delete_by": "M3-E",
+      "owner": "#1049",
+      "importers": [
+        "packages/hive-conductor/frontend/src/App.tsx"
+      ]
+    },
+    {
+      "kind": "page",
+      "path": "packages/hive-conductor/frontend/src/pages/Evolution.tsx",
+      "disposition": "PROJECT",
+      "replaced_by": "hidden for v1.0; Run inspection over canonical Evolve Runs returns v1.2 (#51)",
+      "delete_by": "M4",
+      "owner": "#51",
+      "importers": [
+        "packages/hive-conductor/frontend/src/App.tsx"
+      ]
+    },
+    {
+      "kind": "page",
+      "path": "packages/hive-conductor/frontend/src/pages/RSI.tsx",
+      "disposition": "PROJECT",
+      "replaced_by": "Run inspection over canonical RSI Runs (#50)",
+      "delete_by": "M5",
+      "owner": "#50",
+      "importers": [
+        "packages/hive-conductor/frontend/src/App.tsx"
+      ]
+    },
+    {
+      "kind": "page",
+      "path": "packages/hive-conductor/frontend/src/pages/Containers.tsx",
+      "disposition": "PROJECT",
+      "replaced_by": "Containers surface on the generated client (#382)",
+      "delete_by": "v1.0",
+      "owner": "#382",
+      "importers": [
+        "packages/hive-conductor/frontend/src/App.tsx"
+      ]
+    },
+    {
+      "kind": "page",
+      "path": "packages/hive-conductor/frontend/src/pages/CLI.tsx",
+      "disposition": "PROJECT",
+      "replaced_by": "CLI surface on the generated client (#292)",
+      "delete_by": "v1.0",
+      "owner": "#292",
+      "importers": [
+        "packages/hive-conductor/frontend/src/App.tsx"
+      ]
+    },
+    {
+      "kind": "page",
+      "path": "packages/hive-conductor/frontend/src/pages/DesignStudio.tsx",
+      "disposition": "KEEP",
+      "replaced_by": null,
+      "delete_by": null,
+      "owner": "#286"
+    },
+    {
+      "kind": "page",
+      "path": "packages/hive-conductor/frontend/src/pages/DeckBuilder.tsx",
+      "disposition": "KEEP",
+      "replaced_by": null,
+      "delete_by": null,
+      "owner": "#773"
+    },
+    {
+      "kind": "page",
+      "path": "packages/hive-conductor/frontend/src/pages/Docs.tsx",
+      "disposition": "RETIRE",
+      "replaced_by": null,
+      "delete_by": "M3",
+      "owner": "#1046",
+      "importers": [
+        "packages/hive-conductor/frontend/src/App.tsx"
+      ]
+    },
+    {
+      "kind": "page",
+      "path": "packages/hive-conductor/frontend/src/pages/Login.tsx",
+      "disposition": "KEEP",
+      "replaced_by": null,
+      "delete_by": null,
+      "owner": "#1046"
+    },
+    {
+      "kind": "page",
+      "path": "packages/hive-conductor/frontend/src/pages/Setup.tsx",
+      "disposition": "KEEP",
+      "replaced_by": null,
+      "delete_by": null,
+      "owner": "#1046"
+    },
+    {
+      "kind": "router",
+      "path": "packages/hive-conductor/backend/routes/missions.py",
+      "route": "/v1/tasks",
+      "disposition": "PROJECT",
+      "replaced_by": "canonical service under the declared permission table",
+      "delete_by": "M3",
+      "owner": "#82",
+      "importers": [
+        "packages/hive-conductor/backend/main.py"
+      ]
+    },
+    {
+      "kind": "router",
+      "path": "packages/hive-conductor/backend/routes/work_items.py",
+      "route": "/v1/work-items",
+      "disposition": "PROJECT",
+      "replaced_by": "canonical service under the declared permission table",
+      "delete_by": "M3",
+      "owner": "#82",
+      "importers": [
+        "packages/hive-conductor/backend/main.py"
+      ]
+    },
+    {
+      "kind": "router",
+      "path": "packages/hive-conductor/backend/routes/program.py",
+      "route": "/v1/program",
+      "disposition": "PROJECT",
+      "replaced_by": "canonical service under the declared permission table",
+      "delete_by": "M3",
+      "owner": "#82",
+      "importers": [
+        "packages/hive-conductor/backend/main.py"
+      ]
+    },
+    {
+      "kind": "router",
+      "path": "packages/hive-conductor/backend/routes/dag_runs.py",
+      "route": "/v1/dag-runs",
+      "disposition": "PROJECT",
+      "replaced_by": "canonical service under the declared permission table",
+      "delete_by": "M3",
+      "owner": "#1036",
+      "importers": [
+        "packages/hive-conductor/backend/main.py"
+      ]
+    },
+    {
+      "kind": "router",
+      "path": "packages/hive-conductor/backend/routes/metrics.py",
+      "route": "/v1/dag-metrics",
+      "disposition": "PROJECT",
+      "replaced_by": "canonical service under the declared permission table",
+      "delete_by": "M3",
+      "owner": "#1036",
+      "importers": [
+        "packages/hive-conductor/backend/main.py"
+      ]
+    },
+    {
+      "kind": "router",
+      "path": "packages/hive-conductor/backend/routes/memory.py",
+      "route": "/v1/memory",
+      "disposition": "PROJECT",
+      "replaced_by": "canonical service under the declared permission table",
+      "delete_by": "M3",
+      "owner": "#1047",
+      "importers": [
+        "packages/hive-conductor/backend/main.py"
+      ]
+    },
+    {
+      "kind": "router",
+      "path": "packages/hive-conductor/backend/routes/messages.py",
+      "route": "/v1/messages",
+      "disposition": "PROJECT",
+      "replaced_by": "canonical service under the declared permission table",
+      "delete_by": "M3",
+      "owner": "#1049",
+      "importers": [
+        "packages/hive-conductor/backend/main.py"
+      ]
+    },
+    {
+      "kind": "router",
+      "path": "packages/hive-conductor/backend/routes/quotas.py",
+      "route": "/v1/quotas",
+      "disposition": "PROJECT",
+      "replaced_by": "canonical service under the declared permission table",
+      "delete_by": "M3",
+      "owner": "#718",
+      "importers": [
+        "packages/hive-conductor/backend/main.py"
+      ]
+    },
+    {
+      "kind": "router",
+      "path": "packages/hive-conductor/backend/routes/widgets.py",
+      "route": "/v1/widgets",
+      "disposition": "PROJECT",
+      "replaced_by": "canonical service under the declared permission table",
+      "delete_by": "M3",
+      "owner": "#1048",
+      "importers": [
+        "packages/hive-conductor/backend/main.py"
+      ]
+    },
+    {
+      "kind": "router",
+      "path": "packages/hive-conductor/backend/routes/dashboard_layout.py",
+      "route": "/v1/dashboard",
+      "disposition": "PROJECT",
+      "replaced_by": "canonical service under the declared permission table",
+      "delete_by": "M3",
+      "owner": "#1048",
+      "importers": [
+        "packages/hive-conductor/backend/main.py"
+      ]
+    },
+    {
+      "kind": "router",
+      "path": "packages/hive-conductor/backend/routes/topology.py",
+      "route": "/v1/topology",
+      "disposition": "PROJECT",
+      "replaced_by": "canonical service under the declared permission table",
+      "delete_by": "M3",
+      "owner": "#59",
+      "importers": [
+        "packages/hive-conductor/backend/main.py"
+      ]
+    },
+    {
+      "kind": "router",
+      "path": "packages/hive-conductor/backend/routes/eval_judge.py",
+      "route": "/v1/eval-judge",
+      "disposition": "PROJECT",
+      "replaced_by": "canonical service under the declared permission table",
+      "delete_by": "M3",
+      "owner": "#1036",
+      "importers": [
+        "packages/hive-conductor/backend/main.py"
+      ]
+    },
+    {
+      "kind": "router",
+      "path": "packages/hive-conductor/backend/routes/cli.py",
+      "route": "/v1/cli",
+      "disposition": "PROJECT",
+      "replaced_by": "canonical service under the declared permission table",
+      "delete_by": "M3",
+      "owner": "#292",
+      "importers": [
+        "packages/hive-conductor/backend/main.py"
+      ]
+    },
+    {
+      "kind": "router",
+      "path": "packages/hive-conductor/backend/routes/setup_checklist.py",
+      "route": "/v1/setup-checklist",
+      "disposition": "PROJECT",
+      "replaced_by": "canonical service under the declared permission table",
+      "delete_by": "M3",
+      "owner": "#1048",
+      "importers": [
+        "packages/hive-conductor/backend/main.py"
+      ]
+    },
+    {
+      "kind": "router",
+      "path": "packages/hive-conductor/backend/routes/auth.py",
+      "route": "/v1/auth",
+      "disposition": "KEEP",
+      "replaced_by": null,
+      "delete_by": null,
+      "owner": "#1046"
+    },
+    {
+      "kind": "router",
+      "path": "packages/hive-conductor/backend/routes/setup.py",
+      "route": "/v1/setup",
+      "disposition": "KEEP",
+      "replaced_by": null,
+      "delete_by": null,
+      "owner": "#1046"
+    },
+    {
+      "kind": "router",
+      "path": "packages/hive-conductor/backend/routes/install.py",
+      "route": "/v1/install",
+      "disposition": "KEEP",
+      "replaced_by": null,
+      "delete_by": null,
+      "owner": "#1046"
+    },
+    {
+      "kind": "router",
+      "path": "packages/hive-conductor/backend/routes/hitl.py",
+      "route": "/v1/hitl",
+      "disposition": "KEEP",
+      "replaced_by": null,
+      "delete_by": null,
+      "owner": "#1058"
+    },
+    {
+      "kind": "router",
+      "path": "packages/hive-conductor/backend/routes/workspaces.py",
+      "route": "/v1/workspaces",
+      "disposition": "KEEP",
+      "replaced_by": null,
+      "delete_by": null,
+      "owner": "#1046"
+    },
+    {
+      "kind": "router",
+      "path": "packages/hive-conductor/backend/routes/dags.py",
+      "route": "/v1/dags",
+      "disposition": "KEEP",
+      "replaced_by": null,
+      "delete_by": null,
+      "owner": "#1046"
+    },
+    {
+      "kind": "router",
+      "path": "packages/hive-conductor/backend/routes/schedules.py",
+      "route": "/v1/schedules",
+      "disposition": "KEEP",
+      "replaced_by": null,
+      "delete_by": null,
+      "owner": "#92"
+    },
+    {
+      "kind": "router",
+      "path": "packages/hive-conductor/backend/routes/credentials.py",
+      "route": "/v1/credentials",
+      "disposition": "KEEP",
+      "replaced_by": null,
+      "delete_by": null,
+      "owner": "#58"
+    },
+    {
+      "kind": "router",
+      "path": "packages/hive-conductor/backend/routes/capabilities.py",
+      "route": "/v1/capabilities",
+      "disposition": "KEEP",
+      "replaced_by": null,
+      "delete_by": null,
+      "owner": "#59"
+    },
+    {
+      "kind": "router",
+      "path": "packages/hive-conductor/backend/routes/providers.py",
+      "route": "/v1/providers",
+      "disposition": "KEEP",
+      "replaced_by": null,
+      "delete_by": null,
+      "owner": "#1046"
+    },
+    {
+      "kind": "router",
+      "path": "packages/hive-conductor/backend/routes/harness.py",
+      "route": "/v1/harness",
+      "disposition": "KEEP",
+      "replaced_by": null,
+      "delete_by": null,
+      "owner": "#1046"
+    },
+    {
+      "kind": "router",
+      "path": "packages/hive-conductor/backend/routes/ws.py",
+      "route": "/v1/ws",
+      "disposition": "KEEP",
+      "replaced_by": null,
+      "delete_by": null,
+      "owner": "#1046"
+    },
+    {
+      "kind": "router",
+      "path": "packages/hive-conductor/backend/routes/profile.py",
+      "route": "/v1/profile",
+      "disposition": "KEEP",
+      "replaced_by": null,
+      "delete_by": null,
+      "owner": "#1050"
+    },
+    {
+      "kind": "router",
+      "path": "packages/hive-conductor/backend/routes/audit.py",
+      "route": "/v1/audit",
+      "disposition": "KEEP",
+      "replaced_by": null,
+      "delete_by": null,
+      "owner": "#1046"
+    },
+    {
+      "kind": "router",
+      "path": "packages/hive-conductor/backend/routes/design.py",
+      "route": "/v1/design",
+      "disposition": "KEEP",
+      "replaced_by": null,
+      "delete_by": null,
+      "owner": "#286"
+    },
+    {
+      "kind": "store",
+      "path": "packages/hive-conductor/backend/stores.py::missions",
+      "disposition": "RETIRE",
+      "replaced_by": "canonical store per CONVERGENCE-MATRIX.md or a Workspace-scoped durable store (#364)",
+      "delete_by": "v1.0",
+      "owner": "#82",
+      "importers": []
+    },
+    {
+      "kind": "store",
+      "path": "packages/hive-conductor/backend/stores.py::mission_steps",
+      "disposition": "RETIRE",
+      "replaced_by": "canonical store per CONVERGENCE-MATRIX.md or a Workspace-scoped durable store (#364)",
+      "delete_by": "v1.0",
+      "owner": "#82",
+      "importers": []
+    },
+    {
+      "kind": "store",
+      "path": "packages/hive-conductor/backend/stores.py::schedules",
+      "disposition": "RETIRE",
+      "replaced_by": "canonical ScheduleStore (#92)",
+      "delete_by": "M3-B",
+      "owner": "#92",
+      "importers": [
+        "packages/hive-conductor/backend/routes/schedules.py",
+        "packages/hive-conductor/backend/services/scheduler.py"
+      ]
+    },
+    {
+      "kind": "store",
+      "path": "packages/hive-conductor/backend/stores.py::skills",
+      "disposition": "RETIRE",
+      "replaced_by": "canonical store per CONVERGENCE-MATRIX.md or a Workspace-scoped durable store (#364)",
+      "delete_by": "v1.0",
+      "owner": "#59",
+      "importers": [
+        "packages/hive-conductor/backend/routes/skills.py"
+      ]
+    },
+    {
+      "kind": "store",
+      "path": "packages/hive-conductor/backend/stores.py::agents",
+      "disposition": "RETIRE",
+      "replaced_by": "canonical store per CONVERGENCE-MATRIX.md or a Workspace-scoped durable store (#364)",
+      "delete_by": "v1.0",
+      "owner": "#59",
+      "importers": [
+        "packages/hive-conductor/backend/routes/agents.py",
+        "packages/hive-conductor/backend/services/agent_invocation.py",
+        "packages/hive-conductor/backend/services/agent_materialization.py",
+        "packages/hive-conductor/backend/services/chat_completion.py",
+        "packages/hive-conductor/backend/services/dashboard_metrics.py",
+        "packages/hive-conductor/backend/services/workspace_agent.py"
+      ]
+    },
+    {
+      "kind": "store",
+      "path": "packages/hive-conductor/backend/stores.py::mcp_servers",
+      "disposition": "RETIRE",
+      "replaced_by": "canonical store per CONVERGENCE-MATRIX.md or a Workspace-scoped durable store (#364)",
+      "delete_by": "v1.0",
+      "owner": "#59",
+      "importers": [
+        "packages/hive-conductor/backend/routes/mcp.py"
+      ]
+    },
+    {
+      "kind": "store",
+      "path": "packages/hive-conductor/backend/stores.py::mcp_tools",
+      "disposition": "RETIRE",
+      "replaced_by": "canonical store per CONVERGENCE-MATRIX.md or a Workspace-scoped durable store (#364)",
+      "delete_by": "v1.0",
+      "owner": "#59",
+      "importers": [
+        "packages/hive-conductor/backend/routes/mcp.py"
+      ]
+    },
+    {
+      "kind": "store",
+      "path": "packages/hive-conductor/backend/stores.py::containers",
+      "disposition": "RETIRE",
+      "replaced_by": "Containers surface contract (#382)",
+      "delete_by": "v1.0",
+      "owner": "#382",
+      "importers": []
+    },
+    {
+      "kind": "store",
+      "path": "packages/hive-conductor/backend/stores.py::memory_entries",
+      "disposition": "RETIRE",
+      "replaced_by": "canonical store per CONVERGENCE-MATRIX.md or a Workspace-scoped durable store (#364)",
+      "delete_by": "v1.0",
+      "owner": "#1047",
+      "importers": [
+        "packages/hive-conductor/backend/services/owned_records.py"
+      ]
+    },
+    {
+      "kind": "store",
+      "path": "packages/hive-conductor/backend/stores.py::memory_namespaces",
+      "disposition": "RETIRE",
+      "replaced_by": "canonical store per CONVERGENCE-MATRIX.md or a Workspace-scoped durable store (#364)",
+      "delete_by": "v1.0",
+      "owner": "#1047",
+      "importers": [],
+      "deleted": true
+    },
+    {
+      "kind": "store",
+      "path": "packages/hive-conductor/backend/stores.py::workspaces",
+      "disposition": "RETIRE",
+      "replaced_by": "WorkspaceStore (#364)",
+      "delete_by": "M3",
+      "owner": "#364",
+      "importers": [
+        "packages/hive-conductor/backend/services/workspace_authority.py"
+      ]
+    },
+    {
+      "kind": "store",
+      "path": "packages/hive-conductor/backend/stores.py::persona_feedback",
+      "disposition": "RETIRE",
+      "replaced_by": "canonical store per CONVERGENCE-MATRIX.md or a Workspace-scoped durable store (#364)",
+      "delete_by": "M3",
+      "owner": "#364",
+      "importers": [
+        "packages/hive-conductor/backend/routes/workspaces.py"
+      ]
+    },
+    {
+      "kind": "store",
+      "path": "packages/hive-conductor/backend/stores.py::backlog_items",
+      "disposition": "RETIRE",
+      "replaced_by": "canonical store per CONVERGENCE-MATRIX.md or a Workspace-scoped durable store (#364)",
+      "delete_by": "M3-C",
+      "owner": "#82",
+      "importers": [
+        "packages/hive-conductor/backend/services/backlog.py"
+      ]
+    },
+    {
+      "kind": "store",
+      "path": "packages/hive-conductor/backend/stores.py::chat_sessions",
+      "disposition": "RETIRE",
+      "replaced_by": "canonical store per CONVERGENCE-MATRIX.md or a Workspace-scoped durable store (#364)",
+      "delete_by": "v1.0",
+      "owner": "#1037",
+      "importers": [
+        "packages/hive-conductor/backend/services/owned_records.py"
+      ]
+    },
+    {
+      "kind": "store",
+      "path": "packages/hive-conductor/backend/stores.py::cli_sessions",
+      "disposition": "RETIRE",
+      "replaced_by": "CLI surface contract (#292)",
+      "delete_by": "v1.0",
+      "owner": "#292",
+      "importers": []
+    },
+    {
+      "kind": "store",
+      "path": "packages/hive-conductor/backend/stores.py::users",
+      "disposition": "RETIRE",
+      "replaced_by": "P0.1 identity store",
+      "delete_by": "M3",
+      "owner": "#1046",
+      "importers": [
+        "packages/hive-conductor/backend/routes/auth.py",
+        "packages/hive-conductor/backend/routes/setup.py",
+        "packages/hive-conductor/backend/services/chat_completion.py",
+        "packages/hive-conductor/backend/services/oauth_login.py",
+        "packages/hive-conductor/backend/services/registration_policy.py",
+        "packages/hive-conductor/backend/services/username_registry.py"
+      ]
+    },
+    {
+      "kind": "store",
+      "path": "packages/hive-conductor/backend/stores.py::sessions",
+      "disposition": "RETIRE",
+      "replaced_by": "P0.1 identity store",
+      "delete_by": "M3",
+      "owner": "#1046",
+      "importers": [
+        "packages/hive-conductor/backend/routes/auth.py",
+        "packages/hive-conductor/backend/routes/providers.py",
+        "packages/hive-conductor/backend/routes/setup.py",
+        "packages/hive-conductor/backend/services/identity_health.py"
+      ]
+    },
+    {
+      "kind": "store",
+      "path": "packages/hive-conductor/backend/stores.py::program_contexts",
+      "disposition": "RETIRE",
+      "replaced_by": "canonical store per CONVERGENCE-MATRIX.md or a Workspace-scoped durable store (#364)",
+      "delete_by": "v1.0",
+      "owner": "#82",
+      "importers": [
+        "packages/hive-conductor/backend/services/program_store.py"
+      ]
+    },
+    {
+      "kind": "store",
+      "path": "packages/hive-conductor/backend/stores.py::brief_interviews",
+      "disposition": "RETIRE",
+      "replaced_by": "canonical store per CONVERGENCE-MATRIX.md or a Workspace-scoped durable store (#364)",
+      "delete_by": "M3-D",
+      "owner": "#1037",
+      "importers": [
+        "packages/hive-conductor/backend/services/brief_store.py"
+      ]
+    },
+    {
+      "kind": "store",
+      "path": "packages/hive-conductor/backend/stores.py::work_item_drafts",
+      "disposition": "RETIRE",
+      "replaced_by": "canonical store per CONVERGENCE-MATRIX.md or a Workspace-scoped durable store (#364)",
+      "delete_by": "v1.0",
+      "owner": "#82",
+      "importers": []
+    },
+    {
+      "kind": "store",
+      "path": "packages/hive-conductor/backend/stores.py::dags",
+      "disposition": "RETIRE",
+      "replaced_by": "canonical store per CONVERGENCE-MATRIX.md or a Workspace-scoped durable store (#364)",
+      "delete_by": "M3",
+      "owner": "#364",
+      "importers": [
+        "packages/hive-conductor/backend/routes/dags.py",
+        "packages/hive-conductor/backend/routes/optimizer.py",
+        "packages/hive-conductor/backend/routes/ws.py",
+        "packages/hive-conductor/backend/services/chat_completion.py",
+        "packages/hive-conductor/backend/services/optimizer.py",
+        "packages/hive-conductor/backend/services/optimizer_candidates.py",
+        "packages/hive-conductor/backend/services/substrate_tools.py"
+      ]
+    },
+    {
+      "kind": "store",
+      "path": "packages/hive-conductor/backend/stores.py::messages",
+      "disposition": "RETIRE",
+      "replaced_by": "canonical store per CONVERGENCE-MATRIX.md or a Workspace-scoped durable store (#364)",
+      "delete_by": "M3-E",
+      "owner": "#1049",
+      "importers": []
+    },
+    {
+      "kind": "store",
+      "path": "packages/hive-conductor/backend/stores.py::audit_log",
+      "disposition": "RETIRE",
+      "replaced_by": "core audit store (P0.4)",
+      "delete_by": "M3",
+      "owner": "#1046",
+      "importers": [
+        "packages/hive-conductor/backend/routes/audit.py",
+        "packages/hive-conductor/backend/services/optimizer.py"
+      ]
+    },
+    {
+      "kind": "store",
+      "path": "packages/hive-conductor/backend/stores.py::eval_verdicts",
+      "disposition": "RETIRE",
+      "replaced_by": "canonical store per CONVERGENCE-MATRIX.md or a Workspace-scoped durable store (#364)",
+      "delete_by": "M3",
+      "owner": "#1036",
+      "importers": [
+        "packages/hive-conductor/backend/services/eval_judge.py",
+        "packages/hive-conductor/backend/services/optimizer.py"
+      ]
+    },
+    {
+      "kind": "store",
+      "path": "packages/hive-conductor/backend/stores.py::optimizer_proposals",
+      "disposition": "RETIRE",
+      "replaced_by": "canonical store per CONVERGENCE-MATRIX.md or a Workspace-scoped durable store (#364)",
+      "delete_by": "M3-E",
+      "owner": "#1049",
+      "importers": [
+        "packages/hive-conductor/backend/services/optimizer.py"
+      ]
+    },
+    {
+      "kind": "store",
+      "path": "packages/hive-conductor/backend/stores.py::user_provider_config",
+      "disposition": "RETIRE",
+      "replaced_by": "settings service (#1050)",
+      "delete_by": "M3-E",
+      "owner": "#1050",
+      "importers": [
+        "packages/hive-conductor/backend/routes/credentials.py",
+        "packages/hive-conductor/backend/services/chat_completion.py"
+      ]
+    },
+    {
+      "kind": "store",
+      "path": "packages/hive-conductor/backend/stores.py::dashboard_layouts",
+      "disposition": "RETIRE",
+      "replaced_by": "canonical store per CONVERGENCE-MATRIX.md or a Workspace-scoped durable store (#364)",
+      "delete_by": "v1.0",
+      "owner": "#1048",
+      "importers": [
+        "packages/hive-conductor/backend/services/dashboard_layouts.py"
+      ]
+    },
+    {
+      "kind": "store",
+      "path": "packages/hive-conductor/backend/stores.py::oauth_identity_links",
+      "disposition": "RETIRE",
+      "replaced_by": "P0.1 identity store",
+      "delete_by": "M3",
+      "owner": "#1046",
+      "importers": [
+        "packages/hive-conductor/backend/services/oauth_login.py"
+      ]
+    },
+    {
+      "kind": "store",
+      "path": "packages/hive-conductor/backend/stores.py::dag_runs",
+      "disposition": "RETIRE",
+      "replaced_by": "unified RunStore (#251), then Goal/Run inspection (#65/#1036, step 2)",
+      "delete_by": "M3",
+      "owner": "#251",
+      "importers": [
+        "packages/hive-conductor/backend/services/foundation.py"
+      ]
+    },
+    {
+      "kind": "store",
+      "path": "packages/hive-conductor/backend/stores.py::registration_invitations",
+      "disposition": "RETIRE",
+      "replaced_by": "P0.1 identity store",
+      "delete_by": "M3",
+      "owner": "#1046",
+      "importers": [
+        "packages/hive-conductor/backend/services/registration_policy.py"
+      ]
+    },
+    {
+      "kind": "store",
+      "path": "packages/hive-conductor/backend/stores.py::username_claims",
+      "disposition": "RETIRE",
+      "replaced_by": "P0.1 identity store",
+      "delete_by": "M3",
+      "owner": "#1046",
+      "importers": [
+        "packages/hive-conductor/backend/services/username_registry.py"
+      ]
+    }
+  ]
+}

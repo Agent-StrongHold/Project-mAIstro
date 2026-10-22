@@ -15,13 +15,26 @@ import aiosqlite
 import pytest
 
 from maistro.projects.scope_store import InMemoryProjectScopeStore
+from maistro.runs.concurrency import RunConcurrencyLimits
 from maistro.runs.store import InMemoryRunStore
 
 WORKSPACE = "workspace-1"
 
 
+@pytest.fixture
+def spine_concurrency_limits() -> RunConcurrencyLimits:
+    """The governed root-Run ceilings `spine` enforces (#1182).
+
+    The shipped baselines. A module that seeds a backlog larger than the
+    ceilings to test something else overrides this fixture.
+    """
+    return RunConcurrencyLimits()
+
+
 @pytest.fixture(params=["memory", "sqlite", "postgres"])
-async def spine(request: pytest.FixtureRequest, pg_pool: Any) -> Any:
+async def spine(
+    request: pytest.FixtureRequest, pg_pool: Any, spine_concurrency_limits: RunConcurrencyLimits
+) -> Any:
     """A (run_store, project_id) pair on each backend, isolated per test."""
     if request.param == "postgres":
         if pg_pool is None:
@@ -37,7 +50,13 @@ async def spine(request: pytest.FixtureRequest, pg_pool: Any) -> Any:
         project = await projects.create(
             workspace_id=workspace, parent_project_id=root.project_id, name="Durable"
         )
-        yield PgRunStore(pg_pool, project_store=projects), workspace, project.project_id
+        yield (
+            PgRunStore(
+                pg_pool, project_store=projects, concurrency_limits=spine_concurrency_limits
+            ),
+            workspace,
+            project.project_id,
+        )
         return
 
     projects = InMemoryProjectScopeStore()
@@ -46,13 +65,19 @@ async def spine(request: pytest.FixtureRequest, pg_pool: Any) -> Any:
         workspace_id=WORKSPACE, parent_project_id=root.project_id, name="Durable"
     )
     if request.param == "memory":
-        yield InMemoryRunStore(project_store=projects), WORKSPACE, project.project_id
+        yield (
+            InMemoryRunStore(project_store=projects, concurrency_limits=spine_concurrency_limits),
+            WORKSPACE,
+            project.project_id,
+        )
         return
 
     from maistro.runs.sqlite_store import SqliteRunStore
 
     conn = await aiosqlite.connect(":memory:")
-    store = SqliteRunStore(conn, project_store=projects)
+    store = SqliteRunStore(
+        conn, project_store=projects, concurrency_limits=spine_concurrency_limits
+    )
     await store.ensure_schema()
     try:
         yield store, WORKSPACE, project.project_id

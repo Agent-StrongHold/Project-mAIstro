@@ -32,6 +32,7 @@ import logging
 from typing import Any
 
 from maistro.constants import THUMB_WINDOW_DAYS
+from maistro.memory.exposure import MemoryExposureMode
 from maistro.memory.outcomes import InMemoryOutcomeStore
 from maistro.memory.types import Outcome
 
@@ -41,8 +42,9 @@ ALLOWED_THUMBS = ("up", "down")
 
 # Hive-local default. The maistro bridge can replace this with the
 # container's outcome_store via set_outcome_store() so all feedback flows
-# into the same place the optimizer reads from.
-_store: Any = InMemoryOutcomeStore()
+# into the same place the optimizer reads from. The mode declaration is
+# explicit (ADR-057): a bare store would refuse to record at all.
+_store: Any = InMemoryOutcomeStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
 
 
 def get_outcome_store() -> Any:

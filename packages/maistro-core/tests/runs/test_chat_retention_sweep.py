@@ -22,6 +22,7 @@ from maistro.runs.chat_admission import ChatRunAdmitter
 from maistro.runs.model import RunStatus
 from maistro.runs.retention import UNBOUNDED_RETENTION, RetentionPolicy
 from maistro.runs.store import InMemoryRunStore
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 
 @pytest.fixture
@@ -41,7 +42,9 @@ async def test_an_admitted_chat_run_carries_a_retention_deadline(wired) -> None:
     runs, projects = wired
     admitter = _admitter(runs, projects)
 
-    run = await admitter.admit([{"role": "user", "content": "hello"}])
+    run = await admitter.admit(
+        [{"role": "user", "content": "hello"}], actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+    )
 
     assert run.retention_expires_at is not None
     assert run.retention_expires_at > datetime.now(UTC)
@@ -53,7 +56,9 @@ async def test_opting_out_leaves_the_deadline_unset(wired) -> None:
     runs, projects = wired
     admitter = _admitter(runs, projects, retention=UNBOUNDED_RETENTION)
 
-    run = await admitter.admit([{"role": "user", "content": "hello"}])
+    run = await admitter.admit(
+        [{"role": "user", "content": "hello"}], actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+    )
 
     assert run.retention_expires_at is None
 
@@ -67,7 +72,8 @@ async def test_admission_sweeps_a_run_this_process_never_admitted(wired) -> None
     runs, projects = wired
     short = RetentionPolicy(ttl_seconds=1, sweep_interval_seconds=0)
     stale = await _admitter(runs, projects, retention=short).admit(
-        [{"role": "user", "content": "old"}]
+        [{"role": "user", "content": "old"}],
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
     await runs.transition_run(stale.run_id, RunStatus.QUEUED)
     await runs.transition_run(stale.run_id, RunStatus.RUNNING)
@@ -88,7 +94,10 @@ async def test_a_live_run_past_its_deadline_keeps_its_identity(wired) -> None:
     admitter = _admitter(
         runs, projects, retention=RetentionPolicy(ttl_seconds=1, sweep_interval_seconds=0)
     )
-    run = await admitter.admit([{"role": "user", "content": "still going"}])
+    run = await admitter.admit(
+        [{"role": "user", "content": "still going"}],
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
     await runs.transition_run(run.run_id, RunStatus.QUEUED)
     await runs.transition_run(run.run_id, RunStatus.RUNNING)
 
@@ -110,7 +119,9 @@ async def test_a_sweep_failure_never_refuses_the_turn(wired) -> None:
 
     runs.purge_expired_runs = _explode  # type: ignore[method-assign]
 
-    run = await admitter.admit([{"role": "user", "content": "hello"}])
+    run = await admitter.admit(
+        [{"role": "user", "content": "hello"}], actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+    )
 
     assert run.run_id
     assert isinstance(admitter.sweeper.last_error, RuntimeError)

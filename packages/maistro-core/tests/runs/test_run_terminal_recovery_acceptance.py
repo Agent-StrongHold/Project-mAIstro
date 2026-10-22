@@ -9,6 +9,7 @@ import pytest
 from maistro.graph import Edge, Graph, Node
 from maistro.runs.model import AcceptedNodeOutcome, AttemptResult, AttemptStatus, RunStatus
 from maistro.runs.reconciliation import AttemptLifecycleReconciler
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 
 @pytest.mark.ac("ADR-082526-237d/AC-5")
@@ -23,7 +24,7 @@ async def test_replay_repairs_parent_without_false_cyclic_settlement(
         name="Replay repair",
         nodes=[Node(node_id="only", node_type="agent")],
     )
-    run = await store.create_run(direct)
+    run = await store.create_run(direct, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
     await store.transition_run(run.run_id, RunStatus.QUEUED)
     await store.transition_run(run.run_id, RunStatus.RUNNING)
     node_run = await store.create_node_run(run.run_id, node_id="only")
@@ -65,7 +66,7 @@ async def test_replay_repairs_parent_without_false_cyclic_settlement(
             Edge(from_node="b", to_node="a"),
         ],
     )
-    cyclic_run = await store.create_run(cyclic)
+    cyclic_run = await store.create_run(cyclic, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
     await store.transition_run(cyclic_run.run_id, RunStatus.QUEUED)
     await store.transition_run(cyclic_run.run_id, RunStatus.RUNNING)
     reconciler = AttemptLifecycleReconciler(store)

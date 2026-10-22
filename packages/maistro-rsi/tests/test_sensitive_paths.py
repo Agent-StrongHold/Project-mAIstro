@@ -17,6 +17,7 @@ import pytest
 
 from maistro_rsi.sensitive_paths import (
     SENSITIVE_PATH_PATTERNS,
+    matches_evaluator_oracle_pattern,
     matches_sensitive_pattern,
     normalize_touched_path,
 )
@@ -139,6 +140,20 @@ class TestItStaysASurfaceAndNotAWildcard:
         """Segment-boundary matching: `pattern in path` accepted this once."""
         assert not matches_sensitive_pattern("vendor/notmaistro_rsi/local_loop.py")
         assert not matches_sensitive_pattern("src/maistro_rsi_shim/local_loop.py")
+
+    def test_a_bare_directory_name_matches(self) -> None:
+        """Git reports a symlink whose name equals a protected directory as a
+        bare path with no trailing slash — a root-level ``maistro_rsi -> evil``
+        lands in the HEAD identity scan and in the diff as ``maistro_rsi`` — so
+        the directory patterns must match that spelling, not only prefixed
+        descendants."""
+        assert matches_sensitive_pattern("maistro_rsi")
+        assert matches_sensitive_pattern("maistro_evolve")
+        assert matches_sensitive_pattern("packages/maistro-rsi/tests")
+        assert matches_evaluator_oracle_pattern("quality")
+        assert not matches_sensitive_pattern("notmaistro_rsi")
+        assert not matches_sensitive_pattern("maistro_rsi_backup")
+        assert not matches_sensitive_pattern("vendor/maistro_rsi_mirror/local_loop.py")
 
     def test_no_pattern_is_empty(self) -> None:
         """An empty string matches everything a directory check is given."""

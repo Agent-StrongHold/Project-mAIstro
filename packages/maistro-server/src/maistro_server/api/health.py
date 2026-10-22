@@ -46,6 +46,7 @@ class DetailedHealthResponse(BaseModel):
     effective_resource_policy: dict[str, int | float | bool]
     container_limits: dict[str, int | float | str] | None
     strike_tracker: dict[str, str | bool]
+    persistence: dict[str, dict[str, str | bool]]
 
 
 def _admin_diagnostics_authorized(
@@ -56,7 +57,9 @@ def _admin_diagnostics_authorized(
     They are served only when API auth is enabled and the caller presents a
     valid admin-scoped token. Anonymous or lower-scoped probes — and any probe
     against an auth-disabled deployment, where no authorization decision can
-    be made at all — get the minimal status-only contract.
+    be made at all — get the minimal status-only contract. The #72 durability
+    facts (backend/durable per store family) ride the same gate: they are
+    operator diagnostics, not public surface.
     """
     if not settings.api_keys:
         return False
@@ -65,12 +68,62 @@ def _admin_diagnostics_authorized(
     return principal is not None and principal.is_admin
 
 
+def _container_limits_for(
+    credentials: HTTPAuthorizationCredentials | None, settings: Settings
+) -> dict[str, int | float | str] | None:
+    """Deployment capacity helps size a resource-exhaustion attack, and the
+    `/health` prefix is public and rate-limit exempt, so only an admin sees it."""
+    token = credentials.credentials if credentials is not None else ""
+    principal = resolve_token_principal(token, settings)
+    if principal is None or not principal.is_admin:
+        return None
+    return read_effective_container_limits(CGROUP_ROOT).as_dict()
+
+
 def _strike_tracker_diagnostics(container: Any) -> dict[str, str | bool]:
     """Report the configured strike tracker without touching its state."""
     tracker = getattr(container, "strike_tracker", None)
     if tracker is None:
-        return {"enabled": False, "backend": "none"}
-    return {"enabled": True, "backend": type(tracker).__name__}
+        return {"enabled": False, "backend": "none", "durable": False}
+    durable = type(tracker).__name__.startswith("Pg")
+    return {"enabled": True, "backend": type(tracker).__name__, "durable": durable}
+
+
+def _persistence_diagnostics(container: Any) -> dict[str, dict[str, str | bool]]:
+    """Describe actual stores, including deliberate process-local fallbacks."""
+    stores = {
+        "audit": getattr(container, "audit_log", None),
+        "elevation": getattr(container, "elevation_store", None),
+        "sessions": getattr(container, "session_store", None),
+        "strikes": getattr(container, "strike_tracker", None),
+        "quota": getattr(container, "quota_tracker", None),
+        "learnings": getattr(container, "learning_store", None),
+        "usage_log": getattr(container, "usage_log", None),
+    }
+    result: dict[str, dict[str, str | bool]] = {}
+    # A pathless `sqlite://` wires the durable-twin classes over SQLite's
+    # in-memory database. The class name alone would call that durable, so
+    # the container's recorded disposition decides (#72). Read directly —
+    # the field is part of the Container contract, and a defensive getattr
+    # string would hide the read from the wiring-reads ratchet.
+    memory_backed = container is not None and bool(container.stores_memory_backed)
+    for name, store in stores.items():
+        backend = type(store).__name__ if store is not None else "none"
+        durable = backend.startswith("Pg") or (backend.startswith("Sqlite") and not memory_backed)
+        entry: dict[str, str | bool] = {"backend": backend, "durable": durable}
+        if backend.startswith("Sqlite") and memory_backed:
+            entry["note"] = "pathless sqlite:// runs SQLite in-memory; restart-ephemeral"
+        result[name] = entry
+    usage_persistence = getattr(container, "usage_log_persistence", None)
+    if usage_persistence is not None:
+        result["usage_log"]["persistence_backend"] = type(usage_persistence).__name__
+        result["usage_log"]["mode"] = "write-behind; flush_usage_log required"
+        # The write-behind twin cannot make SQLite's :memory: database survive
+        # a restart. Preserve the backend-derived disposition above instead of
+        # reporting persistence as durable merely because it exists (#72).
+        if not memory_backed:
+            result["usage_log"]["durable"] = True
+    return result
 
 
 async def _check_postgres(settings: Settings) -> ProbeResult:
@@ -158,9 +211,10 @@ async def readiness(
     """Minimal public readiness response after dependency checks.
 
     Reconciliation of #365 (public health exposes only liveness/readiness)
-    with #1567 (operators can read what the process actually enforces): the
-    detailed diagnostic payload is served only to admin-scoped callers; every
-    other caller gets the status-only contract.
+    with #1567/#72 (operators can read what the process actually enforces,
+    including which stores are durable): the detailed diagnostic payload is
+    served only to admin-scoped callers; every other caller gets the
+    status-only contract.
     """
     uptime = time.monotonic() - _start_time
     container = getattr(request.app.state, "container", None)
@@ -171,16 +225,31 @@ async def readiness(
     )
     postgres_result = await _check_postgres(settings)
 
-    circuit_state = circuit_breaker.llm_circuit.state
+    circuit_domains = circuit_breaker.llm_circuits.snapshot()
+    unhealthy = [row for row in circuit_domains if row["state"] != "closed"]
+    # Domain names are sanitized endpoint x routing target — no credentials.
+    # Any open or recovering domain marks the LLM dependency not-ready; the
+    # detailed (admin-only) payload names which domain, so an operator can
+    # tell a single provider outage from a shared-gateway one.
+    _MAX_CIRCUIT_DETAIL = 8
+    detail = "all circuits closed" if circuit_domains else "no circuits registered"
+    if unhealthy:
+        shown = ", ".join(
+            f"{row['name']}={row['state']}" for row in unhealthy[:_MAX_CIRCUIT_DETAIL]
+        )
+        remaining = len(unhealthy) - _MAX_CIRCUIT_DETAIL
+        if remaining > 0:
+            shown += f"; +{remaining} more"
+        detail = f"unhealthy domains: {shown}"
     llm_result = ProbeResult(
-        status="ok" if circuit_state == "closed" else "error",
-        detail=f"circuit={circuit_state}",
+        status="ok" if not unhealthy else "error",
+        detail=f"circuits={detail}",
     )
 
     # The outbound pool is a process resource rather than an external
     # dependency, so observing it cannot make readiness fail through a network
-    # probe. Include it in the aggregate readiness decision without returning
-    # its occupancy or configured ceilings to anonymous callers.
+    # probe. Surface its live occupancy and configured ceilings so operators can
+    # distinguish provider latency from local connection-pool pressure.
     http_stats = shared_client_stats()
     http_pool_result = ProbeResult(
         status="ok",
@@ -200,7 +269,7 @@ async def readiness(
     }
     all_ok = all(c.status == "ok" for c in checks.values())
     detailed = _admin_diagnostics_authorized(credentials, settings)
-    container_limits = read_effective_container_limits(CGROUP_ROOT).as_dict()
+    container_limits = _container_limits_for(credentials, settings) if detailed else None
     result = (
         DetailedHealthResponse(
             status="ok" if all_ok else "degraded",
@@ -211,6 +280,7 @@ async def readiness(
             effective_resource_policy=settings.effective_resource_policy().as_dict(),
             container_limits=container_limits,
             strike_tracker=_strike_tracker_diagnostics(container),
+            persistence=_persistence_diagnostics(container),
         )
         if detailed
         else None

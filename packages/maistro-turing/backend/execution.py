@@ -68,7 +68,6 @@ class _ChatNode(BaseNode[_ChatInput, _ChatOutput]):
     output_schema: ClassVar[type[BaseModel]] = _ChatOutput
     display_name: ClassVar[str] = "Turing chat turn"
     description: ClassVar[str] = "Execute one reachable Turing chat request."
-    idempotent: ClassVar[bool] = False
     external_io: ClassVar[bool] = True
 
     def __init__(self, session: TuringChatSession) -> None:

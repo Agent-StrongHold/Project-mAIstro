@@ -11,6 +11,7 @@ from maistro.runs import AttemptExecutionService, AttemptStatus, RunStatus
 from maistro.runs.lifecycle import transition_node_run, transition_run
 from maistro.runs.model import GraphSnapshot, NodeRun, Run
 from maistro.runtime import PythonExecutionRuntime
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 
 async def _durable_running_node() -> tuple[InMemoryDurableRunStore, DurableRunRecord, str]:
@@ -24,6 +25,7 @@ async def _durable_running_node() -> tuple[InMemoryDurableRunStore, DurableRunRe
         workspace_id=graph.workspace_id,
         project_id=graph.project_id,
         graph=GraphSnapshot.from_graph(graph),
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
     run = transition_run(run, RunStatus.QUEUED)
     run = transition_run(run, RunStatus.RUNNING)

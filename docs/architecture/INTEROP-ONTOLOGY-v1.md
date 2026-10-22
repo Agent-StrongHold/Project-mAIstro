@@ -44,6 +44,8 @@ It is metadata over canonical semantic owners, not a second set of Workspace, Pr
 
 The executable registry and `quality/shared-interop-ontology-v1.json` are required to serialize identically. A contract test fails if either representation drifts. Product migration onto this surface remains owned by the product/seam convergence issues; #459 owns the Builders → Conductor cross-product execution proof.
 
+**Feature parity inventory:** the per-feature Workspace-UI/API/CLI entry-point matrix grounded in this ontology's canonical owners is [FEATURE-PARITY-MATRIX.md](FEATURE-PARITY-MATRIX.md) (#1874).
+
 ## Shared identities
 
 | Concept | Canonical owner | Canonical identity | Required relationship |
@@ -109,3 +111,25 @@ Where a scenario is goal-driven, the observation must preserve the same Workspac
 The machine-readable contract carries a semantic version. Compatible additive changes increment the minor version. Version `1.1.0` adds Agent/Goal identity, Goal revision semantics, and typed Goal relationships to the original v1 contract without changing existing identity fields. Any change that alters an existing concept's identity, owner, lifecycle meaning, or required lineage is breaking and requires a new major version plus the compatibility policy owned by #461.
 
 During M1, #460 prevents new universal owners or side runtimes from being introduced as an implicit way around this ontology. M3 #804/#805/#806 and Design Studio #773/#777 are explicit downstream consumers of the same Goal/Agent semantics.
+
+## M7 reserved kinds (ADR-092926-7a01, pending registration)
+
+The M7 closed design loop (#790, `feat/m7-a1-design-loop-adr`) consumes this ontology and
+reserves the following kinds in ADR-092926-7a01's kind table. Their canonical identities and
+owners are frozen there; the owning lanes (M7-A2 onward) register them here as an additive
+minor-version extension, never as a parallel registry:
+
+| Kind | Frozen owner | Canonical identity | Status |
+|---|---|---|---|
+| Rubric | Goal-acceptance facet of `maistro.goals` | `rubric_id` + `rubric_version`, bound to one `goal_revision` | reserved — not yet registered |
+| CreativeBrief | brief surface (#774) | brief identity + version, projecting one `goal_revision` | reserved — not yet registered |
+| Pack | pack facet of `maistro.goals` | `pack_id` + `pack_version` | reserved — not yet registered |
+| FenceDecision | HITL record on a waiting NodeRun (`maistro.runs`, #48) | `fence_decision_id` | reserved — not yet registered |
+
+Two fencing rules already hold and are contract-tested
+(`packages/maistro-core/tests/ontology/test_design_loop_kind_fencing.py`): the kind names
+`Goal`, `Rubric`, and `EvalRun` are fenced against competing registration outside this
+registry — and `EvalRun` is reserved-forbidden outright, because eval evidence attaches to the
+producing Run/NodeRun/Attempt with no sidecar identity. Goal remains singly owned
+(`maistro.goals`, `goal_id` + `goal_revision`); Persona scoring (ADR-060 `RubricEval`) is not
+the Goal Rubric and `maistro.personas` can never own a scoring kind here.

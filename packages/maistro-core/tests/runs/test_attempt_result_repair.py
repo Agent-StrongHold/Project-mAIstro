@@ -27,6 +27,7 @@ from maistro.runs.model import (
 )
 from maistro.runs.repair import Disposition, classify, repair, survey
 from maistro.runs.store import RunIntegrityError, validate_accepted_outcome_against_attempt
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 pytestmark = [pytest.mark.contract("behavioral")]
 
@@ -64,7 +65,9 @@ async def _accepted_emptied_attempt(spine: Any, *, node_result: Any = RECOVERED)
     carries no second copy at all.
     """
     store, workspace, project_id = spine
-    run = await store.create_run(_graph(workspace, project_id))
+    run = await store.create_run(
+        _graph(workspace, project_id), actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+    )
     node_run = await store.create_node_run(run.run_id, node_id="node-1")
     await store.transition_node_run(node_run.node_run_id, RunStatus.QUEUED)
     await store.transition_node_run(node_run.node_run_id, RunStatus.RUNNING)
@@ -103,7 +106,9 @@ class TestTheSurveyReadsTheStoreProductionWrites:
         """The other half of AC-1: a clean answer has to be reachable too, or
         the survey is only ever right by accident."""
         store, workspace, project_id = spine
-        run = await store.create_run(_graph(workspace, project_id))
+        run = await store.create_run(
+            _graph(workspace, project_id), actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+        )
         node_run = await store.create_node_run(run.run_id, node_id="node-1")
         await store.transition_node_run(node_run.node_run_id, RunStatus.QUEUED)
         await store.transition_node_run(node_run.node_run_id, RunStatus.RUNNING)
@@ -135,7 +140,9 @@ class TestClassification:
         """A superseded retry, a failure, or one still in flight: no accepted
         outcome names it, so there is no second copy anywhere."""
         store, workspace, project_id = spine
-        run = await store.create_run(_graph(workspace, project_id))
+        run = await store.create_run(
+            _graph(workspace, project_id), actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+        )
         node_run = await store.create_node_run(run.run_id, node_id="node-1")
         await store.transition_node_run(node_run.node_run_id, RunStatus.QUEUED)
         await store.transition_node_run(node_run.node_run_id, RunStatus.RUNNING)
@@ -200,7 +207,9 @@ class TestTheRepair:
     @pytest.mark.ac("SPEC-083026-14c3/AC-5")
     async def test_a_running_attempt_is_refused(self, spine: Any) -> None:
         store, workspace, project_id = spine
-        run = await store.create_run(_graph(workspace, project_id))
+        run = await store.create_run(
+            _graph(workspace, project_id), actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+        )
         node_run = await store.create_node_run(run.run_id, node_id="node-1")
         await store.transition_node_run(node_run.node_run_id, RunStatus.QUEUED)
         await store.transition_node_run(node_run.node_run_id, RunStatus.RUNNING)
@@ -249,7 +258,9 @@ class TestTheRepair:
         """The store must not require an accepted outcome to exist. A NodeRun
         that never accepted this Attempt is left exactly as it was."""
         store, workspace, project_id = spine
-        run = await store.create_run(_graph(workspace, project_id))
+        run = await store.create_run(
+            _graph(workspace, project_id), actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+        )
         node_run = await store.create_node_run(run.run_id, node_id="node-1")
         await store.transition_node_run(node_run.node_run_id, RunStatus.QUEUED)
         await store.transition_node_run(node_run.node_run_id, RunStatus.RUNNING)
@@ -306,7 +317,9 @@ class TestACappedSweepSaysSo:
     async def test_a_full_page_is_reported_as_truncated(self, spine: Any) -> None:
         store, workspace, project_id = spine
         for _ in range(2):
-            await store.create_run(_graph(workspace, project_id))
+            await store.create_run(
+                _graph(workspace, project_id), actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+            )
 
         found = await survey(store, limit=2)
 
@@ -316,7 +329,9 @@ class TestACappedSweepSaysSo:
     @pytest.mark.ac("SPEC-083026-14c3/AC-8")
     async def test_a_sweep_that_saw_everything_reports_complete(self, spine: Any) -> None:
         store, workspace, project_id = spine
-        await store.create_run(_graph(workspace, project_id))
+        await store.create_run(
+            _graph(workspace, project_id), actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+        )
 
         found = await survey(store, limit=50)
 
@@ -366,7 +381,9 @@ class TestTheSweepStaysInsideItsWorkspace:
 
     @staticmethod
     async def _emptied_run_in(store: Any, workspace: str, project_id: str) -> Any:
-        run = await store.create_run(_graph(workspace, project_id))
+        run = await store.create_run(
+            _graph(workspace, project_id), actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+        )
         node_run = await store.create_node_run(run.run_id, node_id="node-1")
         await store.transition_node_run(node_run.node_run_id, RunStatus.QUEUED)
         await store.transition_node_run(node_run.node_run_id, RunStatus.RUNNING)

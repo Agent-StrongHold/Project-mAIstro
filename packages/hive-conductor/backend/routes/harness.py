@@ -10,6 +10,8 @@ returns 400 when Warden refuses an inbound payload.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
 from typing import Any
 
@@ -20,19 +22,82 @@ from services.engine import get_engine
 
 from maistro.agents.spec.agent_spec import AgentRole, AgentSpec
 from maistro.capabilities import HarnessSessionManager, Unavailable
+from maistro.capabilities.binding import Binding
+from maistro.capabilities.binding_store import register_boot_binding
+from maistro.capabilities.effect_context import new_effect_context
 from maistro.capabilities.slots.harness_runner import HarnessInputBlocked
+from maistro.policy import BudgetRule, SequencePolicyEngine
 from maistro.security.warden.detector import Warden
 
 router = APIRouter(tags=["harness"])
 
 _manager: HarnessSessionManager | None = None
+#: Serializes the lazy build below. Registering the route's Binding is I/O on a
+#: durable store, so the `is None` check and the assignment are no longer
+#: adjacent: two concurrent first requests could each pass the guard, build
+#: their own manager with its own `_sessions`, and the loser's session id would
+#: then be unknown to every later send/stream/stop (Codex, #1760).
+_manager_lock = asyncio.Lock()
 
 
-def _get_manager() -> HarnessSessionManager:
+def _configured_harness_policy() -> SequencePolicyEngine:
+    """Build the explicit route policy; absent configuration is read-only.
+
+    The route must never construct a manager without a policy. Until a
+    deployment supplies a richer harness policy, this bounded policy denies
+    outbound actions while still allowing session lifecycle and conversation.
+    """
+    return SequencePolicyEngine([BudgetRule(dimension="count", limit=0)])
+
+
+async def _get_manager() -> HarnessSessionManager:
     """Lazily build a process-wide manager over the engine registry + Warden."""
     global _manager
-    if _manager is None:
-        _manager = HarnessSessionManager(get_engine().capabilities, warden=Warden())
+    if _manager is not None:
+        return _manager
+    async with _manager_lock:
+        # Re-checked inside the lock: the waiter that arrives second must see
+        # the manager the first one built, not build a second.
+        if _manager is None:
+            engine = get_engine()
+            container = getattr(engine.agent_port, "container", None)
+            effects = getattr(container, "capability_effects", None)
+            if effects is None:
+                # Stub/degraded engine mode has no policy authority. Keep the route
+                # explicitly available only through a configured effect context;
+                # the context default denies rather than granting the provider call.
+                effects = new_effect_context()
+            binding = Binding(
+                binding_id="builtin:harness-route",
+                workspace_id="default",
+                project_id="default",
+                capability="harness_runner",
+            )
+            # This is composition-time registration, not an effect-time grant. Once
+            # revoked, the manager only resolves the existing identity and never
+            # recreates it -- `put` raises `BindingNotFound` over the tombstone,
+            # and on a durable store that tombstone outlives the process that
+            # wrote it. Suppressed because the manager below already exposes the
+            # route as unavailable when the Binding is absent; the route must not
+            # fail to construct over it.
+            #
+            # `register_boot_binding`, not the in-memory store's synchronous
+            # `register`: every backend supports it, and narrowing to the
+            # concrete in-memory class here is what took this route offline on
+            # exactly the deployments that persist anything (#1133). It also
+            # returns the *stored* record on a restart, so the manager holds
+            # the identity the store actually has rather than a fresh one whose
+            # `created_at` no longer matches (#1760).
+            with contextlib.suppress(Exception):
+                binding = await register_boot_binding(effects.bindings, binding)
+            _manager = HarnessSessionManager(
+                engine.capabilities,
+                warden=Warden(),
+                policy=_configured_harness_policy(),
+                invocation_service=effects.invocations,
+                invocation_binding=binding,
+                binding_store=effects.bindings,
+            )
     return _manager
 
 
@@ -65,7 +130,8 @@ def _agent_spec(body: StartBody) -> AgentSpec:
 
 @router.post("/sessions")
 async def start_session(body: StartBody) -> dict[str, Any]:
-    result = await _get_manager().start(_agent_spec(body), workdir=body.workdir)
+    manager = await _get_manager()
+    result = await manager.start(_agent_spec(body), workdir=body.workdir)
     if isinstance(result, Unavailable):
         raise HTTPException(status_code=503, detail=result.reason)
     return {"session_id": result}
@@ -74,23 +140,29 @@ async def start_session(body: StartBody) -> dict[str, Any]:
 @router.post("/sessions/{session_id}/send")
 async def send_turn(session_id: str, body: SendBody) -> dict[str, Any]:
     try:
-        result = await _get_manager().send(session_id, body.messages)
+        manager = await _get_manager()
+        result = await manager.send(session_id, body.messages)
     except HarnessInputBlocked as exc:
         raise HTTPException(
             status_code=400, detail=f"blocked by warden: {', '.join(exc.flags)}"
         ) from exc
     if isinstance(result, Unavailable):
-        raise HTTPException(status_code=404, detail=result.reason)
+        status = 404 if result.reason.startswith("unknown harness session") else 503
+        raise HTTPException(status_code=status, detail=result.reason)
     return result
 
 
 @router.get("/sessions/{session_id}/stream")
 async def stream_session(session_id: str, request: Request) -> StreamingResponse:
-    manager = _get_manager()
+    manager = await _get_manager()
+    events = await manager.stream_events(session_id)
+    if isinstance(events, Unavailable):
+        status = 404 if events.reason.startswith("unknown harness session") else 503
+        raise HTTPException(status_code=status, detail=events.reason)
 
     async def event_gen() -> Any:
         yield ": connected\n\n"
-        async for event in manager.stream(session_id):
+        for event in events:
             if await request.is_disconnected():
                 break
             kind = event.get("type", "message") if isinstance(event, dict) else "message"
@@ -105,5 +177,9 @@ async def stream_session(session_id: str, request: Request) -> StreamingResponse
 
 @router.delete("/sessions/{session_id}")
 async def stop_session(session_id: str) -> dict[str, Any]:
-    await _get_manager().stop(session_id)
+    manager = await _get_manager()
+    result = await manager.stop(session_id)
+    if isinstance(result, Unavailable):
+        status = 404 if result.reason.startswith("unknown harness session") else 503
+        raise HTTPException(status_code=status, detail=result.reason)
     return {"stopped": True}

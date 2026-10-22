@@ -12,7 +12,41 @@ try:
 except importlib.metadata.PackageNotFoundError:  # pragma: no cover - editable/unbuilt checkout
     __version__ = "0.9.0-dev"
 
+# The #774 brief contract keeps the top-level names it spec'd
+# (SPEC-092826: `CreativeBrief`, `CreativeBriefError`, `CreativeBriefStore`).
+from maistro_design.brief import (
+    ArtifactProjection,
+    ArtifactRequest,
+    ArtifactRequestNotFoundError,
+    BriefContractError,
+    BriefReference,
+    BriefVersionConflictError,
+    CreativeBrief,
+    CreativeBriefError,
+    CrossWorkspaceReferenceError,
+    EvidenceReference,
+    ProjectionOverride,
+    ProtectedFieldOverrideError,
+    RequiredFact,
+)
 from maistro_design.engine import DesignEngine
+from maistro_design.explore import (
+    EXPLORE_NODE_KIND,
+    THESIS_NODE_KIND,
+    DesignExploreNode,
+    DesignExploreOut,
+    DesignThesisNode,
+    DesignThesisOut,
+)
+from maistro_design.governance import DESIGN_MODEL_CAPABILITY
+from maistro_design.model_judge import (
+    DesignEvalRecord,
+    DesignJudgeDimension,
+    DesignJudgeNode,
+    DesignJudgeOut,
+    DesignJudgeThesis,
+    HumanJudgeNotResolvedError,
+)
 from maistro_design.protocols import (
     DesignEngineProtocol,
     DesignProjectStore,
@@ -76,16 +110,70 @@ from maistro_design.types import (
     TrustUpgradeRequiredError,
     TypographyToken,
 )
+from maistro_design.versions import (
+    AgentWorkInputs,
+    ArtifactLock,
+    ArtifactLockConflict,
+    ArtifactVersion,
+    ArtifactVersionError,
+    ArtifactVersionExistsError,
+    ArtifactVersionNotFoundError,
+    BranchControl,
+    BranchStateView,
+    ChangeKind,
+    ChangeOrigin,
+    ControlMode,
+    CreativeArtifactService,
+    GuidanceRecord,
+    LockScope,
+    LockStateError,
+    VersionState,
+    VersionStateError,
+)
 
 __all__ = [
+    "DESIGN_MODEL_CAPABILITY",
+    "EXPLORE_NODE_KIND",
     "NATIVE_SLOTS",
+    "THESIS_NODE_KIND",
+    "AgentWorkInputs",
     "ArtifactKind",
+    "ArtifactLock",
+    "ArtifactLockConflict",
     "ArtifactNode",
+    "ArtifactProjection",
+    "ArtifactRequest",
+    "ArtifactRequestNotFoundError",
+    "ArtifactVersion",
+    "ArtifactVersionError",
+    "ArtifactVersionExistsError",
+    "ArtifactVersionNotFoundError",
+    "BranchControl",
+    "BranchStateView",
+    "BriefContractError",
+    "BriefReference",
+    "BriefVersionConflictError",
     "CatalogImportPolicyError",
+    "ChangeKind",
+    "ChangeOrigin",
     "ColorToken",
+    "ControlMode",
+    "CreativeArtifactService",
+    "CreativeBrief",
+    "CreativeBriefError",
+    "CreativeBriefStore",
+    "CreativeGraphPlan",
+    "CrossWorkspaceReferenceError",
     "DesignEngine",
     "DesignEngineProtocol",
     "DesignError",
+    "DesignEvalRecord",
+    "DesignExploreNode",
+    "DesignExploreOut",
+    "DesignJudgeDimension",
+    "DesignJudgeNode",
+    "DesignJudgeOut",
+    "DesignJudgeThesis",
     "DesignOutput",
     "DesignOutputShapeError",
     "DesignProject",
@@ -96,25 +184,36 @@ __all__ = [
     "DesignSystemLoader",
     "DesignSystemNotFoundError",
     "DesignSystemRegistry",
+    "DesignThesisNode",
+    "DesignThesisOut",
     "DiscoveryField",
     "DiscoveryIncompleteError",
     "DiscoveryResult",
+    "EvidenceReference",
+    "GuidanceRecord",
     "HTMLRenderer",
+    "HumanJudgeNotResolvedError",
     "InMemoryDesignSkillRegistry",
     "InMemoryDesignSystemRegistry",
     "InMemoryTrustBanishList",
     "InMemoryTrustReviewQueue",
     "IncompatibleDesignSystemError",
+    "LockScope",
+    "LockStateError",
     "OpenDesignConfig",
     "OpenDesignProvider",
     "OutputFormat",
+    "PgCreativeBriefStore",
     "PgDesignProjectStore",
+    "ProjectionOverride",
+    "ProtectedFieldOverrideError",
     "RenderProvider",
     "RenderProviderError",
     "RenderSlot",
     "RenderSlotUnavailableError",
     "RendererDiscovery",
     "RendererRegistry",
+    "RequiredFact",
     "SVGRenderer",
     "ScanReport",
     "SkillMode",
@@ -127,6 +226,8 @@ __all__ = [
     "TrustUpgradeRequiredError",
     "TypographyRenderer",
     "TypographyToken",
+    "VersionState",
+    "VersionStateError",
     "__version__",
     "available_skills",
     "import_from_catalog",
@@ -141,9 +242,35 @@ __all__ = [
 
 
 def __getattr__(name: str) -> Any:
-    """Lazy-load PgDesignProjectStore to avoid requiring sqlalchemy at import time."""
+    """Lazy-load the SQLAlchemy-backed PG stores to avoid importing sqlalchemy eagerly."""
     if name == "PgDesignProjectStore":
         from maistro_design.stores import PgDesignProjectStore
 
         return PgDesignProjectStore
+    if name == "PgArtifactVersionStore":
+        from maistro_design.version_store import PgArtifactVersionStore
+
+        return PgArtifactVersionStore
+    if name == "PgCreativeBriefStore":
+        from maistro_design.brief_store import PgCreativeBriefStore
+
+        return PgCreativeBriefStore
+    if name == "CreativeBriefStore":
+        from maistro_design.protocols import CreativeBriefStore
+
+        return CreativeBriefStore
+    if name in {
+        "ArtifactProvenanceRecord",
+        "CreativeGraphPlan",
+        "InvalidationReport",
+        "artifact_provenance",
+        "channel_family",
+        "instantiate_creative_graph",
+        "invalidated_requests",
+        "plan_creative_graph",
+        "run_creative_graph",
+    }:
+        import maistro_design.creative_graph as creative_graph
+
+        return getattr(creative_graph, name)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

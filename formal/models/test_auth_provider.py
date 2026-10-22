@@ -26,8 +26,6 @@ class AuthProviderMachine(RuleBasedStateMachine):
         self.key = "sk-svc-machine-key-abc"
         self.registry = _make_registry(key=self.key)
         self.provider = ServiceKeyAuthProvider(self.registry)
-        self.authentications = 0
-        self.failures = 0
 
     @rule(
         key_suffix=st.text(min_size=0, max_size=20, alphabet=st.characters(whitelist_categories=("L", "N"))),
@@ -35,11 +33,9 @@ class AuthProviderMachine(RuleBasedStateMachine):
     def try_x_service_key(self, key_suffix):
         headers = {"x-service-key": key_suffix}
         identity = self.provider.authenticate(headers)
-        self.authentications += 1
         if identity is not None:
             assert identity.name == "test-service"
-        else:
-            self.failures += 1
+            assert key_suffix == self.key, f"authenticated with non-configured key {key_suffix!r}"
 
     @rule(
         token=st.text(min_size=0, max_size=30, alphabet=st.characters(whitelist_categories=("L", "N", "P"))),
@@ -47,13 +43,27 @@ class AuthProviderMachine(RuleBasedStateMachine):
     def try_bearer(self, token):
         headers = {"authorization": f"Bearer {token}"}
         identity = self.provider.authenticate(headers)
-        self.authentications += 1
         if identity is not None:
             assert identity.name == "test-service"
+            assert token == self.key, f"bearer accepted non-configured token {token!r}"
 
     @invariant()
-    def failures_dont_exceed_attempts(self):
-        assert self.failures <= self.authentications
+    def authentication_is_stateless(self):
+        """Liveness + safety over the full attempt history.
+
+        Counterexample class: a provider that accumulates failure state —
+        lockout after N bad keys, session bleed, registry mutation on miss —
+        breaks liveness (the configured key must STILL authenticate after any
+        history); a prefix/fuzzy key match breaks safety (a wrong key must
+        NEVER authenticate). The previous `failures <= authentications` was
+        implied by its own rules' bookkeeping (each failure also counted an
+        attempt) and constrained no implementation behavior.
+        """
+        identity = self.provider.authenticate({"x-service-key": self.key})
+        assert identity is not None, "configured key stopped authenticating after attempt history"
+        assert identity.name == "test-service"
+        wrong_key = self.key + "-wrong"
+        assert self.provider.authenticate({"x-service-key": wrong_key}) is None, "a wrong key authenticated"
 
 
 TestAuthProviderMachine = AuthProviderMachine.TestCase

@@ -23,6 +23,7 @@ from maistro.observability.correlation import (
     bind_execution_context,
     current_execution_context,
 )
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 pytestmark = [pytest.mark.contract("behavioral")]
 
@@ -74,7 +75,10 @@ def _clear_seen() -> Any:
 class TestADurableRunNamesItself:
     async def test_a_node_runs_under_the_durable_runs_own_id(self) -> None:
         record = await run_durable_graph(
-            _graph(), store=InMemoryDurableRunStore(), node_resolver=_resolver
+            _graph(),
+            store=InMemoryDurableRunStore(),
+            node_resolver=_resolver,
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         )
 
         assert record.status is RunStatus.COMPLETED
@@ -93,7 +97,10 @@ class TestADurableRunNamesItself:
         `project_id` by its producer spelling it.
         """
         record = await run_durable_graph(
-            _graph(), store=InMemoryDurableRunStore(), node_resolver=_resolver
+            _graph(),
+            store=InMemoryDurableRunStore(),
+            node_resolver=_resolver,
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         )
         assert record.status is RunStatus.COMPLETED
 
@@ -129,7 +136,10 @@ class TestADurableRunNamesItself:
             return _Emitting()
 
         record = await run_durable_graph(
-            _graph(), store=InMemoryDurableRunStore(), node_resolver=resolver
+            _graph(),
+            store=InMemoryDurableRunStore(),
+            node_resolver=resolver,
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         )
         assert record.status is RunStatus.COMPLETED
 
@@ -139,7 +149,10 @@ class TestADurableRunNamesItself:
         nodes reported the surrounding Run as their own."""
         with bind_execution_context(run_id="outer-run", attempt_id="outer-attempt"):
             record = await run_durable_graph(
-                _graph(), store=InMemoryDurableRunStore(), node_resolver=_resolver
+                _graph(),
+                store=InMemoryDurableRunStore(),
+                node_resolver=_resolver,
+                actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
             )
 
         [seen] = _Watching.seen
@@ -150,7 +163,10 @@ class TestADurableRunNamesItself:
     async def test_the_binding_does_not_outlive_the_run(self) -> None:
         with bind_execution_context(run_id="outer-run"):
             await run_durable_graph(
-                _graph(), store=InMemoryDurableRunStore(), node_resolver=_resolver
+                _graph(),
+                store=InMemoryDurableRunStore(),
+                node_resolver=_resolver,
+                actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
             )
             assert current_execution_context().run_id == "outer-run"
         assert current_execution_context().run_id == ""

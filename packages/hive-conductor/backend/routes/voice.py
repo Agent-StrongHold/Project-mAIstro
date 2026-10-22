@@ -15,6 +15,7 @@ from services.chat_gate import (
     gate_untrusted,
 )
 from services.chat_runs import admit_turn, execute_turn
+from services.request_principal import optional_actor_id
 
 logger = logging.getLogger(__name__)
 
@@ -78,8 +79,7 @@ async def voice_intent(body: VoiceIntentBody, request: Request) -> VoiceIntentRe
     own model-default chain. A second execution path is how the containment
     rule ends up meaning something different on the route nobody looks at.
     """
-    user = getattr(request.state, "user", None) or {}
-    user_id = str(user.get("id", ""))
+    user_id = optional_actor_id(request)
 
     context_parts = [body.text]
     if body.room:

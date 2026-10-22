@@ -42,9 +42,14 @@ def test_every_fitness_weight_is_pinned_by_the_governed_fixture() -> None:
     assert {f.name: getattr(w, f.name) for f in fields(w)} == _TABLE
 
 
-def test_spec_completion_is_the_largest_weight_in_the_system() -> None:
+def test_proven_scenarios_is_the_max_and_spec_completion_the_largest_work_signal() -> None:
+    """M5-B (#108): the criticality-weighted proven-scenario objective outranks
+    every work signal; spec_completion stays the largest WORK signal — the
+    ladder's finish-promised-work-first contract is unchanged among signals."""
     w = FitnessWeights()
-    assert w.spec_completion == max(getattr(w, f.name) for f in fields(w))
+    assert w.proven_scenarios == max(getattr(w, f.name) for f in fields(w))
+    work_signal_weights = [getattr(w, f.name) for f in fields(w) if f.name != "proven_scenarios"]
+    assert w.spec_completion == max(work_signal_weights)
 
 
 def test_spec_proposed_is_deliberately_just_below_spec_completion() -> None:

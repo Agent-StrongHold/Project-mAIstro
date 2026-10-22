@@ -264,6 +264,46 @@ async def test_snapshot_survives_pruning_of_the_live_log(persist: SqliteUsageLog
 
 
 @pytest.mark.asyncio
+@pytest.mark.asyncio
+async def test_same_timestamp_events_are_both_persisted(persist: SqliteUsageLog) -> None:
+    log = InMemoryUsageLog()
+    log.record("groq:kimi-k2", input_tokens=10, now=1000.0)
+    log.record("groq:kimi-k2", input_tokens=20, now=1000.0)
+
+    await persist.snapshot(log)
+    restored = await persist.restore()
+
+    assert restored.tokens_since("groq:kimi-k2", 3600, LimitUnit.INPUT_TOKENS, now=1000.0) == 30.0
+    assert restored.count_since("groq:kimi-k2", 3600, now=1000.0) == 2.0
+
+
+@pytest.mark.asyncio
+async def test_overlapping_snapshots_are_idempotent(persist: SqliteUsageLog) -> None:
+    log = InMemoryUsageLog()
+    log.record("groq:kimi-k2", input_tokens=10, now=1000.0)
+    await asyncio.gather(persist.snapshot(log), persist.snapshot(log))
+
+    restored = await persist.restore()
+    assert restored.tokens_since("groq:kimi-k2", 3600, LimitUnit.INPUT_TOKENS, now=1000.0) == 10.0
+    assert restored.count_since("groq:kimi-k2", 3600, now=1000.0) == 1.0
+
+
+@pytest.mark.asyncio
+async def test_crash_retry_with_same_event_id_is_idempotent(persist: SqliteUsageLog) -> None:
+    first = InMemoryUsageLog()
+    first.record("groq:kimi-k2", input_tokens=10, now=1000.0, event_id="logical-call-1")
+    await persist.snapshot(first)
+
+    retry = InMemoryUsageLog()
+    retry.record("groq:kimi-k2", input_tokens=10, now=1000.0, event_id="logical-call-1")
+    await persist.snapshot(retry)
+
+    restored = await persist.restore()
+    assert restored.tokens_since("groq:kimi-k2", 3600, LimitUnit.INPUT_TOKENS, now=1000.0) == 10.0
+    assert restored.count_since("groq:kimi-k2", 3600, now=1000.0) == 1.0
+
+
+@pytest.mark.asyncio
 async def test_empty_log_snapshot_is_a_no_op(persist: SqliteUsageLog) -> None:
     log = InMemoryUsageLog()
     await persist.snapshot(log)  # must not raise
@@ -283,3 +323,78 @@ async def test_restore_reproduces_max_retention_pruning(persist: SqliteUsageLog)
     # same InMemoryUsageLog.record() path.
     restored = await persist.restore(max_retention_s=30.0)
     assert restored.tokens_since("groq:kimi-k2", 3600, LimitUnit.INPUT_TOKENS, now=1050.0) == 2.0
+
+
+@pytest.mark.asyncio
+async def test_canonical_invocation_provenance_survives_a_restart(
+    persist: SqliteUsageLog,
+) -> None:
+    """A restart must not silently drop who made the call and what it was.
+
+    `snapshot` wrote seven columns and `restore` read the same seven, so every
+    SQLite restart discarded the invocation identity, the provider, the
+    billing cycle, and the reported/unreported distinction — the four fields
+    the canonical Invocation recorder attaches, and the whole durable audit
+    value they exist for (Codex, #1362).
+    """
+
+    log = InMemoryUsageLog()
+    log.record(
+        "openai:gpt-4",
+        input_tokens=100,
+        output_tokens=50,
+        now=1000.0,
+        invocation_id="inv-7",
+        provider="openai",
+        billing_cycle="monthly",
+        usage_reported=True,
+    )
+    # A legacy callback event alongside it: no identity, and none invented.
+    log.record("openai:gpt-4", input_tokens=5, now=1001.0)
+
+    await persist.snapshot(log)
+    restored = await persist.restore()
+
+    events = sorted(restored.events_for("openai:gpt-4"), key=lambda e: e.timestamp)
+    assert len(events) == 2
+    recorded, legacy = events
+
+    assert recorded.invocation_id == "inv-7"
+    assert recorded.provider == "openai"
+    assert recorded.billing_cycle == "monthly"
+    assert recorded.usage_reported is True
+
+    # The legacy row stays honestly empty rather than defaulted.
+    assert legacy.invocation_id is None
+    assert legacy.provider is None
+    assert legacy.billing_cycle is None
+    assert legacy.usage_reported is None
+
+
+@pytest.mark.asyncio
+async def test_an_unreported_call_restores_as_unreported_not_missing(
+    persist: SqliteUsageLog,
+) -> None:
+    """`False` and `None` mean different things and must stay distinguishable.
+
+    `usage_reported=False` is "the provider was called and reported nothing";
+    `None` is "nobody recorded whether it did". Storing the flag as an INTEGER
+    makes the round trip easy to get wrong in the direction that conflates
+    them.
+    """
+
+    log = InMemoryUsageLog()
+    log.record(
+        "openai:gpt-4",
+        now=1000.0,
+        invocation_id="inv-8",
+        provider="openai",
+        billing_cycle="monthly",
+        usage_reported=False,
+    )
+
+    await persist.snapshot(log)
+    restored = await persist.restore()
+
+    (event,) = restored.events_for("openai:gpt-4")
+    assert event.usage_reported is False

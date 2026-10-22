@@ -9,6 +9,7 @@ import typer
 from rich.console import Console
 from rich.panel import Panel
 
+from maistro.config.first_run import DEFAULT_CRYPTO_PROFILE, FIRST_RUN_QUESTIONS
 from maistro_bootstrap.platform_detect import (
     deployment_hint,
     deployment_tier_gate_message,
@@ -85,8 +86,8 @@ def _provider_panel() -> tuple[bool, bool]:
     return bool(oa), bool(an)
 
 
-def _select_str(message: str, choices: list[str]) -> str:
-    val = questionary.select(message, choices=choices).ask()
+def _select_str(message: str, choices: list[str], default: str | None = None) -> str:
+    val = questionary.select(message, choices=choices, default=default).ask()
     if val is None:
         _abort()
     return str(val)
@@ -181,12 +182,24 @@ def collect_answers_interactive() -> InstallAnswersV1:
         "Sandbox profile (safe is default; unsupported options require building from source):",
         ["safe", "developer"],
     )
+    # The account-name defaults and the crypto-profile default are read from
+    # the shared first-run declaration (maistro.config.first_run), not
+    # restated here (#443 AC-1): the SPA wizard seeds the same values via
+    # GET /v1/setup/questions, so accepting defaults provisions identically
+    # whichever path collected the answers.
     crypto_profile = _select_str(
         "Crypto / identity profile:",
         ["distributed_identity_root", "no_crypto", "full_all_crypto"],
+        default=DEFAULT_CRYPTO_PROFILE,
     )
-    admin_user = questionary.text("Admin user name:", default="maistro-admin").ask()
-    daily_user = questionary.text("Daily driver user 1:", default="maistro-user").ask()
+    admin_user = questionary.text(
+        f"{FIRST_RUN_QUESTIONS['admin_username'].label}:",
+        default=str(FIRST_RUN_QUESTIONS["admin_username"].default),
+    ).ask()
+    daily_user = questionary.text(
+        f"{FIRST_RUN_QUESTIONS['user_username'].label}:",
+        default=str(FIRST_RUN_QUESTIONS["user_username"].default),
+    ).ask()
     if admin_user is None or daily_user is None:
         _abort()
 

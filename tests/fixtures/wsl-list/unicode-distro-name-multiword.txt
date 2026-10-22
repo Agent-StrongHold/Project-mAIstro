@@ -1,0 +1,3 @@
+  NAME            STATE           VERSION
+* Ubuntu          Running         2
+  Тестовый дистр  Stopped         2

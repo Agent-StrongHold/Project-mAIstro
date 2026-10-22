@@ -326,9 +326,9 @@ async def test_harness_refuses_override_reconstructed_across_untrusted_turns():
     assert inner.sends == []
 
 
-async def test_safe_wrapper_passthrough_and_default_allow_all():
+async def test_safe_wrapper_passthrough_and_default_deny():
     # Wrap a real provider; exercise the CapabilityProvider passthrough +
-    # start_session/stop delegation + the default AllowAllGate (no gate given).
+    # start_session/stop delegation + the fail-closed default gate.
     sandbox = _FakeSandbox((0, "hi"), destroyable=True)
     inner = SubprocessHarnessRunner(
         name="pi", command="pi {prompt}", sandbox_factory=_factory(sandbox), binary="pi"
@@ -341,7 +341,7 @@ async def test_safe_wrapper_passthrough_and_default_allow_all():
 
     sid = await safe.start_session(_spec(), workdir="/w")
     resp = await safe.send(sid, [{"role": "user", "content": "ok"}])
-    assert resp["choices"][0]["message"]["content"] == "hi"  # default gate allows all
+    assert resp["choices"][0]["message"]["content"] == "hi"
     await safe.stop(sid)
     assert sandbox.destroyed is True
 

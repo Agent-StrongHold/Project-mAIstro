@@ -88,6 +88,65 @@ async def test_denied_policy_records_event_and_never_calls_provider() -> None:
 
 
 @pytest.mark.asyncio
+async def test_policy_dependency_outage_fails_closed_and_is_audited() -> None:
+    """A raised policy dependency denies, is audited, and admits nothing (#846).
+
+    An unavailable policy authority is an outage, not an authorization. The
+    governed seam must neither fall through to a provider call nor leak a
+    permissive (AllowAllGate-shaped) default — and the refusal must still be
+    recorded through the same audit stream.
+    """
+
+    invocation_store = InMemoryInvocationStore()
+    event_store = InMemoryEventStore()
+    resolved = False
+    executed = False
+
+    async def policy(
+        _binding: Binding,
+        _request: Any,
+        _context: InvocationPolicyContext,
+    ) -> PolicyVerdict:
+        raise RuntimeError("policy store unreachable")
+
+    async def resolver(_binding: Binding) -> _Provider:
+        nonlocal resolved
+        resolved = True
+        return _Provider()
+
+    async def executor(_provider: _Provider, _request: Any) -> None:
+        nonlocal executed
+        executed = True
+
+    service = GovernedInvocationExecutionService(
+        invocation_service=InvocationExecutionService(store=invocation_store),
+        event_store=event_store,
+        policy_evaluator=policy,
+    )
+
+    with pytest.raises(InvocationDenied, match="policy unavailable"):
+        await service.invoke(
+            binding=_binding(),
+            run_id="run-outage",
+            node_run_id="node-run-outage",
+            attempt_id="attempt-outage",
+            effect_key="write:outage",
+            request={"value": 1},
+            resolver=resolver,
+            executor=executor,
+        )
+
+    # No provider selection and no provider call: the outage removed authority.
+    assert resolved is False
+    assert executed is False
+    events = await event_store.list_stream("workspace:ws-1")
+    assert events and events[-1].type == "capability.invocation.policy_decision"
+    assert events[-1].payload["decision"] == "deny"
+    assert events[-1].payload["rule"] == "invocation.fail-closed"
+    assert events[-1].attempt_id == "attempt-outage"
+
+
+@pytest.mark.asyncio
 async def test_approval_policy_blocks_before_provider_execution() -> None:
     event_store = InMemoryEventStore()
 

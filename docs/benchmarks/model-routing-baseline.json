@@ -1,0 +1,353 @@
+{
+  "_comment": "Recorded results of scripts/bench_model_routing.py (issue #914, epic #900 M8-B1), regenerate with `uv run python scripts/bench_model_routing.py` (git history holds the exact landing commit). Deterministic and offline: identical seeds reproduce these numbers exactly. Outcomes come from the script's fixed simulator over (task, model) pairs \u2014 see the research note docs/research/914-task-conditioned-model-routing.md for the reading and the disposition. Costs are cents per task.",
+  "benchmark": "task-conditioned-model-routing",
+  "issue": "914",
+  "epic": "900",
+  "seam": {
+    "router": "maistro.providers.router.CostAwareRouter (shipped, unmodified)",
+    "registry": "maistro.providers.registry.InMemoryProviderRegistry",
+    "cost": "maistro.providers.types.compute_cost_cents",
+    "note": "selection seam is production code; outcomes are a fixed deterministic simulator over (task, model) pairs because the repository records no per-task routing telemetry"
+  },
+  "utility_weights": {
+    "success": "+1.0 / miss -0.25",
+    "cost_cents": 0.05,
+    "latency_ms": 0.0002
+  },
+  "corpus": {
+    "seed": "routing-bench-v1",
+    "tasks_per_class": 400,
+    "corpus_size": 2400,
+    "task_classes": [
+      "chat",
+      "classification",
+      "extraction",
+      "summarization",
+      "code_repair",
+      "planning"
+    ]
+  },
+  "results": [
+    {
+      "scenario": "all-available",
+      "policies": [
+        {
+          "policy": "shipped-router",
+          "routed": 2400,
+          "route_failures": 0,
+          "success_rate": 0.38375,
+          "cost_cents_total": 2.8732,
+          "cost_cents_per_task": 0.001197,
+          "cost_cents_per_success": 0.00312,
+          "latency_p50_ms": 400.0,
+          "latency_p95_ms": 512.3,
+          "deadline_miss_rate": 0.0,
+          "mean_utility": 0.1482,
+          "model_shares": {
+            "gpt-3.5-turbo": 1.0
+          },
+          "provider_shares": {
+            "openai": 1.0
+          },
+          "model_hhi": 1.0,
+          "provider_hhi": 1.0
+        },
+        {
+          "policy": "static-cheap",
+          "routed": 2400,
+          "route_failures": 0,
+          "success_rate": 0.49666666666666665,
+          "cost_cents_total": 0.0,
+          "cost_cents_per_task": 0.0,
+          "cost_cents_per_success": 0.0,
+          "latency_p50_ms": 2500.0,
+          "latency_p95_ms": 3312.5,
+          "deadline_miss_rate": 0.3079,
+          "mean_utility": -0.149,
+          "model_shares": {
+            "local-llama": 1.0
+          },
+          "provider_shares": {
+            "local": 1.0
+          },
+          "model_hhi": 1.0,
+          "provider_hhi": 1.0
+        },
+        {
+          "policy": "budget-conditioned",
+          "routed": 2400,
+          "route_failures": 0,
+          "success_rate": 0.6216666666666667,
+          "cost_cents_total": 1007.2586,
+          "cost_cents_per_task": 0.419691,
+          "cost_cents_per_success": 0.675106,
+          "latency_p50_ms": 400.0,
+          "latency_p95_ms": 1077.7,
+          "deadline_miss_rate": 0.0,
+          "mean_utility": 0.3975,
+          "model_shares": {
+            "claude-3-opus": 0.2717,
+            "gpt-3.5-turbo": 0.7283
+          },
+          "provider_shares": {
+            "anthropic": 0.2717,
+            "openai": 0.7283
+          },
+          "model_hhi": 0.6043,
+          "provider_hhi": 0.6043
+        },
+        {
+          "policy": "tier-conditioned",
+          "routed": 2400,
+          "route_failures": 0,
+          "success_rate": 0.935,
+          "cost_cents_total": 2384.9524,
+          "cost_cents_per_task": 0.99373,
+          "cost_cents_per_success": 1.062813,
+          "latency_p50_ms": 675.8,
+          "latency_p95_ms": 1298.9,
+          "deadline_miss_rate": 0.0,
+          "mean_utility": 0.7257,
+          "model_shares": {
+            "claude-3-opus": 0.4325,
+            "gpt-3.5-turbo": 0.375,
+            "gpt-4o-mini": 0.1925
+          },
+          "provider_shares": {
+            "anthropic": 0.4325,
+            "openai": 0.5675
+          },
+          "model_hhi": 0.3647,
+          "provider_hhi": 0.5091
+        },
+        {
+          "policy": "oracle",
+          "routed": 2400,
+          "route_failures": 0,
+          "success_rate": 0.9983333333333333,
+          "cost_cents_total": 1340.1079,
+          "cost_cents_per_task": 0.558378,
+          "cost_cents_per_success": 0.55931,
+          "latency_p50_ms": 602.2,
+          "latency_p95_ms": 1475.2,
+          "deadline_miss_rate": 0.0,
+          "mean_utility": 0.8319,
+          "model_shares": {
+            "claude-3-opus": 0.1679,
+            "gpt-3.5-turbo": 0.365,
+            "gpt-4-turbo": 0.0762,
+            "gpt-4o-mini": 0.3908
+          },
+          "provider_shares": {
+            "anthropic": 0.1679,
+            "openai": 0.8321
+          },
+          "model_hhi": 0.32,
+          "provider_hhi": 0.7206
+        }
+      ],
+      "comparisons_vs_shipped": {
+        "static-cheap": {
+          "delta_success_rate": 0.1129,
+          "delta_cost_per_task_cents": -0.001197,
+          "delta_latency_p95_ms": 2800.2,
+          "delta_mean_utility": -0.2972,
+          "regret_vs_oracle": 0.9809
+        },
+        "budget-conditioned": {
+          "delta_success_rate": 0.2379,
+          "delta_cost_per_task_cents": 0.418494,
+          "delta_latency_p95_ms": 565.4,
+          "delta_mean_utility": 0.2493,
+          "regret_vs_oracle": 0.4344
+        },
+        "tier-conditioned": {
+          "delta_success_rate": 0.5513,
+          "delta_cost_per_task_cents": 0.992533,
+          "delta_latency_p95_ms": 786.6,
+          "delta_mean_utility": 0.5775,
+          "regret_vs_oracle": 0.1062
+        },
+        "oracle": {
+          "delta_success_rate": 0.6146,
+          "delta_cost_per_task_cents": 0.557181,
+          "delta_latency_p95_ms": 962.9,
+          "delta_mean_utility": 0.6837,
+          "regret_vs_oracle": 0.0
+        }
+      },
+      "stability_flip_rate_under_jitter": {
+        "shipped-router": 0.0,
+        "static-cheap": 0.0,
+        "budget-conditioned": 0.0,
+        "tier-conditioned": 0.0108
+      },
+      "leakage_violations": {
+        "shipped-router": 0,
+        "static-cheap": 0,
+        "budget-conditioned": 0,
+        "tier-conditioned": 0
+      },
+      "leakage_positive_control_oracle_changes": 802
+    },
+    {
+      "scenario": "opus-degraded",
+      "policies": [
+        {
+          "policy": "shipped-router",
+          "routed": 2400,
+          "route_failures": 0,
+          "success_rate": 0.38375,
+          "cost_cents_total": 2.8732,
+          "cost_cents_per_task": 0.001197,
+          "cost_cents_per_success": 0.00312,
+          "latency_p50_ms": 400.0,
+          "latency_p95_ms": 512.3,
+          "deadline_miss_rate": 0.0,
+          "mean_utility": 0.1482,
+          "model_shares": {
+            "gpt-3.5-turbo": 1.0
+          },
+          "provider_shares": {
+            "openai": 1.0
+          },
+          "model_hhi": 1.0,
+          "provider_hhi": 1.0
+        },
+        {
+          "policy": "static-cheap",
+          "routed": 2400,
+          "route_failures": 0,
+          "success_rate": 0.49666666666666665,
+          "cost_cents_total": 0.0,
+          "cost_cents_per_task": 0.0,
+          "cost_cents_per_success": 0.0,
+          "latency_p50_ms": 2500.0,
+          "latency_p95_ms": 3312.5,
+          "deadline_miss_rate": 0.3079,
+          "mean_utility": -0.149,
+          "model_shares": {
+            "local-llama": 1.0
+          },
+          "provider_shares": {
+            "local": 1.0
+          },
+          "model_hhi": 1.0,
+          "provider_hhi": 1.0
+        },
+        {
+          "policy": "budget-conditioned",
+          "routed": 2400,
+          "route_failures": 652,
+          "success_rate": 0.3566666666666667,
+          "cost_cents_total": 2.0753,
+          "cost_cents_per_task": 0.000865,
+          "cost_cents_per_success": 0.002424,
+          "latency_p50_ms": 400.0,
+          "latency_p95_ms": 512.0,
+          "deadline_miss_rate": 0.2717,
+          "mean_utility": 0.1365,
+          "model_shares": {
+            "gpt-3.5-turbo": 0.7283
+          },
+          "provider_shares": {
+            "openai": 0.7283
+          },
+          "model_hhi": 0.5305,
+          "provider_hhi": 0.5305
+        },
+        {
+          "policy": "tier-conditioned",
+          "routed": 2400,
+          "route_failures": 90,
+          "success_rate": 0.82625,
+          "cost_cents_total": 307.2117,
+          "cost_cents_per_task": 0.128005,
+          "cost_cents_per_success": 0.154923,
+          "latency_p50_ms": 704.4,
+          "latency_p95_ms": 1746.7,
+          "deadline_miss_rate": 0.0375,
+          "mean_utility": 0.6072,
+          "model_shares": {
+            "gpt-3.5-turbo": 0.375,
+            "gpt-4-turbo": 0.395,
+            "gpt-4o-mini": 0.1925
+          },
+          "provider_shares": {
+            "openai": 0.9625
+          },
+          "model_hhi": 0.3337,
+          "provider_hhi": 0.9264
+        },
+        {
+          "policy": "oracle",
+          "routed": 2400,
+          "route_failures": 0,
+          "success_rate": 0.9304166666666667,
+          "cost_cents_total": 205.709,
+          "cost_cents_per_task": 0.085712,
+          "cost_cents_per_success": 0.092122,
+          "latency_p50_ms": 534.8,
+          "latency_p95_ms": 1687.6,
+          "deadline_miss_rate": 0.0004,
+          "mean_utility": 0.7675,
+          "model_shares": {
+            "gpt-3.5-turbo": 0.4329,
+            "gpt-4-turbo": 0.1683,
+            "gpt-4o-mini": 0.3933,
+            "local-llama": 0.0054
+          },
+          "provider_shares": {
+            "local": 0.0054,
+            "openai": 0.9946
+          },
+          "model_hhi": 0.3705,
+          "provider_hhi": 0.9892
+        }
+      ],
+      "comparisons_vs_shipped": {
+        "static-cheap": {
+          "delta_success_rate": 0.1129,
+          "delta_cost_per_task_cents": -0.001197,
+          "delta_latency_p95_ms": 2800.2,
+          "delta_mean_utility": -0.2972,
+          "regret_vs_oracle": 0.9165
+        },
+        "budget-conditioned": {
+          "delta_success_rate": -0.0271,
+          "delta_cost_per_task_cents": -0.000332,
+          "delta_latency_p95_ms": -0.3,
+          "delta_mean_utility": -0.0117,
+          "regret_vs_oracle": 0.631
+        },
+        "tier-conditioned": {
+          "delta_success_rate": 0.4425,
+          "delta_cost_per_task_cents": 0.126808,
+          "delta_latency_p95_ms": 1234.4,
+          "delta_mean_utility": 0.459,
+          "regret_vs_oracle": 0.1603
+        },
+        "oracle": {
+          "delta_success_rate": 0.5467,
+          "delta_cost_per_task_cents": 0.084515,
+          "delta_latency_p95_ms": 1175.3,
+          "delta_mean_utility": 0.6193,
+          "regret_vs_oracle": 0.0
+        }
+      },
+      "stability_flip_rate_under_jitter": {
+        "shipped-router": 0.0,
+        "static-cheap": 0.0,
+        "budget-conditioned": 0.0,
+        "tier-conditioned": 0.0108
+      },
+      "leakage_violations": {
+        "shipped-router": 0,
+        "static-cheap": 0,
+        "budget-conditioned": 0,
+        "tier-conditioned": 0
+      },
+      "leakage_positive_control_oracle_changes": 732
+    }
+  ]
+}

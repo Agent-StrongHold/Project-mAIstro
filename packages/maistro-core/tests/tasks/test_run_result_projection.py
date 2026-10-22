@@ -11,6 +11,7 @@ from maistro.runs.model import AttemptStatus, RunStatus
 from maistro.runs.store import InMemoryRunStore
 from maistro.tasks.execution import TaskAttemptExecutor
 from maistro.tasks.models import TaskCreate
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 
 @pytest.mark.ac("ADR-082526-237d/AC-6")
@@ -24,7 +25,7 @@ async def test_task_success_projects_product_result_without_rewriting_attempt_ev
         name="Task",
         nodes=[Node(node_id="task-node", node_type="agent")],
     )
-    run = await store.create_run(graph)
+    run = await store.create_run(graph, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
     output = ConductorOutput(
         success=True,
         final_answer="done",

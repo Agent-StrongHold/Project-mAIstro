@@ -17,6 +17,7 @@ from maistro.graph.durable_runs.executor import (
     _initial_inputs,
     _maybe_increment_synth_depth,
     _new_run,
+    _node_spec,
     _result_output,
     run_durable_graph,
 )
@@ -26,6 +27,7 @@ from maistro.graph.nodes.base import NodeResult
 from maistro.runs.lifecycle import transition_node_run
 from maistro.runs.model import NodeRun
 from maistro.runtime import PythonExecutionRuntime
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 from .._canonical_helpers import completed_node_run, durable_record, graph_from_dag
 
@@ -246,7 +248,7 @@ class TestSynthDepth:
 
         nested = await AgentSynthDagNode(max_depth=3).run(
             {"objective": "nested work"},
-            _build_ctx(updated, "n1"),
+            _build_ctx(updated, "n1", _node_spec(updated.run.graph.materialize(), "n1")),
         )
         assert nested.status == "failed"
         assert nested.error_code == "SynthDagFailed"
@@ -286,7 +288,12 @@ class TestSynthDepth:
             run_id="r-nodepth",
             blackboard_snapshot={"metadata": {"other": 1}},
         )
-        assert _build_ctx(record, "n1").metadata["synth_depth"] == 0
+        assert (
+            _build_ctx(record, "n1", _node_spec(record.run.graph.materialize(), "n1")).metadata[
+                "synth_depth"
+            ]
+            == 0
+        )
 
 
 class TestInitialInputsAndIdentity:
@@ -299,7 +306,11 @@ class TestInitialInputsAndIdentity:
         assert _initial_inputs(record) == {"text": "hi"}
 
     def test_generated_canonical_run_id_is_full_uuid_hex(self) -> None:
-        run = _new_run(_one_node_graph(), run_id=None, actor_principal_id=None)
+        run = _new_run(
+            _one_node_graph(),
+            run_id=None,
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+        )
         assert len(run.run_id) == 32
         int(run.run_id, 16)
 
@@ -315,6 +326,7 @@ class TestInitialInputsAndIdentity:
             store=store,
             node_resolver=_resolver,
             inputs={"text": "hi"},
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         )
         assert result.status is RunStatus.COMPLETED
         assert result.run.result == {"text": "hi"}

@@ -1,0 +1,252 @@
+"""The task stream must not pin the event loop on a stalled backend (#1180).
+
+A real HTTP server stands in for maistro-server and stalls `GET /tasks/{id}`,
+the call the websocket stream makes to check ownership before it polls. While
+that call is in flight the loop has to keep serving everything else, and
+cancelling the stream has to take effect at once rather than after the stall.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import threading
+import time
+from collections.abc import Iterator
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from typing import Any
+
+import pytest
+
+_STALL_S = 2.0
+
+_TASK_BODY = {
+    "task_id": "t1",
+    "status": "completed",
+    "description": "ship it",
+    "workspace": "/tmp/maistro-workspace",  # nosec B108 — static test fixture, mirrors TaskCreate's documented default
+    "tier": 2,
+    "phase": "completed",
+    "progress": {"subtasks": 0, "completed": 0, "current": ""},
+    "result": None,
+    "created_at": "2026-06-20T00:00:00Z",
+    "started_at": None,
+    "completed_at": None,
+}
+
+
+class _StallingTaskServer(ThreadingHTTPServer):
+    daemon_threads = True
+    block_on_close = False
+    stall_s = _STALL_S
+
+
+class _Handler(BaseHTTPRequestHandler):
+    server: _StallingTaskServer
+
+    def do_GET(self) -> None:
+        if self.path.startswith("/tasks/"):
+            # Only the first probe stalls; the stream's later polls answer at once.
+            stall, self.server.stall_s = self.server.stall_s, 0.0
+            time.sleep(stall)
+            self._send(200, _TASK_BODY)
+        elif self.path.startswith("/tasks"):
+            self._send(200, {"items": [_TASK_BODY], "next_cursor": None, "count": 1})
+        else:
+            self._send(404, {})
+
+    def do_DELETE(self) -> None:
+        # `MaistroServerTaskBackend.cancel` issues DELETE /tasks/{id}; the
+        # cancel-path tests below drive the real backend end to end.
+        self._send(200, {"cancelled": True})
+
+    def _send(self, status: int, body: dict[str, Any]) -> None:
+        payload = json.dumps(body).encode()
+        try:
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+        except OSError:
+            pass
+
+    def log_message(self, format: str, *args: Any) -> None:
+        return None
+
+
+@pytest.fixture
+def task_server(monkeypatch: pytest.MonkeyPatch) -> Iterator[_StallingTaskServer]:
+    from maistro.security import outbound
+
+    monkeypatch.setattr(outbound, "_policy", outbound.current_outbound_policy())
+    server = _StallingTaskServer(("127.0.0.1", 0), _Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    outbound.configure_outbound_policy(_origin(server))
+    try:
+        yield server
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def _origin(server: _StallingTaskServer) -> str:
+    host, port = server.server_address[:2]
+    return f"http://{host!s}:{port}"
+
+
+def _engine_over(server: _StallingTaskServer) -> Any:
+    from adapters.task_backend import MaistroServerTaskBackend
+    from services.engine import EngineService
+
+    svc = EngineService()
+    # The scoped stream reads carry the signed delegation envelope (#1057):
+    # fail-closed without a key is that contract's own behavior, so this
+    # scoped-stream fixture satisfies it by explicit injection.
+    svc._backend = MaistroServerTaskBackend(
+        base_url=_origin(server), api_key=None, delegation_key="test-delegation-key"
+    )
+    return svc
+
+
+async def test_stalled_ownership_probe_does_not_block_the_loop(
+    task_server: _StallingTaskServer,
+) -> None:
+    from maistro.http import get_shared_client
+
+    svc = _engine_over(task_server)
+    # Build this loop's pooled client up front: its one-off TLS setup is not
+    # the stall under test and would otherwise count against the heartbeat.
+    get_shared_client(timeout=30.0)
+    done = asyncio.Event()
+    max_gap = 0.0
+
+    async def _heartbeat() -> None:
+        nonlocal max_gap
+        last = time.monotonic()
+        while not done.is_set():
+            await asyncio.sleep(0.01)
+            now = time.monotonic()
+            max_gap = max(max_gap, now - last)
+            last = now
+
+    async def _consume() -> list[dict[str, Any]]:
+        try:
+            return [ev async for ev in svc.iter_task_events("t1", user_id="u1")]
+        finally:
+            done.set()
+
+    beat = asyncio.create_task(_heartbeat())
+    await asyncio.sleep(0.05)
+    events = await _consume()
+    await beat
+
+    assert [e["status"] for e in events] == ["completed"]
+    assert max_gap < 0.25, f"event loop stalled for {max_gap:.2f}s"
+
+
+async def test_cancelling_the_stream_mid_stall_returns_promptly(
+    task_server: _StallingTaskServer,
+) -> None:
+    svc = _engine_over(task_server)
+
+    async def _consume() -> None:
+        async for _ in svc.iter_task_events("t1", user_id="u1"):
+            pass
+
+    started = time.monotonic()
+    consumer = asyncio.create_task(_consume())
+    await asyncio.sleep(0.2)
+    consumer.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await consumer
+
+    assert time.monotonic() - started < 0.7
+
+
+async def test_stalled_cancel_probe_does_not_block_the_loop(
+    task_server: _StallingTaskServer,
+) -> None:
+    """`EngineService.cancel_task` serves async `DELETE /v1/missions/{id}`.
+    Its ownership probe is `get_async` over the pooled client, so a stalled
+    backend response — the same 30s-timeout call class the stream moved off
+    the loop — leaves the loop free and never builds the sync client (#1180).
+    """
+    from maistro.http import get_shared_client
+
+    svc = _engine_over(task_server)
+    get_shared_client(timeout=30.0)
+    done = asyncio.Event()
+    max_gap = 0.0
+
+    async def _heartbeat() -> None:
+        nonlocal max_gap
+        last = time.monotonic()
+        while not done.is_set():
+            await asyncio.sleep(0.01)
+            now = time.monotonic()
+            max_gap = max(max_gap, now - last)
+            last = now
+
+    beat = asyncio.create_task(_heartbeat())
+    await asyncio.sleep(0.05)
+    try:
+        cancelled = await svc.cancel_task("t1", user_id="u1")
+    finally:
+        done.set()
+        await beat
+
+    assert cancelled is True
+    assert max_gap < 0.25, f"event loop stalled for {max_gap:.2f}s"
+    # The whole cancel path stayed on the async client: the sync client the
+    # threadpool routes share was never even constructed.
+    assert svc._backend._sync is None
+
+
+async def test_cancelling_the_cancel_probe_mid_stall_returns_promptly(
+    task_server: _StallingTaskServer,
+) -> None:
+    """Cancelling the caller (client disconnect) must not wait out the stall."""
+    svc = _engine_over(task_server)
+
+    async def _cancel() -> bool:
+        return await svc.cancel_task("t1", user_id="u1")
+
+    started = time.monotonic()
+    canceller = asyncio.create_task(_cancel())
+    await asyncio.sleep(0.2)
+    canceller.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await canceller
+
+    assert time.monotonic() - started < 0.7
+
+
+async def test_sync_callers_reuse_one_owned_client_closed_on_stop(
+    task_server: _StallingTaskServer, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from maistro.http import sync_client
+
+    built: list[Any] = []
+
+    def _counting(**kw: Any) -> Any:
+        client = sync_client(**kw)
+        built.append(client)
+        return client
+
+    monkeypatch.setattr("adapters.task_backend.sync_client", _counting)
+    task_server.stall_s = 0.0
+    svc = _engine_over(task_server)
+
+    for _ in range(3):
+        rec = await asyncio.to_thread(svc.get_task, "t1", user_id="u1")
+        assert rec is not None and rec.id == "t1"
+    for _ in range(2):
+        assert [r.id for r in await asyncio.to_thread(svc.list_tasks)] == ["t1"]
+
+    assert len(built) == 1
+    assert not built[0].is_closed
+
+    await svc.stop()
+    assert built[0].is_closed

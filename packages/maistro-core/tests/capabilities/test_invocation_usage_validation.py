@@ -32,7 +32,7 @@ def test_negative_output_units_rejected() -> None:
 
 def test_negative_cost_rejected() -> None:
     """Line 94: a measured cost cannot be negative."""
-    with pytest.raises(ValueError, match="cost_cents cannot be negative"):
+    with pytest.raises(ValueError, match="cost_cents must be finite and nonnegative"):
         InvocationUsage(cost_cents=-0.01)
 
 

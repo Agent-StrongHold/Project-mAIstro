@@ -12,7 +12,8 @@ from maistro.security.warden.sanitizer import sanitize
 class SanitizerMachine(RuleBasedStateMachine):
     def __init__(self):
         super().__init__()
-        self.sanitized_count = 0
+        self.last_input: str | None = None
+        self.last_output: str | None = None
 
     @rule(
         text=st.text(min_size=0, max_size=500),
@@ -20,15 +21,35 @@ class SanitizerMachine(RuleBasedStateMachine):
     def sanitize_text(self, text):
         result = sanitize(text)
         assert isinstance(result, str)
-        self.sanitized_count += 1
+        self.last_input = text
+        self.last_output = result
 
     @invariant()
-    def no_zero_width_chars(self):
-        pass
+    def output_has_no_zero_width_chars(self):
+        """Safety property (was an empty `pass` invariant).
+
+        Counterexample class: dropping the zero-width substitution from
+        `sanitize` lets U+200B..U+200F/U+FEFF smuggle past — any input
+        carrying one then fails here.
+        """
+        if self.last_output is None:
+            return
+        zero_width = "\u200b\u200c\u200d\u200e\u200f\ufeff"
+        assert not any(c in self.last_output for c in zero_width), (
+            f"zero-width char survived sanitize: {self.last_output!r}"
+        )
 
     @invariant()
-    def sanitized_count_non_negative(self):
-        assert self.sanitized_count >= 0
+    def output_is_a_sanitize_fixpoint(self):
+        """Bounds/idempotence property (was a `>= 0` counter check).
+
+        Counterexample class: a whitespace collapse that only handles pairs
+        of spaces (or any one-pass-only transform) is not idempotent —
+        re-sanitizing the stored output then changes it and fails here.
+        """
+        if self.last_output is None:
+            return
+        assert sanitize(self.last_output) == self.last_output
 
 
 TestSanitizerMachine = SanitizerMachine.TestCase

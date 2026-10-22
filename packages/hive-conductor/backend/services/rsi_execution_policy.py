@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final
@@ -235,53 +236,82 @@ def resolve_test_profile(name: str) -> TestProfile:
 
 
 #: Whether this process can run an RSI cleanup loop with candidate code
-#: contained. It cannot, and saying so here is the point (#305).
+#: contained.
 #:
-#: `LocalRsiConfig.isolation="container"` sandboxes only the builders agent's
-#: edits; `LocalRsiLoop._run_tests` then runs the test command against the
-#: edited worktree ON THE HOST. An argument vector is not an isolation
-#: boundary: `python -m pytest` over a candidate-edited tree imports that
-#: tree's `conftest.py`, its test modules, and any plugin it declares, so
-#: candidate-authored code executes as the Conductor process whether or not a
-#: shell parsed the command.
+#: This used to be the literal `False` that made `POST /v1/rsi/runs` fail
+#: closed (#305): `LocalRsiConfig.isolation="container"` sandboxes only the
+#: builders agent's *edits*, and `LocalRsiLoop._run_tests` then runs the test
+#: command against the edited worktree ON THE HOST — an argument vector is not
+#: an isolation boundary when `python -m pytest` imports the candidate tree's
+#: conftest, test modules and plugins as the Conductor process.
 #:
-#: `tools/run_rsi_isolated.sh` is the supported isolated path precisely because
-#: it puts the WHOLE loop — agent, git, tests, coverage — inside an ephemeral
-#: container. Its own header says so: "`maistro_rsi --isolation container` only
-#: sandboxes the agent's *edits* and then runs the tests back on the host;
-#: running the whole loop in-container closes that gap."
-#:
-#: So the HTTP path fails closed. Dispatching a run into that wrapper is real
-#: work with its own design — where the container runs, how reports come back,
-#: how it is cancelled — and is tracked in #509; until it exists, an
-#: unattested backend must stop the run rather than quietly be the host.
-IN_PROCESS_ISOLATION_AVAILABLE: Final = False
+#: #509 restores the capability with a different execution model, so this is
+#: no longer a constant refusal — and deliberately not a constant `True`
+#: either. `None` — the default — means "attest the container dispatch
+#: backend": the loop is contained only when an ephemeral runner container can
+#: actually be launched from this process (`rsi_container_dispatch`
+#: checks the CLI, the daemon, and the runner image). `False` is the operator
+#: kill-switch. Nothing in source may set `True`: attesting containment no
+#: probe has verified is exactly the silenced check this flag exists to
+#: prevent, so the module-level value staying `None` is itself the auditable
+#: fact — the answer comes from the backend, or there is no answer.
+IN_PROCESS_ISOLATION_AVAILABLE: bool | None = None
 
 
 def _isolation_available() -> bool:
-    """Whether a backend that contains the WHOLE loop is wired in this process.
+    """Whether a backend that contains the WHOLE loop is usable right now.
 
     Deliberately not "is the builders container sandbox importable and is
     docker on PATH". Both can be true while the test command still runs on the
     host, and an attestation that answers a narrower question than the one
     being asked is worse than none — it reads as containment to every caller.
+    The dispatch backend's probe answers the whole question instead: CLI,
+    reachable daemon, and the runner image that will contain the loop.
     """
-    return IN_PROCESS_ISOLATION_AVAILABLE
+    if IN_PROCESS_ISOLATION_AVAILABLE is not None:
+        return IN_PROCESS_ISOLATION_AVAILABLE
+    from services.rsi_container_dispatch import backend_available
+
+    return backend_available()
 
 
 def require_isolation() -> str:
     """The isolation backend an HTTP run must use, or `RsiPolicyError`.
 
     Unavailable isolation stops the run. The alternative — falling back to the
-    host — is precisely the state this issue is about, and it is worse arriving
-    silently than it was arriving by design.
+    host — is precisely the state #305 is about, and it is worse arriving
+    silently than it was arriving by design. When the backend IS available the
+    return value is the contract the service dispatches on: the whole loop
+    runs inside an ephemeral container, never as this process.
+
+    The probe is a subprocess conversation with the docker CLI, so it has the
+    CLI's failure modes: a hung daemon can eat the probe's whole timeout and
+    raise `TimeoutExpired`, and the CLI can vanish between `which` and `run`
+    (`OSError`). Either must land in the SAME operator-facing refusal as an
+    ordinary "no" — an unhandled exception here would turn the route's intended
+    400 into a 500 that says nothing about what to fix.
     """
-    if not _isolation_available():
+    try:
+        available = _isolation_available()
+        reason = None if available else _unavailability_reason_safe()
+    except (OSError, subprocess.SubprocessError):
+        available = False
+        reason = "the container backend probe itself failed"
+    if not available:
         raise RsiPolicyError(
-            "this deployment cannot run an RSI cleanup loop with candidate code "
-            "contained: the in-process loop executes the test command against the "
-            "edited worktree on the host, and an argument vector is not an "
-            "isolation boundary. Use tools/run_rsi_isolated.sh, which runs the "
-            "whole loop inside an ephemeral container"
+            "no contained RSI backend is available in this deployment — candidate "
+            f"code must run in an ephemeral runner container, and: {reason}. Until "
+            "then, tools/run_rsi_isolated.sh drives the same contained loop "
+            "outside the Conductor"
         )
     return REQUIRED_ISOLATION
+
+
+def _unavailability_reason_safe() -> str:
+    """`unavailability_reason()` with its subprocess failures folded into text."""
+    from services.rsi_container_dispatch import unavailability_reason
+
+    try:
+        return unavailability_reason() or "the container backend could not be attested"
+    except (OSError, subprocess.SubprocessError):
+        return "the container backend probe itself failed"

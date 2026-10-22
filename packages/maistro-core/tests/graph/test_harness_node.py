@@ -105,22 +105,24 @@ class TestNodeExecutorSeam:
         await node.execute(_exploding_llm)
         assert node.phase == NodePhase.FAILED
 
-    async def test_run_graph_wires_executor_by_role(self) -> None:
-        # End-to-end: a GraphConfig with a HARNESS node + a node_executors map
-        # drives the node through the executor instead of llm_call.
-        from maistro.graph.executor import run_graph
+    async def test_a_traversal_wires_the_executor_by_role(self) -> None:
+        # A GraphConfig with a HARNESS node + a node_executors map drives the
+        # node through that executor instead of llm_call -- `_exploding_llm`
+        # proves llm_call is never reached. Built on `GraphRun` directly since
+        # the pre-durable `run_graph` wrapper is retired (#1154); this is
+        # Graph-domain traversal, not canonical execution.
+        from maistro.graph.run import GraphRun
         from maistro.graph.types import GraphConfig, GraphTask
 
-        task = GraphTask(
-            description="d",
-            workspace="/w",
-            graph_config=GraphConfig(nodes=[AgentRole.HARNESS], entry=AgentRole.HARNESS),
-        )
-        result = await run_graph(
-            task,
-            _exploding_llm,
+        config = GraphConfig(nodes=[AgentRole.HARNESS], entry=AgentRole.HARNESS)
+        task = GraphTask(description="d", workspace="/w", graph_config=config)
+
+        result = await GraphRun(
+            task=task,
+            config=config,
             node_executors={AgentRole.HARNESS.value: _FixedExecutor()},
-        )
+        ).start(_exploding_llm)
+
         assert result.success
 
 
@@ -278,33 +280,3 @@ class TestEnvelopeHelpers:
         assert _spec_role(AgentRole.CODER) == SpecAgentRole.CODER
         # HARNESS has no spec counterpart → CODER fallback
         assert _spec_role(AgentRole.HARNESS) == SpecAgentRole.CODER
-
-
-class TestEnsureNodeConfigs:
-    def test_none_config_is_noop(self) -> None:
-        from maistro.graph.executor import _ensure_node_configs
-
-        _ensure_node_configs(None, 1)  # must not raise
-
-    def test_backfills_and_applies_beam_width(self) -> None:
-        from maistro.graph.executor import _ensure_node_configs
-        from maistro.graph.types import GraphConfig, NodeConfig
-
-        cfg = GraphConfig(
-            nodes=[AgentRole.PLANNER, AgentRole.CODER],
-            node_configs={AgentRole.PLANNER: NodeConfig(role=AgentRole.PLANNER)},
-        )
-        _ensure_node_configs(cfg, 3)
-        # missing CODER entry was backfilled
-        assert AgentRole.CODER in cfg.node_configs
-        # beam width applied to every role (existing + new)
-        assert cfg.node_configs[AgentRole.PLANNER].beam_width == 3
-        assert cfg.node_configs[AgentRole.CODER].beam_width == 3
-
-    def test_no_beam_when_single_generation(self) -> None:
-        from maistro.graph.executor import _ensure_node_configs
-        from maistro.graph.types import GraphConfig
-
-        cfg = GraphConfig(nodes=[AgentRole.PLANNER])
-        _ensure_node_configs(cfg, 1)
-        assert cfg.node_configs[AgentRole.PLANNER].beam_width == 1

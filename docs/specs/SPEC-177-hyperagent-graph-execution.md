@@ -17,7 +17,8 @@ contracts:
   - boundary
   - behavioral
 tests:
-  - packages/maistro-core/tests/agents/test_graph_execution.py
+  - packages/maistro-core/tests/graph/test_run.py
+  - packages/maistro-core/tests/graph/durable_runs/test_frontier_execution.py
 layer: Orchestration
 owners:
   - '@BlakeMatthews-dev'
@@ -83,6 +84,16 @@ Reintroduce **GRAPH** execution as an **optional path** controlled explicitly by
 - **AC-5**: Spec appendix stays in sync with target module paths in the implementation PR.
 
 ## Appendix A — Reference bundle → target paths
+
+Disposition note (#812): the `tests/agents/test_graph_execution.py` path
+named at authoring time never landed. Graph execution shipped as the
+canonical `maistro.graph` module (not `maistro.agents.graph`), and the
+behavioral contract above — deterministic topology, cycle cap, frontier
+fan-out/gather — is proven by
+`packages/maistro-core/tests/graph/test_run.py` (GraphRun lifecycle and
+edge evaluation) and
+`packages/maistro-core/tests/graph/durable_runs/test_frontier_execution.py`
+(durable frontier execution). Front-matter `tests:` points at those files.
 
 | Reference file (`potential-dead-code/code-worth-implementing-from-legacy/`) | Intended destination |
 |--------------------------------------------------------|-------------------------|

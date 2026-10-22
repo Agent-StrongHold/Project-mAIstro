@@ -20,9 +20,11 @@ from maistro.runs.admission import (
     direct_work_graph,
 )
 from maistro.runs.store import InMemoryRunStore
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 #: Any registered kind works; the tests are about admission, not this kind.
 KIND = "transform.format_markdown"
+ACTOR = "admission-test-user"
 
 
 @pytest.fixture
@@ -104,6 +106,7 @@ async def test_admission_yields_a_run_scoped_to_the_project(scoped) -> None:
         node_type=KIND,
         name="summarise the inbox",
         source="task-queue",
+        actor_principal_id=ACTOR,
     )
     assert run.run_id
     assert (run.workspace_id, run.project_id) == ("w1", project_id)
@@ -122,6 +125,7 @@ async def test_the_run_records_what_admitted_it(scoped) -> None:
         name="n",
         source="chat-turn",
         provenance={"session_id": "s-7"},
+        actor_principal_id=ACTOR,
     )
     assert run.provenance[ADMISSION_SOURCE] == "chat-turn"
     assert run.provenance["session_id"] == "s-7", "caller provenance survives alongside it"
@@ -144,10 +148,22 @@ async def test_the_actor_is_carried_onto_the_run(scoped) -> None:
 async def test_two_admissions_are_two_runs(scoped) -> None:
     store, project_id = scoped
     first = await admit_direct_work(
-        store, workspace_id="w1", project_id=project_id, node_type=KIND, name="n", source="s"
+        store,
+        workspace_id="w1",
+        project_id=project_id,
+        node_type=KIND,
+        name="n",
+        source="s",
+        actor_principal_id=ACTOR,
     )
     second = await admit_direct_work(
-        store, workspace_id="w1", project_id=project_id, node_type=KIND, name="n", source="s"
+        store,
+        workspace_id="w1",
+        project_id=project_id,
+        node_type=KIND,
+        name="n",
+        source="s",
+        actor_principal_id=ACTOR,
     )
     assert first.run_id != second.run_id
 
@@ -159,7 +175,13 @@ async def test_admission_into_an_unknown_project_is_refused(scoped) -> None:
     store, _ = scoped
     with pytest.raises(Exception):  # noqa: B017 - store raises its own scope error
         await admit_direct_work(
-            store, workspace_id="w1", project_id="p-nope", node_type=KIND, name="n", source="s"
+            store,
+            workspace_id="w1",
+            project_id="p-nope",
+            node_type=KIND,
+            name="n",
+            source="s",
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         )
 
 
@@ -176,6 +198,7 @@ async def test_caller_provenance_cannot_override_the_admission_source(scoped) ->
         name="n",
         source="task_queue",
         provenance={ADMISSION_SOURCE: "totally_trusted_webhook", "other": "kept"},
+        actor_principal_id=ACTOR,
     )
 
     assert run.provenance[ADMISSION_SOURCE] == "task_queue"

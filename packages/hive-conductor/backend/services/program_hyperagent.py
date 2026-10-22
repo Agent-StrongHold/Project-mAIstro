@@ -15,14 +15,11 @@ from maistro.agents.hyperagent import (
 from maistro.agents.program_context import apply_guidance
 from services import program_store as prog
 from services.agent_invocation import pulse_roster
+from services.request_principal import require_actor_id
 
 
 def user_id_from_request(request: Request) -> str:
-    user = getattr(request.state, "user", None) or {}
-    uid = user.get("id")
-    if not uid:
-        raise HTTPException(status_code=401, detail="Authentication required")
-    return str(uid)
+    return require_actor_id(request)
 
 
 GLOBAL_PROJECT_ID = "default"

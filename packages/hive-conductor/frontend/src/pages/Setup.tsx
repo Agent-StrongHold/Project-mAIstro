@@ -1,10 +1,25 @@
-import { useEffect, useState } from "react";
-import { apiGet, fallbackMessage } from "../lib/api";
+import { useEffect, useRef, useState } from "react";
+import { apiGet, fallbackMessage, ApiError } from "../lib/api";
 import { SecretField, TextField } from "../components/shared";
 
 type Preset = { name: string; label: string; description: string; max_vcpu: number; max_memory_gb: number; db_backend: string; networking: string; gpu_available: boolean; reactor_enabled: boolean; max_agents: number };
 
+// One entry of the first-run question declaration served by
+// GET /v1/setup/questions — the same declaration the terminal wizard reads
+// directly (#443). The wizard seeds its state from these instead of
+// restating defaults, so identical answers produce an identical
+// /v1/setup/complete payload whichever path collected them.
+type FirstRunQuestionMeta = { key: string; label: string; default: unknown; required: boolean; description: string };
+
 type IdentityStatus = "checking" | "operational" | "disabled" | "misconfigured" | "unavailable";
+
+// Gateway model-discovery lifecycle (#287): "pending" while the catalog fetch
+// is in flight, "ok" once the gateway answered with a non-empty, well-formed
+// catalog, "failed" for every distinguishable failure (auth, not found,
+// gateway error, network, malformed, empty). A failed check keeps the curated
+// list usable for offline setup, but it must never be presented as
+// successfully discovered gateway state.
+type ModelCheck = "pending" | "ok" | "failed";
 
 const MODULES = [
   { id: "crypto_identity", name: "Crypto Identity", desc: "BIP39 HD wallet seed, DID addresses, hierarchical key derivation, agent signing (ADR-021/024)", requires: [] },
@@ -19,8 +34,11 @@ const MODULES = [
 
 export default function Setup() {
   const [step, setStep] = useState(0);
-  const [conductorName, setConductorName] = useState("Hive Conductor");
-  const [routerModel, setRouterModel] = useState("gemini-3.1-flash-lite");
+  // Question declaration + seeded defaults. Every initial state is empty:
+  // values arrive from the declaration, never from literals here (#443).
+  const [questions, setQuestions] = useState<Record<string, FirstRunQuestionMeta>>({});
+  const [conductorName, setConductorName] = useState("");
+  const [routerModel, setRouterModel] = useState("");
   const [availableModels, setAvailableModels] = useState<string[]>([]);
   const [modelsLoading, setModelsLoading] = useState(false);
   const [preset, setPreset] = useState<string | null>(null);
@@ -29,7 +47,8 @@ export default function Setup() {
   const [identityStatus, setIdentityStatus] = useState<IdentityStatus>("checking");
   const [identityReason, setIdentityReason] = useState<string | null>(null);
   const [modules, setModules] = useState<string[]>([]);
-  const [adminUsername, setAdminUsername] = useState("admin");
+  const [declaredModules, setDeclaredModules] = useState<string[] | null>(null);
+  const [adminUsername, setAdminUsername] = useState("");
   const [adminPassword, setAdminPassword] = useState("");
   const [userUsername, setUserUsername] = useState("");
   const [userPassword, setUserPassword] = useState("");
@@ -38,16 +57,48 @@ export default function Setup() {
   const [mnemonic, setMnemonic] = useState<string[] | null>(null);
   const [didKey, setDidKey] = useState<string | null>(null);
   const [mnemonicConfirmed, setMnemonicConfirmed] = useState(false);
+  const [modelCheck, setModelCheck] = useState<ModelCheck>("pending");
+  const [modelError, setModelError] = useState<string | null>(null);
+  const [modelErrorKind, setModelErrorKind] = useState<string | null>(null);
+  // The stored default the backend substitutes when the gateway catalog is
+  // NOT discovered. A distinct provenance state (#287): cached, never
+  // discovered, and never rendered as live gateway state.
+  const [cachedDefault, setCachedDefault] = useState<string | null>(null);
+  const [fallbackAcknowledged, setFallbackAcknowledged] = useState(false);
+  const [manualModel, setManualModel] = useState(false);
+  const [fetchKey, setFetchKey] = useState(0);
+  // Modules the operator explicitly toggled. A toggle is an explicit choice
+  // for that module only — untouched modules still take the declared default,
+  // even if the seed arrives after a toggle.
+  const touchedModules = useRef<Set<string>>(new Set());
 
   const steps = ["Hive", "Hardware", "Accounts", "Modules", "Confirm"];
+
+  // The hardware preset the wizard states when the operator made no explicit
+  // pick: the declared default (the same "auto" the terminal path states).
+  // Without a declaration there is nothing to state — the key is omitted and
+  // the server names the missing field.
+  const hardwareDefault =
+    typeof questions["hardware_preset"]?.default === "string"
+      ? (questions["hardware_preset"].default as string)
+      : null;
+  const resolvedHardware = preset ?? hardwareDefault;
+  // The crypto-identity toggle is only actionable when the deployment can
+  // serve an identity root; the declared module seed is applied under the
+  // same condition (see the seeding effect below).
+  const identityUsable = !(
+    identityStatus === "checking" ||
+    identityStatus === "unavailable" ||
+    (identityStatus === "misconfigured" && identityReason !== "setup_incomplete")
+  );
 
   // Load available models from the LLM gateway via Hive's
   // /v1/settings/models proxy. The user's LITELLM key stays server-side.
   // Setup runs BEFORE any login, so the auth-gated /v1/settings/models will
-  // 401; that's expected — we fall back to a curated list of known
-  // LLM-gateway models so the dropdown is always populated. After the
-  // admin user finishes setup, settings can refresh the list from the
-  // live gateway.
+  // 401: the curated list below is only ever a baseline for offline setup,
+  // and a failed fetch keeps it explicitly marked unverified (#287) instead
+  // of passing it off as discovered gateway state. After the admin user
+  // finishes setup, settings can refresh the list from the live gateway.
   useEffect(() => {
     // Curated LLM gateway model aliases — sorted by "good router default"
     // first (small, fast, cheap), then by family. Trim / extend as the
@@ -81,32 +132,91 @@ export default function Setup() {
       "text-embedding-3",
     ];
     setAvailableModels(FALLBACK_MODELS);
-    setRouterModel((cur) =>
-      FALLBACK_MODELS.includes(cur) ? cur : "gemini-3.1-flash-lite",
-    );
 
-    // Best-effort: ask the live gateway for the latest list; replace if we
-    // get a non-empty response. If we're pre-login the 401 just keeps the
-    // fallback. Settings page (post-login) gets a richer refresh path.
+    // Best-effort: ask the live gateway for the real catalog and replace the
+    // curated baseline only on a well-formed, non-empty answer (#287). Every
+    // failure path keeps the curated list usable but records WHY the gateway
+    // state is not trustworthy: modelCheck stays "failed" with an actionable,
+    // per-cause message, so the UI can demand an explicit
+    // unverified-availability acknowledgement and offer a retry instead of
+    // silently marking gateway/model setup complete after a failed fetch.
+    function failDiscovery(kind: string, message: string) {
+      setModelCheck("failed");
+      setModelErrorKind(kind);
+      setModelError(message);
+    }
     let active = true;
     setModelsLoading(true);
-    apiGet<{ models: string[] }>("/v1/settings/models")
+    setModelCheck("pending");
+    setModelError(null);
+    setModelErrorKind(null);
+    setCachedDefault(null);
+    apiGet<{ models?: unknown; discovered?: boolean; source?: string; error?: { kind?: string; message?: string } | null }>("/v1/settings/models")
       .then((data) => {
         if (!active) return;
-        const models = (data.models ?? []).filter(Boolean);
-        if (models.length > 0) {
-          setAvailableModels(models);
-          if (!models.includes(routerModel)) {
-            const preferred =
-              models.find((m) => m === "gemini-3.1-flash-lite") ??
-              models.find((m) => m.startsWith("gemini-") && m.includes("flash")) ??
-              models[0];
-            setRouterModel(preferred);
-          }
+        // A malformed payload is its own failure class, not an empty catalog:
+        // only an array of non-empty strings counts as a catalog.
+        if (!Array.isArray(data.models)) {
+          failDiscovery("malformed", "The gateway response could not be parsed as a model catalog. Check the gateway deployment.");
+          return;
         }
+        const models = data.models.filter((m): m is string => typeof m === "string" && m.trim().length > 0);
+        // Only a catalog the backend explicitly DISCOVERED from the gateway
+        // may show as discovered (#287). A 200 with `discovered: false`
+        // carries a sanitized failure class (not_configured, tls, policy, …)
+        // and a *substitute* list — the stored default — never a live
+        // catalog. It takes the failure path with the backend's own kind,
+        // and the substitute is surfaced as the cached default, distinct
+        // from the curated suggestions.
+        if (data.discovered !== true) {
+          setCachedDefault(models[0] ?? null);
+          failDiscovery(
+            data.error?.kind ?? "unexpected",
+            data.error?.message ?? "The gateway catalog could not be discovered.",
+          );
+          return;
+        }
+        if (models.length === 0) {
+          failDiscovery("empty", "The gateway answered but returned an empty model catalog. Nothing is confirmed available; the list below is curated suggestions.");
+          return;
+        }
+        setAvailableModels(models);
+        // Re-point a selection the gateway does not serve (including the
+        // empty "server default" seed) to a discovered model: a discovered
+        // catalog is verified state, so the preflight below can actually
+        // verify the effective router model (#287). The operator can still
+        // opt back out via the explicit "Server default" option (#443).
+        setRouterModel((cur) =>
+          models.includes(cur)
+            ? cur
+            : models.find((m) => m === "gemini-3.1-flash-lite") ??
+              models.find((m) => m.startsWith("gemini-") && m.includes("flash")) ??
+              models[0],
+        );
+        setModelCheck("ok");
+        setModelError(null);
+        setModelErrorKind(null);
       })
-      .catch(() => {
-        /* pre-login 401 expected — fallback list is already in place */
+      .catch((err) => {
+        if (!active) return;
+        if (err instanceof ApiError) {
+          // Distinguishable causes (#287): auth, missing endpoint, gateway
+          // outage, connectivity/timeout, other. The copy says what to do,
+          // not just what broke; raw statuses stay in the console via debugApi.
+          if (err.status === 401 || err.status === 403) {
+            failDiscovery("auth", "Gateway authentication failed. During setup there is no signed-in session, so the gateway catalog could not be queried — model availability below is unverified.");
+          } else if (err.status === 404) {
+            failDiscovery("not_found", "The gateway model-discovery endpoint was not found (404). Check the configured gateway URL.");
+          } else if (err.status >= 500) {
+            failDiscovery("server", `The gateway reported a server error (HTTP ${err.status}). It may be misconfigured or overloaded — retry, and fix the gateway if it persists.`);
+          } else if (err.status === 0) {
+            failDiscovery("network", "Could not reach the gateway to discover models (network error or timeout). Check connectivity and proxy settings.");
+          } else {
+            failDiscovery("http", `The gateway rejected the model-discovery request (HTTP ${err.status}).`);
+          }
+        } else {
+          failDiscovery("unexpected", "An unexpected error occurred while discovering gateway models.");
+        }
       })
       .finally(() => {
         if (active) setModelsLoading(false);
@@ -114,7 +224,7 @@ export default function Setup() {
     return () => {
       active = false;
     };
-  }, []);  // eslint-disable-line react-hooks/exhaustive-deps
+  }, [fetchKey]);
 
   useEffect(() => {
     let active = true;
@@ -168,17 +278,90 @@ export default function Setup() {
     };
   }, []);
 
+  // Seed wizard state from the first-run question declaration (#443 AC-1).
+  // Read, not restate: the terminal wizard asks the same questions with the
+  // same defaults, so accepting defaults provisions identically either way.
+  // Fields the operator already edited are left alone; if the endpoint never
+  // answers, the operator simply types the values (the step gates below
+  // refuse blanks) — the SPA never invents a default the declaration owns.
+  useEffect(() => {
+    let active = true;
+    apiGet<{ questions?: Record<string, FirstRunQuestionMeta> }>("/v1/setup/questions")
+      .then((data) => {
+        if (!active || !data.questions) return;
+        const q = data.questions;
+        setQuestions(q);
+        const declared = (key: string): unknown => q[key]?.default;
+        setConductorName((cur) => (cur.trim() ? cur : String(declared("conductor_name") ?? "")));
+        setAdminUsername((cur) => (cur.trim() ? cur : String(declared("admin_username") ?? "")));
+        setUserUsername((cur) => (cur.trim() ? cur : String(declared("user_username") ?? "")));
+        setRouterModel((cur) => (cur.trim() ? cur : String(declared("default_model") ?? "")));
+        const mods = declared("optional_modules");
+        setDeclaredModules(Array.isArray(mods) ? mods.map(String) : null);
+      })
+      .catch(() => {
+        /* No declaration, no seed — gates below force explicit answers. */
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  // Apply the declared module seed once the deployment confirms it can serve
+  // it (#443 AC-6): the terminal path derives the same set from its
+  // crypto-profile question, so both paths provision the same modules when
+  // the operator accepts defaults. Merged per-module: toggling one module
+  // while the declaration request is still in flight must not skip the whole
+  // seed, or the other declared defaults (e.g. crypto_identity) would be
+  // silently dropped from the completion payload. An explicit toggle
+  // outranks the seed only for the module that was toggled.
+  useEffect(() => {
+    if (!identityUsable || declaredModules === null) return;
+    setModules((prev) => {
+      const merged = new Set(prev);
+      for (const id of declaredModules) {
+        if (!touchedModules.current.has(id)) merged.add(id);
+      }
+      return [...merged];
+    });
+  }, [identityUsable, declaredModules]);
+
   async function finish() {
     setLoading(true);
     setError(null);
     try {
+      // Final preflight (#287): re-query the gateway for the effective
+      // default model right before setup completes. "verified" requires the
+      // gateway to answer AND list the chosen model; any failure — or a
+      // catalog that lacks the model — completes as explicitly "unverified",
+      // recorded server-side with the setup configuration, instead of a
+      // failed fetch silently passing for a valid gateway catalog.
+      let modelAvailability: "verified" | "unverified" = "unverified";
+      try {
+        const check = await apiGet<{ models?: unknown; discovered?: boolean }>("/v1/settings/models");
+        const models = Array.isArray(check.models)
+          ? check.models.filter((m): m is string => typeof m === "string" && m.trim().length > 0)
+          : [];
+        // "verified" requires a catalog the backend actually discovered from
+        // the gateway: a 200 that carries the stored-default substitute never
+        // qualifies, so it is recorded as explicitly unverified (#287).
+        if (check.discovered === true && models.includes(routerModel)) modelAvailability = "verified";
+      } catch {
+        modelAvailability = "unverified";
+      }
       const res = await fetch("/v1/setup/complete", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           conductor_name: conductorName,
-          default_model: routerModel,
-          hardware_preset: preset,
+          default_model: routerModel.trim() || null,
+          // Final preflight verdict (#287): "verified" only when the gateway
+          // catalog was actually discovered AND lists the effective model.
+          model_availability: modelAvailability,
+          // An explicit pick wins; otherwise state the declared default. No
+          // declaration and no pick means the key is omitted and the server
+          // names the missing field rather than the SPA guessing.
+          hardware_preset: resolvedHardware ?? undefined,
           optional_modules: modules,
           admin_username: adminUsername,
           admin_password: adminPassword,
@@ -289,21 +472,7 @@ export default function Setup() {
                     field keeps its name when the models list arrives and the
                     <input> becomes a <select> (#375). */}
                 <label htmlFor="setup-router-model" style={{ display: "block", fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", marginBottom: 3 }}>Router model</label>
-                {availableModels.length > 0 ? (
-                  <select
-                    id="setup-router-model"
-                    className="input-field"
-                    value={routerModel}
-                    onChange={(e) => setRouterModel(e.target.value)}
-                    style={{ width: "100%" }}
-                  >
-                    {availableModels.map((m) => (
-                      <option key={m} value={m}>
-                        {m}
-                      </option>
-                    ))}
-                  </select>
-                ) : (
+                {manualModel || availableModels.length === 0 ? (
                   <input
                     id="setup-router-model"
                     className="input-field"
@@ -312,6 +481,59 @@ export default function Setup() {
                     onChange={(e) => setRouterModel(e.target.value)}
                     disabled={modelsLoading}
                   />
+                ) : (
+                  <select
+                    id="setup-router-model"
+                    className="input-field"
+                    value={routerModel}
+                    onChange={(e) => setRouterModel(e.target.value)}
+                    style={{ width: "100%" }}
+                  >
+                    {/* Empty = server default: the same state the terminal
+                        path sends when it does not ask (#443). */}
+                    <option value="">Server default (recommended)</option>
+                    {availableModels.map((m) => (
+                      <option key={m} value={m}>
+                        {m}
+                      </option>
+                    ))}
+                  </select>
+                )}
+                {availableModels.length > 0 && (
+                  <div style={{ marginTop: 6 }}>
+                    {manualModel ? (
+                      <button type="button" className="btn" data-testid="model-list-toggle" onClick={() => { setManualModel(false); setFallbackAcknowledged(false); }}>Pick from the model list instead</button>
+                    ) : (
+                      <button type="button" className="btn" data-testid="model-manual-toggle" onClick={() => { setManualModel(true); setFallbackAcknowledged(false); }}>Enter a model ID manually</button>
+                    )}
+                  </div>
+                )}
+                {/* Discovery provenance (#287): the wizard must never blur a
+                    real gateway catalog into curated suggestions or manual
+                    entry — each renders with its own status line, and only
+                    the discovered state counts as verified. */}
+                <div data-testid="model-discovery-status" style={{ fontFamily: "var(--mono)", fontSize: 12, marginTop: 6, color: modelCheck === "ok" && !manualModel ? "var(--ok)" : "var(--pencil)" }}>
+                  {modelCheck === "pending" && !manualModel && "Checking the gateway model catalog…"}
+                  {modelCheck === "ok" && !manualModel && `✓ ${availableModels.length} models discovered from the gateway`}
+                  {modelCheck === "failed" && !manualModel && "Curated suggestions — the gateway was not queried successfully, availability is UNVERIFIED"}
+                  {manualModel && "Manual entry — the gateway has not confirmed this ID; availability is UNVERIFIED"}
+                </div>
+                {modelCheck === "failed" && cachedDefault !== null && !manualModel && (
+                  <div data-testid="model-cached-default" style={{ fontFamily: "var(--mono)", fontSize: 12, marginTop: 4, color: "var(--pencil)" }}>
+                    Cached default — <code>{cachedDefault}</code> is the Conductor's stored default, not a model discovered from the gateway.
+                  </div>
+                )}
+                {modelError && (
+                  <div role="alert" data-testid={`model-error-${modelErrorKind ?? "unknown"}`} style={{ padding: "6px 10px", background: "rgba(196,69,42,0.12)", border: "1px solid var(--danger)", borderRadius: 4, fontFamily: "var(--mono)", fontSize: 12, color: "var(--danger)" }}>
+                    <div>{modelError}</div>
+                    <button type="button" className="btn" data-testid="model-retry" style={{ marginTop: 6 }} disabled={modelsLoading} onClick={() => setFetchKey((k) => k + 1)}>Retry gateway discovery</button>
+                  </div>
+                )}
+                {(modelCheck === "failed" || manualModel) && (
+                  <div data-testid="unverified-ack" style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 4 }}>
+                    <input type="checkbox" id="unverified-model-ack" checked={fallbackAcknowledged} onChange={(e) => setFallbackAcknowledged(e.target.checked)} />
+                    <label htmlFor="unverified-model-ack" style={{ fontFamily: "var(--hand)", fontSize: 13, cursor: "pointer" }}>I understand the gateway has not confirmed this model and availability is unverified.</label>
+                  </div>
                 )}
                 <div style={{ fontFamily: "var(--hand)", fontSize: 12, color: "var(--pencil)", marginTop: 4 }}>
                   The queen bee's brain — classifies intent, complexity, and cost to route each request to the best worker model. Needs to be fast and cheap, not the strongest. <code>gemini-3.1-flash-lite</code> is a good default.{" "}
@@ -391,11 +613,7 @@ export default function Setup() {
               {MODULES.map((m) => {
                 const enabled = modules.includes(m.id);
                 const depsMet = m.requires.every((r) => modules.includes(r));
-                const identityUnavailable =
-                  m.id === "crypto_identity" &&
-                  (identityStatus === "checking" ||
-                    identityStatus === "unavailable" ||
-                    (identityStatus === "misconfigured" && identityReason !== "setup_incomplete"));
+                const identityUnavailable = m.id === "crypto_identity" && !identityUsable;
                 return (
                   <div key={m.id} className="card" style={{ display: "grid", gridTemplateColumns: "1fr 36px", gap: 8, alignItems: "center", opacity: identityUnavailable ? 0.5 : depsMet || enabled ? 1 : 0.5 }}>
                     <div>
@@ -409,7 +627,10 @@ export default function Setup() {
                       className={`toggle${enabled ? " on" : ""}`}
                       aria-label={`Toggle ${m.name}`}
                       disabled={identityUnavailable || !(depsMet || enabled)}
-                      onClick={() => setModules(enabled ? modules.filter((x) => x !== m.id) : [...modules, m.id])}
+                      onClick={() => {
+                        touchedModules.current.add(m.id);
+                        setModules(enabled ? modules.filter((x) => x !== m.id) : [...modules, m.id]);
+                      }}
                     />
                   </div>
                 );
@@ -423,11 +644,16 @@ export default function Setup() {
               <div className="card">
                 <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", marginBottom: 4 }}>HIVE</div>
                 <div style={{ fontFamily: "var(--hand)", fontSize: 16 }}>{conductorName}</div>
-                <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", marginTop: 2 }}>router: {routerModel}</div>
+                <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", marginTop: 2 }}>
+                  router: {routerModel || "server default"}
+                  {(manualModel || modelCheck === "failed") && (
+                    <span data-testid="router-model-unverified" style={{ color: "var(--danger)" }}> · unverified</span>
+                  )}
+                </div>
               </div>
               <div className="card">
                 <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", marginBottom: 4 }}>HARDWARE</div>
-                <div style={{ fontFamily: "var(--hand)", fontSize: 16 }}>{preset ?? "none selected"}</div>
+                <div style={{ fontFamily: "var(--hand)", fontSize: 16 }}>{resolvedHardware ?? "server default (auto)"}</div>
               </div>
               <div className="card">
                 <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", marginBottom: 4 }}>ACCOUNTS</div>
@@ -458,18 +684,24 @@ export default function Setup() {
           {step < steps.length - 1 ? (
             <button className="btn btn-accent" onClick={() => setStep(step + 1)} disabled={
               (step === 0 && !conductorName.trim()) ||
+              // A failed gateway discovery or a manually entered model ID may
+              // proceed only with an explicit unverified-availability
+              // acknowledgement (#287) — never silently.
+              (step === 0 && (modelCheck === "failed" || manualModel) && !fallbackAcknowledged) ||
               // Only require a hardware choice when there is one to make.
               // POC mode used to select "laptop" locally and skip this step
               // entirely, so retiring it exposed a pre-existing dead end: no
               // presets means no cards, and requiring a selection then blocks
               // first-run provisioning with no error and no retry (#129).
-              (step === 1 && !preset && Object.keys(presets).length > 0) ||
-              (step === 2 && (!adminPassword || !userUsername || !userPassword))
+              // The declared "auto" default already resolves the step via
+              // resolvedHardware, so only an undeclared default blocks.
+              (step === 1 && !resolvedHardware && Object.keys(presets).length > 0) ||
+              (step === 2 && (!adminUsername.trim() || !adminPassword || !userUsername.trim() || !userPassword))
             }>
               next {"\u2192"}
             </button>
           ) : (
-            <button className="btn btn-accent" onClick={() => void finish()} disabled={loading || (!preset && Object.keys(presets).length > 0)}>
+            <button className="btn btn-accent" onClick={() => void finish()} disabled={loading || (!resolvedHardware && Object.keys(presets).length > 0)}>
               {loading ? "configuring..." : "launch the hive \uD83D\uDC1D"}
             </button>
           )}

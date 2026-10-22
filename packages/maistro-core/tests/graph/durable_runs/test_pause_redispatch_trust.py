@@ -10,6 +10,7 @@ from maistro.graph.nodes.base import (
     PAUSE_WAITING_ON_JIRA_SUBTASKS,
 )
 from maistro.runs import GraphSnapshot, Run
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 
 def _waiting_record() -> DurableRunRecord:
@@ -26,6 +27,7 @@ def _waiting_record() -> DurableRunRecord:
             project_id=graph.project_id,
             graph=GraphSnapshot.from_graph(graph),
             status=RunStatus.WAITING,
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         ),
         graph_state=GraphExecutionState(run_id="pause-trust-run"),
         version=1,

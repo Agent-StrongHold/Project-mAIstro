@@ -15,12 +15,16 @@ import stores
 from models.schemas import Agent
 from services.agent_materialization import (
     MANIFEST_ROSTER_SOURCE,
+    MAX_SCAN_TEXT,
+    ScanBudgetExceeded,
+    _run_scan_off_loop,
     agent_id_for,
     materialize_boot_roster,
     materialize_manifest_roster,
     materialize_runtime,
     materialize_workspace_agents,
     register_runtime_source,
+    scan_messages,
     workspace_agents,
 )
 
@@ -458,3 +462,48 @@ class TestRuntimeMaterialization:
 
         assert stored.config["dispatchable"] is False
         assert wired == {}  # nothing was fabricated into the runtime map
+
+
+async def test_scan_messages_refuses_an_oversized_user_turn_before_the_model() -> None:
+    """The per-turn scan budget is enforced on the REAL path (#389 coverage debt).
+
+    Every other `ScanBudgetExceeded` test raises the exception from a stub, so
+    the actual `MAX_SCAN_TEXT` guard — the line that refuses a 64 KiB+ user
+    turn before it can reach the model — never executed. This drives the real
+    `scan_messages` with an oversized turn and asserts the refusal, naming the
+    offending text leaf like the route's error surface does. The hoisted budget
+    walk runs before any message is serialized to the model, so the refusal
+    precedes the per-message scan.
+    """
+    oversized = "a" * (MAX_SCAN_TEXT + 1)
+    with pytest.raises(ScanBudgetExceeded, match="\[0\]\.content is longer than"):
+        await scan_messages([{"role": "user", "content": oversized}])
+
+
+async def test_a_scan_that_finishes_after_the_deadline_is_a_no_op() -> None:
+    """The abandoned worker's late delivery must not disturb anything (#288).
+
+    The scan runs on a daemon thread so the deadline is enforceable; when the
+    deadline wins, the response is already the explicit unknown and the thread
+    is left to finish on its own. Its late delivery lands on a request that is
+    already resolved, and that has to be a no-op: not an exception escaping
+    into the event loop, and not a second answer to a request that was already
+    given one.
+
+    The assertion is structural rather than a timing bound: the request is
+    already resolved when the delivery lands, and the loop still works after.
+    """
+    import asyncio
+
+    async def _slow_scan() -> dict:
+        await asyncio.sleep(0.2)
+        return {"findings": [], "status": "clean"}
+
+    with pytest.raises(TimeoutError):
+        await asyncio.wait_for(_run_scan_off_loop(_slow_scan), timeout=0.05)
+
+    # Let the abandoned worker finish and deliver into the resolved request.
+    await asyncio.sleep(0.5)
+
+    # The loop survived it and still runs work.
+    assert await asyncio.sleep(0, result=True) is True

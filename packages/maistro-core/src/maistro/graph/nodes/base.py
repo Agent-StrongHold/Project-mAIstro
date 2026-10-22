@@ -14,9 +14,12 @@ human.ask_question, ...) live in sibling modules and self-register via
 from __future__ import annotations
 
 import contextlib
+import hashlib
+import json
 import time
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime, timedelta
+from enum import StrEnum
 from typing import Any, ClassVar, Generic, Literal, NoReturn, Protocol, TypeVar, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, SerializeAsAny
@@ -36,6 +39,28 @@ KindCategory = Literal[
     "composite",
     "negative_signal",
 ]
+
+
+class ReplaySemantics(StrEnum):
+    """Executable replay contract for one node kind.
+
+    ``EFFECT_KEY`` is retryable only because the node binds its durable or
+    external effect to :func:`replay_effect_key`; it is not a claim that the
+    underlying operation is intrinsically idempotent.
+    """
+
+    PURE = "pure"
+    IDEMPOTENT = "idempotent"
+    EFFECT_KEY = "retryable_with_effect_key"
+    NON_RETRYABLE = "non_retryable"
+
+    @property
+    def retryable(self) -> bool:
+        return self is not ReplaySemantics.NON_RETRYABLE
+
+    @property
+    def idempotent(self) -> bool:
+        return self in {ReplaySemantics.PURE, ReplaySemantics.IDEMPOTENT}
 
 
 class NodeContext(BaseModel):
@@ -63,6 +88,17 @@ class NodeContext(BaseModel):
     # Caller-provided budget hint; nodes may decline to run if exceeded.
     deadline_at: datetime | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+    #: Self-reported result metadata (epic M4-I). A node's ``_execute`` may
+    #: write here -- ``quality`` for the executor's escalation gate, an
+    #: explicit ``result_state`` for plan supervision -- and ``BaseNode.run``
+    #: merges it into the *successful* NodeResult's metadata after
+    #: ``_execute`` returns. This is per-visit context: the executor builds a
+    #: fresh ``NodeContext`` for every dispatch, so a report written here
+    #: cannot leak into another visit. It is a report *about* an output, not a
+    #: side channel for outcomes: failure metadata still travels on the
+    #: raised exception (``result_metadata`` attribute) and pause metadata on
+    #: ``pause_until``.
+    result_metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class NodeResult(BaseModel):
@@ -126,12 +162,14 @@ class Node(Protocol):
     input_schema: ClassVar[type[BaseModel]]
     output_schema: ClassVar[type[BaseModel]]
     cost_hint: ClassVar[float]  # 0.0 = free; 10.0 = very expensive
-    idempotent: ClassVar[bool]
+    replay_semantics: ClassVar[ReplaySemantics]
     external_io: ClassVar[bool]
     display_name: ClassVar[str]
     description: ClassVar[str]
 
     async def run(self, inputs: BaseModel, ctx: NodeContext) -> NodeResult: ...
+
+    def logical_effect_key(self, inputs: BaseModel, ctx: NodeContext) -> str | None: ...
 
 
 class BaseNode(Generic[InputT, OutputT]):
@@ -155,7 +193,7 @@ class BaseNode(Generic[InputT, OutputT]):
     input_schema: ClassVar[type[BaseModel]]
     output_schema: ClassVar[type[BaseModel]]
     cost_hint: ClassVar[float] = 1.0
-    idempotent: ClassVar[bool] = True
+    replay_semantics: ClassVar[ReplaySemantics] = ReplaySemantics.PURE
     external_io: ClassVar[bool] = False
     display_name: ClassVar[str] = ""
     description: ClassVar[str] = ""
@@ -188,11 +226,18 @@ class BaseNode(Generic[InputT, OutputT]):
         try:
             output = await self._execute(validated, ctx)
             latency_ms = int((time.perf_counter() - start) * 1000)
+            # Self-reported result metadata first (epic M4-I): a node may
+            # declare where its result leaves the world (e.g. the delegation
+            # taxonomy's ACTIONABLE state). The executor owns the logical
+            # effect key, so a node cannot spoof the reconciliation boundary
+            # from its report.
+            metadata = dict(ctx.result_metadata or {})
             return NodeResult(
                 success=True,
                 output=output,
                 latency_ms=latency_ms,
                 status="completed",
+                metadata=metadata,
             )
         except _NodePaused as exc:
             latency_ms = int((time.perf_counter() - start) * 1000)
@@ -215,6 +260,15 @@ class BaseNode(Generic[InputT, OutputT]):
                 error_message=str(exc)[:512],
                 metadata=_failure_metadata(exc),
             )
+
+    def logical_effect_key(self, inputs: InputT, ctx: NodeContext) -> str | None:
+        """Return the stable key that makes an EFFECT_KEY replay safe.
+
+        Nodes that do not expose a key fail closed in the graph retry fold;
+        merely labeling a node retryable must not authorize a second effect.
+        """
+        del inputs, ctx
+        return None
 
     async def _execute(self, inputs: InputT, ctx: NodeContext) -> OutputT:
         """Subclasses implement this. Return the typed output (or raise)."""
@@ -347,7 +401,10 @@ PAUSE_RESUME_CONDITIONS: dict[str, str] = {
     PAUSE_AWAITING_HUMAN_REVIEW: RESUME_ON_ANSWER,
     PAUSE_AWAITING_ROLE_DELEGATE: RESUME_ON_ANSWER,
     PAUSE_AWAITING_REMOTE_DELEGATION: RESUME_ON_ANSWER,
-    PAUSE_AWAITING_HARNESS: RESUME_ON_ANSWER,
+    # The node checkpoints a canonical dispatch receipt and observation ordinal
+    # before polling. Timer re-entry observes that same effect; it never repeats
+    # the dispatch or manufactures a human/system answer (#1192).
+    PAUSE_AWAITING_HARNESS: RESUME_ON_ELAPSED,
     PAUSE_WAITING_ON_JIRA_SUBTASKS: RESUME_ON_ELAPSED,
     # Reconciliation is the polling half of a delegation whose transport
     # acceptance is unknown: re-entering re-reads the receipt sources (the
@@ -443,6 +500,18 @@ def pause_until(
 def now_utc() -> datetime:
     """Single source of truth for "now" so tests can monkeypatch."""
     return datetime.now(UTC)
+
+
+def replay_effect_key(ctx: NodeContext, operation: str, identity: Any = None) -> str:
+    """Derive one logical effect key across physical Attempt retries.
+
+    A retry gets a new Attempt (and may get a new NodeRun visit), so neither is
+    sufficient as the effect identity. Run + graph node is the logical scope;
+    the input digest distinguishes explicit new work at the same node.
+    """
+    payload = json.dumps(identity, sort_keys=True, separators=(",", ":"), default=str)
+    digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()[:24]
+    return f"{operation}:{ctx.run_id}:{ctx.node_id}:{digest}"
 
 
 def preserved_hitl_deadline(resumed: dict[str, Any] | None, *, timeout_seconds: int) -> datetime:

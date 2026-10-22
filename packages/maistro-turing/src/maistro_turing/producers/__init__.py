@@ -136,7 +136,7 @@ class BlogProducer:
             "Format: first line is the title prefixed with 'TITLE: ', then the body."
         )
         try:
-            reply = self._provider.complete(prompt, max_tokens=2000)
+            reply = await self._provider.acomplete(prompt, max_tokens=2000)
         except Exception:
             logger.exception("blog producer LLM call failed")
             return None
@@ -221,7 +221,7 @@ class SelfReflectionProducer:
             "Don't philosophize. Just think like an engineer."
         )
         try:
-            reply = self._provider.complete(prompt, max_tokens=1500)
+            reply = await self._provider.acomplete(prompt, max_tokens=1500)
         except Exception:
             logger.exception("self-reflection LLM call failed")
             return None
@@ -277,7 +277,7 @@ class CuriosityProducer:
             "If you find it fascinating, say why."
         )
         try:
-            reply = self._provider.complete(prompt, max_tokens=1500)
+            reply = await self._provider.acomplete(prompt, max_tokens=1500)
         except Exception:
             logger.exception("curiosity producer LLM call failed")
             return None
@@ -347,7 +347,7 @@ class EmotionalProducer:
             "Write a brief first-person journal entry. Be honest. 2-4 sentences."
         )
         try:
-            reply = self._provider.complete(prompt, max_tokens=500)
+            reply = await self._provider.acomplete(prompt, max_tokens=500)
         except Exception:
             logger.exception("emotional producer LLM call failed")
             return None

@@ -31,7 +31,7 @@ history:
     date: 2026-06-15
 ---
 
-# ADR-100: Foreign harness adapters, hierarchical orchestration, and agent/skill portability
+# ADR-101: Foreign harness adapters, hierarchical orchestration, and agent/skill portability
 
 ## Context
 

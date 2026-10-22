@@ -21,6 +21,7 @@ from maistro.capabilities.binding import Binding
 from maistro.capabilities.credential_routing import CredentialBackedProvider, CredentialRouting
 from maistro.capabilities.effect_context import (
     CapabilityEffectContext,
+    binding_scope_policy,
     new_in_memory_effect_context,
 )
 from maistro.capabilities.invocation import (
@@ -30,6 +31,7 @@ from maistro.capabilities.invocation import (
 )
 from maistro.capabilities.model_chat import (
     MODEL_CHAT_CAPABILITY,
+    GovernedLLMClient,
     ModelChatEgress,
     ModelChatRequest,
     _gateway_usage,
@@ -44,6 +46,10 @@ from maistro.capabilities.providers.llm_gateway import (
 from maistro.capabilities.types import Unavailable
 from maistro.credentials.router import CredentialRouter
 from maistro.credentials.types import CredentialRecord
+from maistro.observability.correlation import (
+    bind_execution_context,
+    detached_execution_context,
+)
 from maistro.providers.errors import NoEligibleModelError
 from maistro.providers.registry import InMemoryProviderRegistry
 from maistro.providers.router import CostAwareRouter
@@ -52,6 +58,9 @@ from maistro.providers.types import (
     RouterBudget,
     RoutingTask,
 )
+from maistro.quota.tracker import InMemoryQuotaTracker
+from maistro.quota.usage_log import InMemoryUsageLog
+from maistro.runs.store import RunIntegrityError
 
 
 def _meta(
@@ -90,9 +99,13 @@ def _effects() -> CapabilityEffectContext:
     """An in-memory effect context with the gateway credential every
     ``_binding()`` authorizes already registered (#1091, Binding-scoped
     credential routing): without it every governed call in this file refuses
-    with ``CredentialScopeError`` before reaching the gateway."""
+    with ``CredentialScopeError`` before reaching the gateway.
 
-    effects = new_in_memory_effect_context()
+    It also opts into the explicit ``binding_scope_policy`` baseline: since
+    #846 an omitted policy evaluator fails closed, so tests that exercise a
+    governed call must name their policy instead of inheriting silence."""
+
+    effects = new_in_memory_effect_context(policy_evaluator=binding_scope_policy)
     effects.credentials.add(
         workspace_id="ws1",
         project_id="p1",
@@ -264,6 +277,72 @@ async def test_pinned_unavailable_model_refuses_without_fallback() -> None:
     assert "does not fall back" in provider.reason
 
 
+@pytest.mark.parametrize("alias", ["", "slow-model", "gateway-only-alias"])
+@pytest.mark.parametrize("pin", ["unregistered-pin", "fast-model"])
+async def test_binding_pin_refuses_before_setup_and_gateway(
+    monkeypatch: pytest.MonkeyPatch, alias: str, pin: str
+) -> None:
+    """A pin is registry authority, never an unregistered request alias (#56)."""
+    from unittest.mock import AsyncMock
+
+    effects = _effects()
+    registry = _registry()
+    registry.mark_unavailable("fast-model")
+    router = CostAwareRouter(registry)
+    select = AsyncMock(side_effect=AssertionError("a pin must not use the router"))
+    monkeypatch.setattr(router, "select", select)
+    # A successful fake terminal makes the pre-fix failure safe and meaningful:
+    # before the repair this actually dispatches instead of refusing.
+    dispatch = AsyncMock(return_value=_OK_BODY)
+    monkeypatch.setattr("maistro.capabilities.model_chat.execute_model_chat", dispatch)
+    setup = AsyncMock()
+    binding = _binding(provider_name=pin)
+    egress = ModelChatEgress(
+        effects,
+        registry=registry,
+        router=router,
+        endpoint=GatewayEndpoint(base_url="https://gateway.invalid"),
+    )
+
+    reason = r"register.*ProviderRegistry" if pin == "unregistered-pin" else "does not fall back"
+    with pytest.raises(CapabilityUnavailable, match=reason):
+        await egress.complete(
+            binding=binding,
+            run_id="pin-run",
+            node_run_id="pin-node",
+            attempt_id="pin-attempt",
+            effect_key="unknown-pin",
+            request=ModelChatRequest(model=alias, messages=[]),
+            setup=setup,
+        )
+
+    select.assert_not_called()
+    setup.assert_not_called()
+    dispatch.assert_not_called()
+    assert (
+        await effects.invocation_store.list_effect(
+            run_id="pin-run",
+            node_run_id="pin-node",
+            binding_id=binding.binding_id,
+            effect_key="unknown-pin",
+        )
+        == []
+    )
+
+
+async def test_unavailable_request_alias_is_not_described_as_a_binding_pin() -> None:
+    registry = _registry()
+    registry.mark_unavailable("fast-model")
+    resolve = resolve_model_chat_provider(registry, CostAwareRouter(registry), alias="fast-model")
+
+    result = await resolve(_binding())
+
+    assert isinstance(result, Unavailable)
+    assert "request alias" in result.reason
+    assert "pinned" not in result.reason
+    assert "does not fall back" in result.reason
+
+
 async def test_unregistered_alias_still_reaches_gateway_with_absent_cost(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -407,6 +486,110 @@ async def test_unreachable_gateway_records_failed_retryable_invocation(
         endpoint=GatewayEndpoint(base_url="http://gw"),
     ).complete(**kwargs)
     assert retried.model == "fast-model"
+
+
+async def test_canonical_invocation_completion_records_quota_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The live Invocation hook records provider usage and deduplicates effects."""
+    tracker = InMemoryQuotaTracker()
+    effects = new_in_memory_effect_context(
+        usage_log=InMemoryUsageLog(),
+        quota_tracker=tracker,
+        policy_evaluator=binding_scope_policy,
+    )
+    # Binding-scoped credential routing (#1091): every governed call in this
+    # file crosses the credential seam, so the gateway credential the binding
+    # authorizes must exist in its Workspace/Project scope.
+    effects.credentials.add(
+        workspace_id="ws1",
+        project_id="p1",
+        record=CredentialRecord(
+            key_id=DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,
+            provider=MODEL_GATEWAY_CREDENTIAL_PROVIDER,
+            api_key="test-litellm-key",
+        ),
+    )
+    registry = _registry()
+    _patch_gateway(monkeypatch, _OK_BODY)
+    egress = ModelChatEgress(
+        effects,
+        registry=registry,
+        router=CostAwareRouter(registry),
+        endpoint=GatewayEndpoint(base_url="http://gw"),
+    )
+    kwargs: dict[str, Any] = {
+        "binding": _binding(),
+        "run_id": "r-quota",
+        "node_run_id": "nr-quota",
+        "attempt_id": "a-quota",
+        "effect_key": "quota:dedupe",
+        "request": ModelChatRequest(model="fast-model", messages=[]),
+    }
+
+    first = await egress.complete(**kwargs)
+    second = await egress.complete(**kwargs)
+
+    events = effects.usage_log.events_for("fast-model")
+    assert len(events) == 1
+    assert events[0].invocation_id == first.invocation_id
+    assert events[0].usage_reported is True
+    assert second.invocation_id == first.invocation_id
+    quota_rows = await tracker.get_all_usage()
+    assert quota_rows[0]["provider"] == "fast-model"
+    assert quota_rows[0]["total_tokens"] == 120
+    rows = await effects.invocation_store.list_effect(
+        run_id="r-quota",
+        node_run_id="nr-quota",
+        binding_id=kwargs["binding"].binding_id,
+        effect_key="quota:dedupe",
+    )
+    assert len(rows) == 1
+    assert rows[0].usage is not None
+
+
+async def test_canonical_invocation_missing_usage_is_explicitly_unreported(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tracker = InMemoryQuotaTracker()
+    effects = new_in_memory_effect_context(
+        usage_log=InMemoryUsageLog(),
+        quota_tracker=tracker,
+        policy_evaluator=binding_scope_policy,
+    )
+    effects.credentials.add(
+        workspace_id="ws1",
+        project_id="p1",
+        record=CredentialRecord(
+            key_id=DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,
+            provider=MODEL_GATEWAY_CREDENTIAL_PROVIDER,
+            api_key="test-litellm-key",
+        ),
+    )
+    _patch_gateway(monkeypatch, {"choices": [{"message": {"content": "ok"}}]})
+    egress = ModelChatEgress(
+        effects,
+        registry=_registry(),
+        router=CostAwareRouter(_registry()),
+        endpoint=GatewayEndpoint(base_url="http://gw"),
+    )
+
+    result = await egress.complete(
+        binding=_binding(),
+        run_id="r-missing",
+        node_run_id="nr-missing",
+        attempt_id="a-missing",
+        effect_key="quota:missing",
+        request=ModelChatRequest(model="fast-model", messages=[]),
+    )
+
+    event = effects.usage_log.events_for("fast-model")[0]
+    assert result.usage is None
+    assert event.usage_reported is False
+    assert event.input_tokens == event.output_tokens == 0
+    row = (await tracker.get_all_usage())[0]
+    assert row["unreported_count"] == 1
+    assert row["total_tokens"] == 0
 
 
 async def test_unknown_outcome_blocks_repeat() -> None:
@@ -1015,3 +1198,63 @@ async def test_chat_payload_carries_structured_output_shape(
         request=ModelChatRequest(messages=[{"role": "user", "content": "hi"}]),
     )
     assert "response_format" not in captured["json"]
+
+
+async def test_client_complete_adopts_bound_context_or_refuses(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A caller that never set a turn uses canonical identity — only a real one.
+
+    `Agent.handle` always calls `set_turn` first, but the client is also the
+    factory's LLMClient for strategies driven outside that seam. `complete`
+    adopts the Run/NodeRun/Attempt triple canonical execution bound on the
+    correlation context when there is one (#1827). When canonical execution
+    bound nothing, the client refuses with RunIntegrityError and makes zero
+    egress calls instead of minting a fabricated identity that would make an
+    unadmitted call look governed (#718's no-ungoverned-side-door rule now
+    means refuse, not invent).
+    """
+    tracker = InMemoryQuotaTracker()
+    effects = new_in_memory_effect_context(
+        usage_log=InMemoryUsageLog(),
+        quota_tracker=tracker,
+        policy_evaluator=binding_scope_policy,
+    )
+    effects.credentials.add(
+        workspace_id="ws1",
+        project_id="p1",
+        record=CredentialRecord(
+            key_id=DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,
+            provider=MODEL_GATEWAY_CREDENTIAL_PROVIDER,
+            api_key="test-litellm-key",
+        ),
+    )
+    registry = _registry()
+    _patch_gateway(monkeypatch, _OK_BODY)
+    client = GovernedLLMClient(
+        effects,
+        registry=registry,
+        router=CostAwareRouter(registry),
+        endpoint=GatewayEndpoint(base_url="http://gw:4000"),
+        workspace_id="ws1",
+        project_id="p1",
+    )
+
+    # No canonical context in scope: refuse with zero egress.
+    with detached_execution_context(), pytest.raises(RunIntegrityError):
+        await client.complete([{"role": "user", "content": "hello"}], "fast-model")
+    assert await tracker.get_all_usage() == []
+
+    # A complete bound context is adopted wholesale, without an explicit
+    # set_turn: the usage the fake gateway reported still reaches the quota
+    # ledger, under the canonical identity the execution bound.
+    with bind_execution_context(
+        run_id="run-adopt",
+        node_run_id="node-adopt",
+        attempt_id="attempt-adopt",
+    ):
+        body = await client.complete([{"role": "user", "content": "hello"}], "fast-model")
+
+    assert body["choices"][0]["message"]["content"] == "hi"
+    (entry,) = await tracker.get_all_usage()
+    assert entry["request_count"] == 1

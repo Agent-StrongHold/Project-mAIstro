@@ -15,6 +15,8 @@ from typing import Any
 
 import pytest
 
+from maistro.capabilities.effect_context import binding_scope_policy
+
 _BACKEND = pathlib.Path(__file__).resolve().parents[1]
 if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
@@ -32,7 +34,10 @@ def _wire_governed_runtime(
     monkeypatch: pytest.MonkeyPatch,
     *,
     endpoint: Any,
-    policy_evaluator: Any = None,
+    # Explicit M1 baseline default (#846): an omitted evaluator is an
+    # unavailable dependency and denies, so behavior tests opt in here and
+    # denial tests pass their denying evaluator explicitly.
+    policy_evaluator: Any = binding_scope_policy,
     project_scope_store: Any = True,
 ) -> tuple[Any, Any]:
     """Build an in-memory governed runtime and aim the route's ``_runtime()``
@@ -178,7 +183,10 @@ async def test_activate_route_delegates_to_governed_health_operation(
     """The route supplies canonical scope and never owns the provider call."""
     from services import governed_model
 
-    from maistro.capabilities.effect_context import new_in_memory_effect_context
+    from maistro.capabilities.effect_context import (
+        binding_scope_policy,
+        new_in_memory_effect_context,
+    )
     from maistro.capabilities.model_chat import ModelCallResult
     from maistro.capabilities.providers.llm_gateway import GatewayEndpoint
     from maistro.projects.scope_store import InMemoryProjectScopeStore
@@ -204,7 +212,9 @@ async def test_activate_route_delegates_to_governed_health_operation(
 
     registry = InMemoryProviderRegistry()
     runtime = governed_model.GovernedModelRuntime(
-        effects=new_in_memory_effect_context(),
+        # Explicit M1 baseline policy (#846): an omitted policy evaluator now
+        # denies rather than defaulting permissive.
+        effects=new_in_memory_effect_context(policy_evaluator=binding_scope_policy),
         registry=registry,
         router=CostAwareRouter(registry),
         endpoint=GatewayEndpoint(base_url="http://gateway"),
@@ -227,7 +237,13 @@ async def test_activate_route_delegates_to_governed_health_operation(
     settings = type("Settings", (), {"hive_default_workspace_id": "default"})()
     monkeypatch.setattr(config, "get_settings", lambda: settings)
 
-    response = await providers_mod.activate_provider("mistral")
+    from starlette.requests import Request
+
+    from maistro.identity import Principal
+
+    request = Request({"type": "http", "method": "POST", "path": "/", "headers": []})
+    request.state.principal = Principal(user_id="test-admin")
+    response = await providers_mod.activate_provider("mistral", request)
 
     assert response["first_model_call"]["invocation_id"] == "inv-1"
     assert calls[0]["binding"].project_id == root.project_id
@@ -443,7 +459,10 @@ class TestKeyAndActivate:
         from services import governed_model
         from services.governed_model import GovernedModelRuntime
 
-        from maistro.capabilities.effect_context import new_in_memory_effect_context
+        from maistro.capabilities.effect_context import (
+            binding_scope_policy,
+            new_in_memory_effect_context,
+        )
         from maistro.capabilities.providers import llm_gateway
         from maistro.capabilities.providers.llm_gateway import GatewayEndpoint
         from maistro.projects.scope_store import InMemoryProjectScopeStore
@@ -500,7 +519,9 @@ class TestKeyAndActivate:
         scope, run_store = asyncio.run(_wire_scope())
 
         runtime = GovernedModelRuntime(
-            effects=new_in_memory_effect_context(),
+            # Explicit M1 baseline policy (#846): an omitted policy evaluator
+            # now denies rather than defaulting permissive.
+            effects=new_in_memory_effect_context(policy_evaluator=binding_scope_policy),
             registry=registry,
             router=CostAwareRouter(registry),
             endpoint=GatewayEndpoint(base_url="http://litellm.test", api_key="master"),

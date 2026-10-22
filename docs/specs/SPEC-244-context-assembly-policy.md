@@ -28,6 +28,7 @@ contracts:
 tests:
   - packages/maistro-core/tests/memory/test_context_assembly.py
   - packages/maistro-core/tests/memory/test_ranked_recall.py
+  - packages/maistro-core/tests/persistence/test_project_global_recall.py
 source:
   - packages/maistro-core/src/maistro/memory/context_assembly.py
 ac-modules:
@@ -114,8 +115,22 @@ async def list_by_scope(
 
 implemented in `InMemoryEpisodicStore` alongside `retrieve`, reusing
 `build_scope_filter`/`matches_scope`. When no `agent_id`/`team_id`/`org_id` is given
-(project-changelog recall with no caller-identity context), scope filtering is
-skipped and `project_id` alone selects memories.
+(project-changelog recall with no caller-identity context), `project_id` alone
+selects **non-GLOBAL** memories. The canonical GLOBAL visibility rule still
+applies: a GLOBAL record bound to an organization requires that same caller
+organization; missing organization context is not a wildcard. Truly unbound
+GLOBAL memories retain their documented public visibility (#1247).
+
+Layer 3 with a resolved caller organization preserves this project-only
+non-GLOBAL history and includes authorized same-organization GLOBAL wisdom.
+It combines the project-only and organization-scoped results from the existing
+`list_by_scope` protocol, deduplicates by `memory_id`, orders by descending
+weight then `memory_id`, and applies its requested limit to the combined set.
+Both reads retain the project and weight bounds. Passing `org_id` to the
+project-history read alone would incorrectly exclude its AGENT/USER/TEAM rows;
+skipping GLOBAL filtering would instead expose another organization's wisdom.
+`matches_scope` and its SQL `scope_predicate` remain the visibility authority;
+this correction adds no scope vocabulary or cross-organization sharing.
 
 Also adds `EpisodicMemory.project_id: str = ""` (`maistro/types/memory.py`) — an
 additive, default-empty field, decided after explicit review (see Open questions in

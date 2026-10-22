@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
+    from maistro_design.brief import CreativeBrief
     from maistro_design.types import (
         DesignProject,
         DesignSkill,
@@ -56,6 +57,22 @@ class DesignProjectStore(Protocol):
     async def list_by_org(self, org_id: str) -> list[DesignProject]: ...
     async def update(self, project: DesignProject, *, org_id: str) -> DesignProject: ...
     async def delete(self, project_id: str, *, org_id: str) -> None: ...
+
+
+@runtime_checkable
+class CreativeBriefStore(Protocol):
+    """Versioned CreativeBrief persistence (#774).
+
+    Append-only and immutable by version: there is deliberately no update.
+    Every operation takes the caller's ``workspace_id`` keyword-only with no
+    default — the same shape rule the DesignProjectStore defect (#326) fixed —
+    and reads in another scope answer ``None`` rather than leaking existence.
+    """
+
+    async def create(self, brief: CreativeBrief) -> CreativeBrief: ...
+    async def get(self, brief_id: str, *, workspace_id: str) -> CreativeBrief | None: ...
+    async def latest(self, lineage_id: str, *, workspace_id: str) -> CreativeBrief | None: ...
+    async def list_versions(self, lineage_id: str, *, workspace_id: str) -> list[CreativeBrief]: ...
 
 
 @runtime_checkable

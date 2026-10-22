@@ -11,7 +11,7 @@ container refuses at startup rather than failing later.
 
 ## Architecture
 
-Consolidation **monorepo** (single git repo, `uv` workspace) with 9 Python packages + the hive-conductor app. It is *not* just a library: it **contains** the Agent Conductor app (`hive-conductor`, the personal/homelab product) and the canvas ability (`maistro-canvas`), and exposes `maistro-core` for downstream products to import. (Was historically split across sibling repos.)
+Consolidation **monorepo** (single git repo, `uv` workspace) with 9 Python packages + the hive-conductor app. It is *not* just a library: it **contains** the **Workspaces** product (`packages/hive-conductor` — replacing the legacy Conductor page tree for v1.0) and the canvas ability (`maistro-canvas`), and exposes `maistro-core` for downstream products to import. (Was historically split across sibling repos.)
 
 ```
 packages/
@@ -32,18 +32,21 @@ packages/
 ```
 maistro-engine (this monorepo)
   │  contains
-  ├── Agent Conductor (household/personal)  — packages/hive-conductor (consumes maistro-core)
+  ├── Workspaces product (v1.0)             — packages/hive-conductor (consumes maistro-core)
+  │     replaces legacy Conductor UI; cutover: docs/architecture/WORKSPACE-CUTOVER-PLAN.md
   └── canvas ability                        — packages/maistro-canvas
   │
   │  imported by downstream products
-  ├─→ Canvas book-maker POC (name TBD)      — imports maistro-canvas (separate frontend app)
-  └─→ Stronghold (PLANNED)                  — will import maistro-engine, add multi-tenancy +
+  ├─→ Canvas book-maker POC (persona template skin, v1.1) — imports maistro-canvas
+  └─→ Stronghold (PLANNED, engine v1.5)     — will import maistro-engine, add hard multi-tenancy +
                                               stricter security, and disable homelab/personal features
 ```
 
-Agent Conductor ships **here**; the Canvas book-maker and Stronghold are downstream products that **import** the engine (Stronghold is a planned refactor, not yet done).
+Workspaces ships **here** for v1.0; the Canvas book-maker and Stronghold are downstream products that **import** the engine (Stronghold target: engine v1.5, not yet started).
 
-**ADR-019** defines the canonical source split: maistro-core = product-agnostic shared runtime (no `org_id`); multi-tenancy/security-posture/feature-toggles live in the importing product (Stronghold). Notable decisions include ADR-036 (ontology), ADR-038 (reliability), ADR-062 (graph execution protocol), and ADR-057 (memory exposure mode).
+**ADR-019** defines the canonical source split: maistro-core = product-agnostic shared runtime; hard multi-tenancy lives in Stronghold (ADR-068 scope axes in core). Notable decisions: ADR-036 (ontology), ADR-038 (reliability), ADR-062 (graph execution protocol), ADR-057 (memory exposure mode).
+
+**v1.0 planning:** release contract in [`ROADMAP.md`](ROADMAP.md); item backlog in [`BACKLOG.md`](BACKLOG.md); Workspace cutover in [`docs/architecture/WORKSPACE-CUTOVER-PLAN.md`](docs/architecture/WORKSPACE-CUTOVER-PLAN.md).
 
 ### Naming convention
 
@@ -72,6 +75,7 @@ Every subsystem is importable. Consumers add `maistro-core` to their requirement
 | **Conduit** | `maistro.conduit` | Request pipeline: classify → route → agent.handle |
 | **Auth** | `maistro.auth` | B2B service keys with scoped permissions |
 | **Events** | `maistro.events` | Bus, handlers, recipes, triggers |
+| **Extensions** | `maistro.extensions` | Governed extension registry persistence: publisher identity, package digest/signature metadata, manifest snapshots, immutable install records (#952); executes no extension code |
 | **Quota** | `maistro.quota` | Token usage tracking per provider per billing cycle |
 | **Sessions** | `maistro.sessions` | Conversation history with TTL pruning |
 | **Intents** | `maistro.agents.intents` | task_type → agent_name routing table |
@@ -85,7 +89,7 @@ Every subsystem is importable. Consumers add `maistro-core` to their requirement
 | **Credentials** | `maistro.credentials` | Per-user encrypted credentials for PM integrations |
 | **Projects** | `maistro.projects` | User workspaces: domains, meta-DAGs, PM Fleet, Canvas/Engineering |
 | **Testing** | `maistro.testing` | Shared test utilities/fixtures |
-| **CLI** | `maistro.cli` | `maistro` command — thin client of the hive-conductor API |
+| **CLI** | `maistro.cli` | Unified `maistro` command: install, upgrade, launch, builders, approvals, security, … |
 
 Root-level modules: `reactor.py` (1kHz reactor loop), `vault.py` (age-encrypted secrets), `privilege.py`, `state.py`.
 
@@ -94,21 +98,21 @@ Root-level modules: `reactor.py` (1kHz reactor loop), `vault.py` (age-encrypted 
 ```
 packages/maistro-canvas/
 ├── src/maistro_canvas/      # Python library
-│   ├── types.py             # Canvas types + 20 domain errors
+│   ├── types.py             # Canvas types + domain errors
 │   ├── protocols.py         # CanvasStore, ImageGenClient, CompositorService
 │   ├── auth.py              # Standalone API key auth
 │   └── canvas/              # Canvas engine (from Stronghold spec 1189)
-│       ├── tool.py          # In-process canvas tool (903 lines)
+│       ├── tool.py          # In-process canvas tool
 │       ├── executor.py      # Canvas action executor
 │       ├── compositor.py    # PIL-based RGBA layer assembly
 │       ├── store.py         # PostgreSQL canvas store
 │       └── routes.py        # REST API routes
 ├── frontend/                # React + Express POC
-│   ├── src/                 # React UI (14 components)
+│   ├── src/                 # React UI
 │   ├── server/              # Python backend
 │   │   ├── mcp/             # Canvas pipeline, illustration, refinement
 │   │   ├── lulu/            # Lulu print-on-demand integration
-│   │   ├── models/          # SQLAlchemy models (11 tables)
+│   │   ├── models/          # SQLAlchemy models
 │   │   └── templates/       # Story templates
 │   └── SPEC.md
 └── agents/davinci/          # Da Vinci agent definition
@@ -143,9 +147,14 @@ PYTHONPATH=packages/maistro-core/src:packages/maistro-canvas/src:packages/maistr
 # Formal property-based conformance tests (separate CI flow — formal-conformance.yml)
 PYTHONPATH=packages/maistro-core/src pytest formal/ -q
 
-# Lint — ci.yml runs `ruff check .` + `ruff format --check` + mypy across all packages/*/src
-ruff check packages/
-mypy packages/ --strict
+# Lint + typecheck — the same commands ci.yml runs (`uv run mypy` covers every
+# packages/*/src; hive-conductor is an app, not part of the type-check surface)
+uv run ruff check .
+uv run ruff format --check .
+uv run mypy packages/maistro-core/src packages/maistro-server/src \
+  packages/maistro-turing/src packages/maistro-canvas/src \
+  packages/maistro-bootstrap/src packages/maistro-registry/src \
+  packages/maistro-evolve/src packages/maistro-rsi/src packages/maistro-design/src
 # CI workflows: ci.yml (lint+type+core tests), quality.yml (full ruleset+coverage),
 # security.yml, mutation.yml, registry.yml, cage-guard.yml, formal-conformance{,-nightly}.yml
 
@@ -207,7 +216,7 @@ maistro-engine/
 │   │       ├── testing/         # shared test utilities
 │   │       ├── conduit.py       # Request pipeline
 │   │       ├── container.py     # DI wiring
-│   │       ├── cli.py           # `maistro` CLI (thin client of hive-conductor API)
+│   │       ├── cli/             # `maistro` CLI: install, upgrade, launch, builders, approvals, …
 │   │       ├── constants.py     # named constants
 │   │       ├── privilege.py     # admin/user1 privilege separation (SPEC-012)
 │   │       ├── vault.py         # age-encrypted secrets vault (SPEC-011)
@@ -255,9 +264,10 @@ maistro-engine/
 │   │   ├── pyproject.toml       # depends: maistro-core
 │   │   └── src/maistro_turing/
 │   │       ├── bridge.py        # Adapters to maistro-core
-│   │       ├── self_model.py    # Autonoetic identity
-│   │       ├── runtime.py       # Actor, chat, config
-│   │       └── producers.py     # Blog, reflection, curiosity, emotion
+│   │       ├── self_model/      # Autonoetic identity
+│   │       ├── cognition/       # Reactor loop
+│   │       ├── runtime/         # Actor, chat, config
+│   │       └── producers/       # Blog, reflection, curiosity, emotion
 │   │
 │   ├── maistro-evolve/
 │   │   ├── pyproject.toml
@@ -265,7 +275,15 @@ maistro-engine/
 │   │
 │   ├── maistro-registry/        # ADR/spec registry CLI (parser, validator, linker, dag, schema)
 │   │
-│   └── hive-conductor/          # Agent Conductor app (no pyproject.toml — requirements.txt)
+│   ├── maistro-rsi/             # Recursive self-improvement: autorun loop, quarantine gate, sandbox
+│   │
+│   ├── maistro-design/          # Open Design integration (renderer registry, SSE ingest)
+│   │
+│   ├── maistro-bootstrap/       # Bootstrap installer and planner
+│   │
+│   └── hive-conductor/          # Agent Conductor app. pyproject.toml is workspace/wheel build
+│       │                        #   metadata (not PyPI-published); backend/requirements.txt is
+│       │                        #   the Docker image's separate dependency resolution
 │       ├── backend/             # FastAPI app
 │       │   ├── main.py          # Entrypoint + route registration
 │       │   ├── routes/          # agents, audit, chat, cli, containers, dags, mcp, memory…

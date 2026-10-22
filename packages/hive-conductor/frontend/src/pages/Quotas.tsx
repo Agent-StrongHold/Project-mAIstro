@@ -5,10 +5,21 @@ import {
   EmptyState,
   LoadingSpinner,
   PageHeader,
-  StatCard,
   Tabs,
   useToast,
 } from "../components/shared";
+
+// Every quota endpoint answers with an envelope (#380): a state that says
+// whether the numbers are measured, plus provenance naming the source, the
+// window, and when this was computed. Unmeasured fields are null — the panel
+// renders "n/a" / "unlimited" from those, never from an invented zero.
+type PanelEnvelope = {
+  state: "ok" | "no_data" | "unavailable" | "error";
+  source: string;
+  window_days: number | null;
+  computed_at: string;
+  reason: string | null;
+};
 
 type ProviderQuota = {
   provider: string;
@@ -16,40 +27,38 @@ type ProviderQuota = {
   billing_cycle: string;
   cycle_key: string;
   used_tokens: number;
-  free_tokens: number;
-  remaining_tokens: number;
+  free_tokens: number | null;
+  remaining_tokens: number | null;
   limit: number | null;
-  usage_pct: number;
-  request_count: number;
+  usage_pct: number | null;
+  request_count: number | null;
   unit: string;
 };
+
+type ProvidersResponse = PanelEnvelope & { providers: ProviderQuota[] };
 
 type ModelStat = {
   model: string;
   provider: string;
-  tier: string;
-  quality: number;
-  speed: number;
-  usage_pct: number;
+  tier: string | null;
+  quality: number | null;
+  speed: number | null;
+  usage_pct: number | null;
   available: boolean;
   context: number | null;
   modality: string | null;
   strengths: string[];
 };
 
-type OutcomeStats = {
-  total: number;
-  succeeded: number;
-  failed: number;
-  rate: number;
-  by_model: Record<string, { total: number; succeeded: number; rate: number }>;
-  days: number;
-};
+type ModelsResponse = PanelEnvelope & { models: ModelStat[] };
+
+type OutcomesResponse = PanelEnvelope;
 
 type SortKey = "model" | "provider" | "tier" | "quality" | "speed" | "usage_pct";
 type SortDir = "asc" | "desc";
 
-function fmt(n: number): string {
+function fmt(n: number | null | undefined): string {
+  if (n === null || n === undefined) return "n/a";
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1_000) return `${(n / 1_000).toFixed(0)}K`;
   return String(Math.round(n));
@@ -79,12 +88,34 @@ function SortableHeader({ label, field, sortKey, sortDir, onSort }: {
   );
 }
 
+/** The provenance line every panel footer shows (#380): source, window, freshness. */
+function ProvenanceFooter({ panel }: { panel: PanelEnvelope }) {
+  return (
+    <div style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--pencil)", marginTop: 10, textAlign: "center", opacity: 0.85 }} title={`${panel.source} · computed ${panel.computed_at}${panel.reason ? ` · ${panel.reason}` : ""}`}>
+      {panel.source}
+      {panel.window_days !== null && panel.window_days !== undefined ? ` · last ${panel.window_days} days` : ""}
+      {` · as of ${new Date(panel.computed_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`}
+    </div>
+  );
+}
+
+/** ok/no_data/unavailable/error are different pages, not the same empty grid. */
+function PanelState({ panel, emptyTitle }: { panel: PanelEnvelope; emptyTitle: string }) {
+  if (panel.state === "error") {
+    return <EmptyState icon="⚠" title={`Source error — ${panel.reason || "the upstream source failed"}`} />;
+  }
+  if (panel.state === "unavailable") {
+    return <EmptyState icon="🚫" title={`Unavailable — ${panel.reason || "no source measures this"}`} />;
+  }
+  return <EmptyState icon="📊" title={emptyTitle} />;
+}
+
 export default function Quotas() {
   const toast = useToast();
   const [tab, setTab] = useState(0);
-  const [providers, setProviders] = useState<ProviderQuota[]>([]);
-  const [models, setModels] = useState<ModelStat[]>([]);
-  const [outcomes, setOutcomes] = useState<OutcomeStats | null>(null);
+  const [providers, setProviders] = useState<ProvidersResponse | null>(null);
+  const [models, setModels] = useState<ModelsResponse | null>(null);
+  const [outcomes, setOutcomes] = useState<OutcomesResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [sortKey, setSortKey] = useState<SortKey>("quality");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
@@ -96,9 +127,9 @@ export default function Quotas() {
       setLoading(true);
       try {
         const [p, m, o] = await Promise.all([
-          apiGet<ProviderQuota[]>("/v1/quotas/providers"),
-          apiGet<ModelStat[]>("/v1/quotas/models"),
-          apiGet<OutcomeStats>("/v1/quotas/outcomes"),
+          apiGet<ProvidersResponse>("/v1/quotas/providers"),
+          apiGet<ModelsResponse>("/v1/quotas/models"),
+          apiGet<OutcomesResponse>("/v1/quotas/outcomes"),
         ]);
         setProviders(p);
         setModels(m);
@@ -115,9 +146,11 @@ export default function Quotas() {
     else { setSortKey(key); setSortDir("desc"); }
   }, [sortKey]);
 
-  const providerNames = [...new Set(models.map((m) => m.provider))].sort();
+  const modelList: ModelStat[] = models?.models ?? [];
+  const providerList: ProviderQuota[] = providers?.providers ?? [];
+  const providerNames = [...new Set(modelList.map((m) => m.provider))].sort();
 
-  const filtered = models.filter((m) => {
+  const filtered = modelList.filter((m) => {
     if (providerFilter !== "all" && m.provider !== providerFilter) return false;
     if (modelFilter && !m.model.toLowerCase().includes(modelFilter.toLowerCase())) return false;
     return true;
@@ -126,56 +159,58 @@ export default function Quotas() {
   const sorted = [...filtered].sort((a, b) => {
     const av = a[sortKey];
     const bv = b[sortKey];
+    if (av === null || av === undefined) return 1;
+    if (bv === null || bv === undefined) return -1;
     if (typeof av === "string" && typeof bv === "string") return sortDir === "asc" ? av.localeCompare(bv) : bv.localeCompare(av);
     return sortDir === "asc" ? Number(av) - Number(bv) : Number(bv) - Number(av);
   });
 
-  const modelEntries = outcomes?.by_model ? Object.entries(outcomes.by_model).sort((a, b) => b[1].total - a[1].total) : [];
-  const maxModelTasks = modelEntries.length > 0 ? modelEntries[0][1].total : 1;
-
   return (
     <div style={{ minHeight: "calc(100vh - 60px)" }}>
-      <PageHeader title="Quotas & Stats" subtitle={`${providers.length} providers · ${models.length} models — track AI usage and costs`} helpHref="/docs#quotas" />
-      <Tabs tabs={[`Providers (${providers.length})`, `Models (${models.length})`, `Outcomes (${outcomes?.total ?? 0})`]} active={tab} onChange={setTab} />
+      <PageHeader title="Quotas & Stats" subtitle={`${providerList.length} providers · ${modelList.length} models — track AI usage and costs`} helpHref="/docs#quotas" />
+      <Tabs tabs={[`Providers (${providerList.length})`, `Models (${modelList.length})`, "Outcomes (unmeasured)"]} active={tab} onChange={setTab} />
 
       {loading ? <LoadingSpinner /> : (
         <>
           {tab === 0 && (
-            providers.length === 0 ? <EmptyState icon="📊" title="No provider data — conductor-router unreachable" /> : (
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 10 }}>
-                {providers.map((p) => {
-                  const tracked = p.limit !== null;
-                  const pct = tracked ? p.usage_pct : 0;
-                  const color = tracked ? usageColor(pct) : "var(--accent)";
-                  return (
-                    <Card key={p.provider}>
-                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
-                        <span style={{ fontFamily: "var(--hand)", fontSize: 16, fontWeight: 700 }}>{p.provider}</span>
-                        <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
-                          <span style={{ width: 6, height: 6, borderRadius: "50%", background: p.status === "active" ? "#5a9a4a" : "#c4452a" }} />
-                          <span style={{ fontFamily: "var(--mono)", fontSize: 12, padding: "2px 6px", borderRadius: 3, background: "rgba(91,143,179,0.12)", color: "#3a6a9a" }}>{p.cycle_key}</span>
+            !providers || providers.state !== "ok" ? <PanelState panel={providers ?? { state: "unavailable", source: "unknown", window_days: null, computed_at: "", reason: "quota data did not load" }} emptyTitle="No provider data" /> : (
+              <div>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 10 }}>
+                  {providerList.map((p) => {
+                    const tracked = p.limit !== null && p.usage_pct !== null;
+                    const pct = tracked ? (p.usage_pct as number) : 0;
+                    const color = tracked ? usageColor(pct) : "var(--accent)";
+                    return (
+                      <Card key={p.provider}>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                          <span style={{ fontFamily: "var(--hand)", fontSize: 16, fontWeight: 700 }}>{p.provider}</span>
+                          <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+                            <span style={{ width: 6, height: 6, borderRadius: "50%", background: p.status === "active" ? "#5a9a4a" : "#c4452a" }} />
+                            <span style={{ fontFamily: "var(--mono)", fontSize: 12, padding: "2px 6px", borderRadius: 3, background: "rgba(91,143,179,0.12)", color: "#3a6a9a" }}>{p.cycle_key}</span>
+                          </div>
                         </div>
-                      </div>
-                      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 2, fontFamily: "var(--mono)", fontSize: 12 }}>
-                        <span style={{ fontWeight: 600, color: "var(--ink)" }}>{fmt(p.used_tokens)} {p.unit}</span>
-                        <span style={{ color: tracked ? usageColor(pct) : "var(--pencil)" }}>{tracked ? `${fmt(p.limit!)} limit` : "unlimited"}</span>
-                      </div>
-                      <div style={{ height: 6, borderRadius: 3, background: "var(--rule)", overflow: "hidden" }}>
-                        <div style={{ height: "100%", borderRadius: 3, background: color, width: `${Math.min(pct || (tracked ? 0 : 5), 100)}%`, transition: "width 0.3s" }} />
-                      </div>
-                      {tracked && <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: usageColor(pct), marginTop: 2 }}>{pct.toFixed(1)}% used · {fmt(p.remaining_tokens)} remaining</div>}
-                      <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", marginTop: 4 }}>
-                        {p.billing_cycle} · {p.request_count} requests
-                      </div>
-                    </Card>
-                  );
-                })}
+                        <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 2, fontFamily: "var(--mono)", fontSize: 12 }}>
+                          <span style={{ fontWeight: 600, color: "var(--ink)" }}>{fmt(p.used_tokens)} {p.unit}</span>
+                          <span style={{ color: tracked ? usageColor(pct) : "var(--pencil)" }}>{tracked ? `${fmt(p.limit)} limit` : "no quota limit exposed"}</span>
+                        </div>
+                        <div style={{ height: 6, borderRadius: 3, background: "var(--rule)", overflow: "hidden" }} title={tracked ? `${pct.toFixed(1)}% used` : "the gateway exposes no quota limit, so there is nothing to fill this bar"} >
+                          <div style={{ height: "100%", borderRadius: 3, background: tracked ? color : "var(--rule)", width: tracked ? `${Math.min(pct, 100)}%` : "0%", transition: "width 0.3s" }} />
+                        </div>
+                        {tracked && <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: usageColor(pct), marginTop: 2 }}>{pct.toFixed(1)}% used · {fmt(p.remaining_tokens)} remaining</div>}
+                        <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", marginTop: 4 }}>
+                          {p.billing_cycle} · {p.request_count === null ? "request count not reported" : `${p.request_count} requests`}
+                        </div>
+                      </Card>
+                    );
+                  })}
+                </div>
+                <ProvenanceFooter panel={providers} />
               </div>
             )
           )}
 
           {tab === 1 && (
-            models.length === 0 ? <EmptyState icon="🧠" title="No model data — conductor-router unreachable" /> : (
+            !models || models.state !== "ok" ? <PanelState panel={models ?? { state: "unavailable", source: "unknown", window_days: null, computed_at: "", reason: "model data did not load" }} emptyTitle="No model data" /> : (
               <div>
                 <div style={{ display: "flex", gap: 8, marginBottom: 12, alignItems: "center" }}>
                   <input className="input-field" style={{ width: 200 }} placeholder="Filter models..." value={modelFilter} onChange={(e) => setModelFilter(e.target.value)} />
@@ -183,7 +218,7 @@ export default function Quotas() {
                     <option value="all">All providers</option>
                     {providerNames.map((p) => <option key={p} value={p}>{p}</option>)}
                   </select>
-                  <span style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)" }}>{sorted.length} of {models.length}</span>
+                  <span style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)" }}>{sorted.length} of {modelList.length}</span>
                 </div>
                 <Card>
                   <div style={{ overflow: "auto" }}>
@@ -205,17 +240,23 @@ export default function Quotas() {
                             <td style={{ padding: "6px 10px", fontWeight: 600, whiteSpace: "nowrap" }}>{m.model}</td>
                             <td style={{ padding: "6px 10px", color: "var(--pencil)" }}>{m.provider}</td>
                             <td style={{ padding: "6px 10px" }}>
-                              <span style={{ fontFamily: "var(--mono)", fontSize: 12, padding: "2px 6px", borderRadius: 3, border: `1px solid ${tierColor[m.tier] || "var(--rule)"}`, color: tierColor[m.tier] || "var(--pencil)" }}>{m.tier}</span>
+                              {m.tier ? (
+                                <span style={{ fontFamily: "var(--mono)", fontSize: 12, padding: "2px 6px", borderRadius: 3, border: `1px solid ${tierColor[m.tier] || "var(--rule)"}`, color: tierColor[m.tier] || "var(--pencil)" }}>{m.tier}</span>
+                              ) : <span style={{ color: "var(--pencil)" }}>n/a</span>}
                             </td>
                             <td style={{ padding: "6px 10px" }}>
-                              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                                <div style={{ width: 50, height: 5, borderRadius: 3, background: "var(--rule)", overflow: "hidden" }}>
-                                  <div style={{ height: "100%", borderRadius: 3, background: "var(--accent)", width: `${m.quality * 100}%` }} />
+                              {m.quality === null || m.quality === undefined ? (
+                                <span style={{ color: "var(--pencil)" }}>n/a</span>
+                              ) : (
+                                <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                                  <div style={{ width: 50, height: 5, borderRadius: 3, background: "var(--rule)", overflow: "hidden" }}>
+                                    <div style={{ height: "100%", borderRadius: 3, background: "var(--accent)", width: `${m.quality * 100}%` }} />
+                                  </div>
+                                  <span style={{ fontSize: 12 }}>{(m.quality * 100).toFixed(0)}%</span>
                                 </div>
-                                <span style={{ fontSize: 12 }}>{(m.quality * 100).toFixed(0)}%</span>
-                              </div>
+                              )}
                             </td>
-                            <td style={{ padding: "6px 10px", color: "var(--pencil)" }}>{m.speed > 0 ? `${m.speed} t/s` : "-"}</td>
+                            <td style={{ padding: "6px 10px", color: "var(--pencil)" }}>{m.speed ? `${m.speed} t/s` : "n/a"}</td>
                             <td style={{ padding: "6px 10px", color: "var(--pencil)", fontSize: 12 }}>{m.modality || "-"}</td>
                             <td style={{ padding: "6px 10px" }}>
                               <div style={{ display: "flex", gap: 3, flexWrap: "wrap" }}>
@@ -230,44 +271,25 @@ export default function Quotas() {
                     </table>
                   </div>
                 </Card>
+                <ProvenanceFooter panel={models} />
               </div>
             )
           )}
 
           {tab === 2 && (
-            !outcomes ? <EmptyState icon="🎯" title="No outcome data" /> : (
+            // #380: outcomes are not measured anywhere (LiteLLM exposes no
+            // aggregated success/failure endpoint), so this tab is explicitly
+            // unavailable. It used to render a hard-coded zeroed scoreboard
+            // that read as "0 requests, everything failing".
+            !outcomes ? (
+              <PanelState
+                panel={{ state: "unavailable", source: "unknown", window_days: null, computed_at: "", reason: "outcome data did not load" }}
+                emptyTitle="No outcome data"
+              />
+            ) : (
               <div>
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 10, marginBottom: 16 }}>
-                  <StatCard label="Total Requests" value={outcomes.total} highlight />
-                  <StatCard label="Succeeded" value={outcomes.succeeded} />
-                  <StatCard label="Failed" value={outcomes.failed} />
-                  <StatCard label="Success Rate" value={`${(outcomes.rate * 100).toFixed(1)}%`} />
-                </div>
-                <Card>
-                  <div style={{ fontFamily: "var(--mono)", fontSize: 12, fontWeight: 600, marginBottom: 10, color: "var(--pencil)", textTransform: "uppercase" }}>
-                    Per-Model Breakdown (last {outcomes.days} days)
-                  </div>
-                  {modelEntries.length === 0 ? (
-                    <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", textAlign: "center", padding: 20 }}>No recent activity</div>
-                  ) : (
-                    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                      {modelEntries.map(([model, info]) => {
-                        const pct = (info.total / maxModelTasks) * 100;
-                        return (
-                          <div key={model} style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                            <span style={{ fontFamily: "var(--mono)", fontSize: 12, width: 220, textAlign: "right", color: "var(--ink)", fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{model}</span>
-                            <div style={{ flex: 1, height: 16, borderRadius: 3, background: "var(--rule)", overflow: "hidden" }}>
-                              <div style={{ height: "100%", borderRadius: 3, background: info.rate >= 1.0 ? "var(--accent)" : "#c4452a", width: `${pct}%`, transition: "width 0.3s", display: "flex", alignItems: "center", paddingLeft: 6, fontFamily: "var(--mono)", fontSize: 12, color: "var(--paper)", fontWeight: 600 }}>
-                                {pct > 12 ? `${info.succeeded}/${info.total}` : ""}
-                              </div>
-                            </div>
-                            <span style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", width: 60 }}>{(info.rate * 100).toFixed(0)}% ok</span>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
-                </Card>
+                <PanelState panel={outcomes} emptyTitle="No outcome data" />
+                <ProvenanceFooter panel={outcomes} />
               </div>
             )
           )}

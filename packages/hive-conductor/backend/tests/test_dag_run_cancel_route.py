@@ -27,6 +27,8 @@ from typing import Any
 import pytest
 from fastapi import HTTPException
 
+from maistro.identity import Principal
+
 _BACKEND = Path(__file__).resolve().parents[1]
 if str(_BACKEND) in sys.path:
     sys.path.remove(str(_BACKEND))
@@ -38,10 +40,10 @@ _USER_ID = "cancel-route-user"
 
 
 class _ScopedRequest:
-    """Just what the dag-runs handlers read off a request: `state.user`."""
+    """Just what the dag-runs handlers read off a request: `state.principal`."""
 
     def __init__(self, user_id: str) -> None:
-        self.state = SimpleNamespace(user={"id": user_id, "username": user_id})
+        self.state = SimpleNamespace(principal=Principal(user_id=user_id, username=user_id))
 
 
 async def _owned_workspace() -> Any:
@@ -57,9 +59,9 @@ async def _owned_workspace() -> Any:
     )
 
 
-async def _long_running_canonical_run() -> tuple[
-    Any, str, asyncio.Task[Any], asyncio.Event, list[str]
-]:
+async def _long_running_canonical_run(
+    workspace_id: str,
+) -> tuple[Any, str, asyncio.Task[Any], asyncio.Event, list[str]]:
     """A canonical Run whose single Attempt's provider is parked mid-flight.
 
     The provider sleeps on `release` — an event nothing in the product ever
@@ -67,26 +69,29 @@ async def _long_running_canonical_run() -> tuple[
     it. `provider_exits` records the coroutine actually unwinding, which is
     what distinguishes "the work was stopped" from "the record was edited".
     """
+    from services.workspace_authority import canonical_store_for_tests
+
     from maistro.graph import Graph, Node
-    from maistro.projects.scope_store import InMemoryProjectScopeStore
     from maistro.runs import AttemptExecutionService, AttemptStatus, InMemoryRunStore
     from maistro.runtime import PythonExecutionRuntime
 
-    project_store = InMemoryProjectScopeStore()
-    root = await project_store.create_root("ws-cancel")
+    # Filed in the caller's own canonical Workspace, as the product files it:
+    # the projection overlay reads canonical truth only for a member (#1152).
+    project_store = canonical_store_for_tests().project_store
+    root = await project_store.root_for_workspace(workspace_id)
     project = await project_store.create(
-        workspace_id="ws-cancel",
+        workspace_id=workspace_id,
         parent_project_id=root.project_id,
         name="Long-running DAG",
     )
     store = InMemoryRunStore(project_store=project_store)
     graph = Graph(
-        workspace_id="ws-cancel",
+        workspace_id=workspace_id,
         project_id=project.project_id,
         name="Long-running DAG",
         nodes=[Node(node_id="node-1", node_type="agent")],
     )
-    run = await store.create_run(graph)
+    run = await store.create_run(graph, actor_principal_id=_USER_ID)
     node_run = await store.create_node_run(run.run_id, node_id="node-1")
 
     provider_exits: list[str] = []
@@ -139,8 +144,16 @@ async def test_cancel_route_terminates_a_long_running_canonical_run(
     from maistro.runs import AttemptStatus, RunStatus
 
     view = await _owned_workspace()
-    store, run_id, worker, release, provider_exits = await _long_running_canonical_run()
-    monkeypatch.setattr(engine_mod, "_singleton", SimpleNamespace(run_store=store))
+    from services.workspace_authority import canonical_store_for_tests
+
+    from maistro.runs.scoped_reads import ScopedRunReader
+
+    store, run_id, worker, release, provider_exits = await _long_running_canonical_run(view.id)
+    workspaces = canonical_store_for_tests()
+    reader = ScopedRunReader(store, workspaces, workspaces.project_store)
+    monkeypatch.setattr(
+        engine_mod, "_singleton", SimpleNamespace(run_store=store, run_reader=reader)
+    )
 
     await get_dag_run_store().start_run(
         run_id="dag-cancel-e2e",
@@ -231,3 +244,119 @@ async def test_cancel_route_answers_a_canonical_run_the_spine_never_saw_with_404
         await cancel_route("dag-ghost-canonical", _ScopedRequest(_USER_ID))
     assert refused.value.status_code == 404
     assert refused.value.detail == "run not found"
+
+
+async def test_list_overlays_only_canonical_runs_the_caller_may_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The list path batches its canonical reads through the scoped reader:
+    a row naming the caller's own canonical Run shows its status, a row that
+    names another Workspace's Run keeps its own (#1152)."""
+    import services.engine as engine_mod
+    from services.dag_run_inspection import list_visible_runs
+    from services.dag_run_store import get_dag_run_store
+    from services.workspace_authority import canonical_store_for_tests
+
+    from maistro.graph import Graph, Node
+    from maistro.runs import InMemoryRunStore, RunStatus
+    from maistro.runs.scoped_reads import ScopedRunReader
+
+    view = await _owned_workspace()
+    workspaces = canonical_store_for_tests()
+    projects = workspaces.project_store
+    foreign = await workspaces.create(creator_user_id="someone-else", name="Foreign")
+    store = InMemoryRunStore(project_store=projects)
+
+    async def cancelled_run(workspace_id: str) -> str:
+        root = await projects.root_for_workspace(workspace_id)
+        graph = Graph(
+            workspace_id=workspace_id,
+            project_id=root.project_id,
+            name="listed",
+            nodes=[Node(node_id="n", node_type="agent")],
+        )
+        run = await store.create_run(graph, actor_principal_id=_USER_ID)
+        await store.transition_run(run.run_id, RunStatus.CANCELLED)
+        return run.run_id
+
+    mine, theirs = await cancelled_run(view.id), await cancelled_run(foreign.workspace_id)
+    reader = ScopedRunReader(store, workspaces, projects)
+    monkeypatch.setattr(
+        engine_mod, "_singleton", SimpleNamespace(run_store=store, run_reader=reader)
+    )
+    dag_runs = get_dag_run_store()
+    await dag_runs.start_run(
+        run_id="list-mine", user_id=_USER_ID, workspace_id=view.id, canonical_run_id=mine
+    )
+    await dag_runs.start_run(
+        run_id="list-theirs", user_id=_USER_ID, workspace_id=view.id, canonical_run_id=theirs
+    )
+
+    listed = {row["id"]: row for row in await list_visible_runs(_USER_ID, limit=100)}
+
+    assert listed["list-mine"]["status"] == "cancelled"
+    assert listed["list-theirs"]["status"] != "cancelled"
+
+
+async def test_list_resolves_the_page_through_one_batched_reader_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The Recent Runs list never re-enters the canonical reader per row (#1333).
+
+    The overlay needs one scoped read for the whole page; a return to the
+    pre-#1152 per-row `_canonical_projection` walk shows up here as one
+    `get_runs` call per row, each carrying a single id.
+    """
+    import services.engine as engine_mod
+    from services.dag_run_inspection import list_visible_runs
+    from services.dag_run_store import get_dag_run_store
+    from services.workspace_authority import canonical_store_for_tests
+
+    from maistro.graph import Graph, Node
+    from maistro.runs import InMemoryRunStore
+    from maistro.runs.scoped_reads import ScopedRunReader
+
+    view = await _owned_workspace()
+    workspaces = canonical_store_for_tests()
+    projects = workspaces.project_store
+    store = InMemoryRunStore(project_store=projects)
+
+    async def running_run(workspace_id: str) -> str:
+        root = await projects.root_for_workspace(workspace_id)
+        graph = Graph(
+            workspace_id=workspace_id,
+            project_id=root.project_id,
+            name="listed",
+            nodes=[Node(node_id="n", node_type="agent")],
+        )
+        return (await store.create_run(graph, actor_principal_id=_USER_ID)).run_id
+
+    first, second = await running_run(view.id), await running_run(view.id)
+    reader = ScopedRunReader(store, workspaces, projects)
+    batches: list[list[str]] = []
+    batched_get_runs = reader.get_runs
+
+    async def counting_get_runs(run_ids: Any, *, principal_id: str) -> Any:
+        batches.append([str(run_id) for run_id in run_ids])
+        return await batched_get_runs(run_ids, principal_id=principal_id)
+
+    reader.get_runs = counting_get_runs  # type: ignore[method-assign]
+    monkeypatch.setattr(
+        engine_mod, "_singleton", SimpleNamespace(run_store=store, run_reader=reader)
+    )
+    dag_runs = get_dag_run_store()
+    await dag_runs.start_run(
+        run_id="batched-one", user_id=_USER_ID, workspace_id=view.id, canonical_run_id=first
+    )
+    await dag_runs.start_run(
+        run_id="batched-two", user_id=_USER_ID, workspace_id=view.id, canonical_run_id=second
+    )
+
+    listed = await list_visible_runs(_USER_ID, limit=100)
+
+    assert {row["id"] for row in listed} >= {"batched-one", "batched-two"}
+    # Exactly one reader call, carrying the whole in-scope page. The process
+    # singletons behind these suites keep earlier tests' rows, so the batch may
+    # name more than this test's two runs -- but never in more than one call.
+    assert len(batches) == 1
+    assert {first, second} <= set(batches[0])

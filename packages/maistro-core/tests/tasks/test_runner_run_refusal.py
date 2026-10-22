@@ -59,7 +59,10 @@ async def test_the_receipt_does_not_advance_past_a_cancelled_run(wired) -> None:
 
     await runner._execute_task(task.task_id)
 
-    assert queue.get(task.task_id).status is TaskStatus.QUEUED  # type: ignore[union-attr]
+    # The receipt never advances past what the Run allows — and since #849 a
+    # refused dispatch also cannot strand it QUEUED: the receipt reconciles to
+    # the Run's own terminal state, which is exactly "not past" the Run.
+    assert queue.get(task.task_id).status is TaskStatus.CANCELLED  # type: ignore[union-attr]
 
 
 async def test_an_ordinary_task_still_runs(wired) -> None:
@@ -113,4 +116,8 @@ async def test_a_run_cancelled_mid_flight_stops_before_the_executor(wired) -> No
     await runner._execute_task(task.task_id)
 
     assert executor.calls == 0, "the executor ran for a Run cancelled during planning"
-    assert queue.get(task.task_id).status is TaskStatus.PLANNING  # type: ignore[union-attr]
+    # The receipt must not advance past the Run — and since #849 it also does
+    # not stay behind it: a Run the reconciliation reads as CANCELLED pulls its
+    # receipt to CANCELLED rather than leaving a PLANNING row describing work
+    # the canonical side already refused.
+    assert queue.get(task.task_id).status is TaskStatus.CANCELLED  # type: ignore[union-attr]

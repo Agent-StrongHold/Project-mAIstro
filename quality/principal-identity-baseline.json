@@ -1,0 +1,10 @@
+{
+  "_comment": "Parallel HTTP principal debt for Workspace cutover P0.1 (#53). Judged against the trusted merge base; a fixed entry must be deleted here.",
+  "metric_definition_version": "1",
+  "tolerated": {
+    "parallel_principal_class::packages/hive-conductor/backend/models/schemas.py::HiveUser": "class HiveUser defines role",
+    "parallel_principal_class::packages/maistro-canvas/src/maistro_canvas/auth.py::CurrentUser": "class CurrentUser defines roles",
+    "parallel_principal_class::packages/maistro-core/src/maistro/privilege.py::_SubsystemIdentity": "class _SubsystemIdentity defines role",
+    "parallel_principal_class::packages/maistro-server/src/maistro_server/api/principal.py::AuthenticatedPrincipal": "class AuthenticatedPrincipal defines roles"
+  }
+}

@@ -123,11 +123,18 @@ class TestScanDesignSystemContent:
     @pytest.mark.contract("behavioral")
     @pytest.mark.scope("property")
     @given(
-        text=st.text(alphabet=st.characters(whitelist_categories=("Ll", "Nd", "Zs")), max_size=200)
+        # Lowercase letters and whitespace only — deliberately no digits. The
+        # scanner runs ``normalize_for_detection`` (bounded leetspeak folding,
+        # maistro.security.normalize), so digit-substituted keyword spellings
+        # (``ja1lbreak`` -> ``jailbreak``) are BLOCKED BY DESIGN; a digit in
+        # the alphabet made this property generate exactly such spellings and
+        # fail. Innocuous digit-bearing prose still never blocks, but that
+        # guarantee is about prose, not arbitrary digit strings.
+        text=st.text(alphabet=st.characters(whitelist_categories=("Ll", "Zs")), max_size=200)
     )
     @settings(max_examples=50)
     def test_plain_text_never_blocks(self, text: str):
-        """Plain lowercase/digit/space text never trips any blocking pattern."""
+        """Plain lowercase/space text never trips any blocking pattern."""
         from maistro_design.systems.importer import scan_design_system_content
 
         report = scan_design_system_content({"DESIGN.md": text})

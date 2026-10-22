@@ -12,6 +12,12 @@ from pathlib import Path, PosixPath
 import pytest
 from pydantic import ValidationError
 
+from maistro.config.first_run import (
+    DEFAULT_CONDUCTOR_NAME,
+    DEFAULT_DEFAULT_MODEL,
+    DEFAULT_HARDWARE_PRESET,
+    crypto_profile_to_modules,
+)
 from maistro_bootstrap.credentials import (
     BOOTSTRAP_CREDENTIALS_FILENAME,
     UnsafeStagedCredentialsError,
@@ -64,15 +70,36 @@ def test_build_payload_carries_names_and_crypto_module() -> None:
     creds = build_bootstrap_credentials(_answers(), admin_password="pw-a", user_password="pw-u")
     assert creds["admin_username"] == "root-admin"
     assert creds["user_username"] == "alice"
-    assert creds["optional_modules"] == ["crypto_identity"]
-    assert creds["hardware_preset"] == "auto"
+    assert creds["optional_modules"] == crypto_profile_to_modules(_answers().crypto_profile)
+    assert creds["hardware_preset"] == DEFAULT_HARDWARE_PRESET
+
+
+def test_unanswered_fields_come_from_the_first_run_declaration() -> None:
+    """The terminal path's non-asked fields are the shared declaration's
+    defaults, not local literals (#443 AC-1/AC-3): the server default for the
+    model is expressed as None ("server decides"), the hardware preset as the
+    documented auto default, and the conductor name as the declared one."""
+    creds = _creds()
+    assert creds["conductor_name"] == DEFAULT_CONDUCTOR_NAME
+    assert creds["hardware_preset"] == DEFAULT_HARDWARE_PRESET
+    assert creds["default_model"] is DEFAULT_DEFAULT_MODEL
 
 
 def test_no_crypto_profile_omits_identity_module() -> None:
     creds = build_bootstrap_credentials(
         _answers(crypto_profile="no_crypto"), admin_password="a", user_password="u"
     )
+    assert creds["optional_modules"] == crypto_profile_to_modules("no_crypto")
     assert creds["optional_modules"] == []
+
+
+def test_full_all_crypto_maps_to_identity_module() -> None:
+    """The mapping is total over the wizard's crypto profiles: every non-
+    no_crypto profile implies the identity module (#443 AC-6)."""
+    creds = build_bootstrap_credentials(
+        _answers(crypto_profile="full_all_crypto"), admin_password="a", user_password="u"
+    )
+    assert creds["optional_modules"] == ["crypto_identity"]
 
 
 def test_write_is_owner_only_and_round_trips(tmp_path: Path) -> None:

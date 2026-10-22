@@ -20,13 +20,17 @@ roster, `agents_dir` populates `Container.agents` and this stops being reached.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import structlog
 
 from maistro.agents.conductor import run_task
+from maistro.capabilities.model_chat import ModelChatEgress
 from maistro.tasks.models import TaskCreate
 from maistro.types.agent import AgentResponse
+
+if TYPE_CHECKING:
+    from maistro.providers.protocols import LLMRouter
 
 logger = structlog.get_logger()
 
@@ -54,6 +58,21 @@ class ConductorAgent:
     honouring the classification is the point.
     """
 
+    def __init__(
+        self,
+        *,
+        governed_egress: ModelChatEgress | None = None,
+        workspace_id: str = "default",
+        router: LLMRouter | None = None,
+    ) -> None:
+        self._governed_egress = governed_egress
+        self._workspace_id = workspace_id
+        # The container's cost-aware router (#1203): when a provider-scoped
+        # circuit is open, `run_task` falls forward through its declared
+        # fallback chain instead of failing the turn. `None` (no router wired)
+        # keeps the previous fail-fast behavior.
+        self._router = router
+
     async def handle(
         self,
         messages: list[dict[str, Any]],
@@ -62,6 +81,7 @@ class ConductorAgent:
         intent: Any = None,
         session_id: str | None = None,
         classified_task_type: str = "",
+        turn_id: str | None = None,
         **_unused: Any,
     ) -> AgentResponse:
         """Run the conductor over the last user message.
@@ -77,7 +97,15 @@ class ConductorAgent:
 
         task = TaskCreate(description=description, **_tier_kwargs(intent))
         try:
-            result = await run_task(task)
+            result = await run_task(
+                task,
+                governed_egress=self._governed_egress,
+                invocation_identity=(turn_id, "conductor-node", "conductor-attempt")
+                if turn_id
+                else None,
+                workspace_id=self._workspace_id,
+                router=self._router,
+            )
         except Exception as exc:
             # Raised rather than swallowed. `Conduit.route_request` catches
             # around this dispatch, and the endpoint above maps the exception

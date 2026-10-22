@@ -98,7 +98,12 @@ def test_cycle_slots_falls_back_to_generic_when_every_model_fails(tmp_path, monk
 
     assert loop._last_scout_model is None
     assert len(slots) == 1
-    assert slots[0][2] == ImprovementKind.DOC  # the generic fallback slot
+    # The generic fallback slot is declared NEW_TEST, not DOC (#392): the
+    # default objective's ladder is verification work, and NEW_TEST resolves
+    # to the BEHAVIOR fail-first contract for source-touching diffs — DOC
+    # would let the default objective dodge fail-first via the refactor
+    # alternative contract.
+    assert slots[0][2] == ImprovementKind.NEW_TEST
 
 
 def test_explicit_scout_model_is_tried_first_but_still_falls_over(tmp_path, monkeypatch) -> None:

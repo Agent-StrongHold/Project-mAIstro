@@ -175,6 +175,40 @@ class TestRsiCycleRun:
         }
 
     @pytest.mark.asyncio
+    async def test_source_commit_pin_reaches_the_self_branch_attempt(
+        self,
+        patched_sandbox,
+        monkeypatch,
+    ):
+        """#404 AC3 plumbing: RsiCycleConfig.source_commit is threaded into the
+        attempt the cycle clones from, so a deployment can pin the RSI cycle's
+        candidate source to an audited digest."""
+        captured: dict[str, object] = {}
+
+        async def capturing_run_attempt(sandbox, workspace, attempt, apply_patch, **kwargs):
+            captured["attempt"] = attempt
+            return SelfBranchResult(
+                attempt=attempt,
+                test_exit_code=0,
+                test_output="",
+                diff="",
+            )
+
+        monkeypatch.setattr("maistro_rsi.runner.run_self_branch_attempt", capturing_run_attempt)
+        digest = "d" * 40
+        cycle = RsiCycle(
+            _config(source_commit=digest),
+            FakeHarness({"baseline": {}, "candidate": {}}),
+            EloTournament(),
+            FakeScheduler(),
+            _noop_patch,
+        )
+
+        await cycle.run(_genome("baseline"), _genome("candidate"), ["openai/gpt-5"])
+
+        assert captured["attempt"].commit == digest
+
+    @pytest.mark.asyncio
     async def test_battles_only_recorded_for_benchmarks_present_in_both_result_sets(
         self,
         patched_sandbox,

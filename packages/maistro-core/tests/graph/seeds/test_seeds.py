@@ -45,12 +45,13 @@ def _make_fake_async_client(fake_issues: dict[str, Any]) -> type:
     return _Client
 
 
-def _inject_jira_credentials(dag: dict[str, Any]) -> None:
+def _inject_jira_credentials(
+    dag: dict[str, Any], binding_id: str = "test-seed-jira-binding"
+) -> None:
     """Populate the jira_poll node's runtime credentials in-place."""
     for n in dag["nodes"]:
         if n["id"] == "jira_poll":
-            n["inputs"]["base_url"] = "https://jira.example.com"
-            n["inputs"]["pat"] = "test-pat"
+            n["inputs"]["binding_id"] = binding_id
 
 
 def _seed_node_resolver(node_id: str, dag_snap: dict[str, Any]) -> Any:
@@ -79,7 +80,8 @@ def test_daily_status_seed_has_required_identity_fields() -> None:
     assert d["name"]
     assert d["description"]
     assert d["entry_node"] == "jira_poll"
-    assert d["max_cycles"] == 1
+    # The declared cycle budget must cover the seed's own 5-wave depth (#1184).
+    assert d["max_cycles"] == 5
 
 
 def test_daily_status_seed_topology_is_5_nodes_4_edges_sequential() -> None:
@@ -264,7 +266,7 @@ async def test_daily_status_seed_short_circuits_when_no_epics_match(
     monkeypatch.setattr(httpx, "AsyncClient", _make_fake_async_client(fake_issues))
 
     dag = daily_status_seed()
-    _inject_jira_credentials(dag)
+    _inject_jira_credentials(dag, "test-seed-jira-binding-2")
 
     store = InMemoryDurableRunStore()
 

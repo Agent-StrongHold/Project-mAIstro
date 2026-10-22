@@ -234,6 +234,55 @@ def test_historical_duplicate_is_quarantined_not_winner_selected() -> None:
         registry.create_users([_user("c", "Alice")])
 
 
+def test_create_users_indexes_an_unmigrated_legacy_row_instead_of_duplicating_it() -> None:
+    """Allocation rejects a name whose only holder predates the claim index.
+
+    Startup migration normally claims every legacy row, but a row can exist
+    unindexed (interrupted migration, or a harness seeding users directly).
+    Registration must not mint a second identity for that name: indexing it
+    lazily inside the allocation critical section keeps the takeover
+    fail-closed, and login keeps resolving to the original account.
+    """
+    users = ModelStore("users", HiveUser)
+    claims = JsonStore("username_claims")
+    legacy = _user("legacy", "Testuser")
+    users["legacy"] = legacy
+    registry = UsernameRegistry(users, claims)
+    assert registry.resolve("testuser") is None  # not indexed yet
+
+    with pytest.raises(UsernameTakenError):
+        registry.create_users([_user("newcomer", "testuser")])
+
+    # No second account, and the claim that now exists names the ORIGINAL row.
+    assert "newcomer" not in users
+    assert claims["username:testuser"]["user_id"] == "legacy"
+    resolved = registry.resolve("TESTUSER")
+    assert resolved is not None and resolved.id == "legacy"
+
+
+def test_create_users_indexes_an_unmigrated_durable_legacy_row(tmp_path) -> None:
+    """The durable path is fail-closed against an unindexed legacy row too."""
+    from maistro.state import PersistedStore, State
+
+    state = State(tmp_path / "legacy-durable.db")
+    persisted = PersistedStore(state)
+    persisted.initialize()
+    persisted.put_raw("users", "legacy", _user("legacy", "Testuser").model_dump_json())
+    state.flush()
+    registry = UsernameRegistry(
+        ModelStore("users", HiveUser, persisted=persisted),
+        JsonStore("username_claims", persisted=persisted),
+    )
+
+    with pytest.raises(UsernameTakenError):
+        registry.create_users([_user("newcomer", "TESTUSER")])
+
+    assert persisted.get_raw("users", "newcomer") is None
+    resolved = registry.resolve("testuser")
+    assert resolved is not None and resolved.id == "legacy"
+    state.close()
+
+
 def test_durable_loser_at_the_atomic_layer_is_refused(tmp_path) -> None:
     """A rival claim landing between the check and the txn still loses cleanly.
 
@@ -495,3 +544,44 @@ def test_create_users_requires_a_batch_and_distinct_names() -> None:
         registry.create_users([])
     with pytest.raises(UsernameTakenError, match="duplicate usernames"):
         registry.create_users([_user("x", "Dup"), _user("y", "dup")])
+
+
+def test_create_users_blocks_an_unindexed_legacy_row() -> None:
+    """Allocation sees the identities login sees.
+
+    A user row written without a claim (a direct import, or the seeded
+    development accounts) is lazily indexed by every read path. The write
+    path must index it too: registering that name must be refused, not
+    silently mint a second account behind the same username.
+    """
+    users = ModelStore("users", HiveUser)
+    claims = JsonStore("username_claims")
+    users["legacy-1"] = _user("legacy-1", "TestUser")
+    registry = UsernameRegistry(users, claims)
+
+    with pytest.raises(UsernameTakenError, match="already claimed"):
+        registry.create_users([_user("new-1", "testuser")])
+
+    # The refusal indexed the legacy row, so the claim now names it and the
+    # read path resolves the original identity.
+    record = claims["username:testuser"]
+    assert record["status"] == "active"
+    assert record["user_id"] == "legacy-1"
+    assert registry.resolve("testuser") is not None
+    assert "new-1" not in users
+
+
+def test_create_users_fails_closed_on_unindexed_legacy_duplicates() -> None:
+    """A quarantined historical duplicate blocks its name for allocation."""
+    users = ModelStore("users", HiveUser)
+    claims = JsonStore("username_claims")
+    users["legacy-a"] = _user("legacy-a", "Zara")
+    users["legacy-b"] = _user("legacy-b", "zara")
+    registry = UsernameRegistry(users, claims)
+
+    with pytest.raises(UsernameTakenError, match="already claimed"):
+        registry.create_users([_user("new-1", "ZARA")])
+
+    record = claims["username:zara"]
+    assert record["status"] == "quarantined"
+    assert "new-1" not in users

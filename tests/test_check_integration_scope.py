@@ -49,16 +49,28 @@ def _scope(**overrides: bool) -> str:
     return json.dumps(value)
 
 
-def test_pull_request_preserves_all_specialized_checks(check) -> None:
-    assert check.required_checks("pull_request", _scope()) == set(ALL_RESULTS)
-
-
 def test_protected_push_preserves_all_specialized_checks(check) -> None:
     assert check.required_checks("push", _scope()) == set(ALL_RESULTS)
 
 
 def test_docs_only_merge_group_can_require_no_specialized_check(check) -> None:
     assert check.required_checks("merge_group", _scope()) == set()
+
+
+@pytest.mark.parametrize("event_name", ["merge_group", "pull_request"])
+def test_path_scoped_events_honour_the_measured_scope(check, event_name) -> None:
+    """One scope policy for both candidate events (#1351): the required set is
+    exactly the legs the measured changed files can affect."""
+    assert check.required_checks(event_name, _scope()) == set()
+    assert check.required_checks(
+        event_name,
+        _scope(hive_e2e=True, wheel_imports=True, docker_build=True),
+    ) == {
+        "hive-conductor-e2e",
+        "hive-conductor-e2e-ui",
+        "wheel-imports",
+        "docker-build",
+    }
 
 
 def test_hive_scope_requires_both_hive_checks(check) -> None:
@@ -74,23 +86,27 @@ def test_hive_scope_requires_both_hive_checks(check) -> None:
     }
 
 
-def test_missing_scope_fails_closed_to_every_check(check) -> None:
-    assert check.required_checks("merge_group", None) == set(ALL_RESULTS)
+@pytest.mark.parametrize("event_name", ["merge_group", "pull_request"])
+def test_missing_scope_fails_closed_to_every_check(check, event_name) -> None:
+    assert check.required_checks(event_name, None) == set(ALL_RESULTS)
 
 
-def test_malformed_scope_fails_closed_to_every_check(check) -> None:
-    assert check.required_checks("merge_group", "not-json") == set(ALL_RESULTS)
+@pytest.mark.parametrize("event_name", ["merge_group", "pull_request"])
+def test_malformed_scope_fails_closed_to_every_check(check, event_name) -> None:
+    assert check.required_checks(event_name, "not-json") == set(ALL_RESULTS)
 
 
-def test_incomplete_scope_fails_closed_to_every_check(check) -> None:
+@pytest.mark.parametrize("event_name", ["merge_group", "pull_request"])
+def test_incomplete_scope_fails_closed_to_every_check(check, event_name) -> None:
     scope_json = json.dumps({"postgres": False})
-    assert check.required_checks("merge_group", scope_json) == set(ALL_RESULTS)
+    assert check.required_checks(event_name, scope_json) == set(ALL_RESULTS)
 
 
-def test_non_boolean_scope_fails_closed_to_every_check(check) -> None:
+@pytest.mark.parametrize("event_name", ["merge_group", "pull_request"])
+def test_non_boolean_scope_fails_closed_to_every_check(check, event_name) -> None:
     scope = json.loads(_scope())
     scope["postgres"] = "false"
-    assert check.required_checks("merge_group", json.dumps(scope)) == set(ALL_RESULTS)
+    assert check.required_checks(event_name, json.dumps(scope)) == set(ALL_RESULTS)
 
 
 def test_selected_check_must_succeed(check) -> None:
@@ -114,9 +130,16 @@ def test_out_of_scope_executed_failure_is_a_finding(check) -> None:
     ]
 
 
-def test_pull_request_skipped_check_is_a_finding(check) -> None:
+def test_pull_request_out_of_scope_skipped_check_is_not_a_finding(check) -> None:
+    """A PR skip the measured scope proves unreachable matches what the
+    producers chose for the same changed files (#1351)."""
     results = {**ALL_RESULTS, "postgres (pg17)": "skipped"}
-    assert check.evaluate("pull_request", _scope(), results) == [
+    assert check.evaluate("pull_request", _scope(), results) == []
+
+
+def test_pull_request_in_scope_skipped_check_is_a_finding(check) -> None:
+    results = {**ALL_RESULTS, "postgres (pg17)": "skipped"}
+    assert check.evaluate("pull_request", _scope(postgres=True), results) == [
         "postgres (pg17): required but result was skipped"
     ]
 

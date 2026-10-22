@@ -26,6 +26,7 @@ from typing import Any, cast
 from sqlalchemy import CursorResult, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from maistro_canvas.canvas.retry_policy import DEFAULT_RETRY_BACKOFF, RetryBackoff
 from maistro_canvas.types import (
     _MAX_LAYERS,
     CanvasNotFoundError,
@@ -36,6 +37,7 @@ from maistro_canvas.types import (
     IncompleteReorderError,
     JobLeaseLostError,
     JobNotFoundError,
+    JobQueueStats,
     LayerLimitExceededError,
     LayerNotFoundError,
     LayerRecord,
@@ -135,6 +137,7 @@ def _coerce_job(row: Any) -> GenerationJobRecord:
         max_attempts=int(d.get("max_attempts", 3)),
         leased_by=d.get("leased_by"),
         lease_expires_at=d.get("lease_expires_at"),
+        next_retry_at=d.get("next_retry_at"),
         org_id=str(d.get("org_id", "")),
     )
 
@@ -162,8 +165,18 @@ def _coerce_composite(row: Any) -> CompositeResult:
 class PgCanvasStore:
     """Canvas Studio persistence layer using async PostgreSQL."""
 
-    def __init__(self, engine: Any) -> None:
+    def __init__(
+        self,
+        engine: Any,
+        *,
+        retry_backoff: RetryBackoff = DEFAULT_RETRY_BACKOFF,
+    ) -> None:
         self._engine = engine
+        # The reaper writes the same backoff schedule the runner does (#398).
+        # Composition passes one ``RetryBackoff`` to both so a requeue from
+        # either path waits on the same schedule; the defaults here and in
+        # ``CanvasJobRunner`` are the same object's values.
+        self._retry_backoff = retry_backoff
 
     # ── Canvases ──────────────────────────────────────────────────────
 
@@ -699,6 +712,7 @@ class PgCanvasStore:
             "max_attempts": job.max_attempts,
             "leased_by": job.leased_by,
             "lease_expires_at": job.lease_expires_at,
+            "next_retry_at": job.next_retry_at,
             "expected_leased_by": expected_leased_by,
             "expected_attempts": expected_attempts,
             "expected_status": expected_status,
@@ -721,7 +735,8 @@ class PgCanvasStore:
                         started_at = :start, completed_at = :done,
                         attempts = GREATEST(attempts, :attempts),
                         max_attempts = :max_attempts,
-                        leased_by = :leased_by, lease_expires_at = :lease_expires_at
+                        leased_by = :leased_by, lease_expires_at = :lease_expires_at,
+                        next_retry_at = :next_retry_at
                     WHERE id = :id AND layer_id IN
                         (SELECT l.id FROM layers l
                          JOIN canvases c ON c.id = l.canvas_id
@@ -802,6 +817,12 @@ class PgCanvasStore:
         the provider past its retry limit. An over-budget ``pending`` row
         (which no current writer produces) is terminalized by
         ``reap_expired_leases`` instead of being stranded.
+
+        A receipt waiting out its retry backoff (#398) is not claimable
+        either: ``next_retry_at`` is written by the requeueing writer and
+        cleared by the claim that finally takes the attempt, so a requeued
+        job waits its scheduled delay instead of being retried in a tight
+        claim loop.
         """
         if lease_seconds <= 0:
             raise ValueError("lease_seconds must be positive")
@@ -815,6 +836,7 @@ class PgCanvasStore:
                         JOIN canvases c ON c.id = l.canvas_id
                         WHERE j.status = 'pending'
                           AND j.attempts < j.max_attempts
+                          AND (j.next_retry_at IS NULL OR j.next_retry_at <= now())
                         ORDER BY j.created_at ASC
                         FOR UPDATE OF j SKIP LOCKED
                         LIMIT 1
@@ -824,6 +846,7 @@ class PgCanvasStore:
                         attempts = j.attempts + 1,
                         leased_by = :worker,
                         lease_expires_at = now() + (:lease_seconds * INTERVAL '1 second'),
+                        next_retry_at = NULL,
                         started_at = COALESCE(j.started_at, now())
                     FROM candidate
                     WHERE j.id = candidate.id
@@ -877,7 +900,14 @@ class PgCanvasStore:
         no holder, an already-expired lease stamp): ``claim_next_pending``
         refuses it, so without this it would sit ``pending`` forever instead
         of being failed through canonical reconciliation.
+
+        A requeued candidate's ``next_retry_at`` (#398) comes from the same
+        shared schedule the runner's failure path uses: persisted in this
+        statement, so a worker that dies right after requeueing cannot lose
+        the backoff and let the next claim loop on the job.
         """
+        backoff_base = self._retry_backoff.base_seconds
+        backoff_cap = self._retry_backoff.cap_seconds
         async with AsyncSession(self._engine) as session:
             requeued = await session.execute(
                 text("""
@@ -893,11 +923,19 @@ class PgCanvasStore:
                     UPDATE generation_jobs AS j
                     SET status = 'pending',
                         leased_by = NULL,
-                        lease_expires_at = NULL
+                        lease_expires_at = NULL,
+                        next_retry_at = CASE
+                            WHEN :backoff_base > 0 THEN now()
+                                + (LEAST(:backoff_cap,
+                                         :backoff_base * POWER(2, GREATEST(j.attempts, 1) - 1))
+                                   * INTERVAL '1 second')
+                            ELSE NULL
+                        END
                     FROM candidate
                     WHERE j.id = candidate.id
                     RETURNING j.id
                 """),
+                {"backoff_base": backoff_base, "backoff_cap": backoff_cap},
             )
             requeued_ids = [row[0] for row in requeued]
 
@@ -921,7 +959,8 @@ class PgCanvasStore:
                         lease_expires_at = CASE
                             WHEN j.status = 'pending' THEN now()
                             ELSE j.lease_expires_at
-                        END
+                        END,
+                        next_retry_at = NULL
                     FROM candidate
                     WHERE j.id = candidate.id
                     RETURNING j.id
@@ -991,6 +1030,60 @@ class PgCanvasStore:
             renewed = cast(CursorResult[Any], result).rowcount > 0
             await session.commit()
             return renewed
+
+    async def job_queue_stats(self, *, org_id: str) -> JobQueueStats:
+        """Health counts for one org's generation-job queue (#398).
+
+        One aggregate statement, org-scoped through the same canvas join every
+        other job read uses (#857): another org's jobs are not a zero section
+        here, they are absent from the count entirely. The classifications
+        mirror the store's own writers so a stat cannot describe a state no
+        query produces:
+
+        - ``stuck`` — ``running`` past its lease: awaiting a reaper sweep.
+        - ``retrying`` — ``pending`` with a charged attempt: waiting out (or
+          due for) a scheduled retry, not fresh work.
+        - ``exhausted`` — out of budget and not terminal: the reaper has
+          surfaced them and canonical reconciliation still owes a terminal
+          write (including over-budget ``pending`` rows that can no longer be
+          claimed).
+        """
+        async with AsyncSession(self._engine) as session:
+            result = await session.execute(
+                text("""
+                    SELECT
+                        COUNT(*) FILTER (WHERE j.status = 'pending') AS pending,
+                        COUNT(*) FILTER (WHERE j.status = 'running') AS running,
+                        COUNT(*) FILTER (
+                            WHERE j.status = 'running'
+                              AND j.lease_expires_at IS NOT NULL
+                              AND j.lease_expires_at < now()
+                        ) AS stuck,
+                        COUNT(*) FILTER (
+                            WHERE j.status = 'pending' AND j.attempts > 0
+                        ) AS retrying,
+                        COUNT(*) FILTER (
+                            WHERE j.attempts >= j.max_attempts
+                              AND j.status IN ('pending', 'running')
+                        ) AS exhausted
+                    FROM generation_jobs j
+                    JOIN layers l ON l.id = j.layer_id
+                    JOIN canvases c ON c.id = l.canvas_id
+                    WHERE c.org_id = :org
+                """),
+                {"org": org_id},
+            )
+            row = result.mappings().first()
+            if row is None:  # pragma: no cover - a grouped aggregate always yields one row
+                raise RuntimeError("job_queue_stats aggregate returned no rows")
+            return JobQueueStats(
+                org_id=org_id,
+                pending=int(row["pending"]),
+                running=int(row["running"]),
+                stuck=int(row["stuck"]),
+                retrying=int(row["retrying"]),
+                exhausted=int(row["exhausted"]),
+            )
 
     # ── Composites ────────────────────────────────────────────────────
 

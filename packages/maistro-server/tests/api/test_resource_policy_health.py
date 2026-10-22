@@ -33,6 +33,8 @@ def _pristine_settings() -> Settings:
         rate_limit_burst=5,
         circuit_breaker_failure_threshold=3,
         circuit_breaker_recovery_timeout_s=90,
+        max_active_root_runs_per_principal=4,
+        max_active_root_runs_per_workspace=16,
     )
 
 
@@ -46,6 +48,8 @@ def _secured_settings() -> Settings:
         rate_limit_burst=5,
         circuit_breaker_failure_threshold=3,
         circuit_breaker_recovery_timeout_s=90,
+        max_active_root_runs_per_principal=4,
+        max_active_root_runs_per_workspace=16,
     )
 
 
@@ -86,6 +90,8 @@ def test_readiness_exposes_effective_resource_policy_to_admin_callers() -> None:
         "rate_limit_burst": 5,
         "circuit_breaker_failure_threshold": 3,
         "circuit_breaker_recovery_timeout_s": 90.0,
+        "max_active_root_runs_per_principal": 4,
+        "max_active_root_runs_per_workspace": 16,
         "unsafe_overrides_enabled": False,
     }
 

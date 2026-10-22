@@ -9,8 +9,9 @@ the GitHub API.
 
 Resolvers shipped:
 
-- `FilesystemResolver` — looks at local files for the engine repo;
-  used in engine self-check.
+- `FilesystemResolver` — answers from the local registry walk's
+  validated front-matter id index (`maistro_registry.walk`); used in
+  engine self-check.
 - `GitHubResolver` — uses the GitHub Contents API (httpx, already a
   dep) for cross-repo verification. Caches one directory listing per
   repo to minimize API calls.
@@ -29,6 +30,7 @@ import httpx
 
 from maistro.http import sync_client
 from maistro_registry.schema import FrontMatter
+from maistro_registry.walk import declared_ids, validate_walk
 
 _RELATIONSHIP_FIELDS: tuple[str, ...] = (
     "substrate",
@@ -119,7 +121,14 @@ class FakeResolver:
 
 @dataclass
 class FilesystemResolver:
-    """Resolver that checks local engine filesystem for ADR/spec presence.
+    """Resolver that answers existence from the registry walk's id index.
+
+    Identity comes from the `id` of front matter that passed validation —
+    the same index the registry walk produces (`maistro_registry.walk`),
+    never from filenames: a file whose name implies one id while its front
+    matter declares another makes only the declared id resolve. The
+    filename is storage metadata; it cannot establish an identity the
+    front matter withholds (#814).
 
     Only authoritative for `maistro-engine`; for any other repo, returns
     ``True`` (optimistic) so a single-repo run doesn't false-flag valid
@@ -127,19 +136,17 @@ class FilesystemResolver:
     """
 
     engine_root: Path
+    #: Precomputed index for callers that already ran the walk (e.g. `lint`,
+    #: which validates every walked file anyway). Built lazily from the same
+    #: registry walk when omitted.
+    declared_id_index: frozenset[str] | None = None
 
     def resolve(self, repo: str, item_id: str) -> bool:
         if repo != "maistro-engine":
             return True  # optimistic; cross-repo check needs GitHubResolver
-
-        prefix = f"{item_id}-"
-        for dir_name in ("adr", "specs"):
-            dir_path = self.engine_root / "docs" / dir_name
-            if dir_path.is_dir() and any(
-                f.name.startswith(prefix) and f.suffix == ".md" for f in dir_path.iterdir()
-            ):
-                return True
-        return False
+        if self.declared_id_index is None:
+            self.declared_id_index = declared_ids(validate_walk(self.engine_root))
+        return item_id in self.declared_id_index
 
 
 @dataclass

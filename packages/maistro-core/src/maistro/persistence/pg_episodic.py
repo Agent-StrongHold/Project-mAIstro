@@ -28,6 +28,7 @@ from maistro.memory.episodic.ranking import rank
 from maistro.memory.episodic.tiers import clamp_weight
 from maistro.memory.episodic.tiers import reinforce as _reinforce
 from maistro.memory.episodic.tiers import tick_decay as _tick_decay
+from maistro.memory.exposure import Actor, MemoryExposureMode, require_write_authority
 from maistro.memory.scopes import build_scope_filter, scope_predicate
 from maistro.observability.correlation import observed_provenance
 from maistro.persistence.episodic_rows import (
@@ -89,10 +90,17 @@ def _placeholders(start: int) -> Any:
 
 
 class PgEpisodicStore:
-    """PostgreSQL-backed episodic store: `EpisodicStore` + `DecayableEpisodicStore`."""
+    """PostgreSQL-backed episodic store: `EpisodicStore` + `DecayableEpisodicStore`.
 
-    def __init__(self, pool: asyncpg.Pool) -> None:
+    The ADR-057 write-authority gate sits at `store`: no declared mode refuses
+    every write; ``SYSTEM_MANAGED`` denies agent-actor writes before any SQL.
+    Decay and reinforcement are ADR-080 dynamics, orthogonal to exposure mode
+    per SPEC-062126-5d56, and stay ungated.
+    """
+
+    def __init__(self, pool: asyncpg.Pool, exposure_mode: MemoryExposureMode | None = None) -> None:
         self._pool = pool
+        self._exposure_mode = exposure_mode
 
     async def ensure_schema(self) -> None:
         """Belt-and-braces for a database migrated before the columns.
@@ -121,7 +129,7 @@ class PgEpisodicStore:
                     f"ALTER TABLE episodic_memories ADD COLUMN IF NOT EXISTS {column} {ddl}"
                 )
 
-    async def store(self, memory: EpisodicMemory) -> str:
+    async def store(self, memory: EpisodicMemory, *, actor: Actor = Actor.AGENT) -> str:
         """Store a memory, naming the execution that produced it. Returns its
         `memory_id`.
 
@@ -133,7 +141,11 @@ class PgEpisodicStore:
         The producer is resolved before the write: what the caller named beats
         the ambient context, and a write with no execution in scope stores NULL
         rather than an id-shaped empty string (#64).
+
+        The write-authority gate is the first statement (ADR-057): a denial
+        executes no SQL.
         """
+        require_write_authority(self._exposure_mode, "write", actor, subject=type(self).__name__)
         provenance = observed_provenance(
             run_id=memory.run_id,
             node_run_id=memory.node_run_id,
@@ -303,13 +315,18 @@ def _scoped_list_query(
     clauses = ["deleted = FALSE"]
     # No agent/user/team/org filter: `project_id` alone selects, independent of
     # the scope hierarchy. `InMemoryEpisodicStore` does the same, for project
-    # changelog recall.
+    # changelog recall. The no-caller global clause still applies, so an
+    # org-bound global is not visible without org context (#1247).
     if agent_id or user_id or team_id or org_id:
         predicate, scope_params = scope_predicate(
             build_scope_filter(agent_id=agent_id, user_id=user_id, team_id=team_id, org_id=org_id),
             markers,
         )
         clauses.append(f"({predicate})")
+        params.extend(scope_params)
+    else:
+        predicate, scope_params = scope_predicate(build_scope_filter(), markers)
+        clauses.append(f"(scope != 'global' OR {predicate})")
         params.extend(scope_params)
     params.append(min_weight)
     clauses.append(f"weight >= {next(markers)}")

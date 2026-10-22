@@ -72,6 +72,18 @@ class ApprovalStatus(StrEnum):
     DENIED = "denied"
 
 
+#: The correlation fields an approval is looked up by; none may be blank.
+_IDENTITY_FIELDS = (
+    "workspace_id",
+    "project_id",
+    "run_id",
+    "node_run_id",
+    "attempt_id",
+    "binding_id",
+    "effect_key",
+)
+
+
 class DurableApproval(BaseModel):
     """Persisted human decision request correlated to canonical execution IDs."""
 
@@ -85,6 +97,7 @@ class DurableApproval(BaseModel):
     attempt_id: str
     binding_id: str
     effect_key: str
+    effect_scope: str = ""
     request_digest: str = ""
     status: ApprovalStatus = ApprovalStatus.PENDING
     actor: str = ""
@@ -93,33 +106,52 @@ class DurableApproval(BaseModel):
 
     @model_validator(mode="after")
     def _validate_state(self) -> DurableApproval:
-        required = {
-            "workspace_id": self.workspace_id,
-            "project_id": self.project_id,
-            "run_id": self.run_id,
-            "node_run_id": self.node_run_id,
-            "attempt_id": self.attempt_id,
-            "binding_id": self.binding_id,
-            "effect_key": self.effect_key,
-        }
-        for field, value in required.items():
-            if not value.strip():
+        self._require_identity()
+        if not self.request_digest:
+            self.request_digest = self._derived_digest()
+        self._require_resolution_consistency()
+        return self
+
+    def _require_identity(self) -> None:
+        """Every correlation field an approval is found by must be present.
+
+        A blank one does not narrow a lookup, so the row would answer for a
+        different effect than the one it authorizes.
+        """
+
+        for field in _IDENTITY_FIELDS:
+            if not str(getattr(self, field)).strip():
                 raise ValueError(f"{field} must be a non-empty string")
-        if not self.request_digest:
-            self.request_digest = str(self.request.params.get("request_digest") or "")
-        if not self.request_digest:
-            legacy_payload = self.request.params.get("request", self.request.params)
-            self.request_digest = approval_request_digest(legacy_payload)
+
+    def _derived_digest(self) -> str:
+        """The request digest carried on the params, or computed from them."""
+
+        carried = str(self.request.params.get("request_digest") or "")
+        if carried:
+            return carried
+        legacy_payload = self.request.params.get("request", self.request.params)
+        return approval_request_digest(legacy_payload)
+
+    def _require_resolution_consistency(self) -> None:
+        """A resolved approval names who resolved it and when; a pending one
+        names neither. Either half alone is a row nobody can audit."""
+
         terminal = self.status in {ApprovalStatus.APPROVED, ApprovalStatus.DENIED}
+        if terminal and not self.actor.strip():
+            raise ValueError("resolved approval requires a non-empty actor")
         if terminal and self.resolved_at is None:
             raise ValueError("resolved approval requires resolved_at")
         if not terminal and self.resolved_at is not None:
             raise ValueError("pending approval cannot have resolved_at")
-        return self
 
     @property
     def effect_identity(self) -> tuple[str, str, str, str]:
-        return (self.run_id, self.node_run_id, self.binding_id, self.effect_key)
+        return (
+            self.run_id,
+            self.effect_scope or self.node_run_id,
+            self.binding_id,
+            self.effect_key,
+        )
 
 
 @runtime_checkable
@@ -135,6 +167,7 @@ class ApprovalStore(Protocol):
         node_run_id: str,
         binding_id: str,
         effect_key: str,
+        effect_scope: str | None = None,
     ) -> DurableApproval | None: ...
 
     async def resolve(
@@ -148,6 +181,12 @@ class ApprovalStore(Protocol):
         # threads the actor explicitly.
         actor: str,
     ) -> DurableApproval: ...
+
+
+def _require_actor(actor: str) -> None:
+    """Reject decisions that cannot be attributed to a verified principal."""
+    if not isinstance(actor, str) or not actor.strip():
+        raise ValueError("actor must be a non-empty verified principal")
 
 
 class InMemoryApprovalStore:
@@ -178,8 +217,9 @@ class InMemoryApprovalStore:
         node_run_id: str,
         binding_id: str,
         effect_key: str,
+        effect_scope: str | None = None,
     ) -> DurableApproval | None:
-        identity = (run_id, node_run_id, binding_id, effect_key)
+        identity = (run_id, effect_scope or node_run_id, binding_id, effect_key)
         for approval in self._items.values():
             if approval.effect_identity == identity:
                 return approval.model_copy(deep=True)
@@ -194,6 +234,7 @@ class InMemoryApprovalStore:
         # ApprovalStore protocol.
         actor: str,
     ) -> DurableApproval:
+        _require_actor(actor)
         async with self._lock:
             existing = self._items.get(request_id)
             if existing is None:
@@ -230,10 +271,17 @@ CREATE TABLE IF NOT EXISTS capability_approvals (
     node_run_id TEXT NOT NULL,
     binding_id TEXT NOT NULL,
     effect_key TEXT NOT NULL,
+    effect_scope TEXT NOT NULL DEFAULT '',
     payload TEXT NOT NULL,
-    UNIQUE(run_id, node_run_id, binding_id, effect_key)
+    UNIQUE(run_id, effect_scope, binding_id, effect_key)
 )
 """)
+            cursor = await self._conn.execute("PRAGMA table_info(capability_approvals)")
+            columns = {str(row[1]) for row in await cursor.fetchall()}
+            if "effect_scope" not in columns:
+                await self._conn.execute(
+                    "ALTER TABLE capability_approvals ADD COLUMN effect_scope TEXT NOT NULL DEFAULT ''"
+                )
 
     async def create(self, approval: DurableApproval) -> DurableApproval:
         existing = await self.find_effect(
@@ -241,6 +289,7 @@ CREATE TABLE IF NOT EXISTS capability_approvals (
             node_run_id=approval.node_run_id,
             binding_id=approval.binding_id,
             effect_key=approval.effect_key,
+            effect_scope=approval.effect_scope or None,
         )
         if existing is not None:
             return existing
@@ -248,14 +297,15 @@ CREATE TABLE IF NOT EXISTS capability_approvals (
             try:
                 await self._conn.execute(
                     """INSERT INTO capability_approvals
-                       (request_id, run_id, node_run_id, binding_id, effect_key, payload)
-                       VALUES (?, ?, ?, ?, ?, ?)""",
+                       (request_id, run_id, node_run_id, binding_id, effect_key, effect_scope, payload)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
                     (
                         approval.request.request_id,
                         approval.run_id,
                         approval.node_run_id,
                         approval.binding_id,
                         approval.effect_key,
+                        approval.effect_scope,
                         approval.model_dump_json(),
                     ),
                 )
@@ -267,6 +317,7 @@ CREATE TABLE IF NOT EXISTS capability_approvals (
                     node_run_id=approval.node_run_id,
                     binding_id=approval.binding_id,
                     effect_key=approval.effect_key,
+                    effect_scope=approval.effect_scope or None,
                 )
                 if raced is not None:
                     return raced
@@ -290,12 +341,17 @@ CREATE TABLE IF NOT EXISTS capability_approvals (
         node_run_id: str,
         binding_id: str,
         effect_key: str,
+        effect_scope: str | None = None,
     ) -> DurableApproval | None:
-        cursor = await self._conn.execute(
-            """SELECT payload FROM capability_approvals
-               WHERE run_id = ? AND node_run_id = ? AND binding_id = ? AND effect_key = ?""",
-            (run_id, node_run_id, binding_id, effect_key),
-        )
+        if effect_scope is None:
+            query = """SELECT payload FROM capability_approvals
+               WHERE run_id = ? AND node_run_id = ? AND binding_id = ? AND effect_key = ?"""
+            params = (run_id, node_run_id, binding_id, effect_key)
+        else:
+            query = """SELECT payload FROM capability_approvals
+               WHERE run_id = ? AND effect_scope = ? AND binding_id = ? AND effect_key = ?"""
+            params = (run_id, effect_scope, binding_id, effect_key)
+        cursor = await self._conn.execute(query, params)
         row = await cursor.fetchone()
         if row is None:
             return None
@@ -310,6 +366,7 @@ CREATE TABLE IF NOT EXISTS capability_approvals (
         # ApprovalStore protocol.
         actor: str,
     ) -> DurableApproval:
+        _require_actor(actor)
         async with self._lock:
             await self._conn.execute("BEGIN IMMEDIATE")
             try:
@@ -342,11 +399,128 @@ CREATE TABLE IF NOT EXISTS capability_approvals (
                 raise
 
 
+class PgApprovalStore:
+    """PostgreSQL approval persistence with database-enforced effect identity."""
+
+    def __init__(self, pool: Any) -> None:
+        self._pool = pool
+
+    async def ensure_schema(self) -> None:
+        from maistro.capabilities.durable_schema import ensure_capability_schema
+
+        await ensure_capability_schema(self._pool)
+
+    async def create(self, approval: DurableApproval) -> DurableApproval:
+        row = await self._pool.fetchrow(
+            """INSERT INTO capability_approvals
+               (request_id, run_id, node_run_id, binding_id, effect_key, effect_scope, payload)
+               VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb)
+               ON CONFLICT (run_id, effect_scope, binding_id, effect_key) DO NOTHING
+               RETURNING payload""",
+            approval.request.request_id,
+            approval.run_id,
+            approval.node_run_id,
+            approval.binding_id,
+            approval.effect_key,
+            approval.effect_scope,
+            approval.model_dump_json(),
+        )
+        if row is not None:
+            return approval.model_copy(deep=True)
+        existing = await self.find_effect(
+            run_id=approval.run_id,
+            node_run_id=approval.node_run_id,
+            binding_id=approval.binding_id,
+            effect_key=approval.effect_key,
+            effect_scope=approval.effect_scope or None,
+        )
+        if existing is not None:
+            return existing
+        raise ValueError(f"approval request {approval.request.request_id!r} already exists")
+
+    async def get(self, request_id: str) -> DurableApproval | None:
+        row = await self._pool.fetchrow(
+            "SELECT payload FROM capability_approvals WHERE request_id=$1", request_id
+        )
+        return _approval_from_payload(row["payload"]) if row is not None else None
+
+    async def find_effect(
+        self,
+        *,
+        run_id: str,
+        node_run_id: str,
+        binding_id: str,
+        effect_key: str,
+        effect_scope: str | None = None,
+    ) -> DurableApproval | None:
+        # Same contract as the SQLite store: a scope-less read is the physical
+        # visit; a scoped read is the logical effect identity the #1194 replay
+        # contract admits across NodeRuns.
+        if effect_scope is None:
+            row = await self._pool.fetchrow(
+                """SELECT payload FROM capability_approvals
+                   WHERE run_id=$1 AND node_run_id=$2 AND binding_id=$3 AND effect_key=$4""",
+                run_id,
+                node_run_id,
+                binding_id,
+                effect_key,
+            )
+        else:
+            row = await self._pool.fetchrow(
+                """SELECT payload FROM capability_approvals
+                   WHERE run_id=$1 AND effect_scope=$2 AND binding_id=$3 AND effect_key=$4""",
+                run_id,
+                effect_scope,
+                binding_id,
+                effect_key,
+            )
+        return _approval_from_payload(row["payload"]) if row is not None else None
+
+    async def resolve(
+        self,
+        request_id: str,
+        *,
+        approved: bool,
+        actor: str,
+    ) -> DurableApproval:
+        _require_actor(actor)
+        async with self._pool.acquire() as conn, conn.transaction():
+            row = await conn.fetchrow(
+                "SELECT payload FROM capability_approvals WHERE request_id=$1 FOR UPDATE",
+                request_id,
+            )
+            if row is None:
+                raise KeyError(f"approval request {request_id!r} does not exist")
+            existing = _approval_from_payload(row["payload"])
+            if existing.status is not ApprovalStatus.PENDING:
+                return existing
+            resolved = existing.model_copy(
+                update={
+                    "status": ApprovalStatus.APPROVED if approved else ApprovalStatus.DENIED,
+                    "actor": actor,
+                    "resolved_at": datetime.now(UTC),
+                }
+            )
+            await conn.execute(
+                "UPDATE capability_approvals SET payload=$1::jsonb WHERE request_id=$2",
+                resolved.model_dump_json(),
+                request_id,
+            )
+            return resolved
+
+
+def _approval_from_payload(payload: Any) -> DurableApproval:
+    if isinstance(payload, str):
+        return DurableApproval.model_validate_json(payload)
+    return DurableApproval.model_validate(json.loads(json.dumps(payload)))
+
+
 __all__ = [
     "ApprovalStatus",
     "ApprovalStore",
     "DurableApproval",
     "InMemoryApprovalStore",
+    "PgApprovalStore",
     "SqliteApprovalStore",
     "approval_request_digest",
     "redact_approval_value",
