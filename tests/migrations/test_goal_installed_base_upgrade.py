@@ -62,15 +62,19 @@ HITL_FILE = "alembic/versions/061_hitl_pause_kind_index.py"
 USER_MODEL_FILE = "alembic/versions/056_user_model_facts.py"
 PLANNER_FILE = "alembic/versions/057_run_store_planner_stability.py"
 
-#: The single linear head after HITL ``061``, audit ``062`` and the Goal store.
+#: The Goal revision: the single linear head after HITL ``061``, audit
+#: ``062``. Personas (#12, 064), replay cursors (#836, 065) and durable
+#: delivery receipts (#1060, 066) append past it; they do not change the Goal
+#: identity this file protects.
 GOAL_REVISION = "063"
+CHAIN_TIP = "064"
 
-#: The chain tip once the live-Workspace-Persona revision (#12) appends past
-#: the Goal store as `064` — a landed trunk migration never moves — and #836's
-#: replay-cursor revision renumbers past it as `065`.
+#: The chain head once the live-Workspace-Persona revision (#12, 064),
+#: #836's replay-cursor revision (065) and the durable delivery receipts
+#: (#1060, 066) append past the Goal store.
 #: The Goal revision above stays the installed-base identity this file protects;
 #: the head moves every time a reviewed revision lands after it.
-CHAIN_HEAD = "065"
+CHAIN_HEAD = "066"
 
 GOAL_TABLES = ("canonical_goals", "canonical_goal_revisions", "canonical_goal_transitions")
 USER_MODEL_TABLES = ("user_model_facts", "user_model_statement_keys")
@@ -433,11 +437,13 @@ class TestTheMergedIdentities:
         assert revisions[GOAL_REVISION].down_revision == "062"
         # The Goal revision took the fresh id off the integrated head when it
         # landed; develop's live-Persona revision (#12) claimed `064` on the
-        # trunk — a landed trunk migration never moves — and #836's
-        # replay-cursor revision renumbered past it to `065` at this sync, so
-        # the head is CHAIN_HEAD while 063 stays parented on 062.
+        # trunk — a landed trunk migration never moves — #836's replay-cursor
+        # revision renumbered past it to `065`, and the durable delivery
+        # receipts (#1060) append as `066`, so the head is CHAIN_HEAD while 063
+        # stays parented on 062.
         assert revisions["064"].down_revision == GOAL_REVISION
-        assert revisions[CHAIN_HEAD].down_revision == "064"
+        assert revisions["065"].down_revision == "064"
+        assert revisions["066"].down_revision == "065"
         assert script_directory.get_heads() == [CHAIN_HEAD]
         # The filenames carry the merged identities too — a renamed file
         # and a moved id are the same silent reassignment in two clothes.
@@ -450,6 +456,7 @@ class TestTheMergedIdentities:
         assert (VERSIONS / "063_canonical_goals.py").is_file()
         assert (VERSIONS / "064_canonical_personas.py").is_file()
         assert (VERSIONS / "065_event_replay_cursors.py").is_file()
+        assert (VERSIONS / "066_durable_delivery_receipts.py").is_file()
 
     def test_restored_files_are_byte_identical_to_the_merged_snapshots(self) -> None:
         """The merged revisions' content is what develop shipped, byte for byte.
