@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +105
+  packages/maistro-core/tests: +107
 ---
 # 806-goal-reconciliation
 
@@ -332,3 +332,59 @@ being dropped.
   (`test_recover_enumerates_from_durable_facts_only` + `record_wake`
   marks-due); #1823's intake commit path is a separate lane and is not in
   this tree.
+
+## 2026-10-22 repair round: never-notified Goals converge via the sweep (+2
+## node IDs; note delta now +107)
+
+The independent verification at 44d3f8879 proved by live experiment that a
+Goal committed with **no wake fact at all** never converged: both store
+twins' `due_goals` required `awake_after IS NOT NULL`, so `recover()` listed
+the Goal but sweeps at +1h..+5h produced 0 policy calls — the crash-matrix
+boundary "after Goal commit before notification" was unmet. The earlier
+AC-6 repair (record_wake marks due) covered Goals whose *wake was recorded
+and lost*; this round closes the boundary one step earlier, where the wake
+was never recorded:
+
+- `Goal.awake` (model.py) and both twins' `due_goals` (in-memory filter +
+  `_DUE_GOALS_SQL_TEMPLATE`) now treat a **READY Goal with no horizon** as
+  sweep-due: the Goal row itself is the durable fact. Sleeping postures
+  (dormant/gated) without a horizon are unchanged — never sweep-due, so the
+  AC-7 guarantee (blocked/waiting Goals consume no decisions) is preserved
+  and still asserted by the existing bounded-sweep and HITL tests.
+- `test_goal_committed_with_no_wake_fact_is_sweep_due` (2 node IDs, both
+  twins): recover() lists the never-notified Goal, a sweep at +1h decides it
+  with no re-delivery, and sweeps at +2h/+5h re-derive but admit nothing new
+  (`admissions_total` stays 1, `pending_admissions` empty — no double
+  execution). Verified to fail against the unfixed twins before the fix.
+- `test_composed_policy_admission_is_fenced_and_idempotent` flipped its
+  first assertion from `reconcile_goals() == 0` ("no wake, nothing to decide
+  yet" — the defect, pinned as intended behavior) to `== 1` with the
+  crash-boundary comment; the duplicate-decision and idempotent-tick
+  assertions that follow are unchanged and still hold on top of it.
+- wiring.py: the docstring's claim that the in-memory-under-pg_pool fallback
+  "mirrors the durable-events disposition (#122)" was factually wrong —
+  #122's `wire_canonical_events` selects a real `PgEventStore` under a pool
+  (events/wiring.py). Rewritten to state the actual disposition: SQLite is
+  the one durable backend for this control plane per
+  `quality/durable-table-retention.json` (tables scoped `sqlite`, issue
+  #806); under a PostgreSQL pool the control plane is process-local, cannot
+  fence a second process, and loses its facts on restart, and the loud
+  warning says so at wiring time. The PostgreSQL twin itself is out of scope
+  for an implementation round here: it would create four new PG tables and
+  require a `durable-table-retention.json` ledger edit, which campaign rules
+  reserve for dedicated ledger rounds.
+- `reconciliation/__init__.py` dropped the phantom `GoalAlreadyClaimed`
+  export (defined nowhere; `from ... import *` raised AttributeError).
+  `claim()` signals a live foreign holder by returning ``None`` — there is
+  no such exception in the mechanics to export.
+- Test hygiene: `test_sqlite_backend_wires_the_durable_goal_store` now
+  `await container.aclose()` in a `finally`, so the container-owned
+  aiosqlite connection drains its worker thread before the test's loop
+  closes — removes the `PytestUnhandledThreadExceptionWarning` the verify
+  driver logged (check-3.log).
+
+Re-verified at this HEAD: goals package 160 passed / 24 skipped (all skips
+Postgres-DSN-gated); `ruff check .` and `ruff format --check .` clean;
+`check-suite-inventory --suite packages/maistro-core/tests` matches at
+17545 + 2 = 17547; `check-vulture-baseline` (CI's exact arguments) exit 0;
+`check-durable-table-inventory` exit 0 (no new tables).

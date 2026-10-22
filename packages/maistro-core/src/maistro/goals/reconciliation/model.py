@@ -84,8 +84,19 @@ class Goal(BaseModel):
         return self.deadline_at is not None and now >= self.deadline_at
 
     def awake(self, now: datetime) -> bool:
-        """Whether the bounded safety sweep should consider this Goal due."""
-        return self.awake_after is not None and now >= self.awake_after
+        """Whether the bounded safety sweep should consider this Goal due.
+
+        Two ways to be due: a scheduled horizon has passed, or the Goal was
+        never scheduled at all. A ``ready`` Goal with no ``awake_after`` is
+        one whose creation was committed but no wake fact ever recorded —
+        the crash point "after Goal commit, before notification" — so the
+        Goal row itself is the durable fact the sweep must discover. A
+        sleeping Goal (dormant/gated) with no horizon waits for a relevant
+        change and is never sweep-due: blocked work consumes nothing.
+        """
+        if self.awake_after is None:
+            return self.status is GoalStatus.READY
+        return now >= self.awake_after
 
 
 class GoalClaim(BaseModel):

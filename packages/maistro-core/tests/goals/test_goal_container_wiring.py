@@ -51,11 +51,16 @@ async def test_container_wires_the_goal_reconciliation_control_plane() -> None:
 
 async def test_sqlite_backend_wires_the_durable_goal_store() -> None:
     container = await _container(database_url="sqlite://")
-    assert type(container.goal_reconciliation_store).__name__ == "SqliteGoalStore"
-    store = container.goal_reconciliation_store
-    await store.create_goal(Goal(goal_id="g-wired", workspace_id="ws", project_id="p"))
-    view = await store.reconciliation_view("g-wired")
-    assert view is not None and view["goal_id"] == "g-wired"
+    try:
+        assert type(container.goal_reconciliation_store).__name__ == "SqliteGoalStore"
+        store = container.goal_reconciliation_store
+        await store.create_goal(Goal(goal_id="g-wired", workspace_id="ws", project_id="p"))
+        view = await store.reconciliation_view("g-wired")
+        assert view is not None and view["goal_id"] == "g-wired"
+    finally:
+        # Release the container-owned aiosqlite connection before this test's
+        # loop closes: the worker thread must drain while its loop is alive.
+        await container.aclose()
 
 
 async def test_pg_pool_falls_back_to_memory_with_a_loud_warning(
@@ -134,7 +139,10 @@ async def test_composed_policy_admission_is_fenced_and_idempotent() -> None:
     store = container.goal_reconciliation_store
     await store.create_goal(Goal(goal_id="g-fence", workspace_id="ws", project_id="p"))
     container.goal_reconciliation_policy = StubPolicy()  # type: ignore[assignment]
-    assert await container.reconcile_goals() == 0, "no wake, nothing to decide yet"
+    # Crash boundary "after Goal commit, before notification": the Goal row
+    # is committed but no wake fact was ever recorded — the bounded tick
+    # alone must discover it (no re-delivery exists).
+    assert await container.reconcile_goals() == 1
 
     await store.record_wake(
         "g-fence",

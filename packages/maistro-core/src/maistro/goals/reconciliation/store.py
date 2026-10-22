@@ -256,12 +256,14 @@ class InMemoryGoalStore:
 
     async def due_goals(self, now: datetime, limit: int) -> list[Goal]:
         terminal = GoalStatus.terminal()
-        due = [
-            g
-            for g in self._goals.values()
-            if g.status not in terminal and g.awake_after is not None and g.awake(now)
-        ]
-        return sorted(due, key=lambda g: g.awake_after or now)[:limit]
+        # Same due rule as the SQL twin (Goal.awake): a passed horizon, or a
+        # READY Goal never scheduled at all — creation is a durable fact the
+        # sweep must discover even though no wake was ever recorded. Sleeping
+        # postures without a horizon wait for a relevant change instead.
+        due = [g for g in self._goals.values() if g.status not in terminal and g.awake(now)]
+        # Most-overdue first, matching the SQL twin's `ORDER BY awake_after`
+        # (NULLs — never scheduled — sort first in ascending order).
+        return sorted(due, key=lambda g: (g.awake_after is not None, g.awake_after or now))[:limit]
 
     async def record_wake(
         self,
@@ -608,10 +610,16 @@ _GOAL_COLUMNS = (
 # The bounded-sweep query as a module constant: the column list is the
 # code-owned _GOAL_COLUMNS constant and every value is bound, so the string
 # formatting bandit's B608 flags is structurally incapable of carrying data.
+# Due means: a passed horizon, or a READY Goal never scheduled at all — a
+# Goal committed with no wake fact (crash point: after Goal commit, before
+# notification) is discovered by the sweep from the Goal row alone. Sleeping
+# postures (dormant/gated) without a horizon wait for a relevant change and
+# are never sweep-due (AC: blocked Goals consume no decisions).
 _DUE_GOALS_SQL_TEMPLATE = (
     "SELECT {columns} FROM goals\n"
     "WHERE status NOT IN ('withdrawn', 'settled')\n"
-    "  AND awake_after IS NOT NULL AND awake_after <= ?\n"
+    "  AND ( (awake_after IS NOT NULL AND awake_after <= ?)\n"
+    "        OR (awake_after IS NULL AND status = 'ready') )\n"
     "ORDER BY awake_after LIMIT ?"
 )
 _DUE_GOALS_SQL = _DUE_GOALS_SQL_TEMPLATE.format(  # nosec B608 — `{columns}` takes only the module constant _GOAL_COLUMNS, never data; now/limit are bound

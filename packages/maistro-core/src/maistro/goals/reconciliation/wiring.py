@@ -109,20 +109,27 @@ async def wire_goal_reconciliation(
 ) -> GoalReconciliationStore:
     """Select the Goal reconciliation store from the container's backend.
 
-    The SQLite twin is the one durable backend (``quality/durable-table-``
-    ``retention.json`` scopes the goal tables to SQLite): two MAIstro
-    processes sharing the database file fence each other through
-    ``BEGIN IMMEDIATE`` compare-and-set. A PostgreSQL pool gets the in-memory
-    twin *with a loud warning*, mirroring the durable-events disposition
-    (#122): an operator who asked for durability must learn now, not after a
-    restart silently drops every claim and wake fact — the PostgreSQL twin
-    is #1572's store.
+    The SQLite twin is the one durable backend: ``quality/durable-table-``
+    ``retention.json`` scopes this control plane's tables (``goals``/``goal_``
+    ``claims``/``goal_wakes``/``goal_admissions``) to SQLite, and two MAIstro
+    processes sharing the database file fence each other through ``BEGIN
+    IMMEDIATE`` compare-and-set. A PostgreSQL pool does **not** get a durable
+    twin yet — no PostgreSQL implementation of this control plane exists in
+    tree (unlike the canonical Event plane, whose #122 wiring selects a real
+    ``PgEventStore`` under a pool) — so the pool is answered with the
+    in-memory twin and a loud warning: claim/lease, wake and admission facts
+    stay process-local there, cannot fence a second process, and are lost on
+    restart. The warning says so at wiring time, not after a restart drops
+    them. Landing the PostgreSQL twin is the tracked durable-backend
+    follow-up for #806's control plane (#1572 owns the canonical Goal PG
+    store this plane deliberately does not re-implement).
     """
     if pg_pool is not None:
         logger.warning(
             "Goal reconciliation is in-memory despite a PostgreSQL backend: the Goal, "
             "claim/lease, wake and admission facts are lost on restart and cannot fence "
-            "a second process. No PostgreSQL implementation exists yet (#1572)."
+            "a second process. No PostgreSQL implementation of this control plane "
+            "exists yet (#1572 owns the canonical Goal PG store, not this one)."
         )
         return InMemoryGoalStore()
     if db_pool is not None:

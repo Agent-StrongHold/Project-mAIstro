@@ -464,6 +464,43 @@ class TestBoundedSafetySweep:
         assert admitter.calls == ["event-9:admit"]
         assert len(await store.pending_wakes(goal.goal_id)) == 0
 
+    async def test_goal_committed_with_no_wake_fact_is_sweep_due(self, store: Any) -> None:
+        """Crash boundary: after Goal commit, before any notification.
+
+        A Goal whose wake was never recorded (the notifying process died
+        between the Goal commit and its notification, or the creator has not
+        emitted yet) is discovered and converged by the bounded sweep alone:
+        the Goal row itself is the durable fact, so recovery lists it and a
+        sweep at any later time decides it — without re-delivery, and with
+        exactly one admission across repeated sweeps (the same decision key
+        replays to the recorded admission, never a second one).
+        """
+        await store.ensure_schema()
+        goal = await store.create_goal(make_goal())
+        policy = run_policy("dec-never-notified")
+        admitter = StubAdmitter()
+        reconciler = GoalReconciler(store, policy, holder="agent", admitter=admitter)
+
+        # No wake fact exists: creation alone is the durable fact.
+        assert await store.pending_wakes(goal.goal_id) == []
+        assert await reconciler.recover() == [goal.goal_id]
+
+        # The bounded sweep alone repairs it — no notification ever arrived.
+        first = await reconciler.sweep(T0 + timedelta(hours=1))
+        assert [o.goal_id for o in first] == [goal.goal_id]
+        assert first[0].decided
+        assert admitter.calls == ["dec-never-notified"]
+
+        # Later sweeps re-derive the sleeping Goal by design (its bounded
+        # horizon passes), but the replayed decision admits nothing new.
+        for hours in (2, 5):
+            outcomes = await reconciler.sweep(T0 + timedelta(hours=hours))
+            assert all(o.goal_id == goal.goal_id for o in outcomes)
+        assert admitter.calls == ["dec-never-notified"], "no double execution"
+        assert len(await store.pending_admissions(goal.goal_id)) == 0
+        view = await store.reconciliation_view(goal.goal_id)
+        assert view is not None and view["admissions_total"] == 1
+
     async def test_never_reconciled_goal_with_a_pending_wake_is_sweep_due(self, store: Any) -> None:
         await store.ensure_schema()
         goal = await store.create_goal(make_goal())

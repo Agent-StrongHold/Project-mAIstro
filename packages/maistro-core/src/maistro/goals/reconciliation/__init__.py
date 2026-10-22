@@ -48,7 +48,6 @@ __all__ = [
     "GOAL_WAKE_PATTERNS",
     "Goal",
     "GoalAdmission",
-    "GoalAlreadyClaimed",
     "GoalBudgetExhausted",
     "GoalCancelled",
     "GoalClaim",
