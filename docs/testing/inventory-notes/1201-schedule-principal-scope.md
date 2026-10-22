@@ -123,3 +123,25 @@ now-clean images. The pip-audit advisories named in earlier rounds
 (gitpython/graphql-core, root lock) are a different job this round's brief does
 not list; the branch still touches no lockfile, so develop parity there is
 unchanged.
+
+Develop-sync round (no test-count change): merging `774ae42fc` (develop) into
+this branch brought #1152's `_provision_configured_workspace`, which provisions
+the configured Workspace at composition time. The three #1201 fixtures that
+created that Workspace themselves then hit `ValueError: Workspace '…' already
+exists` (admission.py:397) or `UNIQUE constraint failed: canonical_workspaces`
+(due.py:112) — the lane's own regression, reproduced by the merge and caught
+before it could reach CI. Each fixture now treats the row as
+create-or-grant-membership: an absent row is created with the actor as owner, an
+already-present row gets the actor's `CONTRIBUTOR` membership via
+`set_membership` (which grants rather than duplicates). No test was added or
+removed; the `inventory-delta` above is unchanged, and the full backend suite
+still collects 3959 node IDs. Executed in this round: `pytest
+packages/hive-conductor/backend/tests` -> 3958 passed, 1 skipped (pg legs via
+`MAISTRO_TEST_PG_DSN`); the six lane suites pass 149/149 with both store legs;
+`packages/maistro-core/tests/scheduling` 314/314; ruff check/format, mypy
+(canonical seven-package command), suite inventory, vulture, radon,
+promotion-surface, reachability, image-pins and image-inventory gates all green
+at candidate 85f242595155 + this fixture repair; a post-merge rebuild of the
+hive-conductor image trivy-scans 0 HIGH/CRITICAL at the security.yml gate
+arguments (golang 1.27.3 + #1152's refreshed python base, both pins
+byte-identical to develop).

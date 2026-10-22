@@ -109,9 +109,19 @@ async def configured(database_url: str, monkeypatch: pytest.MonkeyPatch) -> Asyn
             await container.pg_pool.execute(f"TRUNCATE {listed} RESTART IDENTITY CASCADE")
         else:
             assert isinstance(container.schedule_store, SqliteScheduleStore)
-        await container.workspace_store.create(
-            creator_user_id="tick-actor", name="Tick WS", workspace_id="tick-parity"
-        )
+        # Composition provisions the configured Workspace (#1152); the actor
+        # membership is this fixture's own contribution. An already-present
+        # row gets the membership granted, never a second create.
+        if await container.workspace_store.get("tick-parity") is None:
+            await container.workspace_store.create(
+                creator_user_id="tick-actor", name="Tick WS", workspace_id="tick-parity"
+            )
+        else:
+            from maistro.workspaces.model import WorkspaceRole
+
+            await container.workspace_store.set_membership(
+                "tick-parity", user_id="tick-actor", role=WorkspaceRole.CONTRIBUTOR
+            )
         root = await container.project_scope_store.root_for_workspace("tick-parity")
         await container.template_store.put(
             GraphTemplate(

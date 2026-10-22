@@ -394,9 +394,19 @@ def test_scheduler_tick_executes_the_admitted_run_to_completion(
         container = await create_container(
             AgentConfig(router_api_key="test-key", workspace_id="ws-1")
         )
-        await container.workspace_store.create(
-            creator_user_id="user-1", name="Schedule WS", workspace_id="ws-1"
-        )
+        # Composition now provisions the configured Workspace (#1152), so the
+        # actor's membership is the piece this scenario owns: the row may
+        # already exist with a different owner.
+        if await container.workspace_store.get("ws-1") is None:
+            await container.workspace_store.create(
+                creator_user_id="user-1", name="Schedule WS", workspace_id="ws-1"
+            )
+        else:
+            from maistro.workspaces.model import WorkspaceRole
+
+            await container.workspace_store.set_membership(
+                "ws-1", user_id="user-1", role=WorkspaceRole.CONTRIBUTOR
+            )
         root = await container.project_scope_store.root_for_workspace("ws-1")
         await container.template_store.put(
             GraphTemplate(
@@ -685,10 +695,18 @@ async def _wired_container(database_url: str = "") -> tuple[Any, Any]:
     # the scenario provisions the membership the routes verify at create
     # time; the canonical Workspace provisions its own Root Project.
     # Idempotent: the restart scenarios build a second container over the
-    # same database.
+    # same database, and composition itself now provisions the configured
+    # Workspace (#1152), so an already-present row gets the actor's
+    # membership rather than a second create.
     if await container.workspace_store.get("ws-1") is None:
         await container.workspace_store.create(
             creator_user_id="user-1", name="Schedule WS", workspace_id="ws-1"
+        )
+    else:
+        from maistro.workspaces.model import WorkspaceRole
+
+        await container.workspace_store.set_membership(
+            "ws-1", user_id="user-1", role=WorkspaceRole.CONTRIBUTOR
         )
     root = await container.project_scope_store.root_for_workspace("ws-1")
     await container.template_store.put(
