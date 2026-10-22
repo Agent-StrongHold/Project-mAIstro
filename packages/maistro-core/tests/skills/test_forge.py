@@ -8,7 +8,10 @@ from typing import Any
 import pytest
 
 from maistro.skills.forge import SkillForge
+from maistro.skills.import_pipeline import InMemoryPolicyAttachmentStore
+from maistro.skills.registry import InMemorySkillRegistry
 from maistro.types.memory import Learning
+from maistro.types.skill import SkillDefinition
 
 VALID_SKILL_CONTENT = """---
 name: my_skill
@@ -292,3 +295,142 @@ async def test_call_llm_returns_none_on_exception(skills_dir: Path) -> None:
     forge = SkillForge(llm=llm, skills_dir=skills_dir)
     result = await forge._call_llm("prompt")
     assert result is None
+
+
+# ------------------------------------------------- the governed forge gate
+
+
+async def test_forge_refuses_when_the_trust_policy_rejects_the_registration(
+    skills_dir: Path,
+) -> None:
+    registry = InMemorySkillRegistry()
+    # The host already holds this name at a tier a forged body may not
+    # replace: the forge is refused instead of the forged content inheriting
+    # an approval the host never gave it.
+    registry.register(
+        SkillDefinition(
+            name="my_skill",
+            description="Operator vetted",
+            trust_tier="t0",
+            source="host",
+        )
+    )
+    llm = _StubLLMClient(response=_llm_response(VALID_SKILL_CONTENT))
+    forge = SkillForge(llm=llm, skills_dir=skills_dir, registry=registry)
+
+    with pytest.raises(ValueError, match="Skill trust policy rejected registration"):
+        await forge.forge("make me a skill")
+    assert not (skills_dir / "my_skill.md").exists()
+
+
+async def test_forge_records_the_host_policy_attachment(skills_dir: Path) -> None:
+    policy_store = InMemoryPolicyAttachmentStore()
+    llm = _StubLLMClient(response=_llm_response(VALID_SKILL_CONTENT))
+    forge = SkillForge(llm=llm, skills_dir=skills_dir, policy_store=policy_store)
+
+    skill = await forge.forge("make me a skill")
+    attachment = policy_store.get("my_skill")
+    assert attachment is not None
+    assert attachment.provenance == "forge"
+    assert attachment.content_hash == skill.content_hash
+
+
+async def test_forge_refuses_to_overwrite_a_symlinked_skill_file(skills_dir: Path) -> None:
+    skills_dir.mkdir(parents=True)
+    # A symlink that points at a path inside the root but names no file yet:
+    # the write path refuses it instead of following it.
+    (skills_dir / "my_skill.md").symlink_to(skills_dir / "pending.md")
+    llm = _StubLLMClient(response=_llm_response(VALID_SKILL_CONTENT))
+    forge = SkillForge(llm=llm, skills_dir=skills_dir)
+
+    with pytest.raises(ValueError, match="Refusing to overwrite symlink"):
+        await forge.forge("make me a skill")
+
+
+async def test_mutate_registers_the_rewritten_body_at_the_forge_tier(skills_dir: Path) -> None:
+    registry = InMemorySkillRegistry()
+    skills_dir.mkdir(parents=True)
+    (skills_dir / "my_skill.md").write_text(VALID_SKILL_CONTENT, encoding="utf-8")
+    mutated_content = VALID_SKILL_CONTENT.replace("Body text here.", "Body text here. Be careful.")
+    llm = _StubLLMClient(response=_llm_response(mutated_content))
+    forge = SkillForge(llm=llm, skills_dir=skills_dir, registry=registry)
+
+    result = await forge.mutate("my_skill", Learning(learning="be careful"))
+    assert result["status"] == "mutated"
+    stored = registry.get("my_skill")
+    assert stored is not None
+    # A rewritten body starts at the forge's tier, not at whatever the parser
+    # defaults to: the mutation has to earn its trust again.
+    assert stored.trust_tier == "t3"
+    assert stored.provenance == "forge"
+
+
+async def test_mutate_is_blocked_when_the_registry_refuses_the_rewritten_body(
+    skills_dir: Path,
+) -> None:
+    registry = InMemorySkillRegistry()
+    skills_dir.mkdir(parents=True)
+    (skills_dir / "my_skill.md").write_text(VALID_SKILL_CONTENT, encoding="utf-8")
+    # The host holds this skill at a tier the rewrite may not replace.
+    registry.register(
+        SkillDefinition(
+            name="my_skill",
+            description="Operator vetted",
+            trust_tier="t0",
+            source="host",
+        )
+    )
+    mutated_content = VALID_SKILL_CONTENT.replace("Body text here.", "Body text here. Be careful.")
+    llm = _StubLLMClient(response=_llm_response(mutated_content))
+    forge = SkillForge(llm=llm, skills_dir=skills_dir, registry=registry)
+
+    result = await forge.mutate("my_skill", Learning(learning="be careful"))
+    assert result["status"] == "blocked"
+    assert "trust policy" in result["reason"]
+    # A refused mutation writes nothing: the file on disk is untouched.
+    assert (skills_dir / "my_skill.md").read_text(encoding="utf-8") == VALID_SKILL_CONTENT
+
+
+async def test_mutate_records_the_host_policy_attachment(skills_dir: Path) -> None:
+    policy_store = InMemoryPolicyAttachmentStore()
+    skills_dir.mkdir(parents=True)
+    (skills_dir / "my_skill.md").write_text(VALID_SKILL_CONTENT, encoding="utf-8")
+    mutated_content = VALID_SKILL_CONTENT.replace("Body text here.", "Body text here. Be careful.")
+    llm = _StubLLMClient(response=_llm_response(mutated_content))
+    forge = SkillForge(llm=llm, skills_dir=skills_dir, policy_store=policy_store)
+
+    result = await forge.mutate("my_skill", Learning(learning="be careful"))
+    assert result["status"] == "mutated"
+    attachment = policy_store.get("my_skill")
+    assert attachment is not None
+    assert attachment.provenance == "forge"
+
+
+async def test_mutate_refuses_a_skill_that_resolves_outside_the_skills_directory(
+    skills_dir: Path, tmp_path: Path
+) -> None:
+    # A community directory that is a symlink resolves the skill file outside
+    # the authorized root: the mutation is refused before the file is read.
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "my_skill.md").write_text(VALID_SKILL_CONTENT, encoding="utf-8")
+    skills_dir.mkdir(parents=True)
+    (skills_dir / "community").symlink_to(outside, target_is_directory=True)
+
+    llm = _StubLLMClient()
+    forge = SkillForge(llm=llm, skills_dir=skills_dir)
+    result = await forge.mutate("my_skill", Learning(learning="be careful"))
+    assert result["status"] == "blocked"
+    assert "escapes skills directory" in result["reason"]
+    assert llm.calls == []
+
+
+async def test_mutate_reports_an_empty_body_after_the_fences_are_stripped(skills_dir: Path) -> None:
+    skills_dir.mkdir(parents=True)
+    (skills_dir / "my_skill.md").write_text(VALID_SKILL_CONTENT, encoding="utf-8")
+    # Fenced output that is empty once the fences are stripped.
+    llm = _StubLLMClient(response=_llm_response("```\n\n```"))
+    forge = SkillForge(llm=llm, skills_dir=skills_dir)
+    result = await forge.mutate("my_skill", Learning(learning="be careful"))
+    assert result["status"] == "error"
+    assert result["error"] == "LLM returned empty response"

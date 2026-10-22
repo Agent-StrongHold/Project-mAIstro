@@ -102,6 +102,19 @@ class TestRegisterAndResolve:
         with pytest.raises(CodeRefUnresolved):
             registry.register(entry, verifier=verifier)
 
+    def test_register_without_a_verifier_raises(self) -> None:
+        # Signed code only enters the registry through a verifier: with none
+        # configured there is nothing that could vouch for the body.
+        signer = Ed25519PrivateKey.generate()
+        entry = _make_signed_entry(signer=signer)
+
+        registry = CodeRegistry()
+        with pytest.raises(InvalidSignature):
+            registry.register(entry)
+
+        with pytest.raises(CodeRefUnresolved):
+            registry.resolve("my_compensator@1.0.0")
+
 
 def test_resolve_rechecks_signature_after_registration() -> None:
     class RotatingVerifier:

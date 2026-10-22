@@ -37,7 +37,9 @@ def _clear_mcp_stores():
     _clear(stores.mcp_tools)
 
 
-def _make_server(sid: str = "s1", url: str = "http://example.invalid") -> MCPServer:
+def _make_server(
+    sid: str = "s1", url: str = "http://example.invalid", approved: bool = True
+) -> MCPServer:
     return MCPServer(
         id=sid,
         name="Server",
@@ -45,7 +47,7 @@ def _make_server(sid: str = "s1", url: str = "http://example.invalid") -> MCPSer
         url=url,
         status="connecting",
         tools_count=0,
-        approved=True,
+        approved=approved,
         approved_by="test-admin",
     )
 
@@ -169,6 +171,24 @@ def test_approval_binds_a_finite_tool_allowlist(admin_client: Any) -> None:
     assert [tool["name"] for tool in admin_client.get("/v1/mcp/tools").json()] == ["safe_tool"]
 
 
+def test_approve_unknown_server_returns_404(admin_client: Any) -> None:
+    r = admin_client.post("/v1/mcp/servers/missing/approve", json={"allowed_tools": ["t"]})
+    assert r.status_code == 404
+
+
+@pytest.mark.parametrize("allowed_tools", [[], ["not_a_discovered_tool"]])
+def test_approval_requires_a_non_empty_allowlist_of_discovered_tools(
+    admin_client: Any, allowed_tools: list[str]
+) -> None:
+    stores.mcp_servers["s1"] = _make_server()
+    stores.mcp_tools["allowed"] = MCPTool(
+        id="allowed", server_id="s1", name="safe_tool", description="d"
+    )
+
+    r = admin_client.post("/v1/mcp/servers/s1/approve", json={"allowed_tools": allowed_tools})
+    assert r.status_code == 400
+
+
 # --------------------------------------------------------------------------- #
 # DELETE /servers/{id} (admin-gated: "mcp.delete")
 # --------------------------------------------------------------------------- #
@@ -257,6 +277,25 @@ def test_test_connection_no_server_id_tests_all(admin_client: Any, monkeypatch) 
 def test_test_connection_no_servers_returns_empty_results(admin_client: Any) -> None:
     r = admin_client.post("/v1/mcp/test", json={})
     assert r.json() == {"results": []}
+
+
+def test_test_connection_skips_servers_that_are_not_approved(
+    admin_client: Any, monkeypatch
+) -> None:
+    stores.mcp_servers["s1"] = _make_server(sid="s1")
+    stores.mcp_servers["s2"] = _make_server(sid="s2", approved=False)
+
+    async def fake_test(server_id, *, user_id=None, url=""):
+        return {"ok": True, "server_id": server_id}
+
+    monkeypatch.setattr("services.mcp_client.test_mcp_server", fake_test)
+
+    r = admin_client.post("/v1/mcp/test", json={})
+    assert r.status_code == 200
+    results = r.json()["results"]
+    # An unapproved server is never contacted: approval is the ceiling on
+    # what the platform will talk to.
+    assert {res["server_id"] for res in results} == {"s1"}
 
 
 # --------------------------------------------------------------------------- #

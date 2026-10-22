@@ -14,6 +14,7 @@ import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
+from maistro.security.trust import UNVETTED_TRUST_TIER, is_known_trust_tier
 from maistro.skills.fixer import fix_content
 from maistro.skills.parser import parse_skill_file, security_scan
 from maistro.types.skill import SkillDefinition, SkillMetadata
@@ -84,13 +85,17 @@ class SkillMarketplace:
     ) -> SkillDefinition:
         """Install a skill from a URL.
 
+        ``trust_tier`` is the *host's* decision about the installed skill; the
+        fetched content never names its own tier. A tier the host does not
+        recognize is not promoted -- it lands on the unvetted floor.
+
         Raises ValueError on fetch failure, parse failure, or security rejection.
         """
         _block_ssrf(url)
 
         content = await self._fetch_skill_content(url)
         fixed = self._repair_skill_content(content)
-        skill = self._build_installed_skill(fixed, url)
+        skill = self._build_installed_skill(fixed, url, trust_tier)
         self._persist_installed_skill(skill, fixed)
 
         logger.info("Installed skill '%s' from %s", skill.name, url)
@@ -124,7 +129,7 @@ class SkillMarketplace:
             raise ValueError(msg)
         return fixed
 
-    def _build_installed_skill(self, fixed: str, url: str) -> SkillDefinition:
+    def _build_installed_skill(self, fixed: str, url: str, trust_tier: str) -> SkillDefinition:
         skill = parse_skill_file(fixed, source=url)
         if skill is None:
             msg = f"Failed to parse skill from {url}"
@@ -138,10 +143,20 @@ class SkillMarketplace:
             auth_key_env=skill.auth_key_env,
             system_prompt=skill.system_prompt,
             source=url,
-            trust_tier="t3",
+            trust_tier=self._install_tier(trust_tier),
             provenance=url,
             content_hash=hashlib.sha256(fixed.encode("utf-8")).hexdigest(),
         )
+
+    @staticmethod
+    def _install_tier(trust_tier: str) -> str:
+        """The tier the host asked for, or the unvetted floor.
+
+        The tier belongs to the host: the fetched document never names its own
+        tier, and a tier the host does not recognize is not laundered into a
+        usable one -- it lands on the unvetted floor instead.
+        """
+        return trust_tier if is_known_trust_tier(trust_tier) else UNVETTED_TRUST_TIER
 
     def _persist_installed_skill(self, skill: SkillDefinition, fixed: str) -> None:
         self._skills_dir.mkdir(parents=True, exist_ok=True)

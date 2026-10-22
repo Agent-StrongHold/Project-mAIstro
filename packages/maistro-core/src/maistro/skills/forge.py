@@ -12,10 +12,11 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from maistro.security.trust import UNVETTED_TRUST_TIER
 from maistro.skills.parser import parse_skill_file, security_scan, validate_skill_name
 from maistro.types.skill import SkillDefinition
 
@@ -158,7 +159,7 @@ class SkillForge:
             auth_key_env=skill.auth_key_env,
             system_prompt=skill.system_prompt,
             source="forge",
-            trust_tier="t3",
+            trust_tier=UNVETTED_TRUST_TIER,
             provenance="forge",
             content_hash=hashlib.sha256(content.encode("utf-8")).hexdigest(),
         )
@@ -230,11 +231,7 @@ class SkillForge:
         if registration_error is not None:
             return registration_error
 
-        persist_error = self._persist_mutated_skill(
-            prepared.filepath, skill_name, new_content, full_hash
-        )
-        if persist_error is not None:
-            return persist_error
+        self._persist_mutated_skill(prepared.filepath, skill_name, new_content, full_hash)
         logger.info(
             "Mutated skill '%s' (%s -> %s)",
             skill_name,
@@ -321,8 +318,18 @@ class SkillForge:
         if self._registry is None:
             return None
         mutated_skill = parse_skill_file(new_content, source="forge")
-        if mutated_skill is None or not self._registry.register(
+        if mutated_skill is None:
+            return {"status": "error", "error": "Mutated content failed to parse"}
+        # A mutation is a body change: the rewritten body starts at the
+        # forge's own tier, never at whatever the parser happens to default
+        # to, and the host keeps the provenance of the rewrite.
+        mutated = replace(
             mutated_skill,
+            trust_tier=UNVETTED_TRUST_TIER,
+            provenance="forge",
+        )
+        if not self._registry.register(
+            mutated,
             content_hash=full_hash,
             provenance="forge",
         ):
@@ -331,7 +338,7 @@ class SkillForge:
 
     def _persist_mutated_skill(
         self, filepath: Path, skill_name: str, new_content: str, full_hash: str
-    ) -> dict[str, Any] | None:
+    ) -> None:
         filepath.write_text(new_content, encoding="utf-8")
         if self._policy_store is not None:
             from maistro.skills.import_pipeline import PolicyAttachment
@@ -343,7 +350,6 @@ class SkillForge:
                     provenance="forge",
                 )
             )
-        return None
 
     def _resolve_forge_path(self, skill_name: str) -> Path:
         filepath = self._skills_dir / f"{skill_name}.md"
