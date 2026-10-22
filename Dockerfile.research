@@ -48,11 +48,12 @@ RUN pip install --no-cache-dir \
 
 # ---- docker CLI build ----
 # Same policy as the root Dockerfile: the published docker:29-cli binary embeds
-# go1.26.8 stdlib (trivy HIGHs fixed in go1.26.9/1.27.2) and no released
+# go1.26.8 stdlib (trivy HIGHs fixed in go1.26.9/1.27.2; go1.27.2 itself carried
+# CVE-2026-111943, fixed in go1.26.10/1.27.3) and no released
 # docker:xx-cli tag ships a newer toolchain, so build the exact immutable
 # release tag ourselves on the patched toolchain. Tag resolves to dfc520d; fail
 # if upstream ever disagrees.
-FROM golang:1.27.2-alpine@sha256:f92b6ef800e499660581efdabdf25d9d817a9d124eaf900924f0504e7e27e12d AS dockerclibuild
+FROM golang:1.27.3-alpine@sha256:d530cf60723abf1ffae0cd16bb546b379ec0550d2f3815e5b16ed69dbc00fba4 AS dockerclibuild
 ARG DOCKER_CLI_VERSION=29.9.1
 ARG DOCKER_CLI_COMMIT_SHORT=dfc520d
 RUN apk add --no-cache git && \

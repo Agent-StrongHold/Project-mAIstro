@@ -105,8 +105,8 @@ Locally, scan the **actual built tags** when possible; otherwise scan the real b
 # Actual base images in use (grep '^FROM' across Dockerfile, Dockerfile.research,
 # Dockerfile.rsi-runner, packages/hive-conductor/Dockerfile):
 #   python:3.13.16-slim-bookworm (Dockerfile), python:3.12-slim (Dockerfile.research, Dockerfile.rsi-runner),
-#   node:22-alpine, golang:1.27.2-alpine, cgr.dev/chainguard/python:latest[-dev] (hive-conductor)
-for img in python:3.13.16-slim-bookworm python:3.12-slim node:22-alpine golang:1.27.2-alpine cgr.dev/chainguard/python:latest; do
+#   node:22-alpine, golang:1.27.3-alpine, cgr.dev/chainguard/python:latest[-dev] (hive-conductor)
+for img in python:3.13.16-slim-bookworm python:3.12-slim node:22-alpine golang:1.27.3-alpine cgr.dev/chainguard/python:latest; do
   echo "### trivy image $img ###"
   trivy image --scanners vuln,secret,misconfig --severity MEDIUM,HIGH,CRITICAL --no-progress -q \
     --ignorefile .trivyignore.yaml "$img" > /tmp/trivy-image.out 2>&1; rc=$?

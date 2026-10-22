@@ -45,11 +45,11 @@
     },
     {
       "image": "golang",
-      "tag": "1.27.2-alpine",
-      "digest": "sha256:f92b6ef800e499660581efdabdf25d9d817a9d124eaf900924f0504e7e27e12d",
-      "recorded": "2026-10-19",
-      "recorded_in": "#363",
-      "note": "Builds the age static binaries and the static docker CLI from their pinned upstream release tags (#363): the published docker:29-cli binary embeds go1.26.8 stdlib and the age prebuilt binary go1.25.x, both carrying 2026 stdlib HIGHs (CVE-2026-78667/78669/97031, fixed in go1.26.9/1.27.2) that no released tag of either project ships fixed.",
+      "tag": "1.27.3-alpine",
+      "digest": "sha256:d530cf60723abf1ffae0cd16bb546b379ec0550d2f3815e5b16ed69dbc00fba4",
+      "recorded": "2026-10-22",
+      "recorded_in": "#2238",
+      "note": "Builds the age static binaries and the static docker CLI from their pinned upstream release tags (#363): the published docker:29-cli binary embeds go1.26.8 stdlib and the age prebuilt binary go1.25.x, both carrying 2026 stdlib HIGHs (CVE-2026-78667/78669/97031, fixed in go1.26.9/1.27.2) that no released tag of either project ships fixed. Bumped 1.27.2 -> 1.27.3 because trivy flagged CVE-2026-111943 (crypto/x509 MITM, fixed in go1.26.10/1.27.3) in the rebuilt age and docker-cli binaries the 1.27.2 toolchain produced.",
       "used_by": [
         "packages/hive-conductor/Dockerfile",
         "Dockerfile",
