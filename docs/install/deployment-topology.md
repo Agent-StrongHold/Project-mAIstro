@@ -149,6 +149,31 @@ The decrypting identity must never live only beside the ciphertext it opens, so
 The off-host backup stream carries ciphertext only; replicate the escrow off-host
 through your secret manager by a separate path.
 
+The Conductor capture is allowlisted: only the online `state.db` snapshot and
+regular `secrets.age` / `user_credentials.enc` files enter `conductor-data/`.
+Live SQLite files, WAL/SHM/journal sidecars, decryption keys, hidden files and
+unknown volume contents are not copied. Symlink or non-regular ciphertext and
+key inputs fail the backup rather than being followed or silently skipped.
+The restore verifier rejects unexpected or linked Conductor capture entries,
+even if their hashes match or `SKIP_CONDUCTOR_BACKUP=1` is set.
+
+`BACKUP_ROOT` and `ESCROW_ROOT` must resolve to disjoint directory trees: neither
+may contain the other, including through symlink aliases. Both dated destinations
+must be owned by the invoking user, owner-only, non-symlink directories and empty
+before Docker runs. An existing empty private directory is supported. Re-running
+on the same date after success or partial failure refuses to merge or overwrite
+files: preserve that run and choose a fresh, separate pair of roots before retrying.
+Existing permissions are not recursively repaired. These checks assume trusted
+operator-managed ancestors and no concurrent mutation of the directories; they
+are not a defense against an attacker racing path replacement on the host.
+
+This enforces the existing artifact/escrow boundary, not a new persistence
+architecture or proof of coordinated key rotation. The weekly decrypt drill
+still verifies that the escrowed roots open the captured ciphertext. Old backups
+that contain keys or SQLite sidecars must not be treated as isolated artifacts;
+keep them private and create a fresh verified backup, rather than merely
+regenerating their manifests.
+
 **What becomes unrecoverable if the escrow is lost:** every value in
 `secrets.age` is gone permanently — age/X25519 has no recovery path, so a
 restored Conductor fails closed on its vault (`SECRET_MISSING`) — and every
