@@ -272,7 +272,7 @@ class _UpgradeError(Exception):
     """A preflight or planning error that aborts before any external command."""
 
 
-def _resolve_compose_runtime() -> list[str]:
+def _resolve_compose_runtime(manifest: InstallManifest | None = None) -> list[str]:
     """The compose front-end to drive the stack with, as an argv prefix.
 
     Compose v1 has no fallback (#407): the legacy ``docker-compose`` binary
@@ -280,7 +280,17 @@ def _resolve_compose_runtime() -> list[str]:
     the default front-end, and ``_compose_support_error`` refuses the upgrade
     with platform-specific upgrade instructions instead of letting a phase
     fail mid-way.
+
+    #1820: an install that selected a runtime records it in the manifest, and
+    the upgrade honors that recording — the same front-end that started the
+    stack finishes the upgrade. Falling back to the docker-first probe would
+    silently hand a selected Podman install to Docker the first time the
+    operator upgrades. An unrecorded/`auto` runtime keeps the documented
+    docker-then-podman order.
     """
+    recorded = (manifest.container_runtime or "").strip() if manifest else ""
+    if recorded in ("docker", "podman"):
+        return [recorded, "compose"]
     if shutil.which("docker"):
         # Prefer docker over podman where both exist (most predictable image
         # pinning).
@@ -322,7 +332,7 @@ class _Upgrade:
         self.backup_dir: Path | None = None
         self._cutover_attempted = False
         self._previous_revision: str | None = None
-        self._compose = _resolve_compose_runtime()
+        self._compose = _resolve_compose_runtime(manifest)
         # Archive-swap bookkeeping: the previous release tree is retained as a
         # sibling until the upgrade commits, so any later failure can restore it.
         self._archive_old: Path | None = None
