@@ -1,5 +1,67 @@
 # Repair notes — #845 round (job 9d1d8b32, branch auto-845 @ 89875a6e0)
 
+## Round 3 (job 736c5d8f, @ merge-queue evaluation of 8b35f5193): CI ledger repair
+
+The merge-queue evaluation failed five jobs. Three were this branch's own
+ledger gaps; two were environment-shaped. All fixed or bounded locally:
+
+1. **`delegation_grants` joined the Run purge inventory**
+   (`maistro/runs/retention_scope.py`). The table carries a `run_id` column
+   (a grant binds the Run whose execution it authorizes), so
+   `test_every_run_id_table_is_in_the_purge_inventory` correctly refused it
+   as unaccounted-for. Added to `RUN_REFERENCING_TABLES` + docstring row with
+   the Preserve policy — authorization provenance, TTL-filtered at read time,
+   expiry-sweep owner decision #72 — the same class as `capability_approvals`.
+2. **Retired the unread `Container.delegation_authority` field.**
+   `check-wiring-reads.py` flags a field no production module reads, and its
+   own failure text prescribes the repair: "give the field a reader, or retire
+   it" — banking is structurally unavailable to the introducing branch
+   (authorizations load from the merge base). The field was a second reference
+   to the instance Sentinel already holds, with no production or test consumer
+   (every `delegation_authority=` kwarg in the tree constructs a `Sentinel` or
+   a user model, never a Container). Removed the field declaration and the
+   `Container(...)` kwarg; the canonical authority path is untouched:
+   `_wire_delegation_authority` -> `Sentinel(delegation_authority=...)` (the
+   one delegated-authority service, per the issue's stop condition). This is
+   the ADR-082426-6201 posture: wiring with no reader is the defect
+   check-wiring-reads.py exists for (#133 `archive_store`, #225 `a2a_broker`).
+3. **Synced the accepted CI obligation inventory**
+   (`tests/fixtures/ci_quality_obligations.json`): the branch's one-line
+   quality.yml change (running `test_delegation_durable.py` in the
+   coverage-postgres producer) changed that job's accepted digest; the
+   fixture pins exactly what CI runs, and the established maintenance pattern
+   (29fbf8678, bb5f165c2) updates the digest with the legitimate change.
+   Recomputed: only `coverage-postgres` drifted.
+4. **pip-audit (Supply chain)**: reproduced CI's exact recipe locally
+   (`uv sync --locked --all-extras` -> `uv pip freeze --exclude-editable` ->
+   `pip-audit --strict --format=json -r` -> `pip_audit_gate.py`): exit 0 —
+   the only advisory in the locked set is `ecdsa PYSEC-2026-1325`, triaged in
+   ALLOWED. The CI failure's own log shows the registry-outage retry text
+   ("produced no usable report after 3 attempts"), an infrastructure
+   transient; the gate passes on this tree's dependency set.
+5. **Container scan + SBOM + cosign**: the branch's container inputs are
+   byte-identical to develop (`git diff 774ae42..HEAD -- Dockerfile*
+   packages/hive-conductor/Dockerfile uv.lock .trivyignore.yaml
+   quality/image-inventory.json` is empty), so the job's outcome cannot be
+   branch-caused. Bounded local reproduction: built `hive-conductor:pr-845-local`
+   and `maistro-engine:pr-845-local`, ran CI's identity-contract verification
+   inside the image (pass), and Trivy HIGH/CRITICAL `--ignore-unfixed` against
+   `.trivyignore.yaml` — both images scan clean (exit 0).
+
+Round-3 evidence (all at the final tree): ruff check/format clean;
+`check-wiring-reads.py` with `RATCHET_BASE_REV=origin/develop` exit 0 (11 ->
+11 unread); `tests/test_check_wiring_reads.py` + `tests/test_ci_quality_split.py`
+132 passed; `test_retention_reference_inventory.py` 13 passed (+ retention
+conformance/scope/policy suites 102 passed, 28 PG-env skips); vulture with
+ci.yml's exact args exit 0 (1314 identities, no ledger amendment);
+pip-audit gate exit 0; durable-table inventory 115 tables ok; suite inventory
+21 suites ok (no test added or removed this round, so no inventory-note);
+promotion-surface, reachability, security-inventory, workflow-inventory,
+ratchet-provenance, backlog-consistency, radon (RATCHET_BASE_REV=origin/develop,
+128 -> 128) all exit 0; maistro-core security + a2a 1722 passed / 24 skipped;
+container wiring suites 143 passed; hive legacy-DAG + graph-execution-authority
++ graph-runner 87 passed.
+
 ## Round 2 (job cd6e7f37, @ 9ecb0fc6e): collision re-repair — delegation grants
 renumbered 066 -> 067
 

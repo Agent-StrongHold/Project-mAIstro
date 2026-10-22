@@ -516,10 +516,6 @@ class Container:
     # Sentinel so a future request/confirm surface has somewhere to persist a
     # cleared grant; Sentinel reads the same instance.
     elevation_store: ElevationStore = None  # type: ignore[assignment]
-    # Host-authorized delegation authority (#845). Held here as well as inside
-    # Sentinel so a host component can provision grants; Sentinel reads the
-    # same instance.
-    delegation_authority: DelegationAuthority | None = None
     # Strike ladder (SPEC-012 / security/gate.py). None unless
     # config.security.strike_tracking_enabled -- see create_container.
     strike_tracker: StrikeTracker | None = None
@@ -2821,7 +2817,6 @@ async def create_container(
             strike_recovery=strike_recovery,
             sentinel=sentinel,
             elevation_store=elevation_store,
-            delegation_authority=delegation_authority,
             context_builder=context_builder,
             intent_registry=intent_registry,
             capabilities=capabilities,
