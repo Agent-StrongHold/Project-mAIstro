@@ -368,25 +368,40 @@ main() {
   # pg_isready alone can pass inside that window and pg_restore then dies with
   # `FATAL: database "${PG_DB}" does not exist` — observed live in CI
   # (tests/test_restore_oracle_characterization.py, 2026-10-18). The loop
-  # therefore additionally requires one successful query against ${PG_DB}.
-  # Budget: 120 probes at 1s (see test_verify_readiness_failure_is_diagnosable).
-  for _ in $(seq 1 120); do
+  # therefore requires pg_isready AND one successful query against ${PG_DB}:
+  # a loop keyed on pg_isready alone can break mid-init (pg_isready checks the
+  # socket, not the final server), and the restore that follows then fails as
+  # RESTORE instead of waiting out the restart.
+  #
+  # Readiness budget: 180 probes (~3 min). The drill's first CI appearance
+  # (quality.yml coverage-gate, 2026-10-18) failed exactly here on a shared
+  # runner: `docker run` had succeeded and the image was already cached, but a
+  # runner congested by the same job's 12-minute root suite left initdb slower
+  # than the old 60-probe budget, so the drill reported VERIFIER FAIL for
+  # infrastructure rather than for the backup under verification. (develop's
+  # #2185 set 120; the merged budget keeps this branch's longer 180-probe pin
+  # from the same failure class — see
+  # test_verify_drill_readiness_budget_absorbs_a_loaded_runner.) A probe that
+  # finds the container gone reports the engine's last log lines immediately
+  # instead of spinning out the remaining budget on a container that can no
+  # longer become ready.
+  for _ in $(seq 1 180); do
     if docker exec "${SCRATCH_NAME}" pg_isready -U "${PG_USER}" >/dev/null 2>&1 \
       && docker exec "${SCRATCH_NAME}" psql -X -q -U "${PG_USER}" -d "${PG_DB}" \
         -c 'SELECT 1;' >/dev/null 2>&1; then
       break
     fi
     if [[ "$(docker inspect -f '{{.State.Running}}' "${SCRATCH_NAME}" 2>/dev/null)" != "true" ]]; then
-      docker logs "${SCRATCH_NAME}" >&2 2>/dev/null || true
-      fail_verifier "scratch postgres exited before becoming ready (its logs are above)"
+      docker logs "${SCRATCH_NAME}" 2>&1 | tail -40 >&2 || true
+      fail_verifier "scratch postgres container exited before becoming ready (last log lines above)"
     fi
     sleep 1
   done
   docker exec "${SCRATCH_NAME}" psql -X -q -U "${PG_USER}" -d "${PG_DB}" \
     -c 'SELECT 1;' >/dev/null 2>&1 \
     || {
-      docker logs "${SCRATCH_NAME}" >&2 2>/dev/null || true
-      fail_verifier "scratch postgres did not become ready with database ${PG_DB} within 120s (its logs are above)"
+      docker logs "${SCRATCH_NAME}" 2>&1 | tail -40 >&2 || true
+      fail_verifier "scratch postgres did not become ready with database ${PG_DB} within 180s (its logs are above)"
     }
 
   # ── 3. Restore the custom-format archive ─────────────────────────────────────

@@ -27,6 +27,8 @@ lives in `test_restore_oracle_characterization.py` (docker-gated).
 
 from __future__ import annotations
 
+import hashlib
+import os
 import subprocess
 from pathlib import Path
 
@@ -167,7 +169,11 @@ def test_verify_readiness_failure_is_diagnosable() -> None:
     assert "{{.State.Running}}" in verify, (
         "readiness must fail fast when the container has exited — waiting cannot help"
     )
-    assert "seq 1 120" in verify, "readiness budget must absorb slow initdb under load"
+    # Budget reconciled in the 7f8683be2 develop sync: #2185 set 120 here while
+    # this branch's #1820 repair pinned 180 for the same congested-runner
+    # failure class; the merged budget keeps the longer 180-probe pin, which
+    # satisfies this test's contract (absorb slow initdb under load).
+    assert "seq 1 180" in verify, "readiness budget must absorb slow initdb under load"
     old = _pre_change_script("verify-restore.sh")
     assert "docker logs" not in old, "pre-change script unexpectedly already dumped logs"
 
@@ -244,13 +250,17 @@ def test_scratch_ready_means_the_target_database_answers() -> None:
     # The DB-answering condition, not pg_isready alone, is what breaks the
     # loop; and the post-loop guard falls into the verifier class when the
     # target database never becomes ready.
-    loop_body = verify.split("for _ in $(seq 1 120); do", 1)[1].split("done", 1)[0]
+    # Split on the drill's actual loop header (180 probes since the #1820
+    # readiness repair). The pre-#1820 literal `seq 1 60` no longer occurs in
+    # the script, which made the split fall back to the whole file before the
+    # first `done` — the assertions passed without isolating the loop body.
+    loop_body = verify.split("for _ in $(seq 1 180); do", 1)[1].split("done", 1)[0]
     assert "pg_isready" in loop_body, "the scratch loop must still probe the server"
     assert "psql" in loop_body and '-d "${PG_DB}"' in loop_body, (
         "the scratch loop must require the target database to answer, "
         "not just a listening server (entrypoint temp-server race)"
     )
-    tail = verify.split("for _ in $(seq 1 120); do", 1)[1].split("done", 1)[1]
+    tail = verify.split("for _ in $(seq 1 180); do", 1)[1].split("done", 1)[1]
     assert 'fail_verifier "scratch postgres did not become ready' in tail, (
         "a never-ready scratch database must fail as a verifier failure"
     )
@@ -371,3 +381,135 @@ def test_oracle_begin_snapshot_rejects_a_garbage_snapshot_id() -> None:
     assert out.returncode == 0, out.stdout + out.stderr
     assert "BEGIN_FAILED" in out.stdout and "REJECTED" in out.stdout, out.stdout + out.stderr
     assert "unbound variable" not in out.stderr, out.stderr
+
+
+# ── Scratch readiness: fail fast on a dead container, wait long enough ──────
+# CI regression (quality.yml coverage-gate, 2026-10-18): on a runner congested
+# by the same job's 12-minute root suite, initdb outlived the drill's 60-probe
+# readiness budget and the drill reported VERIFIER FAIL for infrastructure.
+# Two properties prevent a repeat: the budget must be long enough to absorb a
+# loaded runner, and a scratch container that has EXITED must be reported
+# immediately — with its last log lines — instead of burning the whole budget
+# on a container that can never become ready.
+
+
+READINESS_BUDGET_PROBES = 180
+
+
+def _fake_docker_shim(bin_dir: Path, probe_log: Path) -> None:
+    """Write a `docker` shim whose engine never becomes ready and whose one
+    container is already exited. The shim records every pg_isready probe to
+    `probe_log`, so the test can count probes instead of asserting wall-clock
+    timing (which would pin the host's speed, not the drill's behavior)."""
+    shim = bin_dir / "docker"
+    shim.write_text(
+        "#!/usr/bin/env bash\n"
+        'case "$1" in\n'
+        "  run) echo shim-container-id ;;\n"
+        "  exec)\n"
+        f'    echo "$2" >> {probe_log}\n'
+        "    exit 1 ;;\n"
+        "  inspect) echo false ;;\n"
+        "  logs)\n"
+        '    echo "shim-engine: FATAL: did not start" >&2 ;;\n'
+        "  *)\n"
+        '    echo "shim docker: unexpected: $*" >&2\n'
+        "    exit 1 ;;\n"
+        "esac\n",
+        encoding="utf-8",
+    )
+    shim.chmod(0o755)
+
+
+def _write_backup_artifacts(backup_dir: Path) -> None:
+    """Fabricate the artifact set the drill's preflight integrity-checks, so the
+    drill reaches the scratch-readiness step instead of failing ARTIFACT first."""
+    backup_dir.mkdir(parents=True)
+    evidence = "accounts=3\nledger=2\n"
+    for name, content in (
+        ("postgres-maistro.dump", b"PGDMP shim archive"),
+        ("postgres-maistro.schema", b"public.accounts\n"),
+        ("postgres-maistro.rowcounts", evidence.encode()),
+        ("postgres-maistro.provenance", b"snapshot=00000013-00000002-1\nserver_version=17.0\n"),
+    ):  # digest of every artifact is pre-registered beside it
+        path = backup_dir / name
+        path.write_bytes(content)
+        digest = hashlib.sha256(content).hexdigest()
+        (backup_dir / f"{name}.sha256").write_text(f"{digest}  {name}\n")
+
+
+def test_verify_drill_fails_fast_when_scratch_container_dies(tmp_path: Path) -> None:
+    """A scratch postgres that exits before readiness must fail VERIFIER fast,
+
+    naming the exit and carrying the engine's last log lines — never burn the
+    full readiness budget probing a container that can no longer start. The
+    old loop had no liveness check: a dead container cost the whole budget and
+    the message blamed readiness rather than the exit, exactly what a loaded
+    CI runner turned into an opaque VERIFIER FAIL minutes into a job."""
+    date = "2026-10-18"
+    backup_root = tmp_path / "backups"
+    _write_backup_artifacts(backup_root / date)
+    probe_log = tmp_path / "pg-isready-probes.log"
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _fake_docker_shim(bin_dir, probe_log)
+
+    env = dict(os.environ)
+    env.update(
+        PATH=f"{bin_dir}{os.pathsep}{env['PATH']}",
+        BACKUP_ROOT=str(backup_root),
+        PG_IMAGE="shim-never-ready:latest",
+        POSTGRES_USER="maistro",
+        POSTGRES_DB="maistro",
+    )
+    proc = subprocess.run(
+        ["bash", str(VERIFY_SH), date],
+        capture_output=True,
+        text=True,
+        env=env,
+        cwd=str(REPO),
+        timeout=60,
+    )
+    assert proc.returncode != 0, proc.stdout
+    assert "VERIFIER FAIL" in proc.stderr, f"{proc.stdout}\n{proc.stderr}"
+    # The dead container is named as dead, and its last log lines travel with
+    # the failure — the operator sees the engine's own error, not just the
+    # drill's verdict.
+    assert "exited before becoming ready" in proc.stderr, f"{proc.stdout}\n{proc.stderr}"
+    assert "shim-engine: FATAL: did not start" in proc.stderr, f"{proc.stdout}\n{proc.stderr}"
+    # Fail fast, proven structurally: one readiness probe happened, not the
+    # whole budget. Counting probes pins the behavior without asserting the
+    # host's wall-clock speed.
+    probes = probe_log.read_text().splitlines()
+    assert len(probes) < 10, (
+        f"the drill probed a dead container {len(probes)} times — "
+        "the liveness check must stop the wait as soon as the container exits"
+    )
+
+
+def test_verify_drill_readiness_budget_absorbs_a_loaded_runner() -> None:
+    """The readiness budget must be able to outlast a congested CI runner.
+
+    The failing run showed initdb outliving a 60-probe budget on a runner that
+    had just executed a 12-minute suite. The budget is pinned here as text so
+    an accidental shrink back to ~60 fails this review-time assertion, the
+    same way the suite pins the drill's other load-bearing structure."""
+    verify = _read(VERIFY_SH)
+    assert f"seq 1 {READINESS_BUDGET_PROBES}" in verify, (
+        f"the scratch readiness budget must stay at {READINESS_BUDGET_PROBES} probes; "
+        "the 2026-10-18 coverage-gate failure exhausted a 60-probe budget on a "
+        "congested runner"
+    )
+    # And the loop must keep checking liveness: a longer budget alone would
+    # just spend more time failing opaquely on a dead container.
+    assert ".State.Running" in verify, (
+        "the readiness loop must fail fast when the scratch container has exited"
+    )
+    # Readiness must be proven by a real query, not pg_isready alone:
+    # pg_isready also answers during initdb's temporary-server window, so a
+    # pg_isready-keyed loop can break mid-init and the restore that follows
+    # fails as RESTORE instead of waiting out the restart.
+    assert "SELECT 1" in verify, (
+        "scratch readiness must be confirmed by a real query on the final server, "
+        "not pg_isready alone (pg_isready answers during initdb's temporary server)"
+    )

@@ -16,7 +16,7 @@ No live services, production data or security settings are touched.
 
 Existing test counts are unchanged: the Conductor drill fixture now moves its
 age identity into escrow instead of retaining a leaked artifact copy, and the
-readiness structural check scopes itself to the actual 120-iteration loop
+readiness structural check scopes itself to the actual 180-iteration loop
 rather than accidentally inspecting an earlier `done`. The production
 PostgreSQL readiness/semantic-oracle code is unchanged.
 
