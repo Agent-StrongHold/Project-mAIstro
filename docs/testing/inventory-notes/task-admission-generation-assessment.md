@@ -7003,3 +7003,66 @@ TAKEOVER↔REPLACE_EXPIRED swap → 50 failed; lease row moved before the bindin
 row → 16 failed; `LEGACY_UNRESOLVED` row removed (legacy pending falls through
 to lease logic) → 10 failed; mismatch row moved before the expiry row → 22
 failed. All four issue-named regression classes are caught.
+
+## Round 85 (job bdafcf3074e74604875b023f8ed090e4): verification + develop sync at
+## 848d76738 — merge of origin/develop (c29e0ea70) into auto-1852; all gates
+## re-proven first-hand on the merged head
+
+The lane head lacked its declared develop base, so origin/develop (`c29e0ea70`,
+via `156be3ad4`, `9ef97945e`) was merged (`848d76738166`). The only
+both-sides-touched file is `quality/vulture-baseline.json`; the merge kept both
+sides' removals (verified: vs `origin/develop` the ledger differs only by the
+branch-side five `admission_identity.py` enum-member rows the gate itself
+ordered pruned in round 83; develop's `last_error_code` prunes are
+incorporated). No conflict markers, no row resurrection. The merge brought
+develop's +183 maistro-core test node IDs together with develop's own baseline
+update, so `check-suite-inventory.py` matches the recorded inventory with no
+further edit (21/21 suites, 33544 node IDs, rc=0).
+
+Post-merge first-hand battery at `848d76738166`:
+
+- `ruff check .` → All checks passed; `ruff format --check .` → 3439 files
+  already formatted.
+- `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'` → rc=0: 1315 reviewed identities → 1310 findings,
+  unclassified=0, never_allowlist=0. The exact-debt-ledger vulture component
+  is green without any suppression.
+- `check-reachability-dispositions.py` → rc=0 (47 groups, 157 modules:
+  136 CONNECT, 20 LIBRARY, 1 RETIRE).
+- `check-promotion-surface.py` → rc=0.
+- `check-ratchet-provenance.py` → every ratchet OK except `reachability`.
+- `check-reachability.py` → rc=1 with exactly one newly unreachable module,
+  `maistro.tasks.admission_generation` (158 unreachable vs baseline 157,
+  stale = []). This is the issue-mandated merge blocker: #1852 forbids
+  baseline entries, grants, keep-alive imports, or fake callers for this
+  leaf, and no reachability authorization exists on either side of the
+  merge. It is retired only by the parent #1845 integration wiring the real
+  consumer. The three root tests that restate the gate
+  (`test_baseline_matches_the_tree`, both `test_reachability_baseline_identity`
+  identity tests) fail on exactly this single-element delta: 3 failed /
+  36 passed, nothing else.
+- `pytest packages/maistro-core/tests -q` → **16349 passed, 1178 skipped,
+  7 xfailed, 0 failed** (includes the publication pair and the focused
+  classifier suite); the driver trio (`test_pack_contracts.py` +
+  `test_runs_admission_identity_publication.py` +
+  `test_admission_generation_assessment.py`) → 268 passed;
+  `test_root_admission_identity.py` + `test_idempotency.py` → 146 passed;
+  `mypy packages/maistro-core/src/maistro/tasks/admission_generation.py` →
+  Success.
+- Prohibited surfaces (`tasks/idempotency.py`, `tasks/__init__.py`,
+  `runs/__init__.py`, `tasks/queue.py`, `runs/admission_identity.py`)
+  zero-diff vs `origin/develop`; the branch's entire src-side diff vs develop
+  is the new leaf plus a benign docstring/whitespace clarification in
+  `extensions/packs.py` from an earlier declared round.
+- Mutation teeth re-proven first-hand at the merged head (cp backup, md5
+  `257a6e45c382349dd12f559099663fbc` verified byte-identical after each
+  restore): TAKEOVER↔REPLACE_EXPIRED swap → 50 failed; lease row moved before
+  the binding row → 12 failed; `LEGACY_UNRESOLVED` row removed → 10 failed;
+  mismatch row moved before the expiry row → 22 failed. A third production
+  importer of `maistro.runs.admission_identity` (temporary probe import in
+  `tasks/checkpoint.py`, restored clean) fails
+  `test_the_package_publication_is_the_only_production_edge`, proving the
+  two-edge pin kept its exactness.
+
+No ledger or grant file was edited in this round; the only quality-tree state
+is the merged develop side plus the round-83 prune documented above.
