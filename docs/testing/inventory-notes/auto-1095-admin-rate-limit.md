@@ -24,3 +24,11 @@ if `RateLimitMiddleware._extract_key` regresses to the old gate.
 Positive control: with the pre-#1095 gate reinstated in-memory
 (`if not settings.api_keys: return _pre_auth_client_key(request)`), both
 tests fail (2 failed); with the current gate both pass (2 passed).
+
+Independent re-execution (repair round at head `111ad600a`, repair commit
+`e52231a56`, `rate_limit.py` sha256 `6fb9cc62…ad8e95b0`): current gate →
+`2 passed, 1 warning in 2.01s`; old gate reinstated in-memory → `2 failed in
+2.01s` (both tests); file restored byte-for-byte (sha256 re-verified). The
+distinguishing assertions are the same-client invalid bearer after principal
+exhaustion and the second client address sharing the secret — exactly the
+two scenarios the original review found missing.
