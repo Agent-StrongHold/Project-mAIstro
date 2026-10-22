@@ -215,7 +215,11 @@ def test_delete_server_missing_404(admin_client: Any) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# POST /servers/{id}/scan
+# POST /servers/{id}/scan — explicit unsupported (#389, #288)
+#
+# This route used to answer {"findings": [], "status": "clean"} without
+# running anything. It now refuses explicitly (501) instead of fabricating a
+# verdict; the contract test enumerates it as an unsupported scan surface.
 # --------------------------------------------------------------------------- #
 
 
