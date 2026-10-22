@@ -25,6 +25,11 @@ def _split_frontmatter(content: str) -> tuple[str, str] | None:
 _VALID_NAME_RE = re.compile(r"^[a-z][a-z0-9_]{1,50}$")
 MAX_SKILL_BODY_LENGTH = 50000
 
+#: Identity/version of the content scanner below. Bump it whenever the
+#: critical or warning pattern sets change: a `clean` skills scan is only
+#: reproducible if the result says which rule set judged it (#288).
+SKILL_SECURITY_SCAN_VERSION = "skills-security-scan/1"
+
 # Trust tier is never self-declared. A skill's own frontmatter is
 # attacker-controlled content -- only a separate, authenticated promotion
 # step may raise the host-selected unvetted tier.
