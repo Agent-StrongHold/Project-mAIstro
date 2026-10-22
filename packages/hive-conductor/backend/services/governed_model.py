@@ -7,7 +7,7 @@ for the provider's transient registration call; health-check requests and
 Invocation records contain no credential material. Authorization precedes every
 HTTP effect: provider registration is Invocation-internal setup (#1088), and
 evaluator/health invocations correlate to canonical Run/NodeRun/Attempt records
-minted for the requesting operation, never to invented identifiers.
+admitted by the requesting domain, never to invented identifiers.
 """
 
 from __future__ import annotations
@@ -19,35 +19,26 @@ from typing import Any
 from maistro.agents.types import LLMProviderError
 from maistro.capabilities.admitted_model import AdmittedModelCalls
 from maistro.capabilities.binding import Binding
-from maistro.capabilities.binding_store import BindingResolutionError
+from maistro.capabilities.binding_store import BindingResolutionError, register_boot_binding
 from maistro.capabilities.effect_context import CapabilityEffectContext
 from maistro.capabilities.governed_invocation import (
     InvocationApprovalRequired,
     InvocationDenied,
 )
 from maistro.capabilities.invocation import CapabilityUnavailable
-from maistro.capabilities.model_chat import ModelCallResult, ModelChatEgress
+from maistro.capabilities.model_chat import ModelCallResult, ModelChatEgress, ModelSetupError
 from maistro.capabilities.providers.llm_gateway import (
     DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,
     MODEL_CHAT_CAPABILITY,
     MODEL_GATEWAY_CREDENTIAL_PROVIDER,
     GatewayEndpoint,
     ModelChatRequest,
-    ProviderRegistrationError,
     register_provider_models,
 )
+from maistro.credentials.router import CredentialScopeError
 from maistro.credentials.types import CredentialRecord
-from maistro.graph.definitions import Graph, Node
 from maistro.graph.nodes.base import NodeContext
 from maistro.providers.protocols import LLMProviderRegistry, LLMRouter
-from maistro.runs.lifecycle import transition_path
-from maistro.runs.model import (
-    AcceptedNodeOutcome,
-    AttemptResult,
-    AttemptStatus,
-    RunStatus,
-)
-from maistro.runs.store_boundary import require_admitted_actor
 
 
 class ProviderActivationError(RuntimeError):
@@ -150,6 +141,18 @@ def control_plane_binding(
             api_key=runtime.endpoint.api_key,
         ),
     )
+    return control_plane_binding_definition(
+        binding_id=binding_id,
+        workspace_id=workspace_id,
+        project_id=project_id,
+        provider_name=provider_name,
+    )
+
+
+def control_plane_binding_definition(
+    *, binding_id: str, workspace_id: str, project_id: str, provider_name: str
+) -> Binding:
+    """Build the shipped immutable definition without changing credential state."""
     return Binding(
         binding_id=binding_id,
         workspace_id=workspace_id,
@@ -336,14 +339,12 @@ async def dag_tool_completion(
 async def ensure_binding(runtime: GovernedModelRuntime, binding: Binding) -> Binding:
     """Register an immutable control-plane Binding once, then reuse it."""
 
-    existing = await runtime.effects.bindings.get(binding.binding_id)
-    if existing is None:
-        return await runtime.effects.bindings.put(binding)
-    if existing != binding:
+    try:
+        return await register_boot_binding(runtime.effects.bindings, binding)
+    except ValueError as exc:
         raise BindingResolutionError(
             f"Binding {binding.binding_id!r} is immutable and does not match the request"
-        )
-    return existing
+        ) from exc
 
 
 async def resolve_binding(
@@ -358,39 +359,6 @@ async def resolve_binding(
         project_id=binding.project_id,
         node_id=binding.node_id,
         capability=binding.capability,
-    )
-
-
-async def complete(
-    *,
-    runtime: GovernedModelRuntime,
-    binding: Binding,
-    run_id: str,
-    node_run_id: str,
-    attempt_id: str,
-    effect_key: str,
-    request: ModelChatRequest,
-    setup: Any | None = None,
-) -> ModelCallResult:
-    """Execute a model request through canonical Binding -> Invocation.
-
-    ``setup`` is Provider-internal preparation handed to the egress; it runs
-    only after Binding scope resolution and policy authorization (#1088).
-    """
-
-    return await ModelChatEgress(
-        runtime.effects,
-        registry=runtime.registry,
-        router=runtime.router,
-        endpoint=runtime.endpoint,
-    ).complete(
-        binding=binding,
-        run_id=run_id,
-        node_run_id=node_run_id,
-        attempt_id=attempt_id,
-        effect_key=effect_key,
-        request=request,
-        setup=setup,
     )
 
 
@@ -419,20 +387,28 @@ async def register_and_health_check(
     An unknown pin refuses before setup and must remain an actionable error.
     """
 
-    async def register_then_probe() -> None:
-        try:
-            await register_provider_models(runtime.endpoint, models=models, api_key=api_key)
-        except ProviderRegistrationError as exc:
-            raise ProviderActivationError(str(exc)) from exc
+    if runtime.run_store is None:
+        raise RuntimeError("canonical provider activation requires the Container run store")
+    calls = AdmittedModelCalls(
+        runtime.effects,
+        registry=runtime.registry,
+        router=runtime.router,
+        endpoint=runtime.endpoint,
+        run_store=runtime.run_store,
+        binding_ids=(binding.binding_id,),
+    )
 
-    health_binding = binding.model_copy(update={"provider_name": provider_name})
+    async def register_then_probe() -> None:
+        await register_provider_models(runtime.endpoint, models=models, api_key=api_key)
+
+    identity = (run_id, node_run_id, attempt_id)
     try:
-        return await complete(
-            runtime=runtime,
-            binding=health_binding,
-            run_id=run_id,
-            node_run_id=node_run_id,
-            attempt_id=attempt_id,
+        pin = await calls.pinned_model(identity=identity, binding_id=binding.binding_id)
+        if pin != provider_name:
+            raise BindingResolutionError("provider health Binding pin does not match the catalogue")
+        return await calls.complete(
+            identity=identity,
+            binding_id=binding.binding_id,
             effect_key=f"provider.health:{provider_name}",
             request=ModelChatRequest(
                 model=provider_name,
@@ -441,161 +417,35 @@ async def register_and_health_check(
             ),
             setup=register_then_probe,
         )
-    except ProviderActivationError:
-        raise
-    except CapabilityUnavailable as exc:
+    except ModelSetupError:
+        raise ProviderActivationError("model gateway provider registration failed") from None
+    except CapabilityUnavailable:
         raise ProviderHealthError(
-            f"provider health selection unavailable for {provider_name}: {exc}"
-        ) from exc
-    except (BindingResolutionError, InvocationDenied, InvocationApprovalRequired) as exc:
+            "provider health pinned model or scoped credential is unavailable; "
+            "an explicit selection does not fall back. Register metadata in the "
+            "configured ProviderRegistry (provider_config_path); gateway /model/new "
+            "is not sufficient"
+        ) from None
+    except (
+        BindingResolutionError,
+        InvocationDenied,
+        InvocationApprovalRequired,
+        CredentialScopeError,
+    ):
         raise ProviderAuthorizationError(
             f"provider health authorization failed for {provider_name}"
-        ) from exc
-    except Exception as exc:
-        raise ProviderHealthError(f"provider health check failed for {provider_name}") from exc
-
-
-@dataclass(frozen=True)
-class OperationIdentity:
-    """Correlation identity minted as real canonical Run/NodeRun/Attempt records.
-
-    Control-plane model effects (evaluator judgments, provider health checks)
-    are not imaginary Attempts on someone else's Run: this adapter mints a
-    canonical one-node child Run for the operation, so every Invocation recorded
-    beneath it references records that actually exist on the canonical spine
-    (#1088). ``parent_run_id`` ties the operation to the Run that requested it.
-    """
-
-    run_id: str
-    node_run_id: str
-    attempt_id: str
-    operation: str
-
-
-async def mint_operation_identity(
-    runtime: GovernedModelRuntime,
-    *,
-    operation: str,
-    workspace_id: str,
-    project_id: str,
-    parent_run_id: str = "",
-    actor_principal_id: str | None = None,
-    provenance: dict[str, Any] | None = None,
-) -> OperationIdentity:
-    """Mint the canonical Run -> NodeRun -> Attempt identity for one operation.
-
-    Fails closed when the canonical spine is unavailable or the requesting Run
-    does not exist: an Invocation must correlate to records that exist, not to
-    invented strings. The child Run terminalizes through
-    :func:`settle_operation_identity` once the operation's outcome is known.
-    """
-
-    store = runtime.run_store
-    if store is None:
-        raise RuntimeError(
-            "canonical run correlation is unavailable without the core Container run store"
-        )
-    parent_run_id = parent_run_id.strip()
-    parent_run = await store.get_run(parent_run_id) if parent_run_id else None
-    if parent_run_id and parent_run is None:
-        raise LookupError(f"canonical Run {parent_run_id!r} does not exist")
-    resolved_actor = parent_run.actor_principal_id if parent_run is not None else actor_principal_id
-    graph = Graph(
-        workspace_id=workspace_id,
-        project_id=project_id,
-        name=operation,
-        nodes=[Node(node_id=operation, node_type="control-plane", name=operation)],
-    )
-    run = await store.create_run(
-        graph,
-        parent_run_id=parent_run_id or None,
-        initial_status=RunStatus.QUEUED,
-        actor_principal_id=require_admitted_actor(resolved_actor),
-        provenance={
-            "admission_source": "control-plane-operation",
-            "operation": operation,
-            **(provenance or {}),
-        },
-    )
-    run = await store.transition_run(run.run_id, RunStatus.RUNNING)
-    node_run = await store.create_node_run(run.run_id, node_id=operation)
-    for step in transition_path(node_run.status, RunStatus.RUNNING):
-        node_run = await store.transition_node_run(node_run.node_run_id, step)
-    attempt = await store.create_attempt(node_run.node_run_id)
-    await store.transition_attempt(attempt.attempt_id, AttemptStatus.RUNNING)
-    return OperationIdentity(
-        run_id=run.run_id,
-        node_run_id=node_run.node_run_id,
-        attempt_id=attempt.attempt_id,
-        operation=operation,
-    )
-
-
-async def settle_operation_identity(
-    runtime: GovernedModelRuntime,
-    identity: OperationIdentity,
-    *,
-    outcome: str,
-    result: Any = None,
-    error: str | None = None,
-) -> None:
-    """Terminalize the minted operation records with the operation's truth.
-
-    ``outcome`` is ``completed`` (work succeeded), ``failed`` (the work ran and
-    did not succeed), or ``cancelled`` (authorization refused before the work
-    ran). Distinct terminal states are what make an authorization refusal
-    distinguishable from an execution failure in the canonical record too.
-    """
-
-    store = runtime.run_store
-    if store is None:  # pragma: no cover - mint refuses first
-        raise RuntimeError("cannot settle an operation without the canonical run store")
-    terminal = {
-        "completed": (AttemptStatus.COMPLETED, RunStatus.COMPLETED),
-        "failed": (AttemptStatus.FAILED, RunStatus.FAILED),
-        "cancelled": (AttemptStatus.CANCELLED, RunStatus.CANCELLED),
-    }
-    if outcome not in terminal:
-        raise ValueError(f"unknown operation outcome {outcome!r}")
-    attempt_status, run_status = terminal[outcome]
-    attempt = await store.transition_attempt(
-        identity.attempt_id,
-        attempt_status,
-        result=result,
-        error=error,
-    )
-    if outcome == "completed":
-        attempt_result = AttemptResult.from_attempt(attempt)
-        await store.transition_node_run(
-            identity.node_run_id,
-            RunStatus.COMPLETED,
-            result=attempt_result.result,
-            error=attempt_result.error,
-            accepted_outcome=AcceptedNodeOutcome(
-                node_run_id=identity.node_run_id,
-                attempt_result=attempt_result,
-            ),
-        )
-    else:
-        await store.transition_node_run(
-            identity.node_run_id,
-            run_status,
-            error=error,
-        )
-    await store.transition_run(identity.run_id, run_status, result=result, error=error)
+        ) from None
+    except Exception:
+        raise ProviderHealthError(f"provider health check failed for {provider_name}") from None
 
 
 __all__ = [
     "GovernedModelRuntime",
-    "OperationIdentity",
     "ProviderActivationError",
     "ProviderAuthorizationError",
     "ProviderHealthError",
-    "complete",
     "control_plane_binding",
     "ensure_binding",
-    "mint_operation_identity",
     "register_and_health_check",
     "resolve_binding",
-    "settle_operation_identity",
 ]
