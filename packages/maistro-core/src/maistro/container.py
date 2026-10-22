@@ -78,6 +78,7 @@ from maistro.quota.default_tracker import set_default_quota_tracker
 from maistro.quota.tracker import InMemoryQuotaTracker
 from maistro.quota.usage_log import InMemoryUsageLog, get_default_usage_log
 from maistro.router.selector import RouterEngine
+from maistro.runs.access import RunAuthorization
 from maistro.runs.chat_admission import (
     ADMISSION_INCOMPLETE,
     EXECUTION_NEVER_STARTED,
@@ -113,6 +114,7 @@ from maistro.scheduling.store import ScheduleStore
 from maistro.security._types import ANONYMOUS_AUTH
 from maistro.security.gate import Gate
 from maistro.security.outbound import configure_outbound_policy, configured_endpoints
+from maistro.security.sentinel.authz_types import Principal
 from maistro.security.warden.detector import Warden
 from maistro.sessions.store import InMemorySessionStore
 from maistro.tasks.admission import WorkspaceRoutingAdmitter
@@ -127,7 +129,11 @@ from maistro.workspaces.campaigns.wiring import (
     wire_in_memory_campaign_store,
 )
 from maistro.workspaces.store import WorkspaceStore
-from maistro.workspaces.wiring import WORKSPACE_PG_TABLES, wire_workspace_store
+from maistro.workspaces.wiring import (
+    DEFAULT_WORKSPACE_OWNER,
+    WORKSPACE_PG_TABLES,
+    wire_workspace_store,
+)
 
 if TYPE_CHECKING:
     import httpx  # type: ignore[import-not-found, unused-ignore]
@@ -686,6 +692,33 @@ class Container:
             principal = str(principal).strip() or None
         return principal
 
+    async def _chat_run_authorization(self, auth: Any) -> RunAuthorization | None:
+        """Build the Run admission identity from the authenticated caller.
+
+        Returns None only for the anonymous fallback: an identity-free turn
+        has no authenticated evidence, so admission keeps the legacy
+        actor-string path instead of minting a Principal that dresses
+        "anonymous" up as an authenticated identity. A real caller's
+        authorization carries its Workspace/Project scope and its principal,
+        so the store enforces the scope and owned-agent checks (#1152) rather
+        than copying one string into actor, initiator, and acting.
+        """
+        if auth is None or auth is ANONYMOUS_AUTH:
+            return None
+        principal = self._chat_actor_principal(auth)
+        if principal is None or self.chat_admitter is None:
+            return None
+        workspace_id, project_id = await self.chat_admitter.admission_scope()
+        return RunAuthorization(
+            workspace_id=workspace_id,
+            project_id=project_id,
+            # The chat completions boundary authenticates human callers
+            # (bearer -> AuthenticatedPrincipal); delegated execution rides on
+            # `acting_principal`, which admission resolves from the Graph's
+            # agent, never from this string.
+            authenticated_principal=Principal(id=principal, kind="human"),
+        )
+
     def _resolve_chat_auth(self, auth: Any) -> Any:
         """Evaluate an identity-free turn as the role-less anonymous principal.
 
@@ -919,11 +952,16 @@ class Container:
         """
         if self.chat_admitter is None:
             raise ChatTurnRefused("no chat admitter is wired, so the turn cannot get a Run")
+        authenticated = auth is not None
         auth = self._resolve_chat_auth(auth)
         run: Run | None = None
         try:
             admitter = self.chat_admitter
             principal = self._chat_actor_principal(auth)
+            # Built inside the admission failure net: a boundary that cannot
+            # resolve its scope refuses the turn (503) like any other
+            # admission failure, rather than admitting on the legacy path.
+            authorization = await self._chat_run_authorization(auth) if authenticated else None
             try:
                 run = await admitter.admit(
                     messages,
@@ -932,6 +970,7 @@ class Container:
                     intent_hint=intent_hint,
                     known_task_types=self.config.task_types,
                     actor_principal_id=principal,
+                    authorization=authorization,
                 )
             except RunConcurrencyExceeded:
                 # The slots may be held by turns a crashed process left behind,
@@ -946,6 +985,7 @@ class Container:
                     intent_hint=intent_hint,
                     known_task_types=self.config.task_types,
                     actor_principal_id=principal,
+                    authorization=authorization,
                 )
             # Two hops: a Run is born CREATED and the lifecycle has no edge
             # from there to RUNNING. Queued is momentarily true here — the turn
@@ -2251,6 +2291,34 @@ async def _wire_working_memory_backend(db_pool: Any) -> WorkingMemoryManager:
     return wire_in_memory_working_memory()
 
 
+async def _provision_configured_workspace(
+    workspace_store: WorkspaceStore, workspace_id: str
+) -> None:
+    """Provision the configured Workspace and its owner at composition, not
+    left to the first operator action (#1152 review): the default server path
+    admits Runs into `workspace_id` from the first request, while the Run read
+    boundary answers on Workspace membership held in this store — a fresh
+    deployment whose Workspace row and owner membership did not exist yet
+    would admit Runs it could then never read, and the HTTP API cannot help
+    because it mints ids rather than accepting this one. `create` also files
+    the Root Project, which the spine primed already and `create_root` treats
+    as create-or-return, and grants its creator the OWNER membership the
+    boundary reads. Idempotent: a restart (or a replica that won a concurrent
+    first start) finds the row and skips the write; a lost create race is
+    re-checked before failing, so only a store that cannot see the row it
+    just refused to duplicate raises."""
+    if await workspace_store.get(workspace_id) is None:
+        try:
+            await workspace_store.create(
+                creator_user_id=DEFAULT_WORKSPACE_OWNER,
+                name=workspace_id,
+                workspace_id=workspace_id,
+            )
+        except Exception:
+            if await workspace_store.get(workspace_id) is None:
+                raise
+
+
 async def create_container(
     config: AgentConfig,
     *,
@@ -2451,6 +2519,9 @@ async def create_container(
             persona_store=persona_store,
             pg_pool=pg_pool,
         )
+        # The configured Workspace is provisioned at composition, not left to
+        # the first operator action (#1152 review) — why is on the helper.
+        await _provision_configured_workspace(workspace_store, config.workspace_id)
         backlog_history_store = await wire_backlog_history_store(
             history_conn,
             project_store=project_scope_store,
