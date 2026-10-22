@@ -144,7 +144,7 @@ EXPECTED_TABLES = frozenset(
         "elevation_grants",
         # Host-authorized delegation grants (#845): the durable backing of the
         # delegation authority a Sentinel consults before honoring any
-        # agent-to-agent handoff. Lives at the end of the chain (066).
+        # agent-to-agent handoff. Lives at the end of the chain (067).
         "delegation_grants",
         "episodic_memories",
         "event_log",

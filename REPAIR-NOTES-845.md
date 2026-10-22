@@ -1,5 +1,33 @@
 # Repair notes — #845 round (job 9d1d8b32, branch auto-845 @ 89875a6e0)
 
+## Round 2 (job cd6e7f37, @ 9ecb0fc6e): collision re-repair — delegation grants
+renumbered 066 -> 067
+
+The develop sync (merge a9fdec4cb into auto-845) reintroduced the exact
+collision 8b8f6a5 had repaired one number earlier: develop's landed
+`066_durable_delivery_receipts` (#1060) arrived while this branch still held
+`066_delegation_grants`, so two revisions claimed id `066` on `down_revision
+065` and `alembic upgrade head` died with two heads. Per the chain convention
+the tests narrate (a landed trunk migration never moves; the branch revision
+renumbers past it), the salvage rename to 067 was completed:
+
+- `067_delegation_grants.py`: `revision = "067"`, `down_revision = "066"`
+  (linear 063 -> 064 -> 065 -> 066 -> 067, single head).
+- Head-pinning tests updated with the same narration style:
+  `test_capability_invocation_effect_index_migration.py` (heads == ["067"],
+  067 parents on 066), `test_goal_installed_base_upgrade.py` (CHAIN_HEAD =
+  "067", 067 parents on 066), `test_migration_chain.py` comment (067).
+- `quality/durable-table-retention.json`: "created by alembic 067".
+
+Evidence: fresh pg18 DB (maistro-coverage-pg:5433/verify845_migration) —
+`alembic heads` -> `067 (head)`; `uv run pytest tests/migrations -q` -> 170
+passed (was: FAILED exit 1); delegation/elevation durable PG legs 12 passed
+against the migrated DB (067's DDL satisfies the store); delegation authority
++ a2a broker + container wiring 309 passed; execution-tier host-authority
+(test_legacy_dag_node.py) green; ruff clean; durable-table and suite
+inventories ok; vulture with CI's exact args exit 0 (1314 identities, no
+ledger amendment needed).
+
 Continuation of the rate-limit-killed prior attempt; its uncommitted work was
 preserved as `incoming-845.patch` (backup at `/home/dev/Git/wt/incoming-845.patch`)
 and completed rather than restarted.
