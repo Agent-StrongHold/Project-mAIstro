@@ -17,6 +17,7 @@ from __future__ import annotations
 import importlib.machinery
 import importlib.util
 import json
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -603,6 +604,104 @@ class TestTheCliScopeEnvelope:
         out = capsys.readouterr().out
         assert code == check.PENDING_EXIT
         assert "execution scope is ambiguous" in out
+
+    def test_renamed_file_entry_in_changed_files_includes_both_paths(
+        self, check: ModuleType, tmp_path: Path
+    ) -> None:
+        """For a renamed file, the changed-files envelope must include both
+        the old and new paths so that the classifier can see the move in
+        either direction."""
+        # Given a renamed file that moves from an in-scope path to an out-of-scope path
+        old_path = "packages/maistro-core/a.py"
+        new_path = "docs/a.md"
+        payload = {"measured": True, "files": [old_path, new_path]}
+        envelope_path = _envelope(tmp_path, payload)
+        scope, measured = check._pull_request_scope(envelope_path)
+        assert measured is True
+        assert scope is not None
+        # The hive_e2e leg should be in scope due to the old path
+        assert scope.get("hive_e2e") is True
+
+    def test_renamed_file_entry_in_changed_files_includes_both_paths_opposite_direction(
+        self, check: ModuleType, tmp_path: Path
+    ) -> None:
+        """The classifier should also see the move when the file moves
+        from out-of-scope to in-scope."""
+        old_path = "docs/a.md"
+        new_path = "packages/maistro-core/a.py"
+        payload = {"measured": True, "files": [old_path, new_path]}
+        envelope_path = _envelope(tmp_path, payload)
+        scope, measured = check._pull_request_scope(envelope_path)
+        assert measured is True
+        assert scope is not None
+        # The hive_e2e leg should be in scope due to the new path
+        assert scope.get("hive_e2e") is True
+
+    @pytest.mark.skipif(
+        shutil.which("node") is None,
+        reason="node executes the workflow's github-script collection step",
+    )
+    def test_the_collection_script_emits_both_paths_for_a_rename(self, tmp_path: Path) -> None:
+        """The envelope tests above hand-craft `changed-files.json`, so they
+        cannot catch a collector that drops `previous_filename`. This one
+        executes the actual collection `script:` from gates-ran.yml against a
+        mocked `listFiles` response and asserts what it writes."""
+        import yaml
+
+        doc = yaml.safe_load((ROOT / ".github" / "workflows" / "gates-ran.yml").read_text())
+        scripts = [
+            step["with"]["script"]
+            for job in doc["jobs"].values()
+            for step in job.get("steps") or []
+            if step.get("name") == "Collect changed files for pull-request scope"
+        ]
+        assert len(scripts) == 1, "collection step missing from or duplicated in gates-ran.yml"
+        harness = (
+            "'use strict';\n"
+            "const github = {\n"
+            "  rest: { pulls: { listFiles: {} } },\n"
+            "  paginate: async () => [\n"
+            "    { filename: 'docs/a.md', status: 'renamed',\n"
+            "      previous_filename: 'packages/maistro-core/a.py' },\n"
+            "    { filename: 'tools/b.txt', status: 'added' },\n"
+            "    { filename: 'c.md', status: 'renamed' },\n"
+            "  ],\n"
+            "};\n"
+            "const core = { info: () => {}, warning: () => {} };\n"
+            "const context = { repo: { owner: 'owner', repo: 'repo' } };\n"
+            "(async () => {\n" + scripts[0] + "\n})().then(\n"
+            "  () => process.exit(0),\n"
+            "  (err) => { console.error(err); process.exit(1); },\n"
+            ");\n"
+        )
+        harness_path = tmp_path / "collect-changed-files.js"
+        harness_path.write_text(harness, encoding="utf-8")
+        proc = subprocess.run(
+            [shutil.which("node") or "node", str(harness_path)],
+            cwd=tmp_path,
+            env={"PR_NUMBER": "4242"},
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        assert proc.returncode == 0, proc.stderr
+
+        envelope = json.loads((tmp_path / "changed-files.json").read_text(encoding="utf-8"))
+        # A rename contributes both paths in listFiles order; an unrenamed
+        # file contributes only itself; a rename lacking previous_filename
+        # must not leak an undefined entry into the envelope. The cap flag
+        # from #1350 is present even when false, so the evaluator can tell
+        # an explicit complete measurement from a pre-#1350 envelope.
+        assert envelope == {
+            "measured": True,
+            "truncated": False,
+            "files": [
+                "docs/a.md",
+                "packages/maistro-core/a.py",
+                "tools/b.txt",
+                "c.md",
+            ],
+        }
 
 
 class TestTheReport:

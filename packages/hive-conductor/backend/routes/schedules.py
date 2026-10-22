@@ -255,13 +255,16 @@ async def schedule_history(request: Request, limit: int = 100) -> list[dict]:
         if row.workspace_id and row.workspace_id in allowed
     }
     events: list[dict] = []
-    for record in await audit_entries_view():
-        if record.get("action") not in _FIRE_AUDIT_ACTIONS:
-            continue
-        if record.get("target") not in visible:
-            continue
-        events.append(record)
-    events.sort(key=lambda e: str(e.get("created_at", "")), reverse=True)
+    for action in sorted(_FIRE_AUDIT_ACTIONS):
+        count = 0
+        async for record in audit_entries_view(request, action=action):
+            if record.get("target") not in visible:
+                continue
+            events.append(record)
+            count += 1
+            if count >= limit:
+                break
+    events.sort(key=lambda e: (str(e.get("created_at", "")), e["id"]), reverse=True)
     return events[:limit]
 
 

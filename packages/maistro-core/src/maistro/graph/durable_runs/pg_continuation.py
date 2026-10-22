@@ -64,6 +64,40 @@ def _list_run_ids_by_status_query(
     return sql, params
 
 
+def _list_hitl_paused_run_ids_query(
+    *,
+    project_id: str | None,
+    after: tuple[datetime, str] | None,
+    limit: int,
+) -> tuple[str, list[Any]]:
+    """The exact SQL `list_hitl_paused_run_ids` runs, exposed for the same
+    reason `_list_run_ids_by_status_query` is: a test can `EXPLAIN` the query
+    that ships.
+
+    The same two-literal-statements shape: `ix_graph_continuations_hitl_paused`
+    (migration 059) carries `(status, has_hitl_pause, created_at, run_id)`, and
+    an OR'd `$2 IS NULL OR project_id = $2` arm would degrade it to a
+    scan-plus-sort exactly as it would the status query above.
+    """
+    if project_id is None:
+        sql = "SELECT run_id FROM graph_continuations WHERE status = $1 AND has_hitl_pause"
+        params: list[Any] = [RunStatus.PAUSED.value]
+    else:
+        sql = (
+            "SELECT run_id FROM graph_continuations "
+            "WHERE status = $1 AND has_hitl_pause AND project_id = $2"
+        )
+        params = [RunStatus.PAUSED.value, project_id]
+    if after is not None:
+        after_created, after_run_id = after
+        cursor_param = len(params) + 1
+        sql += f" AND (created_at, run_id) > (${cursor_param}, ${cursor_param + 1})"
+        params.extend([after_created, after_run_id])
+    sql += f" ORDER BY created_at ASC, run_id ASC LIMIT ${len(params) + 1}"
+    params.append(limit)
+    return sql, params
+
+
 class PgGraphContinuationStore:
     """Durable continuation store beside the canonical spine."""
 
@@ -75,8 +109,8 @@ class PgGraphContinuationStore:
             row = await conn.fetchrow(
                 """INSERT INTO graph_continuations
                        (run_id, status, project_id, created_at, resume_at,
-                        hitl_deadline_at, version, continuation)
-                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8::text::jsonb)
+                        hitl_deadline_at, has_hitl_pause, version, continuation)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::text::jsonb)
                    ON CONFLICT (run_id) DO NOTHING
                    RETURNING run_id""",
                 *_values(continuation),
@@ -101,8 +135,9 @@ class PgGraphContinuationStore:
             row = await conn.fetchrow(
                 """UPDATE graph_continuations
                       SET status = $2, project_id = $3, created_at = $4, resume_at = $5,
-                          hitl_deadline_at = $6, version = $7, continuation = $8::text::jsonb
-                    WHERE run_id = $1 AND version < $7
+                          hitl_deadline_at = $6, has_hitl_pause = $7, version = $8,
+                          continuation = $9::text::jsonb
+                    WHERE run_id = $1 AND version < $8
                 RETURNING run_id""",
                 *_values(continuation),
             )
@@ -187,6 +222,23 @@ class PgGraphContinuationStore:
             )
         return [str(row["run_id"]) for row in rows]
 
+    async def list_hitl_paused_run_ids(
+        self,
+        *,
+        limit: int = 100,
+        project_id: str | None = None,
+        after: tuple[str, str] | None = None,
+    ) -> list[str]:
+        """Paused continuations holding a human pause, oldest first (#1109)."""
+        sql, params = _list_hitl_paused_run_ids_query(
+            project_id=project_id,
+            after=None if after is None else (datetime.fromisoformat(after[0]), after[1]),
+            limit=limit,
+        )
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(sql, *params)
+        return [str(row["run_id"]) for row in rows]
+
     async def list_run_ids_for_project(self, project_id: str, *, limit: int = 25) -> list[str]:
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
@@ -208,6 +260,7 @@ def _values(continuation: GraphContinuation) -> tuple[Any, ...]:
         continuation.created_at,
         continuation.resume_at,
         continuation.hitl_deadline_at,
+        continuation.has_hitl_pause,
         continuation.version,
         continuation.model_dump_json(),
     )

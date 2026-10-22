@@ -169,22 +169,32 @@ jobs:
             // that cap cannot be told apart from a complete one, so it is
             // recorded as truncated and the evaluator treats scope as
             // ambiguous: skipped specialized checks then stay pending
-            // instead of being excused on partial evidence.
+            // instead of being excused on partial evidence. The cap is
+            // measured on the API response (files.length), not on the
+            // rename-expanded path list.
             const truncated = files.length >= 3000;
+            // A rename's old path reaches this list only through
+            // `previous_filename` (#1349); the merge-group measurement diffs
+            // with --no-renames for the same reason, so a rename into or out
+            // of a scoped tree must classify by both edges, not just the
+            // destination path.
+            const filePaths = files.flatMap(file => {
+              const paths = [file.filename];
+              if (file.status === 'renamed' && file.previous_filename) {
+                paths.push(file.previous_filename);
+              }
+              return paths;
+            });
             fs.writeFileSync(
               'changed-files.json',
-              JSON.stringify({
-                measured: true,
-                truncated,
-                files: files.map(file => file.filename),
-              }),
+              JSON.stringify({ measured: true, truncated, files: filePaths }),
             );
             if (truncated) {
               core.warning(
                 `changed-file list hit the 3,000-file cap on PR #${number}; specialized scope is ambiguous`,
               );
             } else {
-              core.info(`${files.length} changed file(s) on PR #${number}`);
+              core.info(`${filePaths.length} changed file path(s) on PR #${number}`);
             }
 
       - name: Evaluate required execution evidence

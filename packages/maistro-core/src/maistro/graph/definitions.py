@@ -110,6 +110,8 @@ RUNTIME_STATE_ADMITTED: dict[str, str] = {
     "graph": "the definition an execution names, not execution state",
     "persona_id": "a definition-time binding, not execution state",
     "provenance": "template provenance is TemplateProvenance, a distinct field",
+    "goal_id": "admission provenance (#1572): immutable after admission, so a template can never supply it",
+    "goal_revision": "admission provenance (#1572): the desired-state revision the Run was admitted against, immutable after admission",
 }
 
 

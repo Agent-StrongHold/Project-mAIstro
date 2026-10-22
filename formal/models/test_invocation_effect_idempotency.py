@@ -24,10 +24,10 @@ asking the implementation what should happen next):
    pre-dispatch failure) terminalize FAILED; the next `invoke` is admitted.
    Generic exceptions and cancellation terminalize UNKNOWN — never retried
    until reconciliation settles them with evidence.
-4. *Logical effect identity is stable across physical Attempts.* A
-   `logical_effect=True` effect keys its admission on the Run, so a retry
-   under a brand-new Attempt *and* NodeRun replays; an ordinary effect stays
-   scoped to its NodeRun visit.
+4. *Logical effect identity is stable across physical Attempts.* An effect
+   admitted under a Run-stable `effect_scope` keys its admission on the Run,
+   so a retry under a brand-new Attempt *and* NodeRun replays; an ordinary
+   effect stays scoped to its NodeRun visit.
 5. *Terminal records always carry terminal timestamps.* Every row observed in
    the store satisfies `status is terminal <=> finished_at is not None`.
 6. *Concurrent same-effect attempts cannot double-dispatch.* Two workers
@@ -217,7 +217,10 @@ class InvocationEffectMachine(RuleBasedStateMachine):
                 attempt_id=self._attempt(),
                 effect_key=identity[0],
                 request=request,
-                logical_effect=identity[1] is None,
+                # The service keys admission on an explicit scope: a logical
+                # identity carries a Run-stable scope, an ordinary identity
+                # its NodeRun visit (invariant 4).
+                effect_scope=RUN_ID if identity[1] is None else node_run_id,
                 resolver=_resolve,
                 executor=self._execute,
             )
@@ -341,7 +344,7 @@ class InvocationEffectMachine(RuleBasedStateMachine):
             attempt_id=self._attempt(),
             effect_key=key,
             request=request,
-            logical_effect=True,
+            effect_scope=RUN_ID,
             resolver=_resolve,
             executor=self._execute,
         )
@@ -488,7 +491,7 @@ def test_completed_logical_effect_replays_without_redispatch(retries: int, repla
             attempt_id="attempt-first",
             effect_key="effect-replay",
             request={"outcome": "ok"},
-            logical_effect=True,
+            effect_scope=RUN_ID,
             resolver=_resolve,
             executor=execute,
         )
@@ -500,7 +503,7 @@ def test_completed_logical_effect_replays_without_redispatch(retries: int, repla
                 attempt_id=f"attempt-retry-{attempt}",
                 effect_key="effect-replay",
                 request={"outcome": "ok"},
-                logical_effect=True,
+                effect_scope=RUN_ID,
                 resolver=_resolve,
                 executor=execute,
             )
@@ -546,12 +549,21 @@ def test_ambiguous_outcome_blocks_until_evidence(outcome: str, settle: Reconcili
                 attempt_id="attempt-ambiguous",
                 effect_key="effect-ambiguous",
                 request={"outcome": outcome},
+                # One Run-stable identity for the whole scenario: the APPLIED
+                # branch replays from NODE_B, which is only a replay (and the
+                # dispatch counters only freeze) if every invoke admits under
+                # the same scope.
+                effect_scope=RUN_ID,
                 resolver=_resolve,
                 executor=execute,
             )
         assert calls["dispatch"] == 1
         blocked = await store.list_effect(
-            run_id=RUN_ID, node_run_id=NODE_A, binding_id=BINDING_ID, effect_key="effect-ambiguous"
+            run_id=RUN_ID,
+            node_run_id=NODE_A,
+            binding_id=BINDING_ID,
+            effect_key="effect-ambiguous",
+            effect_scope=RUN_ID,
         )
         assert blocked[-1].status is InvocationStatus.UNKNOWN
         assert blocked[-1].finished_at is not None
@@ -564,6 +576,7 @@ def test_ambiguous_outcome_blocks_until_evidence(outcome: str, settle: Reconcili
                 attempt_id="attempt-too-soon",
                 effect_key="effect-ambiguous",
                 request={"outcome": "ok"},
+                effect_scope=RUN_ID,
                 resolver=_resolve,
                 executor=execute,
             )
@@ -589,6 +602,7 @@ def test_ambiguous_outcome_blocks_until_evidence(outcome: str, settle: Reconcili
                     attempt_id="attempt-still-blocked",
                     effect_key="effect-ambiguous",
                     request={"outcome": "ok"},
+                    effect_scope=RUN_ID,
                     resolver=_resolve,
                     executor=execute,
                 )
@@ -604,7 +618,7 @@ def test_ambiguous_outcome_blocks_until_evidence(outcome: str, settle: Reconcili
                 attempt_id="attempt-replay",
                 effect_key="effect-ambiguous",
                 request={"outcome": "ok"},
-                logical_effect=True,
+                effect_scope=RUN_ID,
                 resolver=_resolve,
                 executor=execute,
             )
@@ -619,6 +633,7 @@ def test_ambiguous_outcome_blocks_until_evidence(outcome: str, settle: Reconcili
             attempt_id="attempt-after-proof",
             effect_key="effect-ambiguous",
             request={"outcome": "ok"},
+            effect_scope=RUN_ID,
             resolver=_resolve,
             executor=execute,
         )

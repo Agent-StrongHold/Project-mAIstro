@@ -104,9 +104,9 @@ Locally, scan the **actual built tags** when possible; otherwise scan the real b
 ```bash
 # Actual base images in use (grep '^FROM' across Dockerfile, Dockerfile.research,
 # Dockerfile.rsi-runner, packages/hive-conductor/Dockerfile):
-#   python:3.13.15-slim-bookworm (Dockerfile), python:3.12-slim (Dockerfile.research, Dockerfile.rsi-runner),
-#   node:22-alpine, golang:1.25.13-alpine, cgr.dev/chainguard/python:latest[-dev] (hive-conductor)
-for img in python:3.13.15-slim-bookworm python:3.12-slim node:22-alpine golang:1.25.13-alpine cgr.dev/chainguard/python:latest; do
+#   python:3.13.16-slim-bookworm (Dockerfile), python:3.12-slim (Dockerfile.research, Dockerfile.rsi-runner),
+#   node:22-alpine, golang:1.27.2-alpine, cgr.dev/chainguard/python:latest[-dev] (hive-conductor)
+for img in python:3.13.16-slim-bookworm python:3.12-slim node:22-alpine golang:1.27.2-alpine cgr.dev/chainguard/python:latest; do
   echo "### trivy image $img ###"
   trivy image --scanners vuln,secret,misconfig --severity MEDIUM,HIGH,CRITICAL --no-progress -q \
     --ignorefile .trivyignore.yaml "$img" > /tmp/trivy-image.out 2>&1; rc=$?
@@ -121,7 +121,7 @@ tail -20 /tmp/dockle.out; echo "dockle rc=$rc"
 ```
 
 **Reality check — what it takes to truthfully say "zero Medium+":** the Debian-based images
-(`python:3.12-slim`, `python:3.13.15-slim-bookworm`) carry HIGH/CRITICAL OS-package CVEs at any given
+(`python:3.12-slim`, `python:3.13.16-slim-bookworm`) carry HIGH/CRITICAL OS-package CVEs at any given
 time that you often cannot fix (they wait on upstream). This repo already adopted the mitigations —
 `packages/hive-conductor/Dockerfile` builds on **`cgr.dev/chainguard/python`** (Wolfi, scans near-zero),
 and the rest are gated by CI's nightly trivy/grype job. To *mean* the claim you need one of:

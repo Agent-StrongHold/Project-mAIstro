@@ -1,8 +1,8 @@
 ---
 inventory-delta:
-  packages/hive-conductor/backend/tests: +4
   packages/maistro-core/tests: +6
   packages/maistro-server/tests: +1
+  packages/hive-conductor/backend/tests: +4
 ---
 
 # 1169 canonical cancellation coverage
