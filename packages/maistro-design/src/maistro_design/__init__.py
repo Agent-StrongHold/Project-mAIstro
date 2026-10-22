@@ -30,22 +30,6 @@ from maistro_design.brief import (
     RequiredFact,
 )
 from maistro_design.engine import DesignEngine
-
-# M7-A6 (#795): the closed design-loop proof driver is a published surface of
-# this package — the issue asks for one *public* proof Run, and the driver is
-# how a reviewer reproduces it (`docs/product/M7-A6-DESIGN-LOOP-PROOF.md`).
-# Exposed here rather than left unreachable so the reachability ratchet sees a
-# real call path instead of unreviewed built-but-never-wired code.
-from maistro_design.proof import (
-    PLANTED_DIMENSION_ID,
-    PRODUCT_GOAL_STATEMENT,
-    PROOF_GOAL_ID,
-    DesignLoopProof,
-    InMemoryGoalRevisionCatalog,
-    pack_rubric_catalog,
-    run_design_loop_proof,
-    score_artifact_against_rubric,
-)
 from maistro_design.explore import (
     EXPLORE_NODE_KIND,
     THESIS_NODE_KIND,
@@ -62,6 +46,22 @@ from maistro_design.model_judge import (
     DesignJudgeOut,
     DesignJudgeThesis,
     HumanJudgeNotResolvedError,
+)
+
+# M7-A6 (#795): the closed design-loop proof driver is a published surface of
+# this package — the issue asks for one *public* proof Run, and the driver is
+# how a reviewer reproduces it (`docs/product/M7-A6-DESIGN-LOOP-PROOF.md`).
+# Exposed here rather than left unreachable so the reachability ratchet sees a
+# real call path instead of unreviewed built-but-never-wired code.
+from maistro_design.proof import (
+    PLANTED_DIMENSION_ID,
+    PRODUCT_GOAL_STATEMENT,
+    PROOF_GOAL_ID,
+    DesignLoopProof,
+    InMemoryGoalRevisionCatalog,
+    pack_rubric_catalog,
+    run_design_loop_proof,
+    score_artifact_against_rubric,
 )
 from maistro_design.protocols import (
     DesignEngineProtocol,
