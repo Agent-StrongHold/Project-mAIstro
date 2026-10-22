@@ -82,15 +82,17 @@ RUN python /tmp/prune-dependency-namespaces.py \
 
 # ---- docker CLI build ----
 # The published docker:29-cli binary is built with go1.26.8 (trivy: stdlib
-# CVE-2026-78667/78669/97031 HIGH, fixed in go1.26.9/1.27.2; go1.27.2 itself
-# carried CVE-2026-111943, fixed in go1.26.10/1.27.3) and no released
+# CVE-2026-78667/78669/97031 HIGH, fixed in go1.26.9/1.27.2) and no released
 # docker:xx-cli tag ships a newer toolchain (29.1/29.2 ship older ones). Build
 # the exact same immutable release tag ourselves on the patched toolchain --
 # the same policy as the age stage in packages/hive-conductor/Dockerfile. The
 # tag resolves to dfc520d; fail if upstream ever disagrees. docker/cli has no
 # root go.mod (vendor.mod + vendor/ instead); renaming them is the module-mode
-# build the vendored tree is designed for.
-FROM golang:1.27.3-alpine@sha256:d530cf60723abf1ffae0cd16bb546b379ec0550d2f3815e5b16ed69dbc00fba4 AS dockerclibuild
+# build the vendored tree is designed for. Builder moved to 1.27.3-alpine
+# (#1152): CVE-2026-111943 (crypto/x509 MITM via untrusted intermediates, HIGH,
+# fixed in go1.26.10/1.27.3) flags the 1.27.2 stdlib inside the built binary.
+# Digest-pinned (#349); golang:1.27.3-alpine resolved to this index digest 2026-10-22.
+FROM golang:1.27.3-alpine@sha256:b8c9b82affbbb82a020bbcf998dad2ba9516944ac7e883524642a481a9505e9c AS dockerclibuild
 ARG DOCKER_CLI_VERSION=29.9.1
 ARG DOCKER_CLI_COMMIT_SHORT=dfc520d
 RUN apk add --no-cache git && \
@@ -109,7 +111,9 @@ RUN apk add --no-cache git && \
 # runtime shed git and broke those tools. This image IS vuln-gated like the
 # rest (#346): security.yml/release.yml scan it, so the apt layer also applies
 # the security patches the pinned base digest froze (trivy: libpcre2 HIGH on
-# debian 12.15), matching Dockerfile.research's hardening.
+# debian 12.15; libexpat1 2.5.0-1+deb12u4 -> deb12u5 for CVE-2025-59375 /
+# CVE-2026-77214 on the 2026-10-22 pin refresh), matching
+# Dockerfile.research's hardening.
 FROM python:3.13.16-slim-bookworm@sha256:73aa5faee130c60da030e105ec971ccf57473fbd22ce73bd6fc9ba99a40b838d
 WORKDIR /app
 RUN apt-get update \
