@@ -423,6 +423,10 @@
         {
           "name": "model egress (the direct-caller set may only shrink)",
           "sha256": "cfbc00eefcffaea0e69d5c4b490eb3db0e3764df4e3dbea156f83befcfd1b855"
+        },
+        {
+          "name": "design model egress (governed Invocation path only)",
+          "sha256": "ffc608887b7a1d15d38522bca67dc42ee36e41337b56cb25e9c6318a79ef848c"
         }
       ]
     },
