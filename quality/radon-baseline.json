@@ -333,16 +333,6 @@
       "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
     },
     {
-      "key": "packages/maistro-core/src/maistro/graph/durable_runs/executor.py::_build_ctx",
-      "path": "packages/maistro-core/src/maistro/graph/durable_runs/executor.py",
-      "line": 1082,
-      "name": "_build_ctx",
-      "classname": null,
-      "rank": "C",
-      "complexity": 11,
-      "rationale": "The #1263-family HITL lifecycle-mirror work funnels terminal-evidence resolution into the durable-run executor's node context build. Post-merge ledger reconciliation tracked under SPEC-264 - the ratchet is set at 11."
-    },
-    {
       "key": "packages/maistro-core/src/maistro/graph/durable_runs/stores.py::settle_hitl_record",
       "path": "packages/maistro-core/src/maistro/graph/durable_runs/stores.py",
       "line": 256,

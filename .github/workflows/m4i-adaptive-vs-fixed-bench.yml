@@ -1,0 +1,50 @@
+name: M4-I adaptive-vs-fixed bench
+
+# Manual only, on purpose (same pattern as model-routing-bench.yml).
+#
+# This runs scripts/bench_m4i_adaptive_vs_fixed.py — the #106 / epic M4-I
+# comparison exit evidence: quality-triggered escalation plus text/image
+# observation selection, run against fixed-routing baselines on one shared
+# workload through the production path (real llm.summarize node, governed
+# Binding -> Invocation egress, durable executor supervision fold), against a
+# deterministic model-dependent stub gateway. It is deterministic and offline
+# (no network), so results are comparable run-to-run; the checked-in numbers
+# live in docs/benchmarks/m4i-adaptive-vs-fixed-baseline.json. It is not a
+# gate and not a per-PR job: run it when the escalation/routing contracts,
+# the quality heuristic, or the workload shapes change. The contracts live in
+# docs/adr/ADR-101726-e4bb-verification-aware-execution-contracts.md; the
+# behavioral assertions live in
+# packages/maistro-core/tests/graph/verification/test_adaptive_vs_fixed_baseline.py.
+#
+# It is also what makes scripts/bench_m4i_adaptive_vs_fixed.py a *real* entry
+# point rather than a script nobody can reach: scripts/check-reachability.py
+# roots tooling at the workflow steps that execute it, matching on filename.
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: m4i-adaptive-vs-fixed-bench
+  cancel-in-progress: true
+
+jobs:
+  bench:
+    name: bench
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-uv
+      - name: uv sync (dev deps)
+        run: uv sync --locked --extra dev
+      - name: Benchmark adaptive vs fixed routing (epic M4-I)
+        run: >-
+          uv run python scripts/bench_m4i_adaptive_vs_fixed.py
+          --output m4i-adaptive-vs-fixed-bench.json
+      - name: Upload benchmark results
+        uses: actions/upload-artifact@v7
+        with:
+          name: m4i-adaptive-vs-fixed-bench
+          path: m4i-adaptive-vs-fixed-bench.json
