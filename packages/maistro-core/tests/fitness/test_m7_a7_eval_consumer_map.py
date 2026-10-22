@@ -90,6 +90,21 @@ _DESIGN_FORBIDDEN_DEF_RE = re.compile(
 #: provenance record the banked ``EvaluationProvenance`` class models, built by
 #: pure construction from the frozen snapshot, with no I/O, no score and no
 #: promotion — and was re-reviewed and re-banked in the PR that merged it.
+#: ``_EvaluateNode`` and ``_re_evaluate_refined_artifact`` are the #795 public
+#: proof's evaluate-phase fence leg (M7-A6): the node scores the produced
+#: artifact deterministically — the same no-model standard ADR-061 pins, no
+#: judge and no RubricEval reimplementation — and persists every verdict as a
+#: spine-validated ``RunEvalScore`` through the canonical
+#: ``RunStore.record_eval_score``, then parks the Run on the canonical
+#: ``evaluate.accept`` human pause; the person, never the node, decides
+#: park/redirect/accept. The re-evaluation leg opens the retry Attempt through
+#: the canonical ``open_re_eval_attempt``, scores the fence-proposed artifact
+#: the same way, and *refuses* — raising, with the failing rows already
+#: durable — when the redirected Rubric still fails, so it cannot mint a
+#: passing Attempt that does not exist. Neither holds score authority beyond
+#: the in-Run Rubric eval it writes through, neither promotes anything, and
+#: the acceptance receipt stays a human fence answer (#796). Reviewed and
+#: banked in the #795 repair round that first tripped them.
 #: Banking is path-pinned on purpose: the same
 #: name in any other module still trips, and any *new* scorer/evaluator/critic
 #: name anywhere in the package trips. A bank row whose file or definition
@@ -118,6 +133,14 @@ _DESIGN_SURFACE_BANK: frozenset[tuple[str, str]] = frozenset(
             "_evaluation_provenance",
         ),
         ("packages/maistro-design/src/maistro_design/packs/service.py", "_evaluate_upgrade"),
+        (
+            "packages/maistro-design/src/maistro_design/proof.py",
+            "_EvaluateNode",
+        ),
+        (
+            "packages/maistro-design/src/maistro_design/proof.py",
+            "_re_evaluate_refined_artifact",
+        ),
     }
 )
 

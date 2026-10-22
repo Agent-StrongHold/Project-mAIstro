@@ -64,6 +64,8 @@ model the proof (and later the Design Studio inspector) answers from.
 
 ## Reconciliation against `origin/develop` (7f8683be)
 
+## Reconciliation against `origin/develop` (7f8683be)
+
 The lane was authored on `2c557001d`, where `test_packs.py` had already grown
 +26 across #793 (M7-A4 domain packs) and #794 (M7-A5 HITL fence) without an
 inventory note on that base. The first version of this note therefore recorded
@@ -74,3 +76,21 @@ stale and would double-count: `scripts/check-suite-inventory.py` reported
 `packages/maistro-design/tests: expected 622, collected 596` (+26 over). This
 note records only this issue's **+20**, and the gate now reports
 `expected == collected` for that suite.
+
+## M7-A7 tripwire reconciliation (no test-count change)
+
+Develop's #2208 fitness map
+(`packages/maistro-core/tests/fitness/test_m7_a7_eval_consumer_map.py`, not
+present when this lane was authored) trips on any unbanked evaluator-shaped
+definition in `maistro_design` — and the proof adds two:
+`proof.py`'s `_EvaluateNode` and `_re_evaluate_refined_artifact`. The repair
+banks both by exact `(path, name)` row in `_DESIGN_SURFACE_BANK`, the tripwire's
+own reviewed-exception mechanism, after reviewing them against #796's standard:
+both score deterministically (no model calls) and persist verdicts as
+spine-validated `RunEvalScore` rows through the canonical
+`RunStore.record_eval_score`; the fence node parks the Run for a person's
+decision, the re-evaluation leg refuses to hand back a passing Attempt that
+does not exist, and neither promotes anything. No test was added or removed
+(the fitness module's own bank-freshness assertions keep the rows honest), so
+the per-suite counts above are unchanged; the RSI non-production-reachability
+pin over the same package passes untouched (1729 passed).
