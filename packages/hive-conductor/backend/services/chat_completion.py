@@ -764,6 +764,70 @@ PM_TOOLS: list[dict[str, Any]] = [
             "parameters": {"type": "object", "properties": {}},
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "compose_home_adaptive",
+            "description": "Fill the Workspace Home's adaptive (unpinned) space (#1048). Pass the regions to show; the user's pinned regions are never touched, and a payload that tries to pin, unpin, move or drop one is refused. Each region: {id, kind, position, size?, resource_type?, resource_id?, reason?}. kind: goals, backlog, runs, chat, sessions, design, attention, note.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "regions": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "id": {"type": "string"},
+                                "kind": {
+                                    "type": "string",
+                                    "description": "goals, backlog, runs, chat, sessions, design, attention, note",
+                                },
+                                "position": {"type": "integer"},
+                                "size": {"type": "string"},
+                                "resource_type": {
+                                    "type": "string",
+                                    "description": "goal, backlog_item, run, chat_session, design_surface, attention_item, or none",
+                                },
+                                "resource_id": {"type": "string"},
+                                "reason": {
+                                    "type": "string",
+                                    "description": "Why this region earns its place, from the user's own evidence",
+                                },
+                            },
+                            "required": ["id", "kind"],
+                        },
+                        "description": "The adaptive regions to show in unpinned space",
+                    },
+                    "expected_revision": {
+                        "type": "integer",
+                        "description": "The layout revision this composition was built against",
+                    },
+                },
+                "required": ["regions"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "dismiss_home_adaptive",
+            "description": "Record that the user does not want one adaptive Home candidate surfaced (#1048). Backend-side and durable: the candidate stops being offered in this Workspace, and the count is visible to the user. item_type: goal, backlog_item, run, chat_session, design_surface, attention_item.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "item_type": {
+                        "type": "string",
+                        "description": "goal, backlog_item, run, chat_session, design_surface, attention_item",
+                    },
+                    "item_id": {
+                        "type": "string",
+                        "description": "The canonical id of the item not to surface",
+                    },
+                },
+                "required": ["item_type", "item_id"],
+            },
+        },
+    },
 ]
 
 
@@ -1398,10 +1462,6 @@ async def _tool_create_dashboard_widget(
             "violations": violations,
         }
 
-    # `effective`, not `load`: before a first save the route hands the user their
-    # preset without storing it, so editing the empty record and saving it
-    # replaced every preset widget with the one just added (#340).
-    layout = dict(dashboard_layouts.effective(user_id).layout)
     widget = {
         "id": widget_id,
         "type": widget_type,
@@ -1410,27 +1470,25 @@ async def _tool_create_dashboard_widget(
         "config": config,
     }
 
-    if layout.get("tabs"):
-        tabs = [dict(tab) for tab in layout["tabs"]]
-        target_idx = layout.get("activeTab", 0)
-        if tab_name:
-            for i, tab in enumerate(tabs):
-                if tab.get("name", "").lower() == tab_name.lower():
-                    target_idx = i
-                    break
-            else:
-                tabs.append({"name": tab_name, "widgets": []})
-                target_idx = len(tabs) - 1
-        tabs[target_idx]["widgets"] = [*tabs[target_idx].get("widgets", []), widget]
-        layout["tabs"] = tabs
-    else:
-        existing = layout.get("widgets", [])
-        layout["tabs"] = [{"name": tab_name or "Overview", "widgets": [*existing, widget]}]
-        layout["activeTab"] = 0
-        layout.pop("widgets", None)
+    # `effective`, not `load`: before a first save the route hands the user their
+    # preset without storing it, so editing the empty record and saving it
+    # replaced every preset widget with the one just added (#340). The save is
+    # against the revision read, so a UI save in between is re-read, not erased.
+    def add_to(record: dashboard_layouts.LayoutRecord) -> None:
+        layout = dashboard_layouts.with_widget(record.layout, widget, tab_name)
+        dashboard_layouts.save(user_id, layout, expected_revision=record.revision)
 
     try:
-        dashboard_layouts.save(user_id, layout)
+        try:
+            add_to(dashboard_layouts.effective(user_id))
+        except dashboard_layouts.LayoutConflictError:
+            add_to(dashboard_layouts.effective(user_id))
+    except dashboard_layouts.LayoutConflictError as exc:
+        logger.warning("dashboard widget lost the revision race for %s: %s", user_id, exc)
+        return {
+            "created": False,
+            "error": f"the layout kept changing while the widget was added: {exc}",
+        }
     except dashboard_layouts.LayoutError as exc:
         logger.error("dashboard widget was not persisted for %s: %s", user_id, exc)
         return {"created": False, "error": f"the widget was not saved: {exc}"}
@@ -1514,6 +1572,106 @@ async def _tool_list_workflows(
     }
 
 
+async def _canonical_run_was_cancelled(canonical_run_id: str) -> bool:
+    """Whether the canonical spine recorded this Run as CANCELLED.
+
+    The projection mirrors canonical truth or says nothing; when the spine is
+    unreachable there is nothing to mirror, so the answer is no (#1332).
+    """
+    try:
+        from maistro.runs.model import RunStatus
+        from services.engine import get_engine
+
+        run_store = get_engine().run_store
+        if run_store is None:
+            return False
+        run = await run_store.get_run(canonical_run_id)
+    except Exception:
+        return False
+    return run is not None and run.status is RunStatus.CANCELLED
+
+
+class _ChatDagRunScoreAdapter:
+    """The run shape the eval judge scores a chat-launched DAG through."""
+
+    def __init__(self, exec_id: str, dag_id: str, result: dict[str, Any]):
+        self.run_id = exec_id
+        self.dag_id = dag_id
+        self.project_id = ""
+        self.status = "completed"
+        self.node_records = []
+        for nid, nr in result.get("node_results", {}).items():
+
+            class _NR:
+                pass
+
+            n = _NR()
+            n.node_id = nid
+            n.kind = nr.get("role", "llm")
+            n.phase = "completed"
+            n.latency_ms = nr.get("latency_ms", 0)
+            n.tokens_in = nr.get("tokens_in", 0)
+            n.tokens_out = nr.get("tokens_out", 0)
+            n.error_code = None
+            n.error_message = None
+            n.response_preview = nr.get("response", "")[:500]
+            self.node_records.append(n)
+
+
+async def _eval_judge_score(exec_id: str, dag_id: str, result: dict[str, Any]) -> dict[str, Any]:
+    """Score a chat-launched DAG through the eval judge.
+
+    The scorer is commentary on a run, not part of it: its failure has the
+    same standing as a failed history write and must not change the outcome
+    the caller sees.
+    """
+    try:
+        from services.eval_judge import score_run
+
+        return await score_run(_ChatDagRunScoreAdapter(exec_id, dag_id, result))
+    except Exception as e:
+        return {"score": 0, "error": str(e)[:100]}
+
+
+def _chat_dag_output_preview(result: dict[str, Any]) -> dict[str, str]:
+    """The first few node responses, at the preview length the tool serves."""
+    return {
+        nid: nr.get("response", "")[:200]
+        for nid, nr in list(result.get("node_results", {}).items())[:3]
+    }
+
+
+async def _cancellation_answer(
+    cancelled: asyncio.CancelledError, exec_id: str, dag_id: str
+) -> dict[str, Any]:
+    """The turn's answer when the canonical spine cancelled this DAG run.
+
+    `RunExecutionService.cancel_run` fences the canonical Run CANCELLED, stops
+    its Attempts, and the durable walk persists that truth and re-raises the
+    cancellation into this awaiter (#1332). The same exception also arrives
+    when THIS task is torn down (a chat disconnect) with the canonical Run
+    untouched, so an answer -- and the cancelled row it stamps -- follows only
+    a cancellation the spine actually recorded; otherwise the original
+    cancellation is re-raised, as asyncio's contract requires.
+    """
+    if asyncio.current_task().cancelling():
+        raise cancelled
+    from services.dag_run_store import get_dag_run_store
+
+    record = get_dag_run_store().get_run(exec_id) or {}
+    canonical_run_id = str(record.get("canonical_run_id") or "")
+    if not canonical_run_id or not await _canonical_run_was_cancelled(canonical_run_id):
+        raise cancelled
+    with contextlib.suppress(Exception):
+        await get_dag_run_store().finish_run(exec_id, status="cancelled")
+    return {
+        "run_id": exec_id,
+        "dag_id": dag_id,
+        "status": "cancelled",
+        "cancelled": True,
+    }
+
+
 async def _tool_run_workflow(
     args: dict[str, Any], user_id: str, jira_pat: str | None
 ) -> dict[str, Any]:
@@ -1554,7 +1712,16 @@ async def _tool_run_workflow(
             workspace_id=workspace_id,
             project_id=project_id,
         )
-        result = await execute_dag(dag_data, scope=scope)
+
+        async def _record_admission(canonical_run_id: str) -> None:
+            # Persist the projection -> canonical Run correlation at canonical
+            # admission, not after execution settles (#1332). The canonical
+            # executor awaits this before any physical node work, so a live
+            # Recent Runs entry cancels through the exact canonical Run while
+            # the DAG is still running instead of 404-ing the projection id.
+            await store.record_canonical_run(exec_id, canonical_run_id=canonical_run_id)
+
+        result = await execute_dag(dag_data, scope=scope, on_admitted=_record_admission)
         executed = True
 
         # Store events
@@ -1568,37 +1735,7 @@ async def _tool_run_workflow(
             )
 
         # Trigger eval-judge
-        score_result = {}
-        try:
-            from services.eval_judge import score_run
-
-            class _Adapter:
-                def __init__(self):
-                    self.run_id = exec_id
-                    self.dag_id = dag_id
-                    self.project_id = ""
-                    self.status = "completed"
-                    self.node_records = []
-                    for nid, nr in result.get("node_results", {}).items():
-
-                        class _NR:
-                            pass
-
-                        n = _NR()
-                        n.node_id = nid
-                        n.kind = nr.get("role", "llm")
-                        n.phase = "completed"
-                        n.latency_ms = nr.get("latency_ms", 0)
-                        n.tokens_in = nr.get("tokens_in", 0)
-                        n.tokens_out = nr.get("tokens_out", 0)
-                        n.error_code = None
-                        n.error_message = None
-                        n.response_preview = nr.get("response", "")[:500]
-                        self.node_records.append(n)
-
-            score_result = await score_run(_Adapter())
-        except Exception as e:
-            score_result = {"score": 0, "error": str(e)[:100]}
+        score_result = await _eval_judge_score(exec_id, dag_id, result)
 
         # This producer called `start_run` and never finished it, so a run
         # launched from chat sat at `running` for the life of the process --
@@ -1617,11 +1754,14 @@ async def _tool_run_workflow(
             "score": score_result.get("score", 0),
             "rationale": score_result.get("rationale", ""),
             "topology_proposal": score_result.get("topology_proposal"),
-            "output_preview": {
-                nid: nr.get("response", "")[:200]
-                for nid, nr in list(result.get("node_results", {}).items())[:3]
-            },
+            "output_preview": _chat_dag_output_preview(result),
         }
+    except asyncio.CancelledError as cancelled:
+        # Cancellation that works (#1332): the durable walk re-raises the
+        # canonical cancel fence into this awaiter; `_cancellation_answer`
+        # answers only a cancellation the spine actually recorded -- never a
+        # task teardown, which it re-raises unchanged.
+        return await _cancellation_answer(cancelled, exec_id, dag_id)
     except Exception as e:
         # The failure branch has to finish the run too, or a chat-launched DAG
         # that failed is indistinguishable from one still running.
@@ -1811,6 +1951,95 @@ async def _tool_update_eval(
     return {"updated": True, "dag_id": dag_id, "rubric_length": len(rubric)}
 
 
+async def _tool_compose_home_adaptive(
+    args: dict[str, Any], user_id: str, jira_pat: str | None
+) -> dict[str, Any]:
+    """Compose the Workspace Home's unpinned space (#1048), without a browser.
+
+    Goes through the same `services.home_layouts.compose_adaptive` the
+    `POST /v1/workspaces/{id}/home/adaptive/compose` route serves, so a
+    composition made in chat and one made over the API land in the same
+    durable row under the same authority rule: pinned regions are refused to
+    both. The Workspace comes from the turn's workspace context — the same
+    `_chat_workspace_id` the agent-button tools read — never from a model
+    argument, so the model cannot aim the tool at a Workspace the turn is
+    not about.
+    """
+    from services import home_layouts
+
+    workspace_id = _chat_workspace_id.get()
+    if not workspace_id:
+        return {
+            "composed": False,
+            "error": "no Workspace context for this turn; Home is Workspace-scoped",
+        }
+    raw_regions = args.get("regions")
+    if not isinstance(raw_regions, list):
+        return {"composed": False, "error": "regions must be a list"}
+    regions: list[home_layouts.HomeRegion] = []
+    try:
+        for raw in raw_regions:
+            if not isinstance(raw, dict):
+                raise ValueError("each region must be an object")
+            # The model never gets a `pinned` field to send (see the tool
+            # schema), but a proxying client could attach one. Validate the
+            # payload as-is and let compose_adaptive refuse it: a pinned
+            # payload must fail loudly (PinnedRegionWriteError), not be
+            # silently rewritten into an unpinned compose.
+            regions.append(home_layouts.HomeRegion.model_validate(raw))
+    except Exception as exc:
+        return {"composed": False, "error": f"region payload rejected: {exc}"}
+    expected = args.get("expected_revision")
+    try:
+        record = home_layouts.compose_adaptive(
+            workspace_id,
+            regions,
+            expected_revision=int(expected) if isinstance(expected, int) else None,
+        )
+    except home_layouts.PinnedRegionWriteError as exc:
+        return {"composed": False, "error": str(exc)}
+    except home_layouts.LayoutConflictError as exc:
+        return {
+            "composed": False,
+            "error": f"the layout moved to revision {exc.stored.revision} while composing",
+            "revision": exc.stored.revision,
+        }
+    except home_layouts.LayoutError as exc:
+        return {"composed": False, "error": f"the composition was not saved: {exc}"}
+    return {
+        "composed": True,
+        "workspace_id": workspace_id,
+        "revision": record.revision,
+        "region_count": len(record.layout.regions),
+    }
+
+
+async def _tool_dismiss_home_adaptive(
+    args: dict[str, Any], user_id: str, jira_pat: str | None
+) -> dict[str, Any]:
+    """Record one adaptive-Home dismissal (#1048) through the same service the
+    API route serves — one store, one count, whichever door the user takes."""
+    from services import home_projections
+
+    workspace_id = _chat_workspace_id.get()
+    if not workspace_id:
+        return {
+            "dismissed": False,
+            "error": "no Workspace context for this turn; Home is Workspace-scoped",
+        }
+    item_type = str(args.get("item_type") or "")
+    item_id = str(args.get("item_id") or "")
+    try:
+        record = home_projections.record_dismissal(workspace_id, item_type, item_id, actor=user_id)
+    except ValueError as exc:
+        return {"dismissed": False, "error": str(exc)}
+    return {
+        "dismissed": True,
+        "count": record["count"],
+        "key": f"{item_type}:{item_id}",
+    }
+
+
 _TOOL_HANDLERS: dict[str, Any] = {
     "poll_jira": _tool_poll_jira,
     "fetch_program_state": _tool_poll_jira,
@@ -1844,6 +2073,10 @@ _TOOL_HANDLERS: dict[str, Any] = {
     "suggest_widgets": _tool_suggest_widgets,
     "suggest_workflows": _tool_suggest_workflows,
     "analyze_dashboard": _tool_analyze_dashboard,
+    # Workspace Home (#1048): the Agent's two doors into its own surface, both
+    # through the same services the HTTP routes serve.
+    "compose_home_adaptive": _tool_compose_home_adaptive,
+    "dismiss_home_adaptive": _tool_dismiss_home_adaptive,
 }
 
 # Add hill-climbing and structural mutation from substrate tools

@@ -30,6 +30,8 @@ import pytest
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
+from maistro.memory.exposure import MemoryExposureMode
+
 _BACKEND = pathlib.Path(__file__).resolve().parents[1]
 if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
@@ -389,7 +391,7 @@ async def test_property_record_thumb_persists_round_trip(
 
     from maistro.memory.outcomes import InMemoryOutcomeStore
 
-    fresh = InMemoryOutcomeStore()
+    fresh = InMemoryOutcomeStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
     set_outcome_store(fresh)
     try:
         result = await record_thumb(
@@ -408,7 +410,7 @@ async def test_property_record_thumb_persists_round_trip(
         assert o.user_id == user_id
         assert o.success is True
     finally:
-        set_outcome_store(InMemoryOutcomeStore())
+        set_outcome_store(InMemoryOutcomeStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED))
 
 
 # --- optimizer.run_optimizer invariants ---------------------------------
@@ -430,7 +432,7 @@ async def test_property_optimizer_zero_signal_produces_zero_proposals(
     from services.node_metrics_store import NodeMetricsStore, set_store
     from services.optimizer import run_optimizer
 
-    set_outcome_store(InMemoryOutcomeStore())
+    set_outcome_store(InMemoryOutcomeStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED))
     set_store(NodeMetricsStore())
     for k in list(stores.eval_verdicts.keys()):
         stores.eval_verdicts.pop(k)

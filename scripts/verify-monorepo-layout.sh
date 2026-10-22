@@ -19,6 +19,8 @@ need packages/maistro-canvas/pyproject.toml
 need packages/maistro-bootstrap/pyproject.toml
 need packages/maistro-registry/pyproject.toml
 need packages/maistro-evolve/pyproject.toml
+need packages/maistro-ext-harness/pyproject.toml
+need packages/maistro-ext-sdk/pyproject.toml
 need packages/hive-conductor/frontend/package.json
 need packages/hive-conductor/backend/requirements.txt
 need docs/specs/README.md

@@ -134,6 +134,60 @@ async def test_population_evolves_under_code_rsi(tmp_path) -> None:  # type: ign
 
 
 @pytest.mark.ac("ADR-070126-6386/stage3")
+async def test_run_evolution_emits_attribution_report_each_cycle(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """M4-A8 (#115): the production driver emits the producer-credit report
+    once per cycle, so the search's own improvement signal (which operator
+    produced what, and how it scored) is auditable from a live run's logs."""
+    import random
+
+    import structlog
+
+    from maistro_evolve.attribution import ATTRIBUTION_SCHEMA_VERSION
+    from maistro_evolve.cycle import EvolutionConfig
+    from maistro_evolve.harness import EvalHarness
+    from maistro_evolve.population import PopulationStore
+
+    random.seed(20260703)
+    store = PopulationStore(db_path=tmp_path / "pop.db")
+    seed_population(store, 4)
+
+    async def fix_and_score(comp, target):  # type: ignore[no-untyped-def]
+        return (True, 0.9 if any(c.isdigit() for c in comp.model) else 0.3, False)
+
+    harness = EvalHarness()
+    harness.register_benchmark("code_rsi", make_code_rsi_runner(fix_and_score, "x.py"))
+    cfg = EvolutionConfig(
+        target_benchmarks=["code_rsi"],
+        population_size=4,
+        eval_batch_size=4,
+        tournament_size=2,
+        reconfirm_per_cycle=0,
+    )
+    with structlog.testing.capture_logs() as logs:
+        await run_evolution(store, harness, cycles=2, config=cfg)
+
+    emissions = [e for e in logs if e["event"] == "evolve_attribution_report"]
+    assert len(emissions) == 2  # once per cycle, in order
+    assert [e["cycle"] for e in emissions] == [0, 1]
+    # Cycle 0 evaluates only the seed genomes, which are unattributable by
+    # design (outside the credit system) — the report is still emitted, just
+    # empty. Cycle 1 evaluates the bred children, which carry CandidateOrigin
+    # stamps and are therefore credited to their producers.
+    first = emissions[0]["report"]
+    assert first["schema"] == ATTRIBUTION_SCHEMA_VERSION
+    assert first["events"] == []
+    last = emissions[1]["report"]
+    assert last["schema"] == ATTRIBUTION_SCHEMA_VERSION
+    # Credited producers show up in the folded per-producer view beside the
+    # raw append-only event log.
+    assert last["events"], "bred children carry origins and are credited"
+    assert last["producers"]
+    for row in last["producers"]:
+        assert row["attempts"] >= 1
+        assert "repeated_regressor" in row
+
+
+@pytest.mark.ac("ADR-070126-6386/stage3")
 def test_seed_population_topup_continues_rotation(tmp_path) -> None:  # type: ignore[no-untyped-def]
     # Codex P2 (#250): a top-up must CONTINUE the round-robin past already-seeded
     # models, not restart at 0 (which re-covers m-a/m-b and starves m-c).

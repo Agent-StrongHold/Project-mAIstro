@@ -15,7 +15,7 @@ import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from maistro.skills.parser import parse_skill_file, security_scan
+from maistro.skills.parser import parse_skill_file, security_scan, validate_skill_name
 from maistro.types.skill import SkillDefinition
 
 if TYPE_CHECKING:
@@ -151,6 +151,30 @@ class SkillForge:
 
         return skill
 
+    def _find_mutation_path(self, skill_name: str) -> tuple[Path | None, str | None]:
+        """Resolve a mutation target under the authorized skills root."""
+        if not validate_skill_name(skill_name):
+            return (
+                None,
+                f"Invalid skill name (path traversal or malformed identifier): {skill_name}",
+            )
+
+        root = self._skills_dir.resolve()
+        candidates = (
+            root / f"{skill_name}.md",
+            root / "community" / f"{skill_name}.md",
+        )
+        for candidate in candidates:
+            if candidate.is_symlink():
+                return None, f"Skill path is a symlink and cannot be mutated: {skill_name}"
+            if not candidate.exists():
+                continue
+            resolved = candidate.resolve()
+            if not resolved.is_relative_to(root) or not resolved.is_file():
+                return None, f"Skill path is outside the authorized root: {skill_name}"
+            return candidate, None
+        return None, None
+
     async def mutate(
         self,
         skill_name: str,
@@ -172,13 +196,19 @@ class SkillForge:
                 "Only T2+ skills support learning-driven mutation.",
             }
 
-        filepath = self._skills_dir / f"{skill_name}.md"
-        if not filepath.exists():
-            filepath = self._skills_dir / "community" / f"{skill_name}.md"
-            if not filepath.exists():
-                return {"status": "skipped", "reason": f"No SKILL.md for '{skill_name}'"}
+        filepath, path_error = self._find_mutation_path(skill_name)
+        if path_error is not None:
+            return {"status": "blocked", "reason": path_error}
+        if filepath is None:
+            return {"status": "skipped", "reason": f"No SKILL.md for '{skill_name}'"}
 
         current_content = filepath.read_text(encoding="utf-8")
+        current_safe, current_findings = security_scan(current_content)
+        if not current_safe:
+            return {
+                "status": "blocked",
+                "reason": f"Existing skill rejected by security scan: {', '.join(current_findings)}",
+            }
         old_hash = hashlib.sha256(current_content.encode()).hexdigest()[:16]
 
         learning_text = learning.learning if hasattr(learning, "learning") else str(learning)

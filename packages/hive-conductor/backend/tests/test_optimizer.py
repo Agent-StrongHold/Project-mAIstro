@@ -34,6 +34,8 @@ from typing import Any
 
 import pytest
 
+from maistro.memory.exposure import MemoryExposureMode
+
 _BACKEND = pathlib.Path(__file__).resolve().parents[1]
 if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
@@ -69,7 +71,7 @@ def _isolated():
     _wipe(stores.optimizer_proposals)
     edit_lock.clear()
     prev_fb = get_outcome_store()
-    set_outcome_store(InMemoryOutcomeStore())
+    set_outcome_store(InMemoryOutcomeStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED))
     prev_m = _get_metrics_store()
     _set_metrics_store(NodeMetricsStore())
     yield

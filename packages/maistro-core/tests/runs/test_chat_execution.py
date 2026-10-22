@@ -1138,7 +1138,12 @@ class TestInAgentDelegationCreatesNoNodeRun:
         from maistro.types.agent import AgentIdentity, ReasoningResult
 
         class _Warden:
-            async def scan(self, _text: str, _surface: str) -> Any:
+            # The real scan contract takes an optional keyword-only analysis
+            # ``context`` (session history; and, since #776's working-memory
+            # block rides ahead of the turn as a trusted system message, that
+            # block too). Accept it and ignore it: this stand-in's job is the
+            # delegation spine, not instruction scanning.
+            async def scan(self, _text: str, _surface: str, **_kw: Any) -> Any:
                 return type("V", (), {"clean": True, "flags": ()})()
 
         class _Context:

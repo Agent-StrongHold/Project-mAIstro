@@ -27,6 +27,8 @@ import datetime as _dt
 import importlib.metadata as _metadata
 import json
 import os
+import platform
+import re
 import shlex
 import shutil
 import subprocess
@@ -63,6 +65,110 @@ _RUN_SUBPROCESS = subprocess.run
 #: Where ``maistro upgrade`` looks if it cannot find a source checkout — the
 #: home of a packaged (uv-tool) or containerized install.
 _PACKAGED_MANIFEST = Path("~/.maistro").expanduser() / MANIFEST_FILENAME
+
+#: Minimum Compose v2 the stack's schema needs (#407). The compose files use
+#: conditional ``depends_on`` (``service_healthy`` /
+#: ``service_completed_successfully``), healthcheck wiring and secrets —
+#: Compose v2 features the legacy python ``docker-compose`` (v1, EOL) cannot
+#: parse, so there is deliberately no v1 fallback: a host with only that
+#: binary gets the default front-end and the probe below refuses it with
+#: upgrade instructions. The floor is a preflight convenience, not the real
+#: contract — when a front-end hides a parseable version, the schema-parse
+#: probe (``compose config``) decides instead.
+MIN_COMPOSE_VERSION = (2, 17, 0)
+
+#: Matches the first dotted-numeric token in a compose ``version`` output
+#: ("Docker Compose version v2.39.2", "v2.24.6-desktop.1").
+_COMPOSE_VERSION_RE = re.compile(r"(\d+(?:\.\d+)+)")
+
+
+def _format_compose_version(version: tuple[int, ...]) -> str:
+    return ".".join(str(part) for part in version)
+
+
+def _parse_compose_version(text: str) -> tuple[int, int, int] | None:
+    """Extract a ``(major, minor, patch)`` tuple from a compose version string.
+
+    Returns ``None`` when nothing dotted-numeric can be found — version output
+    is unreliable across front-ends and providers, and callers must fall back
+    to the schema-parse probe rather than guess.
+    """
+    match = _COMPOSE_VERSION_RE.search(text)
+    if match is None:
+        return None
+    major, minor, patch = (*tuple(int(part) for part in match.group(1).split(".")), 0, 0)[:3]
+    return (major, minor, patch)
+
+
+def _compose_upgrade_hint() -> str:
+    """Platform-specific pointer to a modern Compose v2."""
+    system = platform.system().lower()
+    if system == "darwin":
+        return (
+            "On macOS: update Docker Desktop (Settings > Software updates), or "
+            "install the standalone plugin with 'brew install docker-compose'."
+        )
+    if system == "windows":
+        return "On Windows: update Docker Desktop so its WSL2 integration ships a current compose plugin."
+    if "microsoft" in platform.release().lower():
+        return (
+            "In WSL2: add Docker's apt repository, then 'sudo apt-get install -y "
+            "docker-compose-plugin' "
+            "(https://docs.docker.com/engine/install/ubuntu/#install-using-the-repository), "
+            "or update Docker Desktop on the Windows side."
+        )
+    return (
+        "On Linux: install the compose plugin — Debian/Ubuntu: 'sudo apt-get "
+        "install -y docker-compose-plugin'; Fedora/RHEL: 'sudo dnf install "
+        "docker-compose-plugin'; or see "
+        "https://docs.docker.com/compose/install/linux/."
+    )
+
+
+def _compose_support_error(
+    compose: list[str], compose_args: list[str], cwd: str | None = None
+) -> str | None:
+    """Return the refusal message for an unusable compose front-end, or ``None``.
+
+    Two gates, in order of certainty:
+
+    1. a parseable version below ``MIN_COMPOSE_VERSION`` fails outright;
+    2. a missing or unparseable version string proves nothing by itself, so
+       the front-end is feature-probed against the real compose files —
+       parsing the stack's schema is exactly the capability the version floor
+       stands in for. A front-end that is not installed at all returns
+       ``None`` here: the phase that needs it fails with its own clear
+       ``command not found`` outcome.
+    """
+    version_probe = _run(_Cmd([*compose, "version"], cwd=cwd, timeout=15.0))
+    if version_probe.missing is not None:
+        return None
+    version = _parse_compose_version(version_probe.stdout or version_probe.stderr)
+    if version is not None:
+        if version >= MIN_COMPOSE_VERSION:
+            return None
+        return (
+            f"Compose v2 >= {_format_compose_version(MIN_COMPOSE_VERSION)} is "
+            f"required; detected version {_format_compose_version(version)} is "
+            "below the floor and cannot reliably run this stack's schema. "
+            f"{_compose_upgrade_hint()} Then re-run `maistro upgrade`"
+        )
+    config_probe = _run(_Cmd([*compose, *compose_args, "config", "--quiet"], cwd=cwd, timeout=30.0))
+    if config_probe.ok:
+        return None
+    # The parse failure may be the schema (a v1-generation engine) or the
+    # operator's env (a missing required variable) — surface which, so the
+    # refusal names the real problem instead of a guess.
+    detail = (config_probe.stderr or config_probe.stdout).strip().splitlines()
+    detail_line = detail[0] if detail else "none"
+    return (
+        f"`{' '.join(compose)}` reported no usable Compose version and could "
+        "not be verified against the stack compose files (conditional "
+        "depends_on and related schema need Compose v2 >= "
+        f"{_format_compose_version(MIN_COMPOSE_VERSION)}). The compose error "
+        f"was: {detail_line}. {_compose_upgrade_hint()} Then re-run "
+        "`maistro upgrade`"
+    )
 
 
 # Readiness polling. Mirrors the installer (get.sh/install.sh): after
@@ -167,16 +273,20 @@ class _UpgradeError(Exception):
 
 
 def _resolve_compose_runtime() -> list[str]:
-    """The compose front-end to drive the stack with, as an argv prefix."""
-    if shutil.which("docker") and shutil.which("podman"):
-        # Prefer docker where both exist (most predictable image pinning).
-        return ["docker", "compose"]
+    """The compose front-end to drive the stack with, as an argv prefix.
+
+    Compose v1 has no fallback (#407): the legacy ``docker-compose`` binary
+    cannot parse the stack's schema. A host with only that binary resolves to
+    the default front-end, and ``_compose_support_error`` refuses the upgrade
+    with platform-specific upgrade instructions instead of letting a phase
+    fail mid-way.
+    """
     if shutil.which("docker"):
+        # Prefer docker over podman where both exist (most predictable image
+        # pinning).
         return ["docker", "compose"]
     if shutil.which("podman"):
         return ["podman", "compose"]
-    if shutil.which("docker-compose"):
-        return ["docker-compose"]
     return ["docker", "compose"]
 
 
@@ -231,6 +341,11 @@ class _Upgrade:
         being validated. What IS checked up front is the manifest's own shape:
         an archive install without a source_url cannot be re-downloaded, and a
         container/package install without an image reference is not actionable.
+        The one exception is the compose capability probe (#407): read-only,
+        run after the manifest-shape checks, and enforced here rather than at
+        phase time because a front-end that parses the stack schema is a
+        precondition of the plan itself — a compose v1 engine would fail
+        mid-upgrade, after the source tree has already moved.
         """
         if self.install_type == "archive" and not self.manifest.source_url:
             raise _UpgradeError(
@@ -250,6 +365,13 @@ class _Upgrade:
                 "so the install manifest pins ghcr.io/.../maistro-engine:<tag>, "
                 "then re-run `maistro upgrade`."
             )
+        # Package upgrades never drive compose (their cutover is `uv tool
+        # upgrade`), so they skip the engine check entirely — a package-only
+        # host with a stale or absent compose stays upgradeable.
+        if self.install_type != "package":
+            error = _compose_support_error(self._compose, self._compose_args(), cwd=str(self.root))
+            if error:
+                raise _UpgradeError(error)
 
     def backup(self) -> None:
         """Snapshot operator config under a timestamped dir before any mutation.

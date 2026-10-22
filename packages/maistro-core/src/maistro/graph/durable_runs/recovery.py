@@ -369,6 +369,7 @@ async def _resume_due_candidate(
             runtime=runtime,
             run_store=candidate_run_store,
             events=events,
+            now=moment,
         )
     except RecoveryInfrastructureError:
         # A store/session failure invalidates the scan; claiming success for

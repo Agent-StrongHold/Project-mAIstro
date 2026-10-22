@@ -73,6 +73,8 @@ def _prov(
         require_metric_version=lambda *_args, **_kwargs: None,
         load_authorizations=lambda *_args, **_kwargs: dict(authorizations or {}),
         head_sha=lambda *_args, **_kwargs: "candidate",
+        bundled_implementation_fingerprint=lambda *_args, **_kwargs: "bundled-sha256:fake",
+        installed_distribution_version=lambda _name: "9.9-fake",
     )
 
 
@@ -217,7 +219,11 @@ def test_model_egress_main_covers_provenance_and_candidate_drift(
     assert module._modules({"modules": "bad"}) == set()
 
     inventory.write_text(json.dumps({"modules": ["stale"]}), encoding="utf-8")
-    monkeypatch.setattr(module, "discover", lambda: {"new"})
+    monkeypatch.setattr(
+        module,
+        "discover_sites",
+        lambda: {"new": module.EgressFinding("new", "new", ())},
+    )
     monkeypatch.setattr(module, "_provenance", lambda: _prov(resolve_error="bad base"))
     assert module.main() == 1
 
@@ -460,6 +466,7 @@ def test_mutation_scheduler_candidate_paths(
             trusted_history={"entries": {}},
             provenance=_Baseline({"entries": {}}),
             prov=prov,
+            tool_version="bundled-sha256:test",
         )
         == 1
     )
@@ -474,6 +481,7 @@ def test_mutation_scheduler_candidate_paths(
             trusted_history={"entries": {}},
             provenance=_Baseline({"entries": {}}),
             prov=prov,
+            tool_version="bundled-sha256:test",
         )
 
 
@@ -485,7 +493,7 @@ def test_mutation_main_fail_closed_paths(tmp_path: Path, monkeypatch: pytest.Mon
     prov = _prov()
     monkeypatch.setattr(module, "_provenance", lambda: prov)
 
-    def bad_trusted(*_args: object, **_kwargs: object):
+    def bad_trusted(*_args: object, **_kwargs: object) -> None:
         raise _ProvError("bad mutation base")
 
     monkeypatch.setattr(module, "_trusted_json", bad_trusted)
@@ -524,3 +532,119 @@ def test_mutation_main_fail_closed_paths(tmp_path: Path, monkeypatch: pytest.Mon
         lambda _path: (_ for _ in ()).throw(ValueError("candidate malformed")),
     )
     assert module.main([str(rows), "--baseline", str(baseline)]) == 2
+
+
+def test_mutation_version_failure_writes_nothing_and_fails_cleanly(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """#319: a gate that cannot name its implementation publishes no artifact.
+
+    Both write paths (scheduler candidate and legacy candidate) resolve the
+    bundled evaluator's identity BEFORE any write; resolution failure must be
+    a clear nonzero diagnostic with no traceback and no baseline mutation.
+    """
+    module = _load("scripts/check_mutation_baseline.py", "_edge_mutation_version_failure")
+    rows = tmp_path / "rows.jsonl"
+    rows.write_text(
+        json.dumps([{"mutations": [{"module_path": "a.py"}]}, {"test_outcome": "killed"}]) + "\n",
+        encoding="utf-8",
+    )
+    baseline = tmp_path / "baseline.json"
+    baseline.write_text(json.dumps({"entries": {}}), encoding="utf-8")
+    telemetry = tmp_path / "mutation-telemetry-all.jsonl"
+    telemetry.write_text("{}\n", encoding="utf-8")
+    fake = SimpleNamespace(
+        read_telemetry=lambda _path: {"a.py": {"runtime": 1}},
+        evaluate=lambda *_a, **_k: {
+            "quality_failures": [],
+            "runtime_regressions": [],
+            "newly_surviving": [],
+        },
+        baseline_candidate=lambda *_a, **_k: {"entries": {"a.py": {"kill_rate": 1.0}}},
+        render_markdown=lambda _report: "ratchet",
+    )
+    monkeypatch.setitem(sys.modules, "mutation_ratchet", fake)
+    monkeypatch.setattr(module, "_publish_ratchet_into_health_report", lambda *_a: None)
+
+    def refusing_provenance(*_args: object, **_kwargs: object) -> object:
+        return SimpleNamespace(
+            RatchetProvenanceError=_ProvError,
+            Baseline=_Baseline,
+            Provenance=_Proof,
+            resolve_baseline=lambda path, **_kwargs: _Baseline({"entries": {}}, path=path),
+            require_measurement=lambda *_args, **_kwargs: None,
+            load_authorizations=lambda *_args, **_kwargs: {},
+            head_sha=lambda *_args, **_kwargs: "candidate",
+            bundled_implementation_fingerprint=lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                _ProvError("bundled implementation fingerprint: a.py is missing")
+            ),
+        )
+
+    monkeypatch.setattr(module, "_provenance", refusing_provenance)
+
+    # Scheduler write path: no telemetry write, no baseline write.
+    assert module.main([str(rows), "--baseline", str(baseline), "--write-baseline"]) == 2
+    assert json.loads(baseline.read_text()) == {"entries": {}}
+    assert "cannot identify the bundled mutation evaluator" in capsys.readouterr().err
+
+    # Legacy write path: same refusal, same untouched baseline.
+    telemetry.unlink()
+    assert module.main([str(rows), "--baseline", str(baseline), "--write-baseline"]) == 2
+    assert json.loads(baseline.read_text()) == {"entries": {}}
+    assert "cannot identify the bundled mutation evaluator" in capsys.readouterr().err
+
+
+def test_mutation_scheduler_pass_path_reports_the_bundled_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A quality-clean scheduler run passes 0 and names its implementation.
+
+    Uses the real shared provenance module so the fingerprint is a real
+    digest over the real repository sources -- no installed Cosmic Ray is
+    consulted anywhere on this path.
+    """
+    import scripts.ratchet_provenance as real_provenance
+
+    module = _load("scripts/check_mutation_baseline.py", "_edge_mutation_scheduler_pass")
+    rows = tmp_path / "rows.jsonl"
+    rows.write_text("", encoding="utf-8")
+    baseline = tmp_path / "baseline.json"
+    telemetry = tmp_path / "mutation-telemetry-all.jsonl"
+    telemetry.write_text("{}\n", encoding="utf-8")
+    fake = SimpleNamespace(
+        read_telemetry=lambda _path: {"a.py": {"runtime": 1}},
+        evaluate=lambda *_a, **_k: {
+            "quality_failures": [],
+            "runtime_regressions": [],
+            "newly_surviving": [],
+        },
+        baseline_candidate=lambda *_a, **_k: {"entries": {"a.py": {"kill_rate": 1.0}}},
+        render_markdown=lambda _report: "ratchet",
+    )
+    monkeypatch.setitem(sys.modules, "mutation_ratchet", fake)
+    monkeypatch.setattr(module, "_publish_ratchet_into_health_report", lambda *_a: None)
+    monkeypatch.setattr(
+        module,
+        "_provenance",
+        lambda: SimpleNamespace(
+            RatchetProvenanceError=real_provenance.RatchetProvenanceError,
+            Baseline=real_provenance.Baseline,
+            Provenance=real_provenance.Provenance,
+            resolve_baseline=lambda path, **_kwargs: real_provenance.Baseline(
+                text=json.dumps({"entries": {}}),
+                origin="base",
+                base_sha="0" * 40,
+                path=path,
+            ),
+            require_measurement=real_provenance.require_measurement,
+            load_authorizations=lambda *_args, **_kwargs: {},
+            head_sha=lambda *_args, **_kwargs: "candidate",
+            bundled_implementation_fingerprint=real_provenance.bundled_implementation_fingerprint,
+        ),
+    )
+
+    assert module.main([str(rows), "--baseline", str(baseline), "--write-baseline"]) == 0
+    out = capsys.readouterr().out
+    assert "(tool version: bundled-sha256:" in out
+    assert "cosmic-ray scheduler telemetry input" in out
+    assert json.loads(baseline.read_text())["entries"]["a.py"]["kill_rate"] == 1.0

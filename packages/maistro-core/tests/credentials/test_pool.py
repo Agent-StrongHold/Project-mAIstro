@@ -22,6 +22,24 @@ from maistro.credentials.types import (
 )
 
 
+class _AdvancingMonotonicClock:
+    """Scripted stand-in for ``time.monotonic()``.
+
+    Returns the scripted readings in order, holds the last one once the
+    script is exhausted, and records every reading it served so tests can
+    reason about which instants the code under test sampled.
+    """
+
+    def __init__(self, readings: list[float]) -> None:
+        self._readings = list(readings)
+        self.served: list[float] = []
+
+    def __call__(self) -> float:
+        reading = self._readings.pop(0) if self._readings else self.served[-1]
+        self.served.append(reading)
+        return reading
+
+
 def _rec(key_id: str, provider: str = "openai", **kwargs) -> CredentialRecord:
     return CredentialRecord(key_id=key_id, provider=provider, api_key=f"sk-{key_id}", **kwargs)
 
@@ -268,6 +286,108 @@ class TestPoolExhaustion:
         assert err.blocked_keys == 1
         assert err.cooling_down_keys == 2
         assert err.total_keys == 3
+
+
+class TestExhaustionClockAccounting:
+    """#1116: PoolExhaustedError accounting must classify every scoped key
+    against one monotonic clock sample, with the same classification
+    semantics get_stats() uses -- the clock-boundary race #1041 removed from
+    get_stats() but left in _exhaustion_counts()."""
+
+    @staticmethod
+    def _cooling_at(entries: list[CredentialRecord], now: float) -> int:
+        """Independent oracle: cooling-down count at a single instant."""
+
+        return sum(
+            1
+            for e in entries
+            if not e.blocked and e.cooldown_until is not None and e.cooldown_until > now
+        )
+
+    def test_clock_crossing_cooldown_boundaries_cannot_contradict_the_error(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # b expires at 100, c at 200. The fake clock serves 10 while select()
+        # inspects availability, then crosses BOTH expiries while the
+        # accounting scans the scoped set: per-entry readings would see b
+        # cooling (99 < 100) but c already available (201 > 200) and report
+        # blocked + cooling = 1 -- a count true at none of the sampled
+        # instants ("all 2 authorized credentials exhausted", only 1
+        # accounted for). One sample (99.0) makes both keys cooling and the
+        # accounting exact. The unauthorized cooling x and available z must
+        # stay out of the counts entirely.
+        clock = _AdvancingMonotonicClock([10.0, 10.0, 10.0, 99.0, 201.0])
+        monkeypatch.setattr(time, "monotonic", clock)
+        pool = CredentialPool(
+            "openai",
+            [
+                _rec("b", cooldown_until=100.0),
+                _rec("c", cooldown_until=200.0),
+                _rec("x", cooldown_until=500.0),  # cooling but NOT authorized
+                _rec("z"),  # available but NOT authorized
+            ],
+        )
+
+        with pytest.raises(PoolExhaustedError) as exc_info:
+            pool.select(allowed_key_ids=frozenset({"b", "c"}))
+        err = exc_info.value
+
+        assert err.total_keys == 2  # only the authorized keys are accounted
+        assert err.blocked_keys == 0
+        assert err.cooling_down_keys == 2  # per-entry sampling yields 1
+        assert err.soonest_available_at == 100.0
+        # exactly one accounting sample: three availability checks in
+        # _available (b, c, x) plus one reading classifying the scoped set
+        assert len(clock.served) == 4
+        # the reported counts are the truth at one of the sampled instants
+        scoped = [e for e in pool._entries if e.key_id in {"b", "c"}]
+        assert any(self._cooling_at(scoped, t) == err.cooling_down_keys for t in clock.served)
+
+    def test_exhaustion_error_and_stats_classify_identically_at_one_instant(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Frozen clock: both reporters classify the same state at the same
+        # instant and must agree exactly -- two subtly different rules
+        # (per-entry vs one sample, >= vs >) would eventually disagree here.
+        monkeypatch.setattr(time, "monotonic", lambda: 150.0)
+        pool = CredentialPool(
+            "openai",
+            [
+                _rec("a", blocked=True),
+                _rec("b", cooldown_until=200.0),
+                _rec("c", cooldown_until=160.0),
+            ],
+        )
+        stats = pool.get_stats()
+        assert stats.total_keys == 3
+        assert stats.available_keys == 0
+        assert stats.blocked_keys == 1
+        assert stats.cooling_down_keys == 2
+
+        with pytest.raises(PoolExhaustedError) as exc_info:
+            pool.select()
+        err = exc_info.value
+        assert (err.total_keys, err.blocked_keys, err.cooling_down_keys) == (
+            stats.total_keys,
+            stats.blocked_keys,
+            stats.cooling_down_keys,
+        )
+        assert err.blocked_keys + err.cooling_down_keys == err.total_keys
+        assert err.soonest_available_at == 160.0
+
+    def test_cooldown_expiry_boundary_is_available_not_cooling_everywhere(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A key is selectable the instant its cooldown expires: the shared
+        # boundary rule (cooldown_until > now) must agree between stats
+        # accounting and actual selection at the boundary itself.
+        monkeypatch.setattr(time, "monotonic", lambda: 160.0)
+        pool = CredentialPool("openai", [_rec("c", cooldown_until=160.0)])
+        stats = pool.get_stats()
+        assert stats.available_keys == 1
+        assert stats.cooling_down_keys == 0
+        assert stats.blocked_keys == 0
+        assert pool.select().key_id == "c"
 
 
 class TestCooldownAndRecovery:

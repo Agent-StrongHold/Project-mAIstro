@@ -45,6 +45,7 @@ DEV_REQUIRED = {
     "LANGFUSE_NEXTAUTH_SECRET": "x",
     "LANGFUSE_SALT": "x",
     "LITELLM_MASTER_KEY": "bundled-master",
+    "MAISTRO_ROUTER_API_KEY": "x",
     "ROUTER_API_KEY": "x",
     "TASK_DELEGATION_KEY": "x",
 }

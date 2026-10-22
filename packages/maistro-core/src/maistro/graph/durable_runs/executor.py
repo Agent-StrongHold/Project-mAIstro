@@ -31,6 +31,11 @@ from maistro.graph.nodes.base import (
     NodeResult,
     ReplaySemantics,
 )
+from maistro.graph.verification.escalation import (
+    ESCALATED_MODEL_CONTEXT_KEY,
+    LADDER_START_CONTEXT_KEY,
+    escalation_from_policy,
+)
 from maistro.runs.aggregation import derive_run_terminal_status, terminal_run_payload
 from maistro.runs.lifecycle import (
     settle_open_node_run,
@@ -47,9 +52,10 @@ from maistro.runs.model import (
 )
 from maistro.runs.store import RunIntegrityError, RunStore
 
+from .failure import sanitize_failure_message
 from .protocol import DurableRunStore
 from .spine import mirror_lifecycle
-from .types import DurableRunRecord
+from .types import RECOVERY_CLAIM_UNTIL_KEY, DurableRunRecord
 
 NodeResolver = Callable[[str, Graph], BaseNode[Any, Any]]
 
@@ -77,6 +83,7 @@ class _FrontierItem:
     ctx: NodeContext
     result: NodeResult
     replay_semantics: ReplaySemantics = ReplaySemantics.NON_RETRYABLE
+    effect_key: str | None = None
 
 
 def _replace_state(
@@ -281,6 +288,7 @@ async def resume_durable_graph(
     node_resolver: NodeResolver,
     run_store: RunStore | None = None,
     max_steps: int = 256,
+    now: datetime | None = None,
 ) -> DurableRunRecord:
     """Resume through canonical Attempt recovery, never a second physical walker."""
     from .attempt_executor import resume_durable_graph as resume
@@ -291,6 +299,7 @@ async def resume_durable_graph(
         node_resolver=node_resolver,
         run_store=run_store,
         max_steps=max_steps,
+        now=now,
     )
 
 
@@ -494,6 +503,7 @@ async def _checkpoint_paused_frontier(
 ) -> DurableRunRecord:
     """Persist paused siblings together with successors deferred until resume."""
     metadata = dict(record.graph_state.metadata)
+    metadata.pop(RECOVERY_CLAIM_UNTIL_KEY, None)
     pause_entries = {item.node_id: _pause_entry(item.result) for item in paused}
     existing_pauses = metadata.get("pauses", {})
     if isinstance(existing_pauses, Mapping):
@@ -597,15 +607,11 @@ def _may_revisit_after(prior_state: GraphExecutionState, item: _FrontierItem) ->
     """
     if not item.replay_semantics.retryable:
         return False
-    # EFFECT_KEY is a contract, not a descriptive label: the node must have a
-    # logical Node/Run identity available for its effect key to be meaningful.
-    if item.replay_semantics is ReplaySemantics.EFFECT_KEY:
-        if not (item.ctx.run_id and item.ctx.node_id):
-            return False
-        # BaseNode records the key produced by its executable contract. A
-        # retryable effect without that boundary is not safe to revisit.
-        if not item.result.metadata.get("replay_effect_key"):
-            return False
+    # EFFECT_KEY is a contract, not a descriptive label: the node must have
+    # supplied a concrete logical key at execution time. Missing keys fail
+    # closed because the executor cannot prove replay safety on its own.
+    if item.replay_semantics is ReplaySemantics.EFFECT_KEY and not item.effect_key:
+        return False
     visits = prior_state.visit_counts.get(item.node_id, 0)
     return visits < _visit_budget(item.spec)
 
@@ -1079,7 +1085,118 @@ def _maybe_increment_synth_depth(
     return _replace_record(record, graph_state=state)
 
 
-def _build_ctx(record: DurableRunRecord, node_id: str) -> NodeContext:
+def _detach_json_mapping(value: Mapping[str, Any]) -> dict[str, Any]:
+    """Ordinary, independently mutable JSON containers for frozen graph state."""
+    thawed = thaw_json_value(value)
+    return dict(thawed) if isinstance(thawed, Mapping) else {}
+
+
+def _current_pause_carry(record: DurableRunRecord, node_id: str) -> dict[str, Any] | None:
+    """Carry this node's own current persisted pause entry, or None when absent.
+
+    Selection reads only ``graph_state.metadata['pauses'][node_id]`` — never the
+    singleton ``metadata['pause']`` (which names whichever frontier member
+    checkpointed first, i.e. often a sibling) and never another node's entry.
+    A current entry outranks any answered pause stamped under
+    ``hitl_answers[node_id]['_pause']``: the answer belongs to an older visit,
+    so a newer elapsed pause on the same node must not be replaced by it.
+
+    Absence of the pauses key is absence. A present entry that is not a JSON
+    object — including ``None`` — is corrupt evidence and raises rather than
+    silently borrowing a stale answer or a sibling's pause. Metadata detaches
+    through the public ``thaw_json_value`` so the node receives containers it
+    may mutate without touching the frozen record; the wrapper ``resume_at``
+    is stamped last and therefore wins any same-name inner value.
+    """
+    state_metadata = record.graph_state.metadata
+    if "pauses" not in state_metadata:
+        return None
+    pauses = state_metadata["pauses"]
+    if not isinstance(pauses, Mapping):
+        raise ValueError(
+            f"run {record.run_id!r} graph state pauses must be a JSON object, "
+            f"got {type(pauses).__name__}"
+        )
+    if node_id not in pauses:
+        return None
+    entry = pauses[node_id]
+    if not isinstance(entry, Mapping):
+        raise ValueError(
+            f"run {record.run_id!r} node {node_id!r} has a corrupt persisted "
+            f"pause entry: expected a JSON object, got {type(entry).__name__}"
+        )
+    if "metadata" in entry:
+        pause_metadata = entry["metadata"]
+        if not isinstance(pause_metadata, Mapping):
+            raise ValueError(
+                f"run {record.run_id!r} node {node_id!r} persisted pause "
+                f"metadata must be a JSON object, got {type(pause_metadata).__name__}"
+            )
+        carried = _detach_json_mapping(pause_metadata)
+    else:
+        carried = {}
+    carried["resume_at"] = entry.get("resume_at")
+    return carried
+
+
+def _answered_pause_carry(answered: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Carry the server-stamped ``_pause`` of an answered HITL visit.
+
+    The pre-existing fallback for records whose node has no current pause
+    entry: the executor copies the pause payload the durable answer seam
+    stamped (see ``stores.answer_record``), preserving current answer
+    behavior, with the same detached JSON copying as the current-entry path.
+    """
+    pause = answered.get("_pause")
+    if not isinstance(pause, Mapping):
+        return None
+    pause_metadata = pause.get("metadata")
+    carried = _detach_json_mapping(pause_metadata) if isinstance(pause_metadata, Mapping) else {}
+    carried["resume_at"] = pause.get("resume_at")
+    return carried
+
+
+def _supervision_context(
+    metadata: dict[str, Any],
+    record: DurableRunRecord,
+    node_id: str,
+    spec: GraphNode,
+) -> None:
+    """Surface verification-supervision decisions in the node's context.
+
+    Two channels (epic M4-I):
+
+    - *Escalation*: when supervision withheld a prior visit for missing its
+      quality floor, the re-visit must run the ladder rung the executor
+      chose — the node honors it or ignores it, but it must be able to see
+      the decision. The *first* visit under a declared ladder is seeded with
+      the cheapest rung, so cheap-first starts the ladder rather than the
+      node's ambient default model: with the start seeded, "no supervision
+      state yet" provably means the cheapest rung ran, which is exactly the
+      premise the escalation fold escalates from. The seed rides its own
+      key — it is the ladder's beginning, not a supervision decision — so a
+      node's stronger first-visit rules (the vision alias an image
+      observation demands) still outrank it, while a supervision
+      escalation stays final.
+    - *Pause carry*: a resumed visit re-enters the node with the metadata
+      its pause checkpointed, so the resume continues the same logical work.
+    """
+    escalation = record.graph_state.metadata.get("escalations", {}).get(node_id)
+    if isinstance(escalation, Mapping) and escalation.get("model"):
+        metadata[ESCALATED_MODEL_CONTEXT_KEY] = str(escalation["model"])
+    else:
+        declared = escalation_from_policy(spec.policies)
+        if declared is not None:
+            metadata[LADDER_START_CONTEXT_KEY] = declared[0].cheapest
+    carried = _current_pause_carry(record, node_id)
+    if carried is None:
+        answered = record.hitl_answers.get(node_id)
+        carried = _answered_pause_carry(answered) if isinstance(answered, Mapping) else None
+    if carried is not None:
+        metadata[RESUMED_PAUSE_KEY] = carried
+
+
+def _build_ctx(record: DurableRunRecord, node_id: str, spec: GraphNode) -> NodeContext:
     """Build the runtime execution context for one canonical NodeRun."""
     from maistro.graph.types import GraphBlackboard
 
@@ -1101,14 +1218,7 @@ def _build_ctx(record: DurableRunRecord, node_id: str) -> NodeContext:
         "hitl_answers": dict(record.hitl_answers),
         "synth_depth": synth_depth,
     }
-    answered = record.hitl_answers.get(node_id)
-    if isinstance(answered, Mapping):
-        pause = answered.get("_pause")
-        if isinstance(pause, Mapping):
-            pause_metadata = pause.get("metadata")
-            carried = dict(pause_metadata) if isinstance(pause_metadata, Mapping) else {}
-            carried["resume_at"] = pause.get("resume_at")
-            metadata[RESUMED_PAUSE_KEY] = carried
+    _supervision_context(metadata, record, node_id, spec)
     return NodeContext(
         run_id=record.run_id,
         dag_id=record.run.graph.graph_id,
@@ -1231,7 +1341,7 @@ async def _mark_failed(
     """
     record = _settle_open_node_runs(record, RunStatus.FAILED)
     run = _running_run(record.run)
-    error = f"{error_code}: {error_message}"[:512]
+    error = f"{error_code}: {sanitize_failure_message(error_message)}"[:512]
     if run.status is not RunStatus.RUNNING:
         raise ValueError(f"cannot fail run in status {run.status!r}")
     run = transition_run(run, RunStatus.FAILED, error=error)

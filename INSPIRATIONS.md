@@ -22,6 +22,8 @@ For *dependencies* (entries in `pyproject.toml`), the standard `LICENSE` / `NOTI
 
 ## Pattern references (read; no code copied)
 
+- **`0xlol/Ladybug-Memory`** (`ladybug-memory`, LadybugDB-based hot memory) — BM25 lexical recall over an indexed hot store, embeddings stored on working-memory nodes (read-time similarity without re-embedding), and an entity/mention/co-occurrence graph with entity-scoped traversal. Patterns reused behind the MAIstro-owned `WorkingMemory` protocol in `maistro.memory.working` (`ADR-082226-5104` §5–6, issue #301); no code copied and no dependency added — see `docs/architecture/working-memory.md` for the ADR-039 review.
+
 ### Catalog reviewed May 2026
 
 - **`Khamel83/oneshot`** v14.3 (May 2026, MIT) — lane-based routing with explicit fallback chains; janitor signal-file pattern; cross-machine SOPS/Age secrets; `bin/oneshot doctor` aggregated readiness check; CLI-first product surface pattern. Influences: `engine#ADR-038` (reliability fallback chains), `[engine-095]` skills bundle, `[engine-093]` self-CLI generation.

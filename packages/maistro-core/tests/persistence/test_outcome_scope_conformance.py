@@ -27,6 +27,7 @@ from typing import Any
 
 import pytest
 
+from maistro.memory.exposure import MemoryExposureMode
 from maistro.persistence.pg_outcomes import PgOutcomeStore
 from maistro.persistence.sqlite_outcomes import SqliteOutcomeStore
 from maistro.types.memory import Outcome
@@ -49,7 +50,7 @@ async def outcome_store(request: pytest.FixtureRequest, pg_pool: Any) -> AsyncIt
     if request.param == "sqlite":
         aiosqlite = pytest.importorskip("aiosqlite")
         conn = await aiosqlite.connect(":memory:")
-        store = SqliteOutcomeStore(conn)
+        store = SqliteOutcomeStore(conn, exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         await store.ensure_schema()
         try:
             await _seed(store)
@@ -59,7 +60,7 @@ async def outcome_store(request: pytest.FixtureRequest, pg_pool: Any) -> AsyncIt
         return
     if pg_pool is None:
         pytest.skip("MAISTRO_TEST_PG_DSN is not set")
-    store = PgOutcomeStore(pg_pool)
+    store = PgOutcomeStore(pg_pool, exposure_mode=MemoryExposureMode.AGENT_MANAGED)
     await _seed(store)
     yield store
 

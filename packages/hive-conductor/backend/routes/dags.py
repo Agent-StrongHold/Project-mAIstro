@@ -15,6 +15,8 @@ from services.dag_execution_scope import (
 from services.edit_lock import diff_dag_snapshots, mark_edited
 from services.request_principal import optional_actor_id
 
+from maistro.runs.chat_refusal import CHAT_TURN_RETRY_AFTER_S
+from maistro.runs.concurrency import RunConcurrencyExceeded
 from routes.audit import log_audit
 
 
@@ -31,6 +33,34 @@ def _public_failure(exc: BaseException) -> str:
 
 router = APIRouter(tags=["dags"])
 logger = logging.getLogger("hive.dags")
+
+# OpenAPI contract for canonical admission backpressure (#1182): the shape of
+# the HTTPException raised by `run_dag` and `run_champion` when a concurrency
+# ceiling is reached. Declared on both routes so generated clients can type
+# the retry path, including the `Retry-After` header they must honor.
+_ADMISSION_429_RESPONSES: dict[int | str, dict[str, Any]] = {
+    429: {
+        "description": (
+            "Admission backpressure: too many active runs for this scope; "
+            "retry after the interval named by Retry-After"
+        ),
+        "headers": {
+            "Retry-After": {
+                "description": "Seconds to wait before retrying the request",
+                "schema": {"type": "integer"},
+            }
+        },
+        "content": {
+            "application/json": {
+                "schema": {
+                    "type": "object",
+                    "properties": {"detail": {"type": "string"}},
+                    "required": ["detail"],
+                }
+            }
+        },
+    }
+}
 
 
 class DAGNode(BaseModel):
@@ -92,6 +122,14 @@ async def _record_run_projection(*, dag_id: str, user_id: str, result: dict[str,
     The projection uses the canonical Run id as its own key and copies the
     canonical terminal status. It cannot mint a second execution identity or
     recompute whether the DAG succeeded.
+
+    Only a status the canonical Run vocabulary defines is projected, and only
+    a terminal one finishes the row (#1877): a Run still created/queued/
+    running/waiting/paused has no `finished_at` -- the Run model forbids one
+    -- so finishing its row here would publish terminal lifecycle metadata the
+    canonical Run does not carry. A missing or unknown status is malformed
+    projection input, recorded as the projection failure it is -- never
+    coerced to `failed`.
     """
     run_id = str(result.get("run_id") or "")
     if not run_id:
@@ -99,6 +137,13 @@ async def _record_run_projection(*, dag_id: str, user_id: str, result: dict[str,
     try:
         from services.dag_run_store import get_dag_run_store
 
+        from maistro.runs.model import TERMINAL_RUN_STATUSES, RunStatus
+
+        # Validated against the canonical Run vocabulary BEFORE any store
+        # mutation: an unknown or missing status raises here, so the failure
+        # is the caught-and-logged one below and no row is ever opened on
+        # input the projection cannot honestly mirror.
+        status = RunStatus(str(result.get("status")))
         store = get_dag_run_store()
         # The result carries the canonical Workspace/Project the Run was
         # admitted into (`canonical_dag_runner._project` mirrors
@@ -125,11 +170,17 @@ async def _record_run_projection(*, dag_id: str, user_id: str, result: dict[str,
                     "response": node_result.get("response", "")[:2000],
                 },
             )
-        await store.finish_run(
-            run_id,
-            status=str(result.get("status") or "failed"),
-            result=result,
-        )
+        # Terminal only (#1877): `finish_run` stamps the row's `finished_at`,
+        # so calling it for a nonterminal Run would publish a completion time
+        # the canonical Run does not have. A nonterminal Run leaves the row
+        # open at the store's in-flight default; the read overlay (or the
+        # eventual terminal transition) is what gives it its real status.
+        if status in TERMINAL_RUN_STATUSES:
+            await store.finish_run(
+                run_id,
+                status=status.value,
+                result=result,
+            )
     except Exception:
         logger.warning(
             "dag_run_projection_not_recorded run_id=%s dag_id=%s",
@@ -159,7 +210,7 @@ class CreateDAGBody(BaseModel):
 
 
 @router.post("", status_code=201)
-def create_dag(body: CreateDAGBody) -> dict:
+def create_dag(body: CreateDAGBody, request: Request) -> dict:
     t = _now()
     entry_id = str(uuid4())
     worker_id = str(uuid4())
@@ -182,7 +233,15 @@ def create_dag(body: CreateDAGBody) -> dict:
         updated_at=t,
     )
     stores.dags[dag_id] = dag.model_dump(mode="json")
-    log_audit("dag_create", "system", target=dag_id, detail={"name": body.name})
+    # Attribute the write to the initiating principal, not "system": the
+    # non-admin audit scope only retains entries naming the principal, so a
+    # "system" actor would hide the user's own create from their audit page.
+    log_audit(
+        "dag_create",
+        _actor(request),
+        target=dag_id,
+        detail={"name": body.name},
+    )
     return dag.model_dump(mode="json")
 
 
@@ -238,13 +297,13 @@ def delete_dag(dag_id: str) -> None:
 
 
 @router.post("/{dag_id}/activate")
-def activate_dag(dag_id: str) -> dict:
+def activate_dag(dag_id: str, request: Request) -> dict:
     if dag_id not in stores.dags:
         raise HTTPException(status_code=404, detail="dag not found")
     dag = DAGFile(**stores.dags[dag_id])
     dag = dag.model_copy(update={"status": "active", "updated_at": _now()})
     stores.dags[dag_id] = dag.model_dump(mode="json")
-    log_audit("dag_activate", "system", target=dag_id)
+    log_audit("dag_activate", _actor(request), target=dag_id)
     return dag.model_dump(mode="json")
 
 
@@ -335,7 +394,7 @@ def remove_edge(dag_id: str, edge_id: str) -> dict:
     return removed[0].model_dump(mode="json")
 
 
-@router.post("/{dag_id}/run")
+@router.post("/{dag_id}/run", responses=_ADMISSION_429_RESPONSES)
 async def run_dag(
     dag_id: str,
     request: Request,
@@ -368,6 +427,17 @@ async def run_dag(
             scope=scope,
             execution_mode="interactive",
         )
+    except RunConcurrencyExceeded as exc:
+        # Canonical admission backpressure (#1182), not a DAG failure: the
+        # RunStore refused a new root before any execution existed, so there
+        # is no run receipt to return and the same request is admissible once
+        # a slot frees. Same contract as the chat transport's 429: scoped
+        # detail (the ceiling kind, never the exception text) and Retry-After.
+        raise HTTPException(
+            status_code=429,
+            detail=f"too many active runs for this {exc.scope}; retry shortly",
+            headers={"Retry-After": str(CHAT_TURN_RETRY_AFTER_S)},
+        ) from exc
     except CanonicalDagExecutionError as exc:
         result = exc.result
         await _record_run_projection(dag_id=dag_id, user_id=actor, result=result)
@@ -393,7 +463,7 @@ async def run_dag(
     }
 
 
-@router.post("/run-champion")
+@router.post("/run-champion", responses=_ADMISSION_429_RESPONSES)
 async def run_champion(
     request: Request,
     body: DagRunRequest | None = None,
@@ -413,6 +483,15 @@ async def run_champion(
         result = await execute_champion(scope=scope)
         run_id = result.get("run_id")
         return {"execution_id": run_id, "run_id": run_id, "result": result}
+    except RunConcurrencyExceeded as exc:
+        # Same canonical admission backpressure mapping as `run_dag` (#1182):
+        # the champion never reached a Run, so a retryable 429 -- not a
+        # success-shaped receipt -- is the truthful answer.
+        raise HTTPException(
+            status_code=429,
+            detail=f"too many active runs for this {exc.scope}; retry shortly",
+            headers={"Retry-After": str(CHAT_TURN_RETRY_AFTER_S)},
+        ) from exc
     except Exception as exc:
         logger.warning("Champion execution failed", exc_info=exc)
         return {"status": "failed", "error": _public_failure(exc)}

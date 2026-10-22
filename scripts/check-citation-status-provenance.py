@@ -16,6 +16,20 @@ PROVENANCE = ROOT / "scripts" / "ratchet_provenance.py"
 RATCHET = "citation-status"
 METRIC_DEFINITION_VERSION = "1"
 
+#: Bounded analyzer implementation manifest (#319): this adapter plus the
+#: delegated checker and the registry modules that checker imports (citations,
+#: schema, validator -> parser). Only first-party measurement source is
+#: listed; Pydantic underneath schema.py is external dependency metadata, not
+#: this scanner's implementation identity.
+ANALYZER_MANIFEST = (
+    "scripts/check-citation-status-provenance.py",
+    "scripts/check-citation-status.py",
+    "packages/maistro-registry/src/maistro_registry/citations.py",
+    "packages/maistro-registry/src/maistro_registry/schema.py",
+    "packages/maistro-registry/src/maistro_registry/validator.py",
+    "packages/maistro-registry/src/maistro_registry/parser.py",
+)
+
 
 def _load(path: Path, name: str) -> ModuleType:
     spec = importlib.util.spec_from_file_location(name, path)
@@ -32,6 +46,14 @@ def _load(path: Path, name: str) -> ModuleType:
         del sys.modules[name]
         raise
     return module
+
+
+def _tool_version(prov: ModuleType) -> str:
+    """Implementation identity of the analyzers that reached this verdict (#319)."""
+    version: str = prov.bundled_implementation_fingerprint(
+        Path(__file__).resolve().parents[1], ANALYZER_MANIFEST
+    )
+    return version
 
 
 def _identity(problem: object) -> str:
@@ -58,6 +80,7 @@ def main() -> int:
     candidate = set(checker._load_baseline().entries)
 
     try:
+        tool_version = _tool_version(prov)
         trusted_ref = prov.resolve_baseline(checker.LEDGER, root=ROOT)
         trusted = _known(trusted_ref.loads(default={"known": []}))
         prov.require_measurement(corpus, ratchet=RATCHET, what="governance documents")
@@ -76,6 +99,7 @@ def main() -> int:
             ratchet=RATCHET,
             baseline=trusted_ref,
             tool="registry governing-citation scan",
+            tool_version=tool_version,
             metric_definition_version=METRIC_DEFINITION_VERSION,
             old_value=f"{len(trusted)} reviewed citation exception(s)",
             new_value=f"{len(current)} current citation exception(s)",

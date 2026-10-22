@@ -91,3 +91,15 @@ migration re-parents onto it as `050`; the effect-index suite now walks to
 `050` and asserts the single linear head is `050`, and `_vulture_whitelist.py`
 resolves its conflict by keeping both branches' entries (the eval identities
 and develop's harness-target vocabulary).
+
+Repair round (develop sync round 3, auto-780): merging this work into
+`auto-780` collided the head a fourth time, from the other side — that
+branch's `049_design_artifact_versions` (#780) had taken `049` on the same
+parent `048`, with #774's briefs already continuing it as `050`. The
+branch's own chain stands and this module's migration re-parents onto that
+`050` as `051` (superseding Round 6's opposite numbering, which was the
+auto-792 lane's resolution); the effect-index suite walks to `051` and
+asserts the single linear head is `051`, and the chain/retention policy
+comments follow the renumber. `test_migration_chain` still pins
+`canonical_run_eval_scores` in `EXPECTED_TABLES`, so the live-catalog guard
+is unchanged.

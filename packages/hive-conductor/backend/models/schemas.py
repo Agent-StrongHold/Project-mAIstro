@@ -58,6 +58,7 @@ class Mission(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     id: str
+    run_id: str | None = None
     user_id: str = ""
     name: str
     description: str

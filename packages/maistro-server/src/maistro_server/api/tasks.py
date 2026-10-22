@@ -7,6 +7,8 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response, status
 
+from maistro.runs.chat_refusal import CHAT_TURN_RETRY_AFTER_S
+from maistro.runs.concurrency import RunConcurrencyExceeded
 from maistro.tasks.http_contract import (
     DELEGATION_HEADER,
     IDEMPOTENCY_KEY_HEADER,
@@ -86,9 +88,10 @@ async def create_task(
     uid, service_principal, delegation_id, actor_kind = resolve_delegated_identity(auth, delegation)
     try:
         # The queue owns key validation and reconciliation (#1176); this layer
-        # only translates the two refusal shapes into their status codes —
-        # 422 for a key the request itself makes ambiguous, 409 for a reused
-        # key that admitted a different payload.
+        # only translates the refusal shapes into their status codes — 422 for
+        # a key the request itself makes ambiguous, 409 for a reused key that
+        # admitted a different payload, 429 for a canonical ceiling that is
+        # full (#1182).
         task = await queue.submit(
             request,
             user_id=uid,
@@ -107,6 +110,18 @@ async def create_task(
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=str(exc),
+        ) from exc
+    except RunConcurrencyExceeded as exc:
+        # Backpressure, not an admission outage (#1182): the Run store's
+        # governed ceiling is full and the same request admits once a slot
+        # frees. Nothing was admitted, so a 202 receipt here would invent an
+        # execution identity the canonical store refused — and a 500 would
+        # read as an outage. Same answer chat turns get, `Retry-After`
+        # included.
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=f"too many active runs for this {exc.scope}; retry shortly",
+            headers={"Retry-After": str(CHAT_TURN_RETRY_AFTER_S)},
         ) from exc
     response.headers["Location"] = f"/tasks/{task.task_id}"
     return TaskCreatedResponse(

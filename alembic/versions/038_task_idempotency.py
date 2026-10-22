@@ -19,15 +19,24 @@ otherwise. One row per admission claim:
 - `fingerprint` — SHA-256 of the client-meaningful payload. A replay inside
   the window with a different fingerprint is a visible 409, never somebody
   else's (or a stale) Run.
-- `request` — the canonical TaskCreate JSON as admitted, so a replay after a
-  restart reconstructs the original receipt. A plain text column rather than
-  `jsonb`: it is written and read back verbatim, never queried by content,
-  and text has no codec to disagree about (see `evidence_json` on the two
-  pool-building styles).
-- `task_id`, `run_id` — the admitted outcome, written by `complete`. NULL
-  while the claim is pending; their presence is what makes the claim
-  replayable, and the `task_id IS NULL` guard on complete/release keeps a
-  claim's owner from rewriting an outcome that already landed.
+- `request` — the canonical TaskCreate JSON as admitted (owner and explicit
+  key filled in), so a replay after a restart reconstructs the original
+  receipt — including one submitted with a header-only key. A plain text
+  column rather than `jsonb`: it is written and read back verbatim, never
+  queried by content, and text has no codec to disagree about (see
+  `evidence_json` on the two pool-building styles).
+- `claim_token` — a random per-claimant fence. Every claimant-owned write
+  (`begin`, `complete`, `release`) is guarded on it, so a claimant superseded
+  past the pending lease cannot stamp its outcome onto (or release) the
+  winner's row.
+- `task_id`, `run_id` — the announced receipt and, once minted, the Run
+  behind it. `task_id` is written by `begin` BEFORE the Run is minted, so a
+  claimant that dies mid-admission leaves the handle the retry's discovery
+  resolves the minted Run by (the Run's provenance names the receipt);
+  `run_id` is written by `complete`/`resolve_run`. `completed_at` — stamped
+  once by `complete`, its presence (nonzero) is what makes the outcome final
+  and replayable, and the `completed_at = 0` guard keeps any claimant from
+  rewriting an outcome that already landed.
 - `created_at`, `expires_at`, `lease_expires_at` — integer microseconds since
   the epoch, deliberately not timestamptz: the takeover guard and the purge
   query compare and bound these values on both backends, and one integer
@@ -39,12 +48,26 @@ otherwise. One row per admission claim:
 The upgrade needs no backfill: claims begin with this convergence, and every
 submission before it is defined to have no admission identity to migrate.
 
+One reconciliation: the runtime does not wait for this chain. A deployment
+whose pool is spine-ready but not yet migrated provisions this very table at
+wire time (``PgTaskIdempotencyStore.ensure_schema``), so claims are durable
+from the first submission — and ``alembic upgrade head`` then meets a table
+that already exists. Rather than die there with ``DuplicateTable`` (a chain
+that could never reach head on exactly the deployments that provisioned
+early), the upgrade inspects what is standing: every expected column present
+means the runtime provisioned this file's own shape, so the missing purge
+index is created and the revision is stamped. Columns missing means the table
+is not the claim table, and failing loudly beats stamping head over a schema
+the store cannot read or write.
+
 Revision ID: 038
 Revises: 037
 Create Date: 2026-09-09
 """
 
 from __future__ import annotations
+
+from typing import Final
 
 import sqlalchemy as sa
 from alembic import op
@@ -54,18 +77,36 @@ down_revision = "037"
 branch_labels = None
 depends_on = None
 
+#: The columns this migration and ``ensure_schema`` both own, spelled once so
+#: the create and the reconciliation check cannot drift apart. The uppercase
+#: generic spellings are deliberate: they compile to the same DDL as the
+#: title-case aliases, and they are the exact classes a dialect's reflection
+#: hands back for those DDL types (``TEXT`` for ``Text``, ``BIGINT`` for
+#: ``BigInteger``) — so the reconcile path's compiled-name comparison matches
+#: a live server's reflection exactly instead of failing on a class-alias
+#: technicality.
+CLAIM_COLUMNS: Final = (
+    sa.Column("scope_key", sa.TEXT, nullable=False),
+    sa.Column("claim_token", sa.TEXT, nullable=False),
+    sa.Column("fingerprint", sa.TEXT, nullable=False),
+    sa.Column("request", sa.TEXT, nullable=False),
+    sa.Column("task_id", sa.TEXT, nullable=True),
+    sa.Column("run_id", sa.TEXT, nullable=True),
+    sa.Column("completed_at", sa.BIGINT, nullable=False, server_default="0"),
+    sa.Column("created_at", sa.BIGINT, nullable=False),
+    sa.Column("expires_at", sa.BIGINT, nullable=False),
+    sa.Column("lease_expires_at", sa.BIGINT, nullable=False),
+)
+
 
 def upgrade() -> None:
+    inspector = sa.inspect(op.get_bind())
+    if inspector.has_table("task_idempotency"):
+        _reconcile_runtime_provisioned(inspector)
+        return
     op.create_table(
         "task_idempotency",
-        sa.Column("scope_key", sa.Text, nullable=False),
-        sa.Column("fingerprint", sa.Text, nullable=False),
-        sa.Column("request", sa.Text, nullable=False),
-        sa.Column("task_id", sa.Text, nullable=True),
-        sa.Column("run_id", sa.Text, nullable=True),
-        sa.Column("created_at", sa.BigInteger, nullable=False),
-        sa.Column("expires_at", sa.BigInteger, nullable=False),
-        sa.Column("lease_expires_at", sa.BigInteger, nullable=False),
+        *CLAIM_COLUMNS,
         sa.PrimaryKeyConstraint("scope_key", name="pk_task_idempotency"),
     )
     # The purge query's scan bound: expired claims are the only deletable
@@ -73,6 +114,91 @@ def upgrade() -> None:
     op.create_index("ix_task_idempotency_expires", "task_idempotency", ["expires_at"])
 
 
+def _reconcile_runtime_provisioned(inspector: sa.Inspector) -> None:
+    """Adopt a table the runtime provisioned at wire time, or refuse loudly.
+
+    ``ensure_schema`` runs when wiring selects the PostgreSQL tier — before
+    this migration has necessarily run. Its DDL mirrors this file's column
+    set, so an existing table carrying every expected column IS the provisioned
+    claim table: index it (a half-failed provisioning may not have reached the
+    index) and stamp the revision. Anything else standing under this name is a
+    shape the store cannot use, and upgrading over it would leave
+    ``alembic_version`` claiming a schema nobody checked.
+    """
+    _validate_claim_columns(inspector)
+    # The claim protocol's insert-replay and takeover guard rest on a unique
+    # constraint on scope_key (INSERT ... ON CONFLICT, the UPDATE ... WHERE
+    # scope_key = ...). An earlier runtime provisioning that predates the
+    # PRIMARY KEY in ensure_schema leaves a column-complete table with no such
+    # constraint — adopting it as-is would stamp head over a shape the store
+    # cannot write to. Reconstruct it: a duplicate scope_key would fail the
+    # CREATE exactly as it should, loudly, rather than letting the chain
+    # pretend the table is usable when it is not.
+    pk = inspector.get_pk_constraint("task_idempotency")
+    pk_columns = pk.get("constrained_columns", [])
+    if pk_columns != ["scope_key"]:
+        if pk.get("name"):
+            op.drop_constraint(pk["name"], "task_idempotency", type_="primary")
+        op.create_primary_key("pk_task_idempotency", "task_idempotency", ["scope_key"])
+    _validate_expiry_index(inspector)
+
+
+def _validate_claim_columns(inspector: sa.Inspector) -> None:
+    actual_columns = {col["name"]: col for col in inspector.get_columns("task_idempotency")}
+    missing = {col.name for col in CLAIM_COLUMNS} - actual_columns.keys()
+    if missing:
+        raise RuntimeError(
+            "task_idempotency already exists without the columns migration 038 "
+            f"owns (missing: {sorted(missing)}); it is not the runtime-"
+            "provisioned claim table, and the migration will not stamp over it"
+        )
+    malformed = []
+    for expected in CLAIM_COLUMNS:
+        actual = actual_columns[expected.name]
+        # Compare compiled type names rather than classes: reflection hands
+        # back exactly sqltypes.TEXT/BIGINT on live PostgreSQL, but a dialect
+        # reflecting a subclass that compiles to the same DDL must not fail
+        # the reconcile either — what matters is the shape the store binds to.
+        if str(actual["type"]).upper() != str(expected.type).upper():
+            malformed.append(
+                f"{expected.name} has type {actual['type']!s}, expected {expected.type!s}"
+            )
+        if actual["nullable"] is not expected.nullable:
+            malformed.append(
+                f"{expected.name} nullable={actual['nullable']!r}, expected {expected.nullable!r}"
+            )
+    completed_default = actual_columns["completed_at"].get("default")
+    default_text = (
+        str(completed_default).lower().replace("'", "").replace("::bigint", "").strip("() ")
+    )
+    if default_text != "0":
+        malformed.append("completed_at has no zero default required by the claim protocol")
+    if malformed:
+        raise RuntimeError(
+            "task_idempotency exists with an incompatible migration 038 shape: "
+            + "; ".join(malformed)
+        )
+
+
+def _validate_expiry_index(inspector: sa.Inspector) -> None:
+    indexes = {ix["name"]: ix for ix in inspector.get_indexes("task_idempotency")}
+    expires_index = indexes.get("ix_task_idempotency_expires")
+    if expires_index is None:
+        # The purge query's scan bound — same reason as on the create path.
+        op.create_index("ix_task_idempotency_expires", "task_idempotency", ["expires_at"])
+    elif expires_index.get("column_names") != ["expires_at"] or expires_index.get("unique", False):
+        raise RuntimeError(
+            "task_idempotency has an incompatible ix_task_idempotency_expires "
+            f"definition: {expires_index!r}"
+        )
+
+
 def downgrade() -> None:
-    op.drop_index("ix_task_idempotency_expires", table_name="task_idempotency")
-    op.drop_table("task_idempotency")
+    # IF EXISTS: the table may have been created by runtime provisioning
+    # (ensure_schema) and dropped again by a test's cleanup, or never created
+    # at all on a fresh database where alembic auto-stamps to head before
+    # downgrading. The downgrade must be idempotent, not crash on a missing
+    # index or table. Matches the DROP ... IF EXISTS pattern used by every
+    # earlier migration in this chain (see SPEC-178).
+    op.execute("DROP INDEX IF EXISTS ix_task_idempotency_expires")
+    op.execute("DROP TABLE IF EXISTS task_idempotency")

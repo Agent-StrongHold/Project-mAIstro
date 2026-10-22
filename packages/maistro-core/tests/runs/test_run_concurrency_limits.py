@@ -425,6 +425,7 @@ async def test_a_sqlite_count_that_fails_does_not_leave_its_row_for_the_next_com
 ) -> None:
     """A root whose ceiling could not be read is not admitted: its savepoint is
     unwound, so the next writer's commit cannot persist it (review)."""
+    import maistro.runs.sqlite_store as sqlite_store_module
     from maistro.runs.consumer_claim import ClaimingSqliteRunStore
 
     scope_store = InMemoryProjectScopeStore()
@@ -434,15 +435,19 @@ async def test_a_sqlite_count_that_fails_does_not_leave_its_row_for_the_next_com
         store = ClaimingSqliteRunStore(conn, project_store=scope_store)
         await store.ensure_schema()
         spine = _Spine(store, projects)
-        real_fetchone = store._fetchone
-
-        async def _fails_once(query: str, params: tuple[object, ...]) -> Any:
-            monkeypatch.setattr(store, "_fetchone", real_fetchone)
-            raise aiosqlite.OperationalError("database is locked")
-
-        monkeypatch.setattr(store, "_fetchone", _fails_once)
-        with pytest.raises(aiosqlite.OperationalError):
+        # The count seam is explicit now: `_admit_root` executes the module's
+        # counts SQL on the connection it was handed. Naming a table the
+        # schema does not have fails that one statement without touching any
+        # other query the admission path runs.
+        real_counts_sql = sqlite_store_module._ACTIVE_ROOT_COUNTS_SQL
+        monkeypatch.setattr(
+            sqlite_store_module,
+            "_ACTIVE_ROOT_COUNTS_SQL",
+            real_counts_sql.replace("canonical_runs", "canonical_runs_absent"),
+        )
+        with pytest.raises(aiosqlite.OperationalError, match="canonical_runs_absent"):
             await spine.root("w1", "alice")
+        monkeypatch.setattr(sqlite_store_module, "_ACTIVE_ROOT_COUNTS_SQL", real_counts_sql)
         assert not conn.in_transaction
 
         admitted = await spine.root("w1", "alice")
@@ -467,6 +472,279 @@ async def test_sqlite_counts_read_the_active_root_indexes() -> None:
             plan = " ".join(str(row[3]) for row in await cursor.fetchall())
         assert "USING INDEX idx_canonical_runs_active_root_workspace" in plan
         assert "USING INDEX idx_canonical_runs_active_root_principal" in plan
+    finally:
+        await conn.close()
+
+
+async def _store_and_supplied_connection(
+    limits: RunConcurrencyLimits,
+) -> tuple[_Spine, aiosqlite.Connection, aiosqlite.Connection]:
+    """A real store on one connection, plus a second initialized connection.
+
+    Two genuinely distinct `:memory:` databases, each carrying the full
+    schema: a helper that reads the store's own connection when it was handed
+    the other one must fail the tests below, which is exactly the evidence
+    they exist to collect.
+    """
+    from maistro.runs.sqlite_store import SqliteRunStore
+
+    scope_store = InMemoryProjectScopeStore()
+    projects = await _projects(scope_store, ("w1",))
+    store_conn = await aiosqlite.connect(":memory:")
+    supplied = await aiosqlite.connect(":memory:")
+    store = SqliteRunStore(store_conn, project_store=scope_store, concurrency_limits=limits)
+    await store.ensure_schema()
+    await SqliteRunStore(supplied, project_store=scope_store).ensure_schema()
+    for conn in (store_conn, supplied):
+        await conn.execute("CREATE TABLE sibling (value TEXT)")
+        await conn.commit()
+    return _Spine(store, projects), store_conn, supplied
+
+
+def _root_run(spine: _Spine, workspace: str, principal: str) -> Any:
+    """A root Run the way `create_run` would build it, before its insert."""
+    from maistro.runs.model import GraphSnapshot, Run
+
+    return Run(
+        workspace_id=workspace,
+        project_id=spine.projects[workspace],
+        graph=GraphSnapshot.from_graph(spine.graph(workspace)),
+        actor_principal_id=principal,
+        status=RunStatus.QUEUED,
+    )
+
+
+async def _insert_candidate(run: Any, conn: aiosqlite.Connection) -> None:
+    """The candidate's row, written exactly as `create_run` writes it."""
+    from maistro.runs.evidence_json import json_of
+
+    await conn.execute(
+        """INSERT INTO canonical_runs
+           (run_id, workspace_id, project_id, parent_run_id,
+            parent_node_run_id, status, payload)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        (
+            run.run_id,
+            run.workspace_id,
+            run.project_id,
+            run.parent_run_id,
+            run.parent_node_run_id,
+            run.status.value,
+            json_of(run),
+        ),
+    )
+
+
+async def test_sqlite_root_helper_counts_on_supplied_connection() -> None:
+    """`_admit_root` counts on the connection its caller supplies.
+
+    The supplied connection already holds an active root the store's own
+    connection cannot see, so the candidate exceeds the workspace ceiling
+    there while counting zero on the store's connection. The savepoint is
+    established on the supplied connection before the candidate is inserted,
+    matching `create_run`'s order. Connection-selection evidence for the
+    reusable helper boundary, not a multi-writer architecture proposal: a
+    helper that read the store's connection would admit instead of refusing.
+    """
+    from maistro.runs.sqlite_store import _ROOT_ADMISSION_SAVEPOINT
+
+    spine, store_conn, supplied = await _store_and_supplied_connection(
+        RunConcurrencyLimits(per_principal=8, per_workspace=1)
+    )
+    try:
+        await supplied.execute(
+            """INSERT INTO canonical_runs
+               (run_id, workspace_id, project_id, parent_run_id,
+                parent_node_run_id, status, payload)
+               VALUES ('occupant-1', 'w1', ?, NULL, NULL, ?, '{}')""",
+            (spine.projects["w1"], RunStatus.QUEUED.value),
+        )
+        candidate = _root_run(spine, "w1", "alice")
+        await supplied.execute(f"SAVEPOINT {_ROOT_ADMISSION_SAVEPOINT}")
+        await _insert_candidate(candidate, supplied)
+
+        with pytest.raises(RunConcurrencyExceeded) as refused:
+            await spine.store._admit_root(candidate, connection=supplied)  # type: ignore[arg-type]
+
+        assert (refused.value.scope, refused.value.limit, refused.value.active) == (
+            "workspace",
+            1,
+            1,
+        )
+    finally:
+        await store_conn.close()
+        await supplied.close()
+
+
+async def test_sqlite_root_helper_refusal_rolls_back_only_supplied_savepoint() -> None:
+    """A refusal unwinds exactly the supplied connection's savepoint.
+
+    Controlled sentinel writes sit open on both connections. The refusal must
+    undo the candidate row alone: the writes each transaction already owned
+    survive, both connections stay inside their test-owned transactions (no
+    helper commit), and the savepoint is released, not merely rolled back. A
+    helper that cleaned up the store's connection would fail here -- it would
+    find no savepoint and raise, not refuse.
+    """
+    from maistro.runs.sqlite_store import _ROOT_ADMISSION_SAVEPOINT
+
+    spine, store_conn, supplied = await _store_and_supplied_connection(
+        RunConcurrencyLimits(per_principal=8, per_workspace=1)
+    )
+    try:
+        await store_conn.execute("INSERT INTO sibling VALUES ('store-owned')")
+        await supplied.execute("INSERT INTO sibling VALUES ('supplied-owned')")
+        await supplied.execute(
+            """INSERT INTO canonical_runs
+               (run_id, workspace_id, project_id, parent_run_id,
+                parent_node_run_id, status, payload)
+               VALUES ('occupant-1', 'w1', ?, NULL, NULL, ?, '{}')""",
+            (spine.projects["w1"], RunStatus.QUEUED.value),
+        )
+        candidate = _root_run(spine, "w1", "alice")
+        await supplied.execute(f"SAVEPOINT {_ROOT_ADMISSION_SAVEPOINT}")
+        await _insert_candidate(candidate, supplied)
+
+        with pytest.raises(RunConcurrencyExceeded):
+            await spine.store._admit_root(candidate, connection=supplied)  # type: ignore[arg-type]
+
+        async with supplied.execute("SELECT run_id FROM canonical_runs") as cursor:
+            assert await cursor.fetchall() == [("occupant-1",)]
+        assert supplied.in_transaction
+        assert store_conn.in_transaction
+        async with supplied.execute("SELECT value FROM sibling") as cursor:
+            assert await cursor.fetchall() == [("supplied-owned",)]
+        async with store_conn.execute("SELECT value FROM sibling") as cursor:
+            assert await cursor.fetchall() == [("store-owned",)]
+        # RELEASE, not only ROLLBACK: nothing is left for the next writer to
+        # trip over.
+        with pytest.raises(aiosqlite.OperationalError, match="no such savepoint"):
+            await supplied.execute(f"ROLLBACK TO SAVEPOINT {_ROOT_ADMISSION_SAVEPOINT}")
+    finally:
+        await store_conn.close()
+        await supplied.close()
+
+
+async def test_sqlite_count_read_failure_rolls_back_only_supplied_savepoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A count that cannot be read is cleaned up like a refusal: through the
+    supplied connection's savepoint, leaving every other write owned."""
+    import maistro.runs.sqlite_store as sqlite_store_module
+    from maistro.runs.sqlite_store import _ROOT_ADMISSION_SAVEPOINT
+
+    spine, store_conn, supplied = await _store_and_supplied_connection(RunConcurrencyLimits())
+    try:
+        await store_conn.execute("INSERT INTO sibling VALUES ('store-owned')")
+        await supplied.execute("INSERT INTO sibling VALUES ('supplied-owned')")
+        candidate = _root_run(spine, "w1", "alice")
+        await supplied.execute(f"SAVEPOINT {_ROOT_ADMISSION_SAVEPOINT}")
+        await _insert_candidate(candidate, supplied)
+
+        real_counts_sql = sqlite_store_module._ACTIVE_ROOT_COUNTS_SQL
+        monkeypatch.setattr(
+            sqlite_store_module,
+            "_ACTIVE_ROOT_COUNTS_SQL",
+            real_counts_sql.replace("canonical_runs", "canonical_runs_absent"),
+        )
+        with pytest.raises(aiosqlite.OperationalError, match="canonical_runs_absent"):
+            await spine.store._admit_root(candidate, connection=supplied)  # type: ignore[arg-type]
+        monkeypatch.setattr(sqlite_store_module, "_ACTIVE_ROOT_COUNTS_SQL", real_counts_sql)
+
+        async with supplied.execute("SELECT run_id FROM canonical_runs") as cursor:
+            assert await cursor.fetchall() == []
+        assert supplied.in_transaction
+        assert store_conn.in_transaction
+        async with supplied.execute("SELECT value FROM sibling") as cursor:
+            assert await cursor.fetchall() == [("supplied-owned",)]
+        async with store_conn.execute("SELECT value FROM sibling") as cursor:
+            assert await cursor.fetchall() == [("store-owned",)]
+    finally:
+        await store_conn.close()
+        await supplied.close()
+
+
+async def test_sqlite_count_cancellation_still_unwinds_the_supplied_savepoint() -> None:
+    """Cancellation hits the same `except BaseException` cleanup: the supplied
+    savepoint is rolled back and released, in that order, and the original
+    exception identity propagates. No new cancellation semantics are decided
+    here -- no shielding, no task machinery -- only the cleanup this helper
+    already owned, on the connection it was handed.
+    """
+    from maistro.runs.sqlite_store import _ROOT_ADMISSION_SAVEPOINT
+
+    spine, store_conn, supplied = await _store_and_supplied_connection(RunConcurrencyLimits())
+    executed: list[str] = []
+
+    class _CountCancelled:
+        """Delegates everything to the real connection but the count, which is
+        cancelled the moment it executes -- the first statement the helper
+        runs through its supplied connection in this flow."""
+
+        def __init__(self, inner: aiosqlite.Connection) -> None:
+            self._inner = inner
+
+        def __getattr__(self, name: str) -> Any:
+            return getattr(self._inner, name)
+
+        async def execute(self, query: str, parameters: Any = None) -> Any:
+            if "COUNT(*)" in query:
+                executed.append(" ".join(query.split())[:60])
+                raise asyncio.CancelledError
+            executed.append(" ".join(query.split())[:60])
+            return await self._inner.execute(query, parameters)
+
+    try:
+        await supplied.execute("INSERT INTO sibling VALUES ('supplied-owned')")
+        candidate = _root_run(spine, "w1", "alice")
+        await supplied.execute(f"SAVEPOINT {_ROOT_ADMISSION_SAVEPOINT}")
+        await _insert_candidate(candidate, supplied)
+
+        with pytest.raises(asyncio.CancelledError):
+            await spine.store._admit_root(  # type: ignore[arg-type]
+                candidate, connection=_CountCancelled(supplied)
+            )
+
+        assert len(executed) == 3
+        assert "COUNT(*)" in executed[0]
+        assert executed[1].startswith("ROLLBACK TO SAVEPOINT canonical_root_run_admission")
+        assert executed[2].startswith("RELEASE SAVEPOINT canonical_root_run_admission")
+        async with supplied.execute("SELECT run_id FROM canonical_runs") as cursor:
+            assert await cursor.fetchall() == []
+        assert supplied.in_transaction
+    finally:
+        await store_conn.close()
+        await supplied.close()
+
+
+async def test_sqlite_create_run_supplies_existing_connection_to_root_helper(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The real public caller passes its own connection, exactly once, and the
+    real helper still runs against it."""
+    from maistro.runs.sqlite_store import SqliteRunStore
+
+    scope_store = InMemoryProjectScopeStore()
+    projects = await _projects(scope_store, ("w1",))
+    conn = await aiosqlite.connect(":memory:")
+    try:
+        store = SqliteRunStore(conn, project_store=scope_store)
+        await store.ensure_schema()
+        spine = _Spine(store, projects)
+        real_admit = store._admit_root
+        supplied: list[Any] = []
+
+        async def _spy(run: Any, *, connection: Any) -> None:
+            supplied.append(connection)
+            await real_admit(run, connection=connection)
+
+        monkeypatch.setattr(store, "_admit_root", _spy)
+        admitted = await spine.root("w1", "alice")
+
+        assert len(supplied) == 1
+        assert supplied[0] is conn
+        async with conn.execute("SELECT run_id FROM canonical_runs") as cursor:
+            assert await cursor.fetchall() == [(admitted.run_id,)]
     finally:
         await conn.close()
 

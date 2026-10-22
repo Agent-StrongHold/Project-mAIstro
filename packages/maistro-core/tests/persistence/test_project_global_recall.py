@@ -14,6 +14,7 @@ import pytest
 
 from maistro.memory.context_assembly import DefaultContextAssemblyPolicy
 from maistro.memory.episodic.store import InMemoryEpisodicStore
+from maistro.memory.exposure import MemoryExposureMode
 from maistro.memory.outcomes import InMemoryOutcomeStore
 from maistro.persistence.pg_episodic import PgEpisodicStore
 from maistro.persistence.sqlite_episodic import SqliteEpisodicStore
@@ -27,17 +28,17 @@ pytestmark = [pytest.mark.contract("behavioral")]
 @pytest.fixture(params=["memory", "sqlite", "postgres"])
 async def episodic(request: pytest.FixtureRequest, pg_pool: Any) -> AsyncIterator[EpisodicStore]:
     if request.param == "memory":
-        yield InMemoryEpisodicStore()
+        yield InMemoryEpisodicStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         return
     if request.param == "sqlite":
         async with aiosqlite.connect(":memory:") as conn:
-            store = SqliteEpisodicStore(conn)
+            store = SqliteEpisodicStore(conn, exposure_mode=MemoryExposureMode.AGENT_MANAGED)
             await store.ensure_schema()
             yield store
         return
     if pg_pool is None:
         pytest.skip("MAISTRO_TEST_PG_DSN is not set; no live PostgreSQL proof")
-    pg_store = PgEpisodicStore(pg_pool)
+    pg_store = PgEpisodicStore(pg_pool, exposure_mode=MemoryExposureMode.AGENT_MANAGED)
     await pg_store.ensure_schema()
     yield pg_store
 
@@ -88,7 +89,7 @@ async def test_layer3_keeps_project_history_and_only_authorized_globals(
     await _seed(episodic)
     policy = DefaultContextAssemblyPolicy(
         episodic_store=episodic,
-        outcome_store=InMemoryOutcomeStore(),
+        outcome_store=InMemoryOutcomeStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED),
         project_store=InMemoryProjectStore(),
     )
     expected = {"global-public", "project-agent", "project-user", "project-team"}
@@ -111,7 +112,7 @@ async def test_layer3_combined_recall_is_deduplicated_ranked_and_bounded(
         await episodic.store(memory)
     policy = DefaultContextAssemblyPolicy(
         episodic_store=episodic,
-        outcome_store=InMemoryOutcomeStore(),
+        outcome_store=InMemoryOutcomeStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED),
         project_store=InMemoryProjectStore(),
     )
     text = await policy.layer3(project_id="project-a", org_id="org-a", n=3)

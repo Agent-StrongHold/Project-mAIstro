@@ -8,6 +8,7 @@ import pytest
 
 from maistro.persistence.pg_quota import PgQuotaTracker, cycle_key
 from maistro.quota.billing import cycle_key as canonical_cycle_key
+from maistro.types.model import UnknownBillingCycleError
 
 
 class FakeRecord(dict):
@@ -110,7 +111,10 @@ def test_cycle_key_resolves_the_cycle_running_now() -> None:
     """
     assert cycle_key("monthly") == canonical_cycle_key("monthly")
     assert cycle_key("daily") == canonical_cycle_key("daily")
-    assert cycle_key("MONTHLY") == canonical_cycle_key("MONTHLY")
+    # #1205: the tracked vocabulary is exact — 'MONTHLY' is not a tolerated
+    # spelling of monthly, it fails instead of landing in the monthly bucket.
+    with pytest.raises(UnknownBillingCycleError):
+        cycle_key("MONTHLY")
     # Distinct keys per cycle type is the property that makes rollover work.
     assert cycle_key("daily") != cycle_key("monthly")
 
@@ -128,7 +132,7 @@ async def test_record_usage_upserts_and_returns_row(
             "request_count": 1,
         }
     )
-    result = await tracker.record_usage("openai", "  Monthly  ", 100, 50, event_id="event-1")
+    result = await tracker.record_usage("openai", "monthly", 100, 50, event_id="event-1")
     call = conn.calls[0]
     assert call.method == "fetchrow"
     assert "quota_usage_events" in call.query
@@ -235,7 +239,7 @@ async def test_get_usage_pct_negative_free_tokens_returns_zero(
 @pytest.mark.asyncio
 async def test_get_usage_pct_computes_ratio(tracker: PgQuotaTracker, conn: FakeConnection) -> None:
     conn.queue_fetchrow({"total_tokens": 250})
-    pct = await tracker.get_usage_pct("openai", "Monthly", 1000)
+    pct = await tracker.get_usage_pct("openai", "monthly", 1000)
     assert pct == 0.25
     call = conn.calls[0]
     assert call.args == ("openai", canonical_cycle_key("monthly"))

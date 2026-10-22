@@ -292,3 +292,75 @@ class TestTheProjectionTraversesWhatTheValidatorTraverses:
         definition, _ = separate_runtime_state({"steps": [{"run_id": "r1", "name": "one"}]})
 
         assert _node_template(parameters=definition).parameters == {"steps": [{"name": "one"}]}
+
+
+class TestCancellationCauseIsRuntimeState:
+    """Attempt.cancellation_cause is execution evidence, per #1884/#232.
+
+    The field records which of the two meanings one physical Attempt's
+    CANCELLED carries, so it lands in RUNTIME_STATE_FIELDS and inherits the
+    existing rejection/projection behavior -- no new policy, namespace, or
+    detector, and no waiver. Its arrival on the model is exactly what
+    TestTheExclusionSetTracksTheModels exists to force a decision about.
+    """
+
+    @pytest.mark.ac("SPEC-081226-bb3a/AC-9")
+    def test_a_cause_in_template_content_is_refused(self) -> None:
+        with pytest.raises(ValidationError) as caught:
+            _node_template(parameters={"cancellation_cause": "requested"})
+
+        assert _refusal(caught.value).paths == ["parameters.cancellation_cause"]
+
+    @pytest.mark.ac("SPEC-081226-bb3a/AC-9")
+    def test_a_cause_buried_below_the_top_level_is_refused_with_its_path(self) -> None:
+        with pytest.raises(ValidationError) as caught:
+            _node_template(
+                metadata={"last_execution": {"attempts": [{"cancellation_cause": "recovered"}]}}
+            )
+
+        assert _refusal(caught.value).paths == [
+            "metadata.last_execution.attempts[0].cancellation_cause"
+        ]
+
+    @pytest.mark.ac("SPEC-081226-bb3a/AC-9")
+    def test_a_graph_template_is_answerable_for_an_embedded_cause(self) -> None:
+        with pytest.raises(ValidationError) as caught:
+            GraphTemplate(
+                workspace_id="w",
+                name="g",
+                nodes=[Node(node_type="agent", policies={"cancellation_cause": "requested"})],
+            )
+
+        assert _refusal(caught.value).paths == ["nodes[0].policies.cancellation_cause"]
+
+    @pytest.mark.ac("SPEC-081226-bb3a/AC-9")
+    def test_separate_runtime_state_files_the_cause_with_the_execution(self) -> None:
+        definition, runtime = separate_runtime_state(
+            {
+                "model": "claude",
+                "cancellation_cause": "requested",
+                "retry": {"cancellation_cause": "recovered", "limit": 3},
+            }
+        )
+
+        assert definition == {"model": "claude", "retry": {"limit": 3}}
+        assert runtime == {
+            "cancellation_cause": "requested",
+            "retry": {"cancellation_cause": "recovered"},
+        }
+
+    @pytest.mark.ac("SPEC-081226-bb3a/AC-9")
+    def test_what_it_separates_constructs_as_definition_content(self) -> None:
+        definition, runtime = separate_runtime_state(
+            {"model": "claude", "cancellation_cause": "requested"}
+        )
+
+        assert _node_template(parameters=definition).parameters == {"model": "claude"}
+        assert runtime == {"cancellation_cause": "requested"}
+
+    @pytest.mark.ac("SPEC-081226-bb3a/AC-9")
+    def test_the_cause_name_is_classified_exactly_once(self) -> None:
+        """One disposition, in the rejected set -- not admitted or waived."""
+        assert "cancellation_cause" in RUNTIME_STATE_FIELDS
+        assert "cancellation_cause" not in RUNTIME_STATE_ADMITTED
+        assert "cancellation_cause" not in RUNTIME_STATE_UNENFORCEABLE

@@ -20,12 +20,7 @@ from typing import Any
 from maistro_evolve.cycle import EvolutionCycle
 from maistro_evolve.harness import EvalHarness, evidence_method
 from maistro_evolve.population import PopulationStore
-from maistro_evolve.promotion import (
-    EVIDENCE_CYCLE_KEY,
-    HISTORY_KEY,
-    OBJECTIVE_VERSION_KEY,
-    SAMPLES_KEY,
-)
+from maistro_evolve.promotion import objective_version
 from maistro_evolve.types import DAGTopology, EvalResult, EvalWeights, NodeGenome, PipelineGenome
 
 
@@ -72,21 +67,6 @@ def _result(benchmark: str, score: float, evidence: dict[str, Any] | None) -> Ev
     )
 
 
-def _evidence(genome: PipelineGenome, samples: int = 2, cycle: int = 1) -> PipelineGenome:
-    """Stamp a genome with governed-selection-eligible evidence (#854):
-    repeated independent samples, stable spread, objective-stamped and
-    current. Champion APIs run the shared ``selection_eligibility``
-    contract, so provenance fixtures must carry evidence that clears it."""
-    samples_param: dict[str, int] = genome.harness_params.setdefault(SAMPLES_KEY, {})
-    history_param: dict[str, list[float]] = genome.harness_params.setdefault(HISTORY_KEY, {})
-    for bench, score in genome.eval_scores.items():
-        samples_param[bench] = samples
-        history_param[bench] = [score - 0.01] * (samples - 1) + [score + 0.01]
-    genome.harness_params[OBJECTIVE_VERSION_KEY] = "objective-test"
-    genome.harness_params[EVIDENCE_CYCLE_KEY] = cycle
-    return genome
-
-
 class TestEvidenceMethod:
     def test_dict_evidence_extracts_method(self):
         assert (
@@ -126,7 +106,14 @@ class TestCycleFoldsEvidence:
             type(
                 "_Cfg",
                 (),
-                {"eval_batch_size": 4, "eval_ema_alpha": 1.0, "target_benchmarks": ["proxy_bfcl"]},
+                {
+                    "eval_batch_size": 4,
+                    "eval_ema_alpha": 1.0,
+                    "target_benchmarks": ["proxy_bfcl"],
+                    # M4-A8/#115: this test pins evidence folding, not producer
+                    # credit — keep the ledger path out of its assertions.
+                    "producer_attribution": False,
+                },
             )(),
             llm_call=None,
         )
@@ -154,7 +141,14 @@ class TestCycleFoldsEvidence:
             type(
                 "_Cfg",
                 (),
-                {"eval_batch_size": 4, "eval_ema_alpha": 1.0, "target_benchmarks": ["proxy_bfcl"]},
+                {
+                    "eval_batch_size": 4,
+                    "eval_ema_alpha": 1.0,
+                    "target_benchmarks": ["proxy_bfcl"],
+                    # M4-A8/#115: same scoping — the unverified-evidence
+                    # assertion must not depend on producer credit.
+                    "producer_attribution": False,
+                },
             )(),
             llm_call=None,
         )
@@ -165,6 +159,29 @@ class TestCycleFoldsEvidence:
 
 
 class TestChampionProvenance:
+    @staticmethod
+    def _stamp_selection_evidence(genome: PipelineGenome) -> PipelineGenome:
+        """Complete the #854 selection-evidence legs (samples, objective stamp,
+        evidence currency). Since develop's #854 reconciliation,
+        ``get_champion`` only selects ELIGIBLE genomes, so a provenance fixture
+        must carry the evidence that makes it selectable — the same complete-
+        evidence pattern ``test_rsi_safety.py`` uses for the promotion gate.
+        The provenance assertions below stay about #384: per-score evidence
+        naming on the genome that WAS selected.
+        """
+        benchmarks = sorted(genome.eval_scores)
+        genome.harness_params.update(
+            {
+                "eval_samples": dict.fromkeys(benchmarks, 2),
+                "eval_history": {
+                    b: [genome.eval_scores[b], genome.eval_scores[b]] for b in benchmarks
+                },
+                "objective_version": objective_version(benchmarks),
+                "evidence_cycle": 1,
+            }
+        )
+        return genome
+
     def test_none_when_no_scored_genomes(self):
         store = PopulationStore()
         assert store.champion_provenance() is None
@@ -179,15 +196,13 @@ class TestChampionProvenance:
             "proxy_bfcl": "structured-call-match",
             "proxy_gaia": "exact-match+llm-judge",
         }
-        _evidence(champion)
-        store.add(champion)
+        store.add(self._stamp_selection_evidence(champion))
 
         loser = _genome("loser")
         loser.fitness_score = 10.0
         loser.eval_scores = {"proxy_bfcl": 0.3}
         loser.eval_evidence = {"proxy_bfcl": "structured-call-match"}
-        _evidence(loser)
-        store.add(loser)
+        store.add(self._stamp_selection_evidence(loser))
 
         provenance = store.champion_provenance()
         assert provenance is not None
@@ -209,9 +224,8 @@ class TestChampionProvenance:
         genome = _genome("legacy")
         genome.fitness_score = 50.0
         genome.eval_scores = {"proxy_ragas": 0.8}
-        # Selection-eligible under #854 (samples/objective stamped), but a
-        # pre-#384 evidence ledger: no record of how the score was produced.
-        _evidence(genome)
+        self._stamp_selection_evidence(genome)
+        # Pre-#384 genome: folded before evidence existed — no record.
         store.add(genome)
 
         provenance = store.champion_provenance()

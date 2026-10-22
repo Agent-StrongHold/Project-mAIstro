@@ -297,6 +297,66 @@ def test_the_explicit_no_issue_exclusion_is_accepted(gate, tmp_path) -> None:
     assert gate.check() == []
 
 
+def test_an_empty_no_issue_exclusion_is_rejected(gate, tmp_path) -> None:
+    """A no-issue annotation with no reason is no annotation at all.
+
+    The closing delimiter is content to a naive presence check, so
+    `(no linked issue: )` would otherwise satisfy it and bypass traceability
+    (#1102).
+    """
+    _write(
+        gate,
+        tmp_path,
+        changelog=(
+            "# Changelog\n\n## [Unreleased]\n\n### Fixed\n\n"
+            "- **Typo (no linked issue: ).** Empty.\n\n## [1.0.0] - TBD\n\nnotes\n"
+        ),
+    )
+
+    problems = gate.check()
+
+    assert any("links no issue or PR" in p for p in problems)
+
+
+def test_the_last_entry_before_a_category_heading_is_validated(gate, tmp_path) -> None:
+    """Switching category must flush the bullet above the heading.
+
+    A parser that swaps category without emitting the pending entry drops the
+    last entry of every non-final category out of validation entirely — an
+    untraceable entry no check ever sees (#1102).
+    """
+    _write(
+        gate,
+        tmp_path,
+        changelog=(
+            "# Changelog\n\n## [Unreleased]\n\n### Fixed\n\n- **First (#1).** Fine.\n\n"
+            "- **Untraceable.** No link, no exclusion.\n\n### Added\n\n"
+            "- **Second (#2).** Fine.\n\n## [1.0.0] - TBD\n\nnotes\n"
+        ),
+    )
+
+    problems = gate.check()
+
+    assert any("Untraceable" in p and "links no issue or PR" in p for p in problems)
+
+
+def test_a_well_formed_last_entry_before_a_category_heading_passes(gate, tmp_path) -> None:
+    """The flush must not over-reject: the entry that closes its category
+    under the old parser's blind spot is validated, not punished, when it
+    carries its link (#1102)."""
+    _write(
+        gate,
+        tmp_path,
+        changelog=(
+            "# Changelog\n\n## [Unreleased]\n\n### Fixed\n\n- **First (#1).** Fine.\n\n"
+            "- **Last (#2).** Closes the category.\n\n### Added\n\n"
+            "- **Second (#3).** Fine.\n\n## [1.0.0] - TBD\n\nnotes\n"
+        ),
+    )
+
+    assert gate.check() == []
+
+
 def test_an_entry_outside_a_category_fails(gate, tmp_path) -> None:
     _write(
         gate,
@@ -449,6 +509,54 @@ def test_releasing_against_a_placeholder_target_section_fails(gate, tmp_path) ->
     problems = gate.check(releasing="v1.0.0")
 
     assert any("placeholder-only" in p for p in problems)
+
+
+def test_releasing_against_a_heading_only_target_section_fails(gate, tmp_path) -> None:
+    """A category heading is structure, not a note.
+
+    `### Added` alone makes a section structurally nonempty, so a presence
+    check passes while the published notes would carry no entry at all
+    (#1102): readiness must treat a heading-only section as empty.
+    """
+    _write(
+        gate,
+        tmp_path,
+        version="1.0.0",
+        changelog=("# Changelog\n\n## [Unreleased]\n\n## [1.0.0] - TBD\n\n### Added\n"),
+        readme=f"{gate.README_BEGIN}\n{_status(current='1.0.0')}\n{gate.README_END}",
+        tags=["v1.0.0"],
+    )
+
+    problems = gate.check(releasing="v1.0.0")
+
+    assert any("only category headings" in p and "v1.0.0" in p for p in problems)
+
+
+def test_releasing_against_a_heading_plus_trailing_link_defs_target_fails(gate, tmp_path) -> None:
+    """Trailing Keep-a-Changelog definitions are not entries.
+
+    The last section's body sweeps up the file's `[x.y.z]: ...` definitions —
+    with no later `##` heading to stop at — and `release_notes.py` drops them
+    before publishing. Readiness normalizes identically, so `### Added` plus
+    those stray lines is still the heading-only section #1102 rejects, not
+    meaningful content that slips the check through.
+    """
+    _write(
+        gate,
+        tmp_path,
+        version="1.0.0",
+        changelog=(
+            "# Changelog\n\n## [Unreleased]\n\n## [1.0.0] - TBD\n\n### Added\n\n"
+            "[0.9.0]: https://github.com/example/repo/compare/v0.8.0...v0.9.0\n"
+            "[1.0.0]: https://github.com/example/repo/compare/v0.9.0...v1.0.0\n"
+        ),
+        readme=f"{gate.README_BEGIN}\n{_status(current='1.0.0')}\n{gate.README_END}",
+        tags=["v1.0.0"],
+    )
+
+    problems = gate.check(releasing="v1.0.0")
+
+    assert any("only category headings" in p and "v1.0.0" in p for p in problems)
 
 
 def test_releasing_an_rc_checks_the_base_version_section(gate, tmp_path) -> None:

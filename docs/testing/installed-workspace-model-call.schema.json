@@ -1,0 +1,247 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/Agent-StrongHold/Project-mAIstro/develop/docs/testing/installed-workspace-model-call.schema.json",
+  "title": "Installed-workspace selected completed model Invocation, v1",
+  "description": "Exact v1 shape of one selected completed model Invocation with its original physical dispatch evidence (#1879). This is an internal-consistency contract, not a provider-authenticity or authorization proof: matching opaque IDs establish linkage only. All objects reject extra fields and supply no implicit defaults; structural IDs/references are nonblank strings unless explicitly nullable. Invocation.status deliberately admits every canonical InvocationStatus value here -- the completed-only rule is the first ordered semantic invariant (UNSUPPORTED_INVOCATION_STATE), not a schema rule, so a misspelled status (SCHEMA_INVALID) stays distinguishable from a known non-completed state.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "evidence_kind",
+    "request",
+    "run",
+    "node_run",
+    "attempt",
+    "invocation",
+    "dispatch",
+    "expected_model"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1,
+      "description": "Exactly 1. The integer type guard keeps JSON true (which equals 1 in Python) out."
+    },
+    "evidence_kind": {
+      "enum": ["synthetic", "observed"],
+      "description": "synthetic: fixture-built evidence; observed: captured from a real execution."
+    },
+    "request": { "$ref": "#/$defs/request" },
+    "run": { "$ref": "#/$defs/run" },
+    "node_run": { "$ref": "#/$defs/nodeRun" },
+    "attempt": { "$ref": "#/$defs/attempt" },
+    "invocation": { "$ref": "#/$defs/invocation" },
+    "dispatch": { "$ref": "#/$defs/dispatch" },
+    "expected_model": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["provider_name", "requested_model"],
+      "properties": {
+        "provider_name": { "$ref": "#/$defs/nonblankString" },
+        "requested_model": { "$ref": "#/$defs/nonblankString" }
+      },
+      "description": "The selected model the caller asked for. Dispatch.requested_model must equal requested_model; usage.model_version is the concrete version the provider reported and may differ from this alias."
+    }
+  },
+  "$defs": {
+    "nonblankString": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "\\S",
+      "description": "Nonblank: at least one non-whitespace character."
+    },
+    "request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "request_id",
+        "run_id",
+        "workspace_id",
+        "project_id",
+        "actor_principal_id",
+        "agent_id"
+      ],
+      "properties": {
+        "request_id": { "$ref": "#/$defs/nonblankString" },
+        "run_id": { "$ref": "#/$defs/nonblankString" },
+        "workspace_id": { "$ref": "#/$defs/nonblankString" },
+        "project_id": { "$ref": "#/$defs/nonblankString" },
+        "actor_principal_id": { "$ref": "#/$defs/nonblankString" },
+        "agent_id": { "$ref": "#/$defs/nonblankString" }
+      },
+      "description": "Export request_id/agent_id are linkage declarations, not assertions those fields exist on Run. Actor is provenance, not authorization."
+    },
+    "run": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["run_id", "workspace_id", "project_id", "actor_principal_id"],
+      "properties": {
+        "run_id": { "$ref": "#/$defs/nonblankString" },
+        "workspace_id": { "$ref": "#/$defs/nonblankString" },
+        "project_id": { "$ref": "#/$defs/nonblankString" },
+        "actor_principal_id": { "$ref": "#/$defs/nonblankString" }
+      }
+    },
+    "nodeRun": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["node_run_id", "run_id", "node_id"],
+      "properties": {
+        "node_run_id": { "$ref": "#/$defs/nonblankString" },
+        "run_id": { "$ref": "#/$defs/nonblankString" },
+        "node_id": { "$ref": "#/$defs/nonblankString" }
+      }
+    },
+    "attempt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["attempt_id", "node_run_id", "ordinal"],
+      "properties": {
+        "attempt_id": { "$ref": "#/$defs/nonblankString" },
+        "node_run_id": { "$ref": "#/$defs/nonblankString" },
+        "ordinal": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "1-based attempt ordinal; the validator never requires one Invocation per Attempt."
+        }
+      }
+    },
+    "invocation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "invocation_id",
+        "run_id",
+        "node_run_id",
+        "attempt_id",
+        "workspace_id",
+        "project_id",
+        "effect_key",
+        "logical_effect",
+        "status",
+        "binding",
+        "usage"
+      ],
+      "properties": {
+        "invocation_id": { "$ref": "#/$defs/nonblankString" },
+        "run_id": { "$ref": "#/$defs/nonblankString" },
+        "node_run_id": { "$ref": "#/$defs/nonblankString" },
+        "attempt_id": { "$ref": "#/$defs/nonblankString" },
+        "workspace_id": { "$ref": "#/$defs/nonblankString" },
+        "project_id": { "$ref": "#/$defs/nonblankString" },
+        "effect_key": { "$ref": "#/$defs/nonblankString" },
+        "logical_effect": { "type": "boolean" },
+        "status": {
+          "enum": ["created", "running", "completed", "failed", "unknown"],
+          "description": "Canonical InvocationStatus values. Only completed is supported by this successful-call validator; other known states are UNSUPPORTED_INVOCATION_STATE, values outside the enum are SCHEMA_INVALID."
+        },
+        "binding": { "$ref": "#/$defs/binding" },
+        "usage": {
+          "if": { "not": { "type": "null" } },
+          "then": { "$ref": "#/$defs/usage" },
+          "description": "Canonical InvocationUsage, or null exactly when dispatch.usage_provenance.source is unavailable. if/then (not oneOf) keeps a nested usage violation reported at its own pointer."
+        }
+      }
+    },
+    "binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "binding_id",
+        "workspace_id",
+        "project_id",
+        "capability",
+        "provider_name"
+      ],
+      "properties": {
+        "binding_id": { "$ref": "#/$defs/nonblankString" },
+        "workspace_id": { "$ref": "#/$defs/nonblankString" },
+        "project_id": { "$ref": "#/$defs/nonblankString" },
+        "capability": { "$ref": "#/$defs/nonblankString" },
+        "provider_name": { "$ref": "#/$defs/nonblankString" }
+      }
+    },
+    "usage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "units",
+        "input_units",
+        "output_units",
+        "cost_cents",
+        "model",
+        "model_version",
+        "provider"
+      ],
+      "properties": {
+        "units": {
+          "$ref": "#/$defs/nonblankString",
+          "description": "Unit system, e.g. \"tokens\"; canonical InvocationUsage rejects blank units."
+        },
+        "input_units": { "type": "integer", "minimum": 0 },
+        "output_units": { "type": "integer", "minimum": 0 },
+        "cost_cents": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "description": "Finite nonnegative cost in cents, or null when unmeasured. No required cost is fabricated when this is null."
+        },
+        "model": {
+          "type": "string",
+          "description": "Model the provider reported; mirrors canonical InvocationUsage, whose default is the empty string. Never compared to requested_model."
+        },
+        "model_version": {
+          "type": "string",
+          "description": "Concrete version the provider reported; may differ from the requested alias."
+        },
+        "provider": {
+          "type": "string",
+          "description": "Provider the usage came from; not a join key in this primitive."
+        }
+      }
+    },
+    "dispatch": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "dispatch_id",
+        "invocation_id",
+        "provider_name",
+        "requested_model",
+        "provider_request_id",
+        "response_kind",
+        "result_present",
+        "usage_provenance"
+      ],
+      "properties": {
+        "dispatch_id": { "$ref": "#/$defs/nonblankString" },
+        "invocation_id": { "$ref": "#/$defs/nonblankString" },
+        "provider_name": { "$ref": "#/$defs/nonblankString" },
+        "requested_model": { "$ref": "#/$defs/nonblankString" },
+        "provider_request_id": {
+          "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/nonblankString" }],
+          "description": "Provider request IDs may be absent (null); when present, nonblank."
+        },
+        "response_kind": {
+          "enum": ["provider", "stub"]
+        },
+        "result_present": { "type": "boolean" },
+        "usage_provenance": { "$ref": "#/$defs/usageProvenance" }
+      }
+    },
+    "usageProvenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source", "evidence_ref"],
+      "properties": {
+        "source": {
+          "enum": ["reported", "estimated", "unavailable"],
+          "description": "Evidence-only wrapper describing where usage came from; not a new canonical source/provenance enum."
+        },
+        "evidence_ref": {
+          "type": ["string", "null"],
+          "description": "Must be nonblank when source is reported or estimated; free when unavailable."
+        }
+      }
+    }
+  }
+}

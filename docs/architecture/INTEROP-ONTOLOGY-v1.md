@@ -44,6 +44,8 @@ It is metadata over canonical semantic owners, not a second set of Workspace, Pr
 
 The executable registry and `quality/shared-interop-ontology-v1.json` are required to serialize identically. A contract test fails if either representation drifts. Product migration onto this surface remains owned by the product/seam convergence issues; #459 owns the Builders → Conductor cross-product execution proof.
 
+**Feature parity inventory:** the per-feature Workspace-UI/API/CLI entry-point matrix grounded in this ontology's canonical owners is [FEATURE-PARITY-MATRIX.md](FEATURE-PARITY-MATRIX.md) (#1874).
+
 ## Shared identities
 
 | Concept | Canonical owner | Canonical identity | Required relationship |

@@ -37,11 +37,27 @@ class QuotaTrackerMachine(RuleBasedStateMachine):
         self.call_count += 1
 
     @invariant()
-    def total_equals_input_plus_output(self):
+    def recorded_usage_matches_model(self):
+        """Model-vs-store equality for the single (provider, cycle) under test.
+
+        Counterexample class: an accumulator that adds output tokens into the
+        input bucket, drops one side of the sum, or miscounts requests
+        diverges from the independently accumulated `recorded_*` totals here.
+        The previous `total_equals_input_plus_output` re-derived the store's
+        own arithmetic from the store's own fields (`total == input + output`
+        on the SAME entry), so a recorder that stored the wrong split —
+        e.g. `total += input` only — stayed green as long as it was
+        consistently wrong.
+        """
         usage = _run(self.tracker.get_all_usage())
-        for entry in usage:
-            total = entry["input_tokens"] + entry["output_tokens"]
-            assert entry["total_tokens"] == total
+        if not usage:
+            assert self.call_count == 0, "recorded calls but the store holds no usage"
+            return
+        assert len(usage) == 1, f"expected one tracked (provider, cycle), got {len(usage)}"
+        entry = usage[0]
+        assert entry["input_tokens"] == self.recorded_input
+        assert entry["output_tokens"] == self.recorded_output
+        assert entry["total_tokens"] == self.recorded_input + self.recorded_output
 
     @invariant()
     def request_count_matches_calls(self):
