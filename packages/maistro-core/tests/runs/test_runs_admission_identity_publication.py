@@ -10,10 +10,13 @@ These tests pin two properties of that publication:
 - the published names are the module's own objects (a re-export, not a copy
   or a shadowing definition), and they are declared in the package's
   ``__all__``;
-- the leaf is still a leaf. The package's own ``__init__`` is the only
-  production edge into the module, so the reachability the import graph now
-  reports is a published library surface and not a runtime consumer that
-  quietly consumes the types.
+- the leaf is still a leaf. Exactly two production edges import the module:
+  the package's own ``__init__`` (the publication) and the inactive #1852
+  classifier (``tasks/admission_generation.py``), which reads the identity
+  types without anything consuming it in turn. The live claim loop imports
+  neither, so the reachability the import graph now reports is a published
+  library surface plus an unconsumed contract leaf — not a runtime consumer
+  that quietly consumes the types.
 
 Nothing here grants authority: constructing a DTO is not admission, and these
 tests assert no admission decision.
@@ -101,14 +104,34 @@ def test_the_package_publication_is_the_only_production_edge() -> None:
     """The leaf stays a contract leaf: publishing it wires no runtime consumer.
 
     The reachability gate now sees this module through the package's own
-    ``__init__``. If a production module ever imports it directly, the leaf
-    has grown a runtime consumer and its reachability disposition has to be
-    revisited (the #1845 admission-backend integration) — that is a contract
-    change, not a refactor, and this test is where it surfaces.
+    ``__init__``. Exactly two production importers are sanctioned, both
+    contract leaves and neither a runtime consumer:
+
+    - the package publication itself (``maistro/runs/__init__.py``), and
+    - the #1852 replay-generation classifier (``tasks/admission_generation.py``),
+      whose issue-specified API imports the identity types while staying
+      inactive — nothing imports the classifier, so no admission decision
+      path reads these names.
+
+    Any importer beyond exactly those two — above all the live claim loop in
+    ``tasks/idempotency.py`` or the queue — means the leaf has grown a runtime
+    consumer and its reachability disposition has to be revisited (the #1845
+    admission-backend integration) — that is a contract change, not a
+    refactor, and this test is where it surfaces.
     """
+    classifier = (
+        REPO_ROOT
+        / "packages"
+        / "maistro-core"
+        / "src"
+        / "maistro"
+        / "tasks"
+        / "admission_generation.py"
+    )
     importers = _production_importers()
-    assert importers == [PACKAGE_INIT], (
-        "the admission identity leaf must keep exactly one production edge — "
-        f"the package publication in {PACKAGE_INIT}; got "
+    assert importers == [PACKAGE_INIT, classifier], (
+        "the admission identity leaf must keep exactly two production edges — "
+        f"the package publication in {PACKAGE_INIT} and the inactive #1852 "
+        f"classifier {classifier}; got "
         + ", ".join(str(path.relative_to(REPO_ROOT)) for path in importers)
     )

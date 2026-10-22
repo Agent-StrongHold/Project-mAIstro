@@ -6914,3 +6914,92 @@ pair byte-identical to `a89b886d5` (empty diff); classifier sha256
 front-matter record. Prohibited surfaces (`tasks/idempotency.py`,
 `tasks/__init__.py`, `runs/__init__.py`, `tasks/queue.py`) zero-diff vs
 `origin/develop`; no package-initializer export added.
+
+## Round 84 (job e0524f305dae41a98cab7405e3b0b942): repair at 955cb8682352 —
+## forbidden whitelist keep-alive removed; #1150 publication test reconciled to
+## the sanctioned two-edge invariant; all four named mutations re-proven
+
+Starting head `955cb8682352a1eeab5fb2c92fc5e454dc70153e` (exact, clean tree).
+CI at that head failed five jobs; first-hand decomposition reproduced every
+one locally with no services beyond the default environment.
+
+**Root cause: a bad merge union, not the leaf.** The `7f8683be` merge
+(commit `955cb8682`) brought in the #1150-lineage publication test
+`packages/maistro-core/tests/runs/test_runs_admission_identity_publication.py`
+(absent at round 83's head `6aa7f67bf`, verified via
+`git show 6aa7f67bf:<path>` → "exists on disk, but not in '6aa7f67bf'") which
+pins `importers == [runs/__init__.py]` — one production edge into
+`maistro.runs.admission_identity`. The branch-side `_vulture_whitelist.py`
+carries a round-1-era keep-alive for the same leaf:
+`from maistro.runs.admission_identity import AdmissionAssessment`, three
+`receipt_snapshot`/`provenance_snapshot`/`format_version` module variables,
+and six `AdmissionAssessment.*` tuple entries. That import is a second
+production edge, so the publication test failed in both coverage jobs; it is
+also exactly the "suppressions, allowlist/baseline entries, keep-alive
+imports" posture the leaf scope forbids.
+
+**Repair 1 — whitelist keep-alive removed.** Reverted the three
+admission-identity hunks in `_vulture_whitelist.py` to the develop base; the
+file now differs from base `156be3ad4` only by the required
+`SKILL_SECURITY_SCAN_VERSION` removal (the symbol no longer exists in the
+merged `skills/parser.py`, so keeping it would leave a dangling import).
+Effect: the admission identity leaf's production importers drop from three to
+the two sanctioned ones.
+
+**Repair 2 — vulture ledger left at the round-83 prune; gate re-proven
+without suppressions.** An attempted restoration of the five
+`admission_identity.py` enum-member rows was rejected by the gate itself
+("5 recorded identit(y/ies) no longer found — prune them. Fixed debt must be
+pruned from the candidate ledger"): the classifier legitimately reads
+`AdmissionAssessment.REPLACE_EXPIRED/MISMATCH/REPLAYED/LEGACY_UNRESOLVED/
+TAKEOVER`, so those identities no longer exist. The rows stay pruned
+(committed state); the gate now passes WITHOUT the whitelist suppressions:
+`check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+'*/third_party/*'` rc=0, 1320 reviewed identities → 1315 findings,
+unclassified=0, never_allowlist=0, no prune warnings, no unbanked identities.
+
+**Repair 3 — publication test reconciled to the sanctioned contract change.**
+The leaf's issue-specified API mandates
+`from maistro.runs.admission_identity import ...` in the classifier, so the
+#1859-era one-edge pin is superseded by construction. Updated
+`test_the_package_publication_is_the_only_production_edge` to assert the
+exact two-edge list `[runs/__init__.py, tasks/admission_generation.py]` (and
+rewrote the module docstring to match). Strictness is preserved: the list is
+exact, so any third importer — above all `tasks/idempotency.py` or
+`tasks/queue.py` — still fails the test. This is the contract-change surface
+the test's own docstring reserves for exactly this event; no gate script was
+weakened and the leaf remains unconsumed.
+
+**Post-repair battery at 955cb8682352 + this commit (all first-hand):**
+`ruff check .` All checks passed; `ruff format --check .` 3419 files already
+formatted; `mypy packages/maistro-core/src/maistro/tasks/admission_generation.py`
+Success; `pytest packages/maistro-core/tests -q` → **16181 passed, 1163
+skipped, 7 xfailed** (publication test included, 3 passed; focused classifier
+suite 132 passed; C1+live-flow pair 146 passed);
+`check-suite-inventory.py` rc=0 (21/21 suites, 33336 node IDs — the
+publication-test edit changes no counts, so the recorded `+132` delta stands);
+`check-reachability-dispositions.py` rc=0; `check-promotion-surface.py` rc=0;
+`check-shipped-surface-truth.py` rc=0; `check-ratchet-provenance.py` rc=1
+**only** via `check-reachability-provenance.py` returning 1 — every other
+inventory gate OK (adr-status-language, citation-status, promotion-surface,
+reachability-dispositions 157/157, shell-execution 3/3, contract-markers
+358/358, enumerations 1/1, lifecycle 0/0, vulture rc=0).
+
+**Blocker re-derived exactly (set-level, not pytest-truncated):** importing
+the gate and comparing sets gives `stale = []`,
+`added = ['maistro.tasks.admission_generation']`, total unreachable 158 vs
+baseline 157. The three remaining red root tests
+(`test_baseline_matches_the_tree`, both `test_reachability_baseline_identity`
+tests) fail on that single-element delta and nothing else. The blocker stands
+by leaf mandate: no baseline addition is permitted, and none is mechanically
+possible — the baseline grows only behind a landed reachability authorization
+(two-merge rule), and `quality/ratchet-authorizations.json` carries no grant
+for either leaf module. The parent #1845 integration retires the row by
+wiring the real consumer, not by banking.
+
+**Mutation teeth re-proven first-hand at this tree (cp backup, md5
+`257a6e45c382349dd12f559099663fbc` verified byte-identical after restore):**
+TAKEOVER↔REPLACE_EXPIRED swap → 50 failed; lease row moved before the binding
+row → 16 failed; `LEGACY_UNRESOLVED` row removed (legacy pending falls through
+to lease logic) → 10 failed; mismatch row moved before the expiry row → 22
+failed. All four issue-named regression classes are caught.
