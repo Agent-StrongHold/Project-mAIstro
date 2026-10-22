@@ -4,10 +4,10 @@
     {
       "image": "python",
       "tag": "3.13.16-slim-bookworm",
-      "digest": "sha256:a1165e272e578941b84abc79e4ab38a0305cd12803a5c4247979ac7655f4d641",
-      "recorded": "2026-10-19",
-      "recorded_in": "#363",
-      "note": "CPython 3.13.16 on Debian bookworm-slim; the interpreter pin that keeps coincurve building from source only on purpose. Refreshed from 3.13.15 (#363): the grype leg of the container gate flags CPython binary HIGH/CRITICAL CVEs (CVE-2026-19445/19553/82049) whose fixes landed in 3.13.16.",
+      "digest": "sha256:73aa5faee130c60da030e105ec971ccf57473fbd22ce73bd6fc9ba99a40b838d",
+      "recorded": "2026-10-22",
+      "recorded_in": "#1152",
+      "note": "CPython 3.13.16 on Debian bookworm-slim; the interpreter pin that keeps coincurve building from source only on purpose. Refreshed from 3.13.15 (#363): the grype leg of the container gate flags CPython binary HIGH/CRITICAL CVEs (CVE-2026-19445/19553/82049) whose fixes landed in 3.13.16. Digest refreshed 2026-10-22 (#1152): security.yml run 39823108438 flags libexpat1 2.5.0-1+deb12u4 (CVE-2025-59375 / CVE-2026-77214, HIGH, fixed 2.5.0-1+deb12u5) in maistro-engine because the buildx gha cache still serves the pre-upgrade `apt-get upgrade` layer; the base-digest bump invalidates that cached layer so the rebuilt image upgrades to deb12u5 (locally verified: fresh builds already resolved deb12u5, so only the cached-CI layer was stale).",
       "used_by": [
         "Dockerfile",
         "packages/hive-conductor/Dockerfile"
@@ -53,10 +53,10 @@
     {
       "image": "golang",
       "tag": "1.27.3-alpine",
-      "digest": "sha256:d530cf60723abf1ffae0cd16bb546b379ec0550d2f3815e5b16ed69dbc00fba4",
+      "digest": "sha256:b8c9b82affbbb82a020bbcf998dad2ba9516944ac7e883524642a481a9505e9c",
       "recorded": "2026-10-22",
-      "recorded_in": "#2253",
-      "note": "Builds the age static binaries and the static docker CLI from their pinned upstream release tags (#363): the published docker:29-cli binary embeds go1.26.8 stdlib and the age prebuilt binary go1.25.x, both carrying 2026 stdlib HIGHs (CVE-2026-78667/78669/97031, fixed in go1.26.9/1.27.2) that no released tag of either project ships fixed. Bumped 1.27.2 -> 1.27.3 (2026-10-22): CVE-2026-111943 crypto/x509 MITM HIGH (fixed in 1.27.3) in the stdlib embedded by BOTH built binaries -- the docker:29-cli AND age/age-keygen (agebuild stage).",
+      "recorded_in": "#1152",
+      "note": "Builds the age static binaries and the static docker CLI from their pinned upstream release tags (#363, then #1152): the published docker:29-cli binary embeds go1.26.8 stdlib and the age prebuilt binary go1.25.x, both carrying 2026 stdlib HIGHs (CVE-2026-78667/78669/97031, fixed in go1.26.9/1.27.2) that no released tag of either project ships fixed. The 1.27.2 rebuild then aged out itself: CVE-2026-111943 (crypto/x509 MITM via untrusted intermediate certificates, HIGH, fixed in go1.26.10/1.27.3) flagged both binaries' stdlib, so the builder moved to 1.27.3-alpine. Resolved 2026-10-22 hours after upstream re-serialized the tag's index with unchanged per-arch content (the earlier same-day index d530cf60723abf1ffae0cd16bb546b379ec0550d2f3815e5b16ed69dbc00fba4 carries the identical linux/amd64 child).",
       "used_by": [
         "packages/hive-conductor/Dockerfile",
         "Dockerfile",
@@ -79,10 +79,10 @@
     },
     {
       "image": "mcr.microsoft.com/playwright",
-      "tag": "v1.52.0-noble",
-      "digest": "sha256:a021500a801bab0611049217ffad6b9697d827205c15babb86a53bc1a61c02d5",
-      "recorded": "2026-09-30",
-      "recorded_in": "#349",
+      "tag": "v1.64.0-noble",
+      "digest": "sha256:06a9939e57531807f8d5fd76ce44b53165ffb7d7501d87ab10e285c20b1e971f",
+      "recorded": "2026-10-10",
+      "recorded_in": "#1779",
       "note": "Playwright browsers + deps, e2e harness only.",
       "used_by": [
         "packages/hive-conductor/tests/Dockerfile.playwright"

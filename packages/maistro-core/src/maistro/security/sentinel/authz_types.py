@@ -26,6 +26,12 @@ class Principal:
     scopes: tuple[str, ...] = ()
     owner: str | None = None  # required when kind == "agent"
 
+    def __post_init__(self) -> None:
+        if not self.id.strip():
+            raise ValueError("Principal.id must be non-empty")
+        if self.kind == "agent" and not self.owner:
+            raise ValueError("agent Principals require an owner")
+
 
 @dataclass(frozen=True)
 class AuthzDecision:
