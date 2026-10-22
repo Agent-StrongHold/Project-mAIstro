@@ -153,6 +153,31 @@ def test_distinct_failure_classes_in_verify_drill() -> None:
         assert f"fail_{cls.lower()}" not in old
 
 
+def test_verify_readiness_failure_is_diagnosable() -> None:
+    """A scratch container that never becomes ready must leave evidence.
+
+    Two CI runs on 2026-10-18 (39116394628, 39134762935) failed two different
+    characterization tests with a bare "scratch postgres did not become
+    ready" — no logs, no container state — so a slow initdb under runner load
+    could not be told apart from a container that crashed at startup. The
+    readiness loop must probe the container's state (fail fast once it has
+    exited), surface its logs on every readiness failure, and carry a budget
+    that absorbs slow initdb instead of the old 60s one.
+    """
+    verify = _read(VERIFY_SH)
+    assert "docker logs" in verify, "a readiness failure must surface the scratch container's logs"
+    assert "{{.State.Running}}" in verify, (
+        "readiness must fail fast when the container has exited — waiting cannot help"
+    )
+    # Budget reconciled in the 7f8683be2 develop sync: #2185 set 120 here while
+    # this branch's #1820 repair pinned 180 for the same congested-runner
+    # failure class; the merged budget keeps the longer 180-probe pin, which
+    # satisfies this test's contract (absorb slow initdb under load).
+    assert "seq 1 180" in verify, "readiness budget must absorb slow initdb under load"
+    old = _pre_change_script("verify-restore.sh")
+    assert "docker logs" not in old, "pre-change script unexpectedly already dumped logs"
+
+
 def test_security_defaults_preserved_no_restrict_key() -> None:
     """No script may invoke pg_dump --restrict-key (known-key injection risk).
 
@@ -225,7 +250,11 @@ def test_scratch_ready_means_the_target_database_answers() -> None:
     # The DB-answering condition, not pg_isready alone, is what breaks the
     # loop; and the post-loop guard falls into the verifier class when the
     # target database never becomes ready.
-    loop_body = verify.split("for _ in $(seq 1 60); do", 1)[-1].split("done", 1)[0]
+    # Split on the drill's actual loop header (180 probes since the #1820
+    # readiness repair). The pre-#1820 literal `seq 1 60` no longer occurs in
+    # the script, which made the split fall back to the whole file before the
+    # first `done` — the assertions passed without isolating the loop body.
+    loop_body = verify.split("for _ in $(seq 1 180); do", 1)[-1].split("done", 1)[0]
     assert "pg_isready" in loop_body, "the scratch loop must still probe the server"
     assert "psql" in loop_body and '-d "${PG_DB}"' in loop_body, (
         "the scratch loop must require the target database to answer, "

@@ -169,7 +169,13 @@ services:
     restart: unless-stopped
 
   litellm:
-    image: ghcr.io/berriai/litellm:main-latest
+    # Digest-pinned (v1.106.0-dev.3, multi-arch amd64/arm64). BerriAI deleted
+    # the `main-latest` tag from ghcr.io on 2026-10-21 (pulls failed with
+    # "manifest unknown", breaking the canonical clean install, Gate C).
+    # SPEC-072726 Phase 5 already calls for digest pinning; upgrade by
+    # deliberately resolving a new tag to its digest, never by re-floating a
+    # mutable tag.
+    image: ghcr.io/berriai/litellm@sha256:af8050ea45707c42a0572c5cceaa5cebaa89cee4c5cd0585cf879a529804b898
     container_name: maistro-litellm
     ports:
       # Host interface the gateway binds to. Default 127.0.0.1 = loopback only
