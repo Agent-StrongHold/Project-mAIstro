@@ -32,3 +32,10 @@ Independent re-execution (repair round at head `111ad600a`, repair commit
 distinguishing assertions are the same-client invalid bearer after principal
 exhaustion and the second client address sharing the secret — exactly the
 two scenarios the original review found missing.
+
+Re-executed after the develop sync (merge `0c86fa199`, which renumbered
+develop's receipts migration to 067; `rate_limit.py` sha256 unchanged,
+`6fb9cc62…ad8e95b0`): current gate → `28 passed` (whole module); old gate
+reinstated in-memory → `2 failed` (both tests, decisive assertions at the
+same-client wrong-bearer and post-exhaustion valid-bearer lines). Still
+gate-distinguishing at the synced head.
