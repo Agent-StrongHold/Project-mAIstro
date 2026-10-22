@@ -41,7 +41,12 @@ RUN npm run build
 # release tag ourselves with a patched Go toolchain/dependency set so the
 # runtime does not inherit vulnerabilities from an otherwise-current source
 # release. The release tag resolves to b8564ad; fail if upstream ever disagrees.
-FROM golang:1.27.2-alpine@sha256:f92b6ef800e499660581efdabdf25d9d817a9d124eaf900924f0504e7e27e12d AS agebuild
+# The toolchain itself is part of the vuln contract (#349): trivy's gate failed
+# on CVE-2026-111943 (crypto/x509 MITM via untrusted intermediates, HIGH) in
+# the stdlib of the 1.27.2 toolchain these binaries were compiled with; Go
+# 1.27.3 carries that stdlib fix, so the pin tracks it. Bump this pin — not
+# .trivyignore.yaml — when the next stdlib advisory lands.
+FROM golang:1.27.3-alpine@sha256:b8c9b82affbbb82a020bbcf998dad2ba9516944ac7e883524642a481a9505e9c AS agebuild
 ARG AGE_VERSION=1.3.1
 ARG AGE_COMMIT_SHORT=b8564ad
 RUN apk add --no-cache git && \

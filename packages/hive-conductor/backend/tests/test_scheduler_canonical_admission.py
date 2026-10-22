@@ -191,6 +191,93 @@ def test_a_schedule_whose_actor_lost_workspace_membership_is_not_admitted(
     asyncio.run(scenario())
 
 
+def test_revocation_serializes_with_an_in_flight_admission(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Codex P1-2: the eligibility check and Run admission are separated by
+    several awaits, and membership removal holds no definition lock — so a
+    removal that lands inside that window used to be followed by a Run
+    admitted under the already-revoked principal. Admission now holds the
+    same membership-mutation serialization point ``remove_member`` does: a
+    concurrent removal either completes before the check (the tick refuses)
+    or waits until the Run exists. This test pauses the tick inside
+    admission and proves the removal cannot land there.
+    """
+    import logging
+
+    from services import workspace_authority
+    from services.scheduler import _ScheduleRunner, put_canonical_definition
+
+    async def scenario() -> None:
+        container, row, _root = await _fixture(workspace=True)
+        _install_row(row)
+        monkeypatch.setattr(
+            _ScheduleRunner, "_canonical_container", staticmethod(lambda: container)
+        )
+        # Production has one Container, so ``remove_member`` and the
+        # scheduler read the same canonical store there; this fixture's
+        # monkeypatched Container is a separate object, so point the
+        # authority's no-database fallback at the very store the tick reads.
+        monkeypatch.setattr(workspace_authority, "_fallback_store", container.workspace_store)
+        # ``remove_member`` returns the composed Hive view, so the Workspace
+        # needs its presentation record as every product Workspace has.
+        from models.workspace import WorkspacePresentation
+
+        workspace_authority.presentation_store()["ws-1"] = WorkspacePresentation(
+            workspace_id="ws-1",
+            persona_template_id="default",
+            updated_at=datetime(2026, 8, 1, tzinfo=UTC),
+        )
+        await put_canonical_definition("s-1", row)
+        runner = _ScheduleRunner()
+
+        entered, release = asyncio.Event(), asyncio.Event()
+        admit = container.schedule_admitter.admit_due
+
+        async def paused(*args: Any, **kwargs: Any) -> Any:
+            entered.set()
+            await release.wait()
+            return await admit(*args, **kwargs)
+
+        monkeypatch.setattr(container.schedule_admitter, "admit_due", paused)
+        tick = asyncio.create_task(
+            runner._tick_due(
+                datetime(2026, 8, 21, 12, 5, tzinfo=UTC),
+                container,
+                container.schedule_admitter,
+            )
+        )
+        await asyncio.wait_for(entered.wait(), timeout=5)
+        # The tick is now inside admission, holding the serialization point.
+        removal = asyncio.create_task(workspace_authority.remove_member("ws-1", user_id="user-1"))
+        # Event-loop turns, never wall clock: let the removal coroutine run
+        # up to the lock and prove it stops there.
+        for _ in range(10):
+            await asyncio.sleep(0)
+        assert not removal.done(), "a revocation must not complete inside an admission"
+        release.set()
+        await asyncio.gather(tick, removal)
+
+        # The Run was admitted while the actor still held membership; the
+        # removal completed only after admission, not inside its window.
+        assert len(container.run_store._runs) == 1  # type: ignore[attr-defined]
+        assert not await workspace_authority.is_member("user-1", "ws-1")
+
+        with caplog.at_level(logging.WARNING, logger="services.scheduler"):
+            await runner._tick_due(
+                datetime(2026, 8, 21, 13, 5, tzinfo=UTC),
+                container,
+                container.schedule_admitter,
+            )
+        assert "no longer a Workspace member" in caplog.text
+        assert len(container.run_store._runs) == 1, (  # type: ignore[attr-defined]
+            "the completed revocation admits no further Run"
+        )
+
+    asyncio.run(scenario())
+
+
 def test_two_live_runners_claim_one_occurrence(monkeypatch: pytest.MonkeyPatch) -> None:
     from services.scheduler import _ScheduleRunner
 

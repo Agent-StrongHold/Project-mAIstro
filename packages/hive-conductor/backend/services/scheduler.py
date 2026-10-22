@@ -145,46 +145,52 @@ async def fire_now(sid: str, *, fire_id: str | None = None, requester_id: str | 
         # spends the schedule actor's authority, so an actor who has since
         # left the Workspace loses eligibility here too. A manual fire is a
         # caller holding a request, so it refuses (409) rather than skipping
-        # silently like the tick can.
-        if row_workspace:
-            from services.workspace_authority import is_member
+        # silently like the tick can. The gate through the Run write shares
+        # the membership-mutation serialization point (Codex P1-2), so a
+        # completed revocation cannot be followed by a Run admitted under the
+        # revoked principal.
+        from services.workspace_authority import hold_hitl_membership_mutation
 
-            actor = str(
-                getattr(schedule, "actor_principal_id", "")
-                or getattr(schedule, "user_id", "")
-                or ""
-            ).strip()
-            if not actor or not await is_member(actor, row_workspace):
+        async with hold_hitl_membership_mutation():
+            if row_workspace:
+                from services.workspace_authority import is_member
+
+                actor = str(
+                    getattr(schedule, "actor_principal_id", "")
+                    or getattr(schedule, "user_id", "")
+                    or ""
+                ).strip()
+                if not actor or not await is_member(actor, row_workspace):
+                    raise ScheduleNotFireable(
+                        f"schedule {sid} is no longer eligible for its Workspace"
+                    )
+            definition = await runner._definition_for(sid, schedule, store=store, scope=scope)
+            if definition is None:
                 raise ScheduleNotFireable(
-                    f"schedule {sid} is no longer eligible for its Workspace"
+                    f"schedule {sid} names no mission template, so there is nothing to run"
                 )
-        definition = await runner._definition_for(sid, schedule, store=store, scope=scope)
-        if definition is None:
-            raise ScheduleNotFireable(
-                f"schedule {sid} names no mission template, so there is nothing to run"
-            )
-        if definition.exhausted:
-            raise ScheduleNotFireable(
-                f"schedule {sid} has used all {definition.max_runs} of its runs"
-            )
+            if definition.exhausted:
+                raise ScheduleNotFireable(
+                    f"schedule {sid} has used all {definition.max_runs} of its runs"
+                )
 
-        now = datetime.now(UTC)
-        # Captured here, at the one call site with a trustworthy ambient context
-        # (#1063): this coroutine runs inside the HTTP request RequestIDMiddleware
-        # already bound an id for, so forwarding it explicitly is what keeps the
-        # request/response and the resulting Run in the same trace.
-        # `_fire_schedule` never reads ambient context itself -- it is also
-        # reachable from the tick loop, which shares an event loop with whatever
-        # else is running and cannot make the same claim.
-        request_id = current_execution_context().request_id or None
-        run_id = await runner._fire_schedule(
-            sid,
-            schedule,
-            scheduled_for=now,
-            catchup=False,
-            request_id=request_id,
-            requester_id=requester_id,
-        )
+            now = datetime.now(UTC)
+            # Captured here, at the one call site with a trustworthy ambient context
+            # (#1063): this coroutine runs inside the HTTP request RequestIDMiddleware
+            # already bound an id for, so forwarding it explicitly is what keeps the
+            # request/response and the resulting Run in the same trace.
+            # `_fire_schedule` never reads ambient context itself -- it is also
+            # reachable from the tick loop, which shares an event loop with whatever
+            # else is running and cannot make the same claim.
+            request_id = current_execution_context().request_id or None
+            run_id = await runner._fire_schedule(
+                sid,
+                schedule,
+                scheduled_for=now,
+                catchup=False,
+                request_id=request_id,
+                requester_id=requester_id,
+            )
         if run_id is None:
             raise ScheduleNotFireable(
                 f"schedule {sid} could not create a Run; its target may not be registered"
@@ -808,32 +814,44 @@ class _ScheduleRunner:
         a schedule the store had already judged. It is still not an authority
         grant: both branches re-run ``_canonical_scope`` so the membership
         gate (#1201) holds wherever the definition came from.
-        """
-        definition = loaded
-        if definition is None:
-            scope = await self._canonical_scope(schedule, container)
-            definition = await self._definition_for(
-                sid, schedule, store=container.schedule_store, scope=scope
-            )
-            if definition is None:
-                logger.debug("Schedule %s names no mission template; nothing to run", sid)
-                return
-        else:
-            # The locked definition decides what would run, but persistence
-            # is not an authorization grant (#1201): the automatic tick
-            # re-runs the same scope resolution the first put went through,
-            # so an actor who has since lost Workspace membership loses
-            # eligibility on this path too, not only where the row is rebuilt
-            # from its Hive projection. Refusal raises before the admitter
-            # sees the definition; ``_tick_due`` logs and moves on.
-            await self._canonical_scope(definition, container)
 
-        await self._prime_template(definition, container)
-        admission = await admitter.admit_due(
-            definition,
-            now=now,
-            active_run=await self._canonical_active_run(definition, container),
-        )
+        The gate, the definition write, and admission share the
+        membership-mutation serialization point (Codex P1-2): the eligibility
+        check awaits several times before ``create_run``, and revocation does
+        not hold the definition lock, so without this a removal could complete
+        in that window and still be followed by a Run admitted under the
+        revoked principal. Holding the point through admission means a
+        revocation either lands before the check (the tick refuses) or waits
+        until the Run exists — it can never land in between.
+        """
+        from services.workspace_authority import hold_hitl_membership_mutation
+
+        async with hold_hitl_membership_mutation():
+            definition = loaded
+            if definition is None:
+                scope = await self._canonical_scope(schedule, container)
+                definition = await self._definition_for(
+                    sid, schedule, store=container.schedule_store, scope=scope
+                )
+                if definition is None:
+                    logger.debug("Schedule %s names no mission template; nothing to run", sid)
+                    return
+            else:
+                # The locked definition decides what would run, but persistence
+                # is not an authorization grant (#1201): the automatic tick
+                # re-runs the same scope resolution the first put went through,
+                # so an actor who has since lost Workspace membership loses
+                # eligibility on this path too, not only where the row is rebuilt
+                # from its Hive projection. Refusal raises before the admitter
+                # sees the definition; ``_tick_due`` logs and moves on.
+                await self._canonical_scope(definition, container)
+
+            await self._prime_template(definition, container)
+            admission = await admitter.admit_due(
+                definition,
+                now=now,
+                active_run=await self._canonical_active_run(definition, container),
+            )
 
         # Operator visibility for the bounded-work contract (#1200): a walk
         # that hit its budget or step bound ended the tick with backlog it
@@ -919,42 +937,49 @@ class _ScheduleRunner:
         to the Run the first call created: the loser is handed the winner's
         receipt, nothing is counted twice, and the reconciliation is durable
         canonical state (it survives restarts, and works across processes).
+
+        Like the tick, the eligibility check through admission shares the
+        membership-mutation serialization point (Codex P1-2): a revocation
+        cannot complete between ``_canonical_scope`` and the Run write and
+        still be followed by a Run stamped with the revoked actor.
         """
         from maistro.scheduling.admission import ScheduleAdmission
+        from services.workspace_authority import hold_hitl_membership_mutation
 
-        scope = await self._canonical_scope(schedule, container)
-        definition = await self._definition_for(
-            sid, schedule, store=container.schedule_store, scope=scope
-        )
-        if definition is None:
-            raise ScheduleNotFireable(
-                f"schedule {sid} names no mission template, so there is nothing to run"
+        async with hold_hitl_membership_mutation():
+            scope = await self._canonical_scope(schedule, container)
+            definition = await self._definition_for(
+                sid, schedule, store=container.schedule_store, scope=scope
             )
-        # No local `exhausted` pre-check here, deliberately: the admitter asks
-        # the occurrence claim before it refuses (#1120), so a retry of the
-        # same fire_id reconciles to the winner's Run even when that fire
-        # spent the last `max_runs` unit — a refusal ordering in this layer
-        # would answer a retried caller "could not be fired" about a Run that
-        # demonstrably exists.
+            if definition is None:
+                raise ScheduleNotFireable(
+                    f"schedule {sid} names no mission template, so there is nothing to run"
+                )
+            # No local `exhausted` pre-check here, deliberately: the admitter asks
+            # the occurrence claim before it refuses (#1120), so a retry of the
+            # same fire_id reconciles to the winner's Run even when that fire
+            # spent the last `max_runs` unit — a refusal ordering in this layer
+            # would answer a retried caller "could not be fired" about a Run that
+            # demonstrably exists.
 
-        await self._prime_template(definition, container)
-        now = datetime.now(UTC)
-        try:
-            admission = await admitter.admit_due(
-                definition, now=now, manual=True, fire_id=fire_id, requested_by=requested_by
-            )
-        except GraphTemplateNotFound as exc:
-            # The durable template is the authority; the registry was only ever
-            # a migration source above. Nothing was created, so the schedule's
-            # state is untouched and the caller gets the same refusal the
-            # compatibility path gave for an unregistered target (#265).
-            self._audit_manual_failure(sid, schedule, "template_not_found")
-            raise ScheduleNotFireable(
-                f"schedule {sid} could not create a Run; its target may not be registered"
-            ) from exc
-        except Exception as exc:
-            self._audit_manual_failure(sid, schedule, type(exc).__name__)
-            raise ScheduleNotFireable(f"schedule {sid} could not be fired: {exc}") from exc
+            await self._prime_template(definition, container)
+            now = datetime.now(UTC)
+            try:
+                admission = await admitter.admit_due(
+                    definition, now=now, manual=True, fire_id=fire_id, requested_by=requested_by
+                )
+            except GraphTemplateNotFound as exc:
+                # The durable template is the authority; the registry was only ever
+                # a migration source above. Nothing was created, so the schedule's
+                # state is untouched and the caller gets the same refusal the
+                # compatibility path gave for an unregistered target (#265).
+                self._audit_manual_failure(sid, schedule, "template_not_found")
+                raise ScheduleNotFireable(
+                    f"schedule {sid} could not create a Run; its target may not be registered"
+                ) from exc
+            except Exception as exc:
+                self._audit_manual_failure(sid, schedule, type(exc).__name__)
+                raise ScheduleNotFireable(f"schedule {sid} could not be fired: {exc}") from exc
 
         if admission.reconciled_run_id is not None:
             # Same logical request, already fired: the documented
@@ -1114,52 +1139,58 @@ class _ScheduleRunner:
         # can simply wait for the next one — a manual fire is a caller holding
         # a request that must either become a canonical Run or say why not.
         # Rows created by the scoped API still retain the same revocation gate
-        # even when this process has no embedded core bridge (#1201).
+        # even when this process has no embedded core bridge (#1201), held —
+        # like the canonical paths — across the gate, the definition write, and
+        # the Run creation, so a completed revocation cannot be followed by a
+        # newly admitted Run (Codex P1-2).
+        from services.workspace_authority import hold_hitl_membership_mutation
+
         scoped_workspace = str(getattr(schedule, "workspace_id", "") or "").strip()
         scoped_actor = str(
             getattr(schedule, "actor_principal_id", "") or getattr(schedule, "user_id", "") or ""
         ).strip()
-        if scoped_workspace:
-            from services.workspace_authority import is_member
+        async with hold_hitl_membership_mutation():
+            if scoped_workspace:
+                from services.workspace_authority import is_member
 
-            if not scoped_actor or not await is_member(scoped_actor, scoped_workspace):
-                logger.info("Schedule %s is no longer eligible for its Workspace", sid)
+                if not scoped_actor or not await is_member(scoped_actor, scoped_workspace):
+                    logger.info("Schedule %s is no longer eligible for its Workspace", sid)
+                    return
+            store = self._canonical_store()
+            definition = await self._definition_for(sid, schedule, store=store)
+            if definition is None:
+                logger.debug("Schedule %s names no mission template; nothing to run", sid)
                 return
-        store = self._canonical_store()
-        definition = await self._definition_for(sid, schedule, store=store)
-        if definition is None:
-            logger.debug("Schedule %s names no mission template; nothing to run", sid)
-            return
-        decision = evaluate(definition, now=now, active_run=sid in self._in_flight)
+            decision = evaluate(definition, now=now, active_run=sid in self._in_flight)
 
-        for skipped in decision.skipped:
-            logger.info(
-                "Schedule %s skipped occurrence %s: %s",
-                sid,
-                skipped.scheduled_for.isoformat(),
-                skipped.reason.value,
-            )
-
-        last_index = len(decision.fires) - 1
-        for fire_index, fire in enumerate(decision.fires):
-            self._in_flight.add(sid)
-            try:
-                run_id = await self._fire_schedule(
-                    sid, schedule, scheduled_for=fire.scheduled_for, catchup=fire.catchup
+            for skipped in decision.skipped:
+                logger.info(
+                    "Schedule %s skipped occurrence %s: %s",
+                    sid,
+                    skipped.scheduled_for.isoformat(),
+                    skipped.reason.value,
                 )
-            finally:
-                self._in_flight.discard(sid)
-            if run_id is None:
-                return
-            await self._record_fire(
-                sid,
-                schedule,
-                definition,
-                store=store,
-                fire=fire,
-                run_id=run_id,
-                exhausted=decision.exhausted and fire_index == last_index,
-            )
+
+            last_index = len(decision.fires) - 1
+            for fire_index, fire in enumerate(decision.fires):
+                self._in_flight.add(sid)
+                try:
+                    run_id = await self._fire_schedule(
+                        sid, schedule, scheduled_for=fire.scheduled_for, catchup=fire.catchup
+                    )
+                finally:
+                    self._in_flight.discard(sid)
+                if run_id is None:
+                    return
+                await self._record_fire(
+                    sid,
+                    schedule,
+                    definition,
+                    store=store,
+                    fire=fire,
+                    run_id=run_id,
+                    exhausted=decision.exhausted and fire_index == last_index,
+                )
 
     async def _record_fire(
         self,

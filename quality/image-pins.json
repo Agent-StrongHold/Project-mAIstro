@@ -45,11 +45,11 @@
     },
     {
       "image": "golang",
-      "tag": "1.27.2-alpine",
-      "digest": "sha256:f92b6ef800e499660581efdabdf25d9d817a9d124eaf900924f0504e7e27e12d",
-      "recorded": "2026-10-19",
-      "recorded_in": "#363",
-      "note": "Builds the age static binaries and the static docker CLI from their pinned upstream release tags (#363): the published docker:29-cli binary embeds go1.26.8 stdlib and the age prebuilt binary go1.25.x, both carrying 2026 stdlib HIGHs (CVE-2026-78667/78669/97031, fixed in go1.26.9/1.27.2) that no released tag of either project ships fixed.",
+      "tag": "1.27.3-alpine",
+      "digest": "sha256:b8c9b82affbbb82a020bbcf998dad2ba9516944ac7e883524642a481a9505e9c",
+      "recorded": "2026-10-22",
+      "recorded_in": "#1201",
+      "note": "Builds the age static binaries and the static docker CLI from their pinned upstream release tags (#363): the published docker:29-cli binary embeds go1.26.8 stdlib and the age prebuilt binary go1.25.x, both carrying 2026 stdlib HIGHs (CVE-2026-78667/78669/97031, fixed in go1.26.9/1.27.2) that no released tag of either project ships fixed. Bumped from 1.27.2 in #1201: the Container scan gate failed on CVE-2026-111943 (crypto/x509 MITM via untrusted intermediates, HIGH, fixed in go1.27.3) in the stdlib of the toolchain these binaries are compiled with — a fix-at-cause toolchain bump, not an ignore.",
       "used_by": [
         "packages/hive-conductor/Dockerfile",
         "Dockerfile",

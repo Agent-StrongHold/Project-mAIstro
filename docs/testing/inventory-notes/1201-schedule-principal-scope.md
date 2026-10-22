@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/hive-conductor/backend/tests: +7
+  packages/hive-conductor/backend/tests: +11
   packages/maistro-core/tests: +3
 ---
 # Issue 1201 — Schedule principal and Workspace scope
@@ -74,3 +74,52 @@ pre-built hive-conductor image — the branch's diff touches no lockfile, no
 pyproject, no Dockerfile, and no `.trivyignore.yaml` (verified byte-identical
 to the develop base), so develop fails those gates identically and the repair
 belongs to a dependency round, not this issue.
+
+Second verifier-repair round (+4 backend node IDs = three tests, one of them
+dual-leg): the verify round left three findings. (1) The archived-Workspace
+automatic-fire refusal (`_canonical_scope` refusing while the presentation is
+inactive) had no proving test — coverage showed the raise uncovered in both lane
+producers. `test_tick_stops_firing_when_the_workspace_is_archived` now drives the
+production `_tick` over both SQL backends: the schedule fires while the Workspace
+presentation is active, `update_presentation(active=False)` archives it, and the
+next due tick refuses with the cursor left alone (the owed occurrence stays owed,
+so re-activation resumes the schedule). (2) The standalone manual-fire branch
+(`fire_now` with no embedded Container) never rechecked the schedule ACTOR's
+membership before minting a Run in the actor's name — a salvaged lane commit
+(102134fdf) adds that gate and its revocation/re-eligibility regression test;
+this round fixed that commit's lint/format violations (duplicate import, line
+length) so it passes the Quality gates it had never been run against. (3) The
+membership-revocation/admission TOCTOU: the eligibility check and `create_run`
+are separated by several awaits and revocation holds no definition lock, so a
+removal could land inside the window and still be followed by a Run admitted
+under the revoked principal. All four fire paths (canonical tick, canonical
+manual fire, standalone tick, standalone manual fire) now hold the existing
+`hold_hitl_membership_mutation` serialization point from the eligibility check
+through Run admission, and
+`test_revocation_serializes_with_an_in_flight_admission` pauses the tick inside
+admission and proves a concurrent `remove_member` cannot complete there — with
+an in-repo counterfactual check that, with the serialization removed, the
+revocation does land inside the window. Admission holds the lock only through
+Run creation; consumption stays outside it.
+
+Container-gate repair (no test-count change): the named CI failure this round
+was "Container scan + SBOM + cosign". Reproduced locally with the gate's own
+invocation (`trivy image --severity HIGH,CRITICAL --exit-code 1 --ignore-unfixed
+--ignorefile .trivyignore.yaml`) on an image built from this branch: the finding
+is CVE-2026-111943 (crypto/x509 MITM via untrusted intermediates, HIGH) in the
+Go stdlib of the `golang:1.27.2-alpine` toolchain that the Dockerfiles compile
+the `age`/`age-keygen` and static `docker` CLI binaries with — a fix exists
+(1.27.3), so `--ignore-unfixed` cannot suppress it and no ignore entry is
+warranted. Fixed at the cause: the three affected toolchain pins
+(`packages/hive-conductor/Dockerfile`, root `Dockerfile`, `Dockerfile.research`)
+move to `golang:1.27.3-alpine@sha256:b8c9b82a…` and `quality/image-pins.json`
+records the new digest (check-image-pins + check-image-inventory green).
+Rebuilt all three images locally and re-scanned: trivy exits 0 with zero
+HIGH/CRITICAL findings on each, and grype `--fail-on high --only-fixed` exits 0
+(two Medium CPython-base findings below the gate's threshold). `.trivyignore.yaml`
+is untouched — nothing was suppressed; the vulnerable toolchain is gone.
+SBOM/cosign steps are CI-keyed and content-mechanical; they consume the same
+now-clean images. The pip-audit advisories named in earlier rounds
+(gitpython/graphql-core, root lock) are a different job this round's brief does
+not list; the branch still touches no lockfile, so develop parity there is
+unchanged.

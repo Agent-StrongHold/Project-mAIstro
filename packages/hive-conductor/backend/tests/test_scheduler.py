@@ -1081,10 +1081,10 @@ def test_a_manual_fire_rechecks_the_schedule_actor_still_belongs(
     before the definition or Run exists; a manual fire refuses (409) rather
     than skipping silently like the tick can."""
     import stores
+    from services import workspace_authority
     from services.scheduler import ScheduleNotFireable, fire_now
 
     from maistro.scheduling import InMemoryScheduleStore
-    from services import workspace_authority
 
     _register("sched-manual-gate")
     stub = _bounded_stub("s-man-gate", "sched-manual-gate")
@@ -1093,8 +1093,6 @@ def test_a_manual_fire_rechecks_the_schedule_actor_still_belongs(
     before = len(stores.audit_log)
     # The Workspace stays alive, but the schedule actor u1 was removed from
     # it after creating the row -- the state when remaining editor B fires.
-    from services import workspace_authority
-
     view = asyncio.run(
         workspace_authority.create_workspace(
             creator_user_id="requester-b",

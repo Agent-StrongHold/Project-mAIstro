@@ -403,6 +403,64 @@ async def test_tick_stops_firing_when_the_actor_loses_membership(
     assert recorded.next_due_at == NOON + timedelta(hours=1)
 
 
+async def test_tick_stops_firing_when_the_workspace_is_archived(
+    configured: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Archiving a Workspace is a presentation flip: the canonical Workspace
+    and every membership survive it, so the membership gate alone would keep
+    admitting Runs forever (#1201). The automatic tick rechecks the same
+    presentation boundary the interactive DAG scope enforces before every
+    fire, so an archived Workspace admits no occurrence — and the owed
+    occurrence stays owed (the cursor does not move), so re-activating the
+    Workspace resumes the schedule where it stopped.
+    """
+    import logging
+
+    import services.scheduler as sched_mod
+    from models.workspace import WorkspacePresentation
+    from services import workspace_authority
+    from services.scheduler import _ScheduleRunner
+
+    # `update_presentation` composes its view from the route-facing canonical
+    # store. Production has one Container, so that store and the scheduler's
+    # are the same instance there; this fixture's monkeypatched Container is
+    # a separate object, so seed the route-facing store with the same identity
+    # the flip is aimed at.
+    await workspace_authority.canonical_store_for_tests().create(
+        creator_user_id="tick-actor", name="Tick WS", workspace_id="tick-parity"
+    )
+    # A Hive presentation exists for a product Workspace; seed it active so
+    # the first tick proves eligibility is judged through it, not that any
+    # presentation record breaks firing.
+    workspace_authority.presentation_store()["tick-parity"] = WorkspacePresentation(
+        workspace_id="tick-parity",
+        persona_template_id="default",
+        updated_at=NOW,
+    )
+    await _ScheduleRunner()._tick()
+    [first] = await runs(configured)
+    assert first.status is RunStatus.COMPLETED
+
+    await workspace_authority.update_presentation("tick-parity", active=False)
+
+    class LaterClock:
+        @staticmethod
+        def now(tz: object = None) -> datetime:
+            return LATER
+
+    monkeypatch.setattr(sched_mod, "datetime", LaterClock)
+    with caplog.at_level(logging.WARNING, logger="services.scheduler"):
+        await _ScheduleRunner()._tick()
+    assert "archived (inactive)" in caplog.text
+    assert [item.run_id for item in await runs(configured)] == [first.run_id]
+    recorded = await configured.schedule_store.get("tick-schedule")
+    assert recorded is not None
+    assert recorded.runs_so_far == 1, "the archived Workspace admits no second occurrence"
+    assert recorded.next_due_at == NOON + timedelta(hours=1), "the occurrence stays owed"
+
+
 @pytest.mark.parametrize("cursor_failure", [False, True])
 async def test_restart_consumes_queued_run_without_refiring(
     configured: Any, database_url: str, monkeypatch: pytest.MonkeyPatch, cursor_failure: bool
