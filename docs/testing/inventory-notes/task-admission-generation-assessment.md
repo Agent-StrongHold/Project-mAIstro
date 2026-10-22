@@ -60,6 +60,11 @@ invocations (`uv sync --locked --all-extras` first, as `quality.yml` does):
   base (upstream `7a1aaec58`), so at round 86's start the gate named exactly
   one newly unreachable module — this leaf — and round 86 classified that
   leaf the same way; see Round 86.)
+  (Round 89 supersedes Round 86's supersession: the leaf's own classification
+  is removed again and this bullet is once more true at the branch tip — the
+  gate names exactly one NEWLY UNREACHABLE module, `maistro.tasks.`
+  `admission_generation`, and the same three meta-tests fail for that
+  one-module delta; see Round 89.)
 - `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
   '*/third_party/*'` exits 0: 1342 reviewed identities -> 1342 findings, no
   new identity (the name-based scanner sees `_assess` used by the live flow's
@@ -7307,3 +7312,101 @@ independently mergeable** while unwired: activation and the runtime consumer
 belong to the separately reviewed #1845 integration head, which must prune
 the `_EXCLUDED_PACKAGE_PYTHON` classification in the same change that wires
 the module.
+
+## Round 89 (repair round, job 6ab91088b44844bbbaf020b0cb4b952c): the leaf's
+## gate self-classification removed — the issue-mandated explicit merge
+## blocker is restored in the tree at the branch tip
+
+The round's verifier findings, both confirmed first-hand at head `10c71a32f265`
+before any edit:
+
+1. Round 86's classification of this leaf in `check-reachability.py`'s
+   `_EXCLUDED_PACKAGE_PYTHON` made `check-reachability.py` exit **0** at that
+   head (1449 production modules, 157 unreachable == the trusted base) — the
+   issue-mandated explicit merge blocker no longer existed in the tree.
+   #1852 forbids "suppressions ... to make this leaf independently green",
+   states "No quality waiver or threshold change belongs to this task",
+   predicts `check-reachability.py` "would classify the new module as newly
+   unreachable", and requires: "If that integration is unavailable, report
+   implementation/test readiness plus the explicit merge blocker and leave
+   the stack unmerged." The #1845 integration is still unavailable (no
+   runtime consumer exists; activation is outside this leaf), so the honest
+   end state is the blocker standing, not a gate edit that retires it. The
+   #1851 sibling's classification (upstream `7a1aaec58`, inside the trusted
+   base) is trunk governance; a leaf branch extending the gate's exclusion
+   universe to its own module is self-authorization through a second lever —
+   the same shape the two-merge rule exists to prevent. None of the 528 issue
+   comments rules otherwise (searched for `EXCLUDED_PACKAGE|suppress`).
+2. The blocker-section sentence "the unchanged gates fail at this head in
+   exactly the way the leaf scope predicts" was false at that head — it was
+   true only because of finding 1. The bullet now carries a Round 89
+   supersession note and is true again at the new tip.
+
+**The repair (one functional file):** `scripts/check-reachability.py` drops
+the 12-line round-86 block (comment + the
+`packages/maistro-core/src/maistro/tasks/admission_generation.py` entry),
+restoring the gate's source universe for this leaf to the trusted base's
+(`774ae42fc120` classifies only the #1851 sibling). A NOTE comment in the
+gate records why the leaf stays unclassified. No baseline row, disposition,
+grant, threshold, or disabled check exists for the leaf — `quality/` is
+zero-diff before and after.
+
+**Post-repair first-hand battery at the new tip** (tree otherwise unchanged;
+only `scripts/check-reachability.py` + these two notes differ from
+`10c71a32f265`):
+
+- `check-reachability.py` → **rc=1**: "1450 production modules, 158
+  unreachable"; exactly one module "NEWLY UNREACHABLE":
+  `maistro.tasks.admission_generation`. This is the documented explicit
+  merge blocker, back in the tree.
+- `check-reachability-dispositions.py` → rc=0 (47 groups give all 157
+  baselined unreachable modules a disposition); `check-promotion-surface.py`
+  → rc=0; `check-vulture-baseline.py packages/*/src --min-confidence 60
+  --exclude '*/third_party/*'` (CI's exact argv) → **rc=0**, 1314 reviewed
+  identities → 1309 findings, unclassified 0, never_allowlist 0 — the lane's
+  named vulture-ledger repair has an empty fix-list: nothing genuinely dead,
+  no unbanked identity, `quality/vulture-baseline.json` not touched.
+- `check-ratchet-provenance.py` (`RATCHET_BASE_REV=origin/develop`) → rc=1,
+  its only red the reachability sub-ratchet ("ratchet moved away from
+  trusted state") plus the consequent
+  `check-reachability-provenance.py` trusted-base leg — the same single
+  blocker manifesting in the rollup, as in the pre-round-86 state.
+- Reachability meta-tests: 3 failed / 46 passed —
+  `test_check_reachability.py::test_baseline_matches_the_tree`,
+  `test_reachability_baseline_identity.py::test_the_committed_baseline_
+  passes_the_gate_it_now_carries` and `::test_the_baseline_is_exactly_the_
+  unreachable_set`, each naming only
+  `maistro.tasks.admission_generation` as the delta. These failures are the
+  blocker asserted by the repo's own gate-identity tests; they persist by
+  design until the #1845 integration change wires the module (and prunes the
+  sibling classification for itself).
+- Focused leaf battery re-proven green: `test_admission_generation_
+  assessment.py` + `test_runs_admission_identity_publication.py` +
+  `test_pack_contracts.py` + `test_root_admission_identity.py` +
+  `test_idempotency.py` → **414 passed**; whole-tree `ruff check .` and
+  `ruff format --check .` clean; `mypy` on the module Success;
+  `check-suite-inventory.py --suite packages/maistro-core/tests` ok (no
+  test added, moved, or deleted; both recorded inventory deltas unchanged).
+
+**Container scan + SBOM + cosign / pip-audit (the last merge-queue reds).**
+Round 88 first-hand re-proved these fixed at `8d53b7ba0` with the CI-pinned
+trivy (rebuilt images scan clean at HIGH/CRITICAL) and `pip_audit_gate.py`
+rc=0. `git diff --stat 8d53b7ba0..10c71a32f265` is one markdown file
+(+85, docs-only), and at the round-89 tip the repair inputs are verified
+byte-identical to develop's own fixes: both root/research Dockerfile
+`golang:1.27.3-alpine@sha256:b8c9b82a…` FROM lines and
+`quality/image-pins.json` match `origin/develop` functionally (comment-only
+provenance deltas), and `uv.lock` carries gitpython 3.2.1 / graphql-core
+3.3.0. Hosted-CI green at this exact head remains **UNVERIFIED** — no green
+run exists in evidence, and after this round `check-reachability.py` is
+intentionally red as the documented blocker, so the stack must not be
+presented as independently mergeable.
+
+Round 86's reconciliation is **reverted, not refuted in its mechanics**: its
+account of the closed baseline route stands; what fails is the conclusion
+that a leaf branch may move the gate's own exclusion universe. The leaf
+remains **not independently mergeable** while unwired: implementation and
+test readiness are proven (132-test suite, mutation-killed, live flow
+untouched), the explicit merge blocker (`NEWLY UNREACHABLE`) stands in the
+gate output, and activation plus the runtime consumer belong to the
+separately reviewed #1845 integration head.

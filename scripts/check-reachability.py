@@ -64,18 +64,15 @@ _EXCLUDED_PACKAGE_PYTHON = frozenset(
         # reachability authorization (two-merge rule); classifying it keeps the
         # source-universe honest without expanding the ratchet baseline.
         "packages/maistro-core/src/maistro/runs/admission_identity.py",
-        # `packages/maistro-core/src/maistro/tasks/admission_generation.py` is
-        # the same class of leaf one layer up (#1852, parent #1845): a pure,
-        # deliberately inactive replay-generation classifier whose sole
-        # function `_assess` gets a runtime consumer only from the separately
-        # reviewed #1845 integration; until then no import, initializer
-        # export, baseline entry, or grant may exist for it. Classified here
-        # for the same reason as its #1851 sibling: the baseline may grow only
-        # behind a prior landed reachability authorization (two-merge rule);
-        # classifying it keeps the source-universe honest without expanding
-        # the ratchet baseline. Removing this classification while the module
-        # is still unwired fails this gate again, by construction.
-        "packages/maistro-core/src/maistro/tasks/admission_generation.py",
+        # NOTE (#1852 round 89): the tasks/admission_generation.py leaf is
+        # deliberately NOT classified here. #1852 forbids suppressions made
+        # "to make this leaf independently green" and requires the unwired
+        # leaf's explicit merge blocker to remain visible in the tree until
+        # the #1845 integration change lands the runtime consumer (and, in
+        # the same change, prunes this sibling classification for itself).
+        # While the module is unwired, the gate therefore reports it as a
+        # NEWLY UNREACHABLE module — that failure is the documented blocker,
+        # not a defect to repair in this leaf.
         # Developer utilities.
         "packages/hive-conductor/run_hill_climb.py",
         "packages/maistro-evolve/examples/builders_swebench_live.py",
