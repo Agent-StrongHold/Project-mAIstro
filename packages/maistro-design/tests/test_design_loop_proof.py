@@ -376,3 +376,247 @@ class TestNoTimers:
         # The parked windows carried the decision vocabulary.
         accepted = proof.accepted_artifact["accepted"]
         assert accepted["answered_at"]
+
+
+# ---------------------------------------------------------------------------
+# Degenerate paths: every guard on the proof path fails closed, loudly, and
+# names what was missing. These pin the unhappy arcs the happy-path proof walk
+# never reaches — a scorer that silently passes a field-less artifact, a fence
+# node that accepts a decision it does not know, an acceptance built from
+# caller memory instead of durable evidence.
+# ---------------------------------------------------------------------------
+
+
+def _proof_rubric(rubrics: RubricStore, goals: Any, project_id: str) -> Any:
+    """Rubric revision 1, built exactly the way the driver builds it."""
+    from maistro.ontology.rubric import RubricGate, RubricProvenance
+    from maistro.projects.rubric_store import GoalRevisionSnapshot
+    from maistro_design.packs import PackRegistry
+    from maistro_design.proof import pack_rubric_dimensions
+
+    goals.register_goal(
+        GoalRevisionSnapshot(
+            goal_id=PROOF_GOAL_ID,
+            goal_revision=1,
+            workspace_id=WORKSPACE_ID,
+            project_id=project_id,
+        )
+    )
+    pack = PackRegistry.builtin().get("product")
+    return rubrics.create(
+        workspace_id=WORKSPACE_ID,
+        project_id=project_id,
+        goal_id=PROOF_GOAL_ID,
+        goal_revision=1,
+        dimensions=pack_rubric_dimensions(pack),
+        gate=RubricGate(pass_threshold=80.0),
+        provenance=RubricProvenance(
+            authored_by="proof-runner", origin="pack", pack_id=pack.pack_id.value
+        ),
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.contract("behavioral")
+class TestScorerDegeneratePaths:
+    async def test_missing_prose_fields_fail_with_their_reasons(self, proof_spine: Any) -> None:
+        """An artifact with evidenced claims but no offer/channel fails exactly
+        the two prose dimensions — and only them."""
+        _run_store, rubrics, goals, project_id = proof_spine
+        rubric = await _proof_rubric(rubrics, goals, project_id)
+        artifact = {"claims": [{"text": "c", "evidence": "source:x#1"}]}
+        verdicts = {s.dimension_id: s for s in score_artifact_against_rubric(artifact, rubric)}
+        assert verdicts[PLANTED_DIMENSION_ID].passed is True
+        assert verdicts["clarity_of_offer"].passed is False
+        assert verdicts["clarity_of_offer"].detail["reasons"] == [
+            "no offer statement on the artifact"
+        ]
+        assert verdicts["channel_fit"].passed is False
+        assert verdicts["channel_fit"].detail["reasons"] == ["no channel named on the artifact"]
+
+    async def test_planted_dimension_fails_when_there_are_no_claims(self, proof_spine: Any) -> None:
+        """A claim-free artifact cannot pass the evidence dimension by
+        vacuity: ``no claims to evaluate`` is a failure, not a pass."""
+        _run_store, rubrics, goals, project_id = proof_spine
+        rubric = await _proof_rubric(rubrics, goals, project_id)
+        artifact = {"claims": [], "offer": "o", "channel": "c"}
+        verdicts = {s.dimension_id: s for s in score_artifact_against_rubric(artifact, rubric)}
+        assert verdicts[PLANTED_DIMENSION_ID].passed is False
+        assert verdicts[PLANTED_DIMENSION_ID].detail["reasons"] == ["no claims to evaluate"]
+        assert verdicts["clarity_of_offer"].passed is True
+        assert verdicts["channel_fit"].passed is True
+
+    async def test_refine_preserves_an_existing_citation(self) -> None:
+        """The refine repair adds evidence where it is missing and never
+        overwrites a citation the artifact already carried."""
+        from maistro_design.proof import _with_claim_evidence
+
+        artifact = {
+            "claims": [
+                {"text": "kept", "evidence": "source:original#1"},
+                {"text": "repaired", "evidence": None},
+            ]
+        }
+        revised = _with_claim_evidence(dict(artifact))
+        assert revised["claims"][0]["evidence"] == "source:original#1"
+        assert revised["claims"][1]["evidence"]
+        # The input artifact is untouched: the repair is a copy, not a
+        # mutation of the executed output.
+        assert artifact["claims"][1]["evidence"] is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.contract("behavioral")
+class TestNodeFencesFailClosed:
+    """The two fence nodes answer only the decisions the scenario names."""
+
+    def _ctx(self, node_id: str, answers: dict[str, Any]) -> Any:
+        from maistro.graph.nodes import NodeContext
+
+        return NodeContext(
+            run_id="run-degenerate",
+            dag_id="dag-degenerate",
+            node_id=node_id,
+            metadata={"hitl_answers": answers},
+        )
+
+    async def test_evaluate_node_rejects_an_unsupported_decision(self, proof_spine: Any) -> None:
+        from maistro_design.proof import _EvaluateNode
+
+        run_store, rubrics, _goals, _project_id = proof_spine
+        node = _EvaluateNode(run_store, rubrics, "rubric-unused")
+        result = await node.run(
+            {"payload": {}}, self._ctx("eval-1", {"eval-1": {"decision": "accept"}})
+        )
+        assert result.success is False
+        assert result.error_code == "ValueError"
+        assert "evaluate node received unsupported decision 'accept'" in (
+            result.error_message or ""
+        )
+
+    async def test_refine_node_rejects_an_unsupported_decision(self, proof_spine: Any) -> None:
+        from maistro_design.proof import _RefineNode
+
+        _run_store, _rubrics, _goals, _project_id = proof_spine
+        node = _RefineNode()
+        result = await node.run(
+            {"payload": {}}, self._ctx("refine-1", {"refine-1": {"decision": "maybe"}})
+        )
+        assert result.success is False
+        assert "refine node received unsupported decision 'maybe'" in (result.error_message or "")
+
+    async def test_evaluate_node_fails_closed_when_the_rubric_vanished(
+        self, proof_spine: Any
+    ) -> None:
+        """Scoring against a rubric that is not in the store raises — it
+        never scores against nothing."""
+        from maistro_design.proof import _EvaluateNode
+
+        run_store, rubrics, _goals, _project_id = proof_spine
+        node = _EvaluateNode(run_store, rubrics, "rubric-absent")
+        result = await node.run({"payload": {}}, self._ctx("eval-1", {}))
+        assert result.success is False
+        assert "rubric 'rubric-absent' vanished from the store" in (result.error_message or "")
+
+    async def test_refine_accept_refuses_to_accept_from_caller_memory(
+        self, proof_spine: Any
+    ) -> None:
+        """An accept answer with no durable pause behind it is refused: the
+        accepted artifact must be the one the fence proposed."""
+        from maistro_design.proof import _RefineNode
+
+        _run_store, _rubrics, _goals, _project_id = proof_spine
+        node = _RefineNode()
+        result = await node.run(
+            {"payload": {}}, self._ctx("refine-1", {"refine-1": {"decision": "accept"}})
+        )
+        assert result.success is False
+        assert "refusing to accept from caller memory" in (result.error_message or "")
+
+
+@pytest.mark.asyncio
+@pytest.mark.contract("behavioral")
+class TestProofGuardsFailLoudly:
+    async def test_assert_run_status_names_the_phase_and_status(self) -> None:
+        from types import SimpleNamespace
+
+        from maistro_design.proof import _assert_run_status
+
+        parked = SimpleNamespace(run=SimpleNamespace(status=RunStatus.PAUSED))
+        with pytest.raises(AssertionError, match="proof expected the Run to complete"):
+            _assert_run_status(parked, RunStatus.COMPLETED, "to complete")
+        # The matching status passes silently.
+        _assert_run_status(parked, RunStatus.PAUSED, "parked on the fence")
+
+    async def test_refine_proposal_guard_requires_a_durable_artifact(self) -> None:
+        from types import SimpleNamespace
+
+        from maistro_design.proof import _refine_proposed_artifact
+
+        empty_pause = SimpleNamespace(
+            graph_state=SimpleNamespace(metadata={"pauses": {"refine-1": {}}})
+        )
+        with pytest.raises(AssertionError, match="refine proposal carried no durable artifact"):
+            _refine_proposed_artifact(empty_pause, "refine-1")
+        missing_pause = SimpleNamespace(graph_state=SimpleNamespace(metadata={}))
+        with pytest.raises(AssertionError, match="refine proposal carried no durable artifact"):
+            _refine_proposed_artifact(missing_pause, "refine-1")
+
+    async def test_re_eval_refuses_an_unevidenced_artifact(self, proof_spine: Any) -> None:
+        """The re-evaluation Attempt really scores: an unevidenced artifact
+        fails the planted dimension on durable rows, and the driver refuses
+        to hand back a passing Attempt that does not exist."""
+        from maistro.graph import Graph, Node
+        from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+        from maistro_design.proof import _re_evaluate_refined_artifact
+
+        run_store, rubrics, goals, project_id = proof_spine
+        rubric = await _proof_rubric(rubrics, goals, project_id)
+        graph = Graph(
+            workspace_id=WORKSPACE_ID,
+            project_id=project_id,
+            name="re-eval guard",
+            nodes=[Node(node_id="refine.revise", node_type="agent")],
+        )
+        run = await run_store.create_run(graph, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
+        node_run = await run_store.create_node_run(run.run_id, node_id="refine.revise")
+        unevidenced = {"claims": [{"text": "c", "evidence": None}]}
+        with pytest.raises(AssertionError, match="re-evaluation did not pass"):
+            await _re_evaluate_refined_artifact(
+                run_store,
+                rubrics,
+                run_id=run.run_id,
+                refine_node_id=node_run.node_run_id,
+                rubric_id=rubric.rubric_id,
+                rubric_revision=rubric.revision,
+                proposed_artifact=unevidenced,
+            )
+        # The refusal is not free: the failing records were written first,
+        # naming the re-evaluation Attempt the proof would have accepted.
+        scores = await run_store.list_eval_scores(run.run_id)
+        failed = [s for s in scores if not s.passed]
+        assert PLANTED_DIMENSION_ID in {s.dimension_id for s in failed}
+        assert all(
+            s.node_run_id == node_run.node_run_id
+            and s.rubric_id == rubric.rubric_id
+            and s.rubric_revision == rubric.revision
+            for s in failed
+        )
+
+    async def test_extract_accepted_artifact_fails_when_run_carries_none(
+        self,
+    ) -> None:
+        """Every non-dict shape on the accepted artifact's path fails loudly
+        instead of returning something falsy and calling it acceptance."""
+        from types import SimpleNamespace
+
+        from maistro_design.proof import _extract_accepted_artifact
+
+        for bad_result in (None, {"payload": "nope"}, {"payload": {"artifact": "nope"}}):
+            record = SimpleNamespace(
+                node_runs=[SimpleNamespace(node_id="refine-1", result=bad_result)]
+            )
+            with pytest.raises(
+                AssertionError, match="the accepted Run carries no accepted artifact"
+            ):
+                _extract_accepted_artifact(record, "refine-1")

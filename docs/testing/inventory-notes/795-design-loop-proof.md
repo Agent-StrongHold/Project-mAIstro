@@ -1,7 +1,7 @@
 ---
 inventory-delta:
   packages/maistro-core/tests: +16
-  packages/maistro-design/tests: +20
+  packages/maistro-design/tests: +38
 ---
 <!-- Measured by scripts/check-suite-inventory.py --update; see README.md. -->
 # 795-design-loop-proof
@@ -31,21 +31,36 @@ model the proof (and later the Design Studio inspector) answers from.
   `created_at` instead of minting a fresh timestamp behind the caller (the
   proof's redirect step re-walks creation paths, so retries are real there).
 
-`packages/maistro-design/tests` **+20** — `test_design_loop_proof.py`: the
-M7-A6 scenario executed end to end through canonical APIs only, on both the
-in-memory and SQLite `RunStore` backends (10 tests × 2 backends): the planted
-`claim_evidence` failure is durable on the Run before refine and the scorer is
-real (fails unevidenced claims, passes evidenced ones); park → redirect-Rubric
-(same Goal revision, v1 immutable) → accept are canonical human pauses; a
-mid-loop refresh re-reads Goal, Rubric revisions, Run, and all six eval
-records from the stores; both refine-side Attempts are visible, the failed
-record survives, and the accepted artifact names the winning re-evaluation
-Attempt; the Canvas-unavailable branch records exactly that with no artifact
-while the loop completes on the non-Canvas branch, and the Canvas-available
-branch produces on the same Run id; the full lineage chain from the accepted
-artifact to both Rubric revisions and the Goal revision is queryable, with the
-pack identity proven by the snapshot's `source_template` provenance; and the
-proof advances only on decisions (no timers).
+`packages/maistro-design/tests` **+38** — `test_design_loop_proof.py`:
+
+- **+20** — the M7-A6 scenario executed end to end through canonical APIs
+  only, on both the in-memory and SQLite `RunStore` backends (10 tests × 2
+  backends): the planted `claim_evidence` failure is durable on the Run
+  before refine and the scorer is real (fails unevidenced claims, passes
+  evidenced ones); park → redirect-Rubric (same Goal revision, v1 immutable)
+  → accept are canonical human pauses; a mid-loop refresh re-reads Goal,
+  Rubric revisions, Run, and all six eval records from the stores; both
+  refine-side Attempts are visible, the failed record survives, and the
+  accepted artifact names the winning re-evaluation Attempt; the
+  Canvas-unavailable branch records exactly that with no artifact while the
+  loop completes on the non-Canvas branch, and the Canvas-available branch
+  produces on the same Run id; the full lineage chain from the accepted
+  artifact to both Rubric revisions and the Goal revision is queryable, with
+  the pack identity proven by the snapshot's `source_template` provenance;
+  and the proof advances only on decisions (no timers).
+- **+18** — the degenerate paths the happy-path proof walk never reaches
+  (the diff-coverage gate flagged the proof module at 75% branch arcs against
+  its 80% floor, and these are the meaningful arcs it named, not padding):
+  the scorer fails a field-less artifact naming each missing field and fails
+  a claim-free artifact as `no claims to evaluate` (never a vacuous pass);
+  the refine repair adds evidence without overwriting an existing citation;
+  both fence nodes reject a decision they do not know and the evaluate node
+  fails closed when its Rubric vanished from the store; a refine accept with
+  no durable pause behind it is refused as caller memory; the proof's status,
+  pause-evidence and accepted-artifact guards raise naming what was missing;
+  and the re-evaluation Attempt really scores — an unevidenced artifact
+  leaves durable failing rows naming the re-evaluation Attempt and the driver
+  refuses to return a passing Attempt that does not exist.
 
 ## Reconciliation against `origin/develop` (7f8683be)
 
