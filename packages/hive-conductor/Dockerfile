@@ -37,11 +37,12 @@ RUN npm run build
 # age v1.3.1 remains the latest upstream release, but its prebuilt Linux binary
 # was compiled before several 2026 Go/x/crypto and stdlib fixes, and no released
 # age artifact embeds a toolchain carrying the 2026 stdlib fixes (trivy:
-# CVE-2026-78667/78669/97031 HIGH in stdlib 1.25.x). Build the exact immutable
+# CVE-2026-78667/78669/97031 HIGH in stdlib 1.25.x; CVE-2026-111943 HIGH in
+# stdlib 1.27.2, fixed in go1.26.10/1.27.3). Build the exact immutable
 # release tag ourselves with a patched Go toolchain/dependency set so the
 # runtime does not inherit vulnerabilities from an otherwise-current source
 # release. The release tag resolves to b8564ad; fail if upstream ever disagrees.
-FROM golang:1.27.2-alpine@sha256:f92b6ef800e499660581efdabdf25d9d817a9d124eaf900924f0504e7e27e12d AS agebuild
+FROM golang:1.27.3-alpine@sha256:b8c9b82affbbb82a020bbcf998dad2ba9516944ac7e883524642a481a9505e9c AS agebuild
 ARG AGE_VERSION=1.3.1
 ARG AGE_COMMIT_SHORT=b8564ad
 RUN apk add --no-cache git && \
