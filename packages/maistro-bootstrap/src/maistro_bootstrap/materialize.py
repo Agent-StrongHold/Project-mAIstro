@@ -25,34 +25,53 @@ def _write_tutorial(path: Path, todos: list[str]) -> None:
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def _next_compose_command(base_compose_path: str | None) -> str:
+def _plan_runtime(plan: dict[str, Any]) -> str:
+    """The resolved host runtime this plan's artifacts must name (#1820).
+
+    Read from the plan's delivery artifact — the same value install.sh reads —
+    so the Makefile and the entrypoint hints cannot disagree with the selected
+    runtime. Defaults to docker only for plans written before the field
+    existed; ``build_install_plan`` always emits it.
+    """
+    artifacts = plan.get("generated_artifacts")
+    runtime = ""
+    if isinstance(artifacts, dict):
+        delivery = artifacts.get("delivery")
+        if isinstance(delivery, dict):
+            runtime = str(delivery.get("container_runtime", ""))
+    return runtime if runtime in ("docker", "podman") else "docker"
+
+
+def _next_compose_command(base_compose_path: str | None, runtime: str = "docker") -> str:
     if base_compose_path is None:
-        return "docker compose -f <path-to-docker-compose.yml> -f compose.override.yml config"
-    return f"docker compose -f {base_compose_path} -f compose.override.yml config"
+        return f"{runtime} compose -f <path-to-docker-compose.yml> -f compose.override.yml config"
+    return f"{runtime} compose -f {base_compose_path} -f compose.override.yml config"
 
 
-def _write_entrypoint(path: Path, base_compose_path: str | None) -> None:
+def _write_entrypoint(path: Path, base_compose_path: str | None, runtime: str = "docker") -> None:
     path.write_text(
         "#!/usr/bin/env bash\n"
         "set -euo pipefail\n"
         'cd "$(dirname "$0")"\n'
         "echo 'Maistro install artifacts are materialized in:' \"$PWD\"\n"
         "echo 'Review install-answers.yaml and compose.override.yml before starting services.'\n"
-        f"echo 'Next: {_next_compose_command(base_compose_path)}'\n",
+        f"echo 'Next: {_next_compose_command(base_compose_path, runtime)}'\n",
         encoding="utf-8",
     )
     if os.name != "nt":
         path.chmod(path.stat().st_mode | stat.S_IXUSR)
 
 
-def _write_powershell_entrypoint(path: Path, base_compose_path: str | None) -> None:
+def _write_powershell_entrypoint(
+    path: Path, base_compose_path: str | None, runtime: str = "docker"
+) -> None:
     path.write_text(
         "Set-StrictMode -Version Latest\n"
         '$ErrorActionPreference = "Stop"\n'
         "Set-Location $PSScriptRoot\n"
         'Write-Host "Maistro install artifacts are materialized in: $PWD"\n'
         'Write-Host "Review install-answers.yaml and compose.override.yml before starting services."\n'
-        f'Write-Host "Next: {_next_compose_command(base_compose_path)}"\n',
+        f'Write-Host "Next: {_next_compose_command(base_compose_path, runtime)}"\n',
         encoding="utf-8",
     )
 
@@ -102,12 +121,13 @@ def materialize_install_artifacts(plan: dict[str, Any], target_dir: Path) -> lis
 
     written.extend(_materialize_delivery(plan, target_dir, base_compose_path))
 
+    runtime = _plan_runtime(plan)
     entrypoint = target_dir / "install.sh"
-    _write_entrypoint(entrypoint, base_compose_path)
+    _write_entrypoint(entrypoint, base_compose_path, runtime)
     written.append(entrypoint)
 
     powershell_entrypoint = target_dir / "install.ps1"
-    _write_powershell_entrypoint(powershell_entrypoint, base_compose_path)
+    _write_powershell_entrypoint(powershell_entrypoint, base_compose_path, runtime)
     written.append(powershell_entrypoint)
 
     return written
@@ -128,13 +148,16 @@ def _materialize_delivery(
 
     answers = plan.get("answers", {})
     mode = str(answers.get("delivery_mode", "image_pull"))
+    runtime = _plan_runtime(plan)
     repo_root = plan.get("repo_root")
     revision = git_revision(Path(str(repo_root))) if repo_root else None
 
     written: list[Path] = []
     makefile = target_dir / "Makefile"
     makefile.write_text(
-        render_makefile(mode, base_compose_path=base_compose_path, revision=revision),
+        render_makefile(
+            mode, base_compose_path=base_compose_path, revision=revision, runtime=runtime
+        ),
         encoding="utf-8",
     )
     written.append(makefile)
