@@ -10,6 +10,7 @@ provider call.
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Mapping
+from copy import deepcopy
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol
 
@@ -412,6 +413,11 @@ class GovernedToolExecutor:
         logical calls; it cannot widen authorization or detach the recorded
         evidence from the exact materialized arguments.
         """
+        # Detach nested input before the first admission await. Otherwise a
+        # caller retaining the dictionary can change validated arguments while
+        # Binding/policy resolution or dispatch is suspended, bypassing the
+        # schema or diverging from the persisted prediction and effect key.
+        arguments = deepcopy(arguments)
         contract, binding = await self._admit_call(tool_name, arguments, context, authorized_tools)
         expected_evidence = self._expected_evidence(contract, arguments)
         invocation = await self._invoke_admitted(

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
@@ -131,6 +133,75 @@ async def test_governed_tool_persists_expected_evidence_on_canonical_invocation(
         "capability.invocation.completed",
     ]
     assert events[1].invocation_id == invocation.invocation_id
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("pause_at", ["binding", "provider"])
+async def test_caller_mutation_cannot_change_admitted_tool_arguments(pause_at: str) -> None:
+    """Admission awaits cannot detach executed input from schema/prediction evidence."""
+    effects = new_effect_context(policy_evaluator=binding_scope_policy)
+    await effects.bindings.put(_binding())
+    registry = _registry(observed={"ticket_count": 1})
+    registry.require("create_ticket").schema["properties"]["labels"] = {
+        "type": "array",
+        "items": {"type": "string"},
+    }
+    original = {"title": "admitted title", "labels": ["admitted label"]}
+    arguments = deepcopy(original)
+    paused, resume = asyncio.Event(), asyncio.Event()
+    calls: list[dict[str, Any]] = []
+
+    async def pause(stage: str) -> None:
+        if pause_at == stage:
+            paused.set()
+            await resume.wait()
+
+    async def binding_for(_contract: ToolContract, _context: ToolInvocationContext) -> Binding:
+        await pause("binding")
+        return _binding()
+
+    async def backend(_name: str, received: dict[str, Any]) -> dict[str, Any]:
+        await pause("provider")
+        calls.append(deepcopy(received))
+        return {"id": "ticket-1"}
+
+    executor = GovernedToolExecutor(
+        effects=effects, contracts=registry, binding_for=binding_for, backend=backend
+    )
+    task = asyncio.create_task(
+        executor.execute(
+            "create_ticket", arguments, context=_CONTEXT, authorized_tools={"create_ticket"}
+        )
+    )
+    try:
+        # Synchronize at a real async boundary, never with scheduling sleeps.
+        await asyncio.wait_for(paused.wait(), timeout=10)
+        arguments["title"] = 123  # Invalid after the schema check has already passed.
+        arguments["labels"].append(456)  # A shallow copy is insufficient.
+        resume.set()
+        assert await task == {"id": "ticket-1"}
+    finally:
+        resume.set()
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    assert calls == [original]
+    rows = await effects.invocation_store.list_effect(
+        run_id=_CONTEXT.run_id,
+        node_run_id=_CONTEXT.node_run_id,
+        binding_id=_binding().binding_id,
+        effect_key="tool:create_ticket:" + canonical_digest(original),
+    )
+    assert len(rows) == 1
+    invocation = rows[0]
+    assert invocation.request["arguments"] == original
+    evidence = invocation.expected_effect
+    assert evidence is not None
+    assert evidence.materialized_arguments == calls[0] == original
+    assert evidence.arguments_digest == canonical_digest(calls[0])
+    assert evidence.invocation_id == invocation.invocation_id
+    assert evidence.matched is True
 
 
 @pytest.mark.asyncio
