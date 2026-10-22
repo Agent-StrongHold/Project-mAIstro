@@ -14,10 +14,10 @@ from datetime import UTC, datetime
 from typing import Any, Protocol
 
 from maistro.security.sentinel.delegation import (
-    DelegationAuthority,
     DelegationDecision,
     DelegationGrant,
     DelegationRequest,
+    InMemoryDelegationAuthority,
 )
 from maistro.security.sentinel.delegation import (
     _matches as _grant_matches,
@@ -251,8 +251,15 @@ def _grant_from_row(row: Any) -> DelegationGrant:
     )
 
 
-async def build_delegation_authority(*, pg_pool: Any, db_pool: Any) -> Any:
-    """Select delegation persistence from the same backend as the other stores."""
+async def build_delegation_authority(
+    *, pg_pool: Any, db_pool: Any
+) -> DurableDelegationAuthority | InMemoryDelegationAuthority:
+    """Select delegation persistence from the same backend as the other stores.
+
+    The durable authority's ``authorize`` is async; Sentinel and the A2A broker
+    accept either the decision or an awaitable of one, so both shapes satisfy
+    the :class:`DelegationAuthority` seam at runtime.
+    """
     if pg_pool is not None:
         pg_store: Any = PgDelegationStore(pg_pool)
         # The canonical backend's table is created by the store's idempotent
@@ -266,8 +273,6 @@ async def build_delegation_authority(*, pg_pool: Any, db_pool: Any) -> Any:
         sqlite_store: Any = SqliteDelegationStore(db_pool)
         await sqlite_store.ensure_schema()
         return DurableDelegationAuthority(sqlite_store)
-    from maistro.security.sentinel.delegation import InMemoryDelegationAuthority
-
     return InMemoryDelegationAuthority()
 
 

@@ -16,7 +16,7 @@ import uuid
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING, Any, Final, Literal
+from typing import TYPE_CHECKING, Any, Final, Literal, cast
 from urllib.parse import urlsplit, urlunsplit
 
 from maistro.a2a.delegate import A2ADelegator
@@ -513,7 +513,7 @@ class Container:
     # Host-authorized delegation authority (#845). Held here as well as inside
     # Sentinel so a host component can provision grants; Sentinel reads the
     # same instance.
-    delegation_authority: Any = None  # type: ignore[assignment]
+    delegation_authority: DelegationAuthority | None = None
     # Strike ladder (SPEC-012 / security/gate.py). None unless
     # config.security.strike_tracking_enabled -- see create_container.
     strike_tracker: StrikeTracker | None = None
@@ -3005,9 +3005,15 @@ async def _wire_elevation_store(*, pg_pool: Any, db_pool: Any) -> ElevationStore
 
 async def _wire_delegation_authority(*, pg_pool: Any, db_pool: Any) -> DelegationAuthority:
     """Host-created delegation grants live beside the other durable stores."""
+    from maistro.security.sentinel.delegation import DelegationAuthority
     from maistro.security.sentinel.delegation_durable import build_delegation_authority
 
-    return await build_delegation_authority(pg_pool=pg_pool, db_pool=db_pool)
+    # The durable authority resolves its decision asynchronously while the
+    # in-memory seam is synchronous; Sentinel and the A2A broker accept either
+    # shape (they narrow with ``hasattr(result, "__await__")``), so the
+    # protocol's synchronous signature is the seam contract both satisfy.
+    authority = await build_delegation_authority(pg_pool=pg_pool, db_pool=db_pool)
+    return cast(DelegationAuthority, authority)
 
 
 def _sqlite_database_path(database_url: str) -> str:

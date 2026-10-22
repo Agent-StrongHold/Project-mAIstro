@@ -121,7 +121,6 @@ from maistro.runs.sqlite_store import SqliteRunStore
 from maistro.runs.store import InMemoryRunStore, RunStore
 from maistro.security.sentinel.audit import InMemoryAuditLog
 from maistro.security.sentinel.delegation import InMemoryDelegationAuthority
-from maistro.security.sentinel.policy import Sentinel
 from maistro.security.strikes import InMemoryStrikeTracker
 from maistro.skills.parser import SKILL_SECURITY_SCAN_VERSION
 from maistro.state import PersistedStore
@@ -650,12 +649,15 @@ _VULTURE_WHITELIST = (
     # admin API, so it is named here as retained surface rather than banked as
     # unclassified debt.
     InMemoryStrikeTracker.enable,
-    # Host-authorized delegation seam (#845): the mutation entry point and the
-    # host-trusted execution-mode resolver are consumed by external adapters
-    # (Hive conductor) and operator tooling outside this packages/*/src scan;
-    # they are reviewed public surface, not dead code.
+    # Host-authorized delegation seam (#845): the grant mutation entry point
+    # is consumed by the host and operator tooling outside this
+    # packages/*/src scan (the shipped composition wires the durable authority
+    # in maistro.security.sentinel.delegation_durable, whose async
+    # ``add_host_grant`` provisions the same store); it is reviewed public
+    # surface, not dead code. The execution-mode resolver this row used to
+    # name moved to the hive-conductor adapter (services/execution_mode.py),
+    # which the scan does not walk.
     InMemoryDelegationAuthority.add_host_grant,
-    Sentinel.resolve_authorized_execution_mode,
     # Installable domain-pack contracts (M9-F1, #966). The pack contract
     # ships first by design, the same posture as the M9-B1 store seams and
     # the M9-D1 registry above: its in-tree consumers are the conformance
