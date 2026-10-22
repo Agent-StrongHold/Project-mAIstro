@@ -115,3 +115,48 @@ items are being started. Summary: checked 1 assigned issue, done 0 acceptance
 completions, skipped 0 issues, errors 0 validation-command failures; next is the
 blocked production-evidence work above. The ten criteria remain unproven.
 
+## Round 860 current-head revalidation (328c80121b99)
+
+Starting HEAD and clean status were confirmed at
+`328c80121b990bc336ad5be2c17db29f38c09864`; base is
+`c29e0ea7094198095c107e3583dbfd5e50009a5d`. No `check-*.log` files were
+present in the assigned job directory. The supplied prior result says the work
+ended at this same HEAD and was BLOCKED; its claims were checked against live
+tree/evidence rather than accepted as proof. The issue's ten acceptance items
+were frozen from the supplied dispatch snapshot; no other issue/PR is in scope.
+
+Executed the exact vulture CI command:
+`uv run python scripts/check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'`.
+PASS: 1315 reviewed identities, 1315 findings, `unclassified: 0`,
+`never_allowlist: 0`. No ledger edit is justified.
+
+Re-evaluated `docs/testing/soak/evidence/m3a-round109-shakedown.json` with the
+current `failed_promotion_checks()` and called current
+`preflight_artifact_check()`. Recorded evidence is clean at historical head
+`5a59c724a20ef1241d57c048df90758f2c2e1e25`, but is only 420.05 seconds; the
+current evaluator returns failed checks `sustain_duration` and
+`exact_rc_artifact`, and current preflight explicitly returns
+`ok=false, topology=host-uvicorn-preflight`. This is historical shakedown data,
+not an RC soak. `docs/testing/soak/m3a-load-profile.md` further explicitly
+states the current workload excludes concurrent users/Workspaces, Graph/node
+fan-out, successful model/tool calls, Design/Canvas, and sustained Goal
+reconciliation; it also disclaims physical Attempt fencing and application
+loop/cgroup telemetry.
+
+Thus the ten issue criteria remain UNVERIFIED for promotion: representative
+profile; two replicas of the selected production artifact; sustained resource,
+queue and recovery load; physical-work fencing/reconciliation; replica-selection
+security behavior; complete telemetry; active-work kill/restart recovery; >=4h
+exact-RC soak; findings disposition; and machine+human evidence tied to the
+promoted artifact/config hashes. The historical shakedown's successful
+admission/schedule claims and resource values do not close these exact-RC gaps.
+Accepted ADR-081226-a66b retains the Run→NodeRun→Attempt lifecycle authority;
+ADR-082426-82c7 makes the schedule occurrence the canonical Run claim. No
+competing execution/scheduler authority is introduced.
+
+No tests were added, so no suite-inventory note is required. No production soak
+was possible without an identified immutable RC/configuration and production
+runner. Only this handoff is amended; issue remains BLOCKED pending those inputs
+and a fresh >=4h exact-artifact measurement. The assigned job directory contains
+no deterministic check logs, as noted above.
+
