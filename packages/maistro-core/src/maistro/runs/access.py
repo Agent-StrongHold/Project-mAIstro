@@ -11,13 +11,29 @@ never be minted from caller text or Run metadata.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypedDict
 
 from maistro.runs.store_boundary import require_admitted_actor
 from maistro.security.sentinel.authz_types import Principal
 
 if TYPE_CHECKING:
     from maistro.graph.definitions import Graph
+
+
+class AdmissionIdentityFields(TypedDict):
+    """Exactly the keyword fields Run admission consumes from this module.
+
+    A precise shape, not ``dict[str, str]``: stores splat this mapping into
+    the ``Run`` constructor, and pyright reads a ``dict[str, str]`` splat as
+    binding *any* ``Run`` field — including ``status=`` and the ``datetime``
+    stamps — reporting five false ``reportArgumentType`` findings per call
+    site. Naming the three keys keeps the splat checked against exactly the
+    identity fields it carries.
+    """
+
+    actor_principal_id: str
+    initiating_principal_id: str
+    acting_principal_id: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,7 +75,7 @@ def admission_identity_fields(
     *,
     authorization: RunAuthorization | None,
     legacy_actor_principal_id: str | None,
-) -> dict[str, str]:
+) -> AdmissionIdentityFields:
     """Resolve immutable Run identity facts before a Run can be persisted."""
     if authorization is None:
         actor = require_admitted_actor(legacy_actor_principal_id)
@@ -86,6 +102,7 @@ def admission_identity_fields(
 
 
 __all__ = [
+    "AdmissionIdentityFields",
     "RunAuthorization",
     "admission_identity_fields",
     "require_admitted_actor",
