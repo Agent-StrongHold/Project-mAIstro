@@ -3,7 +3,7 @@
 ## Scope and starting state
 
 This writer round is limited to issue #860 on `auto-860`, starting at
-`4ebc4ae035bf287a069e773ae3956ffde5d8ad82` (base
+`b11f1c3615725132ae5b0a6a4b076bd68198b6d5` (base
 `a9fdec4cb40a62ada3e897448eabc81f2410135a`). The worktree was clean on entry.
 No `check-*.log` files were present in the supplied job directory. The supplied
 prior result and historical claims are not treated as fresh evidence.
@@ -49,15 +49,23 @@ production Attempt execution; no competing execution authority is introduced.
 The canonical execution model remains `Goal -> Graph -> Run -> NodeRun ->
 Attempt`.
 
-## Validation executed on the assigned head
+## Validation
+
+At the prior validation checkpoint (`4ebc4ae035bf`), the vulture baseline
+passed with 1,314 reviewed identities/findings and zero unclassified or
+never-allowlist identities; no quality ledger was edited. That is historical
+validation, not a check rerun in this round.
+
+Fresh validation on assigned head `b11f1c3615725132ae5b0a6a4b076bd68198b6d5`:
 
 - `uv run pytest tests/test_soak_promotion_gates.py -x -q` — **84 passed**.
   These test harness gate logic only, not the production topology or soak.
-- `uv run python scripts/check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'` — **passed**; base `a9fdec4cb40a`, candidate `4ebc4ae035bf`, 1,314 reviewed identities/findings, zero unclassified and zero never-allowlist. No quality ledger was edited.
 - `uv run ruff check .` — **passed**.
 - `uv run ruff format --check .` — **passed** (3,454 files already formatted).
 - `git diff --check` — **passed** before this checkpoint update.
 
 No soak was run: exact RC artifact/configuration and four-hour runtime were not
-available. A promotion-grade result additionally requires closure/reclassification
-of load-discovered defects and proof of the listed coverage/fencing criteria.
+available. The checked round-109 evidence remains 420.05 seconds against the
+14,400-second minimum with exact-RC certification false. A promotion-grade
+result additionally requires closure/reclassification of load-discovered
+defects and proof of the listed coverage/fencing criteria.
