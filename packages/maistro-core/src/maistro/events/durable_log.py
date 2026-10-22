@@ -100,6 +100,24 @@ class EventLogStore(Protocol):
         ...
 
 
+def require_json_encodable_payload(payload: dict[str, Any]) -> None:
+    """Reject a payload strict JSON cannot encode (NaN/Infinity, sets, ...).
+
+    The canonical Event envelope already enforces this bound — its field-bounds
+    check serializes with ``allow_nan=False`` — and ``request_digest_v1``
+    re-serializes the logged body under the same rule at dispatch time. Append
+    must therefore be the gate: a payload that was persisted but fails the
+    digest would wedge the processing cursor forever, because the digest is
+    computed before the receipt claim, so no receipt for that event could ever
+    be claimed or settled.
+    """
+    try:
+        json.dumps(payload, allow_nan=False)
+    except (TypeError, ValueError) as exc:
+        msg = f"event payload is not strictly JSON-encodable: {exc}"
+        raise ValueError(msg) from exc
+
+
 def append_from_bus_event(event: Event) -> dict[str, Any]:
     """Map an in-memory bus :class:`~maistro.events.bus.Event` to append() kwargs."""
     return {
@@ -129,6 +147,7 @@ class InMemoryEventLog:
         payload: dict[str, Any] | None = None,
         source: str = "",
     ) -> LoggedEvent:
+        require_json_encodable_payload(payload or {})
         async with self._lock:
             event = LoggedEvent(
                 id=self._next_id,
@@ -225,6 +244,7 @@ class SqliteEventLog:
         source: str = "",
     ) -> LoggedEvent:
         created_at = time.time()
+        require_json_encodable_payload(payload or {})
         cursor = await self._conn.execute(
             """INSERT INTO event_log
                (event_type, entity_type, entity_id, payload, source, created_at)
