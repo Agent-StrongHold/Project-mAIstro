@@ -20,7 +20,8 @@ Legs proven, per acceptance criterion:
 
 1. Auth + DAG execution (Conductor HTTP): login -> Workspace admission ->
    canonical Run -> gateway call -> completed with non-stub content, plus
-   durable Run/NodeRun/Attempt evidence and actor/scope provenance.
+   durable Run/NodeRun/Attempt/Invocation evidence, actor/scope provenance,
+   and exactly-once measured model usage through configured authority.
 2. No fake success: with no gateway configured the canonical Run fails and the
    refusal names ALLOW_STUB_LLM; with the opt-in on, the stub payload is
    labelled ``"stub": true``.
@@ -47,7 +48,10 @@ import json
 import pathlib
 import sys
 import threading
+from collections.abc import Iterator
+from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -62,11 +66,13 @@ from maistro.capabilities.effect_context import (  # noqa: E402
     binding_scope_policy,
     new_in_memory_effect_context,
 )
+from maistro.capabilities.invocation import InvocationStatus  # noqa: E402
 from maistro.capabilities.model_chat import MODEL_CHAT_CAPABILITY  # noqa: E402
 from maistro.capabilities.providers.llm_gateway import (  # noqa: E402
     DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,
     MODEL_GATEWAY_CREDENTIAL_PROVIDER,
 )
+from maistro.container import Container, create_container  # noqa: E402
 from maistro.credentials.types import CredentialRecord  # noqa: E402
 from maistro.graph import Graph, Node  # noqa: E402
 from maistro.graph.durable_runs import RunStatus, run_durable_graph  # noqa: E402
@@ -81,12 +87,14 @@ from maistro.security.outbound import (  # noqa: E402
     current_outbound_policy,
     reset_outbound_policy,
 )
+from maistro.types.config import AgentConfig, ModelBindingConfig  # noqa: E402
 
 pytestmark = [pytest.mark.contract("behavioral")]
 
 GATEWAY_CONTENT = "E2E real-model gateway answer: canonical graph executed"
 GATEWAY_KEY = "e2e-gateway-key"
 GATEWAY_MODEL = "gemini/gemini-2.5-flash"
+GATEWAY_BINDING = "authenticated-dag-model"
 
 
 # --- the deployment's model-gateway interface, live on 127.0.0.1 -------------
@@ -165,6 +173,17 @@ def gateway_env(monkeypatch: pytest.MonkeyPatch, gateway: _RecordingGateway) -> 
     """Configure the deployment's gateway exactly the way compose does, and
     seed the outbound policy the way `main._seed_outbound_policy` does — the
     allowance moves with the configured gateway, never widening past it."""
+    # This gateway is loopback-only. An inherited CI/developer proxy must not
+    # redirect its traffic or make the hermetic proof depend on proxy extras.
+    for name in (
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
+    ):
+        monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("LITELLM_API_BASE", f"{gateway.base_url}/v1")
     monkeypatch.setenv("LITELLM_API_KEY", GATEWAY_KEY)
     monkeypatch.setenv("CHAT_DEFAULT_MODEL", GATEWAY_MODEL)
@@ -178,17 +197,29 @@ def gateway_env(monkeypatch: pytest.MonkeyPatch, gateway: _RecordingGateway) -> 
 
 def _unconfigure_llm(monkeypatch: pytest.MonkeyPatch) -> None:
     """The misconfigured-deployment state: no gateway anywhere."""
-    for var in ("LITELLM_API_BASE", "LITELLM_PROXY_URL", "LITELLM_API_KEY", "LITELLM_PROXY_KEY"):
+    for var in (
+        "LITELLM_API_BASE",
+        "LITELLM_PROXY_URL",
+        "LITELLM_BASE_URL",
+        "LITELLM_URL",
+        "litellm_api_base",
+        "maistro_llm_base_url",
+        "MAISTRO_LLM_BASE_URL",
+        "LITELLM_API_KEY",
+        "LITELLM_PROXY_KEY",
+        "LITELLM_MASTER_KEY",
+        "MAISTRO_LLM_API_KEY",
+    ):
         monkeypatch.delenv(var, raising=False)
 
 
 def _set_allow_stub_llm(monkeypatch: pytest.MonkeyPatch, allowed: bool) -> None:
     import config
 
-    class _S:
-        allow_stub_llm = allowed
-
-    monkeypatch.setattr(config, "get_settings", lambda: _S())
+    settings = SimpleNamespace(
+        allow_stub_llm=allowed, litellm_api_base=None, maistro_model_bindings=[]
+    )
+    monkeypatch.setattr(config, "get_settings", lambda: settings)
 
 
 def _workspace(client: Any, name: str) -> str:
@@ -216,8 +247,77 @@ def _dag(client: Any, name: str, description: str) -> dict[str, Any]:
 # --- Leg 1: authenticated run end to end -------------------------------------
 
 
+@dataclass(frozen=True)
+class _AuthenticatedGatewayRuntime:
+    container: Container
+    workspace_id: str
+    project_id: str
+
+
+@pytest.fixture
+def authenticated_gateway_runtime(
+    admin_client: Any,
+    gateway_env: _RecordingGateway,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+) -> Iterator[_AuthenticatedGatewayRuntime]:
+    """Boot real authorities, then load operator grants for the HTTP-created scope.
+
+    Reopening SQLite models configured startup without borrowing the route
+    suite's spine-only Container or issuing a grant during model dispatch.
+    The registry is explicit trusted fixture metadata, not model discovery.
+    """
+    from services.engine import get_engine
+
+    database_url = f"sqlite:///{tmp_path / 'runtime.sqlite3'}"
+    initial = asyncio.run(
+        create_container(AgentConfig(database_url=database_url, router_api_key="test-router-key"))
+    )
+    monkeypatch.setattr(get_engine(), "_agent_port", SimpleNamespace(container=initial))
+    try:
+        workspace_id = _workspace(admin_client, "M3-A5 real model")
+        project = asyncio.run(initial.project_scope_store.root_for_workspace(workspace_id))
+    finally:
+        asyncio.run(initial.aclose())
+
+    providers = tmp_path / "providers.yaml"
+    providers.write_text(
+        f"models:\n  - name: {GATEWAY_MODEL}\n    provider: e2e-gateway\n"
+        "    cost_input: 0.5\n    cost_output: 1.0\n    latency_p50_ms: 50\n",
+        encoding="utf-8",
+    )
+    container = asyncio.run(
+        create_container(
+            AgentConfig(
+                database_url=database_url,
+                router_api_key="test-router-key",
+                workspace_id=workspace_id,
+                provider_config_path=str(providers),
+                litellm_url=gateway_env.base_url,
+                litellm_key=GATEWAY_KEY,
+                model_bindings=[
+                    ModelBindingConfig(
+                        binding_id=GATEWAY_BINDING,
+                        workspace_id=workspace_id,
+                        project_id=project.project_id,
+                        provider_name=GATEWAY_MODEL,
+                        credential_refs=(DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,),
+                    )
+                ],
+            )
+        )
+    )
+    monkeypatch.setattr(get_engine(), "_agent_port", SimpleNamespace(container=container))
+    try:
+        yield _AuthenticatedGatewayRuntime(container, workspace_id, project.project_id)
+    finally:
+        asyncio.run(container.aclose())
+
+
 def test_authenticated_dag_run_executes_a_real_model_call_end_to_end(
-    admin_client: Any, gateway_env: _RecordingGateway
+    admin_client: Any,
+    gateway_env: _RecordingGateway,
+    authenticated_gateway_runtime: _AuthenticatedGatewayRuntime,
 ) -> None:
     """Login -> Workspace admission -> canonical Run -> real gateway HTTP ->
     non-stub result, with durable Run/NodeRun/Attempt evidence."""
@@ -228,7 +328,9 @@ def test_authenticated_dag_run_executes_a_real_model_call_end_to_end(
     actor_id = str(identity.get("id") or "")
     assert actor_id, f"authenticated identity has no id: {identity}"
 
-    workspace_id = _workspace(admin_client, "M3-A5 real model")
+    container = authenticated_gateway_runtime.container
+    workspace_id = authenticated_gateway_runtime.workspace_id
+    project_id = authenticated_gateway_runtime.project_id
     dag = _dag(admin_client, "m3a5-real-model", "authenticated real-model canonical graph")
 
     run = admin_client.post(f"/v1/dags/{dag['id']}/run", json={"workspace_id": workspace_id})
@@ -246,7 +348,7 @@ def test_authenticated_dag_run_executes_a_real_model_call_end_to_end(
 
     # The gateway saw the real calls: bearer-authenticated POSTs to the
     # OpenAI-compatible endpoint, carrying the node prompts.
-    assert gateway.requests, "no model call reached the configured gateway"
+    assert len(gateway.requests) == len(dag["nodes"]), gateway.requests
     for seen in gateway.requests:
         assert seen["path"].endswith("/chat/completions"), seen
         assert seen["authorization"] == f"Bearer {GATEWAY_KEY}", seen
@@ -255,8 +357,7 @@ def test_authenticated_dag_run_executes_a_real_model_call_end_to_end(
 
     # The node projection carries the model that answered. The DAG boundary
     # projects role/response/success/model/isolation only — no usage — so
-    # usage telemetry is claimed on the governed leg's persisted Invocation,
-    # not here.
+    # usage telemetry is verified on each persisted Invocation below.
     for node in node_results.values():
         assert node["model"] == GATEWAY_MODEL, node
 
@@ -264,21 +365,100 @@ def test_authenticated_dag_run_executes_a_real_model_call_end_to_end(
     # admitted into the authorized scope under the authenticated actor.
     from services.dag_agents import get_run_store
 
+    assert get_run_store() is container.graph_run_store
     record = asyncio.run(get_run_store().get(str(body["run_id"])))
     assert record is not None, "canonical Run record missing from the execution store"
     assert record.run.status is RunStatus.COMPLETED
     assert record.run.actor_principal_id == actor_id
     assert record.run.workspace_id == workspace_id
-    assert record.run.project_id == body["result"]["project_id"]
+    assert record.run.project_id == body["result"]["project_id"] == project_id
+    assert asyncio.run(container.run_store.get_run(record.run_id)) == record.run
     assert len(record.node_runs) == len(dag["nodes"])
+    assert {node_run.node_id for node_run in record.node_runs} == {
+        node["id"] for node in dag["nodes"]
+    }
     for node_run in record.node_runs:
         assert node_run.status is RunStatus.COMPLETED, node_run
+        assert node_run.run_id == record.run_id
     completed_attempts = [
         attempt for attempt in record.attempts if attempt.status is AttemptStatus.COMPLETED
     ]
-    assert completed_attempts, "no completed Attempt on the canonical Run"
+    assert len(completed_attempts) == len(record.attempts) == len(record.node_runs)
     for attempt in completed_attempts:
         assert attempt.node_run_id in {node_run.node_run_id for node_run in record.node_runs}
+
+    # The same configured Container owns the authoritative Binding, physical
+    # Attempts, model Invocations, and exactly-once usage for these HTTP calls.
+    binding = asyncio.run(container.capability_effects.bindings.get(GATEWAY_BINDING))
+    assert binding is not None
+    assert (binding.workspace_id, binding.project_id) == (workspace_id, project_id)
+    assert binding.capability == MODEL_CHAT_CAPABILITY
+    assert binding.provider_name == GATEWAY_MODEL
+    assert binding.credential_refs == (DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,)
+    binding_fields = {
+        "binding_id",
+        "workspace_id",
+        "project_id",
+        "node_id",
+        "capability",
+        "provider_name",
+        "credential_refs",
+        "policy_refs",
+        "config",
+    }
+    invocation_ids: set[str] = set()
+    for node_run in record.node_runs:
+        attempts = asyncio.run(container.run_store.list_attempts(node_run.node_run_id))
+        assert len(attempts) == 1
+        attempt = attempts[0]
+        assert attempt.status is AttemptStatus.COMPLETED
+        assert attempt.execution_lease is not None
+        invocations = asyncio.run(
+            container.invocation_store.list_effect(
+                run_id=record.run_id,
+                node_run_id=node_run.node_run_id,
+                binding_id=GATEWAY_BINDING,
+                effect_key="dag:model",
+            )
+        )
+        assert len(invocations) == 1
+        invocation = invocations[0]
+        invocation_ids.add(invocation.invocation_id)
+        assert invocation.status is InvocationStatus.COMPLETED
+        assert invocation.actor_id == record.run.actor_principal_id == actor_id
+        assert (invocation.workspace_id, invocation.project_id) == (workspace_id, project_id)
+        assert (invocation.run_id, invocation.node_run_id, invocation.attempt_id) == (
+            record.run_id,
+            node_run.node_run_id,
+            attempt.attempt_id,
+        )
+        assert invocation.binding.model_dump(include=binding_fields) == binding.model_dump(
+            include=binding_fields
+        )
+        usage = invocation.usage
+        assert usage is not None
+        assert usage.units == "tokens"
+        assert (usage.input_units, usage.output_units) == (11, 7)
+        assert usage.model == usage.model_version == GATEWAY_MODEL
+        assert usage.provider == "e2e-gateway"
+        assert usage.cost_cents == pytest.approx(0.0125)
+        events = [
+            event
+            for event in container.usage_log.events_for(GATEWAY_MODEL)
+            if event.invocation_id == invocation.invocation_id
+        ]
+        assert len(events) == 1
+        assert (events[0].input_tokens, events[0].output_tokens, events[0].usage_reported) == (
+            11,
+            7,
+            True,
+        )
+        assert events[0].cost_usd == pytest.approx(usage.cost_cents / 100)
+    assert len(invocation_ids) == len(gateway.requests)
+    usage_events = container.usage_log.events_for(GATEWAY_MODEL)
+    assert len(usage_events) == len(invocation_ids)
+    assert {event.invocation_id for event in usage_events} == invocation_ids
+    assert asyncio.run(container.capability_effects.bindings.get(GATEWAY_BINDING)) == binding
 
 
 def test_dag_run_without_a_gateway_refuses_instead_of_fake_success(

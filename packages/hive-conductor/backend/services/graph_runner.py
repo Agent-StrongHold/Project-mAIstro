@@ -66,13 +66,11 @@ async def execute_dag(dag_data: dict, **kwargs: Any) -> dict[str, Any]:
     ``completed`` instead of letting old wrappers stamp a failed Run as
     completed.
 
-    The raw ``_build_llm_call`` handed to the canonical executor is a
-    compatibility fallback only (#718): when the bridge Container and gateway
-    are configured, a node's model call crosses the governed Binding ->
-    Invocation egress and this builder is never used for it; the canonical
-    Invocation authority records the quota evidence. The injection stays so
-    standalone execution (no Container) and tests that patch this module's
-    attribute keep working.
+    The retained builder argument does not authorize ordinary model dispatch.
+    Real ordinary calls require the configured admitted model runtime; explicit
+    no-gateway dry runs return a separately composed, labelled static response.
+    Neither path invokes this raw builder, and canonical Invocations alone own
+    real model usage recording.
     """
     result = await _canonical_execute_dag(
         dag_data,

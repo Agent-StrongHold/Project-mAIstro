@@ -9,6 +9,8 @@ from services.dag_execution_scope import DagExecutionScope
 
 from maistro.graph.durable_runs import InMemoryDurableRunStore
 
+from .dag_model_test_seam import install_test_admitted_model
+
 
 def _safe_node(node_id: str) -> dict[str, Any]:
     return {
@@ -20,11 +22,8 @@ def _safe_node(node_id: str) -> dict[str, Any]:
     }
 
 
-def _fake_llm_builder(_on_response: Any = None):
-    async def call(messages: list[dict[str, Any]], **_kwargs: Any) -> str:
-        return f"ok:{messages[0]['content']}"
-
-    return call
+async def _fake_model_call(messages: list[dict[str, Any]], **_kwargs: Any) -> str:
+    return f"ok:{messages[0]['content']}"
 
 
 def test_arbitrary_legacy_condition_remains_an_unconditional_dependency() -> None:
@@ -84,6 +83,7 @@ async def test_arbitrary_legacy_condition_cannot_silently_skip_successor(
     store = InMemoryDurableRunStore()
     monkeypatch.setattr(runner, "_container", lambda: None)
     monkeypatch.setattr(runner, "get_run_store", lambda: store)
+    install_test_admitted_model(monkeypatch, _fake_model_call)
 
     result = await runner.execute_dag(
         {
@@ -99,7 +99,6 @@ async def test_arbitrary_legacy_condition_cannot_silently_skip_successor(
                 }
             ],
         },
-        llm_builder=_fake_llm_builder,
         scope=DagExecutionScope(
             workspace_id="test-workspace", project_id="test-project", user_id="test-user"
         ),

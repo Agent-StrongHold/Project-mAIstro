@@ -407,7 +407,7 @@ class AttemptExecutionService:
         # Persist physical recovery evidence before logical state claims that
         # execution is active (#544). If the process dies after this point, the
         # ordinary lease sweep has an Attempt to reclaim.
-        await self._lifecycle.prepare_execution(node_run_id)
+        await self._prepare_with_run_fence(attempt, attempt.execution_lease.fencing_token)
         return await self.execute_claimed(
             attempt,
             work_item,
@@ -417,6 +417,37 @@ class AttemptExecutionService:
             reconcile_logical=reconcile_logical,
             context_factory=context_factory,
         )
+
+    async def _prepare_with_run_fence(self, attempt: Attempt, token: str) -> None:
+        try:
+            await self._lifecycle.prepare_execution(attempt.node_run_id)
+        except (asyncio.CancelledError, Exception):
+            await self._settle_preparation_fence(attempt, token)
+            raise
+
+    async def _settle_preparation_fence(self, attempt: Attempt, token: str) -> None:
+        """Abandon a pre-launch Attempt only when its Run is already terminal.
+
+        A Run fence can win after create_attempt persists but before logical
+        preparation/owner registration. The service that minted the lease still
+        owns that physical record; callers must not repair it themselves.
+        Other preparation failures retain the lease for recovery rather than
+        leaving nonterminal logical work with no recoverable physical owner.
+        """
+        try:
+            node = await self._store.get_node_run(attempt.node_run_id)
+            run = await self._store.get_run(node.run_id) if node is not None else None
+        except Exception:
+            # An unreadable fence is not evidence of a terminal Run. Preserve
+            # the original preparation failure and the live recovery lease.
+            return
+        if run is not None and run.status in TERMINAL_RUN_STATUSES:
+            await self._terminalize_if_open(
+                attempt.attempt_id,
+                AttemptStatus.CANCELLED,
+                fencing_token=token,
+                error="execution abandoned before Runtime launch by terminal Run fence",
+            )
 
     async def execute_claimed(
         self,

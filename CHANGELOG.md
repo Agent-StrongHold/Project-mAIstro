@@ -23,6 +23,17 @@ or placeholder-only section.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Benchmark judgments use admitted execution and configured model authority (#1085, #1370).**
+  The evaluator creates a canonical leased child execution with its parent's
+  persisted actor and exact Workspace/Project scope. It selects an existing
+  scoped model Binding without issuing grants or copying ambient gateway keys.
+  Refusal and malformed-rubric errors no longer become zero-score optimizer
+  baselines or cheaper-model winners. Refusals record a failed one-shot operation
+  with typed authorization evidence; actual cancellation remains cancelled.
+  Completed judge Invocations and usage survive rubric rejection.
+
 ### Added
 
 - **The extension SDK boundary is enforced and a reference extension ships outside the
@@ -96,6 +107,27 @@ or placeholder-only section.
 
 ### Fixed
 
+- **Pre-launch Attempts settle when a terminal Run fence wins admission (#1085).**
+  The canonical execution service cancels its already-persisted leased Attempt
+  if logical preparation observes a terminal Run before physical owner registration.
+  Nonterminal or unreadable preparation failures retain their lease for recovery;
+  domain adapters never write physical Attempt outcomes to repair this race.
+- Provider activation now uses real leased canonical execution and the requesting
+  operator's quota identity before registration and its one-token probe (#1085).
+  Repeated activation preserves the immutable health Binding, cancellation drains
+  terminal evidence, and registration errors cannot leak keys or poison probe
+  credential health. Existing config.write scope and strict model pins remain.
+
+
+- **Explicit no-gateway ordinary DAG dry runs remain available (#1085, #87).**
+  `ALLOW_STUB_LLM=true` returns the existing clearly labelled static stub only
+  when no real model endpoint or model grant is configured and no Binding is
+  requested. Without opt-in the refusal retains actionable configuration guidance.
+  Configured calls never fall back after admission, credential, policy, quota or
+  transport failure. The server records the ordinary model mode on the admitted
+  Run, so recovery cannot change a real run into a stub or upgrade a dry run into
+  billable model work. Sandbox and model-backed tool behavior is unchanged.
+
 - **The installer now honors `docker-compose.override.yml` (#405).** `install.sh`
   always invokes Compose with explicit `-f` files, which disables Compose's own
   automatic override loading, so an override copied into the checkout was
@@ -112,6 +144,17 @@ or placeholder-only section.
 
 ### Security
 
+- **Ordinary asynchronous Hive DAG model nodes require admitted execution (#1085).**
+  Calls resolve configured model Bindings through the Container's RunStore,
+  preserving persisted actor/scope/lease identity and canonical usage recording.
+  Node `model_binding_id` selects a declared grant (top-level, then `config`);
+  an omitted ID requires exactly one matching configured Binding. Both provided
+  selectors must be strings; malformed values refuse before fallback. Missing runtime,
+  grants or scoped credentials fail closed without raw fallback or credential
+  copying. Configured model pins and declared node timeouts reach the Provider;
+  later Attempts replay completed effects and refuse UNKNOWN outcomes. The
+  model-backed tool and isolated sandbox paths retain their existing composition.
+
 - **Conductor model calls require persisted execution and configured authority (#1084).**
   Server and Hive task callers now resolve the actual Run, NodeRun, leased Attempt
   and admitted actor before resolving an operator-declared model Binding. Missing
@@ -127,8 +170,8 @@ or placeholder-only section.
   actor/execution correlation, quota and usage use the existing canonical
   effect authority. Missing authority and malformed model answers fail the
   node instead of dispatching with ambient credentials or inventing answers.
-  The generic tool Invocation remains in place. Ordinary legacy model and
-  sandbox callers and Agent tool composition remain separate convergence work.
+  The generic tool Invocation remains in place. Isolated sandbox callers and
+  Agent tool composition remain separate convergence work.
 
 - **Unknown model Binding pins refuse before gateway setup or dispatch (#56).**
   Pinned models must have metadata in the configured ProviderRegistry before

@@ -13,6 +13,8 @@ from services.dag_execution_scope import DagExecutionScope
 from maistro.graph.durable_runs import InMemoryDurableRunStore
 from maistro.runs.model import AttemptStatus
 
+from .dag_model_test_seam import install_test_admitted_model
+
 
 @pytest.fixture
 def execution_scope() -> DagExecutionScope:
@@ -31,17 +33,14 @@ def _safe_node(node_id: str, *, prompt: str | None = None) -> dict[str, Any]:
     }
 
 
-def _fake_llm_builder(*, fail_prompt: str | None = None):
-    def build(_on_response: Any = None):
-        async def call(messages: list[dict[str, Any]], **_kwargs: Any) -> str:
-            system = str(messages[0]["content"])
-            if fail_prompt and fail_prompt in system:
-                raise RuntimeError("intentional node failure")
-            return f"ok:{system}"
+def _fake_model_call(*, fail_prompt: str | None = None):
+    async def call(messages: list[dict[str, Any]], **_kwargs: Any) -> str:
+        system = str(messages[0]["content"])
+        if fail_prompt and fail_prompt in system:
+            raise RuntimeError("intentional node failure")
+        return f"ok:{system}"
 
-        return call
-
-    return build
+    return call
 
 
 def test_graph_normalizes_crud_and_substrate_edge_dialects() -> None:
@@ -183,7 +182,7 @@ async def test_required_node_failure_terminalizes_canonical_run_failed(
     store = InMemoryDurableRunStore()
     monkeypatch.setattr(runner, "_container", lambda: None)
     monkeypatch.setattr(runner, "get_run_store", lambda: store)
-
+    install_test_admitted_model(monkeypatch, _fake_model_call(fail_prompt="fail-me"))
     result = await runner.execute_dag(
         {
             "id": "failure",
@@ -191,13 +190,13 @@ async def test_required_node_failure_terminalizes_canonical_run_failed(
             "nodes": [_safe_node("a", prompt="fail-me")],
             "edges": [],
         },
-        llm_builder=_fake_llm_builder(fail_prompt="fail-me"),
         scope=execution_scope,
     )
 
     assert result["status"] == "failed"
     assert result["run_id"]
     assert result["node_results"]["a"]["success"] is False
+    assert "intentional node failure" in result["node_results"]["a"]["response"]
     record = await store.get(result["run_id"])
     assert record is not None
     assert record.run.status.value == "failed"
@@ -212,6 +211,7 @@ async def test_fanout_runs_under_one_canonical_run(
     store = InMemoryDurableRunStore()
     monkeypatch.setattr(runner, "_container", lambda: None)
     monkeypatch.setattr(runner, "get_run_store", lambda: store)
+    install_test_admitted_model(monkeypatch, _fake_model_call())
 
     result = await runner.execute_dag(
         {
@@ -224,7 +224,6 @@ async def test_fanout_runs_under_one_canonical_run(
                 {"id": "right", "from_node": "root", "to_node": "right"},
             ],
         },
-        llm_builder=_fake_llm_builder(),
         scope=execution_scope,
     )
 
@@ -246,6 +245,7 @@ async def test_run_scout_executes_under_the_same_canonical_run(
     store = InMemoryDurableRunStore()
     monkeypatch.setattr(runner, "_container", lambda: None)
     monkeypatch.setattr(runner, "get_run_store", lambda: store)
+    install_test_admitted_model(monkeypatch, _fake_model_call())
 
     result = await runner.execute_dag(
         {
@@ -256,7 +256,6 @@ async def test_run_scout_executes_under_the_same_canonical_run(
             "nodes": [_safe_node("entry")],
             "edges": [],
         },
-        llm_builder=_fake_llm_builder(),
         scope=execution_scope,
     )
 
@@ -429,7 +428,6 @@ async def test_execute_dag_rejects_a_missing_scope(
     with pytest.raises(ValueError, match="authorized DAG execution scope is required"):
         await runner.execute_dag(
             {"id": "no-scope", "name": "no-scope", "nodes": [_safe_node("a")], "edges": []},
-            llm_builder=_fake_llm_builder(),
             scope=None,
         )
 
@@ -449,7 +447,6 @@ async def test_execute_dag_rejects_a_user_id_that_does_not_match_the_scope(
                 "edges": [],
             },
             user_id="someone-else",
-            llm_builder=_fake_llm_builder(),
             scope=execution_scope,
         )
 
@@ -533,6 +530,7 @@ async def test_a_metrics_recording_failure_never_fails_the_completed_run(
     store = InMemoryDurableRunStore()
     monkeypatch.setattr(runner, "_container", lambda: None)
     monkeypatch.setattr(runner, "get_run_store", lambda: store)
+    install_test_admitted_model(monkeypatch, _fake_model_call())
 
     def _metrics_down(_record: Any) -> int:
         raise RuntimeError("metrics store unavailable")
@@ -542,7 +540,6 @@ async def test_a_metrics_recording_failure_never_fails_the_completed_run(
     with caplog.at_level(logging.WARNING, logger=runner.logger.name):
         result = await runner.execute_dag(
             _legacy_dag(nodes=[_safe_node("a")]),
-            llm_builder=_fake_llm_builder(),
             scope=execution_scope,
         )
 
@@ -554,17 +551,14 @@ async def test_a_metrics_recording_failure_never_fails_the_completed_run(
 # --- declared execution budgets (#1184) ---------------------------------------
 
 
-def _slow_llm_builder(delay_s: float):
+def _slow_model_call(delay_s: float):
     """An LLM whose every answer takes ``delay_s`` seconds to arrive."""
 
-    def build(_on_response: Any = None):
-        async def call(messages: list[dict[str, Any]], **_kwargs: Any) -> str:
-            await asyncio.sleep(delay_s)
-            return "ok:slept"
+    async def call(messages: list[dict[str, Any]], **_kwargs: Any) -> str:
+        await asyncio.sleep(delay_s)
+        return "ok:slept"
 
-        return call
-
-    return build
+    return call
 
 
 def _two_step_dag(**overrides: Any) -> dict[str, Any]:
@@ -593,10 +587,10 @@ async def test_declared_max_cycles_is_enforced_and_reported(
     store = InMemoryDurableRunStore()
     monkeypatch.setattr(runner, "_container", lambda: None)
     monkeypatch.setattr(runner, "get_run_store", lambda: store)
+    install_test_admitted_model(monkeypatch, _fake_model_call())
 
     result = await runner.execute_dag(
         _two_step_dag(max_cycles=1),
-        llm_builder=_fake_llm_builder(),
         scope=execution_scope,
     )
 
@@ -623,10 +617,10 @@ async def test_a_budget_covering_the_depth_completes(
     store = InMemoryDurableRunStore()
     monkeypatch.setattr(runner, "_container", lambda: None)
     monkeypatch.setattr(runner, "get_run_store", lambda: store)
+    install_test_admitted_model(monkeypatch, _fake_model_call())
 
     result = await runner.execute_dag(
         _two_step_dag(max_cycles=2),
-        llm_builder=_fake_llm_builder(),
         scope=execution_scope,
     )
 
@@ -681,10 +675,10 @@ async def test_declared_node_timeout_becomes_the_canonical_attempt_deadline(
 
     slow_node = _safe_node("a")
     slow_node["config"] = {"execution_tier": "safe", "timeout_s": 1}
+    install_test_admitted_model(monkeypatch, _slow_model_call(3.0))
     started = time.monotonic()
     result = await runner.execute_dag(
         _two_step_dag(nodes=[slow_node, _safe_node("b")], max_cycles=2),
-        llm_builder=_slow_llm_builder(3.0),
         scope=execution_scope,
     )
     elapsed = time.monotonic() - started
@@ -716,9 +710,9 @@ async def test_changing_the_declared_node_timeout_changes_whether_work_survives(
 
     slow_node = _safe_node("a")
     slow_node["config"] = {"execution_tier": "safe", "timeout_s": 10}
+    install_test_admitted_model(monkeypatch, _slow_model_call(1.5))
     result = await runner.execute_dag(
         _two_step_dag(nodes=[slow_node, _safe_node("b")], max_cycles=2),
-        llm_builder=_slow_llm_builder(1.5),
         scope=execution_scope,
     )
 
