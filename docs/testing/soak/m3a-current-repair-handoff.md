@@ -254,3 +254,37 @@ GitHub mutations performed. This checkpoint records the fresh evidence; it is
 not promotion or integration approval.
 
 Progress: `{checked: 1, done: 0, skipped: 0, errors: 0, next: immutable RC/config designation and qualifying production soak}`.
+
+## Revalidation at assigned head `4381f3dff17bac69ce88b701529d59ca0bfec918`
+
+Scope remains the single assigned issue #860; starting tree was clean and the
+head matches the assignment. No `check-*.log` files were present in this job
+folder, so no driver checks are assumed. Read the repo instructions and accepted
+ADR-081426-1f7c (runtime mechanics do not own domain lifecycle), ADR-081626-f383
+(lease fencing), ADR-082426-82c7 (occurrence claim), and ADR-085 (quota/rate
+policy). Reconciliation: admission or runtime observations cannot be promoted to
+physical Attempt correctness or a competing execution authority; this worker
+makes no changes to the canonical `Goal -> Graph -> Run -> NodeRun -> Attempt`
+model.
+
+Fresh validation:
+
+| Command | Outcome |
+| --- | --- |
+| `uv run python scripts/check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'` | PASS: 1315 findings / 1315 reviewed identities; unclassified=0, never_allowlist=0. No ledger amendment. |
+| `uv run pytest tests/test_soak_promotion_gates.py packages/maistro-server/tests/api/test_tasks_concurrency_backpressure.py packages/maistro-server/tests/api/test_rate_limit.py -x -q` | PASS: 111 passed; one existing Starlette deprecation warning. These are regressions, not production soak evidence. |
+| Load/evaluator inspection: `scripts/soak/run_soak.py` + `evidence/m3a-round109-shakedown.json` | PASS: asserted observed 420.05 s < required 14,400 s, artifact preflight `ok=false`, and failed promotion checks include `sustain_duration` and `exact_rc_artifact`. No new soak was run. |
+
+Acceptance remains BLOCKED/UNVERIFIED: no immutable exact-RC image/configuration
+was supplied; the runner explicitly boots host uvicorn and cannot prove exact
+artifact equivalence; representative user/Workspace and Graph/Canvas/tool/model/
+Goal workloads, sustained resource/lease/retry/leak behavior, physical-work
+fencing and restart recovery, and complete production telemetry have not been
+observed. The existing profile states that independent per-process rate limits
+allow replica-count × limit aggregate traffic, which does not prove the issue's
+no-replica-bypass criterion. Existing local regressions do not close those gaps.
+No tests were added, so inventory delta is zero and no inventory note is needed.
+Only this handoff changed; no runtime/configuration/evidence/ledger edits and no
+GitHub mutations were made.
+
+Progress: `{checked: 1, done: 0, skipped: 0, errors: 0, next: exact RC designation, address rate-limit acceptance mismatch, then qualifying production soak}`.
