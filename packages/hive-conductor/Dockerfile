@@ -60,7 +60,7 @@ RUN apk add --no-cache git && \
 # ---- builder: self-contained venv (has shell/pip) ----
 # Digest-pinned (#349); shared with the runtime stage below so both resolve to
 # the same CPython build.
-FROM python:3.13.16-slim-bookworm@sha256:a1165e272e578941b84abc79e4ab38a0305cd12803a5c4247979ac7655f4d641 AS pybuild
+FROM python:3.13.16-slim-bookworm@sha256:73aa5faee130c60da030e105ec971ccf57473fbd22ce73bd6fc9ba99a40b838d AS pybuild
 WORKDIR /app
 # CI evidence (run 36835563311): pip's 15s transport timeouts, not resolution
 # failures, killed the sibling research image's builds under runner load.
@@ -142,7 +142,7 @@ RUN python -c "import importlib.metadata as m, sys; from maistro.identity import
 RUN mkdir -p /app/state_seed
 
 # ---- thin runtime: same pinned CPython ABI, nonroot ----
-FROM python:3.13.16-slim-bookworm@sha256:a1165e272e578941b84abc79e4ab38a0305cd12803a5c4247979ac7655f4d641
+FROM python:3.13.16-slim-bookworm@sha256:73aa5faee130c60da030e105ec971ccf57473fbd22ce73bd6fc9ba99a40b838d
 WORKDIR /app
 ENV PATH="/app/venv/bin:$PATH" \
     PYTHONPATH=/app/backend:/app \
