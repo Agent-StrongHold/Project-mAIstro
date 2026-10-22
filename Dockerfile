@@ -88,8 +88,11 @@ RUN python /tmp/prune-dependency-namespaces.py \
 # the same policy as the age stage in packages/hive-conductor/Dockerfile. The
 # tag resolves to dfc520d; fail if upstream ever disagrees. docker/cli has no
 # root go.mod (vendor.mod + vendor/ instead); renaming them is the module-mode
-# build the vendored tree is designed for.
-FROM golang:1.27.2-alpine@sha256:f92b6ef800e499660581efdabdf25d9d817a9d124eaf900924f0504e7e27e12d AS dockerclibuild
+# build the vendored tree is designed for. Like the age builder, the toolchain
+# pin tracks the stdlib: CVE-2026-111943 (crypto/x509 MITM via untrusted
+# intermediate certificates, HIGH, fixed in go1.26.10/1.27.3) applies to
+# go1.27.2 binaries, so the builder is go1.27.3.
+FROM golang:1.27.3-alpine@sha256:b8c9b82affbbb82a020bbcf998dad2ba9516944ac7e883524642a481a9505e9c AS dockerclibuild
 ARG DOCKER_CLI_VERSION=29.9.1
 ARG DOCKER_CLI_COMMIT_SHORT=dfc520d
 RUN apk add --no-cache git && \
