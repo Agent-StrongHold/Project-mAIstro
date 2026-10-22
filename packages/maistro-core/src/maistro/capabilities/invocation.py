@@ -318,6 +318,21 @@ class InvocationStore(Protocol):
 
 
 @runtime_checkable
+class ScopedInvocationDiscoveryStore(Protocol):
+    """Optional bounded discovery; operator ingress never falls back to a global scan."""
+
+    async def list_ambiguous_page(
+        self,
+        *,
+        workspace_id: str,
+        project_id: str,
+        stale_before: datetime,
+        limit: int,
+        after: tuple[datetime, str] | None = None,
+    ) -> list[Invocation]: ...
+
+
+@runtime_checkable
 class EffectClaimStore(Protocol):
     """Optional atomic claim used by multi-worker durable Invocation stores."""
 
@@ -397,6 +412,31 @@ class InMemoryInvocationStore:
                 and (item.started_at or item.created_at) <= stale_before
             )
         ]
+
+    async def list_ambiguous_page(
+        self,
+        *,
+        workspace_id: str,
+        project_id: str,
+        stale_before: datetime,
+        limit: int,
+        after: tuple[datetime, str] | None = None,
+    ) -> list[Invocation]:
+        candidates = (
+            item
+            for item in self._items.values()
+            if (item.workspace_id, item.project_id) == (workspace_id, project_id)
+            and (after is None or (_utc(item.created_at), item.invocation_id) > after)
+            and (
+                item.status is InvocationStatus.UNKNOWN
+                or (
+                    item.status in {InvocationStatus.CREATED, InvocationStatus.RUNNING}
+                    and _utc(item.started_at or item.created_at) <= stale_before
+                )
+            )
+        )
+        ordered = sorted(candidates, key=lambda item: (_utc(item.created_at), item.invocation_id))
+        return [item.model_copy(deep=True) for item in ordered[:limit]]
 
     async def claim(self, invocation: Invocation) -> Invocation:
         """Atomically claim an effect when contexts share this store."""
@@ -881,6 +921,30 @@ class InvocationExecutionService:
 
         return await self._store.list_ambiguous(stale_before=_utc(stale_before))
 
+    async def discover_ambiguous_page(
+        self,
+        *,
+        workspace_id: str,
+        project_id: str,
+        stale_before: datetime,
+        limit: int = 100,
+        after: tuple[datetime, str] | None = None,
+    ) -> list[Invocation]:
+        _require(workspace_id, "workspace_id")
+        _require(project_id, "project_id")
+        if not 1 <= limit <= 101:
+            raise ValueError("discovery limit must be between 1 and 101")
+        if not isinstance(self._store, ScopedInvocationDiscoveryStore):
+            raise RuntimeError("bounded scoped Invocation discovery is unavailable")
+        cursor = (_utc(after[0]), after[1]) if after is not None else None
+        return await self._store.list_ambiguous_page(
+            workspace_id=workspace_id,
+            project_id=project_id,
+            stale_before=_utc(stale_before),
+            limit=limit,
+            after=cursor,
+        )
+
     async def reconcile(
         self,
         invocation_id: str,
@@ -895,6 +959,7 @@ class InvocationExecutionService:
         result: Any | None = None,
         stale_before: datetime | None = None,
         usage: InvocationUsage | None = None,
+        expected_revision: int | None = None,
     ) -> Invocation:
         """Apply operator/provider evidence through the Invocation authority.
 
@@ -915,6 +980,8 @@ class InvocationExecutionService:
             if invocation is None:
                 raise KeyError(f"Invocation {invocation_id!r} does not exist")
             _require_scope(invocation, workspace_id=workspace_id, project_id=project_id)
+            if expected_revision is not None and invocation.revision != expected_revision:
+                raise StaleInvocationUpdate("Invocation changed; inspect it before reconciling")
             if invocation.status is InvocationStatus.COMPLETED:
                 return await self._repair_outcome_evidence(invocation)
             if invocation.status is InvocationStatus.FAILED:
@@ -931,6 +998,7 @@ class InvocationExecutionService:
                 project_id=project_id,
                 result=result,
                 usage=usage,
+                expected_revision=expected_revision,
             )
 
     def _require_reconcilable(self, invocation: Invocation, cutoff: datetime | None) -> None:
@@ -1054,6 +1122,7 @@ class InvocationExecutionService:
         project_id: str,
         result: Any | None,
         usage: InvocationUsage | None = None,
+        expected_revision: int | None = None,
     ) -> Invocation:
         """Shared implementation for provider reports and operator resolutions."""
 
@@ -1092,6 +1161,8 @@ class InvocationExecutionService:
         try:
             settled = await self._store.save(invocation.model_copy(update=update))
         except StaleInvocationUpdate:
+            if expected_revision is not None:
+                raise
             current = await self._store.get(invocation.invocation_id)
             if current is None:
                 raise

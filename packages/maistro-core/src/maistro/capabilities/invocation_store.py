@@ -305,6 +305,40 @@ class SqliteInvocationStore:
             )
         ]
 
+    async def list_ambiguous_page(
+        self,
+        *,
+        workspace_id: str,
+        project_id: str,
+        stale_before: datetime,
+        limit: int,
+        after: tuple[datetime, str] | None = None,
+    ) -> list[Invocation]:
+        cutoff = after[0].timestamp() if after is not None else None
+        cursor = await self._conn.execute(
+            """SELECT payload_json FROM capability_invocations
+               WHERE json_extract(payload_json, '$.workspace_id') = ?
+                 AND json_extract(payload_json, '$.project_id') = ?
+                 AND (status = 'unknown' OR (
+                     status IN ('created', 'running') AND
+                     julianday(COALESCE(json_extract(payload_json, '$.started_at'),
+                                        json_extract(payload_json, '$.created_at'))) <= julianday(?)
+                 ))
+                 AND (? IS NULL OR created_at > ? OR (created_at = ? AND invocation_id > ?))
+               ORDER BY created_at ASC, invocation_id ASC LIMIT ?""",
+            (
+                workspace_id,
+                project_id,
+                stale_before.isoformat(),
+                cutoff,
+                cutoff,
+                cutoff,
+                after[1] if after is not None else "",
+                limit,
+            ),
+        )
+        return [Invocation.model_validate_json(str(row[0])) for row in await cursor.fetchall()]
+
     @staticmethod
     def _row_values(invocation: Invocation) -> tuple[object, ...]:
         return (

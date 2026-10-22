@@ -16,6 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from logging_setup import configure_logging
 from middleware.auth import AuthMiddleware
+from middleware.invocation_ingress import InvocationIngressMiddleware
 from middleware.privilege import PrivilegeMiddleware
 from middleware.request_log import RequestLogMiddleware
 from middleware.security_headers import SecurityHeadersMiddleware
@@ -39,6 +40,7 @@ from routes import (
     health,
     hitl,
     install,
+    invocations,
     mcp,
     memory,
     messages,
@@ -336,6 +338,10 @@ def create_app() -> FastAPI:
         skip_prefixes=("/health", "/docs", "/redoc", "/openapi.json"),
     )
 
+    # Evidence must be bounded before the version negotiator parses a body.
+    # This wrapper delegates selection/status to it and hides reflected selectors.
+    app.add_middleware(InvocationIngressMiddleware)
+
     # Security headers — the true outermost middleware (added last), so
     # headers land on every response, including early rejections from the
     # middlewares added above (e.g. 401s from AuthMiddleware).
@@ -380,6 +386,7 @@ def create_app() -> FastAPI:
     app.include_router(profile.router, prefix="/v1/profile")
     app.include_router(settings_r.router, prefix="/v1/settings")
     app.include_router(capabilities.router, prefix="/v1/capabilities")
+    app.include_router(invocations.router, prefix="/v1/invocations")
     app.include_router(harness.router, prefix="/v1/harness")
     app.include_router(voice.router, prefix="/v1/voice")
     app.include_router(ws.router, prefix="/v1/ws")

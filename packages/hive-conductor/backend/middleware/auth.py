@@ -60,6 +60,7 @@ _ADMIN_CHAT_BLOCKED = ("/v1/chat/",)
 
 _PROTECTED_OPS: dict[str, dict[str, str]] = {
     "GET": {
+        "/v1/invocations": "invocations.inspect",
         # Reading another principal's harness/RSI session stream exposes
         # in-flight code, agent reasoning, and secrets in transit — the same
         # sensitivity as starting the run, so it takes the same scope. Plain
@@ -91,6 +92,7 @@ _PROTECTED_OPS: dict[str, dict[str, str]] = {
         "/v1/workspaces": "workspaces.write",
     },
     "POST": {
+        "/v1/invocations": "invocations.reconcile",
         "/v1/settings": "config.write",
         # The whole /v1/mcp mutating surface, not just /servers: discover and
         # test connect to operator-supplied endpoints, which is the same
