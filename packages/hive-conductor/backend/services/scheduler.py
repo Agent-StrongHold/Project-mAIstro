@@ -140,6 +140,24 @@ async def fire_now(sid: str, *, fire_id: str | None = None, requester_id: str | 
         row_project = str(getattr(schedule, "project_id", "") or "").strip()
         if row_workspace and row_project:
             scope = (row_workspace, row_project)
+        # Same revocation gate the standalone automatic path applies (#1201):
+        # the route proves the requester may touch the row, but the Run still
+        # spends the schedule actor's authority, so an actor who has since
+        # left the Workspace loses eligibility here too. A manual fire is a
+        # caller holding a request, so it refuses (409) rather than skipping
+        # silently like the tick can.
+        if row_workspace:
+            from services.workspace_authority import is_member
+
+            actor = str(
+                getattr(schedule, "actor_principal_id", "")
+                or getattr(schedule, "user_id", "")
+                or ""
+            ).strip()
+            if not actor or not await is_member(actor, row_workspace):
+                raise ScheduleNotFireable(
+                    f"schedule {sid} is no longer eligible for its Workspace"
+                )
         definition = await runner._definition_for(sid, schedule, store=store, scope=scope)
         if definition is None:
             raise ScheduleNotFireable(

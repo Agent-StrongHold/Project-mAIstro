@@ -1071,6 +1071,59 @@ def test_a_manual_run_creates_a_run_and_records_it(monkeypatch: pytest.MonkeyPat
         stores.schedules._data.pop("s-man", None)  # type: ignore[attr-defined]
 
 
+def test_a_manual_fire_rechecks_the_schedule_actor_still_belongs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#1201: the route authorizes the *requester*, but the Run spends the
+    schedule actor's authority -- so on the standalone path too, an actor
+    removed from the Workspace after creating the schedule must not fire.
+    The same revocation gate the standalone automatic path applies runs
+    before the definition or Run exists; a manual fire refuses (409) rather
+    than skipping silently like the tick can."""
+    import stores
+    from services.scheduler import ScheduleNotFireable, fire_now
+
+    from maistro.scheduling import InMemoryScheduleStore
+    from services import workspace_authority
+
+    _register("sched-manual-gate")
+    stub = _bounded_stub("s-man-gate", "sched-manual-gate")
+    store = InMemoryScheduleStore()
+    _with_store(monkeypatch, store)
+    before = len(stores.audit_log)
+    # The Workspace stays alive, but the schedule actor u1 was removed from
+    # it after creating the row -- the state when remaining editor B fires.
+    from services import workspace_authority
+
+    view = asyncio.run(
+        workspace_authority.create_workspace(
+            creator_user_id="requester-b",
+            name="Manual Gate WS",
+            persona_template_id="default",
+            checklist=[],
+            theme_id="default",
+            voice_tone_override=None,
+        )
+    )
+    stub.workspace_id = view.id
+    stub.project_id = "proj-man-gate"
+    stores.schedules._data["s-man-gate"] = stub  # type: ignore[attr-defined]
+    try:
+        try:
+            asyncio.run(fire_now("s-man-gate", requester_id="requester-b"))
+            raise AssertionError("a revoked actor's schedule must not manually fire")
+        except ScheduleNotFireable:
+            pass
+        assert _schedule_runs("s-man-gate", since=before) == [], "no Run was created"
+
+        # Re-adding the actor restores eligibility on the same row.
+        asyncio.run(workspace_authority.set_member(view.id, user_id="u1", role="editor"))
+        run_id = asyncio.run(fire_now("s-man-gate", requester_id="requester-b"))
+        assert run_id
+    finally:
+        stores.schedules._data.pop("s-man-gate", None)  # type: ignore[attr-defined]
+
+
 def test_a_manual_run_preserves_the_http_requests_id(monkeypatch: pytest.MonkeyPatch) -> None:
     """#1063: `POST /v1/schedules/{id}/run` is a real HTTP request that
     RequestIDMiddleware already bound an id for -- `fire_now` must forward
