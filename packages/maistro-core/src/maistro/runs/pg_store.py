@@ -907,6 +907,22 @@ class PgRunStore:
             )
         return model_of(RunEvalScore, row["payload"]) if row is not None else None
 
+    async def list_recent_runs(
+        self, workspace_id: str, *, limit: int = 100, offset: int = 0
+    ) -> list[Run]:
+        if limit <= 0 or offset < 0:
+            raise ValueError("limit must be positive and offset non-negative")
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                """SELECT payload FROM canonical_runs
+                   WHERE workspace_id = $1 AND payload IS NOT NULL
+                   ORDER BY payload->>'created_at' DESC, run_id DESC LIMIT $2 OFFSET $3""",
+                workspace_id,
+                limit,
+                offset,
+            )
+        return [model_of(Run, row["payload"]) for row in rows]
+
     async def get_run(self, run_id: str, *, principal_id: str | None = None) -> Run | None:
         payload = await self._payload(
             "SELECT run_id, payload, archive_key FROM canonical_runs WHERE run_id = $1", run_id

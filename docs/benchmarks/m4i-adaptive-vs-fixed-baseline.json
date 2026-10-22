@@ -1,0 +1,595 @@
+{
+  "_comment": "Recorded results of scripts/bench_m4i_adaptive_vs_fixed.py (issue #106, epic M4-I), regenerate with `uv run python scripts/bench_m4i_adaptive_vs_fixed.py --output docs/benchmarks/m4i-adaptive-vs-fixed-baseline.json` (git history holds the exact landing commit). Deterministic and offline: identical workload, stub gateway, and registry metadata reproduce these numbers exactly. The execution path is production (real llm.summarize node, governed egress, durable executor supervision); only the far side of the wire is a deterministic model-dependent stub, and latency is the registry's per-model p50 summed over physical requests (modeled, not wall-clock). The behavioral assertions live in the harness test module named under 'seam'.",
+  "benchmark": "m4i-adaptive-vs-fixed-routing",
+  "issue": "106",
+  "epic": "M4-I",
+  "quality_bar": 0.7,
+  "seam": {
+    "node": "maistro.graph.nodes.llm_summarize.LlmSummarizeNode (shipped, unmodified)",
+    "egress": "governed Binding -> Invocation model.chat egress (shipped, unmodified)",
+    "executor": "maistro.graph.durable_runs run_durable_graph + authoritative fold (shipped, unmodified)",
+    "gateway": "deterministic model-dependent stub at the httpx wire",
+    "cost": "maistro.providers.types.compute_cost_cents over registry metadata",
+    "latency": "registry latency_p50_ms summed per physical request (modeled, not wall-clock)",
+    "harness": "packages/maistro-core/tests/graph/verification/test_adaptive_vs_fixed_baseline.py"
+  },
+  "registry": {
+    "flash-lite": {
+      "cost_per_1k_input_cents": 0.075,
+      "cost_per_1k_output_cents": 0.3,
+      "latency_p50_ms": 100
+    },
+    "pro": {
+      "cost_per_1k_input_cents": 0.6,
+      "cost_per_1k_output_cents": 2.4,
+      "latency_p50_ms": 900
+    },
+    "vision-pro": {
+      "cost_per_1k_input_cents": 0.45,
+      "cost_per_1k_output_cents": 1.8,
+      "latency_p50_ms": 500
+    }
+  },
+  "workload": [
+    {
+      "task": "easy-standup",
+      "shape": "easy"
+    },
+    {
+      "task": "easy-quarterly",
+      "shape": "easy"
+    },
+    {
+      "task": "easy-feedback",
+      "shape": "easy"
+    },
+    {
+      "task": "hard-incident",
+      "shape": "hard"
+    },
+    {
+      "task": "image-screenshot",
+      "shape": "image"
+    },
+    {
+      "task": "very-hard-callsigns",
+      "shape": "very"
+    }
+  ],
+  "arms": {
+    "adaptive": {
+      "model": "flash-lite",
+      "image_model": "vision-pro",
+      "policies": {
+        "max_attempts": 2,
+        "escalation_ladder": {
+          "models": [
+            "flash-lite",
+            "pro"
+          ],
+          "quality_floor": 0.7
+        }
+      }
+    },
+    "fixed-cheap": {
+      "model": "flash-lite",
+      "image_model": "",
+      "policies": {}
+    },
+    "fixed-strong": {
+      "model": "pro",
+      "image_model": "",
+      "policies": {}
+    },
+    "fixed-vision": {
+      "model": "vision-pro",
+      "image_model": "vision-pro",
+      "policies": {}
+    }
+  },
+  "results": [
+    {
+      "arm": "adaptive",
+      "tasks_succeeded": "5/6",
+      "successes": [
+        "easy-feedback",
+        "easy-quarterly",
+        "easy-standup",
+        "hard-incident",
+        "image-screenshot"
+      ],
+      "failure_cases": {
+        "very-hard-callsigns": "shortfall"
+      },
+      "cost_cents": 0.5505,
+      "latency_ms": 2800,
+      "per_task": [
+        {
+          "task": "easy-standup",
+          "run_status": "completed",
+          "quality": 1.0,
+          "success": true,
+          "failure_case": null,
+          "requests": [
+            {
+              "model": "flash-lite",
+              "prompt_tokens": 177,
+              "completion_tokens": 77,
+              "image_part": false
+            }
+          ],
+          "node_runs": 1,
+          "cost_cents": 0.0364,
+          "latency_ms": 100
+        },
+        {
+          "task": "easy-quarterly",
+          "run_status": "completed",
+          "quality": 1.0,
+          "success": true,
+          "failure_case": null,
+          "requests": [
+            {
+              "model": "flash-lite",
+              "prompt_tokens": 169,
+              "completion_tokens": 73,
+              "image_part": false
+            }
+          ],
+          "node_runs": 1,
+          "cost_cents": 0.0346,
+          "latency_ms": 100
+        },
+        {
+          "task": "easy-feedback",
+          "run_status": "completed",
+          "quality": 1.0,
+          "success": true,
+          "failure_case": null,
+          "requests": [
+            {
+              "model": "flash-lite",
+              "prompt_tokens": 170,
+              "completion_tokens": 74,
+              "image_part": false
+            }
+          ],
+          "node_runs": 1,
+          "cost_cents": 0.0349,
+          "latency_ms": 100
+        },
+        {
+          "task": "hard-incident",
+          "run_status": "completed",
+          "quality": 0.9375,
+          "success": true,
+          "failure_case": null,
+          "requests": [
+            {
+              "model": "flash-lite",
+              "prompt_tokens": 178,
+              "completion_tokens": 78,
+              "image_part": false
+            },
+            {
+              "model": "pro",
+              "prompt_tokens": 178,
+              "completion_tokens": 40,
+              "image_part": false
+            }
+          ],
+          "node_runs": 2,
+          "cost_cents": 0.2395,
+          "latency_ms": 1000
+        },
+        {
+          "task": "image-screenshot",
+          "run_status": "completed",
+          "quality": 0.8107,
+          "success": true,
+          "failure_case": null,
+          "requests": [
+            {
+              "model": "vision-pro",
+              "prompt_tokens": 58,
+              "completion_tokens": 23,
+              "image_part": true
+            }
+          ],
+          "node_runs": 1,
+          "cost_cents": 0.0675,
+          "latency_ms": 500
+        },
+        {
+          "task": "very-hard-callsigns",
+          "run_status": "completed",
+          "quality": 0.2942,
+          "success": false,
+          "failure_case": "shortfall",
+          "requests": [
+            {
+              "model": "flash-lite",
+              "prompt_tokens": 162,
+              "completion_tokens": 70,
+              "image_part": false
+            },
+            {
+              "model": "pro",
+              "prompt_tokens": 162,
+              "completion_tokens": 3,
+              "image_part": false
+            }
+          ],
+          "node_runs": 2,
+          "cost_cents": 0.1376,
+          "latency_ms": 1000
+        }
+      ]
+    },
+    {
+      "arm": "fixed-cheap",
+      "tasks_succeeded": "3/6",
+      "successes": [
+        "easy-feedback",
+        "easy-quarterly",
+        "easy-standup"
+      ],
+      "failure_cases": {
+        "hard-incident": "shortfall",
+        "image-screenshot": "refused",
+        "very-hard-callsigns": "shortfall"
+      },
+      "cost_cents": 0.1758,
+      "latency_ms": 500,
+      "per_task": [
+        {
+          "task": "easy-standup",
+          "run_status": "completed",
+          "quality": 1.0,
+          "success": true,
+          "failure_case": null,
+          "requests": [
+            {
+              "model": "flash-lite",
+              "prompt_tokens": 177,
+              "completion_tokens": 77,
+              "image_part": false
+            }
+          ],
+          "node_runs": 1,
+          "cost_cents": 0.0364,
+          "latency_ms": 100
+        },
+        {
+          "task": "easy-quarterly",
+          "run_status": "completed",
+          "quality": 1.0,
+          "success": true,
+          "failure_case": null,
+          "requests": [
+            {
+              "model": "flash-lite",
+              "prompt_tokens": 169,
+              "completion_tokens": 73,
+              "image_part": false
+            }
+          ],
+          "node_runs": 1,
+          "cost_cents": 0.0346,
+          "latency_ms": 100
+        },
+        {
+          "task": "easy-feedback",
+          "run_status": "completed",
+          "quality": 1.0,
+          "success": true,
+          "failure_case": null,
+          "requests": [
+            {
+              "model": "flash-lite",
+              "prompt_tokens": 170,
+              "completion_tokens": 74,
+              "image_part": false
+            }
+          ],
+          "node_runs": 1,
+          "cost_cents": 0.0349,
+          "latency_ms": 100
+        },
+        {
+          "task": "hard-incident",
+          "run_status": "completed",
+          "quality": 0.5,
+          "success": false,
+          "failure_case": "shortfall",
+          "requests": [
+            {
+              "model": "flash-lite",
+              "prompt_tokens": 178,
+              "completion_tokens": 78,
+              "image_part": false
+            }
+          ],
+          "node_runs": 1,
+          "cost_cents": 0.0367,
+          "latency_ms": 100
+        },
+        {
+          "task": "image-screenshot",
+          "run_status": "failed",
+          "quality": 0.0,
+          "success": false,
+          "failure_case": "refused",
+          "requests": [],
+          "node_runs": 1,
+          "cost_cents": 0,
+          "latency_ms": 0
+        },
+        {
+          "task": "very-hard-callsigns",
+          "run_status": "completed",
+          "quality": 0.5,
+          "success": false,
+          "failure_case": "shortfall",
+          "requests": [
+            {
+              "model": "flash-lite",
+              "prompt_tokens": 162,
+              "completion_tokens": 70,
+              "image_part": false
+            }
+          ],
+          "node_runs": 1,
+          "cost_cents": 0.0331,
+          "latency_ms": 100
+        }
+      ]
+    },
+    {
+      "arm": "fixed-strong",
+      "tasks_succeeded": "4/6",
+      "successes": [
+        "easy-feedback",
+        "easy-quarterly",
+        "easy-standup",
+        "hard-incident"
+      ],
+      "failure_cases": {
+        "image-screenshot": "refused",
+        "very-hard-callsigns": "shortfall"
+      },
+      "cost_cents": 0.876,
+      "latency_ms": 4500,
+      "per_task": [
+        {
+          "task": "easy-standup",
+          "run_status": "completed",
+          "quality": 0.9667,
+          "success": true,
+          "failure_case": null,
+          "requests": [
+            {
+              "model": "pro",
+              "prompt_tokens": 177,
+              "completion_tokens": 41,
+              "image_part": false
+            }
+          ],
+          "node_runs": 1,
+          "cost_cents": 0.2046,
+          "latency_ms": 900
+        },
+        {
+          "task": "easy-quarterly",
+          "run_status": "completed",
+          "quality": 0.8846,
+          "success": true,
+          "failure_case": null,
+          "requests": [
+            {
+              "model": "pro",
+              "prompt_tokens": 169,
+              "completion_tokens": 31,
+              "image_part": false
+            }
+          ],
+          "node_runs": 1,
+          "cost_cents": 0.1758,
+          "latency_ms": 900
+        },
+        {
+          "task": "easy-feedback",
+          "run_status": "completed",
+          "quality": 1.0,
+          "success": true,
+          "failure_case": null,
+          "requests": [
+            {
+              "model": "pro",
+              "prompt_tokens": 170,
+              "completion_tokens": 36,
+              "image_part": false
+            }
+          ],
+          "node_runs": 1,
+          "cost_cents": 0.1884,
+          "latency_ms": 900
+        },
+        {
+          "task": "hard-incident",
+          "run_status": "completed",
+          "quality": 0.9375,
+          "success": true,
+          "failure_case": null,
+          "requests": [
+            {
+              "model": "pro",
+              "prompt_tokens": 178,
+              "completion_tokens": 40,
+              "image_part": false
+            }
+          ],
+          "node_runs": 1,
+          "cost_cents": 0.2028,
+          "latency_ms": 900
+        },
+        {
+          "task": "image-screenshot",
+          "run_status": "failed",
+          "quality": 0.0,
+          "success": false,
+          "failure_case": "refused",
+          "requests": [],
+          "node_runs": 1,
+          "cost_cents": 0,
+          "latency_ms": 0
+        },
+        {
+          "task": "very-hard-callsigns",
+          "run_status": "completed",
+          "quality": 0.2942,
+          "success": false,
+          "failure_case": "shortfall",
+          "requests": [
+            {
+              "model": "pro",
+              "prompt_tokens": 162,
+              "completion_tokens": 3,
+              "image_part": false
+            }
+          ],
+          "node_runs": 1,
+          "cost_cents": 0.1044,
+          "latency_ms": 900
+        }
+      ]
+    },
+    {
+      "arm": "fixed-vision",
+      "tasks_succeeded": "5/6",
+      "successes": [
+        "easy-feedback",
+        "easy-quarterly",
+        "easy-standup",
+        "hard-incident",
+        "image-screenshot"
+      ],
+      "failure_cases": {
+        "very-hard-callsigns": "shortfall"
+      },
+      "cost_cents": 0.7245,
+      "latency_ms": 3000,
+      "per_task": [
+        {
+          "task": "easy-standup",
+          "run_status": "completed",
+          "quality": 0.9667,
+          "success": true,
+          "failure_case": null,
+          "requests": [
+            {
+              "model": "vision-pro",
+              "prompt_tokens": 177,
+              "completion_tokens": 41,
+              "image_part": false
+            }
+          ],
+          "node_runs": 1,
+          "cost_cents": 0.1535,
+          "latency_ms": 500
+        },
+        {
+          "task": "easy-quarterly",
+          "run_status": "completed",
+          "quality": 0.8846,
+          "success": true,
+          "failure_case": null,
+          "requests": [
+            {
+              "model": "vision-pro",
+              "prompt_tokens": 169,
+              "completion_tokens": 31,
+              "image_part": false
+            }
+          ],
+          "node_runs": 1,
+          "cost_cents": 0.1319,
+          "latency_ms": 500
+        },
+        {
+          "task": "easy-feedback",
+          "run_status": "completed",
+          "quality": 1.0,
+          "success": true,
+          "failure_case": null,
+          "requests": [
+            {
+              "model": "vision-pro",
+              "prompt_tokens": 170,
+              "completion_tokens": 36,
+              "image_part": false
+            }
+          ],
+          "node_runs": 1,
+          "cost_cents": 0.1413,
+          "latency_ms": 500
+        },
+        {
+          "task": "hard-incident",
+          "run_status": "completed",
+          "quality": 0.9375,
+          "success": true,
+          "failure_case": null,
+          "requests": [
+            {
+              "model": "vision-pro",
+              "prompt_tokens": 178,
+              "completion_tokens": 40,
+              "image_part": false
+            }
+          ],
+          "node_runs": 1,
+          "cost_cents": 0.1521,
+          "latency_ms": 500
+        },
+        {
+          "task": "image-screenshot",
+          "run_status": "completed",
+          "quality": 0.8107,
+          "success": true,
+          "failure_case": null,
+          "requests": [
+            {
+              "model": "vision-pro",
+              "prompt_tokens": 58,
+              "completion_tokens": 23,
+              "image_part": true
+            }
+          ],
+          "node_runs": 1,
+          "cost_cents": 0.0675,
+          "latency_ms": 500
+        },
+        {
+          "task": "very-hard-callsigns",
+          "run_status": "completed",
+          "quality": 0.2942,
+          "success": false,
+          "failure_case": "shortfall",
+          "requests": [
+            {
+              "model": "vision-pro",
+              "prompt_tokens": 162,
+              "completion_tokens": 3,
+              "image_part": false
+            }
+          ],
+          "node_runs": 1,
+          "cost_cents": 0.0783,
+          "latency_ms": 500
+        }
+      ]
+    }
+  ],
+  "recorded_table": "| arm | tasks succeeded | cost (cents) | modeled latency (ms) | failure cases |\n| --- | --- | --- | --- | --- |\n| adaptive | 5/6 | 0.550 | 2800 | very-hard-callsigns:shortfall |\n| fixed-cheap | 3/6 | 0.176 | 500 | hard-incident:shortfall, image-screenshot:refused, very-hard-callsigns:shortfall |\n| fixed-strong | 4/6 | 0.876 | 4500 | image-screenshot:refused, very-hard-callsigns:shortfall |\n| fixed-vision | 5/6 | 0.725 | 3000 | very-hard-callsigns:shortfall |"
+}

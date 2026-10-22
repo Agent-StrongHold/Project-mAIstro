@@ -27,6 +27,7 @@ from maistro.cli._backlog import cutover as backlog_cutover_command
 from maistro.cli._backlog import import_cmd as backlog_import_command
 from maistro.cli._backlog import revert as backlog_revert_command
 from maistro.cli._connectors import connectors_describe, connectors_verify
+from maistro.cli._extension_authoring import extension_new
 from maistro.cli._extensions import (
     extensions_certify,
     extensions_compat,
@@ -67,12 +68,23 @@ from maistro.extensions.metering import (
     ExtensionUsageEvent,
 )
 from maistro.extensions.packs import InstallablePackRegistry
+from maistro.extensions.quarantine import (
+    ActorKind,
+    AdmissionDecision,
+    ExtensionGovernanceService,
+    GovernanceDecision,
+    InFlightDisposition,
+)
 from maistro.extensions.resolution import LockState
 from maistro.extensions.sqlite_health_store import SqliteExtensionHealthStore
 from maistro.extensions.sqlite_store import SqliteExtensionInstallStore
 from maistro.extensions.store import (
     ExtensionInstallStore,
     InMemoryExtensionInstallStore,
+)
+from maistro.extensions.tenancy import (
+    ScopeBoundExtensionState,
+    TenantScopedExtensionState,
 )
 from maistro.extensions.tool_skill.registration import ExtensionToolCatalog
 from maistro.extensions.ui import (
@@ -109,6 +121,7 @@ from maistro.runs.sqlite_store import SqliteRunStore
 from maistro.runs.store import InMemoryRunStore, RunStore
 from maistro.security.sentinel.audit import InMemoryAuditLog
 from maistro.security.strikes import InMemoryStrikeTracker
+from maistro.skills.parser import SKILL_SECURITY_SCAN_VERSION
 from maistro.state import PersistedStore
 from maistro.workspaces.campaigns.model import (
     Actor,
@@ -439,6 +452,7 @@ _VULTURE_WHITELIST = (
     ExtensionInstallStore.all_installs,
     InMemoryExtensionInstallStore.all_installs,
     SqliteExtensionInstallStore.all_installs,
+    extension_new,
     extensions_history,
     extensions_preflight,
     extensions_show,
@@ -530,6 +544,24 @@ _VULTURE_WHITELIST = (
     ExternalAgentRegistry.refresh_descriptor,
     ExternalAgentRegistry.report_availability,
     ExternalAgentRegistry.eligible_specialists,
+    # Tenant-scoped extension runtime state (#971, M9-G3). Configuration is
+    # served over the operator API (GET/PUT /v1/extensions/state); the cache
+    # and checkpoint namespaces are the host/runtime substrate — the
+    # activation substrate (M9-B2's ExtensionCodeLoader hosts) and the
+    # quarantine flow (#972) bind them through
+    # ExtensionInstallService.extension_state, so their in-tree callers are
+    # the cross-tenant noninterference suites
+    # (packages/maistro-core/tests/extensions/test_org_workspace_policy.py)
+    # until those hosts land. Same contract-ships-first posture as the store
+    # seams above.
+    ScopeBoundExtensionState.delete_config,
+    ScopeBoundExtensionState.cache_set,
+    ScopeBoundExtensionState.cache_get,
+    ScopeBoundExtensionState.cache_delete,
+    ScopeBoundExtensionState.checkpoint_save,
+    ScopeBoundExtensionState.checkpoint_load,
+    ScopeBoundExtensionState.checkpoint_names,
+    TenantScopedExtensionState.clear_scope,
     # Pre-publication extension certification (M9-H3, #975). The
     # `maistro extensions certify` / `verify-certification` commands are
     # typer-dispatched like the lock commands above: their production caller
@@ -585,6 +617,26 @@ _VULTURE_WHITELIST = (
     # (packages/maistro-core/tests/extensions/test_effective_authority.py) — the
     # same contract-ships-first posture as the seams above.
     EffectiveAuthority.with_execution_context,
+    # Extension quarantine/suspension (M9-G4, #972). The governance service is
+    # the single admission gate and the only writer of suspension state; hosts
+    # call it from their invocation seams and consume decisions
+    # (`AdmissionDecision.governing_state`), leases, and the TERMINATE
+    # disposition policy; the EXTENSION actor kind exists to be refused. Its
+    # in-tree callers are the quarantine suite
+    # (packages/maistro-core/tests/extensions/test_extension_quarantine.py)
+    # until host wiring lands — the same contract-ships-first posture.
+    ExtensionGovernanceService.begin_invocation,
+    ExtensionGovernanceService.finish_invocation,
+    ExtensionGovernanceService.disable_version,
+    ExtensionGovernanceService.quarantine_package,
+    ExtensionGovernanceService.quarantine_publisher,
+    ExtensionGovernanceService.re_enable_version,
+    ExtensionGovernanceService.re_enable_package,
+    ExtensionGovernanceService.re_enable_publisher,
+    AdmissionDecision.governing_state,
+    GovernanceDecision.suspended,
+    ActorKind.EXTENSION,
+    InFlightDisposition.TERMINATE,
     # Strike-tracker admin verb (M3 lockout ladder, #134). The protocol
     # (maistro.protocols.strikes) deliberately keeps `enable` off the DI seam:
     # it "exist[s] on the in-memory implementation and [is] admin surface
@@ -596,19 +648,10 @@ _VULTURE_WHITELIST = (
     # admin API, so it is named here as retained surface rather than banked as
     # unclassified debt.
     InMemoryStrikeTracker.enable,
-    # Installable domain-pack contracts (M9-F1, #966). The pack contract
-    # ships first by design, the same posture as the M9-B1 store seams and
-    # the M9-D1 registry above: its in-tree consumers are the conformance
-    # suite (packages/maistro-core/tests/extensions/test_pack_contracts.py),
-    # and the Workspace-scoped activation/configuration lifecycle that drives
-    # these verbs in production is M9-F3 (#968). `activate` is the disable
-    # gate's reversal (new use only — nothing was deleted; named activate,
-    # not enable, so the scanner's name-level matching cannot un-bank the
-    # unrelated security-store `enable` rows); the three `instantiate_*`
-    # methods are the gated instantiation entrypoints that compose the
-    # module-level pure functions behind the registry's active check.
-    InstallablePackRegistry.activate,
-    InstallablePackRegistry.instantiate_graph,
-    InstallablePackRegistry.instantiate_persona,
-    InstallablePackRegistry.instantiate_rubric,
+    # #288 scan-surface provenance: `security_scan` (maistro.skills.parser) is a
+    # public content scanner, but its policy-version identity is surfaced only
+    # by the HTTP scan route (packages/hive-conductor/backend/routes/skills.py),
+    # which this packages/*/src scan does not walk. Whitelist the identity, not
+    # a stub -- the route names the rule set a `clean` verdict was judged by.
+    SKILL_SECURITY_SCAN_VERSION,
 )

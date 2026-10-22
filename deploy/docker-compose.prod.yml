@@ -85,6 +85,94 @@ services:
   maistro-server-2:
     <<: *maistro-server
 
+  hive-conductor:
+    build:
+      context: ..
+      dockerfile: packages/hive-conductor/Dockerfile
+    # Resource floors (#75): a runaway Conductor must not starve the engine
+    # services it shares the host with. Same app-server class as maistro-server.
+    mem_limit: 2g
+    memswap_limit: 2g
+    pids_limit: 512
+    cpus: 2.0
+    environment:
+      - PYTHONUNBUFFERED=1
+      # The engine's database, not a second one: the embedded runtime's
+      # canonical Workspace/Membership store is the same canonical_workspaces
+      # table maistro-server serves (ADR-092326-97c4, #37). Hive never runs
+      # alembic; it starts only once maistro-engine has migrated and is healthy.
+      - DB_HOST=postgres-primary
+      - DB_PORT=5432
+      - DB_NAME=${POSTGRES_DB:-maistro}
+      - DB_USER=${POSTGRES_USER:-maistro}
+      - DB_PASSWORD=${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      - DATABASE_URL=postgresql://maistro:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres-primary:5432/maistro
+      # The same gateway the engine uses, derived the same way (#808) -- two
+      # services that disagree about which gateway they talk to would bill,
+      # rate-limit and log against different backends.
+      - LITELLM_BASE_URL=${LITELLM_BASE_URL:?Set LITELLM_BASE_URL in .env — this stack runs no model gateway of its own}
+      - LITELLM_URL=${LITELLM_BASE_URL:?Set LITELLM_BASE_URL in .env — this stack runs no model gateway of its own}
+      - LITELLM_PROXY_URL=${LITELLM_BASE_URL:?Set LITELLM_BASE_URL in .env — this stack runs no model gateway of its own}
+      - LITELLM_API_BASE=${LITELLM_API_BASE:-${LITELLM_BASE_URL:?Set LITELLM_BASE_URL in .env — this stack runs no model gateway of its own}/v1}
+      - LITELLM_API_KEY=${LITELLM_API_KEY:?Set LITELLM_API_KEY in .env — the gateway key}
+      - LITELLM_PROXY_KEY=${LITELLM_API_KEY:?Set LITELLM_API_KEY in .env — the gateway key}
+      - CHAT_DEFAULT_MODEL=${CHAT_DEFAULT_MODEL:-gemini/gemini-2.5-flash}
+      # Engine router for DAG execution (REQUIRE_AUTH=true expects the router
+      # key). Settings.maistro_base_url / maistro_router_api_key (config.py)
+      # read these MAISTRO_* names directly; CONDUCTOR_ROUTER_URL/ROUTER_API_KEY
+      # are not bound to any field, so task dispatch silently fell back to
+      # localhost with no auth. install.sh writes MAISTRO_ROUTER_API_KEY and
+      # migrates the retired MAISTRO_ACCESS_TOKEN alias into it (#402).
+      - MAISTRO_BASE_URL=http://maistro-server-1:8000  # DevSkim: ignore DS137138 until 2027-12-31 -- internal compose network name; TLS terminates at the ingress
+      - MAISTRO_ROUTER_API_KEY=${MAISTRO_ROUTER_API_KEY:-}
+      - WORKSPACE_SCOPE_KEY=${WORKSPACE_SCOPE_KEY:-}
+      # Sentinel must be armed here like in every other shipped stack: the
+      # preset default is "none", which fail-closed denies every tool
+      # (ADR-072726-0d6b, #1165). Same grant set as the dev/pm-poc/
+      # hive-standalone Conductors, kept in parity by the sentinel test.
+      - MAISTRO_PERMISSION_PRESET=hive_conductor_tools
+      # Graph-node execution is a host capability, not a dispatchable tool:
+      # the node adapter's Sentinel gate authorizes "graph.node.execute"
+      # against the acting user's host role. The preset above names only
+      # dispatch_tool's executables, so without this grant the fail-closed
+      # table denies every node and no DAG can run (#60, #845).
+      - 'MAISTRO_PERMISSIONS={"graph.node.execute": ["admin", "user"]}'
+      # Must match the task server's TASK_DELEGATION_KEY; never reuse the API key.
+      - MAISTRO_DELEGATION_KEY=${TASK_DELEGATION_KEY:?Run ./install.sh to generate TASK_DELEGATION_KEY}
+      - MAISTRO_SERVICE_PRINCIPAL=${MAISTRO_SERVICE_PRINCIPAL:-conductor}
+      # Langfuse credentials for the Langfuse service's own UI/API. These
+      # do NOT enable trace export from this app: the conductor's spans go
+      # out only over OTLP — a build with INSTALL_OBSERVABILITY=1 plus
+      # OTEL_EXPORTER_OTLP_ENDPOINT/HEADERS (see
+      # packages/hive-conductor/backend/adapters/telemetry_langfuse.py).
+      - LANGFUSE_BASE_URL=http://langfuse:3000  # DevSkim: ignore DS137138 until 2027-12-31 -- internal compose network name; TLS terminates at the ingress
+      - LANGFUSE_PUBLIC_KEY=${LANGFUSE_PUBLIC_KEY:-}
+      - LANGFUSE_SECRET_KEY=${LANGFUSE_SECRET_KEY:-}
+      # Foundation state (SQLite/vault/state) on a persistent volume. /data is
+      # pre-owned by the nonroot uid 65532 in the image so the volume is writable.
+      - CONDUCTOR_DATA_DIR=/data
+      # Human login mode + OIDC metadata; secrets remain in the /data vault.
+      - HUMAN_AUTH_MODE=${HUMAN_AUTH_MODE:-hybrid}
+      - OAUTH_PROVIDERS=${OAUTH_PROVIDERS:-{}}
+      - OAUTH_PUBLIC_ORIGIN=${OAUTH_PUBLIC_ORIGIN:-}
+      - OAUTH_SUCCESS_PATH=${OAUTH_SUCCESS_PATH:-/}
+      - HARDWARE_PRESET=${HARDWARE_PRESET:-laptop}
+    volumes:
+      - conductor-data:/data
+    depends_on:
+      postgres-primary:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      maistro-server-1:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8101/health/ready')"]  # devskim: ignore DS162092 until 2027-12-31 -- in-container readiness probe against the container's own loopback
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
   postgres-primary:
     image: pgvector/pgvector:pg17
     environment:
@@ -193,3 +281,4 @@ volumes:
   wal-archive:
   redis-data:
   file-store:
+  conductor-data:

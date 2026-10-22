@@ -39,6 +39,7 @@ from maistro.events.consumer_cursor import (
     DEFAULT_HOLE_GRACE_SECONDS,
     LEGACY_BRIDGE_CONSUMER_ID,
 )
+from maistro.events.publisher import CanonicalEventPublisher
 from maistro.goals.authorization import ScopedGoalStore
 from maistro.goals.store import GoalStore
 from maistro.goals.wiring import wire_goal_store
@@ -71,6 +72,7 @@ from maistro.memory.working_graph.wiring import (
     build_workspace_working_memory,
     working_memory_context_message,
 )
+from maistro.personas.wiring import PERSONA_PG_TABLES, wire_persona_store
 from maistro.projects.scope_store import ProjectScopeStore
 from maistro.quota.default_tracker import set_default_quota_tracker
 from maistro.quota.tracker import InMemoryQuotaTracker
@@ -154,9 +156,11 @@ if TYPE_CHECKING:
     from maistro.events.trigger_store import TriggerDefinition, TriggerStore
     from maistro.extensions.catalog_service import CatalogService, InMemoryCatalogStore
     from maistro.extensions.health import ExtensionHealthService, InMemoryExtensionHealthStore
+    from maistro.extensions.policy import ExtensionPolicyEngine
     from maistro.extensions.service import ExtensionInstallService
     from maistro.extensions.sqlite_health_store import SqliteExtensionHealthStore
     from maistro.extensions.store import ExtensionStore
+    from maistro.extensions.tenancy import TenantScopedExtensionState
     from maistro.graph.harness import HarnessAdapter
     from maistro.identity.lifecycle import (
         AgentIdentity as LifecycleIdentity,
@@ -171,6 +175,7 @@ if TYPE_CHECKING:
     from maistro.observability.tiers import PIIDetector
     from maistro.orchestrator.hierarchy import HarnessRegistry, HierarchicalOrchestrator
     from maistro.personas.golden import GoldenRecordStore
+    from maistro.personas.store import PersonaStore
     from maistro.protocols.embeddings import EmbeddingClient
     from maistro.protocols.memory import (
         ContextAssemblyPolicy,
@@ -262,6 +267,9 @@ class Container:
     #: backend since #132 while the thing its `workspace_id` names had none,
     #: so the only Workspaces that survived a restart were the Conductor's own.
     workspace_store: WorkspaceStore = None  # type: ignore[assignment]
+    #: The live Persona is a Workspace product context, stored beside the
+    #: Project tree rather than in a second product-specific ownership store.
+    persona_store: PersonaStore = None  # type: ignore[assignment]
     #: Append-only BacklogItem history (#101), on the Project store's backend.
     #: References canonical Goals/Runs; never an execution authority itself.
     backlog_history_store: BacklogHistoryStore = None  # type: ignore[assignment]
@@ -457,6 +465,11 @@ class Container:
     resilience_policies: ResiliencePolicyStore = None  # type: ignore[assignment]
     # Durable events (ADR-086): bus bridge + log/trigger/invocation stores.
     event_bus: EventBus = None  # type: ignore[assignment]
+    # Canonical Event authority shared by governed effects and recovery. The
+    # publisher wraps the exact EventStore selected by the effect context and
+    # projects each inserted Event onto `event_bus`, so the durable log bridge
+    # and legacy triggers/subscribers keep observing recovery facts.
+    canonical_event_publisher: CanonicalEventPublisher = None  # type: ignore[assignment]
     durable_event_log: EventLogStore = None  # type: ignore[assignment]
     trigger_store: TriggerStore = None  # type: ignore[assignment]
     invocation_store: Any = None
@@ -506,6 +519,9 @@ class Container:
     # config.security.strike_tracking_enabled -- see create_container.
     strike_tracker: StrikeTracker | None = None
     strike_recovery: Any = None
+    # One durable cursor identifies this reactor consumer across restarts. The
+    # authoritative position lives in the consumer-cursor store (#1163); this
+    # field is the in-process view of what this container's last tick advanced.
     durable_event_cursor: int = 0
     # Governed extension install lifecycle (#953, M9-B2). Process-lifetime
     # in-memory records until the B1 signing/identity substrate (#952) lands;
@@ -516,6 +532,11 @@ class Container:
     # service so every reader observes the one canonical record.
     extension_install_store: ExtensionStore | None = None
     extension_install_service: ExtensionInstallService | None = None
+    # Organization/Workspace extension policy + tenant-scoped runtime state
+    # (#971, M9-G3). The default engine configures nothing, which leaves the
+    # machine's behavior unchanged while still recording decision evidence.
+    extension_policy_engine: ExtensionPolicyEngine | None = None
+    extension_runtime_state: TenantScopedExtensionState | None = None
     # Extension operational views (#978, M9-I3): health evidence, operator
     # decisions, and the projection facade over the SAME install store —
     # never a second lifecycle authority, only a read/projection layer.
@@ -1177,7 +1198,11 @@ class Container:
         crash between "processed" and "cursor written" costs at most a replay
         of already-settled, already-idempotent work; it never skips an event
         still in flight. Nor does it skip an event whose id the log handed
-        out but has not committed yet: see `_gap_safe_position`.
+        out but has not committed yet: see `_gap_safe_position`. The same
+        settled position is also acknowledged on the log itself
+        (`EventLogStore.acknowledge_replay`, #836), so the per-consumer
+        replay cursor stored beside the events stays truthful for readers
+        of the log.
         """
         lease = await self.consumer_cursor_store.claim(
             LEGACY_BRIDGE_CONSUMER_ID, holder=self._durable_events_holder
@@ -1204,6 +1229,17 @@ class Container:
                 fencing_token=lease.fencing_token,
                 position=new_cursor,
             )
+            # The log's own replay acknowledgement (#836) records the same
+            # settlement keyed to this consumer, so `get_replay_cursor`
+            # answers from the store the events live in rather than only
+            # from the bridge's separate cursor store. Both writes are
+            # monotonic and neither is the correctness backstop -- that is
+            # `InvocationStore.claim` -- so a crash between them costs a
+            # replay of already-settled, idempotent work, never a skip. The
+            # gap-safe position is acknowledged, not the raw batch cursor:
+            # a hole is not settled yet, and this acknowledgement must not
+            # claim otherwise.
+            await self.durable_event_log.acknowledge_replay(LEGACY_BRIDGE_CONSUMER_ID, new_cursor)
         self.durable_event_cursor = new_cursor
         return new_cursor
 
@@ -2105,6 +2141,21 @@ class Container:
             id_token_verifier=default_id_token_verifier(),
         )
 
+    def ensure_extension_policy_engine(self) -> ExtensionPolicyEngine:
+        """Return the organization/Workspace extension policy engine (#971).
+
+        The default engine configures nothing: evaluation passes every
+        candidate with an explicit "the layer imposes nothing" trace, so
+        wiring the policy layer changes no behavior until an operator sets a
+        policy — but every install decision gains audit evidence from then
+        on. Hosts with a policy backend replace ``extension_policy_engine``.
+        """
+        from maistro.extensions.policy import ExtensionPolicyEngine
+
+        if self.extension_policy_engine is None:
+            self.extension_policy_engine = ExtensionPolicyEngine()
+        return self.extension_policy_engine
+
     def ensure_extension_install_service(self) -> ExtensionInstallService:
         """Return the governed extension install lifecycle service (#953).
 
@@ -2121,6 +2172,7 @@ class Container:
         """
         from maistro.extensions.service import ExtensionInstallService, UnwiredExtensionLoader
         from maistro.extensions.store import InMemoryExtensionStore
+        from maistro.extensions.tenancy import TenantScopedExtensionState
 
         if self.extension_install_service is None:
             if self.extension_install_store is None:
@@ -2128,6 +2180,8 @@ class Container:
             self.extension_install_service = ExtensionInstallService(
                 self.extension_install_store,
                 loader=UnwiredExtensionLoader(),
+                policy_engine=self.ensure_extension_policy_engine(),
+                runtime_state=self.extension_runtime_state or TenantScopedExtensionState(),
             )
         else:
             self.extension_install_store = self.extension_install_service.store
@@ -2454,9 +2508,15 @@ async def create_container(
         # The same `project_scope_store` object the spine just selected, not a
         # second resolution of the same question: a Workspace whose Root Project is
         # filed in another database is a Workspace whose Runs cannot be filed.
+        persona_store = await wire_persona_store(
+            db_pool,
+            project_store=project_scope_store,
+            pg_pool=pg_pool,
+        )
         workspace_store = await wire_workspace_store(
             db_pool,
             project_store=project_scope_store,
+            persona_store=persona_store,
             pg_pool=pg_pool,
         )
         # The configured Workspace is provisioned at composition, not left to
@@ -2562,6 +2622,12 @@ async def create_container(
         # can therefore never flip authorized False -> True, only needs
         # "self_elevation"/"scoped_2fa" -> "none".
         elevation_store = await _wire_elevation_store(pg_pool=pg_pool, db_pool=db_pool)
+        # Delegated authority is host-owned state, separate from the manifest
+        # roster (#845, #60). A durable deployment can replace this
+        # implementation without changing the Agent or Graph execution paths.
+        from maistro.security.sentinel.delegation import InMemoryDelegationAuthority
+
+        delegation_authority = InMemoryDelegationAuthority()
         # Canonical capability state is created BEFORE Sentinel so the permission
         # source can hold the same registry the container exposes (#1165,
         # ADR-072726-0d6b): a runtime capability disable (set_enabled) must reach
@@ -2580,6 +2646,7 @@ async def create_container(
             audit_log=audit_log,
             tier_policy=tier_policy,
             elevation_store=elevation_store,
+            delegation_authority=delegation_authority,
         )
         strike_recovery = _wire_strike_recovery(
             tracker=strike_tracker,
@@ -2605,7 +2672,7 @@ async def create_container(
             handler_invocation_store,
             consumer_cursor_store,
         ) = await _wire_durable_events(pg_pool, db_pool)
-        handler_caller = HTTPHandlerCaller()
+        handler_caller = HTTPHandlerCaller(handler_invocation_store)
 
         event_bus = EventBus()
 
@@ -2613,7 +2680,9 @@ async def create_container(
             # Bridge: every in-memory bus event is appended to the durable log.
             await durable_event_log.append(**append_from_bus_event(event))
 
-        event_bus.subscribe(_persist_bus_event)
+        # Durable persistence is an authoritative pre-handler adapter: a failed
+        # append aborts emission instead of manufacturing trigger success.
+        event_bus.subscribe(_persist_bus_event, before_handlers=True)
 
         # --- LLM provider registry + cost-aware router (SPEC-070226-cb8d) ----
         from maistro.providers.config import load_provider_registry
@@ -2669,6 +2738,15 @@ async def create_container(
 
         # --- Agent-harness DAG node adapters (ADR-062 spawn_harness) -----------
         wired_harness_adapters = _wire_harness_adapters(harness_adapters)
+        # Governed effects hold the backend-selected canonical EventStore chosen
+        # by `_wire_capability_effects` (#1133); the recovery publisher below is
+        # only a delivery wrapper over that exact object (#16) — never a second
+        # sequencing authority. It projects each inserted Event onto `event_bus`
+        # so the durable-log bridge and legacy trigger/notification fan-out keep
+        # firing on recovery facts, as the pre-canonical path delivered them.
+        canonical_event_publisher = CanonicalEventPublisher(
+            capability_effects.event_store, legacy_bus=event_bus
+        )
         # Operator-declared model.chat Bindings (#1079/#1522) load into the same
         # canonical Binding authority the provisioning seam above built, so model
         # egress and PM polling egress share one fail-closed door.
@@ -2743,6 +2821,7 @@ async def create_container(
             project_store=project_scope_store,
             project_scope_store=project_scope_store,
             workspace_store=workspace_store,
+            persona_store=persona_store,
             backlog_history_store=backlog_history_store,
             campaign_store=campaign_store,
             goal_store=goal_store,
@@ -2774,6 +2853,7 @@ async def create_container(
             stores_memory_backed=stores_memory_backed,
             resilience_policies=resilience_policies,
             event_bus=event_bus,
+            canonical_event_publisher=canonical_event_publisher,
             durable_event_log=durable_event_log,
             trigger_store=trigger_store,
             invocation_store=capability_effects.invocation_store,
@@ -2948,17 +3028,23 @@ async def _wire_audit_log(*, pg_pool: Any, db_pool: Any) -> Any:
     if pg_pool is not None:
         from maistro.persistence.pg_audit import PgAuditLog
 
-        return PgAuditLog(pg_pool)
+        pg_audit = PgAuditLog(pg_pool)
+        await pg_audit.ensure_schema()
+        return pg_audit
     if db_pool is not None:
         from maistro.persistence.sqlite_audit import SqliteAuditLog
 
-        audit = SqliteAuditLog(db_pool)
-        await audit.ensure_schema()
-        return audit
+        sqlite_audit = SqliteAuditLog(db_pool)
+        await sqlite_audit.ensure_schema()
+        return sqlite_audit
 
     from maistro.security.sentinel.audit import InMemoryAuditLog
+    from maistro.security.sentinel.signing import AuditSigner
 
-    return InMemoryAuditLog()
+    # A configured external seed keeps proofs verifiable across restarts. The
+    # generated fallback remains useful for explicitly ephemeral deployments,
+    # but every in-memory decision is still signed before retention.
+    return InMemoryAuditLog(signer=AuditSigner.from_environment())
 
 
 async def _wire_usage_log(db_pool: Any) -> tuple[InMemoryUsageLog, Any]:
@@ -3121,6 +3207,10 @@ _REQUIRED_PG_TABLES: Final = (
     # `postgresql://` deployment that skipped `alembic upgrade head` should hear
     # about it once, at startup, naming every table it lacks.
     *WORKSPACE_PG_TABLES,
+    # The live Persona is the Workspace's product context. It is listed here so
+    # an unmigrated PostgreSQL deployment fails before serving a Workspace that
+    # cannot reload its Persona after restart.
+    *PERSONA_PG_TABLES,
 )
 
 

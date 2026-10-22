@@ -62,8 +62,19 @@ HITL_FILE = "alembic/versions/061_hitl_pause_kind_index.py"
 USER_MODEL_FILE = "alembic/versions/056_user_model_facts.py"
 PLANNER_FILE = "alembic/versions/057_run_store_planner_stability.py"
 
-#: The single linear head after HITL ``061``, audit ``062`` and the Goal store.
+#: The Goal revision: the single linear head after HITL ``061``, audit
+#: ``062``. Personas (#12, 064), replay cursors (#836, 065) and durable
+#: delivery receipts (#1060, 066) append past it; they do not change the Goal
+#: identity this file protects.
 GOAL_REVISION = "063"
+CHAIN_TIP = "064"
+
+#: The chain head once the live-Workspace-Persona revision (#12, 064),
+#: #836's replay-cursor revision (065) and the durable delivery receipts
+#: (#1060, 066) append past the Goal store.
+#: The Goal revision above stays the installed-base identity this file protects;
+#: the head moves every time a reviewed revision lands after it.
+CHAIN_HEAD = "066"
 
 GOAL_TABLES = ("canonical_goals", "canonical_goal_revisions", "canonical_goal_transitions")
 USER_MODEL_TABLES = ("user_model_facts", "user_model_statement_keys")
@@ -296,7 +307,22 @@ def _assert_planner_artifacts_present() -> None:
 
 def _assert_goal_upgrade_completed() -> None:
     """The assertions every installed-base fixture makes at the candidate head."""
-    assert _stamp() == GOAL_REVISION
+    # The fixtures upgrade to `head`, so the stamp is the chain's single head
+    # — `063` when the Goal store landed, `065` since the live-Persona (#12)
+    # and replay-cursor (#836) revisions appended after it. Read rather than
+    # re-pinned: the next append-only revision must not red the installed-base
+    # contract.
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+
+    config = Config(str(ROOT / "alembic.ini"))
+    config.set_main_option("script_location", str(ROOT / "alembic"))
+    directory = ScriptDirectory.from_config(config)
+    heads = directory.get_heads()
+    assert heads == [CHAIN_HEAD], f"upgrade head left the base at {_stamp()!r}, head is {heads}"
+    assert _stamp() == CHAIN_HEAD
+    walked = {item.revision for item in directory.walk_revisions("base", heads[0])}
+    assert GOAL_REVISION in walked, "the Goal revision fell off the head's chain"
     tables = _tables()
     missing = set(GOAL_TABLES) - tables
     assert not missing, f"the Goal DDL did not apply: {missing}"
@@ -409,7 +435,16 @@ class TestTheMergedIdentities:
         assert revisions["060"].down_revision == "059"
         assert revisions["061"].down_revision == "060"
         assert revisions[GOAL_REVISION].down_revision == "062"
-        assert script_directory.get_heads() == [GOAL_REVISION]
+        # The Goal revision took the fresh id off the integrated head when it
+        # landed; develop's live-Persona revision (#12) claimed `064` on the
+        # trunk — a landed trunk migration never moves — #836's replay-cursor
+        # revision renumbered past it to `065`, and the durable delivery
+        # receipts (#1060) append as `066`, so the head is CHAIN_HEAD while 063
+        # stays parented on 062.
+        assert revisions["064"].down_revision == GOAL_REVISION
+        assert revisions["065"].down_revision == "064"
+        assert revisions["066"].down_revision == "065"
+        assert script_directory.get_heads() == [CHAIN_HEAD]
         # The filenames carry the merged identities too — a renamed file
         # and a moved id are the same silent reassignment in two clothes.
         assert (VERSIONS / "056_user_model_facts.py").is_file()
@@ -419,6 +454,9 @@ class TestTheMergedIdentities:
         assert (VERSIONS / "060_backlog_authority_cutover.py").is_file()
         assert (VERSIONS / HITL_FILE.rsplit("/", 1)[-1]).is_file()
         assert (VERSIONS / "063_canonical_goals.py").is_file()
+        assert (VERSIONS / "064_canonical_personas.py").is_file()
+        assert (VERSIONS / "065_event_replay_cursors.py").is_file()
+        assert (VERSIONS / "066_durable_delivery_receipts.py").is_file()
 
     def test_restored_files_are_byte_identical_to_the_merged_snapshots(self) -> None:
         """The merged revisions' content is what develop shipped, byte for byte.
