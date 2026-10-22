@@ -42,6 +42,10 @@ RUNTIME_STATE_FIELDS: frozenset[str] = frozenset(
         # the authorization identity of one execution, which must never be
         # reused: a template carrying it would run later work as that principal
         "actor_principal_id",
+        # Delegated execution provenance is also per-Run state and must not be
+        # carried into a reusable Graph template.
+        "initiating_principal_id",
+        "acting_principal_id",
         # lease, checkpoint and settled-outcome state -- compound names with no
         # plausible reading as definition data
         "execution_lease",
