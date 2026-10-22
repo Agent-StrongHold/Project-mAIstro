@@ -17,6 +17,7 @@ and Hypothesis tests (`test_engine.py`) cannot make.
 from __future__ import annotations
 
 import time
+import tomllib
 from datetime import timedelta
 from pathlib import Path
 
@@ -40,6 +41,48 @@ from ._z3_fire_contract import (
 GRID_WALL_CLOCK_CAP_S = 120.0
 
 _REPO_ROOT = Path(__file__).resolve().parents[4]
+
+#: Normalized distribution names of the solver. A requirement with one of
+#: these names in a shipped manifest (`packages/*`, `extensions/*`) is
+#: production drift wherever it is declared — a package manifest has no
+#: test tree of its own that could justify it, and a dynamic
+#: `importlib.import_module` load would slip past the source scan unnoticed.
+_SOLVER_NAMES = frozenset({"z3", "z3-solver"})
+
+
+def _requirements_of(node: object) -> list[object]:
+    """Flatten a requirements declaration: a list of requirement strings, or
+    a `dependency-groups` / `optional-dependencies` mapping of such lists."""
+    if isinstance(node, dict):
+        return [req for group in node.values() for req in _requirements_of(group)]
+    if isinstance(node, list):
+        return list(node)
+    return []
+
+
+def _requirement_names(manifest: dict[str, object]) -> list[str]:
+    """Every requirement name the manifest declares, in any group.
+
+    Covers the production list (`[project] dependencies`), every
+    `optional-dependencies` group, and every PEP 735 `dependency-groups`
+    group. Unparsable TOML raises — a manifest the guard cannot read must
+    fail the scan, not silently pass it.
+    """
+    project = manifest.get("project")
+    declared: list[object] = []
+    if isinstance(project, dict):
+        declared.extend(_requirements_of(project.get("dependencies")))
+        declared.extend(_requirements_of(project.get("optional-dependencies")))
+    declared.extend(_requirements_of(manifest.get("dependency-groups")))
+    names: list[str] = []
+    for dep in declared:
+        name = str(dep)
+        # Requirement strings may carry extras/markers/version specifiers;
+        # the distribution name is everything before the first of those.
+        for sep in (";", "[", "==", ">", "<", "~", "!", "="):
+            name = name.split(sep)[0]
+        names.append(name.strip().lower())
+    return names
 
 
 def test_production_conforms_to_the_contract_on_the_whole_bounded_grid() -> None:
@@ -249,8 +292,11 @@ def test_occurrences_behind_the_catchup_horizon_are_out_of_scope_not_skipped() -
 
 def test_z3_is_absent_from_production_sources() -> None:
     """The research non-goal: no solver runtime dependency in production.
-    The scan is the gate — any `z3` reference under `packages/*/src` fails
-    here, so the dependency cannot drift into shipped code quietly."""
+    Two scans are the gate — any `z3` reference under `packages/*/src`, or
+    any z3 requirement in a shipped package/extension manifest, fails here,
+    so the dependency cannot drift into shipped code quietly (a dynamic
+    import would evade the source scan; the manifest scan is what catches
+    the dependency being declared without a static import at all)."""
     matches: list[str] = []
     for package_dir in sorted((_REPO_ROOT / "packages").glob("*/src")):
         for source in package_dir.rglob("*.py"):
@@ -258,3 +304,12 @@ def test_z3_is_absent_from_production_sources() -> None:
                 if "import z3" in line or "from z3" in line or line.lstrip().startswith("z3."):
                     matches.append(f"{source}:{lineno}: {line.strip()}")
     assert matches == []
+
+    manifest_hits: list[str] = []
+    for scope in ("packages", "extensions"):
+        for manifest_path in sorted((_REPO_ROOT / scope).rglob("pyproject.toml")):
+            manifest = tomllib.loads(manifest_path.read_text(encoding="utf-8"))
+            for name in _requirement_names(manifest):
+                if name in _SOLVER_NAMES:
+                    manifest_hits.append(f"{manifest_path}: requires {name}")
+    assert manifest_hits == []

@@ -29,7 +29,7 @@ over `runs_so_far × max_runs`). They check *samples*. None of them can ask
 ## Prototype
 
 `packages/maistro-core/tests/scheduling/_z3_fire_contract.py` (machinery) +
-`test_engine_z3_conformance.py` (12 node IDs):
+`test_engine_z3_conformance.py` (13 node IDs):
 
 - **Contract encoding** (`FireContractModel`): per evaluation cell, SMT
   constraints over decision variables — which due occurrence fires, the skip
@@ -66,7 +66,10 @@ over `runs_so_far × max_runs`). They check *samples*. None of them can ask
   directly); occurrences behind the catch-up horizon are out of the
   enumeration walk entirely (see findings).
 - **Boundary guard**: a source scan asserting no `packages/*/src` module
-  references z3 — the research non-goal cannot drift.
+  references z3, plus a manifest scan asserting no shipped package or
+  extension manifest declares the solver as a requirement in any group —
+  the research non-goal cannot drift in through a static import *or* a
+  dynamic load backed by an undeclared-at-source dependency.
 
 ## Findings
 
@@ -116,7 +119,7 @@ maintenance cost of the technique stated precisely.
 | Explainability queries (unsat cores) | 3 queries, each unsat with a 2-family core (blocking rule + request) |
 | Closed-loop starvation queries | 12 queries (3 budgets × 4 properties), 0.07 s total |
 | Teeth guards | 2 mutations, both detected with witnesses |
-| Suite cost | +12 node IDs, ~3 s wall clock in `packages/maistro-core/tests` |
+| Suite cost | +13 node IDs, ~3 s wall clock in `packages/maistro-core/tests` |
 | Solver | z3-solver 5.1.0.0, per-query timeout 10 s (never approached), dev dependency only |
 | Modeling effort | ~330 lines of machinery + ~230 lines of tests; the transcription bugs above were found and fixed by the differential within the first grid walks |
 
@@ -170,3 +173,38 @@ root-level `examples/` sit outside the monorepo layout. The superseded
 drafts are preserved with the attempt's records, not committed here. Per
 the epic's non-goals, no competing `formal/` authority is established — the
 machinery lives in the maistro-core test tree beside the target's suite.
+
+## Review-findings disposition
+
+Independent review of the experiment raised three findings; all three are
+resolved on this branch:
+
+1. **Starvation by replacement was invisible (addressed).** The closed-loop
+   model stored only a 0/1 buffer count, so firing a *newer* occurrence
+   while the held one stayed queued was indistinguishable from draining it.
+   The model now carries occurrence IDs (`held[t]`/`fired[t]`), the
+   starvation queries assert the *specific* held ID fires, and a
+   `bypass-held` drift mutation proves the identity-blind encoding accepts
+   what the ID-aware queries flag (the
+   `test_starvation_queries_hold_occurrence_identity_not_just_a_count`
+   teeth guard, the +13th node ID).
+2. **The boundary guard scanned source only (addressed).** A manifest that
+   declared `z3-solver` without any static import would ship the solver
+   past a source-only scan. The guard now also parses every
+   `packages/*` and `extensions/*` `pyproject.toml` (`tomllib`, fail-closed
+   on unparsable input) and rejects the solver as a requirement in any
+   dependency group; the root manifest's dev lists remain its only
+   legitimate home.
+3. **Run-length decrement phase in the closed loop (assessed; no change).**
+   The observation: a run fired at tick t sets `run_left[t+1] = run_length`,
+   so the busy period starts the tick *after* the fire, while the initial
+   run is already in flight at tick 0. Measured against the
+   fire-tick-counts variant (`run_left[t+1] = run_length − 1` on fire):
+   both encodings give a fired run exactly `run_length` occupied ticks (the
+   phase shifts, the duration does not — the "lasts one tick longer" reading
+   does not hold), and every query verdict is identical under both —
+   starvation, drain, budget, never-ending, and both mutation teeth, across
+   budgets 1–3, faithful and mutated. The choice never flips an answer this
+   experiment reports, so the committed encoding stays; if the model is
+   ever re-anchored to production tick accounting, the phase convention
+   should be decided then, not now.

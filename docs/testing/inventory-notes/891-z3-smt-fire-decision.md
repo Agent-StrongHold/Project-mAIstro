@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +12
+  packages/maistro-core/tests: +13
 ---
 
 # #891 Z3/SMT fire-decision experiment (M8-A11 prototype)
@@ -21,14 +21,17 @@ New files, all under `packages/maistro-core/tests/scheduling/`:
   `BufferedStarvationModel` (four-tick closed loop over arrivals, the held
   occurrence, symbolic run lengths, and the fire budget), and the grid
   driver producing real `Schedule` cells.
-- `test_engine_z3_conformance.py` — 12 node IDs: whole-grid conformance and
+- `test_engine_z3_conformance.py` — 13 node IDs: whole-grid conformance and
   uniqueness walks, the teeth guards, the explainability cores, the
-  starvation questions (parametrized over three budgets), the never-ending
+  starvation questions (parametrized over three budgets), the occurrence
+  identity question (the held ID fires, not just a count), the never-ending
   run witness, the exhausted/disabled short-circuits, the horizon
-  out-of-scope pin, and the z3-absent-from-production-sources scan.
+  out-of-scope pin, and the z3-absent-from-production-sources-and-manifests
+  scan.
 
 `z3-solver` is a dev-only dependency (both dev lists in `pyproject.toml`);
-the source-scan test enforces the issue's non-goal that no solver runtime
-dependency reaches production. Net: +12 collected node IDs on
-`packages/maistro-core/tests`. Experiment record and WATCH disposition:
+the source-and-manifest scan test enforces the issue's non-goal that no
+solver runtime dependency reaches production. Net: +13 collected node IDs
+on `packages/maistro-core/tests` (+12 in the research commit, +1 in the
+review follow-up that gave the starvation model occurrence identity). Experiment record and WATCH disposition:
 `docs/testing/z3-smt-decisions-evidence.md`.
