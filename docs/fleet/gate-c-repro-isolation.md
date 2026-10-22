@@ -15,6 +15,22 @@ with the live fleet.
 8000/8101/5432 outside the production stack. Production is not a resource
 pool.**
 
+## Scope: stack reproduction, NOT the gate verdict
+
+Be precise about what this stack gives you. Gate C
+(`.github/workflows/gate-c.yml`) proves the **installer path** on a clean
+runner: wipe `.env`, then `./install.sh --skip-wizard --no-cli --no-open`
+with a fixed env matrix. `install.sh` drives the *production-named* compose
+stack by design, so it can never be the isolation vehicle on this box. This
+file reproduces the resulting **stack topology** (same engine image,
+pgvector pg18, litellm config) for interactive debugging.
+
+- **Reproduce a Gate-C verdict**: use the real thing —
+  `gh workflow run gate-c --ref <branch>` then `gh run watch <id>`. Do not
+  claim gate success from this stack.
+- **Debug** what the gate's stack was doing when it failed: use this
+  isolated stack with the same env the gate sets.
+
 ## The sanctioned method
 
 Use `docker-compose.repro.yml` (repo root) — standalone, isolated names
