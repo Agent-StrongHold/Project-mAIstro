@@ -12,6 +12,7 @@ TEST_ACTOR_PRINCIPAL_ID = DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 @pytest.fixture(autouse=True)
 def _default_builders_actor_principal(monkeypatch: pytest.MonkeyPatch) -> None:
     """Default missing principals for compatibility canonical entrypoints in builders."""
+    import maistro.runs.access as run_access
     import maistro.runs.store as run_store
 
     original = run_store.require_admitted_actor
@@ -22,3 +23,6 @@ def _default_builders_actor_principal(monkeypatch: pytest.MonkeyPatch) -> None:
         return original(actor_principal_id)
 
     monkeypatch.setattr(run_store, "require_admitted_actor", _require)
+    # create_run resolves admission identity through the access seam (#1152),
+    # whose binding of require_admitted_actor must default the same way.
+    monkeypatch.setattr(run_access, "require_admitted_actor", _require)
