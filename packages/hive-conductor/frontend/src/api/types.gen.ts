@@ -114,6 +114,13 @@ export interface paths {
         /**
          * Scan Proposed Config
          * @description Scan a proposed configuration before it is saved.
+         *
+         *     The result names the scanner (`scanner.name` / `policy_version`), the
+         *     target, and the completion timestamp, so `clean` is always a completed
+         *     analysis and never an assumption (#288). A scan that cannot run -- the
+         *     detector raising or outliving its time budget, including
+         *     `AgentScannerUnavailable` -- answers 503 with no findings list: unknown,
+         *     never clean.
          */
         post: operations["scan_proposed_config_v1_agents_scan_post"];
         delete?: never;
@@ -153,6 +160,11 @@ export interface paths {
         /**
          * Scan Agent
          * @description Scan a saved agent's configuration.
+         *
+         *     Same contract as the proposed-config scan (#288): the result names the
+         *     scanner, the saved agent it walked, and when the walk completed; a scanner
+         *     that cannot run -- raises or outlives its time budget -- answers 503
+         *     (unknown), never clean.
          */
         post: operations["scan_agent_v1_agents__agent_id__scan_post"];
         delete?: never;
