@@ -20,6 +20,7 @@ from maistro.runs.lineage import (
 )
 from maistro.runs.model import AttemptStatus, EvalMethod, RunEvalScore, RunStatus
 from maistro.runs.store import RunNotFound
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 GOAL_ID = "goal-lineage"
 GOAL_REVISION = 3
@@ -39,7 +40,9 @@ def _graph(workspace: str, project_id: str) -> Graph:
 async def _run_one_node(spine: Any, artifact: dict[str, Any]) -> tuple[Any, str, str, str]:
     """A Run with one completed NodeRun/Attempt whose result is `artifact`."""
     store, workspace, project_id = spine
-    run = await store.create_run(_graph(workspace, project_id))
+    run = await store.create_run(
+        _graph(workspace, project_id), actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+    )
     node_run = await store.create_node_run(run.run_id, node_id="node-1")
     attempt = await store.create_attempt(node_run.node_run_id)
     await store.transition_attempt(attempt.attempt_id, AttemptStatus.RUNNING)

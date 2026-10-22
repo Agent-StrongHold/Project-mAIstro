@@ -40,7 +40,7 @@ import pytest
 
 from maistro.graph.durable_runs import RunStatus
 from maistro.ontology import InMemoryOntology
-from maistro.projects.rubric_store import InMemoryGoalRevisionCatalog, RubricStore
+from maistro.projects.rubric_store import RubricStore
 from maistro.runs.eval import eval_summary
 from maistro.runs.sqlite_store import SqliteRunStore
 from maistro.runs.store import InMemoryRunStore
@@ -48,6 +48,7 @@ from maistro_design.proof import (
     PLANTED_DIMENSION_ID,
     PRODUCT_GOAL_STATEMENT,
     PROOF_GOAL_ID,
+    InMemoryGoalRevisionCatalog,
     run_design_loop_proof,
     score_artifact_against_rubric,
 )

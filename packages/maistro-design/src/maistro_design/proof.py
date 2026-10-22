@@ -64,12 +64,11 @@ from maistro.ontology.rubric import (
 )
 from maistro.projects.rubric_store import (
     GoalRevisionSnapshot,
-    InMemoryGoalRevisionCatalog,
     RubricStore,
 )
 from maistro.runs.eval import eval_summary, open_re_eval_attempt
 from maistro.runs.lineage import RunLineage, artifact_lineage
-from maistro.runs.model import AttemptStatus, EvalMethod, RunEvalScore, RunStatus
+from maistro.runs.model import Attempt, AttemptStatus, EvalMethod, RunEvalScore, RunStatus
 from maistro.runs.store import RunStore
 from maistro_design.packs import PackRegistry, pack_graph_template
 
@@ -78,10 +77,33 @@ __all__ = [
     "PRODUCT_GOAL_STATEMENT",
     "PROOF_GOAL_ID",
     "DesignLoopProof",
+    "InMemoryGoalRevisionCatalog",
     "pack_rubric_catalog",
     "run_design_loop_proof",
     "score_artifact_against_rubric",
 ]
+
+
+class InMemoryGoalRevisionCatalog:
+    """Dict-backed :class:`~maistro.projects.rubric_store.GoalRevisionCatalog`.
+
+    The Goal seam (#458) is a Protocol; this proof owns a live in-memory
+    implementation of it so the scenario can register a Goal revision and let
+    the ``RubricStore`` resolve it without a second Goal persistence product.
+    """
+
+    def __init__(self) -> None:
+        self._goals: dict[tuple[str, int], GoalRevisionSnapshot] = {}
+
+    def register_goal(self, snapshot: GoalRevisionSnapshot) -> GoalRevisionSnapshot:
+        """Publish one live Goal revision (proof/boot helper)."""
+        self._goals[(snapshot.goal_id, snapshot.goal_revision)] = snapshot.model_copy(deep=True)
+        return snapshot
+
+    def resolve(self, goal_id: str, goal_revision: int) -> GoalRevisionSnapshot | None:
+        snap = self._goals.get((goal_id, goal_revision))
+        return snap.model_copy(deep=True) if snap is not None else None
+
 
 #: The proof Goal, verbatim from the issue: one claim that must be
 #: evidence-backed.
@@ -133,6 +155,33 @@ def pack_rubric_dimensions(pack: Any) -> list[RubricDimension]:
     return mapped
 
 
+def _unevidenced_claims(claims: list[dict[str, Any]]) -> list[str]:
+    """The planted-failure verdict's reasons: one line per uncited claim."""
+    return [
+        f"claim {index} has no evidence"
+        for index, claim in enumerate(claims)
+        if not claim.get("evidence")
+    ]
+
+
+def _presence_verdict(value: str, reason: str) -> tuple[float, bool, list[str]]:
+    """Score a prose dimension purely on whether the artifact names the field."""
+    if value:
+        return 100.0, True, []
+    return 0.0, False, [reason]
+
+
+def _planted_verdict(
+    claims: list[dict[str, Any]], missing_evidence: list[str]
+) -> tuple[float, bool, list[str]]:
+    """The planted dimension: passes only when claims exist and all are cited."""
+    if not claims:
+        return 0.0, False, ["no claims to evaluate"]
+    if missing_evidence:
+        return 0.0, False, list(missing_evidence)
+    return 100.0, True, []
+
+
 def score_artifact_against_rubric(artifact: dict[str, Any], rubric: Any) -> list[RunEvalScore]:
     """Score one artifact deterministically against one Rubric revision.
 
@@ -142,28 +191,13 @@ def score_artifact_against_rubric(artifact: dict[str, Any], rubric: Any) -> list
     every claim on the artifact cites evidence.
     """
     claims = list(artifact.get("claims") or [])
-    offer = str(artifact.get("offer") or "").strip()
-    channel = str(artifact.get("channel") or "").strip()
-    missing_evidence = [
-        f"claim {index} has no evidence"
-        for index, claim in enumerate(claims)
-        if not claim.get("evidence")
-    ]
     verdicts: dict[str, tuple[float, bool, list[str]]] = {
-        "clarity_of_offer": (
-            100.0 if offer else 0.0,
-            bool(offer),
-            [] if offer else ["no offer statement on the artifact"],
+        "clarity_of_offer": _presence_verdict(
+            str(artifact.get("offer") or "").strip(), "no offer statement on the artifact"
         ),
-        PLANTED_DIMENSION_ID: (
-            100.0 if claims and not missing_evidence else 0.0,
-            bool(claims) and not missing_evidence,
-            missing_evidence or (["no claims to evaluate"] if not claims else []),
-        ),
-        "channel_fit": (
-            100.0 if channel else 0.0,
-            bool(channel),
-            [] if channel else ["no channel named on the artifact"],
+        PLANTED_DIMENSION_ID: _planted_verdict(claims, _unevidenced_claims(claims)),
+        "channel_fit": _presence_verdict(
+            str(artifact.get("channel") or "").strip(), "no channel named on the artifact"
         ),
     }
     scores: list[RunEvalScore] = []
@@ -327,6 +361,12 @@ class _EvaluateNode(BaseNode[_PhaseIO, _PhaseIO]):
         return semantic
 
 
+def _own_answer(ctx: NodeContext) -> dict[str, Any]:
+    """The human's fence answer for this node, or an empty mapping."""
+    answers = (ctx.metadata or {}).get("hitl_answers") or {}
+    return answers.get(ctx.node_id) or {}
+
+
 class _RefineNode(BaseNode[_PhaseIO, _PhaseIO]):
     """Refine phase: repair the artifact, propose acceptance, then emit it.
 
@@ -344,54 +384,59 @@ class _RefineNode(BaseNode[_PhaseIO, _PhaseIO]):
     output_schema: ClassVar[type[BaseModel]] = _PhaseIO
 
     async def _execute(self, inputs: _PhaseIO, ctx: NodeContext) -> _PhaseIO:
-        answers = (ctx.metadata or {}).get("hitl_answers") or {}
-        own = answers.get(ctx.node_id) or {}
         payload = dict(inputs.payload)
-        prior = resumed_pause(ctx)
+        own = _own_answer(ctx)
         if not own:
-            revised = _with_claim_evidence(dict(payload.get("artifact") or {}))
-            revised["refined_by"] = {"attempt_id": ctx.attempt_id}
-            payload["artifact"] = revised
-            pause_until(
-                PAUSE_AWAITING_HUMAN_REVIEW,
-                metadata={
-                    "fence_point": "evaluate.accept",
-                    "proposal": "accept",
-                    "artifact": revised,
-                    "rubric_id": (payload.get("fence") or {}).get("rubric_id"),
-                    "rubric_revision": (payload.get("fence") or {}).get("rubric_revision"),
-                },
-            )
+            self._propose_revision(payload, ctx)
         if own.get("decision") == "accept":
-            # The accepted artifact is the one the durable pause proposed —
-            # read from the pause evidence the answer carried, never rebuilt
-            # from the walked-down payload (whose artifact is still the
-            # unevidenced first Execute output). The pause's `proposal` value
-            # is the string marker "accept"; the artifact sits beside it.
-            proposal_artifact = _plain(prior.get("artifact"))
-            if not isinstance(proposal_artifact, dict) or not proposal_artifact:
-                raise ValueError(
-                    "refine accept answered but the durable pause carried no "
-                    "proposed artifact; refusing to accept from caller memory"
-                )
-            payload["artifact"] = proposal_artifact
-            # The accepted artifact itself names the winning Attempt: the
-            # acceptance receipt rides on the artifact, so the artifact the
-            # fence accepted and the artifact lineage later traces are one
-            # object.
-            proposal_artifact["accepted"] = {
-                "decision": "accept",
-                "rubric_id": own.get("rubric_id"),
-                "rubric_revision": own.get("rubric_revision"),
-                "re_eval_attempt_id": own.get("re_eval_attempt_id"),
-                "produced_by_attempt": (proposal_artifact.get("refined_by") or {}).get(
-                    "attempt_id"
-                ),
-                "answered_at": own.get("answered_at"),
-            }
-            payload["accepted"] = dict(proposal_artifact["accepted"])
-            return _PhaseIO(payload=payload)
+            return self._accept_revision(payload, ctx)
         raise ValueError(f"refine node received unsupported decision {own.get('decision')!r}")
+
+    def _propose_revision(self, payload: dict[str, Any], ctx: NodeContext) -> None:
+        """First visit: rebuild the artifact with evidence and park on the fence."""
+        revised = _with_claim_evidence(dict(payload.get("artifact") or {}))
+        revised["refined_by"] = {"attempt_id": ctx.attempt_id}
+        payload["artifact"] = revised
+        pause_until(
+            PAUSE_AWAITING_HUMAN_REVIEW,
+            metadata={
+                "fence_point": "evaluate.accept",
+                "proposal": "accept",
+                "artifact": revised,
+                "rubric_id": (payload.get("fence") or {}).get("rubric_id"),
+                "rubric_revision": (payload.get("fence") or {}).get("rubric_revision"),
+            },
+        )
+
+    def _accept_revision(self, payload: dict[str, Any], ctx: NodeContext) -> _PhaseIO:
+        """Second visit: emit the artifact the durable pause proposed, accepted."""
+        prior = resumed_pause(ctx)
+        own = _own_answer(ctx)
+        # The accepted artifact is the one the durable pause proposed — read
+        # from the pause evidence the answer carried, never rebuilt from the
+        # walked-down payload (whose artifact is still the unevidenced first
+        # Execute output). The pause's `proposal` value is the string marker
+        # "accept"; the artifact sits beside it.
+        proposal_artifact = _plain(prior.get("artifact"))
+        if not isinstance(proposal_artifact, dict) or not proposal_artifact:
+            raise ValueError(
+                "refine accept answered but the durable pause carried no "
+                "proposed artifact; refusing to accept from caller memory"
+            )
+        payload["artifact"] = proposal_artifact
+        # The accepted artifact itself names the winning Attempt: the
+        # acceptance receipt rides on the artifact, so the artifact the fence
+        # accepted and the artifact lineage later traces are one object.
+        proposal_artifact["accepted"] = {
+            "decision": "accept",
+            "rubric_id": own.get("rubric_id"),
+            "rubric_revision": own.get("rubric_revision"),
+            "re_eval_attempt_id": own.get("re_eval_attempt_id"),
+            "produced_by_attempt": (proposal_artifact.get("refined_by") or {}).get("attempt_id"),
+            "answered_at": own.get("answered_at"),
+        }
+        payload["accepted"] = dict(proposal_artifact["accepted"])
+        return _PhaseIO(payload=payload)
 
 
 def _with_claim_evidence(artifact: dict[str, Any]) -> dict[str, Any]:
@@ -445,6 +490,94 @@ class DesignLoopProof(BaseModel):
     re_eval_attempt_id: str
     accepted_artifact: dict[str, Any]
     lineage: RunLineage
+
+    def __repr__(self) -> str:
+        """A stable, log-safe identity for one completed proof Run."""
+        return (
+            f"DesignLoopProof(run_id={self.run_id!r}, goal_id={self.goal_id!r}, "
+            f"rubric_revision_initial={self.rubric_revision_initial}, "
+            f"rubric_revision_redirected={self.rubric_revision_redirected}, "
+            f"re_eval_attempt_id={self.re_eval_attempt_id!r})"
+        )
+
+
+def _assert_run_status(record: DurableRunRecord, expected: RunStatus, phase: str) -> None:
+    """Pin the post-walk Run status to what the proof scenario requires."""
+    if record.run.status is not expected:
+        raise AssertionError(f"proof expected the Run {phase}, got {record.run.status!r}")
+
+
+def _refine_proposed_artifact(record: DurableRunRecord, refine_node_id: str) -> dict[str, Any]:
+    """The artifact the refine pause proposed, read from durable pause metadata."""
+    pauses = record.graph_state.metadata.get("pauses") or {}
+    refine_pause = pauses.get(refine_node_id) or {}
+    proposed_artifact = _plain((refine_pause.get("metadata") or {}).get("artifact"))
+    if not isinstance(proposed_artifact, dict):
+        raise AssertionError("refine proposal carried no durable artifact")
+    return proposed_artifact
+
+
+async def _re_evaluate_refined_artifact(
+    run_store: RunStore,
+    rubric_store: RubricStore,
+    *,
+    run_id: str,
+    refine_node_id: str,
+    rubric_id: str,
+    rubric_revision: int,
+    proposed_artifact: dict[str, Any],
+) -> Attempt:
+    """Open and run the re-evaluation Attempt on the parked refine NodeRun.
+
+    Returns the completed Attempt. The Attempt's result is the paused
+    continuation the executor's contract requires (status ``"paused"``, reason
+    ``awaiting_human_review``, carrying the same proposal metadata the refine
+    visit wrote): the fence is still the outstanding fact. Completing it as a
+    terminal node result would shadow the pause -- the next walk would accept
+    the re-evaluation as the node's prior completion and the person's accept
+    answer would never re-execute the refine node.
+    """
+    re_eval = await open_re_eval_attempt(run_store, run_id, refine_node_id)
+    await run_store.transition_attempt(re_eval.attempt_id, AttemptStatus.RUNNING)
+    rubric_current = await rubric_store.get(rubric_id)
+    assert rubric_current is not None and rubric_current.revision == rubric_revision
+    for score in score_artifact_against_rubric(proposed_artifact, rubric_current):
+        await run_store.record_eval_score(
+            score.model_copy(
+                update={
+                    "run_id": run_id,
+                    "node_run_id": refine_node_id,
+                    "attempt_id": re_eval.attempt_id,
+                }
+            )
+        )
+    summary = await eval_summary(
+        run_store,
+        run_id,
+        rubric_id=rubric_id,
+        rubric_revision=rubric_revision,
+        dimension_ids=[d.id for d in rubric_current.dimensions],
+    )
+    if not summary.passed:
+        raise AssertionError(f"re-evaluation did not pass: failed={summary.failed_dimensions}")
+    return await run_store.transition_attempt(
+        re_eval.attempt_id,
+        AttemptStatus.COMPLETED,
+        result={
+            "success": True,
+            "status": "paused",
+            "output": None,
+            "metadata": {
+                "paused_reason": PAUSE_AWAITING_HUMAN_REVIEW,
+                "fence_point": "evaluate.accept",
+                "proposal": "accept",
+                "artifact": proposed_artifact,
+                "re_evaluated": True,
+                "rubric_id": rubric_id,
+                "rubric_revision": rubric_revision,
+            },
+        },
+    )
 
 
 async def run_design_loop_proof(
@@ -522,10 +655,7 @@ async def run_design_loop_proof(
         run_store=run_store,
         inputs=launch_inputs,
     )
-    if record.run.status is not RunStatus.PAUSED:
-        raise AssertionError(
-            f"proof expected the Run parked on the fence, got {record.run.status!r}"
-        )
+    _assert_run_status(record, RunStatus.PAUSED, "parked on the fence")
     node_run_ids = _name_node_run_ids(record, node_ids)
 
     # -- Fence decision 1: redirect the *scoring*. A new Rubric revision bound
@@ -552,72 +682,23 @@ async def run_design_loop_proof(
     record = await resume_durable_graph(
         admitted.run_id, store=durable, node_resolver=resolver, run_store=run_store
     )
-    if record.run.status is not RunStatus.PAUSED:
-        raise AssertionError(
-            f"proof expected the refine proposal parked, got {record.run.status!r}"
-        )
+    _assert_run_status(record, RunStatus.PAUSED, "to have the refine proposal parked")
     node_run_ids.update(_name_node_run_ids(record, node_ids))
 
     # -- Refine re-evaluation: a new Attempt (open_re_eval_attempt) on the
     #    parked refine NodeRun, scoring the refined artifact — read from the
     #    durable pause metadata, not caller memory — against Rubric revision 2.
-    fetched = await durable.get(admitted.run_id)
-    assert fetched is not None
-    record = fetched
-    pauses = record.graph_state.metadata.get("pauses") or {}
-    refine_pause = pauses.get(node_ids["refine.revise"]) or {}
-    proposed_artifact = (refine_pause.get("metadata") or {}).get("artifact")
-    proposed_artifact = _plain(proposed_artifact)
-    if not isinstance(proposed_artifact, dict):
-        raise AssertionError("refine proposal carried no durable artifact")
-    re_eval = await open_re_eval_attempt(run_store, admitted.run_id, node_run_ids["refine.revise"])
-    await run_store.transition_attempt(re_eval.attempt_id, AttemptStatus.RUNNING)
-    rubric_current = await rubric_store.get(rubric_v2.rubric_id)
-    assert rubric_current is not None and rubric_current.revision == rubric_v2.revision
-    for score in score_artifact_against_rubric(proposed_artifact, rubric_current):
-        await run_store.record_eval_score(
-            score.model_copy(
-                update={
-                    "run_id": admitted.run_id,
-                    "node_run_id": node_run_ids["refine.revise"],
-                    "attempt_id": re_eval.attempt_id,
-                }
-            )
-        )
-    summary = await eval_summary(
+    record = await durable.get(admitted.run_id)
+    assert record is not None
+    proposed_artifact = _refine_proposed_artifact(record, node_ids["refine.revise"])
+    re_eval = await _re_evaluate_refined_artifact(
         run_store,
-        admitted.run_id,
+        rubric_store,
+        run_id=admitted.run_id,
+        refine_node_id=node_run_ids["refine.revise"],
         rubric_id=rubric_v2.rubric_id,
         rubric_revision=rubric_v2.revision,
-        dimension_ids=[d.id for d in rubric_v2.dimensions],
-    )
-    if not summary.passed:
-        raise AssertionError(f"re-evaluation did not pass: failed={summary.failed_dimensions}")
-    # The re-evaluation Attempt is durable physical work — the passing records
-    # above name it — but the fence is still the outstanding fact, so its
-    # result is the paused continuation the executor's contract requires
-    # (status "paused", reason ``awaiting_human_review``, carrying the same
-    # proposal metadata the refine visit wrote). Completing it as a terminal
-    # node result would shadow the pause: the next walk would accept the
-    # re-evaluation as the node's prior completion and the person's accept
-    # answer would never re-execute the refine node.
-    re_eval = await run_store.transition_attempt(
-        re_eval.attempt_id,
-        AttemptStatus.COMPLETED,
-        result={
-            "success": True,
-            "status": "paused",
-            "output": None,
-            "metadata": {
-                "paused_reason": PAUSE_AWAITING_HUMAN_REVIEW,
-                "fence_point": "evaluate.accept",
-                "proposal": "accept",
-                "artifact": proposed_artifact,
-                "re_evaluated": True,
-                "rubric_id": rubric_v2.rubric_id,
-                "rubric_revision": rubric_v2.revision,
-            },
-        },
+        proposed_artifact=proposed_artifact,
     )
 
     # -- Fence decision 2: accept, citing the passing re-evaluation Attempt.
@@ -636,8 +717,7 @@ async def run_design_loop_proof(
     record = await resume_durable_graph(
         admitted.run_id, store=durable, node_resolver=resolver, run_store=run_store
     )
-    if record.run.status is not RunStatus.COMPLETED:
-        raise AssertionError(f"proof expected the Run completed, got {record.run.status!r}")
+    _assert_run_status(record, RunStatus.COMPLETED, "to complete")
 
     # -- Lineage from the accepted artifact, out of the store only.
     accepted_artifact = _extract_accepted_artifact(record, node_ids["refine.revise"])

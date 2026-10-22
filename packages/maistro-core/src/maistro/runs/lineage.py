@@ -108,6 +108,16 @@ class RunLineage:
     eval_scores: tuple[RunEvalScore, ...]
     rubric_bindings: tuple[RubricRevisionBinding, ...]
 
+    def __repr__(self) -> str:
+        """A stable, log-safe identity: the Run, its Graph, its rubric bindings."""
+        bindings = ", ".join(
+            f"{binding.rubric_id}@{binding.rubric_revision}" for binding in self.rubric_bindings
+        )
+        return (
+            f"RunLineage(run_id={self.run_id!r}, graph_id={self.graph_id!r}, "
+            f"status={self.status!r}, rubric_bindings=[{bindings}])"
+        )
+
     def find_artifact(self, artifact: Any) -> tuple[NodeRunLineage, AttemptLineage]:
         """Locate an artifact value among the persisted Attempt results.
 

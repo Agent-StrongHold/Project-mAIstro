@@ -1,7 +1,7 @@
 ---
 inventory-delta:
   packages/maistro-core/tests: +16
-  packages/maistro-design/tests: +46
+  packages/maistro-design/tests: +20
 ---
 <!-- Measured by scripts/check-suite-inventory.py --update; see README.md. -->
 # 795-design-loop-proof
@@ -37,23 +37,25 @@ in-memory and SQLite `RunStore` backends (10 tests × 2 backends): the planted
 `claim_evidence` failure is durable on the Run before refine and the scorer is
 real (fails unevidenced claims, passes evidenced ones); park → redirect-Rubric
 (same Goal revision, v1 immutable) → accept are canonical human pauses; a
-mid-loop refresh re-reads Goal, Rubric revisions, Run, and all six eval records
-from the stores; both refine-side Attempts are visible, the failed record
-survives, and the accepted artifact names the winning re-evaluation Attempt;
-the Canvas-unavailable branch records exactly that with no artifact while the
-loop completes on the non-Canvas branch, and the Canvas-available branch
-produces on the same Run id; the full lineage chain from the accepted artifact
-to both Rubric revisions and the Goal revision is queryable, with the pack
-identity proven by the snapshot's `source_template` provenance; and the proof
-advances only on decisions (no timers).
+mid-loop refresh re-reads Goal, Rubric revisions, Run, and all six eval
+records from the stores; both refine-side Attempts are visible, the failed
+record survives, and the accepted artifact names the winning re-evaluation
+Attempt; the Canvas-unavailable branch records exactly that with no artifact
+while the loop completes on the non-Canvas branch, and the Canvas-available
+branch produces on the same Run id; the full lineage chain from the accepted
+artifact to both Rubric revisions and the Goal revision is queryable, with the
+pack identity proven by the snapshot's `source_template` provenance; and the
+proof advances only on decisions (no timers).
 
-## Residual delta recorded here on purpose
+## Reconciliation against `origin/develop` (7f8683be)
 
-`packages/maistro-design/tests` also drifted **+26** before this change:
-`test_packs.py` grew across #793 (M7-A4 domain packs) and #794 (M7-A5 HITL
-fence on waiting NodeRuns), both of which landed without an inventory note on
-this branch's history. The gate is per-tree, not per-author, so this note
-records the whole drift — +46 = 20 (this issue) + 26 (attributed above) — to
-bring `expected = baseline + Σ deltas` back to the collected count. The
-attribution lives in this prose, not in a second note, so the ledger keeps one
-delta per suite per change and nothing shares a mutable line.
+The lane was authored on `2c557001d`, where `test_packs.py` had already grown
++26 across #793 (M7-A4 domain packs) and #794 (M7-A5 HITL fence) without an
+inventory note on that base. The first version of this note therefore recorded
+the whole +46 (20 this issue + 26 attributed drift). On `origin/develop` the
+#793 delta is already recorded (`793-domain-packs.md`,
+`793-domain-packs-repair.md`, `auto-793-55af.md`), so the +26 attribution is
+stale and would double-count: `scripts/check-suite-inventory.py` reported
+`packages/maistro-design/tests: expected 622, collected 596` (+26 over). This
+note records only this issue's **+20**, and the gate now reports
+`expected == collected` for that suite.

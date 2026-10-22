@@ -67,9 +67,11 @@ claim that must be evidence-backed."*
 
 This lane ships the **canonical Run inspection** half of the proof surface: the
 scenario is reproducible by any reviewer from the repo, and the lineage is
-queryable from persisted objects. The **Design Studio host display** and the
-**browser E2E** leg of the scenario depend on #95 (Design Studio cutover onto
-canonical Canvas/tool boundaries), which is not landed at this head — there is
+queryable from persisted objects. The driver is exposed on this package's public
+API (`maistro_design.run_design_loop_proof`), so the reachability ratchet sees a
+real call path rather than built-but-never-wired code. The **Design Studio host
+display** and the **browser E2E** leg of the scenario depend on #95 (Design Studio
+cutover onto canonical Canvas/tool boundaries), which is not landed at this head — there is
 no canonical-API Studio surface yet for a browser test to walk, and this lane
 must not build a second UI product to simulate one (#286 forbids simulated
 execution; the issue forbids a new Studio). When #95 lands, the display reads

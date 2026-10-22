@@ -30,6 +30,22 @@ from maistro_design.brief import (
     RequiredFact,
 )
 from maistro_design.engine import DesignEngine
+
+# M7-A6 (#795): the closed design-loop proof driver is a published surface of
+# this package — the issue asks for one *public* proof Run, and the driver is
+# how a reviewer reproduces it (`docs/product/M7-A6-DESIGN-LOOP-PROOF.md`).
+# Exposed here rather than left unreachable so the reachability ratchet sees a
+# real call path instead of unreviewed built-but-never-wired code.
+from maistro_design.proof import (
+    PLANTED_DIMENSION_ID,
+    PRODUCT_GOAL_STATEMENT,
+    PROOF_GOAL_ID,
+    DesignLoopProof,
+    InMemoryGoalRevisionCatalog,
+    pack_rubric_catalog,
+    run_design_loop_proof,
+    score_artifact_against_rubric,
+)
 from maistro_design.protocols import (
     DesignEngineProtocol,
     DesignProjectStore,
@@ -116,6 +132,9 @@ from maistro_design.versions import (
 
 __all__ = [
     "NATIVE_SLOTS",
+    "PLANTED_DIMENSION_ID",
+    "PRODUCT_GOAL_STATEMENT",
+    "PROOF_GOAL_ID",
     "AgentWorkInputs",
     "ArtifactKind",
     "ArtifactLock",
@@ -147,6 +166,7 @@ __all__ = [
     "DesignEngine",
     "DesignEngineProtocol",
     "DesignError",
+    "DesignLoopProof",
     "DesignOutput",
     "DesignOutputShapeError",
     "DesignProject",
@@ -165,6 +185,7 @@ __all__ = [
     "HTMLRenderer",
     "InMemoryDesignSkillRegistry",
     "InMemoryDesignSystemRegistry",
+    "InMemoryGoalRevisionCatalog",
     "InMemoryTrustBanishList",
     "InMemoryTrustReviewQueue",
     "IncompatibleDesignSystemError",
@@ -205,9 +226,12 @@ __all__ = [
     "load_builtins",
     "load_bundled",
     "load_catalog",
+    "pack_rubric_catalog",
+    "run_design_loop_proof",
     "scan_design_output",
     "scan_design_system_content",
     "scan_design_text",
+    "score_artifact_against_rubric",
 ]
 
 
