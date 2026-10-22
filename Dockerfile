@@ -115,6 +115,9 @@ RUN apk add --no-cache git && \
 # the security patches the pinned base digest froze (trivy: libpcre2 HIGH on
 # debian 12.15), matching Dockerfile.research's hardening.
 FROM python:3.13.16-slim-bookworm@sha256:a1165e272e578941b84abc79e4ab38a0305cd12803a5c4247979ac7655f4d641
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libexpat1=2.5.0-1+deb12u5 \
+    && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 RUN apt-get update \
     && apt-get install -y --no-install-recommends git \
