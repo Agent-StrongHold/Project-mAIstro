@@ -189,6 +189,27 @@ def test_scratch_readiness_probes_final_server_and_target_db() -> None:
     assert old_violations, "fail-before baseline drifted: the pinned probe is no longer racy"
 
 
+def test_verify_readiness_failure_is_diagnosable() -> None:
+    """A scratch container that never becomes ready must leave evidence.
+
+    Two CI runs on 2026-10-18 (39116394628, 39134762935) failed two different
+    characterization tests with a bare "scratch postgres did not become
+    ready" — no logs, no container state — so a slow initdb under runner load
+    could not be told apart from a container that crashed at startup. The
+    readiness loop must probe the container's state (fail fast once it has
+    exited), surface its logs on every readiness failure, and carry a budget
+    that absorbs slow initdb instead of the old 60s one.
+    """
+    verify = _read(VERIFY_SH)
+    assert "docker logs" in verify, "a readiness failure must surface the scratch container's logs"
+    assert "{{.State.Running}}" in verify, (
+        "readiness must fail fast when the container has exited — waiting cannot help"
+    )
+    assert "seq 1 120" in verify, "readiness budget must absorb slow initdb under load"
+    old = _pre_change_script("verify-restore.sh")
+    assert "docker logs" not in old, "pre-change script unexpectedly already dumped logs"
+
+
 def test_security_defaults_preserved_no_restrict_key() -> None:
     """No script may invoke pg_dump --restrict-key (known-key injection risk).
 
