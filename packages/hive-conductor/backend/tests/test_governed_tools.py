@@ -203,6 +203,63 @@ async def test_governed_tool_refuses_without_live_canonical_identity(runtime, mo
     assert called is False
 
 
+@pytest.mark.parametrize("conflicting_scope", ["workspace_id", "project_id"])
+async def test_governed_tool_refuses_scope_conflicting_with_admitted_run(
+    runtime, monkeypatch, conflicting_scope: str
+) -> None:
+    import services.governed_tools as governed
+    import services.tool_executor as tools
+
+    calls: list[str] = []
+
+    async def fake_search(query: str, max_results: int = 5, *, model_call=None) -> dict[str, Any]:
+        calls.append(query)
+        return {"query": query}
+
+    monkeypatch.setattr(tools, "web_search", fake_search)
+    scope = {"workspace_id": _WORKSPACE, "project_id": runtime.project_id}
+    scope[conflicting_scope] = "unrelated-scope"
+    with (
+        runtime.context(),
+        bind_execution_context(**scope),
+        pytest.raises(RunIntegrityError, match="scope does not match its admitted Run"),
+    ):
+        await governed.governed_web_search("query", container=runtime.container)
+
+    assert calls == []
+    # Scope confusion must not even register a Binding in the unrelated scope.
+    binding_id = f"hive-tool:{scope['workspace_id']}:{scope['project_id']}"
+    assert await runtime.container.capability_effects.bindings.get(binding_id) is None
+
+
+async def test_governed_tool_derives_missing_correlation_scope_from_admitted_run(
+    runtime, monkeypatch
+) -> None:
+    import services.governed_tools as governed
+    import services.tool_executor as tools
+
+    from maistro.tools.contracts import canonical_digest
+
+    async def fake_search(query: str, max_results: int = 5, *, model_call=None) -> dict[str, Any]:
+        return {"query": query}
+
+    monkeypatch.setattr(tools, "web_search", fake_search)
+    with bind_execution_context(
+        run_id=runtime.identity[0],
+        node_run_id=runtime.identity[1],
+        attempt_id=runtime.identity[2],
+    ):
+        result = await governed.governed_web_search("canonical-scope", container=runtime.container)
+
+    assert result == {"query": "canonical-scope"}
+    arguments = {"query": "canonical-scope", "max_results": 5}
+    rows = await _tool_invocations(runtime, f"tool:web_search:{canonical_digest(arguments)}")
+    assert len(rows) == 1
+    assert rows[0].status is InvocationStatus.COMPLETED
+    assert (rows[0].workspace_id, rows[0].project_id) == (_WORKSPACE, runtime.project_id)
+    assert (rows[0].run_id, rows[0].node_run_id, rows[0].attempt_id) == runtime.identity
+
+
 async def test_chat_web_tools_route_through_the_governed_seam(runtime, monkeypatch) -> None:
     """The chat handlers execute via governed_web_search/governed_browse_url."""
     import services.chat_completion as chat

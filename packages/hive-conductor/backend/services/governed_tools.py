@@ -201,8 +201,13 @@ async def live_tool_context(container: Any) -> ToolInvocationContext:
         raise RunIntegrityError("hive tool execution records do not exist")
     if node.run_id != run.run_id or attempt.node_run_id != node.node_run_id:
         raise RunIntegrityError("hive tool execution records belong to different executions")
-    workspace_id = live.workspace_id.strip() or run.workspace_id
-    project_id = live.project_id.strip() or run.project_id
+    if live.workspace_id not in ("", run.workspace_id) or live.project_id not in (
+        "",
+        run.project_id,
+    ):
+        raise RunIntegrityError("hive tool scope does not match its admitted Run")
+    workspace_id = run.workspace_id
+    project_id = run.project_id
     if not (workspace_id.strip() and project_id.strip()):
         raise RunIntegrityError("hive tool effects require a Workspace/Project scope")
     return ToolInvocationContext(
