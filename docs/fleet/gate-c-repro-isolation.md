@@ -31,6 +31,9 @@ docker compose -f docker-compose.repro.yml -p repro-$$ down -v --remove-orphans
 Notes:
 - Engine migrations run against `repro-postgres` (pgvector pg18, same major
   as production) with throwaway credentials.
+- The engine boots with auth enabled: throwaway API key `repro:repro-dev-key`
+  (`principal:secret` format per #843; override with `REPRO_API_KEY`), and
+  `ROUTER_API_KEY` reuses `LITELLM_MASTER_KEY`.
 - Add `compose.override`-style extras only via additional `-f` files; keep
   names/ports inside the `repro-*` / offset ranges.
 - If a needed service is missing from this file (e.g. langfuse for a trace
