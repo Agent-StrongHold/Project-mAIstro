@@ -110,14 +110,27 @@ RUN apk add --no-cache git && \
 # rest (#346): security.yml/release.yml scan it, so the apt layer also applies
 # the security patches the pinned base digest froze (trivy: libpcre2 HIGH on
 # debian 12.15), matching Dockerfile.research's hardening.
-FROM python:3.13.16-slim-bookworm@sha256:a1165e272e578941b84abc79e4ab38a0305cd12803a5c4247979ac7655f4d641
-WORKDIR /app
+#
+# The security-patch layer lives in its own stage so CI can name it in
+# `--no-cache-filter` (#795). A plain `RUN apt-get upgrade` has a cache key
+# that never changes — same base digest, same instruction — so the GHA cache
+# silently replayed a months-old mirror state forever: the 2026-10-22 gate
+# failed on libexpat1 2.5.0-1+deb12u4 (CVE-2025-59375/CVE-2026-77214, fixed
+# in deb12u5) in an image whose Dockerfile nobody had touched, because the
+# cached layer predated the security update and `apt-get upgrade` never
+# re-ran to pick it up. security.yml builds this stage with
+# `--no-cache-filter runtime-apt` so every candidate re-consults the security
+# mirror; release.yml builds cold and needs no flag.
+FROM python:3.13.16-slim-bookworm@sha256:a1165e272e578941b84abc79e4ab38a0305cd12803a5c4247979ac7655f4d641 AS runtime-apt
 RUN apt-get update \
     && apt-get install -y --no-install-recommends git \
     && apt-get upgrade -y \
     && apt-get autoremove -y --purge \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* /var/cache/apt/* /tmp/*
+
+FROM runtime-apt
+WORKDIR /app
 # /usr/local/bin is on PATH so the static docker CLI (copied below) is found when
 # the sandbox tool shells out to `docker run`.
 ENV PATH="/app/venv/bin:/usr/local/bin:$PATH" \
