@@ -179,6 +179,12 @@ or placeholder-only section.
 
 ### Fixed
 
+- **Conductor run projections preserve intermediate canonical status (#1036).**
+  HTTP and live WebSocket result writers retain created/queued/running/waiting/paused
+  without stamping a completion time. Missing or unknown result status is logged
+  without mutating the projection. This keeps existing unavailable-reader
+  inspection fallback accurate while leaving canonical lifecycle authority unchanged.
+
 - **Hive Graph execution refuses missing canonical authority (#1113).**
   Registered and stored DAGs now require the Container's RunStore and Graph
   continuation owner before admission or execution. Stub/degraded mode reports

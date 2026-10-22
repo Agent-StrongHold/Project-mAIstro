@@ -419,6 +419,27 @@ class DagRunStore:
                 run.result = result
             self._persist(run)
 
+    async def record_nonterminal_result(
+        self, run_id: str, *, status: str, result: dict[str, Any]
+    ) -> None:
+        """Copy a known in-flight canonical result without finishing its row.
+
+        This is presentation data, not a lifecycle transition. As with
+        ``finish_run``, an already-finished row is not rewritten. There is no
+        revision/order token in this projection contract: canonical inspection
+        remains authoritative when readable, including after recovery.
+        """
+        from maistro.runs.model import TERMINAL_RUN_STATUSES, RunStatus
+
+        canonical_status = RunStatus(status)
+        if canonical_status in TERMINAL_RUN_STATUSES:
+            raise ValueError("a terminal result must use finish_run")
+        run = self._runs.get(run_id)
+        if run and run.finished_at is None:
+            run.status = canonical_status.value
+            run.result = result
+            self._persist(run)
+
     async def record_canonical_run(self, run_id: str, *, canonical_run_id: str) -> bool:
         """Attach the canonical Run identity to an already-open projection row.
 
