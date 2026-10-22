@@ -399,3 +399,108 @@ async def test_broker_host_authority_grant_carries_effective_subset() -> None:
     assert result.status == "completed"
     assert captured["metadata"]["delegated_actions"] == ["read_file"]
     assert captured["metadata"]["delegation_grant_ref"] == "grant-broker-1"
+
+
+@pytest.mark.asyncio
+async def test_broker_delegates_through_the_durable_async_authority(tmp_path) -> None:
+    """The shipped durable authority decides asynchronously: the broker must
+
+    await the decision and carry its grant, not treat the awaitable itself as
+    the decision object (#845; the SQLite twin of the in-memory path).
+    """
+    import aiosqlite
+
+    from maistro.security.sentinel.delegation_durable import (
+        DurableDelegationAuthority,
+        SqliteDelegationStore,
+    )
+
+    catalog = AgentCatalog()
+    catalog.register(
+        AgentCard(
+            id="planner",
+            name="planner",
+            trust_tier="t2",
+            delegation_mode="allow_list",
+            sub_agents=("coder",),
+        )
+    )
+    catalog.register(
+        AgentCard(id="coder", name="coder", trust_tier="t2", tools=("read_file", "write_file"))
+    )
+    principal = Principal(id="planner", kind="agent", roles=(), scopes=(), owner="owner-1")
+    captured: dict[str, object] = {}
+
+    async def _capturing_invoker(task: A2ATask, budget: DelegationBudget) -> str:
+        captured["metadata"] = dict(task.metadata)
+        return f"handled:{task.to_agent}:{task.task}"
+
+    conn = await aiosqlite.connect(tmp_path / "delegation.sqlite")
+    try:
+        authority = DurableDelegationAuthority(SqliteDelegationStore(conn))
+        await authority.ensure_schema()
+        await authority.add_host_grant(_host_grant(actions=frozenset({"read_file"})))
+        broker = A2ABroker(
+            resolver=catalog,
+            local=LocalTransport(_capturing_invoker),
+            delegation_authority=authority,
+        )
+        result = await broker.delegate(
+            from_agent="planner",
+            to="coder",
+            task="delegate this exact task",
+            budget=_budget(),
+            principal=principal,
+            owner_id="owner-1",
+            goal_id="goal-1",
+            run_id="run-1",
+            invocation_id="inv-1",
+            scope="project-1",
+            artifact="delegate this exact task",
+        )
+    finally:
+        await conn.close()
+
+    assert result.status == "completed"
+    assert captured["metadata"]["delegated_actions"] == ["read_file"]
+    assert captured["metadata"]["delegation_grant_ref"] == "grant-broker-1"
+    assert captured["metadata"]["delegation_granted_by"] == "host-policy"
+
+
+@pytest.mark.asyncio
+async def test_broker_durable_authority_refusal_names_the_host_reason(tmp_path) -> None:
+    """An async refusal from the durable authority still refuses the hop, with
+
+    the host's own reason surfaced — not a silent pass-through.
+    """
+    import aiosqlite
+
+    from maistro.security.sentinel.delegation_durable import (
+        DurableDelegationAuthority,
+        SqliteDelegationStore,
+    )
+
+    principal = Principal(id="planner", kind="agent", roles=(), scopes=(), owner="owner-1")
+    conn = await aiosqlite.connect(tmp_path / "delegation.sqlite")
+    try:
+        authority = DurableDelegationAuthority(SqliteDelegationStore(conn))
+        await authority.ensure_schema()
+        broker = A2ABroker(
+            resolver=_catalog(), local=LocalTransport(_echo_invoker), delegation_authority=authority
+        )
+        with pytest.raises(DelegationRefused, match="no host grant matches this delegation"):
+            await broker.delegate(
+                from_agent="planner",
+                to="coder",
+                task="delegate this exact task",
+                budget=_budget(),
+                principal=principal,
+                owner_id="owner-1",
+                goal_id="goal-1",
+                run_id="run-1",
+                invocation_id="inv-1",
+                scope="project-1",
+                artifact="delegate this exact task",
+            )
+    finally:
+        await conn.close()

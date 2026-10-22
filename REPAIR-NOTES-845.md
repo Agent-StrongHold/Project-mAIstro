@@ -1,5 +1,61 @@
 # Repair notes — #845 round (job 9d1d8b32, branch auto-845 @ 89875a6e0)
 
+## Round 4 (job b178eb75, @ merge-queue evaluation of cff50ff84): the coverage gate is the diff-coverage leg, not the floor or the suites
+
+The merge-queue evaluation failed exactly one check: `Coverage gate
+(publish-set floor + diff coverage)`. The job's own log (run 39854170068,
+job 120095870394) shows every pytest producer green — server 618, turing 210,
+turing-backend 102, design 622, registry 366, ext-harness 273, ext-sdk 147,
+hive 3907, root tests 5692 — and the 87% publish-set floor passing (combine
+finished 21:21:23). The step died at the final command:
+`check-diff-coverage.py coverage.xml --base 774ae42f…` with three files below
+the per-file floor:
+
+- `maistro/a2a/broker.py`: 50% of 2 changed lines — the `await` narrowing of
+  an async delegation decision inside `delegate()`;
+- `maistro/security/sentinel/policy.py`: 75% of 4 changed lines — the same
+  narrowing in `Sentinel.authorize_delegation`;
+- `maistro/security/sentinel/delegation_durable.py`: 77.8% of 18 changed
+  branch arcs — partial at 207/209/212 (the durable authority's non-agent,
+  owner-mismatch and expired-row denials) and 233 (naive-expiry row
+  normalization).
+
+Root cause: the only tests driving the shipped durable authority called
+`await authority.authorize(...)` directly, so the two production consumers —
+broker and Sentinel — never executed their async branch in a measured run,
+and the durable authority's degenerate denials had no tests at all (the
+in-memory twin's denials were tested; the durable copy shipped unproven).
+The `RuntimeError: Event loop is closed` lines in the same log are pytest
+unraisable-exception warnings during the server producer, which passed
+618/618 — they are not the failure.
+
+Repair (test-only; no production or gate edit): seven core tests drive the
+durable SQLite authority through the production seams — broker delegation
+allowed + refused (2), `Sentinel.authorize_delegation` over a durable
+decision (1) — and pin the authority's own fail-closed paths: non-agent
+principal refused, owner mismatch refused, expiry re-checked after the store
+read (a stale TTL row cannot authorize; a valid row behind it still
+answers), and a naive stored expiry read back as UTC (4).
+`docs/testing/inventory-notes/auto-845-diff-coverage-async-authority.md`
+records the +7 core delta.
+
+Evidence (all at the round's final tree):
+
+- CI's exact gate invocation, rebuilt from CI's own producer commands:
+  `coverage xml` then `check-diff-coverage.py coverage.xml --base
+  774ae42fc1204acaa651cc0e5a4cca688139ade4` → exit 0, `6 changed file(s)
+  measured`, every file ≥90% lines / ≥80% branch arcs (the PG legs of
+  `delegation_durable.py` measured against a real pg18 database after
+  `alembic upgrade head` through the branch's 067 — chain applies cleanly).
+- Publish-set floor: all five coverage-unit producers plus the core suite
+  green locally; `coverage report --fail-under=87` → exit 0 (93% on the
+  local subset, a lower bound of CI's union).
+- Focused suites: `test_delegation_durable.py` + `test_delegation_authority.py`
+  + `test_broker.py` → 46 passed, 2 PG-environment skips; full core suite
+  16269 passed / 1180 skipped under `coverage run --branch`.
+- `ruff check .` clean; `ruff format --check .` clean (3456 files);
+  `check-suite-inventory.py` → ok, 21 suites match (core 17456 = 17449 + 7).
+
 ## Round 3 (job 736c5d8f, @ merge-queue evaluation of 8b35f5193): CI ledger repair
 
 The merge-queue evaluation failed five jobs. Three were this branch's own
