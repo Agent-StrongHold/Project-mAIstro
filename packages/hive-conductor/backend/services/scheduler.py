@@ -611,6 +611,15 @@ class _ScheduleRunner:
             )
             if workspace is None or membership is None:
                 raise ValueError("schedule actor is no longer a Workspace member")
+            # Archiving is a presentation-state flip, so the canonical
+            # Workspace and memberships above stay intact (#1201). Recheck
+            # the same presentation boundary the interactive DAG scope
+            # enforces so an archived Workspace admits no automatic fires.
+            from services import workspace_authority
+
+            presentation = workspace_authority.presentation_store().get(workspace_id)
+            if presentation is not None and presentation.active is False:
+                raise ValueError("schedule Workspace is archived (inactive)")
 
         explicit_project = str(getattr(schedule, "project_id", "") or "")
         if explicit_project:
