@@ -360,24 +360,24 @@ class TestRunnerImageParity:
     def test_runner_image_declares_every_required_analyzer(self) -> None:
         """The scorecard's required analyzer set must be installed in the
         shipped runner image, or every dispatched run dies in a not_run veto
-        for an environment reason. Two install sources count:
-        - the image's explicit ``uv pip install`` invocation inside a RUN
-          instruction (bandit, coverage, ...): a dedicated ``RUN uv pip
-          install ...`` line, or the same invocation chained into the combined
-          ``RUN uv sync ... && uv pip install ... && uv cache clean`` layer —
-          the chain exists so the uv wheel cache (which keeps METADATA for
-          vulnerable tuples the secret scanner would flag) never persists to
-          the final image, and must not be un-merged to satisfy this test;
-        - the locked dev group ``uv sync --frozen`` installs (ruff, mypy are
-          root dev-group members, so they ride the locked sync).
-        A required tool in NEITHER source is the #304 defect: a gate the image
-        can never execute."""
+        for an environment reason (#304). Since #348 the image installs
+        exclusively from the resolved lockfile: one ``RUN uv sync --locked
+        --extra rsi-fitness`` layer carries the workspace, the locked dev
+        group (ruff, mypy) and the locked fitness extra (bandit, coverage,
+        ...) — the explicit unpinned ``uv pip install coverage bandit ...``
+        layer is gone by design, and re-adding it would reintroduce the
+        implicit build-time resolution #348 removes. Parity therefore binds
+        to the locked install surface: the RUN line must be lock-pinned,
+        must request the fitness extra, must keep the dev group (no
+        --no-dev), and every required analyzer must be named by the locked
+        dev group or the locked rsi-fitness extra in pyproject.toml. A
+        required tool in NEITHER locked source is the #304 defect: a gate
+        the image can never execute."""
         import tomllib
 
         dockerfile = (_REPO_ROOT / "Dockerfile.rsi-runner").read_text(encoding="utf-8")
-        # Join backslash continuations first: the analyzer install lives inside
-        # the combined ``RUN uv sync ... && uv pip install ... && uv cache clean``
-        # layer, so the invocation only appears on a continuation line.
+        # Join backslash continuations first: a multi-line RUN otherwise
+        # hides its flags from the line scan below.
         instructions: list[str] = []
         current = ""
         for raw in dockerfile.splitlines():
@@ -391,34 +391,42 @@ class TestRunnerImageParity:
                 current = ""
         if current:
             instructions.append(current)
-        install_lines = [
+        sync_lines = [
             instruction
             for instruction in instructions
-            if instruction.startswith("RUN") and "uv pip install" in instruction
+            if instruction.startswith("RUN") and "uv sync" in instruction
         ]
-        assert install_lines, "runner image lost its analyzer install line"
-        explicit = " ".join(install_lines)
-        # The image must keep syncing the dev group (no --no-dev): that is how
-        # the locked ruff/mypy reach the runner venv.
-        sync_lines = [ln for ln in dockerfile.splitlines() if "uv sync" in ln]
-        assert any("--frozen" in ln and "--no-dev" not in ln for ln in sync_lines), (
+        assert sync_lines, "runner image lost its workspace sync layer"
+        lock_pinned = [ln for ln in sync_lines if "--locked" in ln or "--frozen" in ln]
+        assert lock_pinned, (
+            "runner image sync must be lock-pinned (--locked/--frozen): an "
+            "unpinned sync re-resolves dependencies outside uv.lock (#348)"
+        )
+        assert any("--extra rsi-fitness" in ln for ln in lock_pinned), (
+            "runner image must sync the rsi-fitness extra: it is the locked "
+            "source of the scoring toolchain (#348)"
+        )
+        assert not any("--no-dev" in ln for ln in lock_pinned), (
             "runner image must install the locked dev group (ruff/mypy live there)"
         )
         pyproject = tomllib.loads((_REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
         dev_group = " ".join(pyproject["dependency-groups"]["dev"])
+        fitness_extra = " ".join(pyproject["project"]["optional-dependencies"]["rsi-fitness"])
         for spec in REQUIRED_LINT_TOOL_SPEC:
             gate, dist = spec[0], spec[1]
             installed_via = (
-                "image install line"
-                if dist in explicit
+                "locked rsi-fitness extra"
+                if dist in fitness_extra
                 else ("locked dev group" if dist in dev_group else None)
             )
             assert installed_via is not None, (
-                f"required gate {gate!r} needs analyzer {dist!r}: installed by neither "
-                "Dockerfile.rsi-runner nor the root dev group"
+                f"required gate {gate!r} needs analyzer {dist!r}: named by neither "
+                "the locked rsi-fitness extra nor the root dev group, so the "
+                "shipped runner image can never execute it (#304)"
             )
-        # coverage backs the tests/coverage gates on the same runner.
-        assert "coverage" in explicit
+        # coverage backs the tests/coverage gates on the same runner, and it
+        # rides the locked rsi-fitness extra like the rest of the toolchain.
+        assert "coverage" in fitness_extra
 
 
 # ---------------------------------------------------------------------------

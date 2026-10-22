@@ -280,9 +280,15 @@ jobs:
 
       - name: Verify live Python packages and Conductor identity contract
         run: |
+          # The floor comparisons use stdlib version tuples, not
+          # `packaging.Version`: #348's lock-enforced image stopped carrying
+          # the test toolchain (pytest/hypothesis) that transitively supplied
+          # `packaging`, and the reconciliation gate requires the shipped set
+          # to equal the locked export exactly — so the smoke asserts the
+          # same floors without asking the image for an extra dist.
           docker run --rm --entrypoint python \
             "hive-conductor:pr-${CANDIDATE_TAG}" \
-            -c "import importlib.metadata as m, sys; from packaging.version import Version; assert sys.version_info[:3] == (3, 13, 16), sys.version; assert m.version('bip-utils') == '2.12.2', m.version('bip-utils'); assert m.version('coincurve') == '21.0.0', m.version('coincurve'); assert m.version('pynacl') == '1.6.2', m.version('pynacl'); assert Version(m.version('msgpack')) >= Version('1.2.1'), m.version('msgpack'); assert Version(m.version('setuptools')) >= Version('78.1.1'), m.version('setuptools'); from maistro.identity import ConductorSeed; seed = ConductorSeed.generate(); assert seed.did_key().startswith('did:key:z'); seed.zero(); print('identity=operational python='+sys.version.split()[0]+' bip-utils='+m.version('bip-utils')+' coincurve='+m.version('coincurve')+' pynacl='+m.version('pynacl'))"
+            -c "import importlib.metadata as m, sys; _v = lambda s: tuple(int(p) for p in s.split('.') if p.isdigit()); assert sys.version_info[:3] == (3, 13, 16), sys.version; assert m.version('bip-utils') == '2.12.2', m.version('bip-utils'); assert m.version('coincurve') == '21.0.0', m.version('coincurve'); assert m.version('pynacl') == '1.6.2', m.version('pynacl'); assert _v(m.version('msgpack')) >= (1, 2, 1), m.version('msgpack'); assert _v(m.version('setuptools')) >= (78, 1, 1), m.version('setuptools'); from maistro.identity import ConductorSeed; seed = ConductorSeed.generate(); assert seed.did_key().startswith('did:key:z'); seed.zero(); print('identity=operational python='+sys.version.split()[0]+' bip-utils='+m.version('bip-utils')+' coincurve='+m.version('coincurve')+' pynacl='+m.version('pynacl'))"
 
       - name: Verify live observability extra in Conductor image
         run: |

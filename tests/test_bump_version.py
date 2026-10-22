@@ -144,7 +144,7 @@ class TestTheRegisteredCorpus:
         "label_fragment",
         [
             "pyproject:packages/hive-conductor/pyproject.toml",
-            "inter-package dep:packages/hive-conductor/pyproject.toml:maistro-core[bcrypt]",
+            "inter-package dep:packages/hive-conductor/pyproject.toml:maistro-core[bcrypt,identity]",
             "inter-package dep:packages/hive-conductor/pyproject.toml:maistro-core[observability]",
         ],
     )
