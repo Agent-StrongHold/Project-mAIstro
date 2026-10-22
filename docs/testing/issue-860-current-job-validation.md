@@ -28,9 +28,12 @@ the documented 14,400-second minimum, and no qualifying exact-RC evidence. These
 are concrete blockers; this run does not claim they were freshly re-executed.
 
 The initial quoted-glob vulture invocation failed before scanning because the glob was passed literally. Re-running with shell expansion,
-`uv run python scripts/check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'`, passed: base `a9fdec4cb40a` and candidate `8a57fa9acc1a` both measured 1,314 identities/findings, with zero unclassified and zero never-allowlist. No quality ledger was edited.
+`uv run python scripts/check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'`, passed: base `a9fdec4cb40a` and candidate `70e9b7918553` both measured 1,314 identities/findings, with zero unclassified and zero never-allowlist. No quality ledger was edited.
 
-`uv run pytest tests/test_soak_promotion_gates.py -x -q` passed (84 tests). These unit tests validate the gate behavior, not production topology or soak acceptance.
+Fresh validation on the assigned head `70e9b79185537a01cd645b7c26a79d7540cd668f`:
+`uv run pytest tests/test_soak_promotion_gates.py -x -q` passed (84 tests), and the correctly expanded vulture-baseline command above passed. These validate unit gates and the ledger only, not production topology or soak acceptance. `git diff --check` passed. The assigned job directory contained no `check-*.log` files.
+
+Direct inspection reconfirmed `scripts/soak/run_soak.py:744-755` hard-codes `ok: false` for `host-uvicorn-preflight`. The recorded round-109 evidence states `sustain_seconds=420.05`, versus the profile minimum of 14,400 seconds (`docs/testing/soak/evidence/m3a-round109-shakedown.json:221`; profile duration requirement in `docs/testing/soak/m3a-load-profile.md`). This worker did not rerun a soak; the exact-RC Compose artifact/config and four-hour window are not supplied. The profile's remaining-coverage gaps remain blockers, including concurrent population, Graph/node fan-out, successful tool/model calls, Design/Canvas, Goal/background-worker reconciliation, and worker fencing.
 
 ## ADR reconciliation
 
