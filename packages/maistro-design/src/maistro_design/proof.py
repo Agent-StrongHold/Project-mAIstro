@@ -688,9 +688,9 @@ async def run_design_loop_proof(
     # -- Refine re-evaluation: a new Attempt (open_re_eval_attempt) on the
     #    parked refine NodeRun, scoring the refined artifact — read from the
     #    durable pause metadata, not caller memory — against Rubric revision 2.
-    record = await durable.get(admitted.run_id)
-    assert record is not None
-    proposed_artifact = _refine_proposed_artifact(record, node_ids["refine.revise"])
+    fetched = await durable.get(admitted.run_id)
+    assert fetched is not None
+    proposed_artifact = _refine_proposed_artifact(fetched, node_ids["refine.revise"])
     re_eval = await _re_evaluate_refined_artifact(
         run_store,
         rubric_store,
