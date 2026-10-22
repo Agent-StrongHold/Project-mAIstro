@@ -168,13 +168,26 @@ def main() -> int:
     # Conditional pins gate nothing: their marker may or may not apply on the
     # image's platform. Every pin in the image must be expected (with the
     # expected version); every unconditional expected pin must be in the image.
+    # Comparing by canonical NAME (not by pin string) is what makes a version
+    # skew nameable: `foo==1.0` expected and `foo==2.0` installed shares no
+    # exact string, so a set difference alone would report it as a confusing
+    # missing+extra pair — and the original string-keyed `skewed` comprehension
+    # (`for pin in actual & everything_expected ... .pop() != pin`) compared
+    # each pin against itself and could never fire at all.
     everything_expected = required | conditional
-    missing = sorted(required - actual)
-    extra = sorted(actual - everything_expected)
+    actual_by_name = {p.partition("==")[0]: p for p in actual}
+    expected_by_name = {p.partition("==")[0]: p for p in everything_expected}
+    skewed_names = {
+        name
+        for name in actual_by_name.keys() & expected_by_name.keys()
+        if actual_by_name[name] != expected_by_name[name]
+    }
+    missing = sorted(p for p in required - actual if p.partition("==")[0] not in skewed_names)
+    extra = sorted(
+        p for p in actual - everything_expected if p.partition("==")[0] not in skewed_names
+    )
     skewed = sorted(
-        f"{pin} (image) != {everything_expected.intersection({pin}).pop()}"
-        for pin in actual & everything_expected
-        if everything_expected.intersection({pin}).pop() != pin
+        f"{actual_by_name[name]} (image) != {expected_by_name[name]}" for name in skewed_names
     )
     if missing or extra or skewed:
         print(f"image {args.image} does NOT reconcile to the lock:")
