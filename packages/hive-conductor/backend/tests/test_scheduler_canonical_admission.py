@@ -289,7 +289,9 @@ def test_scheduler_tick_executes_the_admitted_run_to_completion(
         container = await create_container(
             AgentConfig(router_api_key="test-key", workspace_id="ws-1")
         )
-        await container.workspace_store.create(creator_user_id="user-1", name="Schedule WS", workspace_id="ws-1")
+        await container.workspace_store.create(
+            creator_user_id="user-1", name="Schedule WS", workspace_id="ws-1"
+        )
         root = await container.project_scope_store.root_for_workspace("ws-1")
         await container.template_store.put(
             GraphTemplate(

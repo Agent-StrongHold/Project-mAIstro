@@ -31,6 +31,11 @@ from maistro.graph.nodes.base import (
     NodeResult,
     ReplaySemantics,
 )
+from maistro.graph.verification.escalation import (
+    ESCALATED_MODEL_CONTEXT_KEY,
+    LADDER_START_CONTEXT_KEY,
+    escalation_from_policy,
+)
 from maistro.runs.aggregation import derive_run_terminal_status, terminal_run_payload
 from maistro.runs.lifecycle import (
     settle_open_node_run,
@@ -1151,7 +1156,47 @@ def _answered_pause_carry(answered: Mapping[str, Any]) -> dict[str, Any] | None:
     return carried
 
 
-def _build_ctx(record: DurableRunRecord, node_id: str) -> NodeContext:
+def _supervision_context(
+    metadata: dict[str, Any],
+    record: DurableRunRecord,
+    node_id: str,
+    spec: GraphNode,
+) -> None:
+    """Surface verification-supervision decisions in the node's context.
+
+    Two channels (epic M4-I):
+
+    - *Escalation*: when supervision withheld a prior visit for missing its
+      quality floor, the re-visit must run the ladder rung the executor
+      chose — the node honors it or ignores it, but it must be able to see
+      the decision. The *first* visit under a declared ladder is seeded with
+      the cheapest rung, so cheap-first starts the ladder rather than the
+      node's ambient default model: with the start seeded, "no supervision
+      state yet" provably means the cheapest rung ran, which is exactly the
+      premise the escalation fold escalates from. The seed rides its own
+      key — it is the ladder's beginning, not a supervision decision — so a
+      node's stronger first-visit rules (the vision alias an image
+      observation demands) still outrank it, while a supervision
+      escalation stays final.
+    - *Pause carry*: a resumed visit re-enters the node with the metadata
+      its pause checkpointed, so the resume continues the same logical work.
+    """
+    escalation = record.graph_state.metadata.get("escalations", {}).get(node_id)
+    if isinstance(escalation, Mapping) and escalation.get("model"):
+        metadata[ESCALATED_MODEL_CONTEXT_KEY] = str(escalation["model"])
+    else:
+        declared = escalation_from_policy(spec.policies)
+        if declared is not None:
+            metadata[LADDER_START_CONTEXT_KEY] = declared[0].cheapest
+    carried = _current_pause_carry(record, node_id)
+    if carried is None:
+        answered = record.hitl_answers.get(node_id)
+        carried = _answered_pause_carry(answered) if isinstance(answered, Mapping) else None
+    if carried is not None:
+        metadata[RESUMED_PAUSE_KEY] = carried
+
+
+def _build_ctx(record: DurableRunRecord, node_id: str, spec: GraphNode) -> NodeContext:
     """Build the runtime execution context for one canonical NodeRun."""
     from maistro.graph.types import GraphBlackboard
 
@@ -1173,12 +1218,7 @@ def _build_ctx(record: DurableRunRecord, node_id: str) -> NodeContext:
         "hitl_answers": dict(record.hitl_answers),
         "synth_depth": synth_depth,
     }
-    carried = _current_pause_carry(record, node_id)
-    if carried is None:
-        answered = record.hitl_answers.get(node_id)
-        carried = _answered_pause_carry(answered) if isinstance(answered, Mapping) else None
-    if carried is not None:
-        metadata[RESUMED_PAUSE_KEY] = carried
+    _supervision_context(metadata, record, node_id, spec)
     return NodeContext(
         run_id=record.run_id,
         dag_id=record.run.graph.graph_id,

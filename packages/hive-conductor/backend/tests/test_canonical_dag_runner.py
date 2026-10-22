@@ -228,6 +228,8 @@ async def test_required_node_failure_terminalizes_canonical_run_failed(
 ) -> None:
     import services.canonical_dag_runner as runner
 
+    monkeypatch.setitem(globals(), "_SANDBOX_FAIL_PROMPT", "fail-me")
+
     store = runner._container().graph_run_store
 
     result = await runner.execute_dag(
@@ -753,6 +755,8 @@ async def test_declared_node_timeout_becomes_the_canonical_attempt_deadline(
     hard-code (#1184)."""
     import services.canonical_dag_runner as runner
 
+    monkeypatch.setitem(globals(), "_SANDBOX_NODE_DELAY_S", 3.0)
+
     store = runner._container().graph_run_store
 
     slow_node = _safe_node("a")
@@ -785,6 +789,8 @@ async def test_changing_the_declared_node_timeout_changes_whether_work_survives(
     monkeypatch: pytest.MonkeyPatch, execution_scope: DagExecutionScope
 ) -> None:
     import services.canonical_dag_runner as runner
+
+    monkeypatch.setitem(globals(), "_SANDBOX_NODE_DELAY_S", 1.5)
 
     store = runner._container().graph_run_store
 

@@ -18,3 +18,17 @@ actor whose membership is gone), and a PostgreSQL `PgScheduleStore` round-trip c
 proving `workspace_id`, `project_id`, and `actor_principal_id` survive `put`/`get`,
 the project-scoped listing, and a `record_fire` cursor advance. The PG case requires
 `MAISTRO_TEST_PG_DSN` and skips like the existing `test_pg_admission.py` live suite.
+
+Rebuild-repair round (no count change): the lane rebuild commit had mangled 219
+non-issue files (four to the point of syntax errors) and dropped three lane deltas
+the issue tests depend on — the `SCHEDULE_REQUESTED_BY_KEY` definition in
+`maistro/runs/sources.py`, the `requester_id` stub signature in
+`test_schedule_workspace_scope.py`, and the workspace-membership fixture adaptation
+in `test_scheduler_canonical_due.py`. Repair restored every non-issue file to the
+develop base `9ef97945e`, re-applied those three deltas, seeded the monkeypatched
+Container's own workspace store in the two `test_manual_fire_canonical.py` spine
+cases (production has one Container; the route-facing fallback store and the
+Container store are the same instance there, so the test mirrors both seams), and
+made `test_schedule_scope.py`'s list assertion membership-based so ambient rows
+left by other suites cannot fail it. No test was added or removed; the deltas above
+are unchanged.

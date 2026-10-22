@@ -48,7 +48,11 @@ def test_schedule_crud_is_owner_and_workspace_scoped(admin_client: Any, authed_c
         assert owned["workspace_id"] == owner_workspace
         assert owned["project_id"]
 
-        assert admin_client.get("/v1/schedules").json() == [owned]
+        # The owned row is listed for its Workspace's owner. The list is not
+        # asserted whole: other suites may leave rows in Workspaces this
+        # principal can see, and visibility -- not an empty world -- is what
+        # scoping decides here.
+        assert owned in admin_client.get("/v1/schedules").json()
         assert authed_client.get("/v1/schedules").json() == []
 
         # GET is not elevation-gated, so this reaches the schedule route and
@@ -161,9 +165,7 @@ def test_manual_fire_is_owner_scoped_and_stamps_the_requesting_principal(
     async def _noop_validate(graph: Any) -> None:
         return None
 
-    monkeypatch.setattr(
-        canonical_graph_spine.run_store, "_validate_graph_scope", _noop_validate
-    )
+    monkeypatch.setattr(canonical_graph_spine.run_store, "_validate_graph_scope", _noop_validate)
 
     template_id = "sched-scope-fire"
     get_registry().register(

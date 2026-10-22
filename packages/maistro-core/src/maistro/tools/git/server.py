@@ -17,7 +17,7 @@ from typing import Annotated, Any
 from urllib.parse import SplitResult, urlsplit
 from urllib.request import url2pathname
 
-from mcp.server.mcpserver import MCPServer as FastMCP
+from fastmcp import FastMCP
 from pydantic import Field
 
 from maistro.tools.git.github import create_pr, get_pr, list_issues

@@ -312,6 +312,20 @@
       "notes": "Deleted with its Run in the purge transaction. Only chat-admitted Runs carry a retention deadline, so children of scheduled or graph Runs are not purged. Reference policy: runs/retention_scope.py."
     },
     {
+      "table": "canonical_personas",
+      "backends": [
+        "postgres",
+        "sqlite"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/personas/sqlite_store.py",
+      "data_class": "configuration",
+      "retention": "bounded_by_parent",
+      "deletion_path": "maistro.workspaces.sqlite_store:SqliteWorkspaceStore.delete",
+      "issue": null,
+      "parent": "canonical_workspaces",
+      "notes": "The one live Workspace Persona (#12): deleted inside the Workspace delete transaction through its canonical store, and by the ON DELETE CASCADE foreign key if the owner row ever leaves another way. No retention of its own."
+    },
+    {
       "table": "canonical_project_memberships",
       "backends": [
         "postgres",
@@ -705,6 +719,19 @@
       "deletion_path": null,
       "issue": "#325",
       "notes": "No DELETE anywhere in the tree; rows accumulate for the life of the deployment."
+    },
+    {
+      "table": "event_replay_cursors",
+      "backends": [
+        "postgres",
+        "sqlite"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/events/durable_log.py",
+      "data_class": "runtime_state",
+      "retention": "undecided",
+      "deletion_path": null,
+      "issue": "#325",
+      "notes": "One row per replay consumer (#836); bounded by the consumer count, not by time. Same shape as consumer_cursors."
     },
     {
       "table": "feature_corrections",

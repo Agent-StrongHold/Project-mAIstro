@@ -15,7 +15,7 @@ import shlex
 from typing import Annotated, Any
 
 import structlog
-from mcp.server.mcpserver import MCPServer as FastMCP
+from fastmcp import FastMCP
 from pydantic import Field
 
 from maistro.observability.metrics import sandbox_containers_active
