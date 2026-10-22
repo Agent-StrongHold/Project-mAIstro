@@ -72,6 +72,12 @@ invocations (`uv sync --locked --all-extras` first, as `quality.yml` does):
   `admission_generation.py:62 _assess -> C (13)` — unauthorizable in-leaf
   (a grant cannot approve the change that introduces it), so it is left
   standing for the integrating change.
+  (Round 87 supersedes this bullet: the module shipped with the
+  decision-order-as-data table, so `_assess` measures **B (10)** — below
+  the C threshold, no new radon identity exists. At head fc94c5c0c599
+  against base a9fdec4cb40a the gate reports 128 reviewed C-or-worse
+  blocks -> 128, **rc=0**, with zero stale entries. The integrating change
+  has no radon identity to bank; this bullet's premise no longer holds.)
 
 A later, separately scoped #1845 integration change must land the real
 reviewed runtime consumer and pass the unchanged full quality gates at its
@@ -7150,3 +7156,69 @@ Post-change first-hand battery at the round head (single-file diff:
 No test was added, moved, or deleted in this round; both recorded inventory
 deltas (+132 classifier suite, +1 salvage pack-contract test) are unchanged,
 and `quality/` is zero-diff.
+
+## Round 87 (CI-repair round, job 3a1671a957224dc485d04e9435635da9): focused
+## revalidation at fc94c5c0c599; red CI jobs decomposed to trunk-level
+## dependency advisories; stale radon bullet corrected
+
+The merge-queue evaluation named **Container scan + SBOM + cosign** as the
+round's red gate and blocked the previous round for making no commit.
+First-hand decomposition at head fc94c5c0c599 (tree clean, base
+a9fdec4cb40a, `git diff --name-only base..HEAD` == the ten in-scope files
+listed in the job manifest):
+
+- **The branch cannot cause the container/pip-audit reds by file content.**
+  `git diff base..HEAD` touches no dependency, build, container, SBOM,
+  workflow, or image-inventory input: `uv.lock`, `pyproject.toml`,
+  `Dockerfile*`, `.trivyignore.yaml`, `.github/`, and `quality/image-*.json`
+  are all zero-diff (lockfile diff == 0 lines, verified with `wc -l`). The
+  `containers` job builds its four images from exactly those untouched
+  inputs and pins image-level dependency versions from the same lockfile,
+  so its red predates this branch's leaf work (already red at d0188ca04e2d,
+  per Round 86) and cannot be repaired by this leaf without out-of-scope
+  dependency bumps.
+- **The pip-audit/security red is an upstream advisory arrival, identical
+  at base.** The failing advisories (gitpython CVE-2026-114145,
+  graphql-core CVE-2026-75507/75508) target versions pinned in the
+  base-identical `uv.lock` and are absent from the allowlist's single
+  triaged entry (`scripts/pip_audit_gate.py:75-87`, ecdsa
+  PYSEC-2026-1325) — hence "advisories outside the triaged allowlist".
+  Triaging them means editing `ALLOWED`, which is gate-owner policy
+  explicitly outside this lane's one exception (the vulture per-identity
+  ledger), so it is not done here.
+- **The lane's named repair gate is green and needs no amendment.**
+  `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'` -> **rc=0** (1314 reviewed identities -> 1309
+  findings, unclassified=0, never_allowlist=0): no unbanked identity
+  exists to fix or bank; Round 86's five-row stale prune remains the
+  complete ledger state and `quality/` stays zero-diff this round.
+  `RATCHET_BASE_REV=origin/develop check-ratchet-provenance.py` -> rc=0
+  (every sub-ratchet OK; no candidate-approved expansion).
+- **Radon correction (the round's only tree change besides this
+  section).** Re-running `check-radon-baseline.py` at this head gives
+  **rc=0, 128 -> 128**, and `radon cc` measures `_assess` at **B (10)**:
+  the round-13-era bullet above claiming "exits 1 ... left standing for
+  the integrating change" is factually stale and now annotated as
+  superseded in place, so the integrating change is not told to bank a
+  radon identity that no longer exists.
+- **Focused battery re-proven first-hand at this head:** the three-file
+  leaf trio (assessment + publication + pack-contracts) **268 passed**;
+  `test_root_admission_identity.py` + `test_idempotency.py` **146
+  passed**; reachability meta-tests (`tests/test_check_reachability.py`,
+  `test_reachability_baseline_identity.py`,
+  `test_reachability_source_universe.py`) **49 passed**; `ruff check .`
+  and `ruff format --check .` clean; `mypy` on the module Success;
+  `check-reachability.py` rc=0 (1448/157); `check-reachability-dispositions.py`
+  rc=0; `check-promotion-surface.py` rc=0; `check-shipped-surface-truth.py`
+  rc=0; `check-suite-inventory.py` rc=0 (21 suites).
+- **Mutation spot-check re-proves classification power** (zero tree
+  writes; /tmp pytest plugin swapping TAKEOVER <-> REPLACE_EXPIRED before
+  collection): **50 failed / 82 passed** vs the 132-pass control, so the
+  suite still discriminates the issue's named mutation classes.
+
+No test was added, moved, or deleted this round; the recorded inventory
+deltas are unchanged; no gate, threshold, allowlist, baseline, or grant was
+touched. The leaf remains **not independently mergeable** while unwired:
+activation and the runtime consumer belong to the separately reviewed
+#1845 integration head, which must prune the `_EXCLUDED_PACKAGE_PYTHON`
+classification in the same change that wires the module.
