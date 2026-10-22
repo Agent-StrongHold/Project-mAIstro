@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +2
+  packages/maistro-core/tests: +6
   packages/maistro-server/tests: +1
   tests/: -3
 ---
@@ -10,9 +10,13 @@ Post-develop-sync reconciliation of the #1152 branch against
 develop@c29e0ea70 (merges a0f572bef + 144465814), recorded as one
 correction note because the three movements net against each other:
 
-- `packages/maistro-core/tests: +2` — the branch's own Run-access tests
+- `packages/maistro-core/tests: +6` — the branch's Run-access tests
   (`tests/runs/test_access.py` cases and the authz-tier-ladder and
-  container-wiring additions) as they stand on top of develop's suites.
+  container-wiring additions) plus four `require_run_mutation` unit tests in
+  `tests/runs/test_store_boundary.py`: the mutation seam's initiator,
+  administrator, ordinary-member-refusal and stranger paths, pinned core-side
+  because the covering server producer does not bank maistro-core hits and the
+  diff-coverage gate would otherwise score the seam's lines as untested.
 - `packages/maistro-server/tests: +1` —
   `test_cancel_stays_with_the_initiator_or_an_administrator` pins that
   Workspace membership admits Run reads, never cancellation (#1152
