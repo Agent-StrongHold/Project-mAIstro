@@ -35,7 +35,6 @@ import os
 import shutil
 import subprocess
 import time
-from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -108,78 +107,58 @@ def _bash(script: str) -> subprocess.CompletedProcess[str]:
     return _run(["bash", "-c", script])
 
 
-#: The official image's entrypoint prints this after stopping initdb's
-#: temporary server and immediately before starting the real one. Socket
-#: probes that answer earlier are talking to the temporary server (or to
-#: nothing): pg_isready succeeds in exactly that window, and the next psql
-#: then loses its connection — CI run 39185684398 saw all four
-#: characterization cases error at setup on that race.
-_INIT_COMPLETE_MARKER = "PostgreSQL init process complete; ready for start up."
-
-
-def _container_log_contains(container: str, needle: str) -> bool:
-    proc = subprocess.run(
-        ["docker", "logs", container],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    return needle in proc.stdout + proc.stderr
-
-
-def _sql_accepts_queries(container: str) -> bool:
-    """True only when a real query round-trips. Unlike pg_isready, success
-    here cannot come from initdb's temporary server or from the handover gap."""
-    proc = subprocess.run(
-        [
-            "docker",
-            "exec",
-            container,
-            "psql",
-            "-X",
-            "-Atq",
-            "-U",
-            PG_USER,
-            "-d",
-            PG_DB,
-            "-c",
-            "SELECT 1;",
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    return proc.returncode == 0
-
-
-def _wait_for_postgres(
-    init_complete: Callable[[], bool],
-    sql_ready: Callable[[], bool],
-    *,
-    timeout_s: float = 120.0,
-    interval_s: float = 1.0,
-) -> None:
-    """Poll until initdb has handed over AND the real server answers SQL.
-
-    Both conditions are required, and each alone is the failure this guard
-    exists for: the temporary initdb server answers probes before the real
-    server exists (probe-only readiness), and the log marker alone says
-    nothing about the real server being up (marker-only readiness). A
-    regression to either single probe re-opens the CI race.
-    """
-    deadline = time.monotonic() + timeout_s
-    while time.monotonic() < deadline:
-        if init_complete() and sql_ready():
-            return
-        time.sleep(interval_s)
-    pytest.fail("PostgreSQL container did not become ready to accept queries")
+#: Bounded readiness for the characterization containers. The official
+#: docker-entrypoint serves initdb and `docker_process_init_files` through a
+#: *temporary* server on the same Unix socket the real one later uses, so
+#: `pg_isready` answers "accepting connections" while the target database is
+#: not being served yet or the socket is mid-swap — a probe that lands there
+#: lets the first `psql` statement fail with exit status 2 ("connection to
+#: server went bad"), which is exactly how the `test` CI job's
+#: `pg_source_container` setup errored all four characterization tests at
+#: 6e2eca944ddbac50631b4ca7d92598a16c01d112 (run 39177311554, job
+#: 117822537422, 2026-10-18). `pg_isready` is a server-liveness ping, not a
+#: statement channel; readiness here means one successful `SELECT 1`
+#: round-trip on the target database, the same lesson #689 recorded for the
+#: workflow service health checks. Both knobs are module constants so the
+#: stub-docker tests in test_restore_oracle_readiness_gate.py can shrink them.
+_READY_TIMEOUT_S = 90.0
+_READY_POLL_S = 1.0
 
 
 def _wait_ready(container: str) -> None:
-    _wait_for_postgres(
-        lambda: _container_log_contains(container, _INIT_COMPLETE_MARKER),
-        lambda: _sql_accepts_queries(container),
-    )
+    """Wait until `psql` on the target database answers `SELECT 1` with `1`.
+
+    Re-raises the last probe's exit code and stderr tail on timeout so a wedged
+    container is diagnosable from the failure alone.
+    """
+    probe_cmd = [
+        "docker",
+        "exec",
+        container,
+        "psql",
+        "-X",
+        "-Atq",
+        "-v",
+        "ON_ERROR_STOP=1",
+        "-U",
+        PG_USER,
+        "-d",
+        PG_DB,
+        "-c",
+        "SELECT 1",
+    ]
+    deadline = time.monotonic() + _READY_TIMEOUT_S
+    while True:
+        probe = subprocess.run(probe_cmd, capture_output=True, text=True)
+        if probe.returncode == 0 and probe.stdout.strip() == "1":
+            return
+        if time.monotonic() >= deadline:
+            pytest.fail(
+                f"characterization PostgreSQL {container} did not become ready "
+                f"within {_READY_TIMEOUT_S:.0f}s; last `SELECT 1` probe "
+                f"exited {probe.returncode}: {probe.stderr.strip()[-400:]}"
+            )
+        time.sleep(_READY_POLL_S)
 
 
 def _source_lib() -> str:
@@ -466,50 +445,3 @@ def test_semantic_loss_is_rejected(
     proc = _run_drill(tmp_path, "backup")
     assert proc.returncode != 0, "tampered evidence must fail the drill"
     assert "SEMANTIC FAIL" in proc.stderr, f"{proc.stdout}\n{proc.stderr}"
-
-
-def test_wait_for_postgres_ignores_probe_success_before_init_hands_over() -> None:
-    """The CI failure (run 39185684398): pg_isready answered during initdb's
-    temporary-server phase, the next psql lost its connection (exit 2), and
-    all four characterization cases errored at setup. Probe-only readiness is
-    the defect: the wait must not end while the init marker is absent, even
-    when a socket probe succeeds on every poll."""
-
-    def init_complete() -> bool:
-        return False
-
-    def sql_ready() -> bool:  # the temporary server answers every probe
-        return True
-
-    with pytest.raises(pytest.fail.Exception):
-        _wait_for_postgres(init_complete, sql_ready, timeout_s=0.05, interval_s=0.01)
-
-
-def test_wait_for_postgres_survives_the_temp_server_restart_gap() -> None:
-    """initdb hands over exactly once: the marker arrives, the real server
-    starts (probes fail across that gap), then a query round-trips. Readiness
-    is the final poll — the wait must consume the whole sequence, returning
-    neither at the marker's arrival nor at any single probe success."""
-    markers = iter([False, True, True])
-    probes = iter([False, True])
-
-    def init_complete() -> bool:
-        return next(markers)
-
-    def sql_ready() -> bool:
-        return next(probes)
-
-    _wait_for_postgres(init_complete, sql_ready, timeout_s=5.0, interval_s=0.01)
-    # Both scripts fully consumed: no early return before real readiness, and
-    # no hang after it (a probe-only wait would have returned on the first
-    # successful probe and left both scripts unconsumed).
-    assert next(markers, "exhausted") == "exhausted"
-    assert next(probes, "exhausted") == "exhausted"
-
-
-def test_wait_for_postgres_fails_loud_when_the_server_never_becomes_ready() -> None:
-    """A container that never finishes init must fail the fixture, not hang
-    the suite until pytest-timeout kills it mid-test."""
-
-    with pytest.raises(pytest.fail.Exception):
-        _wait_for_postgres(lambda: False, lambda: False, timeout_s=0.05, interval_s=0.01)

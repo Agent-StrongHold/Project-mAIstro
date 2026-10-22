@@ -453,6 +453,14 @@ class ChatRunAdmitter:
         self._project_id = root.project_id
         return self._project_id
 
+    async def admission_scope(self) -> tuple[str, str]:
+        """Return the immutable Workspace/Project binding admissions land in.
+
+        The authenticated boundary reads this to scope a ``RunAuthorization``
+        without reaching into private resolution state.
+        """
+        return self._workspace_id, await self._resolve_project_id()
+
 
 __all__ = [
     "ADMISSION_INCOMPLETE",
