@@ -560,27 +560,38 @@ async def _re_evaluate_refined_artifact(
     """
     re_eval = await open_re_eval_attempt(run_store, run_id, refine_node_id)
     await run_store.transition_attempt(re_eval.attempt_id, AttemptStatus.RUNNING)
-    rubric_current = await rubric_store.get(rubric_id)
-    assert rubric_current is not None and rubric_current.revision == rubric_revision
-    for score in score_artifact_against_rubric(proposed_artifact, rubric_current):
-        await run_store.record_eval_score(
-            score.model_copy(
-                update={
-                    "run_id": run_id,
-                    "node_run_id": refine_node_id,
-                    "attempt_id": re_eval.attempt_id,
-                }
+    try:
+        rubric_current = await rubric_store.get(rubric_id)
+        assert rubric_current is not None and rubric_current.revision == rubric_revision
+        for score in score_artifact_against_rubric(proposed_artifact, rubric_current):
+            await run_store.record_eval_score(
+                score.model_copy(
+                    update={
+                        "run_id": run_id,
+                        "node_run_id": refine_node_id,
+                        "attempt_id": re_eval.attempt_id,
+                    }
+                )
             )
+        summary = await eval_summary(
+            run_store,
+            run_id,
+            rubric_id=rubric_id,
+            rubric_revision=rubric_revision,
+            dimension_ids=[d.id for d in rubric_current.dimensions],
         )
-    summary = await eval_summary(
-        run_store,
-        run_id,
-        rubric_id=rubric_id,
-        rubric_revision=rubric_revision,
-        dimension_ids=[d.id for d in rubric_current.dimensions],
-    )
-    if not summary.passed:
-        raise AssertionError(f"re-evaluation did not pass: failed={summary.failed_dimensions}")
+        if not summary.passed:
+            raise AssertionError(f"re-evaluation did not pass: failed={summary.failed_dimensions}")
+    except BaseException as exc:
+        # Terminalize the attempt: a created/running attempt fences any new
+        # create_attempt on this NodeRun, so leaving it RUNNING would strand
+        # the paused refine node -- no later re-evaluation could ever open.
+        await run_store.transition_attempt(
+            re_eval.attempt_id,
+            AttemptStatus.FAILED,
+            error=f"{type(exc).__name__}: {exc}",
+        )
+        raise
     return await run_store.transition_attempt(
         re_eval.attempt_id,
         AttemptStatus.COMPLETED,

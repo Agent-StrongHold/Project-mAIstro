@@ -255,7 +255,9 @@ class TestRefineAttemptsAndAcceptance:
         # record alone — no excavation of the Attempt payload required.
         claim_score = next(s for s in winning if s.dimension_id == PLANTED_DIMENSION_ID)
         assert claim_score.evidence_pointers == [_CLAIM_EVIDENCE_CITATION]
-        assert all(s.evidence_pointers == [] for s in winning if s.dimension_id != PLANTED_DIMENSION_ID)
+        assert all(
+            s.evidence_pointers == [] for s in winning if s.dimension_id != PLANTED_DIMENSION_ID
+        )
 
         # The accepted artifact names the winning Attempt (and the refine
         # Attempt that produced it).
@@ -587,6 +589,7 @@ class TestProofGuardsFailLoudly:
         fails the planted dimension on durable rows, and the driver refuses
         to hand back a passing Attempt that does not exist."""
         from maistro.graph import Graph, Node
+        from maistro.runs.model import AttemptStatus
         from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
         from maistro_design.proof import _re_evaluate_refined_artifact
 
@@ -622,6 +625,12 @@ class TestProofGuardsFailLoudly:
             and s.rubric_revision == rubric.revision
             for s in failed
         )
+        # And the opened Attempt is terminalized as FAILED: a created/running
+        # attempt fences any new create_attempt on this NodeRun, so stranding
+        # it RUNNING would make the paused node permanently un-re-evaluable.
+        attempts = await run_store.list_attempts(node_run.node_run_id)
+        assert [a.status for a in attempts] == [AttemptStatus.FAILED]
+        assert attempts[0].error is not None and "re-evaluation did not pass" in attempts[0].error
 
     async def test_extract_accepted_artifact_fails_when_run_carries_none(
         self,

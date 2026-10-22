@@ -94,3 +94,21 @@ does not exist, and neither promotes anything. No test was added or removed
 (the fitness module's own bank-freshness assertions keep the rows honest), so
 the per-suite counts above are unchanged; the RSI non-production-reachability
 pin over the same package passes untouched (1729 passed).
+
+## Codex-review salvage reconciliation (no test-count change)
+
+The independent Codex review of the lane (PR #2252 at `2e3733046`)
+flagged two P2 findings on the proof's re-evaluation leg. Both are now
+closed without a count change:
+
+- `proof.py` populated `evidence_pointers` on the passing `claim_evidence`
+  record from the artifact's own citations (commit `99d1400ab`).
+- A re-evaluation that still fails a dimension now transitions the opened
+  Attempt to `FAILED` before propagating, so the created/running fence no
+  longer strands the paused refine NodeRun (this salvage). The assertion
+  deepened in `test_re_eval_refuses_an_unevidenced_artifact` pins it: the
+  Attempt list reads `[FAILED]` with the failure named in `error`.
+
+`packages/maistro-design/tests` remains 614 (38 proof tests × backends) and
+`packages/maistro-core/tests` remains 17417; the suite inventory reports
+`expected == collected` for both.
