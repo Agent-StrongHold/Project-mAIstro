@@ -41,7 +41,11 @@ RUN npm run build
 # release tag ourselves with a patched Go toolchain/dependency set so the
 # runtime does not inherit vulnerabilities from an otherwise-current source
 # release. The release tag resolves to b8564ad; fail if upstream ever disagrees.
-FROM golang:1.27.2-alpine@sha256:f92b6ef800e499660581efdabdf25d9d817a9d124eaf900924f0504e7e27e12d AS agebuild
+# Toolchain refreshed 1.27.2 -> 1.27.3 (#2209): CVE-2026-111943 (crypto/x509
+# MITM via untrusted intermediate certificates, fixed in go1.27.3/1.26.10)
+# lands in every binary the 1.27.2 toolchain emits; rebuilding on 1.27.3 scans
+# clean (trivy HIGH/CRITICAL, ignore-unfixed) where the 1.27.2 build did not.
+FROM golang:1.27.3-alpine@sha256:d530cf60723abf1ffae0cd16bb546b379ec0550d2f3815e5b16ed69dbc00fba4 AS agebuild
 ARG AGE_VERSION=1.3.1
 ARG AGE_COMMIT_SHORT=b8564ad
 RUN apk add --no-cache git && \

@@ -89,7 +89,10 @@ RUN python /tmp/prune-dependency-namespaces.py \
 # tag resolves to dfc520d; fail if upstream ever disagrees. docker/cli has no
 # root go.mod (vendor.mod + vendor/ instead); renaming them is the module-mode
 # build the vendored tree is designed for.
-FROM golang:1.27.2-alpine@sha256:f92b6ef800e499660581efdabdf25d9d817a9d124eaf900924f0504e7e27e12d AS dockerclibuild
+# Toolchain refreshed 1.27.2 -> 1.27.3 (#2209): CVE-2026-111943 (crypto/x509
+# MITM via untrusted intermediate certificates, fixed in go1.27.3/1.26.10)
+# lands in every binary the 1.27.2 toolchain emits.
+FROM golang:1.27.3-alpine@sha256:d530cf60723abf1ffae0cd16bb546b379ec0550d2f3815e5b16ed69dbc00fba4 AS dockerclibuild
 ARG DOCKER_CLI_VERSION=29.9.1
 ARG DOCKER_CLI_COMMIT_SHORT=dfc520d
 RUN apk add --no-cache git && \
