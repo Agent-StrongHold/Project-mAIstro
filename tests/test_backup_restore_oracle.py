@@ -244,13 +244,13 @@ def test_scratch_ready_means_the_target_database_answers() -> None:
     # The DB-answering condition, not pg_isready alone, is what breaks the
     # loop; and the post-loop guard falls into the verifier class when the
     # target database never becomes ready.
-    loop_body = verify.split("for _ in $(seq 1 60); do", 1)[-1].split("done", 1)[0]
+    loop_body = verify.split("for _ in $(seq 1 120); do", 1)[1].split("done", 1)[0]
     assert "pg_isready" in loop_body, "the scratch loop must still probe the server"
     assert "psql" in loop_body and '-d "${PG_DB}"' in loop_body, (
         "the scratch loop must require the target database to answer, "
         "not just a listening server (entrypoint temp-server race)"
     )
-    tail = verify.split("done", 1)[-1]
+    tail = verify.split("for _ in $(seq 1 120); do", 1)[1].split("done", 1)[1]
     assert 'fail_verifier "scratch postgres did not become ready' in tail, (
         "a never-ready scratch database must fail as a verifier failure"
     )
