@@ -219,8 +219,14 @@ def reconcile(root: Path, loaded: Iterable[str]) -> Reconciliation:
     loaded_set = frozenset(loaded)
 
     reachable = frozenset(registration_modules) - unreachable
+    # Only kinds from reachable production modules count as production kinds.
+    # Unreachable modules (even with dispositions) may register kinds during
+    # test collection, but those kinds are not production proof.
+    reachable_modules = frozenset(registration_modules) - unreachable
     production_kinds = {
-        kind: get_node(kind).__module__ for kind in list_kinds() if not kind.startswith("test.")
+        kind: get_node(kind).__module__
+        for kind in list_kinds()
+        if not kind.startswith("test.") and get_node(kind).__module__ in reachable_modules
     }
     return Reconciliation(
         registration_modules=registration_modules,
