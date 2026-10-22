@@ -182,15 +182,34 @@ def _planted_verdict(
     return 100.0, True, []
 
 
+def _claim_evidence_pointers(claims: list[dict[str, Any]]) -> list[str]:
+    """The citations the evidenced claims carry, deduped, first-seen order.
+
+    These justify the ``claim_evidence`` verdict, so the persisted score
+    names them: the score-to-evidence lineage stays inspectable from the
+    canonical record alone, without excavating the Attempt payload.
+    """
+    pointers: list[str] = []
+    for claim in claims:
+        citation = str(claim.get("evidence") or "").strip()
+        if citation and citation not in pointers:
+            pointers.append(citation)
+    return pointers
+
+
 def score_artifact_against_rubric(artifact: dict[str, Any], rubric: Any) -> list[RunEvalScore]:
     """Score one artifact deterministically against one Rubric revision.
 
     Returns one unsaved :class:`RunEvalScore` per dimension (method
     ``deterministic`` — no judge, no LLM: ADR-061 keeps model calls out of
     this seam). The ``claim_evidence`` verdict is real: it passes only when
-    every claim on the artifact cites evidence.
+    every claim on the artifact cites evidence. The ``claim_evidence``
+    record cites its evidence: its ``evidence_pointers`` carry exactly the
+    citations the passing (or attempted) claims carry — empty only when no
+    claim is evidenced, i.e. when the dimension fails.
     """
     claims = list(artifact.get("claims") or [])
+    evidence_pointers = _claim_evidence_pointers(claims)
     verdicts: dict[str, tuple[float, bool, list[str]]] = {
         "clarity_of_offer": _presence_verdict(
             str(artifact.get("offer") or "").strip(), "no offer statement on the artifact"
@@ -218,7 +237,9 @@ def score_artifact_against_rubric(artifact: dict[str, Any], rubric: Any) -> list
                 raw_score=raw,
                 passed=passed,
                 method=EvalMethod.DETERMINISTIC,
-                evidence_pointers=[],
+                evidence_pointers=(
+                    evidence_pointers if dimension.id == PLANTED_DIMENSION_ID else []
+                ),
                 detail={"reasons": reasons},
             )
         )

@@ -45,6 +45,7 @@ from maistro.runs.eval import eval_summary
 from maistro.runs.sqlite_store import SqliteRunStore
 from maistro.runs.store import InMemoryRunStore
 from maistro_design.proof import (
+    _CLAIM_EVIDENCE_CITATION,
     PLANTED_DIMENSION_ID,
     PRODUCT_GOAL_STATEMENT,
     PROOF_GOAL_ID,
@@ -113,6 +114,8 @@ class TestPlantedFailureIsDurableEvidence:
         assert failed.goal_revision == 1
         assert failed.rubric_revision == proof.rubric_revision_initial
         assert failed.detail["reasons"] == ["claim 0 has no evidence"]
+        # Nothing justified a pass, so the failing record cites nothing.
+        assert failed.evidence_pointers == []
 
     async def test_the_planted_failure_is_real_not_scripted(self, proof_spine: Any) -> None:
         """The scorer fails any unevidenced claim, passes an evidenced one."""
@@ -127,19 +130,30 @@ class TestPlantedFailureIsDurableEvidence:
         rubric_v1 = await rubrics.get_revision(proof.rubric_id, proof.rubric_revision_initial)
         assert rubric_v1 is not None
         unevidenced = {"claims": [{"text": "c", "evidence": None}], "offer": "o", "channel": "c"}
-        verdicts = {
-            s.dimension_id: s.passed for s in score_artifact_against_rubric(unevidenced, rubric_v1)
-        }
-        assert verdicts[PLANTED_DIMENSION_ID] is False
+        scores = {s.dimension_id: s for s in score_artifact_against_rubric(unevidenced, rubric_v1)}
+        assert scores[PLANTED_DIMENSION_ID].passed is False
+        # An unevidenced artifact cites nothing: the empty pointer list is
+        # truthful, not a lost lineage.
+        assert scores[PLANTED_DIMENSION_ID].evidence_pointers == []
         evidenced = {
-            "claims": [{"text": "c", "evidence": "source:x#1"}],
+            "claims": [
+                {"text": "c", "evidence": "source:x#1"},
+                {"text": "c2", "evidence": "source:x#1"},
+                {"text": "c3", "evidence": "source:y#2"},
+            ],
             "offer": "o",
             "channel": "c",
         }
-        verdicts = {
-            s.dimension_id: s.passed for s in score_artifact_against_rubric(evidenced, rubric_v1)
-        }
-        assert verdicts[PLANTED_DIMENSION_ID] is True
+        scores = {s.dimension_id: s for s in score_artifact_against_rubric(evidenced, rubric_v1)}
+        assert scores[PLANTED_DIMENSION_ID].passed is True
+        # The evidence record names the citations that justified the pass —
+        # deduped, first-seen order — and only the evidence dimension cites.
+        assert scores[PLANTED_DIMENSION_ID].evidence_pointers == [
+            "source:x#1",
+            "source:y#2",
+        ]
+        assert scores["clarity_of_offer"].evidence_pointers == []
+        assert scores["channel_fit"].evidence_pointers == []
 
 
 @pytest.mark.asyncio
@@ -236,6 +250,12 @@ class TestRefineAttemptsAndAcceptance:
         assert len(winning) == 3
         assert all(s.passed for s in winning)
         assert all(s.rubric_revision == proof.rubric_revision_redirected for s in winning)
+        # The passing claim_evidence record cites the exact repair citation,
+        # so the score-to-evidence lineage is readable from the canonical
+        # record alone — no excavation of the Attempt payload required.
+        claim_score = next(s for s in winning if s.dimension_id == PLANTED_DIMENSION_ID)
+        assert claim_score.evidence_pointers == [_CLAIM_EVIDENCE_CITATION]
+        assert all(s.evidence_pointers == [] for s in winning if s.dimension_id != PLANTED_DIMENSION_ID)
 
         # The accepted artifact names the winning Attempt (and the refine
         # Attempt that produced it).
