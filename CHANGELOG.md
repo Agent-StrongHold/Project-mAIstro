@@ -148,6 +148,20 @@ or placeholder-only section.
 
 ### Security
 
+- **Public Hive model calls use canonical admitted authority (#1084).** Chat,
+  voice and dashboard vision resolve the Container's configured Bindings and
+  persisted execution identity. Raw HTTP and automatic stub fallback are retired;
+  public conversation/tool containment and vision's protocol/timeout remain.
+  Stable effect names preserve replay and reconciliation across Attempts, while
+  completed tool correction and synthesis remain distinct calls. Stream errors
+  retain a compatible terminal frame with explicit failure evidence.
+- **Governed Responses compatibility preserves evidence-backed fallback (#1084).**
+  Complete and streaming responses retain content, refusal, reasoning and reported
+  usage. Operators may explicitly declare supported ingresses; absent data stays
+  unknown. Auto fallback after a request requires the exact non-dispatch rejection
+  contract and re-enters canonical admission. Arbitrary errors cannot trigger a
+  second model call or clear an UNKNOWN Invocation.
+
 - **Ordinary asynchronous Hive DAG model nodes require admitted execution (#1085).**
   Calls resolve configured model Bindings through the Container's RunStore,
   preserving persisted actor/scope/lease identity and canonical usage recording.

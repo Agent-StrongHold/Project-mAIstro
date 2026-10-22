@@ -127,7 +127,7 @@ class TestVoiceRunsOnTheChatPathsSeam:
         LiteLLM base and key was enough to make this route reach the network
         even with `build_llm_port` stubbed.
         """
-        import adapters.llm_http as llm_http
+        import maistro.http as model_http
 
         # The exact condition the old branch keyed on. Without these the old
         # code fell through to `build_llm_port` too, and this test would pass
@@ -138,7 +138,7 @@ class TestVoiceRunsOnTheChatPathsSeam:
         def refuse(**_kwargs: object) -> object:
             raise AssertionError("voice must not construct its own transport")
 
-        monkeypatch.setattr(llm_http, "HttpOpenAIProtocolLLM", refuse)
+        monkeypatch.setattr(model_http, "shared_client", refuse)
         monkeypatch.setattr(voice, "build_llm_port", lambda: RecordingLLM())
 
         result = await voice.voice_intent(_utterance(), FakeRequest())
