@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 from collections.abc import Iterator
 from datetime import UTC, datetime
@@ -187,9 +188,23 @@ async def pg_pool():
     pool = await asyncpg.create_pool(dsn, min_size=1, max_size=8, init=_register_json_codecs)
     try:
         async with pool.acquire() as conn:
-            await conn.execute(
-                "TRUNCATE {} RESTART IDENTITY CASCADE".format(", ".join(_PG_SCRATCH_TABLES))
-            )
+            # Under coverage the previous test's async work can still hold row
+            # or table locks while this TRUNCATE ... CASCADE walks its table
+            # list in a different order; PostgreSQL resolves the lock-order
+            # inversion by aborting the TRUNCATE with DeadlockDetectedError
+            # (deadlock_timeout, 1s by default). The statement is idempotent
+            # scratch cleanup: back off and retry rather than poisoning every
+            # later test in this process with one failed fixture setup.
+            for attempt in range(3):
+                try:
+                    await conn.execute(
+                        "TRUNCATE {} RESTART IDENTITY CASCADE".format(", ".join(_PG_SCRATCH_TABLES))
+                    )
+                    break
+                except asyncpg.exceptions.DeadlockDetectedError:
+                    if attempt == 2:
+                        raise
+                    await asyncio.sleep(0.5 * (attempt + 1))
         yield pool
     finally:
         await pool.close()

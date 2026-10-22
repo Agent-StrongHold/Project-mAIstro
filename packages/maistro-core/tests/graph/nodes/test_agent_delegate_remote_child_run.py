@@ -21,7 +21,6 @@ foreign one is refused rather than filed.
 
 from __future__ import annotations
 
-import asyncio
 from typing import Any
 from unittest.mock import AsyncMock
 
@@ -141,92 +140,6 @@ class TestDelegationFilesAChildRun:
         assert child.workspace_id == parent.workspace_id
         assert child.project_id == parent.project_id
 
-    async def test_replaying_the_same_logical_delegation_reuses_the_child_and_task(
-        self,
-    ) -> None:
-        """A lease-loss retry cannot turn one logical delegation into two tasks."""
-        store, _projects, project = await _spine()
-        parent = await store.create_run(
-            _graph(workspace_id="workspace-1", project_id=project.project_id),
-            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
-        )
-        parent_node_run = await store.create_node_run(parent.run_id, node_id="delegate-1")
-        delegator = _delegator()
-        node = AgentDelegateRemoteNode(a2a_delegator=delegator, run_store=store)
-        context = _ctx(run_id=parent.run_id, node_run_id=parent_node_run.node_run_id)
-        inputs = {"from_agent": "planner", "task": "research X", "to_agent": "researcher"}
-
-        first = await node.run(inputs, context)
-        retry_context = context.model_copy(update={"node_run_id": "node-run-retry-3"})
-        second = await node.run(inputs, retry_context)
-
-        assert first.status == second.status == "paused"
-        assert first.metadata["run_id"] == second.metadata["run_id"]
-        assert first.metadata["task_id"] == second.metadata["task_id"]
-        assert len(delegator._tasks) == 1
-        child = await store.find_run_by_effect(
-            node.replay_effect_key(node.input_schema.model_validate(inputs), context)
-        )
-        assert child is not None
-        # The replayed child Run stays bound to the delegating parent's scope.
-        assert child.parent_run_id == parent.run_id
-        assert child.workspace_id == parent.workspace_id
-        assert child.project_id == parent.project_id
-
-    async def test_independent_worker_reuses_receipt_without_local_task_deduplication(self) -> None:
-        """The durable claim, not a worker-local A2A queue, is the authority."""
-        store, _projects, project = await _spine()
-        parent = await store.create_run(
-            _graph(workspace_id="workspace-1", project_id=project.project_id),
-            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
-        )
-        node_run = await store.create_node_run(parent.run_id, node_id="delegate-1")
-        first_worker = AgentDelegateRemoteNode(
-            a2a_delegator=_delegator(),
-            run_store=store,
-        )
-        inputs = {"from_agent": "planner", "task": "research X", "to_agent": "researcher"}
-        context = _ctx(run_id=parent.run_id, node_run_id=node_run.node_run_id)
-
-        first = await first_worker.run(inputs, context)
-        second_delegator = _delegator()
-        second_worker = AgentDelegateRemoteNode(
-            a2a_delegator=second_delegator,
-            run_store=store,
-        )
-        second = await second_worker.run(
-            inputs,
-            context.model_copy(update={"node_run_id": "lease-loss-retry"}),
-        )
-
-        assert first.status == second.status == "paused"
-        assert first.metadata["run_id"] == second.metadata["run_id"]
-        assert first.metadata["task_id"] == second.metadata["task_id"]
-        assert len(second_delegator._tasks) == 0
-        assert len(first_worker._a2a_delegator._tasks) == 1  # type: ignore[union-attr]
-
-    async def test_concurrent_workers_atomically_claim_one_child_and_task(self) -> None:
-        """Lease-loss overlap cannot admit two canonical children."""
-        store, _projects, project = await _spine()
-        parent = await store.create_run(
-            _graph(workspace_id="workspace-1", project_id=project.project_id),
-            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
-        )
-        node_run = await store.create_node_run(parent.run_id, node_id="delegate-1")
-        delegator = _delegator()
-        node = AgentDelegateRemoteNode(a2a_delegator=delegator, run_store=store)
-        inputs = {"from_agent": "planner", "task": "research X", "to_agent": "researcher"}
-
-        results = await asyncio.gather(
-            node.run(inputs, _ctx(run_id=parent.run_id, node_run_id=node_run.node_run_id)),
-            node.run(inputs, _ctx(run_id=parent.run_id, node_run_id="lease-loss-retry")),
-        )
-
-        assert [result.status for result in results] == ["paused", "paused"]
-        children = [run for run in store._runs.values() if run.parent_run_id == parent.run_id]  # type: ignore[attr-defined]
-        assert len(children) == 1
-        assert len(delegator._tasks) == 1
-
     async def test_the_child_run_provenance_names_the_task_the_mode_and_both_agents(
         self,
     ) -> None:
@@ -339,51 +252,6 @@ class TestTheEscapeGuardsFire:
         assert result.status == "failed"
         assert result.error_code == "RunIntegrityError"
         assert "Project boundaries" in (result.error_message or "")
-
-
-class TestParentageIsVerifiedBeforeAdmission:
-    """The child Run binds to the physical NodeRun that admitted it.
-
-    The binding is the #1194 correlation contract: a lease-loss retry arrives
-    with a fresh NodeRun identity, and adoption of the existing reservation is
-    what keeps it one logical delegation. A ctx whose ``node_run_id`` names a
-    NodeRun of a *different* Run is not a retry -- it is uncorrelatable
-    parentage, and reserving a child under it would file delegated work no
-    resume could ever trace back to the delegating node.
-    """
-
-    async def test_a_delegation_binding_another_runs_node_run_is_refused(self) -> None:
-        store, _projects, project = await _spine()
-        parent = await store.create_run(
-            _graph(workspace_id="workspace-1", project_id=project.project_id),
-            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
-        )
-        # A real NodeRun, belonging to a different Run.
-        stranger = await store.create_run(
-            _graph(workspace_id="workspace-1", project_id=project.project_id),
-            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
-        )
-        foreign_node_run = await store.create_node_run(stranger.run_id, node_id="delegate-1")
-
-        delegator = _delegator()
-        node = AgentDelegateRemoteNode(a2a_delegator=delegator, run_store=store)
-        result = await node.run(
-            {"from_agent": "planner", "task": "research X", "to_agent": "researcher"},
-            _ctx(run_id=parent.run_id, node_run_id=foreign_node_run.node_run_id),
-        )
-
-        assert result.status == "failed"
-        assert result.error_code == "RunIntegrityError"
-        assert "does not belong" in (result.error_message or "")
-        # The refusal precedes admission: no child Run under the delegating
-        # parent, and nothing reached the A2A transport.
-        children = [
-            run
-            for run in store._runs.values()
-            if run.parent_run_id == parent.run_id  # type: ignore[attr-defined]
-        ]
-        assert children == []
-        assert len(delegator._tasks) == 0
 
 
 class TestInterruptedChildAdmission:

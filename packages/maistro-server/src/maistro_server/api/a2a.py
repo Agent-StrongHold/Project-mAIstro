@@ -134,6 +134,13 @@ async def get_a2a_task_by_idempotency_key(
     return {"task_id": run.run_id}
 
 
+#: Vulture reference: FastAPI dispatches the handler through the
+#: ``@router.post``/``@router.get`` decorators, which the static call graph
+#: cannot see (the same framework-dispatch blindness ``maistro-core``'s
+#: ``_vulture_whitelist`` documents for pydantic hooks). The tuple keeps the
+#: live routes visible to the dead-code scanner without any runtime effect.
+_A2A_ROUTE_HANDLERS = (create_a2a_task, get_a2a_task_by_idempotency_key)
+
 # The handlers are this module's public surface: FastAPI registers them from
 # the decorators, which static import scanning cannot see (the same statement
 # every api module's __all__ makes -- see projects.py / workspace_access.py).

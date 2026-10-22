@@ -253,11 +253,28 @@ async def test_retry_adopts_node_run_created_before_checkpoint_failure() -> None
     orphaned = await run_store.list_node_runs(admitted.run_id)
     assert len(orphaned) == 1
 
+    # A failed checkpoint does not prove another process can steal the
+    # persisted claim immediately. Retry only after its ownership expires;
+    # the canonical NodeRun must still be adopted rather than duplicated.
+    from maistro.graph.durable_runs.attempt_executor import LiveAttemptOwned
+
+    claimed = await store.get(admitted.run_id)
+    assert claimed is not None and claimed.resume_at is not None
+    with pytest.raises(LiveAttemptOwned):
+        await traversal.resume_durable_graph(
+            admitted.run_id,
+            store=store,
+            node_resolver=lambda node_id, graph: _Step(),
+            run_store=run_store,
+        )
+    assert await store.get(admitted.run_id) == claimed
+    assert await run_store.list_node_runs(admitted.run_id) == orphaned
     resumed = await traversal.resume_durable_graph(
         admitted.run_id,
         store=store,
         node_resolver=lambda node_id, graph: _Step(),
         run_store=run_store,
+        now=claimed.resume_at,
     )
 
     canonical = await run_store.list_node_runs(admitted.run_id)

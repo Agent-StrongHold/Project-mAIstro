@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -253,3 +254,37 @@ async def test_noncallable_optional_hook_preserves_legacy_dispatch():
         LegacyExecutor(), ToolCall(id="original-id", name="lookup", arguments={"query": "term"})
     )
     assert result == {"name": "lookup", "args": {"query": "term"}}
+
+
+@pytest.mark.parametrize(
+    "declared,allowed",
+    [
+        ((), False),
+        (("other",), False),
+        (("LOOKUP",), False),
+        (("lookup.alias",), False),
+        (("lookup",), True),
+        (("lookup", "lookup"), True),
+    ],
+    ids=["empty", "unlisted", "case-mismatch", "alias", "declared", "duplicate"],
+)
+async def test_agent_declaration_narrows_sentinel_grant(
+    declared: tuple[str, ...], allowed: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    executor = _RecordingExecutor()
+    agent, provider = _agent("react", executor, monkeypatch)
+    agent.identity = replace(agent.identity, tools=declared)
+
+    response = await agent.handle([{"role": "user", "content": "Search twice."}], _CALLER)
+
+    assert response.content == "done"
+    assert len(executor.calls) == (2 if allowed else 0)
+    assert executor.legacy_calls == []
+    results = [
+        message["content"]
+        for message in provider.call_log[-1]["messages"]
+        if message.get("role") == "tool"
+    ]
+    assert len(results) == 2
+    expected = "hook result" if allowed else "Error: Permission denied for undeclared tool 'lookup'"
+    assert results == [expected, expected]

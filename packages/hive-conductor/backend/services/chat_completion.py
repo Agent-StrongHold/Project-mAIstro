@@ -764,6 +764,70 @@ PM_TOOLS: list[dict[str, Any]] = [
             "parameters": {"type": "object", "properties": {}},
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "compose_home_adaptive",
+            "description": "Fill the Workspace Home's adaptive (unpinned) space (#1048). Pass the regions to show; the user's pinned regions are never touched, and a payload that tries to pin, unpin, move or drop one is refused. Each region: {id, kind, position, size?, resource_type?, resource_id?, reason?}. kind: goals, backlog, runs, chat, sessions, design, attention, note.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "regions": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "id": {"type": "string"},
+                                "kind": {
+                                    "type": "string",
+                                    "description": "goals, backlog, runs, chat, sessions, design, attention, note",
+                                },
+                                "position": {"type": "integer"},
+                                "size": {"type": "string"},
+                                "resource_type": {
+                                    "type": "string",
+                                    "description": "goal, backlog_item, run, chat_session, design_surface, attention_item, or none",
+                                },
+                                "resource_id": {"type": "string"},
+                                "reason": {
+                                    "type": "string",
+                                    "description": "Why this region earns its place, from the user's own evidence",
+                                },
+                            },
+                            "required": ["id", "kind"],
+                        },
+                        "description": "The adaptive regions to show in unpinned space",
+                    },
+                    "expected_revision": {
+                        "type": "integer",
+                        "description": "The layout revision this composition was built against",
+                    },
+                },
+                "required": ["regions"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "dismiss_home_adaptive",
+            "description": "Record that the user does not want one adaptive Home candidate surfaced (#1048). Backend-side and durable: the candidate stops being offered in this Workspace, and the count is visible to the user. item_type: goal, backlog_item, run, chat_session, design_surface, attention_item.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "item_type": {
+                        "type": "string",
+                        "description": "goal, backlog_item, run, chat_session, design_surface, attention_item",
+                    },
+                    "item_id": {
+                        "type": "string",
+                        "description": "The canonical id of the item not to surface",
+                    },
+                },
+                "required": ["item_type", "item_id"],
+            },
+        },
+    },
 ]
 
 
@@ -1398,10 +1462,6 @@ async def _tool_create_dashboard_widget(
             "violations": violations,
         }
 
-    # `effective`, not `load`: before a first save the route hands the user their
-    # preset without storing it, so editing the empty record and saving it
-    # replaced every preset widget with the one just added (#340).
-    layout = dict(dashboard_layouts.effective(user_id).layout)
     widget = {
         "id": widget_id,
         "type": widget_type,
@@ -1410,27 +1470,25 @@ async def _tool_create_dashboard_widget(
         "config": config,
     }
 
-    if layout.get("tabs"):
-        tabs = [dict(tab) for tab in layout["tabs"]]
-        target_idx = layout.get("activeTab", 0)
-        if tab_name:
-            for i, tab in enumerate(tabs):
-                if tab.get("name", "").lower() == tab_name.lower():
-                    target_idx = i
-                    break
-            else:
-                tabs.append({"name": tab_name, "widgets": []})
-                target_idx = len(tabs) - 1
-        tabs[target_idx]["widgets"] = [*tabs[target_idx].get("widgets", []), widget]
-        layout["tabs"] = tabs
-    else:
-        existing = layout.get("widgets", [])
-        layout["tabs"] = [{"name": tab_name or "Overview", "widgets": [*existing, widget]}]
-        layout["activeTab"] = 0
-        layout.pop("widgets", None)
+    # `effective`, not `load`: before a first save the route hands the user their
+    # preset without storing it, so editing the empty record and saving it
+    # replaced every preset widget with the one just added (#340). The save is
+    # against the revision read, so a UI save in between is re-read, not erased.
+    def add_to(record: dashboard_layouts.LayoutRecord) -> None:
+        layout = dashboard_layouts.with_widget(record.layout, widget, tab_name)
+        dashboard_layouts.save(user_id, layout, expected_revision=record.revision)
 
     try:
-        dashboard_layouts.save(user_id, layout)
+        try:
+            add_to(dashboard_layouts.effective(user_id))
+        except dashboard_layouts.LayoutConflictError:
+            add_to(dashboard_layouts.effective(user_id))
+    except dashboard_layouts.LayoutConflictError as exc:
+        logger.warning("dashboard widget lost the revision race for %s: %s", user_id, exc)
+        return {
+            "created": False,
+            "error": f"the layout kept changing while the widget was added: {exc}",
+        }
     except dashboard_layouts.LayoutError as exc:
         logger.error("dashboard widget was not persisted for %s: %s", user_id, exc)
         return {"created": False, "error": f"the widget was not saved: {exc}"}
@@ -1893,6 +1951,95 @@ async def _tool_update_eval(
     return {"updated": True, "dag_id": dag_id, "rubric_length": len(rubric)}
 
 
+async def _tool_compose_home_adaptive(
+    args: dict[str, Any], user_id: str, jira_pat: str | None
+) -> dict[str, Any]:
+    """Compose the Workspace Home's unpinned space (#1048), without a browser.
+
+    Goes through the same `services.home_layouts.compose_adaptive` the
+    `POST /v1/workspaces/{id}/home/adaptive/compose` route serves, so a
+    composition made in chat and one made over the API land in the same
+    durable row under the same authority rule: pinned regions are refused to
+    both. The Workspace comes from the turn's workspace context — the same
+    `_chat_workspace_id` the agent-button tools read — never from a model
+    argument, so the model cannot aim the tool at a Workspace the turn is
+    not about.
+    """
+    from services import home_layouts
+
+    workspace_id = _chat_workspace_id.get()
+    if not workspace_id:
+        return {
+            "composed": False,
+            "error": "no Workspace context for this turn; Home is Workspace-scoped",
+        }
+    raw_regions = args.get("regions")
+    if not isinstance(raw_regions, list):
+        return {"composed": False, "error": "regions must be a list"}
+    regions: list[home_layouts.HomeRegion] = []
+    try:
+        for raw in raw_regions:
+            if not isinstance(raw, dict):
+                raise ValueError("each region must be an object")
+            # The model never gets a `pinned` field to send (see the tool
+            # schema), but a proxying client could attach one. Validate the
+            # payload as-is and let compose_adaptive refuse it: a pinned
+            # payload must fail loudly (PinnedRegionWriteError), not be
+            # silently rewritten into an unpinned compose.
+            regions.append(home_layouts.HomeRegion.model_validate(raw))
+    except Exception as exc:
+        return {"composed": False, "error": f"region payload rejected: {exc}"}
+    expected = args.get("expected_revision")
+    try:
+        record = home_layouts.compose_adaptive(
+            workspace_id,
+            regions,
+            expected_revision=int(expected) if isinstance(expected, int) else None,
+        )
+    except home_layouts.PinnedRegionWriteError as exc:
+        return {"composed": False, "error": str(exc)}
+    except home_layouts.LayoutConflictError as exc:
+        return {
+            "composed": False,
+            "error": f"the layout moved to revision {exc.stored.revision} while composing",
+            "revision": exc.stored.revision,
+        }
+    except home_layouts.LayoutError as exc:
+        return {"composed": False, "error": f"the composition was not saved: {exc}"}
+    return {
+        "composed": True,
+        "workspace_id": workspace_id,
+        "revision": record.revision,
+        "region_count": len(record.layout.regions),
+    }
+
+
+async def _tool_dismiss_home_adaptive(
+    args: dict[str, Any], user_id: str, jira_pat: str | None
+) -> dict[str, Any]:
+    """Record one adaptive-Home dismissal (#1048) through the same service the
+    API route serves — one store, one count, whichever door the user takes."""
+    from services import home_projections
+
+    workspace_id = _chat_workspace_id.get()
+    if not workspace_id:
+        return {
+            "dismissed": False,
+            "error": "no Workspace context for this turn; Home is Workspace-scoped",
+        }
+    item_type = str(args.get("item_type") or "")
+    item_id = str(args.get("item_id") or "")
+    try:
+        record = home_projections.record_dismissal(workspace_id, item_type, item_id, actor=user_id)
+    except ValueError as exc:
+        return {"dismissed": False, "error": str(exc)}
+    return {
+        "dismissed": True,
+        "count": record["count"],
+        "key": f"{item_type}:{item_id}",
+    }
+
+
 _TOOL_HANDLERS: dict[str, Any] = {
     "poll_jira": _tool_poll_jira,
     "fetch_program_state": _tool_poll_jira,
@@ -1926,6 +2073,10 @@ _TOOL_HANDLERS: dict[str, Any] = {
     "suggest_widgets": _tool_suggest_widgets,
     "suggest_workflows": _tool_suggest_workflows,
     "analyze_dashboard": _tool_analyze_dashboard,
+    # Workspace Home (#1048): the Agent's two doors into its own surface, both
+    # through the same services the HTTP routes serve.
+    "compose_home_adaptive": _tool_compose_home_adaptive,
+    "dismiss_home_adaptive": _tool_dismiss_home_adaptive,
 }
 
 # Add hill-climbing and structural mutation from substrate tools

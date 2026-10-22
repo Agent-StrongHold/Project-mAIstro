@@ -1,7 +1,9 @@
 # PM Walkthrough — Hive Conductor
 
 > **Audience:** A project manager who has never touched this system.
-> **Time:** 10 minutes from zero to running your first AI agent fleet.
+> **Time:** 10 minutes from zero to creating and inspecting a workflow.
+> The test stack intentionally has no core bridge or model gateway; it verifies
+> unavailable execution rather than manufacturing a Run (#1113).
 
 ---
 
@@ -86,21 +88,26 @@ You now have a DAG with two nodes:
 
 1. On your new DAG, click **Activate** (changes status from draft → active)
 2. Click **Run** (the play button)
-3. Watch the execution — nodes light up as they process
+3. In this unconfigured test stack, execution is refused as
+   `CanonicalGraphUnavailable`; `/health` reports `graph_execution_available: false`.
 
-The run completes in seconds (it's using stub data in dev mode).
+Activation changes the saved definition, not execution authority. No Run ID or
+completed result is created. Executable deployments need the canonical Container,
+RunStore and Graph continuation owner; this walkthrough does not configure them.
 
 ---
 
 ## Step 6: Give Feedback
 
-After a run completes:
+After a real canonical Run completes in a configured deployment:
 
 1. Find the run in **Missions** (Activity) or the DAG detail page
 2. Click the **👍** or **👎** button
 3. Optionally add a comment: "Great summary!" or "Missed the blockers"
 
 This feedback is **Signal #4** — it teaches the optimizer what you like.
+The unconfigured test stack has no new Run to rate; a DAG definition ID cannot
+substitute for a Run ID, and the feedback route refuses that target.
 
 ---
 

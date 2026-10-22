@@ -54,6 +54,26 @@ $ maistro-ext-sdk schema                    # print the manifest JSON Schema
 $ maistro-ext-sdk --contract-version        # print the contract version
 ```
 
+## Scaffolding a new extension (M9-H1, #973)
+
+```console
+$ maistro-ext-sdk new my-tool --publisher acme --family tool
+```
+
+writes a complete, valid, buildable project — manifest, packaging metadata
+with the SDK pin, a family-shaped entrypoint module, sample tests, and a
+README — then validates what it wrote with the same public validator
+(fail-closed: a scaffold that cannot validate is a generator bug). Families:
+`tool`, `skill`, `mcp-gateway`, `capability-provider`, `renderer-plugin` —
+structurally distinct where the contract distinguishes them (the `tool`
+template carries the pinned handler protocol; the others are declarative
+data-only objects whose pinned protocols arrive with their SDK slices).
+
+The generated project builds and tests outside this repository, runs the
+harness conformance suite, and certifies — the full `new → test → validate →
+package → sign` flow is executed per family by
+`scripts/check-extension-scaffold.py`.
+
 Every failure — malformed JSON, unknown field, unknown capability, contract
 mismatch, missing entrypoint file — raises `ExtensionManifestError` with a
 message naming the offending token.
