@@ -223,6 +223,13 @@
       "reviewed_on": "2026-10-18"
     },
     {
+      "identity": "pkg:pypi/markdown-pdf@*",
+      "license": "MIT",
+      "reason": "Wheel METADATA carries no machine-readable license field; the reviewed classifier evidence (OSI Approved :: MIT License) from the installed distribution supplies it.",
+      "owner": "Engineering and Legal",
+      "reviewed_on": "2026-10-23"
+    },
+    {
       "identity": "pkg:pypi/markdown-it-py@*",
       "license": "MIT",
       "reason": "Wheel METADATA carries no machine-readable license field; the reviewed classifier evidence (OSI Approved :: MIT License) from the installed distribution supplies it.",
