@@ -1,4 +1,4 @@
-"""The 064 legacy-principal migration against a live PostgreSQL (#1095).
+"""The 068 legacy-principal migration against a live PostgreSQL (#1095).
 
 `tests/test_legacy_principal_migration.py` reads the migration's SQL and checks
 the shape of the plan. That is not evidence the plan *executes*: an
@@ -55,12 +55,15 @@ pytestmark = pytest.mark.skipif(
     reason="MAISTRO_TEST_DATABASE_URL is unset; these need a real PostgreSQL server",
 )
 
-#: The revision recorded while the chain sits exactly where 064 will find it:
-#: develop's integrated head, after which 064 appends.
-PRE_064_VERSIONS = frozenset({"063"})
+#: The revision recorded while the chain sits exactly where 068 will find it:
+#: develop's integrated head (its landed 063-067 chain, identities kept),
+#: after which 068 appends. Starting here, not at 063, is the point: a
+#: deployment stamped at develop's ``067`` must reach this revision by
+#: walking only the appended rung, exactly as production will.
+PRE_068_VERSIONS = frozenset({"067"})
 
 #: Installer-era and post-installer principals side by side in every surface
-#: 064 touches, so each merge branch has a row to converge.
+#: 068 touches, so each merge branch has a row to converge.
 SEED = """
 insert into canonical_workspaces (workspace_id, name, created_at, updated_at, payload)
 values ('ws1', 'Workspace One', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', '{}'),
@@ -279,8 +282,8 @@ def _column_values(table: str, column: str) -> list[object]:
 
 
 @pytest.fixture
-def mixed_pre_064_database():
-    """The database as an upgraded deployment sat when 064 ships: develop's
+def mixed_pre_068_database():
+    """The database as an upgraded deployment sat when 068 ships: develop's
     integrated chain applied, and rows written under both the installer-era
     `default` principal and the `conductor` that replaced it.
 
@@ -289,11 +292,12 @@ def mixed_pre_064_database():
     """
     result = _alembic("downgrade", "base")
     assert result.returncode == 0, result.stderr
-    # One linear chain: walking to the revision 064 revises is a single
-    # upgrade. The chain itself is what `test_migration_chain.py` proves;
-    # here it only has to land exactly on 063.
-    assert _alembic("upgrade", "063").returncode == 0
-    assert _versions() == PRE_064_VERSIONS
+    # One linear chain: walking to the revision 068 revises is a single
+    # upgrade from develop's landed 067 tip. The chain itself is what
+    # `test_migration_chain.py` proves; here it only has to land exactly on
+    # 067 — the stamp a real upgraded deployment carries.
+    assert _alembic("upgrade", "067").returncode == 0
+    assert _versions() == PRE_068_VERSIONS
     _execute(SEED + USER_MODEL_SEED)
     yield
     assert _alembic("downgrade", "base").returncode == 0
@@ -491,17 +495,15 @@ def _assert_losslessly_migrated() -> None:
         ("evt-default", "conductor"),
     ]
 
-    # The chain tip once the durable delivery receipts (#1060) renumbered
-    # past the replay-cursor revision and #845's delegation grants then
-    # renumbered past the receipts at the b9cd15c60 sync: 064 is this file's
-    # subject, 065 the Persona revision, 066 the replay-cursor revision, 067
-    # the receipts and 068 the current head (test_goal_installed_base_upgrade
-    # carries the same constant).
+    # The chain tip: develop's landed 064 personas, 065 replay cursors, 066
+    # receipts and 067 delegation grants keep their merged identities, and
+    # 068 — this file's subject — appends as the single new head
+    # (test_goal_installed_base_upgrade carries the same constant).
     assert _versions() == {"068"}
 
 
 class TestMixedDataMigratesLosslessly:
-    def test_upgrade_head_merges_every_old_and_new_row(self, mixed_pre_064_database) -> None:
+    def test_upgrade_head_merges_every_old_and_new_row(self, mixed_pre_068_database) -> None:
         result = _alembic("upgrade", "head")
         assert result.returncode == 0, result.stderr
         _assert_losslessly_migrated()
@@ -509,7 +511,7 @@ class TestMixedDataMigratesLosslessly:
 
 class TestForcedProcessDeathIsRestartReconcilable:
     def test_sigkill_mid_migration_rolls_back_completely_then_converges(
-        self, mixed_pre_064_database
+        self, mixed_pre_068_database
     ) -> None:
         import psycopg
 
@@ -541,9 +543,9 @@ class TestForcedProcessDeathIsRestartReconcilable:
             assert _wait_until_lock_queue_clears(), (
                 "the killed backend is still queued on the table lock"
             )
-            # Rolled back totally: the chain still sits at 063, the mapping
+            # Rolled back totally: the chain still sits at 067, the mapping
             # table absent, and the legacy rows exactly where they started.
-            assert _versions() == PRE_064_VERSIONS
+            assert _versions() == PRE_068_VERSIONS
             assert not _table_exists("principal_identity_mappings")
             assert _column_values("canonical_workspace_memberships", "user_id") == [
                 "conductor",
@@ -573,7 +575,7 @@ class TestForcedProcessDeathIsRestartReconcilable:
 
 class TestTwoReplicasConverge:
     def test_both_entrypoints_succeed_and_end_with_one_mapping(
-        self, mixed_pre_064_database
+        self, mixed_pre_068_database
     ) -> None:
         """Two containers racing the same upgrade, through the real entrypoint
         serialization: the advisory lock orders them, and the loser must see a

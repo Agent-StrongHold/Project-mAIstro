@@ -692,7 +692,7 @@
       "retention": "undecided",
       "deletion_path": null,
       "issue": "#72",
-      "notes": "Host-signed delegation grants (#845), created by alembic 068 on PostgreSQL and ensure_schema on SQLite (guarded DDL, one definition; renumbered 067 -> 068 at the b9cd15c60 develop sync past the receipts' 067). Validity is TTL-filtered at read time in the shared decide() path; no DELETE anywhere, so expired rows accumulate. A driven expiry sweep is the same open owner decision as elevation_grants."
+      "notes": "Host-signed delegation grants (#845), created by alembic 067 on PostgreSQL and ensure_schema on SQLite (guarded DDL, one definition; the merged identity develop shipped, kept verbatim — a landed trunk migration never moves). Validity is TTL-filtered at read time in the shared decide() path; no DELETE anywhere, so expired rows accumulate. A driven expiry sweep is the same open owner decision as elevation_grants."
     },
     {
       "table": "elevation_grants",
@@ -1043,12 +1043,12 @@
       "backends": [
         "postgres"
       ],
-      "owner_module": "alembic/versions/064_legacy_principal_ownership.py",
+      "owner_module": "alembic/versions/068_legacy_principal_ownership.py",
       "data_class": "security_evidence",
       "retention": "indefinite_by_decision",
       "deletion_path": null,
       "issue": "#1095",
-      "notes": "One row per retired installer-era principal ('default' -> 'conductor'), written by the supported legacy-ownership migration. The mapping is the durable evidence that pre-migration rows were authored under the legacy principal; 064's downgrade drops the table but deliberately does not reverse ownership. Bounded by the number of supported identity migrations."
+      "notes": "One row per retired installer-era principal ('default' -> 'conductor'), written by the supported legacy-ownership migration. The mapping is the durable evidence that pre-migration rows were authored under the legacy principal; 068's downgrade drops the table but deliberately does not reverse ownership. Bounded by the number of supported identity migrations."
     },
     {
       "table": "prompts",

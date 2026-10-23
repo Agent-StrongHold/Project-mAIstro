@@ -208,16 +208,13 @@ def test_effect_claim_revision_follows_the_chain_tip() -> None:
     # develop's #358 audit cursor indexes follow that landed revision as
     # `062`. The Goal migration appends as `063`; installed-base upgrade
     # tests cover the preserved 056/057/061 identities and forward upgrade.
-    # #1095's legacy-principal ownership migration appends after the
-    # integrated Goal head as `064`, and #12's live-Workspace-Persona table —
-    # re-parented past it from develop's `064`, a landed trunk migration
-    # never moves — follows as `065`; #836's durable legacy replay
-    # acknowledgement renumbers past that as `066`, and the durable delivery
-    # receipts (#1060) renumber past that from develop's `066` at this sync.
-    # #845's delegation grants — landed on develop past its own receipts id,
-    # already claimed here by #1060, so renumbered past the landed trunk tip
-    # by the same convention a second time — append as `068`, one linear
-    # head.
+    # #1095's legacy-principal ownership migration appends after develop's
+    # landed tip: `064_canonical_personas`, `065_event_replay_cursors`,
+    # `066_durable_delivery_receipts` and `067_delegation_grants` keep the
+    # merged identities develop already shipped — a landed trunk migration
+    # never moves, and redrawing them would leave databases stamped at
+    # develop's `066` never executing the new revision — so it takes `068`,
+    # one linear head.
     assert directory.get_heads() == ["068"]
     assert directory.get_revision("064").down_revision == "063"
     assert directory.get_revision("065").down_revision == "064"

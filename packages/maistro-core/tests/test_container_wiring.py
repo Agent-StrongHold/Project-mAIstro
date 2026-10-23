@@ -397,7 +397,7 @@ class TestReplayAcknowledgementOnTheLog:
     """#836: `process_durable_events` must also acknowledge the settled
     position on the durable log itself (`EventLogStore.acknowledge_replay`).
     The `event_replay_cursors` table ships beside `event_log` on every
-    backend and revision 064 manages it in PostgreSQL; a bridge tick that
+    backend and revision 065 manages it in PostgreSQL; a bridge tick that
     never wrote it left the log's replay acknowledgement dead in production
     and the table permanently empty.
     """

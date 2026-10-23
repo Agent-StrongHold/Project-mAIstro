@@ -205,9 +205,9 @@ async def ensure_event_schema(pool: asyncpg.Pool) -> None:
     transaction ends, including by crash, so a worker killed mid-bootstrap does
     not lock the rest out.
 
-    Migrations 004, 036, 066 and 067 remain the real path for a managed
+    Migrations 004, 036, 065 and 066 remain the real path for a managed
     deployment; this is what lets tests and single-command dev runs work
-    without one. The upgrade statements mirror migration 067 (see
+    without one. The upgrade statements mirror migration 066 (see
     `tests/migrations/…agreement`).
     """
     async with pool.acquire() as conn, conn.transaction():

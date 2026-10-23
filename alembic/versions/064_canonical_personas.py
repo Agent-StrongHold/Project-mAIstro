@@ -6,20 +6,20 @@ to diverge from the in-memory one-Persona invariant. The Workspace foreign key
 also makes deletion clean up the dependent Persona without creating a second
 ownership path.
 
-Renumbered from 034 to 065 when develop's chain claimed the 034 slot first;
+Renumbered from 034 to 064 when develop's chain claimed the 034 slot first;
 the renumber kept the single-head contract
 (tests/migrations/test_single_migration_head.py).
 
-Revision ID: 065
-Revises: 064
+Revision ID: 064
+Revises: 063
 """
 
 from __future__ import annotations
 
 from alembic import op
 
-revision = "065"
-down_revision = "064"
+revision = "064"
+down_revision = "063"
 branch_labels = None
 depends_on = None
 

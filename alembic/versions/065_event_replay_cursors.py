@@ -23,16 +23,12 @@ adopted untouched; a fresh one is built to exactly the definition the store
 reads.
 
 Renumbered from 064 to 065 at the develop sync that landed the live-
-Workspace-Persona revision (#12) first, and from 065 to 066 at the sync
-that merged #1095's legacy-principal ownership migration: the branch had
-already re-parented #12's Persona revision past its own `064` as `065`, so
-this one re-parents onto that landed revision and takes the next id — a
-landed trunk migration never moves, and a new id appends after the
-integrated head, exactly as 065_canonical_personas itself renumbered from
-034.
+Workspace-Persona revision (#12) first: a landed trunk migration never
+moves, so this one re-parents onto it and takes the next id, exactly as
+064_canonical_personas itself renumbered from 034.
 
-Revision ID: 066
-Revises: 065
+Revision ID: 065
+Revises: 064
 Create Date: 2026-10-17
 """
 
@@ -40,8 +36,8 @@ from __future__ import annotations
 
 from alembic import op
 
-revision = "066"
-down_revision = "065"
+revision = "065"
+down_revision = "064"
 branch_labels = None
 depends_on = None
 

@@ -63,20 +63,19 @@ USER_MODEL_FILE = "alembic/versions/056_user_model_facts.py"
 PLANNER_FILE = "alembic/versions/057_run_store_planner_stability.py"
 
 #: The Goal revision: the single linear head after HITL ``061``, audit
-#: ``062``. #1095's legacy-principal ownership revision (064), the Persona
-#: table (#12, 065), replay cursors (#836, 066) and durable delivery
-#: receipts (#1060, 067) append past it; they do not change the Goal
-#: identity this file protects.
+#: ``062``. Develop's landed Persona table (#12, 064), replay cursors
+#: (#836, 065), durable delivery receipts (#1060, 066) and delegation grants
+#: (#845, 067) follow it with their merged identities intact; they do not
+#: change the Goal identity this file protects.
 GOAL_REVISION = "063"
 
 #: The chain head once #1095's legacy-principal ownership revision appends
-#: past the Goal store as ``064``, the live-Workspace-Persona revision (#12)
-#: — re-parented past it from develop's ``064``, a landed trunk migration
-#: never moves — follows as ``065``, #836's replay-cursor revision renumbers
-#: past that as ``066``, the durable delivery receipts (#1060) renumber
-#: past that from develop's ``066`` at this sync, and #845's delegation
-#: grants — landed on develop past the receipts id those receipts already
-#: hold here — renumber past them as ``068``.
+#: past develop's landed tip. ``064_canonical_personas``,
+#: ``065_event_replay_cursors``, ``066_durable_delivery_receipts`` and
+#: ``067_delegation_grants`` keep the identities develop already shipped — a
+#: landed trunk migration never moves, and redrawing them would leave a
+#: database stamped at develop's ``066`` treated as past revisions it never
+#: ran. The new revision therefore takes the next unused id, ``068``.
 #: The Goal revision above stays the installed-base identity this file protects;
 #: the head moves every time a reviewed revision lands after it.
 CHAIN_HEAD = "068"
@@ -442,14 +441,11 @@ class TestTheMergedIdentities:
         assert revisions["061"].down_revision == "060"
         assert revisions[GOAL_REVISION].down_revision == "062"
         # The Goal revision took the fresh id off the integrated head when it
-        # landed; #1095's legacy-principal ownership revision parents on it as
-        # `064`, the live-Persona revision (#12) — re-parented past it from
-        # develop's `064`, a landed trunk migration never moves — as `065`,
-        # #836's replay-cursor revision renumbers past that to `066`, the
-        # durable delivery receipts (#1060) renumber past that from develop's
-        # `066` at this sync, and #845's delegation grants renumber past the
-        # receipts as `068`, so the head is CHAIN_HEAD while 063 stays
-        # parented on 062.
+        # landed; develop's landed `064` personas, `065` replay cursors, `066`
+        # receipts and `067` delegation grants follow with those merged
+        # identities verbatim, and #1095's legacy-principal ownership
+        # revision parents on that tip as `068`, so the head is CHAIN_HEAD
+        # while 063 stays parented on 062.
         assert revisions["064"].down_revision == GOAL_REVISION
         assert revisions["065"].down_revision == "064"
         assert revisions["066"].down_revision == "065"
@@ -465,11 +461,11 @@ class TestTheMergedIdentities:
         assert (VERSIONS / "060_backlog_authority_cutover.py").is_file()
         assert (VERSIONS / HITL_FILE.rsplit("/", 1)[-1]).is_file()
         assert (VERSIONS / "063_canonical_goals.py").is_file()
-        assert (VERSIONS / "064_legacy_principal_ownership.py").is_file()
-        assert (VERSIONS / "065_canonical_personas.py").is_file()
-        assert (VERSIONS / "066_event_replay_cursors.py").is_file()
-        assert (VERSIONS / "067_durable_delivery_receipts.py").is_file()
-        assert (VERSIONS / "068_delegation_grants.py").is_file()
+        assert (VERSIONS / "064_canonical_personas.py").is_file()
+        assert (VERSIONS / "065_event_replay_cursors.py").is_file()
+        assert (VERSIONS / "066_durable_delivery_receipts.py").is_file()
+        assert (VERSIONS / "067_delegation_grants.py").is_file()
+        assert (VERSIONS / "068_legacy_principal_ownership.py").is_file()
 
     def test_restored_files_are_byte_identical_to_the_merged_snapshots(self) -> None:
         """The merged revisions' content is what develop shipped, byte for byte.

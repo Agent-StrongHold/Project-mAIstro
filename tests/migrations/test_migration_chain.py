@@ -144,12 +144,12 @@ EXPECTED_TABLES = frozenset(
         "elevation_grants",
         # Host-authorized delegation grants (#845): the durable backing of the
         # delegation authority a Sentinel consults before honoring any
-        # agent-to-agent handoff. Lives at the end of the chain (068;
-        # renumbered past the receipts' 067 at the b9cd15c60 develop sync).
+        # agent-to-agent handoff. Lives at the end of the chain (067; the
+        # merged identity develop shipped, kept verbatim).
         "delegation_grants",
         "episodic_memories",
         "event_log",
-        # The durable legacy replay acknowledgement (#836, 066): one row per
+        # The durable legacy replay acknowledgement (#836, 065): one row per
         # replay consumer, mirroring `consumer_cursors`' shape and rationale.
         "event_replay_cursors",
         "graph_continuations",
@@ -174,7 +174,7 @@ EXPECTED_TABLES = frozenset(
         "node_templates",
         "outcomes",
         # The durable record that the installer-era `default` principal became
-        # `conductor` (036, #1095). The chain asserts on the live catalog, so a
+        # `conductor` (068, #1095). The chain asserts on the live catalog, so a
         # migration that leaves a table behind must see it named here — the
         # suite failed until it did, which is the check working.
         "principal_identity_mappings",

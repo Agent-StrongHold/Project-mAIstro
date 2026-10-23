@@ -16,22 +16,14 @@ EXISTS`) and byte-identical to `POSTGRES_DELEGATION_SCHEMA` in
 `delegation_durable.py`, so a database that already carries the runtime
 bootstrap is adopted untouched and a fresh one is built to exactly the
 definition the store reads.
-
-Revision ID: 068
-Revises: 067
-
-(Renumbered 067 -> 068 at the b9cd15c60 develop sync: the revision landed
-on develop claiming the id the durable delivery receipts (#1060) already
-hold on this chain after the earlier 064-067 renumbers; a landed trunk
-migration never moves, so the newcomer renumbers past it.)
 """
 
 from __future__ import annotations
 
 from alembic import op
 
-revision = "068"
-down_revision = "067"
+revision = "067"
+down_revision = "066"
 branch_labels = None
 depends_on = None
 

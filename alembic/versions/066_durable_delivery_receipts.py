@@ -23,22 +23,17 @@ reviewed remote-commit contract (#1060) into PostgreSQL:
   delivery keys are invented, attempts are never reset, and no full Events
   are copied into receipts.
 
-Revision ID: 067
-Revises: 066
+Revision ID: 066
+Revises: 065
 Create Date: 2026-10-18
-
-(Renumbered 064 -> 065 -> 066 -> 067 as the live-Persona revision (#12),
-#836's replay-cursor revision and then #1095's legacy-principal ownership
-revision claimed the earlier ids first; a landed trunk migration never
-moves, so later revisions renumber past it.)
 """
 
 from __future__ import annotations
 
 from alembic import op
 
-revision = "067"
-down_revision = "066"
+revision = "066"
+down_revision = "065"
 branch_labels = None
 depends_on = None
 

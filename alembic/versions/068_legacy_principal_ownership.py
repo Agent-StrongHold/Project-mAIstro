@@ -1,7 +1,7 @@
 """Migrate the installer-era ``default`` principal without dropping ownership.
 
-Revision ID: 064
-Revises: 063
+Revision ID: 068
+Revises: 067
 
 The installer changes the credential's configured principal from ``default`` to
 ``conductor``.  That is an identity migration, so changing only ``API_KEYS``
@@ -14,13 +14,16 @@ mapping table and idempotent statements below are the database-level guard as
 well: a crashed transaction rolls back, and a second replica converges to the
 same mapping and rows.
 
-Numbered 064, appending after develop's integrated ``063`` canonical-goals
-head. The branch originally drafted this as ``036`` beside
-``035_outcome_scope_thumb_index``, but develop's integrated history already
-assigned the 036 identities (``036_consumer_cursors``,
-``036_audit_log_org_scope``); claiming a sibling id would fork the chain into
-two heads, and threading under develop's shipped migrations would rewrite
-ancestry databases are already stamped with. Per the integration rule recorded
+Appended as ``068`` after develop's integrated head. The branch originally
+drafted this as ``036`` beside ``035_outcome_scope_thumb_index``, but
+develop's integrated history already assigned the 036 identities
+(``036_consumer_cursors``, ``036_audit_log_org_scope``), and it later drafted
+it as ``064`` before develop landed its own ``064_canonical_personas`` /
+``065_event_replay_cursors`` / ``066_durable_delivery_receipts`` /
+``067_delegation_grants``: claiming a sibling id would fork the chain into two
+heads, and re-parenting under develop's shipped migrations would rewrite
+ancestry databases are already stamped with — an installation stamped at
+``066`` would never execute this revision. Per the integration rule recorded
 on ``063_canonical_goals``: merged identities keep their meaning, and a new
 revision appends after the integrated head under an unused id.
 """
@@ -32,8 +35,8 @@ import hashlib
 from alembic import op
 from sqlalchemy import text
 
-revision = "064"
-down_revision = "063"
+revision = "068"
+down_revision = "067"
 branch_labels = None
 depends_on = None
 
@@ -185,7 +188,7 @@ def upgrade() -> None:
     # and planner merges the installed-base suite snapshots) carries an
     # ``audit_log`` without ``signature``. Referencing the column there died
     # with UndefinedColumn — the forward upgrade those bases are legally
-    # owed crashed at 064. A base without the column has no signed rows by
+    # owed crashed at 068. A base without the column has no signed rows by
     # construction, so the proof-preservation exception is vacuous and every
     # 'default' row follows the identity; the guarded probe keeps the
     # exception exactly where the column exists.
