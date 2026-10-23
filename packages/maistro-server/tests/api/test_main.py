@@ -9,6 +9,7 @@ ErrorResponse envelope (request_id, type, message).
 from __future__ import annotations
 
 import json
+import signal
 import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -326,7 +327,7 @@ class TestLifespan:
             # the branch emits, not about wiring a real one.
             patch(
                 "maistro_server.main._build_container",
-                AsyncMock(return_value=(mock_container, MagicMock())),
+                AsyncMock(return_value=mock_container),
             ),
             patch("maistro_server.main.TaskRunner", return_value=_stopped_runner()),
             patch("asyncio.get_running_loop") as mock_loop,
@@ -371,7 +372,7 @@ class TestLifespan:
             patch("maistro_server.main._run_store_pool", AsyncMock(return_value=object())),
             patch(
                 "maistro_server.main._build_container",
-                AsyncMock(return_value=(mock_container, MagicMock())),
+                AsyncMock(return_value=mock_container),
             ),
             patch("maistro_server.main.TaskRunner", return_value=_stopped_runner()),
             patch("asyncio.get_running_loop") as mock_loop,
@@ -412,7 +413,7 @@ class TestLifespan:
             patch("maistro_server.main._run_store_pool", AsyncMock(return_value=object())),
             patch(
                 "maistro_server.main._build_container",
-                AsyncMock(return_value=(mock_container, MagicMock())),
+                AsyncMock(return_value=mock_container),
             ),
             patch("maistro_server.main.TaskRunner", return_value=_stopped_runner()),
             patch("asyncio.get_running_loop") as mock_loop,

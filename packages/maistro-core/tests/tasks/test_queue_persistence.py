@@ -15,7 +15,6 @@ import pytest
 
 import maistro.tasks.queue as queue_mod
 from maistro.memory.store import TaskRecord
-from maistro.observability.metrics import active_tasks
 from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.runs.model import RunStatus
 from maistro.runs.store import InMemoryRunStore

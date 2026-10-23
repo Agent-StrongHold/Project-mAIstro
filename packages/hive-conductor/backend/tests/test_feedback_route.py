@@ -324,7 +324,7 @@ async def test_collect_thumbs_scopes_a_sqlite_store_by_org_and_project() -> None
     from maistro.persistence.sqlite_outcomes import SqliteOutcomeStore
 
     conn = await aiosqlite.connect(":memory:")
-    store = SqliteOutcomeStore(conn, exposure_mode=MemoryExposureMode.AGENT_MANAGED)
+    store = SqliteOutcomeStore(conn)
     await store.ensure_schema()
     previous = svc.get_outcome_store()
     svc.set_outcome_store(store)
