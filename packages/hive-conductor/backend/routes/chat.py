@@ -22,6 +22,7 @@ from services.chat_gate import (
 from services.chat_runs import admit_turn, cancel_unstarted, execute_turn
 from services.owned_records import chat_sessions_for
 from services.program_hyperagent import user_id_from_request
+from services.request_principal import require_actor_id
 
 router = APIRouter(tags=["chat"])
 
@@ -96,10 +97,7 @@ class RunWorkflowBody(BaseModel):
 @router.post("/workflows/run")
 async def run_workflow(body: RunWorkflowBody, request: Request) -> dict:
     """Run a chat-selected workflow only after the shared approval inbox settles it."""
-    user = getattr(request.state, "user", None) or {}
-    user_id = str(user.get("id") or user.get("username") or "")
-    if not user_id:
-        raise HTTPException(status_code=401, detail="Authentication required")
+    user_id = require_actor_id(request)
     args = {"dag_id": body.dag_id}
     if body.goal:
         args["goal"] = body.goal

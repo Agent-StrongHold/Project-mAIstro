@@ -68,12 +68,18 @@ def test_standalone_registered_human_work_is_refused() -> None:
     )
     try:
         with pytest.raises(RuntimeError, match="canonical graph execution spine"):
-            asyncio.run(run_registered_dag("synth-human", workspace_id="w1", project_id="p1"))
+            asyncio.run(
+                run_registered_dag(
+                    "synth-human", workspace_id="w1", project_id="p1", user_id="test-user"
+                )
+            )
     finally:
         registry.deregister("synth-human")
 
 
-def test_run_registered_dag_produces_provenanced_completed_run(synth_dag_id: str) -> None:
+def test_run_registered_dag_produces_provenanced_completed_run(
+    synth_dag_id: str, canonical_graph_spine
+) -> None:
     graph, record = asyncio.run(
         run_registered_dag(
             synth_dag_id,
@@ -143,6 +149,7 @@ class _StubContainer:
         # model that real Container contract rather than making production DI
         # optional just to satisfy older tests.
         self.capability_effects = new_in_memory_effect_context()
+        self.harness_adapters = {}
         self.provider_registry = InMemoryProviderRegistry()
         self.llm_router = CostAwareRouter(self.provider_registry)
 
@@ -331,7 +338,7 @@ def test_an_engine_that_raises_falls_back_rather_than_propagating(monkeypatch) -
     resolver = dag_agents._resolve_nodes_with()
     assert callable(resolver)
     # The fallback is a working resolver, not just a swallowed exception: a
-    # node still resolves (unwired), so DAG execution proceeds as before.
+    # node still resolves (unwired), without authorizing Graph execution.
     assert resolver("d", _DELEGATE_DAG)._a2a_delegator is None
 
 

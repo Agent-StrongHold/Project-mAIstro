@@ -11,8 +11,8 @@ from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
-from middleware.auth import principal_has_permission
 from services.attention import list_attention
+from services.request_principal import require_principal
 
 from routes.hitl import _request_user_id
 
@@ -26,7 +26,7 @@ _READ_SCOPE = "dags.write"
 @router.get("/{workspace_id}/attention")
 async def get_workspace_attention(workspace_id: str, request: Request) -> dict[str, Any]:
     user_id = _request_user_id(request)
-    if not principal_has_permission(request.state.user, _READ_SCOPE):
+    if not require_principal(request).has_permission(_READ_SCOPE):
         raise HTTPException(
             status_code=403, detail=f"Permission '{_READ_SCOPE}' required. Elevate to proceed."
         )

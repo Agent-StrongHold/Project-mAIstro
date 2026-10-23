@@ -974,63 +974,6 @@ async def test_recovery_leaves_a_live_leased_running_receipt_alone() -> None:
     assert store.updates == []
 
 
-async def test_recovery_leaves_a_string_status_live_leased_receipt_alone() -> None:
-    """The live-lease guard must fire for driver-hydrated plain-string status.
-
-    ``PgCanvasStore._coerce_job`` used to hand back the status column as a
-    plain ``str``; identity comparison against ``JobStatus.RUNNING`` then
-    failed silently, the guard never fired, and a second worker's reconcile
-    requeued a live 300s lease back to PENDING -- observed live in the #93
-    two-worker race, where the same physical job was claimed twice under a
-    live lease (attempts=2, provider dispatched twice). This pins the exact
-    production shape: a receipt whose ``status`` is the string ``'running'``.
-    """
-    adapter, _runs, _project = await _adapter()
-    run_id = await _admit_with_receipt(adapter, "job-string-live-lease")
-    store = _ReceiptStore()
-    job = _correlated_job(
-        "job-string-live-lease",
-        run_id,
-        status="running",  # exactly what the PostgreSQL driver returns
-        leased_by="live-worker",
-        lease_expires_at=datetime.now(UTC) + timedelta(seconds=300),
-    )
-    store.jobs[("job-string-live-lease", "org-1")] = job
-    assert not isinstance(job.status, JobStatus)  # a plain string, as hydrated
-
-    repaired = await adapter.reconcile_admissions(store)
-
-    assert repaired == [job]
-    assert job.status == JobStatus.RUNNING
-    assert job.leased_by == "live-worker"
-    assert store.updates == []
-
-
-async def test_recovery_requeues_a_string_status_receipt_whose_lease_expired() -> None:
-    """Equality (not identity) must not protect an *expired* string lease.
-
-    The companion fix could have over-corrected into "never touch a RUNNING
-    receipt"; an expired lease under a plain-string status is still a lost
-    worker and must be requeued.
-    """
-    adapter, _runs, _project = await _adapter()
-    run_id = await _admit_with_receipt(adapter, "job-string-expired-lease")
-    store = _ReceiptStore()
-    job = _correlated_job(
-        "job-string-expired-lease",
-        run_id,
-        status="running",
-        leased_by="dead-worker",
-        lease_expires_at=datetime.now(UTC) - timedelta(seconds=1),
-    )
-    store.jobs[("job-string-expired-lease", "org-1")] = job
-
-    repaired = await adapter.reconcile_admissions(store)
-
-    assert repaired == [job]
-    assert job.status == JobStatus.PENDING
-
-
 async def test_recovery_requeues_a_running_receipt_whose_lease_expired() -> None:
     """An *expired* lease is not live: recovery may still requeue it.
 

@@ -7,6 +7,9 @@
 //   exported markup through lib/visualArtifactRenderer, and persists the
 //   pre-scan verdict alongside the sanitized markup so a hostile artifact can
 //   never be re-read as trusted content.
+// - #990: this page is the design-loop host. It projects canonical
+//   Goal/Rubric/Run state through lib/api; it is not a second product and
+//   browser storage is never the system of record for loop state.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { PageHeader } from "../components/shared";
 import { apiGet, apiPost } from "../lib/api";

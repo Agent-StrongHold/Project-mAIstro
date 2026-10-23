@@ -47,12 +47,10 @@ class CanvasJobRunner:
         poll_interval: float = 1.0,
         reap_interval: float = 30.0,
         max_execution_seconds: float = 1800.0,
-        concurrency: int = 1,
+        retry_backoff: RetryBackoff = DEFAULT_RETRY_BACKOFF,
     ) -> None:
         if max_execution_seconds <= 0:
             raise ValueError("max_execution_seconds must be positive")
-        if concurrency < 1:
-            raise ValueError("concurrency must be at least 1")
         self._store = store
         self._executor = executor
         self._worker_id = worker_id
@@ -60,84 +58,27 @@ class CanvasJobRunner:
         self._poll_interval = poll_interval
         self._reap_interval = reap_interval
         self._max_execution_seconds = max_execution_seconds
-        self._concurrency = concurrency
+        self._retry_backoff = retry_backoff
         self._running = False
 
     async def start(self) -> None:
-        """Run the poll loop until stop() is called.
-
-        With ``concurrency > 1`` up to that many claimed jobs execute
-        concurrently, so independent ready jobs (unrelated artifact branches)
-        progress in parallel where the queue allows it (#93). Each concurrent
-        unit is the same fenced ``tick_once``: claims stay atomic (one
-        ``claim_next_pending`` per unit, each pinning its own attempt
-        generation), and every terminal write fences on the exact claim it
-        belongs to, so two units can never double-process one physical job.
-
-        ``stop()`` stops *claiming* and then drains in-flight jobs before this
-        coroutine returns; if the caller cannot wait (the composition layer's
-        bounded shutdown cancels this task at its grace deadline), the
-        ``CancelledError`` path cancels the in-flight ticks too — mirroring
-        the serial design, where cancellation lands inside the one in-flight
-        tick rather than leaving orphaned provider work running past shutdown.
-        """
+        """Run the poll loop until stop() is called."""
         self._running = True
-        logger.info(
-            "canvas_runner_started worker=%s concurrency=%d",
-            self._worker_id,
-            self._concurrency,
-        )
-        in_flight: set[asyncio.Task[bool]] = set()
+        logger.info("canvas_runner_started worker=%s", self._worker_id)
         reap_counter = 0.0
-        try:
-            while self._running or in_flight:
-                if not self._running:
-                    # Draining after stop(): wait for claimed jobs to finish.
-                    done, _pending = await asyncio.wait(
-                        in_flight, return_when=asyncio.FIRST_COMPLETED
-                    )
-                    in_flight -= done
-                    for task in done:
-                        self._consume_tick(task)
-                    continue
-                # Retire finished units first so their slots free up and no
-                # exception sits unretrieved.
-                finished = {task for task in in_flight if task.done()}
-                in_flight -= finished
-                for task in finished:
-                    self._consume_tick(task)
-                while len(in_flight) < self._concurrency:
-                    in_flight.add(asyncio.create_task(self.tick_once()))
-                reap_counter += self._poll_interval
-                if reap_counter >= self._reap_interval:
-                    reap_counter = 0.0
-                    try:
-                        await self.reap_once()
-                    except Exception:
-                        logger.exception("canvas_runner_reap_error")
-                await asyncio.sleep(self._poll_interval)
-        except asyncio.CancelledError:
-            # Bounded shutdown (bind_canvas_runner_lifecycle) cancelled this
-            # loop at its grace deadline. Cancel the in-flight ticks as well:
-            # leaving them running would keep executing provider work after
-            # the service was told to stop, and the canonical adapter records
-            # the cancellation like it does for the serial design.
-            self._running = False
-            for task in in_flight:
-                task.cancel()
-            await asyncio.gather(*in_flight, return_exceptions=True)
-            raise
-        finally:
-            self._running = False
-
-    @staticmethod
-    def _consume_tick(task: asyncio.Task[bool]) -> None:
-        """Retrieve one finished tick's outcome; log unexpected failures."""
-        if task.cancelled():
-            return
-        exc = task.exception()
-        if exc is not None:
-            logger.error("canvas_runner_tick_error", exc_info=exc)
+        while self._running:
+            try:
+                await self.tick_once()
+            except Exception:
+                logger.exception("canvas_runner_tick_error")
+            reap_counter += self._poll_interval
+            if reap_counter >= self._reap_interval:
+                reap_counter = 0.0
+                try:
+                    await self.reap_once()
+                except Exception:
+                    logger.exception("canvas_runner_reap_error")
+            await asyncio.sleep(self._poll_interval)
 
     def stop(self) -> None:
         self._running = False
