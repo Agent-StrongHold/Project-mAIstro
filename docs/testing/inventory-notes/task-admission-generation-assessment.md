@@ -7775,3 +7775,56 @@ green in the supplied check-0..4 logs.
   leave the stack unmerged"). BLOCKED is therefore the issue-conform
   terminal state of this leaf, not a repairable defect; round 95 is a
   note-only commit.
+
+## Round 96 — independent re-verification at head ed8f2862c (this worktree)
+
+Re-derived every claim first-hand at the dispatched head; no prior round's
+output was trusted.
+
+- `scripts/check-vulture-baseline.py packages/*/src --min-confidence 60
+  --exclude '*/third_party/*'` (CI's exact argv from
+  `.github/workflows/quality.yml:1512` and
+  `.github/workflows/vulture-ratchet.yml`): rc=0, 1314 reviewed identities
+  -> 1309 findings, unclassified 0 — the lane-authorized vulture per-identity
+  ledger repair is already exact; nothing to amend.
+- `scripts/check-shipped-surface-truth.py`: rc=0.
+- `scripts/check-ratchet-provenance.py`: rc=1 with 8/9 sub-ratchets OK; the
+  sole FAIL is `reachability` — "maistro.tasks.admission_generation: NEW
+  unreachable module absent from trusted base and not previously authorized".
+  This is exactly the CI exact-debt-ledger failure at e28574228aa6.
+- `scripts/check-reachability.py`: rc=1, exactly ONE newly unreachable module,
+  `maistro.tasks.admission_generation` (157 dispositioned + this leaf = 158);
+  `check-reachability-dispositions.py` rc=0; `check-promotion-surface.py`
+  rc=0.
+- CI test trio reproduced: `pytest tests/test_check_reachability.py
+  tests/test_reachability_baseline_identity.py -q` -> 3 failed / 36 passed,
+  set diff = the single extra item `maistro.tasks.admission_generation`
+  (Quality-gate and Coverage-gate CI jobs are downstream of this dependency).
+- Focused suites: admission-generation assessment + admission-identity
+  publication + pack contracts -> 268 passed. Suite inventory re-run:
+  `check-suite-inventory.py --suite packages/maistro-core/tests` ok (matches
+  recorded inventory, no duplicate evidence).
+- Tests bite: expiry mutation `expires_at_us <= now_us` -> `<` killed 27
+  focused tests; module restored byte-identical (md5
+  257a6e45c382349dd12f559099663fbc before/after, worktree clean).
+- Hygiene: `ruff check .` and `ruff format --check .` clean (3467 files);
+  mypy clean on the leaf module.
+- Scope guards re-verified: `git diff origin/develop...HEAD --stat` touches
+  neither `tasks/idempotency.py` nor `tasks/__init__.py`, `runs/__init__.py`,
+  or `runs/admission_identity.py`; grep over `packages/*/src` finds
+  `admission_generation` only in the module itself (zero production
+  importers); the `scripts/check-reachability.py` delta is a comment-only
+  NOTE that adds no exclusion and keeps the blocker visible.
+- Ledgers vs develop: `git diff --numstat origin/develop...HEAD -- quality/`
+  = only `quality/vulture-baseline.json` 0/5 — the five now-consumed
+  `AdmissionAssessment` enum identities (fix-eliminated, scan-verified at
+  CI argv). No reachability-baseline, ratchet-authorization, or disposition
+  entry exists for either admission module.
+- Verdict re-derived, unchanged: implementation/test readiness is proven and
+  the vulture ledger is exact; the residual red (exact-debt-ledger /
+  reachability / test trio / downstream Quality+Coverage jobs) is bound
+  solely to the issue-mandated NEW-unreachable leaf, whose every in-leaf
+  remedy the issue prohibits. Per the issue's own contract ("report
+  implementation/test readiness plus the explicit merge blocker and leave
+  the stack unmerged"), BLOCKED is the issue-conform terminal state until
+  the #1845 integration head lands the runtime consumer. Note-only commit.
