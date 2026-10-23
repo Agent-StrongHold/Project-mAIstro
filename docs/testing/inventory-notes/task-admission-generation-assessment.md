@@ -8055,3 +8055,70 @@ All gates re-executed first-hand at `1e80e0c8621b3847ac3e3f799fbbcbd7af71a8fa`
   test readiness are proven; the explicit merge blocker (no reviewed
   runtime consumer; leaf must stay unwired, unmerged, and un-baselined)
   is unchanged and outside this leaf's authority.
+
+## Round 101 (2026-10-23): develop sync executed; blocker re-proven invariant at the merged head
+
+Independent re-verification at the assigned head `4fbaff6875d9` (leaf module
+md5 `257a6e45c382349dd12f559099663fbc`, the same bytes mutation-tested in
+rounds 98–100), then at the merged head after executing the lane-directed
+develop sync.
+
+- Driver deterministic checks at `4fbaff6875d9`: `uv sync --locked --extra
+  dev` ok; `ruff check .` / `ruff format --check .` clean; focused
+  pack/publication/assessment suites 268 passed; suite inventory
+  `packages/maistro-core/tests` 17626 = recorded baseline.
+- Focused commands re-run at the assigned head: leaf suite 132 passed;
+  `test_root_admission_identity.py` + `test_idempotency.py` 146 passed; ruff
+  check/format on the leaf files clean; `mypy
+  packages/maistro-core/src/maistro/tasks/admission_generation.py` clean.
+- Exact-debt-ledger scope at CI argv
+  (`check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'`): rc=0, 1314→1309, `unclassified: 0`,
+  `never_allowlist: 0` — the vulture ledger is exact and nothing needed
+  amending; no `quality/vulture-baseline.json` edit was made or required.
+- The failing gate components reproduce locally and are bound to exactly one
+  identity: `check-reachability.py` rc=1 — `1 module(s) are NEWLY
+  UNREACHABLE: maistro.tasks.admission_generation`;
+  `check-ratchet-provenance.py` rc=1 with both findings naming only
+  `maistro.tasks.admission_generation` (9/9 sub-ratchets executed);
+  `check-reachability-dispositions.py`, `check-promotion-surface.py`,
+  `check-shipped-surface-truth.py` all rc=0. The CI test trio
+  (`tests/test_check_reachability.py` +
+  `tests/test_reachability_baseline_identity.py`) reproduces 3 failed / 36
+  passed with the set delta exactly `+ maistro.tasks.admission_generation`.
+- Mutation spot-checks re-executed first-hand against the focused suite,
+  each restored byte-identically from a /tmp backup (md5 `257a6e45…`
+  verified after every restore; no git restore used): swapping
+  TAKEOVER/REPLACE_EXPIRED → 50 failed; moving the lease row before the
+  binding row → 16 failed. The suite demonstrably bites on the exact
+  regressions the issue names.
+- Scope guards: zero production-source references to
+  `admission_generation` outside the module (tests and this note only).
+- Develop sync executed per the lane brief: `origin/develop` had advanced
+  past the job's snapshot base `2ac960614` to `fe733ae4ee` ([M1 closeout]
+  lockfile/image work, #2243 — no runtime consumer for this leaf). Merged
+  as `c324d3eac67a`. Two conflicts, both resolved in place: (1)
+  `Dockerfile.research` — comment-only CVE wording, resolved to develop's
+  phrasing per the file's established merge precedent; (2)
+  `scripts/check-reachability.py` — kept BOTH develop's
+  `admission_codec.py` `_EXCLUDED_PACKAGE_PYTHON` classification (#1945)
+  and this branch's round-89 NOTE; the `admission_generation.py` leaf
+  remains deliberately unclassified, per #1852's prohibition on
+  suppressions that would make the unwired leaf independently green.
+- Post-sync re-validation at `c324d3eac67a`: `uv sync --locked --extra dev`
+  re-run (uv.lock changed via #2243); `ruff check .` and `ruff format
+  --check .` clean (3472 files); focused suites across the leaf,
+  #1851 identity, live idempotency, sibling codec, pack contracts and
+  identity publication: 543 passed, 3 skipped; suite inventory 17760 node
+  IDs = recorded baseline (develop's #1945 updated it); vulture rc=0 at CI
+  argv (1309 reviewed identities = 1309 findings vs base `fe733ae4ee`);
+  dispositions/promotion/shipped-surface rc=0; reachability rc=1 and
+  provenance rc=1 still naming exactly `maistro.tasks.admission_generation`;
+  CI test trio unchanged (3 failed / 36 passed, single-set delta).
+- Verdict unchanged: BLOCKED by the issue's own contract. Implementation and
+  test readiness are proven at both the pre-sync and post-sync heads; the
+  explicit merge blocker — no reviewed runtime consumer for the inactive
+  leaf (the C integration; draft runtime consumer is #2178), with the leaf
+  required to stay unwired, unmerged, and un-baselined until that
+  separately scoped integration lands — is invariant under the develop
+  sync and outside this leaf's authority.
