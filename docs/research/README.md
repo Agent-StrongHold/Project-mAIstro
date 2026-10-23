@@ -86,6 +86,7 @@ Every child research epic/leaf defines:
 |---|---|---|---|
 | [881 — execution-lifecycle state machines](881-execution-lifecycle-state-machines.md) | M8-A1 | leaf [#881](https://github.com/Agent-StrongHold/Project-mAIstro/issues/881), epic #880 | INCUBATE |
 | [882 — invocation effect/idempotency stateful testing](882-invocation-effect-idempotency-stateful-testing.md) | M8-A2 | leaf [#882](https://github.com/Agent-StrongHold/Project-mAIstro/issues/882), epic #880 | GRADUATE |
+| [891 — direct Z3/SMT modeling of the schedule fire decision](891-z3-smt-fire-decision.md) | M8-A11 | leaf [#891](https://github.com/Agent-StrongHold/Project-mAIstro/issues/891), epic #880 | WATCH |
 | [894 — critical-zone mutation strategy](894-critical-zone-mutation-strategy.md) | M8-A14 | leaf [#894](https://github.com/Agent-StrongHold/Project-mAIstro/issues/894), epic #880 | INCUBATE |
 | [896 — coverage-guided fuzzing of parser surfaces](896-coverage-guided-fuzzing-parser-surfaces.md) | M8-A15 | leaf [#896](https://github.com/Agent-StrongHold/Project-mAIstro/issues/896), epic #880 | INCUBATE |
 | [900 — adaptive model routing, escalation, and inference economics](900-adaptive-model-routing-escalation-economics.md) | M8-B | epic [#900](https://github.com/Agent-StrongHold/Project-mAIstro/issues/900) (leaves #914–#919) | INCUBATE (family) |
@@ -135,9 +136,10 @@ have produced research notes keep them in this folder ([#881](881-execution-life
 [#884](884-tla-plus-model-checking-execution-concurrency.md), [#885](885-differential-reference-model-testing.md),
 [#887](887-postgresql-concurrency-race-harness.md), [#888](888-replay-checkpoint-equivalence.md),
 [#889](889-metamorphic-testing.md), [#890](890-crosshair-symbolic-execution-pure-invariants.md),
-[#894](894-critical-zone-mutation-strategy.md), [#896](896-coverage-guided-fuzzing-parser-surfaces.md),
+[#891](891-z3-smt-fire-decision.md), [#894](894-critical-zone-mutation-strategy.md),
+[#896](896-coverage-guided-fuzzing-parser-surfaces.md),
 [#897](897-lean-leanstral-rust-aeneas-correctness-kernel.md), [#918](918-concurrency-model-checking-tla-apalache.md));
-#881, #882, #894, #896, #918, and #897 are registered in the index above.
+#881, #882, #891, #894, #896, #918, and #897 are registered in the index above.
 
 ## Milestone object note
 

@@ -1,4 +1,4 @@
-# Digest-pinned (#349): v1.64.0-noble index digest resolved 2026-10-10; the tag
+# Digest-pinned (#349): v1.64.1-noble index digest recorded 2026-10-23 (#2137); the tag
 # stays as the human-readable version annotation, the digest is the authority.
 FROM mcr.microsoft.com/playwright:v1.64.1-noble@sha256:7852dc5a7d72f5fe458a597d690f6c42fbc8e9e26ddfa95f8e6ef552558d9bbf
 WORKDIR /tests
@@ -14,7 +14,7 @@ WORKDIR /tests
 # whose markup links through the router. Versions match the shipped frontend /
 # its lockfile.
 RUN npm init -y && npm install \
-    @playwright/test@1.64.0 \
+    @playwright/test@1.64.1 \
     @axe-core/playwright@4.10.2 \
     typescript \
     esbuild@0.28.1 \

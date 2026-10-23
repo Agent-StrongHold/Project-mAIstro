@@ -70,11 +70,12 @@ GOAL_REVISION = "063"
 CHAIN_TIP = "064"
 
 #: The chain head once the live-Workspace-Persona revision (#12, 064),
-#: #836's replay-cursor revision (065) and the durable delivery receipts
-#: (#1060, 066) append past the Goal store.
+#: #836's replay-cursor revision (065), the durable delivery receipts
+#: (#1060, 066) and #845's delegation grants (067) append past the Goal
+#: store.
 #: The Goal revision above stays the installed-base identity this file protects;
 #: the head moves every time a reviewed revision lands after it.
-CHAIN_HEAD = "066"
+CHAIN_HEAD = "067"
 
 GOAL_TABLES = ("canonical_goals", "canonical_goal_revisions", "canonical_goal_transitions")
 USER_MODEL_TABLES = ("user_model_facts", "user_model_statement_keys")
@@ -438,12 +439,14 @@ class TestTheMergedIdentities:
         # The Goal revision took the fresh id off the integrated head when it
         # landed; develop's live-Persona revision (#12) claimed `064` on the
         # trunk — a landed trunk migration never moves — #836's replay-cursor
-        # revision renumbered past it to `065`, and the durable delivery
-        # receipts (#1060) append as `066`, so the head is CHAIN_HEAD while 063
-        # stays parented on 062.
+        # revision renumbered past it to `065`, the durable delivery
+        # receipts (#1060) append as `066`, and #845's delegation grants
+        # renumber past the receipts as `067`, so the head is CHAIN_HEAD
+        # while 063 stays parented on 062.
         assert revisions["064"].down_revision == GOAL_REVISION
         assert revisions["065"].down_revision == "064"
         assert revisions["066"].down_revision == "065"
+        assert revisions["067"].down_revision == "066"
         assert script_directory.get_heads() == [CHAIN_HEAD]
         # The filenames carry the merged identities too — a renamed file
         # and a moved id are the same silent reassignment in two clothes.
