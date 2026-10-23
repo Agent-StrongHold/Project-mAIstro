@@ -209,6 +209,79 @@ class GovernedInvocationExecutionService:
             ),
         )
 
+    async def discover_ambiguous(self, *, stale_before: datetime) -> list[Invocation]:
+        """Expose stale-effect discovery through the governed composition root."""
+
+        return await self._invocations.discover_ambiguous(stale_before=stale_before)
+
+    async def reconcile(
+        self,
+        invocation_id: str,
+        *,
+        disposition: ReconciliationDisposition,
+        source: str,
+        actor: str,
+        reason: str,
+        evidence: Any | None,
+        workspace_id: str,
+        project_id: str,
+        result: Any | None = None,
+        stale_before: datetime | None = None,
+        usage: InvocationUsage | None = None,
+    ) -> Invocation:
+        """Resolve evidence without creating a provider-dispatch bypass."""
+
+        settled = await self._invocations.reconcile(
+            invocation_id,
+            disposition=disposition,
+            source=source,
+            actor=actor,
+            reason=reason,
+            evidence=evidence,
+            workspace_id=workspace_id,
+            project_id=project_id,
+            result=result,
+            stale_before=stale_before,
+            usage=usage,
+        )
+        await self._append_reconciliation_event(settled)
+        return settled
+
+    async def reconcile_with_provider(
+        self,
+        invocation_id: str,
+        adapter: ProviderReconciliationAdapter,
+        *,
+        stale_before: datetime | None = None,
+    ) -> Invocation:
+        """Delegate provider evidence while retaining Invocation authority."""
+
+        settled = await self._invocations.reconcile_with_provider(
+            invocation_id, adapter, stale_before=stale_before
+        )
+        await self._append_reconciliation_event(settled)
+        return settled
+
+    async def _append_reconciliation_event(self, invocation: Invocation) -> None:
+        """Announce a reconciled terminal state on the event stream (#1118 review).
+
+        Consumers that saw `capability.invocation.unknown` (or nothing, after a
+        process death) would otherwise never learn the canonical row settled.
+        The event id carries the status, so an already-announced state is a
+        no-op and a reconciliation that left the row UNKNOWN announces nothing
+        new.
+        """
+        if invocation.status not in {InvocationStatus.COMPLETED, InvocationStatus.FAILED}:
+            return
+        await self._append_terminal_event(
+            invocation,
+            binding=invocation.binding,
+            causation_id=(
+                f"capability-reconciliation-{invocation.invocation_id}-"
+                f"{len(invocation.reconciliation_history)}"
+            ),
+        )
+
     async def invoke(
         self,
         *,
@@ -222,7 +295,7 @@ class GovernedInvocationExecutionService:
         resolver: ProviderResolver,
         executor: ProviderExecutor,
         usage_from: UsageExtractor | None = None,
-        actor_id: str = "",
+        logical_effect: bool = False,
     ) -> Invocation:
         context = InvocationPolicyContext(
             run_id=run_id,
@@ -284,7 +357,7 @@ class GovernedInvocationExecutionService:
                 resolver=resolver,
                 executor=executor,
                 usage_from=usage_from,
-                actor_id=actor_id,
+                logical_effect=logical_effect,
             )
         except asyncio.CancelledError:
             await self._append_latest_terminal_event(

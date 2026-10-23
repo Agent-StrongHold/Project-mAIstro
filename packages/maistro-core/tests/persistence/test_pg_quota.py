@@ -132,7 +132,7 @@ async def test_record_usage_upserts_and_returns_row(
             "request_count": 1,
         }
     )
-    result = await tracker.record_usage("openai", "monthly", 100, 50, event_id="event-1")
+    result = await tracker.record_usage("openai", "  Monthly  ", 100, 50, event_id="event-1")
     call = conn.calls[0]
     assert call.method == "fetchrow"
     assert "quota_usage_events" in call.query

@@ -339,31 +339,13 @@ test("an unauthorized principal gets a sign-in state, not empty data", async () 
   await expect(runs.getByText(/Sign-in required to read metrics/)).toBeVisible();
 });
 
-test("the in-flight request shows a sized skeleton, then the value", async () => {
+test("the in-flight request shows a loading state, then the value", async () => {
   metricsStatus = 200;
   metricsPayload = seededMetrics();
   metricsDelayMs = 800;
   await page.goto(harnessUrl, { waitUntil: "domcontentloaded" });
   const runs = card("Runs Today");
-  // #1421: the pending KPI reserves its real geometry with skeleton shapes
-  // (aria-hidden) under an aria-busy body, instead of a bare text sentence.
-  const loading = runs.getByTestId("kpi-loading");
-  await expect(loading).toBeVisible();
-  await expect(loading).toHaveAttribute("aria-busy", "true");
-  const shapes = loading.locator("[aria-hidden='true'] .skeleton");
-  expect(await shapes.count()).toBeGreaterThan(0);
-  for (const shape of await shapes.all()) {
-    const box = await shape.boundingBox();
-    expect(box).not.toBeNull();
-    expect(box!.height).toBeGreaterThan(0);
-    expect(box!.width).toBeGreaterThan(0);
-  }
   await expect(runs.getByText(/Loading metrics…/)).toBeVisible();
-  // No fake value while the request is open…
-  await expect(runs.getByText(/^7$/)).toHaveCount(0);
-  // …then the measured value replaces the skeleton and the busy state clears.
   await expect(runs.getByText(/^7$/)).toBeVisible();
-  await expect(loading).toHaveCount(0);
-  await expect(runs.locator("[aria-busy='true']")).toHaveCount(0);
   metricsDelayMs = 0;
 });

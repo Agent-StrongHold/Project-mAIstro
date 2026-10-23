@@ -151,10 +151,6 @@ __all__ = [
     "DESIGN_MODEL_CAPABILITY",
     "EXPLORE_NODE_KIND",
     "NATIVE_SLOTS",
-    "PLANTED_DIMENSION_ID",
-    "PRODUCT_GOAL_STATEMENT",
-    "PROOF_GOAL_ID",
-    "THESIS_NODE_KIND",
     "AgentWorkInputs",
     "ArtifactKind",
     "ArtifactLock",
@@ -261,7 +257,6 @@ __all__ = [
     "scan_design_output",
     "scan_design_system_content",
     "scan_design_text",
-    "score_artifact_against_rubric",
 ]
 
 

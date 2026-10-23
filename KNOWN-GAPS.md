@@ -133,8 +133,6 @@ resource mount with negotiated behavior — and the canvas
 `application/vnd.canvas+json;version=2` media-type check stays a canvas-local
 mechanism, distinct from the general scheme.
 
-### Recurring schedules created through the API survive a restart (was: did not)
-
 Recurrence is correct and durable:
 [ADR-082126-f69c](docs/adr/ADR-082126-f69c-recurrence-produces-runs.md)
 replaced the two disagreeing cron matchers with one verified POSIX dialect,
@@ -241,11 +239,7 @@ Tracking: each needs a wiring design, not just a call site — see #346.
 The following text is intended to be copied verbatim into the release notes.
 
 > v1.0.0 ships with an in-memory task queue, so a restart loses queued and
-> active tasks. Memory write-authority enforcement (ADR-057) is active at every
-> memory store boundary — deployments run agent-managed by default and can set
-> `system_managed` to strip agent write authority — but read-path gating,
-> hybrid per-block tags and denial events are not wired, and no product-level
-> E2E proves a denied write yet. Canvas jobs require an external runner; Canvas publish/export
+> active tasks. Canvas jobs require an external runner; Canvas publish/export
 > is governed at `/v2/canvas` (png/webp/jpg/html/pptx where configured; pdf/svg
 > are explicitly unsupported), while print-on-demand and external destinations
 > are not implemented. The mounted Canvas data routes are unconfigured in the

@@ -62,7 +62,9 @@ PYTHONPATH=packages/maistro-core/src:packages/maistro-turing/src \
 ```
 
 Status: implementation in progress. CI type-checks this package's `src/` in
-`lint-and-type-check`; the `ci.yml` pytest matrix does not yet run its suite.
+`lint-and-type-check`, runs both test suites in the `ci.yml` pytest matrix
+(`packages/maistro-turing/tests` and `packages/maistro-turing/backend/tests`),
+and scores both halves of the package under coverage in `quality.yml`.
 
 ## License
 

@@ -67,7 +67,11 @@ class ComplianceBlockNode(BaseNode[ComplianceBlockIn, ComplianceBlockOut]):
         bb = ctx.blackboard
         metadata = bb.metadata if (bb is not None and hasattr(bb, "metadata")) else ctx.metadata
         penalties: list[dict[str, Any]] = list(metadata.get("penalties") or [])
-        penalty_id = self.logical_effect_key(inputs, ctx)
+        penalty_id = replay_effect_key(
+            ctx,
+            self.kind,
+            inputs.model_dump(mode="json"),
+        )
         penalty = {
             "id": penalty_id,
             "node_id": ctx.node_id,

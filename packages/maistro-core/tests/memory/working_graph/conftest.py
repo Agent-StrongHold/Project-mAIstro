@@ -14,7 +14,6 @@ from dataclasses import dataclass, field
 import pytest
 
 from maistro.memory.episodic.store import InMemoryEpisodicStore
-from maistro.memory.exposure import MemoryExposureMode
 from maistro.memory.learnings.store import InMemoryLearningStore
 from maistro.memory.types import EpisodicMemory, Learning, MemoryScope, MemoryTier
 from maistro.memory.working_graph.hydration import (
@@ -124,9 +123,9 @@ class ExplodingSource:
 
 @pytest.fixture
 def episodic() -> InMemoryEpisodicStore:
-    return InMemoryEpisodicStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
+    return InMemoryEpisodicStore()
 
 
 @pytest.fixture
 def learnings() -> InMemoryLearningStore:
-    return InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
+    return InMemoryLearningStore()

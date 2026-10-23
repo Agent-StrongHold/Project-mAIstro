@@ -59,32 +59,10 @@ from maistro.providers.registry import InMemoryProviderRegistry
 from maistro.providers.router import CostAwareRouter
 
 from . import register_node
-from .base import BaseNode, NodeContext, ReplaySemantics, replay_effect_key
+from .base import BaseNode, NodeContext, ReplaySemantics
 
 if TYPE_CHECKING:
     from maistro.providers.protocols import LLMProviderRegistry, LLMRouter
-
-
-def _scoped_effect_key(ctx: NodeContext, inputs: LlmSummarizeIn, supervised_rung: str) -> str:
-    """The Run/node-scoped logical key for one governed completion.
-
-    Two ``llm.summarize`` nodes sharing a Binding and model must not file the
-    same keyed effect: the durable executor binds this key as the Invocation
-    ``effect_scope``, so a model-only key let the second node adopt the
-    first's completed summary. Run + graph node identity, an input digest
-    (so re-work with new source is new work), and the escalation rung keep
-    every distinct completion distinct while retries of one visit reconcile.
-    A blank rung (unsupervised visit) and ``inputs.model`` agree by
-    construction, so the scope bound at frontier preparation and the key
-    passed inside ``_execute`` can never diverge.
-    """
-
-    rung = supervised_rung.strip() or inputs.model
-    return replay_effect_key(
-        ctx,
-        "llm.summarize.complete",
-        {"rung": rung, "inputs": inputs.model_dump(mode="json")},
-    )
 
 
 class LlmSummarizeIn(BaseModel):
@@ -171,14 +149,9 @@ class LlmSummarizeNode(BaseNode[LlmSummarizeIn, LlmSummarizeOut]):
     input_schema: ClassVar[type[BaseModel]] = LlmSummarizeIn
     output_schema: ClassVar[type[BaseModel]] = LlmSummarizeOut
     cost_hint: ClassVar[float] = 3.0  # billable LLM call
-    # Retryable under an effect key (epic M4-I): the governed completion
-    # already files its Invocation under the stable key
-    # ``llm.summarize.complete:{rung}``, so a re-visit is a *new* keyed effect,
-    # never a blind replay of an unbilled one. The default visit budget is
-    # still one attempt, so nothing changes for graphs that declare neither
-    # ``max_attempts`` nor an ``escalation_ladder`` — the semantics only open
-    # the door the executor's quality supervision walks through.
-    replay_semantics: ClassVar[ReplaySemantics] = ReplaySemantics.EFFECT_KEY
+    replay_semantics: ClassVar[ReplaySemantics] = (
+        ReplaySemantics.NON_RETRYABLE
+    )  # LLM output varies; not safe to retry blindly
     external_io: ClassVar[bool] = True
     display_name: ClassVar[str] = "LLM: summarize"
     description: ClassVar[str] = (
@@ -204,22 +177,6 @@ class LlmSummarizeNode(BaseNode[LlmSummarizeIn, LlmSummarizeOut]):
             registry if registry is not None else InMemoryProviderRegistry()
         )
         self._router: LLMRouter = router if router is not None else CostAwareRouter(self._registry)
-
-    def logical_effect_key(self, inputs: LlmSummarizeIn, ctx: NodeContext) -> str | None:
-        """The rung-scoped logical key for one governed completion.
-
-        Epic M4-I escalation re-visits a quality shortfall at the next ladder
-        rung; the node's Invocation for that re-visit files under a *new*
-        keyed effect (``llm.summarize.complete:{rung}``), never a blind
-        replay of an unbilled one — so the node-level key is rung-scoped too.
-        Within one visit the key is stable, so a lease-loss retry reconciles
-        against the same claim. Developing the key from the visit's effective
-        rung (``escalated_model``, else the seeded ladder start) keeps the
-        fail-closed executor contract (#1194): an EFFECT_KEY node proves
-        replay safety with a concrete key, it does not merely label itself
-        retryable.
-        """
-        return _scoped_effect_key(ctx, inputs, _effective_rung(ctx))
 
     async def _execute(self, inputs: LlmSummarizeIn, ctx: NodeContext) -> LlmSummarizeOut:
         # Gateway configuration is read before the Binding is resolved, as it

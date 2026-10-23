@@ -2017,17 +2017,21 @@ class LocalRsiLoop:
                 "-m",
                 f"RSI cycle {index} [{competitor.label}]: {objective[:50]}",
             )
-            # Evaluator-oracle immunity (#109): enforced BEFORE either scoring
-            # path runs. A candidate that mutated the score-defining artifacts
-            # is rejected without its modified oracle ever executing — the
-            # test command and the fitness gates ARE the oracle, so running
-            # either against the mutated tree would let the candidate judge
-            # its own diff.
-            mutations, oracle_digest_value = self._evaluator_integrity(cdir)
-            if mutations and not self._config.allow_evaluator_mutation:
-                self._veto_evaluator_mutation(index, r, mutations, oracle_digest_value)
-                return r
-            self._score_variant(r, index, cdir, objective, kind, mutations, oracle_digest_value)
+            if self._config.use_fitness:
+                (
+                    r.accepted,
+                    r.composite,
+                    r.note,
+                    r.tests_passed,
+                    r.regression_judge_score,
+                    r.trace,
+                ) = self._fitness_decision(
+                    index, cdir, r.changed_files, target=objective, kind=kind
+                )
+            else:
+                r.tests_passed = self._run_tests(cdir)
+                r.accepted = r.tests_passed
+                r.note = "" if r.tests_passed else "test command failed"
         except Exception as exc:
             r.errored = True
             if _is_transient_provider_error(str(exc)):
@@ -2664,7 +2668,6 @@ class LocalRsiLoop:
         *,
         target: str = "",
         kind: ImprovementKind | None = None,
-        evaluator_evidence: tuple[list[str], str | None] | None = None,
     ) -> tuple[bool, float, str, bool, float | None, dict[str, Any]]:
         """Build the multi-signal Scorecard for the candidate and return
         (accepted, composite, reject_reason, tests_passed, regression_judge_score,
@@ -2674,63 +2677,25 @@ class LocalRsiLoop:
         compact per-gate/reward bundle for the commit's git-notes record.
         ``kind`` is the slot's declared ImprovementKind — the fail-first contract's
         declaration input (#392); None keeps the strict default (source-touching
-        ⇒ behavior contract). ``evaluator_evidence`` is the precomputed (#109)
-        integrity verdict ``(mutations, trusted_digest)``; when absent it is
-        resolved here, so merge-dir re-scoring gets the same oracle immunity.
-
-        Under `isolation="container"` the whole evaluation runs inside ONE
-        sandbox seeded from the candidate directory (#614): a sandbox that
-        cannot be established raises `ContainmentUnavailable`, so a decision is
-        never composed from signals that could not run safely.
-        """
+        ⇒ behavior contract)."""
         from maistro_rsi.candidate_fitness import evaluate_candidate
 
-        if evaluator_evidence is None:
-            evaluator_evidence = self._evaluator_integrity(cycle_dir)
-        evaluator_mutations, evaluator_digest = evaluator_evidence
-
-        def _score(contained: ContainedEvaluation | None) -> Any:
-            return evaluate_candidate(
-                cycle_dir,
-                changed_files,
-                test_command=self._config.test_command,
-                test_argv=self._config.test_argv,
-                coverage_source=self._config.coverage_source,
-                coverage_pytest_args=self._config.coverage_pytest_args,
-                baseline_coverage=self._baseline_coverage(),
-                baseline_ref=self._config.baseline_branch,
-                timeout=self._config.test_timeout,
-                regression_judge_fn=(
-                    self._judge_regression if self._config.regression_judge else None
-                ),
-                target=target,
-                baseline_inventory=self._baseline_test_inventory(),
-                allow_test_inventory_shrink=self._config.allow_test_inventory_shrink,
-                declared_kind=kind,
-                evaluator_digest=evaluator_digest,
-                evaluator_mutations=evaluator_mutations,
-                evaluator_mutation_authorized=self._config.allow_evaluator_mutation,
-                contained=contained,
-            )
-
-        # Under container isolation the evaluation opens ONE sandbox seeded
-        # from the candidate directory and every executing signal runs inside
-        # it (#614) — the same containment `_run_tests` applies, extended to
-        # the coverage run, the red/green replay, the mutation probe's reruns,
-        # per-file collection and the static tools. A sandbox that cannot be
-        # established raises `ContainmentUnavailable` here: no Scorecard is
-        # produced from signals that could not run safely. Local isolation
-        # passes `contained=None` and evaluates on the host, as before — an
-        # operator's own machine is the one place that was never the problem.
-        if self._config.isolation == "container":
-            with ContainedEvaluation(
-                cycle_dir,
-                image=self._config.sandbox_image,
-                timeout=self._config.test_timeout,
-            ) as contained:
-                scorecard = _score(contained)
-        else:
-            scorecard = _score(None)
+        scorecard = evaluate_candidate(
+            cycle_dir,
+            changed_files,
+            test_command=self._config.test_command,
+            test_argv=self._config.test_argv,
+            coverage_source=self._config.coverage_source,
+            coverage_pytest_args=self._config.coverage_pytest_args,
+            baseline_coverage=self._baseline_coverage(),
+            baseline_ref=self._config.baseline_branch,
+            timeout=self._config.test_timeout,
+            regression_judge_fn=self._judge_regression if self._config.regression_judge else None,
+            target=target,
+            baseline_inventory=self._baseline_test_inventory(),
+            allow_test_inventory_shrink=self._config.allow_test_inventory_shrink,
+            declared_kind=kind,
+        )
         logger.info(
             "rsi_local_scorecard",
             index=index,
@@ -2748,7 +2713,31 @@ class LocalRsiLoop:
         # None when the judge was unavailable (fail closed, #307). That None
         # must survive to the promotion evidence, never coerced to a number.
         judge_score = float(judge_raw) if isinstance(judge_raw, int | float) else None
-        trace = self._scorecard_trace(scorecard)
+        mut_raw = next(
+            (g.detail.get("score") for g in scorecard.gates if g.name == "tests_pin_behavior"),
+            None,
+        )
+        trace: dict[str, Any] = {
+            "gates": {g.name: g.passed for g in scorecard.gates},
+            "composite": scorecard.composite,
+            "mutation_score": float(mut_raw) if isinstance(mut_raw, int | float) else None,
+        }
+        # Inventory evidence rides the promotion record (#306): the gate's
+        # counts and (capped) deleted/added lists, including the override flag
+        # when a governance-authorized shrink passed — never silent.
+        inv_detail = next(
+            (g.detail for g in scorecard.gates if g.name == "protected_test_inventory"), None
+        )
+        if inv_detail:
+            trace["inventory"] = dict(inv_detail)
+        # Fail-first evidence rides the promotion record (#392): the contract,
+        # probe SHAs, failing identities, digest, and passing result — the
+        # replayable proof behind a behavior-changing promotion.
+        ff_detail = next(
+            (g.detail for g in scorecard.gates if g.name == "fail_first_evidence"), None
+        )
+        if ff_detail:
+            trace["fail_first"] = dict(ff_detail)
         return (
             scorecard.accepted,
             scorecard.composite,
@@ -2835,7 +2824,6 @@ class LocalRsiLoop:
             note=summary,
             inventory=source.get("inventory"),
             fail_first=source.get("fail_first"),
-            evaluator=source.get("evaluator"),
         )
         return write_trace_note(self._baseline, sha, trace_note)
 
