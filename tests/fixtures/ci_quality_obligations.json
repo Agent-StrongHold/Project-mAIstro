@@ -162,7 +162,7 @@
       "steps": [
         {
           "name": "xenon (per-function \u2264 B; per-module \u2264 B; project avg \u2264 A \u2014 ratchet)",
-          "sha256": "5410df147c5d57e8ed1dfeddd6128338a62018784a1c9598261baf2982f12970"
+          "sha256": "a2640b0367882284c08e3516243a2e4a5f98fddf142db900b874a0b59dd77598"
         }
       ]
     },
