@@ -7552,3 +7552,112 @@ head; classifier sha unchanged (`578c1f17…`), so front-matter stays +132.
   callers to turn the reachability red green. The sanctioned repair is the
   #1845 integration head landing the reviewed runtime consumer. The stack
   stays unmerged; this round is a note-only commit.
+
+## repair round 93 at head 572fb5e41ad7 (merge of origin/develop afffa6309
+## resolved in place) — note-only commit, no other tree edit
+
+Trigger: the lane's merge-queue evaluation blocked on a develop-sync conflict
+preserved in the worktree (in-progress merge of origin/develop afffa6309,
+`Dockerfile` unmerged) plus the exact-debt-ledger CI failure at
+f39fc0b519ce. Both discharged/re-proven at the new head, executed here, not
+assumed:
+
+- **Develop sync resolved and committed (572fb5e41):** the in-progress merge
+  of origin/develop (afffa6309 = MERGE_HEAD, verified by `git rev-parse`)
+  had exactly one conflict — `Dockerfile` lines 85–93, a comment-only
+  three-way divergence in the docker-CLI CVE wording (base 2af730d2e vs
+  branch "later also" vs develop "later ... in go1.27.2"). Resolved in
+  favor of develop's (more precise) wording; both sides state identical
+  facts. No other file conflicted; `git grep` for conflict markers across
+  tracked files is clean. The merge also landed develop's #2252 design-loop
+  proof (new `maistro_design/proof.py`, `maistro/runs/lineage.py` exports
+  via develop's own `runs/__init__.py` change — zero branch-side delta
+  there vs origin/develop) and #795 apt-cache staging; none of it touches
+  the tasks/runs admission modules.
+- **Ledger integrity after the merge (the AGENTS.md silent-row-loss check):
+  `git diff --numstat origin/develop HEAD -- quality/` shows exactly one
+  changed ledger — `vulture-baseline.json` 0 added / 5 deleted, and the 5
+  rows are exactly the `AdmissionAssessment` enum members
+  (`LEGACY_UNRESOLVED`, `MISMATCH`, `REPLACE_EXPIRED`, `REPLAYED`,
+  `TAKEOVER` of `maistro/runs/admission_identity.py`) — fix-eliminated by
+  this leaf's classifier referencing them, the same −5 documented in round
+  92. `reachability-baseline.json`, `reachability-dispositions.json`,
+  `radon-baseline.json`, `ratchet-authorizations.json` are byte-identical
+  to origin/develop (equal JSON byte lengths, zero admission rows on either
+  side — the leaf's candidate-baseline row stays deliberately absent since
+  round 89). No row was lost and none was self-authorized.
+- **Upstream state change:** origin/develop now carries the #1851 sibling
+  itself (`packages/maistro-core/src/maistro/runs/admission_identity.py`
+  present at afffa6309) with `check-reachability.py`'s
+  `_EXCLUDED_PACKAGE_PYTHON` classification (the file's comment cites this
+  note's round 89), while `maistro/tasks/admission_generation.py` remains
+  branch-only. Consequently the gate's output now names exactly ONE newly
+  unreachable module — this leaf — and `admission_identity` appears zero
+  times in the reachability output, exactly as rounds 89/92 recorded.
+- **exact-debt-ledger re-bound at the new head** (RATCHET_BASE_REV=
+  origin/develop, CI's shape): `check-ratchet-provenance.py` exits 1 with
+  exactly 8 of 9 sub-ratchets OK and exactly one FAIL — `reachability`
+  (157 -> 158 unreachable of 1453; "maistro.tasks.admission_generation: NEW
+  unreachable module absent from trusted base and not previously
+  authorized" + "current unreachable module missing from candidate
+  baseline") — then the aggregate "ratchet provenance inventory is
+  incomplete" naming only that sub-gate. The reachability-dispositions
+  sub-ratchet is now OK (157 -> 157) because neither side banks the
+  module. Step 3's prescribed vulture amendment still has an empty
+  fix-list: `check-vulture-baseline.py packages/*/src --min-confidence 60
+  --exclude '*/third_party/*'` exits 0, 1314 reviewed identities ->
+  1309 findings, unclassified 0, never_allowlist 0 — the -5 rows are the
+  fix-eliminated enum identities, so the ledger is exact as amended and
+  nothing is genuinely dead to retire beyond it.
+- **The CI `test` trio reproduced at the new head with the single delta:**
+  `tests/test_check_reachability.py::test_baseline_matches_the_tree` +
+  both `tests/test_reachability_baseline_identity.py` gate-identity tests
+  = 3 failed, 12 passed; the failure diff names only
+  `maistro.tasks.admission_generation` ("At index 129 diff: 'maistro.testing'
+  != 'maistro.tasks.admission_generation'"), byte-consistent with the CI
+  logs at f39fc0b519ce. This is the issue-mandated blocker in its exact
+  CI shape; it disappears only when the #1845 integration wires the
+  module. `check-reachability.py` rc=1 on exactly that module;
+  `check-reachability-dispositions.py` rc=0 (47 groups cover all 157);
+  `check-promotion-surface.py` rc=0.
+- **Focused battery at 572fb5e41:** leaf suite 132 passed; live-flow
+  regression (`test_root_admission_identity.py` + `test_idempotency.py`)
+  joined = 278 passed; driver trio (`test_pack_contracts.py` +
+  `test_runs_admission_identity_publication.py` + leaf) 268 passed; mypy
+  Success on both admission modules; ruff check "All checks passed!" and
+  `ruff format --check` 3467 files clean; `check-suite-inventory.py
+  --suite packages/maistro-core/tests` ok (17626 node IDs, identical to
+  the driver's pre-merge count because the driver ran against the
+  already-staged merge content) and full `check-suite-inventory.py` ok
+  (21 suites, 33833 identities, zero duplicate evidence — develop's #2252
+  banked its own deltas).
+- **All four issue-named mutation classes re-killed first-hand** by
+  backup-cp/restore-cp on the module (no git restore/clean; md5
+  257a6e45c382349dd12f559099663fbc identical before and after): swap
+  TAKEOVER/REPLACE_EXPIRED -> 50 failed; lease row moved above binding
+  row -> 16 failed; LEGACY_UNRESOLVED row deleted (legacy pending treated
+  as v2) -> 10 failed; MISMATCH row moved above the expiry row (no expiry
+  exception) -> 22 failed. (Round 92's lease-row count was 14 via the
+  /tmp mutant loader; the direct-source edit here measures 16 — same
+  mutation, both far above zero.) An additional accidental control: the
+  first lease-row attempt was a no-op adjacent-block replace whose
+  `s2 != s` guard fired, and the suite on the unmutated file passed 132 —
+  control re-proven at this exact content.
+- **Boundary re-checks:** no production module imports
+  `maistro.tasks.admission_generation` (grep over `packages/*/src`
+  excluding the module itself: zero matches);
+  `tasks/idempotency.py`, `tasks/queue.py`, `tasks/__init__.py` and the
+  leaf sources have a zero-line diff vs the pre-merge head f35131677;
+  the branch's remaining src delta vs origin/develop is exactly the leaf
+  module (+153) plus the pre-existing #1845-stack sibling leaves
+  (`test_pack_contracts` pack/extension collision test et al.) that CI
+  already evaluated at f39fc0b519ce. The 10 issue-named tests are all
+  present, and
+  `::test_existing_live_claim_flow_does_not_import_v2_classifier` passes
+  by exact node ID.
+- Verdict unchanged and issue-mandated: the leaf is not independently
+  mergeable while unwired; #1852 forbids baseline entries, grants, or
+  fake callers to turn the reachability red green. The sanctioned repair
+  remains the #1845 integration head landing the reviewed runtime
+  consumer (grant first, change second). The stack stays unmerged; this
+  round is a note-only commit.
