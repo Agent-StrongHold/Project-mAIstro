@@ -11,7 +11,6 @@ from maistro.graph.durable_runs.attempt_executor import LiveAttemptOwned
 from maistro.graph.execution_state import GraphExecutionState
 from maistro.runs.model import GraphSnapshot, Run, RunStatus
 from maistro.runs.store import run_cursor_key
-from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 pytestmark = [pytest.mark.contract("behavioral")]
 

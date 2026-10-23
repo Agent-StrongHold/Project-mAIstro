@@ -101,10 +101,9 @@ class Reactor:
         if self._owned_state_path is not None:
             # A closed State cannot reopen its writer, so each start owns a fresh one.
             self._state = State(db_path=self._owned_state_path)
-        backend = self.persistence_backend
-        if backend is not None:
+        if self._state is not None:
             try:
-                backend.run_migration("reactor_log_001", _REACTOR_LOG_MIGRATION)
+                self._state.run_migration("reactor_log_001", _REACTOR_LOG_MIGRATION)
             except Exception:
                 self._release_owned_state()
                 raise
@@ -190,15 +189,13 @@ class Reactor:
         return min(cpu_elapsed / wall_elapsed, 1.0)
 
     def state_submit(self, fn: Callable[[sqlite3.Connection], None]) -> None:
-        backend = self.persistence_backend
-        if backend is not None:
-            backend.submit(fn)
+        if self._state is not None:
+            self._state.submit(fn)
 
     def state_query(self, sql: str) -> list[tuple[Any, ...]]:
-        backend = self.persistence_backend
-        if backend is None:
+        if self._state is None:
             return []
-        reader = backend.open_reader()
+        reader = self._state.open_reader()
         try:
             return reader.execute(sql).fetchall()
         finally:

@@ -1041,7 +1041,7 @@ async def run_autonomous(
     # Scan recalled insights AGAIN at use time, not just at append time: the
     # ledger file sits on disk between runs, and an entry tampered with after
     # append (or written by an older version that never scanned) would
-    # otherwise ride straight into this run's prompts (_recall_prior_learnings).
+    # otherwise ride straight into this run's prompts.
     active_audit = audit or AuditLog(Path(config.workspace_root) / f"autorun-{run_id}.jsonl")
     audit_sink = (
         getattr(active_audit, "record_security_event", None)
@@ -1051,11 +1051,29 @@ async def run_autonomous(
     ledger_boundary = WardenHarvestBoundary(
         Warden(), correlation=run_correlation, audit_sink=audit_sink
     )
-    prior_learnings = await _recall_prior_learnings(
-        active_ledger,
-        ledger_boundary,
-        top_k=config.recall_top_k,
-        repo_url=config.repo_url,
+    prior_learnings: list[str] = []
+    for insight in active_ledger.recall(config.recall_top_k, repo_url=config.repo_url):
+        admission = await ledger_boundary.scan(insight)
+        if admission.admitted:
+            prior_learnings.append(insight)
+        else:
+            await logger.awarning(
+                "rsi_learnings_recall_refused",
+                outcome=admission.outcome,
+                flags=list(admission.verdict.flags) if admission.verdict else [],
+            )
+
+    active_executor = executor or build_executor(
+        config,
+        audit=active_audit,
+        prior_learnings=prior_learnings,
+        correlation=run_correlation,
+    )
+    active_proposer = proposer or make_llm_proposer(
+        config.model,
+        prior_learnings=prior_learnings,
+        audit_sink=audit_sink,
+        correlation=run_correlation,
     )
 
     active_executor = executor or build_executor(
@@ -1131,33 +1149,28 @@ async def run_autonomous(
             # here and being logged as a clean stop.
             await logger.awarning("rsi_autorun_frontier_exhausted", steps=len(steps))
             break
-        except ObjectiveParked as exc:
-            # park_after interventions produced no gain: stop spending on this
-            # objective and hand it back to the backlog policy with full
-            # intervention provenance — the append-only audit trail carries the
-            # parked record (objective, every intervention's lineage review,
-            # directions, cost, and measured gain), so a later operator or
-            # backlog policy can decide whether and when to retry.
-            # The policy's records include interventions already collected
-            # from earlier per-cycle partial results — extend by identity, not
-            # blindly, or a park double-counts them.
-            _extend_interventions_unique(interventions, exc.interventions)
-            # The park fires after the triggering cycle already executed and
-            # recorded its node in the shared tree; the coordinator's partial
-            # result never returns, so recover those steps from the exception
-            # and checkpoint them — otherwise the result omits an executed
-            # experiment and the snapshot leaves the node OPEN for a later
-            # resume to execute again.
-            steps.extend(exc.steps)
-            await _checkpoint_steps(
-                exc.steps,
-                tree=tree,
-                tree_path=tree_path,
+        steps.extend(partial.steps)
+        # Ledger first, then tree: if the process dies between these two
+        # writes, at worst a node's insight is appended twice on a later
+        # resume (recall() dedupes by insight text) rather than lost forever
+        # — the tree still marks the node EXPLORED either way, so losing the
+        # insight instead of the write ordering is the one true crash window
+        # to close (autorun-10/11's retained-learnings guarantee depends on
+        # every executed insight reaching the ledger).
+        for node_id in partial.steps:
+            node = tree.nodes[node_id]
+            flags: tuple[str, ...] = ()
+            admitted = False
+            if node.insight:
+                admission = await ledger_boundary.scan(node.insight)
+                flags = admission.verdict.flags if admission.verdict else ()
+                admitted = admission.admitted
+            active_ledger.append(
                 repo_url=config.repo_url,
                 run_id=run_id,
-                ledger=active_ledger,
-                ledger_boundary=ledger_boundary,
-                policy=intervention_policy,
+                node=node,
+                warden_flags=flags,
+                warden_admitted=admitted,
             )
             await _record_objective_parked(active_audit, exc)
             break

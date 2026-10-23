@@ -403,7 +403,6 @@ async def run_optimizer(
     now: datetime | None = None,
     org_id: str = "",
     project_id: str = "",
-    workspace_id: str = "",
 ) -> dict[str, Any]:
     """Run one optimizer pass on the given DAG.
 

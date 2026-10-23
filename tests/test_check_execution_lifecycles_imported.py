@@ -212,7 +212,6 @@ def test_main_rejects_a_candidate_self_classified_imported_extension(
         load_authorizations=lambda *_a, **_k: {},
         head_sha=lambda *_a: revision,
         Provenance=lambda **_k: SimpleNamespace(render=lambda: "fixture provenance"),
-        bundled_implementation_fingerprint=lambda *_a, **_k: "bundled-sha256:fake",
     )
     monkeypatch.setattr(gate, "_provenance", lambda: provenance)
     assert gate.main() == 1

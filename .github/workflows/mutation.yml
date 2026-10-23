@@ -1,11 +1,22 @@
-# Mutation testing is temporarily disabled until self-hosted runner capacity is
-# restored. Do not run mutation automatically on pull requests or schedules,
-# and do not consume GitHub-hosted Actions minutes while it is parked.
+# Mutation testing gate (#330).
 #
-# The mutation implementation, scheduler, checkpointing, history, baselines,
-# and repository-health tooling remain in the repository and Git history.
-# Restore PR safety and repository-health execution here when self-hosted
-# capacity is available again.
+# Replaces the former always-green "mutation-deferred" placeholder: every
+# status this workflow publishes reflects work actually executed.
+#
+#   pr-gate   Mutates exactly the changed lines of changed mutation-critical
+#             files (quality/mutation-critical-files.json), selecting per line
+#             only the tests coverage says execute it, with each group's
+#             per-mutant timeout derived from that group's measured baseline.
+#             Fails fast on the first un-baselined survivor. Zero mutants,
+#             zero selected tests, a missing tool, a red baseline run, or an
+#             unreadable trusted base each fail the job explicitly.
+#   nightly   Measures the critical set (monotonic expansion from the recorded
+#             survivor baseline), sharded by stable packet identity, and
+#             publishes killed/survived/timeout/no-coverage/error counts plus
+#             candidate baseline/history artifacts. Cached checkpoints are
+#             keyed by source, test scope, commit, and tool fingerprint, so
+#             unchanged mutants are not rerun — and stale cache entries are
+#             rejected, not accepted (scripts/mutation_resume.py).
 
 name: mutation
 
@@ -13,14 +24,353 @@ permissions:
   contents: read
 
 on:
+  pull_request:
+    paths:
+      - 'packages/**/*.py'
+      - 'quality/mutation-critical-files.json'
+      - 'quality/mutation-baseline.json'
+      - '.github/workflows/mutation.yml'
+  schedule:
+    # Nightly full-tree measurement of the critical set.
+    - cron: "23 2 * * *"
   workflow_dispatch:
 
+concurrency:
+  group: mutation-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CRITICAL_LIST: quality/mutation-critical-files.json
+  TRUSTED_BASELINE: quality/mutation-baseline.json
+  HISTORY: quality/mutation-history.json
+
 jobs:
-  mutation-deferred:
-    name: Mutation testing deferred to self-hosted runners
-    runs-on: self-hosted
+  pr-gate:
+    name: Mutation gate (changed critical lines)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
-      - name: Mutation temporarily disabled
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+
+      - uses: ./.github/actions/setup-uv
+
+      - name: Install toolchain
+        run: uv sync --locked --extra dev
+
+      - name: Resolve mutation targets (critical ∩ changed)
+        id: targets
+        env:
+          BASE_REF: ${{ github.base_ref }}
         run: |
-          echo "Mutation testing is temporarily disabled until self-hosted runners are restored."
-          echo "No mutation workload is configured on GitHub-hosted runners."
+          set -euo pipefail
+          # Three-dot diff against the PR's own base branch: the trusted merge
+          # base, never a hardcoded branch. BASE_REF travels through env, not
+          # shell interpolation, so a hostile branch name cannot inject.
+          git diff --name-only "origin/$BASE_REF...HEAD" -- packages --diff-filter=ACMR > changed-py.txt
+          BASE_SHA="$(git merge-base "origin/${BASE_REF}" HEAD)"
+          # The baseline must come from the trusted merge base, never from a
+          # candidate-rewritten file in the PR.
+          if ! git cat-file -e "${BASE_SHA}:${TRUSTED_BASELINE}"; then
+            echo "::error::trusted merge base has no ${TRUSTED_BASELINE}; refusing to run without it"
+            exit 1
+          fi
+          git show "${BASE_SHA}:${TRUSTED_BASELINE}" > trusted-mutation-baseline.json
+          echo "base_sha=${BASE_SHA}" >> "$GITHUB_ENV"
+          set +e
+          uv run python scripts/mutation_critical.py --changed-from changed-py.txt > mutation-targets.tsv
+          status=$?
+          set -e
+          if [ "${status}" -ne 0 ]; then
+            exit "${status}"
+          fi
+          if [ ! -s mutation-targets.tsv ]; then
+            {
+              echo "### Mutation gate"
+              echo ""
+              echo "No mutation-critical file changed; nothing to mutate. "
+              "Critical scope lives in ${CRITICAL_LIST}."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "overlap=none" >> "$GITHUB_OUTPUT"
+          else
+            echo "overlap=critical" >> "$GITHUB_OUTPUT"
+            cat mutation-targets.tsv
+          fi
+
+      - name: Validate mutation governance artifacts
+        run: |
+          set -euo pipefail
+          uv run python scripts/mutation_critical.py --validate
+          uv run python -c "import cosmic_ray, pytest, pytest_timeout; print('mutation toolchain present')"
+
+      - name: Produce per-source diffs and selection inputs
+        if: steps.targets.outputs.overlap == 'critical'
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+          mkdir -p mutation-artifacts
+          while IFS=$'\t' read -r source tests; do
+            id="$(uv run python -c "import sys; sys.path.insert(0, 'scripts'); import mutation_packet; print(mutation_packet.safe_id('${source}'))")"
+            git diff "origin/$BASE_REF...HEAD" -- "${source}" > "mutation-artifacts/${id}.diff"
+            test -s "mutation-artifacts/${id}.diff" || { echo "::error::empty diff for ${source}"; exit 1; }
+            echo "${id} ${source}" | tee diff-map.txt
+          done < mutation-targets.tsv
+
+      - name: Run diff-scoped mutation gate
+        if: steps.targets.outputs.overlap == 'critical'
+        run: |
+          set -euo pipefail
+          uv run python scripts/mutation_pr_gate.py mutation-targets.tsv \
+            --artifacts mutation-artifacts \
+            --baseline trusted-mutation-baseline.json \
+            --diff-dir mutation-artifacts \
+            --scope changed \
+            --commit "${{ github.event.pull_request.head.sha }}"
+
+      - name: Publish gate summary
+        if: always() && steps.targets.outputs.overlap == 'critical'
+        run: |
+          set -euo pipefail
+          {
+            echo "### Mutation gate"
+            echo ""
+            uv run python - <<'PY'
+          import json, pathlib
+          rows = []
+          telemetry = pathlib.Path("mutation-artifacts/mutation-telemetry.jsonl")
+          if telemetry.is_file():
+              for line in telemetry.read_text().splitlines():
+                  if line.strip():
+                      row = json.loads(line)
+                      rows.append(
+                          f"- `{row['source']}`: killed {row['killed_mutants']}/"
+                          f"{row['viable_mutants']} viable ({row['kill_rate']:.1%}), "
+                          f"decision={row.get('decision', 'n/a')}"
+                      )
+          print("\n".join(rows) if rows else "- no telemetry produced")
+          PY
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v7
+        if: always() && steps.targets.outputs.overlap == 'critical'
+        with:
+          name: mutation-pr-artifacts
+          path: mutation-artifacts/
+          retention-days: 14
+
+  nightly-plan:
+    name: Nightly mutation plan
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      packets: ${{ steps.plan.outputs.packets }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+
+      - uses: ./.github/actions/setup-uv
+
+      - run: uv sync --locked --extra dev
+
+      - name: Validate mutation governance artifacts
+        run: |
+          set -euo pipefail
+          uv run python scripts/mutation_critical.py --validate
+          uv run python -c "import cosmic_ray, pytest, pytest_timeout; print('mutation toolchain present')"
+
+      - name: Shard the critical set into stable packets
+        id: plan
+        run: |
+          set -euo pipefail
+          uv run python scripts/mutation_critical.py --changed-from <(uv run python scripts/mutation_critical.py --sources) > critical-targets.tsv
+          test -s critical-targets.tsv || { echo "::error::critical list resolved to zero targets"; exit 1; }
+          # Deterministic LPT packing: same inputs -> same packet membership, so
+          # packet identities are stable across nights.
+          uv run python scripts/mutation_scheduler.py critical-targets.tsv \
+            --history "${HISTORY}" \
+            --target-minutes 25 \
+            --runner-capacity 4 \
+            --output mutation-plan.json
+          uv run python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          plan = json.load(open("mutation-plan.json"))
+          print(f"packets={json.dumps([p['id'] for p in plan['packets']])}")
+          PY
+          cat mutation-plan.json
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: mutation-plan
+          path: |
+            mutation-plan.json
+            critical-targets.tsv
+          retention-days: 7
+
+  nightly-shard:
+    name: Measure mutation packet ${{ matrix.packet }}
+    if: github.event_name != 'pull_request'
+    needs: nightly-plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        packet: ${{ fromJSON(needs.nightly-plan.outputs.packets) }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+
+      - uses: ./.github/actions/setup-uv
+
+      - run: uv sync --locked --extra dev
+
+      - uses: actions/download-artifact@v7
+        with:
+          name: mutation-plan
+
+      # Checkpoint cache: keyed by tool fingerprint + merge-base so unchanged
+      # sources are never re-mutated. mutation_resume re-validates every
+      # restored checkpoint against the live source/test hashes and the exact
+      # commit, so a stale hit is rejected rather than trusted.
+      - name: Restore mutation checkpoints
+        uses: actions/cache@v5
+        with:
+          path: mutation-checkpoints
+          key: mutation-checkpoints-${{ runner.os }}-${{ github.ref }}-${{ github.sha }}
+          restore-keys: |
+            mutation-checkpoints-${{ runner.os }}-${{ github.ref }}-
+
+      - name: Measure this packet
+        run: |
+          set -euo pipefail
+          mkdir -p packet-artifacts mutation-checkpoints
+          uv run python - <<'PY' > packet-targets.tsv
+          import json, sys
+          sys.path.insert(0, "scripts")
+          import mutation_packet
+          plan = json.load(open("mutation-plan.json"))
+          packet = next(p for p in plan["packets"] if p["id"] == int("${{ matrix.packet }}"))
+          for target in packet["targets"]:
+              print(f"{target['source']}\t{target['tests']}")
+          PY
+          test -s packet-targets.tsv || { echo "::error::packet ${{ matrix.packet }} resolved to zero targets"; exit 1; }
+          echo "GITHUB_SHA=${{ github.sha }}" >> "$GITHUB_ENV"
+          uv run python scripts/mutation_packet.py packet-targets.tsv \
+            --checkpoints mutation-checkpoints \
+            --environment <(uv run python - <<'PY'
+          import json, sys
+          sys.path.insert(0, "scripts")
+          import mutation_pr_gate
+          print(json.dumps(mutation_pr_gate.environment()))
+          PY
+          ) \
+            --commit "${{ github.sha }}" \
+            --run-id "${{ github.run_id }}" \
+            --run-attempt "${{ github.run_attempt }}" \
+            --uploader none
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: mutation-packet-${{ matrix.packet }}
+          path: |
+            packet-artifacts/
+            mutation-checkpoints/
+          retention-days: 30
+
+  nightly-publish:
+    name: Publish mutation health
+    if: github.event_name != 'pull_request'
+    needs: nightly-shard
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+
+      - uses: ./.github/actions/setup-uv
+
+      - run: uv sync --locked --extra dev
+
+      - uses: actions/download-artifact@v7
+        with:
+          name: mutation-plan
+
+      - uses: actions/download-artifact@v7
+        with:
+          pattern: mutation-packet-*
+          merge-multiple: true
+          path: shard-output
+
+      - name: Aggregate, ratchet, and publish counts
+        run: |
+          set -euo pipefail
+          mkdir -p publish
+          # Rehydrate the checkpoint tree the aggregate step reads.
+          mkdir -p mutation-checkpoints
+          if [ -d shard-output/mutation-checkpoints ]; then
+            cp -r shard-output/mutation-checkpoints/. mutation-checkpoints/
+          fi
+          uv run python scripts/mutation_aggregate.py \
+            --checkpoints mutation-checkpoints \
+            --inventory critical-targets.tsv \
+            --history "${HISTORY}" \
+            --telemetry-output publish/mutation-telemetry-all.jsonl \
+            --rows-output publish/mutation-rows.jsonl \
+            --json-output publish/mutation-health-report.json \
+            --markdown-output publish/mutation-health-report.md
+          # Killed/survived/timeout/error counts straight from the raw rows.
+          uv run python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json, collections
+          counts = collections.Counter()
+          for line in open("publish/mutation-rows.jsonl"):
+              line = line.strip()
+              if not line:
+                  continue
+              work_item, outcome = json.loads(line)
+              outcome_name = str(outcome.get("test_outcome") or outcome.get("worker_outcome") or "no-coverage").lower()
+              counts[outcome_name] += 1
+          print("### Nightly mutation measurement")
+          print("")
+          for name in ("killed", "survived", "timeout", "incompetent", "no-coverage"):
+              print(f"- {name}: {counts.get(name, 0)}")
+          print(f"- error (invalid/undetermined): see mutation-health-report.json")
+          PY
+          # The candidate baseline may only tighten the trusted one; a candidate
+          # that weakens or invents floors fails here.
+          uv run python scripts/check_mutation_baseline.py publish/mutation-rows.jsonl \
+            --baseline "${TRUSTED_BASELINE}"
+          # Candidate history/baseline artifacts for review (never auto-committed).
+          uv run python scripts/mutation_ratchet.py publish/mutation-telemetry-all.jsonl \
+            --baseline "${TRUSTED_BASELINE}" \
+            --history "${HISTORY}" \
+            --json-output publish/mutation-ratchet.json \
+            --markdown-output publish/mutation-ratchet.md \
+            --candidate-output publish/mutation-baseline-candidate.json \
+            --floor 0.90
+          uv run python scripts/mutation_history.py publish/mutation-telemetry-all.jsonl \
+            --history "${HISTORY}" \
+            --output publish/mutation-history-candidate.json
+          cat publish/mutation-health-report.md >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: mutation-health
+          path: publish/
+          retention-days: 90

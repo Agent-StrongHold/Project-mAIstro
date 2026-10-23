@@ -25,15 +25,13 @@ import stat
 import subprocess
 from pathlib import Path
 
-from tests._path_hiding import is_docker_binary, path_hiding
-
 ROOT = Path(__file__).resolve().parents[1]
 INSTALL_SH = ROOT / "install.sh"
 
 #: record_docker_sock plus the env-writing path it must reach, lifted verbatim
-#: from install.sh. ensure_python moved to scripts/bootstrap-runtime.sh
-#: (#1821); the harness sources that library below.
+#: from install.sh.
 _FUNCTIONS = (
+    "ensure_python",
     "secret_env_run",
     "set_env_value",
     "record_docker_sock",
@@ -57,7 +55,6 @@ SCRIPT_DIR={str(ROOT)!r}
 ENV_FILE=".env"
 PYTHON_CMD=()
 source <(sed -n {extract!r} {install})
-source "{ROOT / "scripts" / "bootstrap-runtime.sh"}"
 """
 
 
@@ -169,11 +166,8 @@ def test_a_non_socket_endpoint_warns_and_writes_nothing(tmp_path: Path) -> None:
 
 def test_a_missing_docker_cli_is_a_no_op(tmp_path: Path) -> None:
     """Podman hosts have no `docker` binary; the socket record is advisory and
-    must not create an .env or fail the install."""
-    result = _run(
-        tmp_path,
-        "record_docker_sock\n",
-        env_extra={"PATH": path_hiding(tmp_path, is_docker_binary)},
-    )
+    must not create an .env or fail the install. No shim is installed here, so
+    `command -v docker` fails on the harness PATH itself."""
+    result = _run(tmp_path, "record_docker_sock\n")
     assert result.returncode == 0, result.stderr
     assert not (tmp_path / ".env").exists()
