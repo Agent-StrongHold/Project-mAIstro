@@ -7878,3 +7878,59 @@ Every check below executed first-hand in this round (no claim inherited):
   activation for the #1845 integration head that must pass the unchanged
   gates. BLOCKED remains the issue-conform terminal state; no repair within
   leaf authority exists.
+
+## Round 98 — independent re-verification at head 8fa19acc125b (base
+## b9cd15c608b5, no develop drift) — note-only commit, no other tree edit
+
+Fresh clean tree at `8fa19acc125b60ab0c6eff2fa74d9f06cda7ed54` (round 97's
+tip; `git status` clean before any check). Every check below executed
+first-hand in this round (no claim inherited):
+
+- Focused: `test_admission_generation_assessment.py` -> 132 passed, all 10
+  issue-named test functions present; companion suites
+  (`test_root_admission_identity.py` + `test_idempotency.py`) -> 146 passed.
+  Driver deterministic battery on the same head: sync rc=0, whole-tree
+  `ruff check .` rc=0, `ruff format --check .` rc=0 (3467 files), focused
+  268 passed, inventory ok.
+- exact-debt-ledger steps at CI's exact workflow invocations
+  (.github/workflows/vulture-ratchet.yml): `check-vulture-baseline.py
+  packages/*/src --min-confidence 60 --exclude '*/third_party/*'` rc=0
+  (1314 reviewed -> 1309 findings, unclassified 0);
+  `check-shipped-surface-truth.py` rc=0.
+- `RATCHET_BASE_REV=origin/develop check-ratchet-provenance.py` rc=1 with
+  8/9 sub-ratchets OK and the sole FAIL the reachability sub-ratchet:
+  `maistro.tasks.admission_generation` NEW unreachable, absent from trusted
+  base and candidate baseline.
+- `check-reachability.py` rc=1 naming exactly ONE newly unreachable module
+  (`maistro.tasks.admission_generation`; 157 dispositioned + this leaf =
+  158 of 1453); `check-reachability-dispositions.py` rc=0 (47 groups);
+  `check-promotion-surface.py` rc=0 (74 tolerated, no expansion).
+- CI test trio reproduced first-hand: the three named reachability
+  identity tests -> 3 failed, each set delta the single extra item
+  `maistro.tasks.admission_generation` — identical to CI jobs 120205141052
+  and 120210143879 at e28574228.
+- All FOUR issue-named regression mutations re-killed this round: swap
+  TAKEOVER/REPLACE_EXPIRED -> 50 failed; lease before binding -> 16
+  failed; treat legacy pending as v2 -> 10 failed; mismatch before expiry
+  -> 22 failed. Module restored byte-identical (md5
+  257a6e45c382349dd12f559099663fbc before/after, restored from a /tmp
+  copy, never via git restore); unmutated suite re-run green (132 passed).
+- Hygiene: `ruff check` + `ruff format --check` on the leaf module and
+  suite clean; `mypy` on the module clean; full
+  `check-suite-inventory.py` ok (21 suites, 33833 identities, rc=0).
+- Scope guards re-derived: zero production-source references to
+  `admission_generation` outside the module (grep rc=1 over packages/*/src);
+  live-flow files (`tasks/idempotency.py`, `tasks/queue.py`,
+  `tasks/__init__.py`) zero-diff vs base; `quality/` vs base b9cd15c60 =
+  only `vulture-baseline.json` 0/5 (the fix-eliminated
+  `AdmissionAssessment` enum rows); `scripts/check-reachability.py` delta
+  remains comment-only (round-89 NOTE).
+- Verdict re-derived at this head, unchanged from rounds 92–97: the tree
+  is exactly the issue-mandated state — implementation/test readiness
+  proven, every residual CI red bound solely to the issue-predicted
+  NEW-unreachable leaf whose in-leaf remedies (#baseline entry,
+  disposition, grant, dummy caller, keep-alive import, exclusion
+  classification) #1852 explicitly prohibits, reserving activation for the
+  #1845 integration head that must pass the unchanged gates. BLOCKED
+  remains the issue-conform terminal state; no repair within leaf
+  authority exists.
