@@ -7453,3 +7453,50 @@ No tree edits except this note. Re-executed first-hand at `8f5e88793623`
   expiry/mismatch decision-order rows → 22 failed; relaxing inclusive
   expiry `<=` → `<` → 27 failed. The suite discriminates on exactly the
   branches the issue pins.
+
+## repair-round re-verification at head 4d98f3e6cf01 (base dc1cfc64d128,
+## origin/develop fetched at 2af730d2e) — no tree edit except this note
+
+Dispatch reported five red check-runs at this head (exact-debt-ledger, test,
+Quality/Reachability, Quality gate, Coverage gate) and a "develop sync
+conflict preserved in worktree" block. Both resolved as follows, every number
+first-hand at this exact head:
+
+- The sync block is already discharged: `4d98f3e6cf01` is the merge commit
+  "Merge commit 'dc1cfc64' into auto-1852" (parents `95a6017d1`, `dc1cfc64`),
+  the worktree is clean, and a marker grep over the leaf/runs/quality trees
+  finds none. origin/develop advanced one commit past the assigned base
+  (`dc1cfc64d` -> `2af730d2e`, #2197) after dispatch capture; left unmerged
+  here as outside this round's snapshot — the next integration round should
+  re-sync.
+- `check-vulture-baseline.py` at CI's exact argv rc=0: 1314 reviewed
+  identities -> 1309 findings, unclassified 0, never_allowlist 0 — the
+  vulture leg of the ledger needs no amendment (the -5 rows vs base are the
+  AdmissionAssessment enum identities the new module now uses; matches CI
+  "Quality / Vulture" = success at this head).
+- `check-ratchet-provenance.py` (RATCHET_BASE_REV=origin/develop) rc=1 whose
+  sole red is the reachability sub-ratchet: `maistro.tasks.admission_generation`
+  NEW unreachable, "absent from trusted base and not previously authorized";
+  all other sub-ratchets OK (shell 3/3, contract-markers 358/358,
+  enumerations 1/1, lifecycle 0/0, vulture, plus adr/citation/dispositions/
+  promotion green upstream).
+- `check-reachability.py` rc=1 naming exactly the leaf as the one NEWLY
+  UNREACHABLE module of 1450; `check-reachability-dispositions.py` rc=0;
+  `check-promotion-surface.py` rc=0; `check-shipped-surface-truth.py` rc=0.
+- The CI-failing test trio reproduces locally with the same single root
+  cause: `test_baseline_matches_the_tree`,
+  `test_the_committed_baseline_passes_the_gate_it_now_carries`,
+  `test_the_baseline_is_exactly_the_unreachable_set` — 3 failed, every
+  assertion diff naming only `maistro.tasks.admission_generation`.
+- Focused battery re-run: leaf suite 132 passed; live-flow regression
+  (`test_root_admission_identity.py` + `test_idempotency.py`) 146 passed;
+  ruff check/format clean on the leaf pair; mypy on the module Success;
+  whole-repo `check-suite-inventory.py` ok (21 suites, 33756 node IDs,
+  0 duplicates); delta stays +132.
+- Verdict unchanged and issue-mandated: #1852 forbids baseline entries,
+  grants, keep-alive imports or wiring "to make this leaf independently
+  green", so no in-leaf change can turn the reachability red; the sanctioned
+  repairs are the #1845 integration head landing the runtime consumer, or an
+  owner-side develop authorization (the path develop already took for the
+  sibling C1 leaf via `7a1aaec58`). The stack stays unmerged; this round is
+  a note-only commit.
