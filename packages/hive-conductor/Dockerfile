@@ -37,11 +37,13 @@ RUN npm run build
 # age v1.3.1 remains the latest upstream release, but its prebuilt Linux binary
 # was compiled before several 2026 Go/x/crypto and stdlib fixes, and no released
 # age artifact embeds a toolchain carrying the 2026 stdlib fixes (trivy:
-# CVE-2026-78667/78669/97031 HIGH in stdlib 1.25.x; CVE-2026-111943 HIGH in
-# stdlib 1.27.2, fixed in go1.26.10/1.27.3). Build the exact immutable
+# CVE-2026-78667/78669/97031 HIGH in stdlib 1.25.x, then CVE-2026-111943 HIGH in
+# stdlib 1.27.2 — crypto/x509 MITM via untrusted intermediate certificates,
+# fixed in 1.26.10/1.27.3). Build the exact immutable
 # release tag ourselves with a patched Go toolchain/dependency set so the
 # runtime does not inherit vulnerabilities from an otherwise-current source
 # release. The release tag resolves to b8564ad; fail if upstream ever disagrees.
+# Digest-pinned (#349); golang:1.27.3-alpine resolved to this index digest 2026-10-22.
 FROM golang:1.27.3-alpine@sha256:b8c9b82affbbb82a020bbcf998dad2ba9516944ac7e883524642a481a9505e9c AS agebuild
 ARG AGE_VERSION=1.3.1
 ARG AGE_COMMIT_SHORT=b8564ad
@@ -57,7 +59,7 @@ RUN apk add --no-cache git && \
 # ---- builder: self-contained venv (has shell/pip) ----
 # Digest-pinned (#349); shared with the runtime stage below so both resolve to
 # the same CPython build.
-FROM python:3.13.16-slim-bookworm@sha256:a1165e272e578941b84abc79e4ab38a0305cd12803a5c4247979ac7655f4d641 AS pybuild
+FROM python:3.13.16-slim-bookworm@sha256:73aa5faee130c60da030e105ec971ccf57473fbd22ce73bd6fc9ba99a40b838d AS pybuild
 WORKDIR /app
 # CI evidence (run 36835563311): pip's 15s transport timeouts, not resolution
 # failures, killed the sibling research image's builds under runner load.
@@ -139,7 +141,7 @@ RUN python -c "import importlib.metadata as m, sys; from maistro.identity import
 RUN mkdir -p /app/state_seed
 
 # ---- thin runtime: same pinned CPython ABI, nonroot ----
-FROM python:3.13.16-slim-bookworm@sha256:a1165e272e578941b84abc79e4ab38a0305cd12803a5c4247979ac7655f4d641
+FROM python:3.13.16-slim-bookworm@sha256:73aa5faee130c60da030e105ec971ccf57473fbd22ce73bd6fc9ba99a40b838d
 WORKDIR /app
 ENV PATH="/app/venv/bin:$PATH" \
     PYTHONPATH=/app/backend:/app \

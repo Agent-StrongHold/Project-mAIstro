@@ -29,7 +29,11 @@ members = [
     "maistro-workspace",
     "reference-greeter",
 ]
-constraints = [{ name = "aiohttp", specifier = ">=3.14.4" }]
+constraints = [
+    { name = "aiohttp", specifier = ">=3.14.4" },
+    { name = "gitpython", specifier = ">=3.2.1" },
+    { name = "graphql-core", specifier = ">=3.3.0" },
+]
 
 [[package]]
 name = "absl-py"

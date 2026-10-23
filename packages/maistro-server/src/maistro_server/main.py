@@ -32,6 +32,7 @@ from maistro.graph.concurrency import configure_graph_concurrency
 from maistro.http import aclose_shared_clients, configure_shared_http
 from maistro.observability.logging import configure_logging
 from maistro.observability.middleware import RequestIDMiddleware
+from maistro.runs.store_boundary import RunStoreBoundary
 from maistro.security.outbound import configure_outbound_policy, configured_endpoints
 from maistro.tasks.execution import TaskAttemptExecutor
 from maistro.tasks.http_contract import (
@@ -563,6 +564,12 @@ async def _runtime_lifespan(app: FastAPI) -> AsyncIterator[None]:
     # The handles these APIs return must resolve against the exact stores the
     # Container selected, not lookalike stores reconstructed by the server.
     runs.configure_run_store(run_store)
+    # Route visibility answers through the same Workspace-membership boundary
+    # the Container's stores back (#1152): missing and foreign ids fail closed
+    # identically at the one seam.
+    runs.configure_run_boundary(
+        RunStoreBoundary(run_store, container.workspace_store, container.project_scope_store)
+    )
     a2a.configure_a2a_admission(
         run_store,
         container.project_scope_store,
@@ -642,6 +649,7 @@ async def _runtime_lifespan(app: FastAPI) -> AsyncIterator[None]:
         await _drain_queue_singleton()
         reset_task_queue()
         runs.configure_run_store(None)
+        runs.configure_run_boundary(None)
         a2a.configure_a2a_admission(None, None)
         workspaces.configure_workspace_store(None)
 
