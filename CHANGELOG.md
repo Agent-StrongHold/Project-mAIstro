@@ -295,6 +295,12 @@ or placeholder-only section.
 
 ### Security
 
+- **Keep Conductor decryption keys and SQLite sidecars out of backup artifacts
+  (#88).** Capture only the online database snapshot and documented ciphertext,
+  reject overlapping backup/escrow roots and reused or unsafe destinations, and
+  refuse contaminated Conductor captures during restore verification. Same-day
+  retries must use fresh disjoint roots after preserving any previous attempt.
+
 - **Protected-branch secret scans recognize two historical soak false positives (#860).**
   Preserve full-history scanning and the default rules while carrying over the
   exact commit/path/rule/line fingerprints for a synthetic local-stack fixture

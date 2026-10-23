@@ -292,13 +292,13 @@ def test_scratch_ready_means_the_target_database_answers() -> None:
     # readiness repair). The pre-#1820 literal `seq 1 60` no longer occurs in
     # the script, which made the split fall back to the whole file before the
     # first `done` — the assertions passed without isolating the loop body.
-    loop_body = verify.split("for _ in $(seq 1 180); do", 1)[-1].split("done", 1)[0]
+    loop_body = verify.split("for _ in $(seq 1 180); do", 1)[1].split("done", 1)[0]
     assert "pg_isready" in loop_body, "the scratch loop must still probe the server"
     assert "psql" in loop_body and '-d "${PG_DB}"' in loop_body, (
         "the scratch loop must require the target database to answer, "
         "not just a listening server (entrypoint temp-server race)"
     )
-    tail = verify.split("done", 1)[-1]
+    tail = verify.split("for _ in $(seq 1 180); do", 1)[1].split("done", 1)[1]
     assert 'fail_verifier "scratch postgres did not become ready' in tail, (
         "a never-ready scratch database must fail as a verifier failure"
     )

@@ -97,12 +97,33 @@ verify_sha256() {
   [[ "${expected}" == "${actual}" ]] || fail_artifact "hash mismatch for ${file}: expected ${expected}, got ${actual} (corrupt backup artifact)"
 }
 
+# A checksum can faithfully seal leaked keys or a stale SQLite WAL too. The
+# Conductor capture has exactly three allowed regular files; refuse any other
+# entry rather than replaying a sidecar over the online-backup snapshot.
+verify_conductor_isolation() {
+  local data="${1}/conductor-data" entry
+  [[ ! -L "${data}" ]] || fail_artifact "conductor-data must not be a symlink"
+  [[ -e "${data}" ]] || return 0
+  [[ -d "${data}" ]] || fail_artifact "conductor-data must be a directory"
+  [[ -r "${data}" && -x "${data}" ]] || fail_artifact "conductor-data must be readable and searchable"
+  for entry in "${data}"/* "${data}"/.[!.]* "${data}"/..?*; do
+    [[ -e "${entry}" || -L "${entry}" ]] || continue
+    [[ -f "${entry}" && ! -L "${entry}" ]] \
+      || fail_artifact "conductor-data must contain only regular files"
+    case "${entry##*/}" in
+      state.db|secrets.age|user_credentials.enc) ;;
+      *) fail_artifact "unexpected conductor-data entry; keys and SQLite sidecars must not be in the backup" ;;
+    esac
+  done
+}
+
 # ── Integrity manifest: missing/corrupt components fail here, loudly ─────────
 # backup.sh writes manifest.sha256 over every component of a real backup; a
 # manifest-less artifact (e.g. the characterization harness's lib-driver
 # output) is still verified per-component via the sidecar hashes above.
 verify_backup_manifest() {
   local src="$1"
+  verify_conductor_isolation "${src}"
   [[ -f "${src}/manifest.sha256" ]] \
     || fail_artifact "no integrity manifest at ${src}/manifest.sha256 — re-run backup.sh (a backup without one cannot prove its components)"
   ( cd "${src}" && sha256sum -c --quiet manifest.sha256 ) \
@@ -112,7 +133,17 @@ verify_backup_manifest() {
 # ── Conductor durable state + credential escrow (issue #88) ──────────────────
 verify_conductor_backup() {
   local src="$1" escrow="$2"
-  local data="${src}/conductor-data"
+  local data="${src}/conductor-data" resolved_src resolved_escrow key
+
+  verify_conductor_isolation "${src}"
+  resolved_src="$(realpath -m -- "${src}")"
+  resolved_escrow="$(realpath -m -- "${escrow}")"
+  case "${resolved_src%/}/" in "${resolved_escrow%/}/"*) fail_artifact "backup and escrow directories must be disjoint" ;; esac
+  case "${resolved_escrow%/}/" in "${resolved_src%/}/"*) fail_artifact "backup and escrow directories must be disjoint" ;; esac
+  [[ ! -L "${escrow}" ]] || fail_artifact "credential escrow must not be a symlink"
+  for key in admin.key credential_master.key; do
+    [[ ! -L "${escrow}/${key}" ]] || fail_artifact "escrow keys must not be symlinks"
+  done
 
   [[ -d "${data}" ]] \
     || fail_artifact "conductor-data is missing from the backup — the authoritative Conductor state (state.db, secrets.age, user_credentials.enc) was not captured; this is exactly the D-18 backup gap"
@@ -147,7 +178,9 @@ with open(db, "rb") as fh:
     if fh.read(16) != b"SQLite format 3\x00":
         print(f"[verify-restore]   {db} is not a SQLite database", file=sys.stderr)
         raise SystemExit(1)
-conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+# This is an isolated online-backup snapshot, not a live database. immutable
+# prevents SQLite from creating/replaying WAL/SHM while verifying the artifact.
+conn = sqlite3.connect(f"file:{db}?mode=ro&immutable=1", uri=True)
 try:
     (integrity,) = conn.execute("PRAGMA integrity_check").fetchone()
     if integrity != "ok":
@@ -297,6 +330,8 @@ PY
 }
 
 main() {
+  # Reject contamination even without a manifest or with Conductor opt-out.
+  verify_conductor_isolation "${SRC}"
   # ── 1. Artifact preflight: everything the oracle needs, integrity-checked ────
   [[ -f "${DUMP}" ]] || fail_artifact "no dump at ${DUMP}"
   [[ -f "${SCHEMA_EVIDENCE}" ]] || fail_artifact "no schema evidence at ${SCHEMA_EVIDENCE} (backup predates the #1881 evidence format; re-run backup.sh)"
