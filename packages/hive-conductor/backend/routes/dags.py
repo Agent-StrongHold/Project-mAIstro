@@ -419,7 +419,7 @@ async def run_dag(
         ) from exc
     log_audit("dag_run", actor, target=dag_id)
 
-    from services.graph_runner import CanonicalDagExecutionError, execute_dag
+    from services.graph_runner import CanonicalDagExecutionError, execute_dag, public_result
 
     try:
         result = await execute_dag(
@@ -439,14 +439,15 @@ async def run_dag(
             headers={"Retry-After": str(CHAT_TURN_RETRY_AFTER_S)},
         ) from exc
     except CanonicalDagExecutionError as exc:
-        result = exc.result
+        logger.warning("Canonical DAG Run failed", exc_info=True)
+        result = public_result(exc.result)
         await _record_run_projection(dag_id=dag_id, user_id=actor, result=result)
         run_id = result.get("run_id")
         return {
             "status": result.get("status", "failed"),
             "execution_id": run_id,
             "run_id": run_id,
-            "error": str(exc),
+            "error": "DAG execution failed; see server logs",
             "result": result,
         }
     except Exception as exc:

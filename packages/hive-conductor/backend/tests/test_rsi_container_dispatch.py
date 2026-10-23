@@ -647,8 +647,7 @@ class TestTheDispatchedLifecycle:
     def test_the_run_refuses_when_the_backend_cannot_attest(
         self, admin_client, authorized_repo: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """An unavailable backend is a refusal, not a downgrade to the host —
-        and the refusal says which piece is missing."""
+        """An unavailable backend refuses without dispatch or public diagnostics."""
         from services import rsi_container_dispatch as dispatch
         from services import rsi_execution_policy as policy
 
@@ -670,8 +669,10 @@ class TestTheDispatchedLifecycle:
         )
 
         assert response.status_code == 400
-        assert "no contained RSI backend" in response.json()["detail"]
-        assert "docker daemon" in response.json()["detail"]
+        assert response.json()["detail"] == (
+            "RSI execution policy rejected the run; check repository and test profile"
+        )
+        assert "docker daemon" not in response.text
 
     def test_cancellation_stops_the_container(
         self,
