@@ -59,6 +59,7 @@ PROD_REQUIRED = {
     "REPLICATION_PASSWORD": "x",
     "ROUTER_API_KEY": "x",
     "TASK_DELEGATION_KEY": "x",
+    "ADMIN_API_KEYS": "[]",
 }
 
 EXTERNAL = {"LITELLM_BASE_URL": "https://gw.corp.example", "LITELLM_API_KEY": "sk-external"}

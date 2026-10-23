@@ -41,9 +41,15 @@ services:
       API_KEYS: ${API_KEYS:?Set API_KEYS in .env}
       # Administrator authority (#1095): without this the stack has no way to
       # authenticate for the admin-only readiness diagnostics -- both replicas
-      # would see ADMIN_API_KEYS as unset even when set in .env. Empty default
-      # keeps deployments with no admin keys booting.
-      ADMIN_API_KEYS: ${ADMIN_API_KEYS:-}
+      # would see ADMIN_API_KEYS as unset even when set in .env. Required, like
+      # the dev stack's identical line: an empty default would hand every
+      # replica `ADMIN_API_KEYS=` (empty string), which the server cannot parse
+      # as the JSON list the field is -- Settings would crash before startup
+      # validation could run (compose-secrets also forbids non-empty defaults
+      # for secret-class vars, so `${VAR:-}` was the only alternative and it is
+      # exactly what broke). `[]` is the documented no-admin-keys value
+      # install.sh writes for new installs.
+      ADMIN_API_KEYS: ${ADMIN_API_KEYS:?Set ADMIN_API_KEYS in .env (use [] when no admin keys)}
       REQUIRE_AUTH: "true"
       # Shared only with the trusted Hive delegation bridge, never clients.
       TASK_DELEGATION_KEY: ${TASK_DELEGATION_KEY:?Set TASK_DELEGATION_KEY in .env}
