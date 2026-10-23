@@ -12,14 +12,18 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from maistro.security.trust import UNVETTED_TRUST_TIER
 from maistro.skills.parser import parse_skill_file, security_scan, validate_skill_name
 from maistro.types.skill import SkillDefinition
 
 if TYPE_CHECKING:
     from maistro.protocols.llm import LLMClient
+    from maistro.skills.import_pipeline import PolicyAttachmentStore
+    from maistro.skills.registry import InMemorySkillRegistry
     from maistro.types.memory import Learning
 
 logger = logging.getLogger("maistro.skills.forge")
@@ -87,6 +91,22 @@ Rules:
 Output ONLY the complete updated SKILL.md file content."""
 
 
+@dataclass(frozen=True)
+class _MutationInputs:
+    """The resolved inputs one skill mutation needs.
+
+    Produced by :meth:`SkillForge._prepare_mutation` once the mutation target
+    has been resolved and both the existing content and the learning have
+    passed the supply-chain checks. Keeping them together lets ``mutate``
+    stay a linear pipeline instead of a decision tree.
+    """
+
+    filepath: Path
+    current_content: str
+    learning_text: str
+    old_hash: str
+
+
 class SkillForge:
     """Creates and mutates skills via LLM."""
 
@@ -95,10 +115,14 @@ class SkillForge:
         llm: LLMClient,
         skills_dir: Path,
         forge_model: str = "auto",
+        registry: InMemorySkillRegistry | None = None,
+        policy_store: PolicyAttachmentStore | None = None,
     ) -> None:
         self._llm = llm
         self._skills_dir = skills_dir
         self._forge_model = forge_model
+        self._registry = registry
+        self._policy_store = policy_store
 
     async def forge(self, request: str) -> SkillDefinition:
         """Generate a new skill from a natural language request.
@@ -124,14 +148,7 @@ class SkillForge:
             msg = "Forged skill content failed to parse"
             raise ValueError(msg)
 
-        filepath = self._skills_dir / f"{skill.name}.md"
-        if not filepath.resolve().is_relative_to(self._skills_dir.resolve()):
-            msg = f"Invalid skill name (path traversal detected): {skill.name}"
-            raise ValueError(msg)
-
-        if filepath.exists():
-            msg = f"Skill '{skill.name}' already exists at {filepath}"
-            raise ValueError(msg)
+        filepath = self._resolve_forge_path(skill.name)
 
         skill = SkillDefinition(
             name=skill.name,
@@ -142,38 +159,31 @@ class SkillForge:
             auth_key_env=skill.auth_key_env,
             system_prompt=skill.system_prompt,
             source="forge",
-            trust_tier="t3",
+            trust_tier=UNVETTED_TRUST_TIER,
+            provenance="forge",
+            content_hash=hashlib.sha256(content.encode("utf-8")).hexdigest(),
         )
 
-        self._skills_dir.mkdir(parents=True, exist_ok=True)
+        if self._registry is not None and not self._registry.register(
+            skill, content_hash=skill.content_hash, provenance="forge"
+        ):
+            raise ValueError(f"Skill trust policy rejected registration for {skill.name!r}")
+        filepath = self._resolve_write_path(skill.name)
+        filepath.parent.mkdir(parents=True, exist_ok=True)
         filepath.write_text(content, encoding="utf-8")
+        if self._policy_store is not None:
+            from maistro.skills.import_pipeline import PolicyAttachment
+
+            self._policy_store.attach(
+                PolicyAttachment(
+                    skill_name=skill.name,
+                    content_hash=skill.content_hash,
+                    provenance="forge",
+                )
+            )
         logger.info("Forged skill '%s' saved to %s", skill.name, filepath)
 
         return skill
-
-    def _find_mutation_path(self, skill_name: str) -> tuple[Path | None, str | None]:
-        """Resolve a mutation target under the authorized skills root."""
-        if not validate_skill_name(skill_name):
-            return (
-                None,
-                f"Invalid skill name (path traversal or malformed identifier): {skill_name}",
-            )
-
-        root = self._skills_dir.resolve()
-        candidates = (
-            root / f"{skill_name}.md",
-            root / "community" / f"{skill_name}.md",
-        )
-        for candidate in candidates:
-            if candidate.is_symlink():
-                return None, f"Skill path is a symlink and cannot be mutated: {skill_name}"
-            if not candidate.exists():
-                continue
-            resolved = candidate.resolve()
-            if not resolved.is_relative_to(root) or not resolved.is_file():
-                return None, f"Skill path is outside the authorized root: {skill_name}"
-            return candidate, None
-        return None, None
 
     async def mutate(
         self,
@@ -196,32 +206,13 @@ class SkillForge:
                 "Only T2+ skills support learning-driven mutation.",
             }
 
-        filepath, path_error = self._find_mutation_path(skill_name)
-        if path_error is not None:
-            return {"status": "blocked", "reason": path_error}
-        if filepath is None:
-            return {"status": "skipped", "reason": f"No SKILL.md for '{skill_name}'"}
-
-        current_content = filepath.read_text(encoding="utf-8")
-        current_safe, current_findings = security_scan(current_content)
-        if not current_safe:
-            return {
-                "status": "blocked",
-                "reason": f"Existing skill rejected by security scan: {', '.join(current_findings)}",
-            }
-        old_hash = hashlib.sha256(current_content.encode()).hexdigest()[:16]
-
-        learning_text = learning.learning if hasattr(learning, "learning") else str(learning)
-        if not learning_text:
-            return {"status": "skipped", "reason": "Empty learning text"}
-
-        learning_error = self._validate_learning_text(learning_text, skill_name)
-        if learning_error is not None:
-            return learning_error
+        prepared = self._prepare_mutation(skill_name, learning)
+        if isinstance(prepared, dict):
+            return prepared
 
         prompt = _MUTATE_PROMPT.format(
-            current_content=current_content,
-            learning_text=learning_text,
+            current_content=prepared.current_content,
+            learning_text=prepared.learning_text,
         )
         new_content = await self._call_llm(prompt)
         if not new_content:
@@ -234,26 +225,159 @@ class SkillForge:
         if output_error is not None:
             return output_error
 
-        new_hash = hashlib.sha256(new_content.encode()).hexdigest()[:16]
+        full_hash = hashlib.sha256(new_content.encode()).hexdigest()
+        new_hash = full_hash[:16]
+        registration_error = self._register_mutated_skill(skill_name, new_content, full_hash)
+        if registration_error is not None:
+            return registration_error
 
-        filepath.write_text(new_content, encoding="utf-8")
+        self._persist_mutated_skill(prepared.filepath, skill_name, new_content, full_hash)
         logger.info(
             "Mutated skill '%s' (%s -> %s)",
             skill_name,
-            old_hash,
+            prepared.old_hash,
             new_hash,
         )
 
         return {
             "status": "mutated",
             "skill_name": skill_name,
-            "old_hash": old_hash,
+            "old_hash": prepared.old_hash,
             "new_hash": new_hash,
         }
+
+    def _prepare_mutation(
+        self,
+        skill_name: str,
+        learning: Learning,
+    ) -> _MutationInputs | dict[str, Any]:
+        """Resolve the mutation target and validate what would be rewritten.
+
+        Returns the resolved inputs, or the refusal (``dict``) that stopped the
+        mutation before any content was read back, re-scanned or rewritten.
+        """
+        filepath, error = self._resolve_mutation_target(skill_name)
+        if error is not None:
+            return error
+        assert filepath is not None
+
+        current_content = filepath.read_text(encoding="utf-8")
+        current_error = self._scan_current_skill(current_content)
+        if current_error is not None:
+            return current_error
+
+        learning_text = learning.learning if hasattr(learning, "learning") else str(learning)
+        learning_error = self._validate_learning_text(learning_text, skill_name)
+        if learning_error is not None:
+            return learning_error
+
+        return _MutationInputs(
+            filepath=filepath,
+            current_content=current_content,
+            learning_text=learning_text,
+            old_hash=hashlib.sha256(current_content.encode()).hexdigest()[:16],
+        )
+
+    def _resolve_mutation_target(
+        self, skill_name: str
+    ) -> tuple[Path | None, dict[str, Any] | None]:
+        if not validate_skill_name(skill_name):
+            return None, {"status": "blocked", "reason": f"Invalid skill name: {skill_name!r}"}
+        root = self._skills_dir.resolve()
+        filepath = root / f"{skill_name}.md"
+        if not filepath.exists():
+            filepath = root / "community" / f"{skill_name}.md"
+            if not filepath.exists():
+                return None, {"status": "skipped", "reason": f"No SKILL.md for '{skill_name}'"}
+        if filepath.is_symlink():
+            return None, {"status": "blocked", "reason": "Refusing to mutate symlinked skill"}
+        if not filepath.is_file():
+            return None, {
+                "status": "blocked",
+                "reason": (
+                    f"Skill path for '{skill_name}' is not a file inside the authorized root"
+                ),
+            }
+        resolved = filepath.resolve()
+        if not resolved.is_relative_to(root):
+            return None, {"status": "blocked", "reason": "Skill path escapes skills directory"}
+        return resolved, None
+
+    def _scan_current_skill(self, current_content: str) -> dict[str, Any] | None:
+        current_safe, current_findings = security_scan(current_content)
+        if not current_safe:
+            return {
+                "status": "blocked",
+                "reason": "Existing skill failed the security scan: " + ", ".join(current_findings),
+            }
+        return None
+
+    def _register_mutated_skill(
+        self, skill_name: str, new_content: str, full_hash: str
+    ) -> dict[str, Any] | None:
+        if self._registry is None:
+            return None
+        mutated_skill = parse_skill_file(new_content, source="forge")
+        if mutated_skill is None:
+            return {"status": "error", "error": "Mutated content failed to parse"}
+        # A mutation is a body change: the rewritten body starts at the
+        # forge's own tier, never at whatever the parser happens to default
+        # to, and the host keeps the provenance of the rewrite.
+        mutated = replace(
+            mutated_skill,
+            trust_tier=UNVETTED_TRUST_TIER,
+            provenance="forge",
+        )
+        if not self._registry.register(
+            mutated,
+            content_hash=full_hash,
+            provenance="forge",
+        ):
+            return {"status": "blocked", "reason": "Skill trust policy rejected mutation"}
+        return None
+
+    def _persist_mutated_skill(
+        self, filepath: Path, skill_name: str, new_content: str, full_hash: str
+    ) -> None:
+        filepath.write_text(new_content, encoding="utf-8")
+        if self._policy_store is not None:
+            from maistro.skills.import_pipeline import PolicyAttachment
+
+            self._policy_store.attach(
+                PolicyAttachment(
+                    skill_name=skill_name,
+                    content_hash=full_hash,
+                    provenance="forge",
+                )
+            )
+
+    def _resolve_forge_path(self, skill_name: str) -> Path:
+        filepath = self._skills_dir / f"{skill_name}.md"
+        root = self._skills_dir.resolve()
+        if not filepath.resolve().is_relative_to(root):
+            msg = f"Invalid skill name (path traversal detected): {skill_name}"
+            raise ValueError(msg)
+        if filepath.exists():
+            msg = f"Skill '{skill_name}' already exists at {filepath}"
+            raise ValueError(msg)
+        return filepath
+
+    def _resolve_write_path(self, skill_name: str) -> Path:
+        root = self._skills_dir.resolve()
+        self._skills_dir.mkdir(parents=True, exist_ok=True)
+        candidate = root / f"{skill_name}.md"
+        if candidate.is_symlink():
+            raise ValueError(f"Refusing to overwrite symlink for skill: {skill_name}")
+        resolved = candidate.resolve()
+        if not resolved.is_relative_to(root):
+            raise ValueError(f"Invalid skill path: {skill_name}")
+        return resolved
 
     def _validate_learning_text(self, learning_text: str, skill_name: str) -> dict[str, Any] | None:
         """Security-scan + instruction-density gate. Returns an error dict to
         short-circuit ``mutate``, or ``None`` if the learning text is acceptable."""
+        if not learning_text:
+            return {"status": "skipped", "reason": "Empty learning text"}
         scan_wrapper = (
             "---\nname: _scan\ndescription: _scan\n"
             "parameters:\n  type: object\n  properties: {}\n"
@@ -288,6 +412,8 @@ class SkillForge:
     def _validate_mutation_output(self, new_content: str, skill_name: str) -> dict[str, Any] | None:
         """Security-scan + parse-check the LLM mutation. Returns an error dict to
         short-circuit ``mutate``, or ``None`` if the new content is acceptable."""
+        if not new_content:
+            return {"status": "error", "error": "LLM returned empty response"}
         safe, findings = security_scan(new_content)
         if not safe:
             return {"status": "error", "error": f"Mutation rejected: {', '.join(findings)}"}
