@@ -7500,3 +7500,55 @@ first-hand at this exact head:
   owner-side develop authorization (the path develop already took for the
   sibling C1 leaf via `7a1aaec58`). The stack stays unmerged; this round is
   a note-only commit.
+
+## repair-round re-verification at head f39fc0b519ce (merge of origin/develop
+## 2af730d2e; base unchanged) — note-only commit, no other tree edit
+
+The round-91 entry's "next integration round should re-sync" happened: this
+job's start head is the merge commit `f39fc0b519ce` (parents `c3a635c99`,
+`2af730d2e`), the worktree is clean, and `git merge-base --is-ancestor
+2af730d2e HEAD` succeeds — the "develop sync conflict preserved in worktree"
+block is discharged. Everything below re-proven first-hand at this exact
+head; classifier sha unchanged (`578c1f17…`), so front-matter stays +132.
+
+- CI reds at this head (exact-debt-ledger, test, Quality/Reachability,
+  Quality gate, Coverage gate) all reproduce locally from the single
+  issue-mandated root cause: `check-reachability.py` rc=1 names exactly one
+  NEWLY UNREACHABLE module, `maistro.tasks.admission_generation`, of 1451;
+  dispositions rc=0 (47 groups / 157 modules), promotion surface rc=0. The
+  failing trio (`test_baseline_matches_the_tree`,
+  `test_the_committed_baseline_passes_the_gate_it_now_carries`,
+  `test_the_baseline_is_exactly_the_unreachable_set`) reproduces 3 failed /
+  12 passed with every assertion diff naming only that module.
+- `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'` rc=0: 1314 reviewed identities -> 1309 findings,
+  unclassified 0, never_allowlist 0. The -5 rows vs develop are exactly the
+  AdmissionAssessment enum identities the new module now references
+  (LEGACY_UNRESOLVED, MISMATCH, REPLACE_EXPIRED, REPLAYED, TAKEOVER) —
+  identities this leaf's fix eliminated, removed under this round's
+  exact-debt-ledger repair mandate; no grant was needed or added (removal
+  direction, not new debt).
+- No forbidden suppression exists: `admission_generation` appears zero times
+  in `quality/reachability-baseline.json` and
+  `quality/ratchet-authorizations.json`; the only other quality/ delta vs
+  develop is `image-pins.json` (round-86 Docker CVE rebuild). The
+  `scripts/check-reachability.py` delta vs develop is comment-only (why the
+  leaf stays unclassified), verified by reading the diff.
+- Focused battery: leaf suite 132 passed; live-flow regression
+  (`test_root_admission_identity.py` + `test_idempotency.py`) 146 passed;
+  adjacent touched suites green (`test_runs_admission_identity_publication`
+  3 passed, `test_pack_contracts` 133 passed); ruff check/format clean
+  whole-tree; module mypy Success; AGENTS.md mypy target (all seven
+  package src trees) Success: no issues in 930 files;
+  `check-suite-inventory.py` ok, 21 suites, delta +132 unchanged.
+- All four issue-named mutation classes re-killed first-hand at this head
+  via the /tmp meta-path mutant loader (no tree edits): control (mutant file
+  = pristine source) 132 passed; swap TAKEOVER/REPLACE_EXPIRED -> 50 failed;
+  lease row before binding row -> 14 failed; LEGACY_UNRESOLVED row dropped
+  (legacy pending treated as v2) -> 10 failed; mismatch row before expiry
+  row (no expiry exception) -> 22 failed.
+- Verdict unchanged and issue-mandated: the leaf is not independently
+  mergeable while unwired; #1852 forbids baseline entries, grants, or fake
+  callers to turn the reachability red green. The sanctioned repair is the
+  #1845 integration head landing the reviewed runtime consumer. The stack
+  stays unmerged; this round is a note-only commit.
