@@ -7661,3 +7661,56 @@ assumed:
   remains the #1845 integration head landing the reviewed runtime
   consumer (grant first, change second). The stack stays unmerged; this
   round is a note-only commit.
+
+## repair round 94 at head 9ad44f121 (base afffa6309 unchanged) —
+## independent re-verification, note-only commit, no other tree edit
+
+Every round-93 number re-derived first-hand at the branch tip
+(9ad44f12100f0f2702e089cc06cd112faeb99374, worktree clean before this
+note): the exact-debt-ledger failure re-binds to exactly the one
+issue-mandated blocker and nothing else.
+
+- CI `exact-debt-ledger` steps re-run with CI's exact arguments at CI's
+  exact argv: `check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` rc=0 (1314 -> 1309,
+  the round-88 fix-eliminated enum rows); `check-shipped-surface-truth.py`
+  rc=0 ("matrix is complete"); `check-ratchet-provenance.py` with
+  `RATCHET_BASE_REV=origin/develop` fails with "ratchet provenance
+  inventory is incomplete" naming only
+  `check-reachability-provenance.py: trusted-base gate returned 1` —
+  8/9 sub-ratchets OK as in round 93.
+- `check-reachability-provenance.py` rc=1 with exactly two lines, both
+  about the leaf: "maistro.tasks.admission_generation: NEW unreachable
+  module absent from trusted base and not previously authorized" and
+  "...: current unreachable module missing from candidate baseline"
+  (157 -> 158 unreachable of 1453 modules).
+- `check-reachability.py` rc=1 naming exactly one NEWLY UNREACHABLE
+  module, `maistro.tasks.admission_generation`;
+  `check-reachability-dispositions.py` rc=0; `check-promotion-surface.py`
+  rc=0. The CI `test` trio reproduced 3 failed / 36 passed with the same
+  three test identities as the f39fc0b519ce logs.
+- Focused battery: leaf suite 132 passed; live-flow regression
+  (`test_root_admission_identity.py` + `test_idempotency.py`) 146
+  passed; whole-tree `ruff check` "All checks passed!"; `ruff format
+  --check` 3467 files clean; mypy Success on the leaf module;
+  `check-suite-inventory.py --suite packages/maistro-core/tests` ok
+  (17626 node IDs). Ledger integrity vs origin/develop: `git diff
+  --numstat origin/develop HEAD -- quality/` = only
+  `quality/vulture-baseline.json` 0/5 (the documented enum-row
+  deletions; no other quality ledger moved).
+- All four issue-named mutation classes re-killed first-hand by
+  backup-cp/restore-cp (md5 257a6e45c382349dd12f559099663fbc identical
+  before and after; `git status` clean after restore): swap
+  TAKEOVER/REPLACE_EXPIRED -> 50 failed; lease row moved to directly
+  after the expiry row (before binding) -> 27 failed;
+  LEGACY_UNRESOLVED row deleted -> 10 failed; MISMATCH row moved above
+  the expiry row -> 22 failed.
+- Import boundary re-proven: grep over `packages/*/src` for
+  `admission_generation` matches only the module itself (zero importer
+  references); the leaf remains unwired exactly as #1852 requires.
+- Resolution of the CI failure remains outside this leaf's authority:
+  clearing the reachability red requires either the #1845 integration
+  wiring a reviewed runtime consumer or an upstream trusted-base
+  classification of the module — #1852 forbids this leaf from doing
+  either (no wiring, no baseline entry, no grant, no gate change).
+  Round 94 is therefore a note-only commit with the blocker intact.
