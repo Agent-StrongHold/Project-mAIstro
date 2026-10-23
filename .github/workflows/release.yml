@@ -387,7 +387,7 @@ jobs:
       #   PyPI (final)   false — a duplicate on the real index means the
       #     version was already published. That must be loud, not skipped.
       - name: Publish (trusted publishing / OIDC)
-        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+        uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
         with:
           repository-url: ${{ needs.guard.outputs.prerelease == 'true' && 'https://test.pypi.org/legacy/' || 'https://upload.pypi.org/legacy/' }}
           skip-existing: ${{ needs.guard.outputs.prerelease == 'true' }}
@@ -467,7 +467,7 @@ jobs:
           done
 
       - uses: docker/setup-buildx-action@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
           cache: npm
