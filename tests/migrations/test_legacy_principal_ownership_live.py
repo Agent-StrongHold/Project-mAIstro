@@ -492,11 +492,12 @@ def _assert_losslessly_migrated() -> None:
     ]
 
     # The chain tip once the durable delivery receipts (#1060) renumbered
-    # past the replay-cursor revision at this sync: 064 is this file's
-    # subject, 065 the Persona revision, 066 the replay-cursor revision and
-    # 067 the current head (test_goal_installed_base_upgrade carries the
-    # same constant).
-    assert _versions() == {"067"}
+    # past the replay-cursor revision and #845's delegation grants then
+    # renumbered past the receipts at the b9cd15c60 sync: 064 is this file's
+    # subject, 065 the Persona revision, 066 the replay-cursor revision, 067
+    # the receipts and 068 the current head (test_goal_installed_base_upgrade
+    # carries the same constant).
+    assert _versions() == {"068"}
 
 
 class TestMixedDataMigratesLosslessly:

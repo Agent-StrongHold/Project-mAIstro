@@ -178,6 +178,29 @@ def upgrade() -> None:
     # the proof exists to detect. Signed rows are immutable evidence and keep
     # their original fields; a reader that must resolve the current principal
     # for one of them joins through ``principal_identity_mappings``.
+    # ``audit_log`` may predate the ADR-073 proof columns entirely: the
+    # signature/signing_key_id/proof_type triplet was folded into 005 by the
+    # M2 security-cage work (d32ddff76), so an installed base built by any
+    # landed chain older than that (the HITL-era 061 cohort, the user-model
+    # and planner merges the installed-base suite snapshots) carries an
+    # ``audit_log`` without ``signature``. Referencing the column there died
+    # with UndefinedColumn — the forward upgrade those bases are legally
+    # owed crashed at 064. A base without the column has no signed rows by
+    # construction, so the proof-preservation exception is vacuous and every
+    # 'default' row follows the identity; the guarded probe keeps the
+    # exception exactly where the column exists.
+    _audit_has_signature = (
+        op.get_bind()
+        .execute(
+            text(
+                "SELECT 1 FROM information_schema.columns"
+                " WHERE table_schema = current_schema()"
+                " AND table_name = 'audit_log' AND column_name = 'signature'"
+            )
+        )
+        .scalar()
+        is not None
+    )
     for table, column in (
         ("learnings", "user_id"),
         ("episodic_memories", "user_id"),
@@ -206,10 +229,13 @@ def upgrade() -> None:
         ("design_creative_briefs", "created_by"),
     ):
         if table == "audit_log":
-            op.execute(
-                f"UPDATE {table} SET {column} = 'conductor'"
-                f" WHERE {column} = 'default' AND signature = ''"
-            )
+            if _audit_has_signature:
+                op.execute(
+                    f"UPDATE {table} SET {column} = 'conductor'"
+                    f" WHERE {column} = 'default' AND signature = ''"
+                )
+            else:
+                op.execute(f"UPDATE {table} SET {column} = 'conductor' WHERE {column} = 'default'")
         else:
             op.execute(f"UPDATE {table} SET {column} = 'conductor' WHERE {column} = 'default'")
 
