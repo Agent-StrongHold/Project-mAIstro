@@ -7828,3 +7828,53 @@ output was trusted.
   implementation/test readiness plus the explicit merge blocker and leave
   the stack unmerged"), BLOCKED is the issue-conform terminal state until
   the #1845 integration head lands the runtime consumer. Note-only commit.
+
+## Round 97 — independent re-verification at head dd12e1a24675 (base
+## b9cd15c608b5, no develop drift) — note-only commit, no other tree edit
+
+Fresh worktree, clean tree at `dd12e1a24675a0790ef350caba62ceb3c09566d7`.
+Every check below executed first-hand in this round (no claim inherited):
+
+- Focused: `test_admission_generation_assessment.py` -> 132 passed;
+  companion suites (`test_root_admission_identity.py`,
+  `test_idempotency.py`, `test_runs_admission_identity_publication.py`,
+  `test_pack_contracts.py`) -> 282 passed.
+- exact-debt-ledger steps at CI's workflow invocations:
+  `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'` rc=0 (1314 -> 1309, unclassified 0);
+  `check-shipped-surface-truth.py` rc=0.
+- `check-ratchet-provenance.py` rc=1 with the sole FAIL the reachability
+  sub-ratchet: `maistro.tasks.admission_generation` NEW unreachable +
+  absent from candidate baseline; dispositions (157), enumerations,
+  lifecycle sub-ratchets all OK.
+- `check-reachability.py` rc=1 naming exactly ONE newly unreachable module
+  (`maistro.tasks.admission_generation`; 157 + this leaf = 158);
+  `check-reachability-dispositions.py` rc=0; `check-promotion-surface.py`
+  rc=0.
+- CI test trio reproduced: `pytest tests/test_check_reachability.py::
+  test_baseline_matches_the_tree tests/test_reachability_baseline_identity.py`
+  -> 3 failed / 12 passed; every assertion delta is the single extra set
+  item `maistro.tasks.admission_generation` (CI Quality-gate and
+  Coverage-gate jobs are downstream of the same dependency failure).
+- All FOUR issue-named regression mutations killed in one pass this round:
+  swap TAKEOVER/REPLACE_EXPIRED -> 50 failed; lease before binding -> 16
+  failed; treat legacy pending as v2 -> 10 failed; mismatch before expiry
+  -> 22 failed. Module restored byte-identical (md5
+  257a6e45c382349dd12f559099663fbc before/after; `git status` clean on the
+  file — restored from a /tmp copy, never via git restore).
+- Hygiene re-run: `ruff check` + `ruff format --check` on the leaf module
+  and its suite clean; `mypy` on the module clean;
+  `check-suite-inventory.py` ok (21 suites match recorded inventory).
+- Scope guards re-derived: zero production source references to
+  `admission_generation` outside the module itself (only importer anywhere
+  is its own test file); `quality/` vs base = only
+  `vulture-baseline.json` 0/5 (the five now-consumed `AdmissionAssessment`
+  enum rows); `scripts/check-reachability.py` delta remains comment-only.
+- Verdict re-derived at this head, unchanged from rounds 92–96: the tree is
+  exactly the issue-mandated state — implementation/test readiness proven,
+  every residual CI red bound solely to the issue-predicted NEW-unreachable
+  leaf whose in-leaf remedies (#baseline entry, disposition, grant, dummy
+  caller, keep-alive import) #1852 explicitly prohibits, reserving
+  activation for the #1845 integration head that must pass the unchanged
+  gates. BLOCKED remains the issue-conform terminal state; no repair within
+  leaf authority exists.
