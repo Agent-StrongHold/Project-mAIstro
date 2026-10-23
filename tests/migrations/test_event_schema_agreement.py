@@ -2,8 +2,9 @@
 
 `PgEventLog`/`PgTriggerStore`/`PgInvocationStore`/`PgConsumerCursorStore`
 create their tables two ways. Alembic revisions 004 (the first three), 036
-(`consumer_cursors`, #1163) and 065 (`event_replay_cursors`, #836; renumbered
-from 064 when the live-Persona revision claimed the id on the trunk first) are
+(`consumer_cursors`, #1163), 065 (`event_replay_cursors`, #836, the merged
+identity develop shipped) and 066 (the
+delivery-receipt columns, #1060, likewise the merged identity) are
 what a real deployment applies;
 `ensure_event_schema()` is what tests and single-process dev runs call. The
 DDL is written out twice on purpose — a migration has to keep creating what it
@@ -77,13 +78,14 @@ def _require_postgres() -> str:
 
 
 def _migration_ddl() -> str:
-    """Render revisions 004, 036 and 065 with `alembic --sql`, which does not connect.
+    """Render revisions 004, 036, 065 and 066 with `alembic --sql`, which does not connect.
 
     Offline mode still builds a URL through `DatabaseSettings`, so the DB_* vars
     below only have to parse — nothing dials them. Rendering the real migrations
     rather than re-typing their DDL is the point: a change to
-    `alembic/versions/004_durable_events.py`, `036_consumer_cursors.py` or
-    `065_event_replay_cursors.py` reaches this test.
+    `alembic/versions/004_durable_events.py`, `036_consumer_cursors.py`,
+    `065_event_replay_cursors.py` or `066_durable_delivery_receipts.py`
+    reaches this test.
     """
     env = {
         **os.environ,

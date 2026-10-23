@@ -108,6 +108,11 @@ dev = [
     "moto[s3,server]>=5.0",
     "boto3>=1.34",
     "hypothesis>=6.0",
+    # M8-A11 (#891) research: the Z3/SMT experiment for the schedule fire/skip
+    # decision runs entirely in the test tree. The solver must never appear in
+    # `packages/*/src` (research non-goal: no production runtime dependency);
+    # a source-scan guard in the experiment enforces that.
+    "z3-solver>=4.13",
     "cosmic-ray>=8.0.0",
     # THREE workflows pass `--timeout=` to pytest; only quality.yml installed
     # this ad-hoc. In mutation.yml the omission was silently catastrophic —
@@ -125,6 +130,23 @@ dev = [
     "google-re2>=1.1",
 ]
 browser = ["playwright>=1.49"]
+# The RSI runner image's fitness toolchain (Dockerfile.rsi-runner). Those
+# tools were `uv pip install`ed unlocked in that image — two runs a month
+# apart could disagree about a fitness score for reasons no commit
+# explains. Declaring them here puts their resolution in uv.lock, and the
+# image syncs them with --locked (#348). All six are load-bearing:
+# maistro_evolve.code_quality shells out to `python -m ruff|bandit|radon`,
+# `pylint`, `interrogate` and `vulture` (code_quality.py), and the coverage
+# gate drives pytest-cov — omitting one silently degrades the fitness score
+# rather than failing it.
+rsi-fitness = [
+    "coverage>=7.6",
+    "bandit>=1.8",
+    "radon>=6.0",
+    "interrogate>=1.7",
+    "vulture>=2.14",
+    "pylint>=3.3",
+]
 # NOTE: the on-demand /code-health and /security-scan toolchains are NOT project
 # extras — several (semgrep) carry transitive pins that conflict with the app's
 # resolution. They are standalone CLI tools listed in requirements-dev-tools.txt;
@@ -183,6 +205,7 @@ dev = [
     "moto[s3,server]>=5.0",
     "boto3>=1.34",
     "hypothesis>=6.0",
+    "z3-solver>=4.13",  # same constraint as the optional-extra list: test tree only
     "cosmic-ray>=8.0.0",
     "pytest-timeout>=2.3",  # see the note in [project.optional-dependencies].dev
     "copier>=9.17.2",
@@ -207,13 +230,22 @@ bypass-selection = true
 
 [tool.uv]
 # Supply-chain floor for the pip-audit gate (security.yml `Supply chain
-# (pip-audit)`). aiohttp is not a production dependency here: it arrives
-# transitively through the cosmic-ray mutation-testing dev tool. The gate
-# nevertheless audits the frozen dev environment (`uv pip freeze`), and the
-# advisories fixed upstream in 3.14.4 (CVE-2026-111064 / GHSA-2g87-pp6c-29x5 /
-# CVE-2026-111063) fail it as shipped. Constrain the floor in the manifest so
-# the lock keeps it instead of drifting back on the next resolve.
-constraint-dependencies = ["aiohttp>=3.14.4"]
+# (pip-audit)`). These are not production dependencies: each arrives
+# transitively through a dev tool, but the gate audits the frozen dev
+# environment (`uv pip freeze`), so a dev advisory fails it as shipped.
+# Constrain the floors in the manifest so the lock keeps them instead of
+# drifting back on the next resolve.
+constraint-dependencies = [
+    "aiohttp>=3.14.4",
+    # Same shape, two more dev-only transitive advisories (pip-audit gate,
+    # 2026-10-22, #891/#2238 round): gitpython arrives via cosmic-ray,
+    # graphql-core via moto[server]. CVE-2026-114145 is fixed in gitpython
+    # 3.2.1; CVE-2026-75507/75508 in graphql-core 3.3.0 (stable, 2026-09-27;
+    # the advisory text still names the 3.3.0rc1 fix line). Both packages
+    # are test-infrastructure only; neither ships in the runtime images.
+    "gitpython>=3.2.1",
+    "graphql-core>=3.3.0",
+]
 
 [tool.ruff]
 target-version = "py312"
