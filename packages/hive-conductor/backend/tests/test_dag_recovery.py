@@ -103,7 +103,7 @@ async def test_recovery_owns_only_hive_legacy_admissions(monkeypatch: pytest.Mon
     assert captured["store"] is graph_store
     assert captured["run_store"] is run_store
     assert captured["limit"] == 7
-    assert isinstance(captured["events"], CanonicalRecoveryEventSink)
+    assert captured["events"] is event_bus
     assert captured["admission_source"] == "hive_legacy_dag"
 
     owned, _ = _queued_run(source="hive_legacy_dag")

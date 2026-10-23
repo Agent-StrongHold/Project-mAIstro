@@ -331,15 +331,9 @@ def main() -> int:
         )
         return 1
     items = sum(1 for line in text.splitlines() if _ITEM_LINE.match(line))
-    authority_note = (
-        "db authority: the file is generated documentation"
-        if authority.get("authority") == "db"
-        else "markdown authority: the file is hand-maintained"
-    )
     print(
         f"OK: {items} backlog items parse, every status, gap marker and citation resolves, "
-        f"and every terminal item outside the legacy set carries closure evidence "
-        f"({authority_note}, revision {authority.get('revision', 0)})"
+        "and every terminal item outside the legacy set carries closure evidence"
     )
     return 0
 
