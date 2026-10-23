@@ -58,6 +58,17 @@ REACHABILITY_BASELINE = ROOT / "quality" / "reachability-baseline.json"
 REACHABILITY_DISPOSITIONS = ROOT / "quality" / "reachability-dispositions.json"
 _PROVENANCE_SOURCE = ROOT / "scripts" / "ratchet_provenance.py"
 RATCHET = "model-egress"
+
+#: Bounded analyzer implementation manifest (#319). Call-site detection
+#: delegates to check_direct_effects.analyze_source and the module census is
+#: check-reachability's collector, so both delegated files belong to this
+#: gate's implementation identity -- hashing only this file would miss an edit
+#: to the analyzer that actually classifies the call sites.
+ANALYZER_MANIFEST = (
+    "scripts/check-model-egress.py",
+    "scripts/check_direct_effects.py",
+    "scripts/check-reachability.py",
+)
 # v2: physical call-site detection with the reachability join (#1089). v1 was
 # the module-level endpoint-text + any-.post heuristic that recorded
 # maistro_server.api.chat_completions without a physical call.
@@ -74,7 +85,18 @@ METRIC_DEFINITION_VERSION = "2"
 #: compatibility helpers moved into the legacy_dag_node adapter; #56:
 #: llm_summarize's model HTTP moved into the approved llm_gateway Provider).
 CANDIDATE_MIGRATIONS: dict[str, str] = {
+    # Reviewed move #1 (#835): graph_runner's compatibility helpers moved into
+    # the legacy_dag_node adapter. Runtime proof that the moved call still
+    # executes through shipped composition (real Container, production
+    # execute_dag resolver): packages/hive-conductor/backend/tests/
+    # test_legacy_dag_node_container_composition.py (#1083).
     "services.legacy_dag_node": "services.graph_runner",
+    # Reviewed move #2 (m1/56): llm_summarize retired onto the governed
+    # gateway — operator-approved migration, predecessor pruned (#56).
+    # Runtime proof that the moved call still executes through shipped
+    # composition (real Container, production build_node_resolver):
+    # packages/maistro-core/tests/test_model_egress_container_composition.py
+    # (#1083).
     "maistro.capabilities.providers.llm_gateway": "maistro.graph.nodes.llm_summarize",
 }
 
@@ -157,6 +179,14 @@ def _provenance() -> ModuleType:
         del sys.modules[spec.name]
         raise
     return module
+
+
+def _tool_version(prov: ModuleType) -> str:
+    """Implementation identity of the analyzers that reached this verdict (#319)."""
+    version: str = prov.bundled_implementation_fingerprint(
+        Path(__file__).resolve().parents[1], ANALYZER_MANIFEST
+    )
+    return version
 
 
 def _load_reachability() -> object:
@@ -430,6 +460,7 @@ def main(argv: list[str] | None = None) -> int:
 
     prov = _provenance()
     try:
+        tool_version = _tool_version(prov)
         trusted_ref = prov.resolve_baseline(INVENTORY, root=ROOT)
         trusted_payload = trusted_ref.loads(default={"modules": []})
         trusted = _modules(trusted_payload)
@@ -470,6 +501,7 @@ def main(argv: list[str] | None = None) -> int:
             ratchet=RATCHET,
             baseline=trusted_ref,
             tool="python ast (direct-effect census)",
+            tool_version=tool_version,
             metric_definition_version=METRIC_DEFINITION_VERSION,
             old_value=f"{len(trusted)} recorded direct callers",
             new_value=f"{len(found)} physical model callers",

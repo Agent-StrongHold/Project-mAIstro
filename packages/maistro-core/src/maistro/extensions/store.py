@@ -385,6 +385,17 @@ class ExtensionStore(Protocol):
 
     async def records_in_state(self, state: ExtensionState) -> list[ExtensionInstallRecord]: ...
 
+    async def records_in_scope(self, scope: ExtensionScope) -> list[ExtensionInstallRecord]:
+        """Every record in the scope, any state — the operational-view seam
+        the health projections (#978) enumerate extensions from."""
+        ...
+
+    async def records_for(
+        self, scope: ExtensionScope, extension_id: str
+    ) -> list[ExtensionInstallRecord]:
+        """Every record of one extension in the scope, any state."""
+        ...
+
     async def append_transition(self, transition: ExtensionTransition) -> None: ...
 
     async def transitions_for(self, install_id: str) -> tuple[ExtensionTransition, ...]: ...
@@ -470,6 +481,24 @@ class InMemoryExtensionStore:
 
     async def records_in_state(self, state: ExtensionState) -> list[ExtensionInstallRecord]:
         return [record for record in self._records.values() if record.state is state]
+
+    async def records_in_scope(self, scope: ExtensionScope) -> list[ExtensionInstallRecord]:
+        return [
+            record
+            for record in self._records.values()
+            if record.org_id == scope.org_id and record.workspace_id == scope.workspace_id
+        ]
+
+    async def records_for(
+        self, scope: ExtensionScope, extension_id: str
+    ) -> list[ExtensionInstallRecord]:
+        return [
+            record
+            for record in self._records.values()
+            if record.org_id == scope.org_id
+            and record.workspace_id == scope.workspace_id
+            and record.extension_id == extension_id
+        ]
 
     async def append_transition(self, transition: ExtensionTransition) -> None:
         self._transitions.append(transition)

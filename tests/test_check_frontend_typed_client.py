@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import yaml
@@ -85,3 +87,53 @@ def test_ci_typed_client_ratchet_has_full_candidate_history() -> None:
     assert not {"ref", "path", "filter", "sparse-checkout"} & options.keys(), (
         "check the complete event candidate in the workspace, with its history"
     )
+
+
+def test_main_reaches_verdicts_through_the_bundled_identity(
+    gate, monkeypatch, tmp_path, capsys
+) -> None:
+    """#319: main() resolves the implementation identity before judging.
+
+    The frontend guards (sources present, generated types present) are
+    satisfied against a synthetic tree, the scan is substituted, and the fake
+    provenance namespace carries bundled_implementation_fingerprint like the
+    real one — so the identity resolves inside the trusted-state try block
+    and both a clean pass and an unauthorized-debt fail reach their verdict.
+    """
+    frontend = tmp_path / "src"
+    frontend.mkdir()
+    types_gen = tmp_path / "types.gen.ts"
+    types_gen.write_text("export type Nothing = never;\n", encoding="utf-8")
+    monkeypatch.setattr(gate, "FRONTEND", frontend)
+    monkeypatch.setattr(gate, "TYPES_GEN", types_gen)
+    baseline = tmp_path / "frontend-typed-client-baseline.json"
+    baseline.write_text(json.dumps({"tolerated": {}}), encoding="utf-8")
+    monkeypatch.setattr(gate, "BASELINE", baseline)
+    trusted = SimpleNamespace(
+        base_sha="0" * 40,
+        absent_at_base=False,
+        loads=lambda default=None: {"tolerated": {}},
+    )
+    provenance = SimpleNamespace(
+        RatchetProvenanceError=RuntimeError,
+        resolve_baseline=lambda *_a, **_k: trusted,
+        require_measurement=lambda *_a, **_k: None,
+        require_metric_version=lambda *_a, **_k: None,
+        load_authorizations=lambda *_a, **_k: {},
+        head_sha=lambda *_a: "c" * 40,
+        Provenance=lambda **_k: SimpleNamespace(render=lambda: "fixture provenance"),
+        bundled_implementation_fingerprint=lambda *_a, **_k: "bundled-sha256:fake",
+    )
+    monkeypatch.setattr(gate, "_provenance", lambda: provenance)
+    monkeypatch.setattr(sys, "argv", ["check-frontend-typed-client.py"])
+
+    monkeypatch.setattr(gate, "collect_violations", lambda: ([], 4))
+    assert gate.main() == 0
+    out = capsys.readouterr().out
+    assert "fixture provenance" in out
+    assert "ok: 0 raw fetch and 0 hand-typed declaration(s) tolerated, none new" in out
+
+    violation = gate.Violation("raw_fetch", "src/pages/Dashboard.tsx", 51, "", "raw call")
+    monkeypatch.setattr(gate, "collect_violations", lambda: ([violation], 4))
+    assert gate.main() == 1
+    assert "NEW frontend typed-client debt" in capsys.readouterr().err

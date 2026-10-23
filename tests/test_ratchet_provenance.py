@@ -12,15 +12,19 @@ import json
 import subprocess
 from collections.abc import Callable
 from pathlib import Path
+from typing import ClassVar
 
 import pytest
 from scripts.ratchet_provenance import (
     BASE_REV_ENV,
+    BUNDLED_FINGERPRINT_PREFIX,
     Baseline,
     Provenance,
     RatchetProvenanceError,
     SelfReferentialBaseline,
+    bundled_implementation_fingerprint,
     head_sha,
+    installed_distribution_version,
     load_authorizations,
     require_measurement,
     require_metric_version,
@@ -372,6 +376,7 @@ class TestTheProvenanceRecord:
             "ratchet": "wiring-reads",
             "baseline": baseline,
             "tool": "ast",
+            "tool_version": "bundled-sha256:" + "a" * 64,
             "metric_definition_version": "1",
             "old_value": "16 unread",
             "new_value": "17 unread",
@@ -391,6 +396,7 @@ class TestTheProvenanceRecord:
             "base_sha",
             "candidate_sha",
             "tool",
+            "tool_version",
             "metric_definition_version",
             "old_value",
             "new_value",
@@ -398,6 +404,49 @@ class TestTheProvenanceRecord:
         }
         assert record["base_sha"] == "a" * 40
         assert record["authorizations"] == ["#516 -- @owner"]
+        assert record["tool_version"] == "bundled-sha256:" + "a" * 64
+
+    def test_tool_version_is_required_not_optional(self) -> None:
+        """#319: no constructor may omit the implementation identity."""
+        baseline = Baseline(text="{}", origin="base", base_sha="a" * 40, path=Path("l.json"))
+
+        with pytest.raises(TypeError, match="tool_version"):
+            Provenance(  # type: ignore[call-arg]
+                ratchet="wiring-reads",
+                baseline=baseline,
+                tool="ast",
+                metric_definition_version="1",
+                old_value="16 unread",
+                new_value="17 unread",
+            )
+
+    @pytest.mark.parametrize("blank", ["", "   \t", None])
+    def test_a_blank_tool_version_is_refused_not_fallen_back_from(self, blank: str) -> None:
+        """A missing identity is a reporting failure, never an 'unknown'."""
+        baseline = Baseline(text="{}", origin="base", base_sha="a" * 40, path=Path("l.json"))
+
+        with pytest.raises(RatchetProvenanceError, match="tool_version"):
+            self._provenance(baseline, tool_version=blank)
+
+    def test_the_tool_version_renders_distinctly_from_the_metric_version(self) -> None:
+        """Two different questions: which implementation ran, which question v."""
+        baseline = Baseline(text="{}", origin="base", base_sha="a" * 40, path=Path("l.json"))
+        version = "bundled-sha256:" + "c" * 64
+
+        rendered = self._provenance(
+            baseline, tool_version=version, metric_definition_version="3"
+        ).render()
+
+        assert f"(tool version: {version})" in rendered
+        assert "metric v3" in rendered
+        assert rendered.index(f"(tool version: {version})") < rendered.index("metric v3")
+
+    def test_an_installed_distribution_identity_renders_the_same_way(self) -> None:
+        baseline = Baseline(text="{}", origin="base", base_sha="a" * 40, path=Path("l.json"))
+
+        rendered = self._provenance(baseline, tool="vulture", tool_version="2.16").render()
+
+        assert "(tool version: 2.16)" in rendered
 
     def test_a_worktree_verdict_says_it_is_not_a_monotonicity_check(self) -> None:
         """The reader has to be able to tell a real gate from a local run."""
@@ -414,6 +463,184 @@ class TestTheProvenanceRecord:
         baseline = Baseline(text=None, origin="base", base_sha="a" * 40, path=Path("l.json"))
 
         assert "nothing is tolerated yet" in self._provenance(baseline).render()
+
+
+class TestBundledImplementationFingerprint:
+    """#319: a bundled scanner's identity is the bytes it executes."""
+
+    @staticmethod
+    def _tree(root: Path) -> None:
+        (root / "scripts").mkdir(parents=True)
+        (root / "scripts" / "scanner.py").write_text("def scan(): return 1\n", encoding="utf-8")
+        (root / "scripts" / "helper.py").write_text("X = 2\n", encoding="utf-8")
+
+    def test_it_hashes_a_sorted_manifest_of_paths_and_bytes(self, tmp_path: Path) -> None:
+        self._tree(tmp_path)
+
+        fingerprint = bundled_implementation_fingerprint(
+            tmp_path, ("scripts/helper.py", "scripts/scanner.py")
+        )
+
+        assert fingerprint.startswith(BUNDLED_FINGERPRINT_PREFIX)
+        assert len(fingerprint) == len(BUNDLED_FINGERPRINT_PREFIX) + 64
+        assert fingerprint == bundled_implementation_fingerprint(
+            tmp_path, ("scripts/scanner.py", "scripts/helper.py")
+        )
+        # A repeated entry is the same manifest, not a different identity.
+        assert fingerprint == bundled_implementation_fingerprint(
+            tmp_path, ("scripts/scanner.py", "scripts/helper.py", "scripts/scanner.py")
+        )
+
+    def test_it_is_deterministic_across_root_paths(self, tmp_path: Path) -> None:
+        """The identity follows the source, not the checkout's location."""
+        first, second = tmp_path / "a", tmp_path / "deeply" / "nested" / "b"
+        for root in (first, second):
+            self._tree(root)
+
+        assert bundled_implementation_fingerprint(
+            first, ("scripts/scanner.py",)
+        ) == bundled_implementation_fingerprint(second, ("scripts/scanner.py",))
+
+    def test_it_changes_when_a_delegated_source_changes(self, tmp_path: Path) -> None:
+        """Hashing only the adapter would miss the analyzer that actually runs."""
+        self._tree(tmp_path)
+
+        before = bundled_implementation_fingerprint(
+            tmp_path, ("scripts/scanner.py", "scripts/helper.py")
+        )
+        (tmp_path / "scripts" / "helper.py").write_text("X = 3\n", encoding="utf-8")
+
+        after = bundled_implementation_fingerprint(
+            tmp_path, ("scripts/scanner.py", "scripts/helper.py")
+        )
+        assert before != after
+        # And the untouched-file-only identity did not move.
+        assert bundled_implementation_fingerprint(
+            tmp_path, ("scripts/scanner.py",)
+        ) == bundled_implementation_fingerprint(tmp_path, ("scripts/scanner.py",))
+
+    def test_length_framing_prevents_content_impersonating_a_manifest(self, tmp_path: Path) -> None:
+        """Two files split the same bytes differently: not one identity."""
+        (tmp_path / "a.py").write_text("xy", encoding="utf-8")
+        (tmp_path / "b.py").write_text("z", encoding="utf-8")
+        other = tmp_path / "other"
+        other.mkdir()
+        (other / "a.py").write_text("x", encoding="utf-8")
+        (other / "b.py").write_text("yz", encoding="utf-8")
+
+        assert bundled_implementation_fingerprint(tmp_path, ("a.py", "b.py")) != (
+            bundled_implementation_fingerprint(other, ("a.py", "b.py"))
+        )
+
+    def test_an_empty_manifest_is_refused(self, tmp_path: Path) -> None:
+        with pytest.raises(RatchetProvenanceError, match="no analyzer source files"):
+            bundled_implementation_fingerprint(tmp_path, ())
+
+    def test_a_missing_source_is_refused(self, tmp_path: Path) -> None:
+        with pytest.raises(RatchetProvenanceError, match=r"vanish\.py is missing"):
+            bundled_implementation_fingerprint(tmp_path, ("vanish.py",))
+
+    @pytest.mark.parametrize("escape", ["../outside.py", "/etc/passwd"])
+    def test_a_path_outside_the_root_is_refused(self, tmp_path: Path, escape: str) -> None:
+        with pytest.raises(RatchetProvenanceError, match="outside"):
+            bundled_implementation_fingerprint(tmp_path, (escape,))
+
+    @pytest.mark.skipif(
+        not hasattr(__import__("os"), "geteuid") or __import__("os").geteuid() == 0,
+        reason="permission bits are not enforced for root",
+    )
+    def test_an_unreadable_source_is_refused(self, tmp_path: Path) -> None:
+        locked = tmp_path / "locked.py"
+        locked.write_text("secret\n", encoding="utf-8")
+        locked.chmod(0o000)
+
+        try:
+            with pytest.raises(RatchetProvenanceError, match="could not be read"):
+                bundled_implementation_fingerprint(tmp_path, ("locked.py",))
+        finally:
+            locked.chmod(0o644)
+
+
+class TestInstalledDistributionVersion:
+    """#319: external analyzers are versioned by the interpreter that runs them."""
+
+    def test_it_reports_the_version_this_interpreter_actually_sees(self) -> None:
+        import importlib.metadata
+
+        version = installed_distribution_version("pytest")
+
+        assert version == importlib.metadata.version("pytest")
+        assert version.strip()
+
+    def test_a_missing_distribution_is_refused_not_defaulted(self) -> None:
+        with pytest.raises(RatchetProvenanceError, match="not installed in this interpreter"):
+            installed_distribution_version("definitely-not-an-installed-distribution-xyz")
+
+
+class TestEveryProductionConstructorWiresAToolVersion:
+    """The scout's map, made executable: all 22 constructors, no inference.
+
+    A new Provenance constructor that forgets ``tool_version`` fails the real
+    dataclass contract anyway; this witness catches the quieter regression --
+    an existing site dropping the wiring, or a file whose manifest names a
+    path that no longer exists.
+    """
+
+    CONSTRUCTORS: ClassVar[dict[str, int]] = {
+        "scripts/check-principal-identity.py": 1,
+        "scripts/check-frontend-typed-client.py": 1,
+        "scripts/check-route-permissions.py": 1,
+        "scripts/check-wiring-reads.py": 1,
+        "scripts/check-public-routes.py": 1,
+        "scripts/check-model-egress.py": 1,
+        "scripts/check-workspace-retirement.py": 1,
+        "scripts/check-execution-lifecycles.py": 1,
+        "scripts/check-radon-baseline.py": 1,
+        "scripts/check-vulture-baseline.py": 1,
+        "scripts/check-adr-status-language-provenance.py": 1,
+        "scripts/check-citation-status-provenance.py": 1,
+        "scripts/check-contract-markers-provenance.py": 1,
+        "scripts/check-enumerations-provenance.py": 1,
+        "scripts/check-lifecycle-provenance.py": 1,
+        "scripts/check-promotion-surface-provenance.py": 1,
+        "scripts/check-reachability-provenance.py": 1,
+        "scripts/check-reachability-dispositions-provenance.py": 1,
+        "scripts/check-shell-execution-provenance.py": 1,
+        "scripts/check_mutation_baseline.py": 3,
+    }
+
+    def test_every_constructor_passes_an_explicit_tool_version(self) -> None:
+        for relative, expected in self.CONSTRUCTORS.items():
+            source = (Path(__file__).resolve().parents[1] / relative).read_text(encoding="utf-8")
+            wired = source.count("tool_version=")
+            # Every site passes the resolved identity explicitly: no default,
+            # no metric-version reuse, no candidate_sha substitute.
+            assert wired >= expected, (
+                f"{relative}: expected {expected} Provenance call(s) wired with "
+                f"tool_version=, found {wired}"
+            )
+
+    def test_bundled_manifests_name_files_that_exist(self) -> None:
+        import re
+
+        root = Path(__file__).resolve().parents[1]
+        pattern = re.compile(r"^(?:SCHEDULER_|LEGACY_)?ANALYZER_MANIFEST = \(([^)]*)\)", re.M)
+        for relative in self.CONSTRUCTORS:
+            source = (root / relative).read_text(encoding="utf-8")
+            for block in pattern.findall(source):
+                for entry in re.findall(r'"([^"]+)"', block):
+                    assert (root / entry).is_file(), (
+                        f"{relative}: manifest names {entry}, which does not exist"
+                    )
+
+    def test_the_mutation_gate_never_attests_an_installed_cosmic_ray(self) -> None:
+        """It never executes Cosmic Ray; only its input format is cosmic-ray's."""
+        root = Path(__file__).resolve().parents[1]
+        source = (root / "scripts/check_mutation_baseline.py").read_text(encoding="utf-8")
+
+        assert "installed_distribution_version" not in source
+        assert "importlib.metadata" not in source
+        assert "cosmic-ray raw outcome input" in source  # input-format description kept
 
 
 def test_head_sha_reports_the_candidate_commit(repo: Path) -> None:

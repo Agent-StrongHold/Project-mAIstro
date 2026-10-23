@@ -1,0 +1,548 @@
+{
+  "schema_version": 1,
+  "legal": {
+    "unknown_license_action": "fail",
+    "copyleft_action": "review",
+    "copyleft_note": "A copyleft finding is surfaced for legal review. This automation does not decide compatibility or grant a license exception."
+  },
+  "coverage": [
+    "transitive-packages",
+    "extras",
+    "vendored-code",
+    "os-packages",
+    "fonts-and-assets",
+    "npm-trees"
+  ],
+  "dependency_classes": {
+    "runtime-distribution": {
+      "description": "Code and assets present in a final image or shipped frontend bundle.",
+      "evidence": "CycloneDX SBOM generated from the final filesystem or extracted bundle.",
+      "review_owner": "Procurement and Legal"
+    },
+    "build-only-tooling": {
+      "description": "Compilers, package managers, and build dependencies used only before the final stage.",
+      "evidence": "Multi-stage Dockerfile builder stages plus the lockfile or package manifest used by that stage.",
+      "review_owner": "Release Engineering"
+    },
+    "external-cli-invocation": {
+      "description": "Binaries or tools invoked through an external process boundary, including copied static CLIs.",
+      "evidence": "Dockerfile COPY --from sources and the source call site that invokes the CLI.",
+      "review_owner": "Security and Legal"
+    },
+    "source-only-development": {
+      "description": "Development and test dependencies retained in source manifests but not shipped by a final artifact.",
+      "evidence": "Root and package development extras, frontend devDependencies, and their lockfiles.",
+      "review_owner": "Engineering"
+    }
+  },
+  "surfaces": [
+    {
+      "id": "maistro-engine",
+      "kind": "final-image",
+      "classification": "runtime-distribution",
+      "source": "Dockerfile",
+      "required": true
+    },
+    {
+      "id": "hive-conductor",
+      "kind": "final-image",
+      "classification": "runtime-distribution",
+      "source": "packages/hive-conductor/Dockerfile",
+      "required": true
+    },
+    {
+      "id": "maistro-engine-research",
+      "kind": "final-image",
+      "classification": "runtime-distribution",
+      "source": "Dockerfile.research",
+      "required": true
+    },
+    {
+      "id": "maistro-rsi-runner",
+      "kind": "final-image",
+      "classification": "runtime-distribution",
+      "source": "Dockerfile.rsi-runner",
+      "required": true
+    },
+    {
+      "id": "hive-conductor-frontend-bundle",
+      "kind": "frontend-bundle",
+      "classification": "runtime-distribution",
+      "source": "packages/hive-conductor/frontend",
+      "artifact_path": "packages/hive-conductor/frontend/dist",
+      "asset_evidence": "final bundle files plus the npm tree that supplies fonts and static assets",
+      "required": true
+    },
+    {
+      "id": "canvas-frontend-bundle",
+      "kind": "frontend-bundle",
+      "classification": "runtime-distribution",
+      "source": "packages/maistro-canvas/frontend",
+      "artifact_path": "packages/maistro-canvas/frontend/dist",
+      "asset_evidence": "final bundle files plus the npm tree that supplies fonts and static assets",
+      "required": true
+    },
+    {
+      "id": "hive-conductor-npm-tree",
+      "kind": "npm-tree",
+      "classification": "source-only-development",
+      "source": "packages/hive-conductor/frontend/package-lock.json",
+      "required": true
+    },
+    {
+      "id": "canvas-npm-tree",
+      "kind": "npm-tree",
+      "classification": "source-only-development",
+      "source": "packages/maistro-canvas/frontend/package-lock.json",
+      "required": true
+    },
+    {
+      "id": "sbx-template",
+      "kind": "operator-final-image",
+      "classification": "runtime-distribution",
+      "source": "deploy/sbx/template/Dockerfile",
+      "required": false
+    },
+    {
+      "id": "sbx-tests",
+      "kind": "operator-final-image",
+      "classification": "runtime-distribution",
+      "source": "deploy/sbx/template/Dockerfile.tests",
+      "required": false
+    }
+  ],
+  "evidence_classes": {
+    "build-only-tooling": [
+      "Dockerfile builder stages",
+      "packages/hive-conductor/frontend/package.json devDependencies",
+      "packages/maistro-canvas/frontend/package.json devDependencies"
+    ],
+    "external-cli-invocation": [
+      "Dockerfile COPY --from=docker:27-cli",
+      "Dockerfile.research COPY --from=docker:27-cli",
+      "packages/maistro-core/src/maistro/tools/git.py",
+      "packages/maistro-core/src/maistro/tools/sandbox.py"
+    ],
+    "source-only-development": [
+      "pyproject.toml [project.optional-dependencies].dev",
+      "requirements-dev-tools.txt",
+      "packages/hive-conductor/frontend/package.json devDependencies",
+      "packages/maistro-canvas/frontend/package.json devDependencies"
+    ]
+  },
+  "reviewed_resolutions": [
+    {
+      "identity": "pkg:npm/hive-conductor-ui@0.1.0",
+      "license": "Apache-2.0",
+      "reason": "This private frontend is first-party source in this Apache-2.0 repository; its package metadata omits the inherited license.",
+      "owner": "Engineering and Legal",
+      "reviewed_on": "2026-02-01"
+    },
+    {
+      "identity": "pkg:npm/canvas-studio-poc@0.0.0",
+      "license": "Apache-2.0",
+      "reason": "This private frontend is first-party source in this Apache-2.0 repository; its package metadata omits the inherited license.",
+      "owner": "Engineering and Legal",
+      "reviewed_on": "2026-02-01"
+    },
+    {
+      "identity": "pkg:pypi/aiosqlite@*",
+      "license": "MIT",
+      "reason": "Wheel METADATA carries no machine-readable license field; the reviewed classifier evidence (OSI Approved :: MIT License) from the installed distribution supplies it.",
+      "owner": "Engineering and Legal",
+      "reviewed_on": "2026-10-18"
+    },
+    {
+      "identity": "pkg:pypi/annotated-types@*",
+      "license": "MIT",
+      "reason": "Wheel METADATA carries no machine-readable license field; the reviewed classifier evidence (OSI Approved :: MIT License) from the installed distribution supplies it.",
+      "owner": "Engineering and Legal",
+      "reviewed_on": "2026-10-18"
+    },
+    {
+      "identity": "pkg:pypi/browser-use@*",
+      "license": "MIT",
+      "reason": "Wheel METADATA carries no license metadata; the upstream PyPI record's classifier (OSI Approved :: MIT License) supplies it.",
+      "owner": "Engineering and Legal",
+      "reviewed_on": "2026-10-18"
+    },
+    {
+      "identity": "pkg:pypi/bubus@*",
+      "license": "MIT",
+      "reason": "Wheel METADATA carries no license metadata; the upstream PyPI record's classifier (OSI Approved :: MIT License) supplies it.",
+      "owner": "Engineering and Legal",
+      "reviewed_on": "2026-10-18"
+    },
+    {
+      "identity": "pkg:pypi/colorama@*",
+      "license": "BSD-3-Clause",
+      "reason": "Wheel METADATA carries no machine-readable license field; the reviewed classifier evidence (OSI Approved :: BSD License) from the installed distribution supplies it.",
+      "owner": "Engineering and Legal",
+      "reviewed_on": "2026-10-18"
+    },
+    {
+      "identity": "pkg:pypi/docutils@*",
+      "license": "Public Domain",
+      "reason": "Wheel METADATA carries no machine-readable license field; the reviewed classifier evidence (License :: Public Domain) from the installed distribution supplies it. Docutils additionally grants BSD-2-Clause and GPL-2.0-or-later options in its COPYING document; distribution under the public-domain grant is the reviewed choice.",
+      "owner": "Engineering and Legal",
+      "reviewed_on": "2026-10-18"
+    },
+    {
+      "identity": "pkg:pypi/ed25519-blake2b-fork@*",
+      "license": "MIT",
+      "reason": "Wheel METADATA carries no machine-readable license field; the reviewed classifier evidence (OSI Approved :: MIT License) from the installed distribution supplies it.",
+      "owner": "Engineering and Legal",
+      "reviewed_on": "2026-10-18"
+    },
+    {
+      "identity": "pkg:pypi/editables@*",
+      "license": "MIT",
+      "reason": "Wheel METADATA carries no license metadata; the upstream PyPI record's classifier (OSI Approved :: MIT License) supplies it.",
+      "owner": "Engineering and Legal",
+      "reviewed_on": "2026-10-18"
+    },
+    {
+      "identity": "pkg:pypi/exceptiongroup@*",
+      "license": "MIT",
+      "reason": "Wheel METADATA carries no machine-readable license field; the reviewed classifier evidence (OSI Approved :: MIT License) from the installed distribution supplies it.",
+      "owner": "Engineering and Legal",
+      "reviewed_on": "2026-10-18"
+    },
+    {
+      "identity": "pkg:pypi/jinja2@*",
+      "license": "BSD-3-Clause",
+      "reason": "Wheel METADATA carries no machine-readable license field; the reviewed classifier evidence (OSI Approved :: BSD License) from the installed distribution supplies it.",
+      "owner": "Engineering and Legal",
+      "reviewed_on": "2026-10-18"
+    },
+    {
+      "identity": "pkg:pypi/lsprotocol@*",
+      "license": "MIT",
+      "reason": "Wheel METADATA carries no machine-readable license field; the reviewed classifier evidence (OSI Approved :: MIT License) from the installed distribution supplies it.",
+      "owner": "Engineering and Legal",
+      "reviewed_on": "2026-10-18"
+    },
+    {
+      "identity": "pkg:pypi/markdown-it-py@*",
+      "license": "MIT",
+      "reason": "Wheel METADATA carries no machine-readable license field; the reviewed classifier evidence (OSI Approved :: MIT License) from the installed distribution supplies it.",
+      "owner": "Engineering and Legal",
+      "reviewed_on": "2026-10-18"
+    },
+    {
+      "identity": "pkg:pypi/packaging@*",
+      "license": "Apache-2.0 OR BSD-2-Clause",
+      "reason": "Wheel METADATA carries no machine-readable license field; packaging is dual-licensed Apache-2.0 OR BSD-2-Clause upstream and the reviewed classifier evidence (OSI Approved :: Apache Software License) is consistent with that grant.",
+      "owner": "Engineering and Legal",
+      "reviewed_on": "2026-10-18"
+    },
+    {
+      "identity": "pkg:pypi/pathspec@*",
+      "license": "MPL-2.0",
+      "reason": "Wheel METADATA carries no machine-readable license field; the reviewed classifier evidence (OSI Approved :: Mozilla Public License 2.0) from the installed distribution supplies it. MPL-2.0 is weak copyleft and is surfaced for legal review by this record.",
+      "owner": "Engineering and Legal",
+      "reviewed_on": "2026-10-18"
+    },
+    {
+      "identity": "pkg:pypi/prompt-toolkit@*",
+      "license": "BSD-3-Clause",
+      "reason": "Wheel METADATA carries no machine-readable license field; the reviewed classifier evidence (OSI Approved :: BSD License) from the installed distribution supplies it.",
+      "owner": "Engineering and Legal",
+      "reviewed_on": "2026-10-18"
+    },
+    {
+      "identity": "pkg:pypi/py-sr25519-bindings@*",
+      "license": "Apache-2.0",
+      "reason": "Wheel METADATA carries no machine-readable license field; the reviewed classifier evidence (OSI Approved :: Apache Software License) from the installed distribution supplies it.",
+      "owner": "Engineering and Legal",
+      "reviewed_on": "2026-10-18"
+    },
+    {
+      "identity": "pkg:pypi/pytoniq-core-fork@*",
+      "license": "NOASSERTION",
+      "reason": "Neither the installed wheel nor the upstream PyPI record publishes any license metadata for this fork. The original pytoniq project is MIT, but the fork's right to rely on that grant has not been reviewed; NOASSERTION keeps the gap visible to Legal instead of inheriting an unreviewed claim.",
+      "owner": "Legal",
+      "reviewed_on": "2026-10-18"
+    },
+    {
+      "identity": "pkg:pypi/trove-classifiers@*",
+      "license": "Apache-2.0",
+      "reason": "Wheel METADATA carries no license metadata; the upstream PyPI record's classifier (OSI Approved :: Apache Software License) supplies it.",
+      "owner": "Engineering and Legal",
+      "reviewed_on": "2026-10-18"
+    },
+    {
+      "identity": "pkg:pypi/wcwidth@0.7.0",
+      "license": "MIT",
+      "reason": "Wheel METADATA declares License-Expression: MIT for this reviewed version.",
+      "owner": "Engineering and Legal",
+      "reviewed_on": "2026-10-18"
+    },
+    {
+      "identity": "pkg:pypi/wcwidth@0.9.2",
+      "license": "MIT",
+      "reason": "Wheel METADATA declares License-Expression: MIT for this reviewed version; the 0.9.2 wheel omits the field in the format Syft reads.",
+      "owner": "Engineering and Legal",
+      "reviewed_on": "2026-10-18"
+    },
+    {
+      "identity": "pkg:pypi/wcwidth@0.9.3",
+      "license": "MIT",
+      "reason": "Reviewed for the 0.9.3 wheel that the maistro-engine-research and hive-conductor images ship: METADATA carries the classifier OSI Approved :: MIT License and the wheel's licenses/LICENSE file is the MIT text. Bound to this version so a later, unreviewed release of wcwidth needs its own review instead of inheriting this one.",
+      "owner": "Engineering and Legal",
+      "reviewed_on": "2026-10-20"
+    },
+    {
+      "identity": "pkg:pypi/x25519@*",
+      "license": "Public Domain",
+      "reason": "The 0.0.2 wheel's METADATA declares License: UNKNOWN, which is missing metadata rather than a licence; the trove classifier License :: Public Domain is the operative licence evidence and no LICENSE file ships in the wheel. The reviewed resolution is what makes the missing metadata acceptable.",
+      "owner": "Engineering and Legal",
+      "reviewed_on": "2026-10-20"
+    },
+    {
+      "identity": "pkg:pypi/yattag@*",
+      "license": "LGPL-2.1-or-later",
+      "reason": "Wheel METADATA carries no machine-readable license field; the reviewed classifier evidence (OSI Approved :: GNU Library or Lesser General Public License) from the installed distribution supplies it. LGPL is copyleft and is surfaced for legal review by this record.",
+      "owner": "Engineering and Legal",
+      "reviewed_on": "2026-10-18"
+    },
+    {
+      "identity": "pkg:cargo/zbus@*",
+      "license": "MPL-2.0",
+      "reason": "zbus is MPL-2.0 upstream; recorded here, more specifically than the uv-binary class resolution, so this crate surfaces as copyleft for legal review rather than being covered by the class record.",
+      "owner": "Engineering and Legal",
+      "reviewed_on": "2026-10-18"
+    },
+    {
+      "identity": "pkg:cargo/zbus_macros@*",
+      "license": "MPL-2.0",
+      "reason": "zbus_macros is MPL-2.0 upstream; recorded here, more specifically than the uv-binary class resolution, so this crate surfaces as copyleft for legal review.",
+      "owner": "Engineering and Legal",
+      "reviewed_on": "2026-10-18"
+    },
+    {
+      "identity": "pkg:cargo/zbus_names@*",
+      "license": "MPL-2.0",
+      "reason": "zbus_names is MPL-2.0 upstream; recorded here, more specifically than the uv-binary class resolution, so this crate surfaces as copyleft for legal review.",
+      "owner": "Engineering and Legal",
+      "reviewed_on": "2026-10-18"
+    },
+    {
+      "identity": "pkg:cargo/secret-service@*",
+      "license": "MPL-2.0",
+      "reason": "secret-service is MPL-2.0 upstream; recorded here, more specifically than the uv-binary class resolution, so this crate surfaces as copyleft for legal review.",
+      "owner": "Engineering and Legal",
+      "reviewed_on": "2026-10-18"
+    },
+    {
+      "identity": "pkg:cargo/priority-queue@*",
+      "license": "MPL-2.0",
+      "reason": "priority-queue is MPL-2.0 upstream; recorded here, more specifically than the uv-binary class resolution, so this crate surfaces as copyleft for legal review.",
+      "owner": "Engineering and Legal",
+      "reviewed_on": "2026-10-18"
+    },
+    {
+      "identity": "pkg:cargo/*",
+      "license": "NOASSERTION",
+      "reason": "These crate identities are recovered by binary cataloging of the digest-pinned uv tool (ghcr.io/astral-sh/uv:0.12.21, pinned in quality/image-pins.json); the binary carries no per-crate license fields. The distributed work is uv itself, published by Astral under MIT OR Apache-2.0, and per-crate licenses are reviewable in uv's upstream Cargo.lock. Known MPL-2.0 crates in the tree carry their own more-specific resolutions so copyleft stays visible.",
+      "owner": "Release Engineering and Legal",
+      "reviewed_on": "2026-10-18"
+    },
+    {
+      "identity": "pkg:golang/filippo.io/age@*",
+      "license": "BSD-3-Clause",
+      "reason": "The static age binary copied into the images is BSD-3-Clause upstream; binary cataloging recovers the module identity but not the license.",
+      "owner": "Security and Legal",
+      "reviewed_on": "2026-10-18"
+    },
+    {
+      "identity": "pkg:golang/filippo.io/edwards25519@*",
+      "license": "BSD-3-Clause",
+      "reason": "Module statically linked into the age binary; BSD-3-Clause upstream.",
+      "owner": "Security and Legal",
+      "reviewed_on": "2026-10-18"
+    },
+    {
+      "identity": "pkg:golang/filippo.io/nistec@*",
+      "license": "BSD-3-Clause",
+      "reason": "Module statically linked into the age binary; BSD-3-Clause upstream.",
+      "owner": "Security and Legal",
+      "reviewed_on": "2026-10-18"
+    },
+    {
+      "identity": "pkg:golang/filippo.io/hpke@*",
+      "license": "MIT",
+      "reason": "Module statically linked into the age binary; MIT upstream.",
+      "owner": "Security and Legal",
+      "reviewed_on": "2026-10-18"
+    },
+    {
+      "identity": "pkg:golang/golang.org/x/crypto@*",
+      "license": "BSD-3-Clause",
+      "reason": "Go x-repo module statically linked into the age binary; the Go project's BSD-3-Clause license applies.",
+      "owner": "Security and Legal",
+      "reviewed_on": "2026-10-18"
+    },
+    {
+      "identity": "pkg:golang/golang.org/x/sys@*",
+      "license": "BSD-3-Clause",
+      "reason": "Go x-repo module statically linked into the age binary; the Go project's BSD-3-Clause license applies.",
+      "owner": "Security and Legal",
+      "reviewed_on": "2026-10-18"
+    },
+    {
+      "identity": "pkg:golang/golang.org/x/term@*",
+      "license": "BSD-3-Clause",
+      "reason": "Go x-repo module statically linked into the age binary; the Go project's BSD-3-Clause license applies.",
+      "owner": "Security and Legal",
+      "reviewed_on": "2026-10-18"
+    },
+    {
+      "identity": "pkg:golang/github.com/docker/cli/*",
+      "license": "Apache-2.0",
+      "reason": "The docker CLI copied via Dockerfile COPY --from=docker:27-cli is Apache-2.0 upstream; binary cataloging recovers the module identity but not the license.",
+      "owner": "Security and Legal",
+      "reviewed_on": "2026-10-18"
+    },
+    {
+      "identity": "pkg:golang/*",
+      "license": "NOASSERTION",
+      "reason": "These module identities are recovered by binary cataloging of the Go toolchain shipped inside the sbx sandbox template base (docker-ce, docker-ce-cli, docker-compose-plugin, docker-buildx-plugin from Docker's apt repository, pinned by the template's digest-pinned base image); binaries carry no per-module license fields. The dominant upstream licenses are Apache-2.0 (docker/containerd/kubernetes ecosystem) and BSD-3-Clause (golang.org/x modules); per-module licenses are reviewable in each component's upstream go.mod tree, and the shipped deb packages themselves carry their own more-specific resolutions below.",
+      "owner": "Release Engineering and Legal",
+      "reviewed_on": "2026-10-18"
+    },
+    {
+      "identity": "pkg:deb/ubuntu/docker-ce@*",
+      "license": "Apache-2.0",
+      "reason": "Docker Engine is Apache-2.0 upstream; the Ubuntu deb from Docker's apt repository publishes no license in the format Syft reads from dpkg copyright data.",
+      "owner": "Security and Legal",
+      "reviewed_on": "2026-10-18"
+    },
+    {
+      "identity": "pkg:deb/ubuntu/docker-ce-cli@*",
+      "license": "Apache-2.0",
+      "reason": "The Docker CLI is Apache-2.0 upstream; the Ubuntu deb publishes no license in the format Syft reads from dpkg copyright data.",
+      "owner": "Security and Legal",
+      "reviewed_on": "2026-10-18"
+    },
+    {
+      "identity": "pkg:deb/ubuntu/docker-compose-plugin@*",
+      "license": "Apache-2.0",
+      "reason": "Docker Compose is Apache-2.0 upstream; the Ubuntu deb publishes no license in the format Syft reads from dpkg copyright data.",
+      "owner": "Security and Legal",
+      "reviewed_on": "2026-10-18"
+    },
+    {
+      "identity": "pkg:deb/ubuntu/docker-buildx-plugin@*",
+      "license": "Apache-2.0",
+      "reason": "Docker Buildx is Apache-2.0 upstream; the Ubuntu deb publishes no license in the format Syft reads from dpkg copyright data.",
+      "owner": "Security and Legal",
+      "reviewed_on": "2026-10-18"
+    },
+    {
+      "identity": "pkg:npm/web-streams-*",
+      "license": "MIT",
+      "reason": "The web-streams-polyfill/ponyfill family is MIT upstream; the unversioned identities Syft derives from the sandbox template's embedded node tree carry no package metadata.",
+      "owner": "Engineering and Legal",
+      "reviewed_on": "2026-10-18"
+    },
+    {
+      "identity": "pkg:npm/%40babel/*",
+      "license": "MIT",
+      "reason": "Internal @babel-scoped packages (eslint configs, plugins and test fixtures) from the sandbox template's embedded node tree; the Babel monorepo is MIT licensed and publishes these packages without individual license files.",
+      "owner": "Engineering and Legal",
+      "reviewed_on": "2026-10-18"
+    },
+    {
+      "identity": "pkg:npm/cli-table@*",
+      "license": "MIT",
+      "reason": "cli-table is MIT upstream; the identity Syft derives from the sandbox template's embedded node tree carries no package metadata.",
+      "owner": "Engineering and Legal",
+      "reviewed_on": "2026-10-18"
+    },
+    {
+      "identity": "pkg:maven/jrt-fs/*",
+      "license": "GPL-2.0-with-classpath-exception",
+      "reason": "The jrt-fs artifact is part of the OpenJDK runtime embedded in the sandbox template base image; OpenJDK is GPL-2.0 with the Classpath Exception 2.0. This is copyleft and is surfaced for legal review by this record; the classpath exception is the reviewed basis for aggregation with the rest of the image.",
+      "owner": "Legal",
+      "reviewed_on": "2026-10-18"
+    },
+    {
+      "identity": "pkg:maven/org.debian.security.UpdateCertificates/ca-certificates-java",
+      "license": "GPL-2.0-with-classpath-exception",
+      "reason": "Debian's ca-certificates-java helper is GPL-2.0 with the Classpath Exception 2.0. This is copyleft and is surfaced for legal review by this record.",
+      "owner": "Legal",
+      "reviewed_on": "2026-10-18"
+    },
+    {
+      "identity": "ubuntu@*",
+      "license": "NOASSERTION",
+      "reason": "Distribution identity pseudo-component emitted for the sbx template's Ubuntu base release; no single license covers an Ubuntu release. Every installed package is individually cataloged with the license Syft reads from its copyright data, so this record only resolves the identity row itself.",
+      "owner": "Release Engineering",
+      "reviewed_on": "2026-10-18"
+    },
+    {
+      "identity": "cli@*",
+      "license": "PSF-2.0",
+      "reason": "distlib's Windows script-launcher stub, vendored inside pip's wheel in every image; distlib is Python Software Foundation licensed. Cataloged as a PE binary without license metadata.",
+      "owner": "Engineering and Legal",
+      "reviewed_on": "2026-10-18"
+    },
+    {
+      "identity": "cli-*",
+      "license": "PSF-2.0",
+      "reason": "distlib's Windows script-launcher stubs (per-architecture variants), vendored inside pip's wheel; distlib is Python Software Foundation licensed.",
+      "owner": "Engineering and Legal",
+      "reviewed_on": "2026-10-18"
+    },
+    {
+      "identity": "gui@*",
+      "license": "PSF-2.0",
+      "reason": "distlib's Windows GUI-launcher stub, vendored inside pip's wheel; distlib is Python Software Foundation licensed.",
+      "owner": "Engineering and Legal",
+      "reviewed_on": "2026-10-18"
+    },
+    {
+      "identity": "gui-*",
+      "license": "PSF-2.0",
+      "reason": "distlib's Windows GUI-launcher stubs (per-architecture variants), vendored inside pip's wheel; distlib is Python Software Foundation licensed.",
+      "owner": "Engineering and Legal",
+      "reviewed_on": "2026-10-18"
+    },
+    {
+      "identity": "Simple Launcher@*",
+      "license": "PSF-2.0",
+      "reason": "PE version-resource name of distlib's t32/t64/w32/w64 launcher executables, vendored inside pip's wheel; distlib is Python Software Foundation licensed.",
+      "owner": "Engineering and Legal",
+      "reviewed_on": "2026-10-18"
+    },
+    {
+      "identity": "pkg:generic/python@*",
+      "license": "PSF-2.0",
+      "reason": "The CPython interpreter identity component; CPython is distributed under the Python Software Foundation License.",
+      "owner": "Engineering and Legal",
+      "reviewed_on": "2026-10-18"
+    },
+    {
+      "identity": "pkg:generic/node@*",
+      "license": "MIT",
+      "reason": "The Node.js runtime shipped in the research image; the Node.js project is MIT licensed (bundled third-party modules retain their own notices and are separately cataloged).",
+      "owner": "Engineering and Legal",
+      "reviewed_on": "2026-10-18"
+    },
+    {
+      "identity": "debian@*",
+      "license": "NOASSERTION",
+      "reason": "Distribution identity pseudo-component emitted for the base OS release; no single license covers a Debian release. Every installed Debian package is individually cataloged with the license Syft reads from its copyright file, so this record only resolves the identity row itself.",
+      "owner": "Release Engineering",
+      "reviewed_on": "2026-10-18"
+    },
+    {
+      "identity": "pkg:github/*",
+      "license": "NOASSERTION",
+      "reason": "GitHub Actions workflow references parsed out of .github files inside dependency source trees scanned for the npm-tree surface. They are build-time workflow pointers, not distributed code or binaries; the referenced upstream actions (actions/checkout, actions/setup-node, coverallsapp/github-action) are MIT licensed.",
+      "owner": "Engineering",
+      "reviewed_on": "2026-10-18"
+    }
+  ]
+}
