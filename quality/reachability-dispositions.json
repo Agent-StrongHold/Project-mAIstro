@@ -10,7 +10,6 @@
       "modules": [
         "@flat/hive-conductor/services.canonical_corpus",
         "@flat/hive-conductor/services.chatbot_integration",
-        "@flat/hive-conductor/services.entra_entitlements",
         "@flat/hive-conductor/services.eval_bootstrap",
         "@flat/hive-conductor/services.onboard_db",
         "@flat/hive-conductor/services.pipeline_orchestrator",
@@ -259,6 +258,9 @@
       "rationale": "ADR-085 provider-side quota verification. #718 wired the recording half (maistro.quota.recorder, and the ambient/reconciliation modules it composes) into the canonical Invocation terminalization, so those left this disposition; #1204 wired the SQLite usage-log snapshot behind the sqlite backend of create_container. The explicit verifier half (verify.py + the per-provider verifiers) still has no production caller and remains owed.",
       "root": "the Invocation cost path (#56)",
       "modules": [
+        "maistro.quota.ambient",
+        "maistro.quota.reconciliation",
+        "maistro.quota.recorder",
         "maistro.quota.verifiers",
         "maistro.quota.verifiers.mistral",
         "maistro.quota.verifiers.openrouter",

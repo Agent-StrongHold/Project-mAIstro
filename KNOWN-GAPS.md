@@ -236,20 +236,62 @@ citing the module paths as evidence the controls operate (#346):
 
 Tracking: each needs a wiring design, not just a call site — see #346.
 
+### Generic Workspace backlog control plane (#82)
+
+The M3 exit condition for #82 required the generic Workspace
+BacklogItem/service/claim/campaign path to be either durably cut over or
+explicitly release-deferred. It is release-deferred: `git grep BacklogItem`
+over `packages/` returns nothing, and Hive's `/v1/work-items` routes are a
+suggest/draft surface only. Work intake today is Hive tasks and canonical
+Runs; there is no generic backlog work-source, claim transaction, or campaign
+notion anywhere in the shipped services.
+
+Tracking: #82 needs the control-plane design (durable BacklogItem store,
+claim semantics, campaign source) before any cutover; do not add routes
+ahead of the store.
+
+### Adaptive-Workspace user-model memory is specified but not reachable
+
+`maistro.memory.user_model` (#1047) ships the owner-only, audited fact
+ground: `promote_evidence`, revisions, corrections, tombstones, and the
+`UserModelStore` protocol, with 30 passing tests. None of it has a production
+call path — nothing in the conductor process or maistro-server constructs a
+`UserModelStore`, and the Dreaming/consolidation producer that would feed it
+does not exist yet either. Same shape as the security controls above:
+correct policy, no wiring, declared rather than counted as shipped.
+
+Tracking: wire the user model when the Dreaming/consolidation cadence
+(#1046) produces eligible evidence and a same-user retrieval gate exists;
+do not invent a producer for it sooner.
+
+### Entra JIT provisioning gates admission only
+
+#492's group-gated first-login provisioning is wired into the Entra login
+path (see `services/entra_jit.py`): an unlinked identity is admitted only
+through explicitly configured eligible groups, decided on a fresh Graph
+membership read, and receives only the mapped permissions. What it does not
+do is reconcile: an already-provisioned account keeps its grants after group
+removal, because permission rows carry no provenance distinguishing
+SSO-managed grants from local/manual ones, and silent revocation could
+delete grants an operator made on purpose.
+
+Tracking: ship entitlement reconciliation that records SSO-managed
+provenance per permission and reconciles on login (`SSOManagedEntitlements`
+is the seam) before advertising group removal as revocation.
+
 ## Release-Notes Text
 
 The following text is intended to be copied verbatim into the release notes.
 
 > v1.0.0 ships with an in-memory task queue, so a restart loses queued and
-> active tasks. Memory write-authority enforcement (ADR-057) is active at every
-> memory store boundary — deployments run agent-managed by default and can set
-> `system_managed` to strip agent write authority — but read-path gating,
-> hybrid per-block tags and denial events are not wired, and no product-level
-> E2E proves a denied write yet. Canvas jobs require an external runner; Canvas publish/export
-> is governed at `/v2/canvas` (png/webp/jpg/html/pptx where configured; pdf/svg
-> are explicitly unsupported), while print-on-demand and external destinations
-> are not implemented. The mounted Canvas data routes are unconfigured in the
-> default shipped service and return `503`. Design Studio can discover
-> resources and select artifact modes, but visual generation and
-> editing/preview still need wired providers. Conductor can run in degraded
-> mode when optional services are unavailable.
+> active tasks. Canvas jobs require an external runner; Canvas publish and
+> some export formats are not implemented. The mounted Canvas data routes are
+> unconfigured in the default shipped service and return `503`. Design Studio
+> can discover resources and select artifact modes, but visual generation,
+> editing/preview, and publish/export are not available. Conductor can run in
+> degraded mode when optional services are unavailable, and API-wide HTTP
+> content negotiation from ADR-076 is deferred to v1.1. The generic Workspace
+> backlog control plane (#82) is release-deferred: work intake is tasks and
+> canonical Runs only. Entra group-gated JIT provisioning (#492) gates
+> account creation only; removing a user from an eligible group does not
+> revoke an already-provisioned account's permissions.

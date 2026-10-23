@@ -22,9 +22,7 @@ export function WorkspaceTabs() {
     selectWorkspace,
     createWorkspace,
     archiveWorkspace,
-    refresh,
     ready,
-    status,
   } = useWorkspaces();
   const [creating, setCreating] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
@@ -171,38 +169,25 @@ export function WorkspaceTabs() {
           it one keyboard-operable group. */}
       <fieldset className="workspace-persona-picker" disabled={busy}>
         <legend>Persona</legend>
-        {templatesPending ? (
-          <div data-testid="persona-skeleton" aria-busy="true">
-            <div aria-hidden="true" style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-              {[0, 1].map((i) => (
-                <div key={i} className="skeleton workspace-persona-skeleton-row" />
-              ))}
-            </div>
-            <span className="workspace-persona-none">Loading personas&#8230;</span>
-          </div>
-        ) : (
-          <>
-            {personaTemplates.length === 0 && (
-              <span className="workspace-persona-none">No personas available</span>
-            )}
-            {personaTemplates.map((p) => (
-              <label
-                key={p.id}
-                className={`workspace-persona-option${p.id === personaTemplateId ? " selected" : ""}`}
-              >
-                <input
-                  type="radio"
-                  name="persona_template"
-                  value={p.id}
-                  checked={p.id === personaTemplateId}
-                  onChange={() => setPersonaTemplateId(p.id)}
-                />
-                <span className="workspace-persona-name">{p.display_name}</span>
-                <span className="workspace-persona-tagline">{p.tagline}</span>
-              </label>
-            ))}
-          </>
+        {personaTemplates.length === 0 && (
+          <span className="workspace-persona-none">No personas available</span>
         )}
+        {personaTemplates.map((p) => (
+          <label
+            key={p.id}
+            className={`workspace-persona-option${p.id === personaTemplateId ? " selected" : ""}`}
+          >
+            <input
+              type="radio"
+              name="persona_template"
+              value={p.id}
+              checked={p.id === personaTemplateId}
+              onChange={() => setPersonaTemplateId(p.id)}
+            />
+            <span className="workspace-persona-name">{p.display_name}</span>
+            <span className="workspace-persona-tagline">{p.tagline}</span>
+          </label>
+        ))}
       </fieldset>
       <div className="workspace-tab-new-actions">
         <button type="submit" disabled={busy || !name.trim() || !personaTemplateId}>
@@ -255,7 +240,7 @@ export function WorkspaceTabs() {
           <button
             type="button"
             className="workspace-empty-create"
-            onClick={openCreate}
+            onClick={() => setCreating(true)}
           >
             Create workspace
           </button>
@@ -265,7 +250,7 @@ export function WorkspaceTabs() {
         <button
           type="button"
           className="workspace-tab workspace-tab-add"
-          onClick={() => (creating ? setCreating(false) : openCreate())}
+          onClick={() => setCreating((v) => !v)}
           aria-label="New workspace"
           aria-expanded={creating}
           title="New workspace"

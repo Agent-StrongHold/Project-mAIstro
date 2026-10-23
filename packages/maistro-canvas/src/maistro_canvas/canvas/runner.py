@@ -47,7 +47,6 @@ class CanvasJobRunner:
         poll_interval: float = 1.0,
         reap_interval: float = 30.0,
         max_execution_seconds: float = 1800.0,
-        retry_backoff: RetryBackoff = DEFAULT_RETRY_BACKOFF,
     ) -> None:
         if max_execution_seconds <= 0:
             raise ValueError("max_execution_seconds must be positive")
@@ -58,7 +57,6 @@ class CanvasJobRunner:
         self._poll_interval = poll_interval
         self._reap_interval = reap_interval
         self._max_execution_seconds = max_execution_seconds
-        self._retry_backoff = retry_backoff
         self._running = False
 
     async def start(self) -> None:

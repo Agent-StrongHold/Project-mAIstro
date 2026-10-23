@@ -54,7 +54,6 @@ from maistro_turing.bridge import (
 from maistro_turing.runtime import TuringActor, TuringChatSession, TuringConfig
 from maistro_turing.self_model import ALL_FACETS, Mood
 
-from .config import replica_count
 from .security import TuringInboundSecurity, TuringSecurityContext
 
 SELF_ID = "turing"
@@ -345,24 +344,19 @@ class TuringState:
         config: TuringConfig | None = None,
         *,
         inbound_security: TuringInboundSecurity | None = None,
-        state_store: SelfModelStateStore | None = None,
-        session_registry: ChatSessionRegistry | None = None,
     ) -> None:
         self._lock = threading.RLock()
         self.config = config or TuringConfig()
         if inbound_security is None:
             raise RuntimeError("canonical Turing security is required for backend startup")
         self.inbound_security = inbound_security
-        # Refuse a multi-replica declaration over the divergent process-local
-        # store at composition time, even when TuringState is constructed
-        # directly rather than through reset_state (#859).
-        _guard_replica_authority(state_store)
-        # An injected store is selected by identity, not truthiness (#859): an
-        # empty mapping-backed shared store is falsey but is still the
-        # deployment's chosen authority — replacing it here would silently
-        # downgrade durability to the process-local default.
-        self.state_store: SelfModelStateStore = (
-            state_store if state_store is not None else InProcessSelfModelStateStore()
+
+        self._mood = Mood(
+            self_id=SELF_ID,
+            valence=0.2,
+            arousal=0.5,
+            focus=0.6,
+            last_tick_at=_now(),
         )
         self.sessions = session_registry if session_registry is not None else ChatSessionRegistry()
 
@@ -389,6 +383,31 @@ class TuringState:
         execution = current_execution_context()
         if not execution.run_id:
             raise RuntimeError("canonical Run context is required for runtime security audit")
+
+        # Model/tool output is produced inside a canonical Run. Resolve every
+        # audit identity from that Run rather than attributing it to Turing.
+        from .execution import get_execution_plane
+
+        run = await get_execution_plane().run_store.get_run(execution.run_id)
+        if run is None or not run.actor_principal_id:
+            raise RuntimeError("canonical Run actor is unavailable for security audit")
+
+        await self.inbound_security.audit_verdict(
+            verdict,  # type: ignore[arg-type]
+            content,
+            boundary=boundary,
+            context=TuringSecurityContext(
+                principal=str(run.actor_principal_id),
+                route="runtime",
+                action=f"turing.{boundary}",
+                workspace_id=run.workspace_id,
+                project_id=run.project_id,
+                run_id=run.run_id,
+                invocation_id=execution.invocation_id,
+            ),
+        )
+
+    # ----------------------------------------------------------- self-model --
 
         # Model/tool output is produced inside a canonical Run. Resolve every
         # audit identity from that Run rather than attributing it to Turing.
@@ -586,36 +605,12 @@ def get_state() -> TuringState:
     return _state
 
 
-def _guard_replica_authority(state_store: SelfModelStateStore | None) -> None:
-    """Refuse a multi-replica declaration without an explicitly shared store.
-
-    The in-process store is authoritative for exactly one process. Merely
-    injecting a store object is not sufficient: an explicitly injected local
-    store (or a custom store that does not declare its replica semantics) would
-    still let replicas diverge. Fail composition, not correctness (#859).
-    """
-    count = replica_count()
-    if count > 1 and not getattr(state_store, "is_shared_across_replicas", False):
-        raise RuntimeError(
-            f"TURING_REPLICA_COUNT={count} declares a multi-replica Turing "
-            "deployment, but the composed SelfModelStateStore is not declared "
-            "shared across replicas; the self-model authority could diverge. "
-            "Compose a shared store implementation to enable replicas."
-        )
-
-
 def reset_state(
     config: TuringConfig | None = None,
     *,
     inbound_security: TuringInboundSecurity,
-    state_store: SelfModelStateStore | None = None,
 ) -> TuringState:
-    """Replace the singleton — used by tests and the composition root."""
+    """Replace the singleton — used by tests for isolation."""
     global _state
-    _guard_replica_authority(state_store)
-    _state = TuringState(
-        config=config,
-        inbound_security=inbound_security,
-        state_store=state_store,
-    )
+    _state = TuringState(config=config, inbound_security=inbound_security)
     return _state

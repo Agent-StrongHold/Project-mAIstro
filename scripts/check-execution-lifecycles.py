@@ -37,11 +37,6 @@ _PROVENANCE_SOURCE = ROOT / "scripts" / "ratchet_provenance.py"
 RATCHET = "execution-lifecycles"
 METRIC_DEFINITION_VERSION = "3"
 
-#: Bounded analyzer implementation manifest (#319): the lifecycle discovery is
-#: this file's own AST scan, so its implementation identity is the actual
-#: bytes of exactly this file.
-ANALYZER_MANIFEST = ("scripts/check-execution-lifecycles.py",)
-
 CLASSIFICATIONS = frozenset({"CANONICAL", "DOMAIN", "PROJECTION", "RECEIPT", "CONVERGE"})
 _ENUM_BASES = frozenset({"Enum", "StrEnum", "IntEnum", "IntFlag", "Flag"})
 _TYPING_FORMS = frozenset({"Literal", "Optional", "Union", "Annotated"})
