@@ -136,10 +136,6 @@ class EngineService:
             "agent_port": type(self._agent_port).__name__ if self._agent_port is not None else None,
             "task_backend": type(self._backend).__name__ if self._backend is not None else None,
             "bridge_configured": self._configured,
-            # Stub/read-only surfaces may remain usable without execution authority.
-            "graph_execution_available": (
-                self.run_store is not None and self.graph_run_store is not None
-            ),
         }
 
     def _record_degradation(self, component: str, exc: BaseException) -> None:
@@ -215,17 +211,6 @@ class EngineService:
         """
         container = getattr(self._agent_port, "container", None)
         return getattr(container, "run_reader", None)
-
-    @property
-    def goal_reader(self) -> Any:
-        """The core Container's Workspace-scoped Goal reader, or None (#1572).
-
-        Goal inspection uses this principal-carrying seam rather than reading
-        the raw Goal store, just as Run inspection uses ``run_reader``.  It is
-        absent only when this process has no embedded core Container.
-        """
-        container = getattr(self._agent_port, "container", None)
-        return getattr(container, "goal_reader", None)
 
     @property
     def graph_run_store(self) -> Any:
@@ -492,7 +477,6 @@ class EngineService:
                 executor=governed_executor,
                 admitter=self.task_admitter,
                 run_store=self.run_store,
-                idempotency_store=self.task_idempotency,
             )
             try:
                 await backend.start()

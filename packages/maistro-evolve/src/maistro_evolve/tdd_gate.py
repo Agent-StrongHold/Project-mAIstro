@@ -163,8 +163,6 @@ def run_test_selection(
     *,
     timeout: int = 600,
     extra_args: tuple[str, ...] = (),
-    interpreter: str | None = None,
-    execute: Callable[[list[str]], tuple[int, str]] | None = None,
 ) -> tuple[int, str]:
     """Run pytest on specific files/selectors in ``repo_dir``; return (exit_code, output).
 
@@ -204,7 +202,16 @@ def run_test_selection(
     env = candidate_env()
     try:
         proc = subprocess.run(
-            argv,
+            [
+                sys.executable,
+                "-m",
+                "pytest",
+                "-q",
+                "-p",
+                "no:cacheprovider",
+                *extra_args,
+                *selectors,
+            ],
             cwd=str(repo_dir),
             capture_output=True,
             text=True,

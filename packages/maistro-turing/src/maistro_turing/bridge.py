@@ -20,8 +20,6 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from maistro.security._types import WardenVerdict
 from maistro_turing.sync_runner import DEFAULT_SYNC_TIMEOUT_SECONDS, SyncLoopRunner
-from maistro_turing.tiers import clamp_weight
-from maistro_turing.types import MemoryTier as TierBoundsTier
 
 if TYPE_CHECKING:
     # maistro-core does not ship a py.typed marker yet, so these imports are

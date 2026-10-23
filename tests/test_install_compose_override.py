@@ -40,10 +40,9 @@ ROOT = Path(__file__).resolve().parents[1]
 INSTALL_SH = ROOT / "install.sh"
 
 #: compose_files and everything it (or show_compose_plan) calls, lifted
-#: verbatim from install.sh. ensure_python is not in this list: it moved to
-#: scripts/bootstrap-runtime.sh (#1821), which the harness sources below so
-#: the probe test still exercises the real resolver.
+#: verbatim from install.sh.
 _FUNCTIONS = (
+    "ensure_python",
     "delivery_mode",
     "effective_delivery_mode",
     "override_file_is_safe",
@@ -78,7 +77,6 @@ PLAN_DIR="${{MAISTRO_INSTALL_PLAN_DIR:-.maistro-install}}"
 MAISTRO_IMAGE_TAG="test-tag"
 COMPOSE_CMD=("docker" "compose")
 source <(sed -n {extract!r} {install})
-source "{ROOT / "scripts" / "bootstrap-runtime.sh"}"
 """
 
 
@@ -466,9 +464,6 @@ def test_the_documented_invocation_renders_the_real_stack(tmp_path: Path) -> Non
             "DB_PASSWORD": "test-db-password",
             "LITELLM_MASTER_KEY": "sk-test-litellm-key",
             "API_KEYS": '["conductor:test-token"]',
-            # #1095 made this a required interpolation too; `[]` is the
-            # documented no-admin-keys value install.sh writes for new installs.
-            "ADMIN_API_KEYS": "[]",
             # Both spellings are required interpolations now: ROUTER_API_KEY
             # for the engine, MAISTRO_ROUTER_API_KEY for the Conductor bridge
             # (#402 made it mandatory -- an empty key means the bridge never

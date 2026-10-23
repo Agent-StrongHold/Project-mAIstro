@@ -255,16 +255,13 @@ async def schedule_history(request: Request, limit: int = 100) -> list[dict]:
         if row.workspace_id and row.workspace_id in allowed
     }
     events: list[dict] = []
-    for action in sorted(_FIRE_AUDIT_ACTIONS):
-        count = 0
-        async for record in audit_entries_view(request, action=action):
-            if record.get("target") not in visible:
-                continue
-            events.append(record)
-            count += 1
-            if count >= limit:
-                break
-    events.sort(key=lambda e: (str(e.get("created_at", "")), e["id"]), reverse=True)
+    for record in await audit_entries_view():
+        if record.get("action") not in _FIRE_AUDIT_ACTIONS:
+            continue
+        if record.get("target") not in visible:
+            continue
+        events.append(record)
+    events.sort(key=lambda e: str(e.get("created_at", "")), reverse=True)
     return events[:limit]
 
 
@@ -477,11 +474,8 @@ async def run_schedule(
         fire_id = _check_fire_id(raw) if raw and raw.strip() else None
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    # The authenticated caller is provenance, not authority (#1201): the fire
-    # still runs on the schedule actor's canonical scope, but the Run names
-    # who asked for it, separately from the actor it consumes.
     try:
-        await fire_now(schedule_id, fire_id=fire_id, requester_id=_actor(request))
+        await fire_now(schedule_id, fire_id=fire_id)
     except ScheduleNotFireable as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ScheduleAdmissionUnavailable as exc:

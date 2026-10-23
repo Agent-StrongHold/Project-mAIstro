@@ -77,15 +77,6 @@ catch is already covered by the suites actually *running* in CI. What counts
 catch, and nothing else does, is a suite silently dropping to zero collected.
 Rationale in full in the script's module docstring.
 
-### Narrowing a run with `--suite`
-
-`--suite <path>` checks one recipe exactly as named, or — when the path is a
-parent directory — every recipe beneath it: `--suite packages/hive-conductor/tests`
-reaches the nested `tests/e2e` suite (its backend suite is a sibling at
-`backend/tests`, not a child, so it is not included). An argument that matches
-no recipe, exactly or as a directory prefix, is an error rather than a silent
-no-op — a typo must never narrow the check to zero suites.
-
 ### Unique-evidence report (#396)
 
 The same run also prints a **unique-evidence report**: how many of the
@@ -139,10 +130,10 @@ file per change, alongside the delta itself.
 
 | Suite | Runs in CI |
 |---|---|
-| `packages/maistro-core/tests` | `quality.yml` `coverage (no services)` (#654) |
+| `packages/maistro-core/tests` | `ci.yml` |
 | `packages/maistro-registry/tests` | `registry.yml` |
-| `packages/maistro-evolve/tests` | `quality.yml` `coverage (no services)` (#654) |
-| `packages/maistro-rsi/tests` | `quality.yml` `coverage (no services)` (#654) |
+| `packages/maistro-evolve/tests` | `ci.yml` |
+| `packages/maistro-rsi/tests` | `ci.yml` |
 | `packages/maistro-server/tests` | `ci.yml` |
 | `packages/maistro-turing/tests` | `ci.yml` |
 | `packages/maistro-design/tests` | `ci.yml` |

@@ -519,21 +519,10 @@ async def create_workspace(
     return view
 
 
-async def set_member(
-    workspace_id: str,
-    *,
-    user_id: str,
-    role: WorkspaceRole,
-    principal_id: str | None = None,
-) -> Workspace:
+async def set_member(workspace_id: str, *, user_id: str, role: WorkspaceRole) -> Workspace:
     async with hold_hitl_membership_mutation():
         store = await _ensure_ready()
-        await store.set_membership(
-            workspace_id,
-            user_id=user_id,
-            role=_canonical_role(role),
-            principal_id=principal_id,
-        )
+        await store.set_membership(workspace_id, user_id=user_id, role=_canonical_role(role))
         await _sync_fallback_recovery_evidence(store, workspace_id)
         view = await get_view(workspace_id)
         if view is None:
@@ -541,12 +530,10 @@ async def set_member(
         return view
 
 
-async def remove_member(
-    workspace_id: str, *, user_id: str, principal_id: str | None = None
-) -> Workspace:
+async def remove_member(workspace_id: str, *, user_id: str) -> Workspace:
     async with hold_hitl_membership_mutation():
         store = await _ensure_ready()
-        await store.remove_membership(workspace_id, user_id=user_id, principal_id=principal_id)
+        await store.remove_membership(workspace_id, user_id=user_id)
         await _sync_fallback_recovery_evidence(store, workspace_id)
         view = await get_view(workspace_id)
         if view is None:
@@ -577,10 +564,10 @@ async def update_presentation(
     return view
 
 
-async def delete_workspace(workspace_id: str, *, principal_id: str | None = None) -> None:
+async def delete_workspace(workspace_id: str) -> None:
     async with hold_hitl_membership_mutation():
         store = await _ensure_ready()
-        await store.delete(workspace_id, principal_id=principal_id)
+        await store.delete(workspace_id)
         _presentations.pop(workspace_id, None)
         if _is_durable_store(store):
             # The journal entry is what keeps a legacy mirror row for this id from

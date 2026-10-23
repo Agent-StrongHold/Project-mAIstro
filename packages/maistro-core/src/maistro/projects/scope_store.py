@@ -132,13 +132,27 @@ class ProjectScopeStore(Protocol):
 
         ...
 
-    async def merge_membership(
-        self,
-        membership: ProjectMembership,
-        *,
-        principal_id: str | None = None,
-    ) -> ProjectMembership:
+    async def merge_membership(self, membership: ProjectMembership) -> ProjectMembership:
         """Merge a delegated re-grant into the canonical row atomically.
+
+        The read that decides what to preserve and the write that stores it
+        are one critical section: when a row already exists for
+        `(project_id, principal_id)`, its `membership_id`, `created_at`,
+        `denies`, `role`, `grants` and `delegable_grants` are preserved and
+        the caller's `grants`/`delegable_grants` are unioned in; when none
+        exists, `membership` becomes the row. An owner's revocation that
+        commits first therefore leaves no row to preserve, so the merge
+        cannot resurrect a revoked principal carrying stale grants -- the
+        failure mode of reading `memberships_for` and then writing through
+        `set_membership` as two separate calls (#1148).
+        """
+
+        ...
+
+    async def memberships_for(
+        self, project_id: str, *, principal_id: str | None = None
+    ) -> list[ProjectMembership]:
+        """List memberships at one Project, optionally for one principal."""
 
         The read that decides what to preserve and the write that stores it
         are one critical section: when a row already exists for
@@ -384,66 +398,6 @@ class InMemoryProjectScopeStore:
             raise ProjectScopeDenied("Project not found")
         await require_project_view(project, workspace_store, principal_id)
 
-    async def _require_project_administer(self, project: Project, principal_id: str) -> None:
-        from maistro.workspaces.store_boundary import (
-            is_blank_principal,
-            require_project_administer,
-        )
-
-        workspace_store = self._workspace_store
-        if workspace_store is None:
-            raise ProjectScopeDenied("Project not found")
-        if is_blank_principal(principal_id):
-            raise ProjectScopeDenied("Project not found")
-        await require_project_administer(project, workspace_store, principal_id)
-
-    async def _resolve_for_authorization(
-        self, project_id: str, principal_id: str | None
-    ) -> Project:
-        """Resolve the Project, collapsing not-found into the scoped denial.
-
-        The store boundary must not be an existence oracle: with an acting
-        principal, an unknown Project and one in a foreign Workspace are
-        indistinguishable, so both surface as the same `ProjectScopeDenied`.
-        """
-        try:
-            return self._require(project_id)
-        except ProjectNotFound:
-            if principal_id is None:
-                raise
-            raise ProjectScopeDenied("Project not found") from None
-
-    async def _authorize_view(self, project_id: str, principal_id: str | None) -> Project:
-        """Resolve the Project and enforce VIEW when a principal is supplied."""
-        project = await self._resolve_for_authorization(project_id, principal_id)
-        if principal_id is not None:
-            await self._require_project_view(project, principal_id)
-        return project
-
-    async def _authorize_administer(self, project_id: str, principal_id: str | None) -> Project:
-        """Resolve the Project and enforce ADMINISTER when a principal is supplied."""
-        project = await self._resolve_for_authorization(project_id, principal_id)
-        if principal_id is not None:
-            await self._require_project_administer(project, principal_id)
-        return project
-
-    async def _authorize_membership_write(
-        self, membership: ProjectMembership, principal_id: str | None, *, replacement: bool
-    ) -> Project:
-        project = await self._authorize_view(membership.project_id, principal_id)
-        if principal_id is not None and self._workspace_store is not None:
-            from maistro.projects.authorization import authorize_membership_write
-
-            await authorize_membership_write(
-                self,
-                project=project,
-                workspace_store=self._workspace_store,
-                membership=membership,
-                principal_id=principal_id,
-                replacement=replacement,
-            )
-        return project
-
     async def get(self, project_id: str, *, principal_id: str | None = None) -> Project | None:
         """Return a detached Project snapshot by ID when present."""
 
@@ -533,7 +487,9 @@ class InMemoryProjectScopeStore:
     ) -> Project:
         """Replace a Project's defaults and advance its update timestamp."""
 
-        project = await self._authorize_administer(project_id, principal_id)
+        project = self._require(project_id)
+        if principal_id is not None:
+            await self._require_project_view(project, principal_id)
         updated = project.model_copy(
             deep=True,
             update={"defaults": dict(defaults), "updated_at": datetime.now(UTC)},
@@ -600,12 +556,7 @@ class InMemoryProjectScopeStore:
         self._memberships[key] = updated
         return updated.model_copy(deep=True)
 
-    async def merge_membership(
-        self,
-        membership: ProjectMembership,
-        *,
-        principal_id: str | None = None,
-    ) -> ProjectMembership:
+    async def merge_membership(self, membership: ProjectMembership) -> ProjectMembership:
         """Merge-or-create the canonical membership in one atomic step.
 
         The in-memory store runs on one event loop and this method has no
@@ -613,9 +564,7 @@ class InMemoryProjectScopeStore:
         no other coroutine can interleave a `remove_membership` between the
         two the way it could against the API's read-then-write (#1148).
         """
-        project = await self._authorize_membership_write(
-            membership, principal_id, replacement=False
-        )
+        project = self._require(membership.project_id)
         if project.workspace_id != membership.workspace_id:
             raise ProjectIntegrityError("ProjectMembership Workspace does not match Project")
         key = (membership.project_id, membership.principal_id)

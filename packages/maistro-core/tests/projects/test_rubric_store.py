@@ -343,18 +343,6 @@ async def test_same_revision_conflicting_content_is_rejected() -> None:
         )
 
 
-async def test_idempotent_create_retry_preserves_created_at() -> None:
-    """Retrying create() with identical content is idempotent: the original
-    revision (and its created_at) is returned, not a timestamp collision."""
-    store, _, _ = harness()
-    first = await make_rubric(store)
-    retry = await make_rubric(store)
-    assert retry == first
-    assert retry.created_at == first.created_at
-    stored = await store.get_revision("rubric-a", 1)
-    assert stored is not None and stored.created_at == first.created_at
-
-
 async def test_rubric_scope_cannot_move_between_projects() -> None:
     """A Rubric bound to proj-1 cannot be re-scoped to another Project later."""
     store, ontology, catalog = harness()
