@@ -30,7 +30,20 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 from middleware.auth import resolve_principal
 from pydantic import BaseModel, ConfigDict, Field
-from services.workspace_authority import is_member, list_views_for_user
+from services.hitl_authorization import (
+    HITL_ANSWER,
+    HITL_CANCEL,
+    HITL_INSPECT,
+    HitlAuthorizationDenied,
+    authorize_project,
+    authorized_project_ids,
+)
+from services.request_principal import request_principal, require_actor_id
+from services.workspace_authority import (
+    hitl_membership_mutation_lock,
+    is_member,
+    list_workspace_ids_for_user,
+)
 
 from maistro.graph.durable_runs import (
     HitlAuthorization,
@@ -197,22 +210,6 @@ def _hitl_authorization(request: Request, workspace_ids: set[str]) -> HitlAuthor
     )
 
 
-def _request_user_id(request: Request) -> str:
-    user = getattr(request.state, "user", None) or {}
-    user_id = str(user.get("id") or user.get("username") or "")
-    if not user_id:
-        raise HTTPException(status_code=401, detail="Authentication required")
-    return user_id
-
-
-async def _require_workspace_access(request: Request, workspace_id: str) -> None:
-    if not await is_member(_request_user_id(request), workspace_id):
-        # Do not confirm that an out-of-scope Run exists. This matches the
-        # scoped DAG inspection door: missing and unauthorized ids are one
-        # answer, while membership remains the canonical authorization check.
-        raise HTTPException(status_code=404, detail="run not found")
-
-
 def _session_principal(request: Request) -> str:
     """The verified session principal behind this request, never "system".
 
@@ -318,33 +315,93 @@ async def list_pending_human_work(
     """
     user_id = _request_user_id(request)
 
+    # The canonical spine is resolved before any authorization-derived empty
+    # answer: a degraded spine is an unavailable capability, not an empty
+    # pending queue, so the fail-closed 503 must not depend on the caller's
+    # Workspace set. Resolving the handle touches no data — disclosure below
+    # is still bounded by Workspace membership and Project authority.
+    store = _store()
+
     # Workspace membership is the canonical visibility boundary for Run data,
     # not the coarse `dags.write` route permission. Resolve every Workspace the
     # principal may see; selecting one default Workspace would hide legitimate
     # work, while omitting this filter leaks every tenant's paused payload.
-    allowed_workspace_ids = {workspace.id for workspace in await list_views_for_user(user_id)}
+    allowed_workspace_ids = set(await list_workspace_ids_for_user(user_id))
     if not allowed_workspace_ids:
+        log_audit(
+            "hitl_authorization_denied",
+            _session_principal(request),
+            target=project_id or "pending",
+            detail={"target_class": "pending", "permission": HITL_INSPECT},
+            severity="warning",
+        )
         return []
 
-    store = _store()
     bounded_limit = max(1, min(limit, 200))
-    records: list[Any] = []
-    # Ask the durable store to apply Workspace scope before its page limit.
-    # Filtering a globally limited page would let another tenant's backlog
-    # hide this caller's pending work indefinitely.
+    items: list[PendingHumanWork] = []
+    # Three bounds compose here, and none subsumes another. Workspace
+    # membership is the security boundary for Run data and is applied by the
+    # store, before its page limit, so another tenant's backlog cannot hide
+    # this caller's pending work (#1240); the pause-kind projection behind
+    # `list_hitl_paused` is what makes human eligibility queryable before the
+    # limit, so a long machine-only prefix cannot hide real human work within
+    # it (#1109); and Project authority is resolved from canonical Workspace +
+    # Project state before any store query, so a client-supplied `project_id`
+    # only ever narrows within the authorized set — a selector, never a grant
+    # (#1110).
+    # The resolved Workspace-id set is a candidate page, not the disclosure
+    # decision: a membership revoked after `list_workspace_ids_for_user` but
+    # before a record's payload is read must not receive that payload, so each
+    # item-carrying record is revalidated against live canonical membership —
+    # the same discovery-mode predicate `list_hitl_due` applies for the expiry
+    # path, not a second, weaker check written here.
+    authorization = _hitl_authorization(request, allowed_workspace_ids)
     for workspace_id in sorted(allowed_workspace_ids):
-        remaining = bounded_limit - len(records)
-        if remaining <= 0:
-            break
-        records.extend(
-            await store.list_by_status(
-                RunStatus.PAUSED,
-                limit=remaining,
-                project_id=project_id,
-                workspace_id=workspace_id,
-            )
+        permitted_project_ids = await authorized_project_ids(
+            principal_id=user_id,
+            workspace_id=workspace_id,
+            project_id=project_id,
         )
-    return [item for record in records for item in _pending_items(record)]
+        if project_id is not None and not permitted_project_ids:
+            log_audit(
+                "hitl_authorization_denied",
+                _session_principal(request),
+                target=project_id,
+                detail={"target_class": "project", "permission": HITL_INSPECT},
+                severity="warning",
+            )
+        for authorized_project_id in permitted_project_ids:
+            await _collect_pending_items_for_scope(
+                store,
+                authorization,
+                workspace_id=workspace_id,
+                project_id=authorized_project_id,
+                items=items,
+                bounded_limit=bounded_limit,
+            )
+            if len(items) >= bounded_limit:
+                break
+        if len(items) >= bounded_limit:
+            break
+    return items[:bounded_limit]
+
+
+@router.get("/{run_id}/{node_id}")
+async def inspect_human_work(run_id: str, node_id: str, request: Request) -> PendingHumanWork:
+    """Inspect one pending node only after canonical scope authorization."""
+    record = await _authorized_record(request, run_id)
+    await _require_project_access(
+        request,
+        workspace_id=record.run.workspace_id,
+        project_id=record.run.project_id,
+        permission=HITL_INSPECT,
+    )
+    for item in _pending_items(record):
+        if item.node_id == node_id:
+            return item
+    # Missing, foreign, terminal, and non-HITL nodes share one refusal so this
+    # detail door cannot become an existence oracle.
+    raise HTTPException(status_code=404, detail="run not found")
 
 
 @router.post("/expire")
@@ -398,10 +455,15 @@ async def expire_human_work(request: Request, limit: int = 100) -> dict[str, Any
 async def cancel_human_work(run_id: str, node_id: str, request: Request) -> dict[str, Any]:
     """Request canonical cancellation of one durable human pause."""
     store = _store()
-    record = await store.get(run_id)
-    if record is None:
-        raise HTTPException(status_code=404, detail="run not found")
-    await _require_workspace_access(request, record.run.workspace_id)
+    record = await _authorized_record(request, run_id)
+    await _require_project_access(
+        request,
+        workspace_id=record.run.workspace_id,
+        project_id=record.run.project_id,
+        permission=HITL_CANCEL,
+        record=record,
+        node_id=node_id,
+    )
     try:
         updated = await store.cancel_hitl(
             run_id,
@@ -458,11 +520,6 @@ async def answer_human_work(
             status_code=422, detail=f"{_RESERVED_ANSWER_KEY!r} is reserved for execution state"
         )
 
-    store = _store()
-    record = await store.get(run_id)
-    if record is None:
-        raise HTTPException(status_code=404, detail="run not found")
-    await _require_workspace_access(request, record.run.workspace_id)
     if record.run.status is not RunStatus.PAUSED:
         raise HTTPException(
             status_code=409, detail=f"run is {record.run.status.value}, not paused on human input"

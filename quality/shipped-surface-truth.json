@@ -573,16 +573,6 @@
       "effect_owner": "maistro.runs.service.RunExecutionService.cancel_run (Run transition + physical Attempt cancellation)"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/dag_runs.py",
-      "method": "POST",
-      "route": "/{run_id}/cancel",
-      "handler": "cancel_run",
-      "disposition": "canonical",
-      "production_enabled": true,
-      "reason": "cancels a visible DAG run by delegating to RunExecutionService.cancel_run on the durable Run spine, preferring the projection's canonical_run_id mapping",
-      "effect_owner": "maistro.runs.service.RunExecutionService.cancel_run (Run transition + physical Attempt cancellation)"
-    },
-    {
       "source": "packages/hive-conductor/backend/routes/dags.py",
       "method": "DELETE",
       "route": "/{dag_id}",

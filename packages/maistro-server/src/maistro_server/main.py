@@ -44,8 +44,7 @@ from maistro.tasks.models import TaskCreate
 from maistro.tasks.progress_webhook import ProgressWebhookNotifier
 from maistro.tasks.queue import configure_task_queue, get_task_queue, reset_task_queue
 from maistro.tasks.runner import TaskRunner
-from maistro.tools.sandbox.server import cleanup_all_containers
-from maistro.types.config import AgentConfig, SecurityConfig
+from maistro.types.config import AgentConfig, ModelBindingConfig, SecurityConfig
 from maistro_server.api import (
     a2a,
     canvas,
@@ -311,23 +310,12 @@ def _agent_config(settings: Settings) -> AgentConfig:
         # config the Container is built from, or no deployment can ever
         # authorize one.
         security=_security_config(),
-    )
-
-
-def _security_config() -> SecurityConfig:
-    """The Sentinel grants, from `maistro.yaml`'s `security` section.
-
-    Read through the loaded YAML config like `_router_api_key` and
-    `_agents_dir`, because that is where an operator states them; a server
-    started without a YAML file gets the shipped defaults, which is the empty
-    fail-closed table (#1165).
-    """
-    yaml_config = settings_module.get_yaml_config()
-    if yaml_config is None:
-        return SecurityConfig()
-    return SecurityConfig(
-        permission_preset=yaml_config.security.permission_preset,
-        permissions=yaml_config.security.permissions,
+        # Same reasoning, for the canonical `model.chat` Binding authority
+        # (#1079): `bootstrap_model_bindings()` reads `AgentConfig.model_bindings`
+        # and authorizes nothing when it is empty, so an operator's
+        # `model_bindings:` YAML declarations must reach this config or every
+        # `llm.summarize` node refuses every Binding in production.
+        model_bindings=_model_bindings(),
     )
 
 
@@ -454,8 +442,9 @@ async def _build_container(settings: Settings, pg_pool: Any) -> tuple[Any, Model
         "dict[str, Agent]",
         {
             CONDUCTOR_AGENT_NAME: ConductorAgent(
-                warden=container.warden,
-                sentinel=container.sentinel,
+                governed_egress=governed_egress,
+                workspace_id=settings.workspace_id,
+                router=container.llm_router,
             )
         },
     )

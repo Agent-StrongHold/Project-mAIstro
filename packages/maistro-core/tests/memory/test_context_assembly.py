@@ -13,6 +13,8 @@ from maistro.memory.episodic.store import InMemoryEpisodicStore
 from maistro.memory.exposure import MemoryExposureMode
 from maistro.memory.outcomes import InMemoryOutcomeStore
 from maistro.memory.types import EpisodicMemory, MemoryScope, MemoryTier, Outcome
+from maistro.memory.working.manager import WorkingMemoryManager
+from maistro.persistence.sqlite_episodic import SqliteEpisodicStore
 from maistro.projects.store import InMemoryProjectStore
 from maistro.protocols.memory import EpisodicStore
 from maistro.types.agent import AgentIdentity
