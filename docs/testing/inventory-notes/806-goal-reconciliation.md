@@ -533,6 +533,59 @@ scheduler registration of `sweep_goal_leases`/`reconcile_goals`, and the
 work, disclosed above and at wiring time (`wiring.py` warns loudly that a
 PostgreSQL pool gets the in-memory twin).
 
+## 2026-10-23 round: develop-sync merge 652cf8e56 completed (no code change
+## in this lane; note delta still +107)
+
+The previously preserved develop-sync merge was completed in place. The
+single conflict was `.gitleaksignore`: both sides are legitimate per-commit
+fingerprints and both were kept — `28aec3787` (this lane's
+test_goal_reconciliation.py PlannedAdmission keyword, recorded in the
+2026-10-20 round) and `4b1284897` (develop #2174's live ownership-migration
+seed, spelling already fixed upstream; the fingerprint stays because the
+introducing branch commit is immutable history). No other file conflicted.
+Merged as `4b2984689`; the repaired boundary the lane tracks (goal committed
+with no wake fact) is untouched by the merge.
+
+Re-validation at the exact merged head `4b2984689`:
+
+- `uv sync --locked --extra dev`: clean; the merge changed neither
+  `uv.lock` nor `pyproject.toml`.
+- The no-wake-fact convergence was re-proven live on **both twins**, not
+  just through the pin test: a standalone experiment creates a Goal, calls
+  `recover()` (lists `g-1`), sweeps at +1h/+2h/+5h, and asserts exactly one
+  admission (`dec-live-exp` once, never duplicated) on `InMemoryGoalStore`
+  and on `SqliteGoalStore` over a real `aiosqlite` connection. The pin test
+  `TestBoundedSafetySweep::test_goal_committed_with_no_wake_fact_is_sweep_due`
+  plus the missed-wake and bounded-sweep siblings pass 6/6 across
+  `[memory]`/`[sqlite]`.
+- `pytest packages/maistro-core/tests/goals -W error`: 160 passed / 24
+  skipped — identical counts to the pre-merge round; all skips
+  Postgres-DSN-gated. `from maistro.goals.reconciliation import *` still
+  executes (21 exports, no phantom `GoalAlreadyClaimed`).
+- `ruff check .` clean; `ruff format --check .` 3483 files formatted.
+- Exact-debt-ledger with CI's exact arguments at the merged head:
+  `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'` exit 0 (1303 reviewed identities -> 1302 findings,
+  never_allowlist 0; base 652cf8e56, candidate 4b2984689);
+  `check-ratchet-provenance.py` exit 0 (0 lifecycle violations);
+  `check-shipped-surface-truth.py` complete; `check-suite-inventory.py`
+  21 suites match (34086 unique identities, 0 duplicate evidence — the
+  merge's #2174 tests are covered by develop's own baseline);
+  `check-backlog-consistency.py` ok.
+- Quality ledgers vs `origin/develop` (`git diff --numstat origin/develop
+  -- quality/`): additive only (ac-state-notes 17+0, durable-table-retention
+  48+0, vulture 0/1 deliberate identity fix) — no row loss through the
+  merge, verified per the numstat rule.
+- AC5 residual re-verified still true at the merged head: `EventWakeBridge`
+  is constructed nowhere under `packages/*/src` (library seam only), and
+  `canonical_recovery.py` (`packages/hive-conductor/backend/services/`)
+  still ticks its three halves without goal sweeps.
+
+Residual unchanged from the rounds above: production emitters for the five
+wake patterns, scheduler registration of `sweep_goal_leases`/
+`reconcile_goals`, and the #1823 intake-created-Goal crash point — all
+#805/#804/#1823 activation work, disclosed above and at wiring time.
+
 ## 2026-10-23 round: re-validation after the 1e6b0802 develop merge (no code
 ## change in this lane; note delta still +107)
 
