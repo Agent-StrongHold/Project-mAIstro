@@ -101,8 +101,12 @@ insert into audit_log (user_id, org_id) values ('default', 'default'), ('conduct
 -- A signed decision proof (ADR-073) signs user_id/org_id via
 -- canonical_audit_bytes, so the migration must leave this row byte-intact;
 -- readers resolve the legacy principal through principal_identity_mappings.
+-- The key id is an opaque fake: it starts with neither `key` nor any other
+-- credential keyword so the SAST scanner cannot read it as an API key (the
+-- original spelling tripped gitleaks' generic-api-key rule; see
+-- .gitleaksignore for the introducing commit's fingerprint).
 insert into audit_log (user_id, org_id, signature, signing_key_id, proof_type)
-values ('default', 'default', 'c2ln', 'key0123456789ab', 'Ed25519Signature2020');
+values ('default', 'default', 'c2ln', 'test-signer-068', 'Ed25519Signature2020');
 
 -- Task visibility is scoped by the authenticated principal (the API passes
 -- ``user_id=owner`` into every task read), so a task owned by the installer-era
