@@ -585,3 +585,45 @@ work — re-verified at this head (`EventWakeBridge` is still constructed
 only in tests; `canonical_recovery.py` still ticks exactly its three
 halves; the wake-pattern event names appear in shipped source only as the
 `WakeReason` enum values), disclosed above and at wiring time.
+
+## 2026-10-23 round: independent re-validation at 51d5f8758 (no code change
+## in this lane; note delta still +107)
+
+Re-derived every acceptance criterion and every prior verify finding at the
+exact head `51d5f8758` instead of trusting the prior round's claims:
+
+- Prior findings re-checked against production source, all still resolved:
+  never-scheduled-READY sweep-due in both twins (`store.py` `_DUE_GOALS_SQL`
+  `OR (awake_after IS NULL AND status = 'ready')` + `Goal.awake` in-memory
+  rule), pinned by `test_goal_committed_with_no_wake_fact_is_sweep_due`
+  executed on both fixtures; factual PG-fallback disclosure asserted by
+  `test_pg_pool_falls_back_to_memory_with_a_loud_warning`; star-import of
+  `maistro.goals.reconciliation` executes clean (21/21 `__all__` names
+  resolve, no phantom `GoalAlreadyClaimed`); the aiosqlite teardown warning
+  stays fixed.
+- Residuals re-derived as still accurate: `EventWakeBridge` has no
+  production construction site; `canonical_recovery.py` `_halves` ticks
+  exactly `abandoned_attempts`/`stranded_chat_admissions`/`parked_runs` —
+  no `sweep_goal_leases`/`reconcile_goals` registration (#805 activation);
+  #1823 intake-created-Goal crash point remains its own lane.
+- `pytest packages/maistro-core/tests/goals -W error`: 160 passed / 24
+  skipped (all skips Postgres-DSN-gated); the crash-boundary and wiring
+  pins re-run individually on both fixtures.
+- Gates at CI's exact arguments, all exit 0: `ruff check .`; `ruff format
+  --check .` (3480 files); `check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` (1303 reviewed -> 1302
+  findings, unclassified 0, never_allowlist 0); `check-ratchet-provenance.py`
+  (54 consumers); `check-shipped-surface-truth.py`; `check-suite-inventory.py`
+  (21 suites match); `check-test-duplicates.py`; `check-backlog-consistency.py`.
+- Ledger attribution vs `origin/develop`: develop advanced one commit past
+  this branch's merge base (`652cf8e5`, #2174), so the naive
+  `git diff --numstat origin/develop -- quality/` shows `49+13` /
+  `1+1` — develop's own rows, not row loss. This branch's delta from the
+  merge base `1e6b0802` is additive-only: `ac-state-notes 17+0`,
+  `durable-table-retention 48+0`, `vulture 0/1`. No commit in the merged
+  range closes #806.
+- Residual unchanged (see the previous round): production wake emitters,
+  scheduler registration, and the #1823 intake crash point remain
+  #805/#804/#1823 activation work; the GH006 merge-queue block is
+  GitHub-side. Branch still needs develop's `652cf8e5` sync on the next
+  non-green queue round.
