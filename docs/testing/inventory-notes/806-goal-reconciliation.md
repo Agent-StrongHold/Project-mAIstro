@@ -532,3 +532,56 @@ scheduler registration of `sweep_goal_leases`/`reconcile_goals`, and the
 #1823 intake-created-Goal crash point all remain #805/#804/#1823 activation
 work, disclosed above and at wiring time (`wiring.py` warns loudly that a
 PostgreSQL pool gets the in-memory twin).
+
+## 2026-10-23 round: re-validation after the 1e6b0802 develop merge (no code
+## change in this lane; note delta still +107)
+
+The branch merged origin/develop's `1e6b08025` (M2-A: governed MCP, skill
+import/Forge, and signed code loading on one supply-chain path) as
+`07bd4f0ac`. Re-validation at the exact merged head:
+
+- Goals-scope isolation: `git diff 89c7a7e8..07bd4f0ac --
+  packages/maistro-core/src/maistro/goals packages/maistro-core/tests/goals
+  docs/testing/inventory-notes/806-goal-reconciliation.md` is empty — the
+  merge is net-empty on this lane's paths (89c7a7e8 and 44d3f887, the two
+  previously verified heads, are both ancestors of 07bd4f0ac).
+- Prior verify-round findings re-checked in the merged tree, all still
+  resolved: the never-scheduled-READY sweep-due rule is present in both
+  twins (`reconciliation/store.py` `_DUE_GOALS_SQL` `OR (awake_after IS NULL
+  AND status = 'ready')` and the `Goal.awake`-based in-memory `due_goals`),
+  pinned by `test_goal_committed_with_no_wake_fact_is_sweep_due` (the
+  crash-boundary "after Goal commit before notification" case); the
+  `wire_goal_reconciliation` PostgreSQL disclosure stays factual (contrast
+  with #122, no false precedent claim), asserted by
+  `test_pg_pool_falls_back_to_memory_with_a_loud_warning`; no phantom
+  `GoalAlreadyClaimed` export (`from maistro.goals.reconciliation import *`
+  executes clean, every `__all__` name resolves); the aiosqlite teardown
+  warning stays fixed.
+- `pytest packages/maistro-core/tests/goals`: 160 passed / 24 skipped
+  (unchanged counts; all skips Postgres-DSN-gated), green under `-W error`;
+  the lane trio (`test_goal_container_wiring.py` +
+  `test_goal_reconciliation.py`): 107 passed.
+- `ruff check .` clean; `ruff format --check .` 3480 files formatted;
+  `check-suite-inventory.py` (full, CI's invocation) 21 suites match
+  (34056 unique identities, 0 duplicate evidence — develop's M2-A tests
+  are covered by develop's own baseline update); `check-test-duplicates.py`
+  ok (1702 files, 0 byte-identical groups).
+- Exact-debt-ledger with CI's exact arguments at the merged head:
+  `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'` exit 0 (1303 reviewed identities -> 1302 findings,
+  unclassified 0, never_allowlist 0; base 1e6b08025602, candidate
+  07bd4f0ac4e2); `check-ratchet-provenance.py` exit 0 (54 quality JSON
+  consumers with provenance); `check-shipped-surface-truth.py` complete;
+  `check-backlog-consistency.py` ok.
+- `git diff --numstat origin/develop -- quality/` at the merged head:
+  additive-only or strictly debt-reducing on every row (ac-state-notes
+  17+0, durable-table-retention 48+0, vulture 0/1); no commit in the merged
+  range closes #806.
+
+Residual unchanged: production emitters for the five wake patterns, the
+scheduler registration of `sweep_goal_leases`/`reconcile_goals`, and the
+#1823 intake-created-Goal crash point all remain #805/#804/#1823 activation
+work — re-verified at this head (`EventWakeBridge` is still constructed
+only in tests; `canonical_recovery.py` still ticks exactly its three
+halves; the wake-pattern event names appear in shipped source only as the
+`WakeReason` enum values), disclosed above and at wiring time.
