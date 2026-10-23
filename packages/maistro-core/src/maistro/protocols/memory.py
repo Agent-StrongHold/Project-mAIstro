@@ -13,7 +13,6 @@ if TYPE_CHECKING:
 
     from maistro.memory.learnings.lifecycle import StageTransition
     from maistro.memory.user_model.types import UserModelFact
-    from maistro.persistence.audit_pages import AuditPage
     from maistro.types.memory import (
         DecaySweep,
         EpisodicMemory,

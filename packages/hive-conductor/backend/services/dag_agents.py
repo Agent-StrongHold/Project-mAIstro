@@ -93,8 +93,6 @@ def _resolve_nodes_with(*, container: Any = None) -> Callable[[str, Any], Any]:
     the delegation has already been dispatched.
     """
     if container is None:
-        container = _container()
-    if container is None:
         return build_node_resolver()
     # Read as attributes rather than through getattr(): the Container dataclass
     # always defines these collaborators, and check-wiring-reads.py (#236)
@@ -139,9 +137,39 @@ def get_canonical_run_store() -> DurableRunStore:
     return container.graph_run_store  # type: ignore[no-any-return]
 
 
+def get_canonical_run_store() -> DurableRunStore:
+    """Return the graph store projected onto the canonical execution spine.
+
+    HITL is not available against the standalone compatibility store. Refusing
+    that path is important: a pending human decision must never be written to
+    process-local state that the canonical Run API and a restarted worker
+    cannot see.
+    """
+    container = _container()
+    if container is None:
+        raise RuntimeError("canonical graph execution spine is unavailable")
+    # An attribute load, not getattr(): check-wiring-reads.py (#236) walks
+    # attribute loads, so a getattr("graph_run_store") read is invisible to it
+    # and the Container field would report as wired-but-unread. Naming it here
+    # is what holds this wiring in place.
+    store = container.graph_run_store
+    if store is None:
+        raise RuntimeError("canonical graph execution spine is unavailable")
+    return store  # type: ignore[no-any-return]
+
+
 def get_run_store() -> DurableRunStore:
-    """Compatibility accessor for the same canonical graph projection."""
-    return get_canonical_run_store()
+    """Return the graph store used by registered-DAG execution.
+
+    The no-container branch remains a deliberately isolated compatibility path
+    for non-HITL standalone DAG tests and deployments. Product HITL routes use
+    :func:`get_canonical_run_store` and therefore cannot accidentally expose or
+    mutate this process-local state.
+    """
+    try:
+        return get_canonical_run_store()
+    except RuntimeError:
+        return _fallback_run_store
 
 
 def get_registry() -> DagRegistry:
@@ -189,17 +217,28 @@ async def run_registered_dag(
     graph = template.instantiate(project_id=project_id)
     if configure is not None:
         configure(graph)
-    # Admission first, then execution. A crash before checkpoint 1 leaves a
-    # canonical QUEUED Run for the existing recovery consumer to pick up.
-    admitted = await run_store.create_run(
-        graph,
-        initial_status=RunStatus.QUEUED,
-        actor_principal_id=user_id,
-        parent_run_id=parent_run_id,
-        parent_node_run_id=parent_node_run_id,
-        provenance={**dict(provenance or {}), "executor": "durable_graph"},
-    )
-    admitted_run_id = admitted.run_id
+    container = _container()
+    run_store = container.run_store if container is not None else None
+    if run_store is None and any(node.node_type.startswith("human.") for node in graph.nodes):
+        raise RuntimeError("canonical graph execution spine is required for human work")
+    # Admission first, then execution. Traversal consumes an admitted Run
+    # rather than creating one (#44): the create and the first traversal
+    # checkpoint are writes to two stores, so a crash between them would leave
+    # a canonical Run RUNNING with nothing to resume it. Admitting here leaves
+    # a QUEUED Run instead, which #251's consumer tick can pick up. Without a
+    # Container there is no spine, and execution takes the pre-convergence
+    # path rather than failing to start.
+    admitted_run_id = None
+    if run_store is not None:
+        admitted = await run_store.create_run(
+            graph,
+            initial_status=RunStatus.QUEUED,
+            actor_principal_id=user_id,
+            parent_run_id=parent_run_id,
+            parent_node_run_id=parent_node_run_id,
+            provenance={**dict(provenance or {}), "executor": "durable_graph"},
+        )
+        admitted_run_id = admitted.run_id
     record = await run_durable_graph(
         graph,
         store=container.graph_run_store,

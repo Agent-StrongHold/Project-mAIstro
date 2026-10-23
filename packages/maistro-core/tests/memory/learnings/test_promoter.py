@@ -38,13 +38,7 @@ class _RaisingForge:
 
 async def test_check_and_promote_without_gate_auto_promotes() -> None:
     store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
-    learning = Learning(
-        trigger_keys=["deploy"],
-        learning="snapshot first",
-        hit_count=10,
-        run_id="run-1",
-        confidence=1.0,
-    )
+    learning = Learning(trigger_keys=["deploy"], learning="snapshot first", hit_count=10)
     await store.store(learning)
 
     promoter = LearningPromoter(store, threshold=5)
@@ -171,14 +165,7 @@ async def test_try_mutate_skill_swallows_exception_from_forge() -> None:
 
 async def test_gate_approved_promotion_triggers_skill_mutation() -> None:
     store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
-    learning = Learning(
-        trigger_keys=["x"],
-        learning="has tool",
-        tool_name="search",
-        hit_count=10,
-        run_id="run-1",
-        confidence=1.0,
-    )
+    learning = Learning(trigger_keys=["x"], learning="has tool", tool_name="search", hit_count=10)
     lid = await store.store(learning)
 
     forge = _StubForge({"status": "mutated", "old_hash": "aaa", "new_hash": "bbb"})

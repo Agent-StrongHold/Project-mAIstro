@@ -39,11 +39,8 @@ KEY_ALIASES = ("LITELLM_API_KEY", "LITELLM_PROXY_KEY")
 
 #: Everything each file requires with `:?`, so a render can get as far as the
 #: gateway lines. Values are placeholders; none of them is under test here.
-#: ADMIN_API_KEYS (#1095) uses the documented empty form -- `[]` means no
-#: admin keys, exactly what install.sh writes into a fresh `.env`.
 DEV_REQUIRED = {
     "API_KEYS": "x",
-    "ADMIN_API_KEYS": "[]",
     "DB_PASSWORD": "x",
     "LANGFUSE_NEXTAUTH_SECRET": "x",
     "LANGFUSE_SALT": "x",
@@ -59,7 +56,6 @@ PROD_REQUIRED = {
     "REPLICATION_PASSWORD": "x",
     "ROUTER_API_KEY": "x",
     "TASK_DELEGATION_KEY": "x",
-    "ADMIN_API_KEYS": "[]",
 }
 
 EXTERNAL = {"LITELLM_BASE_URL": "https://gw.corp.example", "LITELLM_API_KEY": "sk-external"}

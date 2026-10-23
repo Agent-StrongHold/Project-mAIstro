@@ -71,8 +71,8 @@ async def execute_dag(dag_data: dict, **kwargs: Any) -> dict[str, Any]:
     are configured, a node's model call crosses the governed Binding ->
     Invocation egress and this builder is never used for it; the canonical
     Invocation authority records the quota evidence. The injection stays so
-    tests that patch this module's attribute keep working. New Graph work
-    always requires the canonical Run and continuation owners (#1113).
+    standalone execution (no Container) and tests that patch this module's
+    attribute keep working.
     """
     result = await _canonical_execute_dag(
         dag_data,

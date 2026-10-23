@@ -42,47 +42,10 @@ def _validate_finished_at(
         raise ValueError(f"non-terminal {subject} cannot have finished_at")
 
 
-def _validate_identity_projection(run: Run) -> None:
-    """The explicit identity facts, when present, are non-empty and coherent (#1152).
-
-    ``acting_principal_id`` is the identity accounting attributes to, so a Run
-    whose ``actor_principal_id`` projects a different acting identity is
-    internally contradictory and refused rather than silently re-projected.
-    """
-    for field_name in ("initiating_principal_id", "acting_principal_id"):
-        value = getattr(run, field_name)
-        if value is not None:
-            _require_non_empty(value, field_name)
-    if (
-        run.actor_principal_id is not None
-        and run.acting_principal_id is not None
-        and run.actor_principal_id != run.acting_principal_id
-    ):
-        raise ValueError("actor_principal_id must project acting_principal_id")
-
-
-def _project_historical_actor(run: Run) -> None:
-    """Backfill the explicit facts on rows that only carried ``actor_principal_id``.
-
-    Historical rows remain readable, while new delegated rows carry both
-    explicit facts from admission (#1152).
-    """
-    if run.acting_principal_id is None and run.actor_principal_id is not None:
-        object.__setattr__(run, "acting_principal_id", run.actor_principal_id)
-    if run.initiating_principal_id is None and run.acting_principal_id is not None:
-        object.__setattr__(run, "initiating_principal_id", run.acting_principal_id)
-
-
-# Unannotated return, deliberately: pydantic derives the serialization-mode
-# JSON schema for a model with a wrap serializer from that serializer's return
-# annotation, so ``-> dict[str, Any]`` collapses Attempt's serialization schema
-# to ``{"type": "object", "additionalProperties": true}`` and hides every
-# field from schema consumers. Unannotated, pydantic keeps the declared fields;
-# mypy strict's no-untyped-def is suppressed for exactly this one site.
-def _serialize_attempt_without_unknown_cause(  # type: ignore[no-untyped-def]
+def _serialize_attempt_without_unknown_cause(
     self: Attempt,
     handler: SerializerFunctionWrapHandler,
-):
+) -> dict[str, Any]:
     """Omit exactly one serialized key -- the unknown cancellation cause.
 
     Every pre-existing Attempt has ``cancellation_cause`` unknown, and the
@@ -371,8 +334,6 @@ class Run(BaseModel):
         _require_non_empty(self.project_id, "project_id")
         if self.actor_principal_id is None or not self.actor_principal_id.strip():
             raise ValueError("actor_principal_id is required")
-        _validate_identity_projection(self)
-        _project_historical_actor(self)
         self._validate_scope_identity()
         if self.parent_run_id == self.run_id:
             raise ValueError("Run cannot be its own parent")

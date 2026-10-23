@@ -146,9 +146,4 @@ async def wire_workspace_store(
     return InMemoryWorkspaceStore(project_store=project_store, persona_store=persona_store)
 
 
-__all__ = [
-    "DEFAULT_WORKSPACE_OWNER",
-    "WORKSPACE_PG_TABLES",
-    "backend_of",
-    "wire_workspace_store",
-]
+__all__ = ["WORKSPACE_PG_TABLES", "backend_of", "wire_workspace_store"]

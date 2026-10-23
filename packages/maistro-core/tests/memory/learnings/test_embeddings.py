@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
-
 from maistro.memory.exposure import MemoryExposureMode
 from maistro.memory.learnings.embeddings import (
     EMBEDDING_WEIGHT,
