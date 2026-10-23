@@ -180,7 +180,6 @@
         "packages/maistro-core/src/maistro/graph/harness.py::unused variable 'CLAUDE_CODE'",
         "packages/maistro-core/src/maistro/graph/harness.py::unused variable 'GENERIC_HTTP'",
         "packages/maistro-core/src/maistro/graph/harness.py::unused variable 'IN_PROCESS'",
-        "packages/maistro-core/src/maistro/graph/harness.py::unused variable 'dispatched_at'",
         "packages/maistro-core/src/maistro/graph/node.py::unused attribute 'duration_s'",
         "packages/maistro-core/src/maistro/graph/node.py::unused attribute 'duration_s'",
         "packages/maistro-core/src/maistro/graph/node.py::unused attribute 'duration_s'",
