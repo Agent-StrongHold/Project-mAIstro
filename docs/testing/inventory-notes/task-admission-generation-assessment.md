@@ -7714,3 +7714,64 @@ issue-mandated blocker and nothing else.
   classification of the module — #1852 forbids this leaf from doing
   either (no wiring, no baseline entry, no grant, no gate change).
   Round 94 is therefore a note-only commit with the blocker intact.
+
+## repair round 95 at head e28574228 (base afffa6309 unchanged, no
+## develop drift) — first-hand re-verification, note-only commit, no
+## other tree edit
+
+Dispatch re-check with origin/develop re-fetched: still afffa6309, so
+no sync is due. Every round-94 number re-derived first-hand at the
+branch tip (e28574228aa60ce5c308b02e2ce78e7c3edc843f, worktree clean
+before this note); the driver's deterministic checks (uv sync, whole-
+tree ruff check + format, 268-test suite, suite inventory ok) were
+green in the supplied check-0..4 logs.
+
+- CI `exact-debt-ledger` steps at CI's exact argv, run locally:
+  `check-vulture-baseline.py packages/*/src --min-confidence 60
+  --exclude '*/third_party/*'` rc=0, "1314 reviewed identities ->
+  1309 findings", unclassified 0 — the per-identity ledger this repair
+  lane targets is already exact, nothing to amend;
+  `check-shipped-surface-truth.py` rc=0.
+- `check-ratchet-provenance.py` rc=1 with 8/9 sub-ratchets OK; the
+  only FAIL is the reachability sub-ratchet, printing exactly two
+  lines about the leaf: "maistro.tasks.admission_generation: NEW
+  unreachable module absent from trusted base and not previously
+  authorized" and "...: current unreachable module missing from
+  candidate baseline" (157 -> 158 unreachable of 1453 modules).
+- `check-reachability.py` rc=1 naming exactly one NEWLY UNREACHABLE
+  module (`maistro.tasks.admission_generation`);
+  `check-reachability-dispositions.py` rc=0;
+  `check-promotion-surface.py` rc=0. CI `test` trio reproduced: 3
+  failed / 36 passed, diff showing the single extra set item
+  `maistro.tasks.admission_generation`.
+- Focused battery: leaf suite 132 passed (all ten issue-named test
+  identities present, incl. `test_invalid_assessment_inputs_are_
+  rejected` at line 935 and the subprocess import spy at line 589);
+  live-flow regression (`test_root_admission_identity.py` +
+  `test_idempotency.py`) 146 passed; ruff + format + mypy clean on
+  the leaf pair/module; `check-suite-inventory.py` ok (21 suites).
+  `git diff --numstat origin/develop...HEAD -- quality/` = only
+  `quality/vulture-baseline.json` 0/5; no reachability-baseline or
+  ratchet-authorization entry exists for either admission module,
+  exactly as the issue requires.
+- All four issue-named mutation classes re-killed first-hand by
+  backup-cp/restore-cp, focused suite run with `-x` (kill = any
+  failure; md5 257a6e45c382349dd12f559099663fbc identical before and
+  after; `git status` clean after restore): swap
+  TAKEOVER/REPLACE_EXPIRED -> 1 failed (23 passed); lease row before
+  binding -> 1 failed (51); LEGACY_UNRESOLVED row deleted -> 1 failed
+  (24); MISMATCH row above the expiry row -> 1 failed (55).
+- Import boundary re-proven: grep over `packages/*/src` for
+  `admission_generation` matches only the module itself; zero
+  production importer references; no keep-alive wiring was smuggled
+  in.
+- Verdict re-derived, unchanged: the only CI failure this lane is
+  authorized to repair (the vulture per-identity ledger) is green at
+  CI's exact argv; the residual exact-debt-ledger / reachability /
+  test-trio red is the #1852-mandated blocker that only the #1845
+  integration head may clear ("No fake callers, baseline additions,
+  grants, disabled gates or quality waivers are permitted"; "report
+  implementation/test readiness plus the explicit merge blocker and
+  leave the stack unmerged"). BLOCKED is therefore the issue-conform
+  terminal state of this leaf, not a repairable defect; round 95 is a
+  note-only commit.
