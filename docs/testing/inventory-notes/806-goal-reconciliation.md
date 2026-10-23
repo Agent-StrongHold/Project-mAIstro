@@ -447,3 +447,43 @@ All with CI-exact or documented arguments:
 - Quality ledgers vs `origin/develop` (`git diff --numstat`): additive only
   (ac-state-notes 17+0, durable-table-retention 48+0, vulture 0+1, plus
   develop's own image-pins note edit); no rows lost by the merge.
+
+## 2026-10-23 independent verification round: final develop sync b9cd15c60
+## merged as db8274063; battery re-run at the exact reviewed head (no test
+## change; delta unchanged: +107)
+
+The pending develop advance (b9cd15c60, the #2137 playwright/image-pin bump
+in `packages/hive-conductor/tests` only) was merged into this branch as
+db8274063 (`Merge commit 'b9cd15c60…' into auto-806`). The merge touches no
+goals-surface file: `git diff db8274063^1..db8274063 -- packages/maistro-core/
+src/maistro/goals packages/maistro-core/tests/goals` is empty. Independent
+verification at the exact head db8274063af6, all re-executed:
+
+- `pytest packages/maistro-core/tests/goals/test_goal_reconciliation.py
+  packages/maistro-core/tests/goals/test_goal_container_wiring.py -q`:
+  107 passed (matches the driver's check-3.log); full goals directory:
+  160 passed / 24 skipped (all skips Postgres-DSN-gated). No warnings.
+- `ruff check .`: clean; `check-suite-inventory.py`: 21 suites match
+  (33807 unique identities, 0 duplicate evidence).
+- Exact-debt-ledger with CI's exact arguments and
+  `RATCHET_BASE_REV=origin/develop`: `check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` exit 0 (1314 reviewed
+  identities -> 1313 findings, unclassified 0, never_allowlist 0);
+  `check-ratchet-provenance.py` exit 0 (0 lifecycle violations, no
+  candidate-approved expansion); `check-shipped-surface-truth.py` complete.
+- `check-durable-table-inventory.py`: ok, 119 tables. The four #806
+  control-plane rows (`goals`/`goal_claims`/`goal_wakes`/`goal_admissions`)
+  remain scoped `["sqlite"]` — the wiring warning and the retention ledger
+  agree.
+- Quality ledgers vs `origin/develop` (`git diff --numstat b9cd15c60`):
+  additive only (ac-state-notes 17+0, durable-table-retention 48+0, vulture
+  0/1). No commit in b9cd15c60..db8274063 closes #806; the PR body refs it
+  without closure keywords. Worktree clean at the reviewed head.
+
+Residual, unchanged from the rounds above: the mechanics ship ahead of their
+production composition — no shipped consumer subscribes `EventWakeBridge`
+and no shipped loop registers `sweep_goal_leases`/`reconcile_goals`
+(`canonical_recovery.py` still ticks its three halves); the #1823
+intake-created-Goal crash point is a separate lane. All three are
+#805/#804/#1823 activation work per the issue's own dependency structure,
+and all are disclosed above and at wiring time.
