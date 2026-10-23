@@ -18,11 +18,9 @@ This gate closes that hole statically. For each installer entry point it:
    ``$( ... )`` and ``<( ... )`` substitutions — while skipping heredoc bodies
    (they hold Python and prose, not shell) and ``case`` patterns (they are
    data, and ``Darwin)`` must not read as an invocation of ``Darwin``);
-3. asserts each such word is one of: a function defined in the same file (or
-   in a literal file the entry point sources — ``install.sh``/``get.sh``
-   share ``scripts/bootstrap-runtime.sh`` so the #1821 bootstrap contract has
-   exactly one definition), a bash reserved word or builtin, or a command
-   explicitly allowlisted below as intentionally external.
+3. asserts each such word is one of: a function defined in the same file, a
+   bash reserved word or builtin, or a command explicitly allowlisted below as
+   intentionally external.
 
 The allowlist is the "intentionally external" half of the contract: adding a
 dependency on a new host binary is a reviewed decision (one entry, with its
@@ -204,7 +202,6 @@ EXTERNAL_COMMANDS = {
     "touch": "POSIX file tool: archive-install marker",
     "tr": "POSIX text tool",
     "uname": "POSIX: detect OS and architecture",
-    "sh": "POSIX shell: runs the downloaded official uv standalone installer (#1821)",
     "uv": "documented dependency: the installer bootstraps and drives the uv toolchain",
     "wc": "POSIX text tool",
     "xargs": "POSIX: batch command construction",
@@ -566,20 +563,9 @@ def invoked_commands(source: str) -> list[tuple[str, int]]:
     return words
 
 
-def undefined_invocations(source: str, base: Path | None = None) -> list[tuple[str, int]]:
-    """Invocations that are neither defined here nor deliberately external.
-
-    Definitions also count from literal files the source pulls in with
-    ``source "..."`` — install.sh and get.sh share
-    scripts/bootstrap-runtime.sh, so the #1821 bootstrap contract has exactly
-    one definition. Relative sourced paths resolve against *base* first, then
-    the repo root; with no *base* (the single-argument form the tests use),
-    the repo root alone is tried, which covers the real entry points: they
-    live there.
-    """
+def undefined_invocations(source: str) -> list[tuple[str, int]]:
+    """Invocations that are neither defined here nor deliberately external."""
     defined = defined_functions(source)
-    for sourced in sourced_files(source, base):
-        defined.update(defined_functions(sourced.read_text(encoding="utf-8")))
     return [
         (word, line)
         for word, line in invoked_commands(source)
@@ -590,44 +576,13 @@ def undefined_invocations(source: str, base: Path | None = None) -> list[tuple[s
     ]
 
 
-def sourced_files(source: str, base: Path | None) -> list[Path]:
-    """Literal files a target sources, resolved conservatively.
-
-    The installers source their shared bootstrap library through a variable
-    (`source "$SCRIPT_DIR/scripts/bootstrap-runtime.sh"`). For the gate to
-    keep its guarantee — every invoked helper is defined somewhere reviewed —
-    such a target counts as a definition source only when stripping the
-    variable expansions leaves a relative path that exists next to the
-    sourcing file or at the repo root. Anything unresolvable is ignored, so
-    an invocation of a function defined only in an unresolvable file still
-    fails loudly (a false negative on the definitions would be a blind spot,
-    and this gate exists to close one).
-    """
-    found: list[Path] = []
-    for _, line in _logical_lines(source):
-        match = re.match(r"^\s*(?:source|\.)\s+(\".+\")\s*$", line)
-        if not match:
-            continue
-        candidate = re.sub(r"\$\{?[A-Za-z_][A-Za-z0-9_]*\}?", "", match.group(1))
-        candidate = candidate.strip().strip('"').lstrip("/")
-        if not candidate or any(ch in candidate for ch in "$`{}"):
-            continue
-        for root in [base, ROOT] if base is not None else [ROOT]:
-            resolved = root / candidate
-            if resolved.is_file():
-                found.append(resolved)
-                break
-    return found
-
-
 def check(paths: list[Path]) -> list[str]:
     failures: list[str] = []
     for path in paths:
         source = path.read_text(encoding="utf-8")
-        for word, line in undefined_invocations(source, base=path.parent):
+        for word, line in undefined_invocations(source):
             failures.append(
-                f"{path}:{line}: '{word}' is invoked but neither defined in the file "
-                "(or a literal file it sources), "
+                f"{path}:{line}: '{word}' is invoked but neither defined in the file, "
                 "a shell builtin/reserved word, nor allowlisted as intentionally "
                 "external (see EXTERNAL_COMMANDS in scripts/check-install-functions.py)"
             )

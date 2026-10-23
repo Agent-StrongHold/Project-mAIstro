@@ -32,7 +32,6 @@ tasks.run_id, session_turns.run_id                none — logical (004/028)    
 learnings/outcomes/design_outputs/episodic_memories .run_id, .node_run_id, .attempt_id   none — logical (026/028/031)   Preserve. Producer provenance (#709, #64): "this execution produced this learning/outcome/design output/memory" is attribution history exactly like a task receipt — it names an execution that did happen. The purge never touches these tables; the reference resolving to a purged Run is the same residue an Event reference is, and the same policy — observable, not destroyed — applies.
 capability_invocations .run_id, .node_run_id, .attempt_id   none — logical (035)   Preserve. The capability-invocation ledger is an effect receipt ("this Attempt invoked this binding with this effect key"): attribution history, the same class as a task receipt, and it outlives the execution identity it names.
 capability_approvals.run_id (+ node_run_id)       none — logical (runtime DDL)  Preserve. A durable approval request for one effect of one execution is receipt history like the invocation ledger and is never selected by the purge.
-delegation_grants.run_id (+ goal/invocation ids)   none — logical (runtime DDL + alembic 067)   Preserve. A host-created delegation grant (#845) binds the principal, delegating/target Agent, Goal, Run and invocation it authorizes — authorization provenance for an execution that did happen, the same class as a capability approval. Validity is TTL-filtered at read time and a driven expiry sweep is the open owner decision (#72) recorded in `quality/durable-table-retention.json`; the Run purge does not stand in for it.
 design_artifact_versions / design_project_guidance / design_branch_controls .run_id   none — logical (049)   Preserve. Producer provenance (#780): a version-ledger row, a durable guidance record or a branch-control row names the canonical execution that produced or last authorized it — attribution history exactly like `design_outputs`, and the purge never touches it. (`design_artifact_locks` carries no `run_id` column and so is outside this inventory.)
 task_idempotency.run_id                           none — logical (038)          Preserve. The admitted-outcome receipt for an idempotency key, bounded by its own replay window rather than by the Run's retention. `_ClaimFlow.claim` (#325, #1577) drives `purge_expired` on every claim, so the window is swept in production; `quality/durable-table-retention.json` records it as `ttl_purge`. The Run purge does not stand in for it.
 workspace_working_log.run_id                      none — logical (runtime DDL)   Preserve. The per-Workspace observation log (#301, M4-H) records *which run observed something* — attribution history on an append-only log whose only driven deletion is `purge_workspace` when the Workspace itself goes away. A Run purge deleting observations would break the losslessness the log exists for; the residue policy is the same class as Events and task receipts.
@@ -87,11 +86,6 @@ RUN_REFERENCING_TABLES: tuple[str, ...] = (
     "episodic_memories",
     "capability_invocations",
     "capability_approvals",
-    # Host-created delegation grants (#845): run_id names the execution the
-    # grant authorizes — authorization provenance, not execution state. The
-    # grant's own expiry (TTL-filtered reads; sweep owner decision #72) bounds
-    # it, so the Run purge never touches it.
-    "delegation_grants",
     "task_idempotency",
     # Runtime SQLite DDL (working-memory observation log, #301): run_id names
     # the Run that produced the observation — provenance, not execution state.

@@ -193,16 +193,20 @@ class InMemoryWorkspaceStore:
         return workspace.model_copy(deep=True)
 
     async def update(self, workspace: Workspace, *, principal_id: str | None = None) -> Workspace:
-        from maistro.workspaces.store_boundary import authorize_workspace_administer
+        from maistro.workspaces.authorization import WorkspaceAuthorizationDenied
+        from maistro.workspaces.store_boundary import is_blank_principal, require_workspace_view
 
-        await authorize_workspace_administer(self, workspace.workspace_id, principal_id)
         if workspace.workspace_id not in self._workspaces:
             raise WorkspaceNotFound(workspace.workspace_id)
+        if principal_id is not None:
+            if is_blank_principal(principal_id):
+                raise WorkspaceAuthorizationDenied
+            await require_workspace_view(self, workspace.workspace_id, principal_id)
         updated = workspace.model_copy(update={"updated_at": datetime.now(UTC)})
         self._workspaces[workspace.workspace_id] = updated
         return updated.model_copy(deep=True)
 
-    async def delete(self, workspace_id: str, *, principal_id: str | None = None) -> None:
+    async def delete(self, workspace_id: str) -> None:
         """Remove the Workspace, its memberships, and its Projects.
 
         The reference has no transaction, so it compensates the way `create`
@@ -211,14 +215,7 @@ class InMemoryWorkspaceStore:
         it was (#1121). The durable stores do both halves in one transaction
         and need no restore; the contract the conformance suite reads is the
         same.
-
-        A supplied principal must administer the Workspace (#1150). The
-        check runs before the existence lookup, so an outsider cannot tell a
-        foreign id from a missing one.
         """
-        from maistro.workspaces.store_boundary import authorize_workspace_administer
-
-        await authorize_workspace_administer(self, workspace_id, principal_id)
         if workspace_id not in self._workspaces:
             raise WorkspaceNotFound(workspace_id)
         workspace, memberships = await self._delete_workspace_row(workspace_id)
@@ -227,26 +224,11 @@ class InMemoryWorkspaceStore:
         # optional form meant the Projects were purged in tests, where the
         # store was the in-memory reference, and left orphaned on every durable
         # deployment, where no implementation defined it (Codex, #516).
-        # The live Persona is a separate ownership boundary, so it leaves
-        # through its canonical store inside the same compensation. The
-        # snapshot goes first because the compensation contract is all-or-
-        # nothing: a Project failure mid-delete must put the Persona back, not
-        # leave a surviving Workspace without its product context. The durable
-        # stores need no snapshot — their delete joins the one transaction.
-        persona = (
-            await self.persona_store.get_for_workspace(workspace_id)
-            if self.persona_store is not None
-            else None
-        )
         try:
-            if self.persona_store is not None:
-                await self.persona_store.delete_for_workspace(workspace_id)
             await self.project_store.purge_workspace(workspace_id)
         except Exception:
             self._workspaces[workspace_id] = workspace
             self._memberships.update(memberships)
-            if persona is not None and self.persona_store is not None:
-                await self.persona_store.create(persona)
             raise
 
     async def _delete_workspace_row(

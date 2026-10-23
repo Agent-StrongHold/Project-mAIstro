@@ -10,8 +10,6 @@ canonical Run until the harness result is supplied on resume.
 
 from __future__ import annotations
 
-import asyncio
-import json
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -23,7 +21,6 @@ from maistro.capabilities.approval_store import approval_request_digest
 from maistro.capabilities.binding import Binding, ResolvedCapabilityProvider
 from maistro.capabilities.binding_store import BindingNotFound
 from maistro.capabilities.effect_context import CapabilityEffectContext, default_effect_context
-from maistro.capabilities.invocation import Invocation, InvocationStatus, UnsafeEffectRetry
 from maistro.capabilities.slots.harness_runner import HarnessRunner
 from maistro.capabilities.types import Unavailable
 from maistro.graph.harness import (
@@ -42,10 +39,8 @@ from .base import (
     BaseNode,
     NodeContext,
     ReplaySemantics,
-    now_utc,
     pause_until,
     replay_effect_key,
-    resumed_pause,
 )
 from .capability_effect import invoke_capability_effect
 
@@ -101,167 +96,20 @@ def _as_dispatch_adapter(provider: HarnessAdapter | HarnessRunner) -> HarnessAda
     )
 
 
-class HarnessWaitTimedOut(TimeoutError):
-    """The local wait expired; remote execution and Invocation evidence survive."""
+def _merge_poll_evidence(resumed: Any, result: HarnessResult) -> dict[str, Any]:
+    """Overlay a successful poll's evidence onto the transported resume answer.
 
-    def __init__(self, wait: _HarnessWait) -> None:
-        super().__init__(f"harness wait expired at {wait.deadline_at}; remote outcome is unknown")
-        self.result_metadata = {**wait.model_dump(), "remote_outcome": "unknown"}
-
-
-class _HarnessWait(BaseModel):
-    """Versioned traversal continuation, never a second effect lifecycle."""
-
-    model_config = ConfigDict(strict=True, frozen=True, extra="forbid")
-    harness_wait_version: int
-    dispatch_invocation_id: str = Field(min_length=1)
-    binding_id: str = Field(min_length=1)
-    provider_name: str = Field(min_length=1)
-    handle_id: str = Field(min_length=1)
-    harness_type: str = Field(min_length=1)
-    deadline_at: str
-    observation_index: int = Field(ge=0)
-
-    @property
-    def deadline(self) -> datetime:
-        return _aware_time(self.deadline_at)
-
-    @property
-    def effect_key(self) -> str:
-        return f"agent.spawn_harness.poll:{self.dispatch_invocation_id}:{self.observation_index}"
-
-    def request(self) -> dict[str, Any]:
-        return {
-            "operation": "poll",
-            **self.model_dump(exclude={"harness_wait_version", "deadline_at"}),
-        }
-
-
-def _aware_time(value: Any) -> datetime:
-    if not isinstance(value, str):
-        raise ValueError("harness observation/deadline requires an aware ISO timestamp")
-    parsed = datetime.fromisoformat(value)
-    if parsed.utcoffset() is None:
-        raise ValueError("harness observation/deadline requires a timezone")
-    return parsed.astimezone(UTC)
-
-
-def _park(wait: _HarnessWait) -> None:
-    pause_until(
-        PAUSE_AWAITING_HARNESS,
-        resume_at=min(now_utc() + timedelta(seconds=10), wait.deadline),
-        metadata={**wait.model_dump(), "invocation_id": wait.dispatch_invocation_id},
-    )
-
-
-def _request_payload(inputs: SpawnHarnessIn) -> dict[str, Any]:
-    return inputs.model_dump(mode="json", exclude={"binding_id"})
-
-
-def _approval_identity(pause: Mapping[str, Any], request: Any, key: str, binding_id: str) -> None:
-    if pause.get("paused_reason") != PAUSE_AWAITING_HUMAN_APPROVAL:
-        return
-    if (
-        pause.get("binding_id") != binding_id
-        or pause.get("effect_key") != key
-        or pause.get("request_digest") != approval_request_digest(request)
-        or not isinstance(pause.get("approval_request_id"), str)
-        or not pause["approval_request_id"].strip()
-    ):
-        raise ValueError("harness approval continuation does not match its immutable request")
-
-
-def _decode_answer_pause(stamped: Any) -> dict[str, Any]:
-    """Decode the server's answered-pause wrapper without trusting answer fields."""
-    if not isinstance(stamped, Mapping) or not isinstance(stamped.get("metadata"), Mapping):
-        raise ValueError("invalid server-stamped harness answer pause")
-    return {**stamped["metadata"], "resume_at": stamped.get("resume_at")}
-
-
-def _terminal_result(value: Any, handle_id: str) -> SpawnHarnessOut:
-    """Validate terminal provider evidence without coercing a foreign receipt."""
-    if not isinstance(value, dict) or set(value) != {
-        "handle_id",
-        "success",
-        "output",
-        "error",
-        "metadata",
-    }:
-        raise ValueError("invalid harness terminal observation shape")
-    if value["handle_id"] != handle_id or type(value["success"]) is not bool:
-        raise ValueError("harness terminal observation has a foreign handle or invalid success")
-    if not isinstance(value["output"], str) or not isinstance(value["metadata"], dict):
-        raise ValueError("invalid harness terminal output/metadata")
-    if value["error"] is not None and not isinstance(value["error"], str):
-        raise ValueError("invalid harness terminal error")
-    # Reject non-JSON values, NaNs and mutable provider-owned containers before persistence.
-    metadata = json.loads(json.dumps(value["metadata"], allow_nan=False))
-    return SpawnHarnessOut(
-        status="completed" if value["success"] else "failed",
-        handle_id=handle_id,
-        output=value["output"],
-        error=value["error"],
-        metadata=metadata,
-    )
-
-
-def _observation(result: HarnessResult | None, wait: _HarnessWait) -> dict[str, Any]:
-    observed_at = now_utc().isoformat()
-    if result is None:
-        return {"state": "pending", "handle_id": wait.handle_id, "observed_at": observed_at}
-    if not isinstance(result, HarnessResult):
-        raise ValueError("harness poll must return HarnessResult or None")
-    value = {
-        "handle_id": result.handle_id,
-        "success": result.success,
-        "output": result.output,
-        "error": result.error,
-        "metadata": result.metadata,
-    }
-    terminal = _terminal_result(value, wait.handle_id)
-    value["metadata"] = terminal.metadata
-    return {"state": "terminal", "observed_at": observed_at, "result": value}
-
-
-def _validate_observation_time(invocation: Invocation, value: Any) -> datetime:
-    observed = _aware_time(value)
-    if invocation.started_at is None or observed < invocation.started_at:
-        raise ValueError("harness observation time predates its physical Invocation")
-    if invocation.finished_at is None or observed > invocation.finished_at:
-        raise ValueError("harness observation time follows its canonical completion")
-    return observed
-
-
-def _consume_observation(invocation: Invocation, wait: _HarnessWait) -> SpawnHarnessOut:
-    observation = invocation.result
-    if not isinstance(observation, dict):
-        raise ValueError("completed harness poll did not persist an observation")
-    observed = _validate_observation_time(invocation, observation.get("observed_at"))
-    state = observation.get("state")
-    if state == "terminal":
-        if set(observation) != {"state", "observed_at", "result"}:
-            raise ValueError("invalid terminal harness observation")
-        terminal = _terminal_result(observation["result"], wait.handle_id)
-        if observed >= wait.deadline:
-            raise HarnessWaitTimedOut(wait)
-        return terminal
-    _consume_pending(observation, wait)
-    raise AssertionError("pause_until must raise")
-
-
-def _consume_pending(observation: dict[str, Any], wait: _HarnessWait) -> None:
-    if observation.get("state") != "pending" or set(observation) != {
-        "state",
-        "handle_id",
-        "observed_at",
-    }:
-        raise ValueError("invalid pending harness observation")
-    if observation["handle_id"] != wait.handle_id:
-        raise ValueError("pending harness observation has a foreign handle")
-    if now_utc() >= wait.deadline:
-        raise HarnessWaitTimedOut(wait)
-    _park(wait.model_copy(update={"observation_index": wait.observation_index + 1}))
-    raise AssertionError("pause_until must raise")
+    The adapter vouches for the output; poll metadata extends (and on conflict
+    overrides) what the resume answer recorded instead of discarding it.
+    """
+    merged = dict(resumed)
+    if result.output:
+        merged["output"] = result.output
+    if isinstance(result.metadata, dict) and result.metadata:
+        merged_metadata = dict(resumed.get("metadata") or {})
+        merged_metadata.update(result.metadata)
+        merged["metadata"] = merged_metadata
+    return merged
 
 
 @dataclass(frozen=True)
@@ -318,12 +166,7 @@ class AgentSpawnHarnessNode(BaseNode[SpawnHarnessIn, SpawnHarnessOut]):
         return replay_effect_key(
             ctx,
             "agent.spawn_harness.dispatch",
-            {
-                "harness_type": inputs.harness_type,
-                "task": inputs.task,
-                "context": inputs.context,
-                "timeout_seconds": inputs.timeout_seconds,
-            },
+            inputs.model_dump(mode="json"),
         )
 
     @staticmethod
@@ -342,10 +185,38 @@ class AgentSpawnHarnessNode(BaseNode[SpawnHarnessIn, SpawnHarnessOut]):
             {key: resumed[key] for key in SpawnHarnessOut.model_fields if key in resumed}
         )
 
-    async def _legacy_dispatch(
-        self, binding: Binding, inputs: SpawnHarnessIn, ctx: NodeContext
-    ) -> Invocation | None:
-        """A completed dispatch recorded under this node's previous effect key.
+    async def _with_fresh_harness_evidence(
+        self, inputs: SpawnHarnessIn, ctx: NodeContext, resumed: Any
+    ) -> Any:
+        """Prefer the provider's own poll evidence over a transported answer.
+
+        The resume answer may have travelled through a waker or a person; the
+        adapter that owns the session can often confirm (or correct) the
+        payload directly. A successful poll wins; anything else — no adapter,
+        no handle, provider lost the turn — leaves the recorded answer
+        untouched, so the answer path stays the fallback, never a blocker.
+        """
+        adapter = self._adapters.get(inputs.harness_type)
+        handle_id = str(resumed.get("handle_id") or "")
+        if adapter is None or not handle_id:
+            return resumed
+        try:
+            result = await adapter.poll(
+                HarnessHandle(handle_id=handle_id, harness_type=inputs.harness_type)
+            )
+        except Exception:
+            return resumed
+        if result is None or not result.success:
+            return resumed
+        return _merge_poll_evidence(resumed, result)
+
+    async def _execute(self, inputs: SpawnHarnessIn, ctx: NodeContext) -> SpawnHarnessOut:
+        answers = (ctx.metadata or {}).get("hitl_answers") or {}
+        resumed = answers.get(ctx.node_id)
+        if resumed is not None:
+            return self._resume_output(
+                await self._with_fresh_harness_evidence(inputs, ctx, resumed)
+            )
 
         #1319 changed the key from ``agent.spawn_harness.dispatch:<harness
         type>`` to one that also carries the Run, the graph node and a digest
@@ -678,81 +549,13 @@ class AgentSpawnHarnessNode(BaseNode[SpawnHarnessIn, SpawnHarnessOut]):
             capability=self.capability,
         )
 
-    @staticmethod
-    def _resume_evidence(ctx: NodeContext) -> tuple[dict[str, Any], Any]:
-        answers = (ctx.metadata or {}).get("hitl_answers") or {}
-        answer = answers.get(ctx.node_id) if isinstance(answers, Mapping) else None
-        if RESUMED_PAUSE_KEY in ctx.metadata:
-            carried = ctx.metadata[RESUMED_PAUSE_KEY]
-            if not isinstance(carried, Mapping) or not carried:
-                raise ValueError("invalid server-authored harness pause")
-            return resumed_pause(ctx), answer
-        if isinstance(answer, Mapping) and "_pause" in answer:
-            return _decode_answer_pause(answer["_pause"]), answer
-        return {}, answer
-
-    async def _resume_approval(
-        self, pause: Mapping[str, Any], inputs: SpawnHarnessIn, ctx: NodeContext
-    ) -> SpawnHarnessOut | None:
-        phase = pause.get("harness_effect_phase")
-        if phase == "poll":
-            return await self._poll(await self._load_wait(pause, inputs, ctx), inputs, ctx, pause)
-        if phase != "dispatch":
-            raise ValueError("harness approval lacks its server-authored effect phase")
-        _approval_identity(
-            pause, _request_payload(inputs), self.replay_effect_key(inputs, ctx), inputs.binding_id
-        )
-        return None
-
-    async def _resume_legacy_pause(
-        self, pause: Mapping[str, Any], answer: Any, inputs: SpawnHarnessIn, ctx: NodeContext
-    ) -> SpawnHarnessOut:
-        invocation = await self._effects.invocation_store.get(str(pause["invocation_id"]))
-        if invocation is None:
-            raise ValueError("legacy harness pause has no canonical dispatch receipt")
-        wait = self._wait_from_dispatch(invocation, inputs, ctx)
-        if (
-            pause.get("handle_id") != wait.handle_id
-            or pause.get("harness_type") != wait.harness_type
-        ):
-            raise ValueError("legacy harness pause differs from canonical dispatch receipt")
-        if answer is not None:
-            terminal = self._resume_output(answer)
-            if terminal.handle_id != wait.handle_id:
-                raise ValueError("harness terminal answer has a foreign handle")
-            return terminal
-        _park(wait)
-        raise AssertionError("pause_until must raise")
-
-    async def _resume(self, inputs: SpawnHarnessIn, ctx: NodeContext) -> SpawnHarnessOut | None:
-        pause, answer = self._resume_evidence(ctx)
-        reason = pause.get("paused_reason")
-        if reason == PAUSE_AWAITING_HUMAN_APPROVAL:
-            return await self._resume_approval(pause, inputs, ctx)
-        if "harness_wait_version" in pause:
-            if reason != PAUSE_AWAITING_HARNESS:
-                raise ValueError("harness continuation has the wrong pause reason")
-            return await self._poll(await self._load_wait(pause, inputs, ctx), inputs, ctx, pause)
-        if {"dispatch_invocation_id", "observation_index", "deadline_at"}.intersection(pause):
-            raise ValueError("harness continuation is missing its version")
-        if reason == PAUSE_AWAITING_HARNESS and "invocation_id" in pause:
-            return await self._resume_legacy_pause(pause, answer, inputs, ctx)
-        if answer is not None:
-            if pause:
-                raise ValueError("harness answer lacks canonical dispatch receipt provenance")
-            return self._resume_output(answer)
-        if pause:
-            raise ValueError("harness continuation lacks canonical dispatch receipt provenance")
-        return None
-
-    async def _execute(self, inputs: SpawnHarnessIn, ctx: NodeContext) -> SpawnHarnessOut:
-        resumed = await self._resume(inputs, ctx)
-        if resumed is not None:
-            return resumed
-        if inputs.timeout_seconds <= 0:
-            raise ValueError("harness wait requires a positive timeout before dispatch")
-        binding = await self._resolve_binding(inputs, ctx)
-        request_payload = _request_payload(inputs)
+        request_payload = {
+            "harness_type": inputs.harness_type,
+            "task": inputs.task,
+            "context": inputs.context,
+            "timeout_seconds": inputs.timeout_seconds,
+            "workdir": inputs.workdir,
+        }
 
         async def resolve_provider(
             authorized: Binding,
@@ -804,13 +607,22 @@ class AgentSpawnHarnessNode(BaseNode[SpawnHarnessIn, SpawnHarnessOut]):
                 **_detail_payload(handle),
             }
 
-        invocation = await self._dispatch(
-            binding,
-            inputs,
-            ctx,
-            request_payload=request_payload,
-            resolver=resolve_provider,
-            executor=execute_provider,
+        # Include the logical request in the key: a changed task is explicit
+        # new work, while a retry with a new NodeRun keeps the same identity.
+        effect_key = self.replay_effect_key(inputs, ctx)
+        invocation = await invoke_capability_effect(
+            lambda: self._effects.invocations.invoke(
+                binding=binding,
+                run_id=ctx.run_id,
+                node_run_id=ctx.node_run_id,
+                attempt_id=ctx.attempt_id,
+                effect_key=effect_key,
+                request=request_payload,
+                resolver=resolve_provider,
+                executor=execute_provider,
+                logical_effect=True,
+            ),
+            effect_key=effect_key,
         )
         _park(self._wait_from_dispatch(invocation, inputs, ctx))
         raise AssertionError("pause_until must raise")

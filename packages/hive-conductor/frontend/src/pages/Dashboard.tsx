@@ -111,7 +111,7 @@ function useMetrics(): { data: Record<string, any> | null; status: MetricsStatus
   const [status, setStatus] = useState<MetricsStatus>("loading");
   useEffect(() => {
     let cancelled = false;
-    boundedRead(signal => fetch("/v1/dashboard/metrics", { credentials: "same-origin", signal }))
+    fetch("/v1/dashboard/metrics", { credentials: "same-origin" })
       .then(r => {
         if (r.status === 401) { setStatus("unauthorized"); return null; }
         if (!r.ok) { setStatus("error"); return null; }
@@ -412,12 +412,12 @@ function provenanceText(env: KpiEnvelope): string {
 
 function FetchStateLine({ status }: { status: string }) {
   if (status === "loading") {
-    // #1421: the pending KPI reserves the geometry its measured value will
-    // occupy — value line, sub line, provenance footer — instead of a text
-    // sentence, so the number lands without the card collapsing and
-    // re-expanding. The shapes are decorative; `aria-busy` on the body is
-    // the one pending state, cleared on every terminal outcome below.
-    return <KpiSkeleton />;
+    return (
+      <div style={{ display: "flex", flexDirection: "column", justifyContent: "center", height: "100%", opacity: 0.6 }} aria-busy="true">
+        <div style={{ fontSize: "2.2rem", fontWeight: 800, color: "var(--pencil)", lineHeight: 1 }}>…</div>
+        <div style={{ fontSize: "var(--text-floor)", color: "var(--pencil)", marginTop: 6 }}>Loading metrics…</div>
+      </div>
+    );
   }
   if (status === "unauthorized") {
     return (

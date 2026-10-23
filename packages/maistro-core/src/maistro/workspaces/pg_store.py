@@ -80,13 +80,7 @@ class _WorkspaceCreateKwargs(TypedDict):
 class PgWorkspaceStore:
     """Durable Workspace identity and membership store."""
 
-    def __init__(
-        self,
-        pool: asyncpg.Pool,
-        *,
-        project_store: ProjectScopeStore,
-        persona_store: PersonaStore | None = None,
-    ) -> None:
+    def __init__(self, pool: asyncpg.Pool, *, project_store: ProjectScopeStore) -> None:
         if not isinstance(project_store, TransactionalProjectScopeStore):
             msg = (
                 "PgWorkspaceStore needs a Project store that can join its transaction "
@@ -96,11 +90,6 @@ class PgWorkspaceStore:
             raise TypeError(msg)
         self._pool = pool
         self._project_store: DurableProjectScopeStore = project_store
-        # Pairing is the composition point: bind the Project store to this
-        # Workspace store so scoped Project reads cannot run unauthorized
-        # (#1150).
-        self._project_store.bind_workspace_store(self)
-        self.persona_store = persona_store
 
     @property
     def project_store(self) -> ProjectScopeStore:
@@ -166,14 +155,14 @@ class PgWorkspaceStore:
         return model_of(Workspace, payload)
 
     async def update(self, workspace: Workspace, *, principal_id: str | None = None) -> Workspace:
-        """Persist a changed Workspace and stamp ``updated_at``.
+        """Persist a changed Workspace and stamp ``updated_at``."""
+        from maistro.workspaces.authorization import WorkspaceAuthorizationDenied
+        from maistro.workspaces.store_boundary import is_blank_principal, require_workspace_view
 
-        A supplied principal must administer the Workspace (#1150): renaming
-        or re-describing it is an owner mutation, not a member read.
-        """
-        from maistro.workspaces.store_boundary import authorize_workspace_administer
-
-        await authorize_workspace_administer(self, workspace.workspace_id, principal_id)
+        if principal_id is not None:
+            if is_blank_principal(principal_id):
+                raise WorkspaceAuthorizationDenied
+            await require_workspace_view(self, workspace.workspace_id, principal_id)
         updated = workspace.model_copy(update={"updated_at": datetime.now(UTC)})
         from maistro.workspaces.authorization import WorkspaceAction
         from maistro.workspaces.store_boundary import require_workspace_action_on
@@ -196,35 +185,13 @@ class PgWorkspaceStore:
             raise WorkspaceNotFound(workspace.workspace_id)
         return updated
 
-    async def delete(self, workspace_id: str, *, principal_id: str | None = None) -> None:
-        """Remove the Workspace, its memberships, and its Projects.
-
-        A supplied principal must administer the Workspace (#1150). The
-        check runs before the write opens, so an outsider's attempt does not
-        touch the rows even if it races a membership change, and is re-read
-        on the locked connection inside the transaction, so a demotion that
-        commits in between still refuses (#1150).
-        """
-        from maistro.workspaces.authorization import WorkspaceAction
-        from maistro.workspaces.store_boundary import (
-            authorize_workspace_administer,
-            require_workspace_action_on,
-        )
-
-        await authorize_workspace_administer(self, workspace_id, principal_id)
+    async def delete(self, workspace_id: str) -> None:
+        """Remove the Workspace, its memberships, and its Projects."""
         # Purge first, then the Workspace row, in one transaction (#1121).
         # `WorkspaceNotFound` from the row delete rolls the purge back with
-        # it, so deleting an absent Workspace touches nothing. The live
-        # Persona leaves through its canonical store in the same window, so a
-        # Persona or Project failure rolls the whole delete back.
+        # it, so deleting an absent Workspace touches nothing.
         async with self._project_store.transaction() as conn:
-            await self._lock_workspace(conn, workspace_id)
-            await require_workspace_action_on(
-                self, conn, workspace_id, principal_id, WorkspaceAction.ADMINISTER
-            )
             await self._project_store.purge_workspace_in(conn, workspace_id)
-            if self.persona_store is not None:
-                await self.persona_store.delete_for_workspace_in(conn, workspace_id)
             await self._delete_workspace_row(conn, workspace_id)
 
     async def list_for_user(self, user_id: str) -> list[Workspace]:

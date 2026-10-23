@@ -30,7 +30,6 @@ from .continuation import (
 from .execution_store import DurableRunExecutionStore
 from .fair_scan import ScanContinuation, cursor_time
 from .hitl import (
-    MAX_PENDING_SCAN_RECORDS,
     HitlAuthorization,
     HitlAuthorizationRequired,
     HitlDeadlineElapsed,
@@ -62,7 +61,6 @@ from .types import DurableRunRecord
 
 __all__ = [
     "DEFAULT_MAX_STEPS",
-    "MAX_PENDING_SCAN_RECORDS",
     "ArchivedGraphRun",
     "CanonicalDurableRunStore",
     "DurableRunExecutionStore",
@@ -83,7 +81,6 @@ __all__ = [
     "LegacyGraphRunArchive",
     "LegacyRunNotResumable",
     "NodeResolver",
-    "PendingHitlScan",
     "RecoveryInfrastructureError",
     "RunStatus",
     "ScanContinuation",
