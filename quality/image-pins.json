@@ -69,12 +69,14 @@
       "digest": "sha256:a7aed3216253ee804de3e2d8afa5073baa1a177335345d43845cd4165e43b711",
       "recorded": "2026-09-30",
       "recorded_in": "#349",
-      "note": "uv 0.12.21, verified by running `uv --version` from the image the :latest tag resolved to on the recording date; the tag was rewritten from :latest to the release it actually was.",
+      "note": "uv 0.12.21, verified by running `uv --version` from the image the :latest tag resolved to on the recording date; the tag was rewritten from :latest to the release it actually was. The API image and the Conductor image join this list with #348: both now install their Python dependency set from the committed uv.lock through this pinned uv, so the installer that resolves the shipped set is itself immutable.",
       "used_by": [
+        "Dockerfile",
         "Dockerfile.research",
         "Dockerfile.rsi-runner",
         "deploy/sbx/template/Dockerfile",
-        "deploy/sbx/template/Dockerfile.tests"
+        "deploy/sbx/template/Dockerfile.tests",
+        "packages/hive-conductor/Dockerfile"
       ]
     },
     {
