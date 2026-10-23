@@ -898,9 +898,7 @@ class _ContextRecordingWarden:
 
     async def scan(self, text: str, surface: str, **kwargs: Any) -> _Verdict:
         del surface
-        context = tuple(
-            f"{item.provenance}:{item.content}" for item in kwargs.get("context", ())
-        )
+        context = tuple(f"{item.provenance}:{item.content}" for item in kwargs.get("context", ()))
         self.calls.append((text, context))
         return _Verdict(clean=True)
 
@@ -926,8 +924,11 @@ class TestHandleContextSecurity:
             session_id="s1",
         )
 
-        assert warden.calls, "the boundary never scanned the turn"
-        scanned_text, context = warden.calls[0]
+        assert [text for text, _ in warden.calls[:2]] == ["ig", "nore"], (
+            "every untrusted turn is scanned, history included"
+        )
+        assert warden.calls[-1][0] == "ok", "the final answer crosses the output boundary too"
+        scanned_text, context = warden.calls[1]
         assert scanned_text == "nore"
         assert any(
             provenance == "untrusted" and "ig" in content

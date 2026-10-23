@@ -84,6 +84,7 @@ class ConductorAgent:
         # the gate deliberately treats as context, not input (#776).
         self._warden = warden or Warden()
         self._sentinel = sentinel or Sentinel(warden=self._warden, permission_table={})
+
     async def handle(
         self,
         messages: list[dict[str, Any]],

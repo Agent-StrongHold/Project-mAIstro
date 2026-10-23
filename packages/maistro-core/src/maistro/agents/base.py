@@ -205,6 +205,8 @@ def _redact_message_content(content: Any) -> Any:
 def _message_text(message: dict[str, Any]) -> str:
     """Extract text from one message without treating structured content as trusted."""
     return _extract_message_text(message.get("content", ""))
+
+
 def _extract_user_text(messages: list[dict[str, Any]]) -> str:
     """Extract the latest user message text (handling string + content-block forms)."""
     for msg in reversed(messages):
