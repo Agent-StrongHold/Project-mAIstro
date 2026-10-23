@@ -2,6 +2,18 @@
   "_comment": "One reviewed disposition for every GitHub workflow (#400). Until this inventory existed, `.github/workflows/` was governed only by the gates that happened to parse it: stream1-diagnostic.yml sat pinned to a branch deleted after #373 landed, swallowing every failure with `|| true`, unable to fail and reading to every agent as an active pattern. ACTIVE = event-triggered gate or automation; its trigger branches must be live remote refs (or reviewed retained_branches rows). MANUAL_DIAGNOSTIC = workflow_dispatch-only, an on-demand measurement an operator or agent invokes deliberately. RETIRED = removed; names `replaced_by` (what now covers its function), a `removal_owner` and a `removal_issue` -- a retirement is a decision, not permission to resurrect, so a RETIRED file that reappears on disk fails the gate. Checked by scripts/check-workflow-inventory.py in both directions (a workflow file with no entry fails; an entry naming no file fails), plus the three rots that let stream1 go unnoticed: dead trigger branches, pinned commits the repository no longer contains, and blanket error swallowing (`|| true`, `continue-on-error: true`) with no written reason within six lines. The gate does NOT verify that a workflow's declared job graph still does what its rationale says; rationales are reviewed prose, not proofs.",
   "workflows": [
     {
+      "id": "issue-metadata-integrity",
+      "file": ".github/workflows/issue-metadata-integrity.yml",
+      "disposition": "ACTIVE",
+      "triggers": [
+        "issues",
+        "pull_request",
+        "schedule",
+        "workflow_dispatch"
+      ],
+      "rationale": "Checks metadata on issue edits and daily across the backlog; PRs run the isolated repair safety tests. Native hierarchy mutation is manual-only, source-pinned, journaled and verified in bounded batches; no automatic reparenting or priority/state changes."
+    },
+    {
       "id": "cage-guard",
       "file": ".github/workflows/cage-guard.yml",
       "disposition": "ACTIVE",
