@@ -94,8 +94,6 @@ def _server_env(extra: dict[str, str] | None = None) -> dict[str, str]:
     env.update(
         {
             "ROUTER_API_KEY": "sigterm-test-router-key",
-            # Startup validates API_KEY identities even when auth is disabled.
-            "API_KEYS": '["sigterm-test:sigterm-test-api-key"]',
             "REQUIRE_AUTH": "false",
             "DEBUG": "true",
         }
@@ -163,10 +161,7 @@ def _submit_task(port: int, workspace: str, timeout_s: float = 15.0) -> str:
     request = urllib.request.Request(
         f"http://127.0.0.1:{port}/v1/tasks",
         data=payload,
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": "Bearer sigterm-test-api-key",
-        },
+        headers={"Content-Type": "application/json"},
         method="POST",
     )
     with urllib.request.urlopen(request, timeout=timeout_s) as response:
@@ -176,11 +171,9 @@ def _submit_task(port: int, workspace: str, timeout_s: float = 15.0) -> str:
 
 
 def _get_task(port: int, task_id: str, timeout_s: float = 15.0) -> dict:
-    request = urllib.request.Request(
-        f"http://127.0.0.1:{port}/tasks/{task_id}",
-        headers={"Authorization": "Bearer sigterm-test-api-key"},
-    )
-    with urllib.request.urlopen(request, timeout=timeout_s) as response:
+    with urllib.request.urlopen(
+        f"http://127.0.0.1:{port}/tasks/{task_id}", timeout=timeout_s
+    ) as response:
         return dict(json.loads(response.read()))
 
 

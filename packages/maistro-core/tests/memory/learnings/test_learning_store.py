@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from maistro.memory.exposure import MemoryExposureMode
 from maistro.memory.learnings.store import InMemoryLearningStore
 from maistro.memory.types import EpistemicType, Learning, MemoryScope
@@ -235,7 +233,7 @@ class TestPromotion:
     @pytest.mark.ac("SPEC-100126-5445/AC-3")
     async def test_auto_promotion_at_threshold(self) -> None:
         store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
-        id_ = await store.store(_lr(keys=["key"], evidence=True))
+        id_ = await store.store(_lr(keys=["key"]))
         for _ in range(5):
             await store.mark_used([id_])
         promoted = await store.check_auto_promotions(threshold=5, org_id="org-1")

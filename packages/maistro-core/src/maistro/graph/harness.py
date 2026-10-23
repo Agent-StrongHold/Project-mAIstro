@@ -107,10 +107,6 @@ class HarnessRunnerDispatchAdapter:
     ActionGate outbound) resolved through ``resolve_harness_runner`` — or a
     test double with the same session protocol. This class adds no policy of
     its own; it only shapes one turn and records dispatch provenance.
-
-    This legacy bridge's cache is instance-local. It is not a restart-safe
-    timer-poll profile; its unknown-handle ``None`` behavior below remains an
-    explicit #1613/#1192 integration limit, not proof that remote work is pending.
     """
 
     def __init__(self, runner: HarnessRunner, *, workdir: str = ".") -> None:

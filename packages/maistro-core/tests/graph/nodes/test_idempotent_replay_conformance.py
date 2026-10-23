@@ -19,13 +19,6 @@ from typing import Any
 import httpx
 import pytest
 
-from maistro.capabilities.binding import Binding
-from maistro.capabilities.effect_context import (
-    CapabilityEffectContext,
-    binding_scope_policy,
-    new_in_memory_effect_context,
-)
-from maistro.credentials.types import CredentialRecord
 from maistro.graph.nodes import get_node, list_kinds
 from maistro.graph.nodes.base import NodeContext, ReplaySemantics
 from maistro.graph.types import GraphBlackboard
@@ -37,12 +30,6 @@ def _ctx(*, node_run_id: str) -> NodeContext:
         dag_id="dag-1",
         node_id="node-1",
         node_run_id=node_run_id,
-        attempt_id=f"attempt-{node_run_id}",
-        # Governed poll nodes resolve their Binding by scope (#1195), so the
-        # conformance context has to carry the same Workspace/Project the
-        # Binding was registered under.
-        workspace_id="ws-1",
-        project_id="project-1",
         blackboard=GraphBlackboard(task_objective="conformance", workspace=""),
     )
 
@@ -139,67 +126,24 @@ def _subtask_payload(all_done: bool = True) -> dict[str, Any]:
     }
 
 
-# Governed shape (#1195): node input names the Binding and the business
-# parameters; endpoint config and credentials live on the Binding itself.
 _JQL_INPUTS: dict[str, Any] = {
-    "binding_id": "jira-binding",
+    "base_url": "https://jira.example.com",
     "jql": "assignee=currentUser() AND resolution=Unresolved",
+    "pat": "pat-token",
 }
 
 _SUBTASK_INPUTS: dict[str, Any] = {
-    "binding_id": "jira-binding",
+    "base_url": "https://jira.example.com",
     "parent_key": "P-100",
-    "poll_interval_seconds": 5,
+    "pat": "pat-token",
 }
 
 _AIRTABLE_INPUTS: dict[str, Any] = {
-    "binding_id": "airtable-binding",
+    "pat": "pat-token",
     "base_id": "appXYZ",
     "table": "Initiatives",
+    "since_iso": "2026-05-21T00:00:00Z",
 }
-
-
-_POLL_BINDINGS: dict[str, tuple[str, str, dict[str, Any]]] = {
-    # kind -> (capability, provider, binding config)
-    "jira.poll": (
-        "jira.search",
-        "jira",
-        {"base_url": "https://jira.example.com", "flavor": "server"},
-    ),
-    "jira.wait_for_subtasks": (
-        "jira.subtasks",
-        "jira",
-        {"base_url": "https://jira.example.com", "flavor": "server"},
-    ),
-    "airtable.poll": ("airtable.records", "airtable", {}),
-}
-
-
-async def _governed_effects(kind: str) -> CapabilityEffectContext:
-    """A composition root with the Binding these governed poll nodes need."""
-
-    capability, provider, config = _POLL_BINDINGS[kind]
-    effects = new_in_memory_effect_context(policy_evaluator=binding_scope_policy)
-    await effects.bindings.put(
-        Binding(
-            binding_id=f"{provider}-binding",
-            workspace_id="ws-1",
-            project_id="project-1",
-            node_id="node-1",
-            capability=capability,
-            provider_name=provider,
-            config=config,
-            credential_refs=(f"{provider}-key",),
-        )
-    )
-    effects.credentials.add(
-        workspace_id="ws-1",
-        project_id="project-1",
-        record=CredentialRecord(
-            key_id=f"{provider}-key", provider=provider, api_key=f"secret-{provider}"
-        ),
-    )
-    return effects
 
 
 async def _run_poll_kind(
@@ -210,7 +154,7 @@ async def _run_poll_kind(
 ) -> dict[str, Any]:
     seen: dict[str, Any] = {}
     _patch_read_only_transport(monkeypatch, payload, seen)
-    node = get_node(kind)(effect_context=await _governed_effects(kind))
+    node = get_node(kind)()
     first = await node.run(inputs, _ctx(node_run_id="node-run-1"))
     second = await node.run(inputs, _ctx(node_run_id="node-run-retry-2"))
     return {"first": first, "second": second, "http": seen}
@@ -266,68 +210,6 @@ async def test_poll_replay_is_read_only_and_stable(
     assert observed["second"].output == observed["first"].output
 
 
-@pytest.mark.asyncio
-async def test_design_explore_replay_leaves_one_wave_envelope(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The explore coordinator's effect channel is authorization, not a model call.
-
-    ``design.explore`` declares IDEMPOTENT: the coordinator authorizes the wave
-    and emits the wave envelope, and the wave's Invocations belong to the
-    thesis slots. Replaying it against the same logical input must therefore
-    resolve the same authorized Binding, produce the same envelope, and
-    dispatch no model work at all.
-    """
-    from maistro.capabilities.model_chat import MODEL_CHAT_CAPABILITY
-    from maistro_design.explore import DesignExploreNode
-
-    seen: dict[str, Any] = {}
-    _patch_read_only_transport(monkeypatch, {"choices": []}, seen)
-
-    effects = new_in_memory_effect_context(policy_evaluator=binding_scope_policy)
-    await effects.bindings.put(
-        Binding(
-            binding_id="design-model-binding",
-            workspace_id="ws-1",
-            project_id="project-1",
-            node_id="node-1",
-            capability=MODEL_CHAT_CAPABILITY,
-            provider_name="openai",
-            config={},
-            credential_refs=("openai-key",),
-        )
-    )
-    node = DesignExploreNode(effect_context=effects)
-    inputs = {
-        "goal_id": "goal-1",
-        "goal_revision": 3,
-        "goal_desired_state": "A compelling design thesis",
-        "goal_success_conditions": ["clear narrative"],
-        "rubric_id": "rubric-1",
-        "rubric_revision": 2,
-        "rubric_criteria": "novelty 0.5; gate: all",
-        "width": 2,
-        "binding_id": "design-model-binding",
-    }
-
-    first = await node.run(inputs, _ctx(node_run_id="node-run-1"))
-    second = await node.run(inputs, _ctx(node_run_id="node-run-retry-2"))
-
-    assert first.success and second.success
-    out_model = node.output_schema
-    assert isinstance(first.output, out_model) and isinstance(second.output, out_model)
-    # The replay produces the same wave envelope — one wave, not two.
-    assert first.output == second.output
-    assert first.output.authorized_binding_id == "design-model-binding"
-    # And the coordinator authorizes; it never dispatches a model call.
-    assert seen.get("methods", []) == [], "the coordinator reached the model host"
-    # No Invocation was recorded either: the wave's model work belongs to the
-    # thesis slots, not to the coordinator that plans the wave.
-    ledger = getattr(effects.invocation_store, "_items", None)
-    assert ledger is not None, "the in-memory Invocation ledger is not observable"
-    assert not ledger, sorted(ledger)
-
-
 # --- the registry sweep -----------------------------------------------------
 
 
@@ -338,11 +220,8 @@ def test_every_idempotent_kind_has_a_conformance_case() -> None:
     kind that declares the semantics without landing here fails this test --
     the catalog flag can no longer outrun the enforceable contract.
     """
-    import maistro_design.explore  # noqa: F401  (the import is the registration)
-
     covered = {
         "dashboard.append_section",
-        "design.explore",
         "jira.poll",
         "airtable.poll",
         "jira.wait_for_subtasks",

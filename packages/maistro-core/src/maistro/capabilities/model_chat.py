@@ -75,11 +75,7 @@ def _gateway_usage(
 
     if not isinstance(body, dict):
         return None
-    reported: tuple[int, int] | None = None
-    if isinstance(provider, AdapterGatewayProvider):
-        reported = provider.adapter.usage_from(body)
-    if reported is None:
-        reported = reported_usage(body)
+    reported = reported_usage(body)
     if reported is None:
         return None
     input_units, output_units = reported
@@ -237,44 +233,6 @@ def resolve_model_chat_provider(
         return LlmGatewayProvider(selected, model=selected.name)
 
     return resolve
-
-
-async def _resolve_named_model(
-    registry: LLMProviderRegistry,
-    adapters: ProviderAdapterCatalog | None,
-    binding: Binding,
-    selection: str,
-) -> ResolvedCapabilityProvider | Unavailable:
-    """Resolve an explicitly named (pinned or aliased) model selection."""
-
-    try:
-        metadata: ModelMetadata | None = await registry.get_model(selection)
-    except ModelNotFoundError:
-        if binding.provider_name:
-            return Unavailable(
-                slot=MODEL_CHAT_CAPABILITY,
-                reason=(
-                    f"pinned model {selection!r} is unknown; register its metadata "
-                    "in the configured ProviderRegistry before using a Binding pin "
-                    "(provider_config_path); gateway /model/new is not sufficient"
-                ),
-            )
-        metadata = None
-    if metadata is not None and not registry.is_available(metadata.name):
-        source = "pinned model" if binding.provider_name else "request alias"
-        return Unavailable(
-            slot=MODEL_CHAT_CAPABILITY,
-            reason=(
-                f"{source} {selection!r} is unavailable; an explicit selection does not fall back"
-            ),
-        )
-    resolved = adapters.resolve_provider(selection, metadata) if adapters is not None else None
-    if resolved is not None:
-        refusal = _adapter_health_refusal(adapters, resolved)
-        if refusal is not None:
-            return Unavailable(slot=MODEL_CHAT_CAPABILITY, reason=refusal)
-        return resolved
-    return LlmGatewayProvider(metadata, model=selection)
 
 
 class GovernedLLMClient:
@@ -482,7 +440,6 @@ class ModelChatEgress:
         effect_key: str,
         request: ModelChatRequest,
         setup: Callable[[], Awaitable[None]] | None = None,
-        actor_id: str = "",
     ) -> ModelCallResult:
         """Run one governed model call, optionally performing provider setup.
 
@@ -493,13 +450,8 @@ class ModelChatEgress:
         performed by the caller beforehand: a denied policy then causes zero
         HTTP, not a credential-bearing side request ahead of authorization.
         """
-        resolver = resolve_model_chat_provider(
-            self._registry,
-            self._router,
-            alias=request.model,
-            adapters=self._adapters,
-        )
-        selected: list[LlmGatewayProvider | AdapterGatewayProvider] = []
+        resolver = resolve_model_chat_provider(self._registry, self._router, alias=request.model)
+        selected: list[LlmGatewayProvider] = []
 
         async def tracked_resolve(candidate: Binding) -> ResolvedCapabilityProvider | Unavailable:
             provider = await resolver(candidate)
@@ -516,7 +468,7 @@ class ModelChatEgress:
                     "model-chat physical execution requires a Binding-scoped credential"
                 )
             base = provider.base
-            if not isinstance(base, (LlmGatewayProvider, AdapterGatewayProvider)):
+            if not isinstance(base, LlmGatewayProvider):
                 raise TypeError(f"credential routed a non-gateway provider: {base!r}")
             if setup is not None:
                 await setup()

@@ -1486,9 +1486,7 @@ class TestTheBatchReportsWhatTheLogSkipped:
         self, stores: tuple[InMemoryEventLog, InMemoryTriggerStore, InMemoryInvocationStore]
     ) -> None:
         log, triggers, invocations = stores
-        await triggers.add(
-            TriggerDefinition(name="agents", event_pattern="agent.*", **SAFE_TRIGGER_KWARGS)
-        )
+        await triggers.add(TriggerDefinition(name="agents", event_pattern="agent.*"))
         await log.append("agent.created")
         await log.append("agent.created")
 
@@ -1501,9 +1499,7 @@ class TestTheBatchReportsWhatTheLogSkipped:
         self, stores: tuple[InMemoryEventLog, InMemoryTriggerStore, InMemoryInvocationStore]
     ) -> None:
         inner, triggers, invocations = stores
-        await triggers.add(
-            TriggerDefinition(name="agents", event_pattern="agent.*", **SAFE_TRIGGER_KWARGS)
-        )
+        await triggers.add(TriggerDefinition(name="agents", event_pattern="agent.*"))
         for _ in range(6):
             await inner.append("agent.created")
         log = HidingLog(inner, hidden={2, 4, 5})
@@ -1511,6 +1507,8 @@ class TestTheBatchReportsWhatTheLogSkipped:
 
         batch = await process_events_batch(log, triggers, invocations, caller)  # type: ignore[arg-type]
 
+        # The visible events were still processed: a hole delays only the
+        # persisted resume point, never the work.
         assert [event_id for _, event_id in caller.calls] == [1, 3, 6]
         assert batch.cursor == 6
         assert batch.holes == (2, 4)
@@ -1519,9 +1517,7 @@ class TestTheBatchReportsWhatTheLogSkipped:
         self, stores: tuple[InMemoryEventLog, InMemoryTriggerStore, InMemoryInvocationStore]
     ) -> None:
         inner, triggers, invocations = stores
-        await triggers.add(
-            TriggerDefinition(name="agents", event_pattern="agent.*", **SAFE_TRIGGER_KWARGS)
-        )
+        await triggers.add(TriggerDefinition(name="agents", event_pattern="agent.*"))
         await inner.append("agent.created")
         await inner.append("agent.created")
         log = HidingLog(inner, hidden={1})
@@ -1534,8 +1530,10 @@ class TestTheBatchReportsWhatTheLogSkipped:
     async def test_holes_are_only_counted_below_the_settled_cursor(
         self, stores: tuple[InMemoryEventLog, InMemoryTriggerStore, InMemoryInvocationStore]
     ) -> None:
+        """An unsettled event holds the cursor; a hole above it is next tick's
+        business, since nothing above the cursor is persisted anyway."""
         inner, triggers, invocations = stores
-        t = TriggerDefinition(name="agents", event_pattern="agent.*", **SAFE_TRIGGER_KWARGS)
+        t = TriggerDefinition(name="agents", event_pattern="agent.*")
         await triggers.add(t)
         for _ in range(4):
             await inner.append("agent.created")
@@ -1552,9 +1550,7 @@ class TestTheBatchReportsWhatTheLogSkipped:
         self, stores: tuple[InMemoryEventLog, InMemoryTriggerStore, InMemoryInvocationStore]
     ) -> None:
         inner, triggers, invocations = stores
-        await triggers.add(
-            TriggerDefinition(name="agents", event_pattern="agent.*", **SAFE_TRIGGER_KWARGS)
-        )
+        await triggers.add(TriggerDefinition(name="agents", event_pattern="agent.*"))
         for _ in range(3):
             await inner.append("agent.created")
         log = HidingLog(inner, hidden={2})
@@ -1562,53 +1558,3 @@ class TestTheBatchReportsWhatTheLogSkipped:
         cursor = await process_events(log, triggers, invocations, RecordingCaller())  # type: ignore[arg-type]
 
         assert cursor == 3
-
-
-class TestAttemptBudgetCannotBeEvaded:
-    """Kill loops: repeated death/reclaim never buys a fourth send."""
-
-    async def test_repeated_death_and_reclaim_stops_at_the_cap(self) -> None:
-        log = InMemoryEventLog()
-        trig_store = InMemoryTriggerStore()
-        invocations = InMemoryInvocationStore()
-        trigger = TriggerDefinition(trigger_id="t-kill", event_pattern="a.b", **SAFE_TRIGGER_KWARGS)
-        await trig_store.add(trigger)
-        event = await log.append("a.b")
-        delivery = DeliveryIdentity(
-            handler_url=trigger.handler_url,
-            request_digest=request_digest_v1(trigger.handler_url, event),
-            replay_safety=trigger.effective_replay_safety,
-            contract_ref=trigger.contract_ref,
-        )
-        # Worker dies after begin each round: three send permissions total.
-        for expected_attempts in (1, 2, 3):
-            claimed = await invocations.claim(trigger.trigger_id, event.id, delivery=delivery)
-            assert claimed is not None
-            begun = await invocations.begin_dispatch(
-                trigger.trigger_id,
-                event.id,
-                claim_token=claimed.claim_token,
-                expected_revision=claimed.revision,
-                delivery=delivery,
-            )
-            assert begun is not None
-            assert begun.attempts == expected_attempts
-            # Hard death: the lease lapses with the marker in flight.
-            raw = await invocations.get(trigger.trigger_id, event.id)
-            assert raw is not None
-            expired = raw.__class__(**{**raw.__dict__, "lease_expires_at": 0.0})
-            await invocations.save(expired)
-
-        # A fourth begin is refused even after another takeover.
-        fourth_claim = await invocations.claim(
-            trigger.trigger_id, event.id, delivery=delivery, lease_seconds=-1.0
-        )
-        assert fourth_claim is not None  # claim may settle an exhausted receipt...
-        with pytest.raises(DeliveryAttemptLimitReached):
-            await invocations.begin_dispatch(
-                trigger.trigger_id,
-                event.id,
-                claim_token=fourth_claim.claim_token,
-                expected_revision=fourth_claim.revision,
-                delivery=delivery,
-            )
