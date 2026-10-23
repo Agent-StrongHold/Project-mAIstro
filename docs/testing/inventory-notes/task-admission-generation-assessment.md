@@ -7934,3 +7934,59 @@ first-hand in this round (no claim inherited):
   #1845 integration head that must pass the unchanged gates. BLOCKED
   remains the issue-conform terminal state; no repair within leaf
   authority exists.
+
+## Round 99 independent re-verification (head af8960c33, base b9cd15c60)
+
+Re-derived from scratch this round, trusting no prior claim:
+
+- Issue text re-read from dispatch context: the leaf contract requires the
+  unwired state, reports "the explicit merge blocker", and leaves the stack
+  unmerged; baseline entries, grants, keep-alive imports, dummy callers,
+  suppressions and waivers are all named prohibitions. No superseding
+  maintainer directive in the captured comments (latest entries are
+  progress-bot started/blocked markers only).
+- Focused commands re-run first-hand: leaf suite 132 passed; C1 identity +
+  live idempotency 146 passed; pack contracts + admission-identity
+  publication 136 passed — all rc=0. `ruff check` / `ruff format --check`
+  on the leaf pair clean; `mypy` on the module clean.
+- `check-vulture-baseline.py packages/*/src --min-confidence 60
+  --exclude '*/third_party/*'` (CI argv): rc=0, 1314 reviewed -> 1309
+  findings, unclassified 0 — the exact-debt-ledger vulture step has
+  nothing to amend; no ledger change made or needed.
+- `check-reachability-dispositions.py` rc=0 (47 groups, 157 modules);
+  `check-promotion-surface.py` rc=0; `check-shipped-surface-truth.py` rc=0.
+- `RATCHET_BASE_REV=origin/develop check-ratchet-provenance.py` rc=1 with
+  the sole failing sub-ratchet `check-reachability-provenance.py`
+  (157 -> 158 unreachable of 1453): exactly
+  `maistro.tasks.admission_generation` NEW unreachable, absent from
+  trusted base and candidate baseline.
+- `check-reachability.py` rc=1 naming exactly that one NEWLY UNREACHABLE
+  module; the CI test trio
+  (`test_baseline_matches_the_tree` + two baseline-identity tests)
+  reproduced: 3 failed, every reported set delta the single item
+  `maistro.tasks.admission_generation` — matching CI jobs 120205141052 /
+  120205141283 / 120210143879 at e28574228.
+- All FOUR issue-named mutations re-killed with `-x` via atomic
+  single-block rewrites: swap TAKEOVER/REPLACE_EXPIRED -> 1 failed (23
+  passed); lease before binding -> 1 failed (35 passed); legacy pending
+  as v2 -> 1 failed (24 passed); mismatch before expiry -> 1 failed (55
+  passed). Module restored byte-identical in-process after each mutation
+  (md5 257a6e45c382349dd12f559099663fbc before/after; no git restore);
+  `git status` clean afterwards.
+- Scope guards: zero production-source references to
+  `admission_generation` outside the module itself (grep rc=1 over
+  packages/*/src); live-flow files (`tasks/idempotency.py`,
+  `tasks/queue.py`, `tasks/__init__.py`) zero-diff vs base b9cd15c60;
+  full-tree delta vs base = the leaf module+suite, the publication/pack
+  tests, the -5 fix-eliminated vulture rows, the round-89 comment-only
+  reachability NOTE, inventory notes, CHANGELOG/CONVERGENCE-MATRIX and an
+  M9-B2 packs.py docstring change — nothing wires the leaf.
+- Full `check-suite-inventory.py` ok (21 suites, 33833 identities);
+  develop is unchanged at b9cd15c60 and already merged into this branch
+  (merge-base == origin/develop tip), so no sync conflict exists.
+- Verdict unchanged from rounds 92–98 and re-derived here: the tree is
+  exactly the issue-mandated state. Every residual CI red is bound solely
+  to the issue-predicted NEW-unreachable leaf; every in-leaf remedy is an
+  explicit #1852 prohibition; the sole repair is the #1845 integration
+  head landing the reviewed runtime consumer and passing the unchanged
+  gates. BLOCKED is the issue-conform terminal state for this leaf.
