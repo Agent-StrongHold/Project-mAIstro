@@ -578,6 +578,7 @@ async def create_agents(
     model_endpoint: Any = None,
     workspace_id: str = "default",
     project_id: str = "agent-runtime",
+    audit_log: Any = None,
 ) -> dict[str, Agent]:
     _register_custom_strategies()
 
@@ -610,6 +611,9 @@ async def create_agents(
         "rca_extractor": rca_extractor,
         "learning_promoter": learning_promoter,
         "tool_registry": tool_registry,
+        # #847: the canonical audit trail reaches the Agent so pre-Sentinel
+        # tool denials leave scoped authorization evidence.
+        "audit_log": audit_log,
     }
 
     if sa_engine:

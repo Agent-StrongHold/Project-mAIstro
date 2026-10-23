@@ -158,6 +158,7 @@ async def _construct_runtime(settings: Settings) -> EmbeddedRuntime:
     """
     import os
 
+    from services.governed_tools import HiveToolExposureRegistry
     from services.secrets import effective_llm_gateway_key
     from services.tool_executor import admitted_tool_executor
 
@@ -257,6 +258,10 @@ async def _construct_runtime(settings: Settings) -> EmbeddedRuntime:
         context_builder=container.context_builder,
         warden=container.warden,
         sentinel=container.sentinel,
+        # #847: pre-Sentinel tool denials (strategy allowlist gate and the
+        # Agent's own undeclared-tool boundary) audit through the same
+        # canonical trail as Sentinel decisions.
+        audit_log=container.audit_log,
         learning_store=container.learning_store,
         # ADR-091's Layer 0-4 assembly. The container has always built this
         # and nothing read it back, so the episodic memories the Conductor
@@ -280,7 +285,10 @@ async def _construct_runtime(settings: Settings) -> EmbeddedRuntime:
         # against hive's real tool functions instead of silently refusing via
         # react's un-guarded branch. ADR-082526-3ca6: the runtime that owns
         # the agents owns their delegation dependencies.
-        tool_executor=admitted_tool_executor(admitted_calls),
+        tool_executor=admitted_tool_executor(admitted_calls, container=container),
+        # Tool declarations do not supply schemas. Project the same host-owned
+        # contracts the Invocation adapter enforces into Agent/model exposure.
+        tool_registry=HiveToolExposureRegistry(),
         # Project the same roster allow-lists into the Container-owned A2A
         # receipt service. Without this, construction was wired but every
         # in-process delegation still refused as "no capabilities" (#147).

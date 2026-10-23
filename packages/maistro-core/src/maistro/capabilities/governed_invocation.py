@@ -6,7 +6,7 @@ import asyncio
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any
+from typing import Any, cast
 
 from maistro.capabilities.approval_store import (
     ApprovalStatus,
@@ -16,6 +16,7 @@ from maistro.capabilities.approval_store import (
     redact_approval_value,
 )
 from maistro.capabilities.binding import Binding, ResolvedBinding
+from maistro.capabilities.expected_effect import ExpectedEffectEvidence
 from maistro.capabilities.invocation import (
     Invocation,
     InvocationExecutionService,
@@ -141,6 +142,26 @@ class GovernedInvocationExecutionService:
 
         return await self._invocations.discover_ambiguous(stale_before=stale_before)
 
+    async def record_expected_effect_observation(
+        self, invocation_id: str, observed_post_state: Any
+    ) -> Invocation:
+        """Persist tool prediction observations without exposing the store."""
+
+        return await self._invocations.record_expected_effect_observation(
+            invocation_id, observed_post_state
+        )
+
+    @staticmethod
+    def expected_effect_mismatch_event(invocation: Invocation, *, tool_name: str) -> EventEnvelope:
+        """Build mismatch evidence through the canonical Invocation authority."""
+
+        return cast(
+            EventEnvelope,
+            InvocationExecutionService.expected_effect_mismatch_event(
+                invocation, tool_name=tool_name
+            ),
+        )
+
     async def reconcile(
         self,
         invocation_id: str,
@@ -222,6 +243,7 @@ class GovernedInvocationExecutionService:
         resolver: ProviderResolver,
         executor: ProviderExecutor,
         usage_from: UsageExtractor | None = None,
+        expected_effect: ExpectedEffectEvidence | None = None,
         actor_id: str = "",
     ) -> Invocation:
         context = InvocationPolicyContext(
@@ -284,6 +306,7 @@ class GovernedInvocationExecutionService:
                 resolver=resolver,
                 executor=executor,
                 usage_from=usage_from,
+                expected_effect=expected_effect,
                 actor_id=actor_id,
             )
         except asyncio.CancelledError:
