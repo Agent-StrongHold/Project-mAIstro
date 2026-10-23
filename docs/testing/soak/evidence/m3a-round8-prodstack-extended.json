@@ -1,0 +1,145 @@
+{
+ "issue": "860",
+ "schema": "m3a860.production-sustained-round/v1",
+ "round": "C (extended 1200 s window; same production-limit-aware profile as round B)",
+ "captured_at": "2026-10-06T13:27:32.668206+00:00",
+ "artifact": "deploy/docker-compose.prod.yml via project m3a860 (started 2026-10-06T11:05Z, prior round)",
+ "hashes": {
+  "git_head": "20c975f3b617ac5caa8ac97a04c510ee21bbfdce",
+  "server_1_image_id": "sha256:ef3698e0c56ae2827795254234adfd83af5a9bdad24839617e94d1ccccfa6ba0",
+  "server_2_image_id": "sha256:e1952541787efab9ac80e8990d7c221b9e553bb5b5ab4f4874b3d8545d8c1102",
+  "lb_image_id": "sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10",
+  "compose_file_sha256": "74fdc174732c0d9e5ecfe130045f81c616623734d6476dacef0aabc3adbbc3e7"
+ },
+ "kill_window": {
+  "mode": "SIGTERM drain (docker restart -t 20)",
+  "window_s": 2.25,
+  "events": [
+   {
+    "t": 600.4,
+    "event": "replica_2 SIGTERM-drain restart begin (docker restart -t 20)"
+   },
+   {
+    "t": 602.6,
+    "event": "replica_2 restart done: m3a860-maistro-server-2-1"
+   }
+  ],
+  "offered_in_window": {
+   "metrics_unauth": 0,
+   "health_live": 0,
+   "run_get": 0,
+   "health_ready": 0,
+   "task_submit": 0
+  },
+  "status_in_window": {},
+  "transport_errors_in_window": 0
+ },
+ "profile": {
+  "window_s": 1200.0,
+  "offered_rps": {
+   "health_ready": 0.3,
+   "health_live": 14.0,
+   "task_submit": 0.8,
+   "run_get": 0.4,
+   "metrics_unauth": 1.5
+  },
+  "authd_share": "1.2 rps authd (task_submit 0.8 + run_get 0.4) + 0.3 health_ready = 90/min principal vs 2x60/min production budget",
+  "model_calls": "fail fast (no provider keys in environment) -> circuit opens -> tasks terminalize failed; recorded degraded-path class (same as round 7B)"
+ },
+ "totals": {
+  "counts": {
+   "health_live": 16497,
+   "metrics_unauth": 1798,
+   "run_get": 480,
+   "task_submit": 959,
+   "health_ready": 360
+  },
+  "status_by_kind": {
+   "health_live|200": 16497,
+   "metrics_unauth|401": 1797,
+   "run_get|404": 480,
+   "task_submit|202": 959,
+   "health_ready|503": 356,
+   "health_ready|200": 4,
+   "metrics_unauth|429": 1
+  },
+  "client_transport_errors": 0
+ },
+ "latency_ms": {
+  "p50": {
+   "health_live": 3.76,
+   "metrics_unauth": 3.96,
+   "run_get": 5.49,
+   "task_submit": 15.6,
+   "health_ready": 25.27
+  },
+  "p95": {
+   "health_live": 5.8,
+   "metrics_unauth": 8.0,
+   "run_get": 25.43,
+   "task_submit": 43.18,
+   "health_ready": 35.04
+  },
+  "p99": {
+   "health_live": 13.34,
+   "metrics_unauth": 23.24,
+   "run_get": 40.73,
+   "task_submit": 118.16,
+   "health_ready": 58.13
+  },
+  "max": {
+   "health_live": 2255.68,
+   "metrics_unauth": 2256.24,
+   "run_get": 2299.14,
+   "task_submit": 2320.08,
+   "health_ready": 2296.76
+  }
+ },
+ "spine_audit_after_settle": {
+  "submitted_run_ids": 959,
+  "admitted_distinct_run_ids": 959,
+  "rows_for_window_ids": 959,
+  "duplicate_run_rows": 0,
+  "window_runs_by_status": "failed|959",
+  "nonterminal_runs_after_settle": 0,
+  "whole_spine_before_window": {
+   "failed": 681,
+   "queued": 2
+  },
+  "whole_spine_after_settle": {
+   "failed": 1640,
+   "queued": 2
+  }
+ },
+ "metrics_file": "docs/testing/soak/evidence/m3a-round8-prodstack-extended-metrics.jsonl",
+ "finished_at": "2026-10-06T13:50:39.120683+00:00",
+ "thresholds": {
+  "checks": {
+   "sustain_duration": {
+    "ok": false,
+    "observed_s": 1200.0,
+    "required_s": 14400,
+    "note": "extended observation round, still far below the RC 4 h floor"
+   },
+   "exact_rc_artifact": {
+    "ok": false,
+    "note": "locally built images; no release-owner RC designation exists"
+   }
+  }
+ },
+ "promotion_gate_replay": {
+  "failed_checks": [
+   "exactly_once_task_admission",
+   "exactly_once_schedule_occurrence",
+   "rate_limit_enforced",
+   "lb_failover_bounded",
+   "replica_2_rejoined",
+   "nonterminal_runs_after_settle",
+   "task_admission_availability",
+   "sustain_duration",
+   "exact_rc_artifact",
+   "graceful_drain"
+  ],
+  "note": "replayed with failed_promotion_checks at git_head 20c975f3b; observation round is not promotion evidence"
+ }
+}
