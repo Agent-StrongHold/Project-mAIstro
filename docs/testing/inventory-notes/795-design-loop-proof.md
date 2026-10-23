@@ -1,0 +1,138 @@
+---
+inventory-delta:
+  packages/maistro-core/tests: +16
+  packages/maistro-design/tests: +38
+---
+<!-- Measured by scripts/check-suite-inventory.py --update; see README.md. -->
+# 795-design-loop-proof
+
+Issue #795 (M7-A6): one public proof Run with an inspectable
+Goal→Rubric→Explore→Execute→Evaluate→Refine lineage, plus the lineage read
+model the proof (and later the Design Studio inspector) answers from.
+
+## This change's own delta
+
+`packages/maistro-core/tests` **+16**:
+
+- `runs/test_run_lineage.py` **+15** — `maistro.runs.lineage`
+  (`run_lineage`/`artifact_lineage`) as a read model over the shared
+  three-backend `spine` fixture: the projection carries Graph snapshot identity
+  (graph_id, content hash, definition), every NodeRun with its semantic
+  `node_name` from the Graph definition, every Attempt in ordinal order, and
+  every `RunEvalScore` grouped onto the Attempt that earned it; an artifact
+  resolves to its producing Attempt (including nested inside an Attempt
+  result), an artifact the Run never made raises `ArtifactNotInRunLineage`
+  instead of a guessed answer, Rubric/Goal bindings derive from persisted eval
+  records only, and an unknown Run raises `RunNotFound`. Five tests × three
+  backends; the Postgres leg skips without `MAISTRO_TEST_PG_DSN` exactly like
+  every other conformance suite.
+- `projects/test_rubric_store.py` **+1** — a retried `RubricStore.create()` of
+  identical content is idempotent and preserves the stored revision's
+  `created_at` instead of minting a fresh timestamp behind the caller (the
+  proof's redirect step re-walks creation paths, so retries are real there).
+
+`packages/maistro-design/tests` **+38** — `test_design_loop_proof.py`:
+
+- **+20** — the M7-A6 scenario executed end to end through canonical APIs
+  only, on both the in-memory and SQLite `RunStore` backends (10 tests × 2
+  backends): the planted `claim_evidence` failure is durable on the Run
+  before refine and the scorer is real (fails unevidenced claims, passes
+  evidenced ones); park → redirect-Rubric (same Goal revision, v1 immutable)
+  → accept are canonical human pauses; a mid-loop refresh re-reads Goal,
+  Rubric revisions, Run, and all six eval records from the stores; both
+  refine-side Attempts are visible, the failed record survives, and the
+  accepted artifact names the winning re-evaluation Attempt; the
+  Canvas-unavailable branch records exactly that with no artifact while the
+  loop completes on the non-Canvas branch, and the Canvas-available branch
+  produces on the same Run id; the full lineage chain from the accepted
+  artifact to both Rubric revisions and the Goal revision is queryable, with
+  the pack identity proven by the snapshot's `source_template` provenance;
+  and the proof advances only on decisions (no timers).
+- **+18** — the degenerate paths the happy-path proof walk never reaches
+  (the diff-coverage gate flagged the proof module at 75% branch arcs against
+  its 80% floor, and these are the meaningful arcs it named, not padding):
+  the scorer fails a field-less artifact naming each missing field and fails
+  a claim-free artifact as `no claims to evaluate` (never a vacuous pass);
+  the refine repair adds evidence without overwriting an existing citation;
+  both fence nodes reject a decision they do not know and the evaluate node
+  fails closed when its Rubric vanished from the store; a refine accept with
+  no durable pause behind it is refused as caller memory; the proof's status,
+  pause-evidence and accepted-artifact guards raise naming what was missing;
+  and the re-evaluation Attempt really scores — an unevidenced artifact
+  leaves durable failing rows naming the re-evaluation Attempt and the driver
+  refuses to return a passing Attempt that does not exist.
+
+## Reconciliation against `origin/develop` (7f8683be)
+
+## Reconciliation against `origin/develop` (7f8683be)
+
+The lane was authored on `2c557001d`, where `test_packs.py` had already grown
++26 across #793 (M7-A4 domain packs) and #794 (M7-A5 HITL fence) without an
+inventory note on that base. The first version of this note therefore recorded
+the whole +46 (20 this issue + 26 attributed drift). On `origin/develop` the
+#793 delta is already recorded (`793-domain-packs.md`,
+`793-domain-packs-repair.md`, `auto-793-55af.md`), so the +26 attribution is
+stale and would double-count: `scripts/check-suite-inventory.py` reported
+`packages/maistro-design/tests: expected 622, collected 596` (+26 over). This
+note records only this issue's **+20**, and the gate now reports
+`expected == collected` for that suite.
+
+## M7-A7 tripwire reconciliation (no test-count change)
+
+Develop's #2208 fitness map
+(`packages/maistro-core/tests/fitness/test_m7_a7_eval_consumer_map.py`, not
+present when this lane was authored) trips on any unbanked evaluator-shaped
+definition in `maistro_design` — and the proof adds two:
+`proof.py`'s `_EvaluateNode` and `_re_evaluate_refined_artifact`. The repair
+banks both by exact `(path, name)` row in `_DESIGN_SURFACE_BANK`, the tripwire's
+own reviewed-exception mechanism, after reviewing them against #796's standard:
+both score deterministically (no model calls) and persist verdicts as
+spine-validated `RunEvalScore` rows through the canonical
+`RunStore.record_eval_score`; the fence node parks the Run for a person's
+decision, the re-evaluation leg refuses to hand back a passing Attempt that
+does not exist, and neither promotes anything. No test was added or removed
+(the fitness module's own bank-freshness assertions keep the rows honest), so
+the per-suite counts above are unchanged; the RSI non-production-reachability
+pin over the same package passes untouched (1729 passed).
+
+## Codex-review salvage reconciliation (no test-count change)
+
+The independent Codex review of the lane (PR #2252 at `2e3733046`)
+flagged two P2 findings on the proof's re-evaluation leg. Both are now
+closed without a count change:
+
+- `proof.py` populated `evidence_pointers` on the passing `claim_evidence`
+  record from the artifact's own citations (commit `99d1400ab`).
+- A re-evaluation that still fails a dimension now transitions the opened
+  Attempt to `FAILED` before propagating, so the created/running fence no
+  longer strands the paused refine NodeRun (this salvage). The assertion
+  deepened in `test_re_eval_refuses_an_unevidenced_artifact` pins it: the
+  Attempt list reads `[FAILED]` with the failure named in `error`.
+
+`packages/maistro-design/tests` remains 614 (38 proof tests × backends) and
+`packages/maistro-core/tests` remains 17417; the suite inventory reports
+`expected == collected` for both.
+
+## pip-audit supply-chain repair (no test-count change)
+
+The merge-queue evaluation at `ead9b9fec` failed `Supply chain (pip-audit)` /
+`security` on three advisories outside the triaged allowlist, all on
+dev-only transitive dependencies: `gitpython==3.1.62` CVE-2026-114145 (via
+cosmic-ray) and `graphql-core==3.2.11` CVE-2026-75507/75508 (via
+`moto[server]`). Per the gate's own instruction — upgrade when a fixed
+version exists — `uv lock --upgrade-package gitpython
+--upgrade-package graphql-core` moved the pins to `gitpython 3.2.1` and
+`graphql-core 3.3.0` (the stable final release, past the rc the advisory
+named). No `ALLOWED` rows were added. Proven locally at CI's exact
+arguments: `pip-audit --strict` over `uv pip freeze --exclude-editable`
+then `scripts/pip_audit_gate.py` exits 0 (only the triaged `ecdsa`
+PYSEC-2026-1325 pair remains); `check-dependency-namespaces.py` passes
+over the bumped set; the moto-server-driven archive conformance suite
+passes 128/128 on graphql-core 3.3.0. No test was added or removed.
+
+The sibling `Container scan + SBOM + cosign` failure was already repaired
+at `ead9b9fec` (go1.27.2 → 1.27.3 stdlib rebuild of the age and docker-CLI
+stages); re-verified locally this round at trivy 0.73.0 (CI's exact
+version): both rebuilt stage binaries embed `go1.27.3` and scan clean at
+HIGH/CRITICAL with `--ignore-unfixed`, and `check-image-pins.py` passes.
+

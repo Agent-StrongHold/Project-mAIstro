@@ -47,6 +47,22 @@ from maistro_design.model_judge import (
     DesignJudgeThesis,
     HumanJudgeNotResolvedError,
 )
+
+# M7-A6 (#795): the closed design-loop proof driver is a published surface of
+# this package — the issue asks for one *public* proof Run, and the driver is
+# how a reviewer reproduces it (`docs/product/M7-A6-DESIGN-LOOP-PROOF.md`).
+# Exposed here rather than left unreachable so the reachability ratchet sees a
+# real call path instead of unreviewed built-but-never-wired code.
+from maistro_design.proof import (
+    PLANTED_DIMENSION_ID,
+    PRODUCT_GOAL_STATEMENT,
+    PROOF_GOAL_ID,
+    DesignLoopProof,
+    InMemoryGoalRevisionCatalog,
+    pack_rubric_catalog,
+    run_design_loop_proof,
+    score_artifact_against_rubric,
+)
 from maistro_design.protocols import (
     DesignEngineProtocol,
     DesignProjectStore,
@@ -135,6 +151,9 @@ __all__ = [
     "DESIGN_MODEL_CAPABILITY",
     "EXPLORE_NODE_KIND",
     "NATIVE_SLOTS",
+    "PLANTED_DIMENSION_ID",
+    "PRODUCT_GOAL_STATEMENT",
+    "PROOF_GOAL_ID",
     "THESIS_NODE_KIND",
     "AgentWorkInputs",
     "ArtifactKind",
@@ -174,6 +193,7 @@ __all__ = [
     "DesignJudgeNode",
     "DesignJudgeOut",
     "DesignJudgeThesis",
+    "DesignLoopProof",
     "DesignOutput",
     "DesignOutputShapeError",
     "DesignProject",
@@ -195,6 +215,7 @@ __all__ = [
     "HumanJudgeNotResolvedError",
     "InMemoryDesignSkillRegistry",
     "InMemoryDesignSystemRegistry",
+    "InMemoryGoalRevisionCatalog",
     "InMemoryTrustBanishList",
     "InMemoryTrustReviewQueue",
     "IncompatibleDesignSystemError",
@@ -235,9 +256,12 @@ __all__ = [
     "load_builtins",
     "load_bundled",
     "load_catalog",
+    "pack_rubric_catalog",
+    "run_design_loop_proof",
     "scan_design_output",
     "scan_design_system_content",
     "scan_design_text",
+    "score_artifact_against_rubric",
 ]
 
 

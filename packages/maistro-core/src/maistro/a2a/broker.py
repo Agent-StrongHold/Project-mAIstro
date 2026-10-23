@@ -203,6 +203,8 @@ class A2ABroker:
                 requested_at=utc_now(),
             )
             decision = self._delegation_authority.authorize(request, now=request.requested_at)
+            if hasattr(decision, "__await__"):
+                decision = await decision
             if not decision.allowed:
                 raise DelegationRefused(f"host delegation refused: {decision.reason}")
             metadata["delegated_actions"] = sorted(decision.effective_actions)
