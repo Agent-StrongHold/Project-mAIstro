@@ -13,13 +13,6 @@ credential text. Consequences:
 * changing/omitting/forging an Authorization string cannot mint a fresh
   bucket — invalid credentials fall into the same pre-auth bucket as no
   credential at all;
-* with authentication disabled (``API_KEYS`` empty — the development
-  configuration), the Authorization header has no influence at all: no
-  principal exists to resolve, so every request from one client address
-  — headerless, arbitrary Bearer, or malformed scheme — shares that
-  address's one pre-auth bucket (#1101). Header text can neither mint a
-  synthetic ``principal:dev`` bucket beside the ``ip:`` bucket nor
-  collapse distinct development clients into one global bucket;
 * a verified Conductor delegation envelope keys the budget to the originating
   user while retaining the service credential as the authenticated caller;
 * key material never becomes a bucket id, label, or header.
@@ -68,20 +61,6 @@ from maistro.security.rate_limiter import InMemoryRateLimiter
 from maistro.tasks.http_contract import DELEGATION_HEADER, verify_delegation_context
 from maistro_server.api.auth import resolve_token_principal
 from maistro_server.api.route_table import iter_effective_routes
-
-
-def _pre_auth_client_key(request: Request) -> str:
-    """The bounded pre-auth bucket: the connecting client's address.
-
-    A bounded identity no attacker-controlled header content can rotate;
-    also the unconditional bucket of the auth-disabled development
-    configuration (#1101). The value is an internal rate-limit bucket key
-    (never rendered to clients), so it is constructed via ``str.join``
-    rather than an f-string.
-    """
-    client = request.client
-    ip = client.host if client else "unknown"
-    return ":".join(("ip", ip))
 
 
 class RateLimitMiddleware(BaseHTTPMiddleware):

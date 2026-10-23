@@ -31,6 +31,29 @@ jobs:
 
       - uses: ./.github/actions/setup-uv
 
+      - name: Link the stronger installed-workspace proof (#86)
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Gate C stays the fast clean-install SMOKE: a fresh checkout, the
+          # documented install path, readiness, the owned migration chain, and
+          # teardown. The stronger proof for #86 is a separate, deliberately
+          # finite run -- one reviewed manifest drives one support row and
+          # produces one hashed evidence bundle -- and it needs a reviewed
+          # manifest plus a pre-authorized provider budget, so it does not
+          # belong in this always-on smoke.
+          #
+          #   docs/testing/installed-workspace-proof.md
+          #   scripts/prove-installed-workspace.py
+          #
+          # What this step does is keep the link honest: the contract, its
+          # schema, and its entrypoint must ship, and the entrypoint must stay
+          # invocable. It runs no installer and makes no provider call.
+          test -f docs/testing/installed-workspace-proof.md
+          test -f docs/testing/installed-workspace-proof.schema.json
+          test -f scripts/prove-installed-workspace.py
+          python3 scripts/prove-installed-workspace.py --help >/dev/null
+
       - name: Prove clean starting state
         shell: bash
         run: |

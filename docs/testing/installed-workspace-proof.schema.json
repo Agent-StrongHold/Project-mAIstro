@@ -1,165 +1,507 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://raw.githubusercontent.com/Agent-StrongHold/Project-mAIstro/develop/docs/testing/installed-workspace-proof.schema.json",
-  "title": "Installed workspace release-proof envelope, v1 (#1878)",
-  "description": "Structural contract for the three documents of an installed-workspace release-proof envelope: the independently supplied reviewed profile, the bundle manifest.json, and the bundle results.json. The validator (scripts/validate-installed-workspace-proof.py) validates each document against the matching $defs entry. Every object rejects additional properties, no field carries an implicit default, and the reviewed profile deliberately defines no switch that can waive any of the five mandatory scenario families.",
-  "oneOf": [
-    { "$ref": "#/$defs/reviewedProfile" },
-    { "$ref": "#/$defs/manifest" },
-    { "$ref": "#/$defs/results" }
+  "$id": "installed-workspace-proof/manifest",
+  "title": "Reviewed manifest for the installed-workspace proof (#86 M3-A4)",
+  "description": "One reviewed manifest drives one finite installed proof of one support row. It names the published immutable ref plus artifact digests, the support row, the clean target and its probe, approved non-secret installer answers, scoped EXISTING credential references (never secret values), a bounded provider-call budget, and the public installer/lifecycle/client commands for the five mandatory scenario families. The harness at scripts/prove-installed-workspace.py loads THIS file and refuses schema keywords it does not implement, so the contract here is the enforced one. Authorization boundary: no live installation or provider calls are authorized by the issue clarification; a run additionally requires the manifest to be reviewed and the provider budget pre-authorized.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "review",
+    "artifacts",
+    "support_row",
+    "target",
+    "credentials",
+    "provider",
+    "scenarios"
   ],
-  "$defs": {
-    "hex64": {
+  "properties": {
+    "schema": {
+      "const": 1,
+      "description": "Manifest schema version. Bump on any incompatible change."
+    },
+    "notes": {
       "type": "string",
-      "pattern": "^[0-9a-f]{64}$"
+      "description": "Optional free-form provenance for reviewers."
     },
-    "nonEmptyString": {
-      "type": "string",
-      "minLength": 1,
-      "pattern": "\\S"
-    },
-    "reasonCode": {
-      "type": ["string", "null"],
-      "minLength": 1
-    },
-    "evidencePaths": {
-      "type": "array",
-      "items": { "type": "string", "minLength": 1 },
-      "uniqueItems": true
-    },
-    "passRow": {
-      "if": {
-        "properties": { "outcome": { "const": "PASS" } },
-        "required": ["outcome"]
-      },
-      "then": {
-        "properties": {
-          "reason_code": { "type": "null" },
-          "evidence_paths": { "type": "array", "minItems": 1 }
-        }
-      }
-    },
-    "nonPassRow": {
-      "if": {
-        "properties": {
-          "outcome": { "enum": ["FAIL", "BLOCKED", "NOT_RUN", "NOT_APPLICABLE"] }
+    "review": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["reviewed", "reviewer", "reviewed_at"],
+      "properties": {
+        "reviewed": {
+          "const": true,
+          "description": "A manifest is executable evidence input only after human review."
         },
-        "required": ["outcome"]
-      },
-      "then": {
-        "properties": {
-          "reason_code": { "type": "string", "minLength": 1 }
+        "reviewer": {
+          "type": "string",
+          "pattern": ".+\\S.*",
+          "description": "Who reviewed (identity, not a secret)."
+        },
+        "reviewed_at": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?Z$",
+          "description": "UTC ISO-8601 review timestamp."
         }
       }
     },
-    "reviewedProfile": {
+    "artifacts": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["schema_version", "profile_id", "browser_login_applicable"],
+      "required": ["ref", "ref_immutable", "entrypoint", "entrypoint_documentation", "digests"],
       "properties": {
-        "schema_version": { "const": 1 },
-        "profile_id": { "$ref": "#/$defs/nonEmptyString" },
-        "browser_login_applicable": { "type": "boolean" }
-      }
-    },
-    "manifest": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "schema_version",
-        "evidence_kind",
-        "candidate",
-        "profile_id",
-        "files"
-      ],
-      "properties": {
-        "schema_version": { "const": 1 },
-        "evidence_kind": { "enum": ["synthetic", "observed"] },
-        "candidate": {
+        "ref": {
+          "type": "string",
+          "pattern": "^v\\d+\\.\\d+\\.\\d+(-[0-9A-Za-z.+-]+)?$",
+          "description": "Published immutable release tag (e.g. v1.2.0-rc1), never a moving branch."
+        },
+        "ref_immutable": {
+          "const": true,
+          "description": "The proof installs published/tag-pinned artifacts, not a developer checkout."
+        },
+        "entrypoint": {
+          "type": "array",
+          "items": { "type": "string" },
+          "minItems": 1,
+          "description": "Installer entrypoint argv exactly as the shipped documentation resolves it (get.sh/get.ps1 + docs/install). Never the harness checkout's install.sh."
+        },
+        "entrypoint_documentation": {
+          "type": "string",
+          "pattern": ".+\\S.*",
+          "description": "Where the exact entrypoint/version syntax was resolved from (documented path)."
+        },
+        "digests": {
           "type": "object",
-          "additionalProperties": false,
-          "required": ["commit", "artifact_sha256"],
-          "properties": {
-            "commit": {
-              "type": "string",
-              "pattern": "^[0-9a-f]{40}$"
-            },
-            "artifact_sha256": { "$ref": "#/$defs/hex64" }
-          }
-        },
-        "profile_id": { "$ref": "#/$defs/nonEmptyString" },
-        "files": {
-          "type": "array",
-          "items": { "$ref": "#/$defs/listedFile" }
+          "additionalProperties": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$"
+          },
+          "description": "Artifact digests keyed by artifact name (engine image, get.sh, ...)."
         }
       }
     },
-    "listedFile": {
+    "support_row": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["path", "sha256"],
-      "properties": {
-        "path": { "type": "string", "minLength": 1 },
-        "sha256": { "$ref": "#/$defs/hex64" }
-      }
-    },
-    "results": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "schema_version",
-        "candidate_sha256",
-        "profile_id",
-        "scenarios",
-        "subchecks"
-      ],
-      "properties": {
-        "schema_version": { "const": 1 },
-        "candidate_sha256": { "$ref": "#/$defs/hex64" },
-        "profile_id": { "$ref": "#/$defs/nonEmptyString" },
-        "scenarios": {
-          "type": "array",
-          "items": { "$ref": "#/$defs/scenario" }
-        },
-        "subchecks": {
-          "type": "array",
-          "items": { "$ref": "#/$defs/subcheck" }
-        }
-      }
-    },
-    "scenario": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["id", "outcome", "reason_code", "evidence_paths"],
+      "required": ["id", "browser", "owner", "os", "arch", "runtime", "context", "store_profile"],
       "properties": {
         "id": {
-          "enum": ["INSTALL", "EXECUTE", "RESTART", "ISOLATE", "FAIL-CLOSED"]
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9-]*$",
+          "description": "Support-row ID from the owner-approved host/runtime/privilege matrix (#1820)."
         },
-        "outcome": { "enum": ["PASS", "FAIL", "BLOCKED", "NOT_RUN"] },
-        "reason_code": { "$ref": "#/$defs/reasonCode" },
-        "evidence_paths": { "$ref": "#/$defs/evidencePaths" }
-      },
-      "allOf": [
-        { "$ref": "#/$defs/passRow" },
-        { "$ref": "#/$defs/nonPassRow" }
-      ]
+        "browser": {
+          "enum": ["ui", "headless"],
+          "description": "UI-bearing rows prove browser first-run/login; headless rows prove the documented authenticated equivalent."
+        },
+        "owner": {
+          "type": "string",
+          "pattern": ".+\\S.*",
+          "description": "Existing owner of the support-row matrix."
+        },
+        "os": { "type": "string", "pattern": ".+\\S.*" },
+        "arch": { "type": "string", "pattern": ".+\\S.*" },
+        "runtime": {
+          "type": "string",
+          "pattern": ".+\\S.*",
+          "description": "Selected runtime (e.g. docker)."
+        },
+        "context": {
+          "type": "string",
+          "pattern": ".+\\S.*",
+          "description": "Runtime context (e.g. default, rootless, non-default socket)."
+        },
+        "store_profile": {
+          "type": "string",
+          "pattern": ".+\\S.*",
+          "description": "Persistent store profile (e.g. standalone-compose)."
+        },
+        "profile_path": {
+          "type": "string",
+          "pattern": ".+\\S.*",
+          "description": "Optional path to the independently reviewed support-row profile file; copied into the bundle as profile.json and excluded from the recursive hash list. REQUIRED for headless rows (the NOT_APPLICABLE justification)."
+        },
+        "headless_review": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["independently_reviewed", "reviewer"],
+          "properties": {
+            "independently_reviewed": {
+              "const": true,
+              "description": "NOT_APPLICABLE for BROWSER_LOGIN is allowed only on an independently reviewed headless profile."
+            },
+            "reviewer": { "type": "string", "pattern": ".+\\S.*" }
+          },
+          "description": "Mandatory for headless rows."
+        }
+      }
     },
-    "subcheck": {
+    "target": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "outcome", "reason_code", "evidence_paths"],
+      "required": ["host", "account", "probe", "requirements"],
       "properties": {
-        "id": { "const": "BROWSER_LOGIN" },
-        "outcome": {
-          "enum": ["PASS", "FAIL", "BLOCKED", "NOT_RUN", "NOT_APPLICABLE"]
+        "host": {
+          "type": "string",
+          "pattern": ".+\\S.*",
+          "description": "Clean machine/VM identity."
         },
-        "reason_code": { "$ref": "#/$defs/reasonCode" },
-        "evidence_paths": { "$ref": "#/$defs/evidencePaths" }
-      },
-      "allOf": [
-        { "$ref": "#/$defs/passRow" },
-        { "$ref": "#/$defs/nonPassRow" }
-      ]
+        "account": {
+          "type": "string",
+          "pattern": ".+\\S.*",
+          "description": "Ordinary host account (not root, not a break-glass fixture)."
+        },
+        "admin_prerequisites": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "One-time administrator prerequisites, if any, with their owner."
+        },
+        "transport": {
+          "enum": ["local", "ssh"],
+          "description": "How commands reach the target. The manifest's commands embed the transport (e.g. leading ssh argv)."
+        },
+        "env_path": {
+          "type": "string",
+          "pattern": ".+\\S.*",
+          "description": "PATH the executed commands see. The harness environment (Python, uv, credentials, app data, checkout) is never inherited."
+        },
+        "home": {
+          "type": "string",
+          "pattern": ".+\\S.*",
+          "description": "HOME the executed commands see."
+        },
+        "workdir": {
+          "type": "string",
+          "pattern": ".+\\S.*",
+          "description": "Working directory for executed commands (never the harness checkout)."
+        },
+        "probe": {
+          "type": "array",
+          "items": { "type": "string" },
+          "minItems": 1,
+          "description": "Target probe argv; stdout must be JSON reporting the machine facts the results record."
+        },
+        "requirements": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "developer_checkout_absent",
+            "inherited_credentials_absent",
+            "inherited_python_uv_absent",
+            "inherited_app_data_absent"
+          ],
+          "properties": {
+            "developer_checkout_absent": { "const": true },
+            "inherited_credentials_absent": { "const": true },
+            "inherited_python_uv_absent": { "const": true },
+            "inherited_app_data_absent": { "const": true }
+          },
+          "description": "Clean-target contract. The probe must report each as true; a false report BLOCKS the run truthfully."
+        }
+      }
+    },
+    "credentials": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "reference", "scope", "present"],
+        "properties": {
+          "name": { "type": "string", "pattern": ".+\\S.*" },
+          "reference": {
+            "type": "string",
+            "pattern": ".+\\S.*",
+            "description": "Scoped EXISTING credential reference (e.g. vault://...). Never a secret value; the harness rejects secret-shaped literals anywhere in the manifest."
+          },
+          "scope": { "enum": ["gateway", "provider"] },
+          "present": {
+            "type": "boolean",
+            "description": "Whether the referenced credential is already supplied on the target. Absent credentials make provider-touching scenarios NOT_RUN; they are never permission to create or import credentials."
+          }
+        }
+      }
+    },
+    "provider": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["gateway", "model_default", "budget"],
+      "properties": {
+        "gateway": { "type": "string", "pattern": ".+\\S.*" },
+        "model_default": { "type": "string", "pattern": ".+\\S.*" },
+        "model_tier": { "type": "string", "pattern": ".+\\S.*" },
+        "budget": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["authorized", "max_model_calls", "authorization_ref"],
+          "properties": {
+            "authorized": {
+              "type": "boolean",
+              "description": "A budget ceiling must already be authorized before a real provider run."
+            },
+            "max_model_calls": { "type": "integer", "minimum": 1 },
+            "authorization_ref": {
+              "type": "string",
+              "pattern": ".+\\S.*",
+              "description": "Where the ceiling was authorized (ticket/owner)."
+            }
+          }
+        }
+      }
+    },
+    "scenarios": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["install", "execute", "restart", "isolate", "fail_closed"],
+      "properties": {
+        "install": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["installer", "post_checks", "login", "workspace", "effective_config"],
+          "properties": {
+            "answers": {
+              "type": "object",
+              "description": "Approved non-secret installer answers (skip flags, ports, delivery mode)."
+            },
+            "installer": { "$ref": "#/$defs/step", "description": "The published-artifact install (FIRST_RUN). Sanitized stdout/stderr becomes install.log." },
+            "post_checks": {
+              "type": "array",
+              "minItems": 1,
+              "items": { "$ref": "#/$defs/step" },
+              "description": "Health/authenticated post-checks (e.g. /health/live, /health/ready, setup_complete)."
+            },
+            "login": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["mode", "command"],
+              "properties": {
+                "mode": {
+                  "enum": ["browser", "authenticated_equivalent"],
+                  "description": "browser for UI rows (BROWSER_LOGIN); authenticated_equivalent for headless rows. Mocked login or a break-glass user fails INSTALL."
+                },
+                "command": { "$ref": "#/$defs/step" },
+                "expect_json": {
+                  "type": "object",
+                  "description": "Expected signed-in facts (e.g. signed_in_as: the ordinary app principal)."
+                }
+              }
+            },
+            "workspace": { "$ref": "#/$defs/step", "description": "Workspace/Project availability and Workspace Agent reachability as the ordinary user." },
+            "effective_config": {
+              "allOf": [{ "$ref": "#/$defs/step" }],
+              "description": "Public client returning the EFFECTIVE runtime configuration; becomes effective-config.json and must match the declared provider/gateway.",
+              "properties": {
+                "command": true,
+                "name": true,
+                "timeout_s": true,
+                "expect_exit": true,
+                "expect_json": true,
+                "payload": { "const": "effective-config.json" }
+              }
+            }
+          }
+        },
+        "execute": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["client", "correlation"],
+          "properties": {
+            "client": {
+              "allOf": [{ "$ref": "#/$defs/step" }],
+              "properties": {
+                "command": true,
+                "name": true,
+                "timeout_s": true,
+                "expect_exit": true,
+                "expect_json": true,
+                "payload": { "const": "execution.json" }
+              },
+              "description": "Authorized Workspace Agent request through the public product client using #87's same-request oracle. stdout JSON must carry the canonical IDs (run_id, node_run_id, attempt_id), effective provider/model, response digest and provider_calls."
+            },
+            "correlation": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["user", "workspace"],
+              "properties": {
+                "user": { "type": "string", "pattern": ".+\\S.*" },
+                "workspace": { "type": "string", "pattern": ".+\\S.*" }
+              },
+              "description": "Ordinary app principal and Workspace the execution evidence must correlate with across RESTART."
+            }
+          }
+        },
+        "restart": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["stop", "start", "persistence", "new_request"],
+          "properties": {
+            "stop": {
+              "$ref": "#/$defs/step",
+              "description": "Generated lifecycle stop; stdout JSON must report drained=true and sandboxes_remaining=0 (no orphaned MAIstro sandbox resources)."
+            },
+            "start": { "$ref": "#/$defs/step", "description": "Generated lifecycle start." },
+            "persistence": {
+              "allOf": [{ "$ref": "#/$defs/step" }],
+              "properties": {
+                "command": true,
+                "name": true,
+                "timeout_s": true,
+                "expect_exit": true,
+                "expect_json": true,
+                "payload": { "const": "restart.json" }
+              },
+              "description": "Fresh login/client after restart; stdout JSON must show the same user/workspace/session/Run evidence available (no reseeding) including correlated_run_id equal to the EXECUTE run."
+            },
+            "new_request": {
+              "$ref": "#/$defs/step",
+              "description": "One new valid request after restart without reseeding credentials; provider_calls count against the budget."
+            }
+          }
+        },
+        "isolate": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["users", "workspaces", "positive_control", "probes"],
+          "properties": {
+            "users": {
+              "type": "array",
+              "minItems": 2,
+              "maxItems": 2,
+              "items": { "type": "string", "pattern": ".+\\S.*" },
+              "description": "Two distinct ordinary application users."
+            },
+            "workspaces": {
+              "type": "array",
+              "minItems": 2,
+              "maxItems": 2,
+              "items": { "type": "string", "pattern": ".+\\S.*" },
+              "description": "Two explicitly distinct Workspace scopes with no cross-grants."
+            },
+            "positive_control": {
+              "$ref": "#/$defs/step",
+              "description": "Own-scope access must succeed so denial is proven, not a broken probe."
+            },
+            "probes": {
+              "type": "array",
+              "minItems": 4,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["name", "kind", "command"],
+                "properties": {
+                  "name": { "type": "string", "pattern": ".+\\S.*" },
+                  "kind": {
+                    "enum": [
+                      "foreign_session",
+                      "foreign_run_detail",
+                      "foreign_events",
+                      "foreign_artifact",
+                      "foreign_binding",
+                      "random_id"
+                    ],
+                    "description": "What the probe attempts to reach across the scope boundary (or at a random ID)."
+                  },
+                  "command": { "$ref": "#/$defs/step" }
+                }
+              },
+              "description": "Cross-scope and random-ID probes; each must be denied with no leaked data and zero forbidden dispatch."
+            }
+          }
+        },
+        "fail_closed": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["cases"],
+          "properties": {
+            "cases": {
+              "type": "array",
+              "minItems": 4,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["name", "owner", "recovery", "expected_outcome", "arrange", "client"],
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "pattern": "^[a-z0-9][a-z0-9_]*$",
+                    "description": "The four mandatory cases are absent_credential, unavailable_model, inaccessible_runtime, missing_sandbox_capability; more may be added."
+                  },
+                  "owner": {
+                    "type": "string",
+                    "pattern": ".+\\S.*",
+                    "description": "Existing owner of the prerequisite being exercised."
+                  },
+                  "recovery": {
+                    "type": "string",
+                    "pattern": ".+\\S.*",
+                    "description": "Applicable recovery action the truthful result must point to."
+                  },
+                  "expected_outcome": {
+                    "enum": ["blocked", "failed"],
+                    "description": "The truthful named result; success of any kind fails the case."
+                  },
+                  "arrange": {
+                    "$ref": "#/$defs/step",
+                    "description": "Best-effort arrangement that withholds/removes the prerequisite (exit code ignored)."
+                  },
+                  "client": {
+                    "allOf": [{ "$ref": "#/$defs/step" }],
+                    "properties": {
+                      "command": true,
+                      "name": true,
+                      "timeout_s": true,
+                      "expect_exit": true,
+                      "expect_json": true,
+                      "payload": { "const": "fail-closed.json" }
+                    },
+                    "description": "The request under the missing prerequisite; stdout JSON must report outcome == expected_outcome plus this case's recovery pointer."
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "step": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["command"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[A-Z][A-Z0-9_]*$",
+          "description": "Subcheck label; defaults to the declaring slot's canonical name."
+        },
+        "command": {
+          "type": "array",
+          "items": { "type": "string" },
+          "minItems": 1,
+          "description": "Public installer/lifecycle/product-client argv. Executed with a minimal environment; never the harness checkout."
+        },
+        "timeout_s": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Per-step wall-clock budget (default 900)."
+        },
+        "expect_exit": {
+          "type": "array",
+          "items": { "type": "integer" },
+          "minItems": 1,
+          "description": "Acceptable exit codes (default [0])."
+        },
+        "expect_json": {
+          "type": "object",
+          "description": "Expected stdout-JSON facts: each value is either a literal (exact match) or a type name from string|integer|boolean|object|array|nonempty_string|positive_integer."
+        },
+        "payload": {
+          "type": "string",
+          "pattern": "^[a-z0-9-]+\\.json$",
+          "description": "Payload file this step's stdout JSON feeds. Reserved names are validated by the harness."
+        }
+      }
     }
   }
 }
