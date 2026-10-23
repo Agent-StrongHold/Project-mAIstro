@@ -127,3 +127,14 @@ f83de3b7a431523a47234102499d35218b9881fe:docs/testing/inventory-notes/837-persis
 # 164. Range scans over merged history only ever see the latter.
 13e8d307574e3c7e634caf181f49c3b37767e9ab:scripts/smoke-engine-canvas.sh:generic-api-key:153
 c6d2fbdba48c38cc5ab86f2b537c8ee047e26c8d:scripts/smoke-engine-canvas.sh:generic-api-key:164
+
+# ---- #1095: fake signing-key id in the live ownership-migration seed ----
+# The live PostgreSQL migration test seeds one signed audit row (ADR-073) so
+# the migration must prove it leaves the proof byte-intact. Its signing_key_id
+# was an opaque fixture whose spelling began with a credential keyword, so the
+# generic-api-key rule read the value itself as an API key. The fixture is now
+# spelled so no keyword leads the value (the tree is fixed); this fingerprint
+# remains required because the introducing branch commit is immutable history
+# and `gitleaks git` scans each commit's own patch. Paraphrased deliberately:
+# quoting the fixture verbatim here would trip the same rule in this file.
+4b1284897ef07feca817409d4e605dd61bd28e13:tests/migrations/test_legacy_principal_ownership_live.py:generic-api-key:102
