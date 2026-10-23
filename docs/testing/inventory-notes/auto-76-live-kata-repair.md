@@ -29,5 +29,27 @@ three production defects the live conformance then exposed:
 
 Net +3 tests across `packages/maistro-core/tests` (13→14 in
 `test_kata_backend.py`, 25→27 in `test_host_path_boundary.py`).
-`test_kata_live_conformance.py` keeps its 10 tests; on this host they now
-run and pass against real Kata VMs instead of skipping.
+`test_kata_live_conformance.py` keeps its 10 tests; on the originating
+configured host they ran and passed against real Kata VMs instead of skipping.
+
+## Independent repair-lane verification (2026-10-23)
+
+At `5e1c0835d7df3e2591b57d156e6552b766d90dcc`, the assigned worktree's
+current environment did not reproduce that configured deployment profile:
+
+- `uv run pytest packages/maistro-core/tests/sandbox packages/maistro-core/tests/tools/test_canonical_sandbox.py packages/maistro-core/tests/tools/test_sandbox_paths.py -x -q`
+  -> 238 passed, 38 skipped. Live Kata conformance cases were among the
+  environment-dependent skips; this run is not live-VM acceptance evidence.
+- `uv run pytest packages/maistro-server/tests/test_sigterm_shutdown.py -x -q`
+  -> 2 passed, then the orphan-cleanup test failed because the restart phase
+  observed `kata-289be30c9fc3`. Immediate `docker ps -a --filter name=kata-`
+  showed no remaining containers. The exact orphan-cleanup test then passed
+  alone (`1 passed in 9.01s`). Treat the first result as a transient
+  integration failure, not a proven code fix; repeat on the supported profile.
+- `uv run python scripts/check-suite-inventory.py` -> all suites match,
+  including core at 16860. `uv run python scripts/check-convergence-matrix.py`,
+  `uv run ruff check .`, and `uv run ruff format --check .` passed.
+
+These results are a fresh verification record, not a substitute for rerunning
+live Kata conformance and the server orphan-cleanup/restart behavior together
+on the documented deployment profile.
