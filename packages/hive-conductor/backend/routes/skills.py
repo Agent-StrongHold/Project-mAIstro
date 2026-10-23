@@ -9,7 +9,7 @@ from fastapi import APIRouter, HTTPException
 from models.schemas import Skill
 from pydantic import BaseModel, ConfigDict
 
-from maistro.skills.parser import security_scan
+from maistro.skills.parser import SKILL_SECURITY_SCAN_VERSION, security_scan
 
 router = APIRouter(tags=["skills"])
 
@@ -25,6 +25,25 @@ def _skill_text(name: str, description: str, parameters: list[dict]) -> str:
     is a prompt-injection surface, not just the body.
     """
     return "\n".join([name, description, json.dumps(parameters, sort_keys=True, default=str)])
+
+
+def _scan_provenance(*, target_kind: str, target_id: str | None, scanned_values: int) -> dict:
+    """The same self-describing stamp the agent scan routes return (#288).
+
+    `security_scan` is a different detector from Warden, so it names its own
+    identity/version rather than borrowing the Warden policy version. This is
+    what makes a skills `clean` auditable: which rule set ran, over what, when,
+    and how much of it was judged.
+    """
+    return {
+        "scanner": {
+            "name": "skills-security-scan",
+            "policy_version": SKILL_SECURITY_SCAN_VERSION,
+        },
+        "target": {"kind": target_kind, "id": target_id},
+        "scanned_at": _now().isoformat(),
+        "scanned_values": scanned_values,
+    }
 
 
 def _reject_if_unsafe(name: str, description: str, parameters: list[dict]) -> None:
@@ -152,6 +171,11 @@ def scan_skills(body: ScanSkillsBody | None = None) -> dict:
             "status": "clean" if not findings else "flagged",
             "scanned": 1,
             "scan": "content_only",
+            **_scan_provenance(
+                target_kind="adhoc_skill_content",
+                target_id=None,
+                scanned_values=1,
+            ),
         }
 
     scanned = list(stores.skills.values())
@@ -165,6 +189,11 @@ def scan_skills(body: ScanSkillsBody | None = None) -> dict:
         "status": "clean" if not findings else "flagged",
         "scanned": len(scanned),
         "scan": "content_only",
+        **_scan_provenance(
+            target_kind="stored_skills",
+            target_id=None,
+            scanned_values=len(scanned),
+        ),
     }
 
 

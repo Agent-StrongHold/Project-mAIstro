@@ -28,7 +28,6 @@ from pydantic import BaseModel, ConfigDict
 from maistro.graph.durable_runs import DurableRunRecord
 from maistro.identity import Principal
 from maistro.runs.model import RunStatus
-from maistro_turing.runtime import TuringChatSession
 
 from ..execution import TuringAdmissionUnavailable, get_execution_plane
 from ..middleware.auth import require_user
@@ -41,11 +40,12 @@ router = APIRouter(tags=["chat"])
 
 _PUBLIC_CHAT_FAILURE = "Turing chat execution failed"
 
-# (user_id, session_id) -> TuringChatSession. Lives for the process; a
-# production version persists history through the memory bridge. Keying by
-# user_id too prevents one authenticated caller from attaching to another
-# user's session (and its prior _history) by reusing/guessing a session id.
-_SESSIONS: dict[tuple[str, str], TuringChatSession] = {}
+# Sessions live in the composed state's bounded, workspace-owned registry
+# (#859): keyed by the canonical Workspace resolved for the authenticated
+# principal plus the client-supplied session id, TTL- and cardinality-bounded,
+# and disposable. The client id selects a conversation inside the caller's
+# scope; it never decides ownership, and guessing another user's id yields an
+# isolated fresh session in the guesser's own scope.
 
 
 class ChatBody(BaseModel):
@@ -74,13 +74,25 @@ async def chat(
         raise HTTPException(status_code=400, detail="message is required")
 
     session_id = body.session_id or str(uuid4())
-    key = (user.user_id, session_id)
-    session = _SESSIONS.get(key)
-    if session is None:
-        session = get_state().new_chat_session()
-        _SESSIONS[key] = session
-
     plane = get_execution_plane()
+    st = get_state()
+    workspace_id, project_id = await plane.scope_for(user.user_id)
+    try:
+        session = st.sessions.resolve(
+            workspace_id=workspace_id,
+            session_id=session_id,
+            # The factory binds the caller's resolved scope, so the session's
+            # episodic chat capture persists with the caller's provenance
+            # instead of blank user/project fields (#859).
+            factory=lambda: st.new_chat_session(
+                user_id=user.user_id,
+                workspace_id=workspace_id,
+                project_id=project_id,
+            ),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     try:
         record = await plane.run_chat(
             session=session,

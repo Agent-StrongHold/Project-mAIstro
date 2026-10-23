@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any
 
 from maistro.graph.definitions import Graph
 from maistro.projects.scope_store import ProjectScopeStore
+from maistro.runs.access import RunAuthorization, admission_identity_fields
 from maistro.runs.concurrency import (
     ACTIVE_ROOT_STATUS_VALUES,
     RunConcurrencyLimits,
@@ -233,6 +234,13 @@ CREATE TABLE IF NOT EXISTS canonical_runs (
     FOREIGN KEY (parent_node_run_id) REFERENCES canonical_node_runs(node_run_id)
 );
 
+-- Recovery enumerates the bounded live prefix from this index, matching the
+-- PostgreSQL `ix_canonical_runs_live` partial index. The ordering expressions
+-- follow `status` so `list_by_status` walks the index in `(created_at,
+-- run_id)` order instead of building a temporary B-tree over the whole live
+-- population on every recovery tick.
+CREATE INDEX IF NOT EXISTS idx_canonical_runs_status
+    ON canonical_runs(status, json_extract(payload, '$.created_at'), run_id);
 CREATE INDEX IF NOT EXISTS idx_canonical_runs_workspace_project
     ON canonical_runs(workspace_id, project_id);
 CREATE INDEX IF NOT EXISTS idx_canonical_runs_parent
@@ -456,12 +464,18 @@ class SqliteRunStore:
         allow_cross_project: bool = False,
         persona_id: str | None = None,
         actor_principal_id: str | None = None,
+        authorization: RunAuthorization | None = None,
         provenance: dict[str, Any] | None = None,
         retention_expires_at: datetime | None = None,
         initial_status: RunStatus = RunStatus.CREATED,
         goal_id: str | None = None,
         goal_revision: int | None = None,
     ) -> Run:
+        identities = admission_identity_fields(
+            graph,
+            authorization=authorization,
+            legacy_actor_principal_id=actor_principal_id,
+        )
         async with self._write_lock:
             await self._validate_graph_scope(graph)
             if parent_node_run_id is not None and parent_run_id is None:
@@ -487,7 +501,9 @@ class SqliteRunStore:
                 parent_run_id=parent_run_id,
                 parent_node_run_id=parent_node_run_id,
                 persona_id=persona_id,
-                actor_principal_id=require_admitted_actor(actor_principal_id),
+                actor_principal_id=identities["actor_principal_id"],
+                initiating_principal_id=identities["initiating_principal_id"],
+                acting_principal_id=identities["acting_principal_id"],
                 provenance=dict(provenance or {}),
                 retention_expires_at=retention_expires_at,
                 goal_id=goal_id,
@@ -574,6 +590,20 @@ class SqliteRunStore:
             await connection.execute(f"ROLLBACK TO SAVEPOINT {_ROOT_ADMISSION_SAVEPOINT}")
             await connection.execute(f"RELEASE SAVEPOINT {_ROOT_ADMISSION_SAVEPOINT}")
             raise
+
+    async def list_recent_runs(
+        self, workspace_id: str, *, limit: int = 100, offset: int = 0
+    ) -> list[Run]:
+        if limit <= 0 or offset < 0:
+            raise ValueError("limit must be positive and offset non-negative")
+        async with self._conn.execute(
+            """SELECT payload FROM canonical_runs WHERE workspace_id = ?
+               ORDER BY json_extract(payload, '$.created_at') DESC, run_id DESC
+               LIMIT ? OFFSET ?""",
+            (workspace_id, limit, offset),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return [model_of_json(Run, row[0]) for row in rows]
 
     async def get_run(self, run_id: str, *, principal_id: str | None = None) -> Run | None:
         row = await self._fetchone(

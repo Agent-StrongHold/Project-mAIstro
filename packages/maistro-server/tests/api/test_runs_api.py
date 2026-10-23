@@ -16,11 +16,13 @@ from fastapi.testclient import TestClient
 from maistro.observability.metrics import active_tasks
 from maistro.runs.model import RunStatus
 from maistro.runs.sources import ADMISSION_SOURCE
+from maistro.runs.store_boundary import RunStoreBoundary
 from maistro.runs.wiring import wire_execution_spine
 from maistro.tasks import queue as queue_module
 from maistro.tasks.admission import TASK_ID_KEY, TASK_QUEUE_SOURCE
 from maistro.tasks.models import TaskCreate, TaskResult, TaskStatus
 from maistro.tasks.queue import configure_task_queue
+from maistro.workspaces import InMemoryWorkspaceStore
 from maistro_server.api import runs as runs_api
 from maistro_server.main import app
 
@@ -36,20 +38,29 @@ async def wired():
     previous = queue_module._queue
     queue_module._queue = None
     (
-        _scope_store,
+        scope_store,
         run_store,
         admitter,
         _templates,
         _schedules,
         _continuations,
     ) = await wire_execution_spine(None, workspace_id="test-workspace")
+    workspaces = InMemoryWorkspaceStore(project_store=scope_store)
+    # "dev" is the Workspace owner at creation; membership grants it VIEW.
+    # The id is pinned to the spine's configured Workspace, or the Run's
+    # scope and the membership would name different Workspaces.
+    await workspaces.create(
+        creator_user_id="dev", name="test-workspace", workspace_id="test-workspace"
+    )
     configure_task_queue(admitter=admitter)
     runs_api.configure_run_store(run_store)
+    runs_api.configure_run_boundary(RunStoreBoundary(run_store, workspaces, scope_store))
     try:
         yield run_store
     finally:
         queue_module._queue = previous
         runs_api.configure_run_store(None)
+        runs_api.configure_run_boundary(None)
 
 
 @pytest.fixture
@@ -365,9 +376,13 @@ async def test_node_runs_for_an_unknown_run_are_404(wired, client: TestClient) -
     assert client.get("/runs/no-such-run/node-runs").status_code == 404
 
 
-async def test_another_principals_run_is_not_visible(wired, client: TestClient) -> None:
-    """404 rather than 403 on a scope mismatch: a 403 confirms the run_id
-    exists, which is what an enumeration attempt is asking."""
+async def test_a_member_reads_a_run_they_did_not_initiate(wired, client: TestClient) -> None:
+    """Owner decision 2026-09-23 (#1152): visibility is Workspace membership.
+
+    The initiating principal is provenance, not a gate, so the Workspace
+    member reads another principal's Run; a missing id stays a 404 that is
+    word-for-word the refusal any outsider gets.
+    """
     from maistro.graph.definitions import Graph, Node
 
     graph = Graph(
@@ -378,10 +393,17 @@ async def test_another_principals_run_is_not_visible(wired, client: TestClient) 
     )
     other = await wired.create_run(graph, actor_principal_id="somebody-else")
 
-    assert client.get(f"/runs/{other.run_id}").status_code == 404
-    assert client.get(f"/runs/{other.run_id}/node-runs").status_code == 404
-    assert client.post(f"/runs/{other.run_id}/cancel").status_code == 404
-    assert (await wired.get_run(other.run_id)).status is RunStatus.CREATED
+    # "dev" is the Workspace owner: membership, not initiator identity, reads.
+    assert client.get(f"/runs/{other.run_id}").status_code == 200
+    assert client.get(f"/runs/{other.run_id}/node-runs").status_code == 200
+    assert client.post(f"/runs/{other.run_id}/cancel").status_code == 200
+
+    # A missing id and a refused id are the same answer, so the route leaks
+    # nothing about existence.
+    missing = client.get("/runs/no-such-run")
+    assert missing.status_code == 404
+    assert "Run not found" in missing.json()["error"]["message"]
+    assert (await wired.get_run(other.run_id)).status is RunStatus.CANCELLED
 
 
 def test_the_endpoint_says_so_when_no_store_is_configured(client: TestClient) -> None:
@@ -392,3 +414,19 @@ def test_the_endpoint_says_so_when_no_store_is_configured(client: TestClient) ->
         assert client.post("/runs/anything/cancel").status_code == 503
     finally:
         runs_api.configure_run_store(previous)
+
+
+def test_the_endpoint_says_so_when_no_boundary_is_configured(wired, client: TestClient) -> None:
+    """The boundary half of the same fail-loud rule (#1152), with the store
+    itself still configured: reads and cancellation must refuse loudly
+    instead of serving authorization-skipped traffic."""
+    previous = runs_api._run_boundary
+    runs_api.configure_run_boundary(None)
+    try:
+        refused = client.get("/runs/anything")
+        assert refused.status_code == 503
+        assert "No Run authorization boundary is configured" in refused.json()["error"]["message"]
+        assert client.post("/runs/anything/cancel").status_code == 503
+        assert client.get("/runs/anything/node-runs").status_code == 503
+    finally:
+        runs_api.configure_run_boundary(previous)
