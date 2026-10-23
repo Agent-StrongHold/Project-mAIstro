@@ -230,12 +230,24 @@ jobs:
       # Buildx's own driver has its own image store, isolated from the host
       # daemon -- no prepull step protects these fetches, so each build
       # retries itself via buildx-build-retry.sh (Codex, #683).
+      #
+      # Every build below names its image's apt security-patch stage in
+      # `--no-cache-filter` (#795): an `apt-get upgrade` layer's cache key
+      # never changes, so the GHA cache replayed a months-old mirror state
+      # and the 2026-10-22 gate shipped maistro-engine with libexpat1
+      # 2.5.0-1+deb12u4 (CVE-2025-59375/CVE-2026-77214, fixed in deb12u5)
+      # from a layer built before the advisory. --no-cache-filter re-runs
+      # only that stage, so the venv/Go/npm layers stay cached while the OS
+      # patch state is re-consulted from the security mirror on every
+      # candidate. release.yml builds cold (no cache-from) and needs no
+      # flag.
       - name: Build hive-conductor image
         run: >-
           scripts/buildx-build-retry.sh --
           -f packages/hive-conductor/Dockerfile
           -t "hive-conductor:pr-${CANDIDATE_TAG}"
           --build-arg VITE_POC_MODE=pm --build-arg VITE_BASE_PATH=/pm/
+          --no-cache-filter runtime-apt
           --load --cache-from type=gha,scope=hive-conductor
           --cache-to type=gha,scope=hive-conductor,mode=max .
       # The ordinary image and the documented tracing profile are separate
@@ -248,6 +260,7 @@ jobs:
           -t "hive-conductor-observability:pr-${CANDIDATE_TAG}"
           --build-arg INSTALL_OBSERVABILITY=1
           --build-arg VITE_POC_MODE=pm --build-arg VITE_BASE_PATH=/pm/
+          --no-cache-filter runtime-apt
           --load --cache-from type=gha,scope=hive-conductor-observability
           --cache-to type=gha,scope=hive-conductor-observability,mode=max .
 
@@ -255,6 +268,7 @@ jobs:
         run: >-
           scripts/buildx-build-retry.sh --
           -f Dockerfile -t "maistro-engine:pr-${CANDIDATE_TAG}"
+          --no-cache-filter runtime-apt
           --load --cache-from type=gha,scope=engine
           --cache-to type=gha,scope=engine,mode=max .
 
@@ -268,6 +282,7 @@ jobs:
         run: >-
           scripts/buildx-build-retry.sh --
           -f Dockerfile.research -t "maistro-engine-research:pr-${CANDIDATE_TAG}"
+          --no-cache-filter production-apt
           --load --cache-from type=gha,scope=engine-research
           --cache-to type=gha,scope=engine-research,mode=max .
 
@@ -275,6 +290,7 @@ jobs:
         run: >-
           scripts/buildx-build-retry.sh --
           -f Dockerfile.rsi-runner -t "maistro-rsi-runner:pr-${CANDIDATE_TAG}"
+          --no-cache-filter runtime-apt
           --load --cache-from type=gha,scope=rsi-runner
           --cache-to type=gha,scope=rsi-runner,mode=max .
 

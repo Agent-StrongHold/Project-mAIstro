@@ -211,11 +211,15 @@ def test_effect_claim_revision_follows_the_chain_tip() -> None:
     # #12's live-Workspace-Persona table appends past the Goal store as
     # `064`, #836's durable legacy replay acknowledgement renumbers past it
     # as `065`, and the durable delivery receipts (#1060) append past that as
-    # `066`, so the single head is `066`.
-    assert directory.get_heads() == ["066"]
+    # `066`. #845's delegation grants — landed on this chain before the
+    # receipts existed, so twice renumbered past the landed trunk tip (064
+    # then 066 by the same convention) — append past the receipts as `067`,
+    # so the single head is `067`.
+    assert directory.get_heads() == ["067"]
     assert directory.get_revision("064").down_revision == "063"
     assert directory.get_revision("065").down_revision == "064"
     assert directory.get_revision("066").down_revision == "065"
+    assert directory.get_revision("067").down_revision == "066"
     walked = {item.revision for item in directory.walk_revisions("base", "062")}
     assert {
         "034_canonical_run_effect_claim",
