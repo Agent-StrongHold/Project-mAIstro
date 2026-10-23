@@ -26,8 +26,7 @@ gate drift.
 The shipped Playwright setup suite (`frontend/e2e/setup.spec.ts`) had gone
 stale against the current five-step wizard (it predates the Accounts step, so
 "next" never enabled and completion was unreachable). It was rewritten
-against the shipped `Setup.tsx` selectors; test count is unchanged (6), so no
-inventory-delta entry is claimed for it. The suite now drives a real clean
+against the shipped `Setup.tsx` selectors. The suite now drives a real clean
 boot end to end: wizard → hardware → required account credentials → modules →
 confirm → launch, which auto-logs in as the **daily user** and asserts the
 chat surface is reachable for that account.
@@ -66,7 +65,9 @@ resolved and committed (`6fc004fd7` = develop base `ab8b3737`, then
   round's rewrite — it covers the same five-step wizard plus the #287
   model-availability acknowledgement and the #443 crypto-identity/seed
   screens, and still ends asserting the daily-user auto-login landing
-  ("Live Operations"). Test count 6 unchanged; no inventory-delta claim.
+  ("Live Operations"). The merged spec has 8 tests (develop's #443 evolution
+  added the two crypto-identity denials); Playwright specs are not part of the
+  Python suite inventory, so no inventory-delta claim.
 
 Post-merge evidence on `5d14bb3ce`:
 
@@ -101,3 +102,45 @@ On the repaired head, against a live throwaway instance and the worktree:
 - `npm run build` (frontend) -> tsc + vite build passed.
 - `PLAYWRIGHT_BASE_URL=http://localhost:8199 npx playwright test e2e/setup.spec.ts` (backend booted on a fresh `CONDUCTOR_DATA_DIR`) -> 6 passed.
 - `scripts/check-vulture-baseline.py`: no findings from `permission_policy.py` or the changed files; the only unclassified finding is a gitignored `node_modules/flatted/python/flatted.py` artifact absent from CI checkouts.
+
+## Final validation round (head `a33476b99`, 2026-10-23)
+
+All checks re-run at the final head; no code changed in this round — this
+section records fresh evidence and corrects the stale test-count prose above.
+
+- `uv run pytest packages/hive-conductor/backend/tests -q` -> **3630 passed,
+  19 skipped**.
+- `uv run python scripts/check-conductor-permission-matrix.py` -> "permission
+  matrix OK: 47 API entries, 31 UI mutations"; gate wired at
+  `.github/workflows/quality.yml:909` ("Conductor API/UI permission matrix").
+- `uv run ruff check .` and `uv run ruff format --check .` -> pass.
+- CI-exact gates, all exit 0: `check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` (1322 -> 1322 reviewed
+  identities, none new), `check-reachability.py`, `check-route-permissions.py`
+  (41 declared, none new), `check-principal-identity.py` (4 tolerated, none
+  new), `check-suite-inventory.py` (17 suites match).
+- `npm run build` (tsc strict + vite) -> pass.
+- **Playwright `e2e/setup.spec.ts` -> 8/8 passed against a live throwaway
+  backend**: fresh `CONDUCTOR_DATA_DIR`, backend on :8102 (`uv run --no-sync
+  uvicorn main:app`), vite dev on :8199 proxying `/v1` + `/health`, tests run
+  inside the repo's `hive-playwright-373` image (@playwright/test 1.52 = its
+  preinstalled browsers). The completing test walks first boot -> wizard ->
+  Accounts -> Modules -> Confirm -> launch -> #443 recovery-seed
+  acknowledgement -> "enter the hive" -> daily-user auto-login -> "Live
+  Operations" reachable.
+- Harness note for future lanes (cost a debugging cycle to learn): the
+  backend's `session_cookie_secure` default is `True` and settings have **no
+  `CONDUCTOR_` env prefix** — a plain-HTTP throwaway must boot with
+  `SESSION_COOKIE_SECURE=false ALLOW_INSECURE_TRANSPORT=true` (the
+  config-documented local-development escape). With the Secure cookie dropped
+  by the browser, login returns 200 but whoami stays `authenticated:false` and
+  the app shows the sign-in page — it looks like a product bug but is the
+  harness misconfiguring the transport.
+- Acceptance deltas visible at this head: role-scoped denials are enforced and
+  tested at the API layer (permission+elevation boundary grid in
+  `test_auth_middleware.py`, elevation success/refusal/scoped-grant/
+  unassigned-rejection/task-completion-revocation in `test_api.py`, admin
+  break-glass without chat, workspace non-member refusals in
+  `test_workspace_mode.py` / `test_workspace_scoped_submission.py`); the
+  per-role browser walk of all 31 UI mutations remains the recorded residual
+  gap, intentionally covered by the API-layer suites plus the CI matrix gate.
