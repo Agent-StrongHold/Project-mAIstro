@@ -7990,3 +7990,68 @@ Re-derived from scratch this round, trusting no prior claim:
   explicit #1852 prohibition; the sole repair is the #1845 integration
   head landing the reviewed runtime consumer and passing the unchanged
   gates. BLOCKED is the issue-conform terminal state for this leaf.
+
+## Round 100 — independent re-verification at head 1e80e0c8621b (2026-10-23)
+
+All gates re-executed first-hand at `1e80e0c8621b3847ac3e3f799fbbcbd7af71a8fa`
+(merge-base with origin/develop = `b9cd15c608b5`):
+
+- Driver deterministic checks (job 389a57b0) all green: `uv sync --locked
+  --extra dev` rc=0; `ruff check .` rc=0; `ruff format --check .` rc=0
+  (3467 files); focused pytest 268 passed; `check-suite-inventory.py --suite
+  packages/maistro-core/tests` ok (17626 identities, matching inventory).
+  Re-confirmed at head: `ruff check .` rc=0, `ruff format --check .` rc=0.
+- exact-debt-ledger red re-bound first-hand, NOT vulture debt:
+  `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'` (CI exact argv) rc=0 — 1314 reviewed identities -> 1309
+  findings, unclassified 0, nothing to amend. Provenance
+  (`RATCHET_BASE_REV=origin/develop check-ratchet-provenance.py`) rc=1 with
+  8/9 sub-ratchets OK and the sole FAIL `check-reachability-provenance.py`:
+  "maistro.tasks.admission_generation: NEW unreachable module absent from
+  trusted base and not previously authorized" + "current unreachable module
+  missing from candidate baseline".
+- `check-reachability.py` rc=1 on exactly one NEWLY UNREACHABLE module,
+  `maistro.tasks.admission_generation` (158/1453); dispositions rc=0 (47
+  groups, 157 dispositioned), promotion-surface rc=0, shipped-surface rc=0.
+- CI test trio reproduced: 3 failed / 12 passed, sole set delta the single
+  item `maistro.tasks.admission_generation`.
+- Leaf acceptance re-proven: module source read in full (exact-class record
+  gate, `[0-9a-f]{64}` fullmatch, int-not-bool signed-64 `now_us`, decision
+  order as a data table: inclusive expiry -> mismatch -> binding -> legacy
+  -> lease -> PENDING); all 10 issue-named tests present (one def each);
+  issue focused commands green — leaf suite 132 passed,
+  `test_root_admission_identity.py + test_idempotency.py` included run
+  278 passed; `mypy` on the module clean; module ruff/format clean.
+- All FOUR issue-named mutations re-killed with `-x` (pytest rc=1 each):
+  swap TAKEOVER/REPLACE_EXPIRED; lease before binding; legacy pending as
+  v2 (LEGACY_UNRESOLVED row removed); mismatch before expiry. Module
+  restored byte-identical from a /tmp backup after each mutation (md5
+  257a6e45c382349dd12f559099663fbc verified before the first mutation and
+  after the final restore; no git restore used); `git status` clean.
+- Scope guards re-verified: zero production-source references to
+  `admission_generation` outside the module; live-flow files
+  (`tasks/idempotency.py`, `tasks/queue.py`, `tasks/__init__.py`) zero-diff
+  vs b9cd15c60; the branch-side `check-reachability.py` delta is the
+  comment-only round-89 NOTE (no gate semantics touched); the publication
+  test pins the sanctioned two-edge importer invariant (package `__init__`
+  + this inactive classifier).
+- Develop movement resolved: origin/develop advanced b9cd15c60 ->
+  2ac960614, the parent #1845 integration head (PR #1945, "[M1][#1845]
+  Decode immutable admission generations without guessing identity"). It
+  adds the sibling contract leaf `tasks/admission_codec.py` with its own
+  `_EXCLUDED_PACKAGE_PYTHON` classification, but does NOT contain
+  `tasks/admission_generation.py` and adds no authorization for it — so
+  the blocker is invariant under the sync: in the merge-queue synthetic
+  base+candidate tree the reachability/provenance/trio reds remain bound
+  to exactly this leaf. No sync conflict exists (fast-forwardable
+  relationship; worktree clean), and the merge was deliberately not
+  performed: folding the 279-file parent integration stack into this
+  12-file leaf PR would destroy the reviewability #1852 requires
+  ("Keep its changes reviewable as a separate commit or stacked draft
+  PR"). The runtime consumer remains #2178 (DRAFT, "[DRAFT][#1845]
+  Integrate immutable admission generations with canonical PostgreSQL
+  Runs").
+- Verdict re-derived BLOCKED per the issue contract: implementation and
+  test readiness are proven; the explicit merge blocker (no reviewed
+  runtime consumer; leaf must stay unwired, unmerged, and un-baselined)
+  is unchanged and outside this leaf's authority.
