@@ -17,8 +17,7 @@ related:
 supersedes: []
 blocks: []
 blocked-by: []
-contracts:
-  - boundary
+contracts: []
 tests:
   - packages/maistro-core/tests/capabilities/test_durable_approval.py
 layer: Governance
@@ -59,6 +58,17 @@ history:
       collision V-16, ensure_ascii pin V-17, legacy row V-18 — the erratum
       location of revision 2). All cross-references updated; no input, byte,
       or digest value changed.
+  - status: Proposed
+    date: 2026-10-24
+    revision: 5
+    reason: >-
+      Front matter now declares `contracts: []`: this document is an unaccepted
+      decision-gate review artifact, so it claims no contract kind yet. ADR-032's
+      marker cross-check applies to claims; the `boundary` kind is to be declared
+      in the acceptance act itself, together with the marked vectors in the listed
+      test file. Front-matter-only change: no section, vector, input, byte, or
+      digest value changed, so all previously recorded verification evidence
+      remains valid.
 ---
 
 # SPEC-101826-1836: Exact-effect approval payload bytes — versioned canonical serialization contract
