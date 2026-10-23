@@ -224,13 +224,22 @@ bypass-selection = true
 
 [tool.uv]
 # Supply-chain floor for the pip-audit gate (security.yml `Supply chain
-# (pip-audit)`). aiohttp is not a production dependency here: it arrives
-# transitively through the cosmic-ray mutation-testing dev tool. The gate
-# nevertheless audits the frozen dev environment (`uv pip freeze`), and the
-# advisories fixed upstream in 3.14.4 (CVE-2026-111064 / GHSA-2g87-pp6c-29x5 /
-# CVE-2026-111063) fail it as shipped. Constrain the floor in the manifest so
-# the lock keeps it instead of drifting back on the next resolve.
-constraint-dependencies = ["aiohttp>=3.14.4"]
+# (pip-audit)`). These are not production dependencies: each arrives
+# transitively through a dev tool, but the gate audits the frozen dev
+# environment (`uv pip freeze`), so a dev advisory fails it as shipped.
+# Constrain the floors in the manifest so the lock keeps them instead of
+# drifting back on the next resolve.
+constraint-dependencies = [
+    "aiohttp>=3.14.4",
+    # Same shape, two more dev-only transitive advisories (pip-audit gate,
+    # 2026-10-22): gitpython arrives via cosmic-ray, graphql-core via
+    # moto[server]. CVE-2026-114145 is fixed in gitpython 3.2.1;
+    # CVE-2026-75507/75508 in graphql-core 3.3.0 (stable, 2026-09-27; the
+    # advisory text still names the 3.3.0rc1 fix line). Both packages are
+    # test-infrastructure only; neither ships in the runtime images.
+    "gitpython>=3.2.1",
+    "graphql-core>=3.3.0",
+]
 
 [tool.ruff]
 target-version = "py312"
