@@ -51,8 +51,11 @@ RUN pip install --no-cache-dir \
 # go1.26.8 stdlib (trivy HIGHs fixed in go1.26.9/1.27.2) and no released
 # docker:xx-cli tag ships a newer toolchain, so build the exact immutable
 # release tag ourselves on the patched toolchain. Tag resolves to dfc520d; fail
-# if upstream ever disagrees.
-FROM golang:1.27.2-alpine@sha256:f92b6ef800e499660581efdabdf25d9d817a9d124eaf900924f0504e7e27e12d AS dockerclibuild
+# if upstream ever disagrees. Builder moved to 1.27.3-alpine (#1152):
+# CVE-2026-111943 (crypto/x509 MITM via untrusted intermediates, HIGH, fixed in
+# go1.26.10/1.27.3) flags the 1.27.2 stdlib inside the built binary.
+# Digest-pinned (#349); golang:1.27.3-alpine resolved to this index digest 2026-10-22.
+FROM golang:1.27.3-alpine@sha256:b8c9b82affbbb82a020bbcf998dad2ba9516944ac7e883524642a481a9505e9c AS dockerclibuild
 ARG DOCKER_CLI_VERSION=29.9.1
 ARG DOCKER_CLI_COMMIT_SHORT=dfc520d
 RUN apk add --no-cache git && \
@@ -66,20 +69,15 @@ RUN apk add --no-cache git && \
       -o /out/docker ./cmd/docker
 
 # ─── Production stage ─────────────────────────────────
-FROM python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1
-
-WORKDIR /app
-
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1 \
-    # Same transport-patience fix as the builder stage above: this stage's
-    # pip install was the second of the two timeouts in run 36835563311.
-    PIP_DEFAULT_TIMEOUT=60 \
-    PIP_RETRIES=10 \
-    # Browsers installed to a world-readable path so the non-root runtime user
-    # can find Chromium (default ~/.cache/ms-playwright is root-only).
-    PLAYWRIGHT_BROWSERS_PATH=/opt/playwright
+# The security-patch layer lives in its own stage so CI can name it in
+# `--no-cache-filter` (#795): a plain `RUN apt-get upgrade` has a cache key
+# that never changes, so the GHA cache can replay a pre-advisory mirror state
+# forever — exactly how the 2026-10-22 gate run shipped maistro-engine with
+# libexpat1 2.5.0-1+deb12u4 after deb12u5 (CVE-2025-59375/CVE-2026-77214)
+# had published. security.yml builds this stage with
+# `--no-cache-filter production-apt`; release.yml builds cold and needs no
+# flag.
+FROM python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1 AS production-apt
 
 # System layer. Hardening vs the previous image:
 #   - apt-get upgrade applies Debian security patches the base tag froze.
@@ -98,6 +96,21 @@ RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-reco
     && apt-get autoremove -y --purge \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* /var/cache/apt/* /tmp/*
+
+FROM production-apt
+
+WORKDIR /app
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    # Same transport-patience fix as the builder stage above: this stage's
+    # pip install was the second of the two timeouts in run 36835563311.
+    PIP_DEFAULT_TIMEOUT=60 \
+    PIP_RETRIES=10 \
+    # Browsers installed to a world-readable path so the non-root runtime user
+    # can find Chromium (default ~/.cache/ms-playwright is root-only).
+    PLAYWRIGHT_BROWSERS_PATH=/opt/playwright
 
 # Static docker CLI only (talks to a mounted /var/run/docker.sock) — replaces the
 # heavyweight docker.io package and its containerd/runc dependency tree. Built
