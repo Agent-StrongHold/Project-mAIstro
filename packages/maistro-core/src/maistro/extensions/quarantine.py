@@ -544,11 +544,20 @@ class ExtensionGovernanceService:
         actor: GovernanceActor,
         reason: str,
     ) -> GovernanceDecision:
-        """Disable one version; sibling versions keep admitting."""
+        """Disable one version; sibling versions keep admitting.
+
+        ``state_after`` is the effective governing state, not the version
+        layer alone: a version disabled while its package (or publisher) is
+        quarantined is still governed by that quarantine, so the audit row
+        must not claim a narrower state than the identity actually has.
+        """
         self._require_authorized(actor, "disable an extension version")
         self._require_pinned_publisher(extension_id=extension_id, publisher=publisher)
         package = self._packages.setdefault(extension_id, _PackageState(publisher=publisher))
         package.versions[version] = GovernanceState.DISABLED
+        state_after, _ = self._governing(
+            extension_id=extension_id, version=version, publisher=publisher
+        )
         return self._append(
             action="version_disabled",
             target=GovernanceTarget.VERSION,
@@ -557,7 +566,7 @@ class ExtensionGovernanceService:
             publisher=publisher,
             actor=actor,
             reason=reason,
-            state_after=GovernanceState.DISABLED,
+            state_after=state_after,
             changed=True,
         )
 
@@ -613,11 +622,20 @@ class ExtensionGovernanceService:
         actor: GovernanceActor,
         reason: str,
     ) -> GovernanceDecision:
-        """Re-enable one version. Strikes and history are never erased."""
+        """Re-enable one version. Strikes and history are never erased.
+
+        ``state_after`` is the effective governing state, not the version
+        layer alone: re-enabling a version while its package (or publisher)
+        stays quarantined does not make the identity active, so the audit
+        row must not claim a state the identity does not have.
+        """
         self._require_authorized(actor, "re-enable an extension version")
         self._require_pinned_publisher(extension_id=extension_id, publisher=publisher)
         package = self._packages.setdefault(extension_id, _PackageState(publisher=publisher))
         package.versions[version] = GovernanceState.ACTIVE
+        state_after, _ = self._governing(
+            extension_id=extension_id, version=version, publisher=publisher
+        )
         return self._append(
             action="version_re_enabled",
             target=GovernanceTarget.VERSION,
@@ -626,7 +644,7 @@ class ExtensionGovernanceService:
             publisher=publisher,
             actor=actor,
             reason=reason,
-            state_after=GovernanceState.ACTIVE,
+            state_after=state_after,
             changed=True,
         )
 

@@ -162,7 +162,7 @@
       "steps": [
         {
           "name": "xenon (per-function \u2264 B; per-module \u2264 B; project avg \u2264 A \u2014 ratchet)",
-          "sha256": "1d9be1fde26954aee3d96b3061e5cf6b53ef66eb55ac21d3b48085545a60db92"
+          "sha256": "a2640b0367882284c08e3516243a2e4a5f98fddf142db900b874a0b59dd77598"
         }
       ]
     },
@@ -423,6 +423,10 @@
         {
           "name": "model egress (the direct-caller set may only shrink)",
           "sha256": "cfbc00eefcffaea0e69d5c4b490eb3db0e3764df4e3dbea156f83befcfd1b855"
+        },
+        {
+          "name": "design model egress (governed Invocation path only)",
+          "sha256": "ffc608887b7a1d15d38522bca67dc42ee36e41337b56cb25e9c6318a79ef848c"
         }
       ]
     },
@@ -542,7 +546,7 @@
   "coverage_jobs": {
     "coverage-unit": "81c343adca11aa9e82f74aa6c891a4707a9e6a64109194f83fe274c23a0cbe9e",
     "coverage-archive": "c2e6d0aecd422d0456f6e8c42aa00afd6797099d1cef810f1fc725b61f688a09",
-    "coverage-postgres": "3f4ca06db245c1e1ef61e51bb797cef7a2d0f9ebbd2505f139f1b41b2894e2e6",
+    "coverage-postgres": "4640a42df2bf206ed62586d2ca8fb1b14ffefb84b1e07052933b95fee817a809",
     "coverage-gate": "7211a89d2b91b3de6d79187c0ae4a1a7f1a96087e3310e5859a602abd89e1cf2"
   }
 }
