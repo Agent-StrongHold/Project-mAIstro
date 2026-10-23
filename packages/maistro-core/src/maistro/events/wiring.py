@@ -21,6 +21,7 @@ async def wire_canonical_events(
         from maistro.events.pg_envelope import PgEventStore
 
         pg_store = PgEventStore(pg_pool)
+        # Fail readiness on an unmigrated/incompatible pool; Alembic owns DDL.
         await pg_store.ensure_schema()
         store = pg_store
     elif db_pool is not None:
