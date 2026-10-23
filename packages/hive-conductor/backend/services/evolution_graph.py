@@ -316,7 +316,8 @@ class _TournamentWork:
             if genome.eval_scores:
                 scored.append(genome)
         shuffled = list(scored)
-        random.shuffle(shuffled)
+        # Pair the frozen scored membership for Elo accounting; this generates no security material.
+        random.shuffle(shuffled)  # DevSkim: ignore DS148264 until 2027-12-31
         pairs = [
             (shuffled[index].id, shuffled[index + 1].id) for index in range(0, len(shuffled) - 1, 2)
         ]
