@@ -55,12 +55,6 @@ AUTHORITY_NAMES: Final[frozenset[str]] = frozenset(
         "node_resolver",
         "provider_registry",
         "llm_router",
-        # Inbound A2A content policy and its audit trail (#1137): the delegate
-        # node scans peer-controlled payloads at the canonical boundary and
-        # records verdicts beside the canonical security audit log. Optional
-        # everywhere; `scan_inbound` fails closed when the policy is absent.
-        "warden",
-        "audit_log",
     }
 )
 

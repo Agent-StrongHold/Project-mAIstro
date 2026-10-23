@@ -267,12 +267,7 @@ class TestOneTraceFollowsTheWork:
             with bind_execution_context(
                 request_id="req-http-boundary", workspace_id="ws-1", project_id=project.project_id
             ):
-                task = await queue.submit(
-                    TaskCreate(
-                        description="admitted work",
-                        user_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
-                    )
-                )
+                task = await queue.submit(TaskCreate(description="admitted work"))
             run = await run_store.get_run(task.run_id or "")
             assert run is not None
             assert run.provenance[REQUEST_ID_KEY] == "req-http-boundary"

@@ -63,57 +63,26 @@ async def test_effect_claim_is_atomic_and_survives_store_reload(tmp_path: Path) 
         _graph(project_id),
         effect_key="remote-effect-1",
         provenance={"admission_source": "a2a_delegation"},
-        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
     second = await first_store.claim_run_by_effect(
         _graph(project_id),
         effect_key="remote-effect-1",
         provenance={"admission_source": "a2a_delegation"},
-        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
     assert first.claimed is True
     assert second.claimed is False
     assert second.run.run_id == first.run.run_id
-    await first_conn.close()
 
     second_conn = await aiosqlite.connect(db_path)
     second_store = SqliteRunStore(second_conn, project_store=project_store)
     await second_store.ensure_schema()
     reloaded = await second_store.claim_run_by_effect(
-        _graph(project_id),
-        effect_key="remote-effect-1",
-        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+        _graph(project_id), effect_key="remote-effect-1"
     )
     assert reloaded.claimed is False
     assert reloaded.run.run_id == first.run.run_id
+    await first_conn.close()
     await second_conn.close()
-
-
-@pytest.mark.asyncio
-async def test_find_run_by_effect_resolves_the_claim_and_none_when_unclaimed(
-    tmp_path: Path,
-) -> None:
-    """The read half of the effect claim: callers recovering after a crash
-    resolve the Run that already holds the effect, and None means unclaimed."""
-    project_store, project_id = await _project_store()
-    conn = await aiosqlite.connect(tmp_path / "find.db")
-    store = SqliteRunStore(conn, project_store=project_store)
-    await store.ensure_schema()
-    try:
-        assert await store.find_run_by_effect("remote-effect-find") is None
-
-        claim = await store.claim_run_by_effect(
-            _graph(project_id),
-            effect_key="remote-effect-find",
-            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
-        )
-        assert claim.claimed is True
-
-        found = await store.find_run_by_effect("remote-effect-find")
-        assert found is not None
-        assert found.run_id == claim.run.run_id
-    finally:
-        await conn.close()
 
 
 @pytest.mark.asyncio
@@ -124,11 +93,7 @@ async def test_delegation_transport_claim_is_durable_and_single_use(tmp_path: Pa
     first_conn = await aiosqlite.connect(db_path)
     first_store = SqliteRunStore(first_conn, project_store=project_store)
     await first_store.ensure_schema()
-    run = await first_store.create_run(
-        _graph(project_id),
-        provenance={"delegation_key": "key-1"},
-        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
-    )
+    run = await first_store.create_run(_graph(project_id), provenance={"delegation_key": "key-1"})
 
     assert await first_store.claim_delegation_transport_attempt(run.run_id) is True
     assert await first_store.claim_delegation_transport_attempt(run.run_id) is False
@@ -159,11 +124,7 @@ async def test_delegation_transport_claim_is_one_winner_across_store_instances(
     second_store = SqliteRunStore(second_conn, project_store=project_store)
     await first_store.ensure_schema()
     await second_store.ensure_schema()
-    run = await first_store.create_run(
-        _graph(project_id),
-        provenance={"delegation_key": "key-1"},
-        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
-    )
+    run = await first_store.create_run(_graph(project_id), provenance={"delegation_key": "key-1"})
 
     claims = await asyncio.gather(
         first_store.claim_delegation_transport_attempt(run.run_id),
@@ -734,17 +695,12 @@ async def test_ensure_schema_replaces_the_legacy_occurrence_index(tmp_path: Path
             SCHEDULE_FIRE_ID_KEY: "retry-token-1",
             SCHEDULED_FOR_KEY: "2026-08-24T12:00:01+00:00",
         }
-        await store.create_run(
-            _graph(project_id),
-            provenance=provenance,
-            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
-        )
+        await store.create_run(_graph(project_id), provenance=provenance)
 
         with pytest.raises(DuplicateOccurrence):
             await store.create_run(
                 _graph(project_id),
                 provenance={**provenance, SCHEDULED_FOR_KEY: "2026-08-24T12:04:00+00:00"},
-                actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
             )
     finally:
         await conn.close()
@@ -761,7 +717,6 @@ async def test_occurrence_claim_resolves_its_run_without_a_provenance_scan(tmp_p
             SCHEDULE_ID_KEY: "sched-1",
             SCHEDULED_FOR_KEY: scheduled_for,
         },
-        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
 
     resolved = await store.get_run_for_occurrence("sched-1", scheduled_for)
@@ -848,18 +803,10 @@ async def test_a_raised_conflict_releases_the_loser_write_lock(tmp_path: Path) -
     winner_conn = await aiosqlite.connect(db_path)
     winner = SqliteRunStore(winner_conn, project_store=project_store)
     await winner.ensure_schema()
-    run = await winner.create_run(
-        _graph(project_id),
-        provenance={"delegation_key": "key-1"},
-        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
-    )
+    run = await winner.create_run(_graph(project_id), provenance={"delegation_key": "key-1"})
 
     with pytest.raises(sqlite3.IntegrityError):
-        await loser.create_run(
-            _graph(project_id),
-            provenance={"delegation_key": "key-1"},
-            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
-        )
+        await loser.create_run(_graph(project_id), provenance={"delegation_key": "key-1"})
 
     # The loser's connection keeps working: recovery (adopt the winner, then
     # keep writing) runs on this same connection.
@@ -867,10 +814,7 @@ async def test_a_raised_conflict_releases_the_loser_write_lock(tmp_path: Path) -
     assert adopted is not None
     assert adopted.run_id == run.run_id
     recovery_write = await loser.create_run(
-        _graph(project_id),
-        parent_run_id=run.run_id,
-        provenance={"delegation_key": "key-2"},
-        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+        _graph(project_id), parent_run_id=run.run_id, provenance={"delegation_key": "key-2"}
     )
     assert recovery_write.parent_run_id == run.run_id
 
@@ -879,9 +823,7 @@ async def test_a_raised_conflict_releases_the_loser_write_lock(tmp_path: Path) -
     third_conn = await aiosqlite.connect(db_path)
     third = SqliteRunStore(third_conn, project_store=project_store)
     await third.ensure_schema()
-    unrelated = await third.create_run(
-        _graph(project_id), actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
-    )
+    unrelated = await third.create_run(_graph(project_id))
     assert unrelated.run_id != run.run_id
     await loser_conn.close()
     await winner_conn.close()
@@ -927,9 +869,7 @@ async def test_effect_claim_binds_a_declared_parent_chain(tmp_path: Path) -> Non
     conn = await aiosqlite.connect(tmp_path / "effects.db")
     store = SqliteRunStore(conn, project_store=project_store)
     await store.ensure_schema()
-    parent = await store.create_run(
-        _graph(project_id), actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
-    )
+    parent = await store.create_run(_graph(project_id))
     parent_node = await store.create_node_run(parent.run_id, node_id="node-1")
 
     claim = await store.claim_run_by_effect(
@@ -937,7 +877,6 @@ async def test_effect_claim_binds_a_declared_parent_chain(tmp_path: Path) -> Non
         effect_key="delegate:with-parent",
         parent_run_id=parent.run_id,
         parent_node_run_id=parent_node.node_run_id,
-        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
 
     assert claim.claimed is True
@@ -956,12 +895,8 @@ async def test_effect_claim_refuses_a_parent_node_run_from_another_run(
     conn = await aiosqlite.connect(tmp_path / "effects.db")
     store = SqliteRunStore(conn, project_store=project_store)
     await store.ensure_schema()
-    first_parent = await store.create_run(
-        _graph(project_id), actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
-    )
-    second_parent = await store.create_run(
-        _graph(project_id), actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
-    )
+    first_parent = await store.create_run(_graph(project_id))
+    second_parent = await store.create_run(_graph(project_id))
     second_node = await store.create_node_run(second_parent.run_id, node_id="node-1")
 
     with pytest.raises(RunIntegrityError, match="does not belong"):
@@ -970,7 +905,6 @@ async def test_effect_claim_refuses_a_parent_node_run_from_another_run(
             effect_key="delegate:foreign-node",
             parent_run_id=first_parent.run_id,
             parent_node_run_id=second_node.node_run_id,
-            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         )
     await conn.close()
 
@@ -989,7 +923,6 @@ async def test_effect_claim_refuses_a_parent_node_run_without_a_parent_run(
             _graph(project_id),
             effect_key="delegate:orphan-node",
             parent_node_run_id="node-run-nowhere",
-            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         )
     await conn.close()
 
@@ -1018,11 +951,7 @@ async def test_a_claim_racing_a_committed_winner_adopts_the_winner(tmp_path: Pat
         winner_conn = await aiosqlite.connect(db_path)
         winner = SqliteRunStore(winner_conn, project_store=project_store)
         await winner.ensure_schema()
-        claim = await winner.claim_run_by_effect(
-            _graph(project_id),
-            effect_key="delegate:race",
-            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
-        )
+        claim = await winner.claim_run_by_effect(_graph(project_id), effect_key="delegate:race")
         assert claim.claimed is True
         await winner_conn.close()
 
@@ -1037,11 +966,7 @@ async def test_a_claim_racing_a_committed_winner_adopts_the_winner(tmp_path: Pat
         project_store=project_store,
     )
 
-    adopted = await racing.claim_run_by_effect(
-        _graph(project_id),
-        effect_key="delegate:race",
-        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
-    )
+    adopted = await racing.claim_run_by_effect(_graph(project_id), effect_key="delegate:race")
     assert adopted.claimed is False
     assert conn.in_transaction is False
     await conn.close()
@@ -1062,11 +987,7 @@ async def test_a_claim_rejected_by_another_constraint_is_raised(tmp_path: Path) 
     await racing.ensure_schema()
 
     with pytest.raises(sqlite3.IntegrityError, match=r"canonical_runs\.run_id"):
-        await racing.claim_run_by_effect(
-            _graph(project_id),
-            effect_key="delegate:other",
-            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
-        )
+        await racing.claim_run_by_effect(_graph(project_id), effect_key="delegate:other")
     assert conn.in_transaction is False
     await conn.close()
 
@@ -1088,10 +1009,6 @@ async def test_a_claim_racing_with_no_winner_is_an_integrity_failure(tmp_path: P
     await racing.ensure_schema()
 
     with pytest.raises(sqlite3.IntegrityError, match="idx_canonical_runs_effect"):
-        await racing.claim_run_by_effect(
-            _graph(project_id),
-            effect_key="delegate:nowhere",
-            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
-        )
+        await racing.claim_run_by_effect(_graph(project_id), effect_key="delegate:nowhere")
     assert conn.in_transaction is False
     await conn.close()
