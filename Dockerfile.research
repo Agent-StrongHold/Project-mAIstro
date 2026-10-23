@@ -95,7 +95,6 @@ RUN uv export --locked --package maistro-server \
 
 # ---- docker CLI build ----
 # Same policy as the root Dockerfile: the published docker:29-cli binary embeds
-<<<<<<< HEAD
 # go1.26.8 stdlib (trivy HIGHs fixed in go1.26.9/1.27.2; CVE-2026-111943 HIGH
 # in go1.27.2, fixed in go1.26.10/1.27.3) and no released
 # docker:xx-cli tag ships a newer toolchain, so build the exact immutable
