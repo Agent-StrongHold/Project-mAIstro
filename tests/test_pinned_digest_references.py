@@ -8,8 +8,9 @@ from the `quality/image-pins.json` row the Dockerfiles build from, the control
 probe silently runs a different base than the image under test and the smoke
 loses its teeth. A pin refresh that misses such a reference ships that drift.
 
-The 2026-10-22 refresh of `python:3.13.16-slim-bookworm` (#2209) had to touch
-the smoke script by hand; this suite holds that contract closed.
+The 2026-10-22 refresh of `python:3.13.16-slim-bookworm` (first on #2209,
+again on #1152, and on this #2238/#891 CI-repair round) had to touch the
+smoke script by hand each time; this suite holds that contract closed.
 """
 
 from __future__ import annotations
@@ -84,7 +85,7 @@ def test_control_image_matches_the_pin_the_dockerfiles_build_from() -> None:
 
 
 def test_a_stale_digest_of_a_registered_image_is_rejected() -> None:
-    """The failure mode of the #2209 refresh: same image:tag, old digest."""
+    """The failure mode of the 2026-10-22 refreshes: same image:tag, old digest."""
     registry = load_registry()
     some_ref = next(iter(registry))
     image = some_ref.split("@", 1)[0]
