@@ -64,6 +64,13 @@ _EXCLUDED_PACKAGE_PYTHON = frozenset(
         # reachability authorization (two-merge rule); classifying it keeps the
         # source-universe honest without expanding the ratchet baseline.
         "packages/maistro-core/src/maistro/runs/admission_identity.py",
+        # `packages/maistro-core/src/maistro/tasks/admission_codec.py` is an
+        # intentionally unreachable contract leaf (#1893): nothing imports it
+        # yet and a later, separately reviewed integration (the C consumer
+        # leaf) lands the runtime consumer. Classified here rather than
+        # dispositioned unreachable for the same two-merge-rule reason as
+        # admission_identity.py above.
+        "packages/maistro-core/src/maistro/tasks/admission_codec.py",
         # NOTE (#1852 round 89): the tasks/admission_generation.py leaf is
         # deliberately NOT classified here. #1852 forbids suppressions made
         # "to make this leaf independently green" and requires the unwired
