@@ -71,7 +71,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
@@ -225,7 +225,7 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
       - uses: ./.github/actions/setup-uv
@@ -251,7 +251,7 @@ jobs:
       PUBLISH_SET: "maistro-core maistro-canvas maistro-evolve maistro-rsi maistro-bootstrap maistro-ext-sdk"
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
       - uses: ./.github/actions/setup-uv
@@ -436,7 +436,7 @@ jobs:
       id-token: write # keyless cosign signing
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
@@ -808,7 +808,7 @@ jobs:
       contents: write # creating a release writes to the repository
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 

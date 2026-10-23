@@ -87,7 +87,7 @@ jobs:
         run: python scripts/check-formal-oracle-independence.py --base "$FORMAL_ORACLE_BASE"
 
       - name: Setup Python
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
