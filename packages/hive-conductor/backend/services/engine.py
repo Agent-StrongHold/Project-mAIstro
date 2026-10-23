@@ -31,63 +31,12 @@ if TYPE_CHECKING:
 
 __all__ = [
     "EngineService",
-    "EngineState",
     "TaskRecord",
-    "engine_health",
     "get_engine",
+    "process_warden",
     "start_engine",
     "stop_engine",
 ]
-
-#: Lifecycle states the engine moves through (#1181). /health must be able to
-#: tell a successfully stopped engine apart from a boot that failed halfway,
-#: and both apart from one that is serving — possibly with a degraded
-#: optional component.
-EngineState = Literal["not_started", "starting", "ready", "degraded", "startup_failed", "stopped"]
-
-#: Health/JSON surfaces carry a bounded, type-qualified failure cause — never
-#: a raw traceback, and no settings value is ever interpolated into one (#1181).
-#: Text is also passed through the ADR-064 redactor before retention: startup
-#: dependency errors (DSNs, tokens, connection strings) reach the unauthenticated
-#: /health as `cause`/`degradations`, so truncation alone is not enough.
-_CAUSE_MAX_CHARS = 300
-
-
-def _sanitize_cause(exc: BaseException) -> str:
-    """One bounded, redacted, type-qualified line for /health and structured logs."""
-    try:
-        from maistro.security.redact import redact
-
-        text = redact(f"{type(exc).__name__}: {exc}")
-    except Exception:
-        # Fail closed: if the redactor itself is unavailable we cannot vouch
-        # for the message body, so publish the exception type only.
-        text = type(exc).__name__
-    if len(text) > _CAUSE_MAX_CHARS:
-        text = text[:_CAUSE_MAX_CHARS] + "…"
-    return text
-
-
-async def _unwind_agent_port(bridge: Any) -> None:
-    """Unwind a configured bridge after a failed boot (#1181).
-
-    `MaistroCoreBridge.start` has no stop half, but it leaves two things
-    behind. First the module-global runtime source in
-    services.agent_materialization — forgotten first, so nothing can resolve
-    against a container that is being torn down. Then the bridge's Container
-    itself: its `aclose()` releases exactly what that container took — the
-    PostgreSQL pool lease (`holds_pg_pool`) and the SQLite connections it
-    opened — and is idempotent. Clearing `_agent_port` alone would only drop
-    the last reference: each retryable failed boot would take a fresh pool
-    lease until the database runs out of slots, and an aiosqlite worker (a
-    non-daemon thread) left holding queued work could block process exit.
-    """
-    from services.agent_materialization import reset_runtime_source
-
-    reset_runtime_source()
-    container = getattr(bridge, "container", None)
-    if container is not None:
-        await container.aclose()
 
 
 class EngineService:
@@ -793,6 +742,11 @@ _failed_startup: EngineService | None = None
 #: `/health/ready` that ADR-100126-f9d6 excludes for `starting` (#1181).
 _booting: EngineService | None = None
 
+#: Stand-in detector for a process with no core Container (stub/dev mode, or
+#: before `start_engine`). Kept beside the singleton because the point of
+#: `process_warden` is that there is exactly one answer per process.
+_process_warden: Any = None
+
 
 def get_engine() -> EngineService:
     if _singleton is None:
@@ -800,34 +754,37 @@ def get_engine() -> EngineService:
     return _singleton
 
 
-def engine_health() -> dict[str, Any]:
-    """Engine lifecycle health, answerable at any point in the process (#1181).
+def process_warden() -> Any:
+    """The one Warden this Conductor judges untrusted content with (#66/#1171).
 
-    A start that failed is not published — `get_engine()` keeps raising — but
-    /health must still distinguish a clean not-started engine from one whose
-    boot failed and was rolled back, so the failed attempt's snapshot stays
-    reachable here until the next start succeeds or the engine stops. A boot
-    in flight reports `starting` (not `not_started`), so probes cannot mistake
-    a slow dependency for a process that never tried to boot.
+    Conductor chat, voice, HITL definition writes and the inbound harness
+    surface each reach a Warden through `services.agent_materialization` or
+    `routes.harness`. Resolving it here means those surfaces share the core
+    Container's composed detector instead of constructing route-local
+    `Warden()` instances: a second detector is exactly how "what counts as
+    hostile" drifts between neighbouring surfaces, and it would stay
+    pattern-only forever if canonical composition ever gains layers (the
+    LLM-judge tier) or a different policy version.
+
+    No container means a process-wide standalone detector, not no detector.
+    `get_engine()` raises when the engine never started, and a security
+    boundary is the wrong place to turn a boot-order accident into an
+    unscanned path. The fallback is cached so "the Warden refused it" still
+    names one detector for the life of the process.
     """
-    if _singleton is not None:
-        engine = _singleton
-    elif _booting is not None:
-        # The current attempt outranks the retained failure: while a retry is
-        # mid-boot, `starting` is the truthful present state.
-        engine = _booting
-    else:
-        engine = _failed_startup
-    if engine is None:
-        return {
-            "state": "not_started",
-            "cause": None,
-            "degradations": [],
-            "agent_port": None,
-            "task_backend": None,
-            "bridge_configured": False,
-        }
-    return engine.health()
+    global _process_warden
+    container = getattr(getattr(_singleton, "agent_port", None), "container", None)
+    canonical = getattr(container, "warden", None)
+    if canonical is not None:
+        return canonical
+    if _process_warden is None:
+        # Imported here rather than at module scope: this module is on the app
+        # boot path (`main` imports it before any core runtime is built), and
+        # the detector drags in the pattern/heuristic stack.
+        from maistro.security.warden.detector import Warden
+
+        _process_warden = Warden()
+    return _process_warden
 
 
 async def start_engine(settings: Settings) -> EngineService:

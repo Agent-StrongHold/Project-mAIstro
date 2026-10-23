@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from types import SimpleNamespace
 from typing import Any
 
+import pytest
 import routes.harness as harness_mod
-from services.engine import get_engine
+import services.engine as engine_mod
+from services.engine import get_engine, process_warden
 
 from maistro.capabilities import HarnessSessionManager
 from maistro.capabilities.binding import Binding
@@ -355,3 +358,109 @@ def test_harness_scope_is_not_satisfied_by_agents_write(authed_client):
 
     assert _PROTECTED_OPS["POST"]["/v1/harness"] == "harness.execute"
     assert _PROTECTED_OPS["POST"]["/v1/harness"] != _PROTECTED_OPS["POST"]["/v1/agents"]
+
+
+# --- Canonical Warden composition (#66/#1171) ----------------------------
+#
+# Every other test in this file installs a manager directly, so the lazy build
+# the route actually performs on its first request was never exercised. That is
+# where a route-local `Warden()` lived: a second detector judging inbound
+# harness turns with a different pipeline than chat, voice and definition
+# writes. These hold the composition rather than the behaviour of a stub.
+
+
+class _RecordingWarden:
+    def __init__(self, *, block_on: str | None = None) -> None:
+        self.block_on = block_on
+        self.scans: list[tuple[str, str]] = []
+
+    async def scan(self, content: str, boundary: str) -> WardenVerdict:
+        self.scans.append((content, boundary))
+        if self.block_on is not None and self.block_on in content:
+            return WardenVerdict(clean=False, blocked=True, flags=("injection",))
+        return WardenVerdict(clean=True)
+
+
+@pytest.fixture
+def canonical_warden(monkeypatch: pytest.MonkeyPatch) -> _RecordingWarden:
+    """Install a Container-supplied detector, and forget any cached manager.
+
+    Patching the engine singleton rather than `harness_mod._manager` is the
+    point: it leaves `_get_manager()` to build the manager exactly as the first
+    real request does.
+    """
+    warden = _RecordingWarden()
+    registry = get_engine().capabilities
+    engine = SimpleNamespace(
+        capabilities=registry,
+        agent_port=SimpleNamespace(container=SimpleNamespace(warden=warden)),
+    )
+    monkeypatch.setattr(engine_mod, "_singleton", engine)
+    monkeypatch.setattr(harness_mod, "_manager", None)
+    return warden
+
+
+def test_lazy_manager_uses_the_canonical_warden(
+    canonical_warden: _RecordingWarden, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The production build takes the Container's detector, not a new one."""
+    constructed: list[object] = []
+    monkeypatch.setattr(
+        "maistro.security.warden.detector.Warden",
+        lambda *args, **kwargs: constructed.append(object()) or _RecordingWarden(),
+    )
+
+    manager = harness_mod._get_manager()
+
+    assert manager._warden is canonical_warden
+    assert constructed == [], "the route must not build a second detector"
+
+
+def test_inbound_turn_is_refused_by_the_canonical_detector(
+    admin_client, canonical_warden: _RecordingWarden
+) -> None:
+    """The lazily built manager actually gates a turn over HTTP.
+
+    Composition alone would be satisfied by an object wired but never called;
+    this drives the route so the refusal comes from the detector the Container
+    supplied.
+    """
+    canonical_warden.block_on = "EVIL"
+    reg = get_engine().capabilities
+    reg.register(_FakeHarness())
+    reg.activate(SLOT_NAME, "fake")
+    reg.set_enabled(SLOT_NAME, True)
+    try:
+        r = admin_client.post("/v1/harness/sessions", json={"description": "x", "role": "coder"})
+        assert r.status_code == 200, r.text
+        sid = r.json()["session_id"]
+
+        r = admin_client.post(
+            f"/v1/harness/sessions/{sid}/send",
+            json={"messages": [{"role": "user", "content": "do EVIL"}]},
+        )
+        assert r.status_code == 400 and "warden" in r.json()["detail"]
+    finally:
+        reg.set_enabled(SLOT_NAME, False)
+    assert canonical_warden.scans, "the canonical detector was never consulted"
+
+
+def test_lazy_manager_without_a_container_still_gates(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No Container is a standalone detector, never an unscanned surface."""
+    from maistro.security.warden.detector import Warden
+
+    monkeypatch.setattr(
+        engine_mod,
+        "_singleton",
+        SimpleNamespace(capabilities=get_engine().capabilities, agent_port=None),
+    )
+    monkeypatch.setattr(engine_mod, "_process_warden", None)
+    monkeypatch.setattr(harness_mod, "_manager", None)
+
+    manager = harness_mod._get_manager()
+
+    assert isinstance(manager._warden, Warden)
+    # One process-wide stand-in: consecutive calls are the same detector, which
+    # is what makes a refusal attributable to a single pipeline.
+    assert process_warden() is manager._warden
+    assert process_warden() is process_warden()

@@ -13,9 +13,9 @@ from typing import TYPE_CHECKING, Any
 
 from maistro.agents.tool_dispatch import ToolCallExecutor, dispatch_tool_call
 from maistro.observability.correlation import current_execution_context
-from maistro.security.normalize import to_scan_string
+from maistro.security._types import ANONYMOUS_AUTH, GateResult
+from maistro.security.normalize import normalize_for_detection
 from maistro.security.sentinel.pii_filter import scan_and_redact
-from maistro.security.warden.detector import WardenContext, prior_message_context
 from maistro.types.agent import AgentResponse
 from maistro.types.tool import ToolCall
 
@@ -161,61 +161,25 @@ if TYPE_CHECKING:
     from maistro.types.agent import AgentIdentity
 
 
-class _NullSpan:
-    def __enter__(self) -> _NullSpan:
-        return self
-
-    def __exit__(self, *_args: Any) -> None:
-        return None
-
-    def set_input(self, _data: Any) -> _NullSpan:
-        return self
-
-    def set_output(self, _data: Any) -> _NullSpan:
-        return self
-
-
-def _extract_message_text(content: Any) -> str:
+def _message_text(message: dict[str, Any]) -> str:
+    """Extract text from one message without treating structured content as trusted."""
+    content = message.get("content", "")
     if isinstance(content, str):
         return content
     if isinstance(content, list):
         return " ".join(
             part.get("text", "")
             for part in content
-            if isinstance(part, dict) and part.get("type") == "text"
+            if isinstance(part, dict) and isinstance(part.get("text"), str)
         )
     return ""
-
-
-def _redact_message_content(content: Any) -> Any:
-    if isinstance(content, str):
-        return scan_and_redact(content)[0]
-    if isinstance(content, list):
-        redacted = []
-        for part in content:
-            if isinstance(part, dict) and part.get("type") == "text":
-                part = dict(part)
-                part["text"] = scan_and_redact(str(part.get("text", "")))[0]
-            redacted.append(part)
-        return redacted
-    return content
 
 
 def _extract_user_text(messages: list[dict[str, Any]]) -> str:
     """Extract the latest user message text (handling string + content-block forms)."""
     for msg in reversed(messages):
-        if msg.get("role") != "user":
-            continue
-        content = msg.get("content", "")
-        if isinstance(content, str):
-            return content
-        if isinstance(content, list):
-            return " ".join(
-                p.get("text", "")
-                for p in content
-                if isinstance(p, dict) and p.get("type") == "text"
-            )
-        return ""
+        if msg.get("role") == "user":
+            return _message_text(msg)
     return ""
 
 
@@ -285,6 +249,11 @@ class Agent:
         delegation_scope: str | None = None,
         _delegation_depth: int = 0,
     ) -> AgentResponse:
+        # A missing identity is an anonymous principal, never a reason to skip
+        # Sentinel. This keeps direct Agent callers on the same fail-closed path
+        # as the Container composition root.
+        auth = auth if auth is not None else ANONYMOUS_AUTH
+
         # `intent` was accepted and never read — line 219 was the only mention of
         # the name in this file. Callers that classify a request naturally pass
         # the Intent rather than restating its task_type, so honour it as the
@@ -381,11 +350,18 @@ class Agent:
             return blocked_response
         user_text = _extract_user_text(messages)
 
-        # `user_id` (learning-scope provenance) is resolved after the trust
-        # gate; session history was already injected above it, before
-        # `_prepare_user_input`, so prior untrusted turns are part of the
-        # bounded Warden analysis context.
-        user_id = getattr(auth, "user_id", "")
+        # Injected history is untrusted too. Scan the normalized aggregate that
+        # the model is about to receive so an attack split across turns cannot
+        # evade the boundary by being harmless in each fragment.
+        messages, session_history_count = await self._inject_session_history(messages, session_id)
+        warden_verdict = await self._run_warden_context(messages, trace)
+        if not warden_verdict.clean:
+            if trace:
+                trace.score("blocked", 1.0, comment=f"flags: {warden_verdict.flags}")
+            return AgentResponse.blocked_response(
+                f"Blocked by Warden: {', '.join(warden_verdict.flags)}",
+            )
+
         org_id = getattr(auth, "org_id", "")
         team_id = getattr(auth, "team_id", "")
 
@@ -424,35 +400,27 @@ class Agent:
                 error="strategy failed",
             )
 
-        # Delegation: the strategy decided to route to a sub-agent. Resolve the
-        # target and return *its* response. Without this, a DelegateStrategy
-        # result (response=None, done=False, delegate_to=<name>) would fall
-        # through and produce an empty AgentResponse.
-        if result.delegate_to:
-            delegated = await self._delegate(
-                result,
-                auth=auth,
-                session_id=session_id,
-                model_override=model_override,
-                status_callback=status_callback,
-                classified_task_type=classified_task_type,
-                depth=_delegation_depth,
-                trace=trace,
-                turn_id=turn_id,
-                goal_id=goal_id,
-                run_id=run_id,
-                invocation_id=invocation_id,
-                delegation_scope=delegation_scope,
-            )
-            if delegated is not None:
-                return await self._sanitize_agent_response(delegated, trace)
-
-        final_response, blocked_response = await self._prepare_final_output(
-            result.response or "", trace
+        # Delegation and final-output handling stay outside the strategy
+        # implementations so every reasoning strategy shares one boundary.
+        delegated = await self._resolve_delegation(
+            result,
+            auth=auth,
+            session_id=session_id,
+            model_override=model_override,
+            status_callback=status_callback,
+            classified_task_type=classified_task_type,
+            depth=_delegation_depth,
+            trace=trace,
+            turn_id=turn_id,
         )
-        if blocked_response is not None:
-            return blocked_response
-        result.response = final_response
+        if delegated is not None:
+            return delegated
+
+        result, final_block_reason = await self._secure_final_response(result, auth, trace)
+        if final_block_reason:
+            if trace:
+                trace.score("blocked", 1.0, comment=final_block_reason)
+            return AgentResponse.blocked_response(final_block_reason)
 
         tool_had_failures = bool(
             result.tool_history
@@ -465,7 +433,9 @@ class Agent:
         if tool_had_failures:
             await self._extract_rca(result, user_text, user_id, org_id, team_id, trace)
 
-        await self._extract_learnings(result, user_text, user_id, org_id, team_id, trace)
+        await self._extract_learnings(result, user_text, org_id, team_id, trace)
+
+        await self._promote_learnings(org_id, injected_learning_ids)
 
         await self._persist_run(
             result,
@@ -497,6 +467,40 @@ class Agent:
             agent_name=self.identity.name,
         )
 
+    async def _promote_learnings(self, org_id: str, learning_ids: list[int]) -> None:
+        """Promote injected learnings only when the optional promoter is wired."""
+        if self._learning_promoter and learning_ids:
+            await self._learning_promoter.check_and_promote(org_id=org_id)
+
+    async def _resolve_delegation(
+        self,
+        result: Any,
+        *,
+        auth: Any,
+        session_id: str | None,
+        model_override: str | None,
+        status_callback: Any,
+        classified_task_type: str,
+        depth: int,
+        trace: Any,
+        turn_id: str | None,
+    ) -> AgentResponse | None:
+        """Resolve an optional delegate before final-output security runs."""
+        if not result.delegate_to:
+            return None
+        delegated = await self._delegate(
+            result,
+            auth=auth,
+            session_id=session_id,
+            model_override=model_override,
+            status_callback=status_callback,
+            classified_task_type=classified_task_type,
+            depth=depth,
+            trace=trace,
+            turn_id=turn_id,
+        )
+        return delegated
+
     async def _inject_session_history(
         self,
         messages: list[dict[str, Any]],
@@ -527,6 +531,9 @@ class Agent:
         # Strategies retain these values for compatibility; the executor below
         # remains the canonical effect and content-security boundary.
         strategy_kwargs["warden"] = self._warden
+        # Final assistant content is secured after the strategy returns; this
+        # flag prevents a strategy from selecting a different final-output path.
+        strategy_kwargs["agent_security_boundary"] = True
         strategy_kwargs["auth"] = auth
         strategy_kwargs["security_pipeline"] = True
         if self._sentinel is not None:
@@ -600,92 +607,59 @@ class Agent:
                 # requires the Gauntlet like any other learning.
                 await self._learning_promoter.capture_anti_patterns(org_id)
 
-    async def _prepare_user_input(
-        self,
-        messages: list[dict[str, Any]],
-        trace: Any,
-    ) -> tuple[list[dict[str, Any]], AgentResponse | None]:
-        """Scan and redact every user message before context assembly.
+    async def _run_warden_context(self, messages: list[dict[str, Any]], trace: Any) -> Any:
+        """Scan the normalized, turn-aggregated context before prompt assembly."""
+        if self._warden is None:
+            raise RuntimeError("Warden is not wired for Agent context security")
 
-        Each user turn is scanned together with the bounded ordered prefix of
-        the messages before it (session history included, since it is injected
-        before this gate), so an instruction distributed across
-        individually-benign turns is refused before it becomes trusted model
-        context. Trusted system/developer turns carry an authority label and
-        are never concatenated into attacker-controlled analysis text.
-        """
-        prepared = [dict(message) for message in messages]
-        context_manager = trace.span("warden.user_input") if trace else _NullSpan()
-        with context_manager as ws:
-            ws.set_input({"message_count": len(messages)})
-            for index, message in enumerate(prepared):
-                if message.get("role") != "user":
-                    continue
-                content = message.get("content", "")
-                text = _extract_message_text(content)
-                if text and self._warden is not None:
-                    scan_kwargs: dict[str, Any] = {}
-                    prior = prior_message_context(prepared[: index + 1])
-                    if prior:
-                        scan_kwargs["context"] = prior
-                    verdict = await self._warden.scan(text, "user_input", **scan_kwargs)
-                    if not verdict.clean:
-                        ws.set_output({"clean": False, "flags": verdict.flags})
-                        if trace:
-                            trace.score("blocked", 1.0, comment=f"flags: {verdict.flags}")
-                        return prepared, AgentResponse.blocked_response(
-                            f"Blocked by Warden: {', '.join(verdict.flags)}"
-                        )
-                message["content"] = _redact_message_content(content)
-            ws.set_output({"clean": True})
-        return prepared, None
+        untrusted = [message for message in messages if message.get("role") != "system"]
+        # Do not add a delimiter: an injection deliberately split across two
+        # turns must remain contiguous to the scanner.
+        aggregate = "".join(
+            text for text in (_message_text(message) for message in untrusted) if text
+        )
+        normalized = normalize_for_detection(aggregate)
+        boundary = (
+            "tool_result"
+            if any(message.get("role") in {"tool", "function"} for message in untrusted)
+            else "user_input"
+        )
+        if not trace:
+            return await self._warden.scan(normalized, boundary)
+        with trace.span("warden.user_input") as ws:
+            ws.set_input({"text_length": len(normalized), "message_count": len(untrusted)})
+            verdict = await self._warden.scan(normalized, boundary)
+            ws.set_output({"clean": verdict.clean, "flags": verdict.flags})
+        return verdict
 
-    async def _sanitize_final_output(
-        self,
-        content: str,
-        trace: Any,
-    ) -> tuple[str, tuple[str, ...]]:
-        """Scan/redact the exact assistant representation before any sink."""
+    async def _secure_final_response(self, result: Any, auth: Any, trace: Any) -> tuple[Any, str]:
+        """Apply one Agent-owned Warden/Sentinel boundary to final model text."""
+        content = result.response or ""
         if not content:
-            return content, ()
-        context_manager = trace.span("warden.assistant_output") if trace else _NullSpan()
-        with context_manager as ws:
-            ws.set_input({"text_length": len(content)})
-            if self._warden is not None:
-                verdict = await self._warden.scan(content, "assistant_output")
-                if not verdict.clean:
-                    ws.set_output({"clean": False, "flags": verdict.flags})
-                    return "", tuple(verdict.flags)
-            redacted, _ = scan_and_redact(content)
-            ws.set_output({"clean": True, "redacted": redacted != content})
-            return redacted, ()
+            return result, ""
+        if self._sentinel is not None:
+            # ``process_output`` is the canonical path: it combines Warden,
+            # PII redaction, and output optimization. ``post_call`` remains a
+            # compatibility seam for small injected test doubles.
+            if hasattr(self._sentinel, "process_output"):
+                outcome: GateResult = await self._sentinel.process_output(
+                    "assistant_response", content, auth
+                )
+                if outcome.blocked:
+                    return result, outcome.block_reason or "Final response blocked by Warden"
+                return replace(result, response=outcome.sanitized_text), ""
+            if hasattr(self._sentinel, "post_call"):
+                sanitized = await self._sentinel.post_call("assistant_response", content, auth)
+                return replace(result, response=sanitized), ""
+            return result, "Sentinel output boundary is unavailable"
 
-    async def _prepare_final_output(
-        self,
-        content: str,
-        trace: Any,
-    ) -> tuple[str, AgentResponse | None]:
-        sanitized, flags = await self._sanitize_final_output(content, trace)
-        if not flags:
-            return sanitized, None
-        if trace:
-            trace.score("blocked", 1.0, comment=f"flags: {flags}")
-        return "", AgentResponse.blocked_response(f"Blocked by Warden: {', '.join(flags)}")
-
-    async def _sanitize_agent_response(
-        self,
-        response: AgentResponse,
-        trace: Any,
-    ) -> AgentResponse:
-        """Re-apply the output boundary when a delegated agent returns."""
-        if response.blocked or not response.content:
-            return response
-        content, flags = await self._sanitize_final_output(response.content, trace)
-        if flags:
-            if trace:
-                trace.score("blocked", 1.0, comment=f"flags: {flags}")
-            return AgentResponse.blocked_response(f"Blocked by Warden: {', '.join(flags)}")
-        return replace(response, content=content)
+        if self._warden is None:
+            return result, "Warden output boundary is unavailable"
+        verdict = await self._warden.scan(normalize_for_detection(content), "assistant_output")
+        if not verdict.clean:
+            return result, f"Final response blocked by Warden: {', '.join(verdict.flags)}"
+        sanitized, _ = scan_and_redact(content)
+        return replace(result, response=sanitized), ""
 
     async def _build_context(
         self,
@@ -708,7 +682,6 @@ class Agent:
             "learning_store": self._learning_store,
             "context_assembly_policy": self._context_assembly_policy,
             "agent_id": self.identity.name,
-            "user_id": user_id,
             "org_id": org_id,
             "team_id": team_id,
             "project_id": project_id,

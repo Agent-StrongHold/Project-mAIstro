@@ -12,8 +12,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Any, Protocol, runtime_checkable
 
-from maistro.types.security import AuditEntry as AuditEntry
-from maistro.types.security import Violation as Violation
+from maistro.security.redact import redact
 
 
 class IdentityKind(StrEnum):
@@ -59,8 +58,6 @@ class AuthContext:
         explicit ``Sentinel(allow_on_miss=True)`` construction, intended for
         non-production/test/demo wiring, and no configuration surface arms it.
         """
-        if self.delegated_actions is not None and tool_name not in self.delegated_actions:
-            return False
         allowed_roles = permission_table.get(tool_name)
         if allowed_roles is None:
             return False
@@ -78,9 +75,9 @@ SYSTEM_AUTH = AuthContext(
 #: The identity a request that carried none is evaluated as (#1165 review).
 #:
 #: Role-less, so a fail-closed permission table denies it every tool: an
-#: absent identity is not a grant. The Agent tool seam denies ``auth=None``
-#: outright, so routing an identity-free turn as this principal lets the
-#: operator's table decide instead. ``user_id`` stays empty on purpose -- the strike paths key on
+#: absent identity is not a grant, and the strategies that gate
+#: ``Sentinel.pre_call`` on ``auth is not None`` must reach the table rather
+#: than skip it. ``user_id`` stays empty on purpose -- the strike paths key on
 #: it and skip when it is empty, exactly as they did for ``auth=None``, and
 #: `Container.route_request` refuses to arm strike tracking without a real
 #: identity in the first place.
@@ -110,6 +107,26 @@ class WardenVerdict:
     flags: tuple[str, ...] = ()
     confidence: float = 0.0
     reasoning_trace: str | None = None
+
+
+@dataclass
+class Violation:
+    boundary: str
+    rule: str
+    severity: str
+    detail: str = ""
+    repair_action: str | None = None
+
+    def __post_init__(self) -> None:
+        # #1159: `detail` interpolates rejected tool-call material (e.g. the
+        # invalid-enum message carries the rejected value verbatim), so it is
+        # scrubbed AT CONSTRUCTION — before any AuditLog implementation,
+        # durable or in-memory, can persist the violations list. The stop
+        # condition is explicit: keeping raw values out of evidence must not
+        # depend on a particular store omitting the field. The same redactor
+        # runs on every log pipeline, so this matches the system-wide
+        # secret policy (labels + entropy fallback).
+        self.detail = redact(self.detail)
 
 
 @dataclass

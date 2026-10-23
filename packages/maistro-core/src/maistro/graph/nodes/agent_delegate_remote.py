@@ -46,47 +46,8 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal, NoReturn, cast
 from pydantic import BaseModel, Field
 
 from maistro.a2a.delegate import A2ADelegator, DelegationMode
-from maistro.a2a.delegation_context import (
-    DelegationContext,
-    DelegationContextError,
-    DelegationScopeExceeded,
-    validate_goal_binding,
-)
-from maistro.a2a.guest_peers import GuestPeerManager, PeerTrust
-from maistro.a2a.inbound import InboundWarden, default_warden, scan_inbound
-from maistro.a2a.normalize import (
-    PROGRESS_HISTORY_KEY,
-    CanonicalDelegationTruth,
-    SettlementDecision,
-    decide_cancellation,
-    decide_settlement,
-    record_progress,
-)
-from maistro.capabilities.binding import Binding, ResolvedCapabilityProvider
-from maistro.capabilities.binding_store import BindingNotFound
-from maistro.capabilities.effect_context import CapabilityEffectContext
-from maistro.capabilities.governed_invocation import (
-    InvocationApprovalRequired,
-    InvocationDenied,
-)
-from maistro.capabilities.invocation import (
-    CapabilityUnavailable,
-    Invocation,
-    InvocationStatus,
-    ReconciliationDisposition,
-    UnsafeEffectRetry,
-)
-from maistro.capabilities.types import Unavailable
-from maistro.graph.nodes.capability_effect import invoke_capability_effect
-from maistro.graph.verification.taxonomy import RESULT_STATE_METADATA_KEY, ResultState
-from maistro.runs.model import (
-    TERMINAL_ATTEMPT_STATUSES,
-    TERMINAL_RUN_STATUSES,
-    AcceptedNodeOutcome,
-    AttemptResult,
-    AttemptStatus,
-    RunStatus,
-)
+from maistro.a2a.guest_peers import GuestPeerManager
+from maistro.security.warden.detector import Warden
 
 from . import register_node
 from .base import (
@@ -350,9 +311,7 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
         a2a_delegator: A2ADelegator | None = None,
         guest_peers: GuestPeerManager | None = None,
         run_store: RunStore | None = None,
-        effect_context: CapabilityEffectContext | None = None,
-        warden: InboundWarden | None | object = _WARDEN_UNSET,
-        audit_log: Any = None,
+        warden: Warden | None = None,
     ) -> None:
         """Wire in the delegator, the guest-peer manager, the Run store and
         the canonical effect authority.
@@ -362,23 +321,18 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
         the node stays constructible in tests that only exercise dispatch, but
         `build_node_resolver` supplies it in production.
 
-        `effect_context` is the governed Binding/Invocation authority the
-        cross-instance dispatch crosses (issue #959): the external Agent call
-        is one `agent_delegation` Invocation beneath the dispatching Attempt.
-        Without it, the cross-instance path is a wiring fault and refuses
-        rather than dispatching an unrecorded external call.
+        `warden` scans the remote peer's resumed answer before it re-enters
+        trusted Run/Agent context (#66/#1137). Default-constructed rather than
+        optional-with-bypass: a delegate's output arriving as a resume result
+        is exactly the untrusted-content boundary `tool_result` scans exist
+        for, so a node built bare from the registry still gets the full
+        pattern pipeline — there is deliberately no wiring that lets this
+        boundary be absent.
         """
         self._a2a_delegator = a2a_delegator
         self._guest_peers = guest_peers
         self._run_store = run_store
-        self._effects = effect_context
-        # A peer payload is untrusted even after transport authentication
-        # (#1137): the default is the canonical detector, an explicitly
-        # unavailable policy fails closed in `scan_inbound`.
-        self._warden = (
-            default_warden() if warden is _WARDEN_UNSET else cast(InboundWarden | None, warden)
-        )
-        self._audit_log = audit_log
+        self._warden = warden or Warden()
 
     async def _execute(self, inputs: DelegateRemoteIn, ctx: NodeContext) -> DelegateRemoteOut:
         """Dispatch on first run, or return the resumed delegation result.
@@ -521,96 +475,78 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
         onto someone else's Run. The submitted `run_id`, if there is one, is
         ignored rather than compared -- there is nothing to gain from a
         mismatch except a second way to be wrong.
+
+        The answer's own strings (`result`, `error`, `task_id`) are content the
+        remote peer produced. They are Warden-scanned at this boundary before
+        the payload is handed into trusted context (#66/#1137): a resume
+        result must not reach model/prompt context unscanned merely because it
+        arrived as an answer rather than a user turn. A refused payload reads
+        as a failed delegation -- the flags are ours and safe to echo, the
+        payload itself is dropped, never relayed.
         """
         pause = resumed.get("_pause")
-        pause_metadata: Mapping[str, Any] = {}
-        run_id = ""
-        if isinstance(pause, Mapping):
-            # Durable answer submission stamps the complete server-authored
-            # pause entry, whose node metadata carries the child identity.
-            # Keep accepting the flat shape used by older callers/tests, but
-            # never source the identity from the answer's top-level fields.
-            stamped = pause.get("metadata")
-            if isinstance(stamped, Mapping):
-                pause_metadata = stamped
-            run_id = str(pause_metadata.get("run_id") or "")
-            if not run_id:
-                run_id = str(pause.get("run_id") or "")
-        return run_id, pause_metadata
+        run_id = str(pause.get("run_id") or "") if isinstance(pause, dict) else ""
+        raw_status = str(resumed.get("status", "completed"))
+        status = _coerce_status(raw_status)
+        error = resumed.get("error")
+        if status != raw_status:
+            # The status also selects the child's terminal state, so an
+            # unrecognised one would otherwise `KeyError` in the middle of
+            # settling a Run. Reporting it as failed *and saying why* keeps a
+            # malformed answer from reading as a legitimate refusal.
+            error = f"delegate returned an unrecognised status {raw_status!r}"
 
-    async def _late_answer_failure(
-        self,
-        decision: SettlementDecision,
-        child: Run | None,
-        *,
-        task_id: str,
-        run_id: str,
-    ) -> DelegateRemoteOut:
-        """The parent-facing failure for an answer that arrived too late.
+        refused, refusal = await self._scan_inbound(resumed, field="result")
+        error_refused, error_refusal = await self._scan_inbound(resumed, field="error")
+        task_id = str(resumed.get("task_id") or "")
+        task_refused, _ = await self._scan_inbound(resumed, field="task_id")
 
-        The child Run is already terminal: the remote answer arrived too late
-        (or answers work that was cancelled locally). Nothing is written -- a
-        terminal Run has no outgoing transitions -- and the parent is told the
-        delegation failed *with the canonical truth named*, never the remote's
-        self-reported outcome. Letting a remote `completed` ride through here
-        would advance the parent onto work the canonical record holds cancelled
-        or finished.
-        """
-        error = decision.reason
-        if (
-            child is not None
-            and child.status is RunStatus.CANCELLED
-            and decision.normalized.outcome == "completed"
-        ):
-            # The #960 truth composition: the child was cancelled locally,
-            # and the remote -- which never acknowledged the cancellation
-            # -- now reports completion. Quote the cancellation projection
-            # so the parent's evidence records both halves: the remote
-            # observation, and why it is not authority.
-            projection = decide_cancellation(remote_acknowledged=False)
-            assert projection.canonical_status == RunStatus.CANCELLED.value
-            error = f"{decision.reason}; {projection.reason}"
-        return DelegateRemoteOut(status="failed", task_id=task_id, run_id=run_id, error=error)
+        result = resumed.get("result")
+        if refused or error_refused:
+            # Either the payload or the reported error carried content the
+            # Warden refused. One failure covers the whole answer: relaying a
+            # clean `result` beside a poisoned `error` would still deliver
+            # untrusted text into trusted context.
+            status = "failed"
+            error = refusal or error_refusal
+            result = None
+        if task_refused:
+            task_id = ""
 
-    async def _settled_output(
-        self,
-        resumed: dict[str, Any],
-        decision: SettlementDecision,
-        *,
-        raw_status: str,
-        task_id: str,
-        run_id: str,
-    ) -> DelegateRemoteOut:
-        """Build the settled answer from a decision that applies, and record it.
-
-        An answer that said what it meant keeps its own error; a status the
-        normalizer renamed or refused (remote cancellation, an unmapped
-        value) carries the reason it was renamed, so the settlement record
-        says what actually happened.
-        """
-        assert decision.outcome_status is not None
-        renamed = decision.outcome_status != raw_status.strip().lower()
         out = DelegateRemoteOut(
-            status=cast(DelegationStatus, decision.outcome_status),
+            status=status,
             task_id=task_id,
             run_id=run_id,
-            # Remote Agent provenance (issue #959), when the answering peer
-            # reported it. Carried beside the canonical identity; an answer
-            # without it stays without it.
-            remote_agent_version=str(resumed.get("remote_agent_version") or ""),
-            result=resumed.get("result"),
-            error=resumed.get("error") or (decision.reason if renamed else None),
-            timed_out=(
-                bool(resumed.get("timed_out", False)) or decision.normalized.outcome == "timed_out"
-            ),
+            result=result,
+            error=error,
+            timed_out=bool(resumed.get("timed_out", False)),
         )
         await self._record_child_outcome(run_id, out)
         return out
 
-    async def _resume(
-        self, inputs: DelegateRemoteIn, ctx: NodeContext, resumed: dict[str, Any]
-    ) -> DelegateRemoteOut:
-        """Settle the child Run, then report what the delegate answered.
+    async def _scan_inbound(self, resumed: dict[str, Any], *, field: str) -> tuple[bool, str]:
+        """Warden-scan one resumed answer field. Returns ``(refused, message)``.
+
+        Only strings are scanned: absent/None fields carry no content, and the
+        output schema owns the coercion of anything else. The verdict follows
+        the shared `tool_result` posture (`ReactStrategy._sanitize_tool_result`):
+        any non-clean verdict refuses the field, suspicious-but-unproven
+        included, because the alternative is untrusted text inside the Run's
+        prompt context.
+        """
+        value = resumed.get(field)
+        if not isinstance(value, str) or not value:
+            return False, ""
+        verdict = await self._warden.scan(value, "tool_result")
+        if verdict.clean:
+            return False, ""
+        return True, (
+            f"delegation {field} refused by Warden: {', '.join(verdict.flags)}. "
+            "The remote peer's payload was blocked before entering trusted context."
+        )
+
+    async def _terminalize_child(self, run_id: str, out: DelegateRemoteOut) -> None:
+        """Walk the child Run from `created` to the outcome the delegate reported.
 
         The Run id comes from `resumed["_pause"]`, which the store stamps from
         the pause *this node* wrote, never from the submitted answer. The
@@ -1534,10 +1470,18 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
             # No child Run: nothing was admitted, so there is no execution to
             # give an identity to. The peer declining is a legitimate outcome
             # the Graph may branch on, unlike the misconfiguration above.
+            # The peer's error string is still its content, so it crosses the
+            # same Warden boundary as a resumed result before it can reach
+            # trusted context (#66/#1137); a refusal reports ours, not theirs.
+            refused, refusal = await self._scan_inbound({"error": result.error}, field="error")
+            task_id = result.task_id
+            task_refused, _ = await self._scan_inbound({"task_id": result.task_id}, field="task_id")
+            if task_refused:
+                task_id = ""
             return DelegateRemoteOut(
-                status="rejected",
-                task_id=str(result.get("task_id") or ""),
-                error=result.get("error"),
+                status=result.status,
+                task_id=task_id,
+                error=refusal if refused else result.error,
             )
         task_id = str(result.get("task_id") or "")
         if not task_id:

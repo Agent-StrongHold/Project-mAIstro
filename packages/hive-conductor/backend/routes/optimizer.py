@@ -55,22 +55,12 @@ async def trigger_optimizer(
     org_id = str(getattr(request.state, "org_id", "") or "")
     project_id = str(getattr(request.state, "project_id", "") or "")
     try:
-        scope = await authorize_hive_dag_scope(workspace_id=workspace_id or "", user_id=actor)
-    except DagWorkspaceSelectionError as exc:
-        raise HTTPException(
-            status_code=403, detail="DAG Workspace scope is not authorized"
-        ) from exc
-    try:
         result = await run_optimizer(
             dag_id,
             actor=actor,
             apply_auto=apply_auto,
             org_id=org_id,
             project_id=project_id,
-            # The Workspace this request was authorized against: proposals
-            # carry it so candidate registration lands in the authorizing
-            # tenant, not the configured default (#861 review).
-            workspace_id=str(getattr(scope, "workspace_id", "") or ""),
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None

@@ -106,9 +106,8 @@ const HISTORY_LIMIT = 20;
 
 function generateId() {
   // Ids name messages and sessions that later requests refer back to, so
-  // they come from the CSPRNG rather than Math.random -- via `randomId`,
-  // which works over plain HTTP too (see lib/ids.ts).
-  return randomId();
+  // they come from the CSPRNG rather than Math.random.
+  return crypto.randomUUID().replace(/-/g, "").slice(0, 12);
 }
 
 function formatTime(date: Date) {

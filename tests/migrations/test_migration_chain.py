@@ -68,26 +68,7 @@ EXPECTED_TABLES = frozenset(
         "backlog_events",
         "backlog_items",
         "books",
-        # The Canvas store's own tables (044), created outside the repository
-        # until #286 put them in the chain.
-        "canvas_blobs",
-        "canvases",
-        "composite_records",
-        "generation_jobs",
-        "layers",
-        # The canonical governed-capability boundary (039, renumbered from 032
-        # after a collision with 032_asset_instance_org_scope; #1079).
-        # Bindings and Invocations are separate tables: Bindings are immutable
-        # authorization records, Invocations the logical effect ledger.
-        "capability_approvals",
-        # The tombstone half of the same authority (047). Separate from
-        # `capability_bindings` because revoking deletes the binding row,
-        # so a `revoked_at` column would be deleted along with the thing
-        # it forbids and the id could be registered again (#846).
-        "capability_binding_revocations",
-        "capability_bindings",
         "capability_invocations",
-        "consumer_cursors",
         # The canonical execution spine (012) and the template registry it
         # instantiates Runs from (014). Six tables and one, not seven of a
         # kind: `canonical_projects` and its two child tables are the scope a

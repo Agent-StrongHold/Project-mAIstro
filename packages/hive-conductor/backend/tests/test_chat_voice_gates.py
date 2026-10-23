@@ -47,6 +47,19 @@ class FakeRequest:
         self.state = SimpleNamespace(principal=Principal(user_id="user-1"))
 
 
+class _RecordingWarden:
+    """A detector that records what it was asked to judge."""
+
+    def __init__(self, *, seen: list[tuple[str, str]]) -> None:
+        self.seen = seen
+
+    async def scan(self, content: str, boundary: str) -> Any:
+        from maistro.security._types import WardenVerdict
+
+        self.seen.append((content, boundary))
+        return WardenVerdict(clean=True)
+
+
 async def _stream_text(response: Any) -> str:
     chunks = [chunk async for chunk in response.body_iterator]
     return b"".join(c if isinstance(c, bytes) else c.encode() for c in chunks).decode()
@@ -1420,3 +1433,41 @@ async def test_approved_destructive_tool_is_authorized_and_audited() -> None:
         e for e in stores.audit_log.values() if e["action"] == "chat_tool_privilege_approved"
     ]
     assert approved_rows, "the approval must be recorded in audit"
+
+
+# --------------------------------------------------------------------------- #
+# The boundary judges with the process's one detector (#66/#1171)
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_chat_boundary_judges_with_the_canonical_warden(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Chat must be scanned by the Warden canonical composition supplies.
+
+    The gate's guarantee is that a turn is judged by the *same* pipeline as
+    every other Conductor surface. A detector constructed beside the gate
+    satisfies "scanned" while making that guarantee false, so this asserts the
+    Container's detector is the one consulted — not merely that a scan ran.
+    """
+    import services.agent_materialization as materialization
+    import services.engine as engine_mod
+
+    seen: list[tuple[str, str]] = []
+    canonical = _RecordingWarden(seen=seen)
+    monkeypatch.setattr(
+        engine_mod,
+        "_singleton",
+        SimpleNamespace(agent_port=SimpleNamespace(container=SimpleNamespace(warden=canonical))),
+    )
+    monkeypatch.setattr(materialization, "_warden_instance", None)
+
+    fake = FakeLLM()
+    monkeypatch.setattr(chat, "build_llm_port", lambda: fake)
+
+    req = ChatCompletionRequest(messages=[{"role": "user", "content": "what is on my board"}])
+    result = await chat.complete(req, FakeRequest())
+
+    assert result["choices"][0]["message"]["content"] == "safe conversation"
+    assert ("what is on my board", "user_input") in seen

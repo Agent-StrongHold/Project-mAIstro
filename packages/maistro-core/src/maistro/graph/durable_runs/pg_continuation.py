@@ -109,8 +109,8 @@ class PgGraphContinuationStore:
             row = await conn.fetchrow(
                 """INSERT INTO graph_continuations
                        (run_id, status, project_id, created_at, resume_at,
-                        hitl_deadline_at, has_hitl_pause, version, continuation)
-                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::text::jsonb)
+                        hitl_deadline_at, version, continuation)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8::text::jsonb)
                    ON CONFLICT (run_id) DO NOTHING
                    RETURNING run_id""",
                 *_values(continuation),
@@ -135,9 +135,8 @@ class PgGraphContinuationStore:
             row = await conn.fetchrow(
                 """UPDATE graph_continuations
                       SET status = $2, project_id = $3, created_at = $4, resume_at = $5,
-                          hitl_deadline_at = $6, has_hitl_pause = $7, version = $8,
-                          continuation = $9::text::jsonb
-                    WHERE run_id = $1 AND version < $8
+                          hitl_deadline_at = $6, version = $7, continuation = $8::text::jsonb
+                    WHERE run_id = $1 AND version < $7
                 RETURNING run_id""",
                 *_values(continuation),
             )
@@ -239,6 +238,21 @@ class PgGraphContinuationStore:
             rows = await conn.fetch(sql, *params)
         return [str(row["run_id"]) for row in rows]
 
+    async def list_hitl_due_run_ids(self, *, now: datetime, limit: int = 100) -> list[str]:
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                """SELECT run_id FROM graph_continuations
+                    WHERE status = $1
+                      AND hitl_deadline_at IS NOT NULL
+                      AND hitl_deadline_at <= $2
+                 ORDER BY hitl_deadline_at ASC, run_id ASC
+                    LIMIT $3""",
+                RunStatus.PAUSED.value,
+                now,
+                limit,
+            )
+        return [str(row["run_id"]) for row in rows]
+
     async def list_run_ids_for_project(self, project_id: str, *, limit: int = 25) -> list[str]:
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
@@ -260,7 +274,6 @@ def _values(continuation: GraphContinuation) -> tuple[Any, ...]:
         continuation.created_at,
         continuation.resume_at,
         continuation.hitl_deadline_at,
-        continuation.has_hitl_pause,
         continuation.version,
         continuation.model_dump_json(),
     )

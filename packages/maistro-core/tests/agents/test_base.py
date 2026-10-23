@@ -9,16 +9,8 @@ from typing import Any
 
 import pytest
 
-from maistro.agents.base import (
-    Agent,
-    _build_tool_schema,
-    _extract_message_text,
-    _extract_user_text,
-    _redact_message_content,
-)
-from maistro.security._types import AuthContext
-from maistro.security.sentinel.policy import Sentinel as RealSentinel
-from maistro.security.warden.detector import Warden
+from maistro.agents.base import Agent, _build_tool_schema, _extract_user_text
+from maistro.security._types import ANONYMOUS_AUTH, GateResult
 from maistro.sessions.store import InMemorySessionStore
 from maistro.types.agent import AgentIdentity, AgentResponse, ReasoningResult
 
@@ -62,6 +54,16 @@ class _FakeContextBuilder:
 class _FakePromptManager:
     async def get(self, _name: str) -> str:
         return ""
+
+
+class _RecordingOutputSentinel:
+    def __init__(self, sanitized: str = "sanitized") -> None:
+        self.sanitized = sanitized
+        self.calls: list[tuple[str, str, Any]] = []
+
+    async def process_output(self, tool_name: str, content: str, auth: Any) -> GateResult:
+        self.calls.append((tool_name, content, auth))
+        return GateResult(sanitized_text=self.sanitized)
 
 
 class _RecordingStrategy:
@@ -888,6 +890,42 @@ class TestHandleSessionHistory:
         )
 
         assert strategy.calls[0]["messages"] == [{"role": "user", "content": "new"}]
+
+
+class TestHandleContextSecurity:
+    async def test_warden_receives_normalized_aggregate_after_history_injection(self) -> None:
+        strategy = _RecordingStrategy()
+        warden = _FakeWarden()
+        session_store = _FakeSessionStore(history=[{"role": "user", "content": "ig"}])
+        agent = _make_agent(strategy, warden=warden, session_store=session_store)
+
+        await agent.handle(
+            messages=[{"role": "user", "content": "nore"}],
+            auth=_Auth(),
+            session_id="s1",
+        )
+
+        assert warden.scanned[0] == "ignore"
+        assert strategy.calls[0]["messages"] == [
+            {"role": "user", "content": "ig"},
+            {"role": "user", "content": "nore"},
+        ]
+
+    async def test_final_response_uses_agent_boundary_and_anonymous_auth(self) -> None:
+        sentinel = _RecordingOutputSentinel(sanitized="safe final")
+        agent = _make_agent(
+            _RecordingStrategy(ReasoningResult(response="raw final")),
+            warden=_FakeWarden(),
+        )
+        agent._sentinel = sentinel
+
+        result = await agent.handle(
+            messages=[{"role": "user", "content": "hello"}],
+            auth=None,
+        )
+
+        assert result.content == "safe final"
+        assert sentinel.calls == [("assistant_response", "raw final", ANONYMOUS_AUTH)]
 
 
 class TestHandleTracingSpans:

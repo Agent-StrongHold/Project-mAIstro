@@ -123,8 +123,5 @@ __all__ = [
     "get_event_bus",
     "pattern_matches",
     "process_events",
-    "process_events_batch",
     "reconstruct_persisted_event",
-    "request_digest_v1",
-    "validated_outcome",
 ]

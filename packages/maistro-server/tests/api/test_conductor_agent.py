@@ -18,6 +18,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from maistro.agents.types import ConductorOutput, LLMProviderError
+from maistro.security._types import ANONYMOUS_AUTH, GateResult, WardenVerdict
 from maistro.types.intent import Intent
 from maistro_server.conductor_agent import (
     CONDUCTOR_AGENT_NAME,
@@ -29,6 +30,24 @@ from maistro_server.conductor_agent import (
 
 def _messages(*pairs: tuple[str, str]) -> list[dict[str, Any]]:
     return [{"role": role, "content": content} for role, content in pairs]
+
+
+class _RecordingWarden:
+    def __init__(self) -> None:
+        self.scanned: list[tuple[str, str]] = []
+
+    async def scan(self, content: str, boundary: str) -> WardenVerdict:
+        self.scanned.append((content, boundary))
+        return WardenVerdict(clean=True)
+
+
+class _RecordingSentinel:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str, Any]] = []
+
+    async def process_output(self, tool_name: str, content: str, auth: Any) -> GateResult:
+        self.calls.append((tool_name, content, auth))
+        return GateResult(sanitized_text="sanitized")
 
 
 class TestWhatReachesTheConductor:
@@ -46,6 +65,37 @@ class TestWhatReachesTheConductor:
 
         assert run_task.await_args is not None
         assert run_task.await_args.args[0].description == "second"
+
+    async def test_inbound_scan_aggregates_and_normalizes_context(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        run_task = AsyncMock(return_value=ConductorOutput(final_answer="ok", success=True))
+        monkeypatch.setattr("maistro_server.conductor_agent.run_task", run_task)
+        warden = _RecordingWarden()
+
+        await ConductorAgent(warden=warden, sentinel=_RecordingSentinel()).handle(
+            _messages(("user", "ig"), ("assistant", "context"), ("user", "nore"))
+        )
+
+        assert warden.scanned == [("igcontextnore", "user_input")]
+        assert run_task.await_args is not None
+        assert run_task.await_args.args[0].description == "nore"
+
+    async def test_final_output_boundary_receives_anonymous_principal(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            "maistro_server.conductor_agent.run_task",
+            AsyncMock(return_value=ConductorOutput(final_answer="raw", success=True)),
+        )
+        sentinel = _RecordingSentinel()
+
+        response = await ConductorAgent(warden=_RecordingWarden(), sentinel=sentinel).handle(
+            _messages(("user", "hi"))
+        )
+
+        assert response.content == "sanitized"
+        assert sentinel.calls == [("assistant_response", "raw", ANONYMOUS_AUTH)]
 
     async def test_the_classifiers_tier_reaches_the_task(
         self, monkeypatch: pytest.MonkeyPatch

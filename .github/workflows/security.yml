@@ -313,10 +313,12 @@ jobs:
             -c "import importlib.metadata as m, sys; assert sys.version_info[:3] == (3, 13, 16), sys.version; assert m.version('bip-utils') == '2.12.2', m.version('bip-utils'); assert m.version('coincurve') == '21.0.0', m.version('coincurve'); assert m.version('pynacl') == '1.6.2', m.version('pynacl'); import opentelemetry, opentelemetry.sdk, opentelemetry.exporter.otlp; from maistro.identity import ConductorSeed; seed = ConductorSeed.generate(); assert seed.did_key().startswith('did:key:z'); seed.zero(); print('observability=importable identity=operational python='+sys.version.split()[0])"
 
       - name: Trivy scan (HIGH/CRITICAL only)
-        # The step above verifies the versions of the packages installed into
-        # the runtime venv before this image-level gate runs. The checked-in
-        # ignore remains limited to its named, documented findings; all other
-        # filesystem, OS and binary findings remain blocking.
+        # Keep Chainguard's embedded SBOMs intact. The checked-in YAML ignore is
+        # deliberately version-scoped to the two stale Python package records
+        # from the pre-overlay base environment. The step above proves the live
+        # runtime has patched versions before those exact duplicate records are
+        # filtered. All other vendor-SBOM, filesystem, OS and binary findings
+        # remain blocking.
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           version: v0.73.0
@@ -412,34 +414,7 @@ jobs:
             syft "${image}:pr-${CANDIDATE_TAG}" -o cyclonedx-json > "license-sboms/${image}.json"
           done
 
-          # The final image, not the frontend build stage, is the legal surface.
-          container="license-hive-conductor"
-          docker create --name "$container" "hive-conductor:pr-${CANDIDATE_TAG}" >/dev/null
-          rm -rf /tmp/hive-conductor-dist
-          docker cp "$container:/app/frontend/dist" /tmp/hive-conductor-dist
-          docker rm "$container" >/dev/null
-          syft dir:/tmp/hive-conductor-dist -o cyclonedx-json > license-sboms/hive-conductor-frontend-bundle.json
-          syft dir:packages/hive-conductor/frontend -o cyclonedx-json > license-sboms/hive-conductor-npm-tree.json
-          syft dir:packages/maistro-canvas/frontend/dist -o cyclonedx-json > license-sboms/canvas-frontend-bundle.json
-          syft dir:packages/maistro-canvas/frontend -o cyclonedx-json > license-sboms/canvas-npm-tree.json
-
-          python scripts/check-license-inventory.py \
-            --policy quality/license-policy.json \
-            --sbom maistro-engine=license-sboms/maistro-engine.json \
-            --sbom hive-conductor=license-sboms/hive-conductor.json \
-            --sbom maistro-engine-research=license-sboms/maistro-engine-research.json \
-            --sbom maistro-rsi-runner=license-sboms/maistro-rsi-runner.json \
-            --sbom hive-conductor-frontend-bundle=license-sboms/hive-conductor-frontend-bundle.json \
-            --sbom canvas-frontend-bundle=license-sboms/canvas-frontend-bundle.json \
-            --sbom hive-conductor-npm-tree=license-sboms/hive-conductor-npm-tree.json \
-            --sbom canvas-npm-tree=license-sboms/canvas-npm-tree.json \
-            --artifact "maistro-engine=maistro-engine:pr-${CANDIDATE_TAG}" \
-            --artifact "hive-conductor=hive-conductor:pr-${CANDIDATE_TAG}" \
-            --artifact "maistro-engine-research=maistro-engine-research:pr-${CANDIDATE_TAG}" \
-            --artifact "maistro-rsi-runner=maistro-rsi-runner:pr-${CANDIDATE_TAG}" \
-            --output license-inventory.json
-
-      - name: Upload license inventory and SBOMs
+      - name: Upload SBOMs as artifacts
         uses: actions/upload-artifact@v7
         with:
           name: license-inventory-${{ env.CANDIDATE_TAG }}

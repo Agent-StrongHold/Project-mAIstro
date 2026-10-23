@@ -25,7 +25,10 @@ from typing import TYPE_CHECKING, Any
 import structlog
 
 from maistro.agents.conductor import run_task
-from maistro.capabilities.model_chat import ModelChatEgress
+from maistro.security._types import ANONYMOUS_AUTH, GateResult
+from maistro.security.normalize import normalize_for_detection
+from maistro.security.sentinel.policy import Sentinel
+from maistro.security.warden.detector import Warden
 from maistro.tasks.models import TaskCreate
 from maistro.types.agent import AgentResponse
 
@@ -58,20 +61,11 @@ class ConductorAgent:
     honouring the classification is the point.
     """
 
-    def __init__(
-        self,
-        *,
-        governed_egress: ModelChatEgress | None = None,
-        workspace_id: str = "default",
-        router: LLMRouter | None = None,
-    ) -> None:
-        self._governed_egress = governed_egress
-        self._workspace_id = workspace_id
-        # The container's cost-aware router (#1203): when a provider-scoped
-        # circuit is open, `run_task` falls forward through its declared
-        # fallback chain instead of failing the turn. `None` (no router wired)
-        # keeps the previous fail-fast behavior.
-        self._router = router
+    def __init__(self, *, warden: Any | None = None, sentinel: Any | None = None) -> None:
+        # The server fallback is a real product path, not a test-only stub. Keep
+        # its security dependencies explicit even when no roster is configured.
+        self._warden = warden or Warden()
+        self._sentinel = sentinel or Sentinel(warden=self._warden, permission_table={})
 
     async def handle(
         self,
@@ -91,11 +85,19 @@ class ConductorAgent:
         Accepting and ignoring them keeps the call site in `Conduit` uniform;
         declaring them individually would suggest they do something here.
         """
+        auth = auth if auth is not None else ANONYMOUS_AUTH
         description = _last_user_message(messages)
         if not description:
             return AgentResponse(content="No message provided.", agent_name=CONDUCTOR_AGENT_NAME)
 
-        task = TaskCreate(description=description, **_tier_kwargs(intent))
+        aggregate = "".join(
+            _message_text(message) for message in messages if message.get("role") != "system"
+        )
+        verdict = await self._warden.scan(normalize_for_detection(aggregate), "user_input")
+        if not verdict.clean:
+            return AgentResponse.blocked_response(f"Blocked by Warden: {', '.join(verdict.flags)}")
+
+        task = TaskCreate(description=normalize_for_detection(description), **_tier_kwargs(intent))
         try:
             result = await run_task(
                 task,
@@ -118,11 +120,22 @@ class ConductorAgent:
             )
             raise
 
+        final = result.final_answer or "Task completed successfully."
+        outcome: GateResult = await self._sentinel.process_output("assistant_response", final, auth)
+        if outcome.blocked:
+            return AgentResponse.blocked_response(
+                outcome.block_reason or "Final response blocked by Warden"
+            )
         return AgentResponse(
-            content=result.final_answer or "Task completed successfully.",
+            content=outcome.sanitized_text,
             agent_name=CONDUCTOR_AGENT_NAME,
             intent_task_type=classified_task_type,
         )
+
+
+def _message_text(message: dict[str, Any]) -> str:
+    content = message.get("content", "")
+    return content if isinstance(content, str) else ""
 
 
 def _last_user_message(messages: list[dict[str, Any]]) -> str:

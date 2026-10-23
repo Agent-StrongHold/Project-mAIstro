@@ -233,19 +233,10 @@ class Settings(BaseSettings):
     # The embedded Container's Sentinel permission table (ADR-072726-0d6b,
     # #1165). Fail-closed: the shipped empty table denies every tool, so a
     # Conductor that wants its agents to hold tool authority states it here --
-    # `MAISTRO_PERMISSION_PRESET=hive_conductor_tools` (the preset matching
-    # services/tool_executor's executable registry; `dangerous_tools_admin`
-    # grants only engine-side names this runtime cannot dispatch) and/or
+    # `MAISTRO_PERMISSION_PRESET=dangerous_tools_admin` and/or
     # `MAISTRO_PERMISSIONS='{"tool_name": ["admin", "user"]}'` (JSON).
     maistro_permission_preset: str = "none"
     maistro_permissions: dict[str, list[str]] = Field(default_factory=dict)
-    # Operator-declared `model.chat` Binding authorizations (#1079). Fail-closed:
-    # the shipped empty list authorizes no Binding, so `llm.summarize` (and any
-    # other `model.chat`-consuming node) refuses everything until a Conductor
-    # states its Bindings here -- JSON list of
-    # `maistro.types.config.ModelBindingConfig` objects, e.g.
-    # `MAISTRO_MODEL_BINDINGS='[{"binding_id": "b1", "project_id": "p1", "provider_name": "gpt-4"}]'`.
-    maistro_model_bindings: list[ModelBindingConfig] = Field(default_factory=list)
 
     conductor_data_dir: str = "~/.conductor"
     conductor_vault_path: str | None = None

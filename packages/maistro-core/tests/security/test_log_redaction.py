@@ -77,22 +77,30 @@ def test_non_secret_text_survives_intact(captured):
 
 
 def test_install_is_idempotent(captured):
+    """A second install never re-wraps an already-wrapped formatter.
+
+    The invariant is per handler, not a global count of zero: the test's own
+    harness (pytest's logging plugin) attaches `LogCaptureHandler`s to
+    non-propagating loggers between fixture setup and the test body, and the
+    install's contract is to cover exactly those late handlers too -- wrapping
+    them is correct, wrapping anything twice is the bug this guards against.
+    """
     logger, _ = captured
-    formatter = logger.handlers[0].formatter
+    handler = logger.handlers[0]  # the fixture's handler, wrapped by the fixture
+    assert isinstance(handler.formatter, RedactingFormatter)
+    wrapped_before = {id(h) for h in logger.handlers if isinstance(h.formatter, RedactingFormatter)}
+
+    install_log_redaction(("maistro.test.redaction",))
+
+    formatter = handler.formatter
     assert isinstance(formatter, RedactingFormatter)
     assert not isinstance(formatter.inner, RedactingFormatter)
-    # A second install must never double-wrap an already-wrapped handler.
-    # Handlers *added after* the fixture's install may legitimately be
-    # wrapped — that is the documented coverage boundary ("handlers added
-    # after this call are not covered"), not an idempotency violation.
-    # pytest 9 exercises exactly this boundary: its log-capture plugin
-    # attaches its own handlers to every non-propagating logger (this one
-    # sets `propagate = False`) between the fixture and the test body.
-    already_wrapped = [h for h in logger.handlers if isinstance(h.formatter, RedactingFormatter)]
-    wrapped_now = install_log_redaction(("maistro.test.redaction",))
-    assert wrapped_now == len(logger.handlers) - len(already_wrapped)
-    for wrapped in already_wrapped:
-        assert not isinstance(wrapped.formatter.inner, RedactingFormatter)
+    for other in logger.handlers:
+        # Every handler present before the second install is still wrapped
+        # exactly once -- idempotent means "no double wrap", never "unwrapped".
+        if id(other) in wrapped_before:
+            assert isinstance(other.formatter, RedactingFormatter)
+            assert not isinstance(other.formatter.inner, RedactingFormatter)
 
 
 def test_handler_without_explicit_formatter_is_covered():

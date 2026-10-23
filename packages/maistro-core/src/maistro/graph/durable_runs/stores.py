@@ -40,76 +40,8 @@ _VERDICT_NODE_TYPES = frozenset(
 )
 
 
-def _in_scope(
-    record: DurableRunRecord,
-    *,
-    status: RunStatus,
-    project_id: str | None,
-    workspace_id: str | None,
-) -> bool:
-    """Whether one record satisfies the soft scope axes a listing was given."""
-    if record.run.status is not status:
-        return False
-    if project_id is not None and record.run.project_id != project_id:
-        return False
-    return workspace_id is None or record.run.workspace_id == workspace_id
-
-
-def _paused_hitl_records(
-    records: Iterable[DurableRunRecord],
-    *,
-    project_id: str | None,
-    workspace_id: str | None,
-) -> list[DurableRunRecord]:
-    """PAUSED records whose durable frontier holds a human pause (#1109).
-
-    The shared eligibility filter behind ``list_hitl_paused``: scope axes
-    through :func:`_in_scope`, pause-kind through the projection's own
-    authority (`record_has_hitl_pause`), so the query never bounds a generic
-    PAUSED prefix.
-    """
-    return [
-        record
-        for record in records
-        if _in_scope(
-            record,
-            status=RunStatus.PAUSED,
-            project_id=project_id,
-            workspace_id=workspace_id,
-        )
-        and record_has_hitl_pause(record)
-    ]
-
-
-def _created_cursor(record: DurableRunRecord) -> tuple[str, str]:
-    """The ``(created_at, run_id)`` keyset position of one record."""
-    return (cursor_time(record.run.created_at), record.run_id)
-
-
 def _clone(record: DurableRunRecord) -> DurableRunRecord:
     return DurableRunRecord.model_validate_json(record.model_dump_json())
-
-
-def _sorted_due_records(
-    records: ValuesView[DurableRunRecord],
-    now: datetime,
-) -> list[DurableRunRecord]:
-    """PAUSED records whose durable HITL deadline elapsed, earliest first."""
-    due = [
-        record
-        for record in records
-        if record.run.status is RunStatus.PAUSED
-        and (deadline := earliest_hitl_deadline(record)) is not None
-        and deadline <= now
-    ]
-    due.sort(
-        key=lambda record: (
-            earliest_hitl_deadline(record),
-            record.run.created_at,
-            record.run_id,
-        )
-    )
-    return due
 
 
 def _is_malformed_verdict_answer(
@@ -402,75 +334,36 @@ class InMemoryDurableRunStore:
         limit: int = 100,
         project_id: str | None = None,
         workspace_id: str | None = None,
-        after: tuple[str, str] | None = None,
     ) -> list[DurableRunRecord]:
-        matching = sorted(
-            (
-                record
-                for record in self._rows.values()
-                if _in_scope(
-                    record, status=status, project_id=project_id, workspace_id=workspace_id
-                )
-            ),
-            key=_created_cursor,
-        )
-        if after is not None:
-            matching = [record for record in matching if _created_cursor(record) > after]
-        return [_clone(record) for record in matching[:limit]]
+        out: list[DurableRunRecord] = []
+        for record in self._rows.values():
+            if record.run.status is not status:
+                continue
+            if project_id is not None and record.run.project_id != project_id:
+                continue
+            if workspace_id is not None and record.run.workspace_id != workspace_id:
+                continue
+            out.append(_clone(record))
+            if len(out) >= limit:
+                break
+        return out
 
-    async def list_hitl_due(
-        self,
-        *,
-        authorization: HitlAuthorization,
-        now: datetime,
-        limit: int = 100,
-    ) -> list[DurableRunRecord]:
-        require_hitl_authorization(authorization)
-        if limit <= 0:
-            return []
-        visible: list[DurableRunRecord] = []
-        for record in _sorted_due_records(self._rows.values(), now):
-            if (
-                record.run.workspace_id in authorization.workspace_ids
-                and await authorization.permits(
-                    record.run.workspace_id,
-                    consume_evidence=False,
-                )
-            ):
-                visible.append(_clone(record))
-                if len(visible) >= limit:
-                    break
-        return visible
-
-    async def list_hitl_paused(
-        self,
-        *,
-        limit: int = 100,
-        project_id: str | None = None,
-        workspace_id: str | None = None,
-        after: tuple[str, str] | None = None,
-        max_inspected: int = DEFAULT_MAX_INSPECTED,
-    ) -> ScanPage[DurableRunRecord, tuple[str, str]]:
-        """Eligibility is decided before the page is cut, so this store's page
-        carries only eligible rows: an empty page really is the end (#1109).
-        The :class:`ScanPage` shape keeps the two facts separate anyway, so a
-        walk written against one backend reads the same on every backend."""
-        del max_inspected  # eligibility precedes the cut; nothing to bound
-        if limit <= 0:
-            return ScanPage(items=[], resume_after=after, inspected=0)
-        matching = _paused_hitl_records(
-            self._rows.values(), project_id=project_id, workspace_id=workspace_id
+    async def list_hitl_due(self, *, now: datetime, limit: int = 100) -> list[DurableRunRecord]:
+        rows = [
+            record
+            for record in self._rows.values()
+            if record.run.status is RunStatus.PAUSED
+            and (deadline := earliest_hitl_deadline(record)) is not None
+            and deadline <= now
+        ]
+        rows.sort(
+            key=lambda record: (
+                earliest_hitl_deadline(record),
+                record.run.created_at,
+                record.run_id,
+            )
         )
-        matching.sort(key=_created_cursor)
-        if after is not None:
-            matching = [record for record in matching if _created_cursor(record) > after]
-        page = [_clone(record) for record in matching[:limit]]
-        return ScanPage(
-            items=page,
-            resume_after=_created_cursor(page[-1]) if page else after,
-            inspected=len(page),
-            exhausted=len(matching) <= limit,
-        )
+        return [_clone(record) for record in rows[:limit]]
 
     async def list_for_project(self, project_id: str, *, limit: int = 25) -> list[DurableRunRecord]:
         runs = [record for record in self._rows.values() if record.run.project_id == project_id]
@@ -622,27 +515,6 @@ def _backfill_hitl_deadlines(conn: sqlite3.Connection) -> None:
             )
 
 
-def _backfill_hitl_pauses(conn: sqlite3.Connection) -> None:
-    """Restore the pause-kind projection for rows written before it (#1109).
-
-    NULL means "not projected", so the backfill claims every unprojected
-    PAUSED row, not only rows written before the column existed. Leaving a
-    human pause unprojected would hide it from pending discovery, which pages
-    this projection instead of the generic PAUSED prefix.
-    """
-    rows = conn.execute(
-        """SELECT run_id, record_json FROM durable_graph_runs
-            WHERE status = ? AND has_hitl_pause IS NULL""",
-        (RunStatus.PAUSED.value,),
-    ).fetchall()
-    for row in rows:
-        record = DurableRunRecord.model_validate_json(row["record_json"])
-        conn.execute(
-            "UPDATE durable_graph_runs SET has_hitl_pause = ? WHERE run_id = ?",
-            (int(record_has_hitl_pause(record)), row["run_id"]),
-        )
-
-
 class SqliteDurableRunStore:
     """SQLite-backed canonical durable graph checkpoint store.
 
@@ -657,7 +529,7 @@ class SqliteDurableRunStore:
         self._lock = asyncio.Lock()
         with self._connect() as conn, serialized_schema_upgrade_sync(conn):
             _reject_unmigrated_legacy_rows(conn)
-            execute_schema_script_sync(conn, _SCHEMA_SQL)
+            conn.executescript(_SCHEMA_SQL)
             columns = conn.execute("PRAGMA table_info(durable_graph_runs)").fetchall()
             if not any(row[1] == "hitl_deadline_at" for row in columns):
                 conn.execute("ALTER TABLE durable_graph_runs ADD COLUMN hitl_deadline_at TEXT")
@@ -665,14 +537,8 @@ class SqliteDurableRunStore:
                 "CREATE INDEX IF NOT EXISTS idx_durable_graph_runs_hitl_deadline "
                 "ON durable_graph_runs(status, hitl_deadline_at)"
             )
-            if not any(row[1] == "has_hitl_pause" for row in columns):
-                conn.execute("ALTER TABLE durable_graph_runs ADD COLUMN has_hitl_pause INTEGER")
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_durable_graph_runs_hitl_paused "
-                "ON durable_graph_runs(status, has_hitl_pause, created_at, run_id)"
-            )
             _backfill_hitl_deadlines(conn)
-            _backfill_hitl_pauses(conn)
+            conn.commit()
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self._path)
@@ -690,7 +556,6 @@ class SqliteDurableRunStore:
             "created_at": record.run.created_at.isoformat(),
             "resume_at": record.resume_at.isoformat() if record.resume_at else None,
             "hitl_deadline_at": hitl_deadline.isoformat() if hitl_deadline else None,
-            "has_hitl_pause": int(record_has_hitl_pause(record)),
             "version": record.version,
             "record_json": record.model_dump_json(),
         }
@@ -720,7 +585,6 @@ class SqliteDurableRunStore:
         limit: int = 100,
         project_id: str | None = None,
         workspace_id: str | None = None,
-        after: tuple[str, str] | None = None,
     ) -> list[DurableRunRecord]:
         return await asyncio.to_thread(
             _list_by_status_sync,
@@ -729,68 +593,10 @@ class SqliteDurableRunStore:
             limit,
             project_id,
             workspace_id,
-            after,
         )
 
-    async def list_hitl_due(
-        self,
-        *,
-        authorization: HitlAuthorization,
-        now: datetime,
-        limit: int = 100,
-    ) -> list[DurableRunRecord]:
-        require_hitl_authorization(authorization)
-        if limit <= 0:
-            return []
-        requested = limit
-        visible: list[DurableRunRecord] = []
-        seen: set[str] = set()
-        while True:
-            rows = await asyncio.to_thread(_list_hitl_due_sync, self, now, requested)
-            for record in rows:
-                if record.run_id in seen:
-                    continue
-                seen.add(record.run_id)
-                if (
-                    record.run.workspace_id in authorization.workspace_ids
-                    and await authorization.permits(
-                        record.run.workspace_id,
-                        consume_evidence=False,
-                    )
-                ):
-                    visible.append(record)
-                    if len(visible) >= limit:
-                        return visible[:limit]
-            if len(rows) < requested:
-                return visible
-            requested *= 2
-
-    async def list_hitl_paused(
-        self,
-        *,
-        limit: int = 100,
-        project_id: str | None = None,
-        workspace_id: str | None = None,
-        after: tuple[str, str] | None = None,
-        max_inspected: int = DEFAULT_MAX_INSPECTED,
-    ) -> ScanPage[DurableRunRecord, tuple[str, str]]:
-        del max_inspected  # the SQL reads eligible rows only; nothing to bound
-        if limit <= 0:
-            return ScanPage(items=[], resume_after=after, inspected=0)
-        records, exhausted = await asyncio.to_thread(
-            _list_hitl_paused_sync,
-            self,
-            limit,
-            project_id,
-            workspace_id,
-            after,
-        )
-        return ScanPage(
-            items=records,
-            resume_after=_created_cursor(records[-1]) if records else after,
-            inspected=len(records),
-            exhausted=exhausted,
-        )
+    async def list_hitl_due(self, *, now: datetime, limit: int = 100) -> list[DurableRunRecord]:
+        return await asyncio.to_thread(_list_hitl_due_sync, self, now, limit)
 
     async def list_for_project(self, project_id: str, *, limit: int = 25) -> list[DurableRunRecord]:
         return await asyncio.to_thread(
@@ -885,10 +691,10 @@ def _create_sync(
             """
             INSERT INTO durable_graph_runs(
                 run_id, status, active_node_id, project_id, created_at,
-                resume_at, hitl_deadline_at, has_hitl_pause, version, record_json
+                resume_at, hitl_deadline_at, version, record_json
             ) VALUES (
                 :run_id, :status, :active_node_id, :project_id, :created_at,
-                :resume_at, :hitl_deadline_at, :has_hitl_pause, :version, :record_json
+                :resume_at, :hitl_deadline_at, :version, :record_json
             )
             """,
             row,
@@ -924,7 +730,6 @@ def _update_sync(
                    created_at = :created_at,
                    resume_at = :resume_at,
                    hitl_deadline_at = :hitl_deadline_at,
-                   has_hitl_pause = :has_hitl_pause,
                    version = :version,
                    record_json = :record_json
              WHERE run_id = :run_id
@@ -1010,7 +815,6 @@ def _list_by_status_sync(
     limit: int,
     project_id: str | None,
     workspace_id: str | None,
-    after: tuple[str, str] | None = None,
 ) -> list[DurableRunRecord]:
     # Oldest-first (#1056, #1109): a bounded fair scan pages this with an
     # advancing `(created_at, run_id)` cursor, which requires one stable
@@ -1028,14 +832,7 @@ def _list_by_status_sync(
         # the boundary and the restart-safe schema.
         query += " AND json_extract(record_json, '$.run.workspace_id') = ?"
         params.append(workspace_id)
-    if after is not None:
-        query += " AND (created_at, run_id) > (?, ?)"
-        params.extend(after)
-    # Oldest-created-first, which the keyset cursor above depends on: `after`
-    # pages forward through a total order, so the scan cannot re-read the same
-    # fixed prefix every tick (#1056, #1109). The pre-#1275 order here was
-    # `created_at DESC`, which starved the oldest work it was meant to drain.
-    query += " ORDER BY created_at ASC, run_id ASC LIMIT ?"
+    query += " ORDER BY created_at DESC LIMIT ?"
     params.append(limit)
     with store._connect() as conn:
         rows = conn.execute(query, params).fetchall()
@@ -1058,40 +855,6 @@ def _list_hitl_due_sync(
             (RunStatus.PAUSED.value, now.isoformat(), limit),
         ).fetchall()
     return [store._from_row(row) for row in rows]
-
-
-def _list_hitl_paused_sync(
-    store: SqliteDurableRunStore,
-    limit: int,
-    project_id: str | None,
-    workspace_id: str | None,
-    after: tuple[str, str] | None,
-) -> tuple[list[DurableRunRecord], bool]:
-    # Oldest-first, on the same (created_at, run_id) keyset `list_by_status`
-    # pages (#1109): eligibility comes from the projected column, before the
-    # limit, so a machine-only prefix cannot occupy the page human work needs.
-    # One row past the page decides `exhausted` for the ScanPage: this query
-    # filters in SQL, so an empty page means the projection really ended —
-    # but the flag is read from rows, not inferred from emptiness, which is
-    # what lets every backend share one walk.
-    query = "SELECT * FROM durable_graph_runs WHERE status = ? AND has_hitl_pause = 1"
-    params: list[Any] = [RunStatus.PAUSED.value]
-    if project_id is not None:
-        query += " AND project_id = ?"
-        params.append(project_id)
-    if workspace_id is not None:
-        # Workspace scope is Run scope (#1240): read from `record_json` the
-        # same way `_list_by_status_sync` does.
-        query += " AND json_extract(record_json, '$.run.workspace_id') = ?"
-        params.append(workspace_id)
-    if after is not None:
-        query += " AND (created_at, run_id) > (?, ?)"
-        params.extend(after)
-    query += " ORDER BY created_at ASC, run_id ASC LIMIT ?"
-    params.append(limit + 1)
-    with store._connect() as conn:
-        rows = conn.execute(query, params).fetchall()
-    return [store._from_row(row) for row in rows[:limit]], len(rows) <= limit
 
 
 def _list_for_project_sync(

@@ -1,14 +1,11 @@
 """Background schedule runner — turns due schedules into canonical Runs.
 
 Recurrence and fire semantics live in ``maistro.scheduling``.  A configured
-Hive process selects due definitions from the canonical ``ScheduleStore`` and
-admits each occurrence through ``ScheduleRunAdmitter`` — the same Run spine
-task admission writes (``RunStore.create_run`` at ``QUEUED``, then the
-canonical consumer) — for recurring ticks and manual
-``POST /v1/schedules/{id}/run`` fires alike. The Hive row is a projection of
-that definition, not an execution lifecycle. The historical in-process
-definition/cursor adapter remains readable for compatibility. Without a core
-Container its Graph call refuses; it cannot create a standalone execution (#1113).
+Hive process delegates the complete evaluate -> occurrence claim -> Run admit
+-> cursor advance transaction to ``ScheduleRunAdmitter``, for recurring ticks
+and manual ``POST /v1/schedules/{id}/run`` fires alike.  The historical
+in-process path remains only as a compatibility fallback for standalone/demo
+contexts that have no core Container; it is not the production authority.
 """
 
 from __future__ import annotations
@@ -68,6 +65,20 @@ class ScheduleAdmissionUnavailable(RuntimeError):
     degrade to the compatibility path, because firing through the in-process
     registry while a Container exists would make the same persisted schedule
     reachable through two execution authorities.
+    """
+
+
+async def fire_now(sid: str) -> str:
+    """Fire a schedule now through the one canonical admission authority.
+
+    Configured production enters ``ScheduleRunAdmitter.admit_due(manual=True)`` —
+    the same Container, canonical Workspace/Project scope, durable
+    ``GraphTemplate`` resolution, occurrence claim, and cursor transaction the
+    recurring loop uses — so a manual fire and a scheduled fire of one schedule are
+    indistinguishable in Run history apart from their provenance.  The
+    compatibility path below remains only for processes with no core Container
+    at all; a Container that is missing one of its admission collaborators
+    raises :class:`ScheduleAdmissionUnavailable` instead of degrading.
     """
 
 
@@ -383,15 +394,56 @@ async def _backfill_one(runner: _ScheduleRunner, sid: str, container: Any) -> in
 
     schedule = stores.schedules.get(sid)
     if schedule is None:
-        return 0
-    definition = await _scoped_definition(runner, sid, schedule, container)
+        raise ScheduleNotFireable(f"schedule {sid} does not exist")
+
+    runner = _runner or _ScheduleRunner()
+    container = runner._canonical_container()
+    admitter = runner._canonical_admitter(container)
+    if admitter is not None:
+        return await runner._fire_manual_canonical(
+            sid, schedule, container=container, admitter=admitter
+        )
+    if container is not None:
+        raise ScheduleAdmissionUnavailable(
+            f"schedule {sid} cannot be fired: the configured Container is missing its "
+            "run/template/schedule store wiring, so canonical schedule admission is unavailable"
+        )
+
+    store = runner._canonical_store()
+    definition = await runner._definition_for(sid, schedule, store=store)
     if definition is None:
-        return 0
-    existing = await container.schedule_store.get(sid)
-    if existing is not None and not _definition_drifted(existing, definition):
-        return 0
-    await container.schedule_store.put(definition)
-    return 1
+        raise ScheduleNotFireable(
+            f"schedule {sid} names no mission template, so there is nothing to run"
+        )
+    if definition.exhausted:
+        raise ScheduleNotFireable(f"schedule {sid} has used all {definition.max_runs} of its runs")
+
+    now = datetime.now(UTC)
+    # Captured here, at the one call site with a trustworthy ambient context
+    # (#1063): this coroutine runs inside the HTTP request RequestIDMiddleware
+    # already bound an id for, so forwarding it explicitly is what keeps the
+    # request/response and the resulting Run in the same trace.
+    # `_fire_schedule` never reads ambient context itself -- it is also
+    # reachable from the tick loop, which shares an event loop with whatever
+    # else is running and cannot make the same claim.
+    request_id = current_execution_context().request_id or None
+    run_id = await runner._fire_schedule(
+        sid, schedule, scheduled_for=now, catchup=False, request_id=request_id
+    )
+    if run_id is None:
+        raise ScheduleNotFireable(
+            f"schedule {sid} could not create a Run; its target may not be registered"
+        )
+
+    await runner._record_fire(
+        sid,
+        schedule,
+        definition,
+        store=store,
+        fire=FireDecision(scheduled_for=now, catchup=False),
+        run_id=run_id,
+    )
+    return run_id
 
 
 class _ScheduleRunner:
@@ -915,8 +967,6 @@ class _ScheduleRunner:
         *,
         container: Any,
         admitter: ScheduleRunAdmitter,
-        fire_id: str,
-        requested_by: str | None = None,
     ) -> str:
         """Configured Hive manual fire: the recurring path's authority, once.
 
@@ -930,85 +980,40 @@ class _ScheduleRunner:
         #1119 retired manual fire from the compatibility path's reach because
         two firing semantics for one persisted schedule is a second execution
         authority, not an API convenience.
-
-        The one identity difference (#1120): the occurrence claimed is
-        ``(schedule_id, 'manual:' + fire_id)`` — the caller-stable token — so a
-        retried or concurrent double submit carrying the same token reconciles
-        to the Run the first call created: the loser is handed the winner's
-        receipt, nothing is counted twice, and the reconciliation is durable
-        canonical state (it survives restarts, and works across processes).
-
-        Like the tick, the eligibility check through admission shares the
-        membership-mutation serialization point (Codex P1-2): a revocation
-        cannot complete between ``_canonical_scope`` and the Run write and
-        still be followed by a Run stamped with the revoked actor.
         """
         from maistro.scheduling.admission import ScheduleAdmission
-        from services.workspace_authority import hold_hitl_membership_mutation
 
-        async with hold_hitl_membership_mutation():
-            scope = await self._canonical_scope(schedule, container)
-            definition = await self._definition_for(
-                sid, schedule, store=container.schedule_store, scope=scope
+        scope = await self._canonical_scope(schedule, container)
+        definition = await self._definition_for(
+            sid, schedule, store=container.schedule_store, scope=scope
+        )
+        if definition is None:
+            raise ScheduleNotFireable(
+                f"schedule {sid} names no mission template, so there is nothing to run"
             )
-            if definition is None:
-                raise ScheduleNotFireable(
-                    f"schedule {sid} names no mission template, so there is nothing to run"
-                )
-            # No local `exhausted` pre-check here, deliberately: the admitter asks
-            # the occurrence claim before it refuses (#1120), so a retry of the
-            # same fire_id reconciles to the winner's Run even when that fire
-            # spent the last `max_runs` unit — a refusal ordering in this layer
-            # would answer a retried caller "could not be fired" about a Run that
-            # demonstrably exists.
+        if definition.exhausted:
+            raise ScheduleNotFireable(
+                f"schedule {sid} has used all {definition.max_runs} of its runs"
+            )
 
-            await self._prime_template(definition, container)
-            now = datetime.now(UTC)
-            try:
-                admission = await admitter.admit_due(
-                    definition, now=now, manual=True, fire_id=fire_id, requested_by=requested_by
-                )
-            except GraphTemplateNotFound as exc:
-                # The durable template is the authority; the registry was only ever
-                # a migration source above. Nothing was created, so the schedule's
-                # state is untouched and the caller gets the same refusal the
-                # compatibility path gave for an unregistered target (#265).
-                self._audit_manual_failure(sid, schedule, "template_not_found")
-                raise ScheduleNotFireable(
-                    f"schedule {sid} could not create a Run; its target may not be registered"
-                ) from exc
-            except Exception as exc:
-                self._audit_manual_failure(sid, schedule, type(exc).__name__)
-                raise ScheduleNotFireable(f"schedule {sid} could not be fired: {exc}") from exc
+        await self._prime_template(definition, container)
+        now = datetime.now(UTC)
+        try:
+            admission = await admitter.admit_due(definition, now=now, manual=True)
+        except GraphTemplateNotFound as exc:
+            # The durable template is the authority; the registry was only ever
+            # a migration source above. Nothing was created, so the schedule's
+            # state is untouched and the caller gets the same refusal the
+            # compatibility path gave for an unregistered target (#265).
+            self._audit_manual_failure(sid, schedule, "template_not_found")
+            raise ScheduleNotFireable(
+                f"schedule {sid} could not create a Run; its target may not be registered"
+            ) from exc
+        except Exception as exc:
+            self._audit_manual_failure(sid, schedule, type(exc).__name__)
+            raise ScheduleNotFireable(f"schedule {sid} could not be fired: {exc}") from exc
 
-        if admission.reconciled_run_id is not None:
-            # Same logical request, already fired: the documented
-            # reconciliation (#1120) is the first call's receipt — no second
-            # Run, no second count against max_runs, and the caller's retry is
-            # answered with the winner's Run rather than a refusal.
-            winner_id = admission.reconciled_run_id
-            logger.info(
-                "Schedule %s manual fire %s reconciled to existing Run %s",
-                sid,
-                fire_id,
-                winner_id,
-            )
-            # The winner's disable may live only in the durable row (its own
-            # projection answered a different process), so the loser's receipt
-            # reads the store — the authority — rather than assume the fire
-            # left the schedule enabled.
-            recorded = await container.schedule_store.get(sid)
-            self._project_manual_receipt(
-                sid, now, winner_id, exhausted=recorded is not None and not recorded.enabled
-            )
-            await self._consume_promptly(container)
-            # ``str()`` because the admission crosses back from duck-typed
-            # Container land into typed Hive code: re-assert the receipt at
-            # the boundary rather than trust it as ``Any``.
-            return str(winner_id)
         for occurred in admission.already_fired:
-            # A duplicate claim whose winner could not be resolved — the claim
-            # exists, so treating it as free would double-fire the request.
             raise ScheduleNotFireable(
                 f"schedule {sid} occurrence at {occurred.isoformat()} was already "
                 "claimed by another admission"
@@ -1020,23 +1025,13 @@ class _ScheduleRunner:
 
         await self._audit_canonical_admission(
             sid,
-            definition,
+            schedule,
             ScheduleAdmission(run_ids=admission.run_ids),
             container,
         )
         recorded = await container.schedule_store.get(sid)
         if recorded is not None:
             self._project_cursor(sid, recorded)
-        # The admitter moved `last_run_id` and the count, never the recurrence
-        # cursor (`last_fired_at`/`next_due_at`), so `_project_cursor` above
-        # mirrors a `last_run` the hand fire never touched. Project the fire's
-        # own receipt — the moment it was asked for — without moving the cron's
-        # fields, exactly as a manual occurrence should read (#1120).
-        self._project_manual_receipt(sid, now, admission.run_ids[-1], exhausted=admission.disabled)
-        # The immediate UX a manual fire promises is prompt *consumption* of the
-        # admitted Run, never a bypass of admission (#1120): best-effort, since
-        # an unconsumed QUEUED Run is durable, recoverable canonical state.
-        await self._consume_promptly(container)
         return admission.run_ids[-1]
 
     @staticmethod
@@ -1051,59 +1046,6 @@ class _ScheduleRunner:
             detail={"dag_id": str(schedule.mission_template_id), "error": error},
         )
 
-    @staticmethod
-    def _project_manual_receipt(
-        sid: str,
-        requested_at: datetime,
-        run_id: str,
-        *,
-        exhausted: bool,
-    ) -> None:
-        """Mirror a manual fire's receipt onto the legacy Hive response row.
-
-        Same projection `_record_fire` performs, minus the cursor fields a
-        manual fire does not own (`next_run` reflects the cron, not the hand
-        fire, unless exhaustion just cleared it).
-        """
-        import stores
-
-        current = stores.schedules.get(sid)
-        if current is None:
-            return
-        update: dict[str, Any] = {
-            "last_run": requested_at,
-            "last_run_id": run_id,
-            "updated_at": datetime.now(UTC),
-        }
-        if exhausted:
-            update["enabled"] = False
-            update["next_run"] = None
-        stores.schedules[sid] = current.model_copy(update=update)
-
-    @staticmethod
-    async def _consume_promptly(container: Any) -> None:
-        """Nudge the canonical consumer so the admitted Run starts now.
-
-        The immediate UX a manual fire promises is kept by prompt *consumption*
-        of the admitted Run, never by bypassing admission (#1120).
-        `execute_admitted_runs` is the same operator-scheduled tick (ADR-019)
-        that consumes recurring admissions; a hand fire merely asks it to run
-        once, now.  Best-effort by design: if consumption cannot proceed (no
-        claim capability wired, executor construction failure), the Run stays
-        QUEUED — durable, visible, recoverable canonical state, the same
-        posture a recurring admission has between ticks — and the caller still
-        holds its receipt.
-        """
-        tick = getattr(container, "execute_admitted_runs", None)
-        if tick is None:
-            return
-        try:
-            await tick()
-        except Exception as exc:
-            logger.warning(
-                "Schedule manual fire's prompt consumption deferred to the next tick: %s", exc
-            )
-
     async def _evaluate_schedule(self, sid: str, schedule: Any, *, now: datetime) -> None:
         container = self._canonical_container()
         admitter = self._canonical_admitter(container)
@@ -1113,22 +1055,13 @@ class _ScheduleRunner:
                     "configured Container is missing its run/template/schedule store wiring; "
                     "canonical schedule admission is unavailable"
                 )
-            import stores
-
-            # The tick's snapshot may predate a route edit or delete; under the
-            # definition lock the current row decides, so a stale copy cannot
-            # re-enable or resurrect the canonical definition.
-            async with definition_lock(sid):
-                current = stores.schedules.get(sid)
-                if current is None or not getattr(current, "enabled", False):
-                    return
-                await self._evaluate_canonical(
-                    sid,
-                    current,
-                    now=now,
-                    container=container,
-                    admitter=admitter,
-                )
+            await self._evaluate_canonical(
+                sid,
+                schedule,
+                now=now,
+                container=container,
+                admitter=admitter,
+            )
             return
 
         # Standalone/demo compatibility path. Production must never reach this
@@ -1138,12 +1071,12 @@ class _ScheduleRunner:
         # a configured-but-unwired Container, because unlike the tick — which
         # can simply wait for the next one — a manual fire is a caller holding
         # a request that must either become a canonical Run or say why not.
-        # Rows created by the scoped API still retain the same revocation gate
-        # even when this process has no embedded core bridge (#1201), held —
-        # like the canonical paths — across the gate, the definition write, and
-        # the Run creation, so a completed revocation cannot be followed by a
-        # newly admitted Run (Codex P1-2).
-        from services.workspace_authority import hold_hitl_membership_mutation
+        store = self._canonical_store()
+        definition = await self._definition_for(sid, schedule, store=store)
+        if definition is None:
+            logger.debug("Schedule %s names no mission template; nothing to run", sid)
+            return
+        decision = evaluate(definition, now=now, active_run=sid in self._in_flight)
 
         scoped_workspace = str(getattr(schedule, "workspace_id", "") or "").strip()
         scoped_actor = str(
@@ -1244,7 +1177,6 @@ class _ScheduleRunner:
         scheduled_for: datetime | None = None,
         catchup: bool = False,
         request_id: str | None = None,
-        requester_id: str | None = None,
     ) -> str | None:
         """Compatibility immediate execution path, standalone/demo contexts only.
 
@@ -1252,11 +1184,6 @@ class _ScheduleRunner:
         ``_fire_manual_canonical`` and refuses a half-wired Container outright;
         this method stays reachable from the tick's no-Container branch and
         from the tests that exercise it without a Container.
-
-        Even here the Run stays inside the row's own scope and names every
-        provenance principal (#1201): the schedule's actor is the authority
-        consumed, the scheduler is a service distinct from that actor, and a
-        manual fire additionally names the principal that asked for it.
         """
         t = datetime.now(UTC)
 
@@ -1293,18 +1220,8 @@ class _ScheduleRunner:
             )
             return None
 
-        # Real scope when the row carries one (#1201); the synthetic identity
-        # remains the fallback for scopeless legacy rows only.
-        scope_workspace_id = str(getattr(schedule, "workspace_id", "") or f"hive:schedule:{sid}")
-        scope_project_id = str(getattr(schedule, "project_id", "") or scope_workspace_id)
-        user_id = (
-            str(
-                getattr(schedule, "actor_principal_id", "")
-                or getattr(schedule, "user_id", "")
-                or ""
-            )
-            or None
-        )
+        scope_id = f"hive:schedule:{sid}"
+        user_id = str(getattr(schedule, "user_id", "") or "") or None
         try:
             # Always a clean slate (#1063): this path shares an event loop
             # with whatever else is running (the tick loop) and cannot tell a
@@ -1318,29 +1235,16 @@ class _ScheduleRunner:
                 with bind_execution_context(request_id=effective_request_id):
                     graph, record = await run_registered_dag(
                         str(template_id),
-                        workspace_id=scope_workspace_id,
-                        project_id=scope_project_id,
+                        workspace_id=scope_id,
+                        project_id=scope_id,
                         user_id=user_id,
                         provenance={
                             "admission_source": "schedule",
                             "schedule_id": sid,
                             "schedule_name": schedule.name,
-                            # The instant in UTC (#850): this provenance forms
-                            # the occurrence claim the run stores compare as
-                            # text, and a wall-clock rendering would change
-                            # identity with the schedule's timezone.
-                            "scheduled_for": canonical_occurrence_instant(scheduled_for or t),
+                            "scheduled_for": (scheduled_for or t).isoformat(),
                             "catchup": catchup,
                             "request_id": effective_request_id,
-                            # The background service that fired this is not
-                            # the principal whose authority it consumed
-                            # (#1201): both facts are on the Run, distinct.
-                            "scheduler_service_id": "hive-scheduler",
-                            **(
-                                {"manual_requesting_principal_id": requester_id}
-                                if requester_id
-                                else {}
-                            ),
                         },
                     )
         except Exception as exc:

@@ -11,7 +11,7 @@ from importlib import import_module
 from pathlib import Path
 
 from config import get_settings
-from fastapi import FastAPI, Request, Response
+from fastapi import APIRouter, FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from logging_setup import configure_logging
@@ -70,11 +70,6 @@ from services import foundation as foundation_service
 from services.oauth_login import close_oauth_login_service
 from services.settings_store import SettingsPersistenceError
 
-from maistro.api_versioning import (
-    API_VERSIONS,
-    DEFAULT_API_VERSION,
-    VersionNegotiationMiddleware,
-)
 from maistro.observability.middleware import REQUEST_ID_HEADER, RequestIDMiddleware
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -177,7 +172,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     import asyncio
     import logging as _logging
 
-    from services.audit_bridge import bind_audit_event_loop
     from settings_defaults import apply_default_settings_if_needed
 
     from maistro.security.transport import assert_session_transport_is_safe
@@ -330,20 +324,6 @@ def create_app() -> FastAPI:
     # invalid, or duplicate `X-Request-ID` values become a fresh server id
     # (see `maistro.observability.middleware`), never an unvalidated pass-through.
     app.add_middleware(RequestIDMiddleware)
-
-    # API version negotiation (ADR-076) — the same maistro-core middleware
-    # maistro-server wires: the negotiated version is selected by Accept
-    # media type / api_version query / api_version JSON body field, the
-    # default is advertised on every response, and an unsupported selector
-    # is a 406 that never reaches a route handler. Infrastructure paths
-    # (health, docs) pass through untouched. Added before the security
-    # headers so it stays inside them: even a 406 carries the header set.
-    app.add_middleware(
-        VersionNegotiationMiddleware,
-        versions=API_VERSIONS,
-        default_version=DEFAULT_API_VERSION,
-        skip_prefixes=("/health", "/docs", "/redoc", "/openapi.json"),
-    )
 
     # Security headers — the true outermost middleware (added last), so
     # headers land on every response, including early rejections from the

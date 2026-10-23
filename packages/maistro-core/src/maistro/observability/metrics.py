@@ -119,8 +119,8 @@ def _validate_metric_name(name: str) -> None:
         raise ValueError(f"invalid Prometheus metric name {name!r}; the '__' prefix is reserved")
     if name == _UPTIME_METRIC_NAME:
         raise ValueError(f"{_UPTIME_METRIC_NAME!r} is reserved for registry uptime")
-    if name in (_OVERFLOW_METRIC_NAME, _REGISTRY_OVERFLOW_METRIC_NAME):
-        raise ValueError(f"{name!r} is reserved for registry overflow accounting")
+    if name == _OVERFLOW_METRIC_NAME:
+        raise ValueError(f"{_OVERFLOW_METRIC_NAME!r} is reserved for registry overflow accounting")
 
 
 def _label_key(
@@ -332,11 +332,7 @@ class MetricsRegistry:
     ``max_metrics_per_registry`` families plus fixed-size accounting.
     """
 
-    def __init__(
-        self,
-        max_series_per_metric: int | None = None,
-        max_metrics_per_registry: int | None = None,
-    ) -> None:
+    def __init__(self, max_series_per_metric: int | None = None) -> None:
         # None keeps the optional configuration API while retaining the safe
         # default; there is no public uncapped mode because this is a backstop.
         cap = (
