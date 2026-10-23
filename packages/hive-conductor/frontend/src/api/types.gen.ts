@@ -2615,6 +2615,13 @@ export interface paths {
         /**
          * Approve Server
          * @description Explicitly approve a server and bind its finite tool exposure.
+         *
+         *     The approval is stamped with the authenticated principal's audit label,
+         *     never a constant: a delegated deployment that approves a remote server
+         *     must leave an auditable, host-owned record of *who* authorized it (#59).
+         *     ``"admin"`` remains only for a request that arrives with no principal at
+         *     all — the middleware already gates this route on ``mcp.write``
+         *     (middleware/auth.py), so in production that branch is unreachable.
          */
         post: operations["approve_server_v1_mcp_servers__server_id__approve_post"];
         delete?: never;

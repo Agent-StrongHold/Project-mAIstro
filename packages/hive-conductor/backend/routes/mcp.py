@@ -192,8 +192,16 @@ class ApproveServerBody(BaseModel):
 
 
 @router.post("/servers/{server_id}/approve", response_model=MCPServer)
-def approve_server(server_id: str, body: ApproveServerBody) -> MCPServer:
-    """Explicitly approve a server and bind its finite tool exposure."""
+def approve_server(server_id: str, body: ApproveServerBody, request: Request) -> MCPServer:
+    """Explicitly approve a server and bind its finite tool exposure.
+
+    The approval is stamped with the authenticated principal's audit label,
+    never a constant: a delegated deployment that approves a remote server
+    must leave an auditable, host-owned record of *who* authorized it (#59).
+    ``"admin"`` remains only for a request that arrives with no principal at
+    all — the middleware already gates this route on ``mcp.write``
+    (middleware/auth.py), so in production that branch is unreachable.
+    """
     server = stores.mcp_servers.get(server_id)
     if server is None:
         raise HTTPException(status_code=404, detail="server not found")
@@ -204,8 +212,10 @@ def approve_server(server_id: str, body: ApproveServerBody) -> MCPServer:
             status_code=400,
             detail="approval requires a non-empty allowlist of discovered tool names",
         )
+    principal = request_principal(request)
+    approved_by = principal.audit_label() if principal is not None else "admin"
     approved = server.model_copy(
-        update={"approved": True, "approved_by": "admin", "allowed_tools": requested}
+        update={"approved": True, "approved_by": approved_by, "allowed_tools": requested}
     )
     stores.mcp_servers[server_id] = approved
     return approved

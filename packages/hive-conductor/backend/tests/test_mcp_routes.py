@@ -171,6 +171,21 @@ def test_approval_binds_a_finite_tool_allowlist(admin_client: Any) -> None:
     assert [tool["name"] for tool in admin_client.get("/v1/mcp/tools").json()] == ["safe_tool"]
 
 
+def test_approval_records_the_authenticated_approver(admin_client: Any) -> None:
+    # The approval is host-owned provenance: it must name the authenticated
+    # principal, not a constant, or delegated deployments cannot audit who
+    # authorized a remote server (#59).
+    stores.mcp_servers["s1"] = _make_server()
+    stores.mcp_tools["allowed"] = MCPTool(
+        id="allowed", server_id="s1", name="safe_tool", description="d"
+    )
+    response = admin_client.post(
+        "/v1/mcp/servers/s1/approve", json={"allowed_tools": ["safe_tool"]}
+    )
+    assert response.status_code == 200
+    assert response.json()["approved_by"] == "testadmin"
+
+
 def test_approve_unknown_server_returns_404(admin_client: Any) -> None:
     r = admin_client.post("/v1/mcp/servers/missing/approve", json={"allowed_tools": ["t"]})
     assert r.status_code == 404
