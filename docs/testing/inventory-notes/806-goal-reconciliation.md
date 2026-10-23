@@ -388,3 +388,62 @@ Postgres-DSN-gated); `ruff check .` and `ruff format --check .` clean;
 `check-suite-inventory --suite packages/maistro-core/tests` matches at
 17545 + 2 = 17547; `check-vulture-baseline` (CI's exact arguments) exit 0;
 `check-durable-table-inventory` exit 0 (no new tables).
+
+## 2026-10-23 develop-sync round: merge origin/develop 2af730d2e (no test
+## change; delta unchanged: +107)
+
+Resolved the preserved develop-sync block by merging `origin/develop`
+(2af730d2eb48, the #845/#2197 host-authorized-delegation round) into this
+branch. The single conflict was `_vulture_whitelist.py`, where both sides had
+appended reviewed-surface blocks at the same anchor: this lane's #806 goal
+reconciliation block and develop's #845 `InMemoryDelegationAuthority`
+block plus the #966 installable-pack block. Resolution keeps all three
+blocks and drops no row from either side; all newly referenced names were
+already imported by develop's side of the merge, so the union parses and
+scans clean.
+
+While this round's validation battery was running, `origin/develop`
+advanced one more commit (afffa6309, #2252/#795: runs/lineage.py, the
+maistro-design proof module, Dockerfile freshness work) and a merge of it
+landed on this branch as fa9e18c5b, conflict-free and touching none of the
+goals reconciliation surface. The battery below was therefore re-run in
+full at the union head 6e129112f (candidate) with `RATCHET_BASE_REV` at
+afffa63094e (base), so every result is coherent evidence for one tree.
+All with CI-exact or documented arguments:
+
+- `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'` exit 0 (1314 reviewed identities vs 1313 findings,
+  unclassified 0, never_allowlist 0, base afffa63094e / candidate
+  6e129112fbae). The `harness.py::dispatched_at`
+  baseline row this branch dropped earlier stays consistent: the whole-scan
+  name-level match still finds the name used, so the scan itself no longer
+  reports it.
+- `check-radon-baseline` (128 reviewed C-or-worse blocks, base/candidate
+  resolved to afffa63094e/6e129112fbae), `check-reachability`,
+  `check-suite-inventory` (all 21 suites, plus `--suite
+  packages/maistro-core/tests` earlier), `check-test-duplicates`,
+  `check-durable-table-inventory` (119 tables, each with declared
+  retention), `check-ratchet-provenance` (0 lifecycle violations, no
+  candidate-approved expansion), and `check-ac-state --run-tests
+  --ratchet` (folded at afffa63094e) all exit 0.
+- `mypy --strict packages/maistro-core/src` exit 0 after
+  `uv sync --locked --all-extras` (the CI job's setup; the bare-venv
+  `maistro_bootstrap.cli` import-not-found is the documented missing-extra
+  false positive, not a violation).
+- bandit with security.yml's exact arguments (`-r packages/maistro-core/src
+  packages/hive-conductor/backend packages/maistro-server/src -ll
+  --confidence-level=medium`) re-derived Medium+ count: 0.
+- `check-execution-lifecycles`, `check-wiring-reads`,
+  `check-contract-markers` exit 0.
+- Goals package: 160 passed / 24 skipped (all skips Postgres-DSN-gated);
+  the driver's earlier pytest invocation (container wiring +
+  reconciliation, `-x -q`) passes with 107 passed and no warnings summary;
+  re-run with `-W error::pytest.PytestUnhandledThreadExceptionWarning`
+  still passes, confirming the aiosqlite thread hygiene fix holds.
+- Live experiment at HEAD (durable twin): a Goal created with no wake fact
+  converges on the first bounded sweep (`reconcile_goals` → 1 policy call,
+  `admissions_total` 1, `pending_wakes` 0) and later sweeps re-derive
+  without a second admission — the 44d3f8879 finding is closed.
+- Quality ledgers vs `origin/develop` (`git diff --numstat`): additive only
+  (ac-state-notes 17+0, durable-table-retention 48+0, vulture 0+1, plus
+  develop's own image-pins note edit); no rows lost by the merge.
