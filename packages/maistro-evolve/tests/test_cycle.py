@@ -4,12 +4,8 @@ from datetime import UTC, datetime
 
 import pytest
 
-from maistro_evolve.cycle import (
-    EvolutionConfig,
-    EvolutionCycle,
-    FitnessEvidenceDriftError,
-)
-from maistro_evolve.fitness import compute_fitness
+from maistro_evolve.cycle import EvolutionConfig, EvolutionCycle
+from maistro_evolve.evidence_manifest import load_evidence_manifest
 from maistro_evolve.harness import EvalHarness
 from maistro_evolve.objective import (
     DEFAULT_OBJECTIVE,
@@ -377,3 +373,136 @@ class TestEvalHarness:
         for r in results:
             assert 0.0 <= r.score <= 1.0
             assert r.metadata.get("fidelity") == "proxy"
+
+
+class TestEvidencePublication:
+    """The run's evidence manifest is a production artifact, not a helper.
+
+    Epic #104 publishes evidence rather than quoting scores: the manifest
+    carries the results, the metered block, the verdict-conformance report,
+    and the ordered public trace, and it is verified before it is written.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_configured_run_publishes_its_manifest(self, tmp_path):
+        population = PopulationStore()
+        population.add(_genome("a"))
+        harness = _fake_harness(["proxy_ifeval"])
+        config = EvolutionConfig(
+            population_size=2,
+            target_benchmarks=["proxy_ifeval"],
+            self_improve=False,
+            evidence_dir=str(tmp_path),
+        )
+
+        cycle = EvolutionCycle(harness=harness)
+        await cycle.run_cycle(population, llm_call=None, config=config)
+
+        manifests = sorted(tmp_path.glob("*/manifest.json"))
+        assert len(manifests) == 1
+        manifest = load_evidence_manifest(manifests[0])
+        assert manifest["run_id"].startswith("g-a-cycle-")
+        assert manifest["results"][0]["benchmark"] == "proxy_ifeval"
+        assert manifest["results"][0]["samples_evaluated"] == 1
+        # The metered block travels with the run; the verdict conformance
+        # report is what makes the pass/fail rule host-owned.
+        assert manifest["metering"]["samples_evaluated"] == 1
+        assert manifest["verdict_conformance"]
+        assert all(row["passed"] for row in manifest["verdict_conformance"])
+        # The public trace narrates the same numbers the manifest carries.
+        assert [event["phase"] for event in manifest["trace"]] == [
+            "evaluate",
+            "verify-verdict",
+            "verify-verdict",
+            "verify-verdict",
+            "verify-verdict",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_a_run_without_an_evidence_target_publishes_nothing(self, tmp_path):
+        population = PopulationStore()
+        population.add(_genome("a"))
+        harness = _fake_harness(["proxy_ifeval"])
+        config = EvolutionConfig(
+            population_size=2,
+            target_benchmarks=["proxy_ifeval"],
+            self_improve=False,
+        )
+
+        cycle = EvolutionCycle(harness=harness)
+        await cycle.run_cycle(population, llm_call=None, config=config)
+
+        assert list(tmp_path.iterdir()) == []
+
+    @pytest.mark.asyncio
+    async def test_a_run_with_no_results_publishes_nothing(self, tmp_path):
+        """No benchmark produced a result, so there is no run to publish."""
+        population = PopulationStore()
+        population.add(_genome("a"))
+        harness = _fake_harness([])
+        config = EvolutionConfig(
+            population_size=2,
+            target_benchmarks=["proxy_ifeval"],
+            self_improve=False,
+            evidence_dir=str(tmp_path),
+        )
+
+        cycle = EvolutionCycle(harness=harness)
+        await cycle.run_cycle(population, llm_call=None, config=config)
+
+        assert list(tmp_path.iterdir()) == []
+
+    @pytest.mark.asyncio
+    async def test_each_run_gets_its_own_evidence_directory(self, tmp_path):
+        """Each evaluated genome's evidence lands in its own directory."""
+        population = PopulationStore()
+        population.add(_genome("a"))
+        population.add(_genome("b"))
+        harness = _fake_harness(["proxy_ifeval"])
+        config = EvolutionConfig(
+            population_size=2,
+            target_benchmarks=["proxy_ifeval"],
+            self_improve=False,
+            evidence_dir=str(tmp_path),
+        )
+
+        cycle = EvolutionCycle(harness=harness)
+        await cycle.run_cycle(population, llm_call=None, config=config)
+
+        manifests = sorted(tmp_path.glob("*/manifest.json"))
+        run_ids = {load_evidence_manifest(path)["run_id"] for path in manifests}
+        assert {"g-a-cycle-0", "g-b-cycle-0"} <= run_ids
+        assert len({path.parent.name for path in manifests}) == len(manifests)
+
+    @pytest.mark.asyncio
+    async def test_a_later_run_does_not_overwrite_an_earlier_run(self, tmp_path):
+        """A later run's evidence lands beside the earlier run's."""
+        population = PopulationStore()
+        population.add(_genome("a"))
+        population.add(_genome("b"))
+        harness = _fake_harness(["proxy_ifeval"])
+        config = EvolutionConfig(
+            population_size=2,
+            target_benchmarks=["proxy_ifeval"],
+            self_improve=False,
+            evidence_dir=str(tmp_path),
+        )
+
+        cycle = EvolutionCycle(harness=harness)
+        await cycle.run_cycle(population, llm_call=None, config=config)
+        first = {
+            load_evidence_manifest(path)["run_id"] for path in tmp_path.glob("*/manifest.json")
+        }
+        assert first
+
+        # Clear the scores so the next cycle evaluates the genomes again.
+        for genome in population.list_all():
+            genome.eval_scores.clear()
+            genome.fitness_score = None
+        await cycle.run_cycle(population, llm_call=None, config=config)
+
+        run_ids = {
+            load_evidence_manifest(path)["run_id"] for path in tmp_path.glob("*/manifest.json")
+        }
+        assert first <= run_ids
+        assert any(run_id.endswith("-cycle-1") for run_id in run_ids)

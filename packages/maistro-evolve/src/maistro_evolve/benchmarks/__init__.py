@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from .arc_agi import ArcAgiUnavailableError, run_arc_agi
+from .arc_agi import available as _arc_agi_available
 from .bfcl import run_bfcl
 from .bfcl_real import BFCLUnavailableError, run_bfcl_real
 from .bfcl_real import available as _bfcl_available
@@ -59,6 +61,14 @@ PROXY_BENCHMARKS = {
 REAL_BENCHMARKS = {
     "ifeval": run_ifeval_real,
     "bfcl": run_bfcl_real,
+    # The second domain (#104 M4-G): the official ARC-AGI *grid task format*,
+    # graded by exact structural match — the official grader for that format —
+    # over a vendored public corpus. NOT comparable to a published ARC-AGI
+    # leaderboard number (those score a hidden evaluation set): every result
+    # carries official_comparable=False with the reason attached. Its valid
+    # use is the epic's matched same-model comparison (lift_matrix) within one
+    # pinned corpus snapshot. See arc_agi.py for the SPEC-281 reconciliation.
+    "arc_agi": run_arc_agi,
 }
 
 # Availability probes, () -> (ok, reason). Import-cheap by construction: a probe
@@ -67,6 +77,7 @@ REAL_BENCHMARKS = {
 _REAL_PROBES = {
     "ifeval": _ifeval_available,
     "bfcl": _bfcl_available,
+    "arc_agi": _arc_agi_available,
 }
 
 
@@ -91,6 +102,7 @@ def available_real_benchmarks() -> tuple[dict[str, Any], dict[str, str]]:
 __all__ = [
     "PROXY_BENCHMARKS",
     "REAL_BENCHMARKS",
+    "ArcAgiUnavailableError",
     "BFCLUnavailableError",
     "IFEvalUnavailableError",
     "available_real_benchmarks",

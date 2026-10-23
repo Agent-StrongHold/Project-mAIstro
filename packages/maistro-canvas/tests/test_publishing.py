@@ -129,17 +129,12 @@ class RecordingInvocationStore:
     async def get(self, invocation_id: str):
         return await self._inner.get(invocation_id)
 
-    async def claim(self, invocation):
-        self.rows.append(invocation)
-        return await self._inner.claim(invocation)
-
-    async def list_effect(self, *, run_id, node_run_id, binding_id, effect_key, effect_scope=None):
+    async def list_effect(self, *, run_id, node_run_id, binding_id, effect_key):
         return await self._inner.list_effect(
             run_id=run_id,
             node_run_id=node_run_id,
             binding_id=binding_id,
             effect_key=effect_key,
-            effect_scope=effect_scope,
         )
 
     async def list_ambiguous(self, *, stale_before):

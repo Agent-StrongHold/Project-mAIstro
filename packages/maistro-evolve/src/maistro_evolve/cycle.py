@@ -4,15 +4,17 @@ import logging
 import random
 from collections.abc import Sequence
 from datetime import UTC, datetime
-from typing import Any, Literal
+from pathlib import Path
+from typing import Any
 
 from pydantic import BaseModel, Field
 
 from .archive import CandidateArchive, apply_objective
 from .attribution import EvalContext, ProducerKind, ProducerLedger, producer_identity
 from .crossover import crossover_and_mutate
-from .fitness import compute_fitness, passes_hard_gate
-from .harness import EvalHarness, evidence_method
+from .evidence_manifest import build_evidence_manifest, publish_evidence_manifest
+from .fitness import compute_fitness
+from .harness import EvalHarness
 from .hyper_mutator import entry_node, hyper_mutate, slot_lineage
 from .mutate import MUTATION_OPERATOR_NAMES
 from .objective import DEFAULT_OBJECTIVE, EvaluationObjective
@@ -34,7 +36,7 @@ from .retrodiction import (
     TraceLedger,
 )
 from .tournament import EloTournament
-from .types import FitnessComponents, PipelineGenome
+from .types import EvalResult, PipelineGenome
 
 logger = logging.getLogger("maistro_evolve.cycle")
 
@@ -101,81 +103,11 @@ class EvolutionConfig(BaseModel):
     # agent-nondeterminism noise on repeat sampling (a genome scored 0.76 then
     # 0.0 across two identical evals in a live run).
     eval_ema_alpha: float = Field(default=0.5, gt=0.0, le=1.0)
-    # M4-A8 producer attribution (#115): stamp every candidate with the
-    # generator/mutation/prompt/search operator that produced it and credit
-    # evaluation results back to those producers in an append-only ledger.
-    # Bookkeeping only — changes no selection/breeding behavior on its own.
-    producer_attribution: bool = True
-    # Favor productive operators: when True, breeding draws a weighted SUBSET
-    # of the mutation operators per child (ledger-ranked, exploration-floored)
-    # instead of always applying every operator. Opt-in because it changes
-    # search dynamics; attribution bookkeeping works with it on or off.
-    favor_productive_operators: bool = False
-    # Diversity floor for operator favoring: collectively the non-favored
-    # operators keep at least this share of selection probability, so a
-    # productive operator can never starve the others of exploration.
-    producer_exploration_floor: float = Field(default=0.2, ge=0.0, le=1.0)
-    # Regressions at/above this count (with regression-majority signal) mark a
-    # producer as a repeated regressor: its weight is demoted, never zeroed,
-    # and the negative credit is never decayed away.
-    producer_regression_limit: int = Field(default=3, ge=1)
-    # Size of the mutation-operator subset drawn per child when
-    # favor_productive_operators is enabled (clamped to the registry size).
-    mutation_operators_per_child: int = Field(default=3, ge=1)
-    # M4-A5 retrodiction prefilter: before spending a fresh isolated
-    # execution / frontier call, replay the candidate against prior cycle
-    # traces (content-addressed in a TraceLedger). "enforce" skips known
-    # total-failure repeats and deprioritizes low-information repeats;
-    # "shadow" records the same verdicts but still evaluates everything, so
-    # the false-negative rate is measured before the filter is trusted;
-    # "off" disables it. The prefilter never feeds promotion — winners still
-    # go through the real evaluator plus the human approval gate.
-    retrodiction: Literal["enforce", "shadow", "off"] = "enforce"
-    # How many already-evaluated genomes get a FRESH independent sample per
-    # cycle (#854). The cycle used to evaluate every genome exactly once —
-    # a lucky first sample became permanent and the EMA never ran through the
-    # real cycle. Each cycle now re-samples the genomes whose evidence is
-    # weakest/oldest (best-of-N-pending confirmations first), producing the
-    # repeated independent evidence the promotion policy requires.
-    reconfirm_per_cycle: int = Field(default=2, ge=0, le=MAX_EVAL_BATCH_SIZE)
-
-
-class FitnessEvidenceDriftError(RuntimeError):
-    """A genome's fitness moved although its exact evidence did not (#853).
-
-    ``compute_fitness`` is a pure function of (genome evidence, population
-    evidence, objective). If the recorded evidence hash and objective version
-    are unchanged but the total moved, the scoring arithmetic itself changed
-    mid-campaign — exactly the "same evidence, different number" defect the
-    issue forbids. The cycle refuses to continue rather than rank candidates
-    against incomparable numbers.
-    """
-
-
-class FitnessEvidenceRecord(BaseModel):
-    """One genome's fitness evidence as computed in a specific cycle (#853).
-
-    ``EvolutionCycle.fitness_evidence`` keeps the latest record per genome so
-    the determinism contract is enforced in production, not only in tests:
-    recomputing from unchanged evidence (same ``evidence_hash`` under the same
-    ``objective_version``) must reproduce the same ``total`` bit-for-bit, so
-    repeated identical evidence across cycles can never manufacture a fitness
-    gain — any movement is traceable to a recorded evidence or objective
-    change (AC5/AC8).
-    """
-
-    genome_id: str
-    total: float
-    # Gated measured task quality — recorded beside ``total`` so an auditor
-    # can see context terms never entered the capability number.
-    capability_score: float
-    objective_version: str
-    evidence_hash: str
-    # Which components had no measurement, scored pessimistically.
-    missing_evidence: tuple[str, ...] = ()
-    # The objective's component -> role mapping, snapshotting the semantic
-    # split in force when the score was computed.
-    component_roles: dict[str, str] = Field(default_factory=dict)
+    # Where the run publishes its evidence manifest (results + metered
+    # cost/security tax/RHAE + verdict conformance + the ordered public
+    # trace). None ⇒ nothing is published: the manifest is an artifact an
+    # operator asks for, not a side effect every evolution run should have.
+    evidence_dir: str | None = None
 
 
 class EvolutionCycle:
@@ -452,6 +384,45 @@ class EvolutionCycle:
         for genome in candidates[: config.reconfirm_per_cycle]:
             await self._eval_and_fold(genome, config, llm_call)
             population.add(genome)
+            self._publish_evidence(genome, results, config)
+
+    def _publish_evidence(
+        self,
+        genome: PipelineGenome,
+        results: list[EvalResult],
+        config: EvolutionConfig,
+    ) -> None:
+        """Publish this evaluation's evidence manifest, when a target is configured.
+
+        The manifest is the falsifiable artifact behind the run's numbers:
+        which benchmark produced which score over how many samples, the
+        metered cost/security tax/RHAE block, the verdict-conformance report
+        that shows the pass/fail rule was host-owned, and the ordered public
+        trace of what the run did. It is verified before it is written, and
+        refused rather than published when it does not verify.
+
+        One directory per run (``<evidence_dir>/<run_id>/manifest.json``) so a
+        later run cannot overwrite an earlier run's evidence.
+        """
+        if not config.evidence_dir:
+            return
+        if not results:
+            # No benchmark produced a result, so there is no run to publish
+            # evidence about. Nothing is written rather than an empty
+            # manifest that would look like a run.
+            logger.warning(
+                "evolve_cycle_evidence: no results to publish evidence for "
+                "(genome %s) — nothing written",
+                genome.id,
+            )
+            return
+        run_id = f"{genome.id}-cycle-{self._cycle_count}"
+        manifest = build_evidence_manifest(
+            run_id=run_id,
+            results=results,
+            verdict_conformance=self.harness.verdict_conformance(),
+        )
+        publish_evidence_manifest(manifest, Path(config.evidence_dir) / run_id)
 
     async def _run_tournament_battles(
         self,

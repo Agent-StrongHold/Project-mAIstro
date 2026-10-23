@@ -16,11 +16,9 @@ from services.dag_execution_scope import (
     authorize_hive_dag_scope,
     authorize_hive_dag_workspace,
 )
-from services.request_principal import require_actor_id
 
 from maistro.scheduling.cron import CronParseError, minimum_gap
 from maistro.scheduling.model import DEFAULT_CATCHUP_WINDOW_SECONDS, MAX_CATCHUP_WINDOW_SECONDS
-from routes.audit import audit_entries_view
 
 logger = logging.getLogger(__name__)
 
@@ -157,7 +155,8 @@ def _check_fire_id(value: str | None) -> str | None:
 
 def _actor(request: Request) -> str:
     """The authenticated principal; a schedule is never owned by "system"."""
-    actor = require_actor_id(request).strip()
+    user = getattr(request.state, "user", None) or {}
+    actor = str(user.get("id") or "").strip()
     if not actor:
         raise HTTPException(status_code=401, detail="authentication required")
     return actor
@@ -477,11 +476,8 @@ async def run_schedule(
         fire_id = _check_fire_id(raw) if raw and raw.strip() else None
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    # The authenticated caller is provenance, not authority (#1201): the fire
-    # still runs on the schedule actor's canonical scope, but the Run names
-    # who asked for it, separately from the actor it consumes.
     try:
-        await fire_now(schedule_id, fire_id=fire_id, requester_id=_actor(request))
+        await fire_now(schedule_id, fire_id=fire_id)
     except ScheduleNotFireable as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ScheduleAdmissionUnavailable as exc:

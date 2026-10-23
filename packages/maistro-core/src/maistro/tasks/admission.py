@@ -33,10 +33,9 @@ import asyncio
 from typing import TYPE_CHECKING, Any, Protocol
 
 from maistro.observability.correlation import current_execution_context
-from maistro.runs.admission import admit_direct_work, direct_work_graph
+from maistro.runs.admission import admit_direct_work
 from maistro.runs.lifecycle import RUN_TRANSITIONS, InvalidLifecycleTransition
 from maistro.runs.model import TERMINAL_RUN_STATUSES, Run, RunStatus
-from maistro.runs.sources import ADMISSION_SOURCE
 from maistro.runs.task_kinds import resolve_direct_work
 from maistro.tasks.idempotency import IDEMPOTENCY_KEY_PROVENANCE
 from maistro.tasks.models import TaskStatus
@@ -132,22 +131,7 @@ class TaskAdmitter(Protocol):
         ...
 
     async def cancel_run(self, run_id: str) -> bool:
-        """Cancel the canonical Run and signal its physical Attempt owner.
-
-        Returns True only when the Run itself reached CANCELLED through the
-        canonical Run/Attempt service — a local no-op is not a cancellation.
-
-        Compatibility (#1338): this member joined the protocol after ``admit``
-        and ``record_transition``, so a downstream adapter compiled against
-        the earlier two-method shape remains a valid *runtime* citizen. The
-        queue probes the capability with ``getattr`` and, for an adapter
-        without it, refuses to cancel that adapter's admitted work — the
-        receipt stays open, the Run keeps its owner, and the refusal is
-        logged — rather than raising ``AttributeError`` or terminalizing
-        work nothing signalled. Implement the member to make cancellation
-        physically reach admitted Runs; leaving it absent opts out of
-        physical cancellation, visibly (cancel refuses), never silently.
-        """
+        """Cancel the canonical Run and signal its physical Attempt owner."""
         ...
 
 
@@ -223,12 +207,6 @@ class TaskRunAdmitter:
         self._project_id = project_id
         self._projects = project_store
         self._intents = intents
-        # The atomic admission lane (#1845): composition wires the shared pool
-        # and the Run store's connection-owned insert into one coordinator;
-        # this admitter contributes only its Workspace/Project binding through
-        # `prepare_run`. None keeps the legacy two-commit path for tiers that
-        # carry no coordinator (in-memory, SQLite).
-        self._coordinator = coordinator
         # Whether dispatch on this store is claimed atomically with its
         # physical evidence (#544, #1114). On a claiming store the Run's
         # QUEUED->RUNNING write belongs to `claim_consumer_run` — the same
@@ -411,20 +389,6 @@ class TaskRunAdmitter:
             return False
         return True
 
-    async def run_for_task_receipt(self, task_id: str) -> str | None:
-        """The Run this admitter minted for one task receipt, or None.
-
-        The discovery seam behind admission idempotency (#1176): ``admit``
-        stamps the receipt id into the Run's provenance, so a claimant that
-        died between minting and recording leaves a Run that is *findable* by
-        the receipt its claim announced — which is what lets a retry resolve
-        the existing Run instead of minting a second one. None means no Run
-        names the receipt: it was never minted, and the claim may be taken
-        over safely.
-        """
-        run = await self._runs.find_run_by_task_receipt(task_id)
-        return run.run_id if run is not None else None
-
     async def lookup_run(self, run_id: str) -> Run | None:
         """The canonical Run behind a receipt, or None when it does not exist."""
         return await self._runs.get_run(run_id)
@@ -570,18 +534,6 @@ class WorkspaceRoutingAdmitter:
             error=error,
             previous_status=previous_status,
         )
-
-    async def run_for_task_receipt(self, task_id: str) -> str | None:
-        """Resolve one task receipt to its Run, Workspace-independently.
-
-        Same reasoning as ``record_transition``: by admission time the Run
-        exists and knows which Project it is filed in, and task ids are minted
-        globally, so routing the lookup through the default admitter reaches
-        the one implementation of the provenance search rather than a second
-        copy per Workspace.
-        """
-        admitter = await self.admitter_for(None)
-        return await admitter.run_for_task_receipt(task_id)
 
     async def lookup_run(self, run_id: str) -> Run | None:
         """Read the Run through the default admitter's store.

@@ -31,6 +31,10 @@ PYTHONPATH=packages/maistro-core/src:packages/maistro-evolve/src pytest packages
   proxy_gaia, proxy_ragas, proxy_terminalbench, proxy_osworld). See **Benchmark fidelity** below before
   trusting any score from it.
 - `EvolutionCycle` — orchestrates evaluation → battles → culling → breeding → self-improve → diversity, driven by `EvolutionConfig`.
+- `EvalHarness.verdict_conformance()` / `maistro_evolve.verdict_probes` — the host-owned verdict battery (see **Published evidence** below).
+- `maistro_evolve.evidence_manifest` — the published evidence manifest (results, metering, verdict conformance, refusals, public trace, checksums).
+- `maistro_evolve.eval_metering` — the metered run block (cost / security tax / RHAE) stamped on every result as `EvalResult.run_metering`.
+- `maistro_evolve.lift_matrix` — the matched model×harness matrix (lift / gap / gap_closure / transfer / inversion) behind SPEC-281.
 - `reflective_improve()` (reflect.py) — GEPA/MIPROv2-inspired self-improve step: re-runs the weakest benchmark
   for failure traces, proposes K prompt candidates via grounded meta-prompts with randomized tips, re-evaluates
   each, and only an improving candidate enters the population — as a child genome, never overwriting the parent.
@@ -47,12 +51,15 @@ PYTHONPATH=packages/maistro-core/src:packages/maistro-evolve/src pytest packages
 
 ## Benchmark fidelity — stability statement (SPEC-202)
 
-**Exactly two benchmarks run the official harness against the official dataset: `ifeval` and `bfcl`, via the
+**Exactly three benchmarks run the official harness against the official dataset: `ifeval` and `bfcl`, via the
 separate `run_ifeval_real` / `run_bfcl_real` adapters** (`benchmarks/ifeval_real.py` — the published
 541-prompt corpus graded by Google Research's own vendored verifier; `benchmarks/bfcl_real.py` — the
-1,000-instance BFCL v4 Python-AST track graded by the leaderboard's own vendored `ast_checker`). They are
+1,000-instance BFCL v4 Python-AST track graded by the leaderboard's own vendored `ast_checker`), and
+`arc_agi`, via `run_arc_agi` (`benchmarks/arc_agi.py` — the official ARC-AGI *grid task format*, graded by
+exact structural match, over a corpus that is **not vendored here** and whose numbers are **never** comparable
+to a published leaderboard score; see **ARC-AGI as the second domain** below). They are
 reached through `EvalHarness(benchmark_fidelity="real")`, **not** by the default entries, which remain proxy.
-Note the naming: the real tier registers under the bare names `ifeval`/`bfcl`, the proxy tier under
+Note the naming: the real tier registers under the bare names `ifeval`/`bfcl`/`arc_agi`, the proxy tier under
 `proxy_`-prefixed ones. See "Real tier" below.
 
 **None of `proxy_ifeval`, `proxy_bfcl`, `proxy_swebench`, `proxy_tau_bench`, `proxy_gaia`, `proxy_ragas`,
@@ -203,14 +210,63 @@ Things to know before quoting a number from it:
 `EvalHarness()` defaults to `"proxy"` and registers 7 benchmarks (`proxy_osworld` excluded);
 `EvolutionCycle.run_cycle()` logs a `WARNING` naming the tier on every call so a proxy-scored run is never
 mistaken for a real one. `benchmarks/__init__.py` holds two registries: `PROXY_BENCHMARKS` (7 entries) and
-`REAL_BENCHMARKS` (2 — `ifeval`, `bfcl`), plus `available_real_benchmarks()` which splits the latter into
-(runnable here, unavailable-with-reason). A name earns a place in `REAL_BENCHMARKS` only once its score is
-comparable to a published one; the remaining real adapters are `docs/specs/SPEC-202` future work.
+`REAL_BENCHMARKS` (3 — `ifeval`, `bfcl`, `arc_agi`), plus `available_real_benchmarks()` which splits the latter into
+(runnable here, unavailable-with-reason). A name earns a place in `REAL_BENCHMARKS` when its adapter runs the
+**official task format and grader** over a pinned corpus; whether the resulting number may be **quoted against a
+published leaderboard** is a separate, per-result flag (`metadata["official_comparable"]`) — `arc_agi` is always
+`False` (public task files, no multi-attempt protocol, hidden evaluation set upstream), and every real adapter
+records the reason next to the flag. The remaining real adapters are `docs/specs/SPEC-202` future work.
+
+### ARC-AGI as the second domain (`benchmarks/arc_agi.py`)
+
+`arc_agi` is the M4-G second domain: grid induction, so the loop cannot specialize to one task family. Its
+reconciliation with SPEC-281 (status **Proposed**, so it does not override the epic) is stated in the module
+docstring: SPEC-281 excludes ARC-AGI from the *driver set* on cost and addressability; this adapter answers
+the cost objection (offline, deterministic, exact-match grading over the official grid task format — no paid
+interactive environment) and the addressability one (grid induction is planning/pattern-tracking, which a
+harness can help), and it is **never** comparable to a published number. The corpus is not vendored here
+(`benchmarks/third_party/arc_agi/README.md` documents how to vendor it, with the licensing and source-record
+requirements), so the availability probe reports it as unavailable and a real harness skips it loudly rather than
+scoring nothing.
 
 **A real-harness fitness number is not comparable to a proxy-harness one** — or to a real-harness number from
 a machine with different extras installed. `compute_fitness` sees only the benchmarks that ran, and the
 per-benchmark hard gates below only fire for benchmarks that ran. When comparing genomes, compare them under
 the same harness on the same machine.
+
+## Published evidence and host-owned verdicts (#104 M4-G)
+
+A score is a claim; a manifest is a falsifiable artifact. Four pieces make the run's numbers checkable, and
+all four are production paths, not helpers:
+
+- **The verdict battery** (`maistro_evolve.verdict_probes`). Each host-owned grader — the ARC-AGI grid grader,
+  `json_field_match`, `function_call_match`, `judge_score` — is fed a corpus of hostile candidate responses
+  (a printed `PASS`, a missing required field, a prose mention of a tool call, a negated verdict) and a
+  deliberately **permissive mutant** that accepts them. The battery passes only when every hostile response is
+  rejected *and* the mutant is killed by the same corpus: a corpus that cannot tell a gameable grader from a
+  real one certifies nothing. `EvalHarness.evaluate_genome()` runs it and **raises `VerdictConformanceError`**
+  when it does not hold, so a run whose verdicts are not host-owned produces no results at all — nothing can be
+  folded into fitness, promoted, or published on the strength of them.
+- **The metered run block** (`maistro_evolve.eval_metering`). Cost, security tax and RHAE are aggregated over
+  the run and stamped on **every** result as `EvalResult.run_metering` — a first-class field, *not* a key in
+  the adapter's own `metadata` (that dict is the adapter's contract, and callers assert it verbatim). The meter
+  reads fields and closed-kind metadata keys, never the block it writes, so re-metering is idempotent.
+- **The evidence manifest** (`maistro_evolve.evidence_manifest`). `build_evidence_manifest()` turns one
+  evaluation into a dict: results with their sample counts (a percentage without a denominator is unquotable),
+  the SPEC-281 lift rows, the metered block (or an explicit reason for its absence — absence is not silence),
+  the verdict-conformance report (**required**: a manifest that cannot show its verdicts are host-owned is not
+  publishable), the refused diffs with their reasons, the ordered public trace, and a SHA-256 per section plus
+  one over the manifest itself. `publish_evidence_manifest()` verifies before it writes, and writes atomically.
+  `EvolutionConfig.evidence_dir` opts a run into publishing: one directory per run
+  (`<evidence_dir>/<run_id>/manifest.json`), so a later run cannot overwrite an earlier run's evidence.
+- **The matched matrix** (`maistro_evolve.lift_matrix`). The four cells (`W_base`, `W_evo`, `F_base`,
+  `F_evo`) are validated as a matrix — same model within a row, different models across rows, one harness per
+  column, one benchmark and one pinned baseline version — and derive lift, gap, `gap_closure` (null when the gap
+  is not positive), transfer and inversion. An inverted genome is disqualified by `fitness._check_transfer_inversion`
+  before it can breed, and a promotion candidate must carry transfer evidence for every benchmark it was scored on.
+
+Scope boundary: patch-content *policy* stays in `maistro_rsi.export_policy`/`quarantine`. The manifest records
+refusals as data and checks structural integrity; it is not a second authority on patch content.
 
 ## Gotchas
 

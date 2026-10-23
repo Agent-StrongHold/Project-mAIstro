@@ -3,8 +3,9 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from typing import Any, Literal
 
-from .curriculum import RESERVED_BENCHMARK_PREFIX
+from .eval_metering import attach_run_metering
 from .types import EvalResult, PipelineGenome
+from .verdict_probes import ConformanceReport, require_conformance, run_conformance
 
 BenchmarkRunner = Callable[[PipelineGenome, Any], Awaitable[EvalResult]]
 
@@ -137,7 +138,7 @@ class EvalHarness:
         """Register only official-dataset/official-harness adapters.
 
         A ``real`` harness registers a **strict subset** of a proxy harness's
-        benchmarks — two, currently — and does not backfill the rest from the
+        benchmarks — three, currently — and does not backfill the rest from the
         proxy registry. Mixing the tiers behind one ``fidelity`` label is the
         specific dishonesty SPEC-202's two-tier model exists to prevent: a
         caller reading ``harness.fidelity == "real"`` off a harness whose
@@ -209,6 +210,23 @@ class EvalHarness:
             "missing pieces, or use benchmark_fidelity='proxy'."
         )
 
+    def verdict_conformance(self) -> ConformanceReport:
+        """Run the host-owned verdict battery and return its report.
+
+        The battery is the falsifiability evidence for the run: each
+        production grader is fed a corpus of hostile candidate responses (a
+        printed "PASS", a missing required field, a prose mention of a tool
+        call) and a deliberately permissive mutant that accepts them. A grader
+        that accepts a hostile response, or a mutant that survives the corpus,
+        fails the battery.
+
+        It is run here — in the harness, at the point where results are
+        produced — rather than in a publication helper, because the point of
+        the epic is that the verdict is host-owned *before* anything downstream
+        sees a number.
+        """
+        return run_conformance()
+
     async def evaluate_genome(
         self,
         genome: PipelineGenome,
@@ -230,4 +248,19 @@ class EvalHarness:
                 continue
             result = await runner(genome, llm_call)
             results.append(result)
+        # Meter the run (cost / security tax / RHAE, #104 M4-G) and stamp the
+        # block on every result. Attached here — the one path every benchmark
+        # result already flows through — so metering cannot exist as an
+        # unwired helper (see repo_history's warning about built-but-unwired
+        # modules). Re-metering a result list twice is idempotent by
+        # construction: the meter reads fields and closed-kind metadata keys,
+        # never the block it writes.
+        attach_run_metering(results)
+        # The verdict battery, run before the results leave the harness. A
+        # grader that accepts a hostile candidate response (or a permissive
+        # mutant that survives the probe corpus) stops the run here: no
+        # result is returned, so nothing can be folded into fitness, promoted,
+        # or published on the strength of a pass/fail rule that was never
+        # shown to be host-owned (#104 M4-G). Fail closed at the producer.
+        require_conformance(self.verdict_conformance())
         return results

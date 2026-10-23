@@ -42,27 +42,11 @@ MACOS_RUNTIME="${MAISTRO_MACOS_RUNTIME:-}"
 INSTALL_CLI="${MAISTRO_INSTALL_CLI:-1}"
 OPEN_BROWSER="${MAISTRO_OPEN_BROWSER:-1}"
 
-# How this install was launched — recorded so `maistro upgrade` can report it.
-# get.sh sets MAISTRO_INSTALL_SURFACE=curl; a direct `./install.sh` is a checkout.
-INSTALL_SURFACE="${MAISTRO_INSTALL_SURFACE:-checkout}"
-# Marker an archive install leaves at the install root (get.sh writes it;
-# install.sh reads it to classify archive vs. source-tree upgrades).
-ARCHIVE_MARKER="${MAISTRO_ARCHIVE_MARKER:-.maistro-archive-install}"
-
 # Docker API floor the embedded docker CLI can negotiate (Engine 25 exposes
 # API 1.44; Engine 24 tops out at 1.43). The engine images COPY the CLI from
 # docker:29-cli, whose floor rose with the go1.26.8 toolchain rebuild that
 # fixed CVE-2025-68121 (+21 HIGHs) in the previously embedded go1.22.11 CLI.
 MIN_DOCKER_API_VERSION="1.44"
-
-# Compose floor the stack's schema needs. The compose files use conditional
-# `depends_on` (service_healthy / service_completed_successfully), healthcheck
-# wiring and secrets — Compose v2 features the legacy python `docker-compose`
-# (v1, EOL) cannot parse, which is why install.sh no longer falls back to it
-# (#407). The floor is a preflight convenience, not the real contract: when a
-# front-end hides a parseable version, the schema-parse probe in
-# ensure_compose_supported decides instead.
-MIN_COMPOSE_VERSION="2.17.0"
 
 # Container tag the generated image_pull compose pins to (E5/#298). get.sh
 # exports this to match the release it just checked out; when install.sh is run
@@ -166,6 +150,12 @@ Environment:
   Compose's own automatic override loading never applies), after the base
   file and the wizard's plan override — but only when the invoking user owns
   it and it is not group/world-writable; anything else aborts the install.
+
+  Ports and the bind address resolve like Compose interpolation: the process
+  environment wins, then the .env file, then the built-in defaults (engine
+  8000, Conductor 8101, the loopback bind default). The installer reads
+  the published mapping back from compose before health polling, so the
+  probes and the printed URLs always follow the effective ports.
 
   Ports and the bind address resolve like Compose interpolation: the process
   environment wins, then the .env file, then the built-in defaults (engine
@@ -989,37 +979,6 @@ docker_daemon_ready() {
     command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1
 }
 
-# True when Podman answers for the invoking account (#1820): `podman info`
-# proves the same thing for Podman's rootless store that `docker info` proves
-# for the Docker daemon — this account, unprivileged, can operate it.
-podman_runtime_ready() {
-    command -v podman >/dev/null 2>&1 && podman info >/dev/null 2>&1
-}
-
-# True when the SELECTED front-end's engine answers (#1820). Runtime
-# access validation uses the selected runtime — a Docker check must never
-# stand in for a Podman one, or vice versa.
-selected_runtime_ready() {
-    case "${COMPOSE_CMD[0]:-}" in
-        docker) docker_daemon_ready ;;
-        podman) podman_runtime_ready ;;
-        *) return 1 ;;
-    esac
-}
-
-# Platform-phrased remedy for a selected runtime with no working Compose v2
-# front-end (#1820).
-selected_runtime_install_hint() {
-    case "$1" in
-        podman)
-            echo "Install Podman and a Compose v2 provider — Fedora/RHEL: 'sudo dnf install podman podman-compose'; Debian/Ubuntu: 'sudo apt-get install -y podman podman-compose' (or provide Docker's compose plugin so 'podman compose' can use it); macOS: 'brew install podman && podman machine init && podman machine start'. Then re-run ./install.sh."
-            ;;
-        *)
-            echo "$(compose_upgrade_instructions) Then re-run ./install.sh."
-            ;;
-    esac
-}
-
 # Numeric dotted-version comparison: true when $1 >= $2. Pure bash on purpose —
 # macOS ships a sort too old for `sort -V`, and these are always short API
 # versions like "1.43".
@@ -1837,19 +1796,6 @@ run_with_timeout() {
     return "$rc"
 }
 
-# #1820: these are Docker-runtime validations (engine API floor, macOS
-# credential-helper deadlock, docker.sock discovery). Under a Podman selection
-# they must not run: validating the UNSELECTED docker engine would fail an
-# install on an unrelated old Docker daemon, and a docker.sock mapping is
-# meaningless for Podman's rootless store. Lifted verbatim by
-# tests/test_install_runtime_selection.py.
-docker_only_preflight_checks() {
-    [[ "${COMPOSE_CMD[0]:-}" == "docker" ]] || return 0
-    ensure_docker_engine_supported
-    check_docker_credential_helper
-    record_docker_sock
-}
-
 start_engine() {
     if [[ "$START_STACK" == "0" || "$START_STACK" == "false" ]]; then
         warn "Skipping compose start because --no-start or MAISTRO_START_STACK=0 was set."
@@ -1857,18 +1803,12 @@ start_engine() {
     fi
 
     ensure_compose_runtime
-    docker_only_preflight_checks
+    ensure_docker_engine_supported
+    check_docker_credential_helper
+    record_docker_sock
     # compose_files first: report_arch reads the image list from the same
-    # file set `up` will use, so an addon's images are checked too — and
-    # ensure_compose_supported feature-probes that same set before anything
-    # is built or started.
+    # file set `up` will use, so an addon's images are checked too.
     compose_files
-    # Floor gate first: reject a front-end below the schema floor before
-    # printing a plan for it (#407).
-    ensure_compose_supported
-    # Then show (and validate) exactly what will start — effective files,
-    # active profiles, merged render — before `up` runs (#405).
-    show_compose_plan
     report_arch
     info "Starting maistro-engine..."
     "${COMPOSE_CMD[@]}" "${COMPOSE_FILES[@]}" "${COMPOSE_UP_ARGS[@]}"
@@ -2346,7 +2286,7 @@ print_success() {
     echo "maistro-engine is ready"
     echo "  Engine API:  ${ENGINE_BASE_URL}"
     echo "  Conductor:   ${CONDUCTOR_BASE_URL}  (chat, DAGs, deck builder)"
-    echo "  Token:       stored in $ENV_FILE as MAISTRO_ROUTER_API_KEY (not printed)"
+    echo "  Token:       stored in $ENV_FILE as MAISTRO_ACCESS_TOKEN (not printed)"
     echo "  Install dir: $PWD"
     echo "  Plan dir:    $PLAN_DIR"
     echo ""

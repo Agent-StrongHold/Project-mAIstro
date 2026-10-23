@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import httpx
 from fastapi.testclient import TestClient
 from main import app
@@ -79,7 +81,7 @@ async def _wire_self_repair():
     reg.register(act)
 
     effects = new_effect_context(policy_evaluator=binding_scope_policy)
-    await _register_self_repair(reg, Settings(infra_autonomy="auto_safe"), effects)
+    _register_self_repair(reg, Settings(infra_autonomy="auto_safe"), effects)
 
     engine = get_engine()
     saved = engine._capabilities
@@ -106,8 +108,8 @@ def test_run_503_when_no_provider() -> None:
     assert r.status_code == 503
 
 
-async def test_disable_infra_action_after_repair_initialization_blocks_effect() -> None:
-    engine, saved, calls, _effects = await _wire_self_repair()
+def test_disable_infra_action_after_repair_initialization_blocks_effect() -> None:
+    engine, saved, calls, _effects = _wire_self_repair()
     try:
         engine.capabilities.set_enabled("infra_action", False)
         c = _config_writer("sr-disabled")
@@ -124,10 +126,10 @@ async def test_disable_infra_action_after_repair_initialization_blocks_effect() 
         engine._capabilities = saved
 
 
-async def test_revoke_infra_action_after_repair_initialization_blocks_effect() -> None:
-    engine, saved, calls, effects = await _wire_self_repair()
+def test_revoke_infra_action_after_repair_initialization_blocks_effect() -> None:
+    engine, saved, calls, effects = _wire_self_repair()
     try:
-        await effects.bindings.revoke("builtin:self-repair:infra-action")
+        asyncio.run(effects.bindings.revoke("builtin:self-repair:infra-action"))
         c = _config_writer("sr-revoked")
 
         response = c.post("/v1/capabilities/self-repair/run")
@@ -142,8 +144,8 @@ async def test_revoke_infra_action_after_repair_initialization_blocks_effect() -
         engine._capabilities = saved
 
 
-async def test_run_executes_cycle_and_proposals_reflect_it() -> None:
-    engine, saved, _calls, _effects = await _wire_self_repair()
+def test_run_executes_cycle_and_proposals_reflect_it() -> None:
+    engine, saved, _calls, _effects = _wire_self_repair()
     try:
         c = _config_writer("sr-run")
         r = c.post("/v1/capabilities/self-repair/run")

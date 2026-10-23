@@ -36,11 +36,6 @@ from maistro.cli._approvals import app as _approvals_app  # noqa: E402
 from maistro.cli._archive import app as _archive_app  # noqa: E402
 from maistro.cli._backlog import app as _backlog_app  # noqa: E402
 from maistro.cli._builders import app as _builders_app  # noqa: E402
-from maistro.cli._conformance import app as _conformance_app  # noqa: E402
-from maistro.cli._connectors import app as _connectors_app  # noqa: E402
-from maistro.cli._eval_workspace import app as _eval_workspace_app  # noqa: E402
-from maistro.cli._extension_authoring import app as _extension_authoring_app  # noqa: E402
-from maistro.cli._extensions import app as _extensions_app  # noqa: E402
 from maistro.cli._fixtures import app as _fixtures_app  # noqa: E402
 from maistro.cli._install import app as _install_app  # noqa: E402
 from maistro.cli._launch import app as _launch_app  # noqa: E402

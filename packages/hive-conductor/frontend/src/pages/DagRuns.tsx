@@ -12,7 +12,7 @@
 // duration_ms, tool result preview). Day 9 ships this read-only view;
 // Day 13 will overlay eval-judge scores on each node.
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { useNavigate, useSearchParams } from "react-router-dom";
+import { useSearchParams } from "react-router-dom";
 import { apiGet } from "../lib/api";
 
 type EventType = "pm_node_started" | "pm_node_completed" | "pm_node_failed";
@@ -180,17 +180,25 @@ export default function DagRuns() {
           es.addEventListener("pm_resync", refresh);
           es.addEventListener("open", refresh);
         }
-      } catch (e) {
-        if (active) {
-          // Retain the last snapshot, but do not present it as a fresh read.
-          setDetailError(`Run evidence may be stale. ${(e as Error).message}`);
-        }
-      } finally {
-        inFlight = false;
-      }
-    };
-    void refresh();
-    const interval = setInterval(() => void refresh(), 10_000);
+      };
+      es.addEventListener("pm_node_started", handler as EventListener);
+      es.addEventListener("pm_node_completed", handler as EventListener);
+      es.addEventListener("pm_node_failed", handler as EventListener);
+      // The stream told us it dropped events (full queue or trimmed history):
+      // converge on durable truth by re-reading the run (#1183) instead of
+      // stitching a contiguous-looking timeline out of what survived.
+      const resync = () => {
+        if (!active) return;
+        void apiGet<RunDetail>(`/v1/dag-runs/${selectedRunId}`)
+          .then((d) => {
+            if (active) setDetail(d);
+          })
+          .catch(() => {
+            /* keep the current view; the stream keeps delivering */
+          });
+      };
+      es.addEventListener("pm_resync", resync as EventListener);
+    })();
     return () => {
       active = false;
       clearInterval(interval);

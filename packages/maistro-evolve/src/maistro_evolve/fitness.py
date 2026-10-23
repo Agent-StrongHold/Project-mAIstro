@@ -1,12 +1,6 @@
 from __future__ import annotations
 
-import hashlib
-import json
-from typing import Any
-
-from .curriculum import RESERVED_BENCHMARK_PREFIX
-from .diversity import trait_vector
-from .objective import DEFAULT_OBJECTIVE, EvaluationObjective
+from .lift_matrix import TRANSFER_EPSILON
 from .types import FitnessComponents, PipelineGenome
 
 # Tuned per-benchmark minimums. A genome scoring below any of these on a
@@ -366,6 +360,55 @@ def _evidence_hash(
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
 
+def _check_transfer_inversion(genome: PipelineGenome) -> list[str]:
+    """SPEC-281 §2 / AC-3 + AC-4: inversion is a hard gate, absence blocks promotion.
+
+    The frontier cell is expensive, so transfer is sampled — every N
+    generations and on every promotion candidate — and carried forward in
+    ``harness_params["transfer_by_benchmark"]`` as
+    ``{benchmark: {"transfer": float, "transfer_stale": bool}}`` between
+    samples. Two rules, both fail-closed:
+
+    1. A measured ``transfer < -epsilon`` is a gate failure no matter how
+    large the lift is — a harness that damages the frontier model is
+    disqualified, not penalized.
+    2. A genome flagged ``approved_for_promotion`` must carry transfer
+    evidence for every benchmark it was scored on. "A stale transfer is
+    still evidence; an absent one is not" (SPEC-281 §2) — stale entries pass
+    this gate, absent ones do not.
+    """
+    failures: list[str] = []
+    transfers: dict = genome.harness_params.get("transfer_by_benchmark") or {}
+    if not isinstance(transfers, dict):
+        return [
+            "transfer_by_benchmark must be a mapping of benchmark -> "
+            "{'transfer': float, 'transfer_stale': bool}"
+        ]
+    epsilon = float(genome.harness_params.get("transfer_epsilon", TRANSFER_EPSILON))
+    for bench, entry in sorted(transfers.items()):
+        if not isinstance(entry, dict) or "transfer" not in entry:
+            failures.append(f"{bench} transfer evidence present but has no 'transfer' value")
+            continue
+        transfer = entry["transfer"]
+        if not isinstance(transfer, (int, float)) or isinstance(transfer, bool):
+            failures.append(f"{bench} transfer value is not a number: {transfer!r}")
+            continue
+        if transfer < -epsilon:
+            stale = " (stale measurement)" if entry.get("transfer_stale") else ""
+            failures.append(
+                f"{bench} transfer {transfer:.3f} < -{epsilon:.2f}: harness "
+                f"inverts on the frontier model{stale} — disqualified"
+            )
+    if genome.approved_for_promotion:
+        for bench in sorted(genome.eval_scores):
+            if bench not in transfers:
+                failures.append(
+                    f"promotion candidate lacks transfer evidence for {bench} "
+                    "(SPEC-281: stale is acceptable, absent is not)"
+                )
+    return failures
+
+
 def compute_fitness(
     genome: PipelineGenome,
     population: list[PipelineGenome],
@@ -387,6 +430,8 @@ def compute_fitness(
     any weight configuration or padded context evidence.
     """
     passed, gate_failures = _check_hard_gate(genome)
+    gate_failures = gate_failures + _check_transfer_inversion(genome)
+    passed = passed and not gate_failures
 
     w_eval = _weighted_eval_score(genome, objective)
     cost_eff = _cost_efficiency(genome)

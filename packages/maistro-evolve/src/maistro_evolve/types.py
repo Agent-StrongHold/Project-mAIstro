@@ -153,6 +153,15 @@ class EvalResult(BaseModel):
     duration_seconds: float = 0.0
     samples_evaluated: int = 0
     metadata: dict[str, Any] = {}
+    # The run's metered block (cost / security tax / RHAE) — #104 M4-G.
+    #
+    # A first-class field rather than another ``metadata`` key: ``metadata``
+    # is the *adapter's* contract (callers assert on it verbatim, and an
+    # adapter that promises a key set must keep getting that key set), so the
+    # meter cannot be allowed to rewrite what the adapter said. The field is
+    # filled in by the harness after a run, and is what the published
+    # evidence manifest reads back.
+    run_metering: dict[str, Any] | None = None
 
 
 class FitnessComponents(BaseModel):

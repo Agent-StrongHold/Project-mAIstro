@@ -7,6 +7,12 @@ import pytest
 
 from maistro_evolve.harness import EvalHarness
 from maistro_evolve.types import DAGTopology, EvalResult, EvalWeights, NodeGenome, PipelineGenome
+from maistro_evolve.verdict_probes import (
+    ConformanceReport,
+    PathReport,
+    VerdictConformanceError,
+    VerdictProbe,
+)
 
 PROXY_NAMES = [
     "proxy_ifeval",
@@ -308,3 +314,121 @@ async def test_evaluate_genome_defaults_to_all_registered_benchmarks() -> None:
 
     results = await harness.evaluate_genome(_genome())
     assert {r.benchmark for r in results} == {"a", "b", "c"}
+
+
+@pytest.mark.asyncio
+async def test_evaluate_genome_stamps_the_metered_run_block() -> None:
+    """Every result carries the run's metering (#104 M4-G)."""
+    harness = EvalHarness()
+    harness._benchmarks.clear()
+
+    async def fake_runner(genome: PipelineGenome, llm_call: object) -> EvalResult:
+        return EvalResult(
+            benchmark="proxy_ifeval",
+            score=0.5,
+            cost_usd=0.03,
+            duration_seconds=1.5,
+            samples_evaluated=4,
+            metadata={"fidelity": "proxy"},
+        )
+
+    harness.register_benchmark("proxy_ifeval", fake_runner)
+    results = await harness.evaluate_genome(_genome())
+    assert results[0].run_metering is not None
+    assert results[0].run_metering["cost_usd"] == 0.03
+    assert results[0].run_metering["samples_evaluated"] == 4
+
+
+@pytest.mark.asyncio
+async def test_evaluate_genome_does_not_rewrite_adapter_metadata() -> None:
+    """The meter has its own field; the adapter's metadata is its contract."""
+    harness = EvalHarness()
+    harness._benchmarks.clear()
+
+    async def fake_runner(genome: PipelineGenome, llm_call: object) -> EvalResult:
+        return EvalResult(
+            benchmark="proxy_ifeval",
+            score=0.5,
+            cost_usd=0.03,
+            duration_seconds=1.5,
+            samples_evaluated=4,
+            metadata={"fidelity": "proxy", "stub": False, "exit_code": 0},
+        )
+
+    harness.register_benchmark("proxy_ifeval", fake_runner)
+    results = await harness.evaluate_genome(_genome())
+    assert results[0].metadata == {"fidelity": "proxy", "stub": False, "exit_code": 0}
+    assert results[0].run_metering is not None
+
+
+def _failing_conformance_report() -> ConformanceReport:
+    """A report whose path accepted a hostile response — the battery failing."""
+    return ConformanceReport(
+        paths=(
+            PathReport(
+                name="leaky",
+                rationale="a path that lets a hostile response through",
+                probes=(
+                    VerdictProbe(
+                        path="leaky",
+                        probe_id="spoofed",
+                        defect_class="verdict-through-text-formatting",
+                        rationale="a printed verdict marker",
+                        response="PASS",
+                        score=1.0,
+                        rejected=False,
+                    ),
+                ),
+                mutant_name="same-defect",
+                mutant_rationale="test",
+                mutant_killed=True,
+                mutant_survivor_ids=(),
+            ),
+        )
+    )
+
+
+def test_verdict_conformance_reports_the_battery_as_passing() -> None:
+    """The harness runs the battery itself, and the battery holds."""
+    report = EvalHarness().verdict_conformance()
+    assert report.passed
+    assert report.failures() == []
+
+
+@pytest.mark.asyncio
+async def test_evaluate_genome_refuses_to_return_results_when_the_battery_fails() -> None:
+    """Fail closed: no result leaves the harness when a verdict is not host-owned.
+
+    The epic's acceptance is that the pass/fail verdict is host-owned and
+    independently falsifiable *before* results are published or fed into
+    fitness/promotion. A grader that accepts a hostile candidate response
+    must therefore stop the run at the producer, not be discovered later.
+    """
+    harness = EvalHarness()
+    harness._benchmarks.clear()
+
+    async def fake_runner(genome: PipelineGenome, llm_call: object) -> EvalResult:
+        return _fake_runner_result("proxy_ifeval")
+
+    harness.register_benchmark("proxy_ifeval", fake_runner)
+    harness.verdict_conformance = lambda: _failing_conformance_report()  # type: ignore[method-assign]
+
+    with pytest.raises(VerdictConformanceError, match="host-owned"):
+        await harness.evaluate_genome(_genome())
+
+
+@pytest.mark.asyncio
+async def test_the_battery_failure_names_the_hostile_response_it_accepted() -> None:
+    """The refusal says what failed, so the operator can act on it."""
+    harness = EvalHarness()
+    harness._benchmarks.clear()
+
+    async def fake_runner(genome: PipelineGenome, llm_call: object) -> EvalResult:
+        return _fake_runner_result("proxy_ifeval")
+
+    harness.register_benchmark("proxy_ifeval", fake_runner)
+    harness.verdict_conformance = lambda: _failing_conformance_report()  # type: ignore[method-assign]
+
+    with pytest.raises(VerdictConformanceError) as excinfo:
+        await harness.evaluate_genome(_genome())
+    assert "spoofed" in str(excinfo.value)
