@@ -339,7 +339,8 @@ def test_schedule_history_returns_seeded_non_empty_data(history_user: Any) -> No
         detail={"dag_id": "tpl", "run_id": "run-123", "status": "completed"},
     )
     # Another Workspace's fire must not be visible to this caller.
-    log_audit("schedule_fire", "system", target="sch-foreign", detail={})
+    for _ in range(60):  # visible fire must survive an entire newer, foreign page
+        log_audit("schedule_fire", "system", target="sch-foreign", detail={})
 
     try:
         r = history_user.get("/v1/schedules/history")
@@ -350,6 +351,9 @@ def test_schedule_history_returns_seeded_non_empty_data(history_user: Any) -> No
         # Newest first: the run outcome (written last) is the first entry.
         assert events[0]["action"] == "schedule_run"
         assert events[0]["detail"]["run_id"] == "run-123"
+        limited = history_user.get("/v1/schedules/history", params={"limit": 1})
+        assert limited.status_code == 200
+        assert limited.json() == events[:1]
     finally:
         stores.schedules.pop("sch-mine", None)
         stores.schedules.pop("sch-foreign", None)

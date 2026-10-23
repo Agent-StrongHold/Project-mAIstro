@@ -194,7 +194,9 @@ def test_unmounted_capability_is_a_404_not_fake_success() -> None:
     assert TestClient(probe).get("/v1/evolution/status").status_code == 404
 
 
-def test_recovery_when_optional_service_returns(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_recovery_when_optional_service_returns(
+    monkeypatch: pytest.MonkeyPatch, admin_client: TestClient
+) -> None:
     """Recovery is defined on the same surface as degradation, and tested.
 
     Two recovery shapes, both pinned:
@@ -215,7 +217,29 @@ def test_recovery_when_optional_service_returns(monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setenv("LITELLM_API_BASE", "http://gateway.example")
     assert "llm_gateway" not in _services(client.get("/health").json())
 
+    from middleware.auth import AuthMiddleware
+
+    # Generate an actual degradation record, then read it after remounting.
+    # Recovery must not turn the authenticated audit surface into a public one.
+    broken = FastAPI()
+    _include_optional_router(broken, _BROKEN_MODULE)
     healthy = FastAPI()
+    healthy.add_middleware(AuthMiddleware)
     _include_optional_router(healthy, "routes.audit", prefix="/v1/audit")
     assert healthy.state.optional_routers["routes.audit"] is None
-    assert TestClient(healthy).get("/v1/audit").status_code == 200
+    with TestClient(healthy) as recovered:
+        assert recovered.get("/v1/audit").status_code == 401
+        # The real login fixture supplies a session; production middleware
+        # resolves its canonical Principal on this newly mounted application.
+        recovered.cookies.update(admin_client.cookies)
+        response = recovered.get(
+            "/v1/audit", params={"action": "optional_router_degraded", "limit": 1}
+        )
+    assert response.status_code == 200, response.text
+    page = response.json()
+    assert set(page) == {"entries", "next_cursor"}
+    assert len(page["entries"]) == 1
+    record = page["entries"][0]
+    assert record["target"] == _BROKEN_MODULE
+    assert record["actor"] == "system"
+    assert record["severity"] == "warning"

@@ -26,7 +26,8 @@ from maistro.graph.durable_runs import (
 from maistro.graph.policies import resolve_max_cycles, resolve_node_timeout_s
 from maistro.graph.types import DEFAULT_SYSTEM_PROMPTS, JSON_OUTPUT_SCHEMAS, AgentRole
 from maistro.runs.model import TERMINAL_RUN_STATUSES, Run
-from services.dag_agents import _container, get_run_store
+from maistro.runs.recovery_events import CanonicalRecoveryEventSink
+from services.dag_agents import _container, require_graph_execution_spine
 from services.dag_execution_scope import DagExecutionScope, DagWorkspaceSelectionError
 from services.governed_model import dag_node_runtime
 from services.legacy_dag_node import LegacyConductorNode, OnResponseHook
@@ -402,7 +403,7 @@ async def _scope(
     scope: DagExecutionScope | None,
     workspace_id: str | None,
     project_id: str | None,
-) -> tuple[str, str, Any]:
+) -> tuple[str, str]:
     del dag_data
     if scope is None:
         raise DagWorkspaceSelectionError("authorized DAG execution scope is required")
@@ -410,12 +411,7 @@ async def _scope(
         raise DagWorkspaceSelectionError("workspace_id does not match authorized scope")
     if project_id is not None and project_id != scope.project_id:
         raise DagWorkspaceSelectionError("project_id does not match authorized scope")
-    container = _container()
-    return (
-        scope.workspace_id,
-        scope.project_id,
-        container.run_store if container is not None else None,
-    )
+    return scope.workspace_id, scope.project_id
 
 
 def _node_env(
@@ -445,6 +441,9 @@ def _resolver(
     effect_context: Any = None,
     governed_runtime: Any = None,
     progress: Any = None,
+    sentinel: Any = None,
+    host_mode: str | None = None,
+    principal_roles: tuple[str, ...] = (),
 ):
     def resolve(node_id: str, _graph: Graph) -> LegacyConductorNode:
         try:
@@ -461,6 +460,9 @@ def _resolver(
             effect_context=effect_context,
             governed_runtime=governed_runtime,
             progress=progress,
+            sentinel=sentinel,
+            host_mode=host_mode,
+            principal_roles=principal_roles,
         )
 
     return resolve
@@ -513,6 +515,7 @@ def _recovery_resolver(run: Run):
         raise ValueError(f"Run {run.run_id!r} has invalid legacy execution_mode {execution_mode!r}")
     legacy_dag_id = str(graph.metadata.get("legacy_dag_id") or graph.graph_id)
     container = _container()
+    sentinel, host_mode = _host_execution_authority(container)
     return _resolver(
         raw_by_id,
         task_desc=graph.description or graph.name,
@@ -529,6 +532,9 @@ def _recovery_resolver(run: Run):
         llm_builder=None,
         effect_context=(getattr(container, "capability_effects", None) if container else None),
         governed_runtime=dag_node_runtime(container),
+        sentinel=sentinel,
+        host_mode=host_mode,
+        principal_roles=_host_principal_roles(run.actor_principal_id or ""),
     )
 
 
@@ -543,7 +549,7 @@ async def recover_stranded_dag_runs(*, limit: int = 100) -> int:
         node_resolver_factory=_recovery_resolver,
         eligible=lambda run: run.provenance.get("admission_source") == "hive_legacy_dag",
         admission_source="hive_legacy_dag",
-        events=container.event_bus,
+        events=_canonical_recovery_events(container),
         limit=limit,
         # Held across ticks: the scan is bounded per call, and only a tick
         # that resumes where the last stopped crosses a foreign-owned QUEUED
@@ -655,6 +661,7 @@ async def execute_dag(
     project_id: str | None = None,
     llm_builder: Callable[[OnResponseHook | None], Any] | None = None,
     scope: DagExecutionScope | None = None,
+    on_admitted: Callable[[str], Awaitable[Any]] | None = None,
 ) -> dict[str, Any]:
     """Run a shipped Hive DAG as one canonical durable Graph Run.
 
@@ -665,6 +672,19 @@ async def execute_dag(
     presentation seam only -- it can neither change traversal nor outcomes,
     and a raising sink is suppressed by the node adapter. Durable recovery
     never attaches one: there is no live stream to serve.
+
+    ``on_admitted`` (#1332) is the admission seam for producers that opened a
+    projection row under their own execution id before calling this: it is
+    awaited exactly once with the admitted canonical Run id, after
+    ``create_run`` and BEFORE ``run_durable_graph`` starts any physical work,
+    so the producer can persist the projection -> canonical Run correlation
+    while the execution is still cancellable rather than after it settles.
+    Like ``on_event`` it is a presentation seam: a raising sink is suppressed
+    and logged, because the canonical Run is already admitted at that point
+    and aborting execution over a projection write would strand it QUEUED for
+    recovery while the caller is told the DAG failed. Missing canonical authority
+    refuses execution before admission, so the sink never fires and the
+    projection row keeps its honest empty correlation.
     """
     if scope is None:
         # Keep the user parameter only as a consistency check for old callers;
@@ -673,7 +693,7 @@ async def execute_dag(
     if user_id and user_id != scope.user_id:
         raise DagWorkspaceSelectionError("user_id does not match authorized scope")
     user_id = scope.user_id
-    resolved_workspace, resolved_project, canonical_run_store = await _scope(
+    resolved_workspace, resolved_project = await _scope(
         dag_data,
         scope=scope,
         workspace_id=workspace_id,
@@ -702,20 +722,26 @@ async def execute_dag(
         **budget,
     }
 
-    admitted_run_id = None
-    if canonical_run_store is not None:
-        admitted = await canonical_run_store.create_run(
-            graph,
-            initial_status=RunStatus.QUEUED,
-            actor_principal_id=user_id or None,
-            provenance=provenance,
-        )
-        admitted_run_id = admitted.run_id
+    admitted = await canonical_run_store.create_run(
+        graph,
+        initial_status=RunStatus.QUEUED,
+        actor_principal_id=user_id or None,
+        provenance=provenance,
+    )
+    admitted_run_id = admitted.run_id
+    if on_admitted is not None:
+        try:
+            await on_admitted(admitted_run_id)
+        except Exception:
+            logger.warning(
+                "dag_admission_sink_failed run_id=%s dag_id=%s",
+                admitted_run_id,
+                dag_data.get("id", ""),
+                exc_info=True,
+            )
 
     def _build_resolver() -> Any:
-        # One Container read per execution: the effect authority and the
-        # governed model runtime (#718) come from the same live composition.
-        container = _container()
+        # Effects and traversal use the same Container captured before admission.
         return _resolver(
             raw_by_id,
             task_desc=task_desc,
@@ -730,11 +756,14 @@ async def execute_dag(
             progress=on_event,
             effect_context=(getattr(container, "capability_effects", None) if container else None),
             governed_runtime=dag_node_runtime(container),
+            sentinel=sentinel,
+            host_mode=host_mode,
+            principal_roles=_host_principal_roles(user_id),
         )
 
     record = await run_durable_graph(
         graph,
-        store=get_run_store(),
+        store=container.graph_run_store,
         node_resolver=_build_resolver(),
         actor_principal_id=user_id or None,
         run_id=admitted_run_id,

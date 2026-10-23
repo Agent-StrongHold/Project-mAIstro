@@ -28,6 +28,7 @@ from maistro.runs.chat_refusal import ChatTurnRefused
 from maistro.runs.lifecycle import InvalidLifecycleTransition
 from maistro.runs.model import TERMINAL_RUN_STATUSES, Run, RunStatus
 from maistro.runs.store import RunIntegrityError, RunNotFound
+from maistro.security._types import ANONYMOUS_AUTH
 from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 from maistro.types.config import AgentConfig
 
@@ -66,6 +67,40 @@ async def test_a_turn_yields_a_run_id_that_resolves() -> None:
     assert run.provenance[ADMISSION_SOURCE] == CHAT_SOURCE
     assert run.provenance[SESSION_ID_KEY] == "sess-1"
     assert run.provenance["request_id"] == "req-1"
+
+
+@pytest.mark.ac("ADR-082326-c126/AC-3")
+async def test_an_authenticated_turn_admits_through_run_authorization() -> None:
+    """A caller that crossed the auth boundary admits as that identity (#1152).
+
+    The container must construct a `RunAuthorization` from the authenticated
+    principal -- not copy the actor string into every identity field -- so the
+    store's scope and owned-agent checks actually run on production admissions.
+    """
+
+    class _Auth:
+        user_id = "operator-9"
+
+    container = await _container()
+    container.conduit = _Conduit()
+
+    result = await container.route_request(
+        [{"role": "user", "content": "what broke?"}],
+        auth=_Auth(),
+    )
+
+    run = await container.run_store.get_run(result["run_id"])
+    assert run.initiating_principal_id == "operator-9"
+    assert run.acting_principal_id == "operator-9"
+    assert run.actor_principal_id == "operator-9"
+    workspace_id, project_id = await container.chat_admitter.admission_scope()
+    assert (run.workspace_id, run.project_id) == (workspace_id, project_id)
+
+
+async def test_an_anonymous_turn_keeps_the_legacy_admission_path() -> None:
+    container = await _container()
+    assert await container._chat_run_authorization(ANONYMOUS_AUTH) is None
+    assert await container._chat_run_authorization(None) is None
 
 
 async def test_the_openai_shape_is_untouched() -> None:
@@ -885,41 +920,30 @@ async def test_stranded_admission_recovery_respects_the_limit() -> None:
     assert remaining == 1
 
 
-async def test_a_noderun_created_between_the_two_checks_is_not_cancelled() -> None:
-    """The re-check immediately before the write is the real guard: a turn
-    that starts in the narrow window between the two reads must not be
-    cancelled out from under it."""
+async def test_a_run_advanced_after_listing_is_not_cancelled() -> None:
+    """Recovery cannot apply its stale RUNNING snapshot to newer lifecycle state."""
     container = await _container()
     stranded = await _stranded_running_chat_run(container)
-    node_id = stranded.graph.materialize().nodes[0].node_id
 
-    class _NodeRunAppearsOnSecondCheck:
-        def __init__(self, inner) -> None:
+    class _AdvancesBeforeCancel:
+        def __init__(self, inner):
             self._inner = inner
-            self._calls = 0
 
         def __getattr__(self, name):
             return getattr(self._inner, name)
 
-        async def list_node_runs(self, run_id):
-            if run_id == stranded.run_id:
-                self._calls += 1
-                if self._calls == 2:
-                    await self._inner.create_node_run(run_id, node_id=node_id)
-            return await self._inner.list_node_runs(run_id)
+        async def cancel_unstarted_chat_run(self, expected, *, error):
+            await self._inner.transition_run(expected.run_id, RunStatus.WAITING)
+            return await self._inner.cancel_unstarted_chat_run(expected, error=error)
 
-    container.run_store = _NodeRunAppearsOnSecondCheck(container.run_store)  # type: ignore[assignment]
-
-    recovered = await container.recover_stranded_chat_admissions()
-
-    assert recovered == 0
+    container.run_store = _AdvancesBeforeCancel(container.run_store)  # type: ignore[assignment]
+    assert await container.recover_stranded_chat_admissions() == 0
     current = await container.run_store.get_run(stranded.run_id)
-    assert current is not None
-    assert current.status is RunStatus.RUNNING
+    assert current is not None and current.status is RunStatus.WAITING
 
 
 class _AlreadyTerminalStore:
-    """Refuses `transition_run(..., CANCELLED)` as though another path won."""
+    """Refuses conditional cancellation as though another path won."""
 
     def __init__(self, inner) -> None:
         self._inner = inner
@@ -927,10 +951,8 @@ class _AlreadyTerminalStore:
     def __getattr__(self, name):
         return getattr(self._inner, name)
 
-    async def transition_run(self, run_id, target, **kwargs):
-        if target is RunStatus.CANCELLED:
-            raise InvalidLifecycleTransition("already terminal")
-        return await self._inner.transition_run(run_id, target, **kwargs)
+    async def cancel_unstarted_chat_run(self, expected, *, error):
+        raise InvalidLifecycleTransition("already terminal")
 
 
 async def test_a_race_to_terminal_during_compensation_is_logged_and_skipped(
@@ -1077,10 +1099,10 @@ async def test_a_run_deleted_mid_tick_does_not_abort_the_rest_of_the_sweep(
         def __getattr__(self, name):
             return getattr(self._inner, name)
 
-        async def list_node_runs(self, run_id):
-            if run_id == vanished.run_id:
-                raise RunNotFound(run_id)
-            return await self._inner.list_node_runs(run_id)
+        async def cancel_unstarted_chat_run(self, expected, *, error):
+            if expected.run_id == vanished.run_id:
+                raise RunNotFound(expected.run_id)
+            return await self._inner.cancel_unstarted_chat_run(expected, error=error)
 
     container.run_store = _VanishesOnLookup(container.run_store)  # type: ignore[assignment]
 

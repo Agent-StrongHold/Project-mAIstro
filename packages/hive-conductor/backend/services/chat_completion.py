@@ -1712,7 +1712,16 @@ async def _tool_run_workflow(
             workspace_id=workspace_id,
             project_id=project_id,
         )
-        result = await execute_dag(dag_data, scope=scope)
+
+        async def _record_admission(canonical_run_id: str) -> None:
+            # Persist the projection -> canonical Run correlation at canonical
+            # admission, not after execution settles (#1332). The canonical
+            # executor awaits this before any physical node work, so a live
+            # Recent Runs entry cancels through the exact canonical Run while
+            # the DAG is still running instead of 404-ing the projection id.
+            await store.record_canonical_run(exec_id, canonical_run_id=canonical_run_id)
+
+        result = await execute_dag(dag_data, scope=scope, on_admitted=_record_admission)
         executed = True
 
         # Store events

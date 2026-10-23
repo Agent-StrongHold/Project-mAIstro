@@ -40,6 +40,36 @@ def validate_permission_preset(value: str) -> str:
     return value
 
 
+def _has_http_origin_authority(parsed: SplitResult) -> bool:
+    """Require a plain HTTP authority, without userinfo or URL components."""
+    port = parsed.port  # May raise for malformed/out-of-range ports.
+    return (
+        parsed.scheme == "http"
+        and parsed.username is None
+        and parsed.password is None
+        and not parsed.netloc.endswith(":")
+        and not any((parsed.path, parsed.query, parsed.fragment))
+        and (port is None or port > 0)
+    )
+
+
+def _is_http_loopback_origin(origin: str) -> bool:
+    """Classify the local HTTP warning exception without trusting URL prefixes."""
+    if any(char in origin for char in "\\?#") or any(
+        ord(char) <= 32 or ord(char) == 127 for char in origin
+    ):
+        return False
+    try:
+        parsed = urlsplit(origin)
+        return _has_http_origin_authority(parsed) and parsed.hostname in {
+            "localhost",
+            "127.0.0.1",
+            "::1",
+        }
+    except ValueError:
+        return False
+
+
 def validate_cors_origins(origins: list[str]) -> list[str]:
     """Reject CORS origins that would defeat the browser's same-origin policy.
 

@@ -4,6 +4,15 @@
 **Owners:** #1046 (Adaptive Workspace), #804 (Persistent Workspace Agent), #53 (Conductor onto Conduit + canonical Runs), #65 (Workspace-centric inspection), #82 (Workspace backlog)
 **Companion policy:** [M1-CONVERGENCE-FREEZE.md](M1-CONVERGENCE-FREEZE.md) · [CONVERGENCE-MATRIX.md](CONVERGENCE-MATRIX.md) · [KNOWN-GAPS.md](../../KNOWN-GAPS.md) · [BACKLOG.md](../../BACKLOG.md) `[conductor-402]`–`[conductor-413]`
 
+**Update (develop sync, 2026-10-07):** the P0.1/P0.2 enforcement artifacts named below
+(`scripts/check-principal-identity.py`, `scripts/check-route-permissions.py`, their baseline
+ledgers, and the principal-identity fitness test, now at
+`packages/maistro-core/tests/fitness/test_principal_identity.py`) were briefly reverted on
+develop (#1769, reverting 430139cb7) and have since re-landed there (#1805, commit
+41663c63b — cutover S1.1/S1.2), which this branch's merge base carries. Both scripts and
+the fitness test pass at this head, so the sections below are again a record of landed
+enforcement on the develop line, not merely design intent.
+
 ## Why this document exists
 
 The Conductor UI is the third attempt at a product surface, and the flaws it carries are
@@ -25,6 +34,10 @@ Two rules follow from the freeze policy and are the spine of this plan:
 2. **Parity, then delete, ledger-enforced.** Every legacy page, router and store is listed
    with a disposition and a delete-by milestone; the ledger only shrinks; nothing new may
    import a listed module. Same mechanism as `quality/model-egress.json`.
+
+The per-feature Workspace-UI/API/CLI entry-point inventory that this plan's "parity"
+evidence plugs into is [FEATURE-PARITY-MATRIX.md](FEATURE-PARITY-MATRIX.md) (#1874); it
+also records the approved v1.2 Evolution staging (§9) as a preserved decision.
 
 ## What the cutover deprecates, and what it does not
 
@@ -381,7 +394,8 @@ the P0.1 identity store. `audit_log` retires under P0.4. `dag_runs` and
 
 **Epic closure by evidence, not keyword.** `scripts/check-closure-targets.py`: parse the
 PR body for `Closes/Fixes/Resolves #N`; fail if the target's leading bracketed tag contains
-the word EPIC, MILESTONE or INITIATIVE, or the target has sub-issues. The tag test, not a
+the word EPIC, MILESTONE or INITIATIVE, or the target has open direct children (sub-issues
+whose state is `open`). The tag test, not a
 literal `[EPIC]` prefix, because real titles qualify the tag: `[EPIC M1-B]`,
 `[MILESTONE M4]`, `[MASTER INITIATIVE]`. Epics close by hand when `check-ac-state` reports
 every criterion `reachable`. This is the #56 hole. The workflow triggers on `opened`,
@@ -389,6 +403,17 @@ every criterion `reachable`. This is the #56 hole. The workflow triggers on `ope
 payload, so a body edit re-runs the check against the body as it now stands. Triggering
 only on opened/reopened/synchronize is not enough: a `Closes #N` appended after the final
 push would ride a green check (vouching for the old body) straight into the merge.
+
+**Leaf closure by acceptance record, not diff (#1141).** The same check also refuses a
+closing keyword against an open leaf whose body registers acceptance criteria as checkbox
+items under an acceptance heading while any box is still unticked — the tick is the
+issue's closeout record, and #76 was closed completed with every box unticked. A criterion
+claimed on the closing line itself (`Closes #76 AC-2`) must be ticked in that record. The
+verdict reads the PR body and the target's issue state only, never the PR diff: a PR may
+prove a criterion through tests, config, removal or migration without touching the file
+the prose cites, and touching a cited file proves nothing. A closed target is skipped (a
+keyword cannot close it again); an open leaf with every box ticked stays eligible for
+useful auto-close.
 
 **Freeze extended to surfaces.** Add to `quality/m1-convergence-freeze.json` (or an M3
 sibling) a rule: a new file under `frontend/src/pages` that declares a backend entity type
@@ -426,18 +451,38 @@ Open §7 issues → land P0 checks red with baselines → P0.1–P0.4 green → 
 green → **M1 RunStore unification (#251)** → Phase 1 steps 1–6 (step 7 deferred v1.1), each PR
 retiring its ledger row → Phase 2 deletes → epics close by ac-state, never by keyword.
 
-### Phase 0 progress (2026-10-02)
+### Phase 0 progress (re-measured 2026-10-21, L1046 repair round)
+
+Every row was re-run against this branch's merge base in the 2026-10-21 round (after
+merging `origin/develop` at `2dfd3b97`), not copied from the 2026-10-20 one. "Landed" below means: the artifact exists on `develop` and the
+check is wired where the row says it is. "Green" means the command named in the row exited
+0 in this round.
 
 | Item | State |
 |---|---|
-| §5 retirement ledger + gate | in review, [#1766](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1766); delete-by values follow the §9 v1.0 amendments |
-| §6 epic-closure guard | in review, [#1765](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1765) |
-| AC-P1–P9 registration | in review, [#1768](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1768) |
-| P0.1, P0.2 grants | in review, [#1804](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1804); 31 and 40 entries, re-measured on `develop` at `8ccab2c9` |
-| P0.1, P0.2 checks | in review, [#1805](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1805); red until #1804 is in its merge base |
-| P0.3 check | in review; 64 raw fetch + 142 hand-typed declarations banked |
-| P0.4, P0.6–P0.9 checks | not started |
-| P0.5 | backend selection landed with #1321 (see P0.5 "Today"); durable approvals and one process-wide context remain; the check is not started |
+| §5 retirement ledger + gate | **landed** with [#1766](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1766) (`6b74fc14b`); delete-by values follow the §9 v1.0 amendments; `uv run python scripts/check-workspace-retirement.py` reports `89 retirement ledger entries match the tree` (green, `quality.yml` step at `:911`) |
+| §6 epic-closure guard | **landed** with [#1765](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1765) (`059a3e4f5`); `check-closure-targets.py` runs in `ci.yml` (`:287`). Not executed in this round: it resolves PR/issue bodies over the GitHub API |
+| AC-P1–P9 registration | **landed** with [#1768](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1768) (`168fb1a0c`); [SPEC-100126-c041](../specs/SPEC-100126-c041-workspace-cutover-phase-0-contract.md) declares AC-1..AC-9 with the plan's AC-P labels as aliases. `scripts/check-ac-state.py` still records all nine as `unproven`; only AC-8's suite carries a `@pytest.mark.ac` marker at all |
+| P0.1, P0.2 grants | **landed** with [#1804](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1804) (`d896e7751`); `quality/ratchet-authorizations.json` carries 32 `principal-identity` and 40 `route-permissions` grant rows, re-measured on `develop` at `8ccab2c9` |
+| P0.1, P0.2 checks | **landed** with [#1805](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1805) (`41663c63b`); green — `check-principal-identity.py` reports `4 tolerated … none new` and `check-route-permissions.py` reports `41 declared, 0 tolerated undeclared prefix(es), none new` |
+| P0.3 check | **landed** with [#1814](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1814) (`082dadb8a`); green — `check-frontend-typed-client.py` reports `53 raw fetch and 136 hand-typed declaration(s) tolerated, none new`, down from the 64 + 142 banked at review |
+| P0.4 check | **landed green (behavioural half)**: `packages/hive-conductor/backend/tests/test_audit_convergence.py` ([#1811](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1811), `611994c4a`) — failed login, elevation, HITL cancel, denied tool call and `GET /v1/audit` each read back through the core audit store. Its strict `KNOWN_GAPS` set is empty, so the suite asserts the converged behaviour: `uv run pytest … -q` → 18 passed. `routes/audit.py:60` still dual-writes `stores.audit_log`; that store's deletion stays the ledger's Phase 2 item (`quality/workspace-retirement.json`, `stores.py::audit_log`) |
+| P0.5 check | **landed green**: `packages/maistro-core/tests/test_effect_context_convergence.py` ([#1813](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1813), `b4b9e187e`) — backend-selected stores, `default_effect_context() is container.capability_effects`, durable approvals on SQLite, one invocation authority. Empty `KNOWN_GAPS`; `pytest -q` → 7 passed, 1 skipped without a PostgreSQL DSN, and 8 passed with `MAISTRO_TEST_PG_DSN` against a migrated PostgreSQL 18. Backend selection itself landed with #1321 |
+| P0.6 check | **landed** with [#1807](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1807) (`6f9f1a9e4`); green — `check-cross-package-imports.py` reports `no new flat modules under packages/*/backend/ (6 tolerated)`, shrink-only |
+| P0.7 check | **landed green**: `packages/maistro-core/tests/runs/test_crash_window_invariants.py` ([#1810](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1810), `065c0d5f8`) — one kill per two-write seam on the spine plus one recovery tick. Empty `KNOWN_GAPS`; `pytest -q` → 6 passed |
+| P0.8 check | **landed green**: `packages/maistro-core/tests/workspaces/test_store_boundary_scope_conformance.py` ([#1809](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1809), `fc382542c`; gaps burned by [#1841](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1841), `053f93969`) — 39 passed on the `memory` and `sqlite` legs, and 56 passed once `MAISTRO_TEST_PG_DSN` adds the `postgres` leg, so the criterion's "all three backends" is met rather than silently skipped |
+| P0.9 check | **landed green (all three clauses)**: clauses 1–2 via `packages/maistro-core/tests/security/test_scan_what_the_model_sees.py` ([#1812](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1812), `b9f712bb9`) — aggregated-context scan, the spaced/leet/split evasions and the PII redactors; empty `KNOWN_GAPS`; `pytest -q` → 12 passed. Clause 3 — `permission_table` non-empty asserted at Workspace deploy — landed via `tests/security/test_sentinel_permission_table_armed.py` (develop `bf8aa27f1`, "arm Sentinel permission tables on shipped Compose profiles"): it renders every shipped engine-bearing Compose profile through its own config path and asserts the built table is armed, with an empty `KNOWN_GAPS`; `pytest -q` → 11 passed. Both suites re-run green in this round on the merged tree |
+
+Four of the five P0.4/P0.5/P0.7–P0.9 rows are ordinary suites, not `scripts/check-*.py` gates: they
+run in the package test jobs, so a regression in them fails CI without a separate workflow step.
+The exception is P0.5's PostgreSQL leg: `test_effect_context_convergence.py` runs in the
+no-services package job, where `test_postgres_url_selects_durable_effect_stores` skips without
+`MAISTRO_TEST_PG_DSN`, and the PostgreSQL selections in `quality.yml`/`ci.yml` name specific
+directories that omit the file. That one case is evidenced by the one-off migrated-PostgreSQL run
+recorded above, not guarded by CI; wiring the file into a PostgreSQL job is owed before the
+P0.5 row can claim CI-enforced green.
+Each keeps a strict `KNOWN_GAPS` set in which a listed case asserts today's miss, and each
+set is now empty — the entries were burned, not deleted as a shortcut.
 
 An early draft of the P0.1/P0.2 checks reached `develop` without review on 2026-10-01 and
 was reverted by [#1769](https://github.com/Agent-StrongHold/Project-mAIstro/pull/1769); the

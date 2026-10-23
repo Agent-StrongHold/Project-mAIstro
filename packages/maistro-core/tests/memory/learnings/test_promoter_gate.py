@@ -137,8 +137,26 @@ async def test_stale_approval_not_promoted_after_confidence_drops() -> None:
 async def test_org_scoped_candidates_only() -> None:
     """Gate enumeration respects org scoping when an org_id is supplied."""
     store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
-    await store.store(Learning(trigger_keys=["a"], learning="org-a", hit_count=9, org_id="org-a"))
-    await store.store(Learning(trigger_keys=["b"], learning="org-b", hit_count=9, org_id="org-b"))
+    await store.store(
+        Learning(
+            trigger_keys=["a"],
+            learning="org-a",
+            hit_count=9,
+            org_id="org-a",
+            run_id="run-a",
+            confidence=1.0,
+        )
+    )
+    await store.store(
+        Learning(
+            trigger_keys=["b"],
+            learning="org-b",
+            hit_count=9,
+            org_id="org-b",
+            run_id="run-b",
+            confidence=1.0,
+        )
+    )
 
     gate = LearningApprovalGate()
     promoter = LearningPromoter(store, threshold=5, approval_gate=gate)

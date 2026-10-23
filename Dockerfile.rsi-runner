@@ -8,7 +8,14 @@
 #
 # Build:  docker build -f Dockerfile.rsi-runner -t maistro-rsi-runner:latest .
 # Run:    see tools/run_rsi_isolated.sh (or the docker run in the session).
-FROM python:3.12-slim@sha256:f77ac9e44ae96ef2c90b8053ea08c31f8be030f824196b0ae4db6d462c84e51f
+#
+# The security-patch layer lives in its own stage so CI can name it in
+# `--no-cache-filter` (#795): a plain `RUN apt-get upgrade` has a cache key
+# that never changes, so the GHA cache can replay a pre-advisory mirror state
+# forever — the same mechanism that shipped maistro-engine with libexpat1
+# 2.5.0-1+deb12u4 after deb12u5 (CVE-2025-59375/CVE-2026-77214) had published.
+# security.yml builds this stage with `--no-cache-filter runtime-apt`.
+FROM python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1 AS runtime-apt
 
 RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
     git curl build-essential \
@@ -20,6 +27,8 @@ RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-reco
 # debian 13.7, all fixed in current point releases) — same policy as
 # Dockerfile.research. This image runs agent-authored code, so its OS surface
 # is a containment boundary, not a convenience.
+
+FROM runtime-apt
 
 # uv installer image digest-pinned to the 0.12.21 release (#349); `:latest`
 # here previously let a tag move swap the loop's installer with no repo diff.
@@ -140,15 +149,5 @@ RUN uv sync --locked --python 3.12 --extra rsi-fitness
 RUN .venv/bin/python scripts/prune-dependency-namespaces.py \
     && .venv/bin/python scripts/check-dependency-namespaces.py --production \
     && uv cache clean
-
-# #406: the workspace lock installs maistro-core[tui,identity] -> bip-utils ->
-# pytoniq-core-fork, whose wheel ships a generic top-level `examples`
-# namespace. This container runs AGENT-AUTHORED code, so a stray importable
-# `examples` tree is surface an agent can reach; the shipped images prune it,
-# and so does this one — placed after the last site-packages-mutating install,
-# with the same build-time assertion behind it, so a silent no-op prune fails
-# this build rather than shipping the surface to the loop.
-RUN .venv/bin/python scripts/prune-dependency-namespaces.py \
-    && .venv/bin/python scripts/check-dependency-namespaces.py --production
 
 CMD ["sleep", "infinity"]

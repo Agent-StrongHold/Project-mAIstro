@@ -180,6 +180,13 @@ class DefaultContextAssemblyPolicy:
         reason to send nothing: the weight bands still apply, so the answer is
         the scoped set in weight order — which is what the store returns.
 
+        A nonempty `project_id` keeps only memories attributed to that
+        Project: an agent id reused across Workspaces must not recall one
+        Workspace's memories in another (#1047). A memory with no project is
+        not guessed into one, which includes an unattributed GLOBAL memory: a
+        Project run sees only what was recorded for that Project. Only an empty
+        string means no project filter; whitespace remains an exact value.
+
         With a working-memory projection wired and healthy, Layer 1 is the
         indexed hot path (ADR-082226-5104 §5): BM25 over the projection's
         inverted index plus similarity against embeddings stored at write
@@ -192,6 +199,7 @@ class DefaultContextAssemblyPolicy:
         memories = await self._hot_recall(
             query,
             agent_id=agent_id,
+            project_id=project_id,
             min_weight=BUDGET_INCLUDE_WEIGHT,
             limit=_LAYER1_LIMIT,
         )
@@ -200,12 +208,14 @@ class DefaultContextAssemblyPolicy:
                 memories = await self._retrieval.retrieve(
                     query,
                     agent_id=agent_id,
+                    project_id=project_id,
                     min_weight=BUDGET_INCLUDE_WEIGHT,
                     limit=_LAYER1_LIMIT,
                 )
             else:
                 memories = await self.episodic_store.list_by_scope(
                     agent_id=agent_id,
+                    project_id=project_id,
                     min_weight=BUDGET_INCLUDE_WEIGHT,
                     limit=_LAYER1_LIMIT,
                 )
@@ -217,6 +227,7 @@ class DefaultContextAssemblyPolicy:
         query: str,
         *,
         agent_id: str,
+        project_id: str,
         min_weight: float,
         limit: int,
     ) -> list[EpisodicMemory] | None:
@@ -244,6 +255,7 @@ class DefaultContextAssemblyPolicy:
             scored = await projection.recall(
                 query,
                 agent_id=agent_id,
+                project_id=project_id,
                 min_weight=min_weight,
                 limit=limit,
             )

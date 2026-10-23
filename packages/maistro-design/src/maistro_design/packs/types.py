@@ -235,6 +235,9 @@ class PackSummary(BaseModel):
     artifact_kinds: tuple[str, ...]
 
 
+_SEMVER_RE = "^\\d+\\.\\d+\\.\\d+$"
+
+
 class DomainPack(BaseModel):
     """One domain pack manifest (#793 pack contract, minimum).
 
@@ -243,11 +246,17 @@ class DomainPack(BaseModel):
     instance (identity is minted per Goal instantiation — see
     `rubric.GoalRubricCatalog`), a Run/NodeRun/Attempt (minted by the
     canonical executor from the pack's Graph template), or a Design Studio.
+
+    `version` is the pack's own release version (M9-F3, #968): the identity a
+    Workspace activation is recorded against. It is a *pack* version, not a
+    Goal/Graph/Rubric revision — instantiations carry it as provenance and are
+    never rewritten by a later upgrade.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     pack_id: PackId
+    version: str = Field(min_length=1, pattern=_SEMVER_RE)
     name: str = Field(min_length=1)
     summary: str = ""
     explore_focus: tuple[str, ...] = Field(min_length=1)
@@ -304,6 +313,7 @@ class DomainPack(BaseModel):
 
         return GoalRubricCatalog.instantiate(
             pack_id=self.pack_id,
+            pack_version=self.version,
             dimensions=self.rubric_dimensions,
             goal_id=goal_id,
             goal_revision=goal_revision,
