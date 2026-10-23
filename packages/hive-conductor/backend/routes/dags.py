@@ -394,7 +394,7 @@ def remove_edge(dag_id: str, edge_id: str) -> dict:
     return removed[0].model_dump(mode="json")
 
 
-@router.post("/{dag_id}/run")
+@router.post("/{dag_id}/run", responses=_ADMISSION_429_RESPONSES)
 async def run_dag(
     dag_id: str,
     request: Request,
@@ -463,7 +463,7 @@ async def run_dag(
     }
 
 
-@router.post("/run-champion")
+@router.post("/run-champion", responses=_ADMISSION_429_RESPONSES)
 async def run_champion(
     request: Request,
     body: DagRunRequest | None = None,

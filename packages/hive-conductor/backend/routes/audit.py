@@ -11,7 +11,24 @@ import stores
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict
-from services.audit_bridge import hive_entry_to_core, list_core_audit_entries, write_core_audit_sync
+from services.audit_bridge import (
+    core_audit_log,
+    hive_entry_to_core,
+    page_core_audit_entries,
+    write_core_audit_sync,
+)
+from services.audit_query import (
+    DEFAULT_AUDIT_PAGE_SIZE,
+    EXPORT_MAX_ENTRIES,
+    AuditEntry,
+    AuditPage,
+    AuditRetention,
+    actor_of,
+    iter_export_entries,
+    page_entries,
+    retention,
+)
+from services.request_principal import require_principal
 
 router = APIRouter(tags=["audit"])
 
@@ -54,29 +71,41 @@ def log_audit(
     )
 
 
+def _actor_scope(request: Request) -> frozenset[str] | None:
+    """The actor names this principal may see.
+
+    The audit trail is a deployment-level security record: an operator (admin)
+    reads the whole trail; any other principal reads the entries naming
+    themselves — their own logins, gate blocks, elevations. The scope is a
+    *query* constraint (services.audit_query), evaluated before pagination, so
+    another actor's entries are not merely off-page but out of the query.
+    """
+    principal = require_principal(request)
+    if principal.is_admin:
+        return None
+    return frozenset(name for name in (principal.username, principal.user_id) if name)
+
+
+def _query_args(
+    action: str | None, severity: str | None, actor: str | None
+) -> dict[str, str | None]:
+    return {
+        "action": action or None,
+        "severity": severity or None,
+        "actor": actor or None,
+    }
+
+
 @router.get("")
 async def list_entries(
-    action: str | None = None, severity: str | None = None, actor: str | None = None
-) -> list[dict]:
-    return await audit_entries_view(action=action, severity=severity, actor=actor)
-
-
-async def audit_entries_view(
-    action: str | None = None, severity: str | None = None, actor: str | None = None
-) -> list[dict]:
-    """The one audit-log read every surface shares (#389).
-
-    `GET /v1/audit`, the settings-change trail and the schedule fire history
-    all serve the same durable log, so they share this read: the core
-    Sentinel store when a Container exposes one, otherwise the same rows from
-    the hive dict `log_audit` wrote (unit tests, boot ordering). Both legs
-    return the Hive HTTP shape, so callers filter and sort identically.
-    """
-    core_entries = await list_core_audit_entries(action=action, severity=severity, actor=actor)
-    if core_entries is not None:
-        return core_entries
-
-    entries = list(stores.audit_log.values())
+    request: Request,
+    action: str | None = None,
+    severity: str | None = None,
+    actor: str | None = None,
+    limit: int = DEFAULT_AUDIT_PAGE_SIZE,
+    cursor: str | None = None,
+) -> AuditPage:
+    """Bounded pages from the bound authority, with authorization before I/O.
 
     Core decision audit is admin-only (ADR-073). Only deployments without a
     core binding use the scoped legacy store; never switch corpora mid-query.

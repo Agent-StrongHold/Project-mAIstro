@@ -172,6 +172,57 @@ class TestLayer1HotPath:
         assert "pgvector" in second
         assert calls["count"] == 2
 
+    @pytest.mark.parametrize("failure", ["none", "hydration", "recall"])
+    async def test_project_scope_survives_hot_recall_and_durable_fallback(
+        self, failure: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        store = InMemoryEpisodicStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
+        await store.store(_mem("widget alpha secret", memory_id="a", project_id="A"))
+        await store.store(_mem("widget beta plan", memory_id="b", project_id="B"))
+        manager = _manager(store)
+        policy = _policy(store, manager=manager)
+        assert await manager.ensure_hydrated()
+        projection = manager.projection()
+        original_recall = type(projection).recall
+        calls: list[dict[str, Any]] = []
+
+        async def recall(self: Any, query: str, **kwargs: Any) -> Any:
+            calls.append(kwargs)
+            if failure == "recall":
+                raise RuntimeError("projection unavailable")
+            return await original_recall(self, query, **kwargs)
+
+        async def unavailable() -> bool:
+            return False
+
+        monkeypatch.setattr(type(projection), "recall", recall)
+        if failure == "hydration":
+            monkeypatch.setattr(manager, "ensure_hydrated", unavailable)
+        text = await policy.layer1("r1", "agent-1", "s1", "widget", project_id="B")
+        assert text == "widget beta plan"
+        if failure == "hydration":
+            assert calls == []
+        else:
+            assert len(calls) == 1
+            assert calls[0]["project_id"] == "B"
+            assert calls[0]["agent_id"] == "agent-1"
+        assert len(await store.list_by_scope()) == 2
+
+    async def test_empty_scoped_hot_result_does_not_fall_back(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        store = InMemoryEpisodicStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
+        await store.store(_mem("widget alpha secret", memory_id="a", project_id="A"))
+        manager = _manager(store)
+        policy = _policy(store, manager=manager)
+
+        async def unexpected_retrieval(*args: Any, **kwargs: Any) -> Any:
+            pytest.fail("An empty healthy projection must not trigger durable retrieval")
+
+        monkeypatch.setattr(policy._retrieval, "retrieve", unexpected_retrieval)
+        assert await policy.layer1("r1", "agent-1", "s1", "widget", project_id="B") == ""
+        assert manager.projection().stats.records == 1
+
 
 class TestLayer4GraphContext:
     async def test_populated_workspace_gets_real_graph_context(self) -> None:

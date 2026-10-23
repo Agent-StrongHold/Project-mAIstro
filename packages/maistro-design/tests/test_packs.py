@@ -514,6 +514,7 @@ class TestContractEdges:
     def test_shape_missing_a_loop_phase_is_rejected(self) -> None:
         base: dict[str, Any] = {
             "pack_id": "product",
+            "version": "1.0.0",
             "name": "Broken",
             "explore_focus": ["x"],
             "execute_backends": ["builders"],
@@ -537,6 +538,7 @@ class TestContractEdges:
     def test_fenced_node_requires_its_declared_fence_point(self) -> None:
         base: dict[str, Any] = {
             "pack_id": "product",
+            "version": "1.0.0",
             "name": "Unfenced",
             "explore_focus": ["x"],
             "execute_backends": ["builders"],
@@ -601,6 +603,7 @@ class TestContractEdges:
         """A minimal contract-satisfying pack dict, for one-mutation boundaries."""
         return {
             "pack_id": "product",
+            "version": "1.0.0",
             "name": "Boundary Pack",
             "explore_focus": ["x"],
             "execute_backends": ["builders"],

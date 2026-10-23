@@ -394,7 +394,20 @@ def test_scheduler_tick_executes_the_admitted_run_to_completion(
         container = await create_container(
             AgentConfig(router_api_key="test-key", workspace_id="ws-1")
         )
-        root = await container.project_scope_store.create_root("ws-1")
+        # Composition now provisions the configured Workspace (#1152), so the
+        # actor's membership is the piece this scenario owns: the row may
+        # already exist with a different owner.
+        if await container.workspace_store.get("ws-1") is None:
+            await container.workspace_store.create(
+                creator_user_id="user-1", name="Schedule WS", workspace_id="ws-1"
+            )
+        else:
+            from maistro.workspaces.model import WorkspaceRole
+
+            await container.workspace_store.set_membership(
+                "ws-1", user_id="user-1", role=WorkspaceRole.CONTRIBUTOR
+            )
+        root = await container.project_scope_store.root_for_workspace("ws-1")
         await container.template_store.put(
             GraphTemplate(
                 template_id="scheduled-template",
@@ -420,6 +433,9 @@ def test_scheduler_tick_executes_the_admitted_run_to_completion(
             _ScheduleRunner, "_canonical_container", staticmethod(lambda: container)
         )
         try:
+            from services.scheduler import backfill_canonical_definitions
+
+            await backfill_canonical_definitions()
             await _ScheduleRunner()._tick()
             recorded = await container.schedule_store.get("s-1")
             assert recorded is not None and recorded.last_run_id

@@ -184,6 +184,7 @@ def create_test_environment(
         intent_registry=intent_registry,
         audit_log=audit_log,
         capabilities=capabilities,
+        goal_reconciliation_store=InMemoryGoalStore(),
     )
 
     if agents:
