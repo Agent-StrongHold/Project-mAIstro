@@ -1,9 +1,15 @@
----
-inventory-delta:
-  tests/: +8
----
+# Container-gate base-pin refresh (#859 / PR #2209; delta superseded)
 
-# Container-gate base-pin refresh (#859 / PR #2209)
+This note records no inventory delta after the develop sync. The eight
+`tests/test_pinned_digest_references.py` nodes are already counted by
+[1152-container-gate-base-pin-refresh.md](1152-container-gate-base-pin-refresh.md),
+inherited from develop. At `048727437`, the test file and the pin changes below
+are identical to develop `b9cd15c60`; retaining both `tests/: +8` entries made
+`check-suite-inventory.py --suite tests/` expect 5,819 nodes while collecting
+5,811. Withdraw only this duplicate delta, preserving the historical repair
+record below and the genuine `tests/: +1` in
+[859-restore-drill-readiness-pin.md](859-restore-drill-readiness-pin.md).
+No test is removed or weakened.
 
 The "Container scan + SBOM + cosign" leg failed on PR #2209 (run
 39805852418, job 119918729666): trivy flagged libexpat1 2.5.0-1+deb12u4
