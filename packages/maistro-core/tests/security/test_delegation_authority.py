@@ -209,6 +209,54 @@ async def test_authorize_delegation_without_configured_authority_is_refused() ->
     assert decision.reason == "delegation authority is not configured"
 
 
+@pytest.mark.asyncio
+async def test_authorize_delegation_awaits_a_durable_authority_decision() -> None:
+    """The durable authority's decision is a coroutine: Sentinel must await it
+
+    and carry the host grant's provenance, never treat the awaitable itself as
+    the decision (#845; the SQLite twin of the in-memory Sentinel path).
+    """
+    import aiosqlite
+
+    from maistro.security.sentinel.delegation_durable import (
+        DurableDelegationAuthority,
+        SqliteDelegationStore,
+    )
+
+    conn = await aiosqlite.connect(":memory:")
+    try:
+        authority = DurableDelegationAuthority(SqliteDelegationStore(conn))
+        await authority.ensure_schema()
+        await authority.add_host_grant(_grant(actions=frozenset({"read_file"})))
+        sentinel = Sentinel(warden=Warden(), permission_table={}, delegation_authority=authority)
+
+        decision = await sentinel.authorize_delegation(
+            principal=Principal(
+                id="low-agent",
+                kind="agent",
+                owner="owner-1",
+                scopes=("project-1", "agent:low-agent"),
+            ),
+            owner_id="owner-1",
+            delegating_agent_id="low-agent",
+            target_agent_id="writer",
+            goal_id="goal-1",
+            run_id="run-1",
+            invocation_id="inv-1",
+            scope="project-1",
+            requested_actions=frozenset({"read_file"}),
+            artifact="delegate this exact task",
+        )
+    finally:
+        await conn.close()
+
+    assert decision.allowed is True
+    assert decision.effective_actions == frozenset({"read_file"})
+    assert decision.grant_ref == "grant-1"
+    assert decision.granted_by == "host-policy"
+    assert decision.provenance == "human-approval:approval-1"
+
+
 def test_resolve_tier_returns_the_explicit_default_when_no_policy_matches() -> None:
     # `default` is the compatibility adapter's untrusted shape; the host tier
     # policy is empty, so the explicit default decides.

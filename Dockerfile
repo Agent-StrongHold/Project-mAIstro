@@ -82,8 +82,8 @@ RUN python /tmp/prune-dependency-namespaces.py \
 
 # ---- docker CLI build ----
 # The published docker:29-cli binary is built with go1.26.8 (trivy: stdlib
-# CVE-2026-78667/78669/97031 HIGH, fixed in go1.26.9/1.27.2; CVE-2026-111943
-# HIGH in stdlib 1.27.2, fixed in go1.26.10/1.27.3) and no released
+# CVE-2026-78667/78669/97031 HIGH, fixed in go1.26.9/1.27.2; later
+# CVE-2026-111943 HIGH in go1.27.2, fixed in go1.26.10/1.27.3) and no released
 # docker:xx-cli tag ships a newer toolchain (29.1/29.2 ship older ones). Build
 # the exact same immutable release tag ourselves on the patched toolchain --
 # the same policy as the age stage in packages/hive-conductor/Dockerfile. The
@@ -116,14 +116,29 @@ RUN apk add --no-cache git && \
 # debian 12.15; libexpat1 2.5.0-1+deb12u4 -> deb12u5 for CVE-2025-59375 /
 # CVE-2026-77214 on the 2026-10-22 pin refresh), matching
 # Dockerfile.research's hardening.
-FROM python:3.13.16-slim-bookworm@sha256:73aa5faee130c60da030e105ec971ccf57473fbd22ce73bd6fc9ba99a40b838d
-WORKDIR /app
+#
+# The security-patch layer lives in its own stage so CI can name it in
+# `--no-cache-filter` (#795). A plain `RUN apt-get upgrade` has a cache key
+# that never changes — same base digest, same instruction — so the GHA cache
+# silently replayed a months-old mirror state forever: the 2026-10-22 gate
+# failed on libexpat1 2.5.0-1+deb12u4 (CVE-2025-59375/CVE-2026-77214, fixed
+# in deb12u5) in an image whose Dockerfile nobody had touched, because the
+# cached layer predated the security update and `apt-get upgrade` never
+# re-ran to pick it up. security.yml builds this stage with
+# `--no-cache-filter runtime-apt` so every candidate re-consults the security
+# mirror; release.yml builds cold and needs no flag. The 2026-10-22
+# base-digest bump (#1152) additionally invalidated the previously cached
+# apt layer.
+FROM python:3.13.16-slim-bookworm@sha256:73aa5faee130c60da030e105ec971ccf57473fbd22ce73bd6fc9ba99a40b838d AS runtime-apt
 RUN apt-get update \
     && apt-get install -y --no-install-recommends git \
     && apt-get upgrade -y \
     && apt-get autoremove -y --purge \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* /var/cache/apt/* /tmp/*
+
+FROM runtime-apt
+WORKDIR /app
 # /usr/local/bin is on PATH so the static docker CLI (copied below) is found when
 # the sandbox tool shells out to `docker run`.
 ENV PATH="/app/venv/bin:/usr/local/bin:$PATH" \

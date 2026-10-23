@@ -56,7 +56,7 @@
       "digest": "sha256:b8c9b82affbbb82a020bbcf998dad2ba9516944ac7e883524642a481a9505e9c",
       "recorded": "2026-10-22",
       "recorded_in": "#1152",
-      "note": "Builds the age static binaries and the static docker CLI from their pinned upstream release tags (#363, then #1152): the published docker:29-cli binary embeds go1.26.8 stdlib and the age prebuilt binary go1.25.x, both carrying 2026 stdlib HIGHs (CVE-2026-78667/78669/97031, fixed in go1.26.9/1.27.2) that no released tag of either project ships fixed. The 1.27.2 rebuild then aged out itself: CVE-2026-111943 (crypto/x509 MITM via untrusted intermediate certificates, HIGH, fixed in go1.26.10/1.27.3) flagged both binaries' stdlib, so the builder moved to 1.27.3-alpine — #1095's trunk-CI repair independently hit the same advisory and re-resolved the same tag to this identical digest. Resolved 2026-10-22 hours after upstream re-serialized the tag's index with unchanged per-arch content (the earlier same-day index d530cf60723abf1ffae0cd16bb546b379ec0550d2f3815e5b16ed69dbc00fba4 carries the identical linux/amd64 child).",
+      "note": "Builds the age static binaries and the static docker CLI from their pinned upstream release tags (#363, then #1152): the published docker:29-cli binary embeds go1.26.8 stdlib and the age prebuilt binary go1.25.x, both carrying 2026 stdlib HIGHs (CVE-2026-78667/78669/97031, fixed in go1.26.9/1.27.2) that no released tag of either project ships fixed. The 1.27.2 rebuild then aged out itself: CVE-2026-111943 (crypto/x509 MITM via untrusted intermediate certificates, HIGH, fixed in go1.26.10/1.27.3) flagged both binaries' stdlib, so the builder moved to 1.27.3-alpine — #1095's trunk-CI repair independently hit the same advisory and re-resolved the same tag to this identical digest. Resolved 2026-10-22 hours after upstream re-serialized the tag's index with unchanged per-arch content (the earlier same-day index d530cf60723abf1ffae0cd16bb546b379ec0550d2f3815e5b16ed69dbc00fba4 carries the identical linux/amd64 child). The same 1.27.2 -> 1.27.3 bump was independently required by the #795 container-cache repair lane, whose Container scan gate flagged the identical CVE on the age/age-keygen and docker CLI binaries.",
       "used_by": [
         "packages/hive-conductor/Dockerfile",
         "Dockerfile",
@@ -79,10 +79,10 @@
     },
     {
       "image": "mcr.microsoft.com/playwright",
-      "tag": "v1.64.0-noble",
-      "digest": "sha256:06a9939e57531807f8d5fd76ce44b53165ffb7d7501d87ab10e285c20b1e971f",
-      "recorded": "2026-10-10",
-      "recorded_in": "#1779",
+      "tag": "v1.64.1-noble",
+      "digest": "sha256:7852dc5a7d72f5fe458a597d690f6c42fbc8e9e26ddfa95f8e6ef552558d9bbf",
+      "recorded": "2026-10-23",
+      "recorded_in": "#2137",
       "note": "Playwright browsers + deps, e2e harness only.",
       "used_by": [
         "packages/hive-conductor/tests/Dockerfile.playwright"

@@ -213,13 +213,17 @@ def test_effect_claim_revision_follows_the_chain_tip() -> None:
     # re-parented past it from develop's `064`, a landed trunk migration
     # never moves — follows as `065`; #836's durable legacy replay
     # acknowledgement renumbers past that as `066`, and the durable delivery
-    # receipts (#1060) renumber past that from develop's `066` at this sync —
-    # one linear head.
-    assert directory.get_heads() == ["067"]
+    # receipts (#1060) renumber past that from develop's `066` at this sync.
+    # #845's delegation grants — landed on develop past its own receipts id,
+    # already claimed here by #1060, so renumbered past the landed trunk tip
+    # by the same convention a second time — append as `068`, one linear
+    # head.
+    assert directory.get_heads() == ["068"]
     assert directory.get_revision("064").down_revision == "063"
     assert directory.get_revision("065").down_revision == "064"
     assert directory.get_revision("066").down_revision == "065"
     assert directory.get_revision("067").down_revision == "066"
+    assert directory.get_revision("068").down_revision == "067"
     walked = {item.revision for item in directory.walk_revisions("base", "062")}
     assert {
         "034_canonical_run_effect_claim",
