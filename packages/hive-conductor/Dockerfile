@@ -180,7 +180,25 @@ RUN python -c "import importlib.metadata as m, sys; from maistro.identity import
 RUN mkdir -p /app/state_seed
 
 # ---- thin runtime: same pinned CPython ABI, nonroot ----
-FROM python:3.13.16-slim-bookworm@sha256:73aa5faee130c60da030e105ec971ccf57473fbd22ce73bd6fc9ba99a40b838d
+# The security-patch layer lives in its own stage so CI can name it in
+# `--no-cache-filter` (#795): a plain `RUN apt-get upgrade` has a cache key
+# that never changes, so the GHA cache can replay a pre-advisory mirror state
+# forever — the same mechanism that shipped maistro-engine with libexpat1
+# 2.5.0-1+deb12u4 after deb12u5 (CVE-2025-59375/CVE-2026-77214) had published.
+# security.yml builds this stage with `--no-cache-filter runtime-apt`. The
+# 2026-10-22 base-digest bump (#1152) additionally invalidates the previously
+# cached apt layer.
+FROM python:3.13.16-slim-bookworm@sha256:73aa5faee130c60da030e105ec971ccf57473fbd22ce73bd6fc9ba99a40b838d AS runtime-apt
+
+# Security patches the pinned base digest froze at its 2026-10-22 build (trivy:
+# perl-base x3 CRITICAL + x4 HIGH, libpcre2 HIGH on debian 12.15, all fixed in
+# current point releases). Same hardening policy as Dockerfile.research.
+RUN apt-get update && apt-get upgrade -y \
+    && apt-get autoremove -y --purge \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/* /var/cache/apt/* /tmp/*
+
+FROM runtime-apt
 WORKDIR /app
 ENV PATH="/app/venv/bin:$PATH" \
     PYTHONPATH=/app/backend:/app \
@@ -201,13 +219,6 @@ COPY agents/ /app/backend/agents/
 COPY --from=frontend /build/dist /app/frontend/dist
 # Persistent conductor state dir, pre-owned by the nonroot uid (see pybuild).
 COPY --from=pybuild --chown=65532:65532 /app/state_seed /data
-# Security patches the pinned base digest froze at its 2026-09-30 build (trivy:
-# perl-base x3 CRITICAL + x4 HIGH, libpcre2 HIGH on debian 12.15, all fixed in
-# current point releases). Same hardening policy as Dockerfile.research.
-RUN apt-get update && apt-get upgrade -y \
-    && apt-get autoremove -y --purge \
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/* /var/cache/apt/* /tmp/*
 # pip is a build-time tool, not a runtime surface: nothing in the shipped app
 # invokes it, and its vendored dependency tree (pip/_vendor/vendor.txt: msgpack
 # 1.1.2, urllib3 2.7.0, setuptools 70.3.0 -- present in both the venv's pip and

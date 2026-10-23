@@ -16,7 +16,7 @@ import uuid
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING, Any, Final, Literal
+from typing import TYPE_CHECKING, Any, Final, Literal, cast
 from urllib.parse import urlsplit, urlunsplit
 
 from maistro.a2a.delegate import A2ADelegator
@@ -195,6 +195,7 @@ if TYPE_CHECKING:
     from maistro.runs.reconciliation import AttemptLifecycleReconciler
     from maistro.runs.store import RunStore
     from maistro.security._types import AuditLog
+    from maistro.security.sentinel.delegation import DelegationAuthority
     from maistro.security.sentinel.elevation import ElevationStore
     from maistro.security.sentinel.policy import Sentinel
     from maistro.skills.import_pipeline import (
@@ -2613,6 +2614,8 @@ async def create_container(
         # Recovery is an administrative capability; its capability check goes
         # through the same fail-closed table below, so a deployment that arms
         # nothing denies recovery actions too until it configures permissions.
+        # Graph node execution is a synthetic (non-tool) action, so its host
+        # authorization lives in tier records, not in the tool table (#845).
         tier_policy = _configure_strike_recovery_policy()
         logger.info("Sentinel permission table: %s", describe_permission_table(permission_table))
         # SPEC-247 / ADR-068 §D. Without this, Sentinel._check_elevation_grant is a
@@ -2622,12 +2625,6 @@ async def create_container(
         # can therefore never flip authorized False -> True, only needs
         # "self_elevation"/"scoped_2fa" -> "none".
         elevation_store = await _wire_elevation_store(pg_pool=pg_pool, db_pool=db_pool)
-        # Delegated authority is host-owned state, separate from the manifest
-        # roster (#845, #60). A durable deployment can replace this
-        # implementation without changing the Agent or Graph execution paths.
-        from maistro.security.sentinel.delegation import InMemoryDelegationAuthority
-
-        delegation_authority = InMemoryDelegationAuthority()
         # Canonical capability state is created BEFORE Sentinel so the permission
         # source can hold the same registry the container exposes (#1165,
         # ADR-072726-0d6b): a runtime capability disable (set_enabled) must reach
@@ -2635,6 +2632,12 @@ async def create_container(
         from maistro.capabilities.bootstrap import default_capability_registry
         from maistro.security.sentinel.permission_source import CapabilityPermissionSource
 
+        # Delegated authority is host-owned state, separate from the manifest
+        # roster. The durable store is wired from the same backend as the other
+        # canonical stores, so a host grant survives a restart (#845); a process
+        # with no relational backend falls back to the in-memory seam without
+        # changing the Agent or Graph execution paths.
+        delegation_authority = await _wire_delegation_authority(pg_pool=pg_pool, db_pool=db_pool)
         capabilities = default_capability_registry()
         sentinel = Sentinel(
             warden=warden,
@@ -3064,6 +3067,19 @@ async def _wire_elevation_store(*, pg_pool: Any, db_pool: Any) -> ElevationStore
     from maistro.security.sentinel.elevation_durable import build_elevation_store
 
     return await build_elevation_store(pg_pool=pg_pool, db_pool=db_pool)
+
+
+async def _wire_delegation_authority(*, pg_pool: Any, db_pool: Any) -> DelegationAuthority:
+    """Host-created delegation grants live beside the other durable stores."""
+    from maistro.security.sentinel.delegation import DelegationAuthority
+    from maistro.security.sentinel.delegation_durable import build_delegation_authority
+
+    # The durable authority resolves its decision asynchronously while the
+    # in-memory seam is synchronous; Sentinel and the A2A broker accept either
+    # shape (they narrow with ``hasattr(result, "__await__")``), so the
+    # protocol's synchronous signature is the seam contract both satisfy.
+    authority = await build_delegation_authority(pg_pool=pg_pool, db_pool=db_pool)
+    return cast(DelegationAuthority, authority)
 
 
 def _sqlite_database_path(database_url: str) -> str:

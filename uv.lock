@@ -3440,6 +3440,7 @@ dev = [
     { name = "types-pyyaml" },
     { name = "types-regex" },
     { name = "vulture" },
+    { name = "z3-solver" },
 ]
 rsi-fitness = [
     { name = "bandit" },
@@ -3474,6 +3475,7 @@ dev = [
     { name = "ruff" },
     { name = "types-pyyaml" },
     { name = "types-regex" },
+    { name = "z3-solver" },
 ]
 
 [package.metadata]
@@ -3531,6 +3533,7 @@ requires-dist = [
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.34" },
     { name = "vulture", marker = "extra == 'dev'", specifier = ">=2.14" },
     { name = "vulture", marker = "extra == 'rsi-fitness'", specifier = ">=2.14" },
+    { name = "z3-solver", marker = "extra == 'dev'", specifier = ">=4.13" },
 ]
 provides-extras = ["dev", "browser", "rsi-fitness", "bootstrap", "s3"]
 
@@ -3555,6 +3558,7 @@ dev = [
     { name = "ruff", specifier = ">=0.9" },
     { name = "types-pyyaml", specifier = ">=6.0" },
     { name = "types-regex", specifier = ">=2024.5.15" },
+    { name = "z3-solver", specifier = ">=4.13" },
 ]
 
 [[package]]
