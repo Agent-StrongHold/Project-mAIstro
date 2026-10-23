@@ -8122,3 +8122,75 @@ develop sync.
   required to stay unwired, unmerged, and un-baselined until that
   separately scoped integration lands — is invariant under the develop
   sync and outside this leaf's authority.
+
+## Round 102 (2026-10-23): independent re-verification at `37008427a409`; exact-debt-ledger repair scope re-proven empty; blocker invariant holds
+
+Fresh first-hand evidence at the assigned head `37008427a409` (leaf module
+md5 `257a6e45c382349dd12f559099663fbc`, bytes unchanged since round 89);
+no code, ledger, or gate file was edited this round.
+
+- Driver deterministic checks green (job `b196f8a5…` check-0..4 logs):
+  `uv sync --locked --extra dev` ok; `ruff check .` clean; `ruff format
+  --check .` clean (3472 files); focused pack/publication/assessment
+  suites 269 passed; suite inventory `packages/maistro-core/tests`
+  17760 = recorded baseline, 0 duplicate identities.
+- Lane repair directive ("exact-debt-ledger: fix THESE") executed at CI's
+  exact argv: `uv run python scripts/check-vulture-baseline.py
+  packages/*/src --min-confidence 60 --exclude '*/third_party/*'` →
+  rc=0, 1309 reviewed identities = 1309 findings, `unclassified: 0`,
+  `never_allowlist: 0`, base `fe733ae4ee27` vs candidate `37008427a409`.
+  The vulture per-identity ledger is exact and nothing needed amending;
+  no `quality/vulture-baseline.json` edit was made or required. The
+  composite job's failure is therefore fully attributable to its
+  provenance step's reachability sub-ratchet (below), not to the ledger.
+- `check-ratchet-provenance.py` (RATCHET_BASE_REV=origin/develop) rc=1,
+  first-hand: 8/9 sub-ratchets OK (adr-status-language, citation-status,
+  promotion-surface, reachability-dispositions, shell-execution,
+  contract-markers, enumerations, lifecycle); the sole FAIL is
+  reachability, naming exactly `maistro.tasks.admission_generation`
+  ("NEW unreachable module absent from trusted base and not previously
+  authorized" / "current unreachable module missing from candidate
+  baseline"). Both findings are the issue-mandated state: #1852 forbids
+  baseline entries or grants made "to make this leaf independently
+  green", so the only authorized fix is the separately scoped #1845 C
+  integration landing a reviewed runtime consumer.
+- `check-reachability.py` rc=1 — "1 module(s) are NEWLY UNREACHABLE:
+  maistro.tasks.admission_generation" (1454 modules, 158 unreachable).
+  `check-reachability-dispositions.py`, `check-promotion-surface.py`,
+  `check-shipped-surface-truth.py` all rc=0 (47 disposition groups;
+  157 ledgered + 1 newly-unreachable = 158).
+- CI `test` trio reproduced first-hand:
+  `tests/test_check_reachability.py` +
+  `tests/test_reachability_baseline_identity.py` → 3 failed / 36 passed,
+  the only set delta being `+ maistro.tasks.admission_generation`
+  (matches the round-94 CI logs verbatim).
+- Focused commands re-run: leaf suite 132 passed;
+  `test_root_admission_identity.py` + `test_idempotency.py` (live flow
+  untouched) 146 passed; ruff check/format on the two leaf files clean;
+  `mypy packages/maistro-core/src/maistro/tasks/admission_generation.py`
+  clean. Leaf source re-read: exact `_assess` signature, exact-class
+  record validation, `[0-9a-f]{64}` fingerprint gate, int64-not-bool
+  `now_us` gate, and the fixed decision order (REPLACE_EXPIRED →
+  MISMATCH → REPLAYED → LEGACY_UNRESOLVED → TAKEOVER → PENDING) all
+  match the issue contract; all 10 issue-named tests present.
+- Mutation spot-checks re-executed first-hand with in-process
+  byte-identical restore (md5 `257a6e45…` verified after each; no git
+  restore used): swapping TAKEOVER/REPLACE_EXPIRED → focused suite rc=1;
+  moving MISMATCH before expiry and dropping the expiry row → rc=1
+  (33 failed). The suite demonstrably bites on the exact regressions
+  the issue names.
+- Upstream state re-checked: `origin/develop` still at `fe733ae4ee27`
+  (this branch's merge base, already merged at `c324d3eac67a`) — no new
+  #1845 integration commit, and `git grep admission_generation
+  origin/develop -- 'packages/*/src'` finds nothing: develop still has
+  no runtime consumer for this leaf. Zero production-source references
+  to `admission_generation` in this branch outside the module itself
+  (only the import-boundary test names the path).
+- Verdict re-derived BLOCKED per the issue's own contract: implementation
+  and test readiness are proven; the explicit merge blocker — no
+  reviewed runtime consumer for the inactive leaf (the C integration;
+  draft runtime consumer remains #2178), with the leaf required to stay
+  unwired, unmerged, and un-baselined until that separately scoped
+  integration lands — is invariant, and the residual CI failures are
+  that documented blocker surfacing, not a defect repairable inside this
+  leaf without violating the issue's prohibitions.
