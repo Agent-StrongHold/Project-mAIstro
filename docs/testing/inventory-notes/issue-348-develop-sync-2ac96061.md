@@ -74,3 +74,40 @@ against the develop base.
   `pip install .` — Copier downstream product scaffold, not a repo-built
   production image; unchanged by this merge and out of #348's repo-build
   scope (previously recorded).
+
+## Deep-review round 1 (head `4abbd512cfe4`, 2026-10-23)
+
+Adversarial re-examination of every prior finding against reachable
+behavior; `git diff e937e2473..4abbd512c` is the note above only, so the
+image evidence binds to this head. No test delta (`tests/:` stays +0).
+Re-executed first-hand: `uv lock --check` clean (468 pkgs); `ruff check .`
+and `ruff format --check .` clean; the engine reconcile with security.yml's
+exact arguments (`uv export --locked --package maistro-server --extra image
+--no-dev --no-emit-workspace` + `check-image-lock-reconciliation.py`) →
+`OK: … ships exactly the locked set (128 distributions …)`, exit 0;
+`docker run … -c "from maistro.tasks import admission_codec; …"` →
+`shipped-code-ok`; the #348 test surface (lock contract, reconcile gate,
+license inventory, image pins, distribution contract, dependency
+namespaces, engine/canvas packaging, bump version, RSI gate evidence) →
+302 passed, 3 skipped; `check-suite-inventory.py` ok (21 suites);
+`check-merge-markers.py` ok.
+
+Refutation attempts that failed (prior findings stand):
+
+- `packages/hive-conductor/Dockerfile:128` installs `setuptools==84.0.0`
+  outside the hashed export — not implicit resolution: it is the lock's own
+  setuptools pin (`uv.lock:8741-8746` names 84.0.0) and the reconcile gate
+  models it explicitly with `--member setuptools==84.0.0`.
+- Reconcile coverage gap hunt: security.yml builds exactly four production
+  images (lines 248/270/284/292), SBOM-scans all four (lines 323-358) and
+  reconciles all four (lines 447-507). `deploy/sbx/template/Dockerfile` and
+  `templates/autonoetic/Dockerfile.jinja` are built by no repo workflow —
+  only `.github/dependabot.yml:61` references the latter's directory — so
+  no repo-built production image escapes the gate.
+- `deploy/sbx/template/Dockerfile:68-75` is lock-enforced (`uv export
+  --locked` + `--require-hashes`) even though downstream-built.
+
+Residual (unchanged): hosted CI evidence (docker-rebuild-compare SUCCESS,
+wheel-imports success, hosted reconcile run) is bound to parent
+`88e3344b0964`; the two local commits are content-equivalent on every AC
+surface. The GH006 merge-queue block clears when the branch re-enters.
