@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-canvas/tests: +24
+  packages/maistro-canvas/tests: +25
 ---
 # #93 Built-in Canvas worker service and runner concurrency
 
@@ -85,3 +85,22 @@ Test deltas (this round):
 After the fix, 8/8 live two-worker races (2 jobs, 2 workers, fast polls)
 claim exactly once each (attempts=1 everywhere); the kill -9 recovery leg
 re-proved one Run with attempt 1 `cancelled` and attempt 2 `completed`.
+
+## Repair round: pin the status-hydration hinge directly (diff-coverage gap)
+
+Re-running CI's exact diff-coverage gate
+(`scripts/check-diff-coverage.py coverage.xml --base <develop>`) against the
+no-services canvas producer failed: `store.py` measured 60% of its 5 changed
+lines (floor 90%) — lines 128-129, the `except ValueError` legacy-value
+fallback of `_coerce_job_status`, are reachable only through a live driver
+row, and no test called the helper directly. The original lane had no direct
+coverage for it either; the prior round's evidence never ran this gate.
+
+Test deltas (this round):
+
+- Added to `packages/maistro-canvas/tests/test_canonical_execution.py`
+  (+1 test): `test_receipt_status_hydration_coerces_driver_strings_and_passes_legacy_through`
+  pins both branches of the hydration hinge — a driver-shaped plain string
+  hydrates to the `JobStatus` member (through `_coerce_job`, the real row
+  coercion path), and an unrecognized legacy value passes through as a plain
+  string instead of crashing a read path.

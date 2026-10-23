@@ -1031,6 +1031,42 @@ async def test_recovery_requeues_a_string_status_receipt_whose_lease_expired() -
     assert job.status == JobStatus.PENDING
 
 
+def test_receipt_status_hydration_coerces_driver_strings_and_passes_legacy_through() -> None:
+    """``_coerce_job_status`` must both hydrate and tolerate legacy values.
+
+    The #93 two-worker race was caused by the PostgreSQL store hydrating the
+    status column as a plain ``str`` while every guard compared by identity.
+    ``_coerce_job_status`` is the fix's hinge, so both of its branches are
+    pinned directly (the read path only reaches them through a live driver,
+    which the no-services coverage producer never sees):
+
+    - a driver-shaped plain string hydrates to the ``JobStatus`` member the
+      in-memory stores produce, so identity-agnostic comparisons hold;
+    - a value written by an older generation (not a ``JobStatus`` member)
+      passes through as a plain string instead of crashing a read path.
+    """
+    from maistro_canvas.canvas.store import _coerce_job, _coerce_job_status
+
+    assert _coerce_job_status("running") is JobStatus.RUNNING
+    assert _coerce_job_status(JobStatus.DONE) is JobStatus.DONE
+
+    legacy = "queued-by-an-older-generation"
+    hydrated = _coerce_job_status(legacy)
+    assert hydrated == legacy
+    assert not isinstance(hydrated, JobStatus)
+
+    receipt = _coerce_job(
+        {
+            "id": "job-hydrated",
+            "layer_id": "l1",
+            "canvas_id": "c1",
+            "status": "running",  # exactly what the driver returns
+        }
+    )
+    assert isinstance(receipt.status, JobStatus)
+    assert receipt.status is JobStatus.RUNNING
+
+
 async def test_recovery_requeues_a_running_receipt_whose_lease_expired() -> None:
     """An *expired* lease is not live: recovery may still requeue it.
 
