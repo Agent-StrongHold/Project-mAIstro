@@ -42,11 +42,18 @@ def canonicalize_inbound(value: Any) -> str:
     the scanned text, not metadata discarded by a values-only walker.  A
     serialization failure is an ingress refusal rather than an opportunity to
     pass an opaque object downstream.
+
+    ``ensure_ascii=False`` is deliberate (#66/#1158): ASCII-escaping would
+    transliterate a zero-width space into the six literal characters
+    ``\\u200b`` before the scanner sees it, and an injection split as
+    ``igno\\u200bre ...`` then evades the normalizer that folds the real
+    character everywhere else. The canonical form is the representation the
+    peer actually sent, not an ASCII transcription of it.
     """
     return json.dumps(
         value,
         default=_json_default,
-        ensure_ascii=True,
+        ensure_ascii=False,
         separators=(",", ":"),
         sort_keys=True,
     )
