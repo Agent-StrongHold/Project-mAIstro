@@ -307,6 +307,7 @@ class TestRunTauBench:
         assert result.metadata == {
             "total_samples": len(TAU_BENCH_SAMPLES),
             "fidelity": "proxy",
+            "evidence": {"method": "structured-call-match", "outcomes": "simulated"},
         }
         assert result.cost_usd > 0.0
         assert result.score > 0.0

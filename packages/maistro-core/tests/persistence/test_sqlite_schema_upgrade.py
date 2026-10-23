@@ -11,6 +11,7 @@ from typing import Any
 
 import pytest
 
+from maistro.memory.exposure import MemoryExposureMode
 from maistro.sqlite_schema import serialized_schema_upgrade
 
 _LEGACY_SCHEMA: dict[str, str] = {
@@ -298,6 +299,7 @@ async def test_configured_sqlite_schema_failure_propagates(tmp_path: Path) -> No
                 database_url="sqlite:///incompatible.sqlite",
                 pg_pool=None,
                 db_pool=conn,
+                exposure_mode=MemoryExposureMode.AGENT_MANAGED,
             )
 
 

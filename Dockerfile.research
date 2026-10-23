@@ -160,10 +160,12 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PATH="/app/venv/bin:$PATH"
 
 # Static docker CLI only (talks to a mounted /var/run/docker.sock) — replaces the
-# heavyweight docker.io package and its containerd/runc dependency tree.
-# 29-cli ships a binary built with go1.26.8; older 27-cli embedded go1.22.11
-# (CVE-2025-68121 crypto/tls + 21 HIGHs, trivy).
-COPY --from=docker:29-cli /usr/local/bin/docker /usr/local/bin/docker
+# heavyweight docker.io package and its containerd/runc dependency tree. Built
+# from the pinned upstream release tag on the patched Go toolchain (stage
+# above) because the published 29-cli binary embeds go1.26.8 stdlib (trivy HIGHs).
+COPY --from=dockerclibuild /out/docker /usr/local/bin/docker
+# The lock-built venv (third-party pins hash-verified, members non-editable).
+COPY --from=builder /app/venv /app/venv
 
 # Application sources — on-disk assets the app reads at runtime (agent YAML,
 # prompts, migrations) and the two packages' data files. The venv is
@@ -174,42 +176,12 @@ COPY alembic/ alembic/
 COPY alembic.ini .
 COPY pyproject.toml uv.lock README.md ./
 
-# Install the workspace packages with pip, not uv, and non-editable.
-#
-# `uv pip install` on a local path builds that path's project, which makes uv
-# read the root `pyproject.toml` -- and this image copies only maistro-core and
-# maistro-server, while the root declares `[tool.uv.workspace] members =
-# ["packages/*"]` with `workspace = true` sources for five packages that are
-# not here. uv aborts:
-#
-#   Failed to parse entry: `maistro-bootstrap`
-#   `maistro-bootstrap` references a workspace in `tool.uv.sources`, but is
-#   not a workspace member
-#
-# So this image could not be built at all, and nothing noticed because nothing
-# built it -- which is the whole of #346 in one line. pip does not read
-# `[tool.uv.sources]`, which is why the main Dockerfile (identical partial
-# context) builds; matching it here is the smallest fix that does not drag five
-# unrelated packages into a browser image. Named packages are still fine on uv
-# -- nothing local is built -- so the Playwright step below is unchanged.
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
-# pydantic-ai-slim is deliberately NOT installed: ADR-094 cut pydantic-ai from
-# the codebase (zero src imports) and the CVE-2026-25580 fix line (>=1.56.0)
-# requires openai>=2, which cannot co-install with the openai pin below.
-RUN pip install --no-cache-dir \
-    "./packages/maistro-core[llm,sandbox,observability]" \
-    "./packages/maistro-server" \
-    "alembic>=1.14" \
-    "openai>=1.40,<2" \
-    "anyio>=4.14.2" \
-    "httpx>=0.27.0"
-
-# Install browser-use + Playwright + Chromium for the RESEARCH role's web tool.
-# Installed into PLAYWRIGHT_BROWSERS_PATH (set above) so the non-root user can use it.
-RUN uv pip install --system \
-    "browser-use>=0.1.40" \
-    "playwright>=1.49.0" \
- && python -m playwright install chromium
+# Install the Chromium binary for the RESEARCH role's web tool. The playwright
+# package driving it is hash-pinned by the lock (builder stage); this step
+# downloads a browser binary, not a Python dependency, so no package
+# resolution happens here. Installed into PLAYWRIGHT_BROWSERS_PATH (set above)
+# so the non-root user can use it.
+RUN python -m playwright install chromium
 
 # Drop the same build tooling the other images drop: pip is not invoked at
 # runtime by anything in the shipped app, and its vendored dependency tree

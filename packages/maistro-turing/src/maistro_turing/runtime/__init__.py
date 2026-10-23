@@ -242,16 +242,25 @@ class TuringChatSession:
                     )
             prompt_parts.append("Respond naturally as yourself.")
 
-        reply = self._provider.complete(
-            "\n".join(prompt_parts),
-            max_tokens=1000,
-        )
-        result_scan = await self._security.scan_tool_result(reply, tool_name="turing-model")
-        if result_scan.get("verdict") != "allowed":
-            # Do not append or persist a model result until Warden has cleared
-            # it; provider choice must not change the trust boundary.
+            # Async seam (#397): the model call is awaited on the owning loop;
+            # the sync path is reserved for non-loop callers.
+            reply = await self._provider.acomplete(
+                "\n".join(prompt_parts),
+                max_tokens=1000,
+            )
+            result_scan = await self._security.scan_tool_result(reply, tool_name="turing-model")
+            if result_scan.get("verdict") != "allowed":
+                # Do not append or persist a model result until Warden has
+                # cleared it; provider choice must not change the trust
+                # boundary.
+                raise TuringContentBlocked("model result refused by Warden")
+        except Exception:
+            # A failed turn leaves no half-written history: the unpaired user
+            # entry is rolled back, so repeated failures cannot grow the
+            # session's stored state, and a failed turn never reaches the next
+            # turn's model context as if it had been answered.
             self._history.pop()
-            raise TuringContentBlocked("model result refused by Warden")
+            raise
 
         self._history.append({"role": "assistant", "content": reply})
         self._trim_history()

@@ -23,6 +23,61 @@
       "owner": "#56",
       "rationale": "Shipped model call bypasses canonical Provider/Binding/Invocation execution; #56 owns governed model egress."
     },
+    "packages/hive-conductor/backend/routes/widgets.py::widget_jira::PM_POLLING_EFFECT:pm-polling-http#1": {
+      "path": "packages/hive-conductor/backend/routes/widgets.py",
+      "qualname": "widget_jira",
+      "line": 117,
+      "category": "PM_POLLING_EFFECT",
+      "entry_point": "pm-polling-http",
+      "callee": "client.get",
+      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
+      "owner": "#1195",
+      "rationale": "Retained Workspace surface polls Jira REST directly with the operator PAT in headers. The Jira polling effect class is owned by canonical capabilities since #1195 (Binding -> Invocation); recorded as explicit migration debt for the Workspace cutover instead of remaining an invisible direct-effect escape hatch."
+    },
+    "packages/hive-conductor/backend/routes/widgets.py::widget_jira::PM_POLLING_EFFECT:pm-polling-http#2": {
+      "path": "packages/hive-conductor/backend/routes/widgets.py",
+      "qualname": "widget_jira",
+      "line": 134,
+      "category": "PM_POLLING_EFFECT",
+      "entry_point": "pm-polling-http",
+      "callee": "client.get",
+      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
+      "owner": "#1195",
+      "rationale": "Retained Workspace surface polls Jira REST directly with the operator PAT in headers. The Jira polling effect class is owned by canonical capabilities since #1195 (Binding -> Invocation); recorded as explicit migration debt for the Workspace cutover instead of remaining an invisible direct-effect escape hatch. Second occurrence is the pagination loop of the same widget poll."
+    },
+    "packages/hive-conductor/backend/services/airtable_cache.py::get_airtable_base_tables_json.load::PM_POLLING_EFFECT:pm-polling-http#1": {
+      "path": "packages/hive-conductor/backend/services/airtable_cache.py",
+      "qualname": "get_airtable_base_tables_json.load",
+      "line": 86,
+      "category": "PM_POLLING_EFFECT",
+      "entry_point": "pm-polling-http",
+      "callee": "client.get",
+      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
+      "owner": "#1195",
+      "rationale": "Retained Workspace surface reads Airtable REST directly with the operator PAT in headers. The Airtable polling effect class is owned by canonical capabilities since #1195 (Binding -> Invocation); recorded as explicit migration debt for the Workspace cutover instead of remaining an invisible direct-effect escape hatch."
+    },
+    "packages/hive-conductor/backend/services/airtable_cache.py::get_airtable_bases_json.load::PM_POLLING_EFFECT:pm-polling-http#1": {
+      "path": "packages/hive-conductor/backend/services/airtable_cache.py",
+      "qualname": "get_airtable_bases_json.load",
+      "line": 111,
+      "category": "PM_POLLING_EFFECT",
+      "entry_point": "pm-polling-http",
+      "callee": "client.get",
+      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
+      "owner": "#1195",
+      "rationale": "Retained Workspace surface reads Airtable REST directly with the operator PAT in headers. The Airtable polling effect class is owned by canonical capabilities since #1195 (Binding -> Invocation); recorded as explicit migration debt for the Workspace cutover instead of remaining an invisible direct-effect escape hatch."
+    },
+    "packages/hive-conductor/backend/services/airtable_cache.py::get_airtable_records_json.load::PM_POLLING_EFFECT:pm-polling-http#1": {
+      "path": "packages/hive-conductor/backend/services/airtable_cache.py",
+      "qualname": "get_airtable_records_json.load",
+      "line": 59,
+      "category": "PM_POLLING_EFFECT",
+      "entry_point": "pm-polling-http",
+      "callee": "client.get",
+      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
+      "owner": "#1195",
+      "rationale": "Retained Workspace surface reads Airtable REST directly with the operator PAT in headers. The Airtable polling effect class is owned by canonical capabilities since #1195 (Binding -> Invocation); recorded as explicit migration debt for the Workspace cutover instead of remaining an invisible direct-effect escape hatch."
+    },
     "packages/hive-conductor/backend/services/canonical_corpus.py::CanonicalCorpus._extract_patterns::MODEL_EFFECT:openai-compatible-http#1": {
       "path": "packages/hive-conductor/backend/services/canonical_corpus.py",
       "qualname": "CanonicalCorpus._extract_patterns",
@@ -440,6 +495,17 @@
       "disposition": "INTENTIONAL_LIBRARY/INFRASTRUCTURE",
       "owner": "#55",
       "rationale": "Canonical capabilities-layer Invocation plumbing; this is the governed seam, not a bypass."
+    },
+    "packages/maistro-core/src/maistro/capabilities/providers/image_gateway.py::execute_image_generation::MODEL_EFFECT:openai-compatible-image-http#1": {
+      "path": "packages/maistro-core/src/maistro/capabilities/providers/image_gateway.py",
+      "qualname": "execute_image_generation",
+      "line": 195,
+      "category": "MODEL_EFFECT",
+      "entry_point": "openai-compatible-image-http",
+      "callee": "client.post",
+      "disposition": "INTENTIONAL_LIBRARY/INFRASTRUCTURE",
+      "owner": "#286",
+      "rationale": "The approved image.generate Provider implementation itself. The call executes beneath a resolved image.generate Binding, Binding-scoped credential routing and a governed Invocation (ImageGenerationEgress), so this site IS the governed image egress, not a bypass."
     },
     "packages/maistro-core/src/maistro/capabilities/providers/llm_gateway.py::execute_model_chat::MODEL_EFFECT:openai-compatible-http#1": {
       "path": "packages/maistro-core/src/maistro/capabilities/providers/llm_gateway.py",
