@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
-from hypothesis import assume, given, settings
+import pytest
 from hypothesis import strategies as st
 from hypothesis.stateful import RuleBasedStateMachine, rule, invariant
 
 from maistro.graph.definitions import Graph, Node
+from maistro.runs.lifecycle import (
+    RUN_TRANSITIONS,
+    InvalidLifecycleTransition,
+    transition_run,
+)
 from maistro.runs.model import (
     GraphSnapshot,
     Run,
@@ -16,20 +21,19 @@ from maistro.runs.model import (
 
 
 class ExecutionLifecycleMachine(RuleBasedStateMachine):
-    """State machine for the Run lifecycle transitions.
+    """State machine over the *real* Run lifecycle transition table.
 
-    The machine keeps its own model of the Run status and every invariant/
-    rule post-condition is expressed against that model or the documented
-    transitions, so each property has a counterexample class: a Run that
-    makes an invalid transition diverges from the model and fails here.
+    Unlike a hand-rolled mirror, every step calls the production
+    ``transition_run`` helper from ``maistro.runs.lifecycle`` and the
+    machine's model is derived from the same ``RUN_TRANSITIONS`` table the
+    helper enforces. A divergence between the two — a transition the table
+    permits but the helper rejects, or one the helper allows that the table
+    forbids — surfaces as a failed property here rather than as a silent
+    agreement between two copies of the same bug.
     """
-    __test__ = True  # Force pytest to collect this class as a test
 
     def __init__(self):
         super().__init__()
-        self.user = "user-1"
-        self.model_strikes = 0
-        # Create a minimal graph for testing.
         graph = Graph(
             name="test-gcd",
             workspace_id="test-workspace",
@@ -45,76 +49,38 @@ class ExecutionLifecycleMachine(RuleBasedStateMachine):
         )
         self.model_status = RunStatus.CREATED
 
-    @rule()
-    def transition_to_queued(self):
-        assume(self.model_status == RunStatus.CREATED)
-        # In the real system, a Run can be queued from created.
-        self.run = self.run.model_copy(update={"status": RunStatus.QUEUED})
-        self.model_status = RunStatus.QUEUED
-
-    @rule()
-    def transition_to_running(self):
-        assume(self.model_status == RunStatus.QUEUED)
-        self.run = self.run.model_copy(update={"status": RunStatus.RUNNING})
-        self.model_status = RunStatus.RUNNING
-
-    @rule()
-    def transition_to_waiting(self):
-        assume(self.model_status == RunStatus.RUNNING)
-        self.run = self.run.model_copy(update={"status": RunStatus.WAITING})
-        self.model_status = RunStatus.WAITING
-
-    @rule()
-    def transition_to_paused(self):
-        assume(self.model_status == RunStatus.RUNNING)
-        self.run = self.run.model_copy(update={"status": RunStatus.PAUSED})
-        self.model_status = RunStatus.PAUSED
-
-    @rule()
-    def transition_to_completed(self):
-        assume(self.model_status == RunStatus.RUNNING)
-        self.run = self.run.model_copy(update={"status": RunStatus.COMPLETED})
-        self.model_status = RunStatus.COMPLETED
-
-    @rule()
-    def transition_to_failed(self):
-        assume(self.model_status == RunStatus.RUNNING)
-        self.run = self.run.model_copy(update={"status": RunStatus.FAILED})
-        self.model_status = RunStatus.FAILED
-
-    @rule()
-    def transition_to_cancelled(self):
-        assume(
-            self.model_status
-            in {
-                RunStatus.CREATED,
-                RunStatus.QUEUED,
-                RunStatus.RUNNING,
-                RunStatus.WAITING,
-                RunStatus.PAUSED,
-            }
-        )
-        self.run = self.run.model_copy(update={"status": RunStatus.CANCELLED})
-        self.model_status = RunStatus.CANCELLED
-
-    @rule()
-    def transition_to_timed_out(self):
-        assume(self.model_status == RunStatus.RUNNING)
-        self.run = self.run.model_copy(update={"status": RunStatus.TIMED_OUT})
-        self.model_status = RunStatus.TIMED_OUT
+    @rule(target_status=st.sampled_from(list(RunStatus)))
+    def attempt_transition(self, target_status: RunStatus) -> None:
+        current = self.model_status
+        legal = target_status in RUN_TRANSITIONS[current]
+        if legal:
+            self.run = transition_run(self.run, target_status)
+            self.model_status = target_status
+        else:
+            with pytest.raises(InvalidLifecycleTransition):
+                transition_run(self.run, target_status)
+            # An illegal attempt must not mutate either side.
+            assert self.run.status == current
 
     @invariant()
-    def model_matches_run(self):
-        """The internal model status must match the Run's current status."""
+    def model_matches_run(self) -> None:
         assert self.run.status == self.model_status
 
     @invariant()
-    def terminal_statuses_have_no_outgoing_transitions(self):
-        """Once in a terminal status, no further transitions are possible."""
+    def terminal_statuses_have_no_outgoing_transitions(self) -> None:
         if self.model_status in TERMINAL_RUN_STATUSES:
-            # The machine should not allow any further rules to fire from a terminal state.
-            # We can't directly test that here, but we can check that the run's status is terminal.
-            assert self.run.status in TERMINAL_RUN_STATUSES
+            for candidate in RunStatus:
+                assert candidate not in RUN_TRANSITIONS[self.model_status]
+
+    @invariant()
+    def run_validator_agrees_with_table(self) -> None:
+        # The Run's persisted status must always be a member of the table's
+        # domain; guards against a future status added to the enum but not
+        # to RUN_TRANSITIONS.
+        assert self.run.status in RUN_TRANSITIONS
+
+
+TestExecutionLifecycleMachine = ExecutionLifecycleMachine.TestCase
 
 
 def test_execution_lifecycle_placeholder() -> None:

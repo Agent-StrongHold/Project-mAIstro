@@ -21,7 +21,7 @@ do. Audited at `feb19affc`:
 | Claimed control | Actual state at this head | Evidence |
 | --- | --- | --- |
 | `formal/` Hypothesis suite | **Executing.** Invariants I1–I29 against real `maistro.security`/`auth` code; PR-gated plus nightly profile. Executed locally: `uv run pytest formal -q` → **663 passed, 1 skipped** (I29 `PgRunStore` skips without `MAISTRO_TEST_PG_DSN`, `formal/models/test_run_lease_fence.py:114`), ≈56 s wall clock on the CI profile. | `formal/README.md`, `.github/workflows/formal-conformance.yml` |
-| Property testing in packages | Partial. `hypothesis` is a declared dev dependency of `hive-conductor`, `maistro-design`, and `formal/` only; the canonical execution lifecycle (#881) and Invocation effects (#882) have no state-machine property coverage. | `packages/*/pyproject.toml` |
+| Property testing in packages | Partial. `hypothesis` is a declared dev dependency of `hive-conductor`, `maistro-design`, and `formal/` only; leaf #881 now ships a collected `Run` lifecycle state machine, while Invocation effects (#882) still have none. | `packages/*/pyproject.toml`, `formal/models/test_execution_lifecycle.py` |
 | Mutation testing | **Parked.** `.github/workflows/mutation.yml` is `workflow_dispatch`-only on self-hosted runners and its only job echoes a deferral notice; nothing mutates on PRs or schedules. The machinery (`scripts/mutation_*.py`, `quality/mutation-baseline.json`, `quality/mutation-history.json`) is present but idle. The `quality.yml:8` comment "cosmic-ray on changed files only" describes no executing step. | `.github/workflows/mutation.yml:1-33` |
 | OpenAPI contract fuzzing | **Absent.** "schemathesis" occurs exactly once in the tree — the `quality.yml:9` header comment. No dependency, workflow step, script, or config exists. The `quality-gate` job names itself "Pillars 1–4, 7, 8" (`quality.yml:707`): pillar 6 (contract) is not among them. | repo-wide grep; `.github/workflows/quality.yml:9,707` |
 | Strict typing | Executing: mypy strict across `packages/*/src` plus advisory pyright. | `AGENTS.md` typecheck command; `quality.yml` |
@@ -114,11 +114,17 @@ matches the `Run`'s status at every step.
 
 ### Results
 
-The state machine compiles and can be instantiated, but due to pytest
-collection issues (related to the presence of a custom `__init__` method in
-the state machine class), it is not currently executed as a test in the
-pytest suite. Manual instantiation shows that the state machine can be
-created and that the invariants hold for the initial state.
+The state machine is now collected and executed by pytest via the
+`TestExecutionLifecycleMachine = ExecutionLifecycleMachine.TestCase`
+assignment at module scope (the same pattern the other formal models use), so
+it runs in the formal-conformance leg instead of sitting uncollected. Each
+step calls the production `transition_run` helper from
+`maistro.runs.lifecycle` rather than mirroring the status by hand, so a
+divergence between the documented `RUN_TRANSITIONS` table and the helper's
+enforcement surfaces as a failed property. The invariants (model matches the
+Run status, terminal statuses have no outgoing transitions, and every
+persisted status is in the table's domain) hold across the CI profile's
+example budget; no counterexample has been found so far.
 
 ### Evidence
 
@@ -128,11 +134,12 @@ created and that the invariants hold for the initial state.
 
 ### Disposition
 
-Given that the experiment did not produce runnable test evidence (due to
-technical limitations in the test environment), we assign a disposition of
-**WATCH** (watch this space) for leaf #881. The state machine correctly
-models the execution lifecycle and is ready to be run once the pytest
-collection issue is resolved.
+The collection blocker is resolved and the state machine now runs as a real
+property test, so leaf #881 moves from **WATCH** to **INCUBATE**: the
+technique is runnable and exercises production transition logic, but it
+still covers only the linear `Run` lifecycle (not `NodeRun`/`Attempt`, and
+no concurrency or crash interleaving). It should graduate only after those
+seams are modeled and a defect-finding yield is observed.
 
 ## Assurance matrix — state at this head
 
@@ -162,7 +169,7 @@ with the following scores and evidence (based on the experiment record above):
 
 Net score: (0+1+2+3)/4 - (0+1+1+0)/4 = 1.5 - 0.5 = 1.0
 
-Disposition: WATCH (as per experiment record)
+Disposition: INCUBATE (collection blocker resolved; runnable property test)
 
 This technique row is added to the assurance matrix for ranking against the
 baseline population.

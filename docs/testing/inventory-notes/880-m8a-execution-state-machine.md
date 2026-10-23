@@ -1,6 +1,7 @@
 ---
 inventory-delta:
   packages/maistro-rsi/tests: +0
+  formal/: +1
 ---
 # 880 M8-A: execution Hypothesis state machine leaf #881
 
