@@ -487,3 +487,48 @@ and no shipped loop registers `sweep_goal_leases`/`reconcile_goals`
 intake-created-Goal crash point is a separate lane. All three are
 #805/#804/#1823 activation work per the issue's own dependency structure,
 and all are disclosed above and at wiring time.
+
+## 2026-10-23 round: re-validation after the 819dabf5 develop merge (no code
+## change in this lane; note delta still +107)
+
+The branch merged origin/develop's `2ac960614` (#1945 admission-generation
+codec plus the #1893 repair documentation) as `819dabf5e`. Re-validation at
+the exact merged head:
+
+- Goals-scope isolation proven from both parents: net
+  `git diff 20dab98e..819dabf5e -- packages/maistro-core/src/maistro/goals
+  packages/maistro-core/tests/goals` is empty (the merge tree equals the
+  previously verified auto-806 tree on this lane's paths), and develop's
+  side never contained the reconciliation package at all (`git diff
+  819dabf5e^1 819dabf5e^2` on those paths is pure deletion) — the merge
+  took our files; nothing develop shipped was dropped.
+- `pytest packages/maistro-core/tests/goals`: 160 passed / 24 skipped
+  (unchanged counts; all skips Postgres-DSN-gated), also green under
+  `-W error::pytest.PytestUnhandledThreadExceptionWarning` (the aiosqlite
+  teardown warning stays fixed); the lane trio: 107 passed.
+  `from maistro.goals.reconciliation import *` executes clean.
+- `ruff check .` clean; `ruff format --check .` 3475 files formatted;
+  `check-suite-inventory.py` 21 suites match (33941 unique identities,
+  0 duplicate evidence) — the merge's new admission-codec tests are
+  covered by develop's own baseline update.
+- Exact-debt-ledger with CI's exact arguments at the merged head:
+  `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'` exit 0 (1309 reviewed identities -> 1308 findings,
+  unclassified 0, never_allowlist 0; base 2ac960614, candidate 819dabf5);
+  `check-ratchet-provenance.py` (`RATCHET_BASE_REV=origin/develop`) exit 0;
+  `check-shipped-surface-truth.py` complete; `check-ac-state.py` exit 0
+  (regenerated file byte-identical, tree stays clean);
+  `check-durable-table-inventory.py` ok (119 tables);
+  `check-reachability.py` ok; `check-backlog-consistency.py` ok.
+- The merge's ledger changes are develop's own (#1945 removing five vulture
+  rows its fix eliminated and adding ten ratchet authorizations upstream);
+  `git diff --numstat fe733ae4..HEAD -- quality/` remains additive-only or
+  strictly debt-reducing on every row (vulture 0/1, license-policy 0/7,
+  direct-dependency-exceptions 0/5). No commit in the merged range closes
+  #806.
+
+Residual unchanged: production emitters for the five wake patterns, the
+scheduler registration of `sweep_goal_leases`/`reconcile_goals`, and the
+#1823 intake-created-Goal crash point all remain #805/#804/#1823 activation
+work, disclosed above and at wiring time (`wiring.py` warns loudly that a
+PostgreSQL pool gets the in-memory twin).
