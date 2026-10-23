@@ -317,10 +317,6 @@
       "rationale": "ADR-069's signed code registry, ADR-070's repertoire, and the skills catalog, connectors, forge and loader. #59 puts MCP, skill import and signed loading on one governed path, which is where every one of these is reached.",
       "root": "the governed supply-chain path (#59)",
       "modules": [
-        "maistro.code_registry",
-        "maistro.code_registry.registry",
-        "maistro.code_registry.types",
-        "maistro.code_registry.verify",
         "maistro.repertoire",
         "maistro.repertoire.protocol",
         "maistro.repertoire.run",

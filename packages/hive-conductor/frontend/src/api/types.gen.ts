@@ -2603,6 +2603,33 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/mcp/servers/{server_id}/approve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Approve Server
+         * @description Explicitly approve a server and bind its finite tool exposure.
+         *
+         *     The approval is stamped with the authenticated principal's audit label,
+         *     never a constant: a delegated deployment that approves a remote server
+         *     must leave an auditable, host-owned record of *who* authorized it (#59).
+         *     ``"admin"`` remains only for a request that arrives with no principal at
+         *     all — the middleware already gates this route on ``mcp.write``
+         *     (middleware/auth.py), so in production that branch is unreachable.
+         */
+        post: operations["approve_server_v1_mcp_servers__server_id__approve_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/mcp/servers/{server_id}/scan": {
         parameters: {
             query?: never;
@@ -2655,7 +2682,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List Tools */
+        /**
+         * List Tools
+         * @description Expose only tools inside an approved server's host-owned ceiling.
+         */
         get: operations["list_tools_v1_mcp_tools_get"];
         put?: never;
         post?: never;
@@ -5176,6 +5206,14 @@ export interface components {
              */
             role: "user" | "assistant" | "system" | "tool";
         };
+        /** ApproveServerBody */
+        ApproveServerBody: {
+            /**
+             * Allowed Tools
+             * @default []
+             */
+            allowed_tools: string[];
+        };
         /**
          * AuditEntry
          * @description One audit row exactly as ``/v1/audit`` serves it.
@@ -6423,8 +6461,25 @@ export interface components {
         };
         /** MCPServer */
         MCPServer: {
+            /** Allowed Tools */
+            allowed_tools?: string[];
+            /**
+             * Approved
+             * @default false
+             */
+            approved: boolean;
+            /**
+             * Approved By
+             * @default
+             */
+            approved_by: string;
             /** Capabilities */
             capabilities?: string[];
+            /**
+             * Content Hash
+             * @default
+             */
+            content_hash: string;
             /** Description */
             description: string;
             /** Id */
@@ -6436,6 +6491,11 @@ export interface components {
             /** Name */
             name: string;
             /**
+             * Provenance
+             * @default
+             */
+            provenance: string;
+            /**
              * Status
              * @enum {string}
              */
@@ -6445,6 +6505,11 @@ export interface components {
              * @default 0
              */
             tools_count: number;
+            /**
+             * Trust Tier
+             * @default t3
+             */
+            trust_tier: string;
             /** Url */
             url: string;
             /**
@@ -6462,6 +6527,11 @@ export interface components {
              * @default general
              */
             category: string;
+            /**
+             * Content Hash
+             * @default
+             */
+            content_hash: string;
             /** Description */
             description: string;
             /** Id */
@@ -12367,6 +12437,41 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    approve_server_v1_mcp_servers__server_id__approve_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                server_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ApproveServerBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MCPServer"];
+                };
             };
             /** @description Validation Error */
             422: {
