@@ -10,6 +10,8 @@ canonical Run until the harness result is supplied on resume.
 
 from __future__ import annotations
 
+import asyncio
+import json
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -40,8 +42,10 @@ from .base import (
     BaseNode,
     NodeContext,
     ReplaySemantics,
+    now_utc,
     pause_until,
     replay_effect_key,
+    resumed_pause,
 )
 from .capability_effect import invoke_capability_effect
 
@@ -314,7 +318,12 @@ class AgentSpawnHarnessNode(BaseNode[SpawnHarnessIn, SpawnHarnessOut]):
         return replay_effect_key(
             ctx,
             "agent.spawn_harness.dispatch",
-            inputs.model_dump(mode="json"),
+            {
+                "harness_type": inputs.harness_type,
+                "task": inputs.task,
+                "context": inputs.context,
+                "timeout_seconds": inputs.timeout_seconds,
+            },
         )
 
     @staticmethod
@@ -795,22 +804,13 @@ class AgentSpawnHarnessNode(BaseNode[SpawnHarnessIn, SpawnHarnessOut]):
                 **_detail_payload(handle),
             }
 
-        # Include the logical request in the key: a changed task is explicit
-        # new work, while a retry with a new NodeRun keeps the same identity.
-        effect_key = self.replay_effect_key(inputs, ctx)
-        invocation = await invoke_capability_effect(
-            lambda: self._effects.invocations.invoke(
-                binding=binding,
-                run_id=ctx.run_id,
-                node_run_id=ctx.node_run_id,
-                attempt_id=ctx.attempt_id,
-                effect_key=effect_key,
-                request=request_payload,
-                resolver=resolve_provider,
-                executor=execute_provider,
-                logical_effect=True,
-            ),
-            effect_key=effect_key,
+        invocation = await self._dispatch(
+            binding,
+            inputs,
+            ctx,
+            request_payload=request_payload,
+            resolver=resolve_provider,
+            executor=execute_provider,
         )
         _park(self._wait_from_dispatch(invocation, inputs, ctx))
         raise AssertionError("pause_until must raise")

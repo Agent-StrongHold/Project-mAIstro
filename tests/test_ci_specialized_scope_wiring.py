@@ -197,6 +197,63 @@ def test_specialized_scope_gates_preserve_required_matrix_contexts() -> None:
         assert output_guard in condition, job_name
 
 
+@pytest.mark.parametrize("leg_output", ["true", "false"])
+def test_pull_request_scope_gate_is_exactly_the_classifier_output(
+    leg_output: str,
+) -> None:
+    """On a pull_request event, a specialized job runs iff its measured leg
+    is selected -- the same policy gates-ran judges the head with (#1351)."""
+    jobs = _jobs()
+    for job_name, output in SPECIALIZED.items():
+        if job_name == "postgres":
+            continue
+        condition = jobs[job_name]["if"]
+        env = {
+            "github.event_name": "pull_request",
+            f"needs.workflow-lint.outputs.{output}": leg_output,
+        }
+        assert evaluate_github_expression(condition, env) is (leg_output == "true"), job_name
+
+
+@pytest.mark.parametrize("leg_output", ["true", "false"])
+def test_develop_merge_group_scope_gate_is_exactly_the_classifier_output(
+    leg_output: str,
+) -> None:
+    jobs = _jobs()
+    for job_name, output in SPECIALIZED.items():
+        if job_name == "postgres":
+            continue
+        condition = jobs[job_name]["if"]
+        env = {
+            "github.event_name": "merge_group",
+            "github.event.merge_group.base_ref": "refs/heads/develop",
+            f"needs.workflow-lint.outputs.{output}": leg_output,
+        }
+        assert evaluate_github_expression(condition, env) is (leg_output == "true"), job_name
+
+
+def test_non_candidate_events_and_foreign_merge_bases_run_unconditionally() -> None:
+    """Protected pushes and merge groups targeting any other base are not
+    path-scoped candidates: every specialized job must run even when the
+    classifier output says false."""
+    jobs = _jobs()
+    for job_name, output in SPECIALIZED.items():
+        if job_name == "postgres":
+            continue
+        condition = jobs[job_name]["if"]
+        push = {
+            "github.event_name": "push",
+            f"needs.workflow-lint.outputs.{output}": "false",
+        }
+        assert evaluate_github_expression(condition, push) is True, job_name
+        foreign = {
+            "github.event_name": "merge_group",
+            "github.event.merge_group.base_ref": "refs/heads/main",
+            f"needs.workflow-lint.outputs.{output}": "false",
+        }
+        assert evaluate_github_expression(condition, foreign) is True, job_name
+
+
 @pytest.mark.parametrize(
     ("changed_path", "postgres_in_scope"),
     [
@@ -242,6 +299,16 @@ def test_postgres_matrix_keeps_both_required_names_and_real_database_checks() ->
         assert required in commands
     workspace = next(step for step in steps if "tests/workspaces" in step.get("run", ""))
     assert workspace["env"]["MAISTRO_REQUIRE_PG_LEGS"] == "1"
+
+
+def test_postgres_matrix_is_not_filtered_by_pull_request_path_scope() -> None:
+    # Same constraint on the other path-scoped event (#1351): the classifier
+    # may deselect the postgres leg for a PR, but the matrix job still runs.
+    scope = scope_for_event("pull_request", ["docs/ci/MERGE-QUEUE.md"])
+    assert scope["postgres"] is False
+    postgres = _jobs()["postgres"]
+    assert "if" not in postgres
+    assert all("if" not in step for step in postgres["steps"])
 
 
 def test_merge_group_base_targeting_does_not_narrow_the_pr_check_contract() -> None:

@@ -52,6 +52,10 @@ class PopulationStore:
             self._init_db()
         else:
             self._db_path = None
+        # Decision record of the most recent committed promotion (programmatic
+        # access alongside the audit-trail copy written as the committed
+        # entry's detail). None until the first governed promotion commits.
+        self.last_promotion_record: PromotionRecord | None = None
         # Idempotency ledger for effectful cycle-level operations (currently
         # only Evolve's canonical finalize node, #1064) keyed by a caller's
         # own logical identity (e.g. ``f"finalize:{node_run_id}"``). This is

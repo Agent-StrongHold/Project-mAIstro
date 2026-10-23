@@ -247,6 +247,55 @@ def test_shipped_route_factory_rechecks_revoked_binding(admin_client):
         engine._agent_port = saved_port
 
 
+def test_the_route_registers_its_binding_in_a_durable_store(admin_client):
+    """#1133: persistence must not take the harness route offline.
+
+    The route's boot Binding used to be written through the in-memory store's
+    synchronous `register`, behind an `isinstance` narrowing, so on SQLite or
+    PostgreSQL nothing was registered and every session the route opened was
+    refused at resolve time. `put` is on every backend.
+    """
+
+    import asyncio
+    from types import SimpleNamespace
+
+    import aiosqlite
+
+    from maistro.capabilities.binding_store import SqliteBindingStore
+
+    async def _durable_effects() -> Any:
+        conn = await aiosqlite.connect(":memory:")
+        store = SqliteBindingStore(conn)
+        await store.ensure_schema()
+        import dataclasses
+
+        return conn, dataclasses.replace(
+            new_effect_context(policy_evaluator=binding_scope_policy), bindings=store
+        )
+
+    conn, effects = asyncio.run(_durable_effects())
+    engine = get_engine()
+    saved_port = engine._agent_port
+    engine._agent_port = SimpleNamespace(container=SimpleNamespace(capability_effects=effects))
+    reg = engine.capabilities
+    harness = _FakeHarness()
+    reg.register(harness)
+    reg.activate(SLOT_NAME, "fake")
+    reg.set_enabled(SLOT_NAME, True)
+    harness_mod._manager = None
+    try:
+        r = admin_client.post("/v1/harness/sessions", json={"description": "x"})
+
+        assert r.status_code == 200, r.text
+        # In the durable store itself, not merely in the manager: the route
+        # resolves this identity on every turn it serves.
+        assert asyncio.run(effects.bindings.get("builtin:harness-route")) is not None
+    finally:
+        harness_mod._manager = None
+        engine._agent_port = saved_port
+        asyncio.run(conn.close())
+
+
 def test_send_unknown_session_returns_404(admin_client):
     _install_harness(warden=_StubWarden())
     r = admin_client.post("/v1/harness/sessions/ghost/send", json={"messages": []})

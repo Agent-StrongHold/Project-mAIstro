@@ -260,3 +260,96 @@ round 1).
 **Verdict: BLOCKED.** Prior round-3 non-submission was a result-emission
 omission, not a code/evidence change; this round re-ran the full battery and
 re-emits the same diagnosis.
+
+## Re-verification addendum — 2026-10-23 round 5 (job `43373cf79`) + lane-rebuild repair
+
+Round 5 started from rebuilt head `0408ea3c6` ("rebuild L89: re-apply orphaned
+lane history onto develop (was `a30416f695`, root `b1c9eafb94`)"), whose
+immediately preceding attempt (`3352f43c`) died on a provider 404 before doing
+any work. Job `manifest.json` again carried `checks: []` — no driver-executed
+check logs existed — so every check below was run in this worktree. All GitHub
+evidence came from the frozen `dispatch-context.json` (captured
+2026-10-23T23:19:10Z, `complete_for_scope: true`); zero live API calls and zero
+GitHub mutations.
+
+### Lane-rebuild integrity finding and in-place repair
+
+The rebuild commit was not a faithful re-application. Forensics (all from
+local git, tree clean at start):
+
+- The orphaned lane chain (`fc8f78278` → `a30416f695`, four commits) touched
+  exactly one file: this verify note (`git diff c5e070d97 a30416f695
+  --name-status`). Its root `b1c9eafb94` dates to 2026-09-30 and shares **no
+  merge base** with current develop — genuinely orphaned history.
+- Canonical develop (`4de7e906d`, tip 2026-10-23) is **203 commits ahead** of
+  that September-30 line (`git rev-list --count a30416f695..4de7e906d`).
+- Yet `git diff --no-renames --name-status 4de7e906d 0408ea3c6` showed **441
+  files** (436 M + 5 A, −26 164 lines) reverted toward the stale tree:
+  `quality/ratchet-authorizations.json` halved 1774 → 879 lines,
+  `tests/test_check_gates_ran.py` gutted (−272), CI workflows
+  (`quality.yml` −442, `ci.yml` −126), `uv.lock`, migrations, and 5
+  stale-tree files develop no longer has
+  (`.github/workflows/stream1-diagnostic.yml`, `tests/api/test_health.py`,
+  alembic `041_canonical_run_effect_claim` / `043_capability_invocation_effect_index` /
+  `045_capability_invocation_logical_effect` — all present in the old lane
+  tree, all absent from develop).
+
+Repair (this round): each of the 441 paths was restored to its `4de7e906d`
+state (5 stale additions removed); nothing else changed, and the note file was
+kept byte-identical to `a30416f695` (verified: `git diff a30416f695 HEAD --
+<note>` empty before edits). Post-repair parity check:
+`git diff --cached --name-only 4de7e906d` == this note, nothing else. No
+history rewritten, no refs deleted; the pre-repair tree remains reachable at
+`0408ea3c6`.
+
+### Fresh deterministic checks (repaired tree = develop + this note)
+
+`uv sync --locked --extra dev` re-run against develop's lockfile first.
+
+| Check | Command | Result |
+|---|---|---|
+| Release guard | `uv run pytest tests/test_release_guard.py -q` | **24 passed** (develop grew the suite 23 → 24) |
+| Release consistency | `uv run python scripts/check-release-consistency.py` | exit 0 — "ok: released none, shipping 0.9.0, working toward 1.0.0" |
+| Tags | `git tag -l 'v*'` | **0 tags** repo-wide (no rcN, no final) |
+| Soak dirs | `ls scripts/soak docs/testing/soak` | **both absent** at develop |
+| Promotion surface | `uv run python scripts/check-promotion-surface.py` | exit 0 — "promotion surface: ok" (74 tolerated modules) |
+| Lint | `uv run ruff check .` | exit 0 — "All checks passed!" |
+
+### Movement since round 4 (none favorable)
+
+- `release.yml:23-24` still self-declares "NOT YET EXERCISED … this workflow
+  has never run"; `ADR-073126-c4e1` §Implementation status (lines 146-166)
+  still records PyPI trusted publisher **not registered**, `release`
+  environment **not configured**, **no tags at all**.
+- Child soak lane #860: last three progress markers (2026-10-23 08:04-08:28Z)
+  are started → started → **blocked** (repair attempt `db2517ec` at head
+  `78534b6e`). Its PR #1672 remains **open, DRAFT, unmerged** (base
+  `develop`), and the frozen check-runs on that head include **failure**
+  conclusions (Coverage gate, devskim).
+- Dependency lanes vs develop `4de7e906d`: auto-86 **+1**, auto-88 **+297**
+  (unmerged WIP); `origin/auto-84` / `origin/auto-87` have no local remote
+  refs in this worktree (last measured 0 in rounds 3-4) — recorded as not
+  locally resolvable, and in no case merged into develop.
+- #89's own comment timeline (12 comments) contains only bot progress
+  markers; latest state "failed" for the provider-404 attempt.
+
+### Verdict (re-affirmed, round 5)
+
+No criterion moved from FAIL/BLOCKED to PASS. Round-5 tally: 0 PASS,
+1 PARTIAL, 3 UNVERIFIED, 3 FAIL, 1 BLOCKED — unchanged since round 1. The
+promotion-scale gaps remain program-level and outside this lane's authority:
+(1) no designated RC artifact/configuration, (2) no ≥4 h exact-RC soak (child
+lane #860 last recorded BLOCKED on 2026-10-23 with `sustain_duration` floor
+exceeding its lane timeout and `exact_rc_artifact` NOT MET), (3) no first run
+of `release.yml` (requires a `v*` tag push + `release` environment approval —
+GitHub mutations this lane is prohibited from performing), (4) no
+machine-readable soak evidence tied to any promoted artifact at this head.
+The static in-tree release machinery (release guard 24/24, release
+consistency, promotion surface, ruff) is healthy on the repaired tree and is
+not the blocker.
+
+**Verdict: BLOCKED.**
+
+Progress: `{checked: 8, done: 0, skipped: 0, errors: 0, next: program-level RC
+designation and cross-lane sequencing; then #860 exact-RC ≥4h soak; then first
+release-workflow run → rc→final promotion}`.

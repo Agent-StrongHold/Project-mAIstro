@@ -55,6 +55,11 @@ class _Handler(BaseHTTPRequestHandler):
         else:
             self._send(404, {})
 
+    def do_DELETE(self) -> None:
+        # `MaistroServerTaskBackend.cancel` issues DELETE /tasks/{id}; the
+        # cancel-path tests below drive the real backend end to end.
+        self._send(200, {"cancelled": True})
+
     def _send(self, status: int, body: dict[str, Any]) -> None:
         payload = json.dumps(body).encode()
         try:
@@ -156,6 +161,64 @@ async def test_cancelling_the_stream_mid_stall_returns_promptly(
     consumer.cancel()
     with pytest.raises(asyncio.CancelledError):
         await consumer
+
+    assert time.monotonic() - started < 0.7
+
+
+async def test_stalled_cancel_probe_does_not_block_the_loop(
+    task_server: _StallingTaskServer,
+) -> None:
+    """`EngineService.cancel_task` serves async `DELETE /v1/missions/{id}`.
+    Its ownership probe is `get_async` over the pooled client, so a stalled
+    backend response — the same 30s-timeout call class the stream moved off
+    the loop — leaves the loop free and never builds the sync client (#1180).
+    """
+    from maistro.http import get_shared_client
+
+    svc = _engine_over(task_server)
+    get_shared_client(timeout=30.0)
+    done = asyncio.Event()
+    max_gap = 0.0
+
+    async def _heartbeat() -> None:
+        nonlocal max_gap
+        last = time.monotonic()
+        while not done.is_set():
+            await asyncio.sleep(0.01)
+            now = time.monotonic()
+            max_gap = max(max_gap, now - last)
+            last = now
+
+    beat = asyncio.create_task(_heartbeat())
+    await asyncio.sleep(0.05)
+    try:
+        cancelled = await svc.cancel_task("t1", user_id="u1")
+    finally:
+        done.set()
+        await beat
+
+    assert cancelled is True
+    assert max_gap < 0.25, f"event loop stalled for {max_gap:.2f}s"
+    # The whole cancel path stayed on the async client: the sync client the
+    # threadpool routes share was never even constructed.
+    assert svc._backend._sync is None
+
+
+async def test_cancelling_the_cancel_probe_mid_stall_returns_promptly(
+    task_server: _StallingTaskServer,
+) -> None:
+    """Cancelling the caller (client disconnect) must not wait out the stall."""
+    svc = _engine_over(task_server)
+
+    async def _cancel() -> bool:
+        return await svc.cancel_task("t1", user_id="u1")
+
+    started = time.monotonic()
+    canceller = asyncio.create_task(_cancel())
+    await asyncio.sleep(0.2)
+    canceller.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await canceller
 
     assert time.monotonic() - started < 0.7
 

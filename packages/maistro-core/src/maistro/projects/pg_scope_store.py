@@ -144,18 +144,6 @@ class PgProjectScopeStore:
         async with self._pool.acquire() as conn, conn.transaction():
             yield conn
 
-    @asynccontextmanager
-    async def transaction(self) -> AsyncIterator[Any]:
-        """One pooled connection with a transaction open on it.
-
-        The handle `TransactionalProjectScopeStore` names: a Workspace store on
-        the same pool writes its own rows on the yielded connection and passes
-        it to `create_root_in` / `purge_workspace_in`, so both stores' rows
-        commit or roll back as one (#1121).
-        """
-        async with self._pool.acquire() as conn, conn.transaction():
-            yield conn
-
     async def purge_workspace(self, workspace_id: str) -> None:
         """Tear down every Project row this Workspace owns, in a transaction of its own."""
         async with self.transaction() as conn:
@@ -503,7 +491,12 @@ class PgProjectScopeStore:
             )
         return model_of(ProjectMembership, row["payload"])
 
-    async def merge_membership(self, membership: ProjectMembership) -> ProjectMembership:
+    async def merge_membership(
+        self,
+        membership: ProjectMembership,
+        *,
+        principal_id: str | None = None,
+    ) -> ProjectMembership:
         """Merge a delegated re-grant into the canonical row atomically.
 
         The existing row is read under `FOR UPDATE` inside the same
@@ -512,9 +505,13 @@ class PgProjectScopeStore:
         to preserve if it commits first) -- an upsert fed by a separately
         read row could resurrect a revoked principal with stale grants
         (#1148). As in `set_membership`, the row is read back from the
-        `RETURNING` clause rather than trusting a pre-computed value.
+        `RETURNING` clause rather than trusting a pre-computed value. A
+        supplied ``principal_id`` is the acting principal whose
+        membership-write authority is enforced (#1150).
         """
-        project = await self._require(membership.project_id)
+        project = await self._authorize_membership_write(
+            membership, principal_id, replacement=False
+        )
         if project.workspace_id != membership.workspace_id:
             raise ProjectIntegrityError("ProjectMembership Workspace does not match Project")
         async with self._pool.acquire() as conn, conn.transaction():
@@ -554,7 +551,13 @@ class PgProjectScopeStore:
             )
         return model_of(ProjectMembership, row["payload"])
 
-    async def remove_membership(self, project_id: str, *, principal_id: str) -> None:
+    async def remove_membership(
+        self,
+        project_id: str,
+        *,
+        principal_id: str,
+        acting_principal_id: str | None = None,
+    ) -> None:
         """Revoke a principal's membership at one Project, if any exists."""
 
         await self._authorize_administer(project_id, acting_principal_id)

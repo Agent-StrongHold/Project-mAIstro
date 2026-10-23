@@ -24,6 +24,8 @@ from fastapi import HTTPException
 from models.schemas import ChatCompletionRequest
 from routes import chat, voice
 
+from maistro.identity import Principal
+
 # Model-reaching turns are admitted as canonical chat Runs (#1037).
 pytestmark = pytest.mark.usefixtures("chat_run_spine")
 
@@ -813,7 +815,9 @@ async def test_chat_workflow_route_accepts_username_principal_and_omits_empty_go
         return {"run_id": "run-route"}
 
     monkeypatch.setattr(chat, "_execute_workflow_with_approval", run)
-    named = SimpleNamespace(state=SimpleNamespace(user={"username": "blake"}))
+    named = SimpleNamespace(
+        state=SimpleNamespace(principal=Principal(user_id="", username="blake"))
+    )
     result = await chat.run_workflow(chat.RunWorkflowBody(dag_id="dag-2"), named)
 
     assert result["run_id"] == "run-route"
@@ -867,7 +871,11 @@ async def test_chat_workflow_route_waits_on_shared_inbox_then_executes(
         resolved = cap_routes.resolve_approval(
             pending[0].request_id,
             cap_routes.ResolveApprovalBody(approved=True, actor="forged"),
-            SimpleNamespace(state=SimpleNamespace(user={"id": "admin-1", "role": "admin"})),
+            SimpleNamespace(
+                state=SimpleNamespace(
+                    principal=Principal(user_id="admin-1", roles=frozenset({"admin"}))
+                )
+            ),
         )
         assert resolved["resolved"] is True
         result = await asyncio.wait_for(task, timeout=1.0)
@@ -907,12 +915,12 @@ def test_workflow_approval_route_rejects_config_editor_as_approver(
             cap_routes.ResolveApprovalBody(approved=True, actor="forged"),
             SimpleNamespace(
                 state=SimpleNamespace(
-                    user={
-                        "id": "editor-1",
-                        "role": "user",
-                        "permissions": ["config.write"],
-                        "elevated_permissions": ["config.write"],
-                    }
+                    principal=Principal(
+                        user_id="editor-1",
+                        roles=frozenset({"user"}),
+                        permissions=frozenset({"config.write"}),
+                        elevated_permissions=frozenset({"config.write"}),
+                    )
                 )
             ),
         )

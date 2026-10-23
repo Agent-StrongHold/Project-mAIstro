@@ -117,5 +117,6 @@ __all__ = [
     "descriptor_to_template",
     "edge_decision_id",
     "graph_state_hash",
+    "materialize_candidate",
     "snapshot_to_template",
 ]

@@ -32,6 +32,9 @@ from maistro.projects.scope import (
 from maistro.sqlite_schema import execute_schema_script, serialized_schema_upgrade
 
 if TYPE_CHECKING:
+    from maistro.workspaces.store import WorkspaceStore
+
+if TYPE_CHECKING:
     import aiosqlite
 
 #: Passes the leaf-first Project purge may take before it gives up. A Workspace
@@ -595,19 +598,28 @@ class SqliteProjectScopeStore:
             )
         return updated
 
-    async def merge_membership(self, membership: ProjectMembership) -> ProjectMembership:
+    async def merge_membership(
+        self,
+        membership: ProjectMembership,
+        *,
+        principal_id: str | None = None,
+    ) -> ProjectMembership:
         """Merge a delegated re-grant into the canonical row atomically.
 
         Locked the same way `set_membership` is: the read that decides what
         to preserve and the write that stores it share one `_serialized_write`
         critical section, so an owner's `remove_membership` either commits
         entirely before it (leaving no row to preserve -- no resurrection of
-        revoked grants) or is ordered after it (#1148).
+        revoked grants) or is ordered after it (#1148). A supplied
+        ``principal_id`` is the acting principal whose membership-write
+        authority (owner, or a delegable grant) is enforced (#1150).
         """
+        project = await self._authorize_membership_write(
+            membership, principal_id, replacement=False
+        )
+        if project.workspace_id != membership.workspace_id:
+            raise ProjectIntegrityError("ProjectMembership Workspace does not match Project")
         async with self._serialized_write():
-            project = await self._require(membership.project_id)
-            if project.workspace_id != membership.workspace_id:
-                raise ProjectIntegrityError("ProjectMembership Workspace does not match Project")
             existing = await self._membership_or_none(
                 membership.project_id, membership.principal_id
             )

@@ -108,6 +108,7 @@ __all__ = [
     "InvocationStore",
     "LoggedEvent",
     "ProcessedBatch",
+    "ReplaySafety",
     "SqliteEventLog",
     "SqliteEventOutbox",
     "SqliteEventStore",
@@ -124,4 +125,6 @@ __all__ = [
     "process_events",
     "process_events_batch",
     "reconstruct_persisted_event",
+    "request_digest_v1",
+    "validated_outcome",
 ]
