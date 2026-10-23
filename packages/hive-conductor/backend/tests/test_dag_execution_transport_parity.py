@@ -16,6 +16,8 @@ import pytest
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
+pytestmark = pytest.mark.usefixtures("canonical_run_spine")
+
 POLICY_VIOLATION = 1008
 _SECRET = "postgres://svc:hunter2@db.internal/prod"
 
@@ -286,10 +288,15 @@ def test_ws_unexpected_failure_frame_names_only_the_exception_kind(
 
 
 def _run_ids() -> set[str]:
-    from services.dag_agents import get_run_store
+    from services.dag_agents import _container
 
-    store = get_run_store()
-    return set(store._rows)
+    from maistro.runs.model import RunStatus
+
+    async def read_ids():
+        runs = _container().run_store
+        return {run.run_id for status in RunStatus for run in await runs.list_by_status(status)}
+
+    return asyncio.run(read_ids())
 
 
 @pytest.mark.contract("behavioral")
@@ -346,6 +353,46 @@ def sqlite_member_root_project(monkeypatch: pytest.MonkeyPatch) -> Iterator[str]
     loop = asyncio.new_event_loop()
     conn, store, root_project_id = loop.run_until_complete(_open())
     monkeypatch.setattr(workspace_authority, "_engine_workspace_store", lambda: store)
+    from types import SimpleNamespace
+
+    from services.engine import get_engine
+
+    from maistro.graph.durable_runs import CanonicalDurableRunStore, InMemoryGraphContinuationStore
+    from maistro.runs.store import InMemoryRunStore
+
+    runs = InMemoryRunStore(project_store=store.project_store)
+
+    from maistro.capabilities.bootstrap import default_capability_registry
+    from maistro.security.permission_policy import build_permission_table
+    from maistro.security.sentinel.delegation import InMemoryDelegationAuthority
+    from maistro.security.sentinel.permission_source import CapabilityPermissionSource
+    from maistro.security.sentinel.policy import Sentinel
+    from maistro.security.warden.detector import Warden
+
+    _tbl = build_permission_table(
+        preset="none", permissions={"graph.node.execute": ["admin", "user"]}
+    )
+    sentinel = Sentinel(
+        warden=Warden(),
+        permission_table=_tbl,
+        permission_source=CapabilityPermissionSource(
+            base=_tbl, capabilities=default_capability_registry()
+        ),
+        tier_policy={},
+        delegation_authority=InMemoryDelegationAuthority(),
+    )
+
+    monkeypatch.setattr(
+        get_engine(),
+        "_agent_port",
+        SimpleNamespace(
+            container=SimpleNamespace(
+                run_store=runs,
+                graph_run_store=CanonicalDurableRunStore(runs, InMemoryGraphContinuationStore()),
+                sentinel=sentinel,
+            )
+        ),
+    )
     yield root_project_id
     loop.run_until_complete(conn.close())
     loop.close()
@@ -355,16 +402,9 @@ def sqlite_member_root_project(monkeypatch: pytest.MonkeyPatch) -> Iterator[str]
 def canonical_run_spine(_chat_spine_container: Any, monkeypatch: pytest.MonkeyPatch) -> Any:
     """Wire a real canonical Container onto the engine.
 
-    Without this, ``_container()`` returns ``None`` in this suite (the
-    session's ``StubAgentPort`` carries no container), so
-    ``canonical_dag_runner._scope()`` never calls ``RunStore.create_run()``
-    and ``services.dag_agents.get_run_store()`` falls back to a process-local
-    store: a double-admission bug in the real admission path would go
-    unnoticed. Unlike ``chat_run_spine``, this also exposes ``workspace_store``/
-    ``project_scope_store`` -- ``RunStore.create_run()`` validates the Graph's
-    Project against the Container's own project scope, so Workspace authority
-    must resolve through the same Container or that validation refuses every
-    Workspace this fixture's caller creates.
+    The fixture exposes Workspace and Project scope authority alongside the
+    canonical Run and continuation owners. Model dispatch remains faked at
+    the terminal boundary; no production standalone lifecycle is needed.
     """
     from types import SimpleNamespace
 
@@ -376,6 +416,7 @@ def canonical_run_spine(_chat_spine_container: Any, monkeypatch: pytest.MonkeyPa
         graph_run_store=container.graph_run_store,
         workspace_store=container.workspace_store,
         project_scope_store=container.project_scope_store,
+        sentinel=getattr(container, "sentinel", None),
     )
     monkeypatch.setattr(get_engine(), "_agent_port", SimpleNamespace(container=spine))
     yield container

@@ -41,6 +41,30 @@ def test_evolution_stored_diagnostics_are_private(monkeypatch):
     assert raw["last_error"] == SECRET
 
 
+@pytest.mark.parametrize(
+    "diagnostics",
+    [
+        {},
+        {"last_error": None, "availability_reason": None},
+        {"last_error": "", "availability_reason": ""},
+    ],
+)
+def test_evolution_status_without_diagnostics_is_unchanged(monkeypatch, diagnostics):
+    import services.evolution as service
+    from routes.evolution import evolution_status
+
+    raw = {"running": True, "last_run_id": "run-healthy", "cycle_count": 3, **diagnostics}
+    monkeypatch.setattr(
+        service, "get_evolution_service", lambda: SimpleNamespace(status=lambda: raw)
+    )
+
+    result = evolution_status()
+
+    assert result == raw
+    assert result is not raw
+    assert result["running"] is True
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("kind", ["unexpected", "canonical", "unavailable", "validation"])
 async def test_evolution_error_contract(monkeypatch, kind):

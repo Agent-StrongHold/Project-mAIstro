@@ -35,11 +35,16 @@ RUN npm run build
 
 # ---- age build ----
 # age v1.3.1 remains the latest upstream release, but its prebuilt Linux binary
-# was compiled before several 2026 Go/x/crypto and stdlib fixes. Build the exact
-# immutable release tag ourselves with a patched Go toolchain/dependency set so
-# the runtime does not inherit vulnerabilities from an otherwise-current source
+# was compiled before several 2026 Go/x/crypto and stdlib fixes, and no released
+# age artifact embeds a toolchain carrying the 2026 stdlib fixes (trivy:
+# CVE-2026-78667/78669/97031 HIGH in stdlib 1.25.x, then CVE-2026-111943 HIGH in
+# stdlib 1.27.2 — crypto/x509 MITM via untrusted intermediate certificates,
+# fixed in 1.26.10/1.27.3). Build the exact immutable
+# release tag ourselves with a patched Go toolchain/dependency set so the
+# runtime does not inherit vulnerabilities from an otherwise-current source
 # release. The release tag resolves to b8564ad; fail if upstream ever disagrees.
-FROM golang:1.25.13-alpine@sha256:1e0126852075c9c60731c8ba49088448b91f63e2aed97ca9d1a9791622a05946 AS agebuild
+# Digest-pinned (#349); golang:1.27.3-alpine resolved to this index digest 2026-10-22.
+FROM golang:1.27.3-alpine@sha256:b8c9b82affbbb82a020bbcf998dad2ba9516944ac7e883524642a481a9505e9c AS agebuild
 ARG AGE_VERSION=1.3.1
 ARG AGE_COMMIT_SHORT=b8564ad
 RUN apk add --no-cache git && \
@@ -54,7 +59,7 @@ RUN apk add --no-cache git && \
 # ---- builder: self-contained venv (has shell/pip) ----
 # Digest-pinned (#349); shared with the runtime stage below so both resolve to
 # the same CPython build.
-FROM python:3.13.15-slim-bookworm@sha256:2325bb286ec344af3e5898cc224b5844e2707ac6e26b1632516fd3edc84a5e26 AS pybuild
+FROM python:3.13.16-slim-bookworm@sha256:73aa5faee130c60da030e105ec971ccf57473fbd22ce73bd6fc9ba99a40b838d AS pybuild
 WORKDIR /app
 # CI evidence (run 36835563311): pip's 15s transport timeouts, not resolution
 # failures, killed the sibling research image's builds under runner load.
@@ -125,7 +130,7 @@ RUN python /tmp/prune-dependency-namespaces.py \
     && rm -rf /tmp/check-dependency-namespaces.py /tmp/prune-dependency-namespaces.py
 # The image build is the first contract test: exercise the same identity import
 # and derivation that setup uses, and fail if a native wheel was not selected.
-RUN python -c "import importlib.metadata as m, sys; from maistro.identity import ConductorSeed; assert sys.version_info[:3] == (3, 13, 15), sys.version; assert m.version('bip-utils') == '${BIP_UTILS_VERSION}'; assert m.version('coincurve') == '${COINCURVE_VERSION}'; assert m.version('pynacl') == '${PYNACL_VERSION}'; seed = ConductorSeed.generate(); assert seed.did_key().startswith('did:key:z'); seed.zero()" && \
+RUN python -c "import importlib.metadata as m, sys; from maistro.identity import ConductorSeed; assert sys.version_info[:3] == (3, 13, 16), sys.version; assert m.version('bip-utils') == '${BIP_UTILS_VERSION}'; assert m.version('coincurve') == '${COINCURVE_VERSION}'; assert m.version('pynacl') == '${PYNACL_VERSION}'; seed = ConductorSeed.generate(); assert seed.did_key().startswith('did:key:z'); seed.zero()" && \
     if [ "$INSTALL_OBSERVABILITY" = "1" ]; then \
         python -c "import opentelemetry, opentelemetry.sdk, opentelemetry.exporter.otlp"; \
     fi
@@ -136,7 +141,25 @@ RUN python -c "import importlib.metadata as m, sys; from maistro.identity import
 RUN mkdir -p /app/state_seed
 
 # ---- thin runtime: same pinned CPython ABI, nonroot ----
-FROM python:3.13.15-slim-bookworm@sha256:2325bb286ec344af3e5898cc224b5844e2707ac6e26b1632516fd3edc84a5e26
+# The security-patch layer lives in its own stage so CI can name it in
+# `--no-cache-filter` (#795): a plain `RUN apt-get upgrade` has a cache key
+# that never changes, so the GHA cache can replay a pre-advisory mirror state
+# forever — the same mechanism that shipped maistro-engine with libexpat1
+# 2.5.0-1+deb12u4 after deb12u5 (CVE-2025-59375/CVE-2026-77214) had published.
+# security.yml builds this stage with `--no-cache-filter runtime-apt`. The
+# 2026-10-22 base-digest bump (#1152) additionally invalidates the previously
+# cached apt layer.
+FROM python:3.13.16-slim-bookworm@sha256:73aa5faee130c60da030e105ec971ccf57473fbd22ce73bd6fc9ba99a40b838d AS runtime-apt
+
+# Security patches the pinned base digest froze at its 2026-10-22 build (trivy:
+# perl-base x3 CRITICAL + x4 HIGH, libpcre2 HIGH on debian 12.15, all fixed in
+# current point releases). Same hardening policy as Dockerfile.research.
+RUN apt-get update && apt-get upgrade -y \
+    && apt-get autoremove -y --purge \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/* /var/cache/apt/* /tmp/*
+
+FROM runtime-apt
 WORKDIR /app
 ENV PATH="/app/venv/bin:$PATH" \
     PYTHONPATH=/app/backend:/app \
@@ -157,6 +180,15 @@ COPY agents/ /app/backend/agents/
 COPY --from=frontend /build/dist /app/frontend/dist
 # Persistent conductor state dir, pre-owned by the nonroot uid (see pybuild).
 COPY --from=pybuild --chown=65532:65532 /app/state_seed /data
+# pip is a build-time tool, not a runtime surface: nothing in the shipped app
+# invokes it, and its vendored dependency tree (pip/_vendor/vendor.txt: msgpack
+# 1.1.2, urllib3 2.7.0, setuptools 70.3.0 -- present in both the venv's pip and
+# the base interpreter's) is exactly what the trivy gate flagged. Drop pip from
+# the shipped filesystem; the venv keeps everything the app imports.
+RUN rm -rf /app/venv/lib/python3.13/site-packages/pip* \
+           /app/venv/bin/pip* \
+           /usr/local/lib/python3.13/site-packages/pip* \
+           /usr/local/bin/pip*
 EXPOSE 8101
 WORKDIR /app/backend
 # Keep the app nonroot even though the pinned runtime is a slim Python image.

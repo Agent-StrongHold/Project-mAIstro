@@ -136,14 +136,21 @@ def _supersedes(candidate: dict[str, Any], incumbent: dict[str, Any]) -> bool:
     certifies that the enforcement it names ran to a verdict, so it must never
     shadow a sibling run for the same name that did -- regardless of which one
     the API happens to return later. Only when both runs agree on having
-    executed (or both failed to) does list order -- the later entry being the
-    newer attempt -- decide, preserving judging-by-latest-attempt for an
-    ordinary rerun sequence.
+    executed (or both failed to) does the greater check-run ID decide. This
+    matches integration-scope's attempt ordering, independent of API/page order.
+    Do not compare workflow run IDs or run_attempt (not check-run fields), nor
+    timestamps: queued checks may have no start time, and old jobs can start or
+    finish after their replacements. Legacy caller payloads without numeric
+    check-run IDs retain their ordered-list contract.
     """
     candidate_executed = candidate.get("conclusion") not in NON_EXECUTED
     incumbent_executed = incumbent.get("conclusion") not in NON_EXECUTED
     if candidate_executed != incumbent_executed:
         return candidate_executed
+    candidate_id = candidate.get("id")
+    incumbent_id = incumbent.get("id")
+    if type(candidate_id) is int and type(incumbent_id) is int:
+        return candidate_id > incumbent_id
     return True
 
 

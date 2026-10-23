@@ -26,7 +26,11 @@ _MODEL = "model-tools-provider"
 
 @pytest.fixture
 async def container(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    request: pytest.FixtureRequest,
+    shipped_deployment_security: Any,
+    host_user_actor: Any,
 ) -> AsyncIterator[Container]:
     providers = tmp_path / "providers.yaml"
     providers.write_text(
@@ -42,12 +46,18 @@ async def container(
     )
     project = await initial.project_scope_store.root_for_workspace(_WORKSPACE)
     await initial.aclose()
+    # The acting user is a host user with a role: the node adapter's Sentinel
+    # gate resolves the principal's roles from the host's user store, and the
+    # deployment states the graph-node grant (both are what a booted
+    # deployment has; see the `shipped_deployment_security` fixture).
+    host_user_actor(_ACTOR, role="user")
     owner = await create_container(
         AgentConfig(
             router_api_key="test-router-key",
             database_url=database_url,
             workspace_id=_WORKSPACE,
             provider_config_path=str(providers),
+            security=shipped_deployment_security,
             litellm_key="binding-scoped-test-key" if getattr(request, "param", True) else "",
             model_bindings=[
                 {

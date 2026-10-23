@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/hive-conductor/backend/tests: +13
+  packages/hive-conductor/backend/tests: +16
   packages/maistro-canvas/tests: +1
 ---
 
@@ -21,3 +21,6 @@ Six additional live/replay × failed/cancelled/timed_out cases verify safe
 stream frames, persisted projection callbacks, run identity, sequence cursors,
 successful node output, and unchanged internal diagnostic records. The real
 WS/HTTP transport parity test also injects credentials and checks projections.
+
+Three healthy-status cases cover absent, null, and empty diagnostics, preserving
+the service status without inventing a failure or mutating the canonical object.

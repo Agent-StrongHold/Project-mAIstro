@@ -133,23 +133,28 @@ resource mount with negotiated behavior — and the canvas
 `application/vnd.canvas+json;version=2` media-type check stays a canvas-local
 mechanism, distinct from the general scheme.
 
-### Recurring schedules created through the API do not survive a restart
+### Recurring schedules created through the API survive a restart (was: did not)
 
-Recurrence itself is now correct and durable-capable:
+Recurrence is correct and durable:
 [ADR-082126-f69c](docs/adr/ADR-082126-f69c-recurrence-produces-runs.md)
 replaced the two disagreeing cron matchers with one verified POSIX dialect,
 gave schedules a timezone with explicit DST rules, added catchup and overlap
-policies, and shipped a schedule store with in-memory and SQLite
+policies, and shipped a schedule store with in-memory, SQLite, and PostgreSQL
 implementations held to the same tests. A fired schedule produces a canonical
 Run.
 
-What is **not** closed: Hive's `/v1/schedules` routes still write
-`stores.schedules`, which is in memory. A schedule created through the live
-API is therefore still lost on restart, with no error and no indication to
-the user who created it. The durable store it needs already exists; the
-remaining work is migrating the CRUD path behind the unchanged HTTP contract.
+Closed by #1199: Hive's `/v1/schedules` routes write the canonical
+`ScheduleStore` behind the unchanged HTTP contract (`routes/schedules.py`
+`_write_canonical`), keeping the in-memory `stores.schedules` row only as a
+response projection and a one-time migration source, and the live scheduler
+tick enumerates candidates from `ScheduleStore.due()` rather than the legacy
+dictionary. A schedule created through the live API is durable on every
+deployment whose spine has a database (PostgreSQL or SQLite — the same backend
+order `wire_execution_spine` gives every canonical store); only the
+no-database in-memory POC composition still loses rows, exactly as it loses
+every other store.
 
-Two smaller follow-ups from the same ADR: the Hive schedule row has no
+Two smaller follow-ups from the same ADR remain: the Hive schedule row has no
 timezone column, so recurrence there is evaluated in UTC until one is added,
 and `maistro_schedule_fires_total` / the `schedule.fire` span are not emitted
 yet (Run identity is in the audit trail today).
