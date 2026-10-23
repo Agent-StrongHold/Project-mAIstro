@@ -59,7 +59,15 @@ def _host_principal_roles(user_id: str) -> tuple[str, ...]:
         role = registration_policy.host_user_role(user_id)
     except Exception:  # pragma: no cover - store unavailable in isolation
         return ()
-    return (str(role),) if role else ()
+    roles: list[str] = []
+    if role:
+        roles.append(str(role))
+    # Every authenticated human carries the canonical base role, so the
+    # shipped host tier record (armed for "user") applies to admins too
+    # without widening the tier policy to every stored role (#845).
+    if roles and "user" not in roles:
+        roles.append("user")
+    return tuple(roles)
 
 
 def _raw_nodes(dag_data: Mapping[str, Any]) -> list[dict[str, Any]]:
