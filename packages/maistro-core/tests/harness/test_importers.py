@@ -90,7 +90,8 @@ def test_pi_importer_roundtrip() -> None:
     assert agent.description == "Finds and summarizes papers"
     assert agent.model == "claude-sonnet-4-6"
     assert agent.tools == ("web_search", "document_reader")
-    assert agent.trust_tier == "t2"
+    # Foreign metadata cannot self-certify delegation authority.
+    assert agent.trust_tier == "t3"
     assert agent.model_constraints["harness_runner"] == "pi"
     assert agent.model_constraints["instructions"] == PI_AGENT["instructions"]
     assert agent.provenance == "import:pi"

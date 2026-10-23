@@ -140,6 +140,12 @@ async def test_a_chat_created_agent_is_dispatchable_and_provenance_stamped(
     assert provenance["scan"]["findings"] == []
     assert provenance["scan"]["scanned_at"]
     assert provenance["timestamp"]
+    # The stored stamp is self-describing (#288): scanner identity/policy, the
+    # definition it walked, and how many values it judged -- so a stored clean
+    # row always shows the completed analysis behind it (SECURITY.md's claim).
+    assert provenance["scan"]["scanner"]["name"] == "warden"
+    assert provenance["scan"]["target"] == {"kind": "agent_definition", "id": record.id}
+    assert provenance["scan"]["scanned_values"] >= 1
 
 
 async def test_save_as_action_stores_a_clean_provenance_row_without_a_workspace() -> None:

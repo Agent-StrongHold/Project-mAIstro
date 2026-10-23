@@ -27,6 +27,7 @@ from maistro.agents.types import ConductorOutput, LLMProviderError
 from maistro.container import create_container
 from maistro.runs.chat_execution import ATTEMPT_AGENT_KEY
 from maistro.runs.model import TERMINAL_RUN_STATUSES, RunStatus
+from maistro.runs.store_boundary import RunStoreBoundary
 from maistro.types.config import AgentConfig
 from maistro_server.api import chat_completions as chat_api
 from maistro_server.api import runs as runs_api
@@ -58,11 +59,20 @@ async def _routed() -> Iterator[None]:
     container.agents = {CONDUCTOR_AGENT_NAME: ConductorAgent()}  # type: ignore[dict-item]
     chat_api.configure_container(container)
     runs_api.configure_run_store(container.run_store)
+    # The configured Workspace and its "dev" owner membership come from
+    # create_container itself now (#1152), so the boundary the routes answer
+    # through has its membership rows without a test-side bootstrap.
+    runs_api.configure_run_boundary(
+        RunStoreBoundary(
+            container.run_store, container.workspace_store, container.project_scope_store
+        )
+    )
     try:
         yield
     finally:
         chat_api.configure_container(None)
         runs_api.configure_run_store(None)
+        runs_api.configure_run_boundary(None)
 
 
 @pytest.fixture

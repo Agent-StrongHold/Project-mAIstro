@@ -125,13 +125,15 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         than an f-string.
         """
         settings = get_settings()
-        if not settings.api_keys:
+        if not settings.api_keys and not settings.admin_api_keys:
             # #1101: auth is disabled — no principal can be resolved, so the
             # Authorization header (present or absent, valid or not) must not
             # influence the bucket. The delegation envelope is ignored too:
             # budgeting a delegation requires an authenticated service
             # principal to verify against, and inventing one would rebuild
-            # exactly the synthetic bucket this branch removes.
+            # exactly the synthetic bucket this branch removes. Admin-only
+            # deployments (API_KEYS empty, ADMIN_API_KEYS non-empty) are
+            # auth-enabled: an admin bearer resolves to its principal (#1095).
             return _pre_auth_client_key(request)
 
         auth = request.headers.get("authorization", "")
