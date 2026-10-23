@@ -45,6 +45,8 @@ from pathlib import Path
 
 import pytest
 
+from maistro.memory.user_model.types import fact_key
+
 ROOT = Path(__file__).resolve().parents[2]
 DATABASE_URL = os.environ.get("MAISTRO_TEST_DATABASE_URL", "")
 
@@ -62,7 +64,8 @@ PRE_064_VERSIONS = frozenset({"063"})
 SEED = """
 insert into canonical_workspaces (workspace_id, name, created_at, updated_at, payload)
 values ('ws1', 'Workspace One', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', '{}'),
-       ('ws2', 'Workspace Two', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', '{}');
+       ('ws2', 'Workspace Two', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', '{}'),
+       ('ws3', 'Workspace Three', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', '{}');
 
 -- The interesting overlap: default joined *first* as a member, conductor
 -- arrived later as owner. Owner must win the role, the earliest added_at must
@@ -70,7 +73,9 @@ values ('ws1', 'Workspace One', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 
 insert into canonical_workspace_memberships (workspace_id, user_id, role, added_at, payload)
 values ('ws1', 'default', 'member', '2025-12-01T00:00:00Z', '{"user_id":"default","role":"member"}'),
        ('ws1', 'conductor', 'owner', '2026-01-02T00:00:00Z', '{"user_id":"conductor","role":"owner"}'),
-       ('ws2', 'default', 'owner', '2025-12-05T00:00:00Z', '{"user_id":"default","role":"owner"}');
+       ('ws2', 'default', 'owner', '2025-12-05T00:00:00Z', '{"user_id":"default","role":"owner"}'),
+       ('ws3', 'conductor', 'member', '2026-01-02T00:00:00Z', '{"user_id":"conductor","role":"member"}'),
+       ('ws3', 'default', 'contributor', '2025-12-02T00:00:00Z', '{"user_id":"default","role":"contributor"}');
 
 insert into canonical_projects (project_id, workspace_id, is_root, payload)
 values ('proj1', 'ws1', true, '{}'), ('proj2', 'ws2', true, '{}');
@@ -90,6 +95,11 @@ values ('mem-default', 'hot', 'legacy memory', 'default', 'default'), ('mem-cond
 
 insert into outcomes (request_id, user_id, org_id) values ('req-default', 'default', 'default'), ('req-conductor', 'conductor', 'conductor');
 insert into audit_log (user_id, org_id) values ('default', 'default'), ('conductor', 'conductor');
+-- A signed decision proof (ADR-073) signs user_id/org_id via
+-- canonical_audit_bytes, so the migration must leave this row byte-intact;
+-- readers resolve the legacy principal through principal_identity_mappings.
+insert into audit_log (user_id, org_id, signature, signing_key_id, proof_type)
+values ('default', 'default', 'c2ln', 'key0123456789ab', 'Ed25519Signature2020');
 
 -- Task visibility is scoped by the authenticated principal (the API passes
 -- ``user_id=owner`` into every task read), so a task owned by the installer-era
@@ -120,12 +130,13 @@ insert into elevation_grants (principal_id, action_class, kind, granted_at, ttl_
 values ('default', 'tool.invoke', 'temporary', '2026-01-01T00:00:00Z'::timestamptz, 3600, 'test-signer'),
        ('conductor', 'tool.invoke', 'temporary', '2026-01-02T00:00:00Z'::timestamptz, 3600, 'test-signer');
 
--- default carries more strikes but is not disabled; conductor is. The merged
--- principal must sum the history and stay disabled: neither side's abuse state
--- may be reset by the identity change.
+-- Neither row is disabled, but the merged 2+1 history crosses the disable
+-- threshold: the migration must re-derive enforcement state from the summed
+-- count, not just carry the surviving row's flags forward (a stale
+-- non-disabled row would leave a 3-strike principal usable).
 insert into security_strikes (user_id, strike_count, scrutiny_level, locked_until, disabled, last_violation_at, created_at, updated_at)
-values ('default', 2, 'elevated', '2026-02-01T00:00:00Z', false, '2026-01-15T00:00:00Z', '2026-01-01T00:00:00Z', '2026-01-15T00:00:00Z'),
-       ('conductor', 1, 'normal', null, true, '2026-01-10T00:00:00Z', '2026-01-02T00:00:00Z', '2026-01-10T00:00:00Z');
+values ('default', 2, 'locked', '2026-02-01T00:00:00Z', false, '2026-01-15T00:00:00Z', '2026-01-01T00:00:00Z', '2026-01-15T00:00:00Z'),
+       ('conductor', 1, 'normal', null, false, '2026-01-10T00:00:00Z', '2026-01-02T00:00:00Z', '2026-01-10T00:00:00Z');
 insert into security_violations (user_id, flags, boundary, detail)
 values ('default', '{prompt_injection}', 'user_input', 'legacy violation');
 
@@ -189,13 +200,34 @@ insert into design_creative_briefs (brief_id, lineage_id, version, workspace_id,
 values ('brief-default', 'lin', 1, 'ws1', 'proj1', 'goal1', 1, '{}'::jsonb, 'default'),
        ('brief-conductor', 'lin', 2, 'ws2', 'proj2', 'goal1', 1, '{}'::jsonb, 'conductor');
 
+"""
+
+
+def _key(owner: str, statement: str) -> str:
+    """The application's owner-bound digest -- the oracle this pins against."""
+    return fact_key(owner, statement)
+
+
+#: Statement keys are digests of (owner, normalized statement), so the seed
+#: computes them through the application's own ``fact_key`` instead of pasting
+#: constants that could silently drift from it. Three merge shapes: a clean
+#: re-key, a wording conductor already promoted (conductor's live lineage keeps
+#: the key), and a wording the legacy principal tombstoned (the strike must
+#: survive the rename, so the tombstoned lineage keeps the key).
+USER_MODEL_SEED = f"""
 insert into user_model_facts (fact_id, lineage_id, revision, owner_user_id, kind, statement, evidence, first_observed, last_observed, last_reinforced, confidence, state, sensitivity, reusable, persona_hints)
-values ('fact-default', 'lin', 1, 'default', 'kind', 'stmt', '{}'::jsonb, now(), now(), now(), 0.5, 'state', 'sens', true, '{}'::jsonb),
-       ('fact-conductor', 'lin', 1, 'conductor', 'kind', 'stmt', '{}'::jsonb, now(), now(), now(), 0.5, 'state', 'sens', true, '{}'::jsonb);
+values ('fact-a', 'lin-a', 1, 'default', 'kind', 'legacy wording', '{{}}'::jsonb, now(), now(), now(), 0.5, 'active', 'sens', true, '{{}}'::jsonb),
+       ('fact-b-old', 'lin-b-old', 1, 'default', 'kind', 'shared wording', '{{}}'::jsonb, now(), now(), now(), 0.5, 'active', 'sens', true, '{{}}'::jsonb),
+       ('fact-b-new', 'lin-b-new', 1, 'conductor', 'kind', 'shared wording', '{{}}'::jsonb, now(), now(), now(), 0.5, 'active', 'sens', true, '{{}}'::jsonb),
+       ('fact-c-old', 'lin-c-old', 1, 'default', 'kind', 'struck wording', '{{}}'::jsonb, now(), now(), now(), 0.5, 'tombstoned', 'sens', true, '{{}}'::jsonb),
+       ('fact-c-new', 'lin-c-new', 1, 'conductor', 'kind', 'struck wording', '{{}}'::jsonb, now(), now(), now(), 0.5, 'active', 'sens', true, '{{}}'::jsonb);
 
 insert into user_model_statement_keys (fact_key, lineage_id, owner_user_id)
-values ('key-default', 'lin', 'default'), ('key-conductor', 'lin', 'conductor');
-
+values ('{_key("default", "legacy wording")}', 'lin-a', 'default'),
+       ('{_key("default", "shared wording")}', 'lin-b-old', 'default'),
+       ('{_key("conductor", "shared wording")}', 'lin-b-new', 'conductor'),
+       ('{_key("default", "struck wording")}', 'lin-c-old', 'default'),
+       ('{_key("conductor", "struck wording")}', 'lin-c-new', 'conductor');
 """
 
 
@@ -262,7 +294,7 @@ def mixed_pre_064_database():
     # here it only has to land exactly on 063.
     assert _alembic("upgrade", "063").returncode == 0
     assert _versions() == PRE_064_VERSIONS
-    _execute(SEED)
+    _execute(SEED + USER_MODEL_SEED)
     yield
     assert _alembic("downgrade", "base").returncode == 0
 
@@ -305,6 +337,15 @@ def _assert_losslessly_migrated() -> None:
             "2025-12-05 00:00:00+00",
             {"user_id": "conductor", "role": "owner"},
         ),
+        # ws3: no side is owner, but the legacy contributor must still win
+        # over member -- member-only would silently drop can_contribute.
+        (
+            "ws3",
+            "conductor",
+            "contributor",
+            "2025-12-02 00:00:00+00",
+            {"user_id": "conductor", "role": "contributor"},
+        ),
     ]
 
     projects = _query(
@@ -325,9 +366,25 @@ def _assert_losslessly_migrated() -> None:
 
     # Append-only evidence: both rows survive, retargeted, none dropped. The
     # org scope labels ride the same identity (same installer-era value).
-    for table in ("learnings", "episodic_memories", "outcomes", "audit_log"):
+    for table in ("learnings", "episodic_memories", "outcomes"):
         assert _column_values(table, "user_id") == ["conductor", "conductor"], table
         assert _column_values(table, "org_id") == ["conductor", "conductor"], table
+    # Unsigned audit rows follow the identity; a row carrying an Ed25519 proof
+    # keeps its original fields — rewriting them under the unchanged signature
+    # would make PgAuditLog.verify() reject the migrated proof as tampered.
+    assert _column_values("audit_log", "user_id") == [
+        "conductor",
+        "conductor",
+        "default",
+    ], "audit_log"
+    assert _column_values("audit_log", "org_id") == [
+        "conductor",
+        "conductor",
+        "default",
+    ], "audit_log"
+    assert _query("select user_id, org_id from audit_log where signature <> ''") == [
+        ("default", "default")
+    ]
     for table in (
         "design_projects",
         "child_profiles",
@@ -363,11 +420,24 @@ def _assert_losslessly_migrated() -> None:
     assert _column_values("design_artifact_locks", "created_by") == ["conductor", "conductor"]
     assert _column_values("design_creative_briefs", "created_by") == ["conductor", "conductor"]
 
-    # User-model ownership boundaries follow the identity.
-    assert _column_values("user_model_facts", "owner_user_id") == ["conductor", "conductor"]
-    assert _column_values("user_model_statement_keys", "owner_user_id") == [
-        "conductor",
-        "conductor",
+    # User-model ownership follows the identity, and the owner-bound digest is
+    # recomputed: `fact_key` hashes (owner, statement), so re-keying only the
+    # descriptive owner column would leave promotion under `conductor` unable
+    # to resolve the migrated lineage -- duplicating live facts and letting a
+    # migrated tombstone's wording be re-promoted.
+    assert _column_values("user_model_facts", "owner_user_id") == ["conductor"] * 5
+    assert _query(
+        "select fact_key, lineage_id from user_model_statement_keys order by lineage_id"
+    ) == [
+        # Clean re-key: the legacy wording resolves under conductor now.
+        (_key("conductor", "legacy wording"), "lin-a"),
+        # Collision with a live conductor lineage: conductor's key survived and
+        # the legacy digest was merged away.
+        (_key("conductor", "shared wording"), "lin-b-new"),
+        # Collision with a live conductor lineage, but the legacy side is
+        # tombstoned: the strike keeps the key, so re-promoting the struck
+        # wording under conductor stays blocked.
+        (_key("conductor", "struck wording"), "lin-c-old"),
     ]
     # Durable elevation grants keep granting to the migrated principal.
     assert _query("select principal_id from elevation_grants order by id") == [
@@ -375,14 +445,26 @@ def _assert_losslessly_migrated() -> None:
         ("conductor",),
     ]
 
-    # Abuse state summed, never reset: 2 + 1 strikes, still disabled, the
-    # later violation timestamp, and the violation row retargeted with it.
+    # Abuse state summed, never reset, and enforcement re-derived: 2 + 1
+    # strikes crosses the disable ladder (scrutiny 'disabled', disabled), the
+    # still-future lock from the stricter legacy row is preserved, the later
+    # violation timestamp wins, and the violation row is retargeted with it.
     assert _query(
         """
-        select user_id, strike_count, disabled, last_violation_at::text
+        select user_id, strike_count, scrutiny_level, disabled, locked_until::text,
+               last_violation_at::text
           from security_strikes
         """
-    ) == [("conductor", 3, True, "2026-01-15 00:00:00+00")]
+    ) == [
+        (
+            "conductor",
+            3,
+            "disabled",
+            True,
+            "2026-02-01 00:00:00+00",
+            "2026-01-15 00:00:00+00",
+        )
+    ]
     assert _query("select user_id from security_violations") == [("conductor",)]
 
     rate_limits = _query(
@@ -464,6 +546,8 @@ class TestForcedProcessDeathIsRestartReconcilable:
             assert not _table_exists("principal_identity_mappings")
             assert _column_values("canonical_workspace_memberships", "user_id") == [
                 "conductor",
+                "conductor",
+                "default",
                 "default",
                 "default",
             ]

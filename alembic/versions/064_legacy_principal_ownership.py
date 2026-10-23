@@ -27,7 +27,10 @@ revision appends after the integrated head under an unused id.
 
 from __future__ import annotations
 
+import hashlib
+
 from alembic import op
+from sqlalchemy import text
 
 revision = "064"
 down_revision = "063"
@@ -38,6 +41,19 @@ depends_on = None
 # The migration uses a fixed mapping because this is the supported installer
 # migration. A future user-selected identity migration must introduce its own
 # explicit mapping rather than silently reusing this one.
+def _fact_key(owner_user_id: str, statement: str) -> str:
+    """Owner-bound statement digest, inlined from the application.
+
+    Must stay byte-identical to ``maistro.memory.user_model.types.fact_key``
+    as of this revision (``sha256(owner \x1f normalize_statement(statement))``);
+    the live migration test pins the two together. Inlined rather than imported
+    so the recorded migration never changes behavior with later app code.
+    """
+    normalized = " ".join(statement.split()).casefold()
+    raw = "\x1f".join((owner_user_id, normalized))
+    return hashlib.sha256(raw.encode()).hexdigest()
+
+
 def upgrade() -> None:
     # IF NOT EXISTS, not bare CREATE: the chain's re-adoption contract
     # (stamp-back + re-upgrade, pinned by test_migration_chain.py) re-runs a
@@ -64,8 +80,11 @@ def upgrade() -> None:
     )
 
     # Workspace membership is a unique identity boundary.  Merge a mixed
-    # old/new deployment before deleting the legacy key; owner wins and the
-    # earliest membership timestamp is retained.
+    # old/new deployment before deleting the legacy key.  Roles are a
+    # capability ladder (owner ⊃ contributor ⊃ member, per
+    # WorkspaceMembership.can_contribute/can_administer), so the strongest
+    # role across both rows wins -- not just owner -- and the earliest
+    # membership timestamp is retained.
     op.execute(
         """
         INSERT INTO canonical_workspace_memberships
@@ -81,6 +100,8 @@ def upgrade() -> None:
            SET role = CASE
                          WHEN canonical_workspace_memberships.role = 'owner'
                            OR EXCLUDED.role = 'owner' THEN 'owner'
+                         WHEN canonical_workspace_memberships.role = 'contributor'
+                           OR EXCLUDED.role = 'contributor' THEN 'contributor'
                          ELSE canonical_workspace_memberships.role
                        END,
                added_at = LEAST(canonical_workspace_memberships.added_at, EXCLUDED.added_at),
@@ -93,6 +114,8 @@ def upgrade() -> None:
                    to_jsonb(CASE
                        WHEN canonical_workspace_memberships.role = 'owner'
                          OR EXCLUDED.role = 'owner' THEN 'owner'
+                       WHEN canonical_workspace_memberships.role = 'contributor'
+                         OR EXCLUDED.role = 'contributor' THEN 'contributor'
                        ELSE canonical_workspace_memberships.role
                    END),
                    true
@@ -148,6 +171,13 @@ def upgrade() -> None:
     # Design artifact ownership), and ``elevation_grants.principal_id`` names
     # who may hold a durable elevation — leaving any of them behind would
     # strand the legacy principal's resources after the credential moves.
+    # Exception: ``audit_log`` rows carrying an ADR-073 decision proof. The
+    # Ed25519 proof signs ``canonical_audit_bytes``, which covers ``user_id``
+    # and ``org_id``; retargeting either under an unchanged ``signature`` makes
+    # the durable row fail ``PgAuditLog.verify()`` — precisely the tampering
+    # the proof exists to detect. Signed rows are immutable evidence and keep
+    # their original fields; a reader that must resolve the current principal
+    # for one of them joins through ``principal_identity_mappings``.
     for table, column in (
         ("learnings", "user_id"),
         ("episodic_memories", "user_id"),
@@ -175,7 +205,78 @@ def upgrade() -> None:
         ("design_artifact_locks", "created_by"),
         ("design_creative_briefs", "created_by"),
     ):
-        op.execute(f"UPDATE {table} SET {column} = 'conductor' WHERE {column} = 'default'")
+        if table == "audit_log":
+            op.execute(
+                f"UPDATE {table} SET {column} = 'conductor'"
+                f" WHERE {column} = 'default' AND signature = ''"
+            )
+        else:
+            op.execute(f"UPDATE {table} SET {column} = 'conductor' WHERE {column} = 'default'")
+
+    # ``user_model_statement_keys.fact_key`` is the table's primary key and the
+    # owner-bound digest ``fact_key(owner, normalize_statement(statement))`` --
+    # not a descriptive label. The bulk update above retargets the descriptive
+    # ``owner_user_id`` column only, so a re-key is required too: left hashed
+    # under ``default``, runtime promotion under ``conductor`` computes a
+    # different digest, no longer resolves the migrated lineage, and files a
+    # duplicate fact -- or, for a migrated tombstone, re-promotes wording the
+    # owner had struck. Recompute the digest from the lineage's statement under
+    # the canonical owner and merge collisions: a tombstoned lineage keeps the
+    # key (the strike must survive the rename), an already-keyed conductor
+    # lineage otherwise wins, and a legacy digest made redundant by the merge
+    # is dropped. Idempotent: converged rows recompute to their own key.
+    bind = op.get_bind()
+    keyed = bind.execute(
+        text(
+            """
+            SELECT DISTINCT ON (k.fact_key) k.fact_key, k.lineage_id, f.statement
+              FROM user_model_statement_keys k
+              JOIN user_model_facts f ON f.lineage_id = k.lineage_id
+             WHERE k.owner_user_id IN ('default', 'conductor')
+             ORDER BY k.fact_key, f.revision
+            """
+        )
+    ).fetchall()
+    for old_key, lineage_id, statement in keyed:
+        new_key = _fact_key("conductor", statement)
+        if new_key == old_key:
+            continue
+        claimed = bind.execute(
+            text("SELECT lineage_id FROM user_model_statement_keys WHERE fact_key = :k"),
+            {"k": new_key},
+        ).scalar()
+        tombstoned = bind.execute(
+            text(
+                "SELECT 1 FROM user_model_facts"
+                " WHERE lineage_id = :l AND state = 'tombstoned' LIMIT 1"
+            ),
+            {"l": lineage_id},
+        ).scalar()
+        if claimed == lineage_id:
+            # Same lineage under both digests; the legacy one is redundant.
+            bind.execute(
+                text("DELETE FROM user_model_statement_keys WHERE fact_key = :k"),
+                {"k": old_key},
+            )
+            continue
+        if claimed is not None and not tombstoned:
+            # conductor already keyed this wording; its lineage stays canonical.
+            bind.execute(
+                text("DELETE FROM user_model_statement_keys WHERE fact_key = :k"),
+                {"k": old_key},
+            )
+            continue
+        if claimed is not None:
+            # The migrated lineage is tombstoned: re-point the key at it so the
+            # strike keeps blocking re-promotion under the canonical owner.
+            bind.execute(
+                text("DELETE FROM user_model_statement_keys WHERE fact_key = :k"),
+                {"k": new_key},
+            )
+        bind.execute(
+            text("UPDATE user_model_statement_keys SET fact_key = :n WHERE fact_key = :o"),
+            {"n": new_key, "o": old_key},
+        )
 
     # Durable elevation grants name who may hold an elevated capability; the
     # grant must follow the principal or the migrated operator loses it.
@@ -200,6 +301,15 @@ def upgrade() -> None:
 
     # Strike state is keyed by principal and has a foreign-keyed violation log.
     # Merge state first, retarget violations second, then remove the old key.
+    # Summing ``strike_count`` alone would leave enforcement stale: the ladder
+    # in ``security.strikes`` derives ``disabled``/``locked_until``/scrutiny
+    # from the count (>=3 disables, 2 locks, 1 elevates), so a mixed install
+    # where neither row is disabled but the combined history crosses a rung
+    # must re-derive its state. Re-apply the ladder to the merged count while
+    # keeping whichever existing state is stricter: a disable from either side
+    # stays, a still-future lock is preserved, and a merged count landing on
+    # the locked rung locks from the later violation timestamp (the runtime's
+    # ``LOCKOUT_DURATION`` is 8 hours).
     op.execute(
         """
         INSERT INTO security_strikes
@@ -211,7 +321,41 @@ def upgrade() -> None:
          WHERE user_id = 'default'
         ON CONFLICT (user_id) DO UPDATE
            SET strike_count = security_strikes.strike_count + EXCLUDED.strike_count,
-               disabled = security_strikes.disabled OR EXCLUDED.disabled,
+               disabled = security_strikes.disabled OR EXCLUDED.disabled
+                          OR security_strikes.strike_count + EXCLUDED.strike_count >= 3,
+               scrutiny_level = CASE
+                   WHEN security_strikes.disabled OR EXCLUDED.disabled
+                        OR security_strikes.scrutiny_level = 'disabled'
+                        OR EXCLUDED.scrutiny_level = 'disabled'
+                        OR security_strikes.strike_count + EXCLUDED.strike_count >= 3
+                       THEN 'disabled'
+                   WHEN security_strikes.scrutiny_level = 'locked'
+                        OR EXCLUDED.scrutiny_level = 'locked'
+                        OR security_strikes.strike_count + EXCLUDED.strike_count = 2
+                       THEN 'locked'
+                   WHEN security_strikes.scrutiny_level = 'elevated'
+                        OR EXCLUDED.scrutiny_level = 'elevated'
+                        OR security_strikes.strike_count + EXCLUDED.strike_count >= 1
+                       THEN 'elevated'
+                   ELSE 'normal'
+               END,
+               locked_until = NULLIF(
+                   GREATEST(
+                       COALESCE(security_strikes.locked_until, '-infinity'::timestamptz),
+                       COALESCE(EXCLUDED.locked_until, '-infinity'::timestamptz),
+                       CASE
+                           WHEN security_strikes.strike_count + EXCLUDED.strike_count = 2
+                           THEN GREATEST(
+                                    COALESCE(security_strikes.last_violation_at,
+                                             '-infinity'::timestamptz),
+                                    COALESCE(EXCLUDED.last_violation_at,
+                                             '-infinity'::timestamptz)
+                                ) + interval '8 hours'
+                           ELSE '-infinity'::timestamptz
+                       END
+                   ),
+                   '-infinity'::timestamptz
+               ),
                last_violation_at = GREATEST(
                    security_strikes.last_violation_at, EXCLUDED.last_violation_at
                ),

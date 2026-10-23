@@ -20,6 +20,23 @@ def migration(monkeypatch: pytest.MonkeyPatch):
     statements: list[str] = []
     monkeypatch.setattr(module.op, "execute", lambda statement: statements.append(str(statement)))
     monkeypatch.setattr(module.op, "drop_table", lambda name: statements.append(str(name)))
+
+    # The statement-key re-key step is row-level work through a real bind; the
+    # contract here only checks the emitted plan, so an empty table (no rows to
+    # re-key) keeps the pass through upgrade() on the same footing.
+    class _Result:
+        def fetchall(self) -> list[tuple]:
+            return []
+
+        def scalar(self) -> None:
+            return None
+
+    class _Bind:
+        def execute(self, statement: object, params: object = None) -> _Result:
+            statements.append(str(statement))
+            return _Result()
+
+    monkeypatch.setattr(module.op, "get_bind", lambda: _Bind())
     return module, statements
 
 
@@ -42,6 +59,11 @@ def test_upgrade_emits_one_restart_safe_identity_mapping_and_ownership_plan(migr
     assert "canonical_runs" in sql
     assert "canonical_event_log" in sql
     assert "security_violations" in sql
+    # The owner-bound statement digests are recomputed under the canonical
+    # owner and merged, not left hashed from `default`.
+    assert "DISTINCT ON (k.fact_key)" in sql
+    assert "user_model_statement_keys" in sql
+    assert "user_model_facts" in sql
 
 
 def test_downgrade_does_not_guess_at_post_migration_ownership(migration) -> None:
