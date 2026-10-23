@@ -71,6 +71,15 @@ _EXCLUDED_PACKAGE_PYTHON = frozenset(
         # dispositioned unreachable for the same two-merge-rule reason as
         # admission_identity.py above.
         "packages/maistro-core/src/maistro/tasks/admission_codec.py",
+        # NOTE (#1852 round 89): the tasks/admission_generation.py leaf is
+        # deliberately NOT classified here. #1852 forbids suppressions made
+        # "to make this leaf independently green" and requires the unwired
+        # leaf's explicit merge blocker to remain visible in the tree until
+        # the #1845 integration change lands the runtime consumer (and, in
+        # the same change, prunes this sibling classification for itself).
+        # While the module is unwired, the gate therefore reports it as a
+        # NEWLY UNREACHABLE module — that failure is the documented blocker,
+        # not a defect to repair in this leaf.
         # Developer utilities.
         "packages/hive-conductor/run_hill_climb.py",
         "packages/maistro-evolve/examples/builders_swebench_live.py",
