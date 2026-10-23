@@ -396,6 +396,23 @@ class DagRunStore:
                 q.put_nowait(ev)
         return ev
 
+    async def record_nonterminal_status(self, run_id: str, *, status: str) -> None:
+        """Persist canonical-derived in-flight status without terminalizing projection.
+
+        This is presentation data only. Canonical Run remains the authority.
+        Refuse unknown and terminal values rather than creating another lifecycle.
+        """
+        from maistro.runs.model import TERMINAL_RUN_STATUSES, RunStatus
+
+        parsed = RunStatus(status)
+        if parsed in TERMINAL_RUN_STATUSES:
+            raise ValueError("terminal status requires canonical terminal projection")
+        async with self._lock:
+            run = self._runs.get(run_id)
+            if run is not None and run.finished_at is None:
+                run.status = parsed.value
+                self._persist(run)
+
     async def finish_run(
         self,
         run_id: str,

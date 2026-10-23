@@ -115,13 +115,17 @@ class LiveRunProjection:
         try:
             from services.dag_run_store import get_dag_run_store
 
+            from maistro.runs.model import TERMINAL_RUN_STATUSES, RunStatus
+
+            # Validate before opening or changing the projection. Missing or
+            # unknown status is not evidence of a failed canonical Run.
+            status = RunStatus(str(result.get("status")))
             store = get_dag_run_store()
             await self._ensure_started(store, run_id)
-            await store.finish_run(
-                run_id,
-                status=str(result.get("status") or "failed"),
-                result=result,
-            )
+            if status in TERMINAL_RUN_STATUSES:
+                await store.finish_run(run_id, status=status.value, result=result)
+            else:
+                await store.record_nonterminal_status(run_id, status=status.value)
         except Exception:
             logger.warning(
                 "dag_run_live_projection_result_not_recorded run_id=%s dag_id=%s",
