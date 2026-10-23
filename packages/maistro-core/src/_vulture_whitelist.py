@@ -120,6 +120,7 @@ from maistro.runs.scoped_reads import ScopedRunReader
 from maistro.runs.sqlite_store import SqliteRunStore
 from maistro.runs.store import InMemoryRunStore, RunStore
 from maistro.security.sentinel.audit import InMemoryAuditLog
+from maistro.security.sentinel.delegation import InMemoryDelegationAuthority
 from maistro.security.strikes import InMemoryStrikeTracker
 from maistro.skills.parser import SKILL_SECURITY_SCAN_VERSION
 from maistro.state import PersistedStore
@@ -648,6 +649,30 @@ _VULTURE_WHITELIST = (
     # admin API, so it is named here as retained surface rather than banked as
     # unclassified debt.
     InMemoryStrikeTracker.enable,
+    # Host-authorized delegation seam (#845): the grant mutation entry point
+    # is consumed by the host and operator tooling outside this
+    # packages/*/src scan (the shipped composition wires the durable authority
+    # in maistro.security.sentinel.delegation_durable, whose async
+    # ``add_host_grant`` provisions the same store); it is reviewed public
+    # surface, not dead code. The execution-mode resolver this row used to
+    # name moved to the hive-conductor adapter (services/execution_mode.py),
+    # which the scan does not walk.
+    InMemoryDelegationAuthority.add_host_grant,
+    # Installable domain-pack contracts (M9-F1, #966). The pack contract
+    # ships first by design, the same posture as the M9-B1 store seams and
+    # the M9-D1 registry above: its in-tree consumers are the conformance
+    # suite (packages/maistro-core/tests/extensions/test_pack_contracts.py),
+    # and the Workspace-scoped activation/configuration lifecycle that drives
+    # these verbs in production is M9-F3 (#968). `activate` is the disable
+    # gate's reversal (new use only — nothing was deleted; named activate,
+    # not enable, so the scanner's name-level matching cannot un-bank the
+    # unrelated security-store `enable` rows); the three `instantiate_*`
+    # methods are the gated instantiation entrypoints that compose the
+    # module-level pure functions behind the registry's active check.
+    InstallablePackRegistry.activate,
+    InstallablePackRegistry.instantiate_graph,
+    InstallablePackRegistry.instantiate_persona,
+    InstallablePackRegistry.instantiate_rubric,
     # #288 scan-surface provenance: `security_scan` (maistro.skills.parser) is a
     # public content scanner, but its policy-version identity is surfaced only
     # by the HTTP scan route (packages/hive-conductor/backend/routes/skills.py),
