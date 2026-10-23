@@ -108,15 +108,16 @@ the sole author and unchanged by the sync; all gates were re-run and pass.
 - `uv run interrogate -f 64 packages/maistro-rsi/src` — 68.6% ≥ 64% floor.
 - `uv run python scripts/check-suite-inventory.py` — the only RSI drift is
   this note's **+40** (unchanged; develop's #2171 campaign tests are in
-  the synced baseline, not the delta). The script aborts on **pre-existing
-  collection errors** in four out-of-tree extensions added by develop's
-  #2198/#2213 — `extensions/reference-gallery/packages/gallery-weather-
-  connector`, `gallery-unit-skill`, `gallery-model-adapter`, and
-  `gallery-renderer-pack` (ModuleNotFoundError: no `gallery_*` module is
-  installed in this workspace env — verified: the lane commit `0e6f13eee`
-  touches no pyproject workspace membership or gallery package, so these
-  errors are independent of #50). Per the script's own guidance these are
-  broken suites, not inventory drift, and are out of scope for #552.
+  the synced baseline, not the delta). **Re-validation update:** an earlier
+  pass of this note recorded the gate aborting on collection errors in the
+  four reference-gallery extension suites; that is no longer true at the
+  current head — develop's #2213 wiring makes `gallery-weather-connector`,
+  `gallery-unit-skill`, `gallery-model-adapter`, and `gallery-renderer-pack`
+  installed workspace members (`pyproject.toml`, uv-managed), and after a
+  fresh `uv sync --locked --extra dev` the **full gate exits 0**: all 21
+  suites match, RSI collects 1762 (baseline 786 + folded deltas incl. this
+  note's +40), 32346 unique node IDs, 0 duplicates. No known residual gate
+  failures remain for this lane's scope.
 
 ## Containment half (still proven, prior passes)
 
