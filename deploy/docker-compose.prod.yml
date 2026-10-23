@@ -39,6 +39,11 @@ services:
       DB_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
       REDIS_URL: redis://:${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env}@redis:6379/0
       API_KEYS: ${API_KEYS:?Set API_KEYS in .env}
+      # Administrator authority (#1095): without this the stack has no way to
+      # authenticate for the admin-only readiness diagnostics -- both replicas
+      # would see ADMIN_API_KEYS as unset even when set in .env. Empty default
+      # keeps deployments with no admin keys booting.
+      ADMIN_API_KEYS: ${ADMIN_API_KEYS:-}
       REQUIRE_AUTH: "true"
       # Shared only with the trusted Hive delegation bridge, never clients.
       TASK_DELEGATION_KEY: ${TASK_DELEGATION_KEY:?Set TASK_DELEGATION_KEY in .env}
