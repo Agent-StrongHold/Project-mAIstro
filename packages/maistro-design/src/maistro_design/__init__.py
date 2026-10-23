@@ -29,6 +29,7 @@ from maistro_design.brief import (
     ProtectedFieldOverrideError,
     RequiredFact,
 )
+from maistro_design.canonical_execution import DesignCanonicalExecution
 from maistro_design.engine import DesignEngine
 from maistro_design.explore import (
     EXPLORE_NODE_KIND,
@@ -183,6 +184,7 @@ __all__ = [
     "CreativeBriefStore",
     "CreativeGraphPlan",
     "CrossWorkspaceReferenceError",
+    "DesignCanonicalExecution",
     "DesignEngine",
     "DesignEngineProtocol",
     "DesignError",

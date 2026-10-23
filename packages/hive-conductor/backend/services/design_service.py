@@ -42,6 +42,7 @@ class DesignStoreConfigurationError(RuntimeError):
 __all__ = [
     "DesignServiceStatus",
     "DesignStoreConfigurationError",
+    "get_design_canonical_execution",
     "get_design_engine",
     "get_design_status",
     "get_design_store",
@@ -84,6 +85,8 @@ class DesignServiceStatus:
     #: sanitized cause -- the string the project routes answer with, in place
     #: of the no-database message that used to cover both.
     store_cause: str | None = None
+    #: Whether the canonical Goal->Graph->Run execution binding came up (#52).
+    canonical_execution_available: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -96,6 +99,7 @@ class DesignServiceStatus:
                 "cause": self.catalog_cause,
                 "count": len(self.catalog_slugs),
             },
+            "canonical_execution_available": self.canonical_execution_available,
         }
 
 
@@ -250,6 +254,10 @@ def _get_async_session_factory() -> async_sessionmaker[Any] | None:
 _engine_singleton: Any = None
 _store_singleton: Any = None
 _renderer_registry_singleton: Any = None
+_canonical_execution_singleton: Any = None
+# Adapters cached per authorized Workspace (#52 review): admission scope is
+# resolved from the request principal, never from the startup binding.
+_canonical_execution_adapters: dict[str, Any] = {}
 _status: DesignServiceStatus = DesignServiceStatus(cause="start_design_service() has not run")
 
 
@@ -277,6 +285,55 @@ def get_design_engine() -> Any:
     return _engine_singleton
 
 
+def get_design_canonical_execution() -> Any | None:
+    """Return the startup wiring probe, if the spine is wired.
+
+    Not an admission scope. The singleton exists to decide, once, whether the
+    Run/NodeRun/Attempt spine is reachable; its Workspace binding is the
+    deployment's own default and must never stand in for a caller's
+    authorization. Route admission resolves scope per principal via
+    `get_design_canonical_execution_for_principal`.
+    """
+    return _canonical_execution_singleton
+
+
+async def get_design_canonical_execution_for_principal(principal_id: str) -> Any | None:
+    """The canonical Design adapter bound to the caller's authorized Workspace.
+
+    Design offers no caller-named Workspace selection, so the caller's own
+    default Workspace — which `resolve_default_workspace` guarantees they own,
+    the same fallback chat admission applies — is the scope every Run files
+    into. A principal is never filed into a Workspace they hold no membership
+    in, and the adapter is cached per Workspace like chat's admitters.
+    """
+    if not isinstance(principal_id, str) or not principal_id.strip():
+        return None
+    from services.default_workspace import resolve_default_workspace
+    from services.engine import get_engine
+
+    try:
+        core_engine = get_engine()
+    except RuntimeError:
+        return None
+    run_store = getattr(core_engine, "run_store", None)
+    scope_store = getattr(core_engine, "project_scope_store", None)
+    if run_store is None or scope_store is None:
+        return None
+    workspace_id = (await resolve_default_workspace(principal_id)).id
+    adapter = _canonical_execution_adapters.get(workspace_id)
+    if adapter is None:
+        from maistro_design.canonical_execution import DesignCanonicalExecution
+
+        root = await scope_store.create_root(workspace_id)
+        adapter = DesignCanonicalExecution(
+            run_store,
+            workspace_id=workspace_id,
+            project_id=root.project_id,
+        )
+        _canonical_execution_adapters[workspace_id] = adapter
+    return adapter
+
+
 def get_design_store() -> Any:
     """Get the PgDesignProjectStore singleton."""
     if _store_singleton is None:
@@ -291,7 +348,9 @@ async def start_design_service(settings: Settings) -> None:
 
     Called during FastAPI lifespan startup.
     """
-    global _engine_singleton, _store_singleton, _renderer_registry_singleton, _status
+    global _engine_singleton, _store_singleton, _renderer_registry_singleton
+    global _canonical_execution_singleton, _status
+    _canonical_execution_singleton = None
 
     try:
         from maistro_design.engine import DesignEngine
@@ -385,6 +444,32 @@ async def start_design_service(settings: Settings) -> None:
         _renderer_registry_singleton = registry
         logger.info("Renderer slots available: %s", sorted(s.value for s in filled))
 
+        # Design is a projection over the canonical spine. In degraded/demo
+        # mode there may be no in-process RunStore; leave the action unavailable
+        # rather than fabricating a successful local lifecycle.
+        try:
+            from maistro_design.canonical_execution import DesignCanonicalExecution
+            from services.engine import get_engine
+
+            core_engine = get_engine()
+            run_store = core_engine.run_store
+            scope_store = core_engine.project_scope_store
+            workspace_id = str(getattr(settings, "hive_default_workspace_id", "") or "")
+            if run_store is not None and scope_store is not None and workspace_id:
+                # A wiring probe, not an admission scope (#52 review): this
+                # proves the spine answers (`create_root` is idempotent
+                # create-or-return) before the status claims availability.
+                # Per-caller scope is resolved from the request principal at
+                # admission time, never from this deployment-wide binding.
+                root = await scope_store.create_root(workspace_id)
+                _canonical_execution_singleton = DesignCanonicalExecution(
+                    run_store,
+                    workspace_id=workspace_id,
+                    project_id=root.project_id,
+                )
+        except Exception as exc:
+            logger.info("Design canonical execution unavailable: %s", exc)
+
         _status = DesignServiceStatus(
             ready=True,
             bundled_slugs=bundled,
@@ -392,6 +477,7 @@ async def start_design_service(settings: Settings) -> None:
             catalog_cause=catalog_cause,
             catalog_slugs=catalog_slugs,
             store_cause=store_cause,
+            canonical_execution_available=_canonical_execution_singleton is not None,
         )
 
     # Both handlers still catch, because a Conductor install without
@@ -400,9 +486,11 @@ async def start_design_service(settings: Settings) -> None:
     # routes answer with, instead of a log line and a service that looks ready.
     except ImportError as exc:
         logger.warning("maistro-design not installed or unavailable: %s", exc)
+        _canonical_execution_singleton = None
         _status = DesignServiceStatus(cause=f"maistro-design is not installed: {exc}")
     except Exception as exc:
         logger.warning("DesignService initialization failed: %s", exc, exc_info=True)
+        _canonical_execution_singleton = None
         _status = DesignServiceStatus(cause=f"{type(exc).__name__}: {exc}")
 
 
@@ -489,11 +577,14 @@ def _probe_catalog() -> tuple[tuple[str, ...], str | None]:
 
 async def stop_design_service() -> None:
     """Cleanup the DesignService singletons."""
-    global _engine_singleton, _store_singleton, _renderer_registry_singleton, _status
+    global _engine_singleton, _store_singleton, _renderer_registry_singleton
+    global _canonical_execution_singleton, _status
     _status = DesignServiceStatus(cause="stop_design_service() has run")
     _engine_singleton = None
     _store_singleton = None
     _renderer_registry_singleton = None
+    _canonical_execution_singleton = None
+    _canonical_execution_adapters.clear()
     _get_async_engine.cache_clear()
     _get_async_session_factory.cache_clear()
     try:

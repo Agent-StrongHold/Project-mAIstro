@@ -339,3 +339,133 @@ class TestImportableMeansParseable:
         (root / "sparse" / "tokens.css").write_text(":root{}", encoding="utf-8")
         monkeypatch.setattr(importer, "CATALOG_ROOT", root)
         assert design_service._importable("sparse")
+
+
+class TestCanonicalExecutionWiring:
+    """#52: the Design routes must not run a package-private lifecycle.
+
+    `start_design_service` is where the Conductor decides whether Design
+    operations can reach the canonical Run/NodeRun/Attempt spine. These pin
+    the decision itself: wired when the spine is present, truthfully absent
+    (never stubbed) when it is not.
+    """
+
+    async def test_the_adapter_is_built_when_the_spine_is_available(self, monkeypatch, tmp_path):
+        from services import engine as engine_service
+
+        from maistro_design.canonical_execution import DesignCanonicalExecution
+
+        class _ScopeStore:
+            async def create_root(self, workspace_id: str):
+                from maistro.projects.scope import Project
+
+                return Project(
+                    project_id="root-1",
+                    workspace_id=workspace_id,
+                    name="Root",
+                    parent_project_id=None,
+                    is_root=True,
+                )
+
+        class _CoreEngine:
+            run_store = object()
+            project_scope_store = _ScopeStore()
+
+        monkeypatch.setattr(design_service, "_get_async_session_factory", lambda: None)
+        monkeypatch.setattr(design_service, "_engine_singleton", None)
+        monkeypatch.setattr(design_service, "_store_singleton", None)
+        monkeypatch.setattr(design_service, "_renderer_registry_singleton", None)
+        monkeypatch.setattr(design_service, "_canonical_execution_singleton", None)
+        monkeypatch.setattr(engine_service, "get_engine", lambda: _CoreEngine())
+
+        class _Settings:
+            open_design_url = None
+            open_design_api_key = None
+            hive_default_workspace_id = "ws-design"
+
+        await design_service.start_design_service(_Settings())
+        canonical = design_service.get_design_canonical_execution()
+        assert isinstance(canonical, DesignCanonicalExecution)
+        assert design_service.get_design_status().to_dict()["canonical_execution_available"] is True
+
+    async def test_no_spine_leaves_execution_unavailable_rather_than_stubbed(self, monkeypatch):
+        from services import engine as engine_service
+
+        class _CoreEngine:
+            run_store = None
+            project_scope_store = None
+
+        monkeypatch.setattr(design_service, "_get_async_session_factory", lambda: None)
+        monkeypatch.setattr(design_service, "_engine_singleton", None)
+        monkeypatch.setattr(design_service, "_store_singleton", None)
+        monkeypatch.setattr(design_service, "_renderer_registry_singleton", None)
+        monkeypatch.setattr(design_service, "_canonical_execution_singleton", None)
+        monkeypatch.setattr(engine_service, "get_engine", lambda: _CoreEngine())
+
+        class _Settings:
+            open_design_url = None
+            open_design_api_key = None
+            hive_default_workspace_id = "ws-design"
+
+        await design_service.start_design_service(_Settings())
+        assert design_service.get_design_canonical_execution() is None
+        assert (
+            design_service.get_design_status().to_dict()["canonical_execution_available"] is False
+        )
+
+    async def test_admission_scope_is_the_callers_workspace_not_the_deployments(self, monkeypatch):
+        """#52 review: the startup binding is a wiring probe only. At admission
+        time the adapter is bound to the principal's own default Workspace --
+        the one `resolve_default_workspace` guarantees they own -- so a caller
+        never files Runs into a Workspace they hold no membership in."""
+        from services import default_workspace
+        from services import engine as engine_service
+
+        from maistro_design.canonical_execution import DesignCanonicalExecution
+
+        roots: list[str] = []
+
+        class _ScopeStore:
+            async def create_root(self, workspace_id: str):
+                from maistro.projects.scope import Project
+
+                roots.append(workspace_id)
+                return Project(
+                    project_id=f"root-{workspace_id}",
+                    workspace_id=workspace_id,
+                    name="Root",
+                    parent_project_id=None,
+                    is_root=True,
+                )
+
+        class _CoreEngine:
+            run_store = object()
+            project_scope_store = _ScopeStore()
+
+        async def _own_workspace(user_id: str):
+            class _Ws:
+                id = f"ws-of-{user_id}"
+
+            return _Ws()
+
+        monkeypatch.setattr(design_service, "_engine_singleton", None)
+        monkeypatch.setattr(design_service, "_canonical_execution_adapters", {})
+        monkeypatch.setattr(engine_service, "get_engine", lambda: _CoreEngine())
+        monkeypatch.setattr(default_workspace, "resolve_default_workspace", _own_workspace)
+
+        first = await design_service.get_design_canonical_execution_for_principal("user-1")
+        assert isinstance(first, DesignCanonicalExecution)
+        assert roots == ["ws-of-user-1"]
+
+        # Cached per Workspace, not per caller: the same Workspace answers
+        # without a second root probe.
+        again = await design_service.get_design_canonical_execution_for_principal("user-1")
+        other = await design_service.get_design_canonical_execution_for_principal("user-2")
+        assert again is first
+        assert other is not first
+        assert roots == ["ws-of-user-1", "ws-of-user-2"]
+
+    async def test_admission_refuses_a_blank_principal(self, monkeypatch):
+        monkeypatch.setattr(design_service, "_engine_singleton", None)
+        assert await design_service.get_design_canonical_execution_for_principal("") is None
+        assert await design_service.get_design_canonical_execution_for_principal("  ") is None
