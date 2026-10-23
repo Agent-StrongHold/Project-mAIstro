@@ -1,7 +1,7 @@
 """Canonical public surface of the ``maistro.extensions`` package: the
 governed registry, activation flow, dependency resolution, contract
-negotiation, preflight, and certification (M9-B/M9-C/M9-H3, issues
-#952/#953/#956/#975).
+negotiation, preflight, certification, and organization/Workspace policy
+(M9-B/M9-C/M9-G/M9-H3, issues #952/#953/#956/#971/#975).
 
 This package carries the extension surface of epic #938, in four layers:
 
@@ -28,18 +28,21 @@ This package carries the extension surface of epic #938, in four layers:
   identity, package digest/signature metadata, manifest snapshots, catalog
   provenance and durable trust evidence; the append-only
   :class:`ExtensionInstallStore` protocol with its in-memory reference and
-  SQLite durable twin. The inspect→authorize→install flow (#953) and the
-  pin/upgrade/rollback lifecycle (#954) build on these records.
-
+  SQLite durable twin.
 - **M9-B2 activation (issue #953)**: the governed install state machine —
   the pure evaluation modules (manifest, compatibility, trust, authority),
   the activation store seam, and :class:`ExtensionInstallService`. Nothing in
   this package ever imports extension code; activation runs only through the
   host-supplied :class:`ExtensionCodeLoader`, and only after explicit
-  authorization. The post-install lifecycle (#954) lives on the same
-  service: disable/re-enable, rollback to a previously authorized version,
-  terminal removal, and operator pins that fence version moves — every step
-  audited, none ever re-running the loader or widening a grant.
+  authorization.
+- **M9-B3 post-install lifecycle (issue #954)**: pin, resume, rollback,
+  disable and remove on the same records and the same audit trail. A
+  displaced version becomes ``SUPERSEDED`` (rollback-eligible, grant frozen);
+  disable clears the active pointer so new use stops structurally; remove
+  runs the host's :class:`OwnedResourceJanitor` before any transition and
+  leaves the record as evidence. Rollback refuses any target whose frozen
+  grant broadens authority — broader authority requires the fresh
+  inspect → authorize pass, never a rollback side door.
 - **M9-C1 policy (issue #955, ``maistro.extensions.compat``)**: decides
   whether an extension's declared contract, features, and deprecation posture
   are compatible with this host — from metadata alone, before any code
@@ -48,6 +51,22 @@ This package carries the extension surface of epic #938, in four layers:
   (``semver``), a deterministic resolver producing a reproducible
   :class:`LockState` (``resolution``), and lock-driven reinstall through the
   install store (:func:`materialize_lock`).
+- **M9-G3 governance (issue #971)**: the organization/Workspace extension
+  policy (``policy``) — org allow/deny with Workspace enablement ceilings,
+  approved-publisher/version pins, deterministic fixed-order inheritance
+  with a per-rule decision trace, a per-org enforcement window and an audit
+  trail — plus tenant-scoped extension configuration, caches and checkpoints
+  (``tenancy``), so shared extension infrastructure cannot leak state across
+  Workspaces. The root exports this layer's Workspace policy as
+  :class:`WorkspaceExtensionEnablementPolicy`; the name
+  ``WorkspaceExtensionPolicy`` stays with the #969 effective-authority
+  input of the same shape but different seam.
+- **M9-I3 operational views (issue #978)**: the truthful health projection
+  (``health``) — error taxonomy with provenance, host-recorded invocation
+  evidence, durable operator enable/disable/quarantine state, per-version
+  usage digests with ranking and SLO error-budget inputs, and the durable
+  health store (``sqlite_health_store``) that makes projected health survive
+  a restart.
 - **M9-H3 certification (issue #975)**: the pre-publication workflow —
   package structure validation, static public-import and security scans,
   conformance-suite orchestration, Ed25519 sealing of the report digest,
@@ -72,10 +91,24 @@ This package carries the extension surface of epic #938, in four layers:
   that project canonical state through a closed binding allowlist, route
   mutating actions to governed server seams only, enforce availability
   server-side, and carry sandbox policy and provenance on every render.
+- **M9-G3 governance policy (issue #971, :mod:`maistro.extensions.policy`)**:
+  organization/Workspace extension policy — org allow/deny and publisher
+  approval over Workspace enablement, server-side exact-version pinning
+  enforced under concurrent callers, deterministic explainable resolution
+  projected onto the #969 Workspace-policy layer, tenant-keyed extension
+  state with structurally isolated views, and an append-only policy audit
+  trail.
+- **M9-G4 quarantine (issue #972, :mod:`maistro.extensions.quarantine`)**:
+  the suspension flow for misbehaving extensions — canonical
+  security/sandbox/health evidence with threshold-driven package quarantine,
+  version disable and optional publisher-wide action as distinct responses,
+  immediate admission refusal after the authoritative state change,
+  in-flight drain/terminate disposition, and an append-only ledger no
+  extension actor can write or clear.
 
 No layer executes extension code: verification, evaluation, authorization,
-resolution, contract negotiation, certification and metering all operate on
-bytes, declarations, identity and amounts alone.
+resolution, contract negotiation, certification, metering and policy
+evaluation all operate on bytes, declarations, identity and amounts alone.
 
 Naming note: ``ExtensionLifecycleError`` is the governed-install failure base
 (#952/#953). The #950 hook-failure wrapper — the error raised when an
@@ -90,6 +123,14 @@ from maistro.extensions.authority import (
     AuthorityDelta,
     compute_authority_delta,
     normalize_permission,
+)
+from maistro.extensions.catalog_json import (
+    CATALOG_FORMAT,
+    CatalogDocumentError,
+    ParsedCatalogSnapshot,
+    canonical_json,
+    parse_catalog_document,
+    parse_catalog_json,
 )
 from maistro.extensions.certification import (
     BUNDLE_FORMAT,
@@ -205,6 +246,37 @@ from maistro.extensions.errors import (
     ScopeMismatch,
     ServiceNotGranted,
 )
+from maistro.extensions.health import (
+    HEALTH_WINDOW,
+    HEALTHY_STATES,
+    DependencyReadiness,
+    ExtensionErrorKind,
+    ExtensionErrorRecord,
+    ExtensionHealth,
+    ExtensionHealthService,
+    ExtensionHealthStore,
+    ExtensionObservation,
+    ExtensionOperationalState,
+    ExtensionOperationalStatus,
+    ExtensionOperatorAction,
+    ExtensionOperatorState,
+    ExtensionUsageDigest,
+    InMemoryExtensionHealthStore,
+    ObservationOutcome,
+    OperatorDecision,
+    RankingMetric,
+    SloPosition,
+    TelemetryExport,
+    dependency_readiness,
+    digest_observations,
+    evaluate_health,
+    latest_decision,
+    operator_state_for,
+    project_operational_status,
+    rank_digests,
+    slo_position,
+    state_for_action,
+)
 from maistro.extensions.host import (
     EffectRoute,
     EventStoreProgressSink,
@@ -294,12 +366,50 @@ from maistro.extensions.packs import (
     instantiate_rubric_asset,
     pack_extension_view,
 )
+from maistro.extensions.policy import (
+    INHERITANCE_SEMANTICS,
+    ExtensionCandidate,
+    ExtensionPin,
+    ExtensionPolicyEngine,
+    OrgExtensionPolicy,
+    PolicyAuditEvent,
+    PolicyAuditLog,
+    PolicyConfigurationError,
+    PolicyDecision,
+    PolicyLayer,
+    PolicyRuleOutcome,
+    PolicyVerdict,
+)
+from maistro.extensions.policy import (
+    WorkspaceExtensionPolicy as WorkspaceExtensionEnablementPolicy,
+)
 from maistro.extensions.preflight import (
     ExtensionStatus,
     PreflightPolicy,
     PreflightReport,
     TargetHostContract,
     run_preflight,
+)
+from maistro.extensions.quarantine import (
+    GOVERNANCE_ACTOR_KINDS,
+    ActorKind,
+    AdmissionDecision,
+    EvidenceKind,
+    ExtensionEvidence,
+    ExtensionGovernanceLedger,
+    ExtensionGovernancePolicy,
+    ExtensionGovernanceService,
+    GovernanceActor,
+    GovernanceDecision,
+    GovernanceEvent,
+    GovernanceState,
+    GovernanceTarget,
+    InFlightDisposition,
+    InvocationLease,
+    QuarantineAuthorityError,
+    SandboxViolationBridge,
+    health_evidence,
+    security_evidence,
 )
 from maistro.extensions.resolution import (
     LOCK_FORMAT,
@@ -338,9 +448,13 @@ from maistro.extensions.semver import (
 from maistro.extensions.service import (
     ExtensionCodeLoader,
     ExtensionInstallService,
+    ExtensionPolicyViolation,
     LoadedExtension,
+    OwnedResourceJanitor,
+    RetainAllJanitor,
     UnwiredExtensionLoader,
 )
+from maistro.extensions.sqlite_health_store import SqliteExtensionHealthStore
 from maistro.extensions.sqlite_store import SqliteExtensionInstallStore
 from maistro.extensions.store import (
     TRUST_POLICY,
@@ -349,6 +463,11 @@ from maistro.extensions.store import (
     ExtensionStore,
     InMemoryExtensionInstallStore,
     InMemoryExtensionStore,
+)
+from maistro.extensions.tenancy import (
+    ScopeBoundExtensionState,
+    TenantScopedExtensionState,
+    tenant_scope_key,
 )
 from maistro.extensions.trust import TrustPolicy, TrustReport, evaluate_trust
 
@@ -359,6 +478,7 @@ from maistro.extensions.trust import TrustPolicy, TrustReport, evaluate_trust
 # which is how its in-tree consumers already import it.
 from maistro.extensions.types import (
     DIGEST_ALGORITHM,
+    REMOVABLE_STATES,
     TERMINAL_STATES,
     TRANSITIONS,
     ArtifactMismatch,
@@ -368,6 +488,7 @@ from maistro.extensions.types import (
     ExtensionLifecycleError,
     ExtensionManifest,
     ExtensionPackage,
+    ExtensionPinned,
     ExtensionRegistryError,
     ExtensionScope,
     ExtensionState,
@@ -384,11 +505,11 @@ from maistro.extensions.types import (
     PublisherIdentity,
     PublisherKeyConflict,
     RegistryProvenance,
+    RollbackRefused,
     TrustClaim,
     TrustEvidence,
     UnknownInstall,
     UnknownPublisher,
-    VersionPinned,
     canonical_install_payload,
     identity_key,
     manifest_snapshot,
@@ -421,6 +542,7 @@ from maistro.extensions.ui import (
 
 __all__ = [
     "BUNDLE_FORMAT",
+    "CATALOG_FORMAT",
     "CERTIFICATION_FORMAT",
     "CERTIFIER_VERSION",
     "CONFORMANCE_CHECK_ID",
@@ -434,13 +556,18 @@ __all__ = [
     "FEATURE_SUPPORTED",
     "FILESYSTEM_READ_PERMISSION",
     "FILESYSTEM_WRITE_PERMISSION",
+    "GOVERNANCE_ACTOR_KINDS",
+    "HEALTHY_STATES",
+    "HEALTH_WINDOW",
     "HOST_FEATURES",
+    "INHERITANCE_SEMANTICS",
     "LOCK_FORMAT",
     "MANIFEST_PROFILE",
     "NETWORK_OUTBOUND_PERMISSION",
     "PUBLICATION_PROFILE",
     "PUBLIC_IMPORTS_CHECK_ID",
     "REAL_ISOLATION_TIERS",
+    "REMOVABLE_STATES",
     "ROOT_REQUEST_ORIGIN",
     "SEAL_FORMAT",
     "SECURITY_SCAN_CHECK_ID",
@@ -455,11 +582,14 @@ __all__ = [
     "ActionAvailability",
     "ActionUnavailable",
     "ActivationCallback",
+    "ActorKind",
+    "AdmissionDecision",
     "ArtifactMismatch",
     "AttributionDimension",
     "AuthorityBaseline",
     "AuthorityDelta",
     "CallerAuthority",
+    "CatalogDocumentError",
     "CatalogEntry",
     "CatalogRejected",
     "CertificationCheck",
@@ -490,6 +620,7 @@ __all__ = [
     "DataBinding",
     "Degradation",
     "DependencyCycle",
+    "DependencyReadiness",
     "DeprecationNotice",
     "DuplicateCheckError",
     "EffectDispatcher",
@@ -499,11 +630,13 @@ __all__ = [
     "EffectiveAuthority",
     "EntryPointPresenceCheck",
     "EventStoreProgressSink",
+    "EvidenceKind",
     "ExtensionAuthorityEvidence",
     "ExtensionAuthorityInputs",
     "ExtensionBundle",
     "ExtensionCancellation",
     "ExtensionCancelled",
+    "ExtensionCandidate",
     "ExtensionCatalog",
     "ExtensionCodeLoader",
     "ExtensionCompatMetadata",
@@ -514,6 +647,15 @@ __all__ = [
     "ExtensionDependency",
     "ExtensionDescriptor",
     "ExtensionEntryPoint",
+    "ExtensionErrorKind",
+    "ExtensionErrorRecord",
+    "ExtensionEvidence",
+    "ExtensionGovernanceLedger",
+    "ExtensionGovernancePolicy",
+    "ExtensionGovernanceService",
+    "ExtensionHealth",
+    "ExtensionHealthService",
+    "ExtensionHealthStore",
     "ExtensionHookError",
     "ExtensionHost",
     "ExtensionIdentity",
@@ -529,7 +671,16 @@ __all__ = [
     "ExtensionManifest",
     "ExtensionMeter",
     "ExtensionMeteringError",
+    "ExtensionObservation",
+    "ExtensionOperationalState",
+    "ExtensionOperationalStatus",
+    "ExtensionOperatorAction",
+    "ExtensionOperatorState",
     "ExtensionPackage",
+    "ExtensionPin",
+    "ExtensionPinned",
+    "ExtensionPolicyEngine",
+    "ExtensionPolicyViolation",
     "ExtensionProgress",
     "ExtensionQuotaBalance",
     "ExtensionQuotaConflict",
@@ -552,19 +703,28 @@ __all__ = [
     "ExtensionTransition",
     "ExtensionUsageAmounts",
     "ExtensionUsageConflict",
+    "ExtensionUsageDigest",
     "ExtensionUsageEvent",
     "FeatureStatus",
     "FeatureSupport",
+    "GovernanceActor",
+    "GovernanceDecision",
+    "GovernanceEvent",
+    "GovernanceState",
+    "GovernanceTarget",
     "GovernedActionCall",
     "GovernedEffectRoute",
     "GovernedRoute",
     "HostContractMetadata",
     "HostExtensionPolicy",
     "ImportPolicy",
+    "InFlightDisposition",
+    "InMemoryExtensionHealthStore",
     "InMemoryExtensionInstallStore",
     "InMemoryExtensionStore",
     "InProcessExtensionLoader",
     "IncompatibleContract",
+    "InspectionConflict",
     "InspectionConflict",
     "InstallRecord",
     "InstallRequest",
@@ -572,6 +732,7 @@ __all__ = [
     "InvalidSemanticVersion",
     "InvalidTransition",
     "InvalidVersionRange",
+    "InvocationLease",
     "InvocationScope",
     "LoadedExtension",
     "LockArtifacts",
@@ -583,6 +744,10 @@ __all__ = [
     "ManifestRejected",
     "ManifestSnapshot",
     "MissingLockArtifacts",
+    "ObservationOutcome",
+    "OperatorDecision",
+    "OrgExtensionPolicy",
+    "OwnedResourceJanitor",
     "PackAsset",
     "PackAssetKind",
     "PackAssetUnknown",
@@ -603,7 +768,15 @@ __all__ = [
     "PackageIdentity",
     "PackageSignatureInvalid",
     "PackageStructureCheck",
+    "ParsedCatalogSnapshot",
     "PermissionDenial",
+    "PolicyAuditEvent",
+    "PolicyAuditLog",
+    "PolicyConfigurationError",
+    "PolicyDecision",
+    "PolicyLayer",
+    "PolicyRuleOutcome",
+    "PolicyVerdict",
     "PreflightPolicy",
     "PreflightReport",
     "ProgressReporter",
@@ -612,23 +785,33 @@ __all__ = [
     "PublisherIdentity",
     "PublisherKeyConflict",
     "PublisherTrust",
+    "QuarantineAuthorityError",
+    "RankingMetric",
     "RegistryProvenance",
     "RejectedCandidate",
     "RenderedComponent",
     "ResolutionConflict",
     "ResolutionError",
+    "RetainAllJanitor",
+    "RollbackRefused",
     "RootRequest",
     "RouteParam",
     "SandboxPolicy",
+    "SandboxViolationBridge",
     "SandboxViolationLog",
+    "ScopeBoundExtensionState",
     "ScopeMismatch",
     "SecurityScanCheck",
     "SelectionExplanation",
     "SemVer",
     "ServiceNotGranted",
     "SkippedOptional",
+    "SloPosition",
+    "SqliteExtensionHealthStore",
     "SqliteExtensionInstallStore",
     "TargetHostContract",
+    "TelemetryExport",
+    "TenantScopedExtensionState",
     "TrustClaim",
     "TrustEvidence",
     "TrustPolicy",
@@ -650,26 +833,31 @@ __all__ = [
     "UnwiredExtensionLoader",
     "UsageTotals",
     "Verdict",
-    "VersionPinned",
     "VersionRange",
     "ViolationKind",
+    "WorkspaceExtensionEnablementPolicy",
     "WorkspaceExtensionPolicy",
     "assert_snapshot_intact",
     "assert_ui_snapshot_intact",
     "build_sandbox_config",
     "bundle_digest",
     "canonical_install_payload",
+    "canonical_json",
     "certification_as_trust_claim",
     "certify",
     "compute_authority_delta",
     "compute_effective_authority",
+    "dependency_readiness",
     "detect_environment",
     "diff_locks",
+    "digest_observations",
     "ensure_compatible",
     "evaluate_compatibility",
+    "evaluate_health",
     "evaluate_pack_compatibility",
     "evaluate_trust",
     "extension_family",
+    "health_evidence",
     "identity_key",
     "inspect_manifest",
     "inspect_pack_manifest",
@@ -677,16 +865,22 @@ __all__ = [
     "instantiate_graph_asset",
     "instantiate_persona_asset",
     "instantiate_rubric_asset",
+    "latest_decision",
     "manifest_snapshot",
     "materialize_lock",
     "negotiate",
     "normalize_permission",
+    "operator_state_for",
     "pack_extension_view",
+    "parse_catalog_document",
+    "parse_catalog_json",
     "parse_compat_metadata",
     "parse_contract_range",
     "parse_contract_version",
     "parse_feature_status",
     "parse_range",
+    "project_operational_status",
+    "rank_digests",
     "render_summary",
     "report_digest",
     "report_from_json",
@@ -700,9 +894,13 @@ __all__ = [
     "run_preflight",
     "seal_from_json",
     "seal_to_json",
+    "security_evidence",
     "select_isolation_profile",
     "sha256_hex",
     "sign_certification",
+    "slo_position",
+    "state_for_action",
+    "tenant_scope_key",
     "verify_certification",
     "verify_certified_package",
     "verify_component_asset",
