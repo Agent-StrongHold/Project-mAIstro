@@ -84,6 +84,25 @@ def turing_service_key() -> str:
     return key
 
 
+def replica_count() -> int:
+    """How many Turing replicas the deployment declares. One by default.
+
+    Read at state composition (#859): a value above 1 is a multi-replica
+    declaration, and the process-local self-model store refuses to back one —
+    each replica would keep its own authoritative self model and silently
+    diverge. Enabling replicas therefore requires composing a shared
+    ``SelfModelStateStore``; the declaration alone can never enable divergence.
+    """
+    raw = os.environ.get("TURING_REPLICA_COUNT", "1").strip()
+    try:
+        count = int(raw)
+    except ValueError:
+        raise RuntimeError(f"TURING_REPLICA_COUNT must be an integer, got {raw!r}") from None
+    if count < 1:
+        raise RuntimeError(f"TURING_REPLICA_COUNT must be >= 1, got {count}")
+    return count
+
+
 def canonical_turing_scopes() -> frozenset[Scope]:
     """The identity's authority, in the canonical permission model.
 

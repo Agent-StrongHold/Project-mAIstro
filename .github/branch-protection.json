@@ -105,6 +105,7 @@
         "contexts": [
           "Compliance registry",
           "docker-build",
+          "docker-rebuild-compare",
           "hive-conductor-e2e",
           "hive-conductor-e2e-ui",
           "lint-and-type-check",

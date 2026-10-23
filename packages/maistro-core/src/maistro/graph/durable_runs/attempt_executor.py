@@ -728,7 +728,7 @@ async def _execute_frontier(
     for node_id, node_run in zip(frontier, node_runs, strict=True):
         spec = traversal._node_spec(graph, node_id)
         assert spec is not None
-        ctx = traversal._build_ctx(record, node_id)
+        ctx = traversal._build_ctx(record, node_id, spec)
         node = node_resolver(node_id, graph)
         inputs = traversal._resolve_inputs(graph, record, node_run, spec)
         prepared.append((node_id, spec, node_run, ctx, node, inputs))
