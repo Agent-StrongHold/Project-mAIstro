@@ -552,3 +552,84 @@ async def test_the_two_security_stores_probe_independently(
 
     assert _rows("security_violations") == [1.0]
     assert _rows("security_rate_limits") == [2.0]
+
+
+async def test_tracker_purge_rejects_a_nonpositive_limit(
+    patch_asyncpg: FakePool,
+) -> None:
+    """The bounded batch is bounded: a nonpositive limit is a broken sweep
+    loop, refused before any pool I/O."""
+    from datetime import datetime as dt
+
+    tracker = PgStrikeTracker(db_url="postgres://x")
+    with pytest.raises(ValueError, match="limit must be positive"):
+        await tracker.purge_expired(before=dt(2026, 8, 2, tzinfo=UTC), limit=0)
+
+
+async def test_limiter_purge_rejects_a_nonpositive_limit(
+    patch_asyncpg: FakePool,
+) -> None:
+    """Same bounded-batch contract for the throttle ledger's purge."""
+    from datetime import datetime as dt
+
+    limiter = PgRateLimiter(db_url="postgres://x")
+    with pytest.raises(ValueError, match="limit must be positive"):
+        await limiter.purge_expired(before=dt(2026, 8, 2, tzinfo=UTC), limit=0)
+
+
+async def test_tracker_purge_legal_hold_compiles_the_held_scoped_query(
+    patch_asyncpg: FakePool, conn: FakeConnection
+) -> None:
+    """A legal hold scopes the DELETE in SQL — `user_id <> ALL($2::text[])`
+    with the batch limit moved to $3 — so a held principal's violation
+    evidence is never in the deleted set, whatever rows qualify by age
+    (#325)."""
+    from datetime import datetime as dt
+
+    from maistro.observability import metrics as retention_health
+
+    retention_health._LAST_PROBE.clear()
+    # The purge's RETURNING fetch, then its probe's to_regclass/sample/size.
+    conn.queue_fetch([])
+    conn.queue_fetchrow({"ok": True})
+    conn.queue_fetchrow({"n": 0, "oldest": None})
+    conn.queue_fetchrow({"b": 0})
+    before = dt(2026, 8, 2, tzinfo=UTC)
+    tracker = PgStrikeTracker(db_url="postgres://x")
+    await tracker.purge_expired(before=before, limit=250, legal_hold_user_ids=("held",))
+
+    purges = [
+        c
+        for c in conn.calls
+        if c.method == "fetch" and "DELETE FROM security_violations" in c.query
+    ]
+    assert len(purges) == 1
+    assert "user_id <> ALL($2::text[])" in purges[0].query
+    assert "LIMIT $3" in purges[0].query
+    assert purges[0].args == (before.astimezone(UTC), ["held"], 250)
+
+
+async def test_a_second_limiter_purge_inside_the_probe_interval_probes_nothing(
+    patch_asyncpg: FakePool, conn: FakeConnection
+) -> None:
+    """The throttle ledger's stored-volume probe is amortized like every
+    other store's: two purges inside one interval sample the table once
+    (#325)."""
+    from datetime import datetime as dt
+
+    from maistro.observability import metrics as retention_health
+
+    retention_health._LAST_PROBE.clear()
+    conn.queue_fetch([])
+    conn.queue_fetchrow({"ok": True})
+    conn.queue_fetchrow({"n": 0, "oldest": None})
+    conn.queue_fetchrow({"b": 0})
+    limiter = PgRateLimiter(db_url="postgres://x")
+    await limiter.purge_expired(before=dt(2026, 8, 2, tzinfo=UTC))
+    probes_after_first = len([c for c in conn.calls if c.method == "fetchrow"])
+    assert probes_after_first >= 1
+
+    # Inside the interval: the purge still runs, the probe does not.
+    conn.queue_fetch([])
+    await limiter.purge_expired(before=dt(2026, 8, 3, tzinfo=UTC))
+    assert len([c for c in conn.calls if c.method == "fetchrow"]) == probes_after_first

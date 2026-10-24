@@ -244,6 +244,66 @@ async def test_event_id_retry_is_idempotent_under_postgres_concurrency() -> None
         await pool.close()
 
 
+async def test_purge_rejects_a_nonpositive_limit_before_touching_the_pool() -> None:
+    """The bounded batch is bounded: a nonpositive limit is a broken sweep
+    loop, refused before any pool I/O."""
+    pool = _FakeAsyncpgPool()
+    with pytest.raises(ValueError, match="limit must be positive"):
+        await PgEventStore(pool).purge_expired(before=time.time() + 1, limit=0)
+    assert not pool.statements
+
+
+async def test_purge_honors_legal_hold_workspaces() -> None:
+    """The PG leg of the deletion-authority contract (#325): events in a held
+    Workspace survive a purge that removes their equally expired neighbors."""
+    held = f"ws-hold-{uuid4().hex}"
+    free = f"ws-free-{uuid4().hex}"
+    pool = await _pool()
+    try:
+        store = PgEventStore(pool)
+        old = time.time() - 10_000
+        await store.append(
+            EventEnvelope(
+                event_id=f"event-{uuid4().hex}", type="e", workspace_id=held, timestamp=old
+            )
+        )
+        await store.append(
+            EventEnvelope(
+                event_id=f"event-{uuid4().hex}", type="e", workspace_id=free, timestamp=old
+            )
+        )
+
+        # The purge is global on this shared database; other tests' leftover
+        # rows inflate the count. Assert what this test owns: its held rows
+        # survive, its free row does not.
+        await store.purge_expired(
+            before=time.time() + 60,
+            legal_hold_workspace_ids=(held,),
+        )
+        assert (
+            await pool.fetchval(
+                "SELECT COUNT(*) FROM canonical_event_log WHERE workspace_id = $1", held
+            )
+            == 1
+        )
+        assert (
+            await pool.fetchval(
+                "SELECT COUNT(*) FROM canonical_event_log WHERE workspace_id = $1", free
+            )
+            == 0
+        )
+    finally:
+        await pool.execute(
+            "DELETE FROM canonical_event_log WHERE workspace_id IN ($1, $2)", held, free
+        )
+        await pool.execute(
+            "DELETE FROM canonical_event_stream_watermarks WHERE stream_id IN ($1, $2)",
+            f"workspace:{held}",
+            f"workspace:{free}",
+        )
+        await pool.close()
+
+
 async def test_sequence_high_water_mark_survives_event_purge() -> None:
     """The PG leg of cursor survival (#325): retention may delete every event
     of a stream, and the next append must continue its sequence from the

@@ -19,6 +19,26 @@ from maistro.events.durable_log import (
 )
 
 
+class _FailingDeleteConnection:
+    """aiosqlite wrapper whose execute() raises exactly on the purge DELETE.
+
+    Every other statement (BEGIN IMMEDIATE, commits, rollbacks, the health
+    probe's SELECTs) is delegated to the real connection, so the test drives
+    one precise failure: the DELETE itself blowing up mid-transaction.
+    """
+
+    def __init__(self, conn: aiosqlite.Connection) -> None:
+        self._conn = conn
+
+    async def execute(self, sql: str, *args: Any) -> Any:
+        if "DELETE FROM event_log" in sql:
+            raise RuntimeError("disk I/O error")
+        return await self._conn.execute(sql, *args)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._conn, name)
+
+
 @pytest.fixture(params=["memory", "sqlite"])
 async def log(request: pytest.FixtureRequest) -> AsyncIterator[EventLogStore]:
     if request.param == "memory":
@@ -121,6 +141,83 @@ class TestAppend:
             await store.purge_expired(before=time.time() + 1)
             assert _series(retention_table_rows) == [0.0]
             assert _series(retention_oldest_record_timestamp) == []
+        finally:
+            await conn.close()
+
+    async def test_sqlite_purge_rejects_a_nonpositive_limit(self) -> None:
+        """The bounded batch is bounded: a caller asking for a purge that
+        deletes "no more than zero" rows has a broken sweep loop, and the
+        guard must say so before touching the table."""
+        conn = await aiosqlite.connect(":memory:")
+        try:
+            store = SqliteEventLog(conn)
+            await store.ensure_schema()
+            await store.append("old.event")
+            with pytest.raises(ValueError, match="limit must be positive"):
+                await store.purge_expired(before=time.time() + 1, limit=0)
+            # The refusal deletes nothing and the log is intact.
+            assert len(await store.query(limit=10)) == 1
+        finally:
+            await conn.close()
+
+    async def test_a_failed_sqlite_purge_commits_nothing_and_leaves_the_store_usable(
+        self,
+    ) -> None:
+        """A purge that blows up mid-transaction must raise, leave every row
+        in place, and roll back — the connection is not left inside the
+        aborted BEGIN IMMEDIATE, so the next statement on the store works.
+        This is the no-partial-delete half of the #325 purge contract."""
+        conn = await aiosqlite.connect(":memory:")
+        try:
+            store = SqliteEventLog(conn)
+            await store.ensure_schema()
+            await store.append("old.event")
+            await store.append("other.event")
+
+            failing = _FailingDeleteConnection(conn)
+            with pytest.raises(RuntimeError, match="disk I/O error"):
+                await SqliteEventLog(failing).purge_expired(  # type: ignore[arg-type]
+                    before=time.time() + 1
+                )
+
+            # Nothing was deleted, and the rolled-back connection still
+            # serves queries (a missing rollback would surface here as
+            # "cannot start a transaction within a transaction").
+            assert len(await store.query(limit=10)) == 2
+            assert await store.append("after.failure") is not None
+        finally:
+            await conn.close()
+
+    async def test_a_second_purge_inside_the_probe_interval_costs_no_probe(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The stored-volume probe is the amortized cost of the sweep: two
+        purges inside one probe interval sample the table once (#325)."""
+        import maistro.events.durable_log as durable_log_module
+        from maistro.observability import metrics as retention_health
+
+        retention_health._LAST_PROBE.clear()
+        samples: list[str] = []
+        real_sample = durable_log_module.sqlite_table_sample
+
+        async def counting_sample(conn: Any, table: str, *args: Any, **kwargs: Any) -> Any:
+            samples.append(table)
+            return await real_sample(conn, table, *args, **kwargs)
+
+        monkeypatch.setattr(durable_log_module, "sqlite_table_sample", counting_sample)
+
+        conn = await aiosqlite.connect(":memory:")
+        try:
+            store = SqliteEventLog(conn)
+            await store.ensure_schema()
+            await store.append("e.1")
+            assert await store.purge_expired(before=time.time() + 1) == 1
+            assert samples == ["event_log"]
+
+            # Inside the interval: the purge still runs, the probe does not.
+            await store.append("e.2")
+            assert await store.purge_expired(before=time.time() + 1) == 1
+            assert samples == ["event_log"]
         finally:
             await conn.close()
 

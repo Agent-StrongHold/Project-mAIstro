@@ -665,3 +665,83 @@ async def test_sequence_continues_after_a_purge_removes_the_highest_sequence(
     assert next_event.sequence == 3
     page = await store.list_stream("workspace:ws-suffix", after_sequence=2)
     assert [event.sequence for event in page] == [3]
+
+
+async def test_sqlite_purge_rejects_a_nonpositive_limit() -> None:
+    """The bounded batch is bounded: a nonpositive limit is a broken sweep
+    loop, and the guard must refuse it before touching the table."""
+    conn = await aiosqlite.connect(":memory:")
+    try:
+        store = SqliteEventStore(conn)
+        await store.ensure_schema()
+        await store.append(EventEnvelope(type="e.1", workspace_id="ws-guard"))
+        with pytest.raises(ValueError, match="limit must be positive"):
+            await store.purge_expired(before=time.time() + 1, limit=0)
+        assert len(await store.list_stream("workspace:ws-guard")) == 1
+    finally:
+        await conn.close()
+
+
+async def test_sqlite_purge_honors_legal_hold_workspaces() -> None:
+    """A legal hold is a deletion authority: rows in a held Workspace stay
+    through a purge that removes their equally expired neighbors (#325)."""
+    conn = await aiosqlite.connect(":memory:")
+    try:
+        store = SqliteEventStore(conn)
+        await store.ensure_schema()
+        old = time.time() - 10_000
+        await store.append(EventEnvelope(type="e.held", workspace_id="ws-held", timestamp=old))
+        await store.append(EventEnvelope(type="e.free", workspace_id="ws-free", timestamp=old))
+
+        removed = await store.purge_expired(
+            before=time.time() + 1,
+            limit=10,
+            legal_hold_workspace_ids=("ws-held",),
+        )
+
+        assert removed == 1
+        assert [event.workspace_id for event in await store.list_stream("workspace:ws-held")] == [
+            "ws-held"
+        ]
+        assert await store.list_stream("workspace:ws-free") == []
+    finally:
+        await conn.close()
+
+
+async def test_a_failed_sqlite_purge_commits_nothing_and_leaves_the_store_usable() -> None:
+    """A purge that blows up mid-transaction must raise, leave every row in
+    place, and roll back — the connection is not left inside the aborted
+    BEGIN IMMEDIATE, so the next statement on the store works. This is the
+    no-partial-delete half of the #325 purge contract."""
+
+    class FailingDeleteConnection:
+        """Delegates everything except the purge DELETE, which fails."""
+
+        def __init__(self, inner: aiosqlite.Connection) -> None:
+            self._inner = inner
+
+        async def execute(self, sql: str, *args: Any) -> Any:
+            if "DELETE FROM canonical_event_log" in sql:
+                raise RuntimeError("disk I/O error")
+            return await self._inner.execute(sql, *args)
+
+        def __getattr__(self, name: str) -> Any:
+            return getattr(self._inner, name)
+
+    conn = await aiosqlite.connect(":memory:")
+    try:
+        store = SqliteEventStore(conn)
+        await store.ensure_schema()
+        await store.append(EventEnvelope(type="e.1", workspace_id="ws-fail"))
+        await store.append(EventEnvelope(type="e.2", workspace_id="ws-fail"))
+
+        failing = SqliteEventStore(FailingDeleteConnection(conn))  # type: ignore[arg-type]
+        with pytest.raises(RuntimeError, match="disk I/O error"):
+            await failing.purge_expired(before=time.time() + 1)
+
+        # Nothing was deleted, and the rolled-back connection still serves
+        # queries and accepts a later append.
+        assert len(await store.list_stream("workspace:ws-fail")) == 2
+        assert await store.append(EventEnvelope(type="e.3", workspace_id="ws-fail"))
+    finally:
+        await conn.close()

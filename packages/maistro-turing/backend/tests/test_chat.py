@@ -457,6 +457,48 @@ def test_a_stale_tracking_entry_frees_its_window_slot():
     _await(scenario())
 
 
+def test_a_failed_continuation_reclaim_leaves_the_run_alone(monkeypatch):
+    """Eviction reclaims a resumable Run's continuation state BEFORE deleting
+    the Run (the reference is logical, no foreign key). If the reclaim fails,
+    deleting would orphan a resumable state pointing at nothing — so the Run
+    must be left alone: no delete, no crash, its tracking entry kept for the
+    next sweep to retry (Codex, #325 review)."""
+    from maistro.graph import Graph, Node
+
+    async def failing_delete(_run_id: str) -> None:
+        raise RuntimeError("continuation store unavailable")
+
+    async def scenario() -> None:
+        plane = _new_execution_plane(max_retained=1)
+        workspace_id, project_id = await plane._scope_for("user")
+        monkeypatch.setattr(plane._continuations, "delete", failing_delete)
+
+        graph = Graph(
+            workspace_id=workspace_id,
+            project_id=project_id,
+            name="terminal chat admission",
+            nodes=[Node(node_id="n", node_type="test", name="n")],
+        )
+        terminal = await plane.run_store.create_run(
+            graph,
+            actor_principal_id="user",
+            initial_status=RunStatus.QUEUED,
+        )
+        await plane.run_store.transition_run(terminal.run_id, RunStatus.RUNNING)
+        await plane.run_store.transition_run(terminal.run_id, RunStatus.COMPLETED)
+        plane._retained_runs[terminal.run_id] = workspace_id
+
+        # The window overflows with this admission; eviction reaches the
+        # terminal Run, the continuation reclaim fails, and the admission
+        # must survive that instead of orphaning the Run's resumable state.
+        await plane._track_admission("brand-new-run", workspace_id=workspace_id)
+
+        assert await plane.run_store.get_run(terminal.run_id) is not None
+        assert terminal.run_id in plane._retained_runs
+
+    _await(scenario())
+
+
 def test_turing_cleanup_helpers_fail_closed_without_masking_the_caller(monkeypatch, caplog):
 
     async def fail(*_args: Any, **_kwargs: Any) -> Any:
