@@ -178,46 +178,6 @@ def parse_actual(text: str) -> set[str]:
     return set(pins.values())
 
 
-def reconcile_variance(
-    required: set[str], conditional: set[str], actual: set[str]
-) -> tuple[list[str], list[str], list[str]]:
-    """Compare an image's pins against the lock and return (missing, extra, skewed).
-
-    A uv.lock may carry SEVERAL pins for one distribution, forked by
-    environment markers: beartype resolves to 0.22.9 for python_full_version
-    < '3.15' and 0.23.1 for >= '3.15', so `uv export` lists both and each
-    image installs the variant its own interpreter selects — both correct.
-    Keying expected pins by bare name collapses the variants into one dict
-    slot and compares the image against whichever variant set iteration
-    happened to leave there: a false "version mismatch" that comes and goes
-    with PYTHONHASHSEED (it failed the #330 containers job for exactly this
-    reason — a beartype fork this branch's own re-lock introduced). So a name
-    is satisfied by ANY of its locked variants; a real skew — an installed
-    version no locked variant names — is still reported, once, as a
-    mismatch, and never also as a missing/extra pair on either side of it.
-    """
-    everything_expected = required | conditional
-    allowed_by_name: dict[str, set[str]] = {}
-    for pin in everything_expected:
-        allowed_by_name.setdefault(pin.partition("==")[0], set()).add(pin)
-
-    actual_by_name = {p.partition("==")[0]: p for p in actual}
-    skewed_names: set[str] = set()
-    skewed: list[str] = []
-    for name, pin in actual_by_name.items():
-        allowed = allowed_by_name.get(name)
-        if allowed is not None and pin not in allowed:
-            skewed_names.add(name)
-            skewed.append(f"{pin} (image) != {' or '.join(sorted(allowed))}")
-    skewed.sort()
-
-    missing = sorted(p for p in required - actual if p.partition("==")[0] not in skewed_names)
-    extra = sorted(
-        p for p in actual - everything_expected if p.partition("==")[0] not in skewed_names
-    )
-    return missing, extra, skewed
-
-
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--image", required=True, help="image tag, e.g. maistro-engine:pr-123")
