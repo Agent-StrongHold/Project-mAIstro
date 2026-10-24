@@ -25,6 +25,12 @@ or placeholder-only section.
 
 ### Added
 
+- **Workspace Approvals projection over the existing capability + HITL APIs
+  (#2278, Parity P-1).** New `/approvals` page lists
+  `/v1/capabilities/approvals` and `/v1/hitl/pending`, and posts
+  approve/deny/answer/cancel through those same doors — identical authority
+  to `maistro approvals` and the HITL routes. No parallel approvals store.
+
 - **`/health` names the Reactor's persistence authority beside every other
   store family (#1178).** `persistence.families` gains a `reactor` entry:
   `fire-and-forget` when the Reactor writes through the canonical `State`

@@ -61,7 +61,7 @@ Evidence: [`routes/auth.py`](../../packages/hive-conductor/backend/routes/auth.p
 | Credentials + master-key rotation | `maistro.credentials` (encrypted per-user store) | supported — `Credentials.tsx` (`/credentials`) | supported — `/v1/credentials/*` | supported — `maistro security rotate-credential-key` (operator path) |
 | Skills + Forge + scan + toggle | `maistro.skills`, `maistro.code_registry` (signing + trust tiers, #59 path) | supported — `Skills.tsx` (`/skills`) | supported — `/v1/skills`, `/forge`, `/scan`, `/{id}`, `/toggle` | missing |
 | MCP integrations (discovery / trust) | `maistro.integrations` + Warden/policy (#59 supply-chain path) | supported — `MCP.tsx` (`/mcp`, nav "Integrations") | supported — `/v1/mcp/servers*`, `/discover`, `/test`; `unknown` on `/discover` and `/{id}/scan` (unresolved surface-truth dispositions) | missing |
-| Capability slots + approvals inbox | `maistro.capabilities` (`governed_invocation`, `approval_store`) | missing — no UI calls `/v1/capabilities/*` or `/v1/hitl/*` (G6) | supported — `/v1/capabilities*`, `/v1/hitl/{run}/{node}/answer|cancel`, `/v1/hitl/pending` | supported — `maistro approvals list|approve|deny` |
+| Capability slots + approvals inbox | `maistro.capabilities` (`governed_invocation`, `approval_store`) | partial — Approvals UI (#2278) calls `/v1/capabilities/approvals` + `/v1/hitl/*`; slot management UI is #2273 | supported — `/v1/capabilities*`, `/v1/hitl/{run}/{node}/answer|cancel`, `/v1/hitl/pending` | supported — `maistro approvals list|approve|deny` |
 
 Evidence: BFF registrations [`backend/main.py:370,376,382`](../../packages/hive-conductor/backend/main.py); approvals CLI registration [`cli/__init__.py:46`](../../packages/maistro-core/src/maistro/cli/__init__.py); absence of `/v1/capabilities` and `/v1/hitl` callers verified by repo-wide frontend grep at the evidence commit.
 
@@ -87,7 +87,7 @@ Evidence: BFF registrations [`backend/main.py:370,376,382`](../../packages/hive-
 | Run retry | #1169 / #1036 control plane — **no owner confirmed** | missing | missing | missing (P-2) |
 | Node-level inspection / feedback | NodeRun/Attempt projections | supported — node click-through in `DagRuns.tsx` | supported — `/v1/dag-runs/{run_id}/events`, `/v1/dag-runs/{run_id}/feedback`, node feedback | missing |
 | Container / sandbox lifecycle | `maistro.sandbox` + Conductor container service | supported — `Containers.tsx` (`/containers`) | supported — `/v1/containers*` incl. build/start/stop/restart/logs; `unknown` on `/build` (unresolved surface-truth disposition) | supported — `maistro sandbox status` (host isolation report) |
-| HITL answers inside a live Run | `maistro.capabilities` approvals + HITL routes | missing — no UI caller (G6) | supported — `/v1/hitl/pending`, `/{run}/{node}`, `/answer`, `/cancel`, `/expire` | supported — `maistro approvals list|approve|deny` |
+| HITL answers inside a live Run | `maistro.capabilities` approvals + HITL routes | partial — Approvals page (#2278) lists pending and posts answer/cancel | supported — `/v1/hitl/pending`, `/{run}/{node}`, `/answer`, `/cancel`, `/expire` | supported — `maistro approvals list|approve|deny` |
 
 ### E. Durable state
 
@@ -139,9 +139,9 @@ Evidence: BFF registrations [`backend/main.py:370,376,382`](../../packages/hive-
 
 | # | Missing counterpart | Proposal |
 |---|---|---|
-| P-1 | HITL/capability approvals have API + CLI support but no Workspace UI caller | Owner review: fold a minimal approvals projection into the #65 UX plane or the capabilities service UI; do not create a separate approvals backend. |
-| P-2 | Run retry exists on no surface | Owner review: define retry inside the #1169/#1036 control plane (a new Attempt under the same NodeRun/Run identity), or record it as a deliberate non-goal. |
-| P-3 | No CLI commands for in-product CRUD (agents, providers, skills, MCP, schedules, backlog) | Owner review: decide whether CLI functional parity targets operator lifecycle only (today's state) or gains scoped CRUD; any addition goes through the existing public API authority, not new endpoints. |
+| P-1 | HITL/capability approvals have API + CLI support but no Workspace UI caller | **Owned by [#2278](https://github.com/Agent-StrongHold/Project-mAIstro/issues/2278)** — minimal `/approvals` projection over the existing public APIs (no parallel store). |
+| P-2 | Run retry exists on no surface | **Owned by [#2279](https://github.com/Agent-StrongHold/Project-mAIstro/issues/2279)** — define retry inside the #1169/#1036 control plane (new Attempt under same NodeRun/Run), or record deliberate non-goal. |
+| P-3 | No CLI commands for in-product CRUD (agents, providers, skills, MCP, schedules, backlog) | **Owned by [#2280](https://github.com/Agent-StrongHold/Project-mAIstro/issues/2280)** — decide operator-lifecycle-only vs scoped CRUD through existing public APIs. |
 
 These proposals raise no runtime work in this change; they exist so the missing rows above do not silently read as owned.
 
