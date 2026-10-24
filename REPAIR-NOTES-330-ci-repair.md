@@ -36,6 +36,24 @@ fixed in-tree or attributed with evidence.
 - ruff check / format: clean. Workflow-inventory, branch-independence,
   reachability, dispositions, compliance, mutation-critical validate: green.
 
+## Live mutation-sweep evidence (#320 DoD criterion)
+
+A real cosmic-ray sweep was executed in this worktree against the #320
+secret-comparison module with its real test scope:
+
+- source `packages/maistro-core/src/maistro/security/secret_equal.py`, tests
+  `packages/maistro-core/tests/security/test_secret_equal.py` (resolved by
+  `mutation_targets.resolve_package_tests`)
+- result: **killed 5/5 viable mutants, kill rate 100%, survivors []**
+  (report: `adjusted: 5/5`; non-viable/skipped subtracted)
+- the source file was verified byte-identical after the run (`git diff HEAD`
+  empty); sweep artifacts were removed and the worktree left clean.
+
+This is the strongest local proof available for "the exact mutants
+demonstrated in #320 are killed"; #321/#322 modules are in the committed
+critical list (pinned by `test_the_three_demonstrated_modules_are_critical`)
+and are measured by the same machinery nightly.
+
 ## Not touched
 
 - `quality/vulture-baseline.json` (no new debt; gate green without amendment).
