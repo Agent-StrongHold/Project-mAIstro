@@ -1,5 +1,7 @@
 """Promotion exports must stay in the operator-selected export directory."""
 
+import builtins
+import os
 from pathlib import Path
 
 import pytest
@@ -7,7 +9,10 @@ import pytest
 from maistro_rsi.promotion_review import _export_patch
 
 
-@pytest.mark.parametrize("stem", ["/../../x", "../evil", "x\\..\\x", ""])
+@pytest.mark.parametrize(
+    "stem",
+    ["/../../x", "../evil", "x\\..\\x", "", "has space", "semi;colon", "a" * 65],
+)
 def test_export_rejects_path_components(tmp_path: Path, stem: str) -> None:
     export = tmp_path / "exports"
     export.mkdir()
@@ -47,14 +52,15 @@ def test_export_refuses_leaf_symlink_created_at_open(
     export = tmp_path / "exports"
     outside = tmp_path / "outside.patch"
     outside.write_text("private patch")
-    original_open = Path.open
+    original_open = builtins.open
 
-    def plant_link(path: Path, *args: object, **kwargs: object):
-        if path.name == "0001-approved-abc12345.patch":
-            path.symlink_to(outside)
+    def plant_link(path: object, *args: object, **kwargs: object):
+        path_str = os.fspath(path)
+        if str(path_str).endswith("0001-approved-abc12345.patch"):
+            Path(path_str).symlink_to(outside)
         return original_open(path, *args, **kwargs)
 
-    monkeypatch.setattr(Path, "open", plant_link)
+    monkeypatch.setattr(builtins, "open", plant_link)
     with pytest.raises(FileExistsError):
         _export_patch(export, "abc123456789", "candidate")
     assert outside.read_text() == "private patch"

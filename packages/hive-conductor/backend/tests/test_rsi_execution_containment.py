@@ -198,6 +198,21 @@ class TestPathContainment:
         with pytest.raises(policy.RsiPolicyError, match="git"):
             policy.resolve_repo(str(root / "plain"))
 
+    def test_dotdot_traversal_out_of_the_root_is_refused(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``realpath`` collapses ``..`` before the startswith guard runs."""
+        from services import rsi_execution_policy as policy
+
+        root = tmp_path / "root"
+        root.mkdir()
+        outside = tmp_path / "outside"
+        (outside / ".git").mkdir(parents=True)
+        monkeypatch.setattr(policy, "_authorized_roots", lambda: (root.resolve(),))
+
+        with pytest.raises(policy.RsiPolicyError, match="not beneath"):
+            policy.resolve_repo(str(root / ".." / "outside"))
+
     def test_no_configured_root_fails_closed(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

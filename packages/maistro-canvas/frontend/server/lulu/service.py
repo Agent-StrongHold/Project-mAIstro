@@ -1,6 +1,5 @@
 import os
 import sys
-import tempfile
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -8,6 +7,7 @@ from pydantic import BaseModel
 
 sys.path.insert(0, os.path.dirname(__file__))
 
+from lulu import preflight as _preflight
 from lulu.client import LuluApiError, LuluClient, LuluError
 from lulu.constants import (
     DEFAULT_PACKAGE,
@@ -15,7 +15,12 @@ from lulu.constants import (
     SHIPPING_LEVELS,
     SPINE_WIDTH_FORMULA_PAPERBACK,
 )
-from lulu.preflight import preflight_cover, preflight_interior
+from lulu.preflight import contained_pdf_path, preflight_cover, preflight_interior
+
+#: HTTP-edge copy of the preflight root. Tests patch this name; the value is
+#: passed into ``contained_pdf_path`` so the dual ``lulu`` / ``server.lulu``
+#: import paths cannot desync the guard from the patch.
+PREFLIGHT_ROOT = _preflight.PREFLIGHT_ROOT
 
 SANDBOX = os.environ.get("LULU_SANDBOX", "true").lower() != "false"
 CLIENT_KEY = os.environ.get("LULU_CLIENT_KEY", "")
@@ -218,30 +223,16 @@ class CoverPreflightRequest(BaseModel):
     interior_page_count: int = 32
 
 
-#: Where a caller may point preflight at. The export pipeline writes PDFs
-#: under the platform temp directory; anything outside it is not a print job.
-#:
-#: ``realpath`` rather than ``normpath``: the default root is the platform temp
-#: directory, which is itself a symlink on some platforms (macOS ``/tmp`` ->
-#: ``/private/tmp``), and a root that is spelled differently from the paths
-#: underneath it refuses every legitimate request.
-PREFLIGHT_ROOT = os.path.realpath(os.environ.get("LULU_PREFLIGHT_ROOT") or tempfile.gettempdir())
-
-
 def _preflight_path(raw: str) -> str:
     """Contain a caller-supplied PDF path to ``PREFLIGHT_ROOT`` or refuse.
 
-    Symlinks are followed *before* containment is decided. ``normpath`` alone
-    collapses ``..`` but knows nothing about links, and the default root is the
-    world-writable temp directory — so anyone on the host can plant a link
-    there whose every path component reads as legal and whose target is not.
-    The resolved path is what is returned, so the reader opens the file the
-    check actually approved rather than the spelling it was handed.
+    Delegates to ``lulu.preflight.contained_pdf_path`` so the HTTP edge and the
+    library share one realpath+startswith guard (CodeQL ``py/path-injection``).
     """
-    candidate = os.path.realpath(raw)
-    if candidate != PREFLIGHT_ROOT and not candidate.startswith(PREFLIGHT_ROOT + os.sep):
-        raise HTTPException(400, detail="pdf_path must be inside the preflight directory")
-    return candidate
+    try:
+        return contained_pdf_path(raw, root=PREFLIGHT_ROOT)
+    except ValueError as exc:
+        raise HTTPException(400, detail=str(exc)) from exc
 
 
 @app.post("/preflight/interior")
