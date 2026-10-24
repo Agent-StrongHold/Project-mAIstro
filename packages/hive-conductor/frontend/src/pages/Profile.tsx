@@ -127,6 +127,7 @@ export default function Profile() {
             aria-label="Workspace default landing"
             onChange={async (e) => {
               const next = resolveLandingPath(e.target.value);
+              const prev = landing;
               setLanding(next);
               setLandingBusy(true);
               try {
@@ -135,6 +136,9 @@ export default function Profile() {
                 await apiPatch("/v1/profile", { field: LANDING_PREF_KEY, value: next });
                 toast(`Default landing set to ${LANDING_OPTIONS.find((o) => o.path === next)?.label ?? next}`, "ok");
               } catch {
+                // Roll back the optimistic value so the select shows the last
+                // saved preference; re-selecting the same option re-fires onChange.
+                setLanding(prev);
                 toast("Couldn't save default landing", "error");
               } finally {
                 setLandingBusy(false);
@@ -167,12 +171,16 @@ export default function Profile() {
             aria-label="Workspace restore aggressiveness"
             onChange={async (e) => {
               const next = resolveRestoreAggressiveness(e.target.value);
+              const prev = restore;
               setRestore(next);
               setRestoreBusy(true);
               try {
                 await apiPatch("/v1/profile", { field: RESTORE_PREF_KEY, value: next });
                 toast(`Restore aggressiveness set to ${restoreLabel(next)}`, "ok");
               } catch {
+                // Roll back the optimistic value so the select shows the last
+                // saved preference; re-selecting the same option re-fires onChange.
+                setRestore(prev);
                 toast("Couldn't save restore aggressiveness", "error");
               } finally {
                 setRestoreBusy(false);
