@@ -43,6 +43,7 @@ from maistro.archive.protocols import ArchiveStore
 from maistro.archive.types import ArchiveKey
 from maistro.graph.definitions import Graph
 from maistro.projects.scope_store import ProjectScopeStore
+from maistro.runs.access import RunAuthorization, admission_identity_fields
 from maistro.runs.concurrency import ACTIVE_ROOT_STATUS_VALUES, RunConcurrencyLimits
 from maistro.runs.evidence_json import decode_evidence, decode_payload, json_of, model_of
 from maistro.runs.lifecycle import (
@@ -290,6 +291,7 @@ class PgRunStore:
         allow_cross_project: bool = False,
         persona_id: str | None = None,
         actor_principal_id: str | None = None,
+        authorization: RunAuthorization | None = None,
         provenance: dict[str, Any] | None = None,
         retention_expires_at: datetime | None = None,
         initial_status: RunStatus = RunStatus.CREATED,
@@ -308,6 +310,7 @@ class PgRunStore:
                 graph,
                 persona_id=persona_id,
                 actor_principal_id=actor_principal_id,
+                authorization=authorization,
                 provenance=provenance,
                 retention_expires_at=retention_expires_at,
                 initial_status=initial_status,
@@ -322,6 +325,7 @@ class PgRunStore:
                 allow_cross_project=allow_cross_project,
                 persona_id=persona_id,
                 actor_principal_id=actor_principal_id,
+                authorization=authorization,
                 provenance=provenance,
                 retention_expires_at=retention_expires_at,
                 initial_status=initial_status,
@@ -347,6 +351,7 @@ class PgRunStore:
         *,
         persona_id: str | None = None,
         actor_principal_id: str | None = None,
+        authorization: RunAuthorization | None = None,
         provenance: dict[str, Any] | None = None,
         retention_expires_at: datetime | None = None,
         initial_status: RunStatus = RunStatus.CREATED,
@@ -371,6 +376,11 @@ class PgRunStore:
         satisfy that ordering, only completed earlier.
         """
         await self._validate_graph_scope(graph)
+        identities = admission_identity_fields(
+            graph,
+            authorization=authorization,
+            legacy_actor_principal_id=actor_principal_id,
+        )
         run = Run(
             workspace_id=graph.workspace_id,
             project_id=graph.project_id,
@@ -378,7 +388,9 @@ class PgRunStore:
             parent_run_id=None,
             parent_node_run_id=None,
             persona_id=persona_id,
-            actor_principal_id=require_admitted_actor(actor_principal_id),
+            actor_principal_id=identities["actor_principal_id"],
+            initiating_principal_id=identities["initiating_principal_id"],
+            acting_principal_id=identities["acting_principal_id"],
             provenance=dict(provenance or {}),
             retention_expires_at=retention_expires_at,
             goal_id=goal_id,
@@ -397,6 +409,7 @@ class PgRunStore:
         allow_cross_project: bool = False,
         persona_id: str | None = None,
         actor_principal_id: str | None = None,
+        authorization: RunAuthorization | None = None,
         provenance: dict[str, Any] | None = None,
         retention_expires_at: datetime | None = None,
         initial_status: RunStatus = RunStatus.CREATED,
@@ -427,6 +440,7 @@ class PgRunStore:
                 graph,
                 persona_id=persona_id,
                 actor_principal_id=actor_principal_id,
+                authorization=authorization,
                 provenance=provenance,
                 retention_expires_at=retention_expires_at,
                 initial_status=initial_status,
@@ -457,7 +471,11 @@ class PgRunStore:
             parent_run_id=parent_run_id,
             parent_node_run_id=parent_node_run_id,
             persona_id=persona_id,
-            actor_principal_id=require_admitted_actor(actor_principal_id),
+            **admission_identity_fields(
+                graph,
+                authorization=authorization,
+                legacy_actor_principal_id=actor_principal_id,
+            ),
             provenance=dict(provenance or {}),
             retention_expires_at=retention_expires_at,
             goal_id=goal_id,
@@ -888,6 +906,22 @@ class PgRunStore:
                 "SELECT payload FROM canonical_run_eval_scores WHERE eval_id = $1", eval_id
             )
         return model_of(RunEvalScore, row["payload"]) if row is not None else None
+
+    async def list_recent_runs(
+        self, workspace_id: str, *, limit: int = 100, offset: int = 0
+    ) -> list[Run]:
+        if limit <= 0 or offset < 0:
+            raise ValueError("limit must be positive and offset non-negative")
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                """SELECT payload FROM canonical_runs
+                   WHERE workspace_id = $1 AND payload IS NOT NULL
+                   ORDER BY payload->>'created_at' DESC, run_id DESC LIMIT $2 OFFSET $3""",
+                workspace_id,
+                limit,
+                offset,
+            )
+        return [model_of(Run, row["payload"]) for row in rows]
 
     async def get_run(self, run_id: str, *, principal_id: str | None = None) -> Run | None:
         payload = await self._payload(
