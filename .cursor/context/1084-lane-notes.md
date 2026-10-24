@@ -40,6 +40,27 @@ head: ee063fde9 (merge of origin/develop e20e9f52 into auto-1084 @ bfba2d4b9)
   docstring). Not ours; fixing it needs a reachability-baseline entry — a
   ledger edit outside this lane.
 
+## 2026-10-24 CI-repair round (head ab0abeba3 -> bc3841989)
+
+- Resolved the develop sync conflict as a true merge (fb416cf38) on top of
+  `4de7e906d`; no hand-edited quality/*.json rollback.
+- The only local validation failure left at ab0abeba3 was the suite-inventory
+  note: its `inventory-delta` named the root suite `tests`, which is not a
+  recipe (`scripts/check-suite-inventory.py` RECIPES uses `tests/`). Renamed
+  the key; the delta is 0 and all 21 suites now match the ledger.
+- Re-verified the registry.yml `Validate ADR/spec front-matter` job end to end
+  on this head: `maistro_registry.cli lint . --strict` 0 errors/0 warnings,
+  `tools/lint_lifecycle.py`, `scripts/check-adr-index.py`,
+  `scripts/check-adr-status-language.py`, the AC-Defined index (no diff),
+  `scripts/check-citation-status-provenance.py` (0 exceptions), and the
+  registry unit tests (194 passed).
+- Also green on this head: ruff check/format, the core+server focused pytest
+  (191 passed/2 skipped), the hive-conductor focused pytest (109 passed), the
+  suite-inventory gates (21 suites), `check-vulture-baseline.py` (1302==1302),
+  `check-promotion-surface.py`, `check-model-egress.py`,
+  `check-design-model-egress.py`, `check_direct_effects.py`, radon (127==127),
+  reachability, and `check-ratchet-provenance.py` (54 consumers classified).
+
 ## Open design item for the owner
 
 - RESOLVED this round (SPEC-285, docs/specs/SPEC-285-model-egress-incremental-
