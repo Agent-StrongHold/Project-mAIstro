@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import time
 from datetime import UTC, datetime
 from typing import Any
@@ -107,6 +108,92 @@ def _workspace_authority_available() -> bool:
         return canonical_store_available()
     except Exception:
         return False
+
+
+def _probe_zoneinfo(key: str) -> None:
+    """Resolve one zone through the process's real tz database."""
+    from zoneinfo import ZoneInfo
+
+    ZoneInfo(key)
+
+
+def _tz_database_source() -> str:
+    """Which zone database answered, as recorded on /health (#290).
+
+    The shipped image pins PYTHONTZPATH at the venv's `tzdata` wheel; a
+    process without that env var resolves through the OS tzpath, falling
+    back to a wheel install if one is present.
+    """
+    tzpath = os.environ.get("PYTHONTZPATH", "")
+    if tzpath:
+        return f"tzdata-wheel:{tzpath}"
+    try:
+        import importlib.metadata as _md
+
+        return f"tzdata-wheel:{_md.version('tzdata')}"
+    except Exception:
+        return "system:tzpath"
+
+
+def _timezone_database_state() -> dict:
+    """Whether the zone database the scheduler depends on actually works (#290).
+
+    Every schedule — even a `UTC` one — resolves through
+    `zoneinfo.ZoneInfo`, which raises for every key when the image has no
+    timezone data. The scheduler keeps serving with its loop swallowed, so
+    this probe is the difference between "scheduling is down" and silence:
+    it resolves UTC plus a real region zone (a database truncated to no keys
+    or one that lost its regions must not pass on a lucky key alone) and
+    records which source answered. `error` is the actionable diagnostic:
+    it names the failed zone and the `PYTHONTZPATH` the image pins when one
+    is set, so the fix is a one-line read away. Same defensive contract as
+    the other probes: an implementation failure reports unavailable, never
+    healthy.
+    """
+    try:
+        for zone in ("UTC", "America/New_York"):
+            _probe_zoneinfo(zone)
+    except Exception as exc:
+        tzpath = os.environ.get("PYTHONTZPATH", "")
+        hint = (
+            f"PYTHONTZPATH={tzpath} is set and unusable; " if tzpath else "no zone database found; "
+        )
+        return {
+            "status": "unavailable",
+            "source": _tz_database_source(),
+            "error": (
+                f"{hint}zone resolution failed ({exc}); schedules cannot fire. "
+                "Install the tzdata wheel in the image or the OS tzdata package"
+            ),
+        }
+    source = _tz_database_source()
+    tzpath = os.environ.get("PYTHONTZPATH", "")
+    if tzpath and not os.path.isdir(tzpath):
+        return {
+            "status": "unavailable",
+            "source": source,
+            "error": (
+                f"PYTHONTZPATH={tzpath} does not exist; the tzdata wheel "
+                "is missing from the image — reinstall it (pip install tzdata) "
+                "or rebuild the image"
+            ),
+        }
+    return {"status": "available", "source": source, "error": None}
+
+
+def _scheduler_state() -> dict:
+    """Scheduler liveness, independent of process liveness (#290).
+
+    The lifespan swallows scheduler startup failure and keeps serving, so the
+    process can look alive while no schedule will ever fire. Unreadable state
+    reports as not-running, never as healthy.
+    """
+    try:
+        from services.scheduler import scheduler_status
+
+        return scheduler_status()
+    except Exception as exc:
+        return {"running": False, "error": f"status_probe_failed: {exc}"}
 
 
 def _optional_routers_state(app: Any) -> dict[str, str | None]:
@@ -275,6 +362,8 @@ def health(request: Request) -> dict:
     memory_decay = _memory_decay_state()
     memory_decay_enabled = _memory_decay_running(memory_decay)
     log_redaction = _log_redaction_active()
+    scheduler = _scheduler_state()
+    tz_database = _timezone_database_state()
     optional_routers = _optional_routers_state(request.app)
     degraded_services = _degraded_services(
         llm_configured=llm_configured,
@@ -318,6 +407,11 @@ def health(request: Request) -> dict:
         # #333/#1179: the durability/ack mode per store family — whether a
         # 2xx from a mutation route means the State writer committed it.
         "persistence": _persistence_status(),
+        # #290: scheduling is visible independently of process liveness, and
+        # a zone database that cannot resolve a key degrades the instance —
+        # a scheduler that can silently never fire must not read as healthy.
+        "scheduler": scheduler,
+        "tz_database": tz_database,
         # M3-B7 (#97): a user-facing operating state names what is degraded.
         # `optional_routers` is the raw mount outcome per feature router;
         # `degraded_services` is the human-readable rendering of every
@@ -328,13 +422,17 @@ def health(request: Request) -> dict:
         # the readiness probe that takes a failed engine out of rotation.
         "engine": engine,
         # Degraded iff any capability is diminished: the rendered #97 list
-        # covers llm/decay/redaction/identity/optional routers, and the #1181
-        # engine lifecycle closes the union (a failed boot or an unreadable
+        # covers llm/decay/redaction/identity/optional routers, the #1181
+        # engine lifecycle closes that union (a failed boot or an unreadable
         # engine probe is a degraded operating state even when every check
-        # above is green). A clean engine that never booted (`not_started`, as
-        # in tests and scripts) is not by itself a degraded operating state.
+        # above is green — a clean engine that never booted, `not_started` as
+        # in tests and scripts, is not by itself degraded), and #290 adds the
+        # scheduler and its timezone database to the fold: a scheduler that
+        # can silently never fire must not read as healthy.
         "degraded": bool(degraded_services)
-        or engine["state"] in {"degraded", "startup_failed", "unknown"},
+        or engine["state"] in {"degraded", "startup_failed", "unknown"}
+        or (not scheduler.get("running"))
+        or tz_database.get("status") != "available",
     }
 
 
@@ -365,6 +463,14 @@ def ready(response: Response) -> ReadyResponse:
         checks["identity"] = False
     checks["log_redaction"] = _log_redaction_active()
     checks["workspace_authority"] = _workspace_authority_available()
+    # #290: timezone data and the scheduler are visible independently from
+    # process liveness. Readiness stays keyed on api + workspace authority (a
+    # broken scheduler degrades the conductor; it still serves what it can),
+    # but a zone database that cannot resolve a single key is reported here
+    # and flips /health's `degraded` — never silently healthy.
+    checks["scheduler"] = bool(_scheduler_state().get("running"))
+    tz_database = _timezone_database_state()
+    checks["tz_database"] = tz_database.get("status") == "available"
     # #1181: an engine whose boot failed (or is mid-boot, or was stopped) takes
     # the instance out of rotation — the product's chat/mission surfaces fail
     # closed without it. `not_started` keeps the historical contract for
@@ -376,4 +482,10 @@ def ready(response: Response) -> ReadyResponse:
         # 503 so the image and Compose healthchecks, which only look at the
         # status code, take the instance out of rotation.
         response.status_code = 503
-    return ReadyResponse(ready=is_ready, checks=checks)
+    return ReadyResponse(
+        ready=is_ready,
+        checks=checks,
+        # #290: when the zone database is broken, readiness is degraded with
+        # the actionable diagnostic attached rather than a bare false flag.
+        warnings=([tz_database["error"]] if tz_database.get("error") else []),
+    )

@@ -122,6 +122,19 @@ def test_health_reports_no_degradation_when_everything_is_healthy(
         patch_memory_decay(state="running"),
         patch_redaction(True),
         patch_identity_disabled(),
+        # #290 (develop integration): the scheduler and its timezone database
+        # joined the `degraded` fold. This test runs without the app lifespan
+        # (module-level TestClient), so both probes would truthfully read
+        # broken; stub them healthy so the assertion stays about the
+        # capabilities this test names.
+        patch(
+            "routes.health._scheduler_state",
+            return_value={"running": True, "error": None},
+        ),
+        patch(
+            "routes.health._timezone_database_state",
+            return_value={"status": "available", "source": "tzdata-wheel:test", "error": None},
+        ),
     ):
         data = client.get("/health").json()
 

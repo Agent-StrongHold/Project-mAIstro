@@ -73,6 +73,18 @@ def test_health_not_degraded_when_all_dependencies_healthy(
             return_value={"enabled": True, "state": "running"},
         ),
         patch("routes.health._log_redaction_active", return_value=True),
+        # #290: the scheduler and its timezone database joined the `degraded`
+        # fold; this test runs without the app lifespan (TestClient), so the
+        # scheduler probe would truthfully read not-running. Both are stubbed
+        # healthy so the assertion stays about the dependencies it names.
+        patch(
+            "routes.health._scheduler_state",
+            return_value={"running": True, "error": None},
+        ),
+        patch(
+            "routes.health._timezone_database_state",
+            return_value={"status": "available", "source": "tzdata-wheel:2026.3", "error": None},
+        ),
     ):
         data = client.get("/health").json()
 
