@@ -820,9 +820,20 @@ class TestWiring:
         text = (ROOT / "Dockerfile.research").read_text(encoding="utf-8")
         assert "identity" not in text
 
-    def test_rsi_runner_prunes_after_the_frozen_sync(self):
+    def test_rsi_runner_prunes_after_the_locked_sync(self):
+        """The prune must act on the environment the sync installed.
+
+        #348 replaced the runner's `uv sync --python 3.12 --frozen` with
+        `uv sync --locked --python 3.12 --extra rsi-fitness`: `--locked`
+        fails the build when uv.lock is out of date with any pyproject.toml
+        (lock drift is a red build, not a silent re-resolution), and the
+        extra is the fitness toolchain, locked instead of `uv pip install
+        coverage bandit radon interrogate vulture pylint` resolving against
+        the index at build time. The ordering this test holds is unchanged —
+        the prune follows the sync, and the assertion follows the prune.
+        """
         text = (ROOT / "Dockerfile.rsi-runner").read_text(encoding="utf-8")
-        sync_at = text.index("uv sync --python 3.12 --frozen")
+        sync_at = text.index("uv sync --locked --python 3.12 --extra rsi-fitness")
         prune_at = text.index("prune-dependency-namespaces.py")
         check_at = text.index("check-dependency-namespaces.py --production")
         assert sync_at < prune_at < check_at

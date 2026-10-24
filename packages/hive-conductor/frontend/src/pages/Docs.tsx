@@ -24,6 +24,20 @@ You don't need to know any of this to use it. Just open Chat and type what you w
 The hexagonal grid shows all your agents as a honeycomb — each hex is one agent. Click one to see details.`,
   },
   {
+    id: "cli",
+    title: "CLI",
+    content: `The CLI page is a **limited operational console** — not a shell and not a demo panel (#292). Every command it offers is registered on the backend and executed there (POST /v1/cli/exec); the page only renders what the backend returns.
+
+Supported commands:
+- **hctl status** — system status, including what is degraded and why
+- **hctl agents** — the agent roster
+- **hctl health** — the full health-check JSON
+- **hctl sessions** — the CLI sessions this page's history lives in
+- **help** — the supported command list
+
+Anything else is refused with an explicit "unsupported command" error — the page never fakes an answer. Every execution (including refused ones) is written to the Audit Log, and your command history is stored server-side, so reloading the page or reconnecting restores the real state. Commands are read-only inspection: they use the same authenticated session as every other page and can change nothing.`,
+  },
+  {
     id: "chat",
     title: "Chat",
     content: `Chat is how you talk to the AI. Just type what you want in plain English:

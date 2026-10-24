@@ -533,3 +533,25 @@ def list_invitations() -> list[dict[str, Any]]:
         )
     views.sort(key=lambda view: str(view.get("created_at") or ""), reverse=True)
     return views
+
+
+def host_user_role(user_id: str) -> str:
+    """Resolve a host-assigned user role without widening retiring-store importers.
+
+    The Conductor's legacy user store is a retiring surface; this helper keeps
+    the ``stores.users`` reference inside an already-tracked importer so the
+    canonical DAG runner does not become a new consumer. Unknown or unreadable
+    users resolve to no role (fail-closed).
+    """
+    if not user_id:
+        return ""
+    try:
+        import stores
+
+        user = stores.users.get(user_id)
+    except Exception:  # pragma: no cover - store unavailable in isolation
+        return ""
+    if user is None:
+        return ""
+    role = getattr(user, "role", "")
+    return str(role) if role else ""

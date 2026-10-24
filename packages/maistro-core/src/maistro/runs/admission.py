@@ -35,6 +35,7 @@ from maistro.runs.model import RunStatus
 from maistro.runs.sources import ADMISSION_SOURCE
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
+    from maistro.runs.access import RunAuthorization
     from maistro.runs.model import Run
     from maistro.runs.store import RunStore
 
@@ -92,6 +93,7 @@ async def admit_direct_work(
     parameters: dict[str, Any] | None = None,
     description: str = "",
     actor_principal_id: str | None = None,
+    authorization: RunAuthorization | None = None,
     persona_id: str | None = None,
     provenance: dict[str, Any] | None = None,
     retention_expires_at: datetime | None = None,
@@ -124,6 +126,7 @@ async def admit_direct_work(
     return await store.create_run(
         graph,
         actor_principal_id=actor_principal_id,
+        authorization=authorization,
         persona_id=persona_id,
         # `source` last, deliberately. With the spread last, a caller passing
         # `admission_source` in its own provenance silently overrode the

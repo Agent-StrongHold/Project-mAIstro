@@ -8,6 +8,10 @@ TraversalCommit in the same optimistic durable checkpoint.
 
 from __future__ import annotations
 
+import math
+from collections.abc import Mapping
+from typing import Any
+
 from maistro.graph.definitions import Graph
 from maistro.graph.execution_state import GraphEdgeDecision, GraphExecutionState
 from maistro.graph.traversal_commit import (
@@ -15,6 +19,8 @@ from maistro.graph.traversal_commit import (
     TraversalCommit,
     graph_state_hash,
 )
+from maistro.graph.verification.expectations import PlanExpectationQueue
+from maistro.graph.verification.taxonomy import classify_result_state
 from maistro.runs.lifecycle import transition_node_run
 from maistro.runs.model import (
     AcceptedNodeOutcome,
@@ -28,6 +34,203 @@ from . import executor as traversal
 from .failure import sanitize_failure_message
 from .protocol import DurableRunStore
 from .types import DurableRunRecord
+
+
+def _plan_mismatch_error(
+    record: DurableRunRecord,
+    graph: Graph,
+    completed: tuple[traversal._FrontierItem, ...],
+    paused: tuple[traversal._FrontierItem, ...],
+) -> str | None:
+    """Supervise accepted nodes against the plan queue's predicted post-states.
+
+    A plan is a claim about the future (epic M4-I). When a node's actual
+    post-state contradicts its declared
+    ``policies[\"expect_post_state\"]`` prediction, the Run halts here with
+    ``PlanPostStateMismatch`` instead of routing the contradicted state
+    onward — the same visible-stop contract the blackboard halt uses, and
+    deliberately a failure rather than a pause: nothing external is owed an
+    answer, and resuming without new work would only re-read the same world.
+
+    Paused completions are supervised on their result-state claim only: the
+    state exists now (a human pause is ACTIONABLE), while output assertions
+    belong to the resumed completion. Prior completed NodeRuns seed queue
+    consumption so the durable "still awaiting" evidence never lists a step
+    that finished in an earlier fold.
+    """
+    if not completed and not paused:
+        return None
+    queue = PlanExpectationQueue.from_graph(graph)
+    if not queue.expectations:
+        return None
+    _seed_expectation_progress(queue, record)
+    for item, check_output in (
+        *((item, True) for item in completed),
+        *((item, False) for item in paused),
+    ):
+        mismatch = _supervise_expectation(queue, item, check_output=check_output)
+        if mismatch is not None:
+            return mismatch
+    return None
+
+
+def _seed_expectation_progress(queue: PlanExpectationQueue, record: DurableRunRecord) -> None:
+    """Mark plan steps already completed in earlier frontier folds."""
+    for node_run in record.node_runs:
+        if node_run.status is RunStatus.COMPLETED:
+            queue.mark_completed(node_run.node_id)
+
+
+def _supervise_expectation(
+    queue: PlanExpectationQueue,
+    item: traversal._FrontierItem,
+    *,
+    check_output: bool,
+) -> str | None:
+    """Return durable mismatch text for one node, or ``None`` when it matches."""
+    verdict = queue.supervise(
+        item.node_id,
+        output=traversal._result_output(item.result),
+        result_state=classify_result_state(item.result),
+        check_output=check_output,
+    )
+    if verdict is None or verdict.matched:
+        return None
+    suffix = _expectation_description(item)
+    # The halt names what the plan still awaited: the durable explanation
+    # covers not just the contradicted prediction but the work the plan
+    # predicted had not happened yet.
+    pending = queue.pending_node_ids
+    pending_note = f" (plan still awaiting: {', '.join(pending)})" if pending else ""
+    return f"{verdict.describe()}{suffix}{pending_note}"
+
+
+def _expectation_description(item: traversal._FrontierItem) -> str:
+    """The node's optional human description, rendered for the error suffix."""
+    declared = item.spec.policies.get("expect_post_state")
+    if not isinstance(declared, Mapping):
+        return ""
+    description = declared.get("description")
+    return f" [{description}]" if description else ""
+
+
+def _visit_quality(item: traversal._FrontierItem) -> float | None:
+    """The visit's self-reported quality, or ``None`` when it reports none."""
+    from maistro.graph.verification.escalation import QUALITY_METADATA_KEY
+
+    raw_quality = (item.result.metadata or {}).get(QUALITY_METADATA_KEY)
+    if not isinstance(raw_quality, (int, float)) or isinstance(raw_quality, bool):
+        return None
+    quality = float(raw_quality)
+    # The contract is 0.0..1.0 and a finite JSON number. A malformed report
+    # must not bypass the floor (the old ``> 1`` path did) or poison durable
+    # metadata (``NaN`` did when the escalation checkpoint was built), so it
+    # is scored as the lowest quality: escalate while a rung remains, then
+    # accept the finite shortfall.
+    if not math.isfinite(quality) or not 0.0 <= quality <= 1.0:
+        return 0.0
+    return quality
+
+
+def _escalate_one_visit(
+    record: DurableRunRecord,
+    item: traversal._FrontierItem,
+    escalations: dict[str, Any],
+    declared: tuple[Any, Any],
+    quality: float,
+) -> bool:
+    """Record one visit's ladder decision; ``True`` when it re-queues at a rung.
+
+    The re-queued visit is a fresh NodeRun/Attempt whose context names the
+    chosen rung; a decision not to escalate (floor met, ladder exhausted, or
+    no visit left) clears any prior rung state so the acceptance is final.
+    """
+    from maistro.graph.verification.escalation import decide_escalation
+
+    ladder, gate = declared
+    current = escalations.get(item.node_id, {}).get("model")
+    decision = decide_escalation(ladder, current, quality, gate)
+    if not (
+        decision.escalate
+        and decision.to_model is not None
+        and traversal._may_revisit_after(record.graph_state, item)
+    ):
+        return False
+    escalations[item.node_id] = {
+        "model": decision.to_model,
+        "rung": ladder.index_of(decision.to_model),
+        "from_model": decision.from_model,
+        "quality": decision.quality,
+    }
+    return True
+
+
+def _escalate_quality_shortfalls(
+    record: DurableRunRecord,
+    completed: tuple[traversal._FrontierItem, ...],
+) -> tuple[DurableRunRecord, tuple[traversal._FrontierItem, ...], tuple[str, ...]]:
+    """Withhold quality-short visits and re-queue them at the next ladder rung.
+
+    Cheap-first escalation (epic M4-I): a completed visit whose self-reported
+    ``quality`` metadata misses the node's declared floor is *not accepted as
+    final* while a stronger rung and visit budget remain. Its edges do not
+    route this cycle; it re-enters the frontier as a fresh NodeRun/Attempt —
+    never a rewritten one — whose ``NodeContext.metadata["escalated_model"]``
+    names the rung to run. Exhausted budgets and exhausted ladders accept the
+    shortfall as final: supervision may not become an unbounded loop, and the
+    accepted visit's own metadata still records the shortfall for anyone
+    reading the evidence.
+    """
+    from maistro.graph.verification.escalation import (
+        ESCALATION_STATE_METADATA_KEY,
+        escalation_from_policy,
+    )
+
+    if not completed:
+        return record, completed, ()
+    escalations: dict[str, Any] = {
+        str(node_id): dict(entry)
+        for node_id, entry in (
+            record.graph_state.metadata.get(ESCALATION_STATE_METADATA_KEY) or {}
+        ).items()
+        if isinstance(entry, Mapping)
+    }
+    advanced: list[traversal._FrontierItem] = []
+    requeued: list[str] = []
+    changed = False
+    for item in completed:
+        declared = escalation_from_policy(item.spec.policies)
+        quality = _visit_quality(item)
+        if declared is None or quality is None:
+            changed |= escalations.pop(item.node_id, None) is not None
+            advanced.append(item)
+            continue
+        if _escalate_one_visit(record, item, escalations, declared, quality):
+            requeued.append(item.node_id)
+            changed = True
+        else:
+            changed |= escalations.pop(item.node_id, None) is not None
+            advanced.append(item)
+    if not changed:
+        return record, completed, ()
+    return _commit_escalation_state(record, escalations), tuple(advanced), tuple(requeued)
+
+
+def _commit_escalation_state(
+    record: DurableRunRecord, escalations: dict[str, Any]
+) -> DurableRunRecord:
+    """Write the ladder decisions into graph state; an empty map clears them."""
+    from maistro.graph.verification.escalation import ESCALATION_STATE_METADATA_KEY
+
+    metadata = dict(record.graph_state.metadata)
+    if escalations:
+        metadata[ESCALATION_STATE_METADATA_KEY] = escalations
+    else:
+        metadata.pop(ESCALATION_STATE_METADATA_KEY, None)
+    return traversal._replace_record(
+        record,
+        graph_state=traversal._replace_state(record.graph_state, metadata=metadata),
+    )
 
 
 def _completed_attempt_result(record: DurableRunRecord, node_run_id: str) -> AttemptResult:
@@ -235,8 +438,16 @@ async def _fold_failures(
     *,
     prior_state: GraphExecutionState,
     store: DurableRunStore,
+    escalated_ids: tuple[str, ...] = (),
 ) -> DurableRunRecord:
-    """Retry failed visits without discarding completed sibling advancement."""
+    """Retry failed visits without discarding completed sibling advancement.
+
+    The ``completed`` subset arrives already supervised (plan post-state
+    mismatch, quality ladder) — ``fold_authoritative_frontier`` runs both
+    contracts before this fold, so a retryable failure elsewhere cannot
+    advance an unsupervised sibling. ``escalated_ids`` carries supervision's
+    re-queued visits into the same frontier as the retries.
+    """
     exhausted = traversal.first_exhausted_failure(prior_state, failures)
     if exhausted is not None:
         return await traversal._mark_failed(
@@ -248,7 +459,7 @@ async def _fold_failures(
 
     next_ids, decisions = traversal._route_completed_items(record, graph, completed)
     retry_ids = tuple(item.node_id for item in failures)
-    candidates = traversal._dedupe((*retry_ids, *next_ids))
+    candidates = traversal._dedupe((*retry_ids, *next_ids, *escalated_ids))
     ready, blocked_fanins = traversal._partition_ready_targets(
         record,
         graph,
@@ -284,6 +495,25 @@ async def fold_authoritative_frontier(
     for item in (*completed, *dispatched_failures):
         record = traversal._maybe_increment_synth_depth(record, item.spec, item.result)
 
+    # Supervision binds the whole completed subset, including mixed-result
+    # frontiers: a retryable failure in one branch must not waive plan
+    # post-state supervision or the quality ladder for a completed sibling,
+    # so both contracts run before the failure path routes advancement.
+    #
+    # Escalation runs first: a sub-floor cheap visit is not the final world.
+    # Judging it against the plan would halt a Run whose stronger rung would
+    # satisfy the prediction. Only the visits accepted for advancement are
+    # post-state supervised; a paused visit is checked on result-state alone.
+    record, completed, escalated_ids = _escalate_quality_shortfalls(record, completed)
+    mismatch = _plan_mismatch_error(record, graph, completed, paused)
+    if mismatch is not None:
+        return await traversal._mark_failed(
+            record,
+            error_code="PlanPostStateMismatch",
+            error_message=mismatch,
+            store=store,
+        )
+
     if failures:
         return await _fold_failures(
             record,
@@ -292,6 +522,7 @@ async def fold_authoritative_frontier(
             failures,
             prior_state=prior_state,
             store=store,
+            escalated_ids=escalated_ids,
         )
 
     halt_reason = traversal._blackboard_halt_reason(record)
@@ -304,6 +535,7 @@ async def fold_authoritative_frontier(
         )
 
     next_ids, decisions = traversal._route_completed_items(record, graph, completed)
+    next_ids = traversal._dedupe((*next_ids, *escalated_ids))
     next_ids, blocked_fanins = traversal._partition_ready_targets(
         record,
         graph,

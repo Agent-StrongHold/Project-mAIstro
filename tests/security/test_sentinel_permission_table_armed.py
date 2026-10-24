@@ -213,3 +213,31 @@ def test_hive_preset_tracks_the_executable_registry() -> None:
     silently re-arming a table of unusable grants.
     """
     assert PERMISSION_PRESETS["hive_conductor_tools"] == frozenset(TOOLS)
+
+
+@pytest.mark.parametrize("profile", sorted(HIVE_PROFILES))
+def test_shipped_profiles_authorize_graph_node_execution(
+    profile: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every shipped Conductor profile states graph-node execution authority.
+
+    The Conductor's node adapter asks Sentinel to authorize the
+    ``graph.node.execute`` capability before a node runs (#60, #845). The
+    tool preset cannot carry that grant -- it names only the executables
+    `dispatch_tool` routes -- so the deployment states it in
+    `MAISTRO_PERMISSIONS`. Without it the fail-closed table denies every
+    node and no DAG can run at all.
+    """
+    files, host_env, service, build_table = PROFILES[profile]
+    env = _render_services(files, host_env())[service]
+
+    table = build_table(env, monkeypatch)
+
+    assert "graph.node.execute" in table, (
+        f"{profile} arms {sorted(table)}; the node adapter's Sentinel gate "
+        f"denies every node without a graph.node.execute grant"
+    )
+    assert table["graph.node.execute"] == frozenset({"admin", "user"}), (
+        f"{profile} grants graph.node.execute to {sorted(table['graph.node.execute'])}; "
+        f"the host roles the Conductor assigns to a user record are admin and user"
+    )
