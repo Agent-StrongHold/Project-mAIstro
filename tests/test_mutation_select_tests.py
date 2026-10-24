@@ -10,6 +10,7 @@ parameters, a changed line nothing executes — and each is pinned here.
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 from pathlib import Path
 from typing import ClassVar
@@ -230,3 +231,126 @@ class TestEndToEnd:
         assert selection.no_coverage == [], "executable covered lines never fail the gate"
         assert selection.non_executable == [3], "blank line excluded, not a gap"
         assert selection.import_time_only == [1], "import-time line excluded, not a gap"
+
+    def test_an_unresolvable_context_is_a_named_warning_and_uncovered(self, mod, monkeypatch):
+        """A line that ran under a context the collection cannot name must be
+        reported as executed-but-unattributed, never silently dropped into a
+        group with tests that may not execute it."""
+        import types
+
+        coverage_payload = {
+            "files": {
+                "pkg/mod.py": {
+                    "executed_lines": [4],
+                    "missing_lines": [],
+                    "contexts": {"4": ["some_module.ghost_context"]},
+                }
+            }
+        }
+
+        def fake_run(argv, **kwargs):
+            argv = [str(part) for part in argv]
+            if "coverage" in argv:
+                report = Path(argv[argv.index("-o") + 1])
+                report.write_text(json.dumps(coverage_payload), encoding="utf-8")
+            done = types.SimpleNamespace(returncode=0, stdout="", stderr="")
+            return done
+
+        monkeypatch.setattr(mod.subprocess, "run", fake_run)
+        selection = mod.select("pkg/mod.py", "tests/test_mod.py", [4])
+        assert selection.groups == []
+        assert selection.no_coverage == [4]
+
+
+class TestARedBaselineAbortsSelection:
+    def test_selection_refuses_to_rank_lines_on_a_red_baseline(self, mod, monkeypatch):
+        import types
+
+        def red_run(argv, **kwargs):
+            return types.SimpleNamespace(returncode=1, stdout="1 failed", stderr="")
+
+        monkeypatch.setattr(mod.subprocess, "run", red_run)
+        with pytest.raises(SystemExit):
+            mod.select("pkg/mod.py", "tests/test_mod.py", [4])
+
+
+class TestChangedLineInput:
+    def test_a_json_array_of_lines_is_accepted(self, mod, tmp_path):
+        path = tmp_path / "lines.json"
+        path.write_text("[4, 2, 9]", encoding="utf-8")
+        assert mod._read_lines(str(path)) == [4, 2, 9]
+
+    def test_a_json_object_of_lines_is_accepted(self, mod, tmp_path):
+        path = tmp_path / "lines.json"
+        path.write_text('{"9": null, "4": null}', encoding="utf-8")
+        assert mod._read_lines(str(path)) == [4, 9]
+
+    def test_an_empty_line_set_is_explicit_never_an_empty_gate(self, mod, tmp_path):
+        path = tmp_path / "lines.json"
+        path.write_text("[]", encoding="utf-8")
+        with pytest.raises(SystemExit, match="empty"):
+            mod._read_lines(str(path))
+
+
+class TestTheSelectionCli:
+    """`main` turns a selection into the workflow's selection artifact and
+    decides the exit: no-coverage lines fail the PR gate unless the run is a
+    measurement (--allow-uncovered), and a selection with no groups refuses."""
+
+    @staticmethod
+    def _selection(mod, **overrides):
+        return mod.Selection(
+            groups=overrides.get("groups", [{"lines": [4], "tests": ["t::x"]}]),
+            no_coverage=overrides.get("no_coverage", []),
+            non_executable=overrides.get("non_executable", []),
+            import_time_only=overrides.get("import_time_only", []),
+        )
+
+    def _main(self, mod, tmp_path, extra_args):
+        lines = tmp_path / "lines.json"
+        lines.write_text("[4]", encoding="utf-8")
+        output = tmp_path / "selection.json"
+        rc = mod.main(
+            [
+                "--source",
+                "pkg/mod.py",
+                "--tests",
+                "tests/test_mod.py",
+                "--lines",
+                str(lines),
+                "--output",
+                str(output),
+                *extra_args,
+            ]
+        )
+        return rc, output
+
+    def test_a_clean_selection_writes_the_workflow_artifact(self, mod, tmp_path, monkeypatch):
+        monkeypatch.setattr(mod, "select", lambda *a, **k: self._selection(mod))
+        rc, output = self._main(mod, tmp_path, [])
+        assert rc == 0
+        payload = json.loads(output.read_text(encoding="utf-8"))
+        assert payload["groups"] == [{"lines": [4], "tests": ["t::x"]}]
+        assert payload["changed_lines"] == [4]
+
+    def test_no_coverage_lines_fail_the_pr_gate(self, mod, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            mod, "select", lambda *a, **k: self._selection(mod, groups=[], no_coverage=[4])
+        )
+        rc, _ = self._main(mod, tmp_path, [])
+        assert rc == 1
+
+    def test_allow_uncovered_turns_no_coverage_into_report_only(self, mod, tmp_path, monkeypatch):
+        # Measurement runs may report unexecuted lines; a PR gate may not.
+        monkeypatch.setattr(
+            mod,
+            "select",
+            lambda *a, **k: self._selection(mod, no_coverage=[9]),
+        )
+        assert self._main(mod, tmp_path, ["--allow-uncovered"])[0] == 0
+        assert self._main(mod, tmp_path, [])[0] == 1
+
+    def test_zero_groups_refuse_an_empty_mutation_run(self, mod, tmp_path, monkeypatch):
+        monkeypatch.setattr(mod, "select", lambda *a, **k: self._selection(mod, groups=[]))
+        rc, _ = self._main(mod, tmp_path, ["--allow-uncovered"])
+        assert rc == 1

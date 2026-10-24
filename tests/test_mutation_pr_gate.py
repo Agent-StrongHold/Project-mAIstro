@@ -13,6 +13,7 @@ import importlib.util
 import json
 import sys
 from pathlib import Path
+from typing import ClassVar
 
 import pytest
 
@@ -280,3 +281,229 @@ class TestTheGateDecisions:
         )
         assert decision == "report-only"
         assert checkpoint["survivor_ids"]
+
+
+class TestMeasurementMode:
+    """`--scope all` (the nightly) gives one whole-file group; the refusal
+    paths are the gate's honesty for the selection it was handed."""
+
+    def test_measurement_mode_selects_the_whole_file(self, gate, tmp_path, monkeypatch):
+        seen: dict = {}
+
+        def fake_run_group(source, group, index, **kwargs):
+            seen["group"] = group
+            seen["diff_path"] = kwargs.get("diff_path")
+            return _report(5, []), 1.0
+
+        monkeypatch.setattr(gate, "run_group", fake_run_group)
+        checkpoint, decision = gate.gate_source(
+            SOURCE,
+            TESTS,
+            artifacts=tmp_path,
+            baseline=_baseline_entry(0.9, []),
+            diff_path=tmp_path / "unused.diff",
+            changed_lines=None,
+            timeout_factor=4.0,
+            commit="c0ffee",
+            env=gate.environment(),
+        )
+        assert decision == "pass"
+        assert seen["group"] == {"lines": [], "tests": [TESTS]}
+        assert seen["diff_path"] is None, "whole-file measurement has no diff to restrict to"
+        assert checkpoint["verified_commit"] == "c0ffee"
+
+    def test_a_changed_line_with_no_selected_test_refuses(self, gate, tmp_path, monkeypatch):
+        class _Selection:
+            groups: ClassVar[list] = [{"lines": [9], "tests": ["t"]}]
+            no_coverage: ClassVar[list] = [9]
+
+        monkeypatch.setattr(gate, "select", lambda *a, **k: _Selection())
+        with pytest.raises(SystemExit):
+            gate.gate_source(
+                SOURCE,
+                TESTS,
+                artifacts=tmp_path,
+                baseline=_baseline_entry(0.9, []),
+                diff_path=None,
+                changed_lines=[9],
+                timeout_factor=4.0,
+                commit="c",
+                env=gate.environment(),
+            )
+
+    def test_zero_selected_tests_refuses(self, gate, tmp_path, monkeypatch):
+        class _Selection:
+            groups: ClassVar[list] = []
+            no_coverage: ClassVar[list] = []
+
+        monkeypatch.setattr(gate, "select", lambda *a, **k: _Selection())
+        with pytest.raises(SystemExit):
+            gate.gate_source(
+                SOURCE,
+                TESTS,
+                artifacts=tmp_path,
+                baseline=_baseline_entry(0.9, []),
+                diff_path=None,
+                changed_lines=[9],
+                timeout_factor=4.0,
+                commit="c",
+                env=gate.environment(),
+            )
+
+
+class TestTheBaselineRunItself:
+    """`measure_baseline` times the real selected-test run and refuses red —
+    a mutant measured against a red baseline proves nothing (#330)."""
+
+    @staticmethod
+    def _completed(returncode: int, stdout: str = ""):
+        import types
+
+        done = types.SimpleNamespace(returncode=returncode, stdout=stdout, stderr="")
+        return done
+
+    def test_a_green_baseline_returns_its_wall_seconds(self, gate, monkeypatch):
+        seen: dict = {}
+
+        def fake_run(argv, **kwargs):
+            seen["argv"] = [str(part) for part in argv]
+            seen["env"] = kwargs["env"]
+            return self._completed(0)
+
+        monkeypatch.setattr(gate.subprocess, "run", fake_run)
+        seconds = gate.measure_baseline("tests/test_mod.py::test_add", "/pp", ["-x"])
+        assert seconds >= 0.0
+        assert "-m" in seen["argv"] and "pytest" in seen["argv"]
+        assert seen["env"]["PYTHONPATH"] == "/pp"
+
+    def test_a_red_baseline_aborts(self, gate, monkeypatch, capsys):
+        monkeypatch.setattr(
+            gate.subprocess,
+            "run",
+            lambda argv, **kwargs: self._completed(1, stdout="1 failed"),
+        )
+        with pytest.raises(SystemExit):
+            gate.measure_baseline("tests/test_mod.py", "/pp", [])
+        err = capsys.readouterr().err
+        assert "baseline is red" in err
+
+
+class TestUnusableBaselines:
+    def test_unparseable_json_aborts(self, gate, tmp_path):
+        path = tmp_path / "baseline.json"
+        path.write_text("{not json", encoding="utf-8")
+        with pytest.raises(SystemExit):
+            gate.read_baseline(path)
+
+    def test_entries_that_are_not_an_object_aborts(self, gate, tmp_path):
+        path = tmp_path / "baseline.json"
+        path.write_text('{"entries": ["not", "an", "object"]}', encoding="utf-8")
+        with pytest.raises(SystemExit):
+            gate.read_baseline(path)
+
+
+class TestTheCli:
+    """`main` owns the plumbing the workflow actually invokes: target rows,
+    selection input, telemetry artifacts, and the refusal to run against
+    nothing."""
+
+    def _targets(self, tmp_path: Path) -> Path:
+        targets = tmp_path / "targets.tsv"
+        targets.write_text(f"{SOURCE}\t{TESTS}\n", encoding="utf-8")
+        return targets
+
+    def _baseline(self, tmp_path: Path) -> Path:
+        baseline = tmp_path / "baseline.json"
+        baseline.write_text(json.dumps(_baseline_entry(0.9, [])), encoding="utf-8")
+        return baseline
+
+    def test_a_run_records_telemetry_and_checkpoints(self, gate, tmp_path, monkeypatch):
+        selection_dir = tmp_path / "selection"
+        selection_dir.mkdir()
+        identifier = gate.mutation_packet.safe_id(SOURCE)
+        (selection_dir / f"{identifier}.selection.json").write_text(
+            json.dumps({"changed_lines": [9]}), encoding="utf-8"
+        )
+
+        def fake_gate(source, tests, **kwargs):
+            return {"source": source, "killed_mutants": 9, "viable_mutants": 10}, "pass"
+
+        monkeypatch.setattr(gate, "gate_source", fake_gate)
+        artifacts = tmp_path / "artifacts"
+        rc = gate.main(
+            [
+                str(self._targets(tmp_path)),
+                "--artifacts",
+                str(artifacts),
+                "--baseline",
+                str(self._baseline(tmp_path)),
+                "--selection-dir",
+                str(selection_dir),
+                "--scope",
+                "changed",
+                "--commit",
+                "c0ffee",
+            ]
+        )
+        assert rc == 0
+        telemetry = (artifacts / "mutation-telemetry.jsonl").read_text(encoding="utf-8")
+        assert json.loads(telemetry.splitlines()[-1])["decision"] == "pass"
+        assert (artifacts / f"{identifier}.checkpoint.json").is_file()
+
+    def test_measurement_scope_needs_no_selection_input(self, gate, tmp_path, monkeypatch):
+        captured: dict = {}
+
+        def fake_gate(source, tests, **kwargs):
+            captured["changed_lines"] = kwargs["changed_lines"]
+            captured["diff_path"] = kwargs["diff_path"]
+            return {"source": source}, "pass"
+
+        monkeypatch.setattr(gate, "gate_source", fake_gate)
+        rc = gate.main(
+            [
+                str(self._targets(tmp_path)),
+                "--artifacts",
+                str(tmp_path / "artifacts"),
+                "--baseline",
+                str(self._baseline(tmp_path)),
+                "--scope",
+                "all",
+                "--commit",
+                "c0ffee",
+            ]
+        )
+        assert rc == 0
+        assert captured["changed_lines"] is None
+        assert captured["diff_path"] is None
+
+    def test_a_run_against_nothing_is_not_a_pass(self, gate, tmp_path):
+        targets = tmp_path / "targets.tsv"
+        targets.write_text("\n", encoding="utf-8")
+        rc = gate.main(
+            [
+                str(targets),
+                "--artifacts",
+                str(tmp_path / "artifacts"),
+                "--baseline",
+                str(self._baseline(tmp_path)),
+                "--scope",
+                "all",
+            ]
+        )
+        assert rc == 1
+
+    def test_changed_scope_without_selection_or_diff_is_an_error(self, gate, tmp_path):
+        rc = gate.main(
+            [
+                str(self._targets(tmp_path)),
+                "--artifacts",
+                str(tmp_path / "artifacts"),
+                "--baseline",
+                str(self._baseline(tmp_path)),
+                "--diff-dir",
+                str(tmp_path / "absent"),
+                "--scope",
+                "changed",
+            ]
+        )
+        assert rc == 1

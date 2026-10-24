@@ -113,7 +113,11 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p mutation-artifacts
-          while IFS=$'\t' read -r source tests; do
+          # Column 2 is the selected-test list consumed downstream by the
+          # packet runner; this loop only needs the source path, so the field
+          # is read into `_tests` (not discarded) to keep column folding off
+          # `${source}` and shellcheck SC2034 quiet.
+          while IFS=$'\t' read -r source _tests; do
             id="$(uv run python -c "import sys; sys.path.insert(0, 'scripts'); import mutation_packet; print(mutation_packet.safe_id('${source}'))")"
             git diff "origin/$BASE_REF...HEAD" -- "${source}" > "mutation-artifacts/${id}.diff"
             test -s "mutation-artifacts/${id}.diff" || { echo "::error::empty diff for ${source}"; exit 1; }

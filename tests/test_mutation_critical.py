@@ -162,3 +162,62 @@ class TestIntersectAndEmit:
         assert mod.main(["--list", str(REAL_LIST), "--sources"]) == 0
         out = capsys.readouterr().out.splitlines()
         assert len(out) == len(mod.load(REAL_LIST)["entries"])
+
+
+class TestLoadShapeRejections:
+    """The structural checks between parse and validation: a list that is not
+    an object, an object with no domains, and entries that are not objects
+    each have to be named errors, not AttributeErrors mid-walk."""
+
+    def test_a_json_array_is_not_a_list(self, tmp_path, mod):
+        with pytest.raises(mod.CriticalListError, match="must be a JSON object"):
+            mod.load(_write_list(tmp_path, "[]"))
+
+    def test_a_missing_domains_array_is_an_error(self, tmp_path, mod):
+        payload = json.loads(json.dumps(VALID))
+        del payload["domains"]
+        with pytest.raises(mod.CriticalListError, match="non-empty 'domains'"):
+            mod.load(_write_list(tmp_path, payload))
+
+    def test_an_entry_that_is_not_an_object_is_an_error(self, tmp_path, mod):
+        payload = json.loads(json.dumps(VALID))
+        payload["entries"] = ["secret_equal.py"]
+        with pytest.raises(mod.CriticalListError, match="every critical entry"):
+            mod.load(_write_list(tmp_path, payload))
+
+
+class TestTheCliSurface:
+    def test_an_unreadable_list_exits_two(self, tmp_path, capsys, mod):
+        assert mod.main(["--list", str(tmp_path / "absent.json"), "--validate"]) == 2
+        assert "::error::" in capsys.readouterr().err
+
+    def test_validate_mode_reports_the_shape(self, mod, capsys):
+        assert mod.main(["--list", str(REAL_LIST), "--validate"]) == 0
+        out = capsys.readouterr().out
+        assert "critical-file list OK" in out
+
+    def test_no_mode_is_a_usage_error(self, mod):
+        with pytest.raises(SystemExit):
+            mod.main(["--list", str(REAL_LIST)])
+
+    def test_changed_from_stdin_reads_the_dash(self, tmp_path, mod, monkeypatch):
+        import io
+
+        monkeypatch.setattr(
+            sys,
+            "stdin",
+            io.StringIO("packages/maistro-core/src/maistro/security/secret_equal.py\n"),
+        )
+        assert mod.main(["--list", str(REAL_LIST), "--changed-from", "-"]) == 0
+
+    def test_emit_targets_puts_scripts_on_the_path_itself(self, mod, monkeypatch):
+        # `_emit_targets` must work when the caller never put scripts/ on
+        # sys.path — the workflow invokes it as a script, but the nightly's
+        # callers import it cold.
+        scripts_dir = str(ROOT / "scripts")
+        trimmed = [p for p in sys.path if p != scripts_dir]
+        monkeypatch.setattr(sys, "path", trimmed)
+        assert (
+            mod._emit_targets(["packages/maistro-core/src/maistro/security/secret_equal.py"]) == 0
+        )
+        assert scripts_dir in sys.path

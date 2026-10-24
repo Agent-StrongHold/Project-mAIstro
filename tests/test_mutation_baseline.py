@@ -113,3 +113,23 @@ def test_baselined_source_regression_fails(
     )
 
     assert module.main([str(rows), "--baseline", str(baseline)]) == 1
+
+
+def test_skipped_rows_never_enter_the_denominator(module, tmp_path: Path) -> None:
+    """Annotation-filtered mutants were never executed, so counting them
+    inflates the denominator and flatters the kill rate — the same viability
+    adjustment scripts/mutation_viability.py applies to the gate's reports.
+    """
+    rows = tmp_path / "rows.jsonl"
+    lines = [
+        json.dumps([{"mutations": [{"module_path": "packages/example.py"}]}, outcome])
+        for outcome in [
+            {"test_outcome": "killed"},
+            {"test_outcome": "survived"},
+            {"worker_outcome": "SKIPPED"},
+            {"test_outcome": "skipped"},
+        ]
+    ]
+    rows.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    assert module.scores(rows) == {"packages/example.py": (1, 2)}
