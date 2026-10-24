@@ -94,8 +94,8 @@ jobs:
             {
               echo "### Mutation gate"
               echo ""
-              echo "No mutation-critical file changed; nothing to mutate. "
-              "Critical scope lives in ${CRITICAL_LIST}."
+              echo "No mutation-critical file changed; nothing to mutate."
+              echo "Critical scope lives in ${CRITICAL_LIST}."
             } >> "$GITHUB_STEP_SUMMARY"
             echo "overlap=none" >> "$GITHUB_OUTPUT"
           else
@@ -282,6 +282,17 @@ jobs:
             --run-id "${{ github.run_id }}" \
             --run-attempt "${{ github.run_attempt }}" \
             --uploader none
+
+      - name: Fold fresh checkpoints into the uploaded and cached tree
+        run: |
+          set -euo pipefail
+          # execute_source() writes new checkpoints, reports, and raw rows under
+          # mutation-checkpoints-new/<identifier>/; without this copy the
+          # uploaded artifact and the cache would carry only restored stale
+          # state and nightly-publish would never see this run's measurements.
+          if [ -d mutation-checkpoints-new ]; then
+            cp -r mutation-checkpoints-new/. mutation-checkpoints/
+          fi
 
       - uses: actions/upload-artifact@v7
         with:
