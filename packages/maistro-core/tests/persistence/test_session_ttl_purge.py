@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import AsyncIterator
+from datetime import UTC, datetime
 from typing import Any
 
 import aiosqlite
@@ -170,3 +171,109 @@ async def test_append_past_the_ttl_deletes_expired_messages_and_turn_markers(
 
     assert await _session_ids(turn_store, "sessions") == {"new"}
     assert await _session_ids(turn_store, "session_turns") == {"new"}
+
+
+@pytest.mark.contract("behavioral")
+@pytest.mark.scope("unit")
+async def test_a_purge_publishes_the_conversation_tables_stored_volume(
+    store: SqliteSessionStore,
+) -> None:
+    """The TTL is driven inline on every append, so a TTL silently widened to
+    never-expire would look identical to a healthy one in delete counts. The
+    stored level of `sessions` and `session_turns`, and how far back the
+    retained conversation reaches, is what actually shows the TTL enforcing
+    itself (#325)."""
+    from maistro.observability import metrics as retention_health
+    from maistro.observability.metrics import (
+        retention_oldest_record_timestamp,
+        retention_table_rows,
+    )
+
+    def _series(metric: Any, table: str) -> list[float]:
+        return [
+            float(s["value"])
+            for s in metric.collect()
+            if s.get("labels", {}) == {"table": table, "backend": "sqlite"}
+        ]
+
+    retention_health._LAST_PROBE.clear()
+    fresh_ts = time.time() - 10
+    await _insert_at(store, "s1", 0, time.time() - 10_000)  # expired
+    await _insert_at(store, "s1", 1, fresh_ts)  # retained
+
+    await store.purge_expired()
+
+    assert _series(retention_table_rows, "sessions") == [1.0]
+    assert _series(retention_oldest_record_timestamp, "sessions") == [pytest.approx(fresh_ts)]
+    # `session_turns` is purged by the same call and publishes alongside.
+    assert _series(retention_table_rows, "session_turns") == [0.0]
+    assert _series(retention_oldest_record_timestamp, "session_turns") == []
+
+
+class _HealthFakePool:
+    """The sliver of asyncpg.Pool the post-purge health probe touches.
+
+    Answers the existence check, the count/oldest scan and the size probe with
+    the shapes asyncpg really returns — in particular `MIN(timestamp)` over a
+    TIMESTAMPTZ column, which arrives as a `datetime`, never a float.
+    """
+
+    def __init__(self, oldest: datetime) -> None:
+        self._oldest = oldest
+
+    def acquire(self) -> Any:
+        oldest = self._oldest
+
+        class _Conn:
+            async def execute(self, query: str, *args: object) -> str:
+                return "DELETE 0"
+
+            def transaction(self) -> Any:
+                return _Acquire()
+
+            async def fetchrow(self, query: str, *args: object) -> Any:
+                if "to_regclass" in query:
+                    return {"ok": True}
+                if "pg_total_relation_size" in query:
+                    return {"b": 8192}
+                return {"n": 2, "oldest": oldest}
+
+        class _Acquire:
+            async def __aenter__(self) -> _Conn:
+                return _Conn()
+
+            async def __aexit__(self, *exc: object) -> bool:
+                return False
+
+        return _Acquire()
+
+
+@pytest.mark.contract("behavioral")
+@pytest.mark.scope("unit")
+async def test_the_postgres_probe_decodes_timestamptz_as_datetime() -> None:
+    """Migrations 005/023 type both conversation `timestamp` columns as
+    TIMESTAMPTZ, which asyncpg returns as `datetime` objects. The probe's
+    `unix_s` conversion floated one, caught the TypeError, and published no
+    oldest-record series for tables that have one — the postgres twin of the
+    SQLite volume test above."""
+    from maistro.observability import metrics as retention_health
+    from maistro.observability.metrics import retention_oldest_record_timestamp
+
+    oldest = datetime(2026, 10, 1, 12, 0, tzinfo=UTC)
+    store = PgSessionStore(_HealthFakePool(oldest))  # type: ignore[arg-type]
+    retention_health._LAST_PROBE.clear()
+
+    await store.purge_expired()
+
+    samples = [
+        float(s["value"])
+        for s in retention_oldest_record_timestamp.collect()
+        if s.get("labels", {}) == {"table": "sessions", "backend": "postgres"}
+    ]
+    assert samples == [pytest.approx(oldest.timestamp())]
+    turns = [
+        float(s["value"])
+        for s in retention_oldest_record_timestamp.collect()
+        if s.get("labels", {}) == {"table": "session_turns", "backend": "postgres"}
+    ]
+    assert turns == [pytest.approx(oldest.timestamp())]

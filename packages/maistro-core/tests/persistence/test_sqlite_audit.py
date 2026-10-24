@@ -6,6 +6,8 @@ from __future__ import annotations
 import logging
 from collections.abc import AsyncIterator
 from dataclasses import replace
+from datetime import UTC, datetime, timedelta
+from typing import Any
 
 import aiosqlite
 import pytest
@@ -290,3 +292,66 @@ async def test_get_entries_invalid_filter_column_raises(
 async def test_get_entries_rejects_unknown_keyword(log: SqliteAuditLog) -> None:
     with pytest.raises(TypeError, match="unexpected keyword argument 'status'"):
         await log.get_entries(status="denied")  # type: ignore[call-arg]
+
+
+@pytest.mark.asyncio
+async def test_purge_expired_respects_boundary_and_legal_hold(log: SqliteAuditLog) -> None:
+    old = datetime.now(UTC) - timedelta(days=2)
+    await log._conn.executemany(
+        "INSERT INTO audit_log (timestamp, user_id, agent_id) VALUES (?, ?, ?)",
+        [(old.isoformat(), "held", "a"), (old.isoformat(), "free", "a")],
+    )
+    await log._conn.commit()
+
+    removed = await log.purge_expired(
+        before=datetime.now(UTC) - timedelta(days=1),
+        legal_hold_user_ids=("held",),
+    )
+
+    assert removed == 1
+    cursor = await log._conn.execute("SELECT user_id FROM audit_log")
+    assert [row[0] for row in await cursor.fetchall()] == ["held"]
+
+
+@pytest.mark.asyncio
+async def test_a_purge_publishes_the_audit_tables_stored_volume(
+    log: SqliteAuditLog,
+) -> None:
+    """The audit horizon is the importing product's policy (the #325 owner
+    decision); the engine's contribution is making the table's actual level
+    observable. A purge publishes rows and the oldest retained record, and a
+    drained table's oldest-record series disappears rather than going stale."""
+    from maistro.observability import metrics as retention_health
+    from maistro.observability.metrics import (
+        retention_oldest_record_timestamp,
+        retention_table_rows,
+    )
+
+    def _series(metric: Any) -> list[float]:
+        return [
+            float(s["value"])
+            for s in metric.collect()
+            if s.get("labels", {}) == {"table": "audit_log", "backend": "sqlite"}
+        ]
+
+    retention_health._LAST_PROBE.clear()
+    old = datetime.now(UTC) - timedelta(days=2)
+    keep = datetime.now(UTC) - timedelta(minutes=1)
+    await log._conn.executemany(
+        "INSERT INTO audit_log (timestamp, user_id, agent_id) VALUES (?, ?, ?)",
+        [(old.isoformat(), "u", "a"), (keep.isoformat(), "u", "a")],
+    )
+    await log._conn.commit()
+
+    assert await log.purge_expired(before=datetime.now(UTC) - timedelta(days=1)) == 1
+
+    assert _series(retention_table_rows) == [1.0]  # the held-back row remains
+    assert len(_series(retention_oldest_record_timestamp)) == 1
+    assert _series(retention_oldest_record_timestamp)[0] == pytest.approx(keep.timestamp())
+
+    # Draining the log removes the oldest-record series instead of leaving
+    # the last value standing in for history that no longer exists.
+    retention_health._LAST_PROBE.clear()
+    await log.purge_expired(before=datetime.now(UTC) + timedelta(days=1))
+    assert _series(retention_table_rows) == [0.0]
+    assert _series(retention_oldest_record_timestamp) == []

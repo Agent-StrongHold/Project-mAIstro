@@ -369,12 +369,90 @@ def test_retention_window_preserves_active_runs_and_drops_missing_entries():
             actor_principal_id="user",
             initial_status=RunStatus.QUEUED,
         )
-        plane._retained_runs[active.run_id] = None
+        plane._retained_runs[active.run_id] = workspace_id
 
         await plane._track_admission("missing-run", workspace_id=workspace_id)
 
         assert list(plane._retained_runs) == [active.run_id]
         assert await plane.run_store.get_run(active.run_id) is not None
+
+    _await(scenario())
+
+
+def test_retention_window_is_scoped_to_the_admitting_workspace():
+    """The bounded window is per-Workspace (#1175): a user's turn evicts only
+    that user's terminal Runs. Before the scoping, one user's admission could
+    `delete_run` another user's Runs the moment the process-wide window
+    overflowed — the max-window was an unscoped purge one API up."""
+
+    class ReplySession:
+        async def handle_message(self, message: str) -> str:
+            return f"reply:{message}"
+
+    async def scenario() -> None:
+        plane = _new_execution_plane(max_retained=1)
+        session = ReplySession()
+
+        def turn(user: str, message: str):
+            return plane.run_chat(session=session, user_id=user, session_id="s", message=message)
+
+        first_a = await turn("user-a", "a1")
+        second_a = await turn("user-a", "a2")
+        # A's window (1) evicted A's first terminal Run.
+        assert await plane.run_store.get_run(first_a.run_id) is None
+        assert await plane.run_store.get_run(second_a.run_id) is not None
+
+        first_b = await turn("user-b", "b1")
+        second_b = await turn("user-b", "b2")
+        # B's window evicted B's first Run — and must not have touched A's:
+        # the pre-#1175 global window deleted A's newest Run here instead.
+        assert await plane.run_store.get_run(first_b.run_id) is None
+        assert await plane.run_store.get_run(second_b.run_id) is not None
+        assert await plane.run_store.get_run(second_a.run_id) is not None
+        # Both Workspaces are still tracked; the window is per-Workspace.
+        assert plane.retained == 2
+
+    _await(scenario())
+
+
+def test_a_stale_tracking_entry_frees_its_window_slot():
+    """A tracked Run the store already deleted (a retention sweep at the end
+    of an earlier admission, say) occupies no window: dropping its stale entry
+    must decrement the precomputed excess, or the loop evicts a terminal Run
+    that fits the window beside the new admission (Codex, #325 review).
+    With `max_retained=2`, a stale entry, one terminal Run and the new
+    admission, the terminal Run and the admission are the two live entries —
+    pre-fix, the stale entry consumed a slot and the terminal Run was deleted
+    instead."""
+    from maistro.graph import Graph, Node
+
+    async def scenario() -> None:
+        plane = _new_execution_plane(max_retained=2)
+        workspace_id, project_id = await plane._scope_for("user")
+
+        # A: tracked, already gone from the store. Inserted first, so the
+        # eviction loop reaches it before the terminal Run.
+        plane._retained_runs["gone-run"] = workspace_id
+        graph = Graph(
+            workspace_id=workspace_id,
+            project_id=project_id,
+            name="terminal chat admission",
+            nodes=[Node(node_id="n", node_type="test", name="n")],
+        )
+        terminal = await plane.run_store.create_run(
+            graph,
+            actor_principal_id="user",
+            initial_status=RunStatus.QUEUED,
+        )
+        await plane.run_store.transition_run(terminal.run_id, RunStatus.RUNNING)
+        await plane.run_store.transition_run(terminal.run_id, RunStatus.COMPLETED)
+        plane._retained_runs[terminal.run_id] = workspace_id
+
+        await plane._track_admission("brand-new-run", workspace_id=workspace_id)
+
+        assert "gone-run" not in plane._retained_runs
+        assert await plane.run_store.get_run(terminal.run_id) is not None
+        assert list(plane._retained_runs) == [terminal.run_id, "brand-new-run"]
 
     _await(scenario())
 

@@ -40,6 +40,12 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING
 
+from maistro.observability.metrics import (
+    OldestUnit,
+    publish_retention_table_health,
+    retention_health_probe_due,
+    sqlite_table_sample,
+)
 from maistro.quota.usage_log import InMemoryUsageLog
 from maistro.sqlite_schema import serialized_schema_upgrade
 
@@ -74,10 +80,40 @@ CREATE TABLE IF NOT EXISTS usage_events (
 )
 """
 
+_AGGREGATES_SCHEMA = """
+CREATE TABLE IF NOT EXISTS usage_event_aggregates (
+    scope_key TEXT NOT NULL,
+    bucket_start REAL NOT NULL,
+    input_tokens INTEGER NOT NULL DEFAULT 0,
+    output_tokens INTEGER NOT NULL DEFAULT 0,
+    images INTEGER NOT NULL DEFAULT 0,
+    cost_usd REAL NOT NULL DEFAULT 0.0,
+    PRIMARY KEY (scope_key, bucket_start)
+)
+"""
+
 _INDEX = """
 CREATE INDEX IF NOT EXISTS idx_usage_events_scope_ts
     ON usage_events (scope_key, timestamp)
 """
+
+_WATERMARKS = """
+CREATE TABLE IF NOT EXISTS usage_purge_watermarks (
+    scope_key TEXT PRIMARY KEY,
+    purged_through REAL NOT NULL
+)
+"""
+
+#: Most raw rows one `purge_expired` call may aggregate and delete.
+DEFAULT_PURGE_BATCH = 1_000
+
+#: The accounting tables this store's aggregate-then-delete sweep governs,
+#: with each table's oldest-record expression (both store Unix seconds in a
+#: REAL column), for the post-purge health probe (#325).
+_TABLE_HEALTH_TABLES: tuple[tuple[str, str, OldestUnit], ...] = (
+    ("usage_events", "timestamp", "unix_s"),
+    ("usage_event_aggregates", "bucket_start", "unix_s"),
+)
 
 
 class SqliteUsageLog:
@@ -105,6 +141,7 @@ class SqliteUsageLog:
         """
         async with self._operation_lock, serialized_schema_upgrade(self._conn):
             await self._conn.execute(_SCHEMA)
+            await self._conn.execute(_AGGREGATES_SCHEMA)
             cursor = await self._conn.execute("PRAGMA table_info(usage_events)")
             columns = await cursor.fetchall()
             if not any(row[1] == "event_id" for row in columns):
@@ -126,6 +163,7 @@ class SqliteUsageLog:
                 "ON usage_events (event_id)"
             )
             await self._conn.execute(_INDEX)
+            await self._conn.execute(_WATERMARKS)
 
     async def snapshot(self, log: InMemoryUsageLog) -> None:
         """Persist the currently retained events, idempotently.
@@ -134,8 +172,25 @@ class SqliteUsageLog:
         events on each flush is intentional: the unique event identity makes
         this safe and avoids a process-local watermark whose update could be
         lost after a successful commit.
+
+        Events at or below a scope's durable purge watermark are skipped.
+        `record` prunes only the scope it touches, so an idle scope can retain
+        events older than any purge horizon indefinitely; after
+        `purge_expired` has aggregated and deleted such an event's durable
+        row, replaying the stale in-memory copy would resurrect the row and
+        the next sweep would aggregate it a second time. The watermark is
+        the durable record that everything at or below it already lives in
+        the aggregates, so a flush never reinserts a retired event.
         """
         async with self._operation_lock:
+            cursor = await self._conn.execute(
+                "SELECT scope_key, purged_through FROM usage_purge_watermarks"
+            )
+            watermark_rows = await cursor.fetchall()
+            # Indexed rather than tuple-unpacked: ruff's C416/C402 would have
+            # the dict built by `dict(...)` exactly as mypy cannot type it
+            # (aiosqlite rows are not declared as tuple pairs).
+            watermarks: dict[str, float] = {row[0]: row[1] for row in watermark_rows}
             rows = [
                 (
                     event.event_id,
@@ -152,6 +207,7 @@ class SqliteUsageLog:
                 )
                 for scope_key in log.scope_keys()
                 for event in log.events_for(scope_key)
+                if event.timestamp > watermarks.get(scope_key, float("-inf"))
             ]
             if not rows:
                 return
@@ -164,6 +220,121 @@ class SqliteUsageLog:
                 rows,
             )
             await self._conn.commit()
+
+    async def purge_expired(
+        self,
+        *,
+        before: float,
+        limit: int = DEFAULT_PURGE_BATCH,
+        legal_hold_scopes: tuple[str, ...] = (),
+    ) -> int:
+        """Aggregate and delete an idempotent bounded batch of raw events.
+
+        Raw `usage_events` rows are reconciliation evidence with a bounded
+        lifetime; the aggregates are the long-lived accounting totals (#325).
+        Deleting raw rows therefore must not lose the spend they recorded:
+        aggregates are upserted in the same transaction as the deletion, so a
+        crash before commit removes neither and a retry adds the same bucket
+        exactly once. The horizon is the caller's policy — the in-memory
+        enforcement window is shorter than any horizon a retention driver
+        should pass, so a cutoff cannot change a current quota decision —
+        and ``legal_hold_scopes`` is deliberately an explicit input rather
+        than a hidden process-local flag, so every replica applies the same
+        hold decision.
+        """
+        if limit <= 0:
+            raise ValueError("limit must be positive")
+        if not legal_hold_scopes:
+            hold_sql = ""
+            hold_params: tuple[object, ...] = ()
+        else:
+            marks = ",".join("?" for _ in legal_hold_scopes)
+            hold_sql = f" AND scope_key NOT IN ({marks})"  # nosec B608 - values bound, identifiers are literal ?
+            hold_params = tuple(legal_hold_scopes)
+        # The aggregate must cover exactly the batch being deleted -- not
+        # every expired row.  Otherwise the rows that survive a bounded
+        # delete are aggregated again by the next sweep and the aggregates
+        # double-count them.  ``ORDER BY timestamp, rowid`` makes the batch
+        # deterministic, so the two statements below select the same rows.
+        batch_sql = (
+            "SELECT rowid FROM usage_events WHERE timestamp < ?"
+            + hold_sql
+            + " ORDER BY timestamp, rowid LIMIT ?"
+        )
+        async with self._operation_lock:
+            await self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                aggregate_sql = (
+                    """INSERT INTO usage_event_aggregates
+                       (scope_key, bucket_start, input_tokens, output_tokens, images, cost_usd)
+                       SELECT scope_key, CAST(timestamp / 86400 AS INTEGER) * 86400 AS bucket_start,
+                              SUM(input_tokens), SUM(output_tokens), SUM(images), SUM(cost_usd)
+                       FROM usage_events
+                       WHERE rowid IN ("""
+                    + batch_sql
+                    + ")"
+                    + """ GROUP BY scope_key, bucket_start
+                       ON CONFLICT(scope_key, bucket_start) DO UPDATE SET
+                         input_tokens = usage_event_aggregates.input_tokens + excluded.input_tokens,
+                         output_tokens = usage_event_aggregates.output_tokens + excluded.output_tokens,
+                         images = usage_event_aggregates.images + excluded.images,
+                         cost_usd = usage_event_aggregates.cost_usd + excluded.cost_usd"""
+                )
+                await self._conn.execute(aggregate_sql, (before, *hold_params, limit))
+                # Watermark the newest timestamp each scope lost, in the same
+                # transaction as the deletion: `snapshot` consults this to
+                # recognize retired events whose in-memory copies may still
+                # linger and must not be reinserted (they would be aggregated
+                # a second time by the next sweep).
+                # Assigned to a name before `execute` (like `batch_sql` and
+                # `delete_sql` above): bandit B608 flags a SQL-looking string
+                # that is a *direct* argument to `execute`, but not one built
+                # into an intermediate variable whose values are all bound.
+                retired_sql = (
+                    "SELECT scope_key, MAX(timestamp) FROM usage_events WHERE rowid IN ("
+                    + batch_sql
+                    + ") GROUP BY scope_key"
+                )
+                retired = await self._conn.execute(
+                    retired_sql,
+                    (before, *hold_params, limit),
+                )
+                await self._conn.executemany(
+                    "INSERT INTO usage_purge_watermarks (scope_key, purged_through) "
+                    "VALUES (?, ?) ON CONFLICT(scope_key) DO UPDATE SET "
+                    "purged_through = MAX(purged_through, excluded.purged_through)",
+                    await retired.fetchall(),
+                )
+                delete_sql = "DELETE FROM usage_events WHERE rowid IN (" + batch_sql + ")"
+                cursor = await self._conn.execute(
+                    delete_sql,
+                    (before, *hold_params, limit),
+                )
+                await self._conn.commit()
+                await self._publish_table_health()
+                return max(cursor.rowcount, 0)
+            except BaseException:
+                await self._conn.rollback()
+                raise
+
+    async def _publish_table_health(self) -> None:
+        """Publish stored-volume gauges for the accounting tables (#325).
+
+        Raw `usage_events` is the table whose "accidental permanent raw usage
+        history" this store exists to prevent: its stored level is the one
+        signal that shows the aggregate-then-delete sweep keeping pace with
+        ingest, and the aggregates' oldest bucket is how far back the
+        long-lived accounting half reaches. Throttled per store by the
+        publisher, so a caller sweeping per cycle costs one probe a minute.
+        """
+        if not retention_health_probe_due("usage:sqlite"):
+            return
+        samples = []
+        for table, oldest_expr, unit in _TABLE_HEALTH_TABLES:
+            sample = await sqlite_table_sample(self._conn, table, oldest_expr, oldest_unit=unit)
+            if sample is not None:
+                samples.append(sample)
+        publish_retention_table_health("usage:sqlite", "sqlite", samples, min_interval_s=0.0)
 
     async def restore(self, *, max_retention_s: float = 86_400.0) -> InMemoryUsageLog:
         """Rehydrate a fresh `InMemoryUsageLog` from persisted events.

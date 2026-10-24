@@ -121,7 +121,10 @@ class TuringExecutionPlane:
         )
         self._workspace_by_user: dict[str, str] = {}
         self._scope_lock = asyncio.Lock()
-        self._retained_runs: OrderedDict[str, None] = OrderedDict()
+        # run_id -> owning Workspace id. The bounded window is per-Workspace
+        # (#1175): eviction candidates are only ever this admission's own
+        # Workspace's Runs.
+        self._retained_runs: OrderedDict[str, str] = OrderedDict()
         self._retention_lock = asyncio.Lock()
         self._max_retained = max_retained
         self._retention = retention if retention is not None else RetentionPolicy()
@@ -175,19 +178,42 @@ class TuringExecutionPlane:
         return await self.scope_for(user_id)
 
     async def _track_admission(self, run_id: str, *, workspace_id: str) -> None:
-        self._retained_runs[run_id] = None
+        self._retained_runs[run_id] = workspace_id
         async with self._retention_lock:
-            for retained_id in list(self._retained_runs):
-                if len(self._retained_runs) <= self._max_retained:
+            # The bounded window is Workspace-scoped (#1175): when this
+            # Workspace's window overflows, only this Workspace's terminal
+            # Runs are evicted, oldest first. Another Workspace's Runs are
+            # not candidates — they are outside this admission's deletion
+            # authority, whatever the process-wide total looks like.
+            scoped = [
+                retained_id
+                for retained_id, retained_ws in self._retained_runs.items()
+                if retained_ws == workspace_id
+            ]
+            excess = len(scoped) - self._max_retained
+            for retained_id in scoped:
+                if excess <= 0:
                     break
                 retained = await self.run_store.get_run(retained_id)
                 if retained is None:
                     self._retained_runs.pop(retained_id, None)
+                    # A stale entry no longer occupies the window; dropping
+                    # it frees one slot just like a real eviction would.
+                    excess -= 1
                     continue
                 if retained.status not in TERMINAL_RUN_STATUSES:
                     continue
+                # A graph continuation names a Run that is about to stop
+                # existing. The reference is logical — no foreign key — so
+                # reclaim it first, and if that fails leave the Run alone
+                # rather than orphan a resumable state pointing at nothing.
+                try:
+                    await self._continuations.delete(retained_id)
+                except Exception:
+                    continue
                 await self.run_store.delete_run(retained_id)
                 self._retained_runs.pop(retained_id, None)
+                excess -= 1
         # Scoped to the Workspace this admission ran in: one user's turn
         # is never the deletion authority over another user's expired
         # Runs (#1175). A sweep with no scope refuses and deletes nothing;

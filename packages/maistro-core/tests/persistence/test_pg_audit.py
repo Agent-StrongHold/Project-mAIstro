@@ -8,7 +8,7 @@ canned rows, so tests assert on emitted SQL/params, not just "didn't raise".
 from __future__ import annotations
 
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
@@ -451,3 +451,37 @@ async def test_real_postgres_two_org_scope_and_schema(
 
     assert [entry.boundary for entry in entries] == ["org-a"]
     assert all(entry.org_id == "org-a" for entry in entries)
+
+
+@pytest.mark.asyncio
+async def test_real_postgres_purge_publishes_stored_volume(pg_pool: Any) -> None:
+    """The PostgreSQL audit probe publishes the one number SQLite cannot
+    honestly produce — `pg_total_relation_size` — alongside rows and the
+    oldest retained record (#325). audit_log is truncated per test, so the
+    counts are this test's own rows."""
+    from maistro.observability import metrics as retention_health
+    from maistro.observability.metrics import (
+        retention_oldest_record_timestamp,
+        retention_table_bytes,
+        retention_table_rows,
+    )
+
+    if pg_pool is None:
+        pytest.skip("MAISTRO_TEST_PG_DSN is not set")
+    retention_health._LAST_PROBE.clear()
+
+    audit = PgAuditLog(pg_pool)
+    await audit.log(AuditEntry(boundary="b", user_id="u", org_id="org"))
+    assert await audit.purge_expired(before=datetime.now(UTC) + timedelta(days=1)) == 1
+
+    def _series(metric: Any) -> list[float]:
+        return [
+            float(s["value"])
+            for s in metric.collect()
+            if s.get("labels", {}) == {"table": "audit_log", "backend": "postgres"}
+        ]
+
+    assert _series(retention_table_rows) == [0.0]  # drained: the one row expired
+    assert len(_series(retention_table_bytes)) == 1
+    assert _series(retention_table_bytes)[0] > 0
+    assert _series(retention_oldest_record_timestamp) == []

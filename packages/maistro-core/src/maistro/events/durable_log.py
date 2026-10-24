@@ -234,6 +234,36 @@ class SqliteEventLog:
         async with serialized_schema_upgrade(self._conn):
             await execute_schema_script(self._conn, _SCHEMA)
 
+    async def purge_expired(
+        self,
+        *,
+        before: float,
+        limit: int = 1_000,
+        legal_hold_entity_ids: tuple[str, ...] = (),
+    ) -> int:
+        """Delete a bounded delivery-history batch after terminal processing."""
+        if limit <= 0:
+            raise ValueError("limit must be positive")
+        hold_sql = ""
+        params: list[object] = [before]
+        if legal_hold_entity_ids:
+            marks = ",".join("?" for _ in legal_hold_entity_ids)
+            hold_sql = f" AND entity_id NOT IN ({marks})"  # values remain bound
+            params.extend(legal_hold_entity_ids)
+        params.append(limit)
+        await self._conn.execute("BEGIN IMMEDIATE")
+        try:
+            cursor = await self._conn.execute(
+                "DELETE FROM event_log WHERE id IN (SELECT id FROM event_log "  # nosec B608 - hold_sql is ?-placeholders only, all values bound
+                "WHERE created_at < ?" + hold_sql + " ORDER BY id LIMIT ?)",
+                params,
+            )
+            await self._conn.commit()
+            return max(cursor.rowcount, 0)
+        except BaseException:
+            await self._conn.rollback()
+            raise
+
     async def append(
         self,
         event_type: str,

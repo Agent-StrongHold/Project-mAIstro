@@ -458,3 +458,48 @@ async def test_rate_limiter_check_and_record_deletes_expired_windows(
         if c.method == "execute" and "DELETE FROM security_rate_limits" in c.query
     ]
     assert len(delete_calls) == 1
+
+
+async def test_purge_publishes_the_violation_evidence_volume(
+    patch_asyncpg: FakePool, conn: FakeConnection
+) -> None:
+    """`security_violations` was the issue's named unbounded-evidence table:
+    the purge publishes its stored level, size and oldest retained record, so
+    a bounded mechanism nobody drives is visible in the level instead of
+    invisible in a zero delete count (#325)."""
+    from datetime import datetime as dt
+
+    from maistro.observability import metrics as retention_health
+    from maistro.observability.metrics import (
+        retention_oldest_record_timestamp,
+        retention_table_bytes,
+        retention_table_rows,
+    )
+
+    retention_health._LAST_PROBE.clear()
+    old = dt(2026, 8, 1, tzinfo=UTC)
+    # The purge's RETURNING fetch, then the probe's to_regclass, sample row
+    # (one retained violation at `old`), and size row.
+    conn.queue_fetch([])
+    conn.queue_fetchrow({"ok": True})
+    conn.queue_fetchrow({"n": 1, "oldest": old})
+    conn.queue_fetchrow({"b": 8192})
+    tracker = PgStrikeTracker(db_url="postgres://x")
+    assert await tracker.purge_expired(before=dt(2026, 8, 2, tzinfo=UTC)) == 0
+
+    def _series(metric: Any) -> list[float]:
+        return [
+            float(s["value"])
+            for s in metric.collect()
+            if s.get("labels", {}) == {"table": "security_violations", "backend": "postgres"}
+        ]
+
+    assert _series(retention_table_rows) == [1.0]
+    assert _series(retention_table_bytes) == [8192.0]
+    assert _series(retention_oldest_record_timestamp) == [pytest.approx(old.timestamp())]
+
+    # Throttled per store: a second purge inside the interval probes nothing.
+    probe_calls_before = len([c for c in conn.calls if c.method == "fetchrow"])
+    conn.queue_fetch([])
+    await tracker.purge_expired(before=dt(2026, 8, 3, tzinfo=UTC))
+    assert len([c for c in conn.calls if c.method == "fetchrow"]) == probe_calls_before

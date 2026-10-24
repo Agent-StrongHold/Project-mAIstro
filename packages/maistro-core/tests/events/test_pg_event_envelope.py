@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import time
 from typing import Any
 from uuid import uuid4
 
@@ -240,4 +241,34 @@ async def test_event_id_retry_is_idempotent_under_postgres_concurrency() -> None
         assert [row.event_id for row in history] == [event_id]
     finally:
         await pool.execute("DELETE FROM canonical_event_log WHERE stream_id = $1", stream)
+        await pool.close()
+
+
+async def test_sequence_high_water_mark_survives_event_purge() -> None:
+    """The PG leg of cursor survival (#325): retention may delete every event
+    of a stream, and the next append must continue its sequence from the
+    durable per-stream high-water mark instead of restarting at 1 — a reader
+    resuming from an earlier `after_sequence` cursor would otherwise silently
+    miss the new events until reused numbers passed its position."""
+    workspace = f"ws-purge-hwm-{uuid4().hex}"
+    stream = f"workspace:{workspace}"
+    pool = await _pool()
+    try:
+        store = PgEventStore(pool)
+        for _ in range(2):
+            await store.append(
+                EventEnvelope(event_id=f"event-{uuid4().hex}", type="e", workspace_id=workspace)
+            )
+        assert await store.purge_expired(before=time.time() + 60) == 2
+        resumed = await store.append(
+            EventEnvelope(event_id=f"event-{uuid4().hex}", type="after", workspace_id=workspace)
+        )
+        assert resumed.sequence == 3
+        page = await store.list_stream(stream, after_sequence=2)
+        assert [event.sequence for event in page] == [3]
+    finally:
+        await pool.execute("DELETE FROM canonical_event_log WHERE stream_id = $1", stream)
+        await pool.execute(
+            "DELETE FROM canonical_event_stream_watermarks WHERE stream_id = $1", stream
+        )
         await pool.close()

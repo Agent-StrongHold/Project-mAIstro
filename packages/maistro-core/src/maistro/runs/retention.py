@@ -30,7 +30,13 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
-from maistro.observability.metrics import retention_backlog_remaining, retention_purged_total
+from maistro.observability.metrics import (
+    retention_backlog_age_seconds,
+    retention_backlog_remaining,
+    retention_purged_total,
+    retention_sweep_failures_total,
+    retention_sweep_last_success_timestamp,
+)
 from maistro.runs.retention_scope import GlobalRetentionScope
 from maistro.runs.store import DEFAULT_PURGE_BATCH, PurgeOutcome, RetentionScope
 
@@ -53,14 +59,23 @@ DEFAULT_SWEEP_INTERVAL_SECONDS = 300.0
 DEFAULT_MAX_TRACKED_SCOPES = 4096
 
 # Scopes whose last *completed* sweep ran out of batch before the scope
-# drained. Process-wide, because every sweeper in the process (chat, Turing)
+# drained, mapped to the time.monotonic() instant they entered the ledger.
+# Process-wide, because every sweeper in the process (chat, Turing)
 # publishes into the one gauge: a per-sweeper or last-writer-wins value would
 # let Workspace B draining erase Workspace A's standing backlog. An entry
 # leaves only when a sweep of that same scope drains it, so a Workspace nobody
-# sweeps again stays counted: its expired Runs are, in fact, still there. The
-# set is bounded by the scopes currently backlogged, not by scopes ever seen.
-_BACKLOGGED_SCOPES: set[RetentionScope] = set()
+# sweeps again stays counted: its expired Runs are, in fact, still there — and
+# the entry time is what turns "still there" into a backlog age a dashboard
+# can alert on. The map is bounded by the scopes currently backlogged, not by
+# scopes ever seen.
+_BACKLOGGED_SCOPES: dict[RetentionScope, float] = {}
 _BACKLOG_LOCK = threading.Lock()
+
+
+def _metric_mode(scope: RetentionScope) -> str:
+    """The bounded metric label for a scope's authorization mode (#818):
+    `global` or `workspace`, never a caller-created Workspace id."""
+    return "global" if isinstance(scope, GlobalRetentionScope) else "workspace"
 
 
 @dataclass(frozen=True)
@@ -214,9 +229,11 @@ class RunRetentionSweeper:
                 # A failed sweep commits nothing, so it neither drained this
                 # scope's backlog nor observed a new one: the ledger stands.
                 self.last_error = exc
+                retention_sweep_failures_total.inc(mode=_metric_mode(resolved))
                 return 0
             self.last_error = None
             self._report_backlog(resolved, outcome)
+            retention_sweep_last_success_timestamp.set(time.time(), mode=outcome.mode)
             if outcome.runs:
                 retention_purged_total.inc(outcome.runs, mode=outcome.mode)
             return outcome.runs
@@ -233,37 +250,52 @@ class RunRetentionSweeper:
         resolved = self._resolve_scope(scope)
         async with self._lock:
             self._stamp(resolved)
-            outcome = await self._store.purge_expired_runs(
-                resolved, now=now, limit=self._policy.batch_limit
-            )
+            try:
+                outcome = await self._store.purge_expired_runs(
+                    resolved, now=now, limit=self._policy.batch_limit
+                )
+            except Exception:
+                # The error still propagates — an operator demanding a sweep
+                # deserves the refusal in their face — but a failed sweep is
+                # also a health fact: counted, so "no successful sweep since"
+                # is visible even where the exception itself is not.
+                retention_sweep_failures_total.inc(mode=_metric_mode(resolved))
+                raise
             self.last_error = None
             self._report_backlog(resolved, outcome)
+            retention_sweep_last_success_timestamp.set(time.time(), mode=outcome.mode)
             if outcome.runs:
                 retention_purged_total.inc(outcome.runs, mode=outcome.mode)
             return outcome.runs
 
     def _report_backlog(self, scope: RetentionScope, outcome: PurgeOutcome) -> None:
-        """Publish how many scopes of this sweep's mode still have a backlog.
+        """Publish how many scopes of this sweep's mode still have a backlog,
+        and how long the oldest of them has been waiting.
 
         The purge count alone cannot alert: a scope whose backlog never
         drains looks identical to a quiet one unless "the batch ran out"
         is itself a series a dashboard can graph. The value is a count of
         backlogged scopes, so one Workspace draining cannot erase another's
-        backlog; the label is the mode, never a Workspace id (#818).
+        backlog; the label is the mode, never a Workspace id (#818). The age
+        gauge is what separates a backlog that just opened from one that has
+        been draining for hours across repeated partial batches: both count
+        one scope, only the age says how stale the oldest evidence is.
         """
-        is_global = isinstance(scope, GlobalRetentionScope)
+        mode = _metric_mode(scope)
         with _BACKLOG_LOCK:
             if outcome.backlog_remaining:
-                _BACKLOGGED_SCOPES.add(scope)
+                _BACKLOGGED_SCOPES.setdefault(scope, time.monotonic())
             else:
-                _BACKLOGGED_SCOPES.discard(scope)
-            backlogged = sum(
-                1
-                for backlogged_scope in _BACKLOGGED_SCOPES
-                if isinstance(backlogged_scope, GlobalRetentionScope) == is_global
-            )
-            retention_backlog_remaining.set(
-                float(backlogged), mode="global" if is_global else "workspace"
+                _BACKLOGGED_SCOPES.pop(scope, None)
+            entered = [
+                entered_at
+                for backlogged_scope, entered_at in _BACKLOGGED_SCOPES.items()
+                if _metric_mode(backlogged_scope) == mode
+            ]
+            retention_backlog_remaining.set(float(len(entered)), mode=mode)
+            retention_backlog_age_seconds.set(
+                max((time.monotonic() - entered_at for entered_at in entered), default=0.0),
+                mode=mode,
             )
 
 
