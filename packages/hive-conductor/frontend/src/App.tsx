@@ -1,6 +1,7 @@
 import { createContext, lazy, Suspense, useContext, useEffect, useState } from "react";
 import { Navigate, Route, Routes } from "react-router-dom";
 import { AppShell } from "./components/AppShell";
+import { DefaultLandingRedirect } from "./components/DefaultLandingRedirect";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { Onboarding } from "./components/Onboarding";
 import { ToastProvider } from "./components/shared";
@@ -17,6 +18,7 @@ import Setup from "./pages/Setup";
 // first paint of every session, so splitting them would only add a round
 // trip with nothing to show meanwhile.
 const Agents = lazy(() => import("./pages/Agents"));
+const Attention = lazy(() => import("./pages/Attention"));
 const AuditLog = lazy(() => import("./pages/AuditLog"));
 const Backlog = lazy(() => import("./pages/Backlog"));
 const Chat = lazy(() => import("./pages/Chat"));
@@ -183,13 +185,17 @@ function AppRoutes() {
             <Suspense fallback={<AppShellSkeleton />}>
               <Routes>
                 <Route path="/" element={<AppShell />}>
-                  {/* #1048: Workspace Home is the default Mission-Control
-                      landing. Dashboard stays registered until retirement
-                      burn-down (#2274) deletes it. */}
-                  <Route index element={<Navigate to="home" replace />} />
+                  {/* #1048 / #1050: default landing is Workspace Home unless
+                      the user set preferences.workspace_default_landing on
+                      the canonical profile. Dashboard stays registered until
+                      retirement burn-down (#2274) deletes it. */}
+                  <Route index element={<DefaultLandingRedirect />} />
                   <Route path="home" element={<Home />} />
                   <Route path="dashboard" element={<Dashboard />} />
                   <Route path="chat" element={<Chat />} />
+                  {/* #1049: Attention is the Workspace orchestration inbox
+                      (read-only projection). Home links default here. */}
+                  <Route path="attention" element={<Attention />} />
                   <Route path="missions" element={<Missions />} />
                   <Route path="backlog" element={<Backlog />} />
                   <Route path="dags" element={<DagBuilder />} />
