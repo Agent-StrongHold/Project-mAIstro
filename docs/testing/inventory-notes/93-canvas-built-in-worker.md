@@ -396,3 +396,34 @@ expired-lease companion) still passes against the merged
 `canonical_execution._project_receipt`. Acceptance remains as recorded:
 the product-level E2E under #773/#95 is still pending and KNOWN-GAPS.md
 keeps the Canvas-runner entry open for exactly that reason.
+
+## Repair round: second develop sync (`ffc27cc43`, Biscuit ADR) — re-validation at `e854c3efa6ea`
+
+Merge `e854c3efa6ea` folded develop `ffc27cc43` into the branch; against the
+prior head `3a080aa11` it is doc-only (11 added files: the Biscuit ADR,
+ADR-INDEX row, REPAIR-NOTES-1838 records, and the L1838 beartype-split
+inventory note) — no code, test, or ledger file changed, so no ledger merge
+audit is needed this round. The gate battery was nevertheless re-executed at
+the merged head:
+
+- `scripts/check-vulture-baseline.py packages/*/src --min-confidence 60
+  --exclude '*/third_party/*'` (CI argv): 1297 reviewed == 1297 findings
+  against base `ffc27cc43fb8`; nothing unbanked, nothing to amend.
+- `uv run ruff check .` and `uv run ruff format --check .`: clean.
+- `scripts/check-suite-inventory.py`: 21/21 suites match the recorded
+  inventory (canvas 636, `tests/` 5916), 0 duplicate identities.
+- `scripts/check-reachability.py`: 149 unreachable of 1463 modules, no
+  expansion; `scripts/check-reachability-dispositions.py`: 46 groups cover
+  all 149 (128 CONNECT, 20 LIBRARY, 1 RETIRE).
+- `uv run pytest packages/maistro-canvas/tests -q`: 581 passed, 75 skipped
+  (PG-gated legs); `tests/test_check_image_lock_reconciliation.py`: 69
+  passed; the three acceptance-bearing suites
+  (`test_worker_service.py`, `test_runner_concurrency.py`,
+  `test_canonical_execution.py`) pass as a focused run: 71 passed.
+- Production-shape probe re-run at this head: `uv run maistro-canvas-worker`
+  with no environment exits 2 with `canvas_worker_config_error:
+  MAISTRO_CANVAS_PG_DSN is required...`.
+
+Front-matter delta unchanged (+28: no tests added or removed this round).
+Acceptance status is unchanged from the round above; the GH006 merge-queue
+block is queue-side, not a tree defect.
