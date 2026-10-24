@@ -27,6 +27,7 @@ class ChatSession(BaseModel):
 
     id: str
     user_id: str = ""
+    workspace_id: str | None = None
     title: str
     messages: list[ChatMessage] = Field(default_factory=list)
     created_at: datetime
@@ -38,9 +39,17 @@ class ChatSessionSummary(BaseModel):
 
     id: str
     user_id: str = ""
+    workspace_id: str | None = None
     title: str
     message_count: int
     updated_at: datetime
+
+
+class CreateSessionBody(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    title: str = "New chat"
+    workspace_id: str
 
 
 class ChatCompletionRequest(BaseModel):

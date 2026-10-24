@@ -5114,6 +5114,8 @@ export interface components {
              * @default
              */
             user_id: string;
+            /** Workspace Id */
+            workspace_id?: string | null;
         };
         /** ChatSessionSummary */
         ChatSessionSummary: {
@@ -5133,6 +5135,8 @@ export interface components {
              * @default
              */
             user_id: string;
+            /** Workspace Id */
+            workspace_id?: string | null;
         };
         /**
          * ClaimRule
@@ -5446,6 +5450,8 @@ export interface components {
              * @default New chat
              */
             title: string;
+            /** Workspace Id */
+            workspace_id: string;
         };
         /** CreateSkillBody */
         CreateSkillBody: {
@@ -8713,7 +8719,9 @@ export interface operations {
     };
     list_sessions_v1_chat_sessions_get: {
         parameters: {
-            query?: never;
+            query: {
+                workspace_id: string;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -8727,6 +8735,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ChatSessionSummary"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

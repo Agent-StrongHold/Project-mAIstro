@@ -744,48 +744,36 @@ def test_the_runs_section_projects_only_this_workspaces_runs(
 def test_the_chat_section_titles_sessions_from_their_first_real_message(
     admin_client, authed_client
 ) -> None:
+    """Home chat section reads #1822 conversation_sessions (Workspace-scoped)."""
     ws = _create_workspace(admin_client)
     _add_member(admin_client, ws, "user", "editor")
 
-    from models.schemas import ChatMessage, ChatSession
+    from services import conversation_sessions
 
-    now = datetime.now(UTC)
-    stores.chat_sessions["sess-a"] = ChatSession(
-        id="sess-a",
-        user_id="user",
-        title="Saved title",
-        messages=[ChatMessage(id="m1", role="user", content="x" * 100)],
-        created_at=now,
-        updated_at=now,
-    )
-    stores.chat_sessions["sess-b"] = ChatSession(
-        id="sess-b",
-        user_id="user",
-        title="Saved title",
-        messages=[ChatMessage(id="m2", role="user", content="   ")],
-        created_at=now,
-        updated_at=now,
-    )
-    stores.chat_sessions["sess-c"] = ChatSession(
-        id="sess-c",
-        user_id="user",
-        title="Empty but honest",
-        messages=[],
-        created_at=now,
-        updated_at=now,
-    )
+    conversation_sessions.reset_for_tests()
+
+    async def _seed() -> tuple[str, str, str]:
+        a = await conversation_sessions.create("user", ws, "Saved title")
+        await conversation_sessions.append_turn(
+            a.session_id, [{"role": "user", "content": "x" * 100}]
+        )
+        b = await conversation_sessions.create("user", ws, "Saved title")
+        await conversation_sessions.append_turn(b.session_id, [{"role": "user", "content": "   "}])
+        c = await conversation_sessions.create("user", ws, "Empty but honest")
+        return a.session_id, b.session_id, c.session_id
+
     try:
+        sess_a, sess_b, sess_c = asyncio.run(_seed())
         body = authed_client.get(f"/v1/workspaces/{ws}/home/projections").json()
         chat = next(s for s in body["sections"] if s["kind"] == "chat")
         assert chat["status"] == "ok"
         by_id = {i["resource_id"]: i for i in chat["items"]}
-        assert by_id["sess-a"]["title"] == "x" * 80  # truncated to the title cap
-        assert by_id["sess-b"]["title"] == "Saved title"  # whitespace is not a title
-        assert by_id["sess-c"]["title"] == "Empty but honest"  # no messages at all
-        assert by_id["sess-a"]["href"] == "/chat?session=sess-a"
+        assert by_id[sess_a]["title"] == "x" * 80  # truncated to the title cap
+        assert by_id[sess_b]["title"] == "Saved title"  # whitespace is not a title
+        assert by_id[sess_c]["title"] == "Empty but honest"  # no messages at all
+        assert by_id[sess_a]["href"] == f"/chat?session={sess_a}"
     finally:
-        for sid in ("sess-a", "sess-b", "sess-c"):
-            stores.chat_sessions.pop(sid, None)
+        conversation_sessions.reset_for_tests()
 
 
 def test_the_design_section_reads_the_real_status_object(
