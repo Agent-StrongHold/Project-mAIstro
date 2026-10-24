@@ -69,30 +69,39 @@ _DUMP = (
 
 
 def parse_expected(text: str) -> tuple[set[str], set[str]]:
-    """Returns (unconditional pins, marker-conditional pins).
+    """Returns (unconditional pins, marker-conditional pins), by pin string.
 
     uv export lists every environment's entries: `pywin32 ; sys_platform ==
     'win32'` is in the export but correctly absent from a linux image, while
     `secretstorage ; sys_platform == 'linux'` is correctly present. A
     conditional pin matches either way — it gates nothing; its version is
     still checked when it does ship.
+
+    One name may carry SEVERAL pins: a uv.lock forked across environment
+    markers (beartype 0.22.9 for python_full_version < '3.15', 0.23.1 for
+    >= '3.15') exports one pin per variant, and every variant must survive
+    this parse — keying by bare name would keep only the last variant and
+    make the image's correct variant look unknown (#330). A name with any
+    conditional variant is classified conditional as a whole, as before.
     """
-    pins: dict[str, str] = {}
-    conditional: set[str] = set()
+    variants: dict[str, dict[str, bool]] = {}
     for line in text.splitlines():
         stripped = line.strip()
         m = _REQ.match(stripped)
         if m:
             name = canon(m.group(1))
-            pins[name] = f"{name}=={m.group(2)}"
-            if ";" in stripped:
-                conditional.add(name)
-    if not pins:
+            pin = f"{name}=={m.group(2)}"
+            entry = variants.setdefault(name, {})
+            entry[pin] = entry.get(pin, False) or (";" in stripped)
+    if not variants:
         raise SystemExit(
             "error: expected-file contains no `name==version` pins — is it "
             "a `uv export --format requirements-txt` output?"
         )
-    return {pins[n] for n in pins} - {pins[n] for n in conditional}, {pins[n] for n in conditional}
+    conditional_names = {n for n, pins in variants.items() if any(pins.values())}
+    required = {pin for n, pins in variants.items() if n not in conditional_names for pin in pins}
+    conditional = {pin for n in conditional_names for pin in variants[n]}
+    return required, conditional
 
 
 def parse_actual(text: str) -> set[str]:
@@ -107,6 +116,46 @@ def parse_actual(text: str) -> set[str]:
     if not pins:
         raise SystemExit(f"error: no distributions dumped from the image:\n{text}")
     return set(pins.values())
+
+
+def reconcile_variance(
+    required: set[str], conditional: set[str], actual: set[str]
+) -> tuple[list[str], list[str], list[str]]:
+    """Compare an image's pins against the lock and return (missing, extra, skewed).
+
+    A uv.lock may carry SEVERAL pins for one distribution, forked by
+    environment markers: beartype resolves to 0.22.9 for python_full_version
+    < '3.15' and 0.23.1 for >= '3.15', so `uv export` lists both and each
+    image installs the variant its own interpreter selects — both correct.
+    Keying expected pins by bare name collapses the variants into one dict
+    slot and compares the image against whichever variant set iteration
+    happened to leave there: a false "version mismatch" that comes and goes
+    with PYTHONHASHSEED (it failed the #330 containers job for exactly this
+    reason — a beartype fork this branch's own re-lock introduced). So a name
+    is satisfied by ANY of its locked variants; a real skew — an installed
+    version no locked variant names — is still reported, once, as a
+    mismatch, and never also as a missing/extra pair on either side of it.
+    """
+    everything_expected = required | conditional
+    allowed_by_name: dict[str, set[str]] = {}
+    for pin in everything_expected:
+        allowed_by_name.setdefault(pin.partition("==")[0], set()).add(pin)
+
+    actual_by_name = {p.partition("==")[0]: p for p in actual}
+    skewed_names: set[str] = set()
+    skewed: list[str] = []
+    for name, pin in actual_by_name.items():
+        allowed = allowed_by_name.get(name)
+        if allowed is not None and pin not in allowed:
+            skewed_names.add(name)
+            skewed.append(f"{pin} (image) != {' or '.join(sorted(allowed))}")
+    skewed.sort()
+
+    missing = sorted(p for p in required - actual if p.partition("==")[0] not in skewed_names)
+    extra = sorted(
+        p for p in actual - everything_expected if p.partition("==")[0] not in skewed_names
+    )
+    return missing, extra, skewed
 
 
 def main() -> int:
@@ -169,26 +218,10 @@ def main() -> int:
     # image's platform. Every pin in the image must be expected (with the
     # expected version); every unconditional expected pin must be in the image.
     # Comparing by canonical NAME (not by pin string) is what makes a version
-    # skew nameable: `foo==1.0` expected and `foo==2.0` installed shares no
-    # exact string, so a set difference alone would report it as a confusing
-    # missing+extra pair — and the original string-keyed `skewed` comprehension
-    # (`for pin in actual & everything_expected ... .pop() != pin`) compared
-    # each pin against itself and could never fire at all.
-    everything_expected = required | conditional
-    actual_by_name = {p.partition("==")[0]: p for p in actual}
-    expected_by_name = {p.partition("==")[0]: p for p in everything_expected}
-    skewed_names = {
-        name
-        for name in actual_by_name.keys() & expected_by_name.keys()
-        if actual_by_name[name] != expected_by_name[name]
-    }
-    missing = sorted(p for p in required - actual if p.partition("==")[0] not in skewed_names)
-    extra = sorted(
-        p for p in actual - everything_expected if p.partition("==")[0] not in skewed_names
-    )
-    skewed = sorted(
-        f"{actual_by_name[name]} (image) != {expected_by_name[name]}" for name in skewed_names
-    )
+    # skew nameable, and allowing any marker-forked variant of a name is what
+    # keeps a legitimate fork from flaking the gate on hash order (see
+    # reconcile_variance for the #330 incident).
+    missing, extra, skewed = reconcile_variance(required, conditional, actual)
     if missing or extra or skewed:
         print(f"image {args.image} does NOT reconcile to the lock:")
         for p in missing:
