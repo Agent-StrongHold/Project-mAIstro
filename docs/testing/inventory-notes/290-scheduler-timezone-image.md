@@ -395,3 +395,43 @@ host publish via an untracked override — CI is unaffected):
   `check-compose-secrets.py` ok (10 tracked profiles); `uv lock --check`
   ok; workflow-inventory gate clean; shellcheck clean on the edited
   `run:` block.
+
+## Repair round: develop sync + typed-client regen (2026-10-24, head `1f154d256`)
+
+Hosted CI at `0c76013e0` failed the `test` job on the *Generated API types
+match the backend's OpenAPI document (#1048)* step: this branch's
+`warnings: string[]` addition to the scheduler-health schema
+(`backend/models/schemas.py`) was never regenerated into the committed
+`packages/hive-conductor/frontend/src/api/types.gen.ts`. (The
+`RuntimeError: Event loop is closed` lines in that job's log are shutdown
+noise from the OpenAPI dump process, not the failure.) Repair: reran
+`uv run python scripts/dump-hive-openapi.py` + `npm --prefix
+packages/hive-conductor/frontend run gen:api` and committed the 5-line
+generated addition; `git diff --exit-code` on the step is now clean. The
+round also merged `origin/develop` (`3825fb9b5`, #2307 + #2290) — one
+conflict, `.github/workflows/security.yml`, resolved to the union
+(setuptools 84.2.1 from develop + this branch's `tzdata==2026.3` member in
+the hive image lock-reconciliation assertion).
+
+Re-validated at the merged head, compose-built image
+`sha256:62edc22cdc07313d864e2a6c0a2a77eecc81f296da1cbe07474a895eb453ebfc`
+(`hive-conductor-hive:latest`; build-time tz smoke green via
+`/app/venv/lib/python3.13/site-packages/tzdata/zoneinfo`; host 8101 again
+held by another stack, so the local run published `127.0.0.1:18101` via an
+untracked override, deleted after use — CI is unaffected):
+
+- CI-exact failing step: green (`git diff --exit-code -- …/types.gen.ts`).
+- CI-exact api phase: **14 passed / 14 skipped** in 272s — UTC `*/5`
+  natural fire, Berlin 04:30 wall time + CET/CEST offset + exact instant,
+  invalid-zone 422s, `/health` tz/scheduler pins; restart-marked test
+  skipped pre-restart as designed. Restart phase (`start hive`, wait
+  healthy, `SCHED_TZ_AFTER_RESTART=1 -k restart_recovery`): **1 passed**.
+- CI-exact `test` job remainder: backend suite **3969 passed, 26
+  skipped**; combined one-process run (`pytest tests/
+  packages/hive-conductor/backend/tests packages/maistro-design/tests
+  -q --timeout=60`) **10365 passed, 170 skipped**; suite inventory ok (21
+  suites, 34177 node IDs — no delta, this round adds no tests);
+  `check-test-duplicates.py` ok; `check-frontend-typed-client.py` ok (51
+  raw fetch / 129 hand-typed, unchanged from base `3825fb9b5`); hive
+  frontend `npm run build` green on the regenerated types; `ruff check .`
+  and `ruff format --check .` clean.
