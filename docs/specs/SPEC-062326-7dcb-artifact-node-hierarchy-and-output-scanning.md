@@ -67,6 +67,7 @@ class ArtifactKind(StrEnum):
     BLOB = "blob"
     CONTAINER = "container"
 
+
 @dataclass
 class ArtifactNode:
     key: str
@@ -76,8 +77,9 @@ class ArtifactNode:
     children: dict[str, ArtifactNode] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)
 
-    def get(self, address: str) -> ArtifactNode | None: ...   # dotted-path lookup
+    def get(self, address: str) -> ArtifactNode | None: ...  # dotted-path lookup
     def walk(self, _prefix: str = "") -> Iterator[tuple[str, ArtifactNode]]: ...  # FILE/BLOB leaves
+
 
 @dataclass
 class DesignOutput:
@@ -88,10 +90,11 @@ class DesignOutput:
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
     @property
-    def format(self) -> OutputFormat | None: ...   # root.format
+    def format(self) -> OutputFormat | None: ...  # root.format
     @property
-    def content(self) -> str: ...    # root.value; raises DesignOutputShapeError unless
-                                       # root.kind is FILE and root.value is str
+    def content(self) -> str:
+        ...  # root.value; raises DesignOutputShapeError unless
+        # root.kind is FILE and root.value is str
 ```
 
 `RendererKind = Literal["html", "svg", "typography"]`; `DesignSkill` gained
@@ -101,7 +104,8 @@ class DesignOutput:
 
 ```python
 def scan_design_output(
-    output: DesignOutput, *,
+    output: DesignOutput,
+    *,
     banish_list: InMemoryTrustBanishList | None = None,
     url_allowlist: tuple[str, ...] = DEFAULT_URL_ALLOWLIST,
 ) -> ScanReport: ...
@@ -118,23 +122,32 @@ pattern ..."`.
 `packages/maistro-design/src/maistro_design/engine.py`:
 
 ```python
-def _build_output(prompt_stack: str, trust_tier: TrustTier) -> DesignOutput: ...
+def _build_output(prompt_stack: str, trust_tier: TrustTier) -> DesignOutput:
+    ...
     # wraps the assembled prompt stack as a single FILE-kind ArtifactNode
 
-def _scan_output_or_raise(output: DesignOutput, banish_list: InMemoryTrustBanishList) -> None: ...
+
+def _scan_output_or_raise(output: DesignOutput, banish_list: InMemoryTrustBanishList) -> None:
+    ...
     # raises TrustBannedError if scan_design_output(...).passed is False
+
 
 class DesignEngine:
     def __init__(
-        self, skill_registry, system_registry,
-        banish_list=None, trust_review_queue=None,
-        canvas_store=None, image_gen=None,
+        self,
+        skill_registry,
+        system_registry,
+        banish_list=None,
+        trust_review_queue=None,
+        canvas_store=None,
+        image_gen=None,
         html_renderer: HTMLRenderer | None = None,
         svg_renderer: SVGRenderer | None = None,
         typography_renderer: TypographyRenderer | None = None,
     ) -> None: ...
 
-    def _check_renderer_available(self, skill: Any) -> None: ...
+    def _check_renderer_available(self, skill: Any) -> None:
+        ...
         # raises SkillModeError if skill.required_renderer is set and the
         # matching renderer attribute (via _RENDERER_ATTRS) is None
 ```
@@ -168,7 +181,8 @@ def build_multimodal_output(
     *,
     trust_tier: TrustTier,
     banish_list: InMemoryTrustBanishList | None = None,
-) -> DesignOutput: ...
+) -> DesignOutput:
+    ...
     # One entry -> root.kind=FILE (str) or BLOB (bytes), matching generate()'s
     # single-artifact shape. Multiple entries -> root.kind=CONTAINER with one
     # FILE/BLOB child per format, keyed by OutputFormat.value ("html", "css",
@@ -176,7 +190,9 @@ def build_multimodal_output(
     # scan_design_output() before returning; raises TrustBannedError on a
     # blocking finding. Reuses _scan_output_or_raise — no new scan logic.
 
-async def persist_blobs(output: DesignOutput, canvas_store: CanvasStore) -> dict[str, str]: ...
+
+async def persist_blobs(output: DesignOutput, canvas_store: CanvasStore) -> dict[str, str]:
+    ...
     # Walks output.root.walk(), calls canvas_store.store_blob(node.value,
     # format=..., metadata=node.metadata) for every BLOB leaf, and returns
     # {dotted_address: stored_id}. Does not mutate output (outputs are

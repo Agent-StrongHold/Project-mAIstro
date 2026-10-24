@@ -55,17 +55,23 @@ shipped module.
 ```python
 def load_bundled(registry: DesignSystemRegistry) -> None: ...
 def import_from_catalog(
-    slug: str, registry: DesignSystemRegistry, *,
+    slug: str,
+    registry: DesignSystemRegistry,
+    *,
     trust_tier: TrustTier = TrustTier.T2,
     banish_list: InMemoryTrustBanishList | None = None,
 ) -> DesignSystem: ...
 def import_open_design_system(
-    manifest: dict[str, Any], *, design_md: str = "", tokens_css: str = "",
+    manifest: dict[str, Any],
+    *,
+    design_md: str = "",
+    tokens_css: str = "",
     design_tokens: dict[str, Any] | None = None,
     trust_tier: TrustTier = TrustTier.T2,
 ) -> DesignSystem: ...
 def scan_design_system_content(
-    files: dict[str, str], *,
+    files: dict[str, str],
+    *,
     banish_list: InMemoryTrustBanishList | None = None,
     url_allowlist: tuple[str, ...] = DEFAULT_URL_ALLOWLIST,
 ) -> ScanReport: ...

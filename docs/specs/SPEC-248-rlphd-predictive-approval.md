@@ -84,6 +84,7 @@ class RlphdVerdict:
     theta: float
     auto_acted: bool
 
+
 class RlphdModel:
     def __init__(self, feature_weights: dict[str, float] | None = None) -> None: ...
     def predict(self, features: dict[str, float]) -> float: ...  # sigmoid(weighted sum)
@@ -92,9 +93,12 @@ class RlphdModel:
     ) -> "RlphdModel":  # returns updated copy; pure, like memory/episodic/tiers.py's style
         ...
 
+
 class RlphdThresholdStore(Protocol):
     async def get_theta(self, principal_id: str, action_class: str, gate: str) -> float: ...
-    async def set_theta(self, principal_id: str, action_class: str, gate: str, theta: float) -> None: ...
+    async def set_theta(
+        self, principal_id: str, action_class: str, gate: str, theta: float
+    ) -> None: ...
     async def opted_in(self, principal_id: str, action_class: str) -> bool: ...
 ```
 

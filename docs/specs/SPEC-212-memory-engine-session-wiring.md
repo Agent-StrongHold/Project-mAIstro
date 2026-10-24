@@ -52,10 +52,10 @@ keeping persistence fully optional so tests run without Postgres.
 `memory/store.py` additions:
 
 ```python
-def get_engine() -> AsyncEngine | None: ...                       # lru_cache'd
-def get_async_session_factory() -> async_sessionmaker | None: ... # lru_cache'd
+def get_engine() -> AsyncEngine | None: ...  # lru_cache'd
+def get_async_session_factory() -> async_sessionmaker | None: ...  # lru_cache'd
 async def get_db_session() -> AsyncGenerator[AsyncSession, None]: ...  # FastAPI dep
-def reset_engine_cache() -> None: ...                              # test helper
+def reset_engine_cache() -> None: ...  # test helper
 ```
 
 `get_engine()` returns `None` when `DATABASE_URL` is unset in settings —

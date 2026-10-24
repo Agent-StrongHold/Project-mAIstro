@@ -86,6 +86,7 @@ class Tier(StrEnum):
     ADMIN = "admin_elevation"
     BLOCKED = "blocked"
 
+
 @dataclass(frozen=True)
 class Principal:
     id: str
@@ -93,6 +94,7 @@ class Principal:
     roles: tuple[str, ...] = ()
     scopes: tuple[str, ...] = ()
     owner: str | None = None  # required when kind == "agent"
+
 
 @dataclass(frozen=True)
 class AuthzDecision:

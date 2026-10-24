@@ -73,8 +73,10 @@ class TaskBackend(Protocol):
     async def iter_events(self, task_id: str) -> AsyncIterator[dict[str, Any]]: ...
     async def stop(self) -> None: ...
 
+
 class LocalTaskBackend:
     """Wraps TaskQueue + TaskRunner in-process. Demo/dev mode only (ADR-096)."""
+
 
 class MaistroServerTaskBackend:
     """httpx client against maistro-server's /tasks API. Production default."""

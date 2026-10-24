@@ -140,8 +140,10 @@ class LocalCA:
     def issue_leaf(self, hostnames: list[str]) -> str: ...  # returns leaf PEM
     def get_ca_fingerprint(self) -> str: ...
     def rotate_leaves(self) -> None: ...  # re-issue 90-day leaf certs; root CA unchanged
+
     # No rotate_root(): the root is immutable from the seed. Root compromise → new instance
     # identity + re-run the trust ceremony (see "Root CA is immutable").
+
 
 class TrustInstaller:
     def generate_install_url(self, ttl_hours: int = 24) -> str: ...

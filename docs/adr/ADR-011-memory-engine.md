@@ -48,10 +48,10 @@ Engine is only created when `DATABASE_URL` is set in settings. If unset (dev/tes
 
 ```python
 # memory/store.py additions
-def get_engine() -> AsyncEngine | None: ...          # lru_cache'd
+def get_engine() -> AsyncEngine | None: ...  # lru_cache'd
 def get_async_session_factory() -> async_sessionmaker | None: ...  # lru_cache'd
 async def get_db_session() -> AsyncGenerator[AsyncSession, None]: ...  # FastAPI dep
-def reset_engine_cache() -> None: ...               # test helper, clears lru_cache
+def reset_engine_cache() -> None: ...  # test helper, clears lru_cache
 ```
 
 ## Acceptance criteria

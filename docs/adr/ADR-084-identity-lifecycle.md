@@ -67,12 +67,12 @@ delegation**.
   implicit, nothing ambient. Least-privilege per task.
 
 ```python
-class CapabilityToken(BaseModel):           # a VC, ADR-024
-    issuer: DID                             # the owner
-    subject: DID                            # the agent
-    scope: AuthzScope                       # clamped: scope <= issuer's authority
-    task_id: str                            # per-task / per-delegation
-    expires_at: datetime                    # TTL; auto-expires, no renewal-by-default
+class CapabilityToken(BaseModel):  # a VC, ADR-024
+    issuer: DID  # the owner
+    subject: DID  # the agent
+    scope: AuthzScope  # clamped: scope <= issuer's authority
+    task_id: str  # per-task / per-delegation
+    expires_at: datetime  # TTL; auto-expires, no renewal-by-default
 ```
 
 ### 3. Account / key recovery — a capability-graded ladder

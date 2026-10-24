@@ -101,7 +101,9 @@ removing, or re-purposing a marker is a same-PR documentation change —
 Examples of correct linkage and rung behavior:
 
 ```python
-@pytest.mark.ac("SPEC-080126-3a7c/AC-2")  # clears `covered` when collected, `passing` only when it passes
+@pytest.mark.ac(
+    "SPEC-080126-3a7c/AC-2"
+)  # clears `covered` when collected, `passing` only when it passes
 @pytest.mark.contract("behavioral")
 @pytest.mark.scope("integration")
 async def test_due_schedule_admits_a_canonical_run() -> None: ...

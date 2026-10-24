@@ -99,15 +99,23 @@ Duplicate agent ids raise `IdentityAlreadyExistsError`.
 @dataclass
 class CapabilityToken:
     """JWT-like token signed by agent DID; grants authority to delegate to sub-agents."""
+
     iss: str  # issuer DID (the agent)
     sub: str  # subject (delegated agent or service)
     cap: Literal["delegate", "read", "write"]
     exp: int  # expiry timestamp
     signature: bytes  # Ed25519 signature over canonical form {iss}.{sub}.{cap}.{exp}
 
+
 async def issue_capability_token(
-    agent_id: str, target_agent_id: str, capability: str, ttl_seconds: int = 3600,
-    *, identity_store: IdentityStore, token_store: TokenStore, secret_store: SecretStore,
+    agent_id: str,
+    target_agent_id: str,
+    capability: str,
+    ttl_seconds: int = 3600,
+    *,
+    identity_store: IdentityStore,
+    token_store: TokenStore,
+    secret_store: SecretStore,
 ) -> CapabilityToken: ...
 ```
 
@@ -129,7 +137,10 @@ subclass on failure.
 async def recover_agent_identity(
     agent_id: str,
     recovery_seed: bytes | str | list[str],  # raw 32 bytes or BIP39 phrases
-    *, identity_store: IdentityStore, token_store: TokenStore, secret_store: SecretStore,
+    *,
+    identity_store: IdentityStore,
+    token_store: TokenStore,
+    secret_store: SecretStore,
     grace_ttl_seconds: int = 86400,
 ) -> AgentIdentity: ...
 ```
@@ -146,7 +157,10 @@ async def recover_agent_identity(
 
 ```python
 async def offboard_agent(
-    agent_id: str, *, identity_store: IdentityStore, token_store: TokenStore,
+    agent_id: str,
+    *,
+    identity_store: IdentityStore,
+    token_store: TokenStore,
     emit: Callable[[str, str], None] | None = None,
 ) -> AgentIdentity: ...
 ```

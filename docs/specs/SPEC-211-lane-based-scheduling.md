@@ -63,8 +63,8 @@ design so it can be picked up as a discrete unit of work.
 
 ```python
 class TaskRunner:
-    live_slots: int = 2                    # reserved for Lane.LIVE
-    background_slots: int                  # = max_workers - live_slots
+    live_slots: int = 2  # reserved for Lane.LIVE
+    background_slots: int  # = max_workers - live_slots
 ```
 
 A task's `Lane` (from `AgentSpec.lane`) determines which semaphore it

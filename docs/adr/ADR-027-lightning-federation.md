@@ -97,9 +97,10 @@ class FriendHandshake:
     peer_did: str
     peer_ln_node_id: str
     scope: list[str]
-    quote_terms: dict[str, int]   # e.g., {"memory_query": 100}
+    quote_terms: dict[str, int]  # e.g., {"memory_query": 100}
     session_key: bytes
     trust_vc: VerifiableCredential | None
+
 
 class FederationTransport:
     def initiate_handshake(self, peer_did: str, scope: list[str]) -> FriendHandshake: ...

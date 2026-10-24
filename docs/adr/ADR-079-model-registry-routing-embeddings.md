@@ -70,9 +70,11 @@ circuit-broken models skipped).
 class ModelRegistry(Protocol):
     def candidates(self, *, use_case: str | None = None) -> list[ModelEntry]: ...
 
+
 class Router(Protocol):
-    def pick(self, task: Task) -> ModelEntry: ...        # default optimise cost × latency × fit
-    def fallback_chain(self, task: Task) -> list[ModelEntry]: ...   # ADR-038
+    def pick(self, task: Task) -> ModelEntry: ...  # default optimise cost × latency × fit
+    def fallback_chain(self, task: Task) -> list[ModelEntry]: ...  # ADR-038
+
 
 class ModelEntry(BaseModel):
     id: str
@@ -96,11 +98,12 @@ vectors inline; instead it triggers a background **batch re-embed**, run **overn
 
 ```python
 class Embedder(Protocol):
-    def embed(self, text: str) -> Embedding: ...         # LiteLLM, else local sentence-transformer
+    def embed(self, text: str) -> Embedding: ...  # LiteLLM, else local sentence-transformer
+
 
 class Embedding(BaseModel):
     vector: list[float]
-    model_version: str                                   # stamped; drives batch re-embed
+    model_version: str  # stamped; drives batch re-embed
 ```
 
 ## Acceptance criteria

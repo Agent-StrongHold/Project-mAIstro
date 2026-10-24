@@ -59,9 +59,10 @@ relational binding (`for-scope` → `approved-by`), not a fixed admin-only tree 
 ```python
 @dataclass(frozen=True)
 class ApproverBinding:
-    action: str          # action name or reversibility/impact class
-    for_scope: str        # e.g. "team:2", "user:*"
-    approved_by: str      # e.g. "team:1", "role:manager"
+    action: str  # action name or reversibility/impact class
+    for_scope: str  # e.g. "team:2", "user:*"
+    approved_by: str  # e.g. "team:1", "role:manager"
+
 
 class ApproverGraph:
     def __init__(self, bindings: list[ApproverBinding]) -> None: ...

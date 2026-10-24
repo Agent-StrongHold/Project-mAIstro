@@ -101,10 +101,10 @@ class DbConfigStore:
         return row.value
 
     async def set(self, key: str, value: ConfigValue, *, principal: Principal) -> None:
-        await self._authorize(principal, key)          # ADR-068 RBAC
-        self._validate_against_stage(key, value)        # range/enum check per stage
+        await self._authorize(principal, key)  # ADR-068 RBAC
+        self._validate_against_stage(key, value)  # range/enum check per stage
         await self._write(key, value, principal)
-        await self._audit(key, value, principal)        # ADR-037 event
+        await self._audit(key, value, principal)  # ADR-037 event
         self._cache.invalidate(key)
 
     async def export(self) -> bytes:

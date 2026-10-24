@@ -71,19 +71,24 @@ class ConsentTask:
     summary: str
     current_scope: MemoryScope
     target_scope: MemoryScope
-    owner: str                 # principal id of the approver
+    owner: str  # principal id of the approver
     status: Literal["pending", "approved", "rejected"] = "pending"
+
 
 class Principal(Protocol):
     scope: MemoryScope
     agent_id: str | None
     user_id: str | None
 
+
 def can_read(reader: Principal, memory: EpisodicMemory) -> bool: ...
+
 
 def propose_widen(memory: EpisodicMemory, target_scope: MemoryScope) -> ConsentTask: ...
 
+
 def resolve_consent(task: ConsentTask, decision: Literal["approve", "reject"]) -> ConsentTask: ...
+
 
 def apply_widen(memory: EpisodicMemory, task: ConsentTask) -> EpisodicMemory:
     """Only callable when task.status == 'approved'; widens memory.scope to task.target_scope."""

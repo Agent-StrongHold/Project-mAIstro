@@ -79,11 +79,11 @@ Every delegation carries a `DelegationBudget` that decrements across hops:
 ```python
 @dataclass(frozen=True)
 class DelegationBudget:
-    max_depth: int = 3            # hops remaining; 0 ⇒ refuse to delegate further
-    deadline: datetime            # absolute latency budget (wall clock)
-    token_budget: int             # shared LLM token ceiling across the sub-tree
-    trace_id: str                 # correlates the whole delegation tree
-    chain: tuple[str, ...] = ()   # agent/peer ids already in the path (cycle guard)
+    max_depth: int = 3  # hops remaining; 0 ⇒ refuse to delegate further
+    deadline: datetime  # absolute latency budget (wall clock)
+    token_budget: int  # shared LLM token ceiling across the sub-tree
+    trace_id: str  # correlates the whole delegation tree
+    chain: tuple[str, ...] = ()  # agent/peer ids already in the path (cycle guard)
 ```
 
 `A2ABroker.delegate` refuses (raises `DelegationRefused`) when `max_depth == 0`, the deadline has passed, the budget is exhausted, or the target is already in `chain` (circular-delegation prevention). Each hop appends its id to `chain` and decrements `max_depth`.
@@ -108,18 +108,20 @@ Emit `agent.delegate.requested|completed|refused|failed` (ADR-037) with `{trace_
 
 ```python
 class A2ABroker:
-    def __init__(self, *, local: LocalTransport, federated: FederatedTransport,
-                 audit: AuditLogger) -> None: ...
+    def __init__(
+        self, *, local: LocalTransport, federated: FederatedTransport, audit: AuditLogger
+    ) -> None: ...
 
     async def delegate(
         self,
         *,
         from_agent: str,
-        to: str,                       # local AgentCard id OR registered peer name
+        to: str,  # local AgentCard id OR registered peer name
         task: str,
         budget: DelegationBudget,
         mode: DelegationMode = DelegationMode.ALLOW_LIST,
     ) -> DelegationResult: ...
+
 
 class Transport(Protocol):
     async def run(self, task: A2ATask, budget: DelegationBudget) -> DelegationResult: ...

@@ -71,26 +71,30 @@ module with no PIL dependency. The legacy `compositor.py` is unchanged.
 ```python
 # packages/maistro-canvas/src/maistro_canvas/canvas/asset_compositor.py
 
+
 class SceneNode:
     """Tree node wrapping an AssetInstance plus children list. Built
     from a flat list by `build_scene_graph`."""
 
+
 @dataclass(frozen=True)
 class PlannedRender:
     instance_id: str
-    parent_chain: tuple[str, ...]    # root -> instance_id
-    resolved_transform: Transform    # composed parent.transform * instance.transform
-    prompt: str                      # WorldStyle ⊕ Volume ⊕ Render ⊕ layer
-    asset_sheet_ref: str | None      # passed to the image backend
+    parent_chain: tuple[str, ...]  # root -> instance_id
+    resolved_transform: Transform  # composed parent.transform * instance.transform
+    prompt: str  # WorldStyle ⊕ Volume ⊕ Render ⊕ layer
+    asset_sheet_ref: str | None  # passed to the image backend
     skin_binding: dict[str, str] | None
     z_index: int
+
 
 @dataclass(frozen=True)
 class RenderPlan:
     canvas_id: str
     page_index: int | None
     world_style: WorldStyle
-    rendered: tuple[PlannedRender, ...]   # in render order
+    rendered: tuple[PlannedRender, ...]  # in render order
+
 
 # Public functions
 def build_scene_graph(instances: Iterable[AssetInstance]) -> list[SceneNode]: ...

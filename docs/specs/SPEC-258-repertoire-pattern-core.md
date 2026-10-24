@@ -103,11 +103,14 @@ class Verdict:
     ok: bool
     reason: str = ""
 
+
 class RehearsalFailed(Exception):
     def __init__(self, verdict: Verdict) -> None: ...
 
+
 class PerformGate(Protocol):
     def should_perform(self, entry: Any, *, stakes: float) -> bool: ...
+
 
 # maistro/repertoire/protocol.py
 class Repertoire(Protocol[I, S, E]):
@@ -117,6 +120,7 @@ class Repertoire(Protocol[I, S, E]):
     def rehearse(self, candidate: S) -> Verdict: ...
     def compose(self, verified: S, input_class: str) -> E: ...
     def class_of(self, inp: I) -> str: ...
+
 
 # maistro/repertoire/run.py
 async def repertoire_run(

@@ -61,12 +61,18 @@ implemented and flags where it diverges from ADR-089's decision.
 ```python
 LLM_FALLBACK_THRESHOLD = 3.0  # module-level constant, not DB config
 
+
 def is_ambiguous(scores: dict[str, float]) -> bool: ...
 
+
 class ClassifierEngine:
-    def __init__(self, llm_client: LLMClient | None = None, classifier_model: str = "auto") -> None: ...
+    def __init__(
+        self, llm_client: LLMClient | None = None, classifier_model: str = "auto"
+    ) -> None: ...
     async def classify(self, messages, task_types, explicit_priority=None) -> Intent: ...
-    def detect_multi_intent(self, user_text: str, task_types: dict[str, TaskTypeConfig]) -> list[str]: ...
+    def detect_multi_intent(
+        self, user_text: str, task_types: dict[str, TaskTypeConfig]
+    ) -> list[str]: ...
 ```
 
 `packages/maistro-core/src/maistro/classifier/multi_intent.py`:
