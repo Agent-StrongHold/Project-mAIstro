@@ -36,9 +36,8 @@ from maistro.runs.chat_execution import (
 from maistro.runs.concurrency import RunConcurrencyExceeded
 from maistro.runs.model import Run, RunStatus
 from maistro.runs.wiring import wire_chat_admission
-from services import workspace_authority
+from services import conversation_sessions, workspace_authority
 from services.default_workspace import resolve_default_workspace
-from services.owned_records import chat_sessions_for
 from services.program_hyperagent import user_id_from_request
 from services.workspace_agent import resolve_workspace_agent
 
@@ -62,6 +61,7 @@ class AdmittedTurn:
     agent_id: str
     container: Any
     admitter: ChatRunAdmitter
+    session_id: str | None = None
 
 
 def _capacity(exc: RunConcurrencyExceeded) -> HTTPException:
@@ -184,16 +184,25 @@ async def _settle_window(admitter: ChatRunAdmitter, run: Run) -> None:
         logger.warning("chat Run retention sweep failed", exc_info=True)
 
 
-def _owned_session(request: Request, session_id: Any) -> str | None:
+def _owned_session(
+    request: Request,
+    session_id: Any,
+    workspace_id: Any = None,
+) -> str | None:
     """The session id to record as provenance, when it is the caller's own.
 
     Provenance is what a conversation's Runs are later found by, so a caller
-    must not be able to file a turn under someone else's session.
+    must not be able to file a turn under someone else's session. Unknown or
+    foreign session ids still admit the turn — provenance is simply omitted
+    (AC-5 stream non-disclosure). When `workspace_id` is provided, the
+    session's Workspace must match or provenance is dropped the same way.
     """
     if not isinstance(session_id, str) or not session_id:
         return None
+    user_id = user_id_from_request(request)
+    ws = workspace_id if isinstance(workspace_id, str) and workspace_id else None
     try:
-        chat_sessions_for(request).require(session_id)
+        conversation_sessions.require_owned(user_id, session_id, workspace_id=ws)
     except HTTPException:
         return None
     return session_id
@@ -217,13 +226,15 @@ async def admit_turn(
     run: Run | None = None
     admitter: ChatRunAdmitter | None = None
     marked = False
+    owned_session: str | None = None
     try:
         ws = await _turn_workspace(user_id, workspace_id)
         agent = await resolve_workspace_agent(ws)
         admitter = await _admitter_for(container, ws)
+        owned_session = _owned_session(request, session_id, workspace_id)
         run = await admitter.admit(
             messages,
-            session_id=_owned_session(request, session_id),
+            session_id=owned_session,
             request_id=_request_id(request),
             actor_principal_id=user_id,
         )
@@ -251,7 +262,13 @@ async def admit_turn(
         _release_dispatch_shield(admitter, run, marked)
         await container._cancel_incomplete_admission(run)
         raise _unavailable("chat turn could not be admitted; retry shortly") from None
-    return AdmittedTurn(run=run, agent_id=agent.id, container=container, admitter=admitter)
+    return AdmittedTurn(
+        run=run,
+        agent_id=agent.id,
+        container=container,
+        admitter=admitter,
+        session_id=owned_session,
+    )
 
 
 async def execute_turn(
@@ -304,9 +321,50 @@ async def execute_turn(
         else:
             await container._close_chat_run(run, result=chat_turn_outcome(result))
         result["run_id"] = run.run_id
+        await _persist_conversation_turn(turn, messages, result)
         return result
     finally:
         await _settle_window(turn.admitter, run)
+
+
+async def _persist_conversation_turn(
+    turn: AdmittedTurn,
+    messages: list[dict[str, Any]],
+    result: dict[str, Any],
+) -> None:
+    """Append the accepted user+assistant pair to SessionStore after a model answer.
+
+    Uses the Run id as `turn_id` so a retry of the same Run cannot duplicate
+    the transcript (#327 / ADR-083026-5fab). Failures here must not undo the
+    answered turn — the Run already closed successfully.
+    """
+    if not turn.session_id:
+        return
+    choice = (result.get("choices") or [{}])[0]
+    content = (choice.get("message") or {}).get("content")
+    if not isinstance(content, str):
+        return
+    batch: list[dict[str, str]] = []
+    last_user = next(
+        (m for m in reversed(messages) if m.get("role") == "user"),
+        None,
+    )
+    if last_user is not None and isinstance(last_user.get("content"), str):
+        batch.append({"role": "user", "content": last_user["content"]})
+    batch.append({"role": "assistant", "content": content})
+    try:
+        await conversation_sessions.append_turn(
+            turn.session_id,
+            batch,
+            turn_id=turn.run.run_id,
+        )
+    except Exception:
+        logger.warning(
+            "conversation transcript append failed for session %s turn %s",
+            turn.session_id,
+            turn.run.run_id,
+            exc_info=True,
+        )
 
 
 async def cancel_unstarted(turn: AdmittedTurn) -> None:

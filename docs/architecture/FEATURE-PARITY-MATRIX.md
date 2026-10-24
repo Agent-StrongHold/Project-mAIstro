@@ -84,7 +84,7 @@ Evidence: BFF registrations [`backend/main.py:370,376,382`](../../packages/hive-
 |---|---|---|---|---|
 | Run list / detail by canonical ID | `maistro.runs` + canonical store (one Run truth, #1036) | partial — `DagRuns.tsx` is a read-only SSE viewer ([DagRuns.tsx:1-11](../../packages/hive-conductor/frontend/src/pages/DagRuns.tsx)); no cancel/control control (G5) | supported — BFF `GET /v1/dag-runs`, `/{run_id}`, `/{run_id}/events`; server `GET /v1/runs/{run_id}`, `/node-runs` | missing (G5) |
 | Run cancel / control | #1169 canonical cancellation; #1036 control seam | missing — no UI control calls any cancel route (G5) | supported — BFF `POST /v1/dag-runs/{run_id}/cancel` ([:82](../../packages/hive-conductor/backend/routes/dag_runs.py)); server `POST /v1/runs/{run_id}/cancel` ([runs.py:89](../../packages/maistro-server/src/maistro_server/api/runs.py)) | missing (G5) |
-| Run retry | #1169 / #1036 control plane — **no owner confirmed** | missing | missing | missing (P-2) |
+| Run retry | #1169 / #1036 control plane — decision owner [#2279](https://github.com/Agent-StrongHold/Project-mAIstro/issues/2279) (P-2; not implemented) | missing | missing | missing (P-2) |
 | Node-level inspection / feedback | NodeRun/Attempt projections | supported — node click-through in `DagRuns.tsx` | supported — `/v1/dag-runs/{run_id}/events`, `/v1/dag-runs/{run_id}/feedback`, node feedback | missing |
 | Container / sandbox lifecycle | `maistro.sandbox` + Conductor container service | supported — `Containers.tsx` (`/containers`) | supported — `/v1/containers*` incl. build/start/stop/restart/logs; `unknown` on `/build` (unresolved surface-truth disposition) | supported — `maistro sandbox status` (host isolation report) |
 | HITL answers inside a live Run | `maistro.capabilities` approvals + HITL routes | partial — Approvals page (#2278) lists pending and posts answer/cancel | supported — `/v1/hitl/pending`, `/{run}/{node}`, `/answer`, `/cancel`, `/expire` | supported — `maistro approvals list|approve|deny` |
@@ -135,15 +135,15 @@ Evidence: BFF registrations [`backend/main.py:370,376,382`](../../packages/hive-
 | G4 | CLI page is a fixed client-side mini console over session-only backend routes | [#292](https://github.com/Agent-StrongHold/Project-mAIstro/issues/292) | M4 eventual (per that issue) | No contract defines the page's supported command set vs backend CLI sessions | #292's contract lands; page executes through registered backend capabilities or is renamed/scoped |
 | G5 | Run inspection/control: UI is read-only (no cancel control), CLI has no inspect/control commands | [#1036](https://github.com/Agent-StrongHold/Project-mAIstro/issues/1036) (rich UX: #65; canonical cancel: #1169) | M1 seam, M3 UX | The control seam must read/delegate canonical truth before surfaces project controls | Cancel/control delegating to #1169 with repeat/refusal semantics; equivalent UI/API/CLI operations per #1036 AC-8 |
 
-## Bounded missing-owner proposals (for review — not owners)
+## Bounded parity proposals (owned — not yet implemented)
 
-| # | Missing counterpart | Proposal |
-|---|---|---|
-| P-1 | HITL/capability approvals have API + CLI support but no Workspace UI caller | **Owned by [#2278](https://github.com/Agent-StrongHold/Project-mAIstro/issues/2278)** — minimal `/approvals` projection over the existing public APIs (no parallel store). |
-| P-2 | Run retry exists on no surface | **Owned by [#2279](https://github.com/Agent-StrongHold/Project-mAIstro/issues/2279)** — define retry inside the #1169/#1036 control plane (new Attempt under same NodeRun/Run), or record deliberate non-goal. |
-| P-3 | No CLI commands for in-product CRUD (agents, providers, skills, MCP, schedules, backlog) | **Owned by [#2280](https://github.com/Agent-StrongHold/Project-mAIstro/issues/2280)** — decide operator-lifecycle-only vs scoped CRUD through existing public APIs. |
+| # | Missing counterpart | Owner issue | Decision / proposal |
+|---|---|---|---|
+| P-1 | HITL/capability approvals have API + CLI support but no Workspace UI caller | [#2278](https://github.com/Agent-StrongHold/Project-mAIstro/issues/2278) | **Implemented (this PR):** minimal `/approvals` projection over the existing public APIs (no parallel store). Slot management remains #2273. |
+| P-2 | Run retry exists on no surface | [#2279](https://github.com/Agent-StrongHold/Project-mAIstro/issues/2279) | Define retry inside the #1169/#1036 control plane (a new Attempt under the same NodeRun/Run identity), or record it as a deliberate non-goal. |
+| P-3 | No CLI commands for in-product CRUD (agents, providers, skills, MCP, schedules, backlog) | [#2280](https://github.com/Agent-StrongHold/Project-mAIstro/issues/2280) | Decide whether CLI functional parity targets operator lifecycle only (today's state) or gains scoped CRUD; any addition goes through the existing public API authority, not new endpoints. |
 
-These proposals raise no runtime work in this change; they exist so the missing rows above do not silently read as owned.
+These rows are owned for decision/implementation tracking; they are **not** claimed implemented. Ownership alone raises no runtime work.
 
 ## Deliberately preserved decisions
 
