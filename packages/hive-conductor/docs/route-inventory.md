@@ -27,7 +27,7 @@ recorded below as URL-only with their owning issues.
 
 ## Canonical surfaces (primary/grouped navigation entry)
 
-22 destinations, each reachable from both the desktop icon rail and the
+20 destinations, each reachable from both the desktop icon rail and the
 narrow-screen drawer (asserted by
 `tests/e2e/navigation-coverage.spec.ts`):
 
@@ -42,14 +42,12 @@ narrow-screen drawer (asserted by
 | `/schedules` | Schedules | Schedules (shown only with `schedules.write`, below) | PROJECT → canonical `ScheduleStore` | #92 (M3-B) |
 | `/missions` | Missions | Missions | MERGE → Workspace backlog (DELETE v1.0) | #82 (M3-C) |
 | `/backlog` | Backlog | Backlog | Workspace backlog (canonical) | #82 |
-| `/agents` | Agents | Agents | DELETE v1.0 → Capabilities projection | #59, #848 |
-| `/topology` | Topology | Topology | DELETE v1.0 → Capabilities projection | #59, #848 |
+| `/capabilities` | Capabilities | Capabilities | KEEP — unified surface (#2273 / `conductor-407`) | #2273 |
 | `/optimizer` | Optimization Inbox | Optimizer | MERGE → Attention/Waiting | #1049 (M3-E) |
 | `/messages` | Message Board | Messages | MERGE → Attention/Waiting | #1049 (M3-E) |
 | `/quotas` | Quotas & Stats | Quotas | PROJECT → Invocation usage | #718 (M3) |
 | `/knowledge` | KnowledgeBase | Inner Temple | DELETE v1.0 → Workspace/user memory | #776, #1047 (M3-E) |
 | `/rsi` | RSI | RSI | PROJECT → Evolve/RSI Run inspection | #51/#50 (M4/M5) |
-| `/mcp` | MCP | Integrations | DELETE v1.0 → Capabilities projection | #59, #848 |
 | `/containers` | Containers | Containers (shown only with `containers.control`, below) | PROJECT v1.0 (retained contract) | #382 |
 | `/cli` | CLI | CLI | PROJECT v1.0 (retained contract) | #292 |
 | `/credentials` | Credentials | Credentials | PROJECT → credential router consumers | #58 |
@@ -57,10 +55,8 @@ narrow-screen drawer (asserted by
 | `/settings` | Settings | Settings | PROJECT → settings service | #1050 (M3-E) |
 
 `/schedules`, `/messages`, `/quotas`, `/containers`, `/cli` and `/audit` are
-the #1417 additions. The legacy rows already linked before #1417 (Chat,
-Missions, Agents, Topology, Optimizer, KnowledgeBase, MCP) keep their entries:
-removing them is the retirement work of the owning issues, not a
-discoverability change, and dropping their links now would orphan live routes.
+the #1417 additions. Agents / Topology / Integrations left primary nav for
+Capabilities (#2273); they remain URL-only until deleted.
 
 ## Canonical surfaces with a contextual or parent entry (no primary nav row)
 
@@ -78,7 +74,10 @@ or hides them and this issue may not promote or retire them:
 | Route | Surface | Rationale for staying unlinked | Owner |
 |---|---|---|---|
 | `/work-items` | Jira drafts (WorkItems) | Legacy surface MERGEd into the Workspace backlog; permanent promotion would fight the M3-C cutover | #82 (M3-C) |
-| `/skills` | Skills | Legacy surface replaced by the Capabilities projection | #59, #848 (M3) |
+| `/skills` | Skills | Legacy surface replaced by Capabilities (#2273); page delete is a follow-up slice | #2273 |
+| `/agents` | Agents | Superseded by Capabilities primary nav (#2273); URL retained until delete | #2273 |
+| `/topology` | Topology | Superseded by Capabilities primary nav (#2273); URL retained until delete | #2273 |
+| `/mcp` | MCP / Integrations | Superseded by Capabilities primary nav (#2273); URL retained until delete | #2273 |
 | `/memory` | Memory | Legacy surface replaced by user model / Workspace memory | #776, #1047 (M3-E) |
 | `/evolution` | Evolution Engine | Hidden for v1.0 per §9 ("DELETE/HIDE v1.0, restore v1.2"); route retirement itself is out of #1417's scope | cutover plan §9 (v1.2) |
 

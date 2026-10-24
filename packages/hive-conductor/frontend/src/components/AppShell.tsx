@@ -14,14 +14,12 @@ import {
   Target,
   Flag,
   Brain,
-  Plug,
   KeyRound,
   Palette,
   Settings,
   Workflow,
   PlayCircle,
-  Bot,
-  Network,
+  Boxes,
   Zap,
   Repeat,
   ListTodo,
@@ -58,23 +56,23 @@ const fullNav = [
   { to: "/missions", icon: Target, label: "Missions" },
   // #99: editable backlog (board/list/detail) over the canonical service.
   { to: "/backlog", icon: ListTodo, label: "Backlog" },
-  { to: "/agents", icon: Bot, label: "Agents" },
-  { to: "/topology", icon: Network, label: "Topology" },
+  // #2273: one Capabilities surface replaces Agents / MCP / Skills / Topology
+  // as the primary nav entry; those four stay URL-reachable until deleted.
+  { to: "/capabilities", icon: Boxes, label: "Capabilities" },
   { to: "/optimizer", icon: Zap, label: "Optimizer" },
   // #1417: Messages, Quotas, Containers, CLI and Audit were all registered,
   // implemented routes with no navigation entry (audit GLO-01). Each is a
   // retained surface per the cutover plan (PROJECT rows, and CLI/Containers
   // under contracts #292/#382), so they get discoverable entries here; the
-  // legacy pages scheduled for replacement (Skills, Work Items, Memory,
-  // Evolution) deliberately stay off this list — docs/route-inventory.md
-  // records their URL-only dispositions and owning issues.
+  // legacy pages scheduled for replacement (Agents, Topology, Integrations,
+  // Skills, Work Items, Memory, Evolution) deliberately stay off this list —
+  // docs/route-inventory.md records their URL-only dispositions.
   { to: "/messages", icon: Inbox, label: "Messages" },
   { to: "/quotas", icon: Gauge, label: "Quotas" },
   { to: "/knowledge", icon: Brain, label: "Inner Temple" },
   // M0 containment for #311: Deck Builder is intentionally absent until
   // model-authored HTML/SVG has a canonical sanitizer/structured renderer.
   { to: "/rsi", icon: Repeat, label: "RSI" },
-  { to: "/mcp", icon: Plug, label: "Integrations" },
   // #1417: CLI and Containers keep their v1.0 contract lanes (#292, #382),
   // so they stay shipped and must stay reachable while those run.
   // `scope` as above: every Containers mutation requires containers.control

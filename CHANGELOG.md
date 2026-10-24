@@ -25,6 +25,12 @@ or placeholder-only section.
 
 ### Added
 
+- **Capabilities becomes the primary Hive Conductor surface for slots and
+  providers (#2273, `conductor-407`).** New `/capabilities` page lists
+  `/v1/capabilities` slots with host-owned trust/provenance, re-discover, and
+  enable/disable over the same public APIs. Agents, Topology, and Integrations
+  leave primary nav (URL-only until deleted); Skills was already URL-only.
+
 - **`/health` names the Reactor's persistence authority beside every other
   store family (#1178).** `persistence.families` gains a `reactor` entry:
   `fire-and-forget` when the Reactor writes through the canonical `State`
