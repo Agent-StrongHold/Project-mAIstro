@@ -1,0 +1,38 @@
+# One-shot closeout for the 2026-10-23 likely-done certification.
+# Runs only on this agent branch; do not merge to develop.
+name: one-shot-issue-closeout
+
+on:
+  push:
+    branches: [cursor/issue-closeout-571a]
+    paths:
+      - "scripts/one-shot-issue-closeout/**"
+      - ".github/workflows/one-shot-issue-closeout.yml"
+  workflow_dispatch:
+
+permissions:
+  issues: write
+  contents: read
+
+concurrency:
+  group: one-shot-issue-closeout
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - name: Apply issue closeout
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: python3 scripts/one-shot-issue-closeout/apply.py
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: closeout-results
+          path: scripts/one-shot-issue-closeout/results.json
+          if-no-files-found: ignore
