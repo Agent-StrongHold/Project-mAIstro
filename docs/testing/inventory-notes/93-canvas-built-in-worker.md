@@ -198,3 +198,36 @@ as environmental, not branch-caused: the gitignored runtime artifact
 `quality/ac-state.json` (written by `check-ac-state.py --run-tests` in this
 worktree) is the only unclassified surface, and the test passes with it
 moved aside.
+
+## CI-repair round at af81bcd0 (merge-queue evaluation, 2026-10-24)
+
+The hosted run failed two required checks; neither was caused by the worker
+implementation, and both are repaired without touching Python source (so the
+`inventory-delta` above is unchanged):
+
+1. **Container scan + SBOM + cosign** — the Trivy step over
+   `maistro-engine-research:pr-2266` exited 1 on pypdf 6.21.1
+   (CVE-2026-115572/115580/115585, HIGH, all fixed in 6.21.2). pypdf reaches
+   only the research image (maistro-server `--extra browser` → browser_use);
+   the hive-conductor and `--extra image` exports do not carry it. Repair:
+   `uv lock --upgrade-package pypdf` (6.21.1 -> 6.21.2, lock-only). Proof:
+   the image was rebuilt locally from this lock and scanned with CI's exact
+   invocation (`trivy image --severity HIGH,CRITICAL --exit-code 1
+   --ignore-unfixed --ignorefile .trivyignore.yaml`, trivy 0.73.0): exit 0,
+   0 vulnerabilities. The Supply chain (pip-audit) gate was re-run over the
+   refreshed dev freeze with CI's gate script: OK (1 known, triaged).
+2. **test** — the `npm audit --audit-level=high` step over
+   `packages/maistro-canvas/frontend` exited 1 on advisory drift (3 HIGH:
+   body-parser via express, undici via jsdom, zod via
+   eslint-plugin-react-hooks; 3 moderate), all fixed within existing
+   semver ranges. Repair: `npm audit fix` in that frontend —
+   `package-lock.json` only, `package.json` untouched. Proof: fresh
+   `npm ci` then audit exits 0 (0 vulnerabilities), and `npm run lint`
+   (13 warnings = the existing budget), `npm run build`, and
+   `npm run test:ci` (79 tests) all pass. The `RuntimeError: Event loop is
+   closed` lines in that job's log are non-fatal
+   `PytestUnhandledThreadExceptionWarning` annotations from aiosqlite in the
+   untouched maistro-server suite, not step failures; the job's only failed
+   step is the audit. The hive-conductor frontend reports one HIGH (zod) to
+   `npm audit` but is gated by no step (`npm ci` exits 0; its image-level
+   Trivy scan passed) and is left untouched here.
