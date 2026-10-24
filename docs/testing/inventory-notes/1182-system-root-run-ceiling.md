@@ -42,3 +42,43 @@ effective ceilings, `system: null` included.
 - `test_readiness_degraded_still_reports_run_concurrency_limits_to_admins` —
   the 503 detailed payload carries the same ceilings when a dependency is
   down.
+
+## Independent re-verification (2026-10-24, live evidence, tree unmodified)
+
+Executed on this worktree at `cc605a6c` against the live `pgvector:pg18`
+container (`MAISTRO_TEST_PG_DSN` set, so no `[postgres]` leg skipped):
+
+- `uv run pytest packages/maistro-core/tests/runs/test_run_concurrency_limits.py -q`
+  → **79 passed** (principal/Workspace/system ceilings, fairness, parked-resume,
+  duplicate-vs-backpressure, stranded-turn reclaim; concurrent-admission cases
+  exercised the real advisory-lock path on PostgreSQL 18).
+- `uv run pytest packages/maistro-core/tests/runs -q` → **1670 passed,
+  3 skipped**; `uv run pytest packages/maistro-server/tests/api -q` → **552
+  passed** (includes the 429-without-retained-claim and admin-diagnostics
+  regressions); `test_resource_policy_declared_floors.py` → 8 passed
+  (tighten-freely / loosen-only-with-override for both ceilings).
+- **Fail-before proof:** a `-p` plugin neutering only
+  `RunConcurrencyLimits.check` (no other change) makes all 15 ceiling tests
+  fail across memory, SQLite and PostgreSQL — the check is the single
+  refusing site; without the plugin all pass.
+- **Gates with CI's exact arguments:** `ruff check .` / `ruff format --check .`
+  clean; `check-suite-inventory.py` (21 suites match); `check-security-inventory.py`;
+  `check-vulture-baseline.py packages/*/src --min-confidence 60
+  --exclude '*/third_party/*'` (1321 reviewed = 1321 findings); `check-radon-baseline.py`;
+  `check-reachability.py`; `check-reachability-dispositions.py`;
+  `check-ratchet-provenance.py`; `check-promotion-surface.py`;
+  `check_direct_effects.py` — all exit 0. Running the vulture gate without its
+  CI path arguments fails on `tests/`-scoped rows the blocking job never sees
+  (the documented default-scan trap), which is an invocation error, not debt.
+- mypy on `maistro/runs`, `maistro/config`, `maistro/security`,
+  `maistro_server/api`: clean (remaining repo mypy errors are pre-existing
+  import-stub issues in unrelated `cli`/`maistro_canvas` modules).
+
+Known residuals, unchanged: RC/load evidence under #860 is an external-issue
+dependency (delegated by this issue's own 2026-10-03 decomposition);
+`pytest.mark.ac("SPEC-1182/AC-6")` at `test_resource_policy_health.py:99`
+names no declared spec criterion (report-only bucket, like the two
+pre-existing `SPEC-082226-2a10/AC-6` markers in the same file); the branch
+needs a sync merge from `origin/develop` before integration — develop's delta
+touches adjacent regions of `settings.py`/`store.py`/`sqlite_store.py`/
+`pg_store.py`/`health.py`, so expect small same-region conflicts there.
