@@ -44,6 +44,8 @@ let adminNarrowPage: Page;
  * principal holding the grant — the setup wizard's admin (every permission)
  * and not the daily user (see DAILY_USER_ENTRIES below). */
 const NAV_ENTRIES: Array<{ label: string; path: string; scope?: string; probe: (p: Page) => Locator }> = [
+  // #1048: Home is the default landing; keep Dashboard reachable until retirement.
+  { label: "Home", path: "/home", probe: (p) => p.getByRole("heading", { name: "Home", exact: true }) },
   { label: "Chat", path: "/chat", probe: (p) => p.getByLabel("Chat messages") },
   { label: "Dashboard", path: "/dashboard", probe: (p) => p.getByRole("heading", { name: "Live Operations", exact: true }) },
   // #65: the Goal-centric inspection surface. Its reachability is asserted
@@ -176,7 +178,7 @@ const DRAWER_CHUNK_SIZE = 7;
 
 for (const [index, group] of chunk(DAILY_USER_ENTRIES, RAIL_CHUNK_SIZE).entries()) {
   test(`desktop icon rail reaches destinations ${index + 1}/${chunk(DAILY_USER_ENTRIES, RAIL_CHUNK_SIZE).length} by keyboard (${group[0].label} → ${group[group.length - 1].label})`, async () => {
-    await page.goto("/dashboard");
+    await page.goto("/home");
     for (const entry of group) {
       // Scoped to the rail: the drawer renders the same labels and is
       // display:none here — a page-level name query would resolve two links
@@ -198,7 +200,7 @@ for (const [index, group] of chunk(DAILY_USER_ENTRIES, RAIL_CHUNK_SIZE).entries(
 
 for (const [index, group] of chunk(DAILY_USER_ENTRIES, DRAWER_CHUNK_SIZE).entries()) {
   test(`narrow-screen drawer reaches destinations ${index + 1}/${chunk(DAILY_USER_ENTRIES, DRAWER_CHUNK_SIZE).length} by keyboard and dismisses (${group[0].label} → ${group[group.length - 1].label})`, async () => {
-    await narrowPage.goto("/dashboard");
+    await narrowPage.goto("/home");
     for (const entry of group) {
       const hamburger = narrowPage.getByRole("button", { name: "Open menu" });
       await expect(hamburger).toBeVisible();
@@ -247,7 +249,9 @@ test("mutation-scoped destinations stay out of both chrome modes without the gra
 
   const scoped = NAV_ENTRIES.filter((entry) => entry.scope);
   await expect(page.locator(".icon-sidebar").getByRole("link", { name: "RSI", exact: true })).toHaveCount(0);
-  await page.goto("/dashboard");
+  // #1048: Home is the default landing; the union keeps #373's RSI absence
+  // check at the reloaded page above and restarts from the new landing.
+  await page.goto("/home");
   for (const entry of scoped) {
     await expect(page.locator(".icon-sidebar").getByRole("link", { name: entry.label, exact: true })).toHaveCount(0);
   }
@@ -266,7 +270,7 @@ test("mutation-scoped destinations stay out of both chrome modes without the gra
 
 for (const scopedGroup of chunk(NAV_ENTRIES.filter((entry) => entry.scope), 7)) {
   test(`admin icon rail reaches the grant-gated destinations by keyboard (${scopedGroup.map((e) => e.label).join(", ")})`, async () => {
-    await adminPage.goto("/dashboard");
+    await adminPage.goto("/home");
     for (const entry of scopedGroup) {
       const link = adminPage.locator(".icon-sidebar").getByRole("link", { name: entry.label, exact: true });
       await expect(link).toBeVisible();
@@ -279,7 +283,7 @@ for (const scopedGroup of chunk(NAV_ENTRIES.filter((entry) => entry.scope), 7)) 
   });
 
   test(`admin drawer reaches the grant-gated destinations by keyboard and dismisses (${scopedGroup.map((e) => e.label).join(", ")})`, async () => {
-    await adminNarrowPage.goto("/dashboard");
+    await adminNarrowPage.goto("/home");
     for (const entry of scopedGroup) {
       const hamburger = adminNarrowPage.getByRole("button", { name: "Open menu" });
       await expect(hamburger).toBeVisible();
@@ -318,16 +322,16 @@ test("browser back and forward return canonical surfaces after rail navigation",
   // Messages, not Schedules: the back/forward invariant is about history and
   // active state, and the daily-user session driving it may not hold
   // `schedules.write` (the scoped rows are walked under the admin account).
-  await page.goto("/dashboard");
+  await page.goto("/home");
   const link = page.locator(".icon-sidebar").getByRole("link", { name: "Messages", exact: true });
   await link.click();
   await page.waitForURL("**/messages");
   await expect(page.getByRole("heading", { name: "Message Board", exact: true })).toBeVisible();
 
   await page.goBack();
-  await page.waitForURL("**/dashboard");
-  await expect(page.getByRole("heading", { name: "Live Operations", exact: true })).toBeVisible();
-  await expectSingleActiveRailEntry(page, "Dashboard");
+  await page.waitForURL("**/home");
+  await expect(page.getByRole("heading", { name: "Home", exact: true })).toBeVisible();
+  await expectSingleActiveRailEntry(page, "Home");
 
   await page.goForward();
   await page.waitForURL("**/messages");
