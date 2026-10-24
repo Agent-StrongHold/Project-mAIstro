@@ -209,3 +209,26 @@ cosign` against a head containing 4cb4b70a9. Everything the failing step
 executes has been re-run locally with CI-exact arguments and passes; the
 remaining risk is only hosted-runner variance (registry/trivy-DB), not this
 failure mode.
+
+## Round-4 addendum — the same fix also landed on develop (f956a8142)
+
+While recording this round, origin/develop advanced by
+`f956a8142 WIP: [M2-A10][#75] Bound concurrent DAG Runs per principal and
+Workspace (#2285)`, which carries an INDEPENDENT repair of the identical
+beartype marker-split reconcile failure (its own evidence: merge-queue run
+40085096483; same name -> set-of-emitted-versions semantics, "one of ..."
+mismatch wording, 3 equivalent tests). Consequences for the next develop sync
+of this branch (not performable here — no pushes):
+
+- `scripts/check-image-lock-reconciliation.py` and
+  `tests/test_check_image_lock_reconciliation.py` will conflict TEXTUALLY;
+  the conflict is semantically benign — both implementations were proven this
+  round against the SAME freshly built engine image + the SAME fresh export:
+  this branch's 4cb4b70a9 script `OK ... exit 0`, AND develop's f956a8142
+  script `OK ... exit 0` on identical inputs. Either resolution keeps the gate
+  green; keep ONE implementation (develop's is already merged, so taking it in
+  the sync is the natural resolution) and union or pick the test cases — both
+  sets encode the same contract (both branches reconcile; outside-split fails).
+- This branch's distinct deliverables (the gate-exact local proof, the
+  inventory note, the corrected "four of five" wording) are additive docs and
+  do not conflict.
