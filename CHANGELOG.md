@@ -299,10 +299,12 @@ or placeholder-only section.
   regex injection, and scan-scope noise).** Remaining open CodeQL findings are
   cleared with `realpath`+`startswith` containment, kind-only public failure
   text (including `/health` optional-router outcomes), escaped consistency
-  markers, and prototype-safe book-plan path assignment. DevSkim drops pure
-  data trees (`systems/catalog`, `benchmarks/corpora`, `formal/`) and dated
-  suppressions for integrity-pin / non-crypto RNG false positives so the
-  Security tab is actionable again.
+  markers, and prototype-safe book-plan path assignment. DevSkim drops
+  non-shipped trees (`systems/catalog`, `benchmarks/corpora`, `formal/`,
+  `.github/`, `deploy/`, `alembic/`) and dated suppressions for integrity-pin /
+  non-crypto RNG / intentional loopback defaults so the Security tab is
+  actionable again. Lockfile bumps `fastmcp` and `setuptools` for the
+  pip-audit gate.
 
 - **Protected-branch secret scans recognize two historical soak false positives (#860).**
   Preserve full-history scanning and the default rules while carrying over the

@@ -187,6 +187,9 @@ def test_a_shipped_template_under_a_docs_directory_stays_in_scope() -> None:
         "packages/maistro-design/src/maistro_design/systems/catalog/catalog.json",
         "packages/maistro-evolve/src/maistro_evolve/benchmarks/corpora/repo_history_tasks.json",
         "formal/models/test_pipeline_integration.py",
+        ".github/workflows/ci.yml",
+        "deploy/scripts/backup.sh",
+        "alembic/env.py",
     ],
 )
 def test_the_noisy_trees_are_still_excluded(path: str) -> None:
