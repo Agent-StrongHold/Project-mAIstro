@@ -418,6 +418,7 @@ def canonical_dag_spine(_chat_spine_container: Any, monkeypatch: pytest.MonkeyPa
         graph_run_store=container.graph_run_store,
         workspace_store=container.workspace_store,
         project_scope_store=container.project_scope_store,
+        sentinel=getattr(container, "sentinel", None),
     )
     monkeypatch.setattr(get_engine(), "_agent_port", SimpleNamespace(container=spine))
     yield container

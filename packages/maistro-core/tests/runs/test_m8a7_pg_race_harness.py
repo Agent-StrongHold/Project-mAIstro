@@ -83,7 +83,12 @@ import pytest
 
 asyncpg = pytest.importorskip("asyncpg")
 
-from maistro.events.invocations import HandlerInvocation, InvocationStatus  # noqa: E402
+from maistro.events.invocations import (  # noqa: E402
+    DeliveryIdentity,
+    HandlerInvocation,
+    InvocationStatus,
+    request_digest_v1,
+)
 from maistro.events.pg_stores import (  # noqa: E402
     PgConsumerCursorStore,
     PgEventLog,
@@ -566,6 +571,11 @@ async def test_invocation_claims_from_independent_actors_dispatch_exactly_once(
     The single-statement claim upsert is the whole guarantee: one winner, the
     rest ``None``. After a terminal status lands, no session can re-claim it
     even with a lapsed lease.
+
+    #1060 contract: ``claim`` takes the frozen ``DeliveryIdentity`` (the
+    prepared receipt freezes handler_url/digest exactly once) and never
+    consumes the attempt budget — ``begin_dispatch`` is the sole
+    budget-consuming permission to send.
     """
     await PgEventLog(pg_pool).ensure_schema()
     triggers = PgTriggerStore(pg_pool)
@@ -578,6 +588,10 @@ async def test_invocation_claims_from_independent_actors_dispatch_exactly_once(
     )
     await triggers.add(trigger)
     event = await PgEventLog(pg_pool).append("race.fired", entity_id="e-1")
+    identity = DeliveryIdentity(
+        handler_url=trigger.handler_url,
+        request_digest=request_digest_v1(trigger.handler_url, event),
+    )
     go = threading.Event()
 
     def claimer() -> Callable[[Any], Awaitable[Any]]:
@@ -591,7 +605,10 @@ async def test_invocation_claims_from_independent_actors_dispatch_exactly_once(
             # failure (the CI flake this harness shipped with). Expiration is
             # exercised deterministically below, sequentially, after the race.
             return await store.claim(
-                trigger.trigger_id, event.id, lease_seconds=CLAIM_LEASE.total_seconds()
+                trigger.trigger_id,
+                event.id,
+                delivery=identity,
+                lease_seconds=CLAIM_LEASE.total_seconds(),
             )
 
         return _claim
@@ -619,13 +636,25 @@ async def test_invocation_claims_from_independent_actors_dispatch_exactly_once(
         last_error="",
         created_at=winner.created_at,
         lease_expires_at=time.time() - 3600,
+        # Preserve the current-claim fencing state a real lapsed dispatch
+        # would carry; only the lease itself is lapsed.
+        claim_token=winner.claim_token,
+        revision=winner.revision,
     )
     await store.save(lapsed)
     reclaimed = await store.claim(
-        trigger.trigger_id, event.id, lease_seconds=CLAIM_LEASE.total_seconds()
+        trigger.trigger_id,
+        event.id,
+        delivery=identity,
+        lease_seconds=CLAIM_LEASE.total_seconds(),
     )
     assert reclaimed is not None, "a lapsed lease on a PENDING invocation must be reclaimable"
-    assert reclaimed.attempts == winner.attempts + 1
+    # Takeover fencing (#1060): the claim token rotates and the revision
+    # advances, but the attempt budget is *not* consumed by a claim —
+    # ``begin_dispatch`` is the sole budget-consuming permission to send.
+    assert reclaimed.attempts == winner.attempts
+    assert reclaimed.claim_token != winner.claim_token
+    assert reclaimed.revision == winner.revision + 1
 
     # Terminal is terminal: even with the lease long lapsed, no session may
     # re-dispatch a SUCCESS invocation.
@@ -642,7 +671,10 @@ async def test_invocation_claims_from_independent_actors_dispatch_exactly_once(
     for _ in range(ACTORS):
         assert (
             await store.claim(
-                trigger.trigger_id, event.id, lease_seconds=CLAIM_LEASE.total_seconds()
+                trigger.trigger_id,
+                event.id,
+                delivery=identity,
+                lease_seconds=CLAIM_LEASE.total_seconds(),
             )
             is None
         )
@@ -650,7 +682,7 @@ async def test_invocation_claims_from_independent_actors_dispatch_exactly_once(
     rows = await store.list_for_event(event.id)
     assert len(rows) == 1
     assert rows[0].status is InvocationStatus.SUCCESS
-    assert rows[0].attempts == 2, "terminal re-claim attempts must not increment"
+    assert rows[0].attempts == winner.attempts, "a claim never consumes the attempt budget"
 
 
 @pytest.mark.asyncio

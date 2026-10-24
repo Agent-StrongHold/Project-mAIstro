@@ -1,6 +1,5 @@
 """Builders 2.0 workflow runtime package."""
 
-from maistro.builders.cli_execution import CanonicalBuilderTurnExecutor
 from maistro.builders.contracts import (
     ArtifactRef,
     RunRequest,
@@ -30,6 +29,11 @@ from maistro.builders.graph_executor import (
     DispatchResult,
     PipelineDispatcher,
 )
+from maistro.builders.interactive import (
+    BuildersExecutionSpine,
+    CanonicalInteractiveTurnExecutor,
+    InteractiveTurnResult,
+)
 from maistro.builders.orchestrator import BuildersOrchestrator, RunState
 from maistro.builders.pipeline import (
     BUILDER_PIPELINE,
@@ -57,10 +61,11 @@ __all__ = [
     "BuildersDAG",
     "BuildersDagFailure",
     "BuildersDagResult",
+    "BuildersExecutionSpine",
     "BuildersOrchestrator",
     "BuildersRuntime",
-    "CanonicalBuilderTurnExecutor",
     "CanonicalGraphPipelineExecutor",
+    "CanonicalInteractiveTurnExecutor",
     "DagRun",
     "DispatchResult",
     "Gate",
@@ -68,6 +73,7 @@ __all__ = [
     "InMemoryEventBus",
     "InMemoryGitHubService",
     "InMemoryWorkspaceService",
+    "InteractiveTurnResult",
     "IssueUpdate",
     "PipelineDispatcher",
     "PipelineGraph",

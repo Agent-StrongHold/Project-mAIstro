@@ -37,14 +37,12 @@
       "converged_by": "#47"
     },
     "maistro.builders.contracts::RunStatus": {
-      "classification": "CONVERGE",
-      "rationale": "Builders' receipt-level RunStatus. After the #49 cutover the shipped compositions (BuilderPipeline, run_builders_dag, the `maistro builders` CLI turn executor) run through the canonical adapter, which projects this enum from canonical Run state; it can no longer decide generic lifecycle truth. Deletion owed after parity (#35).",
-      "converged_by": "#49"
+      "classification": "DOMAIN",
+      "rationale": "Builders workflow-result states remain a domain receipt for the reusable five-stage strategy. The shipped interactive ReAct turn is admitted and terminalized by canonical Run/NodeRun/Attempt; this enum is not its execution authority."
     },
     "maistro.builders.pipeline::StageStatus": {
-      "classification": "CONVERGE",
-      "rationale": "Per-stage receipt states for the issue-to-merge pipeline. After the #49 cutover the canonical adapter projects them from NodeRun/Attempt evidence; the legacy executor that drove them directly is compatibility-only with no shipped caller. Deletion owed after parity (#35).",
-      "converged_by": "#49"
+      "classification": "DOMAIN",
+      "rationale": "Per-stage projection for the reusable issue-to-merge composition. Canonical NodeRun state is authoritative for shipped execution, while this receipt remains domain compatibility data."
     },
     "maistro_canvas.types::JobStatus": {
       "classification": "CONVERGE",
