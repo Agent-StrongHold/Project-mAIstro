@@ -305,7 +305,6 @@ or placeholder-only section.
 
 ### Security
 
-<<<<<<< HEAD
 - **CodeQL / DevSkim backlog cleanup (path injection, stack-trace exposure,
   regex injection, and scan-scope noise)** (no linked issue: GitHub
   code-scanning backlog on develop, not a numbered tracker issue). Remaining
@@ -322,7 +321,7 @@ or placeholder-only section.
   a binding. Lockfile bumps `fastmcp`, `setuptools`, and `pypdf` for
   pip-audit/Trivy; canvas frontend `npm audit fix` clears high advisories;
   Trivyignore documents the bookworm-only libbrotli finding.
-=======
+
 - **Image lock reconciliation and canvas npm audit follow-up after #2305
   (no linked issue: supply-chain CI on develop).** Hive Conductor Dockerfile
   and `security.yml` expected-member pin move from `setuptools==84.0.0` to
@@ -331,7 +330,6 @@ or placeholder-only section.
   left the image behind the expected export); canvas frontend
   `package-lock.json` refreshed so `npm audit --omit=dev` reports zero
   vulnerabilities.
->>>>>>> origin/develop
 
 - **Protected-branch secret scans recognize two historical soak false positives (#860).**
   Preserve full-history scanning and the default rules while carrying over the
