@@ -31,8 +31,15 @@ From the **monorepo root** (`maistro-engine/`):
 
 ```bash
 docker build -f packages/hive-conductor/Dockerfile packages/hive-conductor -t hive-conductor:local
-docker run --rm -p 8101:8101 hive-conductor:local
+docker run --rm -p 8101:8101 -v hive-conductor-data:/data hive-conductor:local
 ```
+
+`/data/conductor` is the Conductor's durable state directory under Docker
+(`CONDUCTOR_DATA_DIR`), one level inside the volume mounted at `/data`, and
+pre-created in the image owned by the nonroot runtime uid 65532. Without a
+volume mounted at `/data` (or at any parent of `CONDUCTOR_DATA_DIR`) the
+process **refuses to start** (`DATA_DIR_EPHEMERAL`) — see
+[Persistent state](#persistent-state) below.
 
 Or from **`packages/hive-conductor/`** (compose uses the local `Dockerfile`):
 
@@ -41,6 +48,93 @@ docker compose up --build
 ```
 
 Then open `http://localhost:8101`.
+
+## Persistent state
+
+Everything the Conductor must survive a restart lives in one directory,
+`CONDUCTOR_DATA_DIR` (default `~/.conductor` on a host; `/data/conductor` in
+Docker — a directory *inside* the `conductor-data` volume, which Compose
+mounts at `/data`; the data directory must not be the volume's mount root
+because restore swaps the directory itself by rename, and a mount point
+cannot be renamed). The standalone [`docker-compose.yml`](docker-compose.yml)
+mounts that volume, so `docker compose down/up` and image
+replacement preserve every account, session, setting, and vault entry; the
+startup guard refuses to serve from an unwritable or (inside a container)
+container-filesystem data directory instead of silently discarding state
+(#331).
+
+### What lives there (the full inventory)
+
+| File | What | Written by |
+|------|------|------------|
+| `state.db` (+ `state.db-wal`, `state.db-shm` while live) | SQLite: accounts, sessions, settings, registration policy, profiles, setup marker | `maistro.state` via `Foundation._init_state` |
+| `secrets.age` | age-encrypted vault entries | `maistro.vault` via `Foundation._init_vault` |
+| `admin.key` | age identity that opens `secrets.age` | setup wizard / vault init |
+| `credential_master.key` | Fernet master key for the credential store (mode `0600`) | `UserCredentialStore.open` |
+| `user_credentials.enc` | encrypted per-user integration credentials | `UserCredentialStore` |
+
+These files are **coupled**: the vault only opens with its identity key and
+the credential store only decrypts under its master key. Copy them
+piecemeal and you get a deployment that boots but cannot read itself —
+move them as one unit (below).
+
+### Backup and restore (atomic)
+
+Stop the Conductor first (`docker compose stop hive-conductor`): a running
+process holds `state.db` open and will write stale state back over you.
+
+```bash
+# One archive, whole directory, staged + renamed so it is never partial.
+docker compose run --rm --entrypoint maistro -v "$PWD/backups:/backup" \
+  hive-conductor security backup --data-dir /data/conductor --out /backup/conductor-data.tar.gz
+
+# Restore (replaces the directory; dry-run without --yes). The volume is
+# additionally mounted at /srv so the data directory /srv/conductor is not
+# the mount root — restore swaps it by rename, which a mount point cannot do:
+docker compose stop hive-conductor
+docker compose run --rm --entrypoint maistro \
+  -v conductor-data:/srv -v "$PWD/backups:/backup:ro" \
+  hive-conductor security restore --data-dir /srv/conductor \
+  --from /backup/conductor-data.tar.gz --yes
+docker compose start hive-conductor
+```
+
+The restore verifies the archive (a corrupt or truncated tarball is refused
+before anything is touched) and swaps the extracted tree in atomically. The
+archive contains key material — store it encrypted, off-box.
+
+### Volume migration
+
+`conductor-data` is an ordinary named volume; to move it (e.g. to another
+host or to a bind mount), back it up as above, recreate the destination,
+and restore into it:
+
+```bash
+# On the target, after `docker compose up -d && docker compose stop`:
+docker compose run --rm --entrypoint maistro \
+  -v conductor-data:/srv -v "$PWD/backups:/backup:ro" \
+  hive-conductor security restore --data-dir /srv/conductor \
+  --from /backup/conductor-data.tar.gz --yes
+```
+
+To switch from a named volume to a host directory, replace the `volumes:`
+entry in `docker-compose.yml` with `- /srv/conductor-data:/data` and make
+that directory owned by uid `65532` (the image's nonroot runtime user):
+`sudo install -d -o 65532 -g 65532 -m 700 /srv/conductor-data`.
+
+### Deletion is destructive
+
+`docker compose down` keeps the volume; **`docker compose down -v` deletes
+it**, and with it every account, session, setting, and vault entry. There is
+no second copy. Back up first if the data matters.
+
+### Escape hatch for throwaway harnesses
+
+`CONDUCTOR_ALLOW_EPHEMERAL_DATA_DIR=1` acknowledges that the configured
+data directory is deliberately ephemeral (used by
+[`docker-compose.test.yml`](docker-compose.test.yml) so each e2e run starts
+from a fresh setup wizard). Never set it where state must survive a
+recreate.
 
 ## Ports & protocols
 
