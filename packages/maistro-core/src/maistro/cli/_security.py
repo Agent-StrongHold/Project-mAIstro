@@ -264,7 +264,20 @@ def _note_uncaptured_durable_files(inventory: list[tuple[str, str]]) -> None:
 
 
 def _write_staged_archive(files: list[Path], root: Path, tmp_path: Path) -> None:
-    """Write every file into one tar.gz at ``tmp_path`` and fsync the archive."""
+    """Write every file into one tar.gz at ``tmp_path`` and fsync the archive.
+
+    The staging file is created exclusively with mode ``0600``: the archive
+    holds the credential master key and the vault, so under a permissive
+    umask it must never fall back to group/world-readable. The later rename
+    preserves the mode, so the published archive keeps owner-only access too.
+    """
+    try:
+        fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        # Stale staging file from an earlier crashed run — replace it.
+        tmp_path.unlink(missing_ok=True)
+        fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    os.close(fd)
     with tarfile.open(tmp_path, "w:gz") as tar:
         for file_path in files:
             tar.add(file_path, arcname=file_path.relative_to(root).as_posix())
