@@ -1,6 +1,9 @@
 import { useState, useRef, useEffect, useCallback, type ReactNode } from "react";
-import { fallbackMessage } from "../lib/api";
+import { useSearchParams } from "react-router-dom";
+import { ApiError, apiGet, apiPost, fallbackMessage } from "../lib/api";
 import { randomId } from "../lib/ids";
+import type { ChatApiMessage, ChatSessionDetail, ChatSessionSummary } from "../lib/chatSessions";
+import { sessionPath, sessionsListPath } from "../lib/chatSessions";
 import { useWorkspaces } from "../context/WorkspaceContext";
 
 type Role = "user" | "assistant";
@@ -113,10 +116,6 @@ function generateId() {
 
 function formatTime(date: Date) {
   return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-}
-
-function createSession(title = "New Chat"): Session {
-  return { id: generateId(), title, messages: [], createdAt: new Date() };
 }
 
 function compactArgs(args?: Record<string, unknown>): string {
@@ -243,25 +242,68 @@ function ToolSteps({ steps }: { steps: ToolStep[] }) {
   );
 }
 
+function apiMessagesToUi(messages: ChatApiMessage[]): Message[] {
+  return messages
+    .filter((m) => m.role === "user" || m.role === "assistant")
+    .map((m) => ({
+      id: m.id,
+      role: m.role as Role,
+      content: m.content,
+      timestamp: m.timestamp ? new Date(m.timestamp) : new Date(),
+    }));
+}
+
+function detailToSession(detail: ChatSessionDetail): Session {
+  return {
+    id: detail.id,
+    title: detail.title,
+    messages: apiMessagesToUi(detail.messages),
+    createdAt: new Date(detail.created_at),
+  };
+}
+
 export default function ChatPage() {
-  const { activeWorkspaceId } = useWorkspaces();
+  // #1822: sessions and transcripts are Workspace-scoped durable rows. The
+  // drawer hydrates from `/v1/chat/sessions`; stream carries `session_id` so
+  // execute_turn can append into maistro.sessions. Stale stream callbacks are
+  // aborted on Workspace/session switch.
+  const { activeWorkspaceId, ready: workspacesReady } = useWorkspaces();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const pendingDeepLinkRef = useRef<string | null>(searchParams.get("session"));
   const suggestedPromptsHeading = SUGGESTED_PROMPTS_HEADING;
   const suggestedPrompts = SUGGESTED_PROMPTS;
   const [models, setModels] = useState<string[]>([]);
   const MODELS = models;
-  const [sessions, setSessions] = useState<Session[]>([createSession()]);
-  const [activeId, setActiveId] = useState(sessions[0].id);
+  const [sessions, setSessions] = useState<Session[]>([]);
+  const [activeId, setActiveId] = useState<string>("");
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [input, setInput] = useState("");
   const [streaming, setStreaming] = useState(false);
   const [model, setModel] = useState("");
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [loadingSessions, setLoadingSessions] = useState(false);
+  const [modelOpen, setModelOpen] = useState(false);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const listEndRef = useRef<HTMLDivElement>(null);
+  const streamAbortRef = useRef<AbortController | null>(null);
+  const streamEpochRef = useRef(0);
 
   useEffect(() => {
+    const linked = searchParams.get("session");
+    if (linked) pendingDeepLinkRef.current = linked;
+  }, [searchParams]);
+
+  useEffect(() => {
+    // Models catalog is still a bare fetch (pre-existing typed-client debt).
     fetch("/v1/settings/models")
       .then((res) => res.json())
       .then((data) => {
         const arr = Array.isArray(data) ? data : data.models || data.data || [];
-        const list = arr.map((m: any) => (typeof m === "string" ? m : m.id || m.name || "")).filter(Boolean);
+        const list = arr
+          .map((m: { id?: string; name?: string } | string) =>
+            typeof m === "string" ? m : m.id || m.name || "",
+          )
+          .filter(Boolean);
         if (list.length > 0) {
           setModels(list);
           setModel(list[0]);
@@ -269,11 +311,10 @@ export default function ChatPage() {
       })
       .catch(() => {});
   }, []);
-  const [modelOpen, setModelOpen] = useState(false);
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const listEndRef = useRef<HTMLDivElement>(null);
 
-  const activeSession = sessions.find((s) => s.id === activeId) ?? sessions[0] ?? createSession();
+  const activeSession =
+    sessions.find((s) => s.id === activeId) ??
+    ({ id: "", title: "Chat", messages: [], createdAt: new Date() } satisfies Session);
 
   useEffect(() => {
     listEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -292,10 +333,112 @@ export default function ChatPage() {
     setSessions((prev) => prev.map((s) => (s.id === id ? updater(s) : s)));
   }, []);
 
+  const openSession = useCallback(async (sessionId: string) => {
+    const detail = await apiGet<ChatSessionDetail>(sessionPath(sessionId));
+    const session = detailToSession(detail);
+    setSessions((prev) => {
+      const rest = prev.filter((s) => s.id !== session.id);
+      return [session, ...rest];
+    });
+    setActiveId(session.id);
+    return session;
+  }, []);
+
+  const createServerSession = useCallback(
+    async (title = "New Chat") => {
+      if (!activeWorkspaceId) throw new Error("No Workspace selected");
+      const detail = await apiPost<ChatSessionDetail>("/v1/chat/sessions", {
+        title,
+        workspace_id: activeWorkspaceId,
+      });
+      const session = detailToSession(detail);
+      setSessions((prev) => [session, ...prev.filter((s) => s.id !== session.id)]);
+      setActiveId(session.id);
+      return session;
+    },
+    [activeWorkspaceId],
+  );
+
+  useEffect(() => {
+    if (!workspacesReady) return;
+    streamAbortRef.current?.abort();
+    streamAbortRef.current = null;
+    streamEpochRef.current += 1;
+    setStreaming(false);
+    setInput("");
+    setLoadError(null);
+
+    if (!activeWorkspaceId) {
+      setSessions([]);
+      setActiveId("");
+      setLoadingSessions(false);
+      return;
+    }
+
+    let cancelled = false;
+    setLoadingSessions(true);
+    const tick = setTimeout(() => {
+      void (async () => {
+        try {
+          const list = await apiGet<ChatSessionSummary[]>(sessionsListPath(activeWorkspaceId));
+          if (cancelled) return;
+          if (list.length === 0) {
+            const created = await createServerSession();
+            if (cancelled) return;
+            setSessions([created]);
+            setActiveId(created.id);
+            pendingDeepLinkRef.current = null;
+          } else {
+            const linked = pendingDeepLinkRef.current;
+            pendingDeepLinkRef.current = null;
+            const preferred =
+              linked && list.some((s) => s.id === linked) ? linked : list[0].id;
+            const opened = await openSession(preferred);
+            if (cancelled) return;
+            // Keep other summaries in the drawer without full histories yet.
+            const others: Session[] = list
+              .filter((s) => s.id !== opened.id)
+              .map((s) => ({
+                id: s.id,
+                title: s.title,
+                messages: [],
+                createdAt: new Date(s.updated_at),
+              }));
+            setSessions([opened, ...others]);
+            if (linked && searchParams.get("session")) {
+              const next = new URLSearchParams(searchParams);
+              next.delete("session");
+              setSearchParams(next, { replace: true });
+            }
+          }
+          setLoadError(null);
+        } catch (e) {
+          if (cancelled) return;
+          setSessions([]);
+          setActiveId("");
+          setLoadError(e instanceof ApiError ? e.message : "Couldn't load chat sessions.");
+        } finally {
+          if (!cancelled) setLoadingSessions(false);
+        }
+      })();
+    }, 0);
+    return () => {
+      cancelled = true;
+      clearTimeout(tick);
+    };
+    // searchParams / setSearchParams are read only to consume ?session= once;
+    // listing them would re-hydrate when the param is cleared.
+  }, [activeWorkspaceId, workspacesReady, createServerSession, openSession]);
+
   const sendMessage = useCallback(
     async (text: string) => {
-      if (!text.trim() || streaming) return;
+      if (!text.trim() || streaming || !activeWorkspaceId || !activeId) return;
       const sessionId = activeId;
+      const epoch = streamEpochRef.current;
+      streamAbortRef.current?.abort();
+      const abort = new AbortController();
+      streamAbortRef.current = abort;
+
       const userMsg: Message = { id: generateId(), role: "user", content: text.trim(), timestamp: new Date() };
       const assistantId = generateId();
       const assistantMsg: Message = {
@@ -307,7 +450,6 @@ export default function ChatPage() {
         timestamp: new Date(),
       };
 
-      // Build bounded history (prior turns + this one) — the backend is otherwise stateless per request.
       const prior = (sessions.find((s) => s.id === sessionId)?.messages ?? [])
         .filter((m) => m.content)
         .map((m) => ({ role: m.role, content: m.content }));
@@ -323,20 +465,26 @@ export default function ChatPage() {
       setStreaming(true);
       setTimeout(() => textareaRef.current?.focus(), 0);
 
-      const patchAssistant = (fn: (m: Message) => Message) =>
+      const patchAssistant = (fn: (m: Message) => Message) => {
+        if (streamEpochRef.current !== epoch) return;
         updateSession(sessionId, (s) => ({
           ...s,
           messages: s.messages.map((m) => (m.id === assistantId ? fn(m) : m)),
         }));
+      };
 
       try {
         const res = await fetch("/v1/chat/stream", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           credentials: "same-origin",
-          // The active workspace lets the backend answer a work request with
-          // the brief interview instead of the model (SPEC-091726-7c2a).
-          body: JSON.stringify({ model, messages: outbound, workspace_id: activeWorkspaceId ?? undefined }),
+          signal: abort.signal,
+          body: JSON.stringify({
+            model,
+            messages: outbound,
+            workspace_id: activeWorkspaceId,
+            session_id: sessionId,
+          }),
         });
         if (!res.ok || !res.body) throw new Error(fallbackMessage(res.status));
 
@@ -412,16 +560,22 @@ export default function ChatPage() {
         if (!gotContent) {
           patchAssistant((m) => ({ ...m, content: m.content || "(no response)", status: undefined }));
         }
-      } catch (e: any) {
+      } catch (e: unknown) {
+        if (abort.signal.aborted || (e instanceof DOMException && e.name === "AbortError")) {
+          return;
+        }
+        const message = e instanceof Error ? e.message : "stream failed";
         patchAssistant((m) => ({
           ...m,
           status: undefined,
           steps: (m.steps ?? []).map((st) => (st.status === "running" ? { ...st, status: "error" } : st)),
-          content: `Error: ${e.message}`,
+          content: `Error: ${message}`,
         }));
       } finally {
-        setStreaming(false);
-        setTimeout(() => textareaRef.current?.focus(), 0);
+        if (streamEpochRef.current === epoch) {
+          setStreaming(false);
+          setTimeout(() => textareaRef.current?.focus(), 0);
+        }
       }
     },
     [activeId, streaming, model, sessions, updateSession, activeWorkspaceId],
@@ -430,25 +584,67 @@ export default function ChatPage() {
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
-      sendMessage(input);
+      void sendMessage(input);
     }
   };
 
+  const abortActiveStream = () => {
+    streamAbortRef.current?.abort();
+    streamAbortRef.current = null;
+    streamEpochRef.current += 1;
+    setStreaming(false);
+  };
+
   const newSession = () => {
-    const s = createSession();
-    setSessions((prev) => [s, ...prev]);
-    setActiveId(s.id);
-    setDrawerOpen(false);
-    setTimeout(() => textareaRef.current?.focus(), 0);
+    if (!activeWorkspaceId || loadingSessions) return;
+    abortActiveStream();
+    void (async () => {
+      try {
+        await createServerSession();
+        setLoadError(null);
+        setDrawerOpen(false);
+        setTimeout(() => textareaRef.current?.focus(), 0);
+      } catch (e) {
+        setLoadError(e instanceof ApiError ? e.message : "Couldn't create a chat session.");
+      }
+    })();
   };
 
   const switchSession = (id: string) => {
-    setActiveId(id);
-    setDrawerOpen(false);
-    setTimeout(() => textareaRef.current?.focus(), 0);
+    if (id === activeId) {
+      setDrawerOpen(false);
+      return;
+    }
+    abortActiveStream();
+    void (async () => {
+      try {
+        await openSession(id);
+        setLoadError(null);
+        setDrawerOpen(false);
+        setTimeout(() => textareaRef.current?.focus(), 0);
+      } catch (e) {
+        setLoadError(e instanceof ApiError ? e.message : "Couldn't open that chat session.");
+      }
+    })();
   };
 
-  const isEmpty = activeSession.messages.length === 0;
+  const canCompose = Boolean(activeWorkspaceId && activeId && !loadingSessions && !loadError);
+  const isEmpty = canCompose && activeSession.messages.length === 0;
+
+  if (workspacesReady && !activeWorkspaceId) {
+    return (
+      <div className="chat-layout">
+        <main className="chat-main">
+          <div className="empty-state" role="status">
+            <p className="empty-title">Select a Workspace</p>
+            <p className="empty-subtitle">
+              Chat sessions are Workspace-scoped. Pick or create a Workspace in the tab bar first.
+            </p>
+          </div>
+        </main>
+      </div>
+    );
+  }
 
   return (
     <div className="chat-layout">
@@ -456,7 +652,12 @@ export default function ChatPage() {
       <aside className={`drawer${drawerOpen ? " drawer--open" : ""}`} aria-label="Chat sessions">
         <div className="drawer-header">
           <span className="drawer-title">Sessions</span>
-          <button className="btn-icon" onClick={newSession} aria-label="New chat">
+          <button
+            className="btn-icon"
+            onClick={newSession}
+            aria-label="New chat"
+            disabled={!activeWorkspaceId || loadingSessions}
+          >
             ＋
           </button>
         </div>
@@ -518,6 +719,17 @@ export default function ChatPage() {
         <main className="chat-main">
           {activeSession.brief && <BriefSoFar brief={activeSession.brief} />}
           <div role="log" aria-live="polite" aria-label="Chat messages" className="message-list">
+            {loadingSessions && (
+              <div className="empty-state" role="status">
+                <p className="empty-title">Loading sessions…</p>
+              </div>
+            )}
+            {!loadingSessions && loadError && (
+              <div className="empty-state" role="alert">
+                <p className="empty-title">Chat unavailable</p>
+                <p className="empty-subtitle">{loadError}</p>
+              </div>
+            )}
             {isEmpty && (
               <div className="empty-state">
                 <p className="empty-title">What can I help you with?</p>
@@ -527,7 +739,7 @@ export default function ChatPage() {
                     <button
                       key={p}
                       className="card prompt-btn"
-                      onClick={() => sendMessage(p)}
+                      onClick={() => void sendMessage(p)}
                       aria-label={`Suggested prompt: ${p}`}
                     >
                       {p}
@@ -573,12 +785,12 @@ export default function ChatPage() {
               placeholder="Message… (Enter to send, Shift+Enter for newline)"
               aria-label="Message input"
               rows={2}
-              disabled={streaming}
+              disabled={streaming || !canCompose}
             />
             <button
               className="btn-primary send-btn"
-              onClick={() => sendMessage(input)}
-              disabled={!input.trim() || streaming}
+              onClick={() => void sendMessage(input)}
+              disabled={!input.trim() || streaming || !canCompose}
               aria-label="Send message"
             >
               Send
