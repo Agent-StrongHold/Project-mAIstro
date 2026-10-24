@@ -328,6 +328,11 @@ jobs:
             echo "::error::rsi-runner image carries security-patch stamp '${stamp}', not this run (${{ github.run_id }}) — stale build-cache binding"
             exit 1
           fi
+          # Forensic context only: if dpkg-query fails (a future base image
+          # renamed or dropped libbrotli1), that must not fail the job — the
+          # real gate is the stamp assertion above, which exits 1 on any
+          # stale-cache binding. This swallow covers the listing's
+          # absence-of-package only, never a build or scan failure.
           docker run --rm --entrypoint dpkg-query \
             "maistro-rsi-runner:pr-${CANDIDATE_TAG}" \
             -W -f='${Package} ${Version}\n' libbrotli1 || true
