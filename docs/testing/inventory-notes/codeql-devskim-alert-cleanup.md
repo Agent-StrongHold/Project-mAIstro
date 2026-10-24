@@ -1,8 +1,8 @@
 ---
 inventory-delta:
   tests/: +9
-  packages/hive-conductor/backend/tests: +9
-  packages/maistro-bootstrap/tests: +1
+  packages/hive-conductor/backend/tests: +10
+  packages/maistro-bootstrap/tests: +2
   packages/maistro-design/tests: +2
 ---
 # CodeQL + DevSkim open-alert cleanup

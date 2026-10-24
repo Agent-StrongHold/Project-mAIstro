@@ -106,12 +106,10 @@ def _ensure_env_loaded() -> None:
     # then walks upward from cwd.
     root = find_maistro_engine_root()
     if root is None:
-        _rewrite_compose_litellm_hosts()
         return
 
     env_file = root / ".env"
     if not env_file.is_file():
-        _rewrite_compose_litellm_hosts()
         return
 
     values = _parse_env_file(env_file)

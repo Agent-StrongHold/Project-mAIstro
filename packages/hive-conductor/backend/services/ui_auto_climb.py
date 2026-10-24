@@ -266,5 +266,13 @@ def build_cli_parser() -> Any:
 
 
 if __name__ == "__main__":
-    args = build_cli_parser().parse_args()
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--component", default="Chat.tsx")
+    parser.add_argument("--passes", type=int, default=5)
+    parser.add_argument("--url", default="http://localhost:8101")
+    parser.add_argument("--path", default="/chat")
+    args = parser.parse_args()
+
     asyncio.run(auto_climb(args.component, args.url, args.path, args.passes))

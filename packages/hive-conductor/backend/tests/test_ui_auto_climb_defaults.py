@@ -2,6 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
+import sys
+import types
+from typing import Any
+
+import pytest
+
 
 def test_default_climb_url_is_loopback() -> None:
     from services import ui_auto_climb
@@ -23,8 +30,25 @@ def test_loopback_service_defaults_import() -> None:
     from services import mcp_defaults, pipeline_orchestrator, ui_climb_vm
 
     assert "127.0.0.1" in mcp_defaults.FILESYSTEM_MCP_URL
-    assert (
-        "127.0.0.1" in pipeline_orchestrator.FANTASIA_BASE
-        or pipeline_orchestrator.FANTASIA_BASE == ""
-    )
+    assert "127.0.0.1" in pipeline_orchestrator.FANTASIA_BASE
     assert "localhost" in ui_climb_vm.BROKER_URL
+
+
+def test_trigger_deploy_lazy_imports_tork_client(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The lazy import line must run under coverage (optional tork adapter)."""
+    from services import pipeline_orchestrator
+
+    stub = types.ModuleType("services.tork_client")
+
+    def _yaml(**_: Any) -> str:
+        return "job: yaml"
+
+    async def _submit(_yaml_text: str) -> str:
+        return "job-1"
+
+    stub.build_job_yaml = _yaml  # type: ignore[attr-defined]
+    stub.submit_job = _submit  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "services.tork_client", stub)
+
+    out = asyncio.run(pipeline_orchestrator.trigger_deploy("proj-1"))
+    assert out == {"tork_job_id": "job-1", "status": "building"}
