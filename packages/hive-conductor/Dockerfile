@@ -59,7 +59,7 @@ RUN apk add --no-cache git && \
 # ---- builder: self-contained venv (has shell/pip) ----
 # Digest-pinned (#349); shared with the runtime stage below so both resolve to
 # the same CPython build.
-FROM python:3.13.16-slim-bookworm@sha256:73aa5faee130c60da030e105ec971ccf57473fbd22ce73bd6fc9ba99a40b838d AS pybuild
+FROM python:3.15.0-slim-bookworm@sha256:0e019bbdfb5d9874cb2389f1c2884b64aa2ac97c99960b5bc521cef978c0617d AS pybuild
 WORKDIR /app
 # uv is the installer tool image — pinned to the 0.12.21 release by digest
 # (#349); a `:latest` tag could swap the installer under every build with no
@@ -188,7 +188,7 @@ RUN mkdir -p /app/state_seed
 # security.yml builds this stage with `--no-cache-filter runtime-apt`. The
 # 2026-10-22 base-digest bump (#1152) additionally invalidates the previously
 # cached apt layer.
-FROM python:3.13.16-slim-bookworm@sha256:73aa5faee130c60da030e105ec971ccf57473fbd22ce73bd6fc9ba99a40b838d AS runtime-apt
+FROM python:3.15.0-slim-bookworm@sha256:0e019bbdfb5d9874cb2389f1c2884b64aa2ac97c99960b5bc521cef978c0617d AS runtime-apt
 
 # Security patches the pinned base digest froze at its 2026-10-22 build (trivy:
 # perl-base x3 CRITICAL + x4 HIGH, libpcre2 HIGH on debian 12.15, all fixed in
