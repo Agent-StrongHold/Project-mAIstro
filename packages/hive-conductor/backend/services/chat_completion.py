@@ -2992,6 +2992,12 @@ PROFILE_SCHEMA = {
         "model_preferences",
         "topics_to_avoid",
         "assumptions_to_avoid",
+        # #1050: explicit Workspace default landing surface (path). UI + API
+        # + profile_set share this field; missing → Workspace Home.
+        "workspace_default_landing",
+        # #1050: how eagerly to restore a prior surface after absence
+        # (off|brief|balanced|generous). Continuity consumer is #1822.
+        "workspace_restore_aggressiveness",
     ],
     "goals": ["current_focus", "okrs", "blockers", "definition_of_done"],
     "communication": ["challenge_style", "presentation_format", "terminology"],
@@ -3036,11 +3042,15 @@ async def _tool_profile_set(
     value = args.get("value", "")
     if not field or not value:
         return {"error": "field and value required"}
+    from services.workspace_preferences import PreferenceValueError
+
     try:
         # Off the loop: a profile write waits inside the acknowledged `put_raw`
         # (a `State.submit_sync`) for the writer thread to commit, and this
         # runs inside the chat request's own task.
         await asyncio.to_thread(profile_store.set_field, user_id, field, value)
+    except PreferenceValueError as exc:
+        return {"error": str(exc)}
     except profile_store.ProfilePersistenceError as exc:
         # Reported, not swallowed. The old path suppressed the write failure
         # and answered `updated: True`, so the model told the user their fact
@@ -3100,13 +3110,23 @@ PROFILE_TOOLS = [
         "type": "function",
         "function": {
             "name": "profile_set",
-            "description": "Set a profile field. Use when user shares info about themselves, their preferences, or corrections.",
+            "description": (
+                "Set a profile field. Use when user shares info about themselves, "
+                "their preferences, or corrections. Workspace product prefs: "
+                "workspace_default_landing (path: /home|/chat|/goals|/backlog|/work-items); "
+                "workspace_restore_aggressiveness (off|brief|balanced|generous — "
+                "how long to restore the prior surface after absence)."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "field": {
                         "type": "string",
-                        "description": "Field name (e.g. 'name', 'role', 'response_style', 'current_focus')",
+                        "description": (
+                            "Field name (e.g. 'name', 'role', 'response_style', "
+                            "'current_focus', 'workspace_default_landing', "
+                            "'workspace_restore_aggressiveness')"
+                        ),
                     },
                     "value": {"type": "string", "description": "The value to store"},
                 },
