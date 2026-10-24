@@ -120,11 +120,11 @@ def _expected_clause(candidates: set[str]) -> str:
     ordered = sorted(candidates)
     if len(ordered) == 1:
         return ordered[0]
-    return "one of " + ", ".join(ordered)
+    return "one of " + ", ".join(ordered) + " (" + " or ".join(ordered) + ")"
 
 
 def parse_actual(text: str) -> set[str]:
-    pins: set[str] = {}
+    pins: dict[str, str] = {}
     for line in text.splitlines():
         line = line.strip()
         if not line or line.startswith(("+", "*", "-", "WARN", "Using", "Checked")):
