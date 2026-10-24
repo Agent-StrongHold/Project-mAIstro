@@ -132,15 +132,20 @@ def test_split_resolution_reconciles_with_whichever_branch_the_image_resolved(
 def test_split_resolution_still_fails_on_a_version_neither_branch_pins(
     gate, tmp_path, monkeypatch, capsys
 ):
+    """A version the lock offers under NEITHER marker still fails — the
+    marker-aware gate names the pin the image's own interpreter selects
+    (0.22.9 on a 3.13 image), not a set-arbitrary survivor. Without the
+    dumped interpreter version the split falls back to the lenient
+    treatment (test_marker_split_with_unevaluatable_marker_stays_lenient):
+    gating nothing beats guessing a row."""
     expected = _write_expected(tmp_path, SPLIT_EXPORT)
-    _install_docker(monkeypatch, gate, _Docker(_dump("beartype==0.20.0")))
+    _install_docker(
+        monkeypatch, gate, _Docker(_dump("python-full-version 3.13.16", "beartype==0.20.0"))
+    )
     monkeypatch.setattr(sys, "argv", _argv(expected))
     assert gate.main() == 1
     out = capsys.readouterr().out
-    assert (
-        "version mismatch     : beartype==0.20.0 (image)"
-        " != one of beartype==0.22.9, beartype==0.23.1" in out
-    )
+    assert "version mismatch     : beartype==0.20.0 (image) != beartype==0.22.9" in out
     # Still a single named mismatch — not a confusing missing/extra pair.
     assert "locked, not in image" not in out
     assert "in image, not locked" not in out
