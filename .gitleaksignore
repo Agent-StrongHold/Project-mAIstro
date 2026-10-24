@@ -155,3 +155,18 @@ c6d2fbdba48c38cc5ab86f2b537c8ee047e26c8d:scripts/smoke-engine-canvas.sh:generic-
 # and `gitleaks git` scans each commit's own patch. Paraphrased deliberately:
 # quoting the fixture verbatim here would trip the same rule in this file.
 4b1284897ef07feca817409d4e605dd61bd28e13:tests/migrations/test_legacy_principal_ownership_live.py:generic-api-key:102
+# ---- #1690's cross-replica auth-composition test (fixed at source; the
+# introducing commit is history) ----
+# Commit 593295177 assigned synthetic principal literals
+# ("alice-secret-1690" / "mallory-secret-1690") to *token variables in the
+# two-process auth test. They are throwaway API_KEYS-stub bearers that
+# authenticate to nothing outside the test's own spawned server. Commit
+# cd0eadd02 renamed variables and values to principal-shaped strings, per
+# the .gitleaks.toml guidance to fix such lines at source — but `gitleaks
+# git` scans each commit's own patch, so the range scan keeps reporting the
+# introducing commit until history is rewritten, which a PR branch must not
+# do. These two fingerprints cover exactly that one historical patch; the
+# file at HEAD is scanner-clean on its own (verified: the base..head scan
+# reports nothing after these entries).
+5932951775677edaf0decb5b04e61fce2f679b5c:packages/maistro-server/tests/test_task_cross_replica_visibility.py:generic-api-key:500
+5932951775677edaf0decb5b04e61fce2f679b5c:packages/maistro-server/tests/test_task_cross_replica_visibility.py:generic-api-key:501
