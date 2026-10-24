@@ -23,7 +23,21 @@ or placeholder-only section.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Workspace Attention no longer 500s without a graph spine (#1049).** Standalone
+  / e2e Conductor (no wired Container graph store) still returns Attention as a
+  200 with `summary.hitl_unavailable: true` and any failed-Run projections; HITL
+  pauses require the canonical spine and are omitted rather than crashing the
+  page.
+
 ### Added
+
+- **Workspace Attention page and nav (#1049, partial).** `/attention` lists the
+  existing Workspace Attention projection (HITL pauses + failed Runs) with the
+  backend summary and Run inspection links. Answering still uses the HITL API
+  named by `answer_href`; defer/dismiss and Messages/Optimizer MERGE remain
+  follow-ons.
 
 - **Workspace Home is the default Mission-Control landing (#1048, partial).**
   Authenticated `/` now opens `/home`, which reads the existing Home layout and

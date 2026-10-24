@@ -17,6 +17,7 @@ import Setup from "./pages/Setup";
 // first paint of every session, so splitting them would only add a round
 // trip with nothing to show meanwhile.
 const Agents = lazy(() => import("./pages/Agents"));
+const Attention = lazy(() => import("./pages/Attention"));
 const AuditLog = lazy(() => import("./pages/AuditLog"));
 const Backlog = lazy(() => import("./pages/Backlog"));
 const Chat = lazy(() => import("./pages/Chat"));
@@ -190,6 +191,9 @@ function AppRoutes() {
                   <Route path="home" element={<Home />} />
                   <Route path="dashboard" element={<Dashboard />} />
                   <Route path="chat" element={<Chat />} />
+                  {/* #1049: Attention is the Workspace orchestration inbox
+                      (read-only projection). Home links default here. */}
+                  <Route path="attention" element={<Attention />} />
                   <Route path="missions" element={<Missions />} />
                   <Route path="backlog" element={<Backlog />} />
                   <Route path="dags" element={<DagBuilder />} />
