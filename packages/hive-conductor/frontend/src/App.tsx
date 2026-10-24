@@ -31,6 +31,7 @@ const DesignStudio = lazy(() => import("./pages/DesignStudio"));
 const DeckBuilder = lazy(() => import("./pages/DeckBuilder"));
 const Docs = lazy(() => import("./pages/Docs"));
 const Evolution = lazy(() => import("./pages/Evolution"));
+const Goals = lazy(() => import("./pages/Goals"));
 const RSI = lazy(() => import("./pages/RSI"));
 const MCP = lazy(() => import("./pages/MCP"));
 const Memory = lazy(() => import("./pages/Memory"));
@@ -192,6 +193,7 @@ function AppRoutes() {
                   <Route path="backlog" element={<Backlog />} />
                   <Route path="dags" element={<DagBuilder />} />
                   <Route path="dag-runs" element={<DagRuns />} />
+                  <Route path="goals" element={<Goals />} />
                   <Route path="schedules" element={<Schedules />} />
                   <Route path="agents" element={<Agents />} />
                   <Route path="work-items" element={<WorkItems />} />

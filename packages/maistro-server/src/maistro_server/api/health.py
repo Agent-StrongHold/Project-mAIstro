@@ -61,7 +61,7 @@ def _admin_diagnostics_authorized(
     facts (backend/durable per store family) ride the same gate: they are
     operator diagnostics, not public surface.
     """
-    if not settings.api_keys:
+    if not settings.api_keys and not settings.admin_api_keys:
         return False
     token = credentials.credentials if credentials is not None else ""
     principal = resolve_token_principal(token, settings)

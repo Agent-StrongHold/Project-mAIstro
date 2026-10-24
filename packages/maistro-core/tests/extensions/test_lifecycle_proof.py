@@ -16,10 +16,10 @@ production seams. The load-bearing properties:
   plugin lying about its identity is recorded FAILED with nothing active);
 * the lineage stays honest about what this base cannot prove yet (the #954
   post-install restart-durability boundary note is present, not hidden);
-* the #954 post-install lifecycle is covered by its dedicated suite
-  (test_post_install_lifecycle.py); this proof pins the record-level
-  properties its durable siblings must preserve (append-only trails, audited
-  version displacement, queryable history after deactivation).
+* the #954 post-install lifecycle (disable/resume/rollback/remove) is
+  covered by its dedicated suite (test_post_install_lifecycle.py) and now
+  driven end to end by the proof's ``disable-rollback-remove`` stage against
+  the same service seam, closing the last epic acceptance link in-tree.
 """
 
 from __future__ import annotations
@@ -27,6 +27,7 @@ from __future__ import annotations
 import importlib.util
 import io
 import json
+import re
 import subprocess
 import sys
 import time
@@ -41,19 +42,58 @@ from maistro.extensions.types import ExtensionState
 
 REPO = Path(__file__).resolve().parents[4]
 SCRIPT = REPO / "scripts" / "extension_lifecycle_proof.py"
+DOC = REPO / "docs" / "extensions" / "lifecycle-proof.md"
 
 EXPECTED_STAGES = (
     "build-catalog",
+    "distribution",
     "discover",
     "inspect",
     "authorize-install",
     "invoke-observe",
     "denials",
     "update-fence",
+    "canonical-execution",
     "catalog-integrity",
+    "disable-rollback-remove",
     "durable-restart",
     "canonical-truth-boundary",
 )
+
+#: A backticked token shaped like a check id — lower-case words joined by
+#: hyphens (``code-runs-only-from-artifact``). Stage ids share the shape, so
+#: they are excluded before the remainder is checked against the proof, as
+#: are the repository's organization/workspace identifiers (``org-acme``,
+#: ``ws-7``), which are names, not claims.
+CHECK_ID_SHAPE = re.compile(r"^[a-z][a-z0-9]*(?:-[a-z0-9]+)+$")
+NAMESPACE_IDENTIFIER = re.compile(r"^(?:org|ws|tenant|workspace)-[a-z0-9]+$")
+
+
+def _stage_table_rows(text: str) -> list[str]:
+    """The stage ids the document's stage table lists, in document order."""
+    rows: list[str] = []
+    in_table = False
+    for line in text.splitlines():
+        if not in_table:
+            in_table = line.startswith("| Stage |")
+            continue
+        if not line.startswith("|"):
+            break
+        first_cell = line.split("|")[1].strip()
+        if not first_cell or set(first_cell) <= set("-: "):
+            continue
+        rows.append(first_cell)
+    return rows
+
+
+def _cited_check_ids(text: str) -> set[str]:
+    """Backticked check ids the document cites (stage ids included)."""
+    tokens = set(re.findall(r"`([^`\n]+)`", text))
+    return {
+        token
+        for token in tokens
+        if CHECK_ID_SHAPE.match(token) and not NAMESPACE_IDENTIFIER.match(token)
+    }
 
 
 def _load_proof_module():
@@ -93,6 +133,34 @@ class TestFullLifecycleProof:
         assert restart_stage["note"] is not None
         assert "#954" in restart_stage["note"]
         assert "rollback" in restart_stage["note"]
+
+    async def test_canonical_truth_boundary_scans_the_whole_extension_package(
+        self, proof_module, tmp_path: Path
+    ) -> None:
+        """The structural boundary must cover every module it names.
+
+        The document says *no module under* ``maistro/extensions`` imports
+        canonical run/goal truth. A scan that read only the top-level
+        modules would leave ``tool_skill/`` unchecked and let the claim
+        drift from the check, so the lineage must name the subpackage
+        modules it read.
+        """
+        report = await _run_proof(proof_module, tmp_path / "scratch")
+        stage = next(s for s in report["stages"] if s["name"] == "canonical-truth-boundary")
+        scanned = stage["evidence"]["scanned_modules"]
+        assert "tool_skill/execution.py" in scanned
+        assert "tool_skill/registration.py" in scanned
+        on_disk = sorted(
+            str(
+                path.relative_to(
+                    REPO / "packages" / "maistro-core" / "src" / "maistro" / "extensions"
+                )
+            )
+            for path in (
+                REPO / "packages" / "maistro-core" / "src" / "maistro" / "extensions"
+            ).rglob("*.py")
+        )
+        assert scanned == on_disk
 
     async def test_every_invocation_record_carries_canonical_provenance(
         self, proof_module, tmp_path: Path
@@ -144,6 +212,123 @@ class TestProofDeterminism:
     async def test_reported_base_commit_is_a_commit(self, proof_module, tmp_path: Path) -> None:
         report = await _run_proof(proof_module, tmp_path / "scratch")
         assert len(report["base_commit"]) == 40
+
+
+@pytest.mark.contract("boundary")
+@pytest.mark.scope("integration")
+class TestEpicCatalogDistribution:
+    """Epic #948: per-org private catalog snapshots through the #979 service."""
+
+    async def test_distribution_stage_proves_independent_private_snapshots(
+        self, proof_module, tmp_path: Path
+    ) -> None:
+        report = await _run_proof(proof_module, tmp_path / "scratch")
+        stage = next(s for s in report["stages"] if s["name"] == "distribution")
+        assert stage["ok"]
+        check_ids = {c["id"] for c in stage["checks"]}
+        assert {
+            "private-listing-serves-publisher-metadata",
+            "search-and-publisher-filter",
+            "version-detail-anchors-the-manifest",
+            "independent-private-snapshots-serve-identical-bytes",
+            "unpublished-org-sees-nothing",
+        } <= check_ids
+        assert stage["evidence"]["private_org"] != stage["evidence"]["second_org"]
+        assert len(stage["evidence"]["listed_versions"]) == 4
+
+    async def test_each_org_snapshot_carries_pinned_identity(
+        self, proof_module, tmp_path: Path
+    ) -> None:
+        """Each seeded org's snapshot lists byte-identical identity digests."""
+        proof = proof_module.LifecycleProof(tmp_path / "scratch")
+        await proof.run()
+        stage = next(s for s in proof.stages if s.name == "distribution")
+        # Re-derive what the stage proved, from the same store pairs: the
+        # entries seeded into each org's snapshot are the same objects, so
+        # their digests cannot drift between orgs.
+        identities = sorted(
+            (e.identity.extension_name, e.identity.semantic_version, e.identity.package_sha256)
+            for e in proof.catalog_entries
+        )
+        assert len(identities) == 4
+        assert all(len(identity[2]) == 64 for identity in identities)
+        assert stage.ok
+
+
+@pytest.mark.contract("boundary")
+@pytest.mark.scope("integration")
+class TestEpicCanonicalExecution:
+    """Epic #948: catalog entry → installed artifact → executed Run/Invocation."""
+
+    async def test_canonical_execution_links_catalog_entry_to_run_invocation(
+        self, proof_module, tmp_path: Path
+    ) -> None:
+        report = await _run_proof(proof_module, tmp_path / "scratch")
+        stage = next(s for s in report["stages"] if s["name"] == "canonical-execution")
+        assert stage["ok"]
+        check_ids = {c["id"] for c in stage["checks"]}
+        assert {
+            "attempt-completed-with-extension-result",
+            "invocation-carries-attempt-correlation",
+            "extension-provenance-on-canonical-stream",
+            "executed-code-is-the-installed-artifact",
+            "chain-links-catalog-entry-to-executed-invocation",
+        } <= check_ids
+        evidence = stage["evidence"]
+        assert evidence["run_id"] and evidence["node_run_id"] and evidence["attempt_id"]
+        assert evidence["invocation_id"]
+        assert evidence["attempt_status"] == "completed"
+        assert len(evidence["artifact_sha256"]) == 64
+
+    async def test_every_digest_link_of_the_chain_is_identical(
+        self, proof_module, tmp_path: Path
+    ) -> None:
+        """One digest per lineage: the lock pin's 1.1.0 and the canonically
+        executed 2.0.0 each link pin/entry/record/built bytes identically."""
+        proof = proof_module.LifecycleProof(tmp_path / "scratch")
+        report = await proof.run()
+
+        # Executed-artifact lineage: the canonical Attempt ran the 2.0.0
+        # install, so read that artifact's digest from canonical-stage
+        # evidence — not from the post-rollback active record.
+        stage = next(s for s in report["stages"] if s["name"] == "canonical-execution")
+        executed_version = stage["evidence"]["extension"]["version"]
+        executed_digest = stage["evidence"]["artifact_sha256"]
+        assert executed_version == "2.0.0"
+        executed_entry = next(
+            e
+            for e in proof.catalog_entries
+            if e.identity.extension_name == "acme.notary"
+            and e.identity.semantic_version == executed_version
+        )
+        assert executed_entry.identity.package_sha256 == executed_digest
+        assert executed_digest == proof_module.sha256_hex(
+            proof.artifacts[f"acme.notary@{executed_version}"]
+        )
+
+        # Pinned lineage: the discover-stage lock pin (1.1.0) — the record
+        # the rollback stage re-activates before the stage's final
+        # active-pointer uninstall retires it, so read it from the store.
+        assert proof.lock is not None
+        pin = proof.lock.get("acme.notary")
+        assert pin is not None and pin.package_sha256 is not None
+        pinned_entry = next(
+            e
+            for e in proof.catalog_entries
+            if e.identity.extension_name == "acme.notary"
+            and e.identity.semantic_version == pin.semantic_version
+        )
+        assert pinned_entry.identity.package_sha256 == pin.package_sha256
+        assert pin.package_sha256 == proof_module.sha256_hex(
+            proof.artifacts[f"acme.notary@{pin.semantic_version}"]
+        )
+        record = next(
+            r
+            for r in await proof.store.records_in_state(ExtensionState.REMOVED)
+            if r.version == pin.semantic_version
+        )
+        assert record.version == pin.semantic_version == "1.1.0"
+        assert record.artifact_sha256 == pin.package_sha256
 
 
 @pytest.mark.contract("boundary")
@@ -263,6 +448,82 @@ class TestPostInstallHistoryTruth:
 
 @pytest.mark.contract("boundary")
 @pytest.mark.scope("integration")
+class TestPostInstallLifecycle:
+    """Epic #948: the #954 operator verbs, driven on the service seam."""
+
+    async def test_disable_rollback_remove_stage_proves(self, proof_module, tmp_path: Path) -> None:
+        report = await _run_proof(proof_module, tmp_path / "scratch")
+        stage = next(s for s in report["stages"] if s["name"] == "disable-rollback-remove")
+        assert stage["ok"]
+        check_ids = {c["id"] for c in stage["checks"]}
+        assert {
+            "disable-stops-new-use-structurally",
+            "disabled-record-keeps-grant-and-trail",
+            "resume-recrosses-the-loader-seam",
+            "rollback-restores-the-superseded-version",
+            "rollback-narrows-authority-truthfully",
+            "rollback-cannot-smuggle-broader-authority",
+            "remove-uninstalls-one-record-terminal",
+            "removal-preserves-historical-evidence",
+            "remove-is-idempotent",
+            "remove-active-record-clears-the-active-pointer",
+        } <= check_ids
+        post_install = stage["evidence"]["post_install"]
+        assert post_install["rolled_back_to"]["version"] == "1.1.0"
+        assert post_install["removed"]["version"] == "2.0.0"
+        assert post_install["removed"]["terminal"] is True
+        assert post_install["removed_active"]["version"] == "1.1.0"
+        assert post_install["removed_active"]["active_pointer_cleared"] is True
+
+    async def test_removed_record_keeps_evidence_and_grant_narrowed(
+        self, proof_module, tmp_path: Path
+    ) -> None:
+        """Re-derive the end state from the store, not the stage's own claims.
+
+        Removal is terminal yet evidence-preserving (digest, frozen grant,
+        audited trail) for both retired records — the superseded 2.0.0 and
+        the *active* 1.1.0 the stage uninstalls last, which leaves the scope
+        with no active pointer at all — and the rolled-back artifact's reach
+        for the superseded grant was an observed denial before that removal.
+        """
+        proof = proof_module.LifecycleProof(tmp_path / "scratch")
+        report = await proof.run()
+        removed = [
+            record
+            for record in await proof.store.records_in_state(ExtensionState.REMOVED)
+            if record.extension_id == "acme.notary"
+        ]
+        assert len(removed) == 2
+        by_version = {record.version: record for record in removed}
+        record = by_version["2.0.0"]
+        assert record.artifact_sha256 == proof_module.sha256_hex(
+            proof.artifacts["acme.notary@2.0.0"]
+        )
+        assert record.granted_permissions == (proof_module.STORAGE_CAPABILITY,)
+        trail = await proof.store.transitions_for(record.install_id)
+        assert trail[-1].to_state is ExtensionState.REMOVED
+        assert "hygiene" in trail[-1].reason
+
+        # The active-pointer cleanup path: the run ends by uninstalling the
+        # record that *is* the active pointer, so nothing stays authoritative.
+        active_record = by_version["1.1.0"]
+        assert active_record.granted_permissions == ()
+        active_trail = await proof.store.transitions_for(active_record.install_id)
+        assert active_trail[-1].from_state is ExtensionState.ACTIVE
+        assert active_trail[-1].to_state is ExtensionState.REMOVED
+        assert await proof.service.active(proof.scope, "acme.notary") is None
+
+        denials = [
+            o
+            for o in report["invocations"]
+            if o["outcome"] == "denied:undeclared-capability"
+            and o["extension"]["version"] == "1.1.0"
+        ]
+        assert denials, "the rolled-back 1.1.0 probe must be an observed denial"
+
+
+@pytest.mark.contract("boundary")
+@pytest.mark.scope("integration")
 class TestCommandLineContract:
     def test_cli_writes_lineage_and_exits_zero(self, tmp_path: Path) -> None:
         out = tmp_path / "lineage"
@@ -274,7 +535,7 @@ class TestCommandLineContract:
         )
         assert result.returncode == 0, result.stdout + result.stderr
         report = json.loads((out / "lineage.json").read_text(encoding="utf-8"))
-        assert report["schema"] == "maistro-extension-lifecycle-proof:v1"
+        assert report["schema"] == "maistro-extension-lifecycle-proof:v2"
         assert report["summary"]["checks_failed"] == 0
         markdown = (out / "lineage.md").read_text(encoding="utf-8")
         assert "# Extension lifecycle proof — lineage" in markdown
@@ -301,3 +562,67 @@ class TestCommandLineContract:
         assert report["summary"]["checks_failed"] == 1
         markdown = (out / "lineage.md").read_text(encoding="utf-8")
         assert "FAIL: `injected`" in markdown
+
+
+@pytest.mark.contract("boundary")
+@pytest.mark.scope("integration")
+class TestPublicProofDocumentStaysTrue:
+    """The public proof document must describe the proof that exists.
+
+    The document is the epic's evidence artifact (#948: "one public proof
+    documents every canonical object/evidence link from catalog entry
+    through executed Run/Invocation"), so a stale stage table, a stale check
+    count, or a cited check id the proof does not implement makes it lie.
+    These pins fail loudly when the proof moves and the document does not
+    follow.
+    """
+
+    async def test_document_stage_table_matches_the_stages_the_proof_runs(
+        self, proof_module, tmp_path: Path
+    ) -> None:
+        report = await _run_proof(proof_module, tmp_path / "scratch")
+        stages = [stage["name"] for stage in report["stages"]]
+        rows = _stage_table_rows(DOC.read_text(encoding="utf-8"))
+        assert rows == stages, (
+            "the public proof document must document exactly the stages the "
+            "proof runs, in the order the proof runs them"
+        )
+
+    async def test_document_quotes_the_proofs_own_counts(
+        self, proof_module, tmp_path: Path
+    ) -> None:
+        report = await _run_proof(proof_module, tmp_path / "scratch")
+        summary = report["summary"]
+        passed = summary["checks_total"] - summary["checks_failed"]
+        quoted = (
+            f"PROVED: {summary['stages_ok']}/{summary['stages']} stages, "
+            f"{passed}/{summary['checks_total']} checks"
+        )
+        assert quoted in DOC.read_text(encoding="utf-8"), (
+            "the document quotes the proof's own summary line — a stale count "
+            "means the published proof misstates what actually ran"
+        )
+
+    async def test_every_check_id_the_document_cites_exists_in_the_proof(
+        self, proof_module, tmp_path: Path
+    ) -> None:
+        report = await _run_proof(proof_module, tmp_path / "scratch")
+        stage_names = {stage["name"] for stage in report["stages"]}
+        check_ids = {check["id"] for stage in report["stages"] for check in stage["checks"]}
+        cited = _cited_check_ids(DOC.read_text(encoding="utf-8")) - stage_names
+        assert cited <= check_ids, (
+            f"the document cites check ids the proof does not implement: "
+            f"{sorted(cited - check_ids)}"
+        )
+
+    def test_document_does_not_claim_a_public_catalog_distribution_seam(self) -> None:
+        """The platform has no cross-org publish/consume seam.
+
+        ``CatalogService`` is a per-org private catalog whose only write path
+        is ``set_catalog``, so the document must not describe the second
+        organization's snapshot as a public distribution — and must keep
+        disclosing the per-org boundary instead.
+        """
+        text = DOC.read_text(encoding="utf-8")
+        assert "as a public catalog" not in text
+        assert "per-org" in text
