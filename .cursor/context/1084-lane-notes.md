@@ -1,7 +1,7 @@
 ---
 lane: L1084
 issue: "#1084 [M1-D2][#56] Converge shipped Hive chat and Agent model egress onto canonical Provider/Binding/Invocation"
-round: "implement, 2026-10-20"
+round: "implement+repair, 2026-10-24 (SPEC-285 incremental streaming)"
 head: ee063fde9 (merge of origin/develop e20e9f52 into auto-1084 @ bfba2d4b9)
 ---
 
@@ -14,6 +14,12 @@ head: ee063fde9 (merge of origin/develop e20e9f52 into auto-1084 @ bfba2d4b9)
 - Two repair commits follow: b728bca8a (census rekey after the radon refactor
   of execute_model_chat/_post_model_chat + bridge fakes), ee063fde9 (server
   chat door's conductor consumes persisted execution identities).
+- The 2026-10-24 repair round resolves the NEEDS-DEEP-REVIEW streaming item:
+  SPEC-285 (docs/specs/) specifies the narrow on_chunk observer seam, the
+  gateway pumps chunks live, stream_chunks bridges them through a queue, and
+  streamed calls now record usage from the terminal usage chunk. reachability
+  stays red on admission_identity — verified identical on the pre-repair head,
+  still a pre-existing base condition.
 
 ## Ratchet traps hit this round (do not rediscover)
 - radon: new/moved blocks must stay grade B; execute_model_chat and
@@ -35,10 +41,15 @@ head: ee063fde9 (merge of origin/develop e20e9f52 into auto-1084 @ bfba2d4b9)
   ledger edit outside this lane.
 
 ## Open design item for the owner
-- Bounded work item 3 (incremental streaming through the governed lifecycle)
-  shipped as Invocation-truthful buffering: _stream_body (llm_gateway.py:299)
-  buffers, GovernedModelChatClient.stream_chunks (model_chat.py:734) replays.
-  The shipped /chat/stream route already emitted a single done frame (M0
-  decision, routes/chat.py:233), so no shipped consumer lost incremental
-  tokens — but the narrow callback/lifecycle design the issue asked to specify
-  before implementation was not written as an ADR. Needs owner review.
+
+- RESOLVED this round (SPEC-285, docs/specs/SPEC-285-model-egress-incremental-
+  streaming.md): bounded work item 3's narrow callback/lifecycle design is
+  specified, and the shipped path now honors it — _stream_body (llm_gateway.py)
+  pumps normalized chunks to an on_chunk observer while the Invocation is
+  RUNNING, stream_chunks bridges them live through a queue, and terminalization
+  still happens only after full consumption (failure → FAILED/UNKNOWN,
+  consumer abandonment → UNKNOWN cancel, dedup replay from the terminal
+  record). Streamed calls now also record usage from the terminal usage chunk,
+  which the buffered path lost entirely. Owner ratification of the streaming
+  semantics is requested in the spec's ratification note; the admission owner
+  decision (2026-09-23) is untouched.

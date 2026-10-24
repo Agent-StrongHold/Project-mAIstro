@@ -45,7 +45,8 @@ def _adapter(variant: str = "chat_completions") -> HttpOpenAIProtocolLLM:
 
 
 def _req(**kw: Any) -> ChatCompletionRequest:
-    return ChatCompletionRequest(messages=[{"role": "user", "content": "hi"}], model="m", **kw)
+    kw.setdefault("model", "m")
+    return ChatCompletionRequest(messages=[{"role": "user", "content": "hi"}], **kw)
 
 
 async def test_hive_builder_uses_container_governed_egress(
@@ -162,6 +163,44 @@ class TestStreaming:
             pytest.raises(httpx.HTTPStatusError),
         ):
             [c async for c in _adapter().stream(_req())]
+
+    async def test_stream_records_usage_on_the_governed_ledger(self) -> None:
+        """The shipped streaming bridge is the governed one, and it accounts.
+
+        Chunks flow to the caller parsed, while the Invocation that owns them
+        terminalizes with the usage the terminal usage chunk reported — the
+        accounting a buffered bridge lost (SPEC-285).
+        """
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                content=_sse(
+                    '{"choices":[{"delta":{"content":"he"}}]}',
+                    '{"choices":[{"delta":{"content":"llo"}}]}',
+                    '{"usage":{"prompt_tokens":7,"completion_tokens":2},"choices":[]}',
+                ),
+            )
+
+        adapter = _adapter()
+        with override_transport(httpx.MockTransport(handler)):
+            chunks = [c async for c in adapter.stream(_req(model="usage-probe"))]
+
+        assert [
+            c["choices"][0]["delta"]["content"]
+            for c in chunks
+            if c.get("choices") and c["choices"][0].get("delta", {}).get("content")
+        ] == ["he", "llo"]
+        egress = adapter._client._egress  # type: ignore[attr-defined]
+        rows = list(egress._effects.invocation_store._items.values())  # type: ignore[attr-defined]
+        # The adapter composes the process-ephemeral context, which earlier
+        # tests in this file may share — select this stream's Invocation by
+        # the model only it pins.
+        (mine,) = [r for r in rows if r.binding.provider_name == "usage-probe"]
+        assert mine.status.value == "completed"
+        assert mine.usage is not None
+        assert mine.usage.input_units == 7
+        assert mine.usage.output_units == 2
 
 
 class TestComplete:

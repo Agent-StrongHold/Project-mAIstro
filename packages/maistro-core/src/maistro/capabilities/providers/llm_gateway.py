@@ -28,6 +28,7 @@ reached, so no external effect occurred and the Invocation may fail retryably.
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 import httpx
@@ -296,10 +297,102 @@ def _responses_event_to_chunk(event: dict[str, object]) -> dict[str, object] | N
     return None
 
 
-async def _stream_body(response: httpx.Response, *, responses: bool) -> dict[str, object]:
-    """Buffer a stream so Invocation can terminalize after the Provider call."""
+def _stream_usage(event: dict[str, object]) -> dict[str, int] | None:
+    """Normalize one SSE event's usage report to OpenAI token fields.
 
-    chunks: list[dict[str, object]] = []
+    chat.completions streams usage as ``prompt_tokens``/``completion_tokens``
+    (a terminal chunk with empty choices); the Responses protocol reports
+    ``input_tokens``/``output_tokens`` inside its ``response.completed``
+    event. ``None`` means this event carried no measurement, which is the
+    truthful reading — an unmeasured stream must not read as zero.
+    """
+
+    usage = event.get("usage")
+    if not isinstance(usage, dict):
+        completed = event.get("response")
+        usage = completed.get("usage") if isinstance(completed, dict) else None
+        if not isinstance(usage, dict):
+            return None
+    prompt = usage.get("prompt_tokens", usage.get("input_tokens"))
+    completion = usage.get("completion_tokens", usage.get("output_tokens"))
+    if not isinstance(prompt, int) or not isinstance(completion, int):
+        return None
+    return {"prompt_tokens": prompt, "completion_tokens": completion}
+
+
+class _StreamSummary:
+    """Accumulates the terminal summary while the stream's chunks pass by live.
+
+    The Invocation terminalizes on this summary — assembled content, last
+    finish reason, last usage report, and the chunk list a deduplicated replay
+    needs — exactly as it terminalizes on a non-streaming body (SPEC-285).
+    """
+
+    __slots__ = ("_chunks", "_content_parts", "_finish_reason", "_usage")
+
+    def __init__(self) -> None:
+        self._chunks: list[dict[str, object]] = []
+        self._content_parts: list[str] = []
+        self._finish_reason: object = None
+        self._usage: dict[str, int] | None = None
+
+    def absorb(self, chunk: dict[str, object]) -> None:
+        """Fold one normalized chunk into the summary."""
+
+        self._chunks.append(chunk)
+        choices = chunk.get("choices")
+        if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+            self._absorb_choice(choices[0])
+
+    def _absorb_choice(self, choice: dict[str, object]) -> None:
+        delta = choice.get("delta")
+        piece = delta.get("content") if isinstance(delta, dict) else None
+        if isinstance(piece, str):
+            self._content_parts.append(piece)
+        if choice.get("finish_reason") is not None:
+            self._finish_reason = choice.get("finish_reason")
+
+    def observe_usage(self, event: dict[str, object]) -> None:
+        """Record the last usage measurement any raw event carried."""
+
+        self._usage = _stream_usage(event) or self._usage
+
+    def body(self) -> dict[str, object]:
+        """The terminal summary body the Invocation result records."""
+
+        body: dict[str, object] = {
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": "".join(self._content_parts),
+                    },
+                    "finish_reason": self._finish_reason,
+                }
+            ],
+            "_stream_chunks": self._chunks,
+        }
+        if self._usage is not None:
+            body["usage"] = self._usage
+        return body
+
+
+async def _stream_body(
+    response: httpx.Response,
+    *,
+    responses: bool,
+    on_chunk: Callable[[dict[str, object]], None] | None = None,
+) -> dict[str, object]:
+    """Pump a provider SSE body to ``on_chunk`` live and return the summary.
+
+    Every parsed chunk reaches ``on_chunk`` while the wire is still producing,
+    so the consumer of a governed stream sees tokens as the provider emits
+    them (SPEC-285). The Invocation is unaffected: it was admitted before this
+    dispatch and terminalizes on the returned summary after full consumption,
+    exactly as the non-streaming body terminalizes.
+    """
+
+    summary = _StreamSummary()
     async for line in response.aiter_lines():
         if not line or not line.startswith("data:"):
             continue
@@ -310,14 +403,16 @@ async def _stream_body(response: httpx.Response, *, responses: bool) -> dict[str
             event = json.loads(data)
         except (TypeError, ValueError):
             continue
-        if isinstance(event, dict):
-            chunk = _responses_event_to_chunk(event) if responses else event
-            if chunk is not None:
-                chunks.append(chunk)
-    return {
-        "choices": [{"message": {"role": "assistant", "content": ""}}],
-        "_stream_chunks": chunks,
-    }
+        if not isinstance(event, dict):
+            continue
+        chunk = _responses_event_to_chunk(event) if responses else event
+        if chunk is None:
+            continue
+        summary.absorb(chunk)
+        summary.observe_usage(event)
+        if on_chunk is not None:
+            on_chunk(chunk)
+    return summary.body()
 
 
 def _checked_body(response: Any) -> dict[str, object]:
@@ -414,6 +509,8 @@ async def _post_model_chat(
     request: ModelChatRequest,
     endpoint: GatewayEndpoint,
     selected: str,
+    *,
+    on_chunk: Callable[[dict[str, object]], None] | None = None,
 ) -> dict[str, object]:
     """Perform one POST (or streamed POST) under the selected protocol."""
 
@@ -435,7 +532,7 @@ async def _post_model_chat(
             if not streamed.is_success:
                 await streamed.aread()
                 _checked_body(streamed)
-            body = await _stream_body(streamed, responses=responses)
+            body = await _stream_body(streamed, responses=responses, on_chunk=on_chunk)
             body["_provider_response_headers"] = dict(streamed.headers)
             return body
     response = await client.post(
@@ -452,6 +549,8 @@ async def _dispatch_gateway_model_chat(
     provider: LlmGatewayProvider,
     request: ModelChatRequest,
     endpoint: GatewayEndpoint,
+    *,
+    on_chunk: Callable[[dict[str, object]], None] | None = None,
 ) -> dict[str, object]:
     """Transport one shipped-Provider call, selecting the request's protocol."""
 
@@ -463,14 +562,18 @@ async def _dispatch_gateway_model_chat(
         async with shared_client(timeout=endpoint.timeout_s) as client:
             if protocol == "auto" and not request.tools:
                 try:
-                    return await _post_model_chat(client, provider, request, endpoint, "responses")
+                    return await _post_model_chat(
+                        client, provider, request, endpoint, "responses", on_chunk=on_chunk
+                    )
                 except EffectNotApplied as exc:
                     if "status=401" in str(exc):
                         raise
                     return await _post_model_chat(
-                        client, provider, request, endpoint, "chat_completions"
+                        client, provider, request, endpoint, "chat_completions", on_chunk=on_chunk
                     )
-            return await _post_model_chat(client, provider, request, endpoint, protocol)
+            return await _post_model_chat(
+                client, provider, request, endpoint, protocol, on_chunk=on_chunk
+            )
     except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
         raise EffectNotApplied(f"model gateway unreachable, no effect occurred: {exc}") from exc
 
@@ -480,6 +583,7 @@ async def execute_model_chat(
     request: object,
     *,
     endpoint: GatewayEndpoint,
+    on_chunk: Callable[[dict[str, object]], None] | None = None,
 ) -> dict[str, object]:
     """Perform the one governed model HTTP call and return the canonical body.
 
@@ -492,6 +596,12 @@ async def execute_model_chat(
     first under ``auto``, then chat.completions) and may stream, but always
     through this one seam — never a second transport, a second authorization
     path, or a second Invocation.
+
+    ``on_chunk`` is the streaming observer (SPEC-285): when the request
+    streams, the gateway's normalized chunks are handed to it as they arrive,
+    before the Invocation terminalizes. It is a progress side channel only —
+    it cannot alter authorization, admission, dedup, or the terminal record.
+    Adapter-backed calls keep their buffered JSON contract and ignore it.
     """
 
     from maistro.capabilities.provider_adapters import AdapterGatewayProvider
@@ -503,7 +613,7 @@ async def execute_model_chat(
         return await _dispatch_adapter_model_chat(provider, request, endpoint)
     if not isinstance(provider, LlmGatewayProvider):
         raise TypeError(f"model-chat Invocation resolved a non-gateway provider: {provider!r}")
-    return await _dispatch_gateway_model_chat(provider, request, endpoint)
+    return await _dispatch_gateway_model_chat(provider, request, endpoint, on_chunk=on_chunk)
 
 
 class _ModelCallPreflight:
