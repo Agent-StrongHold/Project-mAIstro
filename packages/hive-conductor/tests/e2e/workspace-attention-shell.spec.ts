@@ -30,6 +30,27 @@ test.afterAll(async () => {
   await context.close();
 });
 
+/** Attention skips its API until a Workspace is active — mint one for admin. */
+async function ensureActiveWorkspace(): Promise<string> {
+  const listed = await page.request.get("/v1/workspaces");
+  expect(listed.status()).toBe(200);
+  const rows = ((await listed.json()) as { id: string; active?: boolean }[]).filter(
+    (w) => w.active !== false,
+  );
+  let workspaceId = rows[0]?.id;
+  if (!workspaceId) {
+    const created = await page.request.post("/v1/workspaces", {
+      data: { persona_template_id: "pm_fleet", name: `Attention e2e ${Date.now()}` },
+    });
+    expect(created.status()).toBe(201);
+    workspaceId = (await created.json()).id as string;
+  }
+  await page.evaluate((id) => {
+    window.localStorage.setItem("hive_active_workspace_id", id);
+  }, workspaceId);
+  return workspaceId;
+}
+
 test("Attention is reachable from the icon rail", async () => {
   await page.goto("/dashboard");
   const link = page.locator(".icon-sidebar").getByRole("link", { name: "Attention", exact: true });
@@ -40,10 +61,10 @@ test("Attention is reachable from the icon rail", async () => {
 });
 
 test("Attention loads the Workspace projection API and shows summary", async () => {
+  const workspaceId = await ensureActiveWorkspace();
   const attention = page.waitForResponse(
     (res) =>
-      res.url().includes("/attention") &&
-      res.url().includes("/v1/workspaces/") &&
+      res.url().includes(`/v1/workspaces/${workspaceId}/attention`) &&
       res.request().method() === "GET" &&
       res.ok(),
   );
