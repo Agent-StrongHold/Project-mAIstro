@@ -200,6 +200,36 @@ def test_append_message_updates_session_updated_at(authed_client: Any) -> None:
     assert after >= before
 
 
+def test_append_message_system_role_accepted_without_session_store_persist(
+    authed_client: Any,
+) -> None:
+    """SessionStore only keeps user/assistant; system is shape-parity only."""
+    sid = _create(authed_client, "x")
+    r = authed_client.post(
+        f"/v1/chat/sessions/{sid}/messages",
+        json={"role": "system", "content": "operator note"},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["role"] == "system"
+    assert r.json()["content"] == "operator note"
+    got = authed_client.get(f"/v1/chat/sessions/{sid}").json()
+    assert got["messages"] == []
+
+
+def test_history_as_messages_skips_unknown_roles() -> None:
+    from routes.chat import _history_as_messages
+
+    msgs = _history_as_messages(
+        "sess-1",
+        [
+            {"role": "user", "content": "a"},
+            {"role": "narrator", "content": "skip me"},
+            {"role": "assistant", "content": "b"},
+        ],
+    )
+    assert [(m.role, m.content) for m in msgs] == [("user", "a"), ("assistant", "b")]
+
+
 # --------------------------------------------------------------------------- #
 # POST /complete
 # --------------------------------------------------------------------------- #

@@ -99,9 +99,7 @@ def _workspace_for(user_id: str, name: str = "chat ws") -> str:
 
 
 def _create(client: Any, title: str = "a chat", *, workspace_id: str) -> str:
-    response = client.post(
-        "/v1/chat/sessions", json={"title": title, "workspace_id": workspace_id}
-    )
+    response = client.post("/v1/chat/sessions", json={"title": title, "workspace_id": workspace_id})
     assert response.status_code == 200, response.text
     return response.json()["id"]
 
