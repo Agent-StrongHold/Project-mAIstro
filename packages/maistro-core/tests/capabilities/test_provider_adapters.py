@@ -1943,6 +1943,64 @@ async def test_programmatic_registration_leaves_full_attribution_evidence(
 
 
 @pytest.mark.contract("behavioral")
+@pytest.mark.ac("SPEC-102426-976a/AC-4")
+async def test_malformed_attribution_fails_soft_and_never_breaks_the_ledger(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A payload this build cannot decode is omitted from the event, loudly.
+
+    Telemetry enrichment must never break the effect ledger (M9-I1, #976): a
+    Binding snapshot carrying an attribution payload a newer writer produced
+    (a foreign format tag, say) still completes its effect, the durable
+    Invocation row keeps the payload verbatim — evidence is never silently
+    rewritten — and the terminal audit event simply claims no extension
+    identity, with a warning naming the binding in telemetry.
+    """
+
+    captured = _CapturedGateway(_acme_response())
+    monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **kw: captured.client())
+    catalog, store = await _catalog_with(AcmeAdapter(_spec()))  # declares nothing
+    effects = _effects()
+
+    future = {
+        "format": "extension-attribution:v999",
+        "extension_id": "acme.models",
+        "version": "2.3.1",
+        "publisher": "acme",
+        "package_sha256": "a" * 64,
+        "manifest_sha256": "b" * 64,
+    }
+    result = await _egress(effects, catalog, store).complete(
+        binding=_binding(config={"adapter_id": "acme.models", "extension_attribution": future}),
+        run_id="run-future",
+        node_run_id="nr-future",
+        attempt_id="att-future",
+        effect_key="test:future-format",
+        request=ModelChatRequest(model="acme-mini", messages=[{"role": "user", "content": "h"}]),
+    )
+
+    # the effect itself completed: fail-soft telemetry, not a failed Invocation
+    stored = await effects.invocation_store.get(result.invocation_id)
+    assert stored is not None
+    assert stored.status is InvocationStatus.COMPLETED
+    # the durable snapshot keeps the payload verbatim — never rewritten
+    assert stored.binding.config["extension_attribution"] == future
+
+    events = await effects.event_store.list_stream("workspace:ws1")
+    terminal = [e for e in events if e.type == "capability.invocation.completed"]
+    assert terminal
+    assert terminal[-1].invocation_id == stored.invocation_id
+    # the live terminal event omits the fragment instead of failing
+    assert "extension" not in terminal[-1].provenance
+    # and the omission is loud: a warning naming the binding
+    warnings = [r for r in caplog.records if r.name == "maistro.capabilities.governed_invocation"]
+    assert warnings
+    assert "malformed extension attribution" in warnings[-1].getMessage()
+    assert stored.binding.binding_id in warnings[-1].getMessage()
+
+
+@pytest.mark.contract("behavioral")
 @pytest.mark.ac("SPEC-102426-976a/AC-2")
 async def test_undeclared_adapter_log_claims_no_identity(
     monkeypatch: pytest.MonkeyPatch,
