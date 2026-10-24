@@ -33,7 +33,7 @@ narrow-screen drawer (asserted by
 
 | Route | Surface | Nav label | Disposition (cutover plan §5/§9) | Replacement owner |
 |---|---|---|---|---|
-| `/chat` | Chat | Chat | PROJECT → Workspace Agent chat | #1037 (M3-D) |
+| `/chat` | Chat | Chat | PROJECT → Workspace Agent chat | #1822 (M3-D; foundation #1037 closed) |
 | `/dashboard` | Dashboard | Dashboard | DELETE v1.0 → Workspace Home | #1048 |
 | `/goals` | Goals | Goals | PROJECT → Goal/Run inspection | #65/#1036 |
 | `/design-studio` | Design Studio | Design Studio | KEEP / PROJECT v1.0 (blocker) | #95, #286, #773 |
@@ -79,7 +79,7 @@ or hides them and this issue may not promote or retire them:
 | `/topology` | Topology | Superseded by Capabilities primary nav (#2273); URL retained until delete | #2273 |
 | `/mcp` | MCP / Integrations | Superseded by Capabilities primary nav (#2273); URL retained until delete | #2273 |
 | `/memory` | Memory | Legacy surface replaced by user model / Workspace memory | #776, #1047 (M3-E) |
-| `/evolution` | Evolution Engine | Hidden for v1.0 per §9 ("DELETE/HIDE v1.0, restore v1.2"); route retirement itself is out of #1417's scope | cutover plan §9 (v1.2) |
+| `/evolution` | Evolution Engine | Hidden for v1.0 per §9 ("DELETE/HIDE v1.0, restore v1.2"); route retirement itself is out of #1417's scope | #2275 (v1.2 restore; #51 Evolve impl) |
 
 `tests/e2e/navigation-coverage.spec.ts` asserts both halves of this contract:
 these routes still render (they are not deleted) and the shell renders no nav
