@@ -92,3 +92,45 @@ ADR correctly stays `Proposed` and #1837 stays open.
 None observed for this gate. Registry-side drift (a future advisory against
 any shipped pin) is inherent to a scanner gate and is handled per-round by
 the established root-cause-then-rebuild policy.
+
+## Round 3 (job 977c8c4b7309437f) — fresh evidence at 1c000a686, post-race window
+
+The hosted re-run identified above as the only remaining repair action had not
+happened by this round; the merge-queue failure remains run 40074187701 job
+120813931856 (rsi-runner `libbrotli1 1.1.0-2+b7`, CVE-2026-111497) from
+07:41:21Z. This round re-proved the resolution mechanism FRESH, after the
+deb.debian.org trixie-security propagation window had fully passed:
+
+- `docker build -f Dockerfile.rsi-runner --no-cache-filter runtime-apt -t
+  maistro-rsi-runner:pr-2268-r3 .` → in-image `dpkg-query -W 'libbrotli*'` →
+  **1.1.0-2+deb13u1** (fixed version; the race window is closed — the mirror
+  now serves the security update consistently).
+- Gate-exact `trivy image --severity HIGH,CRITICAL --exit-code 1
+  --ignore-unfixed --ignorefile .trivyignore.yaml maistro-rsi-runner:pr-2268-r3`
+  (trivy v0.73.0, the workflow-pinned version) → **exit 0**.
+- Same fresh proof for the research image: `docker build -f Dockerfile.research
+  --no-cache-filter production-apt -t maistro-engine-research:pr-2268-r3 .` →
+  `libbrotli1 1.1.0-2+deb13u1` + `pypdf 6.21.2` in-image; gate-exact trivy →
+  **exit 0**.
+- Hosted evidence at this exact head carries over for the other two images:
+  in run 40074187701 `hive-conductor` and `maistro-engine` scanned clean, as
+  did `maistro-engine-research`; only rsi-runner hit the stale CDN edge.
+- Gates re-run at head, all exit 0: `check-adr-status-language.py` +
+  `git diff --check` (the issue's own hygiene command), `check-adr-index.py`,
+  `check-contract-markers.py`, `check-suite-inventory.py` (21 suites match),
+  `check-dependency-namespaces.py`, `check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` (1302 identities = banked),
+  `gitleaks git --redact --log-opts=4de7e906d..1c000a686 .` (no leaks),
+  CI-exact pip-audit → `pip_audit_gate.py` (only triaged ecdsa
+  PYSEC-2026-1325).
+- Issue acceptance re-verified independently (not inherited): ADR-101826-c3f1
+  recorded registration/assertion blobs replay under webauthn==3.0.1 with the
+  recorded outcomes, I1–I6 refuse with **exact message-string equality** to
+  the ADR table (8/8), and the recorded wheel sha256 matches PyPI byte-for-byte
+  (`9927b2f5…c93e31`). Scope unchanged: no `webauthn` in `uv.lock`, no
+  `packages/*/src` diff, Hybrid ADR-090726-9a4e diff empty, ADR still
+  `Proposed`, no closure keywords in lane commits or PR body.
+
+Residual action unchanged and now expected green: the next hosted evaluation
+of `Container scan + SBOM + cosign` (a rebuild re-consults the mirror per
+#795 and the race window has closed, as the r3 in-image versions above prove).
