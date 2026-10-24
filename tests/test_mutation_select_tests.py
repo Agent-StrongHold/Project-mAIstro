@@ -117,6 +117,49 @@ class TestCoverageParsing:
         with pytest.raises(ValueError, match="no entry"):
             mod.coverage_contexts({"files": {}}, "pkg/mod.py")
 
+    def test_executable_lines_are_executed_plus_missing(self, mod):
+        entry = {"executed_lines": [1, 4], "missing_lines": [7]}
+        payload = {"files": {"pkg/mod.py": entry}}
+        assert mod.coverage_executable_lines(payload, "pkg/mod.py") == ({1, 4}, {7})
+
+
+class TestExecutableFiltering:
+    """Only executable changed lines owe the gate a killing test (review: P2).
+
+    Requiring coverage of a comment or blank line fails the gate on a change
+    no mutant could ever exercise; requiring it of an import-time line fails
+    the gate on a line that provably ran. Neither is a coverage gap.
+    """
+
+    EXECUTED, MISSING = {2, 5}, {9}
+    BY_LINE: ClassVar[dict[int, list[str]]] = {2: ["t_a"]}  # 5 ran only at import: no test context
+
+    def test_a_comment_or_blank_line_is_never_a_coverage_gap(self, mod):
+        testable, non_exec, import_only = mod.partition_changed(
+            [3], self.EXECUTED, self.MISSING, self.BY_LINE
+        )
+        assert (testable, non_exec, import_only) == ([], [3], [])
+
+    def test_an_import_time_line_is_covered_even_though_no_test_owns_it(self, mod):
+        testable, non_exec, import_only = mod.partition_changed(
+            [5], self.EXECUTED, self.MISSING, self.BY_LINE
+        )
+        assert (testable, non_exec, import_only) == ([], [], [5])
+
+    def test_an_executable_unexecuted_line_stays_a_coverage_requirement(self, mod):
+        testable, non_exec, import_only = mod.partition_changed(
+            [9], self.EXECUTED, self.MISSING, self.BY_LINE
+        )
+        assert (testable, non_exec, import_only) == ([9], [], [])
+        selection = mod.group_lines(testable, {})
+        assert selection.no_coverage == [9]  # still fails the gate
+
+    def test_a_covered_executable_line_stays_testable(self, mod):
+        testable, non_exec, import_only = mod.partition_changed(
+            [2], self.EXECUTED, self.MISSING, self.BY_LINE
+        )
+        assert (testable, non_exec, import_only) == ([2], [], [])
+
 
 class TestGrouping:
     def test_lines_with_the_same_tests_collapse_into_one_group(self, mod):
@@ -162,7 +205,8 @@ class TestEndToEnd:
         src_dir.mkdir()
         (src_dir / "__init__.py").write_text("", encoding="utf-8")
         (src_dir / "calc.py").write_text(
-            "def add(a, b):\n    return a + b\n\n\ndef mul(a, b):\n    return a * b\n",
+            "THREE = 3\n\n\ndef add(a, b):\n    return a + b\n\n\ndef mul(a, b):\n"
+            "    return a * b\n",
             encoding="utf-8",
         )
         tests_dir = tmp_path / "sel_tests"
@@ -176,10 +220,13 @@ class TestEndToEnd:
         selection = mod.select(
             str(src_dir / "calc.py"),
             str(tests_dir),
-            [2, 6],
+            [1, 3, 5, 9],  # import-time const, blank line, executable returns
             env_extra={"PYTHONPATH": f"{tmp_path}:{mod._package_pythonpath()}"},
         )
         tests_by_line = {line: set(g["tests"]) for g in selection.groups for line in g["lines"]}
-        assert tests_by_line[2], "line 2 (return a + b) has no selected test"
-        assert tests_by_line[6], "line 6 (return a * b) has no selected test"
-        assert tests_by_line[2] != tests_by_line[6], "each line keeps its own killing test"
+        assert tests_by_line[5], "line 5 (return a + b) has no selected test"
+        assert tests_by_line[9], "line 9 (return a * b) has no selected test"
+        assert tests_by_line[5] != tests_by_line[9], "each line keeps its own killing test"
+        assert selection.no_coverage == [], "executable covered lines never fail the gate"
+        assert selection.non_executable == [3], "blank line excluded, not a gap"
+        assert selection.import_time_only == [1], "import-time line excluded, not a gap"

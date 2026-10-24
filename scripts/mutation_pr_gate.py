@@ -182,7 +182,12 @@ def run_group(
     pythonpath: str,
     timeout_factor: float,
 ) -> tuple[dict, float]:
-    """One cosmic-ray session for one selection group. Returns (report, seconds)."""
+    """One cosmic-ray session for one selection group. Returns (report, seconds).
+
+    The session is diff-scoped *and* restricted to this group's own changed
+    lines: a group must never score mutants its selected tests cannot see, or
+    every surviving mutant would appear in every group's report.
+    """
     tests = " ".join(group["tests"])
     identifier = f"{mutation_packet.safe_id(source)}-g{group_index}"
     session = artifacts / f"session-{identifier}.sqlite"
@@ -201,19 +206,19 @@ def run_group(
         capture_output=True,
     )
     if diff_path is not None:
-        subprocess.run(
-            [
-                sys.executable,
-                "scripts/mutation_diff_scope.py",
-                str(session),
-                "--source",
-                source,
-                "--diff",
-                str(diff_path),
-                "--require-intersection",
-            ],
-            check=True,
-        )
+        argv = [
+            sys.executable,
+            "scripts/mutation_diff_scope.py",
+            str(session),
+            "--source",
+            source,
+            "--diff",
+            str(diff_path),
+            "--require-intersection",
+        ]
+        if group["lines"]:
+            argv += ["--restrict-lines", ",".join(str(line) for line in group["lines"])]
+        subprocess.run(argv, check=True)
     with mutation_packet._restored(Path(source)):
         subprocess.run(["cosmic-ray", "exec", str(config_path), str(session)], check=True)
     seconds = time.monotonic() - mutation_start

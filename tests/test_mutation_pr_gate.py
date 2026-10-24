@@ -138,6 +138,68 @@ class TestCombineReports:
         assert identities == again
 
 
+class TestRunGroupScopesToItsOwnLines:
+    """Each group's session must be restricted to its own changed lines, not
+    the whole PR diff — otherwise mutants outside a group's selection are
+    scored against tests that cannot see them and survive artificially."""
+
+    def _fake_run(self, gate, calls):
+        def fake_run(argv, **kwargs):
+            argv = [str(part) for part in argv]
+            calls.append(argv)
+            if any(part.endswith("mutation_viability.py") for part in argv):
+                report = Path(argv[argv.index("--json") + 1])
+                report.write_text(json.dumps(_report(1, [])), encoding="utf-8")
+
+            class _Done:
+                returncode = 0
+
+            return _Done()
+
+        return fake_run
+
+    def test_the_diff_scope_call_carries_the_groups_lines(self, gate, tmp_path, monkeypatch):
+        source = tmp_path / "mod.py"
+        source.write_text("def f(x):\n    return x\n", encoding="utf-8")
+        monkeypatch.setattr(gate, "measure_baseline", lambda *a, **k: 1.0)
+        calls: list[list[str]] = []
+        monkeypatch.setattr(gate.subprocess, "run", self._fake_run(gate, calls))
+
+        gate.run_group(
+            str(source),
+            {"lines": [4, 7], "tests": [TESTS]},
+            0,
+            artifacts=tmp_path,
+            diff_path=tmp_path / "mod.diff",
+            pythonpath="/pp",
+            timeout_factor=4.0,
+        )
+
+        scope_calls = [c for c in calls if any(p.endswith("mutation_diff_scope.py") for p in c)]
+        assert len(scope_calls) == 1
+        restrict = scope_calls[0][scope_calls[0].index("--restrict-lines") + 1]
+        assert restrict == "4,7"
+
+    def test_measurement_mode_without_a_diff_stays_whole_file(self, gate, tmp_path, monkeypatch):
+        source = tmp_path / "mod.py"
+        source.write_text("def f(x):\n    return x\n", encoding="utf-8")
+        monkeypatch.setattr(gate, "measure_baseline", lambda *a, **k: 1.0)
+        calls: list[list[str]] = []
+        monkeypatch.setattr(gate.subprocess, "run", self._fake_run(gate, calls))
+
+        gate.run_group(
+            str(source),
+            {"lines": [], "tests": [TESTS]},
+            0,
+            artifacts=tmp_path,
+            diff_path=None,
+            pythonpath="/pp",
+            timeout_factor=4.0,
+        )
+
+        assert not any(p.endswith("mutation_diff_scope.py") for c in calls for p in c)
+
+
 class TestTheGateDecisions:
     def _run(
         self,

@@ -186,3 +186,75 @@ class TestExplicitFailures:
             results = dict(db.results)
         assert "in-scope" not in results
         assert results["out-of-scope"].worker_outcome == WorkerOutcome.SKIPPED
+
+
+class TestGroupLineRestriction:
+    """--restrict-lines narrows a session to one selection group's own lines."""
+
+    def test_ranges_and_commas_parse_inclusively(self, mod):
+        assert mod.parse_line_ranges("10,12-14") == {10, 12, 13, 14}
+        assert mod.parse_line_ranges("3 7") == {3, 7}
+
+    def test_a_reversed_range_is_rejected(self, mod):
+        with pytest.raises(ValueError, match="unparseable"):
+            mod.parse_line_ranges("9-4")
+
+    def test_main_rejects_a_restriction_outside_the_diff(self, mod, tmp_path):
+        diff = tmp_path / "real.diff"
+        diff.write_text(DIFF, encoding="utf-8")
+        assert (
+            mod.main(
+                [
+                    str(tmp_path / "unused.sqlite"),
+                    "--source",
+                    "x",
+                    "--diff",
+                    str(diff),
+                    "--restrict-lines",
+                    "900",
+                ]
+            )
+            == 1
+        )
+
+    def test_a_session_only_scores_its_own_group_lines(self, mod, tmp_path):
+        # Both mutants sit on changed lines, but this group owns only line 2:
+        # the line-4 mutant must be skipped, never scored against tests that
+        # cannot see it (the artificial-survivor bug the gate must not have).
+        from cosmic_ray.work_db import MutationSpec, WorkDB, WorkerOutcome, WorkItem, use_db
+
+        session = tmp_path / "session.sqlite"
+        with use_db(session, mode=WorkDB.Mode.create) as db:
+            db.add_work_items(
+                [
+                    WorkItem(
+                        "group-line",
+                        [MutationSpec("pkg/mod.py", "core/Number", 0, (2, 4), (2, 12))],
+                    ),
+                    WorkItem(
+                        "other-groups-line",
+                        [MutationSpec("pkg/mod.py", "core/Number", 1, (4, 4), (4, 12))],
+                    ),
+                ]
+            )
+        diff = tmp_path / "real.diff"
+        diff.write_text(DIFF, encoding="utf-8")
+        assert (
+            mod.main(
+                [
+                    str(session),
+                    "--source",
+                    "pkg/mod.py",
+                    "--diff",
+                    str(diff),
+                    "--restrict-lines",
+                    "2",
+                    "--report",
+                ]
+            )
+            == 0
+        )
+        with use_db(session, mode=WorkDB.Mode.open) as db:
+            results = dict(db.results)
+        assert "group-line" not in results
+        assert results["other-groups-line"].worker_outcome == WorkerOutcome.SKIPPED

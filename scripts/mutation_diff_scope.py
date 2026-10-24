@@ -26,7 +26,7 @@ silently weakens the gate, so:
 Usage
 -----
     python scripts/mutation_diff_scope.py SESSION.sqlite --source PATH \
-        --diff PR.diff [--require-intersection] [--report]
+        --diff PR.diff [--restrict-lines "10,12-14"] [--require-intersection] [--report]
 
 The diff must be a unified diff for exactly one file (the workflow produces
 `git diff <merge-base> -- <source>`); the changed-line numbers are the *new*
@@ -86,6 +86,23 @@ class DiffScope:
         return any(line in self.lines for line in range(start_row, end_row + 1))
 
 
+def parse_line_ranges(text: str) -> set[int]:
+    """Parse "10,12-14" (commas/spaces, inclusive ranges) into {10, 12, 13, 14}."""
+    lines: set[int] = set()
+    for part in text.replace(",", " ").split():
+        start, sep, end = part.partition("-")
+        try:
+            lo = hi = int(start)
+            if sep:
+                hi = int(end)
+        except ValueError as exc:
+            raise ValueError(f"unparseable line range: {part!r}") from exc
+        if lo > hi:
+            raise ValueError(f"unparseable line range: {part!r}")
+        lines.update(range(lo, hi + 1))
+    return lines
+
+
 def apply_diff_scope(
     work_db,
     source: str,
@@ -130,6 +147,14 @@ def main(argv: list[str] | None = None) -> int:
         "--diff", required=True, help="unified diff of the source vs the trusted merge base"
     )
     parser.add_argument(
+        "--restrict-lines",
+        default=None,
+        help=(
+            "line numbers or inclusive ranges (e.g. '10,12-14') this session is further "
+            "restricted to — one selection group's changed lines, a subset of the diff's"
+        ),
+    )
+    parser.add_argument(
         "--require-intersection",
         action="store_true",
         help="fail when no pending mutant intersects the changed lines",
@@ -146,14 +171,32 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 1
+    if args.restrict_lines is not None:
+        group_lines = parse_line_ranges(args.restrict_lines)
+        if not group_lines:
+            print(
+                "::error::--restrict-lines parsed to an empty line set; a session scoped "
+                "to nothing is a configuration error, not a pass.",
+                file=sys.stderr,
+            )
+            return 1
+        scope.lines &= group_lines
+        if not scope.lines:
+            print(
+                "::error::--restrict-lines shares no line with the diff's changed lines; "
+                "the group's selection is stale or from another diff.",
+                file=sys.stderr,
+            )
+            return 1
 
     with use_db(args.session, mode=_OPEN) as db:
         kept, skipped = apply_diff_scope(db, args.source, scope)
 
     if args.report:
+        note = f", restricted to {args.restrict_lines!r}" if args.restrict_lines else ""
         print(
-            f"diff scope for {args.source}: {len(scope.lines)} changed line(s), "
-            f"{kept} mutant(s) in scope, {skipped} skipped"
+            f"diff scope for {args.source}: {len(scope.lines)} in-scope line(s)"
+            f"{note}, {kept} mutant(s) in scope, {skipped} skipped"
         )
 
     if args.require_intersection and kept == 0:
