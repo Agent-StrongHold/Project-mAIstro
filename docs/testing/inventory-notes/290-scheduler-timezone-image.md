@@ -301,3 +301,97 @@ count is unchanged (delta: none).
   was already resolved before this round: `origin/develop` (4de7e906d) is
   an ancestor of this branch (merge-base == `origin/develop`, 0 commits
   behind); the resolution commits are b6dd05f66 and f48deb0a3.
+
+## Repair round: the CI gates the branch was failing (2026-10-24, head `2e83601cc`)
+
+The hosted run at `2e83601cc` failed nine checks. Each root cause, the fix,
+and the local proof (no code paths of this issue's feature changed this
+round; the scheduler/health/tzdata work above is untouched):
+
+1. **A bare error swallow in ci.yml's new restart step** (`|| echo starting`
+   with no written reason) failed the workflow-inventory gate, which failed
+   the three `tests/test_check_workflow_inventory.py` tree tests, the
+   `test` job, `security`, `Quality / Workflow inventory`, the
+   `Quality gate (Pillars 1–4, 7, 8)` ("quality-workflow-inventory:
+   dependency did not succeed") and the `Coverage gate` (same three tests).
+   Fix: the readiness-poll swallow now carries its written reason (a
+   still-starting container has no health state to read; the post-loop
+   assertion still fails the step). `check-workflow-inventory.py` clean;
+   `tests/` root suite **5638 passed, 143 skipped** (the exact CI step).
+2. **`hive-conductor-e2e-ui` never started a container**: the compose guard
+   added for the harness key (`${MAISTRO_ROUTER_API_KEY:?...}`) fails
+   interpolation in every compose command of a job that does not export it,
+   and only `hive-conductor-e2e` did. That is the whole
+   `integration-scope` failure ("hive-conductor-e2e-ui is required by
+   integration scope but concluded failure"). Fix: the same job-level
+   throwaway stub (same rationale comment) on `hive-conductor-e2e-ui`.
+   Proof: `docker compose config` without the var prints the exact CI
+   error; with it, the full CI-exact UI run below is green.
+3. **Supply chain (pip-audit)**: `fastmcp==4.0.11` (GHSA-7xgj-8392-5q4r,
+   GHSA-vqqp-x5qm-5qp4 → 4.1.2) and `setuptools==84.0.0`
+   (GHSA-xmj3-9gf7-h52w → 84.1.0) — trunk-level lock rot, not introduced
+   here. Fix: `uv lock --upgrade-package` for fastmcp (→ 4.1.3,
+   fastmcp-slim → 4.1.3, openapi-pydantic → 0.6.0), setuptools (→ 84.2.1)
+   and, for the Container scan, pypdf (→ 6.21.2; CVE-2026-115572/80/85,
+   HIGH ×3 in trivy); the image's exact setuptools pin and
+   security.yml's `--member setuptools==...` moved with the lock. The same
+   run exposed the gate's second half: the branch's carried-for-deployment
+   `aiosqlite` declaration had no reviewed disposition — added to
+   `quality/direct-dependency-exceptions.json` (DECLARATIVE_RUNTIME, #290,
+   msgpack precedent). Local CI-exact pip-audit + gate: **exit 0**.
+4. **The lock-reconciliation step (runs after trivy, so CI never reached
+   it) would have failed next**: the image ships `tzdata==2026.3` by
+   deliberate ARG pin and tzdata is deliberately not in any lock export —
+   `check-image-lock-reconciliation.py` reported `in image, not locked`.
+   Fix: `--member tzdata==2026.3` (and `--member setuptools==84.2.1`) on
+   the hive-conductor reconciliation with a comment tying the members to
+   the Dockerfile pins. Locally, against the rebuilt image: **OK: ships
+   exactly the locked set (74 distributions)**.
+5. **pm-workflow UI specs 06/07 pinned the spine-absent harness** and would
+   have failed `hive-conductor-e2e-ui` as soon as the interpolation fix let
+   the job run: the harness's `DATABASE_URL=sqlite:...` (added for the
+   scheduler proofs) makes `engine.graph_execution_available` true —
+   verified live — so `expect(...graph_execution_available).toBe(false)`
+   and the `CanonicalGraphUnavailable` payload pins were dead premises.
+   The two specs now pin the harness's documented truth: activation is
+   still definition state; the run resolves the spine (real
+   `execution_id`), executes, and fails closed at host policy ("host
+   policy did not authorize this node"); the failed run persists under its
+   DAG in `/v1/dag-runs`; a definition ID as a run ID still 404s
+   `{"detail": "run not found"}`. The spine-absent refusal itself stays
+   pinned at the unit level (`test_graph_execution_authority.py`). Test
+   count unchanged (219 UI specs; the Playwright suite is not a
+   suite-inventory ledger suite — inventory re-checked: 21 suites ok).
+
+Re-verified end to end at this tree, compose-built image
+`sha256:5f4a713c5d4659a05599fd9ab3e7580b3c3b887c0c16cf76911e8493f3120453`
+(`hive-conductor-hive:latest`; setuptools 84.2.1, tzdata 2026.3,
+aiosqlite 0.22.1, `PYTHONTZPATH` smoke green in-build; host 8101 is held
+by a leaked rootlesskit bind from another stack, so local runs drop the
+host publish via an untracked override — CI is unaffected):
+
+- CI-exact api phase (`up --build --abort-on-container-exit
+  --exit-code-from api-tests api-tests`): **14 passed / 14 skipped**
+  (all four pre-restart timezone tests; restart-marked skipped as
+  designed), restart phase (`start hive`, wait healthy,
+  `SCHED_TZ_AFTER_RESTART=1 -k restart_recovery`): **1 passed**.
+- CI-exact UI phase (`CI=1`, `up --build ... --exit-code-from e2e-tests
+  e2e-tests`, fresh stack): **219 passed (4.0m)** — including rewritten
+  specs 06/07. An earlier local run showed 10 failures that were (a) the
+  06/07 premise flips above and (b) eight spec failures caused by reusing
+  a hive container that had already served the api phase (leftover
+  canonical state); a fresh stack — what CI's per-job container actually
+  is — is fully green, so only (a) was real.
+- Negative proofs re-run on the rebuilt image: moving the wheel's
+  `zoneinfo` dir away makes the build-smoke snippet raise
+  `AssertionError` and `ZoneInfo("UTC")` raise `ZoneInfoNotFoundError`;
+  booting with `PYTHONTZPATH=/nonexistent/tzdata` serves `/health`
+  `degraded=true`, `tz_database.status=unavailable` naming the env var
+  and the fix, and `/health/ready` carries `checks.tz_database=false`
+  with the same diagnostic in `warnings`.
+- Gates re-run locally: `ruff check .` / `ruff format --check .` clean;
+  root `tests/` **5638 passed, 143 skipped**; backend
+  **3957 passed, 26 skipped**; `check-suite-inventory.py` ok (21 suites);
+  `check-compose-secrets.py` ok (10 tracked profiles); `uv lock --check`
+  ok; workflow-inventory gate clean; shellcheck clean on the edited
+  `run:` block.

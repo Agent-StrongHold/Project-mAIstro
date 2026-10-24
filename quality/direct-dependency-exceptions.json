@@ -16,6 +16,11 @@
         "category": "DECLARATIVE_RUNTIME",
         "owner": "#348",
         "rationale": "Never imported by backend/; declared so the lock-installed image carries the pinned security floor (>=1.2.1: Trivy blocks 1.1.2 for GHSA-6v7p-g79w-8964). security.yml asserts the version inside the built image, so the runtime use is the image content itself, not a Python import."
+      },
+      "aiosqlite": {
+        "category": "DECLARATIVE_RUNTIME",
+        "owner": "#290",
+        "rationale": "Never imported by backend/; declared so the locked closure the image installs (uv export --package hive-conductor) carries aiosqlite for maistro.persistence: a sqlite: DATABASE_URL (the compose harness pins one) puts the canonical stores on the sqlite extra, whose stores import aiosqlite. Without the declaration the roster bridge fails closed and /health/ready serves 503 forever."
       }
     },
     "packages/maistro-canvas/pyproject.toml": {

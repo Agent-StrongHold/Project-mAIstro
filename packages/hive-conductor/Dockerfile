@@ -125,7 +125,7 @@ RUN uv export --locked --package hive-conductor \
  && uv pip install --python /app/venv/bin/python --no-deps --no-cache \
       ./packages/maistro-core ./packages/maistro-bootstrap ./packages/maistro-canvas \
       ./packages/maistro-design ./packages/maistro-evolve \
- && uv pip install --python /app/venv/bin/python --no-cache "setuptools==84.0.0" \
+ && uv pip install --python /app/venv/bin/python --no-cache "setuptools==84.2.1" \
  && uv pip check --python /app/venv/bin/python
 # Deliberate timezone database (#290). The scheduler resolves every schedule
 # zone through `zoneinfo.ZoneInfo`, INCLUDING `ZoneInfo("UTC")` — with no tz

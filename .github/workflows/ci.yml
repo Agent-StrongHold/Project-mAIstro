@@ -851,6 +851,17 @@ jobs:
 
   hive-conductor-e2e-ui:
     needs: workflow-lint
+    env:
+      # Throwaway harness key, not a credential (#367): docker-compose.test.yml
+      # requires MAISTRO_ROUTER_API_KEY in the caller's environment —
+      # check-compose-secrets holds every tracked profile to the
+      # refuse-to-start ${VAR:?message} shape, so the key can no longer live
+      # in the file. The harness has no gateway; the stub unblocks roster
+      # construction while model calls keep failing at call time (the F3
+      # degraded mode this harness runs in). Set at the job level so every
+      # compose command below (up, ps, logs, probe, down) interpolates;
+      # without it compose fails interpolation before any container starts.
+      MAISTRO_ROUTER_API_KEY: test-harness-not-a-real-key
     if: >-
       needs.workflow-lint.outputs.hive_e2e == 'true' ||
       (github.event_name != 'merge_group' && github.event_name != 'pull_request') ||
@@ -965,6 +976,10 @@ jobs:
           set -euo pipefail
           docker compose -f docker-compose.test.yml start hive
           cid=$(docker compose -f docker-compose.test.yml ps -q hive)
+          # The poll tolerates `docker inspect` failing: a container that is
+          # still starting has no health state to read yet, and "starting" is
+          # the truthful status for it. The post-loop assertion below still
+          # fails the step if hive never reaches healthy.
           for i in $(seq 1 40); do
             status=$(docker inspect -f '{{.State.Health.Status}}' "$cid" 2>/dev/null || echo starting)
             [ "$status" = "healthy" ] && break

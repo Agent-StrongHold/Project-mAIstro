@@ -474,12 +474,17 @@ jobs:
           uv export --locked --package hive-conductor \
             --no-dev --no-emit-workspace \
             --format requirements-txt --output-file /tmp/expected-hive.txt
+          # setuptools and tzdata are the image's declared extras: exact pins
+          # installed by packages/hive-conductor/Dockerfile (ARG
+          # TZDATA_VERSION; the setuptools pin) and deliberately absent from
+          # the lock export, so they are asserted here as members (#290, #348).
           python scripts/check-image-lock-reconciliation.py \
             --image "hive-conductor:pr-${CANDIDATE_TAG}" \
             --expected-file /tmp/expected-hive.txt \
             --member maistro-core==0.9.0 --member maistro-bootstrap==0.9.0 \
             --member maistro-canvas==0.9.0 --member maistro-design==0.9.0 \
-            --member maistro-evolve==0.9.0 --member setuptools==84.0.0
+            --member maistro-evolve==0.9.0 --member setuptools==84.2.1 \
+            --member tzdata==2026.3
 
           uv export --locked --package maistro-server \
             --extra observability --extra browser \
