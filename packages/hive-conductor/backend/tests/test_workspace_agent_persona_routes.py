@@ -135,6 +135,162 @@ def test_agent_tool_matches_the_route(admin_client) -> None:
     )
 
 
+def test_get_maps_resolve_failures(admin_client, monkeypatch: pytest.MonkeyPatch) -> None:
+    from routes import workspaces as ws_routes
+
+    ws = _create_workspace(admin_client)
+
+    async def _missing(*_a: object, **_k: object) -> Any:
+        raise workspace_agent.WorkspaceNotFound(ws)
+
+    monkeypatch.setattr(ws_routes, "resolve_workspace_agent", _missing)
+    assert admin_client.get(f"/v1/workspaces/{ws}/agent").status_code == 404
+
+    async def _conflict(*_a: object, **_k: object) -> Any:
+        raise workspace_agent.WorkspaceAgentConflict("id held by another Workspace")
+
+    monkeypatch.setattr(ws_routes, "resolve_workspace_agent", _conflict)
+    assert admin_client.get(f"/v1/workspaces/{ws}/agent").status_code == 409
+
+
+def test_put_handler_authz_and_service_failures(
+    admin_client, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Reach handler-local 404/403/409 after the scope gate has already passed."""
+    from routes import workspaces as ws_routes
+
+    ws = _create_workspace(admin_client)
+
+    async def _invisible(*_a: object, **_k: object) -> None:
+        return None
+
+    monkeypatch.setattr(ws_routes, "visible_view", _invisible)
+    assert (
+        admin_client.put(
+            f"/v1/workspaces/{ws}/agent", json={"persona_template_id": "delivery"}
+        ).status_code
+        == 404
+    )
+
+    async def _visible(*_a: object, **_k: object) -> object:
+        return object()
+
+    async def _editor(*_a: object, **_k: object) -> str:
+        return "editor"
+
+    monkeypatch.setattr(ws_routes, "visible_view", _visible)
+    monkeypatch.setattr(ws_routes, "member_role", _editor)
+    refused = admin_client.put(
+        f"/v1/workspaces/{ws}/agent", json={"persona_template_id": "delivery"}
+    )
+    assert refused.status_code == 403
+    assert "owner" in refused.json()["detail"]
+
+    async def _owner(*_a: object, **_k: object) -> str:
+        return "owner"
+
+    monkeypatch.setattr(ws_routes, "member_role", _owner)
+
+    async def _missing(*_a: object, **_k: object) -> Any:
+        raise workspace_agent.WorkspaceNotFound(ws)
+
+    monkeypatch.setattr(ws_routes, "set_workspace_agent_persona", _missing)
+    assert (
+        admin_client.put(
+            f"/v1/workspaces/{ws}/agent", json={"persona_template_id": "delivery"}
+        ).status_code
+        == 404
+    )
+
+    async def _conflict(*_a: object, **_k: object) -> Any:
+        raise workspace_agent.WorkspaceAgentConflict("id held by another Workspace")
+
+    monkeypatch.setattr(ws_routes, "set_workspace_agent_persona", _conflict)
+    assert (
+        admin_client.put(
+            f"/v1/workspaces/{ws}/agent", json={"persona_template_id": "delivery"}
+        ).status_code
+        == 409
+    )
+
+
+def test_agent_tool_error_paths(admin_client, monkeypatch: pytest.MonkeyPatch) -> None:
+    from services import workspace_authority
+
+    # No Workspace context on the turn.
+    token = _set_tool_workspace(None)
+    try:
+        bare = asyncio_run(
+            _tool_set_workspace_agent_persona({"persona_template_id": "delivery"}, "admin", None)
+        )
+    finally:
+        chat_completion._chat_workspace_id.reset(token)
+    assert bare["swapped"] is False
+    assert "Workspace context" in bare["error"]
+
+    ws = _create_workspace(admin_client)
+    token = _set_tool_workspace(ws)
+    try:
+
+        async def _invisible(*_a: object, **_k: object) -> None:
+            return None
+
+        monkeypatch.setattr(workspace_authority, "visible_view", _invisible)
+        missing = asyncio_run(
+            _tool_set_workspace_agent_persona({"persona_template_id": "delivery"}, "admin", None)
+        )
+        assert missing == {"swapped": False, "error": "workspace not found"}
+
+        async def _visible(*_a: object, **_k: object) -> object:
+            return object()
+
+        async def _editor(*_a: object, **_k: object) -> str:
+            return "editor"
+
+        monkeypatch.setattr(workspace_authority, "visible_view", _visible)
+        monkeypatch.setattr(workspace_authority, "member_role", _editor)
+        refused = asyncio_run(
+            _tool_set_workspace_agent_persona({"persona_template_id": "delivery"}, "admin", None)
+        )
+        assert refused["swapped"] is False
+        assert "owner" in refused["error"]
+
+        async def _owner(*_a: object, **_k: object) -> str:
+            return "owner"
+
+        monkeypatch.setattr(workspace_authority, "member_role", _owner)
+
+        async def _bad_value(*_a: object, **_k: object) -> Any:
+            raise ValueError("unknown persona template: nope")
+
+        monkeypatch.setattr(workspace_agent, "set_workspace_agent_persona", _bad_value)
+        bad = asyncio_run(
+            _tool_set_workspace_agent_persona({"persona_template_id": "nope"}, "admin", None)
+        )
+        assert bad["swapped"] is False
+        assert "unknown persona" in bad["error"]
+
+        async def _gone(*_a: object, **_k: object) -> Any:
+            raise workspace_agent.WorkspaceNotFound(ws)
+
+        monkeypatch.setattr(workspace_agent, "set_workspace_agent_persona", _gone)
+        gone = asyncio_run(
+            _tool_set_workspace_agent_persona({"persona_template_id": "delivery"}, "admin", None)
+        )
+        assert gone == {"swapped": False, "error": "workspace not found"}
+
+        async def _conflict(*_a: object, **_k: object) -> Any:
+            raise workspace_agent.WorkspaceAgentConflict("conflict")
+
+        monkeypatch.setattr(workspace_agent, "set_workspace_agent_persona", _conflict)
+        conflict = asyncio_run(
+            _tool_set_workspace_agent_persona({"persona_template_id": "delivery"}, "admin", None)
+        )
+        assert conflict == {"swapped": False, "error": "conflict"}
+    finally:
+        chat_completion._chat_workspace_id.reset(token)
+
+
 def asyncio_run(coro: Any) -> Any:
     import asyncio
 
