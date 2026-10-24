@@ -104,4 +104,27 @@ def test_binding_tools_override_reads_presentation_store() -> None:
     assert binding_tools_override("ws-override", "intake") == ["only_this"]
     assert binding_tools_override("ws-override", "other") is None
     assert binding_tools_override(None, "intake") is None
+    assert binding_tools_override("ws-missing", "intake") is None
     assert binding_prompt_fragment("ws-missing", "intake") == ""
+
+
+def test_binding_prompt_fragment_reads_presentation_store() -> None:
+    from models.workspace import WorkspacePresentation
+    from services.workspace_authority import presentation_store
+
+    store = presentation_store()
+    store["ws-frag"] = WorkspacePresentation(
+        workspace_id="ws-frag",
+        persona_template_id="pm_fleet",
+        tool_bindings=[
+            AgentToolBinding(
+                agent_id="intake",
+                tools=["poll_jira"],
+                prompt_fragment="Always ask for a ticket number.",
+            )
+        ],
+        updated_at=datetime.now(UTC),
+    )
+    assert binding_prompt_fragment("ws-frag", "intake") == "Always ask for a ticket number."
+    assert binding_prompt_fragment("ws-frag", "other") == ""
+    assert binding_prompt_fragment(None, "intake") == ""
