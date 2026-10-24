@@ -13,6 +13,7 @@ import type {
   BriefField,
   BriefView,
   Message,
+  Role,
   Session,
   ToolStep,
 } from "../lib/chatUi";
