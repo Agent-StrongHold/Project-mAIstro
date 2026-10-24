@@ -1,7 +1,7 @@
 # Conductor Persistence Map — durability and acknowledgement modes
 
 **Status:** living document. Structural counterpart: `docs/architecture/CONVERGENCE-MATRIX.md` (persistence *owners*); this map records the durability/ack *contract* per store family. Referenced by the persistence convergence effort (#1135) and owned by #333/#1179.
-**Scope:** every user-visible mutation surface in `packages/hive-conductor/backend` — the model stores, JSON stores, and record stores that HTTP routes write through.
+**Scope:** every user-visible mutation surface in `packages/hive-conductor/backend` — the model stores, JSON stores, and record stores that HTTP routes write through — plus the one internal subsystem that has a persistence authority of its own (the Reactor, #1178).
 
 ## The acknowledgement contract
 
@@ -22,12 +22,15 @@ Every mutation that claims durable success acknowledges at the **State writer's 
     "model_json_stores": "durable-ack",
     "settings": "durable-ack",
     "profiles": "durable-ack",
-    "registration_policy": "durable-ack"
+    "registration_policy": "durable-ack",
+    "reactor": "fire-and-forget"
   }
 }
 ```
 
 With no state database configured (`memory://` deployments, tests), `ack` is `process-memory` and the families read `memory`/`ephemeral`. An unreadable state reports `unknown`, never durable.
+
+The `reactor` family is the Reactor's persistence authority (#1178): `fire-and-forget` because the Reactor's events ride the canonical `State` writer — one writer on the configured state database — and no durable-success claim is returned to a caller; `unavailable` when there is no Reactor, or a Reactor with no `State` bound, so a deployment never wears a durable label for a store it does not have.
 
 ## Store families
 
@@ -70,7 +73,7 @@ Each record store does write-then-read-back and refuses to acknowledge a write t
 
 | Subsystem | Mode | Notes |
 |---|---|---|
-| Reactor event persist (`maistro.reactor.state_submit`) | fire-and-forget | internal event loop, no durable-success claim returned; owned by #1178, converging under #1135 |
+| Reactor event persist (`maistro.reactor.state_submit`) | fire-and-forget | internal event loop, no durable-success claim returned; the write authority is the canonical `State` (one writer on the configured state database), not a store of its own — `/health` reports this family as `persistence.families.reactor` (#1178) |
 | `State.flush()` callers | drain barrier only | startup seeding drain (`services/foundation.py`) and CLI paths; never an acknowledgement |
 
 ## Crash semantics

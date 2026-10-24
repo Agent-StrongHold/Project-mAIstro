@@ -1071,6 +1071,57 @@ def test_a_manual_run_creates_a_run_and_records_it(monkeypatch: pytest.MonkeyPat
         stores.schedules._data.pop("s-man", None)  # type: ignore[attr-defined]
 
 
+def test_a_manual_fire_rechecks_the_schedule_actor_still_belongs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#1201: the route authorizes the *requester*, but the Run spends the
+    schedule actor's authority -- so on the standalone path too, an actor
+    removed from the Workspace after creating the schedule must not fire.
+    The same revocation gate the standalone automatic path applies runs
+    before the definition or Run exists; a manual fire refuses (409) rather
+    than skipping silently like the tick can."""
+    import stores
+    from services import workspace_authority
+    from services.scheduler import ScheduleNotFireable, fire_now
+
+    from maistro.scheduling import InMemoryScheduleStore
+
+    _register("sched-manual-gate")
+    stub = _bounded_stub("s-man-gate", "sched-manual-gate")
+    store = InMemoryScheduleStore()
+    _with_store(monkeypatch, store)
+    before = len(stores.audit_log)
+    # The Workspace stays alive, but the schedule actor u1 was removed from
+    # it after creating the row -- the state when remaining editor B fires.
+    view = asyncio.run(
+        workspace_authority.create_workspace(
+            creator_user_id="requester-b",
+            name="Manual Gate WS",
+            persona_template_id="default",
+            checklist=[],
+            theme_id="default",
+            voice_tone_override=None,
+        )
+    )
+    stub.workspace_id = view.id
+    stub.project_id = "proj-man-gate"
+    stores.schedules._data["s-man-gate"] = stub  # type: ignore[attr-defined]
+    try:
+        try:
+            asyncio.run(fire_now("s-man-gate", requester_id="requester-b"))
+            raise AssertionError("a revoked actor's schedule must not manually fire")
+        except ScheduleNotFireable:
+            pass
+        assert _schedule_runs("s-man-gate", since=before) == [], "no Run was created"
+
+        # Re-adding the actor restores eligibility on the same row.
+        asyncio.run(workspace_authority.set_member(view.id, user_id="u1", role="editor"))
+        run_id = asyncio.run(fire_now("s-man-gate", requester_id="requester-b"))
+        assert run_id
+    finally:
+        stores.schedules._data.pop("s-man-gate", None)  # type: ignore[attr-defined]
+
+
 def test_a_manual_run_preserves_the_http_requests_id(monkeypatch: pytest.MonkeyPatch) -> None:
     """#1063: `POST /v1/schedules/{id}/run` is a real HTTP request that
     RequestIDMiddleware already bound an id for -- `fire_now` must forward
@@ -1095,6 +1146,33 @@ def test_a_manual_run_preserves_the_http_requests_id(monkeypatch: pytest.MonkeyP
         assert run.provenance["request_id"] == "http-req-42"
     finally:
         stores.schedules._data.pop("s-man-reqid", None)  # type: ignore[attr-defined]
+
+
+def test_manual_fire_records_requester_separately_from_schedule_actor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import stores
+    from services.scheduler import fire_now
+
+    from maistro.scheduling import InMemoryScheduleStore
+
+    _register("sched-manual-provenance")
+    stub = _schedule_stub("s-man-provenance", "sched-manual-provenance")
+    stores.schedules._data["s-man-provenance"] = stub  # type: ignore[attr-defined]
+    _with_store(monkeypatch, InMemoryScheduleStore())
+    try:
+        run_id = asyncio.run(fire_now("s-man-provenance", requester_id="requesting-human"))
+        from services.dag_agents import _container
+
+        run = asyncio.run(_container().run_store.get_run(run_id))
+        assert run.actor_principal_id == "u1"
+        assert run.provenance["manual_requesting_principal_id"] == "requesting-human"
+        assert run.provenance["scheduler_service_id"] == "hive-scheduler"
+    finally:
+        stores.schedules._data.pop("s-man-provenance", None)  # type: ignore[attr-defined]
+        from services.dag_agents import get_registry
+
+        get_registry().deregister("sched-manual-provenance")
 
 
 def test_a_manual_run_with_no_ambient_request_mints_its_own(

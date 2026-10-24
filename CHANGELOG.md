@@ -36,8 +36,9 @@ or placeholder-only section.
   adapter packages may declare the same identity on `ProviderAdapterSpec`
   (all four fields or none; strict semver and digest shape enforced at
   registration, with an optional `extension_id` naming the installed package
-  itself when the adapter is provided by an out-of-tree extension): `bootstrap_provider_adapters` snapshots the payload into the
-  wired `model.chat` Binding, governed adapter calls log canonical
+  itself when the adapter is provided by an out-of-tree extension):
+  `bootstrap_provider_adapters` snapshots the payload into the wired
+  `model.chat` Binding, governed adapter calls log canonical
   `extension_*` identity fields, adapter errors name the failing version and
   publisher, and durable Invocation evidence carries the attribution beside —
   never instead of — the canonical caller/Workspace/Run/NodeRun/Attempt/
@@ -47,6 +48,17 @@ or placeholder-only section.
   gallery adapter package proves the chain end to end: its manifest id,
   version, publisher and the digests of the manifest and the wheel it
   publishes travel with one governed call into the terminal audit event.
+
+- **`/health` names the Reactor's persistence authority beside every other
+  store family (#1178).** `persistence.families` gains a `reactor` entry:
+  `fire-and-forget` when the Reactor writes through the canonical `State`
+  (one writer on the configured state database; the write is queued and no
+  durable-success claim is returned to a caller), and `unavailable` when
+  there is no Reactor or it has no `State` bound — never a durable label the
+  deployment has not earned. The Reactor's own state writes keep riding the
+  canonical State writer; this makes that authority visible where every
+  other family's already was, and the persistence map
+  (`docs/architecture/CONDACTOR-PERSISTENCE-MAP.md`) records it.
 
 - **Named `cross-product-parity` CI job and M1 closeout strict mode
   (#459, partial).** The #459 cross-product parity suite
@@ -190,6 +202,10 @@ or placeholder-only section.
   in favor of ADR-101; added AC Defined spec index to [`docs/specs/README.md`](docs/specs/README.md).
 
 ### Fixed
+
+- **Conductor batch inspection respects existing projection scope (#1036).**
+  Canonical fallback applies only when no projection exists, keeping verdict-list
+  visibility consistent with detail and stream admission for colliding run IDs.
 
 - **Hive Graph execution refuses missing canonical authority (#1113).**
   Registered and stored DAGs now require the Container's RunStore and Graph
@@ -2259,6 +2275,43 @@ or placeholder-only section.
   canonical adapter and runner, including claim refusal, fenced reaper
   terminalization and a fresh-job dispatch control. The existing retry and
   lease-ownership behavior is unchanged.
+
+### Dependencies
+
+- **Pillow and certifi move past their open advisories (#363).** The
+  installed `pillow` 12.3.0 carried eight advisories with fixes only in
+  13.0.0, and `certifi` 2026.4.22 carried GHSA-6q48-6c7w-9gw2 with its
+  fix in 2026.10.19; the supply-chain gate therefore failed on both.
+  `maistro-canvas` now requires `pillow>=13.0.0,<14` — the floor is raised
+  past the advisories so a fresh resolve cannot pick a vulnerable release
+  again, and the `<14` ceiling keeps the next major Pillow release an
+  explicit, reviewable decision — and `uv.lock` resolves `pillow` 13.0.0
+  and `certifi` 2026.10.19. No code path changes; both distributions keep
+  the licenses the license inventory already recorded (MIT-CMU and MPL-2.0).
+
+### Fixed
+
+- **The license inventory gate stops accepting missing license metadata as a
+  license, and stops hiding licensed shipped assets (#363).** Four defects in
+  `scripts/check-license-inventory.py` are fixed against the acceptance
+  criteria of the license-inventory issue. A producer placeholder
+  (`NOASSERTION`, `NONE`, `UNKNOWN`, `LicenseRef-Unknown`) is missing
+  metadata, not a license: such a component now requires a reviewed
+  resolution instead of passing as `known` (real effect: `pkg:pypi/x25519`,
+  whose METADATA declares `License: UNKNOWN`, is now resolved by a reviewed
+  record). A file component that carries explicit license evidence (a
+  shipped script, a font, a vendored asset) keeps that evidence and its
+  copyleft class instead of being rewritten to `not-applicable`; a file
+  component with no license at all is still provenance. The copyleft
+  classifier now recognises the families the frontend trees actually ship —
+  `OFL`, `EUPL` and `CC-BY-SA` — so the three OFL fonts in the conductor's
+  npm tree are surfaced for legal review instead of being reported as
+  benign (the copyleft count on the same SBOMs moves 423 → 426). The
+  inventory also records the policy file it was actually produced with,
+  rather than always naming the default. The reviewed resolutions in
+  `quality/license-policy.json` are bound to the versions actually reviewed
+  (`wcwidth` 0.7.0 / 0.9.2 / 0.9.3), so a later unreviewed release needs
+  its own review.
 
 ## [1.0.0] - TBD
 
