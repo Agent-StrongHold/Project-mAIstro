@@ -35,9 +35,14 @@ def contained_pdf_path(raw: str | Path, *, root: str | None = None) -> str:
     """
     base = PREFLIGHT_ROOT if root is None else root
     candidate = os.path.realpath(str(raw))
-    if candidate != base and not candidate.startswith(base + os.sep):
-        raise ValueError("pdf_path must be inside the preflight directory")
-    return candidate
+    return _require_under_root(candidate, base)
+
+
+def _require_under_root(candidate: str, base: str) -> str:
+    """Re-assert ``realpath`` containment; sinks must sit in the true branch."""
+    if candidate == base or candidate.startswith(base + os.sep):
+        return candidate
+    raise ValueError("pdf_path must be inside the preflight directory")
 
 
 @dataclass
@@ -171,6 +176,11 @@ def _check_file_size(result: PreflightResult, path: str) -> None:
 
     ``path`` must already be the string returned by ``contained_pdf_path``.
     """
+    # Re-dominate the ``getsize`` sink for CodeQL (sanitizer across calls).
+    path = _require_under_root(path, PREFLIGHT_ROOT)
+    if path != PREFLIGHT_ROOT and not path.startswith(PREFLIGHT_ROOT + os.sep):
+        result.issues.append(PreflightIssue("error", "PATH_OUTSIDE_ROOT", "pdf_path rejected"))
+        return
     file_size_mb = os.path.getsize(path) / (1024 * 1024)
     max_file_size_mb = 300
     if file_size_mb > max_file_size_mb:
@@ -209,18 +219,23 @@ def preflight_interior(
         result.issues.append(PreflightIssue("error", "PATH_OUTSIDE_ROOT", str(exc)))
         return result
 
-    if not os.path.exists(candidate):
+    # Sinks (exists / PdfReader) inside the startswith-dominated branch.
+    if candidate == PREFLIGHT_ROOT or candidate.startswith(PREFLIGHT_ROOT + os.sep):
+        if not os.path.exists(candidate):
+            result.passed = False
+            result.issues.append(
+                PreflightIssue("error", "FILE_NOT_FOUND", f"PDF not found: {candidate}")
+            )
+            return result
+        try:
+            reader = PdfReader(candidate)
+        except Exception as e:
+            result.passed = False
+            result.issues.append(PreflightIssue("error", "INVALID_PDF", f"Cannot read PDF: {e}"))
+            return result
+    else:
         result.passed = False
-        result.issues.append(
-            PreflightIssue("error", "FILE_NOT_FOUND", f"PDF not found: {candidate}")
-        )
-        return result
-
-    try:
-        reader = PdfReader(candidate)
-    except Exception as e:
-        result.passed = False
-        result.issues.append(PreflightIssue("error", "INVALID_PDF", f"Cannot read PDF: {e}"))
+        result.issues.append(PreflightIssue("error", "PATH_OUTSIDE_ROOT", "pdf_path rejected"))
         return result
 
     result.page_count = len(reader.pages)
@@ -264,88 +279,95 @@ def preflight_cover(
         result.issues.append(PreflightIssue("error", "PATH_OUTSIDE_ROOT", str(exc)))
         return result
 
-    if not os.path.exists(candidate):
-        result.passed = False
-        result.issues.append(
-            PreflightIssue("error", "FILE_NOT_FOUND", f"Cover PDF not found: {candidate}")
+    # Sinks (exists / PdfReader / getsize) inside the startswith-dominated branch.
+    if candidate == PREFLIGHT_ROOT or candidate.startswith(PREFLIGHT_ROOT + os.sep):
+        if not os.path.exists(candidate):
+            result.passed = False
+            result.issues.append(
+                PreflightIssue("error", "FILE_NOT_FOUND", f"Cover PDF not found: {candidate}")
+            )
+            return result
+        try:
+            reader = PdfReader(candidate)
+        except Exception as e:
+            result.passed = False
+            result.issues.append(
+                PreflightIssue("error", "INVALID_PDF", f"Cannot read cover PDF: {e}")
+            )
+            return result
+
+        cover_pages = len(reader.pages)
+        result.page_count = cover_pages
+
+        if cover_pages != 1:
+            result.issues.append(
+                PreflightIssue(
+                    "error",
+                    "COVER_PAGE_COUNT",
+                    f"Cover must be exactly 1 page, got {cover_pages}",
+                    {"page_count": cover_pages},
+                )
+            )
+
+        fmt = PICTURE_BOOK_FORMATS.get(pod_package_id)
+        if not fmt:
+            result.passed = False
+            result.issues.append(
+                PreflightIssue("error", "UNKNOWN_PACKAGE", f"Unknown package: {pod_package_id}")
+            )
+            return result
+
+        trim_w_in, trim_h_in = fmt["trim_size_in"]
+        spine_width_in = (page_count / 444) + 0.06
+        cover_w_in = (
+            trim_w_in + BLEED_MARGIN_IN + trim_w_in + spine_width_in + trim_w_in + BLEED_MARGIN_IN
         )
+        cover_h_in = trim_h_in + 2 * BLEED_MARGIN_IN
+
+        first_page = reader.pages[0]
+        mediabox = first_page.mediabox
+        result.page_width_pt = float(mediabox.width)
+        result.page_height_pt = float(mediabox.height)
+
+        expected_w_pt = _in_to_pt(cover_w_in)
+        expected_h_pt = _in_to_pt(cover_h_in)
+
+        width_diff_pt = abs(result.page_width_pt - expected_w_pt)
+        height_diff_pt = abs(result.page_height_pt - expected_h_pt)
+
+        if width_diff_pt > 5 or height_diff_pt > 5:
+            actual_w_in = _pt_to_in(result.page_width_pt)
+            actual_h_in = _pt_to_in(result.page_height_pt)
+            result.issues.append(
+                PreflightIssue(
+                    "error",
+                    "COVER_SIZE_MISMATCH",
+                    f"Cover size {actual_w_in:.3f}x{actual_h_in:.3f}in "
+                    f"expected ~{cover_w_in:.3f}x{cover_h_in:.3f}in "
+                    f"(spine: {spine_width_in:.4f}in for {page_count} pages)",
+                    {
+                        "actual_size_in": (round(actual_w_in, 3), round(actual_h_in, 3)),
+                        "expected_size_in": (round(cover_w_in, 3), round(cover_h_in, 3)),
+                        "spine_width_in": round(spine_width_in, 4),
+                        "page_count": page_count,
+                    },
+                )
+            )
+
+        file_size_mb = os.path.getsize(candidate) / (1024 * 1024)
+        if file_size_mb > 100:
+            result.issues.append(
+                PreflightIssue(
+                    "warning",
+                    "COVER_FILE_LARGE",
+                    f"Cover PDF is {file_size_mb:.1f}MB",
+                    {"file_size_mb": round(file_size_mb, 1)},
+                )
+            )
+
+        result.passed = len(result.errors) == 0
         return result
 
-    try:
-        reader = PdfReader(candidate)
-    except Exception as e:
-        result.passed = False
-        result.issues.append(PreflightIssue("error", "INVALID_PDF", f"Cannot read cover PDF: {e}"))
-        return result
-
-    cover_pages = len(reader.pages)
-    result.page_count = cover_pages
-
-    if cover_pages != 1:
-        result.issues.append(
-            PreflightIssue(
-                "error",
-                "COVER_PAGE_COUNT",
-                f"Cover must be exactly 1 page, got {cover_pages}",
-                {"page_count": cover_pages},
-            )
-        )
-
-    fmt = PICTURE_BOOK_FORMATS.get(pod_package_id)
-    if not fmt:
-        result.passed = False
-        result.issues.append(
-            PreflightIssue("error", "UNKNOWN_PACKAGE", f"Unknown package: {pod_package_id}")
-        )
-        return result
-
-    trim_w_in, trim_h_in = fmt["trim_size_in"]
-    spine_width_in = (page_count / 444) + 0.06
-    cover_w_in = (
-        trim_w_in + BLEED_MARGIN_IN + trim_w_in + spine_width_in + trim_w_in + BLEED_MARGIN_IN
-    )
-    cover_h_in = trim_h_in + 2 * BLEED_MARGIN_IN
-
-    first_page = reader.pages[0]
-    mediabox = first_page.mediabox
-    result.page_width_pt = float(mediabox.width)
-    result.page_height_pt = float(mediabox.height)
-
-    expected_w_pt = _in_to_pt(cover_w_in)
-    expected_h_pt = _in_to_pt(cover_h_in)
-
-    width_diff_pt = abs(result.page_width_pt - expected_w_pt)
-    height_diff_pt = abs(result.page_height_pt - expected_h_pt)
-
-    if width_diff_pt > 5 or height_diff_pt > 5:
-        actual_w_in = _pt_to_in(result.page_width_pt)
-        actual_h_in = _pt_to_in(result.page_height_pt)
-        result.issues.append(
-            PreflightIssue(
-                "error",
-                "COVER_SIZE_MISMATCH",
-                f"Cover size {actual_w_in:.3f}x{actual_h_in:.3f}in "
-                f"expected ~{cover_w_in:.3f}x{cover_h_in:.3f}in "
-                f"(spine: {spine_width_in:.4f}in for {page_count} pages)",
-                {
-                    "actual_size_in": (round(actual_w_in, 3), round(actual_h_in, 3)),
-                    "expected_size_in": (round(cover_w_in, 3), round(cover_h_in, 3)),
-                    "spine_width_in": round(spine_width_in, 4),
-                    "page_count": page_count,
-                },
-            )
-        )
-
-    file_size_mb = os.path.getsize(candidate) / (1024 * 1024)
-    if file_size_mb > 100:
-        result.issues.append(
-            PreflightIssue(
-                "warning",
-                "COVER_FILE_LARGE",
-                f"Cover PDF is {file_size_mb:.1f}MB",
-                {"file_size_mb": round(file_size_mb, 1)},
-            )
-        )
-
-    result.passed = len(result.errors) == 0
+    result.passed = False
+    result.issues.append(PreflightIssue("error", "PATH_OUTSIDE_ROOT", "pdf_path rejected"))
     return result

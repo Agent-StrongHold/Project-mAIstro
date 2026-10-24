@@ -14,7 +14,7 @@ import { saveState, loadState, clearState } from "../lib/persistence";
 import CanvasViewport from "./CanvasViewport";
 import { logGenerationAttempt, updateVerdict, saveLayoutVersion } from "../lib/generationTracker";
 import { exportBookPdf } from "../lib/exportPdf";
-import { safePathAssign } from "../lib/safePathAssign";
+import { isSafeObjectKey, safePathAssign } from "../lib/safePathAssign";
 
 const S = {
   loading: "loading",
@@ -398,9 +398,35 @@ export default function BookWorkspace({ bookSpec, onReset }) {
   };
 
   const updateScene = (idx, field, value) => {
-    setRawDecomp((prev) => { const n = { ...prev }; n.scenes = [...n.scenes]; n.scenes[idx] = { ...n.scenes[idx], [field]: value }; return n; });
+    // Computed keys from UI must refuse prototype-chain names
+    // (CodeQL js/prototype-pollution-utility). Re-check inside each
+    // updater so the assignment sits in an isSafeObjectKey-dominated
+    // branch the query can see (not only a pre-callback guard).
+    setRawDecomp((prev) => {
+      if (!isSafeObjectKey(field)) {
+        return prev;
+      }
+      const n = { ...prev };
+      n.scenes = [...n.scenes];
+      const scene = { ...n.scenes[idx] };
+      scene[field] = value;
+      n.scenes[idx] = scene;
+      return n;
+    });
     if (bookPlan) {
-      setBookPlan((prev) => { const n = { ...prev }; n.scenes = [...n.scenes]; if (n.scenes[idx]) n.scenes[idx] = { ...n.scenes[idx], [field]: value }; return n; });
+      setBookPlan((prev) => {
+        if (!isSafeObjectKey(field)) {
+          return prev;
+        }
+        const n = { ...prev };
+        n.scenes = [...n.scenes];
+        if (n.scenes[idx]) {
+          const scene = { ...n.scenes[idx] };
+          scene[field] = value;
+          n.scenes[idx] = scene;
+        }
+        return n;
+      });
     }
   };
 

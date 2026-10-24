@@ -46,6 +46,31 @@ def test_export_preserves_symlinked_root_and_idempotence(tmp_path: Path) -> None
     assert result.read_text() == "candidate"
 
 
+def test_export_rejects_directory_outside_authorized_roots(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Export roots are the platform temp dir plus RSI_* env allowlists."""
+    monkeypatch.delenv("RSI_WORK_ROOT", raising=False)
+    monkeypatch.delenv("RSI_EXPORT_ROOTS", raising=False)
+    # A private directory that is not under gettempdir() — simulate by
+    # shrinking the authorized set to an empty sibling allowlist.
+    outside = tmp_path / "outside-exports"
+    outside.mkdir()
+    allow = tmp_path / "only-here"
+    allow.mkdir()
+    monkeypatch.setenv("RSI_EXPORT_ROOTS", str(allow))
+    # Also override tempdir root so tmp_path itself is not implicitly trusted
+    # when it happens to live under the real platform temp directory.
+    monkeypatch.setenv("RSI_WORK_ROOT", str(allow))
+    monkeypatch.setattr(
+        "maistro_rsi.promotion_review._authorized_export_roots",
+        lambda: (os.path.realpath(str(allow)),),
+    )
+    with pytest.raises(ValueError, match="authorized export root"):
+        _export_patch(outside, "abc123456789", "candidate")
+    assert list(outside.glob("*.patch")) == []
+
+
 def test_export_refuses_leaf_symlink_created_at_open(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

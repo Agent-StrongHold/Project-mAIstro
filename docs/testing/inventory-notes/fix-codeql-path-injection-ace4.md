@@ -2,7 +2,7 @@
 inventory-delta:
   packages/hive-conductor/backend/tests: +1
   packages/maistro-core/tests: +1
-  packages/maistro-rsi/tests: +3
+  packages/maistro-rsi/tests: +4
 ---
 # fix-codeql-path-injection-ace4
 
@@ -15,8 +15,10 @@ site to the sanitizer CodeQL models (``os.path.realpath`` +
   authorized RSI root is refused after realpath.
 - ``test_workspace.py`` (+1): realpath symlink escape after a lexical pass
   is still refused; existing symlink case now mkdir's the allowlisted root.
-- ``test_promotion_export_paths.py`` (+3): stem allowlist gains space /
-  semicolon / overlong cases; leaf-symlink race patches ``builtins.open``.
+- ``test_promotion_export_paths.py`` (+4): stem allowlist gains space /
+  semicolon / overlong cases; leaf-symlink race patches ``builtins.open``;
+  export directory must sit under platform temp / ``RSI_WORK_ROOT`` /
+  ``RSI_EXPORT_ROOTS`` so ``makedirs``/``glob`` are startswith-dominated.
 - ``test_service_paths.py`` (+5, not inventory-gated — no CI recipe collects
   ``packages/maistro-canvas/frontend/server/lulu/tests``): library
   ``preflight_interior`` / ``preflight_cover`` refuse outside/symlink paths
