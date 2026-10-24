@@ -5,7 +5,12 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 from models.workspace import AgentToolBinding, Workspace
-from services.tool_binding import resolve_agent_prompt_fragment, resolve_agent_tools
+from services.tool_binding import (
+    binding_prompt_fragment,
+    binding_tools_override,
+    resolve_agent_prompt_fragment,
+    resolve_agent_tools,
+)
 
 
 def _workspace(**overrides: object) -> Workspace:
@@ -83,3 +88,20 @@ def test_two_workspaces_on_same_persona_resolve_different_tools() -> None:
     )
     assert resolve_agent_tools(ws_a, persona, "intake") == ["create_epic"]
     assert resolve_agent_tools(ws_b, persona, "intake") == ["custom_tool"]
+
+
+def test_binding_tools_override_reads_presentation_store() -> None:
+    from models.workspace import WorkspacePresentation
+    from services.workspace_authority import presentation_store
+
+    store = presentation_store()
+    store["ws-override"] = WorkspacePresentation(
+        workspace_id="ws-override",
+        persona_template_id="pm_fleet",
+        tool_bindings=[AgentToolBinding(agent_id="intake", tools=["only_this"])],
+        updated_at=datetime.now(UTC),
+    )
+    assert binding_tools_override("ws-override", "intake") == ["only_this"]
+    assert binding_tools_override("ws-override", "other") is None
+    assert binding_tools_override(None, "intake") is None
+    assert binding_prompt_fragment("ws-missing", "intake") == ""
