@@ -363,6 +363,9 @@ async def add_project_membership(
     )
 
     denies = body.denies
+    grants = body.grants
+    delegable_grants = body.delegable_grants
+    role = body.role
     if not requester_membership.can_administer:
         if body.denies:
             raise HTTPException(
@@ -381,21 +384,47 @@ async def add_project_membership(
                 )
             except PermissionError as exc:
                 raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
-        # set_membership upserts the one canonical row per (project, principal)
-        # -- a non-owner's request must not be read as "clear whatever denies
-        # already exist" just because it says nothing about them, or a
-        # delegated re-grant would silently launder away an owner-issued deny.
-        existing = await project_store.memberships_for(project_id, principal_id=body.principal_id)
-        denies = existing[0].denies if existing else set()
+        # A non-owner may only *add* authority they can themselves delegate;
+        # everything already on the canonical row survives until the owner
+        # revokes it (#1148: revocation is owner-only and explicit). What
+        # decides "everything already on the row" must be the store itself,
+        # inside the same critical section that writes the row: reading it
+        # here with `memberships_for` and merging in Python left a window in
+        # which an owner's `remove_membership` committed between the read and
+        # the `set_membership` write, and the upsert then resurrected the
+        # revoked principal carrying the stale grants the stale read had
+        # "preserved".
+        try:
+            return await project_store.merge_membership(
+                ProjectMembership(
+                    workspace_id=workspace_id,
+                    project_id=project_id,
+                    principal_id=body.principal_id,
+                    role=role,
+                    grants=grants,
+                    denies=denies,
+                    delegable_grants=delegable_grants,
+                ),
+                principal_id=requester,
+            )
+        except ProjectScopeDenied as exc:
+            # The boundary re-resolved the requester's delegable authority
+            # and refused (#1150) -- an owner's revocation can land after the
+            # pre-check above. Answer with the pre-check's own refusal shape
+            # rather than letting the store's denial escape as a 500.
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=(f"principal {requester!r} cannot delegate the requested Project grants"),
+            ) from exc
 
     membership = ProjectMembership(
         workspace_id=workspace_id,
         project_id=project_id,
         principal_id=body.principal_id,
-        role=body.role,
-        grants=body.grants,
+        role=role,
+        grants=grants,
         denies=denies,
-        delegable_grants=body.delegable_grants,
+        delegable_grants=delegable_grants,
     )
     try:
         return await project_store.set_membership(membership, principal_id=requester)

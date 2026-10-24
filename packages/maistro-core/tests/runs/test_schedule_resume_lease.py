@@ -36,6 +36,7 @@ from maistro.runs.consumption import (
 )
 from maistro.runs.model import AttemptStatus, RunStatus
 from maistro.runs.sources import ADMISSION_SOURCE, SCHEDULE_INPUTS_KEY, SCHEDULE_SOURCE
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 from maistro.types.config import AgentConfig
 
 pytestmark = [pytest.mark.contract("behavioral")]
@@ -104,6 +105,7 @@ async def _paused_run(container: Container, *, workspace: str) -> tuple[str, Any
         graph,
         provenance={ADMISSION_SOURCE: SCHEDULE_SOURCE, SCHEDULE_INPUTS_KEY: {}},
         initial_status=RunStatus.QUEUED,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
     first_reach = ScheduleAttemptExecutor(container.run_store, lease_ttl=timedelta(seconds=30))
     await first_reach.execute(run)

@@ -115,7 +115,12 @@ class ProjectScopeStore(Protocol):
 
         ...
 
-    async def set_membership(self, membership: ProjectMembership) -> ProjectMembership:
+    async def set_membership(
+        self,
+        membership: ProjectMembership,
+        *,
+        principal_id: str | None = None,
+    ) -> ProjectMembership:
         """Create or update the one canonical membership for this principal.
 
         Keyed on `(project_id, principal_id)`, not on `membership_id`: a
@@ -123,6 +128,28 @@ class ProjectScopeStore(Protocol):
         existing row -- carrying its original `membership_id` and
         `created_at` forward -- rather than adding a second, independent
         grant no later call can ever fully retract (#1148).
+        """
+
+        ...
+
+    async def merge_membership(
+        self,
+        membership: ProjectMembership,
+        *,
+        principal_id: str | None = None,
+    ) -> ProjectMembership:
+        """Merge a delegated re-grant into the canonical row atomically.
+
+        The read that decides what to preserve and the write that stores it
+        are one critical section: when a row already exists for
+        `(project_id, principal_id)`, its `membership_id`, `created_at`,
+        `denies`, `role`, `grants` and `delegable_grants` are preserved and
+        the caller's `grants`/`delegable_grants` are unioned in; when none
+        exists, `membership` becomes the row. An owner's revocation that
+        commits first therefore leaves no row to preserve, so the merge
+        cannot resurrect a revoked principal carrying stale grants -- the
+        failure mode of reading `memberships_for` and then writing through
+        `set_membership` as two separate calls (#1148).
         """
 
         ...
@@ -143,16 +170,26 @@ class ProjectScopeStore(Protocol):
 
         ...
 
-    async def remove_membership(self, project_id: str, *, principal_id: str) -> None:
+    async def remove_membership(
+        self,
+        project_id: str,
+        *,
+        principal_id: str,
+        acting_principal_id: str | None = None,
+    ) -> None:
         """Revoke a principal's membership at one Project.
 
         A no-op when the principal has no membership there: revocation is
         idempotent the same way `WorkspaceStore.remove_membership` is.
+        ``acting_principal_id`` is the requester whose authority is checked;
+        ``None`` is the internal/system shape, not a self-service fallback.
         """
 
         ...
 
-    async def put_resource(self, resource: ProjectScopedResource) -> ProjectScopedResource:
+    async def put_resource(
+        self, resource: ProjectScopedResource, *, principal_id: str | None = None
+    ) -> ProjectScopedResource:
         """Create or replace a resource owned by a Project."""
 
         ...
@@ -535,8 +572,13 @@ class InMemoryProjectScopeStore:
             resolved.update(project.defaults)
         return resolved
 
-    async def set_membership(self, membership: ProjectMembership) -> ProjectMembership:
-        """Create or update the one canonical membership per (project, principal)."""
+    async def set_membership(
+        self,
+        membership: ProjectMembership,
+        *,
+        principal_id: str | None = None,
+    ) -> ProjectMembership:
+        """Create or update the one canonical membership per (project, principal).
 
         This upsert replaces the row wholesale, so a supplied ``principal_id``
         must hold ADMINISTER (#1150); delegated additions go through
@@ -555,6 +597,43 @@ class InMemoryProjectScopeStore:
                 "updated_at": datetime.now(UTC),
             }
         )
+        self._memberships[key] = updated
+        return updated.model_copy(deep=True)
+
+    async def merge_membership(
+        self,
+        membership: ProjectMembership,
+        *,
+        principal_id: str | None = None,
+    ) -> ProjectMembership:
+        """Merge-or-create the canonical membership in one atomic step.
+
+        The in-memory store runs on one event loop and this method has no
+        await between reading the existing row and writing the merged one, so
+        no other coroutine can interleave a `remove_membership` between the
+        two the way it could against the API's read-then-write (#1148).
+        """
+        project = await self._authorize_membership_write(
+            membership, principal_id, replacement=False
+        )
+        if project.workspace_id != membership.workspace_id:
+            raise ProjectIntegrityError("ProjectMembership Workspace does not match Project")
+        key = (membership.project_id, membership.principal_id)
+        existing = self._memberships.get(key)
+        if existing is None:
+            updated = membership.model_copy(update={"updated_at": datetime.now(UTC)})
+        else:
+            updated = membership.model_copy(
+                update={
+                    "membership_id": existing.membership_id,
+                    "created_at": existing.created_at,
+                    "role": existing.role,
+                    "grants": existing.grants | membership.grants,
+                    "denies": existing.denies,
+                    "delegable_grants": (existing.delegable_grants | membership.delegable_grants),
+                    "updated_at": datetime.now(UTC),
+                }
+            )
         self._memberships[key] = updated
         return updated.model_copy(deep=True)
 
@@ -577,12 +656,21 @@ class InMemoryProjectScopeStore:
         memberships.sort(key=lambda item: (item.created_at, item.membership_id))
         return memberships
 
-    async def remove_membership(self, project_id: str, *, principal_id: str) -> None:
+    async def remove_membership(
+        self,
+        project_id: str,
+        *,
+        principal_id: str,
+        acting_principal_id: str | None = None,
+    ) -> None:
         """Revoke a principal's membership at one Project, if any exists."""
 
+        await self._authorize_administer(project_id, acting_principal_id)
         self._memberships.pop((project_id, principal_id), None)
 
-    async def put_resource(self, resource: ProjectScopedResource) -> ProjectScopedResource:
+    async def put_resource(
+        self, resource: ProjectScopedResource, *, principal_id: str | None = None
+    ) -> ProjectScopedResource:
         """Create or replace a Project resource without crossing Workspaces."""
 
         project = await self._authorize_administer(resource.project_id, principal_id)

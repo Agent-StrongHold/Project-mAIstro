@@ -32,15 +32,12 @@ async def ask(client: httpx.AsyncClient) -> None:
 
 @pytest.fixture(scope="module")
 def gate():
-    # The gate script imports its `check_direct_effects` sibling with a bare
-    # `import`, which resolves only when `scripts/` is importable. Running the
-    # gate from the CLI puts its own directory on `sys.path`; this loader does
-    # not, and full-suite runs only worked because an alphabetically earlier
-    # test module happened to insert the path first. Make the fixture
-    # order-independent instead of inheriting that accident.
-    scripts = str(ROOT / "scripts")
-    if scripts not in sys.path:
-        sys.path.insert(0, scripts)
+    # The gate owns its sibling dependency: `_load_direct_effects()` loads
+    # `check_direct_effects` by absolute path, so the load below needs no
+    # `scripts/` entry on sys.path -- and this fixture deliberately does not
+    # add one (#1115). A bare sibling import reintroduced into the gate must
+    # fail this isolated run instead of silently passing on a mutated
+    # sys.path; that is the order-independence contract under test.
     spec = importlib.util.spec_from_file_location("check_model_egress", SCRIPT)
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)

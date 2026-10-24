@@ -9,6 +9,7 @@ from maistro.runs import AcceptedNodeOutcome, AttemptResult, AttemptStatus, RunS
 from maistro.runs.lifecycle import InvalidLifecycleTransition
 from maistro.runs.model import NodeRun
 from maistro.runs.store import RunStore
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 
 async def _running_node(spine: Any) -> tuple[RunStore, NodeRun]:
@@ -19,7 +20,7 @@ async def _running_node(spine: Any) -> tuple[RunStore, NodeRun]:
         name="Accepted outcome invariant",
         nodes=[Node(node_id="node-1", node_type="agent")],
     )
-    run = await store.create_run(graph)
+    run = await store.create_run(graph, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
     node_run = await store.create_node_run(run.run_id, node_id="node-1")
     node_run = await store.transition_node_run(node_run.node_run_id, RunStatus.QUEUED)
     node_run = await store.transition_node_run(node_run.node_run_id, RunStatus.RUNNING)

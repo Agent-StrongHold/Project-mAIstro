@@ -175,6 +175,7 @@ class DagRun:
             canonical_run_id=raw.get("canonical_run_id", ""),
             workspace_id=raw.get("workspace_id", ""),
             project_id=raw.get("project_id", ""),
+            event_seq=raw.get("event_seq", 0),
         )
 
     def to_record(self) -> dict[str, Any]:
@@ -197,6 +198,7 @@ class DagRun:
             "canonical_run_id": self.canonical_run_id,
             "workspace_id": self.workspace_id,
             "project_id": self.project_id,
+            "event_seq": self.event_seq,
             "events": [asdict(ev) for ev in self.events],
         }
 

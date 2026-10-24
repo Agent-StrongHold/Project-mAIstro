@@ -25,16 +25,18 @@ that defect in both directions:
   authority — and nothing on the execution side (scheduler, recovery, the
   canonical runner) reads this projection at all.
 
-Canonical runs here are protocol-shaped fakes (`DurableRunStore.get` → a
-record whose `.run.status` is a real `RunStatus`): the thing under test is
-the reconciliation decision, not the spine's own storage, which its own
-suites cover.
+Canonical runs here are protocol-shaped fakes standing in for the scoped
+reader seam `dag_run_inspection` reads (`get_runs`/`get_run` answering
+objects whose `.status` is a real `RunStatus`): the thing under test is the
+reconciliation decision, not the spine's own storage, which its own suites
+cover.
 """
 
 from __future__ import annotations
 
 import asyncio
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -57,20 +59,61 @@ def _workspace(client: Any, name: str) -> str:
     return r.json()["id"]
 
 
-class _FakeCanonicalStore:
-    """The slice of `DurableRunStore` reconciliation reads: `get(run_id)`."""
+class _FakeCanonicalReader:
+    """The slice of the scoped canonical reader that inspection reads.
+
+    `dag_run_inspection` asks through `get_runs(run_ids, principal_id=...)`
+    (the batched lifecycle overlay) and `get_run(run_id, principal_id=...)`
+    (the optional NodeRun/Attempt evidence read); both are Workspace-scoped
+    in production, so the fake answers only the ids it was seeded with.
+    """
 
     def __init__(self, runs: dict[str, Any] | None = None) -> None:
         self._runs = dict(runs or {})
         self.gets: list[str] = []
 
-    async def get(self, run_id: str) -> Any:
+    async def get_runs(self, run_ids: list[str], *, principal_id: str = "") -> dict[str, Any]:
+        self.gets.extend(run_ids)
+        return {run_id: self._runs[run_id] for run_id in run_ids if run_id in self._runs}
+
+    async def get_run(self, run_id: str, *, principal_id: str = "") -> Any:
         self.gets.append(run_id)
         return self._runs.get(run_id)
 
 
-def _canonical_record(status: Any) -> Any:
-    return SimpleNamespace(run=SimpleNamespace(status=status))
+def _canonical_record(run_id: str, status: Any, workspace_id: str) -> Any:
+    """A canonical Run shaped the way the overlay reads it: a real
+    `RunStatus`, the projection row's Workspace identity (the overlay ignores
+    cross-Workspace links), and the null lifecycle fields it must be able to
+    overwrite a stale row with."""
+    return SimpleNamespace(
+        run_id=run_id,
+        workspace_id=workspace_id,
+        project_id="proj-authority",
+        actor_principal_id=_AUTHED_USER_ID,
+        status=status,
+        result=None,
+        error=None,
+        finished_at=None,
+        created_at=datetime(2026, 1, 15, 12, 0, 0, tzinfo=UTC),
+    )
+
+
+def _point_reader(monkeypatch: pytest.MonkeyPatch, fake: _FakeCanonicalReader) -> None:
+    """Wire the fake reader in at the one seam inspection reads.
+
+    Same instance-attribute patch the session conftest uses for spine
+    fixtures: `EngineService.run_reader` is a read-only view of the
+    Container's scoped reader, so the Container under a fake `_agent_port`
+    is the seam.
+    """
+    from services.engine import get_engine
+
+    monkeypatch.setattr(
+        get_engine(),
+        "_agent_port",
+        SimpleNamespace(container=SimpleNamespace(run_reader=fake)),
+    )
 
 
 class _Records(dict):
@@ -121,8 +164,10 @@ def test_failed_projection_row_serves_completed_canonical_truth(
         workspace_id=ws,
         canonical_run_id="r-lying-failure",
     )
-    fake = _FakeCanonicalStore({"r-lying-failure": _canonical_record(RunStatus.COMPLETED)})
-    monkeypatch.setattr("services.dag_agents.get_run_store", lambda: fake)
+    fake = _FakeCanonicalReader(
+        {"r-lying-failure": _canonical_record("r-lying-failure", RunStatus.COMPLETED, ws)}
+    )
+    _point_reader(monkeypatch, fake)
 
     listed = authed_client.get("/v1/dag-runs").json()
     row = next(r for r in listed if r["id"] == "r-lying-failure")
@@ -150,8 +195,10 @@ def test_completed_projection_row_cannot_resurrect_failed_canonical_work(
         workspace_id=ws,
         canonical_run_id="r-lying-success",
     )
-    fake = _FakeCanonicalStore({"r-lying-success": _canonical_record(RunStatus.FAILED)})
-    monkeypatch.setattr("services.dag_agents.get_run_store", lambda: fake)
+    fake = _FakeCanonicalReader(
+        {"r-lying-success": _canonical_record("r-lying-success", RunStatus.FAILED, ws)}
+    )
+    _point_reader(monkeypatch, fake)
 
     detail = authed_client.get("/v1/dag-runs/r-lying-success")
     assert detail.status_code == 200
@@ -176,8 +223,10 @@ def test_projection_cannot_terminalize_work_the_spine_still_executes(
         workspace_id=ws,
         canonical_run_id="r-premature",
     )
-    fake = _FakeCanonicalStore({"r-premature": _canonical_record(RunStatus.RUNNING)})
-    monkeypatch.setattr("services.dag_agents.get_run_store", lambda: fake)
+    fake = _FakeCanonicalReader(
+        {"r-premature": _canonical_record("r-premature", RunStatus.RUNNING, ws)}
+    )
+    _point_reader(monkeypatch, fake)
 
     detail = authed_client.get("/v1/dag-runs/r-premature")
     assert detail.status_code == 200
@@ -197,13 +246,15 @@ def test_uncorrelated_row_is_served_as_recorded(
 
     ws = _workspace(authed_client, "Receipt Boundary")
     _plant_row(get_dag_run_store(), "r-uncorrelated", status="completed", workspace_id=ws)
-    fake = _FakeCanonicalStore({})
-    monkeypatch.setattr("services.dag_agents.get_run_store", lambda: fake)
+    fake = _FakeCanonicalReader({})
+    _point_reader(monkeypatch, fake)
 
     detail = authed_client.get("/v1/dag-runs/r-uncorrelated")
     assert detail.status_code == 200
     assert detail.json()["status"] == "completed"
-    assert "r-uncorrelated" not in fake.gets
+    # The row's own key is the correlation candidate inspection asks about;
+    # asking is not authority — the reader has nothing, so the recorded
+    # receipt stands.
 
 
 def test_row_whose_canonical_run_no_longer_resolves_is_served_as_recorded(
@@ -222,8 +273,8 @@ def test_row_whose_canonical_run_no_longer_resolves_is_served_as_recorded(
         workspace_id=ws,
         canonical_run_id="r-gone",
     )
-    fake = _FakeCanonicalStore({})  # the spine holds nothing anymore
-    monkeypatch.setattr("services.dag_agents.get_run_store", lambda: fake)
+    fake = _FakeCanonicalReader({})  # the spine holds nothing anymore
+    _point_reader(monkeypatch, fake)
 
     detail = authed_client.get("/v1/dag-runs/r-gone")
     assert detail.status_code == 200
@@ -255,8 +306,10 @@ def test_reconciliation_does_not_rewrite_the_stored_record(
     )
     assert records["r-provenance"]["status"] == "failed"
 
-    fake = _FakeCanonicalStore({"r-provenance": _canonical_record(RunStatus.COMPLETED)})
-    monkeypatch.setattr("services.dag_agents.get_run_store", lambda: fake)
+    fake = _FakeCanonicalReader(
+        {"r-provenance": _canonical_record("r-provenance", RunStatus.COMPLETED, ws)}
+    )
+    _point_reader(monkeypatch, fake)
 
     served = authed_client.get("/v1/dag-runs/r-provenance")
     assert served.json()["status"] == "completed"
@@ -293,8 +346,8 @@ def test_reconciliation_holds_across_restart_and_replica_reload(
     replica.reload()
     assert replica.get_run("r-replica") is not None
 
-    fake = _FakeCanonicalStore({"r-replica": _canonical_record(RunStatus.FAILED)})
-    monkeypatch.setattr("services.dag_agents.get_run_store", lambda: fake)
+    fake = _FakeCanonicalReader({"r-replica": _canonical_record("r-replica", RunStatus.FAILED, ws)})
+    _point_reader(monkeypatch, fake)
 
     detail = authed_client.get("/v1/dag-runs/r-replica")
     assert detail.status_code == 200
@@ -346,7 +399,9 @@ def test_chat_workflow_success_records_canonical_status_and_correlation(
     monkeypatch.setattr(graph_runner, "execute_dag", _fake_execute_dag)
     monkeypatch.setattr(eval_judge_service, "score_run", _fake_score_run)
 
-    out = asyncio.run(_tool_run_workflow({"dag_id": dag_id}, _AUTHED_USER_ID, None))
+    out = asyncio.run(
+        _tool_run_workflow({"dag_id": dag_id, "workspace_id": ws}, _AUTHED_USER_ID, None)
+    )
     assert out.get("status") == "completed", out
 
     row = get_dag_run_store().get_run(str(out["run_id"]))
@@ -383,7 +438,9 @@ def test_chat_workflow_canonical_failure_records_canonical_status_and_correlatio
     monkeypatch.setattr(graph_runner, "execute_dag", _failing_execute_dag)
 
     before = {r["id"] for r in get_dag_run_store().list_runs(limit=100)}
-    out = asyncio.run(_tool_run_workflow({"dag_id": dag_id}, _AUTHED_USER_ID, None))
+    out = asyncio.run(
+        _tool_run_workflow({"dag_id": dag_id, "workspace_id": ws}, _AUTHED_USER_ID, None)
+    )
     assert "error" in out, out
 
     after = {r["id"] for r in get_dag_run_store().list_runs(limit=100)}
@@ -416,11 +473,13 @@ def test_chat_failure_row_is_reconciled_like_any_other(
 
     monkeypatch.setattr(graph_runner, "execute_dag", _failing_execute_dag)
     before = {r["id"] for r in get_dag_run_store().list_runs(limit=100)}
-    asyncio.run(_tool_run_workflow({"dag_id": dag_id}, _AUTHED_USER_ID, None))
+    asyncio.run(_tool_run_workflow({"dag_id": dag_id, "workspace_id": ws}, _AUTHED_USER_ID, None))
 
     # The spine recovered the same Run afterwards and completed it.
-    fake = _FakeCanonicalStore({"r-chat-reconciled": _canonical_record(RunStatus.COMPLETED)})
-    monkeypatch.setattr("services.dag_agents.get_run_store", lambda: fake)
+    fake = _FakeCanonicalReader(
+        {"r-chat-reconciled": _canonical_record("r-chat-reconciled", RunStatus.COMPLETED, ws)}
+    )
+    _point_reader(monkeypatch, fake)
 
     new_rows = {r["id"] for r in get_dag_run_store().list_runs(limit=100)} - before
     assert new_rows, "the failure branch must still finish the run"
@@ -471,12 +530,12 @@ def test_contradicting_projection_cannot_mutate_canonical_truth(
         workspace_id=ws,
         canonical_run_id="r-no-write",
     )
-    canonical = _canonical_record(RunStatus.FAILED)
-    fake = _FakeCanonicalStore({"r-no-write": canonical})
-    monkeypatch.setattr("services.dag_agents.get_run_store", lambda: fake)
+    canonical = _canonical_record("r-no-write", RunStatus.FAILED, ws)
+    fake = _FakeCanonicalReader({"r-no-write": canonical})
+    _point_reader(monkeypatch, fake)
 
     served = authed_client.get("/v1/dag-runs/r-no-write")
     assert served.json()["status"] == "failed"
     # The canonical record is untouched by both the planted row and the read.
-    assert canonical.run.status is RunStatus.FAILED
-    assert fake.gets == ["r-no-write"]  # the detail read asked; nothing wrote
+    assert canonical.status is RunStatus.FAILED
+    assert "r-no-write" in fake.gets  # the detail read asked; nothing wrote

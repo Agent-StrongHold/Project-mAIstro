@@ -11,13 +11,14 @@ its locally stamped finish time over whatever the spine later decided.
 
 These tests pin the correction at both doors:
 
-- **Write side** (`routes.dags._record_run_projection` + a narrow
-  `DagRunStore.record_status` presentation seam): a non-terminal canonical
-  status is mirrored as display state with no invented `finished_at`, so the
-  terminal write after recovery still lands; terminal outcomes finish
-  normally; a result with no status outside the canonical vocabulary
-  fabricates no terminal outcome; a late non-terminal mirror cannot unfinish
-  a finished receipt; and the open row survives persist/reopen exactly.
+- **Write side** (the projection writers + a narrow `DagRunStore.record_status`
+  presentation seam): the run-route writer fail-closes on input outside the
+  canonical vocabulary — no row, no finish, nothing fabricated (#1877) — and
+  finishes only terminal canonical outcomes; the chat workflow writer records
+  the canonical outcome under the shared #1036 terminality contract, so a
+  non-terminal canonical state is mirrored open with no invented
+  `finished_at`, a late non-terminal mirror cannot unfinish a finished
+  receipt, and an open row survives persist/reopen exactly.
 
 - **Read side** (`services.dag_run_inspection`): lifecycle reconciliation
   replaces status AND finish time — a terminal row over an open canonical
@@ -61,20 +62,58 @@ def _workspace(client: Any, name: str) -> str:
     return r.json()["id"]
 
 
-class _FakeCanonicalStore:
-    """The slice of `DurableRunStore` reconciliation reads: `get(run_id)`."""
+class _FakeCanonicalReader:
+    """The slice of the scoped canonical reader that inspection reads.
+
+    `dag_run_inspection` asks through `get_runs(run_ids, principal_id=...)`
+    and `get_run(run_id, principal_id=...)`; both are Workspace-scoped in
+    production, so the fake answers only the ids it was seeded with.
+    """
 
     def __init__(self, runs: dict[str, Any] | None = None) -> None:
         self._runs = dict(runs or {})
         self.gets: list[str] = []
 
-    async def get(self, run_id: str) -> Any:
+    async def get_runs(self, run_ids: list[str], *, principal_id: str = "") -> dict[str, Any]:
+        self.gets.extend(run_ids)
+        return {run_id: self._runs[run_id] for run_id in run_ids if run_id in self._runs}
+
+    async def get_run(self, run_id: str, *, principal_id: str = "") -> Any:
         self.gets.append(run_id)
         return self._runs.get(run_id)
 
 
-def _canonical_run(status: Any, finished_at: Any = None, error: Any = None) -> Any:
-    return SimpleNamespace(run=SimpleNamespace(status=status, finished_at=finished_at, error=error))
+def _point_reader(monkeypatch: pytest.MonkeyPatch, fake: _FakeCanonicalReader) -> None:
+    """Wire the fake reader in at the one seam inspection reads."""
+    from services.engine import get_engine
+
+    monkeypatch.setattr(
+        get_engine(),
+        "_agent_port",
+        SimpleNamespace(container=SimpleNamespace(run_reader=fake)),
+    )
+
+
+def _canonical_run(
+    run_id: str,
+    status: Any,
+    workspace_id: str,
+    finished_at: Any = None,
+    error: Any = None,
+) -> Any:
+    """A canonical Run shaped the way the overlay reads it, filed in the
+    projection row's Workspace (the overlay ignores cross-Workspace links)."""
+    return SimpleNamespace(
+        run_id=run_id,
+        workspace_id=workspace_id,
+        project_id="proj-lifecycle",
+        actor_principal_id=_AUTHED_USER_ID,
+        status=status,
+        result=None,
+        error=error,
+        finished_at=finished_at,
+        created_at=datetime(2026, 1, 15, 12, 0, 0, tzinfo=UTC),
+    )
 
 
 class _Records(dict):
@@ -126,11 +165,13 @@ def _project(status: str, run_id: str, workspace_id: str, **extra: Any) -> None:
 
 
 @pytest.mark.parametrize("status", _NONTERMINAL)
-def test_nonterminal_canonical_status_is_mirrored_open(authed_client: Any, status: str) -> None:
+def test_nonterminal_canonical_status_leaves_the_row_open(authed_client: Any, status: str) -> None:
     """All five non-terminal canonical statuses reach the projection writer
-    (the facade raises for each): the row must mirror the canonical status as
-    display state WITHOUT inventing `finished_at` (#1036) — and survive a
-    persist/reopen exactly, still open."""
+    (the facade raises for each): the row is opened and left open — no
+    invented `finished_at` (#1036, #1877) — and the open row survives
+    persist/reopen exactly. What the row displays is decided at read time by
+    the lifecycle overlay against the canonical Run, never by a locally
+    stamped finish."""
     from services.dag_run_store import configure_dag_run_store
 
     ws = _workspace(authed_client, f"Lifecycle Open {status}")
@@ -142,18 +183,15 @@ def test_nonterminal_canonical_status_is_mirrored_open(authed_client: Any, statu
 
     row = store.get_run(run_id)
     assert row is not None
-    assert row["status"] == status
     assert row["finished_at"] is None
-    assert records[run_id]["status"] == status
     assert records[run_id]["finished_at"] is None
 
-    # Persist/reopen: a replica rehydrates the fixture and the stored
-    # canonical-derived status is still exact, still un-finished.
+    # Persist/reopen: a replica rehydrates the fixture and the row is still
+    # exactly as open as the writer left it — reopen finishes nothing.
     replica = configure_dag_run_store(records)
     replica.reload()
     reopened = replica.get_run(run_id)
     assert reopened is not None
-    assert reopened["status"] == status
     assert reopened["finished_at"] is None
 
 
@@ -179,8 +217,9 @@ def test_result_without_a_known_status_fabricates_no_terminal_outcome(
 ) -> None:
     """A result whose status is missing, or outside the canonical vocabulary,
     must not be stamped `failed` by the projection writer: that was a locally
-    decided terminal outcome. The row stays open — an honest in-progress
-    receipt — and no finish is invented."""
+    decided terminal outcome. The writer fail-closes before any store
+    mutation — no row is opened at all — and the miss surfaces as the
+    caught-and-logged projection failure it is (#1877)."""
     from services.dag_run_store import configure_dag_run_store, get_dag_run_store
 
     ws = _workspace(authed_client, "No Fabricated Outcome")
@@ -190,11 +229,8 @@ def test_result_without_a_known_status_fabricates_no_terminal_outcome(
     _project("sorta-done", "r-unknown-status", ws)
 
     for run_id in ("r-missing-status", "r-unknown-status"):
-        row = get_dag_run_store().get_run(run_id)
-        assert row is not None, run_id
-        assert row["finished_at"] is None, run_id
-    assert store.get_run("r-missing-status")["status"] == "running"
-    assert store.get_run("r-unknown-status")["status"] == "running"
+        assert get_dag_run_store().get_run(run_id) is None, run_id
+    assert not store.list_runs(limit=100)
 
 
 def test_record_status_cannot_unfinish_a_finished_receipt() -> None:
@@ -252,13 +288,14 @@ def test_run_route_failure_branch_parks_waiting_without_finishing(
 
     monkeypatch.setattr(graph_runner, "execute_dag", _parked)
 
-    r = admin_client.post(f"/v1/dags/{dag_id}/run")
+    r = admin_client.post(f"/v1/dags/{dag_id}/run", json={"workspace_id": ws})
     assert r.status_code == 200, r.text
     assert r.json()["status"] == "waiting"
 
     row = get_dag_run_store().get_run("r-route-waiting")
     assert row is not None
-    assert row["status"] == "waiting"
+    # The parked Run's row stays open and correlated — no invented finish;
+    # what the row displays follows the canonical Run at read time.
     assert row["finished_at"] is None
     assert row["canonical_run_id"] == "r-route-waiting"
 
@@ -307,7 +344,9 @@ def test_chat_workflow_parked_run_mirrors_open(
 
     monkeypatch.setattr(graph_runner, "execute_dag", _parked)
     before = {r["id"] for r in get_dag_run_store().list_runs(limit=100)}
-    out = asyncio.run(_tool_run_workflow({"dag_id": dag_id}, _AUTHED_USER_ID, None))
+    out = asyncio.run(
+        _tool_run_workflow({"dag_id": dag_id, "workspace_id": ws}, _AUTHED_USER_ID, None)
+    )
     assert "error" in out, out
 
     new_rows = {r["id"] for r in get_dag_run_store().list_runs(limit=100)} - before
@@ -341,7 +380,7 @@ def test_chat_workflow_result_without_status_records_no_outcome(
 
     monkeypatch.setattr(graph_runner, "execute_dag", _no_status)
     before = {r["id"] for r in get_dag_run_store().list_runs(limit=100)}
-    asyncio.run(_tool_run_workflow({"dag_id": dag_id}, _AUTHED_USER_ID, None))
+    asyncio.run(_tool_run_workflow({"dag_id": dag_id, "workspace_id": ws}, _AUTHED_USER_ID, None))
 
     new_rows = {r["id"] for r in get_dag_run_store().list_runs(limit=100)} - before
     assert new_rows
@@ -380,15 +419,14 @@ def test_waiting_projection_resumes_to_completed_without_irreversible_finish(
     _project("waiting", run_id, ws)
     row = store.get_run(run_id)
     assert row is not None
-    assert row["status"] == "waiting"
     assert row["finished_at"] is None  # never irreversibly finished
 
     # 2. Recovery resumes the Run to COMPLETED; the terminal write lands.
     canonical_finished_at = datetime(2026, 10, 20, 12, 0, 0, tzinfo=UTC)
-    fake = _FakeCanonicalStore(
-        {run_id: _canonical_run(RunStatus.COMPLETED, finished_at=canonical_finished_at)}
+    fake = _FakeCanonicalReader(
+        {run_id: _canonical_run(run_id, RunStatus.COMPLETED, ws, finished_at=canonical_finished_at)}
     )
-    monkeypatch.setattr("services.dag_agents.get_run_store", lambda: fake)
+    _point_reader(monkeypatch, fake)
 
     async def _terminal_write() -> None:
         await store.finish_run(run_id, status="completed")
@@ -431,8 +469,10 @@ def test_stale_terminal_row_over_open_canonical_run_serves_open_lifecycle(
         workspace_id=ws,
         canonical_run_id="r-stale-finish",
     )
-    fake = _FakeCanonicalStore({"r-stale-finish": _canonical_run(RunStatus.WAITING)})
-    monkeypatch.setattr("services.dag_agents.get_run_store", lambda: fake)
+    fake = _FakeCanonicalReader(
+        {"r-stale-finish": _canonical_run("r-stale-finish", RunStatus.WAITING, ws)}
+    )
+    _point_reader(monkeypatch, fake)
 
     detail = authed_client.get("/v1/dag-runs/r-stale-finish")
     assert detail.status_code == 200
@@ -467,14 +507,17 @@ def test_served_finish_time_is_canonical_not_the_local_clock(
         canonical_run_id="r-canonical-clock",
     )
     canonical_finished_at = datetime(2026, 10, 19, 9, 30, 0, tzinfo=UTC)
-    fake = _FakeCanonicalStore(
+    fake = _FakeCanonicalReader(
         {
             "r-canonical-clock": _canonical_run(
-                RunStatus.COMPLETED, finished_at=canonical_finished_at
+                "r-canonical-clock",
+                RunStatus.COMPLETED,
+                ws,
+                finished_at=canonical_finished_at,
             )
         }
     )
-    monkeypatch.setattr("services.dag_agents.get_run_store", lambda: fake)
+    _point_reader(monkeypatch, fake)
 
     detail = authed_client.get("/v1/dag-runs/r-canonical-clock")
     assert detail.status_code == 200
@@ -503,8 +546,8 @@ def test_absent_canonical_still_serves_the_recorded_lifecycle(
         status="failed",
         workspace_id=ws,
     )
-    fake = _FakeCanonicalStore({})
-    monkeypatch.setattr("services.dag_agents.get_run_store", lambda: fake)
+    fake = _FakeCanonicalReader({})
+    _point_reader(monkeypatch, fake)
 
     detail = authed_client.get("/v1/dag-runs/r-receipt-lifecycle")
     assert detail.status_code == 200

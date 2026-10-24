@@ -17,16 +17,18 @@ update. A Run the spine had not finished was irreversibly presented as
 finished, and a stale terminal row kept its locally stamped finish time over
 whatever the spine later decided.
 
-Write side (`routes.dags._record_run_projection`, the chat workflow tool,
-and the shared `DagRunStore.record_outcome` terminality contract): all five
-non-terminal canonical statuses are mirrored as open display state with no
-invented `finished_at` — carrying the canonical correlation, so open rows
-reconcile too — and survive persist/reopen exactly; all four terminal
-statuses finish normally; a result whose status is missing or outside the
-canonical vocabulary fabricates no terminal outcome at either writer (both
-once substituted `failed`); a late non-terminal mirror cannot unfinish a
-finished receipt; and an end-to-end `POST /v1/dags/{id}/run` test drives
-the real failure branch for a parked Run.
+Write side (the projection writers and the shared
+`DagRunStore.record_outcome` terminality contract): the run-route writer
+fail-closes on input outside the canonical vocabulary — no row, no finish,
+nothing fabricated (#1877) — and finishes only terminal canonical outcomes,
+so a parked Run's row stays open and correlated with no invented
+`finished_at`; the chat workflow writer records the canonical outcome under
+the shared #1036 contract, so a non-terminal canonical state is mirrored
+open with the canonical correlation and no invented `finished_at`; all four
+terminal statuses finish normally at both writers; a late non-terminal
+mirror cannot unfinish a finished receipt; and an end-to-end
+`POST /v1/dags/{id}/run` test drives the real failure branch for a parked
+Run. Open rows survive persist/reopen exactly.
 
 The #1036 required regression — record WAITING, resume after recovery to
 COMPLETED, prove the projection was never irreversibly finished at the
@@ -45,6 +47,12 @@ Red/green evidence: the suite was written first and failed 11 of 13 at the
 implementation base (the two passing cases pin pre-existing correct
 behavior: terminal finishes and absent-canonical fallback); after the fix,
 and after the same terminality contract was extended to the chat writer
-two more cases were added for it, all 15 pass, with the full
-hive-conductor backend suite (2289 passed, 4 skipped) and `ruff check` /
-`ruff format --check` green at the same head.
+two more cases were added for it, all 15 pass. The branch was then rebuilt
+onto a newer `develop` that had independently merged the #1877 writer and
+overlay work; the writer pins were adapted to that merged semantics (the
+route writer fail-closes before opening a row on malformed input; the
+read-side overlay carries displayed lifecycle truth), the read-side pins
+were re-pointed at the merged scoped-reader seam, and all 15 still pass
+alongside the 12 authority tests, with the full hive-conductor backend
+suite (3971 passed, 26 skipped) and `ruff check` / `ruff format --check`
+green at the rebuilt head.
