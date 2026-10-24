@@ -68,6 +68,16 @@ class ExplorationPolicy(StrEnum):
     TOURNAMENT = "tournament"
 
 
+#: Every :class:`ExplorationPolicy` value, in declaration order. Exposed as a
+#: single tuple so callers (and static analysis) can enumerate the policies
+#: without re-listing them.
+ALL_EXPLORATION_POLICIES: tuple[ExplorationPolicy, ...] = (
+    ExplorationPolicy.WIDE_THEN_CONVERGE,
+    ExplorationPolicy.TIGHT,
+    ExplorationPolicy.TOURNAMENT,
+)
+
+
 class ThesisDisposition(StrEnum):
     """Where one thesis stands in the wave's eval/fence lifecycle."""
 
@@ -231,6 +241,15 @@ def exploration_plan_of(run: Run) -> ExplorationPlan | None:
     if recorded is None:
         return None
     return ExplorationPlan.model_validate(recorded)
+
+
+def run_provenance(plan: ExplorationPlan) -> dict[str, Any]:
+    """Return the ``Run.provenance`` entry that makes ``plan`` visible on a Run.
+
+    Thin module-level wrapper over :meth:`ExplorationPlan.run_provenance` so
+    the helper is reachable as a callable as well as on the plan itself.
+    """
+    return plan.run_provenance()
 
 
 def _wave_record_of(node_run: NodeRun) -> dict[str, Any]:
@@ -644,6 +663,7 @@ async def _require_thesis_node_run(store: ExplorationRunStore, node_run_id: str)
 
 
 __all__ = [
+    "ALL_EXPLORATION_POLICIES",
     "PROVENANCE_KEY",
     "REJECTED_DISPOSITIONS",
     "RUN_PROVENANCE_KEY",
@@ -668,6 +688,7 @@ __all__ = [
     "name_wave_winner",
     "record_thesis_score",
     "rejected_thesis_texts",
+    "run_provenance",
     "thesis_provenance_of",
     "wave_records",
 ]
