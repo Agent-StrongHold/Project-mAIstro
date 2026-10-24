@@ -489,7 +489,6 @@ from maistro.extensions.ui import (
 
 __all__ = [
     "ATTRIBUTION_FORMAT",
-    "ATTRIBUTION_FORMAT",
     "ATTRIBUTION_KEYS",
     "BUNDLE_FORMAT",
     "CATALOG_FORMAT",

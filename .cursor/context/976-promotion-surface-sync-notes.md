@@ -68,3 +68,69 @@ fails identically on `origin/develop` (its message is about built-but-never-wire
 modules), and `check-vulture-baseline.py` under its *default* arguments (which
 include `tests`) — CI invokes it with `packages/*/src --min-confidence 60
 --exclude '*/third_party/*'`, which is green.
+
+## Verification round (job 7b9c9ee6, head a382356fb, 2026-10-24)
+
+Independent re-validation of every claim above; no earlier verification was
+trusted. The job driver wrote **no** `check-*.log` files for this round, so all
+evidence below was produced here:
+
+- `pytest packages/maistro-core/tests/capabilities
+  packages/maistro-core/tests/extensions -q` → **1881 passed, 7 skipped**
+  (matches the inventory note's delta; `check-suite-inventory.py` → exit 0, 21
+  suites match — after one `uv sync --locked --extra dev`, the venv was missing
+  the four #980 gallery workspace members, which made the renderer-pack suite
+  fail collection; an environment fault, not a tree fault).
+- `ruff check .` / `ruff format --check .` → clean. `mypy
+  packages/maistro-core/src` → only the 5 pre-existing `maistro_bootstrap`
+  import-not-found errors in untouched files.
+- CI-arg gates: vulture `packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'` → **1326 == 1326**, radon **134 == 134**,
+  promotion-surface → ok (272), promotion-surface-provenance → 273 modules, no
+  tolerance expansion, reachability-dispositions → 168/168 dispositioned,
+  shipped-surface-truth → complete, backlog-consistency → ok,
+  extension-imports → ok, cross-package-imports → ok.
+- `git diff e20e9f52 -- quality/` is **empty** — no ledger row touched by this
+  branch (the 17-row diff vs `origin/develop` is develop's own 59 commits since
+  the merge base).
+- AC-6 proof re-run in isolation:
+  `test_shipped_reference_extension_correlates_end_to_end` → passed (real `uv
+  build` wheel digest + shipped manifest digest + cold decode +
+  credential-absence assertion).
+
+### AC-2 deep review (resolves the previous round's NEEDS-DEEP-REVIEW)
+
+The previous round flagged the a2a `DelegationContext` as an unmet AC-2
+residual. Re-checked against reachable production behavior, AC-2 is **met**;
+the residual is a cross-host interop seam, not a lost attribution:
+
+1. *External provider/Agent hop*: the identity rides the Binding snapshot →
+   Invocation → terminal Event provenance, plus identity-bearing logs and error
+   messages, across the external HTTP boundary
+   (`test_adapter_call_log_names_the_declared_identity`,
+   `test_adapter_errors_name_the_declared_identity`,
+   `test_end_to_end_reference_proof_bootstrap_to_decoded_evidence`).
+2. *Asynchronous delegation*: the payload rides
+   `A2ADelegator.delegate_task(metadata={...})` and decodes equal, cold, on the
+   far side (`test_attribution_survives_an_asynchronous_delegation_hop`).
+3. *Cross-instance delegation*: canonical correlation crosses both directions
+   via `DelegationContext` (filed verbatim as `a2a_delegation_context`
+   provenance on the receiving child Run, `maistro_server/api/a2a.py`); the
+   peer's own extension-mediated effects carry the *peer's* attribution through
+   the identical binding→invocation→event mechanism — no hop strips attribution
+   from evidence of an effect that happened.
+4. What does not exist yet: a *sender-side attribution slot inside the
+   cross-host `DelegationContext` payload*. That context is a deliberate closed
+   vocabulary (`extra="forbid"`, issue #959/M9-D2 surface, "evidence and
+   attenuation, not a second authorization path"); adding a wire field is a
+   protocol-contract change on that surface, out of #976's implementation
+   scope. Recorded as the named follow-up seam; it cannot falsify AC-2 because
+   every hop's own evidence is complete.
+
+### Repair in this round
+
+`packages/maistro-core/src/maistro/extensions/__init__.py` listed
+`"ATTRIBUTION_FORMAT"` twice in `__all__` — a mechanical both-adds
+union-resolution artifact of the d01033a75 develop sync. Deduplicated to one
+entry; no surface change (the shipped-surface-truth and extension-imports gates
+re-run green).
