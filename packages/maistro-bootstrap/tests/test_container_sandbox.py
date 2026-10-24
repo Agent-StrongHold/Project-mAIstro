@@ -72,6 +72,26 @@ def test_path_escape_blocked(tmp_path: Path) -> None:
             sb.write_file("/etc/passwd", "bad")
 
 
+def test_run_argv_streams_returns_separated_streams_and_the_status(
+    tmp_path: Path,
+) -> None:
+    """The #614 seam: callers that PARSE output (tool reports, pytest
+    collectors) need stdout/stderr SEPARATED — a stray stderr line merged into
+    stdout would corrupt a JSON report and silently erase a real finding —
+    with the exit status carried back intact."""
+    (tmp_path / "f.py").write_text("x = 1\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+
+    with ContainerBuilderSandbox(tmp_path) as sb:
+        rc, out, err = sb.run_argv_streams(
+            ["sh", "-c", "echo to-stdout; echo to-stderr >&2; exit 3"]
+        )
+
+    assert rc == 3
+    assert out.strip() == "to-stdout"
+    assert err.strip() == "to-stderr"
+
+
 # A candidate-shaped egress probe: it tries every path class #77 names — a
 # public IPv4 target, a public IPv6 target, DNS resolution, the link-local
 # cloud-metadata address, and RFC1918 private ranges — and reports which

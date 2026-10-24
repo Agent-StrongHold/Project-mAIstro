@@ -8,16 +8,18 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Protocol, runtime_checkable
+from typing import Protocol, cast, runtime_checkable
 
 from maistro.a2a.delegation_context import (
     DelegationContext,
     DelegationContextError,
     validate_goal_binding,
 )
+from maistro.a2a.inbound import InboundWarden, default_warden, scan_inbound
 from maistro.http import shared_client
 
 logger = logging.getLogger("maistro.a2a.guest_peers")
+_WARDEN_UNSET = object()
 
 
 @dataclass(frozen=True)
@@ -102,9 +104,20 @@ class InMemoryAuditLogger:
 class GuestPeerManager:
     """Registry of trusted external A2A peers with secure delegation."""
 
-    def __init__(self, audit: AuditLogger | None = None) -> None:
+    def __init__(
+        self,
+        audit: AuditLogger | None = None,
+        *,
+        warden: InboundWarden | None | object = _WARDEN_UNSET,
+    ) -> None:
         self._peers: dict[str, PeerTrust] = {}
         self._audit = audit or InMemoryAuditLogger()
+        # A peer response is untrusted even after transport authentication. The
+        # default is the canonical detector; an explicitly unavailable policy
+        # is handled fail-closed by scan_inbound.
+        self._warden = (
+            default_warden() if warden is _WARDEN_UNSET else cast(InboundWarden | None, warden)
+        )
         # This is a process-local receipt cache only. The key is still sent to
         # the peer so a peer that supports idempotent admission remains safe
         # across replicas; a cache must never be mistaken for remote truth.
@@ -281,7 +294,11 @@ class GuestPeerManager:
         idempotency_key: str | None = None,
         context: DelegationContext | None = None,
     ) -> DelegationResult:
-        """Delegate a task to an external A2A peer."""
+        """Delegate a task to an external A2A peer.
+
+        The key is sent at the transport boundary so a remote admission service
+        can deduplicate a request whose caller lost its lease after dispatch.
+        """
         refused = await self._refused_dispatch(peer_name, agent_id, context)
         if refused is not None:
             return refused
@@ -374,6 +391,25 @@ class GuestPeerManager:
                 )
                 resp.raise_for_status()
                 data = resp.json()
+
+            # A peer response is untrusted even after transport authentication
+            # (issue #1137): Warden scans the exact representation before it
+            # can reach trusted context; an unavailable policy fails closed.
+            verdict = await scan_inbound(self._warden, data)
+            if not verdict.clean:
+                await self._audit.log_delegation(
+                    peer.peer_name,
+                    agent_id,
+                    "warden refused a2a response",
+                )
+                return DelegationResult(
+                    task_id="",
+                    peer_name=peer.peer_name,
+                    status="rejected",
+                    error="inbound A2A response refused by Warden",
+                    peer_url=peer.peer_url,
+                )
+
         except Exception as exc:
             await self._audit.log_delegation(peer.peer_name, agent_id, str(exc))
             return DelegationResult(
@@ -399,6 +435,6 @@ class GuestPeerManager:
             agent_version=str(data.get("agent_version") or ""),
             protocol_version=str(data.get("protocol_version") or ""),
         )
-        if idempotency_key:
+        if idempotency_key and submitted.task_id:
             self._idempotent_receipts[(peer.peer_name, idempotency_key)] = submitted
         return submitted

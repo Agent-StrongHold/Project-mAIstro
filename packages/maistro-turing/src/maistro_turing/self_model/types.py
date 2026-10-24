@@ -7,6 +7,7 @@ specs/self-todos.md, specs/mood.md, specs/activation-graph.md.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -298,6 +299,15 @@ class Mood:
     updated_at: datetime = field(default_factory=_now)
 
     def __post_init__(self) -> None:
+        for _name, _value in (
+            ("valence", self.valence),
+            ("arousal", self.arousal),
+            ("focus", self.focus),
+        ):
+            if isinstance(_value, bool) or not isinstance(_value, (int, float)):
+                raise TypeError(f"{_name} must be a real number, got {type(_value).__name__}")
+            if not math.isfinite(_value):
+                raise ValueError(f"{_name} out of range: {_value}")
         if not -1.0 <= self.valence <= 1.0:
             raise ValueError(f"valence out of range: {self.valence}")
         if not 0.0 <= self.arousal <= 1.0:

@@ -108,6 +108,8 @@ paragraph once named was removed — its front-matter citation was
 dispositioned with it when cited test paths were made to resolve, #812), and the
 twin-parity machine checks in `test_learning_contract.py`. The PostgreSQL DDL
 half is migration `054_learning_applicability_epistemics` (single linear head,
-see the chain test; renumbered past develop's `052_learning_stage_ladder`,
-which the merge with M4-B1 brought onto the same parent); the SQLite twin
+see the chain test; renumbered past develop's `052_learning_stage_ladder` /
+`053_learning_lifecycle_columns`, while #82's backlog work source rides past
+develop's learning revisions as `059_backlog_work_source` /
+`060_backlog_authority_cutover`); the SQLite twin
 upgrades in place.

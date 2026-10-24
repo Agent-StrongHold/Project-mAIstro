@@ -16,6 +16,12 @@ Workspace boundary — the same authority the workspace/agents routes use —
 before any metadata, event, existence signal, or stream is served. A run
 outside that boundary is indistinguishable from a run that does not exist.
 Authentication happens in AuthMiddleware; it is not authorization.
+
+The routes hold no import of the projection storage at all (#65, the
+`Conductor canonical inspection plane` parity dependency): the list, the
+detail, the cancel control, the retention bounds, and the SSE subscription
+all go through the inspection seam, so there is exactly one authorization
+door and no second path a future handler could take around it.
 """
 
 from __future__ import annotations
@@ -26,8 +32,14 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
-from services.dag_run_inspection import can_inspect_run, list_visible_runs, visible_run_detail
-from services.dag_run_store import get_dag_run_store
+from services.dag_run_inspection import (
+    can_inspect_run,
+    close_event_subscription,
+    event_subscription,
+    list_visible_runs,
+    retention_bounds,
+    visible_run_detail,
+)
 from services.request_principal import require_actor_id
 
 router = APIRouter(tags=["dag-runs"])
@@ -69,14 +81,7 @@ def retention() -> dict[str, Any]:
     per-run scoping applies, exactly as before (#1174 scoped the run-bearing
     routes, not this description of the store's bounds).
     """
-    from services.dag_run_store import MAX_EVENTS_PER_RUN, MAX_RUNS
-
-    store = get_dag_run_store()
-    return {
-        "durable": store.is_durable,
-        "max_runs": MAX_RUNS,
-        "max_events_per_run": MAX_EVENTS_PER_RUN,
-    }
+    return retention_bounds()
 
 
 @router.post("/{run_id}/cancel")
@@ -165,21 +170,21 @@ async def _next_authorized_event(uid: str, run_id: str, q: asyncio.Queue[Any]) -
     return True, ev
 
 
-async def _event_generator(*, uid: str, run_id: str, request: Request, store: Any):
+async def _event_generator(*, uid: str, run_id: str, request: Request):
     q: asyncio.Queue[Any] | None = None
     # Highest event seq delivered on this stream. Events carry their per-run
     # sequence number (#1183); a delivered seq that jumps past `last_seq + 1`
     # means the bounded queue dropped events, and the consumer is told.
     last_seq = 0
     try:
-        # Authorization is intentionally checked again when the stream starts.
-        # The response may have been created after the route's admission check
-        # but before this generator is first resumed. Delay subscription until
-        # this check so an abandoned response cannot leave an unauthorized
-        # live queue behind.
-        if not await can_inspect_run(uid, run_id):
+        # The subscription is taken through the inspection seam, which
+        # re-checks authorization before the queue exists: the response may
+        # have been created after the route's admission check but before this
+        # generator is first resumed, and an abandoned response must not
+        # leave an unauthorized live queue behind (#1174, via #65's seam).
+        q = await event_subscription(uid, run_id)
+        if q is None:
             return
-        q = store.subscribe(run_id)
 
         # Helpful preamble + keepalive comment so corp proxies don't kill idle
         # SSE. It contains no run data, but is emitted only while the
@@ -213,7 +218,7 @@ async def _event_generator(*, uid: str, run_id: str, request: Request, store: An
             yield f"event: {ev.event_type}\ndata: {json.dumps(payload)}\n\n"
     finally:
         if q is not None:
-            store.unsubscribe(run_id, q)
+            close_event_subscription(run_id, q)
 
 
 @router.get("/{run_id}/events")
@@ -224,14 +229,14 @@ async def stream_run_events(run_id: str, request: Request) -> StreamingResponse:
     uid = _user_id(request)
     # Scope authorization happens HERE, before the subscription queue exists
     # and before anything is streamed or replayed into it (#1174). An
-    # out-of-scope id gets the same 404 a missing run gets.
+    # out-of-scope id gets the same 404 a missing run gets. The generator
+    # re-checks when it actually subscribes, so the queue can outlive neither
+    # the admission decision nor a membership revocation in between.
     if not await can_inspect_run(uid, run_id):
         raise HTTPException(status_code=404, detail="run not found")
 
-    store = get_dag_run_store()
-
     return StreamingResponse(
-        _event_generator(uid=uid, run_id=run_id, request=request, store=store),
+        _event_generator(uid=uid, run_id=run_id, request=request),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",

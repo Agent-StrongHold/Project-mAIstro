@@ -1,6 +1,14 @@
-"""Weight bounds and inheritance priority per tier. See specs/tiers.md."""
+"""Weight bounds and inheritance priority per tier. See specs/tiers.md.
+
+``clamp_weight`` is the documented numeric safeguard for every tiered memory
+write. #859 puts it on the actual write path: the Turing memory bridge clamps
+at its single ``store_episode`` seam, so a caller cannot persist a weight
+outside its tier's declared bounds (or a non-finite one) anywhere.
+"""
 
 from __future__ import annotations
+
+import math
 
 from .types import MemoryTier
 
@@ -29,5 +37,14 @@ INHERITANCE_PRIORITY: dict[MemoryTier, int] = {
 
 
 def clamp_weight(tier: MemoryTier, proposed: float) -> float:
+    """Clamp one proposed weight into its tier's declared bounds.
+
+    NaN and infinities are refused rather than clamped: ``max``/``min`` with a
+    NaN operand returns an arbitrary endpoint, which would silently launder a
+    malformed weight into a plausible-looking one instead of failing the write.
+    """
+    weight = float(proposed)
+    if not math.isfinite(weight):
+        raise ValueError(f"weight must be a finite number, got {proposed!r}")
     lo, hi = WEIGHT_BOUNDS[tier]
-    return max(lo, min(hi, proposed))
+    return max(lo, min(hi, weight))

@@ -294,3 +294,171 @@ class TestAssemble:
             budget_tokens=1,
         )
         assert "CONSTRAINTS" * 50 in text
+
+
+class AdaptiveContextAssemblyPolicy(DefaultContextAssemblyPolicy):
+    """A policy that adapts the context budget based on query length."""
+
+    async def assemble(
+        self,
+        project_id: str,
+        run_id: str,
+        agent_id: str,
+        session_id: str,
+        budget_tokens: int,
+        query: str = "",
+        org_id: str = "",
+    ) -> str:
+        # Adaptive logic: increase the budget for longer queries (a proxy for a
+        # more complex task) and decrease it for very short ones. This is the
+        # seam epic #901's "adaptive top-k/context budgeting" leaf would tune;
+        # here it exists only to prove the budget actually reaches the
+        # production inclusion decision.
+        query_len = len(query)
+        if query_len > 100:
+            adaptive_budget = int(budget_tokens * 1.5)
+        elif query_len < 10:
+            adaptive_budget = int(budget_tokens * 0.5)
+        else:
+            adaptive_budget = budget_tokens
+        # Ensure the budget is at least 1 to avoid errors.
+        adaptive_budget = max(1, adaptive_budget)
+        return await super().assemble(
+            project_id=project_id,
+            run_id=run_id,
+            agent_id=agent_id,
+            session_id=session_id,
+            budget_tokens=adaptive_budget,
+            query=query,
+            org_id=org_id,
+        )
+
+
+class TestAdaptiveContextBudgeting:
+    """Exploratory spike for epic #901's adaptive top-k/context budgeting.
+
+    The assertions pin real ADR-091 behavior, not the scaffold policy: a
+    memory below `ALWAYS_INCLUDE_WEIGHT` (0.6) is packed only while it fits
+    whole, so a budget change is observable as an inclusion flip.
+    """
+
+    @staticmethod
+    def _adaptive_policy() -> AdaptiveContextAssemblyPolicy:
+        return AdaptiveContextAssemblyPolicy(
+            episodic_store=InMemoryEpisodicStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED),
+            outcome_store=InMemoryOutcomeStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED),
+            project_store=InMemoryProjectStore(),
+        )
+
+    async def test_adaptive_budget_affects_inclusion_of_budget_dependent_memory(
+        self,
+    ) -> None:
+        # "widget widget" estimates to 3 tokens and sits in the budget band
+        # (weight 0.5 < ALWAYS_INCLUDE_WEIGHT), so it is included only while
+        # it fits whole. Base budget 5: the short query's 0.5x factor leaves
+        # 2 tokens (memory dropped); the long query's 1.5x leaves 7 (kept).
+        # The query words overlap the content so the ranker keeps the memory
+        # in the pool either way; only the budget decides.
+        policy = self._adaptive_policy()
+        project = await policy.project_store.create(
+            owner_user_id="u1", name="Proj", profile_markdown=""
+        )
+        memory = _mem(MemoryTier.OPINION, 0.5, memory_id="m-budget", project_id=project.id)
+        memory.content = "widget widget"
+        await policy.episodic_store.store(memory)
+
+        text_short = await policy.assemble(
+            project_id=project.id,
+            run_id="r1",
+            agent_id="agent-1",
+            session_id="s1",
+            budget_tokens=5,
+            query="widget",
+        )
+        text_long = await policy.assemble(
+            project_id=project.id,
+            run_id="r1",
+            agent_id="agent-1",
+            session_id="s1",
+            budget_tokens=5,
+            query="widget " + "x" * 100,
+        )
+        assert "widget widget" not in text_short
+        assert "widget widget" in text_long
+
+    async def test_short_query_reduction_is_what_drops_the_memory(
+        self,
+    ) -> None:
+        # Control for the flip above: the default policy at the same base
+        # budget keeps the memory for the very same short query, so the
+        # exclusion is the adaptive 0.5x factor, not the base budget.
+        policy = DefaultContextAssemblyPolicy(
+            episodic_store=InMemoryEpisodicStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED),
+            outcome_store=InMemoryOutcomeStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED),
+            project_store=InMemoryProjectStore(),
+        )
+        project = await policy.project_store.create(
+            owner_user_id="u1", name="Proj", profile_markdown=""
+        )
+        memory = _mem(MemoryTier.OPINION, 0.5, memory_id="m-budget", project_id=project.id)
+        memory.content = "widget widget"
+        await policy.episodic_store.store(memory)
+
+        text = await policy.assemble(
+            project_id=project.id,
+            run_id="r1",
+            agent_id="agent-1",
+            session_id="s1",
+            budget_tokens=5,
+            query="widget",
+        )
+        assert "widget widget" in text
+
+    async def test_budget_gate_includes_a_memory_only_while_it_fits_whole(
+        self,
+    ) -> None:
+        # The gate any adaptive budgeting policy would tune, on the production
+        # policy: a budget-band memory is dropped the moment it no longer
+        # fits, while an always-include memory (weight >= 0.6) survives a
+        # budget that drops it.
+        policy = DefaultContextAssemblyPolicy(
+            episodic_store=InMemoryEpisodicStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED),
+            outcome_store=InMemoryOutcomeStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED),
+            project_store=InMemoryProjectStore(),
+        )
+        project = await policy.project_store.create(
+            owner_user_id="u1", name="Proj", profile_markdown=""
+        )
+        budgeted = _mem(MemoryTier.OPINION, 0.5, memory_id="m-budget", project_id=project.id)
+        budgeted.content = "widget widget"
+        await policy.episodic_store.store(budgeted)
+
+        tight = await policy.assemble(
+            project_id=project.id,
+            run_id="r1",
+            agent_id="agent-1",
+            session_id="s1",
+            budget_tokens=2,
+        )
+        assert tight == ""
+        loose = await policy.assemble(
+            project_id=project.id,
+            run_id="r1",
+            agent_id="agent-1",
+            session_id="s1",
+            budget_tokens=3,
+        )
+        assert loose == "widget widget"
+
+        wisdom = _mem(MemoryTier.WISDOM, 0.95, memory_id="m-wisdom", project_id=project.id)
+        wisdom.content = "wisdom lore"
+        await policy.episodic_store.store(wisdom)
+        with_wisdom = await policy.assemble(
+            project_id=project.id,
+            run_id="r1",
+            agent_id="agent-1",
+            session_id="s1",
+            budget_tokens=2,
+        )
+        assert "wisdom lore" in with_wisdom
+        assert "widget widget" not in with_wisdom

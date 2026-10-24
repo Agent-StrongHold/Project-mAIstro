@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -176,3 +177,103 @@ def test_recorded_exit_codes_map_to_status_states(exit_code: str, expected_state
         assert calls["failed"] is not None
     else:
         assert calls["failed"] is None
+
+
+def _collect_step() -> dict:
+    """The changed-files collector step, extracted from the workflow artifact."""
+    doc = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    steps = doc["jobs"]["publish-gates-ran"]["steps"]
+    return next(
+        step for step in steps if step.get("name") == "Collect changed files for pull-request scope"
+    )
+
+
+def _run_collect_script(
+    script: str, env: dict[str, str], pages: list[list[dict[str, str]]], cwd: Path
+) -> dict:
+    """Execute the real collector JS against faked ``github``/``core`` APIs.
+
+    The collector runs under CommonJS (it does ``require('fs')``) and writes
+    ``changed-files.json`` relative to ``cwd``, so the harness runs it in a
+    scratch directory and the test reads the envelope the artifact actually
+    wrote. Faked pages stand in for ``github.paginate`` so the cap can be
+    exercised without a 3,000-file pull request.
+    """
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is required to execute the collect script")
+    # __FAKE_PAGES must be read before process.env is swapped for __FAKE_ENV.
+    prelude = (
+        "const __pages = JSON.parse(process.env.__FAKE_PAGES || '[]');\n"
+        "let __failed = null; const __warnings = []; const __infos = [];\n"
+        "const github = {\n"
+        "  rest: { pulls: { listFiles: { endpoint: {} } } },\n"
+        "  paginate: async (_request, _options) => __pages.flat(),\n"
+        "};\n"
+        "const core = { info: (m) => __infos.push(m), warning: (m) => __warnings.push(m), setFailed: (m) => { __failed = m; } };\n"
+        "const context = { repo: { owner: 'o', repo: 'r' } };\n"
+        "process.env = JSON.parse(process.env.__FAKE_ENV || '{}');\n"
+    )
+    wrapped = "(async () => {\n" + script + "\n})().then(() => {\n"
+    epilogue = (
+        "process.stdout.write("
+        "JSON.stringify({ warnings: __warnings, infos: __infos, failed: __failed }));\n});"
+    )
+    result = subprocess.run(
+        # CommonJS on purpose: the collector requires('fs'), which does not
+        # exist in the module harness the publish script runs under.
+        [node, "-e", prelude + wrapped + epilogue],
+        env={
+            "__FAKE_ENV": json.dumps(env),
+            "__FAKE_PAGES": json.dumps(pages),
+            "PATH": os.pathsep.join([str(Path(node).parent), "/usr/bin", "/bin"]),
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+        cwd=str(cwd),
+    )
+    assert result.returncode == 0, f"collect script crashed:\n{result.stderr}"
+    payload = result.stdout.strip().splitlines()[-1]
+    return json.loads(payload)
+
+
+def test_the_collector_marks_a_capped_listfiles_response_truncated(tmp_path: Path):
+    """#1350: pulls.listFiles exposes at most 3,000 files per PR even when
+    fully paginated. A response at the cap must be recorded as truncated
+    rather than as a complete measurement, with the operator warned -- the
+    evaluator then treats scope as ambiguous instead of excusing skipped
+    specialized checks on partial evidence."""
+    pages = [[{"filename": f"src/file_{page}_{i}.txt"} for i in range(100)] for page in range(30)]
+    result = _run_collect_script(
+        _collect_step()["with"]["script"], {"PR_NUMBER": "17"}, pages, tmp_path
+    )
+    envelope = json.loads((tmp_path / "changed-files.json").read_text(encoding="utf-8"))
+    assert envelope["measured"] is True
+    assert envelope["truncated"] is True
+    assert len(envelope["files"]) == 3000
+    assert result["warnings"]
+    assert result["failed"] is None
+
+
+def test_the_collector_records_a_short_response_as_complete(tmp_path: Path):
+    """Below the cap the envelope stays a plain measured one -- truncation
+    must not leak into PRs the cap never touched."""
+    pages = [[{"filename": "notes/todo.txt"}]]
+    result = _run_collect_script(
+        _collect_step()["with"]["script"], {"PR_NUMBER": "17"}, pages, tmp_path
+    )
+    envelope = json.loads((tmp_path / "changed-files.json").read_text(encoding="utf-8"))
+    assert envelope == {"measured": True, "truncated": False, "files": ["notes/todo.txt"]}
+    assert result["warnings"] == []
+
+
+def test_the_collectors_cap_matches_the_evaluators():
+    """Two 3,000s (workflow JS and evaluator constant) that must move
+    together: a cap raised in one place and not the other would either miss
+    real truncation or permanently distrust complete responses."""
+    gate = _gate_module()
+    match = re.search(r"files\.length >= (\d+)", WORKFLOW.read_text(encoding="utf-8"))
+    assert match, "cap detection missing from the changed-files collector"
+    assert int(match.group(1)) == gate.LIST_FILES_CAP

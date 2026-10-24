@@ -39,6 +39,11 @@ LEDGER = ROOT / "quality" / "workspace-retirement.json"
 _PROVENANCE_SOURCE = ROOT / "scripts" / "ratchet_provenance.py"
 RATCHET = "workspace-retirement"
 METRIC_DEFINITION_VERSION = "1"
+
+#: Bounded analyzer implementation manifest (#319): the retirement census is
+#: this file's own AST/import scan, so its implementation identity is the
+#: actual bytes of exactly this file.
+ANALYZER_MANIFEST = ("scripts/check-workspace-retirement.py",)
 CONDUCTOR = Path("packages") / "hive-conductor"
 BACKEND = CONDUCTOR / "backend"
 FRONTEND_SRC = CONDUCTOR / "frontend" / "src"
@@ -395,6 +400,14 @@ def _provenance() -> ModuleType:
     return module
 
 
+def _tool_version(prov: ModuleType) -> str:
+    """Implementation identity of the scanner that reached this verdict (#319)."""
+    version: str = prov.bundled_implementation_fingerprint(
+        Path(__file__).resolve().parents[1], ANALYZER_MANIFEST
+    )
+    return version
+
+
 def main() -> int:
     if not LEDGER.exists():
         print(f"FAIL: {LEDGER} is missing", file=sys.stderr)
@@ -403,6 +416,7 @@ def main() -> int:
 
     prov = _provenance()
     try:
+        tool_version = _tool_version(prov)
         prov.require_measurement(_entries(ledger), ratchet=RATCHET, what="ledger entries")
         trusted_ref = prov.resolve_baseline(LEDGER, root=ROOT)
         trusted = trusted_ref.loads(default={})
@@ -417,6 +431,7 @@ def main() -> int:
             ratchet=RATCHET,
             baseline=trusted_ref,
             tool="python ast + import scan",
+            tool_version=tool_version,
             metric_definition_version=METRIC_DEFINITION_VERSION,
             old_value=f"{len(tolerated_importers(trusted))} tolerated importers",
             new_value=f"{len(tolerated_importers(ledger))} tolerated importers",

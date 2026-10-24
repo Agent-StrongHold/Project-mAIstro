@@ -36,6 +36,7 @@ from models.schemas import (
     Skill,
 )
 from models.workspace import Workspace
+from services.audit_query import IndexedAuditStore
 from services.model_store import JsonStore, ModelStore
 
 logger = logging.getLogger(__name__)
@@ -68,7 +69,8 @@ def _mission(
         progress=progress,
         steps_total=4,
         steps_completed=2,
-        assigned_agents=["agent-1"],
+        # Not a Run, so no agent. Naming "agent-1" made mission detail look assigned.
+        assigned_agents=[],
         tags=["demo"],
         metadata={},
     )
@@ -110,7 +112,7 @@ brief_interviews: JsonStore = JsonStore("brief_interviews")
 work_item_drafts: JsonStore = JsonStore("work_item_drafts")
 dags: JsonStore = JsonStore("dags")
 messages: JsonStore = JsonStore("messages")
-audit_log: JsonStore = JsonStore("audit_log")
+audit_log: JsonStore = IndexedAuditStore("audit_log")
 # Phase 5 Signal #3 — eval-judge verdicts keyed by run_id.
 eval_verdicts: JsonStore = JsonStore("eval_verdicts")
 # Phase 6 — optimizer proposals keyed by proposal_id.
@@ -174,6 +176,33 @@ _all_json_stores: list[JsonStore] = [
 ]
 
 
+def register_json_store(store: JsonStore) -> JsonStore:
+    """Adopt a service-owned durable store into the central persistence wiring.
+
+    New durable state does not belong in this module: every `stores.py` store
+    is a row in the cutover retirement ledger (#1046) and a retiring surface
+    may not gain consumers, so a store added today would be born unable to
+    name a reader. Service-owned stores — `services.settings_store` since
+    #334, `services.home_layouts` and `services.home_projections` since
+    #1048 — declare their own `JsonStore` beside the only code that writes
+    it, and register here so `configure_persistence` and `initialize_stores`
+    still reach it: a store that missed the deployment's persistence
+    configuration would silently stop surviving a restart.
+
+    Registration is idempotent and ordered: before `configure_persistence`, an
+    append is enough because the central wiring runs later; after it, the
+    store is wired and initialized immediately so the caller's next write is
+    durable without waiting for a restart that will not come.
+    """
+    if any(existing is store for existing in _all_json_stores):
+        return store
+    _all_json_stores.append(store)
+    if _persisted is not None:
+        store._persisted = _persisted
+        store.initialize()
+    return store
+
+
 def configure_persistence(persisted_store: Any) -> None:
     """Wire a PersistedStore into all mutable stores."""
     global _persisted
@@ -214,7 +243,11 @@ def purge_all_sessions() -> int:
 
 
 def initialize_stores() -> None:
-    """Load persisted data, then seed if empty."""
+    """Migrate before serving requests, load persisted data, then seed if empty."""
+    if _persisted is not None:
+        from services.audit_query import ensure_audit_index
+
+        ensure_audit_index(_persisted)
     for store in _all_model_stores:
         store.initialize()
     for store in _all_json_stores:
@@ -282,7 +315,7 @@ def _seed_mission_steps() -> None:
                 description="Check env",
                 status="completed",
                 order=0,
-                agent_id="agent-1",
+                agent_id=None,
                 started_at=t,
                 completed_at=t,
                 output="ok",
@@ -295,7 +328,7 @@ def _seed_mission_steps() -> None:
                 description="Apply change",
                 status="running",
                 order=1,
-                agent_id="agent-1",
+                agent_id=None,
                 started_at=t,
                 completed_at=None,
                 output=None,
@@ -484,7 +517,10 @@ def _seed_mcp_servers() -> None:
             id="mcp-1",
             name="Filesystem",
             description="Local workspace tools",
-            url="http://127.0.0.1:9999/mcp",
+            # Loopback is the truthful origin for a fabricated "Local workspace
+            # tools" row; the health check that may dial it goes through the
+            # outbound guard and records the connection failure harmlessly.
+            url="http://127.0.0.1:9999/mcp",  # devskim: ignore DS162092 until 2027-12-31 -- fabricated demo seed row, never a production origin
             status="connected",
             tools_count=6,
             last_ping=t,

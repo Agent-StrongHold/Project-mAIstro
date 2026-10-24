@@ -12,6 +12,7 @@ from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple
 
+from maistro.agents.types import LLMProviderError
 from maistro.http import shared_client
 
 if TYPE_CHECKING:
@@ -53,6 +54,24 @@ class _HttpOpenAILLMClient:
     def _headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self._key}", "Content-Type": "application/json"}
 
+    def _require_credential(self) -> None:
+        """Refuse before dispatch when no gateway credential was configured (#1824).
+
+        A deployment with no effective key (see
+        ``services.secrets.effective_llm_gateway_key``) has no model
+        authorization; this client used to paper over that with a placeholder
+        ``sk-noop`` bearer token, which turned "not configured" into a
+        gateway-dependent 401 that looked like an outage. Absent configuration
+        is a sanitized unavailable/error *before* any HTTP dispatch instead,
+        and the message names no secret material because there is none.
+        """
+        if not self._key:
+            raise LLMProviderError(
+                "model gateway credential is not configured; "
+                "model dispatch is unavailable (set MAISTRO_LLM_API_KEY or "
+                "LITELLM_API_KEY)"
+            )
+
     async def complete(
         self,
         messages: list[dict[str, Any]],
@@ -65,6 +84,7 @@ class _HttpOpenAILLMClient:
         temperature: float | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        self._require_credential()
         payload: dict[str, Any] = {
             "model": model or self._model,
             "messages": messages,
@@ -138,7 +158,7 @@ async def _construct_runtime(settings: Settings) -> EmbeddedRuntime:
     """
     import os
 
-    from services.secrets import maistro_llm_api_key
+    from services.secrets import effective_llm_gateway_key
     from services.tool_executor import admitted_tool_executor
 
     from maistro.agents.factory import _load_preamble, create_agents
@@ -150,7 +170,12 @@ async def _construct_runtime(settings: Settings) -> EmbeddedRuntime:
     from maistro.types.errors import ConfigError
 
     llm_base = (settings.litellm_api_base or "").strip()
-    llm_key = maistro_llm_api_key(settings) or ""
+    # The one effective gateway credential per the documented precedence
+    # matrix (#1824): vault -> MAISTRO_LLM_API_KEY -> LITELLM_API_KEY ->
+    # supported proxy aliases -> None. Empty is fail-closed: the legacy client
+    # below refuses dispatch on it and no scoped credential is registered,
+    # rather than dispatching under a placeholder key.
+    llm_key = effective_llm_gateway_key(settings) or ""
     model = settings.maistro_model
 
     config = AgentConfig(
@@ -200,7 +225,10 @@ async def _construct_runtime(settings: Settings) -> EmbeddedRuntime:
     gateway_base = llm_base or _BUNDLED_GATEWAY_BASE
     llm_client = _HttpOpenAILLMClient(
         base_url=gateway_base,
-        api_key=llm_key or "sk-noop",
+        # No ``or "sk-noop"`` (#1824): an unconfigured credential must reach
+        # the gateway as a sanitized refusal before dispatch, not as a fake
+        # bearer token a real gateway can only answer with a 401.
+        api_key=llm_key,
         model=model,
     )
     model_endpoint = GatewayEndpoint(

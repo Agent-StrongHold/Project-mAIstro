@@ -20,13 +20,18 @@ from maistro_turing.bridge import (
 class FakeEpisodicStore:
     def __init__(self) -> None:
         self.stored: list[Any] = []
+        self.last_user_id: str | None = None
 
     async def store(self, memory: Any) -> str:
         self.stored.append(memory)
         return "mem-1"
 
-    async def retrieve(self, query: str, *, limit: int = 5) -> list[Any]:
+    async def retrieve(
+        self, query: str, *, user_id: str | None = None, limit: int = 5
+    ) -> list[Any]:
         from maistro.types.memory import EpisodicMemory, MemoryTier
+
+        self.last_user_id = user_id
 
         return [
             EpisodicMemory(
@@ -34,6 +39,7 @@ class FakeEpisodicStore:
                 tier=MemoryTier.OBSERVATION,
                 content=f"{query}-{i}",
                 weight=0.3,
+                user_id=user_id,
             )
             for i in range(min(limit, 2))
         ]
@@ -157,6 +163,43 @@ class TestTuringMemoryBridge:
         assert mem.weight == 0.4
         assert mem.context == {"k": "v"}
 
+    async def test_store_episode_clamps_out_of_range_weight_at_the_write_seam(self) -> None:
+        """The documented clamp_weight safeguard is ON the write path (#859).
+
+        An over-range proposal persists at its tier's upper bound, an
+        under-range one at its lower bound — clamped exactly once, here, not
+        wherever a caller happens to remember to clamp.
+        """
+        store = FakeEpisodicStore()
+        bridge = TuringMemoryBridge(episodic_store=store)
+
+        await bridge.store_episode(content="hot take", tier="observation", weight=999.0)
+        assert store.stored[-1].weight == 0.5  # observation upper bound
+
+        await bridge.store_episode(content="cold take", tier="observation", weight=-3.0)
+        assert store.stored[-1].weight == 0.1  # observation lower bound
+
+        await bridge.store_episode(content="wisdom", tier="wisdom", weight=0.2)
+        assert store.stored[-1].weight == 0.9  # wisdom lower bound
+
+    async def test_store_episode_refuses_malformed_weights_and_tiers(self) -> None:
+        """Type/range constraints fail the write instead of laundering values."""
+        store = FakeEpisodicStore()
+        bridge = TuringMemoryBridge(episodic_store=store)
+
+        with pytest.raises(ValueError, match="finite"):
+            await bridge.store_episode(content="x", tier="observation", weight=float("nan"))
+        with pytest.raises(ValueError, match="finite"):
+            await bridge.store_episode(content="x", tier="observation", weight=float("inf"))
+        with pytest.raises(TypeError, match="real number"):
+            await bridge.store_episode(content="x", tier="observation", weight="0.4")  # type: ignore[arg-type]
+        with pytest.raises(TypeError, match="real number"):
+            await bridge.store_episode(content="x", tier="observation", weight=True)  # type: ignore[arg-type]
+        with pytest.raises(ValueError, match="not-a-tier"):
+            await bridge.store_episode(content="x", tier="not-a-tier", weight=0.4)
+        # Nothing malformed reached the store.
+        assert store.stored == []
+
     async def test_retrieve_episodes_with_no_store_returns_empty_list(self) -> None:
         bridge = TuringMemoryBridge()
         result = await bridge.retrieve_episodes("query")
@@ -172,6 +215,49 @@ class TestTuringMemoryBridge:
         assert result[0]["tier"] == "observation"
         assert result[0]["weight"] == 0.3
         assert isinstance(result[0]["created_at"], str)
+        # Unscoped retrieval does not claim a scope filter.
+        assert store.last_user_id is None
+
+    async def test_store_episode_carries_principal_provenance(self) -> None:
+        """Scoped writes persist the caller's identity on the row (#859).
+
+        Blank-scope rows are indistinguishable across principals in a shared
+        episodic store, so the write seam must accept — and set — the
+        caller's canonical user/project provenance.
+        """
+        store = FakeEpisodicStore()
+        bridge = TuringMemoryBridge(episodic_store=store)
+
+        await bridge.store_episode(
+            content="scoped capture",
+            tier="observation",
+            user_id="user-7",
+            project_id="proj-9",
+        )
+        mem = store.stored[-1]
+        assert mem.user_id == "user-7"
+        assert mem.project_id == "proj-9"
+
+        # The unscoped path keeps blank provenance rather than guessing one.
+        await bridge.store_episode(content="unscoped capture", tier="observation")
+        mem = store.stored[-1]
+        assert mem.user_id is None
+        assert mem.project_id == ""
+
+    async def test_retrieve_episodes_scopes_reads_to_the_calling_principal(self) -> None:
+        """Scoped reads pass the caller's identity to the store's filter (#859).
+
+        Retrieval without a scope filter would surface every principal's
+        episodes to everyone; the scope filter is how one Workspace's reads
+        stay inside its own cognitive history.
+        """
+        store = FakeEpisodicStore()
+        bridge = TuringMemoryBridge(episodic_store=store)
+
+        result = await bridge.retrieve_episodes("query", user_id="user-7")
+        assert len(result) == 2
+        assert store.last_user_id == "user-7"
+        assert all(item["content"].startswith("query") for item in result)
 
     async def test_store_learning_with_no_store_returns_zero(self) -> None:
         bridge = TuringMemoryBridge()

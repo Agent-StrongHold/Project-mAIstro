@@ -265,6 +265,23 @@ class TestStateSubmitIntegration:
             await reactor.stop()
             state.close()
 
+    def test_the_reactor_names_its_persistence_authority(self, tmp_path: Path) -> None:
+        """#1178: the authority the Reactor's state writes land in is the
+        canonical `State` it was handed, and a Reactor with no State has no
+        persistence authority at all — the difference a health report has to
+        be able to state out loud."""
+        from maistro.reactor import Reactor
+        from maistro.state import State
+
+        state = State(db_path=tmp_path / "state.db")
+        try:
+            reactor = Reactor(state=state)
+            assert reactor.persistence_backend is state
+        finally:
+            state.close()
+
+        assert Reactor().persistence_backend is None
+
     @pytest.mark.asyncio()
     async def test_concurrent_reactor_and_persisted_store_writes_never_lock(
         self, tmp_path: Path

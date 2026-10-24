@@ -123,8 +123,7 @@ def seeded(admin_client: Any, monkeypatch: pytest.MonkeyPatch) -> Iterator[_Seed
     # This fixture seeds the legacy document-shaped store directly. Bind it to
     # the route only as an explicit test seam; production `_store()` refuses
     # this store and requires the Container's canonical projection.
-    store = dag_agents.get_run_store()
-    assert isinstance(store, InMemoryDurableRunStore)
+    store = InMemoryDurableRunStore()
     monkeypatch.setattr(dag_agents, "get_canonical_run_store", lambda: store)
     created: list[str] = []
 
@@ -242,8 +241,7 @@ async def test_expiry_endpoint_only_settles_authorized_workspace_projects(
     # This test seeds the legacy document-shaped store directly. Bind it to the
     # route only as an explicit test seam; production `_store()` refuses this
     # store and requires the Container's canonical projection.
-    store = dag_agents.get_run_store()
-    assert isinstance(store, InMemoryDurableRunStore)
+    store = InMemoryDurableRunStore()
     monkeypatch.setattr(dag_agents, "get_canonical_run_store", lambda: store)
 
     deadline = datetime.now(UTC) - timedelta(minutes=1)

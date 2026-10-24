@@ -155,9 +155,10 @@ async def runtime(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request):
     agent_dir = agents / "researcher"
     agent_dir.mkdir(parents=True)
     (agents / "PREAMBLE.md").write_text("Preamble for {{agent_name}}")
+    declared_tools = ["web_search", "browse_url"] if condition == "unlisted-tool" else list(_TOOLS)
     (agent_dir / "agent.yaml").write_text(
         "name: researcher\ndescription: research tool agent\n"
-        "tools: [clarify, web_search, browse_url]\nreasoning:\n  strategy: react\n"
+        f"tools: {json.dumps(declared_tools)}\nreasoning:\n  strategy: react\n"
     )
     (agent_dir / "SOUL.md").write_text("Research the user's question.")
 
@@ -517,3 +518,91 @@ async def test_real_rounds_with_reused_ids_make_distinct_effects_and_replay(runt
     for round_num in (0, 1):
         (row,) = await runtime.history(call_id="same-id", round_num=round_num)
         assert row.status is InvocationStatus.COMPLETED
+
+
+@pytest.mark.parametrize("runtime", ["unlisted-tool"], indirect=True)
+@pytest.mark.parametrize("strategy", ["react", "artificer", "builders_learning"])
+async def test_boot_agent_denies_unlisted_model_tool_before_provider(
+    runtime, strategy, monkeypatch
+):
+    """A valid operator Binding and Sentinel grant cannot widen the Agent declaration."""
+    from maistro.agents.artificer.strategy import ArtificerStrategy
+    from maistro.agents.strategies.builders_learning import BuildersLearningStrategy
+    from maistro.agents.strategies.react import ReactStrategy
+    from maistro.testing.faux_provider import FauxProvider, FauxResponse, ToolCallDef
+
+    provider = FauxProvider()
+    strategies = {
+        "react": ReactStrategy,
+        "artificer": ArtificerStrategy,
+        "builders_learning": BuildersLearningStrategy,
+    }
+    if strategy == "artificer":
+        provider.seed(FauxResponse(content="1. Clarify the audience."))
+
+        async def no_sleep(_seconds):
+            return None
+
+        monkeypatch.setattr("maistro.agents.artificer.strategy.asyncio.sleep", no_sleep)
+    provider.seed(
+        FauxResponse(
+            tool_calls=[ToolCallDef("clarify", {"questions": ["Audience?"]}, call_id="tool-call-1")]
+        )
+    )
+    provider.seed(FauxResponse(content="Finished"))
+    runtime.agent._strategy = strategies[strategy]()
+    runtime.agent._llm = provider
+    with runtime.context():
+        response = await runtime.agent.handle(
+            [{"role": "user", "content": "Clarify the audience"}],
+            AuthContext(user_id=_ACTOR, roles=frozenset({"operator"})),
+        )
+    assert response.content.endswith("Finished")
+    exposed_names = {
+        tool["function"]["name"] for call in provider.call_log for tool in call.get("tools") or []
+    }
+    assert exposed_names == {"web_search", "browse_url"}
+    assert runtime.sent == []
+    assert await runtime.history() == []
+    results = [
+        message["content"]
+        for message in provider.call_log[-1]["messages"]
+        if message.get("role") == "tool"
+    ]
+    assert results == ["Error: Permission denied for undeclared tool 'clarify'"]
+
+
+@pytest.mark.parametrize("runtime", ["unlisted-tool"], indirect=True)
+@pytest.mark.parametrize("identity_hook", [False, True])
+async def test_boot_agent_denies_strategy_widening_tool_exposure(runtime, identity_hook):
+    """Even a strategy-authored schema cannot turn callback access into authority."""
+    from maistro.types.agent import ReasoningResult
+    from maistro.types.tool import ToolCall
+
+    results = []
+
+    class Strategy:
+        async def reason(self, messages, model, llm, *, tools, tool_executor, **kwargs):
+            tools.append({"type": "function", "function": {"name": "clarify", "parameters": {}}})
+            args = {"questions": ["Audience?"]}
+            if identity_hook:
+                result = await tool_executor.execute_tool_call(
+                    ToolCall("tool-call-1", "clarify", args),
+                    agent_name="forged-agent",
+                    delegation_depth=99,
+                )
+            else:
+                result = await tool_executor("clarify", args)
+            results.append(result)
+            return ReasoningResult(response="Finished", done=True)
+
+    runtime.agent._strategy = Strategy()
+    with runtime.context():
+        response = await runtime.agent.handle(
+            [{"role": "user", "content": "Clarify the audience"}],
+            AuthContext(user_id=_ACTOR, roles=frozenset({"operator"})),
+        )
+    assert response.content == "Finished"
+    assert results == ["Error: Permission denied for undeclared tool 'clarify'"]
+    assert runtime.sent == []
+    assert await runtime.history() == []

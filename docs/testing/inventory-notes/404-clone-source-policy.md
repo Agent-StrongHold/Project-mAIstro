@@ -1,99 +1,96 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +32
+  packages/maistro-core/tests: +19
   packages/maistro-rsi/tests: +12
 ---
 # Clone-source policy: hosts, digest pins, executable redirect/submodule enforcement (#404)
 
-The first #404 round (`404-reject-git-protocol.md`) closed the scheme hole:
-`git://` is rejected by both clone surfaces. Independent verification found
-the remaining acceptance gaps: the scheme gate accepted every https host on
-earth (no explicit source policy), nothing pinned candidate source to a
-commit digest, the redirect/submodule argument was comment-only, and the
-tests covered case variants only. This change closes those gaps.
+Develop-side round (M6 WIP 159fbafe9), recorded here as merged into
+`auto-404` (PR #1729's implementation). The develop commit carried a second,
+parallel #404 implementation; the merge resolution kept the branch's
+enforcement core — the three-layer transport pin (`_TRANSPORT_PIN`), the
+verified-local-root gate for `file://`, the TOCTOU fetch/detach/re-verify
+pin flow, `require_signed`, and the post-clone `.gitmodules` URL scan — and
+adopted develop's public surface on top of it (`validate_clone_source`,
+`ClonePolicyError`, `_COMMIT_DIGEST_RE`, the `git_remote_tip` tool, and the
+resolve-then-pin `git_clone` flow), so every surface that clones shares one
+verdict. Details of the resolution are in
+`404-git-clone-source-policy.md` (develop-sync merge round) and
+`404-develop-sync-merge.md` (node-ID ledger reconciliation).
 
-A follow-up round closed the last unpinned production clone surface: the RSI
-self-branch cycle (`maistro_rsi.selfbranch`) cloned policy-vetted URLs with
-no way to name the digest it was branching from. `SelfBranchAttempt.commit`
-now carries an optional full-digest pin, `RsiCycleConfig.source_commit`
-feeds it, and `SelfBranchResult.cloned_commit` reports the digest `git_clone`
-verified with its post-fetch `rev-parse HEAD` verdict — the cycle's audit
-trail names the exact source object it branched, patched and tested.
+## The merged policy (`maistro.tools.git.server`)
 
-## Policy (`maistro.tools.git.server`)
+- `validate_clone_source(url)` is the one gate: `git://` (any casing) is
+  hard-rejected before any allowlist logic; https/ssh must additionally name
+  a host on the allowlist — `MAISTRO_GIT_CLONE_HOSTS` (comma-separated)
+  overrides, and without it the default forges (github.com, gitlab.com,
+  bitbucket.org, ssh.github.com) are the allowlist, so remote sources are
+  always host-restricted; scp-style `git@host:path`, `-`-prefixed flag
+  strings, and any other scheme spelling are refused on parsing, not
+  prefix-matching. A local source is clonable only as `file://` with the
+  scheme tuple explicitly widened AND the path under a verified root
+  (`_ALLOWED_LOCAL_SOURCE_ROOTS`, empty in production — bare local paths
+  are refused, not workspace-validated as this round's original draft had
+  it). `maistro_rsi.__main__` harvest gates its `--clone-url` through the
+  exact same function, and the builders TUI (`_builders_tui._open_repo`)
+  runs the same verdict before its clone — one policy, no second to drift.
+- `git_remote_tip` resolves a policy-vetted remote's HEAD to a full digest
+  under the same source policy and transport pins; `git_clone` with an
+  omitted pin resolves through it first, so **no successful clone is
+  unpinned**. A `commit=<full digest>` pin is used as-is; the pinned digest
+  is fetched by itself, checked out, and re-verified against HEAD after all
+  fetching (TOCTOU guard); the proven digest is reported as `head_commit`
+  and `pinned_commit`.
+- The clone argv carries the branch's full transport whitelist
+  (`protocol.allow=never` + explicit https/ssh allows + `protocol.file.allow=user`,
+  `http.followRedirects=false`, `http.sslVerify=true`) ahead of the
+  subcommand, and the URL sits after `--`; the RSI harvest clone argv
+  carries its pins the same way. git itself refuses the git:// transport
+  and refuses redirects, whatever a `.gitmodules` entry or a server
+  response asks for.
 
-- `validate_clone_source(url)` is the one gate: `git://` (any casing) is the
-  unauthenticated-transport verdict; https/ssh must additionally name a host
-  on `_ALLOWED_CLONE_HOSTS` (deployment override:
-  `MAISTRO_GIT_CLONE_ALLOWED_HOSTS`, comma-separated; user-info does not
-  change the host); scp-style `git@host:path` and any other scheme spelling
-  is refused on spelling; a bare path qualifies only as a *verified local
-  source* by passing the same workspace-root validation as the destination.
-  `maistro_rsi.__main__` harvest gates its `--clone-url` through the exact
-  same function — one verdict, no second policy to drift.
-- `git_clone(commit=...)` pins the checkout: the pin must be a full 40/64-hex
-  digest (a ref name or short sha is remote-repointable), is fetched directly
-  by digest, and the final `rev-parse HEAD` verdict runs after all fetching —
-  a ref that moves mid-clone (TOCTOU) fails the call instead of silently
-  delivering different content than the audited digest. `pinned_commit`
-  carries the verified value in the result.
-- The clone argv now carries `-c protocol.git.allow=never` and
-  `-c http.followRedirects=false`: git itself refuses the git:// transport
-  (even via a `.gitmodules` entry or a redirect) and refuses to follow
-  redirects (the default `initial` still follows a cross-host initial
-  redirect, which would let an allowed host's open redirect pick the real
-  source). The RSI harvest clone argv carries the same pins, and both
-  surfaces pass the URL after `--`.
-
-Signature verification of the pinned object is deliberately out of scope: it
+Signature verification of the pinned object remains out of scope: it
 requires a configured trust anchor (whose keys sign what?) and no production
 surface configures one; the digest pin over an authenticated transport is the
 identity policy that exists end to end today.
 
-Test delta (+32 node IDs in `packages/maistro-core/tests`, +12 in
-`packages/maistro-rsi/tests`):
+Test delta as merged (+19 node IDs in `packages/maistro-core/tests`, +12 in
+`packages/maistro-rsi/tests`; the original +32 core claim covered a parallel
+`test_server_security.py` suite whose API the merge resolution did not
+retain — the branch's suite already covers those invariants):
 
-- `tests/tools/git/test_server_security.py` (+29):
-  - host policy (+7): `blocked_clone_host` for off-allowlist hosts incl. the
-    `github.com@evil.com` userinfo trick; not-overstrict cases (case, port,
-    user-info); the env override admitting a deployment's own forge.
-  - scheme spelling/encoding (+5): scp-style, uppercase scheme, `git+ssh://`,
-    percent-encoded scheme, and an encoded-host `git://` that cannot
-    resurrect the unauthenticated verdict.
-  - verified local sources (+2): a workspace-root path is accepted; `/etc`
-    and a `-`-prefixed flag string are not.
-  - executable redirect/submodule enforcement (+3): the `-c` pins are
-    asserted in the clone argv; real git refuses a live HTTP 302
-    (`followRedirects=false`) leaving no checkout; real git refuses a
-    `git://` submodule URL under the pin and refuses `git://` ls-remote in
-    transport selection — before any connection.
-  - digest pinning/TOCTOU (+12): non-digest pins refused pre-spawn (×6);
-    pin to non-tip digest fetched and verified, pin to tip verified without
-    refetch, uppercase pin normalized, unknown digest fails closed; the
-    end-to-end TOCTOU case (ref moves between decision and fetch — an
-    unpinned clone tracks it, a pinned clone still delivers the audited
-    digest); the argv proves the verdict runs before success and the pins
-    ride with the clone.
-  - `tests/cli/test_builders.py` (+3): the builders TUI's `_open_repo` is
-    where classification becomes a `git clone` subprocess — the git://
-    rejection is now driven at runtime (casing-proof, naming the policy,
-    spawning no subprocess and recording no session), alongside a local-path
-    control proving the gate is on the transport only.
-- `tests/test_harvest_entry_point.py` (+6): the harvest `--clone-url` gate —
-  four refused URLs exit 2 with no subprocess and no work tree (including
-  the named git:// verdict), and the allowed transport reaches git with the
-  enforcement pins and the `--` separator.
-- `tests/test_selfbranch.py` (+5, `TestSourceCommitPinning`): the self-branch
-  clone surface closes the last unpinned #404 gap — an attempt's `commit`
-  pin reaches `git_clone`; the unpinned default is explicit (no pin passed,
-  no `cloned_commit` reported); a verified pin is recorded on the result;
-  a failed clone reports no identity; and an end-to-end run against real git
-  pins the origin's HEAD digest and proves the branched/patched workspace
-  sits exactly on that object.
-- `tests/test_runner.py` (+1): `RsiCycleConfig.source_commit` is threaded
-  into the attempt the cycle hands to `run_self_branch_attempt`.
+- `tests/cli/test_builders.py` (+18): the builders TUI's `_open_repo` is
+  where classification becomes a `git clone` subprocess — refused sources
+  (git:// in any casing, plaintext http, off-allowlist hosts, scp-style,
+  `-`-prefixed flag strings) are named and blocked at runtime, spawning no
+  subprocess and recording no session; a local path still takes the
+  directory branch (the gate is on the transport, not on opening repos);
+  and an allowed https source reaches the shared, digest-pinning clone
+  authority with the UI cache under the approved workspace root.
+- `tests/tools/git/test_server.py` (+1 net): the `git_clone` orchestration
+  contract for the merged resolve-then-pin flow — an omitted pin resolves
+  via `git_remote_tip` before cloning, an explicit pin skips resolution, a
+  failed resolution fails closed before any clone subprocess.
+- `tests/test_harvest_entry_point.py` (+6, rsi): the harvest `--clone-url`
+  gate — refused URLs exit 2 with no subprocess and no work tree, and the
+  allowed transport reaches git with enforcement pins and the `--`
+  separator.
+- `tests/test_selfbranch.py` (+5, rsi, `TestSourceCommitPinning`): the
+  self-branch clone surface — an attempt's `commit` pin reaches
+  `git_clone`; a verified pin is recorded on the result as `cloned_commit`;
+  and the end-to-end live cases run real git: a pinned attempt branches
+  exactly from the audited digest, and the unpinned default resolves the
+  tip and branches from that object.
+- `tests/test_harvest_clone_source.py` (+5, rsi, new file): real-git
+  materialization of the harvest clone — the workspace branches from the
+  resolved digest with a materialized work tree and the pinned LF work
+  tree; an unresolvable base ref or unreachable remote refuses before any
+  workspace exists.
+- `tests/test_runner.py` (+1, rsi): `RsiCycleConfig.source_commit` is
+  threaded into the attempt the cycle hands to `run_self_branch_attempt`.
 
-Existing tests updated, counts unchanged: `test_server.py` and two
-`test_server_security.py` cases cloned from `example.com`, which the new
-explicit host policy refuses by design — they now clone from allowlisted
-hosts so they still exercise the subprocess paths they were written for.
+Existing tests updated, counts unchanged: the RSI hermetic real-git tests
+(`test_cli.py`, `test_selfbranch.py`) register the `file://` origin as a
+verified local source root alongside the widened scheme tuple — the merged
+policy's local-source gate — so they still exercise the same subprocess
+paths they were written for.

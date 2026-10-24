@@ -17,10 +17,16 @@ from fastapi import APIRouter, Depends, Header, HTTPException, status
 
 from maistro.runs.chat_execution import ATTEMPT_AGENT_KEY, CHAT_EXECUTOR_ID
 from maistro.runs.model import Attempt
+from maistro.runs.scoped_reads import RunNotVisible
 from maistro.runs.service import RunExecutionService
+from maistro.runs.sources import ADMISSION_SOURCE
 from maistro.runs.store import RunStore
+from maistro.runs.store_boundary import RunStoreBoundary
 from maistro.runtime import PythonExecutionRuntime
+from maistro.tasks.admission import TASK_ID_KEY, TASK_QUEUE_SOURCE
 from maistro.tasks.http_contract import DELEGATION_HEADER
+from maistro.tasks.models import TaskStatus
+from maistro.tasks.queue import get_task_queue
 from maistro_server.api.auth import RequireAuth
 from maistro_server.api.delegation import resolve_delegated_identity
 from maistro_server.api.schemas import AttemptSummary, NodeRunSummary, RunSummary
@@ -28,12 +34,25 @@ from maistro_server.api.schemas import AttemptSummary, NodeRunSummary, RunSummar
 router = APIRouter(prefix="/runs", tags=["runs"])
 
 _run_store: RunStore | None = None
+_run_boundary: RunStoreBoundary | None = None
 
 
 def configure_run_store(store: RunStore | None) -> None:
     """Install the store the routes read, from the app lifespan."""
     global _run_store
     _run_store = store
+
+
+def configure_run_boundary(boundary: RunStoreBoundary | None) -> None:
+    """Install the Workspace-membership boundary the routes authorize through.
+
+    Owner decision 2026-09-23 (#1152): canonical Run visibility is Workspace
+    membership. The routes answer through the one seam that carries that
+    authorization intrinsically; the raw store stays configured only for the
+    lifecycle seams (cancellation) that hold the run id already.
+    """
+    global _run_boundary
+    _run_boundary = boundary
 
 
 def get_run_store() -> RunStore:
@@ -45,21 +64,29 @@ def get_run_store() -> RunStore:
     return _run_store
 
 
-async def _require_visible_run(store: RunStore, run_id: str, owner: str) -> Any:
-    """Fetch a Run the caller is allowed to see, or 404.
+def get_run_boundary() -> RunStoreBoundary:
+    if _run_boundary is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="No Run authorization boundary is configured",
+        )
+    return _run_boundary
+
+
+async def _require_visible_run(run_id: str, owner: str) -> Any:
+    """Fetch a Run the caller may see under Workspace membership, or 404.
 
     404 rather than 403 on a scope mismatch, deliberately: a 403 confirms the
-    run_id exists, which is exactly what an enumeration attempt is asking.
-
-    A Run with no `actor_principal_id` is visible to nobody but the unauthenticated
-    "dev" principal — the same fail-closed rule `TaskQueue.get` had to be fixed
-    into, where `task.user_id and ...` short-circuited on the empty string and
-    handed ownerless tasks to every caller.
+    run_id exists, which is exactly what an enumeration attempt is asking. The
+    boundary refuses a missing id and a foreign id with the same answer, so
+    this route leaks nothing about existence either way (owner decision
+    2026-09-23, #1152: visibility is Workspace membership -- any member
+    authorized for the Run's Project may read it, whoever initiated it).
     """
-    run = await store.get_run(run_id)
-    if run is None or (run.actor_principal_id or "dev") != owner:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
-    return run
+    try:
+        return await get_run_boundary().require_run(run_id, principal_id=owner)
+    except RunNotVisible:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found") from None
 
 
 @router.get("/{run_id}")
@@ -71,7 +98,7 @@ async def get_run(
 ) -> RunSummary:
     """The canonical execution state behind a submitted task."""
     owner, _, _, _ = resolve_delegated_identity(auth, delegation)
-    run = await _require_visible_run(store, run_id, owner)
+    run = await _require_visible_run(run_id, owner)
     return RunSummary(
         run_id=run.run_id,
         status=run.status.value,
@@ -95,11 +122,37 @@ async def cancel_run(
 ) -> RunSummary:
     """Request cancellation through the canonical physical execution seam."""
     owner, _, _, _ = resolve_delegated_identity(auth, delegation)
-    await _require_visible_run(store, run_id, owner)
+    # View-level membership admits reads, never lifecycle mutation: only the
+    # initiating principal or a Workspace administrator may cancel (#1152
+    # review). The refusal is the seam's one 404, so nothing about existence
+    # or authority is disclosed to a peer member.
+    try:
+        await get_run_boundary().require_run_mutation(run_id, principal_id=owner)
+    except RunNotVisible:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found") from None
     run = await RunExecutionService(
         store=store,
         runtime=PythonExecutionRuntime(),
     ).cancel_run(run_id)
+    if run.provenance.get(ADMISSION_SOURCE) == TASK_QUEUE_SOURCE:
+        task_id = run.provenance.get(TASK_ID_KEY)
+        if isinstance(task_id, str) and task_id:
+            # If cancellation won, the Run is already CANCELLED: the admitter
+            # accepts that redundant transition and update_status terminalizes
+            # the live receipt through its ordinary path (metrics, persistence).
+            # If completion won first, refusal reconciliation projects that
+            # canonical winner instead. The
+            # wall-clock stamps that path writes are then overwritten with the
+            # canonical Run's own truth — the receipt is a projection, so it
+            # carries the Run's finish time and outcome, not the clock.
+            queue = get_task_queue()
+            receipt = queue.get(task_id)
+            # Provenance alone is not reciprocal identity. An inconsistent
+            # task_id must never transition a different canonical Run through
+            # its local receipt, even when the source marker is task_queue.
+            if receipt is not None and receipt.run_id == run.run_id:
+                await queue.update_status(task_id, TaskStatus.CANCELLED)
+                queue.settle_terminal_receipt(task_id, run=run)
     return RunSummary(
         run_id=run.run_id,
         status=run.status.value,
@@ -130,7 +183,7 @@ async def list_node_runs(
     answer rather than an advertised gap.
     """
     owner, _, _, _ = resolve_delegated_identity(auth, delegation)
-    await _require_visible_run(store, run_id, owner)
+    await _require_visible_run(run_id, owner)
     return [
         NodeRunSummary(
             node_run_id=node_run.node_run_id,

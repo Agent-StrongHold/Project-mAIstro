@@ -19,6 +19,10 @@ class SkillDefinition:
     system_prompt: str = ""
     source: str = ""
     trust_tier: str = "t2"
+    # Host-recorded supply-chain facts. Parsers never populate trust or
+    # approval from attacker-controlled frontmatter.
+    content_hash: str = ""
+    provenance: str = ""
 
 
 @dataclass(frozen=True)

@@ -59,6 +59,15 @@ def test_scan_reports_clean_only_when_stored_skills_are_clean(admin_client):
     assert body["status"] == "clean"
     assert body["findings"] == []
     assert body["scanned"] == 1
+    # A skills `clean` is only auditable if the response names the rule set,
+    # the target, when it completed, and how much it judged (#288).
+    assert body["scanner"] == {
+        "name": "skills-security-scan",
+        "policy_version": "skills-security-scan/1",
+    }
+    assert body["target"] == {"kind": "stored_skills", "id": None}
+    assert body["scanned_at"]
+    assert body["scanned_values"] == 1
 
 
 def test_scan_flags_a_dirty_stored_skill(admin_client):
@@ -97,6 +106,13 @@ def test_scan_of_adhoc_content_flags_injection(admin_client):
 def test_scan_of_adhoc_clean_content_is_clean(admin_client):
     body = admin_client.post("/v1/skills/scan", json={"content": "a plain harmless note"}).json()
 
+    assert body["scanner"] == {
+        "name": "skills-security-scan",
+        "policy_version": "skills-security-scan/1",
+    }
+    assert body["target"] == {"kind": "adhoc_skill_content", "id": None}
+    assert body["scanned_at"]
+    assert body["scanned_values"] == 1
     assert body["status"] == "clean"
     assert body["findings"] == []
 

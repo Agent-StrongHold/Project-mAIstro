@@ -43,6 +43,7 @@ from maistro.archive.protocols import ArchiveStore
 from maistro.archive.types import ArchiveKey
 from maistro.graph.definitions import Graph
 from maistro.projects.scope_store import ProjectScopeStore
+from maistro.runs.access import RunAuthorization, admission_identity_fields
 from maistro.runs.concurrency import ACTIVE_ROOT_STATUS_VALUES, RunConcurrencyLimits
 from maistro.runs.evidence_json import decode_evidence, decode_payload, json_of, model_of
 from maistro.runs.lifecycle import (
@@ -89,11 +90,13 @@ from maistro.runs.store import (
     RunNotFound,
     StaleExecutionFence,
     admit_in_state,
+    matches_chat_admission_snapshot,
     outcome_embeds_attempt,
     repaired_accepted_outcome,
     require_repairable_attempt,
     validate_accepted_outcome_against_attempt,
     validate_child_scope,
+    validate_effect_claim_parent,
     validate_eval_score_spine,
 )
 from maistro.runs.store_boundary import RunStoreBoundary, require_admitted_actor
@@ -288,21 +291,47 @@ class PgRunStore:
         allow_cross_project: bool = False,
         persona_id: str | None = None,
         actor_principal_id: str | None = None,
+        authorization: RunAuthorization | None = None,
         provenance: dict[str, Any] | None = None,
         retention_expires_at: datetime | None = None,
         initial_status: RunStatus = RunStatus.CREATED,
+        goal_id: str | None = None,
+        goal_revision: int | None = None,
     ) -> Run:
-        run = await self.prepare_run(
-            graph,
-            parent_run_id=parent_run_id,
-            parent_node_run_id=parent_node_run_id,
-            allow_cross_project=allow_cross_project,
-            persona_id=persona_id,
-            actor_principal_id=actor_principal_id,
-            provenance=provenance,
-            retention_expires_at=retention_expires_at,
-            initial_status=initial_status,
-        )
+        if parent_run_id is None and parent_node_run_id is None:
+            # The parentless branch prepares through the root-only seam
+            # (#1882): every scope-store read completes — and releases its
+            # connection — before the admission connection below is acquired,
+            # so this store never waits on itself for the pool's last
+            # connection. Preparation therefore stays outside the `async with`
+            # block by construction; the tests probe that a nested call (held
+            # connection first) cannot complete.
+            run = await self.prepare_root_run(
+                graph,
+                persona_id=persona_id,
+                actor_principal_id=actor_principal_id,
+                authorization=authorization,
+                provenance=provenance,
+                retention_expires_at=retention_expires_at,
+                initial_status=initial_status,
+                goal_id=goal_id,
+                goal_revision=goal_revision,
+            )
+        else:
+            run = await self.prepare_run(
+                graph,
+                parent_run_id=parent_run_id,
+                parent_node_run_id=parent_node_run_id,
+                allow_cross_project=allow_cross_project,
+                persona_id=persona_id,
+                actor_principal_id=actor_principal_id,
+                authorization=authorization,
+                provenance=provenance,
+                retention_expires_at=retention_expires_at,
+                initial_status=initial_status,
+                goal_id=goal_id,
+                goal_revision=goal_revision,
+            )
         async with self._pool.acquire() as conn:
             try:
                 # READ COMMITTED pinned: the count after the advisory locks
@@ -316,6 +345,61 @@ class PgRunStore:
                 raise conflict from exc
         return run
 
+    async def prepare_root_run(
+        self,
+        graph: Graph,
+        *,
+        persona_id: str | None = None,
+        actor_principal_id: str | None = None,
+        authorization: RunAuthorization | None = None,
+        provenance: dict[str, Any] | None = None,
+        retention_expires_at: datetime | None = None,
+        initial_status: RunStatus = RunStatus.CREATED,
+        goal_id: str | None = None,
+        goal_revision: int | None = None,
+    ) -> Run:
+        """Validate and build one *parentless* Run, writing nothing (#1882).
+
+        The task-agnostic root half of the admission seam: the graph's Project
+        scope is checked — which acquires and releases its own pool connection
+        through the Project store — the actor is required, the graph is copied
+        into the snapshot, and the initial state is applied. The finished
+        candidate is private to the operation: never published, and never
+        mutated by another coroutine.
+
+        This method performs pool I/O of its own, so a caller must not invoke
+        it while holding an already-acquired pool transaction: the Project
+        store's read would wait for that same connection and deadlock. That is
+        the seam working, not a hazard to defend against — scope-store I/O has
+        to finish *before* the admission transaction is acquired (#1845), and
+        the authorization/scope query itself is never removed or deferred to
+        satisfy that ordering, only completed earlier.
+        """
+        await self._validate_graph_scope(graph)
+        identities = admission_identity_fields(
+            graph,
+            authorization=authorization,
+            legacy_actor_principal_id=actor_principal_id,
+        )
+        run = Run(
+            workspace_id=graph.workspace_id,
+            project_id=graph.project_id,
+            graph=GraphSnapshot.from_graph(graph.model_copy(deep=True)),
+            parent_run_id=None,
+            parent_node_run_id=None,
+            persona_id=persona_id,
+            actor_principal_id=identities["actor_principal_id"],
+            initiating_principal_id=identities["initiating_principal_id"],
+            acting_principal_id=identities["acting_principal_id"],
+            provenance=dict(provenance or {}),
+            retention_expires_at=retention_expires_at,
+            goal_id=goal_id,
+            goal_revision=goal_revision,
+        )
+        # Before the insert, not after it: one commit, so there is no window in
+        # which a process death leaves a CREATED Run whose receipt was queued.
+        return admit_in_state(run, initial_status)
+
     async def prepare_run(
         self,
         graph: Graph,
@@ -325,9 +409,12 @@ class PgRunStore:
         allow_cross_project: bool = False,
         persona_id: str | None = None,
         actor_principal_id: str | None = None,
+        authorization: RunAuthorization | None = None,
         provenance: dict[str, Any] | None = None,
         retention_expires_at: datetime | None = None,
         initial_status: RunStatus = RunStatus.CREATED,
+        goal_id: str | None = None,
+        goal_revision: int | None = None,
     ) -> Run:
         """Build one Run without writing anything — the admission-side half.
 
@@ -339,27 +426,44 @@ class PgRunStore:
         transaction, then hands the finished Run to :meth:`insert_prepared_run`
         on the connection it already holds. The checks are unchanged from
         ``create_run``'s own body — this is that body, split at its only seam.
+
+        A parentless request routes to :meth:`prepare_root_run`, the root-only
+        seam ``create_run`` itself uses; only the child path is decided here.
+        The scope check lives in each branch: the parentless route relies on
+        :meth:`prepare_root_run`'s own validation, so an admission through this
+        method performs the Project-store lookup once, not twice.
         """
-        await self._validate_graph_scope(graph)
         if parent_node_run_id is not None and parent_run_id is None:
             raise RunIntegrityError("parent_node_run_id requires parent_run_id")
-        if parent_run_id is not None:
-            parent = await self._require_run(parent_run_id)
-            # The shared check, not a second copy of its two conditions. Its own
-            # docstring says duplicating them at a call site is "the smaller diff
-            # and the worse one", and this store was that duplicate.
-            validate_child_scope(
-                parent,
-                workspace_id=graph.workspace_id,
-                project_id=graph.project_id,
-                allow_cross_project=allow_cross_project,
+        if parent_run_id is None:
+            return await self.prepare_root_run(
+                graph,
+                persona_id=persona_id,
+                actor_principal_id=actor_principal_id,
+                authorization=authorization,
+                provenance=provenance,
+                retention_expires_at=retention_expires_at,
+                initial_status=initial_status,
+                goal_id=goal_id,
+                goal_revision=goal_revision,
             )
-            if parent_node_run_id is not None:
-                parent_node_run = await self._require_node_run(parent_node_run_id)
-                if parent_node_run.run_id != parent_run_id:
-                    raise RunIntegrityError(
-                        "parent_node_run_id does not belong to parent_run_id",
-                    )
+        await self._validate_graph_scope(graph)
+        parent = await self._require_run(parent_run_id)
+        # The shared check, not a second copy of its two conditions. Its own
+        # docstring says duplicating them at a call site is "the smaller diff
+        # and the worse one", and this store was that duplicate.
+        validate_child_scope(
+            parent,
+            workspace_id=graph.workspace_id,
+            project_id=graph.project_id,
+            allow_cross_project=allow_cross_project,
+        )
+        if parent_node_run_id is not None:
+            parent_node_run = await self._require_node_run(parent_node_run_id)
+            if parent_node_run.run_id != parent_run_id:
+                raise RunIntegrityError(
+                    "parent_node_run_id does not belong to parent_run_id",
+                )
         run = Run(
             workspace_id=graph.workspace_id,
             project_id=graph.project_id,
@@ -367,9 +471,15 @@ class PgRunStore:
             parent_run_id=parent_run_id,
             parent_node_run_id=parent_node_run_id,
             persona_id=persona_id,
-            actor_principal_id=require_admitted_actor(actor_principal_id),
+            **admission_identity_fields(
+                graph,
+                authorization=authorization,
+                legacy_actor_principal_id=actor_principal_id,
+            ),
             provenance=dict(provenance or {}),
             retention_expires_at=retention_expires_at,
+            goal_id=goal_id,
+            goal_revision=goal_revision,
         )
         # Before the insert, not after it: one commit, so there is no window in
         # which a process death leaves a CREATED Run whose receipt was queued.
@@ -797,6 +907,22 @@ class PgRunStore:
             )
         return model_of(RunEvalScore, row["payload"]) if row is not None else None
 
+    async def list_recent_runs(
+        self, workspace_id: str, *, limit: int = 100, offset: int = 0
+    ) -> list[Run]:
+        if limit <= 0 or offset < 0:
+            raise ValueError("limit must be positive and offset non-negative")
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                """SELECT payload FROM canonical_runs
+                   WHERE workspace_id = $1 AND payload IS NOT NULL
+                   ORDER BY payload->>'created_at' DESC, run_id DESC LIMIT $2 OFFSET $3""",
+                workspace_id,
+                limit,
+                offset,
+            )
+        return [model_of(Run, row["payload"]) for row in rows]
+
     async def get_run(self, run_id: str, *, principal_id: str | None = None) -> Run | None:
         payload = await self._payload(
             "SELECT run_id, payload, archive_key FROM canonical_runs WHERE run_id = $1", run_id
@@ -821,36 +947,6 @@ class PgRunStore:
         )
         return Run.model_validate(payload) if payload is not None else None
 
-    async def _require_locked_parent_scope(
-        self,
-        # PoolConnectionProxy at the one call site; `Any` like every other
-        # connection-taking helper in this store (#1194 repair).
-        conn: Any,
-        graph: Graph,
-        *,
-        parent_run_id: str | None,
-        parent_node_run_id: str | None,
-        allow_cross_project: bool,
-    ) -> None:
-        """Validate the optional parent chain inside the claim transaction."""
-        if parent_run_id is None:
-            return
-        parent_payload = await self._locked(conn, "canonical_runs", "run_id", parent_run_id)
-        parent = Run.model_validate(parent_payload)
-        validate_child_scope(
-            parent,
-            workspace_id=graph.workspace_id,
-            project_id=graph.project_id,
-            allow_cross_project=allow_cross_project,
-        )
-        if parent_node_run_id is None:
-            return
-        parent_node_run = NodeRun.model_validate(
-            await self._locked(conn, "canonical_node_runs", "node_run_id", parent_node_run_id)
-        )
-        if parent_node_run.run_id != parent_run_id:
-            raise RunIntegrityError("parent_node_run_id does not belong to parent_run_id")
-
     async def claim_run_by_effect(
         self,
         graph: Graph,
@@ -869,8 +965,6 @@ class PgRunStore:
         if not effect_key:
             raise ValueError("effect_key must be non-empty")
         await self._validate_graph_scope(graph)
-        if parent_node_run_id is not None and parent_run_id is None:
-            raise RunIntegrityError("parent_node_run_id requires parent_run_id")
         run = Run(
             workspace_id=graph.workspace_id,
             project_id=graph.project_id,
@@ -894,11 +988,29 @@ class PgRunStore:
                 return RunEffectClaim(
                     Run.model_validate(decode_evidence(decode_payload(existing_payload))), False
                 )
-            await self._require_locked_parent_scope(
-                conn,
-                graph,
+            parent = (
+                Run.model_validate(
+                    await self._locked(conn, "canonical_runs", "run_id", parent_run_id)
+                )
+                if parent_run_id is not None
+                else None
+            )
+            parent_node_run = (
+                NodeRun.model_validate(
+                    await self._locked(
+                        conn, "canonical_node_runs", "node_run_id", parent_node_run_id
+                    )
+                )
+                if parent is not None and parent_node_run_id is not None
+                else None
+            )
+            validate_effect_claim_parent(
+                parent,
+                parent_node_run,
                 parent_run_id=parent_run_id,
                 parent_node_run_id=parent_node_run_id,
+                workspace_id=graph.workspace_id,
+                project_id=graph.project_id,
                 allow_cross_project=allow_cross_project,
             )
             inserted = await conn.fetchrow(
@@ -1112,6 +1224,23 @@ class PgRunStore:
         oldest_raw = row["oldest"]
         oldest = datetime.fromisoformat(oldest_raw) if oldest_raw else None
         return int(row["open_runs"]), oldest
+
+    async def cancel_unstarted_chat_run(self, expected: Run, *, error: str) -> bool:
+        async with self._pool.acquire() as conn, conn.transaction():
+            current = Run.model_validate(
+                await self._locked(conn, "canonical_runs", "run_id", expected.run_id)
+            )
+            if not matches_chat_admission_snapshot(current, expected):
+                return False
+            # create_node_run locks this same parent before inserting: no
+            # physical dispatch can appear between this check and the write.
+            if await conn.fetchval(
+                "SELECT 1 FROM canonical_node_runs WHERE run_id = $1 LIMIT 1", expected.run_id
+            ):
+                return False
+            updated = transition_run(current, RunStatus.CANCELLED, error=error)
+            await self._write(conn, "canonical_runs", "run_id", expected.run_id, updated)
+            return True
 
     async def transition_run(
         self,
