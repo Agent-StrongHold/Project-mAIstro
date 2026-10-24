@@ -23,6 +23,15 @@ or placeholder-only section.
 
 ## [Unreleased]
 
+### Changed
+
+- **Evolution is hidden from the v1.0 shipped product surface (#2275,
+  `conductor-411`).** `/evolution` is unregistered from the Hive Conductor
+  route table and stays out of nav; the page module remains in-tree for the
+  **v1.2** restore. Docs no longer describe Evolution as an available feature.
+  Evolve implementation ownership stays with #51. The retirement ledger and
+  `route-inventory` record HIDE v1.0 / restore v1.2.
+
 ### Added
 
 - **`/health` names the Reactor's persistence authority beside every other
