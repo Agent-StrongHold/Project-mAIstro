@@ -74,3 +74,55 @@ develop fails identically. Fixes are lockfile-only, evidence-driven from the fet
   lock now pins 6.21.2 with no 6.21.1 reference remaining. Remote CI confirms on next run.
 - `beartype` gained a Python-3.15-only second pin (0.23.1) alongside 0.22.9 — resolver
   artifact of the fastmcp bump; supported interpreters (3.12/3.13) keep 0.22.9.
+
+## Round 2 (this head) — reconcile-gate split-resolution, fixed by develop sync
+
+Next CI evaluation (security run 40102023193 at 8df101efe, job 120895964684) moved the
+failure inside the same `Container scan + SBOM + cosign` job: every Trivy scan passed
+(the develop merge had carried pypdf 6.21.2, closing the previous residual) and the new
+failing step was `Reconcile installed packages to uv.lock`:
+
+```
+image maistro-engine:pr-2302 does NOT reconcile to the lock:
+  version mismatch     : beartype==0.22.9 (image) != beartype==0.23.1
+```
+
+Root cause (evidence-driven from the fetched job log, read-only API): the merged uv.lock
+splits beartype across environment markers — `0.22.9 ; python_full_version < '3.15'` and
+`0.23.1 ; python_full_version >= '3.15'`, both marker-conditional in the export. The
+gate's `parse_expected` keyed pins by name alone, so only the last line's version
+survived and a correct Python 3.13 image shipping the `<'3.15'` pin was reported as a
+version skew — a false positive contradicting the script's own contract ("conditional
+pins gate nothing"). The repair is **not a ledger or gate edit**: develop's f956a8142
+(`1182-image-lock-split-resolution.md`) already carries the upstream fix — the checker
+now keeps every version of a split resolution and accepts whichever branch the image's
+interpreter resolves, while still failing any version neither branch pins.
+
+Fix: `git merge origin/develop` (7be3b70ef) — clean merge; the only overlapping files
+(two frontend package-locks) were byte-identical on both sides. Nothing else changed;
+no issue-#34 acceptance surface touched.
+
+Local proof (this worktree):
+- develop's `tests/test_check_image_lock_reconciliation.py` — 32 passed on the merged
+  tree; 4 split-resolution tests fail against the pre-merge checker (old script extracted
+  to /tmp), including the exact CI case (`shipped 0.22.9`), so the tests name the
+  regression.
+- Real maistro-engine image built from the merged tree
+  (`docker build -f Dockerfile -t maistro-engine:pr-2302 .`), then the gate run with
+  CI's exact invocation: `OK: maistro-engine:pr-2302 ships exactly the locked set
+  (128 distributions, incl. 3 workspace member(s); 14 marker-conditional pin(s)
+  evaluated leniently)`, exit 0.
+- Marker-evaluated export simulation (py3.13/linux) reproduces the CI failure
+  byte-for-byte on the old checker and accepts on the new one.
+- `uv lock --check` consistent; `uv sync --locked --extra dev` clean.
+- Battery: `ruff check` / `ruff format --check` pass; vulture gate with CI's exact
+  arguments passes (1298 findings / 1302 reviewed, base f956a8142, no unbanked
+  identities, no ledger amendment needed); portability + merged-run-concurrency +
+  resource-policy suites 94 passed / 19 skipped; suite inventory matches for
+  packages/maistro-core/tests, packages/maistro-server/tests and root tests/;
+  check-reachability.py / check-convergence-matrix.py / check-reachability-dispositions.py /
+  check-backlog-consistency.py all exit 0 (149 unreachable modules, dispositions
+  unchanged).
+- hive-conductor's export contains no beartype pin at all, so the second reconcile
+  invocation never had this failure mode; hive/research/rsi images were not rebuilt
+  locally (heavy) — remote CI verifies those invocations on the merged tree.
