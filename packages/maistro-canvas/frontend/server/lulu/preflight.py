@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import logging
+import os
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -13,6 +15,29 @@ from .constants import (
 )
 
 logger = logging.getLogger("lulu.preflight")
+
+#: Where a caller may point preflight at. Shared with ``service._preflight_path``.
+#: ``realpath`` rather than ``normpath``: the default is the platform temp
+#: directory, which is itself a symlink on some platforms.
+PREFLIGHT_ROOT = os.path.realpath(os.environ.get("LULU_PREFLIGHT_ROOT") or tempfile.gettempdir())
+
+
+def contained_pdf_path(raw: str | Path, *, root: str | None = None) -> str:
+    """Canonical PDF path under ``root`` (default ``PREFLIGHT_ROOT``), or ``ValueError``.
+
+    Uses ``os.path.realpath`` + ``startswith(root + sep)`` — the containment
+    guard CodeQL's ``py/path-injection`` models — so the string returned here
+    is what every subsequent open/stat/exists must use.
+
+    ``root`` is overridable so the HTTP edge can hold its own patchable copy
+    (``service.PREFLIGHT_ROOT``) without fighting the dual ``lulu`` /
+    ``server.lulu`` import spellings under different ``sys.path`` entries.
+    """
+    base = PREFLIGHT_ROOT if root is None else root
+    candidate = os.path.realpath(str(raw))
+    if candidate != base and not candidate.startswith(base + os.sep):
+        raise ValueError("pdf_path must be inside the preflight directory")
+    return candidate
 
 
 @dataclass
@@ -141,9 +166,12 @@ def _check_page_size(result: PreflightResult, fmt: dict, first_page: object) -> 
         )
 
 
-def _check_file_size(result: PreflightResult, path: Path) -> None:
-    """Append file-size related issues to ``result``."""
-    file_size_mb = path.stat().st_size / (1024 * 1024)
+def _check_file_size(result: PreflightResult, path: str) -> None:
+    """Append file-size related issues to ``result``.
+
+    ``path`` must already be the string returned by ``contained_pdf_path``.
+    """
+    file_size_mb = os.path.getsize(path) / (1024 * 1024)
     max_file_size_mb = 300
     if file_size_mb > max_file_size_mb:
         result.issues.append(
@@ -174,15 +202,22 @@ def preflight_interior(
     allow_extra_blank: bool = True,
 ) -> PreflightResult:
     result = PreflightResult()
-    path = Path(pdf_path)
-
-    if not path.exists():
+    try:
+        candidate = contained_pdf_path(pdf_path)
+    except ValueError as exc:
         result.passed = False
-        result.issues.append(PreflightIssue("error", "FILE_NOT_FOUND", f"PDF not found: {path}"))
+        result.issues.append(PreflightIssue("error", "PATH_OUTSIDE_ROOT", str(exc)))
+        return result
+
+    if not os.path.exists(candidate):
+        result.passed = False
+        result.issues.append(
+            PreflightIssue("error", "FILE_NOT_FOUND", f"PDF not found: {candidate}")
+        )
         return result
 
     try:
-        reader = PdfReader(str(path))
+        reader = PdfReader(candidate)
     except Exception as e:
         result.passed = False
         result.issues.append(PreflightIssue("error", "INVALID_PDF", f"Cannot read PDF: {e}"))
@@ -200,7 +235,7 @@ def preflight_interior(
 
     _check_page_count(result, fmt, expected_page_count, allow_extra_blank)
     _check_page_size(result, fmt, reader.pages[0])
-    _check_file_size(result, path)
+    _check_file_size(result, candidate)
 
     result.passed = len(result.errors) == 0
     if result.passed:
@@ -222,17 +257,22 @@ def preflight_cover(
     page_count: int,
 ) -> PreflightResult:
     result = PreflightResult()
-    path = Path(pdf_path)
+    try:
+        candidate = contained_pdf_path(pdf_path)
+    except ValueError as exc:
+        result.passed = False
+        result.issues.append(PreflightIssue("error", "PATH_OUTSIDE_ROOT", str(exc)))
+        return result
 
-    if not path.exists():
+    if not os.path.exists(candidate):
         result.passed = False
         result.issues.append(
-            PreflightIssue("error", "FILE_NOT_FOUND", f"Cover PDF not found: {path}")
+            PreflightIssue("error", "FILE_NOT_FOUND", f"Cover PDF not found: {candidate}")
         )
         return result
 
     try:
-        reader = PdfReader(str(path))
+        reader = PdfReader(candidate)
     except Exception as e:
         result.passed = False
         result.issues.append(PreflightIssue("error", "INVALID_PDF", f"Cannot read cover PDF: {e}"))
@@ -296,7 +336,7 @@ def preflight_cover(
             )
         )
 
-    file_size_mb = path.stat().st_size / (1024 * 1024)
+    file_size_mb = os.path.getsize(candidate) / (1024 * 1024)
     if file_size_mb > 100:
         result.issues.append(
             PreflightIssue(

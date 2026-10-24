@@ -295,6 +295,19 @@ or placeholder-only section.
 
 ### Security
 
+- **CodeQL / DevSkim backlog cleanup (path injection, stack-trace exposure,
+  regex injection, and scan-scope noise)** (no linked issue: GitHub
+  code-scanning backlog on develop, not a numbered tracker issue). Remaining
+  open CodeQL findings are cleared with `realpath`+`startswith` containment,
+  kind-only public failure text (including `/health` optional-router outcomes),
+  escaped consistency markers, and prototype-safe book-plan path assignment.
+  DevSkim drops non-shipped trees (`systems/catalog`, `benchmarks/corpora`,
+  `formal/`, `.github/`, `deploy/`, `alembic/`) and dated suppressions for
+  integrity-pin / non-crypto RNG / intentional loopback defaults so the
+  Security tab is actionable again. Lockfile bumps `fastmcp`, `setuptools`, and
+  `pypdf` for pip-audit/Trivy; canvas frontend `npm audit fix` clears high
+  advisories; Trivyignore documents the bookworm-only libbrotli finding.
+
 - **Protected-branch secret scans recognize two historical soak false positives (#860).**
   Preserve full-history scanning and the default rules while carrying over the
   exact commit/path/rule/line fingerprints for a synthetic local-stack fixture

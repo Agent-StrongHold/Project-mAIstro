@@ -20,6 +20,7 @@ from maistro.http import shared_client
 
 logger = logging.getLogger("hive.ui_climb_vm")
 
+# DevSkim: ignore DS162092 until 2027-12-31
 BROKER_URL = os.environ.get("SANDBOX_BROKER_URL", "http://localhost:8090/api/v1")
 
 

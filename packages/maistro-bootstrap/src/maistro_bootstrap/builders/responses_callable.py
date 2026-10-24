@@ -108,6 +108,7 @@ def _ensure_env_loaded() -> None:
     for key in ("LITELLM_URL", "LITELLM_BASE_URL", "LITELLM_PROXY_URL"):
         val = os.environ.get(key, "")
         if "://litellm:" in val:
+            # DevSkim: ignore DS162092 until 2027-12-31
             os.environ[key] = val.replace("://litellm:", "://127.0.0.1:")
 
 

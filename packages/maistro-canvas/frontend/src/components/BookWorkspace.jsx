@@ -14,6 +14,7 @@ import { saveState, loadState, clearState } from "../lib/persistence";
 import CanvasViewport from "./CanvasViewport";
 import { logGenerationAttempt, updateVerdict, saveLayoutVersion } from "../lib/generationTracker";
 import { exportBookPdf } from "../lib/exportPdf";
+import { safePathAssign } from "../lib/safePathAssign";
 
 const S = {
   loading: "loading",
@@ -393,17 +394,7 @@ export default function BookWorkspace({ bookSpec, onReset }) {
   };
 
   const updateBookPlan = (path, value) => {
-    setBookPlan((prev) => {
-      const n = { ...prev };
-      const keys = path.split(".");
-      // A dotted path is walked and assigned; a segment naming the prototype
-      // chain would rewrite Object.prototype for the whole page.
-      if (keys.some((k) => k === "__proto__" || k === "constructor" || k === "prototype")) return prev;
-      let obj = n;
-      for (let i = 0; i < keys.length - 1; i++) { obj[keys[i]] = { ...obj[keys[i]] }; obj = obj[keys[i]]; }
-      obj[keys[keys.length - 1]] = value;
-      return n;
-    });
+    setBookPlan((prev) => safePathAssign(prev, path, value));
   };
 
   const updateScene = (idx, field, value) => {

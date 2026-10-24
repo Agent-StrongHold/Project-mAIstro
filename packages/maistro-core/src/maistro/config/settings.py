@@ -62,9 +62,9 @@ def _is_http_loopback_origin(origin: str) -> bool:
     try:
         parsed = urlsplit(origin)
         return _has_http_origin_authority(parsed) and parsed.hostname in {
-            "localhost",
-            "127.0.0.1",
-            "::1",
+            "localhost",  # DevSkim: ignore DS162092 until 2027-12-31
+            "127.0.0.1",  # DevSkim: ignore DS162092 until 2027-12-31
+            "::1",  # DevSkim: ignore DS162092 until 2027-12-31
         }
     except ValueError:
         return False
@@ -157,7 +157,7 @@ class ModelRateProfileConfig(BaseModel):
 class DatabaseSettings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="DB_")
 
-    host: str = "localhost"
+    host: str = "localhost"  # DevSkim: ignore DS162092 until 2027-12-31
     port: int = 5432
     name: str = "maistro"
     user: str = "maistro"
@@ -197,7 +197,7 @@ class DatabaseSettings(BaseSettings):
 class LiteLLMSettings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="LITELLM_")
 
-    base_url: str = "http://localhost:4000"
+    base_url: str = "http://localhost:4000"  # DevSkim: ignore DS162092 until 2027-12-31; ignore DS137138 until 2027-12-31
     master_key: str = ""
 
 
@@ -217,7 +217,7 @@ class MistralSettings(BaseSettings):
 class LangfuseSettings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="LANGFUSE_")
 
-    host: str = "http://localhost:3000"
+    host: str = "http://localhost:3000"  # DevSkim: ignore DS162092 until 2027-12-31; ignore DS137138 until 2027-12-31
     public_key: str = ""
     secret_key: str = ""
     enabled: bool = True
@@ -250,7 +250,7 @@ class SandboxSettings(BaseSettings):
 class OllamaSettings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="OLLAMA_")
 
-    base_url: str = "http://localhost:11434/v1"
+    base_url: str = "http://localhost:11434/v1"  # DevSkim: ignore DS162092 until 2027-12-31; ignore DS137138 until 2027-12-31
 
 
 class NtfySettings(BaseSettings):
@@ -280,8 +280,8 @@ class Settings(BaseSettings):
     allow_unsafe_resource_overrides: bool = False
     # Default to loopback so a careless dev-server start doesn't expose the
     # API on every interface. Container deployments override this via the
-    # HOST env var (e.g. HOST=0.0.0.0 in docker-compose for the server svc).
-    host: str = "127.0.0.1"
+    # HOST env var (e.g. HOST=0.0.0.0 in docker-compose for the server svc).  # DevSkim: ignore DS162092 until 2027-12-31
+    host: str = "127.0.0.1"  # DevSkim: ignore DS162092 until 2027-12-31
     port: int = 8000
 
     api_keys: list[str] = Field(
@@ -309,7 +309,9 @@ class Settings(BaseSettings):
     )
 
     cors_origins: list[str] = Field(
-        default_factory=lambda: ["http://localhost:3080"],
+        default_factory=lambda: [
+            "http://localhost:3080",  # DevSkim: ignore DS162092 until 2027-12-31; ignore DS137138 until 2027-12-31
+        ],
         description="Allowed CORS origins. This is the field the FastAPI apps "
         "actually pass to CORSMiddleware — validated here, at the boundary "
         "that is read.",
@@ -325,7 +327,7 @@ class Settings(BaseSettings):
 
     max_tokens_per_task: int = Field(default=100_000, description="Max LLM tokens per task")
 
-    ollama_base_url: str = "http://localhost:11434/v1"
+    ollama_base_url: str = "http://localhost:11434/v1"  # DevSkim: ignore DS162092 until 2027-12-31; ignore DS137138 until 2027-12-31
     maistro_dry_run: bool = False
     poc_mode: str = Field(
         default="",
@@ -476,7 +478,11 @@ class SecurityConfig(BaseModel):
 
 
 class CORSConfig(BaseModel):
-    allowed_origins: list[str] = Field(default_factory=lambda: ["http://localhost:3200"])
+    allowed_origins: list[str] = Field(
+        default_factory=lambda: [
+            "http://localhost:3200",  # DevSkim: ignore DS162092 until 2027-12-31; ignore DS137138 until 2027-12-31
+        ]
+    )
     allowed_methods: list[str] = Field(
         default_factory=lambda: ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
     )
@@ -531,7 +537,7 @@ class MaistroYamlConfig(BaseModel):
     database_url: str = ""
     redis_url: str = ""
     agents_dir: str = ""
-    litellm_url: str = "http://litellm:4000"
+    litellm_url: str = "http://litellm:4000"  # DevSkim: ignore DS137138 until 2027-12-31
     litellm_key: str = ""
     router_api_key: str = ""
     jwt_secret: str = ""

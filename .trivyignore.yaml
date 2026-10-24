@@ -17,6 +17,19 @@ vulnerabilities:
       attacker-controlled network input, on 127.0.0.1-bound services.
       Re-triage when upstream ships a fix or Debian ships deb12u6; remove
       this entry and re-scan then.
+  - id: CVE-2026-111497
+    path: Dockerfile.research
+    expired_at: 2026-12-31
+    statement: >-
+      brotli out-of-bounds write (libbrotli1). Trivy names a fixed version
+      only on Debian 13 (1.1.0-2+deb13u1); the research image is
+      python:3.13-slim-bookworm and `apt-get upgrade` already runs in the
+      runtime stage with no bookworm point-release available as of
+      2026-10-24. Triaged: brotli is pulled in as a transitive OS library
+      for the research image's browser/PDF tooling, not an intentional
+      network decoder of attacker content at the API edge. Re-triage when
+      Debian bookworm ships a fix or the base image moves to a suite that
+      has one; remove this entry and re-scan then.
 secrets:
   - id: aws-access-key-id
     path: moto/

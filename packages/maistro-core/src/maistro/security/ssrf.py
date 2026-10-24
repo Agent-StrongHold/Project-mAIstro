@@ -66,7 +66,7 @@ ALLOWED_SCHEMES = frozenset({"http", "https"})
 #: Matched against the **parsed hostname**, never against the raw URL. The
 #: previous version compared `url.startswith("https://kubernetes.")` and friends,
 #: which refused `https://kubernetes.io/docs/` — a public documentation site —
-#: along with `https://10.example.com/` and `http://localhost@example.com/`,
+#: along with `https://10.example.com/` and `http://localhost@example.com/`,  # DevSkim: ignore DS162092 until 2027-12-31
 #: where the userinfo field is not the host at all. A guard that refuses real
 #: public URLs teaches its callers to route around it, which costs more than the
 #: obfuscation the prefix list was reaching for.
@@ -82,7 +82,7 @@ ALLOWED_SCHEMES = frozenset({"http", "https"})
 #: unresolvable-host rule to do it by accident.
 _BLOCKED_HOSTNAMES = frozenset(
     {
-        "localhost",
+        "localhost",  # DevSkim: ignore DS162092 until 2027-12-31
         "metadata.goog",  # GCP metadata, short form
         "instance-data",  # EC2 metadata, short form
         "kubernetes.default",  # in-cluster API server
@@ -94,7 +94,7 @@ _BLOCKED_HOSTNAMES = frozenset(
 #: (`kubernetes.default.svc`, `…svc.cluster.local`) and mDNS. None of the four
 #: is a public gTLD, so none of them can match a name on the public internet.
 _BLOCKED_HOSTNAME_SUFFIXES = (
-    ".localhost",
+    ".localhost",  # DevSkim: ignore DS162092 until 2027-12-31
     ".internal",
     ".local",
     ".svc",
@@ -251,7 +251,7 @@ def _check_shape(url: str) -> str:
     try:
         parsed = urlsplit(url.strip())
     except ValueError as exc:
-        # `urlsplit` raises on things like `http://[::1` (unterminated IPv6).
+        # `urlsplit` raises on things like `http://[::1` (unterminated IPv6).  # DevSkim: ignore DS162092 until 2027-12-31
         # Letting that escape would mean the guard raised something its callers
         # do not catch as a block — `browse()` handles `SSRFBlockedError`, so a
         # bare `ValueError` would surface as an unhandled error rather than a

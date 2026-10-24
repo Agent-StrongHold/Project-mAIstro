@@ -80,6 +80,25 @@ def test_parse_expected_splits_conditional_from_required_pins(gate):
     assert conditional == {"secretstorage==3.5.0", "pywin32==311"}
 
 
+def test_parse_expected_retains_every_python_marker_version(gate):
+    """Dual Python-marker pins must not collapse to last-write-wins.
+
+    `uv export` emits both `beartype==0.22.9 ; python_full_version < '3.15'`
+    and `beartype==0.23.1 ; python_full_version >= '3.15'`. A 3.13 image
+    installs 0.22.9; keeping only the last export line would false-fail it.
+    """
+    text = "\n".join(
+        [
+            "fastapi==0.142.2",
+            "beartype==0.22.9 ; python_full_version < '3.15'",
+            "beartype==0.23.1 ; python_full_version >= '3.15'",
+        ]
+    )
+    required, conditional = gate.parse_expected(text)
+    assert required == {"fastapi==0.142.2"}
+    assert conditional == {"beartype==0.22.9", "beartype==0.23.1"}
+
+
 def test_parse_expected_names_are_canonicalized(gate):
     required, _ = gate.parse_expected("Some_Pkg==1.0\n")
     assert required == {"some-pkg==1.0"}
@@ -245,6 +264,26 @@ def test_conditional_pin_version_is_checked_when_it_ships(gate, tmp_path, monkey
     assert gate.main() == 1
     out = capsys.readouterr().out
     assert "version mismatch     : secretstorage==3.6.0 (image) != secretstorage==3.5.0" in out
+
+
+def test_dual_marker_versions_both_acceptable_when_image_ships_either(
+    gate, tmp_path, monkeypatch, capsys
+):
+    expected = _write_expected(
+        tmp_path,
+        "\n".join(
+            [
+                "fastapi==0.142.2",
+                "beartype==0.22.9 ; python_full_version < '3.15'",
+                "beartype==0.23.1 ; python_full_version >= '3.15'",
+                "",
+            ]
+        ),
+    )
+    _install_docker(monkeypatch, gate, _Docker(_dump("fastapi==0.142.2", "beartype==0.22.9")))
+    monkeypatch.setattr(sys, "argv", _argv(expected))
+    assert gate.main() == 0
+    assert "ships exactly the locked set" in capsys.readouterr().out
 
 
 def test_member_pin_satisfies_the_contract(gate, tmp_path, monkeypatch, capsys):

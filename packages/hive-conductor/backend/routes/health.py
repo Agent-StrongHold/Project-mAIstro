@@ -121,7 +121,26 @@ def _optional_routers_state(app: Any) -> dict[str, str | None]:
     state = getattr(app.state, "optional_routers", None)
     if not isinstance(state, dict):
         return {}
-    return {str(module): (None if error is None else str(error)) for module, error in state.items()}
+    # Public liveness must not relay raw exception text (CodeQL
+    # py/stack-trace-exposure). Mount failures are already recorded as a
+    # kind-only string in main._include_optional_router; anything else that
+    # somehow lands here is reduced to a fixed public phrase.
+    out: dict[str, str | None] = {}
+    for module, error in state.items():
+        if error is None:
+            out[str(module)] = None
+        elif isinstance(error, BaseException):
+            out[str(module)] = f"{type(error).__name__}: router failed to mount; see server logs"
+        else:
+            text = str(error)
+            # Preserve an already-sanitized kind-only message; never pass
+            # through a raw "Type: message" that still carries internals.
+            if ": router failed to mount; see server logs" in text:
+                out[str(module)] = text
+            else:
+                kind = text.split(":", 1)[0].strip() or "Error"
+                out[str(module)] = f"{kind}: router failed to mount; see server logs"
+    return out
 
 
 def _degraded_services(

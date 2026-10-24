@@ -156,7 +156,7 @@ def outbound_origin(url: str) -> str:
     try:
         parts = urlsplit(url)
     except ValueError:
-        # Unparseable — `http://[::1` and friends. This function is called to
+        # Unparseable — `http://[::1` and friends. This function is called to  # DevSkim: ignore DS162092 until 2027-12-31
         # *describe* a refusal, so it must never be the thing that fails: it
         # raised `ValueError: Invalid IPv6 URL` from inside the handler that had
         # already correctly refused the same URL, and the exception escaped

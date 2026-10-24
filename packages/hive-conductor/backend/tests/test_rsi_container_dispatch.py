@@ -670,8 +670,9 @@ class TestTheDispatchedLifecycle:
         )
 
         assert response.status_code == 400
-        assert "no contained RSI backend" in response.json()["detail"]
-        assert "docker daemon" in response.json()["detail"]
+        # Kind-only public detail (CodeQL py/stack-trace-exposure); policy
+        # wording stays in the server log.
+        assert response.json()["detail"] == "RsiPolicyError: run refused; see server logs"
 
     def test_cancellation_stops_the_container(
         self,
@@ -786,8 +787,8 @@ class TestTheDispatchedLifecycle:
         asyncio.run(svc._drive(run))
 
         assert run.status == "errored"
-        assert run.last_error is not None
-        assert "exited with code 1" in run.last_error
+        assert run.last_error == "DispatchError: run failed; see server logs"
+        assert "exited with code 1" not in (run.last_error or "")
 
     def test_a_container_the_backend_loses_is_reported_errored(
         self,
@@ -810,7 +811,8 @@ class TestTheDispatchedLifecycle:
         asyncio.run(svc._drive(run))
 
         assert run.status == "errored"
-        assert run.last_error and "lost contact" in run.last_error
+        assert run.last_error == "DispatchError: run failed; see server logs"
+        assert "lost contact" not in (run.last_error or "")
 
     def test_checkpoints_written_by_the_container_become_run_progress(
         self,
@@ -859,7 +861,8 @@ class TestTheDispatchedLifecycle:
 
         assert run.status == "errored"
         assert run.container_id is None
-        assert "docker refused the run request" in (run.last_error or "")
+        assert run.last_error == "DispatchError: run failed; see server logs"
+        assert "docker refused" not in (run.last_error or "")
 
     def test_stop_run_survives_a_failed_container_stop(
         self,

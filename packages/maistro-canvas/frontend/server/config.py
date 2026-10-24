@@ -43,7 +43,7 @@ from collections.abc import Mapping
 #: profile publishes, not the container's 5432.
 _COMPOSE_USER = "mcp"
 _COMPOSE_DATABASE = "mcp_orders"
-_COMPOSE_HOST = "localhost"
+_COMPOSE_HOST = "localhost"  # DevSkim: ignore DS162092 until 2027-12-31
 _COMPOSE_PORT = 5441
 
 
@@ -80,7 +80,7 @@ def require_database_url(env: Mapping[str, str] | None = None) -> str:
             "docker-compose.yml starts PostgreSQL with, or set DATABASE_URL to a "
             "full postgresql+asyncpg:// URL to reach a database elsewhere. See "
             "this package's README -- neither has a default, because guessing "
-            "localhost would report a connection failure instead of a missing "
+            "localhost would report a connection failure instead of a missing "  # DevSkim: ignore DS162092 until 2027-12-31
             "setting (#432)."
         )
         raise ConfigError(msg)

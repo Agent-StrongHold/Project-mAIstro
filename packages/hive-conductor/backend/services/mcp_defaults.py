@@ -16,7 +16,9 @@ ATLASSIAN_ROVO_MCP_URL = os.getenv(
 
 ATLASSIAN_ROVO_SERVER_ID = "mcp-atlassian-rovo"
 FILESYSTEM_SERVER_ID = "mcp-filesystem-local"
-FILESYSTEM_MCP_URL = os.getenv("FILESYSTEM_MCP_URL", "http://127.0.0.1:9999/mcp").strip()
+FILESYSTEM_MCP_URL = os.getenv(
+    "FILESYSTEM_MCP_URL", "http://127.0.0.1:9999/mcp"
+).strip()  # DevSkim: ignore DS162092 until 2027-12-31
 
 ATLASSIAN_ROVO_TOOLS: tuple[dict[str, str], ...] = (
     {
