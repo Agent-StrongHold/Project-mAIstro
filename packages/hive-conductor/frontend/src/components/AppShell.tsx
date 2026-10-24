@@ -2,6 +2,7 @@ import { type ReactNode, useState } from "react";
 import { clearUiState } from "../lib/uiState";
 import { NavLink, Outlet } from "react-router-dom";
 import { useUser } from "../App";
+import { useAuthorization } from "../context/AuthorizationContext";
 import { AppearanceToggle } from "./AppearanceToggle";
 import { DegradedBanner } from "./DegradedBanner";
 import { WorkspaceTabs } from "./WorkspaceTabs";
@@ -73,7 +74,7 @@ const fullNav = [
   { to: "/knowledge", icon: Brain, label: "Inner Temple" },
   // M0 containment for #311: Deck Builder is intentionally absent until
   // model-authored HTML/SVG has a canonical sanitizer/structured renderer.
-  { to: "/rsi", icon: Repeat, label: "RSI" },
+  { to: "/rsi", icon: Repeat, label: "RSI", surface: "rsi" },
   { to: "/mcp", icon: Plug, label: "Integrations" },
   // #1417: CLI and Containers keep their v1.0 contract lanes (#292, #382),
   // so they stay shipped and must stay reachable while those run.
@@ -87,15 +88,9 @@ const fullNav = [
 ];
 
 
-// #1417 review: entries with a `scope` are only actionable for sessions
-// holding that permission (admins pass every gate, as in the backend), so
-// filter them instead of showing screens whose mutations all 403.
-function visibleNav(user: ReturnType<typeof useUser>) {
-  if (!user) return fullNav.filter((item) => !item.scope);
-  if (user.role === "admin") return fullNav;
-  return fullNav.filter((item) => !item.scope || user.permissions.includes(item.scope));
-}
-
+// #1417 review: gated entries are only shown for sessions the canonical
+// authorization policy lets act on them (admins pass every gate, as in the
+// backend), so the nav never advertises a screen whose mutations all 403.
 async function logout() {
   try {
     // frontend-typed-client: allow pre-existing banked raw fetch (was :60); line shifted by the #97 DegradedBanner import/render above.
@@ -112,7 +107,25 @@ async function logout() {
 
 export function AppShell({ children }: { children?: ReactNode }) {
   const user = useUser();
+  const authorization = useAuthorization();
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const nav = fullNav.filter((item) => {
+    // One canonical filter for both gating spellings: `surface` resolves
+    // through the SURFACE_POLICY contract served at /v1/auth/capabilities,
+    // `scope` (#1417) names the same API-enforced permission directly. UI
+    // filtering is convenience only — the API re-checks every request (#373).
+    const permission = item.surface
+      ? authorization.surfacePermission(item.surface)
+      : item.scope;
+    if (!permission) {
+      // A gated entry whose permission cannot be resolved fails closed;
+      // ungated entries stay for every authenticated session.
+      return !item.surface && !item.scope;
+    }
+    // Keep a grant that only needs self-elevation reachable so the user can
+    // see the explanation and elevate; hide surfaces they cannot ever use.
+    return authorization.can(permission) || authorization.canElevate(permission);
+  });
   const shellTitle = "Hive Conductor";
 
   return (
@@ -144,16 +157,17 @@ export function AppShell({ children }: { children?: ReactNode }) {
           </div>
         )}
         <div className="drawer-nav">
-          {visibleNav(user).map((item) => (
+          {nav.map((item) => (
             <NavLink
               key={item.to}
               to={item.to}
               className={({ isActive }) => `drawer-link${isActive ? " active" : ""}`}
               end={item.to === "/cli"}
               onClick={() => setDrawerOpen(false)}
+              title={item.surface && !authorization.can(authorization.surfacePermission(item.surface)) ? "Requires elevation" : item.label}
             >
               <span className="drawer-link-icon"><item.icon size={16} strokeWidth={1.5} /></span>
-              <span>{item.label}</span>
+              <span>{item.label}{item.surface && !authorization.can(authorization.surfacePermission(item.surface)) ? " · locked" : ""}</span>
             </NavLink>
           ))}
         </div>
@@ -165,16 +179,16 @@ export function AppShell({ children }: { children?: ReactNode }) {
       </nav>
 
       <nav className="icon-sidebar">
-        {visibleNav(user).map((item) => (
+        {nav.map((item) => (
           <NavLink
             key={item.to}
             to={item.to}
             className={({ isActive }) => `nav-icon${isActive ? " active" : ""}`}
             end={item.to === "/cli"}
-            title={item.label}
+            title={item.surface && !authorization.can(authorization.surfacePermission(item.surface)) ? "Requires elevation" : item.label}
           >
             <span aria-hidden><item.icon size={16} strokeWidth={1.5} /></span>
-            <span className="nav-icon-label">{item.label}</span>
+            <span className="nav-icon-label">{item.label}{item.surface && !authorization.can(authorization.surfacePermission(item.surface)) ? " · locked" : ""}</span>
           </NavLink>
         ))}
         <div style={{ flex: 1 }} />
