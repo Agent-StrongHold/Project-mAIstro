@@ -139,34 +139,6 @@ class _UnclassifiedPauseNode(BaseNode[_PauseIn, _PauseOut]):
         return _PauseOut(text="unreachable")
 
 
-class _HardCrash(BaseException):
-    """Simulate process death without letting the Attempt terminalize."""
-
-
-class _LeaseResumeNode(BaseNode[_PauseIn, _PauseOut]):
-    """Pause once, then exercise a resumed Attempt's lease."""
-
-    kind: ClassVar[str] = "test.resume.lease"
-    kind_category: ClassVar = "wait"
-    input_schema: ClassVar[type[BaseModel]] = _PauseIn
-    output_schema: ClassVar[type[BaseModel]] = _PauseOut
-    reaches: ClassVar[int] = 0
-    mode: ClassVar[str] = "complete"
-
-    async def _execute(self, inputs: _PauseIn, ctx: NodeContext) -> _PauseOut:
-        type(self).reaches += 1
-        if type(self).reaches == 1:
-            pause_until(
-                PAUSE_WAITING_ON_JIRA_SUBTASKS,
-                resume_at=datetime.now(UTC) - timedelta(seconds=1),
-            )
-        if type(self).mode == "slow":
-            await asyncio.sleep(0.2)
-        elif type(self).mode == "crash":
-            raise _HardCrash()
-        return _PauseOut(text=f"resumed:{inputs.marker}")
-
-
 class _CrashAfterResumeNode(BaseNode[_PauseIn, _PauseOut]):
     """Pauses once, then stays live until the resumed worker is killed."""
 
@@ -189,44 +161,12 @@ class _CrashAfterResumeNode(BaseNode[_PauseIn, _PauseOut]):
         return _PauseOut(text="unreachable")
 
 
-class _CrashOnceAfterResumeNode(BaseNode[_PauseIn, _PauseOut]):
-    """Pauses, hangs on its first resume until killed, completes on the second."""
-
-    kind: ClassVar[str] = "test.resume.crash-once-after-resume"
-    kind_category: ClassVar = "wait"
-    input_schema: ClassVar[type[BaseModel]] = _PauseIn
-    output_schema: ClassVar[type[BaseModel]] = _PauseOut
-    resumed_started: ClassVar[asyncio.Event | None] = None
-    resumes: ClassVar[int] = 0
-    carried: ClassVar[dict[str, Any]] = {}
-
-    async def _execute(self, inputs: _PauseIn, ctx: NodeContext) -> _PauseOut:
-        carried = resumed_pause(ctx)
-        if carried:
-            type(self).resumes += 1
-            type(self).carried = carried
-            if type(self).resumes == 1:
-                event = type(self).resumed_started
-                assert event is not None
-                event.set()
-                await asyncio.sleep(3600)
-            return _PauseOut(text=f"resumed:{inputs.marker}")
-        pause_until(
-            PAUSE_WAITING_ON_JIRA_SUBTASKS,
-            resume_at=datetime.now(UTC) - timedelta(seconds=1),
-            metadata={"first_seen": "2026-09-01T00:00:00+00:00"},
-        )
-        return _PauseOut(text="unreachable")
-
-
 for _cls in (
     _PollingPauseNode,
     _DispatchingPauseNode,
     _UnclassifiedPauseNode,
     _CrashAfterResumeNode,
-    _CrashOnceAfterResumeNode,
     _FailingNode,
-    _LeaseResumeNode,
 ):
     with contextlib.suppress(ValueError):
         register_node(_cls)
@@ -452,7 +392,6 @@ async def test_a_resumed_schedule_attempt_is_leased_and_reclaimed_after_worker_d
         graph,
         provenance={ADMISSION_SOURCE: SCHEDULE_SOURCE, SCHEDULE_INPUTS_KEY: {"marker": "m"}},
         initial_status=RunStatus.QUEUED,
-        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
     # Leave room for a real PostgreSQL round trip while keeping the recovery
     # window short enough to exercise the heartbeat and expiry boundary.
@@ -484,28 +423,17 @@ async def test_a_resumed_schedule_attempt_is_leased_and_reclaimed_after_worker_d
         # Poll for a renewal instead of sleeping a fixed multiple of the TTL:
         # PostgreSQL round trips can consume most of a short test window, while
         # the explicit recovery clock below makes expiry itself deterministic.
-        # The budget is completed poll iterations, not wall-clock: on a
-        # coverage-instrumented CI runner, leaked background threads and disk
-        # stalls can starve this loop's cooperative tasks (the heartbeat with
-        # them) for whole seconds while any clock keeps advancing, so a
-        # wall-clock deadline can expire without the heartbeat ever getting a
-        # turn (seen as a flaky "not renewed by the heartbeat" on the
-        # no-services coverage job and again on the coverage (PostgreSQL)
-        # job's sqlite leg, adjacent pass and fail runs on the same head).
-        # Each completed iteration proves the loop was scheduled; once it is,
-        # the heartbeat's lapsed timer fires within a few iterations, so an
-        # exhausted budget means the heartbeat genuinely never renewed.
+        loop = asyncio.get_running_loop()
         live = await store.get_attempt(resumed.attempt_id)
-        polls_left = 150
+        renewal_deadline = loop.time() + 5.0
         while (
             live is None
             or live.execution_lease is None
             or live.execution_lease.expires_at is None
             or live.execution_lease.expires_at <= lease.expires_at
         ):
-            if polls_left <= 0:
+            if loop.time() >= renewal_deadline:
                 pytest.fail("a live resumed Attempt was not renewed by the heartbeat")
-            polls_left -= 1
             await asyncio.sleep(0.05)
             live = await store.get_attempt(resumed.attempt_id)
         live_lease = live.execution_lease
@@ -572,76 +500,6 @@ async def test_a_resumed_schedule_attempt_is_leased_and_reclaimed_after_worker_d
     finally:
         worker.cancel()
         await asyncio.gather(worker, return_exceptions=True)
-
-
-class TestAResumeThatCrashedIsResumedAgain:
-    """The ordinary tick, not a hand-driven retry, continues after recovery (#1112).
-
-    `recover_abandoned_attempts` reclaims the dead resume's Attempt as
-    CANCELLED and parks the Run WAITING. Before this, `resumable_pause` read
-    only the newest Attempt, so the reclaimed row hid the pause behind it and
-    every later `resume_parked_runs` tick skipped the Run: durably parked,
-    permanently inert, exactly the state #641 removed for the first pause.
-    """
-
-    async def test_the_tick_resumes_past_the_reclaimed_attempt(self) -> None:
-        _CrashOnceAfterResumeNode.resumes = 0
-        _CrashOnceAfterResumeNode.carried = {}
-        _CrashOnceAfterResumeNode.resumed_started = asyncio.Event()
-        container = await _container()
-        run_id = await _parked_run(container, _CrashOnceAfterResumeNode.kind, workspace="ws-crash")
-        (node_run,) = await container.run_store.list_node_runs(run_id)
-
-        worker = asyncio.create_task(container.resume_parked_runs())
-        try:
-            await _CrashOnceAfterResumeNode.resumed_started.wait()
-            attempts = await container.run_store.list_attempts(node_run.node_run_id)
-            resumed = attempts[-1]
-            assert resumed.status is AttemptStatus.RUNNING
-            assert resumed.execution_lease is not None
-
-            async def _dead(*_args: Any, **_kwargs: Any) -> Any:
-                raise ConnectionError("resumed worker is gone")
-
-            # Process death: the heartbeat stops without orderly cancellation
-            # and the Attempt stays durably RUNNING until the sweep reclaims it.
-            container.run_store.renew_lease = _dead  # type: ignore[method-assign]
-            live = await container.run_store.get_attempt(resumed.attempt_id)
-            assert live is not None and live.execution_lease is not None
-            expires_at = live.execution_lease.expires_at
-            assert expires_at is not None
-            assert (
-                await container.recover_abandoned_attempts(
-                    now=expires_at + timedelta(microseconds=1)
-                )
-                == 1
-            )
-        finally:
-            worker.cancel()
-            await asyncio.gather(worker, return_exceptions=True)
-
-        reclaimed = await container.run_store.get_attempt(resumed.attempt_id)
-        parked = await container.run_store.get_run(run_id)
-        assert reclaimed is not None and reclaimed.status is AttemptStatus.CANCELLED
-        assert parked is not None and parked.status is RunStatus.WAITING
-
-        # The finding: nothing hand-drives a retry here. The same tick that
-        # resumed the first pause sees past the recovery artefact.
-        assert await container.resume_parked_runs() == 1
-
-        completed = await container.run_store.get_run(run_id)
-        assert completed is not None and completed.status is RunStatus.COMPLETED
-        attempts = await container.run_store.list_attempts(node_run.node_run_id)
-        assert [attempt.status for attempt in attempts] == [
-            AttemptStatus.YIELDED,
-            AttemptStatus.CANCELLED,
-            AttemptStatus.COMPLETED,
-        ]
-        assert _CrashOnceAfterResumeNode.resumes == 2
-        # The pause the YIELDED Attempt recorded is what the node gets back,
-        # metadata included, not the reclaimed row's empty result.
-        assert _CrashOnceAfterResumeNode.carried["paused_reason"] == PAUSE_WAITING_ON_JIRA_SUBTASKS
-        assert _CrashOnceAfterResumeNode.carried["first_seen"] == "2026-09-01T00:00:00+00:00"
 
 
 class TestAnAnswerGatedPauseIsLeftAlone:

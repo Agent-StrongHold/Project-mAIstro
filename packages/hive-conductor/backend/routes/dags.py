@@ -6,12 +6,9 @@ from typing import Any, Literal
 from uuid import uuid4
 
 import stores
-from fastapi import APIRouter, HTTPException, Query, Request
-from pydantic import BaseModel, ConfigDict, Field
-from services.dag_execution_scope import (
-    DagWorkspaceSelectionError,
-    authorize_hive_dag_scope,
-)
+from fastapi import APIRouter, HTTPException, Request
+from pydantic import BaseModel, ConfigDict
+from services.dag_run_store import parse_canonical_status
 from services.edit_lock import diff_dag_snapshots, mark_edited
 from services.request_principal import optional_actor_id
 
@@ -123,17 +120,26 @@ async def _record_run_projection(*, dag_id: str, user_id: str, result: dict[str,
     canonical terminal status. It cannot mint a second execution identity or
     recompute whether the DAG succeeded.
 
-    Only a status the canonical Run vocabulary defines is projected, and only
-    a terminal one finishes the row (#1877): a Run still created/queued/
-    running/waiting/paused has no `finished_at` -- the Run model forbids one
-    -- so finishing its row here would publish terminal lifecycle metadata the
-    canonical Run does not carry. A missing or unknown status is malformed
-    projection input, recorded as the projection failure it is -- never
-    coerced to `failed`.
+    Only a terminal canonical outcome finishes the row (#1036): a result
+    the spine has not finished (created/queued/running/waiting/paused) is
+    mirrored as open display state with no invented `finished_at`, because
+    `finish_run` stamps once and refuses later updates -- finishing at an
+    intermediate state would freeze a Run the spine may still resume. A
+    result whose status is missing or outside the canonical vocabulary
+    fabricates no terminal outcome; the row stays open and the miss is
+    logged for the operator, not papered over with a local guess.
     """
     run_id = str(result.get("run_id") or "")
     if not run_id:
         return
+    status = str(result.get("status") or "")
+    if parse_canonical_status(status) is None:
+        logger.warning(
+            "dag_run_projection_status_not_canonical run_id=%s dag_id=%s status=%r",
+            run_id,
+            dag_id,
+            status or None,
+        )
     try:
         from services.dag_run_store import get_dag_run_store
 
@@ -170,17 +176,7 @@ async def _record_run_projection(*, dag_id: str, user_id: str, result: dict[str,
                     "response": node_result.get("response", "")[:2000],
                 },
             )
-        # Terminal only (#1877): `finish_run` stamps the row's `finished_at`,
-        # so calling it for a nonterminal Run would publish a completion time
-        # the canonical Run does not have. A nonterminal Run leaves the row
-        # open at the store's in-flight default; the read overlay (or the
-        # eventual terminal transition) is what gives it its real status.
-        if status in TERMINAL_RUN_STATUSES:
-            await store.finish_run(
-                run_id,
-                status=status.value,
-                result=result,
-            )
+        await store.record_outcome(run_id, status=status, result=result)
     except Exception:
         logger.warning(
             "dag_run_projection_not_recorded run_id=%s dag_id=%s",

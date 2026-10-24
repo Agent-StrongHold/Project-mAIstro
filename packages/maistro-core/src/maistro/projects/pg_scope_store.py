@@ -432,24 +432,16 @@ class PgProjectScopeStore:
             resolved.update(project.defaults)
         return resolved
 
-    async def set_membership(
-        self,
-        membership: ProjectMembership,
-        *,
-        principal_id: str | None = None,
-    ) -> ProjectMembership:
+    async def set_membership(self, membership: ProjectMembership) -> ProjectMembership:
         """Create or update the one canonical membership per (project, principal).
 
         Keyed on `(project_id, principal_id)`, carrying the prior row's
         `membership_id` and `created_at` forward on an update rather than
         minting a second, independent grant (#1148) -- the existing row is
         read under `FOR UPDATE` so the decision of what to preserve is
-        atomic with the write. A supplied ``principal_id`` is the acting
-        principal whose membership-write authority is enforced (#1150); this
-        replacement upsert requires ADMINISTER, while `merge_membership`
-        takes the delegable-add path.
+        atomic with the write.
         """
-        project = await self._authorize_membership_write(membership, principal_id, replacement=True)
+        project = await self._require(membership.project_id)
         if project.workspace_id != membership.workspace_id:
             raise ProjectIntegrityError("ProjectMembership Workspace does not match Project")
         async with self._pool.acquire() as conn, conn.transaction():
@@ -491,76 +483,9 @@ class PgProjectScopeStore:
             )
         return model_of(ProjectMembership, row["payload"])
 
-    async def merge_membership(
-        self,
-        membership: ProjectMembership,
-        *,
-        principal_id: str | None = None,
-    ) -> ProjectMembership:
-        """Merge a delegated re-grant into the canonical row atomically.
-
-        The existing row is read under `FOR UPDATE` inside the same
-        transaction that writes the merge, so a concurrent owner
-        `remove_membership` blocks until this commits (or finds no row left
-        to preserve if it commits first) -- an upsert fed by a separately
-        read row could resurrect a revoked principal with stale grants
-        (#1148). As in `set_membership`, the row is read back from the
-        `RETURNING` clause rather than trusting a pre-computed value. A
-        supplied ``principal_id`` is the acting principal whose
-        membership-write authority is enforced (#1150).
-        """
-        project = await self._authorize_membership_write(
-            membership, principal_id, replacement=False
-        )
-        if project.workspace_id != membership.workspace_id:
-            raise ProjectIntegrityError("ProjectMembership Workspace does not match Project")
-        async with self._pool.acquire() as conn, conn.transaction():
-            existing = await self._membership_or_none(
-                membership.project_id, membership.principal_id, conn=conn
-            )
-            if existing is None:
-                updated = membership.model_copy(update={"updated_at": datetime.now(UTC)})
-            else:
-                updated = membership.model_copy(
-                    update={
-                        "membership_id": existing.membership_id,
-                        "created_at": existing.created_at,
-                        "role": existing.role,
-                        "grants": existing.grants | membership.grants,
-                        "denies": existing.denies,
-                        "delegable_grants": (
-                            existing.delegable_grants | membership.delegable_grants
-                        ),
-                        "updated_at": datetime.now(UTC),
-                    }
-                )
-            row = await conn.fetchrow(
-                """INSERT INTO canonical_project_memberships
-                   (project_id, principal_id, workspace_id, membership_id, payload)
-                   VALUES ($1, $2, $3, $4, $5::text::jsonb)
-                   ON CONFLICT (project_id, principal_id) DO UPDATE SET
-                     workspace_id = EXCLUDED.workspace_id,
-                     membership_id = EXCLUDED.membership_id,
-                     payload = EXCLUDED.payload
-                   RETURNING payload""",
-                updated.project_id,
-                updated.principal_id,
-                updated.workspace_id,
-                updated.membership_id,
-                json_of(updated),
-            )
-        return model_of(ProjectMembership, row["payload"])
-
-    async def remove_membership(
-        self,
-        project_id: str,
-        *,
-        principal_id: str,
-        acting_principal_id: str | None = None,
-    ) -> None:
+    async def remove_membership(self, project_id: str, *, principal_id: str) -> None:
         """Revoke a principal's membership at one Project, if any exists."""
 
-        await self._authorize_administer(project_id, acting_principal_id)
         async with self._pool.acquire() as conn:
             await conn.execute(
                 """DELETE FROM canonical_project_memberships

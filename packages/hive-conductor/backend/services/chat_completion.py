@@ -1693,6 +1693,11 @@ async def _tool_run_workflow(
     # Minted before the `try`, so the failure branch can always name the run
     # it is finishing rather than risking an unbound local.
     exec_id = str(uuid4())
+    # Raised by the facade when the canonical Run ended somewhere other than
+    # `completed`; catching it separately is what lets the failure branch
+    # record the canonical outcome instead of re-deciding it locally (#35).
+    from services.graph_runner import CanonicalDagExecutionError
+
     # The `try` below covers the event and history writes that follow the
     # execution as well as the execution itself, so a failing `append_event` --
     # a full or closed writer queue, say -- used to reach the failure branch
@@ -1700,28 +1705,21 @@ async def _tool_run_workflow(
     # whether the graph itself finished, so only that decides the status.
     executed = False
     try:
-        from services.dag_execution_scope import authorize_hive_dag_scope
+        from services.canonical_dag_runner import resolve_execution_scope
         from services.dag_run_store import get_dag_run_store
         from services.graph_runner import execute_dag
 
-        scope = await authorize_hive_dag_scope(workspace_id=workspace_id, user_id=user_id)
-        project_id = scope.project_id
+        # The projection row opens before execution, so it must already carry
+        # the scope the execution will resolve -- resolved here by the same
+        # resolver `execute_dag` uses, never a second mapping (#1174).
+        workspace_id, project_id = await resolve_execution_scope(dag_data)
         store = get_dag_run_store()
         await store.start_run(
             run_id=exec_id,
             workspace_id=workspace_id,
             project_id=project_id,
         )
-
-        async def _record_admission(canonical_run_id: str) -> None:
-            # Persist the projection -> canonical Run correlation at canonical
-            # admission, not after execution settles (#1332). The canonical
-            # executor awaits this before any physical node work, so a live
-            # Recent Runs entry cancels through the exact canonical Run while
-            # the DAG is still running instead of 404-ing the projection id.
-            await store.record_canonical_run(exec_id, canonical_run_id=canonical_run_id)
-
-        result = await execute_dag(dag_data, scope=scope, on_admitted=_record_admission)
+        result = await execute_dag(dag_data, user_id=user_id)
         executed = True
 
         # Store events
@@ -1743,8 +1741,20 @@ async def _tool_run_workflow(
         # too (Codex, #697). Suppressed for the same reason the run route
         # suppresses its own: the DAG already produced a result, and the
         # answer the caller gets must not depend on the history write.
+        # The status is copied from the canonical result and the row carries
+        # the canonical Run's id, so this projection row never owns terminal
+        # truth or an uncorrelated identity (#35): inspection reconciles it
+        # against the spine for as long as that Run resolves. The outcome is
+        # recorded under the shared #1036 terminality contract: the facade
+        # only returns `completed`, so this row finishes; had it not, no
+        # finish would be invented.
         with contextlib.suppress(Exception):
-            await store.finish_run(exec_id, status="completed", result=result)
+            await store.record_outcome(
+                exec_id,
+                status=str(result.get("status") or "completed"),
+                result=result,
+                canonical_run_id=str(result.get("run_id") or ""),
+            )
 
         return {
             "run_id": exec_id,
@@ -1756,12 +1766,26 @@ async def _tool_run_workflow(
             "topology_proposal": score_result.get("topology_proposal"),
             "output_preview": _chat_dag_output_preview(result),
         }
-    except asyncio.CancelledError as cancelled:
-        # Cancellation that works (#1332): the durable walk re-raises the
-        # canonical cancel fence into this awaiter; `_cancellation_answer`
-        # answers only a cancellation the spine actually recorded -- never a
-        # task teardown, which it re-raises unchanged.
-        return await _cancellation_answer(cancelled, exec_id, dag_id)
+    except CanonicalDagExecutionError as exc:
+        # The canonical Run reached a non-success state. The projection row
+        # records THAT outcome and the Run that decided it -- not a locally
+        # re-derived "failed" -- so the row can never contradict the spine
+        # it is a receipt of (#35). The facade raises for every non-completed
+        # status, including a Run parked WAITING/PAUSED; the shared #1036
+        # terminality contract decides the rest: terminal outcomes finish the
+        # row, non-terminal ones mirror open with no invented `finished_at`,
+        # and a result with no canonical status records no outcome at all.
+        canonical = exc.result
+        with contextlib.suppress(Exception):
+            from services.dag_run_store import get_dag_run_store
+
+            await get_dag_run_store().record_outcome(
+                exec_id,
+                status=str(canonical.get("status") or ""),
+                result=canonical,
+                canonical_run_id=str(canonical.get("run_id") or ""),
+            )
+        return {"error": f"DAG execution failed: {exc}"}
     except Exception as e:
         # The failure branch has to finish the run too, or a chat-launched DAG
         # that failed is indistinguishable from one still running.
@@ -1769,7 +1793,10 @@ async def _tool_run_workflow(
         # `executed` decides the status, not where the exception was caught:
         # a graph that completed and then tripped over a bookkeeping write is
         # a completed run whose history is incomplete, and calling it failed
-        # tells the reader the opposite of what happened.
+        # tells the reader the opposite of what happened. This branch only
+        # fires when the canonical outcome itself is unknown (a bookkeeping
+        # crash, not a decided Run): the row keeps the executor's last known
+        # fact and stays uncorrelated rather than guessing a terminal one.
         status = "completed" if executed else "failed"
         with contextlib.suppress(Exception):
             from services.dag_run_store import get_dag_run_store

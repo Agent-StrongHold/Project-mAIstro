@@ -707,8 +707,8 @@ class _CompletedRecord:
         error = None
         # Real `Run` records always carry their admission scope; `_project`
         # mirrors both onto the execution result (#1174).
-        workspace_id = "test-workspace"
-        project_id = "test-project"
+        workspace_id = "hive-standalone-compat"
+        project_id = "hive-standalone-compat"
 
     graph_state = SimpleNamespace(cycle=1, blackboard_snapshot={"node_annotations": {}})
     node_runs = (

@@ -24,7 +24,6 @@ import pytest
 
 from maistro.graph import Graph, Node
 from maistro.projects.scope import ProjectNotEmpty
-from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.runs.lifecycle import (
     InvalidLifecycleTransition,
     StaleLeaseRenewal,
