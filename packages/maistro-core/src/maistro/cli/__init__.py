@@ -14,6 +14,7 @@ Subcommands:
     maistro conformance      Run the shared extension conformance suite
     maistro connectors       Verify a connector against the shared conformance suite
     maistro sandbox          Report the isolation this host can provide
+    maistro backlog          Backlog authority cutover and agent work surface
     maistro portability      Import foreign agent/skill formats; export to MCP + SKILL.md
 
 Config via env: MAISTRO_API_URL (default http://127.0.0.1:8101),
@@ -60,6 +61,7 @@ app.add_typer(_extensions_app, name="extensions")
 app.add_typer(_conformance_app, name="conformance")
 app.add_typer(_connectors_app, name="connectors")
 app.add_typer(_sandbox_app, name="sandbox")
+app.add_typer(_eval_workspace_app, name="eval-workspace")
 app.add_typer(_portability_app, name="portability")
 app.add_typer(_repair_app, name="repair")
 app.add_typer(_backlog_app, name="backlog")
