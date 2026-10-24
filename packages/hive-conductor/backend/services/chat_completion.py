@@ -2930,6 +2930,9 @@ PROFILE_SCHEMA = {
         "model_preferences",
         "topics_to_avoid",
         "assumptions_to_avoid",
+        # #1050: explicit Workspace default landing surface (path). UI + API
+        # + profile_set share this field; missing → Workspace Home.
+        "workspace_default_landing",
     ],
     "goals": ["current_focus", "okrs", "blockers", "definition_of_done"],
     "communication": ["challenge_style", "presentation_format", "terminology"],

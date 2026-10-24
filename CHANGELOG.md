@@ -25,6 +25,15 @@ or placeholder-only section.
 
 ### Added
 
+- **Durable Workspace default-landing preference (#1050, partial).** Authenticated
+  `/` reads `preferences.workspace_default_landing` from the canonical profile
+  store and navigates there (Home / Chat / Goals / Backlog / Work items). Missing
+  or invalid values still land on Workspace Home. Profile exposes a control that
+  PATCHes the same field chat `profile_set` writes — one durable owner, no
+  browser-local product authority. Recent-session restoration, learned
+  suggestions, and Agent-driven edits remain later #1050 slices (#1822 for
+  conversation continuity).
+
 - **Workspace Home is the default Mission-Control landing (#1048, partial).**
   Authenticated `/` now opens `/home`, which reads the existing Home layout and
   projections APIs, supports pin/unpin against that authority, and shows honest

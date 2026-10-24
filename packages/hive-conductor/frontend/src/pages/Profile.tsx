@@ -1,5 +1,12 @@
 import { Fragment, useEffect, useState } from "react";
 import { useToast } from "../components/shared";
+import { apiGet, apiPatch } from "../lib/api";
+import {
+  DEFAULT_LANDING_PATH,
+  LANDING_OPTIONS,
+  LANDING_PREF_KEY,
+  resolveLandingPath,
+} from "../lib/landing";
 import { claimUiState, clearUiState, storedUiState } from "../lib/uiState";
 
 export default function Profile() {
@@ -8,6 +15,8 @@ export default function Profile() {
   const [summaryLoading, setSummaryLoading] = useState(true);
   const [activity, setActivity] = useState<any[]>([]);
   const [sessions, setSessions] = useState<any[]>([]);
+  const [landing, setLanding] = useState(DEFAULT_LANDING_PATH);
+  const [landingBusy, setLandingBusy] = useState(false);
   const toast = useToast();
   const [stored, setStored] = useState(() => storedUiState());
 
@@ -15,6 +24,10 @@ export default function Profile() {
     fetch("/v1/auth/whoami", { credentials: "same-origin" })
       .then(r => r.json())
       .then(d => { if (d.user) setUser(d.user); });
+
+    apiGet<{ preferences?: Record<string, unknown> }>("/v1/profile")
+      .then((p) => setLanding(resolveLandingPath(p.preferences?.[LANDING_PREF_KEY])))
+      .catch(() => {});
 
     // Fetch memories and generate summary
     fetch("/v1/memory/entries", { credentials: "same-origin" })
@@ -86,6 +99,45 @@ export default function Profile() {
           <div style={{ fontFamily: "var(--hand)", fontSize: 24, fontWeight: 700 }}>{user.username}</div>
           <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)" }}>{user.role} · MyID authenticated</div>
         </div>
+      </div>
+
+      <div className="card" style={{ marginBottom: 12 }} data-testid="workspace-default-landing">
+        <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", marginBottom: 8 }}>
+          WORKSPACE DEFAULT LANDING
+        </div>
+        <div style={{ fontFamily: "var(--hand)", fontSize: 13, color: "var(--pencil)", marginBottom: 8 }}>
+          Where this account opens a Workspace when no recent session is being restored.
+          Saved on your durable profile — the same record chat can update with profile_set.
+        </div>
+        <label style={{ display: "grid", gap: 6, fontFamily: "var(--mono)", fontSize: 12 }}>
+          <span>Default surface</span>
+          <select
+            value={landing}
+            disabled={landingBusy}
+            aria-label="Workspace default landing"
+            onChange={async (e) => {
+              const next = resolveLandingPath(e.target.value);
+              setLanding(next);
+              setLandingBusy(true);
+              try {
+                // PATCH one field — same path as chat profile_set; avoids
+                // PUT replacing the whole preferences document.
+                await apiPatch("/v1/profile", { field: LANDING_PREF_KEY, value: next });
+                toast(`Default landing set to ${LANDING_OPTIONS.find((o) => o.path === next)?.label ?? next}`, "ok");
+              } catch {
+                toast("Couldn't save default landing", "error");
+              } finally {
+                setLandingBusy(false);
+              }
+            }}
+          >
+            {LANDING_OPTIONS.map((o) => (
+              <option key={o.path} value={o.path}>
+                {o.label}
+              </option>
+            ))}
+          </select>
+        </label>
       </div>
 
       {user.session_policy && (
