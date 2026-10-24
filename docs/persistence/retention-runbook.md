@@ -28,6 +28,19 @@ Every destructive sweep follows the same contract:
    `maistro_retention_sweep_failures_total`, each labeled by authorization mode
    — and a failed sweep is not reported as successful: it advances the failure
    counter, never the last-success timestamp.
+6. After committing, the store probes the tables it governs and publishes their
+   stored volume — `maistro_retention_table_rows`,
+   `maistro_retention_table_bytes`, and
+   `maistro_retention_oldest_record_timestamp`, labeled `table` (from the
+   governed inventory set) and `backend`. The purge counters are rates and
+   cannot show a policy that never runs; the levels can. The probe is
+   throttled per store (default 60s) so per-admission and inline drivers cost
+   at most one table scan per interval, and it gates the sampling itself, not
+   just the gauge writes. Honest absences are part of the contract: an empty
+   table publishes no oldest-record series, and SQLite without the dbstat
+   runtime publishes no per-table bytes (PostgreSQL always reports
+   `pg_total_relation_size`). A quiet purge publishes too — zero deletions is
+   exactly when the level is the only health signal there is.
 
 PostgreSQL replicas coordinate through database transactions and row/key
 locking. SQLite replicas coordinate through `BEGIN IMMEDIATE` and the

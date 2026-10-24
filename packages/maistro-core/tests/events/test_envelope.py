@@ -7,6 +7,7 @@ import json
 import time
 from collections.abc import AsyncIterator
 from dataclasses import replace
+from typing import Any
 
 import aiosqlite
 import pytest
@@ -502,3 +503,114 @@ class TestEventStoreContract:
         assert failed.sequence == 1
         assert retried.sequence == 2
         assert [event.attempt_id for event in history] == ["attempt-1", "attempt-2"]
+
+
+async def test_a_sqlite_purge_publishes_the_event_log_stored_volume(
+    store: EventStore,
+) -> None:
+    """Run retention preserves the canonical event log on purpose, and this
+    store's own bounded purge is what bounds it instead — the stored level is
+    the signal that says that bound is actually being driven (#325)."""
+    from maistro.observability import metrics as retention_health
+    from maistro.observability.metrics import (
+        retention_oldest_record_timestamp,
+        retention_table_rows,
+    )
+
+    if not isinstance(store, SqliteEventStore):
+        pytest.skip("the probe rides the SQLite store's purge; the PG leg is in the PG suite")
+
+    def _series(metric: Any) -> list[float]:
+        return [
+            float(s["value"])
+            for s in metric.collect()
+            if s.get("labels", {}) == {"table": "canonical_event_log", "backend": "sqlite"}
+        ]
+
+    retention_health._LAST_PROBE.clear()
+    old = time.time() - 10_000
+    fresh = time.time()
+    await store.append(
+        EventEnvelope(type="x", workspace_id="w1", run_id="r1", attempt_id="a1", timestamp=old)
+    )
+    await store.append(
+        EventEnvelope(type="x", workspace_id="w1", run_id="r2", attempt_id="a2", timestamp=fresh)
+    )
+
+    assert await store.purge_expired(before=time.time() - 1) == 1
+
+    assert _series(retention_table_rows) == [1.0]
+    assert _series(retention_oldest_record_timestamp) == [pytest.approx(fresh)]
+
+    # Draining the log removes the oldest-record series rather than leaving
+    # the last value to stand in for history that no longer exists.
+    retention_health._LAST_PROBE.clear()
+    await store.purge_expired(before=time.time() + 1)
+    assert _series(retention_table_rows) == [0.0]
+    assert _series(retention_oldest_record_timestamp) == []
+
+
+async def test_a_postgres_purge_publishes_the_event_log_stored_volume(
+    pg_pool: Any,
+) -> None:
+    """The PG leg of the probe: same series, plus the per-table size only
+    PostgreSQL can measure. `canonical_event_log` is shared across this
+    process's PG tests, so the row assertion is a delta between two probes
+    of this test's own appends."""
+    from maistro.events.pg_envelope import PgEventStore
+    from maistro.observability import metrics as retention_health
+    from maistro.observability.metrics import (
+        retention_oldest_record_timestamp,
+        retention_table_bytes,
+        retention_table_rows,
+    )
+
+    if pg_pool is None:
+        pytest.skip("MAISTRO_TEST_PG_DSN is not set")
+    store = PgEventStore(pg_pool)
+    await store.ensure_schema()
+    # canonical_event_log is shared across this process's PG tests and is not
+    # in the fixture's truncate list: clear it so the published levels are
+    # this test's own rows, not a mixture (same isolation rule the
+    # cursor_store fixture applies with TRUNCATE).
+    await pg_pool.execute("DELETE FROM canonical_event_log")
+    retention_health._LAST_PROBE.clear()
+
+    def _rows() -> float:
+        return sum(
+            float(s["value"])
+            for s in retention_table_rows.collect()
+            if s.get("labels", {}) == {"table": "canonical_event_log", "backend": "postgres"}
+        )
+
+    await store.purge_expired(before=time.time() + 1, limit=1)  # publish the level
+    assert _rows() == 0.0
+
+    old = time.time() - 10_000
+    fresh = time.time()
+    await store.append(
+        EventEnvelope(
+            type="x", workspace_id="ws-health", run_id="r1", attempt_id="a1", timestamp=old
+        )
+    )
+    await store.append(
+        EventEnvelope(
+            type="x", workspace_id="ws-health", run_id="r2", attempt_id="a2", timestamp=fresh
+        )
+    )
+    retention_health._LAST_PROBE.clear()
+    assert await store.purge_expired(before=time.time() - 1) == 1
+
+    assert _rows() == 1.0
+    samples = [
+        float(s["value"])
+        for s in retention_oldest_record_timestamp.collect()
+        if s.get("labels", {}) == {"table": "canonical_event_log", "backend": "postgres"}
+    ]
+    assert samples and samples[-1] <= fresh
+    sizes = [
+        float(s["value"])
+        for s in retention_table_bytes.collect()
+        if s.get("labels", {}) == {"table": "canonical_event_log", "backend": "postgres"}
+    ]
+    assert sizes and sizes[-1] > 0

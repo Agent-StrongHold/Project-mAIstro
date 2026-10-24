@@ -106,6 +106,10 @@ class _EvalPool:
         raise AssertionError(f"unexpected fetchval query: {query!r}")
 
     async def fetchrow(self, query: str, *args: object) -> _Row | None:
+        if "to_regclass" in query:
+            # The post-purge health probe (#325) asks this first; a table the
+            # fake does not model resolves as absent and ends the probe.
+            return None
         if "SELECT status FROM canonical_runs" in query:
             payload = self.runs.get(str(args[0]))
             if payload is None:

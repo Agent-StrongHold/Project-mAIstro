@@ -19,6 +19,12 @@ import os
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from maistro.observability.metrics import (
+    PostgresFetchRow,
+    postgres_table_sample,
+    publish_retention_table_health,
+    retention_health_probe_due,
+)
 from maistro.security.strikes import LOCKOUT_DURATION, StrikeRecord, ViolationRecord
 
 logger = logging.getLogger("maistro.strikes")
@@ -250,7 +256,30 @@ class PgStrikeTracker:
         pool = await self._get_pool()
         async with pool.acquire() as conn, conn.transaction():
             rows = await conn.fetch(query, *params)
+        await self._publish_table_health()
         return len(rows)
+
+    async def _publish_table_health(self) -> None:
+        """Publish the violation evidence's stored volume after a purge (#325).
+
+        `security_violations` was the issue's named unbounded-evidence table:
+        its stored level, size, and the age of the oldest retained record are
+        the signal that the bounded mechanism is actually being driven, and
+        how much evidence a deployment still holds. Throttled per store by
+        the publisher.
+        """
+        if not retention_health_probe_due("security:postgres"):
+            return
+        pool = await self._get_pool()
+        async with pool.acquire() as conn:
+            fetchrow: PostgresFetchRow = conn.fetchrow
+            sample = await postgres_table_sample(
+                fetchrow, "security_violations", "timestamp", oldest_unit="datetime"
+            )
+        if sample is not None:
+            publish_retention_table_health(
+                "security:postgres", "postgres", [sample], min_interval_s=0.0
+            )
 
     async def get(self, user_id: str) -> StrikeRecord | None:
         pool = await self._get_pool()
@@ -465,4 +494,25 @@ class PgRateLimiter:
                 before.astimezone(UTC),
                 limit,
             )
+        await self._publish_rate_limit_health()
         return len(rows)
+
+    async def _publish_rate_limit_health(self) -> None:
+        """Publish the throttle table's stored volume after a purge (#325).
+
+        The window table is bounded by design (one row per key per minute);
+        its level is how a deployment notices the throttle table itself
+        growing without bound when keys are attacker-controlled.
+        """
+        if not retention_health_probe_due("security:postgres"):
+            return
+        pool = await self._get_pool()
+        async with pool.acquire() as conn:
+            fetchrow: PostgresFetchRow = conn.fetchrow
+            sample = await postgres_table_sample(
+                fetchrow, "security_rate_limits", "window_start", oldest_unit="datetime"
+            )
+        if sample is not None:
+            publish_retention_table_health(
+                "security:postgres", "postgres", [sample], min_interval_s=0.0
+            )

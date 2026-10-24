@@ -472,3 +472,58 @@ async def test_an_unreported_call_restores_as_unreported_not_missing(
 
     (event,) = restored.events_for("openai:gpt-4")
     assert event.usage_reported is False
+
+
+@pytest.mark.asyncio
+async def test_a_purge_publishes_the_accounting_tables_stored_volume(
+    persist: SqliteUsageLog,
+) -> None:
+    """The raw-vs-aggregate split (#325) is only provable as a level: after a
+    purge the raw table's gauge shows exactly the rows that survived, the
+    aggregates show the day-buckets the raw rows were folded into, and the
+    oldest-record series shows how far back each reaches. A purge that
+    deletes nothing still publishes — a quiet table is when the level is the
+    only health signal there is."""
+    from maistro.observability import metrics as retention_health
+    from maistro.observability.metrics import (
+        retention_oldest_record_timestamp,
+        retention_table_rows,
+    )
+
+    def _rows(table: str) -> float | None:
+        values = [
+            float(s["value"])
+            for s in retention_table_rows.collect()
+            if s.get("labels", {}) == {"table": table, "backend": "sqlite"}
+        ]
+        return sum(values) if values else None
+
+    retention_health._LAST_PROBE.clear()
+    log = InMemoryUsageLog()
+    log.record("provider:model", input_tokens=2, output_tokens=3, now=99.0)
+    log.record("provider:model", input_tokens=5, output_tokens=7, now=100.0)
+    await persist.snapshot(log)
+
+    assert await persist.purge_expired(before=100.0) == 1
+
+    assert _rows("usage_events") == 1.0  # the boundary row (t=100) is retained
+    assert _rows("usage_event_aggregates") == 1.0  # the one folded day-bucket
+    oldest_raw = [
+        float(s["value"])
+        for s in retention_oldest_record_timestamp.collect()
+        if s.get("labels", {}) == {"table": "usage_events", "backend": "sqlite"}
+    ]
+    assert oldest_raw == [100.0]  # the retained row is the oldest retained record
+
+    # Draining everything publishes the empty level: zero rows, no oldest
+    # record — an absent series, never a fabricated epoch-origin zero.
+    retention_health._LAST_PROBE.clear()
+    assert await persist.purge_expired(before=1_000.0) == 1
+    assert _rows("usage_events") == 0.0
+    assert _rows("usage_event_aggregates") == 1.0  # aggregates outlive raw rows
+    oldest_after = [
+        s
+        for s in retention_oldest_record_timestamp.collect()
+        if s.get("labels", {}) == {"table": "usage_events", "backend": "sqlite"}
+    ]
+    assert oldest_after == []

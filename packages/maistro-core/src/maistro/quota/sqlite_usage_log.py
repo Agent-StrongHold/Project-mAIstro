@@ -40,6 +40,12 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING
 
+from maistro.observability.metrics import (
+    OldestUnit,
+    publish_retention_table_health,
+    retention_health_probe_due,
+    sqlite_table_sample,
+)
 from maistro.quota.usage_log import InMemoryUsageLog
 from maistro.sqlite_schema import serialized_schema_upgrade
 
@@ -93,6 +99,14 @@ CREATE INDEX IF NOT EXISTS idx_usage_events_scope_ts
 
 #: Most raw rows one `purge_expired` call may aggregate and delete.
 DEFAULT_PURGE_BATCH = 1_000
+
+#: The accounting tables this store's aggregate-then-delete sweep governs,
+#: with each table's oldest-record expression (both store Unix seconds in a
+#: REAL column), for the post-purge health probe (#325).
+_TABLE_HEALTH_TABLES: tuple[tuple[str, str, OldestUnit], ...] = (
+    ("usage_events", "timestamp", "unix_s"),
+    ("usage_event_aggregates", "bucket_start", "unix_s"),
+)
 
 
 class SqliteUsageLog:
@@ -247,10 +261,30 @@ class SqliteUsageLog:
                     (before, *hold_params, limit),
                 )
                 await self._conn.commit()
+                await self._publish_table_health()
                 return max(cursor.rowcount, 0)
             except BaseException:
                 await self._conn.rollback()
                 raise
+
+    async def _publish_table_health(self) -> None:
+        """Publish stored-volume gauges for the accounting tables (#325).
+
+        Raw `usage_events` is the table whose "accidental permanent raw usage
+        history" this store exists to prevent: its stored level is the one
+        signal that shows the aggregate-then-delete sweep keeping pace with
+        ingest, and the aggregates' oldest bucket is how far back the
+        long-lived accounting half reaches. Throttled per store by the
+        publisher, so a caller sweeping per cycle costs one probe a minute.
+        """
+        if not retention_health_probe_due("usage:sqlite"):
+            return
+        samples = []
+        for table, oldest_expr, unit in _TABLE_HEALTH_TABLES:
+            sample = await sqlite_table_sample(self._conn, table, oldest_expr, oldest_unit=unit)
+            if sample is not None:
+                samples.append(sample)
+        publish_retention_table_health("usage:sqlite", "sqlite", samples, min_interval_s=0.0)
 
     async def restore(self, *, max_retention_s: float = 86_400.0) -> InMemoryUsageLog:
         """Rehydrate a fresh `InMemoryUsageLog` from persisted events.

@@ -170,3 +170,40 @@ async def test_append_past_the_ttl_deletes_expired_messages_and_turn_markers(
 
     assert await _session_ids(turn_store, "sessions") == {"new"}
     assert await _session_ids(turn_store, "session_turns") == {"new"}
+
+
+@pytest.mark.contract("behavioral")
+@pytest.mark.scope("unit")
+async def test_a_purge_publishes_the_conversation_tables_stored_volume(
+    store: SqliteSessionStore,
+) -> None:
+    """The TTL is driven inline on every append, so a TTL silently widened to
+    never-expire would look identical to a healthy one in delete counts. The
+    stored level of `sessions` and `session_turns`, and how far back the
+    retained conversation reaches, is what actually shows the TTL enforcing
+    itself (#325)."""
+    from maistro.observability import metrics as retention_health
+    from maistro.observability.metrics import (
+        retention_oldest_record_timestamp,
+        retention_table_rows,
+    )
+
+    def _series(metric: Any, table: str) -> list[float]:
+        return [
+            float(s["value"])
+            for s in metric.collect()
+            if s.get("labels", {}) == {"table": table, "backend": "sqlite"}
+        ]
+
+    retention_health._LAST_PROBE.clear()
+    fresh_ts = time.time() - 10
+    await _insert_at(store, "s1", 0, time.time() - 10_000)  # expired
+    await _insert_at(store, "s1", 1, fresh_ts)  # retained
+
+    await store.purge_expired()
+
+    assert _series(retention_table_rows, "sessions") == [1.0]
+    assert _series(retention_oldest_record_timestamp, "sessions") == [pytest.approx(fresh_ts)]
+    # `session_turns` is purged by the same call and publishes alongside.
+    assert _series(retention_table_rows, "session_turns") == [0.0]
+    assert _series(retention_oldest_record_timestamp, "session_turns") == []

@@ -6,6 +6,11 @@ import logging
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
+from maistro.observability.metrics import (
+    publish_retention_table_health,
+    retention_health_probe_due,
+    sqlite_table_sample,
+)
 from maistro.persistence.audit_pages import AUDIT_PAGE_INDEXES, AuditPage, make_page, page_query
 from maistro.security.sentinel.signing import SIGNING_KEY_ENV, AuditSigner
 from maistro.sqlite_schema import serialized_schema_upgrade
@@ -209,10 +214,26 @@ class SqliteAuditLog:
                 params,
             )
             await self._conn.commit()
+            await self._publish_table_health()
             return max(cursor.rowcount, 0)
         except BaseException:
             await self._conn.rollback()
             raise
+
+    async def _publish_table_health(self) -> None:
+        """Publish the audit log's stored volume after a successful purge (#325).
+
+        The audit horizon is the importing product's policy; the engine's
+        contribution is making the table's actual level observable — rows,
+        bytes where the backend can measure them, and how far back the
+        retained evidence reaches — so a horizon nobody enforces is visible
+        instead of assumed. Throttled per store by the publisher.
+        """
+        if not retention_health_probe_due("audit:sqlite"):
+            return
+        sample = await sqlite_table_sample(self._conn, "audit_log", "timestamp", oldest_unit="iso")
+        if sample is not None:
+            publish_retention_table_health("audit:sqlite", "sqlite", [sample], min_interval_s=0.0)
 
     async def get_entries(
         self,

@@ -17,6 +17,11 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 from uuid import uuid4
 
 from maistro.observability.correlation import current_execution_context
+from maistro.observability.metrics import (
+    publish_retention_table_health,
+    retention_health_probe_due,
+    sqlite_table_sample,
+)
 from maistro.security.redact import redact_structure
 from maistro.sqlite_schema import execute_schema_script, serialized_schema_upgrade
 
@@ -435,10 +440,27 @@ class SqliteEventStore:
                 params,
             )
             await self._conn.commit()
+            await self._publish_table_health()
             return max(cursor.rowcount, 0)
         except BaseException:
             await self._conn.rollback()
             raise
+
+    async def _publish_table_health(self) -> None:
+        """Publish the canonical event log's stored volume after a purge (#325).
+
+        Run retention preserves the event log on purpose, and this store's own
+        bounded purge is what bounds it instead — so the table's level is the
+        one signal that says that bound is actually being driven. Throttled
+        per store by the publisher.
+        """
+        if not retention_health_probe_due("events:sqlite"):
+            return
+        sample = await sqlite_table_sample(
+            self._conn, "canonical_event_log", "timestamp", oldest_unit="unix_s"
+        )
+        if sample is not None:
+            publish_retention_table_health("events:sqlite", "sqlite", [sample], min_interval_s=0.0)
 
     async def append(self, event: EventEnvelope) -> EventEnvelope:
         return (await self.append_with_disposition(event)).event

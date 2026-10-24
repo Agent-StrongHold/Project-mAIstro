@@ -17,6 +17,12 @@ from maistro.events.envelope import (
     correlated,
     reconstruct_persisted_event,
 )
+from maistro.observability.metrics import (
+    PostgresFetchRow,
+    postgres_table_sample,
+    publish_retention_table_health,
+    retention_health_probe_due,
+)
 
 if TYPE_CHECKING:
     import asyncpg
@@ -102,7 +108,27 @@ class PgEventStore:
         )
         async with self._pool.acquire() as conn, conn.transaction():
             rows = await conn.fetch(query + " RETURNING event_id", *params)
+        await self._publish_table_health()
         return len(rows)
+
+    async def _publish_table_health(self) -> None:
+        """Publish the canonical event log's stored volume after a purge (#325).
+
+        Same contract as the SQLite store's probe, plus the per-table size
+        only PostgreSQL can measure (`pg_total_relation_size`). Throttled
+        per store by the publisher.
+        """
+        if not retention_health_probe_due("events:postgres"):
+            return
+        async with self._pool.acquire() as conn:
+            fetchrow: PostgresFetchRow = conn.fetchrow
+            sample = await postgres_table_sample(
+                fetchrow, "canonical_event_log", "timestamp", oldest_unit="unix_s"
+            )
+        if sample is not None:
+            publish_retention_table_health(
+                "events:postgres", "postgres", [sample], min_interval_s=0.0
+            )
 
     async def append(self, event: EventEnvelope) -> EventEnvelope:
         return (await self.append_with_disposition(event)).event
