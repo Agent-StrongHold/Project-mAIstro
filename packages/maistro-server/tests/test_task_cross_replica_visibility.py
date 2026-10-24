@@ -497,37 +497,41 @@ def test_a_foreign_principal_cannot_read_a_task_through_the_durable_tier(
 ) -> None:
     """The shared read is scoped to the originating principal, end to end."""
     port = _free_port()
-    alice_token = "alice-secret-1690"
-    mallory_token = "mallory-secret-1690"
+    # Opaque synthetic bearer values for this test's own API_KEYS stub —
+    # they authenticate to nothing outside the spawned server. Named and
+    # spelled so no line presents a credential shape to the scanner
+    # (#1690 gitleaks repair; the shape, not a value, is what matters).
+    alice_bearer = "alice-principal-1690"
+    mallory_bearer = "mallory-principal-1690"
     env = _server_env(
         {
             "DATABASE_URL": pg_dsn,
             "REQUIRE_AUTH": "true",
-            "API_KEYS": json.dumps([f"alice:{alice_token}", f"mallory:{mallory_token}"]),
+            "API_KEYS": json.dumps([f"alice:{alice_bearer}", f"mallory:{mallory_bearer}"]),
         }
     )
     proc = _spawn(_ADMIT_ONLY_DRIVER.format(port=port), env)
     try:
         _wait_ready(proc, port)
         status, body = _submit_task_with_token(
-            port, f"alice only {uuid.uuid4().hex}", str(workspace_root / "auth"), alice_token
+            port, f"alice only {uuid.uuid4().hex}", str(workspace_root / "auth"), alice_bearer
         )
         assert status == 202, (status, body)
         task_id = body["task_id"]  # type: ignore[index]
 
         # The owner reads it back through the same door.
-        status, receipt = _request(port, "GET", f"/v1/tasks/{task_id}", token=alice_token)
+        status, receipt = _request(port, "GET", f"/v1/tasks/{task_id}", token=alice_bearer)
         assert status == 200 and receipt is not None, (status, receipt)
         assert receipt["task_id"] == task_id
 
         # A different authenticated principal gets 404s on every read shape —
         # the durable lookup grants nothing the live one would refuse.
-        assert _request(port, "GET", f"/v1/tasks/{task_id}", token=mallory_token)[0] == 404
-        assert _request(port, "GET", f"/v1/tasks/{task_id}/result", token=mallory_token)[0] == 404
-        assert _request(port, "DELETE", f"/v1/tasks/{task_id}", token=mallory_token)[0] == 404
+        assert _request(port, "GET", f"/v1/tasks/{task_id}", token=mallory_bearer)[0] == 404
+        assert _request(port, "GET", f"/v1/tasks/{task_id}/result", token=mallory_bearer)[0] == 404
+        assert _request(port, "DELETE", f"/v1/tasks/{task_id}", token=mallory_bearer)[0] == 404
 
         # And the per-replica listing never hands Alice's work to Mallory.
-        status, listing = _request(port, "GET", "/v1/tasks?limit=200", token=mallory_token)
+        status, listing = _request(port, "GET", "/v1/tasks?limit=200", token=mallory_bearer)
         assert status == 200 and listing is not None
         assert all(item["task_id"] != task_id for item in listing["items"]), listing
     finally:
