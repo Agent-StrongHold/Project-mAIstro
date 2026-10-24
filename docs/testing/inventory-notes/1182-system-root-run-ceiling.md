@@ -133,3 +133,62 @@ Evidence from this round (all exit 0 unless stated):
   maistro-server: both match. `ruff check .` / `ruff format --check .`: clean.
   `check-dependency-namespaces.py` (the ci.yml `security` job's other leg):
   no unreviewed top-level namespaces.
+
+## Repair round 3 (2026-10-24): containers gate — Trivy rsi-runner leg
+
+At head `eaf3d9830e4cb65478b45928e9f3f21259cb9b2b` the merge-queue run of
+2026-10-24 05:24–05:38Z (run 40066067725, job 120789474851) failed exactly
+one of its ~80 checks: the security.yml `containers` job, at step "Trivy
+scan maistro-rsi-runner (HIGH/CRITICAL only)", reporting CVE-2026-111497
+(brotli OOB write, HIGH) against `libbrotli1` with *installed version*
+`1.1.0-2+b7`. Everything else was green, including `exact-debt-ledger`.
+
+The finding is contradicted by the job's own evidence and does not
+reproduce against the artifact this commit defines:
+
+- The same job's build log shows `runtime-apt` fetching `libbrotli1
+  1.1.0-2+deb13u1` from `trixie-security` and unpacking exactly that
+  version (`Get:54`, `Preparing to unpack .../53-libbrotli1_1.1.0-2+deb13u1`).
+  apt lists `libbrotli1` under NEW packages (the pinned
+  `python:3.12-slim@sha256:a6e34c...` base carries no libbrotli1 at all —
+  verified locally: 92 packages, none named libbrotli1), so no `b7` entry
+can exist in the image's dpkg lineage.
+- Local no-cache rebuilds from this commit (`docker build -f
+  Dockerfile.rsi-runner --target runtime-apt` and the full image) install
+  `1.1.0-2+deb13u1` (checked via `dpkg -l` inside the built image), and
+  `trivy v0.73.0` — the exact CI scanner version, current DB — reports
+  **0** HIGH/CRITICAL findings for the apt stage and for the full image.
+- The verdict is intermittent on identical content: the same job passed
+  all four Trivy scans at 06:28Z on commit `581a86c0` (run 40070347802,
+  job 120802241605) after installing the same `deb13u1`, while a later
+  run on `1c000a68` (~07:3xZ) repeated the same build-vs-scan
+  contradiction. Trivy re-downloads the DB from scratch before every scan
+  step (four downloads in the failed job), and the DB pipeline was
+  ingesting the day's new advisories — the served revision, not the
+  image, is the variable.
+
+Actions taken, deliberately narrow:
+
+- **No `.trivyignore.yaml` entry was added.** Suppressing CVE-2026-111497
+  would mask a genuine regression to a vulnerable libbrotli1 for a
+  finding the image does not actually contain; the ignore file's policy
+  reserves entries for real, named findings.
+- **No Dockerfile change**: the apt stage already upgrades and installs
+  the fixed library on every `--no-cache-filter runtime-apt` rebuild;
+  there is nothing to repair in the image definition.
+- Acceptance re-proven at this head: 172 passed across
+  `test_run_concurrency_limits.py`, `test_root_admission_identity.py`,
+  `test_admission.py`, `test_resource_policy_declared_floors.py` and
+  `test_resource_policy_health.py`; 87 passed across
+  `test_chat_completions_gate.py` and `test_container_chat_runs.py`;
+  `check-vulture-baseline.py packages/*/src --min-confidence 60
+  --exclude '*/third_party/*'` exit 0 (1302 reviewed identities = 1302
+  findings); `ruff check .` and `ruff format --check .` clean.
+
+Residual risk, recorded honestly: the containers gate is re-run by the
+merge queue on the next evaluation. If the served trivy DB revision
+reproduces the bogus `1.1.0-2+b7` record, the job can fail again without
+any change on this branch; the durable remedy (a bounded rescan for the
+transient-DB window, mirroring the pip-audit retry pattern already in
+security.yml) is an owner decision on the workflow, not a lane-level
+edit.
