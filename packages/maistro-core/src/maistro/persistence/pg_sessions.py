@@ -203,8 +203,12 @@ class PgSessionStore:
         async with self._pool.acquire() as conn:
             fetchrow: PostgresFetchRow = conn.fetchrow
             for table in ("sessions", "session_turns"):
+                # Migrations 005/023 type both columns TIMESTAMPTZ, which
+                # asyncpg returns as `datetime` — the `unix_s` conversion
+                # would `float()` it, catch the TypeError, and report no
+                # oldest record for tables that have one.
                 sample = await postgres_table_sample(
-                    fetchrow, table, "timestamp", oldest_unit="unix_s"
+                    fetchrow, table, "timestamp", oldest_unit="datetime"
                 )
                 if sample is not None:
                     samples.append(sample)

@@ -97,6 +97,13 @@ CREATE INDEX IF NOT EXISTS idx_usage_events_scope_ts
     ON usage_events (scope_key, timestamp)
 """
 
+_WATERMARKS = """
+CREATE TABLE IF NOT EXISTS usage_purge_watermarks (
+    scope_key TEXT PRIMARY KEY,
+    purged_through REAL NOT NULL
+)
+"""
+
 #: Most raw rows one `purge_expired` call may aggregate and delete.
 DEFAULT_PURGE_BATCH = 1_000
 
@@ -156,6 +163,7 @@ class SqliteUsageLog:
                 "ON usage_events (event_id)"
             )
             await self._conn.execute(_INDEX)
+            await self._conn.execute(_WATERMARKS)
 
     async def snapshot(self, log: InMemoryUsageLog) -> None:
         """Persist the currently retained events, idempotently.
@@ -164,8 +172,25 @@ class SqliteUsageLog:
         events on each flush is intentional: the unique event identity makes
         this safe and avoids a process-local watermark whose update could be
         lost after a successful commit.
+
+        Events at or below a scope's durable purge watermark are skipped.
+        `record` prunes only the scope it touches, so an idle scope can retain
+        events older than any purge horizon indefinitely; after
+        `purge_expired` has aggregated and deleted such an event's durable
+        row, replaying the stale in-memory copy would resurrect the row and
+        the next sweep would aggregate it a second time. The watermark is
+        the durable record that everything at or below it already lives in
+        the aggregates, so a flush never reinserts a retired event.
         """
         async with self._operation_lock:
+            cursor = await self._conn.execute(
+                "SELECT scope_key, purged_through FROM usage_purge_watermarks"
+            )
+            watermark_rows = await cursor.fetchall()
+            # Indexed rather than tuple-unpacked: ruff's C416/C402 would have
+            # the dict built by `dict(...)` exactly as mypy cannot type it
+            # (aiosqlite rows are not declared as tuple pairs).
+            watermarks: dict[str, float] = {row[0]: row[1] for row in watermark_rows}
             rows = [
                 (
                     event.event_id,
@@ -182,6 +207,7 @@ class SqliteUsageLog:
                 )
                 for scope_key in log.scope_keys()
                 for event in log.events_for(scope_key)
+                if event.timestamp > watermarks.get(scope_key, float("-inf"))
             ]
             if not rows:
                 return
@@ -255,6 +281,30 @@ class SqliteUsageLog:
                          cost_usd = usage_event_aggregates.cost_usd + excluded.cost_usd"""
                 )
                 await self._conn.execute(aggregate_sql, (before, *hold_params, limit))
+                # Watermark the newest timestamp each scope lost, in the same
+                # transaction as the deletion: `snapshot` consults this to
+                # recognize retired events whose in-memory copies may still
+                # linger and must not be reinserted (they would be aggregated
+                # a second time by the next sweep).
+                # Assigned to a name before `execute` (like `batch_sql` and
+                # `delete_sql` above): bandit B608 flags a SQL-looking string
+                # that is a *direct* argument to `execute`, but not one built
+                # into an intermediate variable whose values are all bound.
+                retired_sql = (
+                    "SELECT scope_key, MAX(timestamp) FROM usage_events WHERE rowid IN ("
+                    + batch_sql
+                    + ") GROUP BY scope_key"
+                )
+                retired = await self._conn.execute(
+                    retired_sql,
+                    (before, *hold_params, limit),
+                )
+                await self._conn.executemany(
+                    "INSERT INTO usage_purge_watermarks (scope_key, purged_through) "
+                    "VALUES (?, ?) ON CONFLICT(scope_key) DO UPDATE SET "
+                    "purged_through = MAX(purged_through, excluded.purged_through)",
+                    await retired.fetchall(),
+                )
                 delete_sql = "DELETE FROM usage_events WHERE rowid IN (" + batch_sql + ")"
                 cursor = await self._conn.execute(
                     delete_sql,

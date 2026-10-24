@@ -197,6 +197,9 @@ class TuringExecutionPlane:
                 retained = await self.run_store.get_run(retained_id)
                 if retained is None:
                     self._retained_runs.pop(retained_id, None)
+                    # A stale entry no longer occupies the window; dropping
+                    # it frees one slot just like a real eviction would.
+                    excess -= 1
                     continue
                 if retained.status not in TERMINAL_RUN_STATUSES:
                     continue

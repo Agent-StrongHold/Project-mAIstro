@@ -614,3 +614,54 @@ async def test_a_postgres_purge_publishes_the_event_log_stored_volume(
         if s.get("labels", {}) == {"table": "canonical_event_log", "backend": "postgres"}
     ]
     assert sizes and sizes[-1] > 0
+
+
+async def test_sequence_continues_after_a_purge_empties_the_stream(store: EventStore) -> None:
+    """Retention deletes event rows (#325); the stream cursor must not rewind.
+
+    Sequence allocation that read only the surviving MAX(sequence) restarts an
+    emptied stream at 1: a reader resuming from `after_sequence=N` silently
+    misses every new event until the reused numbers pass N. The durable
+    per-stream high-water mark is the allocation floor, so the next event
+    continues the sequence the deleted rows already handed out.
+    """
+    if not isinstance(store, SqliteEventStore):
+        pytest.skip("the memory store has no purge; the PG leg is in the PG suite")
+
+    for index in range(2):
+        await store.append(
+            EventEnvelope(type=f"e.{index}", workspace_id="ws-purged", timestamp=1_000.0 + index)
+        )
+    assert await store.purge_expired(before=5_000.0) == 2
+    assert await store.list_stream("workspace:ws-purged") == []
+
+    resumed = await store.append(EventEnvelope(type="after.purge", workspace_id="ws-purged"))
+
+    assert resumed.sequence == 3
+    page = await store.list_stream("workspace:ws-purged", after_sequence=2)
+    assert [event.sequence for event in page] == [3]
+
+
+async def test_sequence_continues_after_a_purge_removes_the_highest_sequence(
+    store: EventStore,
+) -> None:
+    """Timestamps need not follow append order, so a purge can remove the
+    highest sequence while a lower-numbered row survives; MAX() over the
+    survivors would reuse the deleted number, and a reader parked at that
+    number would never see the new event."""
+    if not isinstance(store, SqliteEventStore):
+        pytest.skip("the memory store has no purge; the PG leg is in the PG suite")
+
+    # Appended second but stamped older: retention removes sequence 2, the
+    # stream's high-water mark, and leaves sequence 1 behind.
+    await store.append(EventEnvelope(type="e.1", workspace_id="ws-suffix", timestamp=2_000.0))
+    await store.append(EventEnvelope(type="e.2", workspace_id="ws-suffix", timestamp=1_000.0))
+
+    assert await store.purge_expired(before=1_500.0) == 1
+    assert [event.sequence for event in await store.list_stream("workspace:ws-suffix")] == [1]
+
+    next_event = await store.append(EventEnvelope(type="after.purge", workspace_id="ws-suffix"))
+
+    assert next_event.sequence == 3
+    page = await store.list_stream("workspace:ws-suffix", after_sequence=2)
+    assert [event.sequence for event in page] == [3]

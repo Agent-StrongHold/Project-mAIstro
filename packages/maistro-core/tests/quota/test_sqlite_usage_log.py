@@ -527,3 +527,43 @@ async def test_a_purge_publishes_the_accounting_tables_stored_volume(
         if s.get("labels", {}) == {"table": "usage_events", "backend": "sqlite"}
     ]
     assert oldest_after == []
+
+
+@pytest.mark.asyncio
+async def test_purge_then_snapshot_does_not_double_count_idle_scope(
+    persist: SqliteUsageLog,
+) -> None:
+    """Regression (#325 review): a flush must not resurrect purged events.
+
+    `record` prunes only the scope it touches, so a scope that goes idle can
+    retain events far past the purge horizon. Before the fix, a `snapshot`
+    after `purge_expired` reinserted such an event (its durable `event_id`
+    row was gone), and the next sweep aggregated it a second time —
+    snapshot → purge → snapshot → purge doubled a single 7-token event.
+    """
+    t0 = 1_000_000.0
+    log = InMemoryUsageLog(max_retention_s=86_400.0)
+    log.record("provider:model", input_tokens=7, now=t0)
+    await persist.snapshot(log)  # flushed while fresh — 7 tokens durable
+
+    # The scope goes idle and the process ages far past the in-memory
+    # retention window; the sweep horizon is legal (older than it).
+    horizon = t0 + 5 * 86_400.0
+    assert await persist.purge_expired(before=horizon) == 1
+    async with persist._operation_lock:
+        cursor = await persist._conn.execute(
+            "SELECT COALESCE(SUM(input_tokens), 0) FROM usage_event_aggregates"
+        )
+        assert (await cursor.fetchone())[0] == 7
+
+    # The stale in-memory copy must not be reinserted now that its durable
+    # row is gone; otherwise the next sweep aggregates it a second time.
+    await persist.snapshot(log)
+    assert await persist.purge_expired(before=horizon) == 0
+    async with persist._operation_lock:
+        cursor = await persist._conn.execute(
+            "SELECT COALESCE(SUM(input_tokens), 0) FROM usage_event_aggregates"
+        )
+        assert (await cursor.fetchone())[0] == 7  # not 14
+        cursor = await persist._conn.execute("SELECT COUNT(*) FROM usage_events")
+        assert (await cursor.fetchone())[0] == 0

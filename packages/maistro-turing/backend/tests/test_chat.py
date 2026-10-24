@@ -415,6 +415,48 @@ def test_retention_window_is_scoped_to_the_admitting_workspace():
     _await(scenario())
 
 
+def test_a_stale_tracking_entry_frees_its_window_slot():
+    """A tracked Run the store already deleted (a retention sweep at the end
+    of an earlier admission, say) occupies no window: dropping its stale entry
+    must decrement the precomputed excess, or the loop evicts a terminal Run
+    that fits the window beside the new admission (Codex, #325 review).
+    With `max_retained=2`, a stale entry, one terminal Run and the new
+    admission, the terminal Run and the admission are the two live entries —
+    pre-fix, the stale entry consumed a slot and the terminal Run was deleted
+    instead."""
+    from maistro.graph import Graph, Node
+
+    async def scenario() -> None:
+        plane = _new_execution_plane(max_retained=2)
+        workspace_id, project_id = await plane._scope_for("user")
+
+        # A: tracked, already gone from the store. Inserted first, so the
+        # eviction loop reaches it before the terminal Run.
+        plane._retained_runs["gone-run"] = workspace_id
+        graph = Graph(
+            workspace_id=workspace_id,
+            project_id=project_id,
+            name="terminal chat admission",
+            nodes=[Node(node_id="n", node_type="test", name="n")],
+        )
+        terminal = await plane.run_store.create_run(
+            graph,
+            actor_principal_id="user",
+            initial_status=RunStatus.QUEUED,
+        )
+        await plane.run_store.transition_run(terminal.run_id, RunStatus.RUNNING)
+        await plane.run_store.transition_run(terminal.run_id, RunStatus.COMPLETED)
+        plane._retained_runs[terminal.run_id] = workspace_id
+
+        await plane._track_admission("brand-new-run", workspace_id=workspace_id)
+
+        assert "gone-run" not in plane._retained_runs
+        assert await plane.run_store.get_run(terminal.run_id) is not None
+        assert list(plane._retained_runs) == [terminal.run_id, "brand-new-run"]
+
+    _await(scenario())
+
+
 def test_turing_cleanup_helpers_fail_closed_without_masking_the_caller(monkeypatch, caplog):
 
     async def fail(*_args: Any, **_kwargs: Any) -> Any:

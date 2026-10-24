@@ -395,6 +395,10 @@ CREATE INDEX IF NOT EXISTS idx_canonical_event_stream
     ON canonical_event_log (stream_id, sequence);
 CREATE INDEX IF NOT EXISTS idx_canonical_event_run
     ON canonical_event_log (run_id, sequence);
+CREATE TABLE IF NOT EXISTS canonical_event_stream_watermarks (
+    stream_id TEXT PRIMARY KEY,
+    last_sequence INTEGER NOT NULL
+);
 """
 
 
@@ -488,10 +492,23 @@ class SqliteEventStore:
                         inserted=False,
                     )
 
+                # Allocation consults the durable per-stream high-water mark as
+                # well as the surviving rows: retention deletes event rows, and
+                # MAX(sequence) over what is left would rewind the stream — a
+                # reader resuming from `after_sequence=N` would silently miss
+                # every new event until reused numbers passed N. The mark is a
+                # table of its own, not a surviving row, precisely because the
+                # purge may remove every row of the stream (and may remove the
+                # highest sequence first: timestamps need not follow append
+                # order). Same transaction, same `BEGIN IMMEDIATE` write
+                # authority, so allocation stays serialized.
                 cursor = await self._conn.execute(
-                    "SELECT COALESCE(MAX(sequence), 0) + 1 "
-                    "FROM canonical_event_log WHERE stream_id = ?",
-                    (event.stream_id,),
+                    "SELECT MAX("
+                    "COALESCE((SELECT MAX(sequence) FROM canonical_event_log "
+                    "WHERE stream_id = ?), 0), "
+                    "COALESCE((SELECT last_sequence FROM canonical_event_stream_watermarks "
+                    "WHERE stream_id = ?), 0)) + 1",
+                    (event.stream_id, event.stream_id),
                 )
                 row = await cursor.fetchone()
                 sequence = int(row[0]) if row is not None else 1
@@ -529,6 +546,18 @@ class SqliteEventStore:
                         json.dumps(persisted.payload),
                         json.dumps(persisted.provenance),
                     ),
+                )
+                # Advance the mark in the same transaction as the insert: a
+                # commit that moved a stream's sequence without the mark would
+                # hand the next append a number the cursor model has already
+                # delivered. The two-argument scalar MAX keeps the mark
+                # monotonic even if a mark row somehow ran ahead.
+                await self._conn.execute(
+                    "INSERT INTO canonical_event_stream_watermarks "
+                    "(stream_id, last_sequence) VALUES (?, ?) "
+                    "ON CONFLICT(stream_id) DO UPDATE SET "
+                    "last_sequence = MAX(last_sequence, excluded.last_sequence)",
+                    (persisted.stream_id, persisted.sequence),
                 )
                 await self._conn.commit()
                 return EventAppendResult(persisted, inserted=True)
