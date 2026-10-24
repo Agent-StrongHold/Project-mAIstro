@@ -43,7 +43,7 @@ from maistro_evolve.coverage_gate import (
 )
 from maistro_evolve.doc_regression import doc_regressions
 from maistro_evolve.improvement import ImprovementKind
-from maistro_evolve.mutation_probe import MutationProbe, probe_diff_mutations
+from maistro_evolve.mutation_probe import MutationProbe, MutationRunner, probe_diff_mutations
 from maistro_evolve.scenario_objective import (
     CorrectnessResult,
     ScenarioEvaluation,
@@ -69,9 +69,15 @@ from maistro_evolve.tdd_gate import (
     new_test_signal,
     red_green_signal,
 )
+from maistro_rsi.contained_validation import (
+    CONTAINED_PYTHON,
+    ContainedEvaluation,
+    ContainmentUnavailable,
+)
 from maistro_rsi.fail_first import (
     EvidenceContract,
     FailFirstEvidence,
+    ProbeExecutor,
     collect_fail_first_evidence,
     fail_first_gate,
     resolve_contract,
@@ -801,15 +807,28 @@ def _scenario_signal_items(
     return [_scenario_signal(scenario_eval, w)]
 
 
-def compose_scorecard(inp: FitnessInputs, weights: FitnessWeights | None = None) -> Scorecard:
-    """Pure: assemble gates + priority-weighted scores into a Scorecard."""
-    w = weights or FitnessWeights()
-    # The proven-scenario objective (M5-B, #108) is evaluated first: its gate
-    # is a veto like any other, and its evaluation record rides on the
-    # Scorecard so the correctness verdict and the scalar objective are
-    # recorded separately from the work-signal composite.
-    scenario_eval = _scenario_objective_eval(inp)
-    gates = [
+def _quality_delta(inp: FitnessInputs) -> float | None:
+    """The refactor contract's measured composite delta, or ``None`` when
+    either side of the measurement is absent — ``fail_first_gate`` fails the
+    refactor contract closed on ``None``. (#1792 extraction.)"""
+    if inp.code_quality_composite is None or inp.baseline_quality_composite is None:
+        return None
+    return inp.code_quality_composite - inp.baseline_quality_composite
+
+
+def _reason_gate(name: str, ok: bool, reasons: list[str], pass_text: str) -> GateResult:
+    """A gate whose reason is the joined violation list, or the pass text when
+    there is nothing to report. (#1792: shared shape of the four negative
+    evidence gates.)"""
+    return GateResult(name, ok, "; ".join(reasons) or pass_text)
+
+
+def _scorecard_gates(
+    inp: FitnessInputs, scenario_eval: ScenarioEvaluation | None
+) -> list[GateResult]:
+    """The gate row of the scorecard, in audit order. (#1792: extracted from
+    ``compose_scorecard``; order and verdicts are load-bearing.)"""
+    return [
         # The oracle-immunity veto leads (#109): a candidate that mutated the
         # evaluator it is scored by is rejected on this gate before any other
         # signal is consulted, and its ``accepted`` can never come from the
@@ -853,26 +872,15 @@ def compose_scorecard(inp: FitnessInputs, weights: FitnessWeights | None = None)
             net_new_tests=inp.net_new_tests,
             assertion_score=inp.assertion_score,
         ),
-        fail_first_gate(
-            resolve_contract(inp.declared_kind, inp.changed_src, inp.changed_tests),
-            inp.fail_first,
-            quality_delta=(
-                inp.code_quality_composite - inp.baseline_quality_composite
-                if inp.code_quality_composite is not None
-                and inp.baseline_quality_composite is not None
-                else None
-            ),
-            net_new_tests=inp.net_new_tests,
-            assertion_score=inp.assertion_score,
-        ),
         *inp.lint_gates,
         *_scenario_gate_items(scenario_eval),
         *_conditional_gates(inp),
     ]
-    scores: list[SignalScore] = [
-        red_green_signal(inp.tdd, w.red_green),
-        *_scenario_signal_items(scenario_eval, w),
-    ]
+
+
+def _new_test_score(inp: FitnessInputs, w: FitnessWeights) -> SignalScore | None:
+    """The net-new-test signal, or ``None`` when coverage itself was not
+    measured on both sides. (#1792 extraction.)"""
     cov_delta = (
         inp.candidate_coverage - inp.baseline_coverage
         if inp.candidate_coverage is not None and inp.baseline_coverage is not None
@@ -936,16 +944,7 @@ def _work_scores(inp: FitnessInputs, w: FitnessWeights) -> list[SignalScore]:
                 inp.code_quality_detail or "changed-source quality composite",
             )
         )
-    scorecard = Scorecard(
-        gates=gates,
-        scores=scores,
-        scenario_objective=scenario_eval,
-    )
-    # Provenance (#109): the scorecard records the trusted evaluator digest it
-    # was judged against, so an acceptance decision is replayable against the
-    # exact oracle version that produced it.
-    scorecard.evaluator_digest = inp.evaluator_digest
-    return scorecard
+    return scores
 
 
 def _scorecard_scores(
@@ -1418,7 +1417,14 @@ def _mean_quality_at_base(cwd: Path, baseline_ref: str, src_files: list[str]) ->
     ``baseline_ref`` — the left side of the refactor contract's quality delta.
     Files absent on baseline contribute nothing (a new file has no baseline
     quality to improve upon). Returns None when no baseline version of any
-    changed file could be read: the refactor contract then fails closed."""
+    changed file could be read: the refactor contract then fails closed.
+
+    Deliberately host-side even under containment (#614): the analyzed bytes
+    are the pinned BASE revision's, written by the harness into a bare temp
+    directory. Nothing candidate-authored is parsed there and no candidate
+    config file can ride along, so the tools only ever read harness-written
+    data — and they run behind the credential-boundary env, never ambient
+    inheritance."""
     composites: list[float] = []
     for i, rel in enumerate(src_files):
         base = subprocess.run(
@@ -1503,13 +1509,16 @@ def _resolve_tdd_evidence(
     timeout: int,
     config_changed: list[str],
     tdd: TddEvidence | None,
+    executor: ProbeExecutor | None = None,
 ) -> tuple[TddEvidence, FailFirstEvidence | None]:
     """The #392 evidence contract's collection step: when the caller supplies
     no ``tdd`` view, probe the base revision for fail-first evidence (a source
     change owes a changed test that is red on the exact base for the intended
     reason). Returns ``(tdd, fail_first)`` — the probe record is None when no
     probe ran, which the fail-first gate treats as missing evidence (fail
-    closed) under the behavior contract."""
+    closed) under the behavior contract. ``executor`` routes the probe's test
+    runs (#614): the replay imports candidate test code, so a contained
+    evaluation runs it inside the sandbox."""
     if tdd is not None:
         return tdd, None
     if not (baseline_ref and tests):
@@ -1521,6 +1530,7 @@ def _resolve_tdd_evidence(
         tests,
         timeout,
         config_files_changed=config_changed,
+        executor=executor,
     )
     if fail_first is None:
         return TddEvidence(changed_tests=tests), None
@@ -1535,13 +1545,15 @@ def _stage_mutation_probe(
     tests: list[str],
     timeout: int,
     weights: FitnessWeights | None,
+    runner: MutationRunner | None = None,
 ) -> Scorecard | None:
     """Run the diff-mutation probe once the cheap gates cleared.
 
     Cost-layered after the cheap gates: mutation runs the changed tests once
     per mutant, so a candidate already doomed on tests/coverage/syntax never
     pays for it. Only meaningful when the diff added source lines AND changed
-    tests exist to catch mutations of them.
+    tests exist to catch mutations of them. ``runner`` (#614) writes each
+    mutant into — and reruns the tests inside — the evaluation sandbox.
 
     Returns the staged, gate-failing Scorecard when the probe vetoes the
     candidate, else ``None`` (probe absent or passed).
@@ -1549,7 +1561,7 @@ def _stage_mutation_probe(
     if not (baseline_ref and new_src_lines and tests):
         return None
     inputs.mutation_probe = probe_diff_mutations(
-        cwd, new_src_lines, tests, timeout=timeout, max_mutants=_MUTATION_MAX_MUTANTS
+        cwd, new_src_lines, tests, timeout=timeout, max_mutants=_MUTATION_MAX_MUTANTS, runner=runner
     )
     staged = compose_scorecard(inputs, weights)
     if staged.gates_passed:
@@ -1586,6 +1598,32 @@ def _attach_regression_judge(
         inputs.regression_judge = regression_judge_fn(diff, target)
 
 
+def _changed_py_partition(changed_files: list[str]) -> tuple[list[str], list[str], list[str]]:
+    """Partition the changed files into (changed source, changed tests, all
+    python). The source/tests split decides the evidence contract (#392), so
+    a test file is never counted as source there. (#1792 extraction.)"""
+    all_py = [f for f in changed_files if f.endswith(".py")]
+    src = [f for f in all_py if not _is_test(f)]
+    return src, changed_test_paths(changed_files), all_py
+
+
+def _baseline_derived(
+    cwd: Path, baseline_ref: str | None, src: list[str], tests: list[str]
+) -> tuple[int, list[str], list[str], dict[str, set[int]]]:
+    """The measurements that read the BASE revision, each defined away (to an
+    empty zero value) when there is no baseline or nothing to diff:
+    (net-new tests, doc regressions, new AC coverage, per-file new source
+    lines). All are read-only git probes, so their relative order is free.
+    (#1792 extraction.)"""
+    from maistro_rsi.spec_tracker import new_ac_coverage
+
+    net_new = count_net_new_tests(cwd, baseline_ref, tests) if (baseline_ref and tests) else 0
+    doc_reasons = _doc_regressions(cwd, baseline_ref, src) if baseline_ref else []
+    new_acs = new_ac_coverage(cwd, baseline_ref, tests) if (baseline_ref and tests) else []
+    new_src_lines = new_source_lines(cwd, baseline_ref, src) if (baseline_ref and src) else {}
+    return net_new, doc_reasons, new_acs, new_src_lines
+
+
 def evaluate_candidate(
     candidate_dir: str | Path,
     changed_files: list[str],
@@ -1615,6 +1653,7 @@ def evaluate_candidate(
     scenario_proven_scores: dict[str, float] | None = None,
     scenario_candidate_scores: dict[str, float] | None = None,
     scenario_correctness: CorrectnessResult | None = None,
+    contained: ContainedEvaluation | None = None,
 ) -> Scorecard:
     """Run the local signals for a candidate and compose the Scorecard.
 
@@ -1646,6 +1685,17 @@ def evaluate_candidate(
     closed, #307) — the score of a judge that never ruled is None, not a
     number.
 
+    ``contained`` is the evaluation sandbox (#614): when given, every signal
+    that executes candidate code — the test run, the coverage run, the
+    red/green replay, the mutation probe's reruns, per-file collection and
+    the static tools — runs inside it, and results come back as data (exit
+    codes, parsed reports, file contents read on demand). No signal falls
+    back to the host, and a sandbox that cannot establish or execute raises
+    `ContainmentUnavailable` instead of producing a Scorecard: "the tests
+    failed" and "the tests could not be run safely" are different facts.
+    One sandbox serves the whole evaluation — a per-signal container would
+    multiply a multi-cycle run's cost by the number of gates.
+
     Evaluator-oracle integrity (#109): with a ``baseline_ref`` and no explicit
     ``evaluator_mutations``, the candidate's diff is checked against the
     score-defining artifact surface BEFORE any oracle run — a candidate that
@@ -1658,9 +1708,16 @@ def evaluate_candidate(
     evaluator version that judged it.
     """
     cwd = Path(candidate_dir)
-    src = [f for f in changed_files if f.endswith(".py") and not _is_test(f)]
-    tests = changed_test_paths(changed_files)
-    all_py = [f for f in changed_files if f.endswith(".py")]
+    # The containment routing decision (#614), made once: when a sandbox was
+    # handed in, every executing signal below routes through it and none may
+    # fall back to the host. The analysis that only PARSES candidate bytes
+    # (syntax check, assertion scores, doc regression, inventory diffing)
+    # stays a host-side computation over data either way; the code-quality
+    # tools shell out, so their runner crosses the boundary too
+    # (``routing.quality_run_tool``).
+    routing = _signal_routing(contained)
+    run_tests = routing.test_run
+    src, tests, all_py = _changed_py_partition(changed_files)
     # The declared contract (#392): the slot's ImprovementKind decides whether
     # source-touching work owes fail-first evidence (default) or the refactor
     # alternative (declared refactor/doc polish).
@@ -1691,23 +1748,15 @@ def evaluate_candidate(
     if withheld is not None:
         return withheld
 
-    # Oracle immunity (#109) — enforced BEFORE any oracle run. Unless the
-    # caller already resolved the integrity evidence, derive it from the
-    # trusted baseline revision. A candidate that mutated the evaluator oracle
-    # is rejected WITHOUT executing the mutated tree: its modified oracle must
-    # not contribute acceptance evidence. The digest still pins the trusted
-    # base definition into the scorecard provenance either way.
-    evaluator_digest, evaluator_mutations, withheld = _resolve_evaluator_evidence(
+    tests_passed, test_reason = _run(test_command, cwd, timeout, argv=test_argv, execute=run_tests)
+    cand_cov, missing = measure_coverage_detailed(
         cwd,
-        changed_files,
-        baseline_ref=baseline_ref,
-        declared=declared,
-        evaluator_digest=evaluator_digest,
-        evaluator_mutations=evaluator_mutations,
-        evaluator_mutation_authorized=evaluator_mutation_authorized,
-        weights=weights,
+        source=coverage_source,
+        pytest_args=coverage_pytest_args,
+        interpreter=routing.interpreter,
+        execute=routing.coverage_execute,
     )
-    cq, cq_detail = _mean_quality(cwd, src)
+    cq, cq_detail = _mean_quality(cwd, src, run_tool=routing.quality_run_tool)
     astr, astr_detail = _mean_assertion(cwd, tests)
     tdd, fail_first = _resolve_tdd_evidence(
         cwd,
@@ -1717,10 +1766,10 @@ def evaluate_candidate(
         timeout=timeout,
         config_changed=config_changed,
         tdd=tdd,
+        executor=routing.probe_executor,
     )
-    net_new = count_net_new_tests(cwd, baseline_ref, tests) if (baseline_ref and tests) else 0
-    doc_reasons = _doc_regressions(cwd, baseline_ref, src) if baseline_ref else []
-    from maistro_rsi.spec_tracker import new_ac_coverage, proposed_specs
+    net_new, doc_reasons, new_acs, new_src_lines = _baseline_derived(cwd, baseline_ref, src, tests)
+    from maistro_rsi.spec_tracker import proposed_specs
 
     new_specs = proposed_specs(cwd, changed_files)
 
@@ -1796,7 +1845,14 @@ def evaluate_candidate(
         return prelim
 
     staged = _stage_mutation_probe(
-        inputs, cwd, baseline_ref, new_src_lines, tests, timeout, weights
+        inputs,
+        cwd,
+        baseline_ref,
+        new_src_lines,
+        tests,
+        timeout,
+        weights,
+        routing.mutation_runner,
     )
     if staged is not None:
         return staged

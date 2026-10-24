@@ -4,6 +4,9 @@
 # and chapters, so this pack proves canvas use is per-pack binding, never
 # the pack identity.
 pack_id: book
+# Pack release version (M9-F3, #968): the identity Workspace activations
+# are recorded against; bump it when the manifest's defaults change.
+version: 1.0.0
 name: Book Pack
 summary: >-
   Thesis, outline, and a chapter plan explored before produce; manuscript and

@@ -396,6 +396,9 @@ async def test_cycle_route_projects_real_canonical_failures(
     population = _Population([_Genome("g1"), _Genome("g2")])
     tournament = _BattleFailureTournament() if failure_stage == "battle" else _Tournament()
     service = _EvolutionService()
+    # This domain/execution fixture performs no model work; the governed path
+    # is covered separately by test_evolution_model_correlation.
+    monkeypatch.setattr(service, "_build_llm_call", lambda: None)
     service._population = population
     service._tournament = tournament
     monkeypatch.setattr(evolution_module, "get_evolution_service", lambda: service)
@@ -460,6 +463,9 @@ async def test_successful_cycle_route_projects_completed_canonical_run(
     monkeypatch.setattr(cycle_module, "EvolutionCycle", _Cycle)
 
     service = _EvolutionService()
+    # This domain/execution fixture performs no model work; the governed path
+    # is covered separately by test_evolution_model_correlation.
+    monkeypatch.setattr(service, "_build_llm_call", lambda: None)
     service._population = _Population([_Genome("g1"), _Genome("g2")])
     service._tournament = _Tournament()
     monkeypatch.setattr(evolution_module, "get_evolution_service", lambda: service)
@@ -579,6 +585,8 @@ async def test_post_seed_during_real_cycle_is_admitted_after_pair_plan(
 
     population = _Population([_Genome("g1"), _Genome("g2")])
     service = evolution_service._EvolutionService()
+    # The pausing domain double does not call a model.
+    monkeypatch.setattr(service, "_build_llm_call", lambda: None)
     service._population = population
     service._tournament = _Tournament()
     previous = evolution_service._service
@@ -664,6 +672,8 @@ async def test_post_seed_during_battle_traversal_cannot_change_persisted_pairs(
 
     population = _Population([_Genome(f"g{index}") for index in range(1, 5)])
     service = evolution_service._EvolutionService()
+    # The pausing domain double does not call a model.
+    monkeypatch.setattr(service, "_build_llm_call", lambda: None)
     service._population = population
     service._tournament = _Tournament()
     previous = evolution_service._service
@@ -757,6 +767,8 @@ async def test_racing_post_cycle_requests_persist_separate_canonical_plans(
 
     population = _Population([_Genome(f"g{index}") for index in range(1, 5)])
     service = evolution_service._EvolutionService()
+    # The pausing domain double does not call a model.
+    monkeypatch.setattr(service, "_build_llm_call", lambda: None)
     service._population = population
     service._tournament = _Tournament()
     previous = evolution_service._service

@@ -232,7 +232,11 @@ async def test_agent_promotion_under_agent_managed_promotes(
 ) -> None:
     store, mode = learning_store
     _only_mode(mode, MemoryExposureMode.AGENT_MANAGED)
-    await store.store(_learning(), actor=Actor.AGENT)
+    # The M4-B3 evidence contract (ADR-100126-5445) applies on every promotion
+    # path, this conformance harness included: the candidate carries the source
+    # Run and measured confidence any promotion requires, so this test isolates
+    # exactly the ADR-057 authority decision.
+    await store.store(_learning(run_id="run-authority", confidence=1.0), actor=Actor.AGENT)
     promoted = await store.check_auto_promotions(
         threshold=0, org_id="org-authority", actor=Actor.AGENT
     )

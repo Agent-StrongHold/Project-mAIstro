@@ -191,12 +191,54 @@ class ModelBindingConfig(BaseModel):
         return value
 
 
+class AdapterInstanceConfig(BaseModel):
+    """Operator-declared wiring for one registered provider adapter (M9-E1).
+
+    This is deployment configuration, never adapter-package configuration: the
+    adapter package declares *that* it needs a credential and under which
+    logical reference; only the operator's own configuration supplies the
+    secret material (``adapter_key``), and it is provisioned into the scoped
+    credential router, not stored on the adapter or the Binding.
+    """
+
+    adapter_id: str
+    binding_id: str
+    project_id: str
+    workspace_id: str = ""
+    #: Node scoping mirrors ``ModelBindingConfig``: an adapter credential
+    #: intended for one graph node can be scoped to it instead of authorizing
+    #: every node in the project that can name the binding id.
+    node_id: str = ""
+    provider_name: str = ""
+    disabled: bool = False
+    adapter_key: str = ""
+    credential_refs: tuple[str, ...] = ()
+    policy_refs: tuple[str, ...] = ()
+    probe_health_at_boot: bool = False
+
+    @field_validator("adapter_id", "binding_id", "project_id")
+    @classmethod
+    def _require_adapter_scope_identity(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("adapter wiring identity/scope fields must be non-empty")
+        return value
+
+    @field_validator("credential_refs", "policy_refs")
+    @classmethod
+    def _reject_empty_adapter_refs(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if any(not ref.strip() for ref in value):
+            raise ValueError("adapter wiring refs cannot contain empty values")
+        return value
+
+
 if TYPE_CHECKING:
 
     def _vulture_pydantic_contract_usage() -> None:
         """Keep reflection-owned Pydantic surface visible to production-only Vulture scans."""
         _ = ModelBindingConfig._require_scope_identity
         _ = ModelBindingConfig._reject_empty_refs
+        _ = AdapterInstanceConfig._require_adapter_scope_identity
+        _ = AdapterInstanceConfig._reject_empty_adapter_refs
 
     _ = _vulture_pydantic_contract_usage
 
@@ -220,6 +262,10 @@ class AgentConfig(BaseModel):
     # Empty by default: configuring a Provider/model does not itself grant any
     # Workspace/Project the right to invoke it.
     model_bindings: list[ModelBindingConfig] = Field(default_factory=list)
+    # Operator wiring for registered provider-adapter packages (M9-E1, #961).
+    # Empty by default: a deployment with no adapter configuration routes every
+    # model through the shipped gateway exactly as before the SDK existed.
+    provider_adapters: list[AdapterInstanceConfig] = Field(default_factory=list)
     database_url: str = ""
     # The Workspace this instance admits work into (#41). Core keeps the soft
     # scope axes only (ADR-019/ADR-068), and a single-instance deployment is one

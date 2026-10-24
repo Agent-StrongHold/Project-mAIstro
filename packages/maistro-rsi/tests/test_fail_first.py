@@ -345,11 +345,58 @@ def test_related_detection_matches_changed_module_imports(tmp_path: Path) -> Non
     (tmp_path / "test_mod.py").write_text(
         "from helper import g\n\ndef test_g():\n    assert g() == 5\n", encoding="utf-8"
     )
-    assert fail_first._has_related_failure(tmp_path, ["test_mod.py::test_g"], ["pkg/sub/helper.py"])
+
+    def _host_read(rel: str) -> str:
+        return (tmp_path / rel).read_text(encoding="utf-8")
+
+    assert fail_first._has_related_failure(
+        _host_read, ["test_mod.py::test_g"], ["pkg/sub/helper.py"]
+    )
     # No reference to the changed module anywhere → unrelated.
     assert not fail_first._has_related_failure(
-        tmp_path, ["test_mod.py::test_g"], ["completely/other.py"]
+        _host_read, ["test_mod.py::test_g"], ["completely/other.py"]
     )
+
+
+def test_related_detection_matches_a_module_used_without_an_import() -> None:
+    """The textual stem match is the arc for a failing test that USES the
+    changed module without importing it — attribute access on a fixture- or
+    monkeypatch-injected reference. No import name intersects the changed
+    module's dotted suffixes, and the bare stem appearing in the source still
+    counts as related evidence; a file mentioning nothing about it does not."""
+
+    def _uses_not_imports(_rel: str) -> str:
+        return "result = helper.g()\nassert result == 5\n"
+
+    assert fail_first._has_related_failure(
+        _uses_not_imports, ["test_mod.py::test_g"], ["pkg/helper.py"]
+    )
+
+    def _silent(_rel: str) -> str:
+        return "x = 1\n"
+
+    assert not fail_first._has_related_failure(_silent, ["test_mod.py::test_g"], ["pkg/helper.py"])
+
+
+def test_related_detection_tolerates_transport_and_parse_failures() -> None:
+    """A contained read that dies mid-flight (Docker gone, exec timeout) is
+    'no import surface', never a crash (#614) — and unparsable test source
+    falls back to the textual import match instead of raising."""
+
+    def _unreadable(rel: str) -> str:
+        raise RuntimeError("sandbox transport died")
+
+    assert not fail_first._has_related_failure(_unreadable, ["test_mod.py::test_g"], ["helper.py"])
+
+    def _syntax_error(rel: str) -> str:
+        return "from helper import g\n def broken(:\n"
+
+    assert fail_first._has_related_failure(_syntax_error, ["test_mod.py::test_g"], ["helper.py"])
+
+    def _null_bytes(rel: str) -> str:
+        return "import helper\x00"
+
+    assert fail_first._has_related_failure(_null_bytes, ["test_mod.py::test_g"], ["helper.py"])
 
 
 def test_failure_digest_is_stable_and_identity_sensitive() -> None:
@@ -456,7 +503,15 @@ def test_probe_flags_flaky_red_as_non_reproducible(tmp_path: Path, monkeypatch) 
     _commit_candidate(repo)
     calls = {"n": 0}
 
-    def fake_run(repo_dir: object, selectors: object, *, timeout: int = 600, extra_args=()):
+    def fake_run(
+        repo_dir: object,
+        selectors: object,
+        *,
+        timeout: int = 600,
+        extra_args=(),
+        interpreter=None,
+        execute=None,
+    ):
         calls["n"] += 1
         if calls["n"] == 1:
             return 0, ""  # candidate: green
@@ -479,7 +534,15 @@ def test_probe_skips_second_run_when_already_passing(tmp_path: Path, monkeypatch
     _commit_candidate(repo)
     calls = {"n": 0}
 
-    def fake_run(repo_dir: object, selectors: object, *, timeout: int = 600, extra_args=()):
+    def fake_run(
+        repo_dir: object,
+        selectors: object,
+        *,
+        timeout: int = 600,
+        extra_args=(),
+        interpreter=None,
+        execute=None,
+    ):
         calls["n"] += 1
         return 0, ""  # green everywhere: a characterization snapshot
 
@@ -605,3 +668,55 @@ def test_older_note_without_fail_first_still_parses() -> None:
     note = TraceNote(cycle=1, target="t", accepted=True, kind="doc", model="m", files_touched=1)
     back = TraceNote.from_json(note.to_json())
     assert back.fail_first is None
+
+
+# ---------------------------------------------------------------------------
+# #1792: malformed and unreadable evidence inputs fail closed, never open
+# ---------------------------------------------------------------------------
+
+
+def test_related_detection_falls_back_to_textual_imports_when_the_test_file_is_malformed(
+    tmp_path: Path,
+) -> None:
+    """An unparsable failing test keeps its attribution check: the textual
+    import-line fallback matches the changed module that a parse cannot."""
+    (tmp_path / "test_broken.py").write_text(
+        "from helper import g\ndef test_g(:\n    assert g() == 5\n",  # syntax error
+        encoding="utf-8",
+    )
+    read = fail_first._HostExecutor(tmp_path).read_text
+    assert fail_first._has_related_failure(read, ["test_broken.py::test_g"], ["pkg/helper.py"])
+
+
+def test_related_detection_skips_unreadable_test_files_without_inventing_relatedness(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failing test whose content cannot be read is neither related nor a
+    crash: the guard drops the attribution check, it never manufactures it."""
+    (tmp_path / "test_ghost.py").write_text("placeholder", encoding="utf-8")
+
+    def boom(self: Path, *args: object, **kwargs: object) -> str:
+        raise OSError("vanishing file")
+
+    monkeypatch.setattr(Path, "read_text", boom)
+    host_read = fail_first._HostExecutor(tmp_path).read_text
+    assert not fail_first._has_related_failure(
+        host_read, ["test_ghost.py::test_g"], ["pkg/helper.py"]
+    )
+
+
+@pytest.mark.skipif(not _PYTEST_RUNNABLE, reason="pytest not runnable as a subprocess")
+def test_probe_returns_missing_evidence_when_the_base_ref_is_unresolvable(
+    tmp_path: Path,
+) -> None:
+    """No replayable base revision means no evidence at all: collection must
+    return None (the gate then fails the behavior contract closed on missing)
+    without touching the candidate tree."""
+    repo = _repo(tmp_path)
+    _commit_candidate(repo)
+    ev = collect_fail_first_evidence(
+        repo, "definitely-not-a-ref", ["src.py"], ["test_src.py"], timeout=120
+    )
+    assert ev is None
+    # The early return must not have flipped a single file in the worktree.
+    assert "return 2" in (repo / "src.py").read_text(encoding="utf-8")

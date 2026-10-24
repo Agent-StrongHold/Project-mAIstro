@@ -43,6 +43,15 @@ _PROVENANCE_SOURCE = ROOT / "scripts" / "ratchet_provenance.py"
 RATCHET = "route-permissions"
 METRIC_DEFINITION_VERSION = "1"
 
+#: Bounded analyzer implementation manifest (#319). The mounted-prefix census
+#: imports the live Hive app and enumerates routes through the server's route
+#: table helper, so both files belong to the analyzer identity; the app itself
+#: is the measured input, not the analyzer.
+ANALYZER_MANIFEST = (
+    "scripts/check-route-permissions.py",
+    "packages/maistro-server/src/maistro_server/api/route_table.py",
+)
+
 REQUIRED = ("owner", "disposition", "reason")
 REQUIRED_TEMPORARY = ("issue", "expires")
 DISPOSITIONS = frozenset({"permanent", "temporary"})
@@ -63,6 +72,14 @@ def _provenance() -> ModuleType:
         del sys.modules[spec.name]
         raise
     return module
+
+
+def _tool_version(prov: ModuleType) -> str:
+    """Implementation identity of the scanner that reached this verdict (#319)."""
+    version: str = prov.bundled_implementation_fingerprint(
+        Path(__file__).resolve().parents[1], ANALYZER_MANIFEST
+    )
+    return version
 
 
 def _v1_prefix(path: str) -> str | None:
@@ -229,6 +246,7 @@ def main() -> int:
     candidate = set(_object(_read(BASELINE), "tolerated"))
     prov = _provenance()
     try:
+        tool_version = _tool_version(prov)
         prov.require_measurement(mounted, ratchet=RATCHET, what="mounted /v1/ prefixes")
         trusted_ref = prov.resolve_baseline(BASELINE, root=ROOT)
         trusted_payload = trusted_ref.loads(default={})
@@ -255,6 +273,7 @@ def main() -> int:
             ratchet=RATCHET,
             baseline=trusted_ref,
             tool="hive app route table",
+            tool_version=tool_version,
             metric_definition_version=METRIC_DEFINITION_VERSION,
             old_value=f"{len(trusted)} tolerated undeclared prefixes",
             new_value=f"{len(current)} undeclared of {len(mounted)} mounted",

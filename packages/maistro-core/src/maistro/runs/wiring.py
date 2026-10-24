@@ -25,7 +25,7 @@ from maistro.tasks.admission import WorkspaceRoutingAdmitter
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from maistro.graph.durable_runs.continuation import GraphContinuationStore
 
-__all__ = ["wire_chat_admission", "wire_execution_spine"]
+__all__ = ["spine_is_migrated", "wire_chat_admission", "wire_execution_spine"]
 
 logger = logging.getLogger(__name__)
 
