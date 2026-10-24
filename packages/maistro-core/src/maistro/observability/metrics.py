@@ -842,11 +842,13 @@ async def postgres_table_sample(
     """
     if table not in _KNOWN_TABLES:
         raise ValueError(f"retention health probe: unknown table {table!r}")
-    if not await fetchrow("SELECT to_regclass($1) IS NOT NULL AS ok", table):
+    exists = await fetchrow("SELECT to_regclass($1) IS NOT NULL AS ok", table)
+    if exists is None or not exists["ok"]:
+        # `exists` is a nonempty record even when the table is absent
+        # (`ok=False`), so its truthiness says nothing; consult the field.
         return None
     row = await fetchrow(
-        # nosec B608 - identifiers are whitelist-checked / source constants, values bound
-        f"SELECT COUNT(*) AS n, MIN({oldest_expr}) AS oldest FROM {table}",
+        f"SELECT COUNT(*) AS n, MIN({oldest_expr}) AS oldest FROM {table}",  # nosec B608
     )
     if row is None:  # pragma: no cover - COUNT always yields a row
         return None
@@ -878,8 +880,7 @@ async def sqlite_table_sample(
         raise ValueError(f"retention health probe: unknown table {table!r}")
     try:
         async with conn.execute(
-            # nosec B608 - identifiers are whitelist-checked / source constants
-            f"SELECT COUNT(*) AS n, MIN({oldest_expr}) AS oldest FROM {table}",
+            f"SELECT COUNT(*) AS n, MIN({oldest_expr}) AS oldest FROM {table}",  # nosec B608
         ) as cursor:
             row = await cursor.fetchone()
     except Exception as exc:

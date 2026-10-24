@@ -209,7 +209,7 @@ class SqliteAuditLog:
         await self._conn.execute("BEGIN IMMEDIATE")
         try:
             cursor = await self._conn.execute(
-                "DELETE FROM audit_log WHERE id IN (SELECT id FROM audit_log "
+                "DELETE FROM audit_log WHERE id IN (SELECT id FROM audit_log "  # nosec B608 - hold_sql is ?-placeholders only, all values bound
                 "WHERE timestamp < ?" + hold_sql + " ORDER BY timestamp, id LIMIT ?)",
                 params,
             )

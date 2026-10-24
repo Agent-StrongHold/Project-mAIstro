@@ -22,6 +22,7 @@ from maistro.observability import metrics as retention_health
 from maistro.observability.metrics import (
     RetentionTableSample,
     oldest_timestamp,
+    postgres_table_sample,
     publish_retention_table_health,
     retention_oldest_record_timestamp,
     retention_table_bytes,
@@ -164,3 +165,42 @@ async def test_sqlite_bytes_are_the_dbstat_sum_or_an_honest_none(conn: Any) -> N
 
 async def test_a_sqlite_bytes_probe_of_a_missing_table_is_none(conn: Any) -> None:
     assert await sqlite_table_bytes(conn, "audit_log") is None
+
+
+class _RecordingFetchrow:
+    """`Connection.fetchrow` at the boundary `postgres_table_sample` needs.
+
+    PostgreSQL answers `SELECT to_regclass($1) IS NOT NULL AS ok` with a
+    one-row record even when the table is absent — `ok=False`, not `None` —
+    so the probe must consult the field; the record's own truthiness says
+    nothing about the table.
+    """
+
+    def __init__(self, ok: bool | None) -> None:
+        self._ok = ok
+        self.queries: list[str] = []
+
+    async def __call__(self, query: str, *args: object) -> Any:
+        self.queries.append(query)
+        if "to_regclass" in query:
+            return None if self._ok is None else {"ok": self._ok}
+        return {"n": 7, "oldest": None}
+
+
+async def test_a_postgres_sample_of_an_absent_table_is_none() -> None:
+    """The absent-table answer arrives as a truthy record carrying `ok=False`:
+    the probe must return `None` without issuing the count query — never a
+    fabricated level for a table the deployment has not provisioned."""
+    fetch = _RecordingFetchrow(ok=False)
+    sample = await postgres_table_sample(fetch, "audit_log", "timestamp", oldest_unit="datetime")
+    assert sample is None
+    assert not any("COUNT(*)" in q for q in fetch.queries)
+
+
+async def test_a_postgres_sample_of_an_unanswered_existence_check_is_none() -> None:
+    """A boundary that cannot answer the existence check at all yields no
+    sample either; the honest absence outranks any measurement."""
+    fetch = _RecordingFetchrow(ok=None)
+    sample = await postgres_table_sample(fetch, "audit_log", "timestamp", oldest_unit="datetime")
+    assert sample is None
+    assert not any("COUNT(*)" in q for q in fetch.queries)

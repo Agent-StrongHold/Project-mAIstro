@@ -254,7 +254,7 @@ class SqliteEventLog:
         await self._conn.execute("BEGIN IMMEDIATE")
         try:
             cursor = await self._conn.execute(
-                "DELETE FROM event_log WHERE id IN (SELECT id FROM event_log "
+                "DELETE FROM event_log WHERE id IN (SELECT id FROM event_log "  # nosec B608 - hold_sql is ?-placeholders only, all values bound
                 "WHERE created_at < ?" + hold_sql + " ORDER BY id LIMIT ?)",
                 params,
             )

@@ -433,7 +433,7 @@ class SqliteEventStore:
         await self._conn.execute("BEGIN IMMEDIATE")
         try:
             cursor = await self._conn.execute(
-                "DELETE FROM canonical_event_log WHERE event_id IN ("
+                "DELETE FROM canonical_event_log WHERE event_id IN ("  # nosec B608 - hold_sql is ?-placeholders only, all values bound
                 "SELECT event_id FROM canonical_event_log WHERE timestamp < ?"
                 + hold_sql
                 + " ORDER BY timestamp, event_id LIMIT ?)",
