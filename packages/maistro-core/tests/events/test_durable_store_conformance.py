@@ -30,7 +30,7 @@ import aiosqlite
 import pytest
 
 from maistro.events.consumer_cursor import InMemoryConsumerCursorStore, SqliteConsumerCursorStore
-from maistro.events.durable_log import InMemoryEventLog, SqliteEventLog
+from maistro.events.durable_log import InMemoryEventLog, LoggedEvent, SqliteEventLog
 from maistro.events.invocations import (
     DeliveryAlreadyStarted,
     DeliveryAttemptLimitReached,
@@ -233,21 +233,6 @@ async def cursor_store(request):
             yield PgConsumerCursorStore(pool)
         finally:
             await pool.close()
-
-
-@pytest.fixture(params=BACKENDS)
-async def cursor_store(request):
-    if request.param == "memory":
-        return InMemoryConsumerCursorStore()
-    if request.param == "sqlite":
-        store = SqliteConsumerCursorStore(await _sqlite_conn())
-        await store.ensure_schema()
-        return store
-    from maistro.events.pg_stores import PgConsumerCursorStore
-
-    pool = await _pg_pool()
-    await pool.execute("TRUNCATE consumer_cursors")
-    return PgConsumerCursorStore(pool)
 
 
 class TestEventLog:

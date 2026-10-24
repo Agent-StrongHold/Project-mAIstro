@@ -17,7 +17,7 @@ import contextlib
 import hashlib
 import logging
 import random
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Iterator, Sequence
 from copy import deepcopy
 from itertools import pairwise
 from typing import Any, ClassVar
@@ -501,6 +501,7 @@ async def _finalize_cycle(
     """
     marker_id = _finalize_marker_id(ctx.node_run_id) if ctx is not None else None
     if marker_id is not None:
+        assert ctx is not None
         marker = population.get_cycle_marker(marker_id)
         if marker is not None:
             status = marker.get("status")
@@ -513,7 +514,8 @@ async def _finalize_cycle(
         population.record_cycle_marker(marker_id, {"status": "in_progress"})
 
     try:
-        new_ids = await _apply_finalize_mutations(cycle, population, config, llm_call)
+        with _model_call_context(llm_call, ctx) as bound_llm:
+            new_ids = await _apply_finalize_mutations(cycle, population, config, bound_llm)
     except Exception:
         if marker_id is not None:
             population.record_cycle_marker(marker_id, {"status": "faulted"})
@@ -768,7 +770,7 @@ def _resolver(
     llm_call: Any,
     membership_ids: Sequence[str] | None = None,
     battle_slots: int | None = None,
-):
+) -> NodeResolver:
     tournament_work = _TournamentWork(
         cycle=cycle,
         population=population,

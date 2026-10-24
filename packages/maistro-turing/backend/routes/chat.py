@@ -74,13 +74,25 @@ async def chat(
         raise HTTPException(status_code=400, detail="message is required")
 
     session_id = body.session_id or str(uuid4())
-    key = (user.user_id, session_id)
-    session = _SESSIONS.get(key)
-    if session is None:
-        session = get_state().new_chat_session()
-        _SESSIONS[key] = session
-
     plane = get_execution_plane()
+    st = get_state()
+    workspace_id, project_id = await plane.scope_for(user.user_id)
+    try:
+        session = st.sessions.resolve(
+            workspace_id=workspace_id,
+            session_id=session_id,
+            # The factory binds the caller's resolved scope, so the session's
+            # episodic chat capture persists with the caller's provenance
+            # instead of blank user/project fields (#859).
+            factory=lambda: st.new_chat_session(
+                user_id=user.user_id,
+                workspace_id=workspace_id,
+                project_id=project_id,
+            ),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     try:
         record = await plane.run_chat(
             session=session,
