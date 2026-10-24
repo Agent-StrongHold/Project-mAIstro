@@ -1,28 +1,39 @@
 """Reusable integration contracts for M1 cross-product parity (#459).
 
 This module is test/evidence code only. It deliberately does not emulate a
-product runtime or fill a missing convergence seam. Product scenarios assert
-the exact source-level dependency state before touching a surface that is still
-owned by an active convergence PR. An unavailable scenario is therefore a
-named, evidence-backed state in the suite rather than a test suppression.
+product runtime or fill a missing convergence seam. Source probes remain
+optional development diagnostics; strict closeout evidence requires a real
+producer and observer callback and records an unavailable seam as a failure.
 """
 
 from __future__ import annotations
 
+import asyncio
 import importlib
+import inspect
 import json
 import os
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 from typing import Any, Final
 
 REPO_ROOT: Final = Path(__file__).resolve().parents[2]
 _STRICT_ENV_VAR: Final = "MAISTRO_PARITY_STRICT"
+_MODE_ENV_VAR: Final = "MAISTRO_PARITY_MODE"
 
 
 def _strict_mode_enabled() -> bool:
-    return os.environ.get(_STRICT_ENV_VAR) == "1"
+    """True when the fail-closed M1 closeout mode is selected.
+
+    One strict concept, two spellings: ``MAISTRO_PARITY_MODE=m1-closeout`` is
+    the explicit closeout invocation switch (scripts/run-m1-closeout.py) and
+    ``MAISTRO_PARITY_STRICT=1`` is the equivalent env spelling kept so existing
+    strict invocations and ``dependency_assessment``'s fail-closed contract
+    agree on a single mode authority.
+    """
+    return parity_mode() is ParityMode.M1_CLOSEOUT
 
 
 class DependencyUnavailable(AssertionError):
@@ -31,6 +42,21 @@ class DependencyUnavailable(AssertionError):
 
 class ParityContractError(AssertionError):
     """A product projection diverged from canonical execution identity/lifecycle."""
+
+
+class ScenarioAbstained(AssertionError):
+    """A required product scenario did not execute its real producer boundary."""
+
+
+class CloseoutFailure(AssertionError):
+    """The strict M1 closeout report contains a failed required scenario."""
+
+
+class ParityMode(StrEnum):
+    """The development diagnostic mode and the fail-closed M1 closeout mode."""
+
+    DEVELOPMENT = "development"
+    M1_CLOSEOUT = "m1-closeout"
 
 
 @dataclass(frozen=True, slots=True)
@@ -134,8 +160,8 @@ CONDUCTOR_INSPECTION = Dependency(
     issue=1036,
     pr=None,
     description=(
-        "GET /v1/dag-runs/{run_id} must resolve canonical Run evidence instead of the "
-        "product-private dag_run_store authority."
+        "The #1036 inspection/control boundary must resolve canonical Run evidence "
+        "instead of a product-private dag_run_store authority."
     ),
     probes=(
         SourceProbe(
@@ -270,18 +296,12 @@ _DEPENDENCY_LIST: Final = (
 DEPENDENCIES: Final = {dependency.key: dependency for dependency in _DEPENDENCY_LIST}
 
 
-def dependency_assessment(*dependencies: Dependency) -> DependencyAssessment:
-    """Return an assertion-backed dependency state for an executable scenario.
+def _assess_dependencies(*dependencies: Dependency) -> DependencyAssessment:
+    """Non-raising dependency state; the strict wrapper adds the fail-closed raise.
 
-    A blocked scenario is only accepted when every blocker is tied to a named
-    issue/PR and a concrete missing/legacy source seam. This is intentionally
-    not a pytest skip or expected-failure mechanism. Once the probes pass the
-    caller must execute the scenario's real assertions.
-
-    Under ``MAISTRO_PARITY_STRICT=1`` (M1 closeout mode) a blocker is not a
-    named, evidence-backed state to report and continue past: it raises
-    ``DependencyUnavailable`` instead, so a scenario that only proved its
-    dependency missing cannot register as a pass.
+    ``execute_scenario`` must see the raw blockers so strict closeout evidence
+    can name them per scenario (EXECUTED/PASSED or FAILED per required
+    scenario) instead of short-circuiting before any evidence is emitted.
     """
     blockers: list[str] = []
     for dependency in dependencies:
@@ -298,11 +318,28 @@ def dependency_assessment(*dependencies: Dependency) -> DependencyAssessment:
         detail = "; ".join(failures)
         blockers.append(f"{dependency.key}: waiting on {owner}: {detail}")
 
-    if blockers and _strict_mode_enabled():
-        raise DependencyUnavailable(" | ".join(blockers))
-
     assessment = DependencyAssessment(ready=not blockers, blockers=tuple(blockers))
     assert assessment.ready is (not assessment.blockers)
+    return assessment
+
+
+def dependency_assessment(*dependencies: Dependency) -> DependencyAssessment:
+    """Return an assertion-backed dependency state for an executable scenario.
+
+    A blocked scenario is only accepted when every blocker is tied to a named
+    issue/PR and a concrete missing/legacy source seam. This is intentionally
+    not a pytest skip or expected-failure mechanism. Once the probes pass the
+    caller must execute the scenario's real assertions.
+
+    Under strict M1 closeout mode (``MAISTRO_PARITY_MODE=m1-closeout`` or the
+    equivalent ``MAISTRO_PARITY_STRICT=1`` spelling) a blocker is not a named,
+    evidence-backed state to report and continue past: it raises
+    ``DependencyUnavailable`` instead, so a scenario that only proved its
+    dependency missing cannot register as a pass.
+    """
+    assessment = _assess_dependencies(*dependencies)
+    if assessment.blockers and _strict_mode_enabled():
+        raise DependencyUnavailable(" | ".join(assessment.blockers))
     return assessment
 
 
@@ -311,6 +348,234 @@ def require_dependencies(*dependencies: Dependency) -> None:
     assessment = dependency_assessment(*dependencies)
     if assessment.blockers:
         raise DependencyUnavailable(" | ".join(assessment.blockers))
+
+
+@dataclass(frozen=True, slots=True)
+class ScenarioExecution:
+    """The real product observation returned by an executed scenario."""
+
+    observation: Mapping[str, Any] | None = None
+
+
+ScenarioCallable = Callable[[], ScenarioExecution | Awaitable[ScenarioExecution]]
+ScenarioValidator = Callable[[Mapping[str, Any]], None]
+
+
+@dataclass(frozen=True, slots=True)
+class ParityScenario:
+    """One required producer -> canonical spine -> observer/control scenario."""
+
+    name: str
+    dependencies: tuple[Dependency, ...]
+    execute: ScenarioCallable
+    validate_observation: ScenarioValidator | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ScenarioEvidence:
+    """Machine-readable result for one required scenario."""
+
+    name: str
+    status: str
+    executed: bool
+    blockers: tuple[str, ...] = ()
+    error: str | None = None
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "scenario": self.name,
+            "status": self.status,
+            "executed": self.executed,
+            "blockers": list(self.blockers),
+            "error": self.error,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class CloseoutReport:
+    """The complete strict report; no strict scenario can be BLOCKED-as-green."""
+
+    evidence: tuple[ScenarioEvidence, ...]
+
+    @property
+    def passed(self) -> bool:
+        return bool(self.evidence) and all(item.status == "PASSED" for item in self.evidence)
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "mode": ParityMode.M1_CLOSEOUT.value,
+            "scenarios": [item.as_dict() for item in self.evidence],
+            "passed": self.passed,
+        }
+
+
+def parity_mode(value: str | None = None) -> ParityMode:
+    """Resolve the explicit mode switch used by the closeout invocation.
+
+    ``MAISTRO_PARITY_MODE`` selects the mode when set; otherwise the
+    equivalent ``MAISTRO_PARITY_STRICT=1`` spelling selects M1 closeout mode;
+    otherwise development mode reports named blockers without failing closed.
+
+    Codex review (PR #1789 follow-up): the two spellings name one concept, so
+    they must agree. ``MAISTRO_PARITY_STRICT=1`` combined with an explicit
+    ``MAISTRO_PARITY_MODE`` other than ``m1-closeout`` is rejected instead of
+    silently downgrading the fail-closed flag.
+    """
+    if value is None:
+        raw = os.environ.get(_MODE_ENV_VAR)
+        strict = os.environ.get(_STRICT_ENV_VAR) == "1"
+        if raw is None:
+            if strict:
+                return ParityMode.M1_CLOSEOUT
+            raw = "development"
+        elif strict and raw != ParityMode.M1_CLOSEOUT.value:
+            allowed = ", ".join(item.value for item in ParityMode)
+            raise ValueError(
+                f"{_STRICT_ENV_VAR}=1 conflicts with {_MODE_ENV_VAR}={raw!r}: "
+                "the strict spelling selects m1-closeout, so an explicit "
+                f"{_MODE_ENV_VAR} must also be m1-closeout (allowed: {allowed})"
+            )
+    else:
+        raw = value
+    try:
+        return ParityMode(raw)
+    except ValueError as exc:
+        allowed = ", ".join(item.value for item in ParityMode)
+        raise ValueError(f"{_MODE_ENV_VAR} must be one of: {allowed}") from exc
+
+
+def _emit_evidence(evidence: ScenarioEvidence) -> None:
+    """Emit one JSON object per scenario for CI log/artifact consumers."""
+    print(f"M1_PARITY_EVIDENCE {json.dumps(evidence.as_dict(), sort_keys=True)}")
+
+
+def _blocked_evidence(
+    scenario: ParityScenario,
+    assessment: DependencyAssessment,
+    selected_mode: ParityMode,
+) -> ScenarioEvidence:
+    """Record a required scenario that never reached its producer boundary."""
+    status = "FAILED" if selected_mode is ParityMode.M1_CLOSEOUT else "BLOCKED"
+    return ScenarioEvidence(
+        name=scenario.name,
+        status=status,
+        executed=False,
+        blockers=assessment.blockers,
+    )
+
+
+def _failure_status(exc: BaseException, selected_mode: ParityMode) -> str:
+    """Classify an execution failure; raise through what must not be recorded.
+
+    Development mode only turns intentional abstentions into BLOCKED evidence;
+    execution and validation failures must stay visible so a real parity
+    regression cannot hide behind a green check.
+    """
+    if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+        raise exc
+    if selected_mode is ParityMode.M1_CLOSEOUT:
+        return "FAILED"
+    if not isinstance(exc, ScenarioAbstained):
+        raise exc
+    return "BLOCKED"
+
+
+async def execute_scenario(
+    scenario: ParityScenario,
+    *,
+    mode: ParityMode | None = None,
+    raise_on_failure: bool = True,
+) -> ScenarioEvidence:
+    """Run one scenario, converting every strict abstention into a failure.
+
+    Uses the non-raising dependency assessment so the blocker evidence is
+    emitted here with the scenario's own name; the strict raise stays this
+    function's job. A PASSED record always carries a real product observation,
+    and in strict mode it additionally requires an observation invariant
+    (``validate_observation``), so a degenerate execution cannot satisfy the
+    closeout while proving nothing.
+    """
+    selected_mode = mode or parity_mode()
+    assessment = _assess_dependencies(*scenario.dependencies)
+    if assessment.blockers:
+        evidence = _blocked_evidence(scenario, assessment, selected_mode)
+        _emit_evidence(evidence)
+        if selected_mode is ParityMode.M1_CLOSEOUT and raise_on_failure:
+            raise DependencyUnavailable(" | ".join(assessment.blockers))
+        return evidence
+
+    try:
+        result = scenario.execute()
+        if inspect.isawaitable(result):
+            result = await result
+        if not isinstance(result, ScenarioExecution):
+            raise ScenarioAbstained(
+                f"{scenario.name} returned no real ScenarioExecution observation"
+            )
+        # A PASSED record is the closeout's only green state, so it must carry
+        # real observation evidence. Codex review (PR #2210): previously the
+        # observation was required only when a validator was configured, so a
+        # degenerate ``ScenarioExecution()`` -- no observation, no validator --
+        # was recorded as ``executed=true, PASSED`` even in strict release
+        # mode. Now the observation is required in every mode, and a strict
+        # PASSED additionally requires an invariant (``validate_observation``)
+        # over the real producer/observer records; development mode keeps its
+        # two-mode contract and stays lenient about which invariant is named.
+        if result.observation is None:
+            raise ScenarioAbstained(f"{scenario.name} returned no product observation")
+        if selected_mode is ParityMode.M1_CLOSEOUT and scenario.validate_observation is None:
+            raise ScenarioAbstained(
+                f"{scenario.name} has no observation invariant: a strict PASSED "
+                "requires a validator over the real producer/observer records"
+            )
+        if scenario.validate_observation is not None:
+            scenario.validate_observation(result.observation)
+    except BaseException as exc:
+        status = _failure_status(exc, selected_mode)
+        evidence = ScenarioEvidence(
+            name=scenario.name,
+            status=status,
+            executed=False,
+            error=f"{type(exc).__name__}: {exc}",
+        )
+        _emit_evidence(evidence)
+        if selected_mode is ParityMode.M1_CLOSEOUT and raise_on_failure:
+            raise
+        return evidence
+
+    evidence = ScenarioEvidence(name=scenario.name, status="PASSED", executed=True)
+    _emit_evidence(evidence)
+    return evidence
+
+
+def execute_scenario_sync(
+    scenario: ParityScenario,
+    *,
+    mode: ParityMode | None = None,
+) -> ScenarioEvidence:
+    """Synchronous wrapper for ordinary pytest tests and small CI probes."""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(execute_scenario(scenario, mode=mode))
+    raise RuntimeError("execute_scenario_sync cannot run inside an active event loop")
+
+
+async def execute_closeout(scenarios: tuple[ParityScenario, ...]) -> CloseoutReport:
+    """Execute every required scenario and raise only after all evidence is emitted."""
+    evidence: list[ScenarioEvidence] = []
+    for scenario in scenarios:
+        evidence.append(
+            await execute_scenario(
+                scenario,
+                mode=ParityMode.M1_CLOSEOUT,
+                raise_on_failure=False,
+            )
+        )
+    report = CloseoutReport(tuple(evidence))
+    if not report.passed:
+        raise CloseoutFailure(json.dumps(report.as_dict(), sort_keys=True))
+    return report
 
 
 @dataclass(slots=True)

@@ -97,10 +97,19 @@ services:
       # reduced CI budget off this, and without it the suite runs at local
       # settings and overruns the job's step timeout. Empty when run locally.
       - CI=${CI:-}
-    mem_limit: 1g
-    memswap_limit: 1g
+    # Two CPUs and 2g, not the 1.0/1g the #2157 floor pass applied to every
+    # service here: this container is the only one that runs Chromium, and a
+    # 219-spec suite at workers:1 pins a browser to a single core for ~4.5
+    # minutes. Under that cap the suite fails mid-run on resource starvation,
+    # not on product behaviour — observed 2026-10-22 on CI (run 39856259683,
+    # job 120095610522: chromium "Target crashed" at spec 114/219, the other
+    # 218 passed) and reproduced locally at the same commit (a different spec
+    # stalled on a bare SPA shell past its 5s expect; 213 passed). Both bounds
+    # stay inside the ceilings scripts/check-compose-resources.py enforces.
+    mem_limit: 2g
+    memswap_limit: 2g
     pids_limit: 256
-    cpus: 1.0
+    cpus: 2.0
     depends_on:
       hive:
         condition: service_healthy

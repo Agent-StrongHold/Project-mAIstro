@@ -1,0 +1,315 @@
+"""Canonical execution adapter for the shipped Builders ReAct turn.
+
+SPEC-201 deliberately keeps the interactive product as a ReAct loop. This
+module makes that loop a domain strategy behind canonical Graph -> Run ->
+NodeRun -> Attempt execution rather than letting it own execution identity.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import getpass
+import os
+import uuid
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+from maistro.builders.graph import PipelineGraph, PipelineNode
+from maistro.builders.graph_executor import (
+    CanonicalGraphPipelineExecutor,
+    DispatchResult,
+)
+from maistro.builders.pipeline import PipelineRun, PipelineStage
+from maistro.config.database import resolve_database_url, to_asyncpg_dsn
+from maistro.graph.durable_runs import CanonicalDurableRunStore
+from maistro.runs.model import RunStatus
+from maistro.runs.store import RunStore
+from maistro.runs.wiring import wire_execution_spine
+
+_DEFAULT_WORKSPACE_ID = "default"
+_DEFAULT_DATABASE_PATH = Path.home() / ".maistro" / "builders.db"
+_TURN_NODE_NAME = "interactive-turn"
+_ACTOR_PRINCIPAL_ENV = "MAISTRO_BUILDERS_ACTOR_PRINCIPAL"
+
+#: Stop reasons that mean the strategy gave up rather than producing an answer.
+_FAILED_TURN_STOP_REASONS = frozenset({"error", "max_turns"})
+
+#: Stop reasons that mean the model ran out of budget mid-answer. The turn is
+#: incomplete work, so it settles the canonical Run as failed.
+_TRUNCATED_TURN_STOP_REASONS = frozenset({"length", "max_tokens"})
+
+
+def _join_content(content: Any) -> str:
+    """Flatten a model answer into the single text the turn reports.
+
+    A Responses-style ``content`` may be a plain string or a list of blocks,
+    each carrying its own ``text``. Only blocks that actually carry text are
+    joined; anything else is a non-text block and is skipped.
+    """
+    if isinstance(content, list):
+        return "\n".join(
+            str(block.get("text", ""))
+            for block in content
+            if isinstance(block, dict) and block.get("text")
+        )
+    return str(content)
+
+
+def resolve_local_operator_principal(override: str | None = None) -> str:
+    """Actor identity for the local ``maistro builders`` operator.
+
+    Canonical Run admission (#364) requires an admitted actor principal on
+    every store backend, including SQLite. The interactive CLI has no HTTP
+    principal, so the operator is identified by a stable local identity:
+    explicit argument, then ``MAISTRO_BUILDERS_ACTOR_PRINCIPAL``, then the OS
+    user. This is audit identity only — it grants nothing by itself.
+    """
+    explicit = override or os.environ.get(_ACTOR_PRINCIPAL_ENV)
+    if explicit and explicit.strip():
+        return explicit.strip()
+    try:
+        user = getpass.getuser()
+    except Exception:
+        user = ""
+    return f"builders-local:{user}" if user else "builders-local"
+
+
+@dataclass(frozen=True)
+class InteractiveTurnResult:
+    """Result of one interactive turn, including its canonical identity."""
+
+    run_id: str
+    status: RunStatus
+    output: str
+    raw_result: dict[str, Any] | None
+    error: str = ""
+
+
+class _ReActDispatcher:
+    """Adapt SPEC-201's TurnRunner as physical work for one canonical node."""
+
+    def __init__(self, runner: Any, messages: list[dict[str, Any]]) -> None:
+        self._runner = runner
+        self._messages = messages
+        self.raw_result: dict[str, Any] | None = None
+        self.output = ""
+
+    def supports(self, agent_name: str, node_name: str) -> bool:
+        return agent_name == "builders-react" and node_name == _TURN_NODE_NAME
+
+    async def run(
+        self,
+        *,
+        run_id: str,
+        node_name: str,
+        agent_name: str,
+        prompt: str,
+        context: dict[str, Any],
+    ) -> DispatchResult:
+        del run_id, node_name, agent_name, prompt, context
+        try:
+            # TurnRunner remains the ReAct domain strategy. The caller is the
+            # canonical graph adapter, so this call is physical node work and
+            # not an independent execution admission path.
+            result = await self._runner.execute_turn(messages=list(self._messages))
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            return DispatchResult(ok=False, error=str(exc) or type(exc).__name__)
+
+        self.raw_result = result
+        stop_reason = result.get("stop_reason")
+        if stop_reason in _FAILED_TURN_STOP_REASONS:
+            return DispatchResult(
+                ok=False,
+                error=str(result.get("error") or f"interactive turn stopped: {stop_reason}"),
+            )
+        if stop_reason in _TRUNCATED_TURN_STOP_REASONS:
+            # A truncated turn did not finish the work the operator asked for.
+            # Recording it COMPLETED would project a failed turn as success
+            # (#1068 acceptance: no failure projected as a successful turn).
+            return DispatchResult(
+                ok=False,
+                error=str(result.get("error") or f"interactive turn truncated: {stop_reason}"),
+            )
+        self.output = _join_content(result.get("content", ""))
+        return DispatchResult(ok=True, output=self.output)
+
+
+class CanonicalInteractiveTurnExecutor:
+    """Admit and execute one Builders interactive turn on the canonical spine."""
+
+    def __init__(
+        self,
+        *,
+        run_store: RunStore,
+        durable_store: Any,
+        workspace_id: str,
+        project_id: str,
+        actor_principal_id: str | None = None,
+    ) -> None:
+        self._run_store = run_store
+        self._durable_store = durable_store
+        self._workspace_id = workspace_id
+        self._project_id = project_id
+        # Canonical Run admission requires an actor principal on every store
+        # backend. A direct caller that leaves the optional argument unset
+        # still gets the local operator audit identity rather than a None that
+        # every store rejects.
+        self._actor_principal_id = resolve_local_operator_principal(actor_principal_id)
+
+    async def execute(
+        self,
+        *,
+        session_id: str,
+        repo: str,
+        prompt: str,
+        messages: list[dict[str, Any]],
+        runner: Any,
+    ) -> InteractiveTurnResult:
+        """Execute a bounded ReAct continuation as one canonical Run."""
+        domain_run = PipelineRun(
+            id=f"builders-turn-{uuid.uuid4().hex}",
+            issue_number=0,
+            title=prompt[:200] or "Builders interactive turn",
+            repo=repo,
+            stages=[
+                PipelineStage(
+                    name=_TURN_NODE_NAME,
+                    agent_name="builders-react",
+                    prompt_template="{prompt}",
+                )
+            ],
+        )
+        domain_run.context.update(
+            {
+                "prompt": prompt,
+                "repo": repo,
+                "session_id": session_id,
+                "interactive": True,
+            }
+        )
+        dispatcher = _ReActDispatcher(runner, messages)
+        graph = PipelineGraph(
+            [
+                PipelineNode(
+                    name=_TURN_NODE_NAME,
+                    agent_name="builders-react",
+                    prompt_template="{prompt}",
+                )
+            ]
+        )
+        record = await CanonicalGraphPipelineExecutor(
+            dispatcher,
+            run_store=self._run_store,
+            durable_store=self._durable_store,
+            workspace_id=self._workspace_id,
+            project_id=self._project_id,
+            actor_principal_id=self._actor_principal_id,
+        ).execute(graph, domain_run)
+        return InteractiveTurnResult(
+            run_id=record.run_id,
+            status=record.run.status,
+            output=dispatcher.output,
+            raw_result=dispatcher.raw_result,
+            error=domain_run.failed_stage_error,
+        )
+
+
+@dataclass
+class BuildersExecutionSpine:
+    """Configured canonical stores used by the interactive CLI process."""
+
+    workspace_id: str
+    project_id: str
+    run_store: RunStore
+    durable_store: Any
+    actor_principal_id: str
+    _close: Any
+
+    @classmethod
+    async def open(
+        cls,
+        *,
+        workspace_id: str = _DEFAULT_WORKSPACE_ID,
+        database_url: str | None = None,
+        actor_principal_id: str | None = None,
+    ) -> BuildersExecutionSpine:
+        """Open the configured canonical backend for the Builders CLI scope.
+
+        A standalone CLI with no deployment URL uses a private SQLite file,
+        not an in-memory store, so session resume and inspection retain the
+        same Run identity across process restarts.
+        """
+        url = database_url or resolve_database_url()
+        if not url:
+            _DEFAULT_DATABASE_PATH.parent.mkdir(parents=True, exist_ok=True)
+            url = f"sqlite:///{_DEFAULT_DATABASE_PATH}"
+
+        closer: Any
+        if url.startswith("sqlite:"):
+            import aiosqlite
+
+            path = url.removeprefix("sqlite:///")
+            conn = await aiosqlite.connect(os.path.expanduser(path))
+            (
+                projects,
+                run_store,
+                _admitter,
+                _templates,
+                _schedules,
+                continuations,
+            ) = await wire_execution_spine(conn, workspace_id=workspace_id)
+
+            async def close() -> None:
+                await conn.close()
+
+            closer = close
+        else:
+            from maistro.persistence import get_pool, release_pool
+
+            pool = await get_pool(to_asyncpg_dsn(url))
+            (
+                projects,
+                run_store,
+                _admitter,
+                _templates,
+                _schedules,
+                continuations,
+            ) = await wire_execution_spine(None, workspace_id=workspace_id, pg_pool=pool)
+
+            async def close() -> None:
+                await release_pool(pool)
+
+            closer = close
+
+        project = await projects.root_for_workspace(workspace_id)
+        return cls(
+            workspace_id=workspace_id,
+            project_id=project.project_id,
+            run_store=run_store,
+            durable_store=CanonicalDurableRunStore(run_store, continuations),
+            actor_principal_id=resolve_local_operator_principal(actor_principal_id),
+            _close=closer,
+        )
+
+    async def close(self) -> None:
+        await self._close()
+
+    def executor(self) -> CanonicalInteractiveTurnExecutor:
+        return CanonicalInteractiveTurnExecutor(
+            run_store=self.run_store,
+            durable_store=self.durable_store,
+            workspace_id=self.workspace_id,
+            project_id=self.project_id,
+            actor_principal_id=self.actor_principal_id,
+        )
+
+
+__all__ = [
+    "BuildersExecutionSpine",
+    "CanonicalInteractiveTurnExecutor",
+    "InteractiveTurnResult",
+    "resolve_local_operator_principal",
+]
