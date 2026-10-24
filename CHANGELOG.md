@@ -25,6 +25,12 @@ or placeholder-only section.
 
 ### Added
 
+- **Capabilities becomes the primary Hive Conductor surface for slots and
+  providers (#2273, `conductor-407`).** New `/capabilities` page lists
+  `/v1/capabilities` slots with host-owned trust/provenance, re-discover, and
+  enable/disable over the same public APIs. Agents, Topology, and Integrations
+  leave primary nav (URL-only until deleted); Skills was already URL-only.
+
 - **`/health` names the Reactor's persistence authority beside every other
   store family (#1178).** `persistence.families` gains a `reactor` entry:
   `fire-and-forget` when the Reactor writes through the canonical `State`
@@ -294,6 +300,15 @@ or placeholder-only section.
   `MAISTRO_COMPOSE_PROFILES` activates profiles an override assigns.
 
 ### Security
+
+- **Image lock reconciliation and canvas npm audit follow-up after #2305
+  (no linked issue: supply-chain CI on develop).** Hive Conductor Dockerfile
+  and `security.yml` expected-member pin move from `setuptools==84.0.0` to
+  `84.2.1` so container reconcile matches the lock; `uv.lock` resolves
+  `beartype` to a single `0.23.1` (drops the dual 0.22.9/0.23.1 split that
+  left the image behind the expected export); canvas frontend
+  `package-lock.json` refreshed so `npm audit --omit=dev` reports zero
+  vulnerabilities.
 
 - **Protected-branch secret scans recognize two historical soak false positives (#860).**
   Preserve full-history scanning and the default rules while carrying over the
