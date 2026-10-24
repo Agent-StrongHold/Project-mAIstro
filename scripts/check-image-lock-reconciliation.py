@@ -100,8 +100,21 @@ def parse_expected(text: str) -> tuple[set[str], set[str]]:
     return pins - conditional, conditional
 
 
+def _expected_clause(candidates: set[str]) -> str:
+    """The expected-side half of a mismatch line.
+
+    A single pin reads exactly as it always has (`foo==1.0`); a split
+    resolution names every version the lock accepts for the name, so the
+    operator sees the full accepted set, not an arbitrary survivor.
+    """
+    ordered = sorted(candidates)
+    if len(ordered) == 1:
+        return ordered[0]
+    return "one of " + ", ".join(ordered) + " (" + " or ".join(ordered) + ")"
+
+
 def parse_actual(text: str) -> set[str]:
-    pins: set[str] = {}
+    pins: dict[str, str] = {}
     for line in text.splitlines():
         line = line.strip()
         if not line or line.startswith(("+", "*", "-", "WARN", "Using", "Checked")):
@@ -170,42 +183,22 @@ def main() -> int:
         return 1
     actual = parse_actual(proc.stdout)
 
-    # Conditional pins gate nothing: their marker may or may not apply on the
-    # image's platform. Every pin in the image must be expected (with the
-    # expected version); every unconditional expected pin must be in the image.
-    # Comparing by canonical NAME (not by pin string) is what makes a version
-    # skew nameable: `foo==1.0` expected and `foo==2.0` installed shares no
-    # exact string, so a set difference alone would report it as a confusing
-    # missing+extra pair — and the original string-keyed `skewed` comprehension
-    # (`for pin in actual & everything_expected ... .pop() != pin`) compared
-    # each pin against itself and could never fire at all.
-    #
-    # A single name can resolve to several marker-conditional versions in one
-    # lock (e.g. beartype 0.22.9 for `python_full_version < '3.15'` and 0.23.1
-    # for `>= '3.15'`). The image ships exactly one of them, so the acceptable
-    # set for a name is every version the lock names: the image matches when it
-    # carries ANY of them. Collapsing the name to one pin (the previous
-    # `expected_by_name`) compared the installed branch against the *other*
-    # branch and red-lit a correct image — and which branch it picked was a set
-    # iteration order, so the gate was also hash-seed flaky.
     everything_expected = required | conditional
     actual_by_name = {p.partition("==")[0]: p for p in actual}
-    expected_versions: dict[str, set[str]] = {}
+    expected_by_name: dict[str, set[str]] = {}
     for pin in everything_expected:
-        name, _, version = pin.partition("==")
-        expected_versions.setdefault(name, set()).add(version)
+        expected_by_name.setdefault(pin.partition("==")[0], set()).add(pin)
     skewed_names = {
         name
-        for name, pin in actual_by_name.items()
-        if name in expected_versions and pin.partition("==")[2] not in expected_versions[name]
+        for name in actual_by_name.keys() & expected_by_name.keys()
+        if actual_by_name[name] not in expected_by_name[name]
     }
     missing = sorted(p for p in required - actual if p.partition("==")[0] not in skewed_names)
     extra = sorted(
         p for p in actual - everything_expected if p.partition("==")[0] not in skewed_names
     )
     skewed = sorted(
-        f"{actual_by_name[name]} (image) != "
-        + " or ".join(sorted(f"{name}=={v}" for v in expected_versions[name]))
+        f"{actual_by_name[name]} (image) != {_expected_clause(expected_by_name[name])}"
         for name in skewed_names
     )
     if missing or extra or skewed:
