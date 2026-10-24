@@ -758,9 +758,7 @@ def test_the_chat_section_titles_sessions_from_their_first_real_message(
             a.session_id, [{"role": "user", "content": "x" * 100}]
         )
         b = await conversation_sessions.create("user", ws, "Saved title")
-        await conversation_sessions.append_turn(
-            b.session_id, [{"role": "user", "content": "   "}]
-        )
+        await conversation_sessions.append_turn(b.session_id, [{"role": "user", "content": "   "}])
         c = await conversation_sessions.create("user", ws, "Empty but honest")
         return a.session_id, b.session_id, c.session_id
 

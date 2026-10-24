@@ -120,9 +120,10 @@ async def test_require_owned_optional_workspace_match() -> None:
     assert conversation_sessions.require_owned("user", record.session_id).session_id == (
         record.session_id
     )
-    assert conversation_sessions.require_owned(
-        "user", record.session_id, workspace_id=ws_a
-    ).session_id == record.session_id
+    assert (
+        conversation_sessions.require_owned("user", record.session_id, workspace_id=ws_a).session_id
+        == record.session_id
+    )
 
     with pytest.raises(Exception) as mismatch:
         conversation_sessions.require_owned("user", record.session_id, workspace_id=ws_b)

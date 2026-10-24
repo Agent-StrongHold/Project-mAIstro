@@ -153,9 +153,7 @@ class AppendMessageBody(BaseModel):
 
 
 @router.post("/sessions/{session_id}/messages", response_model=ChatMessage)
-async def append_message(
-    session_id: str, body: AppendMessageBody, request: Request
-) -> ChatMessage:
+async def append_message(session_id: str, body: AppendMessageBody, request: Request) -> ChatMessage:
     user_id = require_actor_id(request)
     conversation_sessions.require_owned(user_id, session_id)
     msg_id = str(uuid4())

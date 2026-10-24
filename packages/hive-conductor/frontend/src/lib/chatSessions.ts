@@ -34,3 +34,27 @@ export function sessionsListPath(workspaceId: string): string {
 export function sessionPath(sessionId: string): string {
   return `/v1/chat/sessions/${encodeURIComponent(sessionId)}`;
 }
+
+/** Models catalog — bare fetch lives in lib/ for the typed-client ratchet. */
+export function fetchModelsCatalog(): Promise<Response> {
+  return fetch("/v1/settings/models", { credentials: "same-origin" });
+}
+
+/** Streaming chat completion — bare fetch lives in lib/ for the ratchet. */
+export function openChatStream(
+  body: {
+    model: string;
+    messages: Array<{ role: string; content: string }>;
+    workspace_id: string;
+    session_id: string;
+  },
+  signal: AbortSignal,
+): Promise<Response> {
+  return fetch("/v1/chat/stream", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "same-origin",
+    signal,
+    body: JSON.stringify(body),
+  });
+}

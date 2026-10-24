@@ -225,9 +225,9 @@ def test_session_id_is_provenance_not_a_second_run_identity(
     authed_client: Any, container: Container, gateway: _Gateway
 ) -> None:
     ws = _workspace()
-    sid = authed_client.post(
-        "/v1/chat/sessions", json={"title": "t", "workspace_id": ws}
-    ).json()["id"]
+    sid = authed_client.post("/v1/chat/sessions", json={"title": "t", "workspace_id": ws}).json()[
+        "id"
+    ]
 
     first = _complete(authed_client, workspace_id=ws, session_id=sid)
     second = _complete(authed_client, workspace_id=ws, session_id=sid)
@@ -247,9 +247,7 @@ def test_a_session_id_the_caller_does_not_own_is_not_recorded(
     from services import conversation_sessions
 
     foreign_ws = _workspace(owner="someone-else", name="foreign")
-    foreign = _run(
-        conversation_sessions.create("someone-else", foreign_ws, "t")
-    ).session_id
+    foreign = _run(conversation_sessions.create("someone-else", foreign_ws, "t")).session_id
 
     r = _complete(authed_client, session_id=foreign)
 
@@ -792,3 +790,59 @@ def test_settling_a_turn_never_turns_a_failed_sweep_into_a_failed_answer() -> No
     _run(chat_runs._settle_window(admitter, run))  # type: ignore[arg-type]
 
     assert admitter.calls == ["release:run-1", "sweep"]
+
+
+@pytest.mark.asyncio
+async def test_persist_conversation_turn_skips_non_string_model_content(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Non-str assistant content must not call SessionStore (coverage #1822)."""
+    calls: list[object] = []
+
+    async def _append(*_a: object, **_k: object) -> None:
+        calls.append(1)
+
+    monkeypatch.setattr(
+        "services.chat_runs.conversation_sessions.append_turn",
+        _append,
+    )
+    turn = chat_runs.AdmittedTurn(
+        run=SimpleNamespace(run_id="run-ns"),
+        agent_id="agent-1",
+        container=None,
+        admitter=SimpleNamespace(),  # type: ignore[arg-type]
+        session_id="sess-1",
+    )
+    await chat_runs._persist_conversation_turn(
+        turn,
+        [{"role": "user", "content": "hi"}],
+        {"choices": [{"message": {"content": None}}]},
+    )
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_persist_conversation_turn_swallows_append_failures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Transcript append failure must not undo an already-answered Run."""
+
+    async def _boom(*_a: object, **_k: object) -> None:
+        raise RuntimeError("session store unavailable")
+
+    monkeypatch.setattr(
+        "services.chat_runs.conversation_sessions.append_turn",
+        _boom,
+    )
+    turn = chat_runs.AdmittedTurn(
+        run=SimpleNamespace(run_id="run-fail"),
+        agent_id="agent-1",
+        container=None,
+        admitter=SimpleNamespace(),  # type: ignore[arg-type]
+        session_id="sess-1",
+    )
+    await chat_runs._persist_conversation_turn(
+        turn,
+        [{"role": "user", "content": "hi"}],
+        {"choices": [{"message": {"content": "ok"}}]},
+    )

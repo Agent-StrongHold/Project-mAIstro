@@ -20,9 +20,9 @@ from uuid import uuid4
 import stores
 from fastapi import HTTPException
 from pydantic import BaseModel, ConfigDict, Field
-from services.model_store import JsonStore
 
 from maistro.sessions.store import InMemorySessionStore
+from services.model_store import JsonStore
 
 logger = logging.getLogger("hive.conversation_sessions")
 

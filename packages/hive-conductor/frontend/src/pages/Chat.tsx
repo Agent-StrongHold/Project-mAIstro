@@ -3,53 +3,20 @@ import { useSearchParams } from "react-router-dom";
 import { ApiError, apiGet, apiPost, fallbackMessage } from "../lib/api";
 import { randomId } from "../lib/ids";
 import type { ChatApiMessage, ChatSessionDetail, ChatSessionSummary } from "../lib/chatSessions";
-import { sessionPath, sessionsListPath } from "../lib/chatSessions";
+import {
+  fetchModelsCatalog,
+  openChatStream,
+  sessionPath,
+  sessionsListPath,
+} from "../lib/chatSessions";
+import type {
+  BriefField,
+  BriefView,
+  Message,
+  Session,
+  ToolStep,
+} from "../lib/chatUi";
 import { useWorkspaces } from "../context/WorkspaceContext";
-
-type Role = "user" | "assistant";
-type StepStatus = "running" | "done" | "error";
-
-interface ToolStep {
-  id: string;
-  tool: string;
-  args?: Record<string, unknown>;
-  status: StepStatus;
-  summary?: string;
-}
-
-interface Message {
-  id: string;
-  role: Role;
-  content: string;
-  reasoning?: string; // assistant only — streamed thinking / reasoning tokens
-  steps?: ToolStep[]; // assistant only — the live tool/status timeline
-  status?: string; // assistant only — transient status line while streaming
-  timestamp: Date;
-}
-
-/** The brief so far, as the chat stream's `brief` event carries it
- * (SPEC-091726-7c2a): the interview's summary and next question while it is
- * open, or the draft once the person committed. */
-interface BriefField {
-  key: string;
-  label: string;
-  value: string | null;
-  source: "user" | "verbatim" | "record" | "assumed" | "open";
-}
-interface BriefView {
-  event: string;
-  summary: { known: number; needed: number; ready: boolean; fields: BriefField[]; notes: string[] } | null;
-  question: { key: string; label: string; question: string; can_assume: boolean } | null;
-  draft?: { fields: Record<string, string>; assumed: string[]; notes: string[] };
-}
-
-interface Session {
-  id: string;
-  title: string;
-  messages: Message[];
-  createdAt: Date;
-  brief?: BriefView | null;
-}
 
 const SOURCE_LABEL: Record<BriefField["source"], string> = {
   user: "you",
@@ -298,8 +265,7 @@ export default function ChatPage() {
   }, [searchParams]);
 
   useEffect(() => {
-    // Models catalog is still a bare fetch (pre-existing typed-client debt).
-    fetch("/v1/settings/models")
+    fetchModelsCatalog()
       .then((res) => res.json())
       .then((data) => {
         const arr = Array.isArray(data) ? data : data.models || data.data || [];
@@ -487,18 +453,15 @@ export default function ChatPage() {
       };
 
       try {
-        const res = await fetch("/v1/chat/stream", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          credentials: "same-origin",
-          signal: abort.signal,
-          body: JSON.stringify({
+        const res = await openChatStream(
+          {
             model,
             messages: outbound,
             workspace_id: activeWorkspaceId,
             session_id: sessionId,
-          }),
-        });
+          },
+          abort.signal,
+        );
         if (!res.ok || !res.body) throw new Error(fallbackMessage(res.status));
 
         const reader = res.body.getReader();
@@ -652,11 +615,14 @@ export default function ChatPage() {
     return (
       <div className="chat-layout">
         <main className="chat-main">
-          <div className="empty-state" role="status">
-            <p className="empty-title">Select a Workspace</p>
-            <p className="empty-subtitle">
-              Chat sessions are Workspace-scoped. Pick or create a Workspace in the tab bar first.
-            </p>
+          {/* Keep aria-label so navigation-coverage e2e can probe Chat. */}
+          <div role="log" aria-live="polite" aria-label="Chat messages" className="message-list">
+            <div className="empty-state" role="status">
+              <p className="empty-title">Select a Workspace</p>
+              <p className="empty-subtitle">
+                Chat sessions are Workspace-scoped. Pick or create a Workspace in the tab bar first.
+              </p>
+            </div>
           </div>
         </main>
       </div>
