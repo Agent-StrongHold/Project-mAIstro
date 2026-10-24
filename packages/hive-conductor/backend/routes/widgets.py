@@ -496,16 +496,16 @@ async def capture_screenshot(request: Request) -> dict[str, Any]:
                     {
                         "name": "hive_session",
                         "value": session_id,
-                        "domain": "localhost",
+                        "domain": "localhost",  # DevSkim: ignore DS162092 until 2027-12-31
                         "path": "/",
                     }
-                ]  # DevSkim: ignore DS162092 until 2027-12-31
+                ]
             )
             page = await ctx.new_page()
             await page.goto(
-                "http://localhost:5173/dashboard",
+                "http://localhost:5173/dashboard",  # DevSkim: ignore DS162092 until 2027-12-31
                 wait_until="networkidle",
-                timeout=15000,  # DevSkim: ignore DS162092 until 2027-12-31
+                timeout=15000,
             )
             await page.wait_for_timeout(3000)
             # Dismiss onboarding if present

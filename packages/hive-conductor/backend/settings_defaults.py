@@ -18,9 +18,10 @@ def default_settings(*, pm_poc: bool | None = None) -> SettingsModel:
     """Sensible 2026 defaults aligned with hive config and setup wizard."""
     cfg = get_settings()
     router_model = cfg.chat_default_model or "cerebras-qwen-3-235b-a22b-2507"
-    api_host = os.getenv("HIVE_PUBLIC_URL", "http://127.0.0.1:8101").rstrip(
-        "/"
-    )  # DevSkim: ignore DS162092 until 2027-12-31
+    api_host = os.getenv(
+        "HIVE_PUBLIC_URL",
+        "http://127.0.0.1:8101",  # DevSkim: ignore DS162092 until 2027-12-31
+    ).rstrip("/")
     pm = is_pm_poc_mode() if pm_poc is None else pm_poc
 
     if pm:

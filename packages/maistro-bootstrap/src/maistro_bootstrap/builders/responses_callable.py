@@ -68,6 +68,17 @@ def _parse_env_file(path: Path) -> dict[str, str]:
     return values
 
 
+def _rewrite_compose_litellm_hosts() -> None:
+    """Rewrite Compose-internal ``litellm`` hostnames to loopback for host use."""
+    for key in ("LITELLM_URL", "LITELLM_BASE_URL", "LITELLM_PROXY_URL"):
+        val = os.environ.get(key, "")
+        if "://litellm:" in val:
+            os.environ[key] = val.replace(
+                "://litellm:",
+                "://127.0.0.1:",  # DevSkim: ignore DS162092 until 2027-12-31
+            )
+
+
 def _ensure_env_loaded() -> None:
     global _env_loaded
     if _env_loaded:
@@ -79,7 +90,9 @@ def _ensure_env_loaded() -> None:
     # silently picking up a real .env from a nearby engine-root checkout would
     # break that isolation. PYTEST_CURRENT_TEST is set by pytest itself for
     # every test, so this needs no coordination with any test suite's conftest.
+    # Compose-hostname rewrite still runs: it only touches already-set values.
     if os.environ.get("PYTEST_CURRENT_TEST"):
+        _rewrite_compose_litellm_hosts()
         return
 
     # Don't early-return just because a URL is exported: a user may have
@@ -93,10 +106,12 @@ def _ensure_env_loaded() -> None:
     # then walks upward from cwd.
     root = find_maistro_engine_root()
     if root is None:
+        _rewrite_compose_litellm_hosts()
         return
 
     env_file = root / ".env"
     if not env_file.is_file():
+        _rewrite_compose_litellm_hosts()
         return
 
     values = _parse_env_file(env_file)
@@ -104,12 +119,7 @@ def _ensure_env_loaded() -> None:
         if key in values and not os.environ.get(key):
             os.environ[key] = values[key]
 
-    # Docker Compose's internal service name — unreachable from the host.
-    for key in ("LITELLM_URL", "LITELLM_BASE_URL", "LITELLM_PROXY_URL"):
-        val = os.environ.get(key, "")
-        if "://litellm:" in val:
-            # DevSkim: ignore DS162092 until 2027-12-31
-            os.environ[key] = val.replace("://litellm:", "://127.0.0.1:")
+    _rewrite_compose_litellm_hosts()
 
 
 def _base_url() -> str:

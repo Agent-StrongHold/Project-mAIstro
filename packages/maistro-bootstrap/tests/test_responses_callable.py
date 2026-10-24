@@ -62,3 +62,15 @@ def test_unconfigured_returns_stub(monkeypatch: pytest.MonkeyPatch) -> None:
     result = LiteLLMCallable()(messages=[{"role": "user", "content": "hi"}])
     assert result["stop_reason"] == "end_turn"
     assert "not configured" in result["content"]
+
+
+def test_docker_compose_litellm_hostname_rewrites_to_loopback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Compose-internal `litellm` host is rewritten for host-side builders."""
+    from maistro_bootstrap.builders import responses_callable as rc
+
+    _clear_env(monkeypatch)
+    monkeypatch.setenv("LITELLM_URL", "http://litellm:4000")
+    monkeypatch.setattr(rc, "_env_loaded", False)
+    assert _base_url() == "http://127.0.0.1:4000"

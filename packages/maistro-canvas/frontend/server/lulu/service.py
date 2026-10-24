@@ -275,9 +275,10 @@ if __name__ == "__main__":
 
     import uvicorn
 
-    # Loopback by default; container deploys set LULU_BIND_HOST=0.0.0.0 so  # DevSkim: ignore DS162092 until 2027-12-31
+    # Loopback by default; container deploys set LULU_BIND_HOST=0.0.0.0 so
     # an accidental local `python service.py` doesn't expose Lulu on the LAN.
     bind_host = os.getenv(
-        "LULU_BIND_HOST", "127.0.0.1"
-    )  # DevSkim: ignore DS162092 until 2027-12-31
+        "LULU_BIND_HOST",
+        "127.0.0.1",  # DevSkim: ignore DS162092 until 2027-12-31
+    )
     uvicorn.run(app, host=bind_host, port=8260)

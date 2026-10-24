@@ -33,8 +33,7 @@ logger = logging.getLogger("hive.ui_auto")
 
 FRONTEND_DIR = Path(__file__).parent.parent.parent / "frontend"
 PAGES_DIR = FRONTEND_DIR / "src" / "pages"
-# DevSkim: ignore DS162092 until 2027-12-31
-DEFAULT_CLIMB_URL = "http://localhost:8101"
+DEFAULT_CLIMB_URL = "http://localhost:8101"  # DevSkim: ignore DS162092 until 2027-12-31
 
 
 async def screenshot(url: str, path: str = "/chat") -> str:
@@ -254,15 +253,18 @@ async def auto_climb(
     return {"best_score": best_score, "passes": max_passes, "history": history}
 
 
-if __name__ == "__main__":
+def build_cli_parser() -> Any:
+    """CLI parser for ``python -m services.ui_auto_climb`` (tested for coverage)."""
     import argparse
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--component", default="Chat.tsx")
     parser.add_argument("--passes", type=int, default=5)
-    # DevSkim: ignore DS162092 until 2027-12-31
-    parser.add_argument("--url", default="http://localhost:8101")
+    parser.add_argument("--url", default=DEFAULT_CLIMB_URL)
     parser.add_argument("--path", default="/chat")
-    args = parser.parse_args()
+    return parser
 
+
+if __name__ == "__main__":
+    args = build_cli_parser().parse_args()
     asyncio.run(auto_climb(args.component, args.url, args.path, args.passes))

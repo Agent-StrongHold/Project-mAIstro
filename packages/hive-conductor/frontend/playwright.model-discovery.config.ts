@@ -23,12 +23,10 @@ export default defineConfig({
     screenshot: "only-on-failure",
   },
   webServer: {
-    // DevSkim: ignore DS162092 until 2027-12-31 -- the runner deliberately
-    // hosts its own throwaway dev server on loopback; --host 127.0.0.1 keeps
-    // it unreachable from outside the machine under test.
-    command: `npm run dev -- --port ${PORT} --strictPort --host 127.0.0.1`,  // DevSkim: ignore DS162092 until 2027-12-31
-    // devskim: ignore DS162092 -- readiness poll of the same loopback server.
-    url: `http://127.0.0.1:${PORT}`,  // DevSkim: ignore DS162092 until 2027-12-31
+    // The runner deliberately hosts its own throwaway dev server on loopback;
+    // --host 127.0.0.1 keeps it unreachable from outside the machine under test.
+    command: `npm run dev -- --port ${PORT} --strictPort --host 127.0.0.1`, // DevSkim: ignore DS162092 until 2027-12-31
+    url: `http://127.0.0.1:${PORT}`, // DevSkim: ignore DS162092 until 2027-12-31
     reuseExistingServer: false,
     timeout: 90_000,
   },
