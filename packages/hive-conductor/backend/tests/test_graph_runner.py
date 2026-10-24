@@ -729,6 +729,43 @@ async def test_execute_dag_streaming_yields_full_lifecycle(
     async def _run_durable_graph(graph: Any, **kw: Any) -> Any:
         return _CompletedRecord()
 
+    # A Sentinel with the shipped graph-node grant, so nodes that actually
+    # run (the cancellation proofs) take the inline floor instead of failing
+    # closed to the sandbox. Mirrors `canonical_graph_spine`.
+    from maistro.capabilities.bootstrap import default_capability_registry
+    from maistro.security.permission_policy import build_permission_table
+    from maistro.security.sentinel.delegation import InMemoryDelegationAuthority
+    from maistro.security.sentinel.permission_source import CapabilityPermissionSource
+    from maistro.security.sentinel.policy import Sentinel
+    from maistro.security.warden.detector import Warden
+
+    _tbl = build_permission_table(
+        preset="none", permissions={"graph.node.execute": ["admin", "user"]}
+    )
+    _sentinel = Sentinel(
+        warden=Warden(),
+        permission_table=_tbl,
+        permission_source=CapabilityPermissionSource(
+            base=_tbl, capabilities=default_capability_registry()
+        ),
+        tier_policy={},
+        delegation_authority=InMemoryDelegationAuthority(),
+    )
+
+    import datetime as _dt
+
+    import stores as _stores
+
+    _stores.users["test-user"] = _stores.users._model_class(
+        id="test-user",
+        username="test-user",
+        password_hash="unused",
+        role="user",
+        is_active=True,
+        permissions=[],
+        created_at=_dt.datetime.now(_dt.UTC),
+    )
+
     monkeypatch.setattr(
         runner,
         "_container",
@@ -737,6 +774,7 @@ async def test_execute_dag_streaming_yields_full_lifecycle(
                 create_run=AsyncMock(return_value=SimpleNamespace(run_id="run-1"))
             ),
             graph_run_store=object(),
+            sentinel=_sentinel,
         ),
     )
     monkeypatch.setattr(runner, "record_run_completion", lambda record: 0)
@@ -766,6 +804,43 @@ async def test_execute_dag_streaming_yields_failed_on_exception(
     async def _boom(graph: Any, **kw: Any) -> Any:
         raise RuntimeError("synthetic")
 
+    # A Sentinel with the shipped graph-node grant, so nodes that actually
+    # run (the cancellation proofs) take the inline floor instead of failing
+    # closed to the sandbox. Mirrors `canonical_graph_spine`.
+    from maistro.capabilities.bootstrap import default_capability_registry
+    from maistro.security.permission_policy import build_permission_table
+    from maistro.security.sentinel.delegation import InMemoryDelegationAuthority
+    from maistro.security.sentinel.permission_source import CapabilityPermissionSource
+    from maistro.security.sentinel.policy import Sentinel
+    from maistro.security.warden.detector import Warden
+
+    _tbl = build_permission_table(
+        preset="none", permissions={"graph.node.execute": ["admin", "user"]}
+    )
+    _sentinel = Sentinel(
+        warden=Warden(),
+        permission_table=_tbl,
+        permission_source=CapabilityPermissionSource(
+            base=_tbl, capabilities=default_capability_registry()
+        ),
+        tier_policy={},
+        delegation_authority=InMemoryDelegationAuthority(),
+    )
+
+    import datetime as _dt
+
+    import stores as _stores
+
+    _stores.users["test-user"] = _stores.users._model_class(
+        id="test-user",
+        username="test-user",
+        password_hash="unused",
+        role="user",
+        is_active=True,
+        permissions=[],
+        created_at=_dt.datetime.now(_dt.UTC),
+    )
+
     monkeypatch.setattr(
         runner,
         "_container",
@@ -774,6 +849,7 @@ async def test_execute_dag_streaming_yields_failed_on_exception(
                 create_run=AsyncMock(return_value=SimpleNamespace(run_id="run-1"))
             ),
             graph_run_store=object(),
+            sentinel=_sentinel,
         ),
     )
     monkeypatch.setattr(runner, "run_durable_graph", _boom)
@@ -819,6 +895,43 @@ async def test_execute_dag_streaming_defers_run_until_past_started_frame(
     async def _project(result: dict[str, Any]) -> None:
         calls.append("project")
 
+    # A Sentinel with the shipped graph-node grant, so nodes that actually
+    # run (the cancellation proofs) take the inline floor instead of failing
+    # closed to the sandbox. Mirrors `canonical_graph_spine`.
+    from maistro.capabilities.bootstrap import default_capability_registry
+    from maistro.security.permission_policy import build_permission_table
+    from maistro.security.sentinel.delegation import InMemoryDelegationAuthority
+    from maistro.security.sentinel.permission_source import CapabilityPermissionSource
+    from maistro.security.sentinel.policy import Sentinel
+    from maistro.security.warden.detector import Warden
+
+    _tbl = build_permission_table(
+        preset="none", permissions={"graph.node.execute": ["admin", "user"]}
+    )
+    _sentinel = Sentinel(
+        warden=Warden(),
+        permission_table=_tbl,
+        permission_source=CapabilityPermissionSource(
+            base=_tbl, capabilities=default_capability_registry()
+        ),
+        tier_policy={},
+        delegation_authority=InMemoryDelegationAuthority(),
+    )
+
+    import datetime as _dt
+
+    import stores as _stores
+
+    _stores.users["test-user"] = _stores.users._model_class(
+        id="test-user",
+        username="test-user",
+        password_hash="unused",
+        role="user",
+        is_active=True,
+        permissions=[],
+        created_at=_dt.datetime.now(_dt.UTC),
+    )
+
     monkeypatch.setattr(
         runner,
         "_container",
@@ -827,6 +940,7 @@ async def test_execute_dag_streaming_defers_run_until_past_started_frame(
                 create_run=AsyncMock(return_value=SimpleNamespace(run_id="run-1"))
             ),
             graph_run_store=object(),
+            sentinel=_sentinel,
         ),
     )
     monkeypatch.setattr(runner, "record_run_completion", lambda record: 0)
@@ -912,6 +1026,43 @@ def _stub_canonical_walk(
     from services import canonical_dag_runner as runner
 
     monkeypatch.setattr(gr_mod(), "_build_llm_call", llm_builder)
+    # A Sentinel with the shipped graph-node grant, so nodes that actually
+    # run (the cancellation proofs) take the inline floor instead of failing
+    # closed to the sandbox. Mirrors `canonical_graph_spine`.
+    from maistro.capabilities.bootstrap import default_capability_registry
+    from maistro.security.permission_policy import build_permission_table
+    from maistro.security.sentinel.delegation import InMemoryDelegationAuthority
+    from maistro.security.sentinel.permission_source import CapabilityPermissionSource
+    from maistro.security.sentinel.policy import Sentinel
+    from maistro.security.warden.detector import Warden
+
+    _tbl = build_permission_table(
+        preset="none", permissions={"graph.node.execute": ["admin", "user"]}
+    )
+    _sentinel = Sentinel(
+        warden=Warden(),
+        permission_table=_tbl,
+        permission_source=CapabilityPermissionSource(
+            base=_tbl, capabilities=default_capability_registry()
+        ),
+        tier_policy={},
+        delegation_authority=InMemoryDelegationAuthority(),
+    )
+
+    import datetime as _dt
+
+    import stores as _stores
+
+    _stores.users["test-user"] = _stores.users._model_class(
+        id="test-user",
+        username="test-user",
+        password_hash="unused",
+        role="user",
+        is_active=True,
+        permissions=[],
+        created_at=_dt.datetime.now(_dt.UTC),
+    )
+
     monkeypatch.setattr(
         runner,
         "_container",
@@ -920,6 +1071,7 @@ def _stub_canonical_walk(
                 create_run=AsyncMock(return_value=SimpleNamespace(run_id="run-1"))
             ),
             graph_run_store=object(),
+            sentinel=_sentinel,
         ),
     )
     monkeypatch.setattr(runner, "record_run_completion", lambda record: 0)

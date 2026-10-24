@@ -132,6 +132,7 @@ verify_conductor_backup() {
     echo "[verify-restore] no secrets.age / user_credentials.enc captured — vault and per-user credentials were never provisioned at backup time; nothing ciphertext to verify"
   fi
 
+
   # state.db must be a usable SQLite database: intact, and carrying the
   # canonical spine (Workspaces, Runs/NodeRuns/Attempts), the graph
   # continuations with their fencing version, sessions, and the audit log.
@@ -326,24 +327,47 @@ main() {
     -e POSTGRES_DB="${PG_DB}" \
     "${PG_IMAGE}" >/dev/null
 
-  # Readiness must mean the TARGET DATABASE answers, not merely that a server
-  # is listening. The image entrypoint starts a temporary bootstrap server that
-  # accepts socket connections BEFORE its init step creates ${PG_DB}, so
-  # pg_isready alone can pass inside that window and pg_restore then dies with
-  # `FATAL: database "${PG_DB}" does not exist` — observed live in CI
-  # (tests/test_restore_oracle_characterization.py, 2026-10-18). The loop
-  # therefore additionally requires one successful query against ${PG_DB}.
-  for _ in $(seq 1 60); do
+  # Readiness must mean the FINAL server answers queries on the TARGET DATABASE,
+  # not merely that some server is listening. The image entrypoint starts a
+  # temporary bootstrap server that accepts unix-socket connections BEFORE its
+  # init step creates ${PG_DB}, so `pg_isready` alone can pass inside that
+  # window and pg_restore then dies with `FATAL: database "${PG_DB}" does not
+  # exist` — observed live in CI (tests/test_restore_oracle_characterization.py,
+  # 2026-10-18). The temporary server runs with `listen_addresses=''`, so a
+  # probe over TCP loopback can only succeed once the final server is up, and a
+  # real query against ${PG_DB} can only succeed once init has created it. The
+  # loop therefore requires BOTH the socket readiness signal and a TCP-loopback
+  # query against the target database, which is strictly stronger than either
+  # signal alone.
+  #
+  # Readiness budget: 180 probes (~3 min) at 1s per probe, reconciled across
+  # develop's #2185 (120) and this branch's #1820 repair (180) pinning the
+  # longer budget for the same congested-runner failure class: a shared runner
+  # busy with the 12-minute root suite ran initdb slower than a 60-probe
+  # budget, so the drill reported VERIFIER FAIL for infrastructure rather than
+  # for the backup under verification (see
+  # test_verify_drill_readiness_budget_absorbs_a_loaded_runner). A probe that
+  # finds the container gone reports the engine's last log lines immediately
+  # instead of spinning out the remaining budget on a container that can no
+  # longer become ready.
+  ready=0
+  for _ in $(seq 1 180); do
     if docker exec "${SCRATCH_NAME}" pg_isready -U "${PG_USER}" >/dev/null 2>&1 \
-      && docker exec "${SCRATCH_NAME}" psql -X -q -U "${PG_USER}" -d "${PG_DB}" \
-        -c 'SELECT 1;' >/dev/null 2>&1; then
+      && docker exec "${SCRATCH_NAME}" psql -X -q -h 127.0.0.1 -U "${PG_USER}" \
+        -d "${PG_DB}" -c 'SELECT 1;' >/dev/null 2>&1; then
+      ready=1
       break
+    fi
+    if [[ "$(docker inspect -f '{{.State.Running}}' "${SCRATCH_NAME}" 2>/dev/null)" != "true" ]]; then
+      docker logs "${SCRATCH_NAME}" 2>&1 | tail -40 >&2 || true
+      fail_verifier "scratch postgres container exited before becoming ready (last log lines above)"
     fi
     sleep 1
   done
-  docker exec "${SCRATCH_NAME}" psql -X -q -U "${PG_USER}" -d "${PG_DB}" \
-    -c 'SELECT 1;' >/dev/null 2>&1 \
-    || fail_verifier "scratch postgres did not become ready with database ${PG_DB}"
+  [[ "${ready}" == 1 ]] || {
+    docker logs "${SCRATCH_NAME}" 2>&1 | tail -40 >&2 || true
+    fail_verifier "scratch postgres did not become ready with database ${PG_DB} within 180s (its logs are above)"
+  }
 
   # ── 3. Restore the custom-format archive ─────────────────────────────────────
   if ! docker exec -i "${SCRATCH_NAME}" pg_restore -U "${PG_USER}" -d "${PG_DB}" \

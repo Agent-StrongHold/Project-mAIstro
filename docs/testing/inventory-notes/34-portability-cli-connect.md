@@ -15,9 +15,10 @@ to the production entry point the disposition ledger named: a
 `maistro.cli` subcommand. The new `maistro portability` commands (`formats`,
 `import-agent`, `import-skills`, `export`) are real file-conversion behavior —
 no store, no lifecycle, no fake keep-alive import. The reachability baseline
-shrank 178 → 174 and the `portability` disposition group was removed; the
-convergence-matrix Portability row moved CONNECT → KEEP and the README
-"Known non-features" list dropped `portability`.
+shrank 153 → 149 (the four `maistro.portability*` rows left the baseline) and
+the `portability` disposition group was removed; the convergence-matrix
+Portability row moved CONNECT → KEEP and the README "Known non-features" list
+dropped `portability`.
 
 ## Tests added
 

@@ -96,6 +96,10 @@ class PgWorkspaceStore:
             raise TypeError(msg)
         self._pool = pool
         self._project_store: DurableProjectScopeStore = project_store
+        # Pairing is the composition point: bind the Project store to this
+        # Workspace store so scoped Project reads cannot run unauthorized
+        # (#1150).
+        self._project_store.bind_workspace_store(self)
         self.persona_store = persona_store
 
     @property
@@ -162,16 +166,23 @@ class PgWorkspaceStore:
         return model_of(Workspace, payload)
 
     async def update(self, workspace: Workspace, *, principal_id: str | None = None) -> Workspace:
-        """Persist a changed Workspace and stamp ``updated_at``."""
-        from maistro.workspaces.authorization import WorkspaceAuthorizationDenied
-        from maistro.workspaces.store_boundary import is_blank_principal, require_workspace_view
+        """Persist a changed Workspace and stamp ``updated_at``.
 
-        if principal_id is not None:
-            if is_blank_principal(principal_id):
-                raise WorkspaceAuthorizationDenied
-            await require_workspace_view(self, workspace.workspace_id, principal_id)
+        A supplied principal must administer the Workspace (#1150): renaming
+        or re-describing it is an owner mutation, not a member read.
+        """
+        from maistro.workspaces.store_boundary import authorize_workspace_administer
+
+        await authorize_workspace_administer(self, workspace.workspace_id, principal_id)
         updated = workspace.model_copy(update={"updated_at": datetime.now(UTC)})
-        async with self._pool.acquire() as conn:
+        from maistro.workspaces.authorization import WorkspaceAction
+        from maistro.workspaces.store_boundary import require_workspace_action_on
+
+        async with self._pool.acquire() as conn, conn.transaction():
+            await self._lock_workspace(conn, workspace.workspace_id)
+            await require_workspace_action_on(
+                self, conn, workspace.workspace_id, principal_id, WorkspaceAction.ADMINISTER
+            )
             status = await conn.execute(
                 """UPDATE canonical_workspaces
                       SET name = $2, updated_at = $3, payload = $4::text::jsonb
@@ -185,14 +196,32 @@ class PgWorkspaceStore:
             raise WorkspaceNotFound(workspace.workspace_id)
         return updated
 
-    async def delete(self, workspace_id: str) -> None:
-        """Remove the Workspace, its memberships, and its Projects."""
+    async def delete(self, workspace_id: str, *, principal_id: str | None = None) -> None:
+        """Remove the Workspace, its memberships, and its Projects.
+
+        A supplied principal must administer the Workspace (#1150). The
+        check runs before the write opens, so an outsider's attempt does not
+        touch the rows even if it races a membership change, and is re-read
+        on the locked connection inside the transaction, so a demotion that
+        commits in between still refuses (#1150).
+        """
+        from maistro.workspaces.authorization import WorkspaceAction
+        from maistro.workspaces.store_boundary import (
+            authorize_workspace_administer,
+            require_workspace_action_on,
+        )
+
+        await authorize_workspace_administer(self, workspace_id, principal_id)
         # Purge first, then the Workspace row, in one transaction (#1121).
         # `WorkspaceNotFound` from the row delete rolls the purge back with
         # it, so deleting an absent Workspace touches nothing. The live
         # Persona leaves through its canonical store in the same window, so a
         # Persona or Project failure rolls the whole delete back.
         async with self._project_store.transaction() as conn:
+            await self._lock_workspace(conn, workspace_id)
+            await require_workspace_action_on(
+                self, conn, workspace_id, principal_id, WorkspaceAction.ADMINISTER
+            )
             await self._project_store.purge_workspace_in(conn, workspace_id)
             if self.persona_store is not None:
                 await self.persona_store.delete_for_workspace_in(conn, workspace_id)
@@ -212,8 +241,16 @@ class PgWorkspaceStore:
             )
         return [model_of(Workspace, row["payload"]) for row in rows]
 
-    async def list_memberships(self, workspace_id: str) -> list[WorkspaceMembership]:
-        """Every membership in the Workspace, ordered by (added_at, user_id)."""
+    async def list_memberships(
+        self, workspace_id: str, *, principal_id: str | None = None
+    ) -> list[WorkspaceMembership]:
+        """Every membership in the Workspace, ordered by (added_at, user_id).
+
+        A supplied principal must be able to view the Workspace (#1150).
+        """
+        from maistro.workspaces.store_boundary import authorize_workspace_view
+
+        await authorize_workspace_view(self, workspace_id, principal_id)
         async with self._pool.acquire() as conn:
             await self._require_workspace(conn, workspace_id)
             rows = await conn.fetch(
@@ -229,8 +266,15 @@ class PgWorkspaceStore:
         workspace_id: str,
         *,
         user_id: str,
+        principal_id: str | None = None,
     ) -> WorkspaceMembership | None:
-        """One user's membership, or ``None`` when they are not a member."""
+        """One user's membership, or ``None`` when they are not a member.
+
+        A supplied principal must be able to view the Workspace (#1150).
+        """
+        from maistro.workspaces.store_boundary import authorize_workspace_view
+
+        await authorize_workspace_view(self, workspace_id, principal_id)
         async with self._pool.acquire() as conn:
             await self._require_workspace(conn, workspace_id)
             payload = await conn.fetchval(
@@ -247,10 +291,28 @@ class PgWorkspaceStore:
         *,
         user_id: str,
         role: WorkspaceRole,
+        principal_id: str | None = None,
     ) -> WorkspaceMembership:
-        """Create or re-role a membership, refusing to strip the last owner."""
+        """Create or re-role a membership, refusing to strip the last owner.
+
+        A supplied principal must administer the Workspace (#1150) -- first
+        as a fast refusal before any lock, then re-read on the locked
+        connection inside the transaction, so an owner demoted between the
+        two reads refuses here rather than writing with stale authority
+        (#1150).
+        """
+        from maistro.workspaces.authorization import WorkspaceAction
+        from maistro.workspaces.store_boundary import (
+            authorize_workspace_administer,
+            require_workspace_action_on,
+        )
+
+        await authorize_workspace_administer(self, workspace_id, principal_id)
         async with self._pool.acquire() as conn, conn.transaction():
             await self._lock_workspace(conn, workspace_id)
+            await require_workspace_action_on(
+                self, conn, workspace_id, principal_id, WorkspaceAction.ADMINISTER
+            )
             existing_payload = await conn.fetchval(
                 """SELECT payload FROM canonical_workspace_memberships
                     WHERE workspace_id = $1 AND user_id = $2""",
@@ -278,10 +340,29 @@ class PgWorkspaceStore:
             await self._insert_membership(conn, membership, on_conflict_update=True)
         return membership
 
-    async def remove_membership(self, workspace_id: str, *, user_id: str) -> None:
-        """Drop a membership, refusing to strip the last owner."""
+    async def remove_membership(
+        self, workspace_id: str, *, user_id: str, principal_id: str | None = None
+    ) -> None:
+        """Drop a membership, refusing to strip the last owner.
+
+        A supplied principal must administer the Workspace, or be the member
+        removing themselves (#1150) -- fast refusal first, then the same
+        rule re-decided on the locked connection inside the transaction, so
+        a concurrent demotion still refuses (#1150).
+        """
+        from maistro.workspaces.store_boundary import (
+            authorize_membership_removal,
+            require_membership_removal_on,
+        )
+
+        await authorize_membership_removal(
+            self, workspace_id, user_id=user_id, principal_id=principal_id
+        )
         async with self._pool.acquire() as conn, conn.transaction():
             await self._lock_workspace(conn, workspace_id)
+            await require_membership_removal_on(
+                self, conn, workspace_id, user_id=user_id, principal_id=principal_id
+            )
             role = await conn.fetchval(
                 """SELECT role FROM canonical_workspace_memberships
                     WHERE workspace_id = $1 AND user_id = $2""",
@@ -350,6 +431,25 @@ class PgWorkspaceStore:
             membership.added_at,
             json_of(membership),
         )
+
+    async def lock_and_read_membership(
+        self, conn: Any, workspace_id: str, *, user_id: str
+    ) -> WorkspaceMembership | None:
+        """One membership, on the connection the caller already holds (#1150).
+
+        A durable write calls this after taking the Workspace row lock
+        (`SELECT ... FOR UPDATE`), so the read that decides authority is
+        serialized with a revocation that commits before the lock was
+        granted -- the property a pre-write check on a second pooled
+        connection cannot have.
+        """
+        payload = await conn.fetchval(
+            """SELECT payload FROM canonical_workspace_memberships
+                WHERE workspace_id = $1 AND user_id = $2""",
+            workspace_id,
+            user_id,
+        )
+        return model_of(WorkspaceMembership, payload) if payload is not None else None
 
     async def _lock_workspace(self, conn: Any, workspace_id: str) -> None:
         """Serialise membership writes for one Workspace, or refuse."""

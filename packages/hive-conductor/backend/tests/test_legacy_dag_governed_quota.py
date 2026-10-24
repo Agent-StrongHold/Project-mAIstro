@@ -179,12 +179,28 @@ def _install_container(monkeypatch: pytest.MonkeyPatch, tracker: _RecordingTrack
         quota_tracker=tracker,
         policy_evaluator=binding_scope_policy,
     )
+    # Host user record for the acting principal (role intersection, #60/#845).
+    import datetime as _dt
+
+    import stores as _stores
+
+    _stores.users["quota-user"] = _stores.users._model_class(
+        id="quota-user",
+        username="quota-user",
+        password_hash="unused",
+        role="user",
+        is_active=True,
+        permissions=[],
+        created_at=_dt.datetime.now(_dt.UTC),
+    )
+
     container = SimpleNamespace(
         capability_effects=effects,
         provider_registry=_model_registry(),
         llm_router=SimpleNamespace(),
         run_store=spine.run_store,
         graph_run_store=spine.graph_run_store,
+        sentinel=getattr(spine, "sentinel", None),
     )
     monkeypatch.setattr(runner, "_container", lambda: container)
     return container, usage_log, effects.invocation_store
@@ -359,12 +375,27 @@ async def test_dag_node_without_effect_authority_falls_back_and_records_nothing(
 
         return call
 
+    import datetime as _dt
+
+    import stores as _stores
+
+    _stores.users["quota-user"] = _stores.users._model_class(
+        id="quota-user",
+        username="quota-user",
+        password_hash="unused",
+        role="user",
+        is_active=True,
+        permissions=[],
+        created_at=_dt.datetime.now(_dt.UTC),
+    )
+
     monkeypatch.setattr(
         runner,
         "_container",
         lambda: SimpleNamespace(
             run_store=canonical_graph_spine.run_store,
             graph_run_store=canonical_graph_spine.graph_run_store,
+            sentinel=getattr(canonical_graph_spine, "sentinel", None),
         ),
     )
     _FakeGatewayClient.seen = []

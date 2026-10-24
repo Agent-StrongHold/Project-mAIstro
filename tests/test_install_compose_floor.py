@@ -32,6 +32,8 @@ INSTALL_SH = ROOT / "install.sh"
 #: The compose-floor functions, lifted verbatim from install.sh.
 _FUNCTIONS = (
     "version_ge",
+    "selected_container_runtime",
+    "runtime_compose_cmd",
     "detect_compose_cmd",
     "compose_reported_version",
     "compose_upgrade_instructions",
@@ -47,6 +49,10 @@ def _harness(shim_dir: Path, prelude: str = "", base_path: str = "$PATH") -> str
     return f"""
 set -euo pipefail
 PATH={shlex.quote(str(shim_dir))}:{base_path}
+# #1820: detect_compose_cmd now reads the runtime selection through
+# selected_container_runtime, which resolves a plan dir; these tests model the
+# unselected/auto path, so point it at a plan that does not exist.
+PLAN_DIR={shlex.quote(str(shim_dir / "no-plan-here"))}
 ok() {{ echo "[ok] $*"; }}
 info() {{ :; }}
 warn() {{ echo "WARN: $*" >&2; }}

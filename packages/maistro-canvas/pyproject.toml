@@ -13,6 +13,8 @@ dependencies = [
     "asyncpg>=0.30,<1",
     # RGBA layer assembly in canvas/compositor.py — a hard runtime dep, not
     # optional: the module-level _LANCZOS/_BICUBIC lookups run at import time.
+    # Floor follows the 13.x line: 12.3.0 carries PYSEC/CVE advisories fixed
+    # only in 13.0.0 (pip-audit gate, #848 CI repair round).
     "pillow>=13.0.0,<14",
     "httpx>=0.28,<1",
     "pydantic>=2.4.0,<3",
