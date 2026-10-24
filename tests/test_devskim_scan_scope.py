@@ -83,9 +83,20 @@ def _shipped_sources() -> list[str]:
                     continue
                 rel = path.relative_to(REPO_ROOT)
                 parts = set(rel.parts)
-                # Tests and vendored code are what the list is *for*; they are
-                # not the shipped surface it must leave alone.
-                if parts & {"tests", "__tests__", "node_modules", "dist", "third_party"}:
+                # Tests, vendored code, and the vendored swagger-ui-dist
+                # release (#1425, served by backend/routes/api_docs.py with
+                # sha256 provenance pinned in `_ASSETS` and enforced by
+                # `backend/tests/test_docs_first_party.py`) are what the list
+                # is *for*; they are not the shipped surface it must leave
+                # alone.
+                if parts & {
+                    "tests",
+                    "__tests__",
+                    "node_modules",
+                    "dist",
+                    "third_party",
+                    "swagger-ui",
+                }:
                     continue
                 if ".test." in path.name:
                     continue
@@ -158,6 +169,7 @@ def test_a_shipped_template_under_a_docs_directory_stays_in_scope() -> None:
         "packages/hive-conductor/backend/tests/test_scheduler.py",
         "packages/maistro-canvas/frontend/server/security.test.js",
         "packages/maistro-evolve/src/maistro_evolve/benchmarks/third_party/ifeval/instructions.py",
+        "packages/hive-conductor/backend/static/swagger-ui/swagger-ui-bundle.js",
     ],
 )
 def test_the_noisy_trees_are_still_excluded(path: str) -> None:

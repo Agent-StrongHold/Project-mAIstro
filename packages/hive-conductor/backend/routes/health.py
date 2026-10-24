@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from config import get_settings
-from fastapi import APIRouter, Response
+from fastapi import APIRouter, Request, Response
 from models.schemas import ReadyResponse
 
 _START = time.monotonic()
@@ -81,6 +81,18 @@ def _log_redaction_active() -> bool:
         return False
 
 
+def _engine_state() -> dict:
+    """Engine lifecycle state (#1181). Same defensive contract as every probe
+    here: /health must answer even when the engine module itself is broken.
+    """
+    try:
+        from services.engine import engine_health
+
+        return engine_health()
+    except Exception:
+        return {"state": "unknown", "cause": "health_probe_failed", "degradations": []}
+
+
 def _workspace_authority_available() -> bool:
     """Whether Workspace requests can reach their canonical store (#37).
 
@@ -97,13 +109,112 @@ def _workspace_authority_available() -> bool:
         return False
 
 
+def _optional_routers_state(app: Any) -> dict[str, str | None]:
+    """`{module: error | None}` for the optional feature routers (M3-B7, #97).
+
+    `_include_optional_router` records every mount outcome on
+    `app.state.optional_routers` precisely so a caller can ask what happened;
+    a startup log line is not queryable. Defensive like every probe here:
+    /health must answer even if the attribute is missing (a process still
+    running older code) or holds something unexpected.
+    """
+    state = getattr(app.state, "optional_routers", None)
+    if not isinstance(state, dict):
+        return {}
+    return {str(module): (None if error is None else str(error)) for module, error in state.items()}
+
+
+def _degraded_services(
+    *,
+    llm_configured: bool,
+    memory_decay: dict,
+    memory_decay_enabled: bool,
+    log_redaction: bool,
+    identity: dict,
+    identity_required: bool,
+    optional_routers: dict[str, str | None],
+) -> list[dict[str, str]]:
+    """Name every degraded capability and why, in one stable shape (M3-B7, #97).
+
+    `degraded: true` answers *whether* the Conductor is diminished; a
+    user-facing operating state has to answer *what* and *why* — the UI banner
+    and `hctl status` render this list verbatim, so each reason is written to
+    be shown to a person. Order is stable: the always-present capability
+    checks first, then the optional routers alphabetically.
+    """
+    services: list[dict[str, str]] = []
+    if not llm_configured:
+        services.append(
+            {
+                "service": "llm_gateway",
+                "reason": "no LLM gateway configured (set LITELLM_API_BASE or LITELLM_PROXY_URL)",
+            }
+        )
+    if not memory_decay_enabled:
+        services.append(
+            {
+                "service": "memory_decay",
+                "reason": f"episodic decay is not running (state: {memory_decay.get('state', 'unknown')})",
+            }
+        )
+    if not log_redaction:
+        services.append(
+            {
+                "service": "log_redaction",
+                "reason": "ADR-064 redaction inactive; secrets may appear in logs",
+            }
+        )
+    if identity_required:
+        services.append(
+            {
+                "service": "identity",
+                "reason": f"identity module status: {identity.get('status', 'unknown')}",
+            }
+        )
+    for module, error in sorted(optional_routers.items()):
+        if error is not None:
+            services.append({"service": f"router:{module}", "reason": error})
+    return services
+
+
+def _reactor_persistence_family() -> str:
+    """The Reactor's persistence authority, in the map's vocabulary (#1178).
+
+    The Reactor writes through the canonical `State` — one writer on the
+    configured state database — so its events land in the Conductor's own
+    state database, not in a store of its own. The write is queued on the
+    State's writer and no durable-success claim comes back to a caller, which
+    is the `fire-and-forget` mode the persistence map
+    (`docs/architecture/CONDACTOR-PERSISTENCE-MAP.md`) names for it. A
+    Reactor with no State bound has no persistence authority at all, and says
+    so instead of wearing a durable label.
+
+    Same defensive contract as the probes above: an unreadable Reactor
+    reports as unavailable, never as durable.
+    """
+    try:
+        from services.foundation import get_foundation
+
+        reactor = get_foundation().reactor
+    except Exception:
+        return "unavailable"
+    if reactor is None:
+        return "unavailable"
+    backend = getattr(reactor, "persistence_backend", None)
+    return "fire-and-forget" if backend is not None else "unavailable"
+
+
 def _persistence_status() -> dict:
-    """Per-family durability/ack mode (#333, #1179).
+    """Per-family durability/ack mode (#333, #1179, #1178).
 
     Every Conductor mutation path acknowledges at the State writer's commit —
     the write APIs raise instead of accepting a command into the queue — so
     the mode a family reports is `durable-ack` (survives restart; 2xx means
     committed) or `ephemeral`/`memory` (process-lifetime, labelled as such).
+    The Reactor is the one family that is not a user-visible mutation surface
+    but does have a persistence authority of its own (#1178): it reports the
+    mode the persistence map gives it, so an operator reads one map instead of
+    inferring the Reactor's store from the code.
     Same defensive contract as the probes above: /health must never fail
     because of this, so an unreadable state reports as `unknown`, never as
     durable.
@@ -121,6 +232,11 @@ def _persistence_status() -> dict:
                 "settings": "durable-ack" if settings_store.durable() else "ephemeral",
                 "profiles": "durable-ack" if profile_store.durable() else "ephemeral",
                 "registration_policy": "durable-ack" if registration_durable() else "ephemeral",
+                # #1178: the Reactor's persistence authority, named where every
+                # other store family's is named — `fire-and-forget` when it
+                # writes through the canonical State, `unavailable` when it has
+                # no store to write through.
+                "reactor": _reactor_persistence_family(),
             },
         }
     except Exception:
@@ -202,10 +318,23 @@ def health(request: Request) -> dict:
         # #333/#1179: the durability/ack mode per store family — whether a
         # 2xx from a mutation route means the State writer committed it.
         "persistence": _persistence_status(),
-        "degraded": (not llm_configured)
-        or (not memory_decay_enabled)
-        or (not log_redaction)
-        or identity_required,
+        # M3-B7 (#97): a user-facing operating state names what is degraded.
+        # `optional_routers` is the raw mount outcome per feature router;
+        # `degraded_services` is the human-readable rendering of every
+        # degraded capability, which the UI banner and `hctl status` show.
+        "optional_routers": optional_routers,
+        "degraded_services": degraded_services,
+        # #1181: engine lifecycle visibility. Liveness stays 200 "ok" — it is
+        # the readiness probe that takes a failed engine out of rotation.
+        "engine": engine,
+        # Degraded iff any capability is diminished: the rendered #97 list
+        # covers llm/decay/redaction/identity/optional routers, and the #1181
+        # engine lifecycle closes the union (a failed boot or an unreadable
+        # engine probe is a degraded operating state even when every check
+        # above is green). A clean engine that never booted (`not_started`, as
+        # in tests and scripts) is not by itself a degraded operating state.
+        "degraded": bool(degraded_services)
+        or engine["state"] in {"degraded", "startup_failed", "unknown"},
     }
 
 
@@ -236,7 +365,13 @@ def ready(response: Response) -> ReadyResponse:
         checks["identity"] = False
     checks["log_redaction"] = _log_redaction_active()
     checks["workspace_authority"] = _workspace_authority_available()
-    is_ready = checks["api"] and checks["workspace_authority"]
+    # #1181: an engine whose boot failed (or is mid-boot, or was stopped) takes
+    # the instance out of rotation — the product's chat/mission surfaces fail
+    # closed without it. `not_started` keeps the historical contract for
+    # contexts that never run the app lifespan (tests, scripts); an unreadable
+    # probe reports not-ready, never ready.
+    checks["engine"] = _engine_state()["state"] in {"ready", "degraded", "not_started"}
+    is_ready = checks["api"] and checks["workspace_authority"] and checks["engine"]
     if not is_ready:
         # 503 so the image and Compose healthchecks, which only look at the
         # status code, take the instance out of rotation.

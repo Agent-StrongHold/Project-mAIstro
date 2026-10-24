@@ -284,13 +284,18 @@ is the seam) before advertising group removal as revocation.
 The following text is intended to be copied verbatim into the release notes.
 
 > v1.0.0 ships with an in-memory task queue, so a restart loses queued and
-> active tasks. Canvas jobs require an external runner; Canvas publish and
-> some export formats are not implemented. The mounted Canvas data routes are
-> unconfigured in the default shipped service and return `503`. Design Studio
-> can discover resources and select artifact modes, but visual generation,
-> editing/preview, and publish/export are not available. Conductor can run in
-> degraded mode when optional services are unavailable, and API-wide HTTP
-> content negotiation from ADR-076 is deferred to v1.1. The generic Workspace
+> active tasks. Memory write-authority enforcement (ADR-057) is active at every
+> memory store boundary — deployments run agent-managed by default and can set
+> `system_managed` to strip agent write authority — but read-path gating,
+> hybrid per-block tags and denial events are not wired, and no product-level
+> E2E proves a denied write yet. Canvas jobs require an external runner; Canvas publish/export
+> is governed at `/v2/canvas` (png/webp/jpg/html/pptx where configured; pdf/svg
+> are explicitly unsupported), while print-on-demand and external destinations
+> are not implemented. The mounted Canvas data routes are unconfigured in the
+> default shipped service and return `503`. Design Studio can discover
+> resources and select artifact modes, but visual generation and
+> editing/preview still need wired providers. Conductor can run in degraded
+> mode when optional services are unavailable. The generic Workspace
 > backlog control plane (#82) is release-deferred: work intake is tasks and
 > canonical Runs only. Entra group-gated JIT provisioning (#492) gates
 > account creation only; removing a user from an eligible group does not

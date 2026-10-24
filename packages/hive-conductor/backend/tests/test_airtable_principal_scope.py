@@ -11,6 +11,8 @@ from routes import widgets
 from services import chat_completion
 from services import user_credentials as cred_svc
 
+from maistro.identity import Principal
+
 
 class _NonIterableConfig(dict[str, object]):
     """Catch regressions that enumerate the process-wide config store."""
@@ -31,7 +33,7 @@ class _CredentialStore:
 
 
 def _request(user_id: str) -> Any:
-    return SimpleNamespace(state=SimpleNamespace(user={"id": user_id}))
+    return SimpleNamespace(state=SimpleNamespace(principal=Principal(user_id=user_id)))
 
 
 @pytest.fixture

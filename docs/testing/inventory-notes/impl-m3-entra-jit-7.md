@@ -92,6 +92,46 @@ can read transitive group membership, and the feature denies (rather than
 provisions) if that scope is absent. Entitlement reconciliation after group
 removal remains the declared KNOWN-GAPS deferral.
 
+## Rebase round (job `6a0b0a800ec24cf8bc5e5bf06bad84c1`): lane rebuilt onto develop
+
+The squash-rebuild of this lane onto develop (`a8a79725b`) was corrupt: its
+`uv.lock` spliced rows (an `asyncpg 0.31.0` entry carrying `ast_serialize`
+wheels; 13 still-referenced package entries dropped), and 12 files carried
+syntactically invalid splices (653 `invalid-syntax` findings) with ~100 more
+semantically damaged (`F821`). This round reconstructed the lane as its four
+genuine issue-#7 commits (`df227b0f2`, `8211ee682`, `a5003ce30`, `b4acea845`)
+cherry-picked onto `origin/develop` (`4de7e906d`), resolving the KNOWN-GAPS
+release-notes conflict in favor of develop's newer paragraph plus this slice's
+two disposition sentences, and dropping `b4acea845`'s `vulture-baseline.json`
+re-churn (computed against the divergent lane tree; the ledger edit requires an
+explicit exact-debt-ledger instruction). On this base the JIT slice adds no
+vulture debt: the trusted-base gate passes with develop's unmodified ledger.
+
+Re-validation executed at this tip:
+
+- `uv sync --locked --all-extras` — exit 0 (venv repaired: a stale
+  `jsonschema` dist-info without package files was force-reinstalled).
+- `uv run ruff check .` — all checks passed; `uv run ruff format --check .` —
+  3486 files already formatted.
+- `uv run pytest packages/hive-conductor/backend/tests/ -q` — 3949 passed,
+  26 skipped (includes this suite's 22 and the adjacent auth/Entra suites);
+  `test_m8a6_workspace_noninterference_research.py` run separately — 17 passed.
+- `uv run python scripts/check-release-consistency.py` — exit 0.
+- `uv run python scripts/check-reachability.py` — 152 unreachable of 1460
+  modules, exit 0 (prune holds on develop's larger tree; was 187 on the lane
+  snapshot).
+- `scripts/check-reachability-provenance.py`,
+  `check-reachability-dispositions-provenance.py`,
+  `check-promotion-surface.py`, `check-promotion-surface-provenance.py` — all
+  exit 0; `services/entra_entitlements.py` remains on the containment surface.
+- `scripts/check-vulture-baseline.py packages/*/src --min-confidence 60
+  --exclude '*/third_party/*'` (CI's exact arguments) — exit 0, 1302 reviewed
+  identities, 0 unclassified, trusted base `4de7e906d9dc`.
+- `scripts/check-ratchet-provenance.py`, `check-radon-baseline.py` (127
+  blocks), `check-backlog-consistency.py`, `check-suite-inventory.py` (21
+  suites match) — all exit 0.
+- `uv run mypy --strict packages/maistro-core/src` — success (826 files).
+
 ## Out of scope (recorded, not silently dropped)
 
 Goal model / persistent Workspace Agent (#804), backlog implementation (#82),

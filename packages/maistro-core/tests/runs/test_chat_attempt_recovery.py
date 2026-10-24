@@ -504,7 +504,7 @@ class TestATerminalWriteFailureIsNotSwallowed:
         )
         container.conduit = conduit = _Conduit(content="the answer")
 
-        result = await container.route_request(MESSAGES)
+        result = await _route_request(container, MESSAGES)
 
         assert result["choices"][0]["message"]["content"] == "the answer"
         assert conduit.calls == 1

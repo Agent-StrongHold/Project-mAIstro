@@ -343,13 +343,8 @@ export default function AuditLog() {
           </a>,
           <button
             key="refresh"
-            onClick={handleRefresh}
-            style={{
-              padding: "5px 14px", borderRadius: 4, cursor: "pointer",
-              fontFamily: "var(--mono)", fontSize: 12,
-              border: "1.3px solid var(--rule)",
-              background: "var(--paper)", color: "var(--ink)",
-            }}
+            onClick={() => { void loadFirstPage(); }}
+            style={ghostButtonStyle}
           >
             Refresh
           </button>,
@@ -402,63 +397,45 @@ export default function AuditLog() {
         ) : entries.length === 0 ? (
           <EmptyState icon="📜" title="No audit entries" />
         ) : (
-          <div style={{ overflow: "auto" }}>
-            <table style={{ width: "100%", borderCollapse: "collapse", fontFamily: "var(--mono)", fontSize: 12 }}>
-              <thead>
-                <tr style={{ borderBottom: "1.3px solid var(--rule)" }}>
-                  <th style={{ textAlign: "left", padding: "8px 12px", color: "var(--pencil)", fontWeight: 600, fontSize: 12, textTransform: "uppercase", whiteSpace: "nowrap" }}>Time</th>
-                  <th style={{ textAlign: "left", padding: "8px 12px", color: "var(--pencil)", fontWeight: 600, fontSize: 12, textTransform: "uppercase", whiteSpace: "nowrap" }}>Action</th>
-                  <th style={{ textAlign: "left", padding: "8px 12px", color: "var(--pencil)", fontWeight: 600, fontSize: 12, textTransform: "uppercase", whiteSpace: "nowrap" }}>Actor</th>
-                  <th style={{ textAlign: "left", padding: "8px 12px", color: "var(--pencil)", fontWeight: 600, fontSize: 12, textTransform: "uppercase", whiteSpace: "nowrap" }}>Target</th>
-                  <th style={{ textAlign: "left", padding: "8px 12px", color: "var(--pencil)", fontWeight: 600, fontSize: 12, textTransform: "uppercase", whiteSpace: "nowrap" }}>Severity</th>
-                  <th style={{ textAlign: "left", padding: "8px 12px", color: "var(--pencil)", fontWeight: 600, fontSize: 12, textTransform: "uppercase", whiteSpace: "nowrap" }}>Detail</th>
-                </tr>
-              </thead>
-              <tbody>
-                {entries.map((entry) => {
-                  const icon = ACTION_ICONS[entry.action] || "\uD83D\uDCCB";
-                  return (
-                    <tr
-                      key={entry.id}
-                      style={{ borderBottom: "1px solid var(--rule)" }}
-                    >
-                      <td style={{ padding: "8px 12px", whiteSpace: "nowrap" }}>
-                        <span title={new Date(entry.created_at).toLocaleString()}>
-                          {relativeTime(entry.created_at)}
-                        </span>
-                      </td>
-                      <td style={{ padding: "8px 12px", whiteSpace: "nowrap" }}>
-                        <span style={{ fontFamily: "var(--mono)", fontSize: 12 }}>
-                          {icon} {entry.action}
-                        </span>
-                      </td>
-                      <td style={{ padding: "8px 12px", whiteSpace: "nowrap" }}>
-                        {entry.actor}
-                      </td>
-                      <td style={{ padding: "8px 12px", whiteSpace: "nowrap", color: entry.target ? "var(--ink)" : "var(--pencil)" }}>
-                        {entry.target || "\u2014"}
-                      </td>
-                      <td style={{ padding: "8px 12px" }}>
-                        {severityBadge(entry.severity)}
-                      </td>
-                      <td style={{ padding: "8px 12px" }}>
-                        <button
-                          onClick={() => setDetailEntry(entry)}
-                          style={{
-                            background: "none", border: "none", cursor: "pointer",
-                            fontFamily: "var(--mono)", fontSize: 12,
-                            color: "var(--accent)", padding: 0, textAlign: "left",
-                          }}
-                        >
-                          {truncateJson(entry.detail)}
-                        </button>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
+          <>
+            <div style={{ display: "grid", gridTemplateColumns: COLUMN_WIDTHS, borderBottom: "1.3px solid var(--rule)", padding: `8px 0` }}>
+              {["Time", "Action", "Actor", "Target", "Severity", "Detail"].map((h) => (
+                <span key={h} role="columnheader" style={{ padding: "0 12px", color: "var(--pencil)", fontWeight: 600, fontSize: 12, textTransform: "uppercase", whiteSpace: "nowrap" }}>{h}</span>
+              ))}
+            </div>
+            <div
+              ref={scrollRef}
+              onScroll={onScroll}
+              role="rowgroup"
+              // The spacer already preserves scroll coordinates when rows
+              // are evicted. Native anchoring would adjust them again and can
+              // pull the sentinel back into view, draining unsolicited pages.
+              style={{ height: VIEWPORT_HEIGHT, overflowY: "auto", overflowAnchor: "none" }}
+            >
+              <div style={{ height: (discardedRows + start) * ROW_HEIGHT }} aria-hidden="true" />
+              {windowRows.map((entry) => (
+                <AuditRow key={entry.id} entry={entry} onOpenDetail={setDetailEntry} />
+              ))}
+              <div style={{ height: Math.max(0, (totalCount - end) * ROW_HEIGHT) }} aria-hidden="true" />
+              {/* Load-more sentinel + fallback: observation usually fires
+                  first; the button covers keyboard/AT and observer-less paths. */}
+              <div ref={setSentinel} style={{ height: 1 }} />
+              {hasMore && (
+                <div style={{ display: "flex", justifyContent: "center", padding: "12px 0" }}>
+                  <button onClick={() => { void loadMore(); }} disabled={loadingMore} style={ghostButtonStyle}>
+                    {loadingMore ? "Loading…" : "Load older entries"}
+                  </button>
+                </div>
+              )}
+              {!hasMore && (
+                <div style={{ textAlign: "center", padding: "12px 0", fontFamily: "var(--mono)", fontSize: 11, color: "var(--pencil)" }}>
+                  {retention?.scope === "own"
+                    ? "Beginning of this account's (filtered) trail"
+                    : "Beginning of the (filtered) trail"}
+                </div>
+              )}
+            </div>
+          </>
         )}
       </Card>
 

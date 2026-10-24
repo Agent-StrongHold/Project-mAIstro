@@ -17,6 +17,7 @@ from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoin
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
+from maistro.identity import Principal
 from maistro.security._types import AuditEntry, AuditLog, WardenVerdict
 from maistro.security.warden.detector import Warden
 
@@ -227,9 +228,9 @@ class TuringInboundSecurityMiddleware(BaseHTTPMiddleware):
 
 
 def _principal(request: Request) -> str:
-    user = getattr(request.state, "user", None)
-    if isinstance(user, dict) and user.get("id"):
-        return str(user["id"])
+    principal = getattr(request.state, "principal", None)
+    if isinstance(principal, Principal) and principal.user_id:
+        return principal.user_id
     service = getattr(request.state, "service", None)
     name = getattr(service, "name", None)
     return str(name) if name else "unknown"

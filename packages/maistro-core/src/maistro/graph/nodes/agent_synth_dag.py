@@ -446,7 +446,7 @@ class AgentSynthDagNode(BaseNode[SynthDagIn, SynthDagOut]):
 
         synthesized_kinds = [str(n) for n in synth.graph_config.nodes]
 
-        if verdict.status != "approved":
+        if verdict.status not in ("approved", "approved_degraded"):
             raise SynthDagFailed(_verdict_error(verdict))
 
         # `approved_degraded` (#1191) means the advisory proportionality judge
@@ -494,6 +494,8 @@ class AgentSynthDagNode(BaseNode[SynthDagIn, SynthDagOut]):
             "admission_source": "agent.synth_dag",
             "objective": inputs.objective[:200],
         }
+        if proportionality_disposition != "allow":
+            provenance["proportionality"] = proportionality_disposition
         # The child starts one level deeper than the node that spawned it,
         # so a nested agent.synth_dag inside it hits the same hard cap.
         blackboard_metadata = {"synth_depth": depth + 1}

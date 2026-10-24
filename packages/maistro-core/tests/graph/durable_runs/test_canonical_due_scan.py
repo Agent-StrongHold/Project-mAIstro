@@ -40,6 +40,7 @@ from maistro.graph.execution_state import GraphExecutionState
 from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.runs import InMemoryRunStore
 from maistro.runs.model import RunStatus
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 pytestmark = [pytest.mark.contract("behavioral")]
 
@@ -97,7 +98,9 @@ async def _row(
         name="due scan",
         nodes=[Node(node_id="node-1", node_type="agent")],
     )
-    run = await run_store.create_run(graph, initial_status=RunStatus.QUEUED)
+    run = await run_store.create_run(
+        graph, initial_status=RunStatus.QUEUED, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+    )
     await run_store.transition_run(run.run_id, RunStatus.RUNNING)
     await run_store.transition_run(
         run.run_id, RunStatus.COMPLETED if settled else RunStatus.WAITING
