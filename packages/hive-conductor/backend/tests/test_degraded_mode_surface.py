@@ -88,6 +88,39 @@ def test_health_names_degraded_optional_router_with_cause(
     assert data["degraded"] is True
 
 
+def test_health_optional_router_baseexception_is_kind_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A live exception object on optional_routers never publishes its message."""
+    monkeypatch.setattr(
+        app.state,
+        "optional_routers",
+        {"routes.design": ImportError("cannot import name 'engine' from secret.module")},
+    )
+
+    data = client.get("/health").json()
+
+    public = "ImportError: router failed to mount; see server logs"
+    assert data["optional_routers"]["routes.design"] == public
+    assert "secret.module" not in data["optional_routers"]["routes.design"]
+
+
+def test_health_optional_router_preserves_already_sanitized(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Kind-only strings recorded at mount time pass through unchanged."""
+    public = "ModuleNotFoundError: router failed to mount; see server logs"
+    monkeypatch.setattr(
+        app.state,
+        "optional_routers",
+        {"routes.canvas": public},
+    )
+
+    data = client.get("/health").json()
+
+    assert data["optional_routers"]["routes.canvas"] == public
+
+
 def test_health_lists_each_degraded_capability_with_reason(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -249,6 +249,29 @@ def test_unavailable_cycle_is_distinguishable_from_execution_failure(
     }
 
 
+def test_unexpected_cycle_exception_returns_kind_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Bare Exception on /cycle must not echo the message (stack-trace exposure)."""
+
+    class _Boom:
+        cycle_count = 0
+
+        async def _run_one_cycle(self, **_: Any) -> str:
+            raise RuntimeError("dsn=postgresql://ops:s3cr3t@db.internal/hive")
+
+    import services.evolution as evolution_service
+
+    monkeypatch.setattr(evolution_service, "get_evolution_service", lambda: _Boom())
+    with pytest.raises(HTTPException) as caught:
+        asyncio.run(trigger_cycle(SimpleNamespace(state=SimpleNamespace())))
+
+    assert caught.value.status_code == 500
+    assert caught.value.detail == "RuntimeError: evolution failed; see server logs"
+    assert "s3cr3t" not in str(caught.value.detail)
+    assert "db.internal" not in str(caught.value.detail)
+
+
 @pytest.mark.parametrize(
     ("status", "diagnostic"),
     [

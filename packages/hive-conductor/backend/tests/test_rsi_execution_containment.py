@@ -200,6 +200,35 @@ class TestPathContainment:
         with pytest.raises(policy.RsiPolicyError, match="git"):
             policy.resolve_repo(str(root / "plain"))
 
+    def test_a_file_beneath_the_root_is_not_a_directory(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from services import rsi_execution_policy as policy
+
+        root = tmp_path / "root"
+        root.mkdir()
+        plain = root / "plain.txt"
+        plain.write_text("not a repo\n", encoding="utf-8")
+        monkeypatch.setattr(policy, "_authorized_roots", lambda: (root.resolve(),))
+
+        with pytest.raises(policy.RsiPolicyError, match="not a directory"):
+            policy.resolve_repo(str(plain))
+
+    def test_startswith_match_that_fails_beneath_check_is_refused(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Defensive break when the CodeQL-visible guard and dual check disagree."""
+        from services import rsi_execution_policy as policy
+
+        root = tmp_path / "root"
+        repo = root / "repo"
+        (repo / ".git").mkdir(parents=True)
+        monkeypatch.setattr(policy, "_authorized_roots", lambda: (root.resolve(),))
+        monkeypatch.setattr(policy, "_beneath_an_authorized_root", lambda *_a, **_k: False)
+
+        with pytest.raises(policy.RsiPolicyError, match="not beneath"):
+            policy.resolve_repo(str(repo))
+
     def test_dotdot_traversal_out_of_the_root_is_refused(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

@@ -76,23 +76,35 @@ def parse_expected(text: str) -> tuple[set[str], set[str]]:
     `secretstorage ; sys_platform == 'linux'` is correctly present. A
     conditional pin matches either way — it gates nothing; its version is
     still checked when it does ship.
+
+    The lock can also resolve *different versions* for the same name under
+    different Python markers (``beartype==0.22.9 ; python_full_version <
+    '3.15'`` next to ``beartype==0.23.1 ; python_full_version >= '3.15'``).
+    Every such pin is retained: the image may ship any one of them, and a
+    last-write-wins collapse would false-fail a 3.13 image against the 3.15
+    pin.
     """
-    pins: dict[str, str] = {}
+    unconditional: dict[str, str] = {}
     conditional: set[str] = set()
+    conditional_names: set[str] = set()
     for line in text.splitlines():
         stripped = line.strip()
         m = _REQ.match(stripped)
         if m:
             name = canon(m.group(1))
-            pins[name] = f"{name}=={m.group(2)}"
+            pin = f"{name}=={m.group(2)}"
             if ";" in stripped:
-                conditional.add(name)
-    if not pins:
+                conditional.add(pin)
+                conditional_names.add(name)
+            else:
+                unconditional[name] = pin
+    if not unconditional and not conditional:
         raise SystemExit(
             "error: expected-file contains no `name==version` pins — is it "
             "a `uv export --format requirements-txt` output?"
         )
-    return {pins[n] for n in pins} - {pins[n] for n in conditional}, {pins[n] for n in conditional}
+    required = {unconditional[name] for name in unconditional if name not in conditional_names}
+    return required, conditional
 
 
 def parse_actual(text: str) -> set[str]:
@@ -176,18 +188,21 @@ def main() -> int:
     # each pin against itself and could never fire at all.
     everything_expected = required | conditional
     actual_by_name = {p.partition("==")[0]: p for p in actual}
-    expected_by_name = {p.partition("==")[0]: p for p in everything_expected}
+    expected_pins_by_name: dict[str, set[str]] = {}
+    for pin in everything_expected:
+        expected_pins_by_name.setdefault(pin.partition("==")[0], set()).add(pin)
     skewed_names = {
         name
-        for name in actual_by_name.keys() & expected_by_name.keys()
-        if actual_by_name[name] != expected_by_name[name]
+        for name in actual_by_name.keys() & expected_pins_by_name.keys()
+        if actual_by_name[name] not in expected_pins_by_name[name]
     }
     missing = sorted(p for p in required - actual if p.partition("==")[0] not in skewed_names)
     extra = sorted(
         p for p in actual - everything_expected if p.partition("==")[0] not in skewed_names
     )
     skewed = sorted(
-        f"{actual_by_name[name]} (image) != {expected_by_name[name]}" for name in skewed_names
+        f"{actual_by_name[name]} (image) != {' | '.join(sorted(expected_pins_by_name[name]))}"
+        for name in skewed_names
     )
     if missing or extra or skewed:
         print(f"image {args.image} does NOT reconcile to the lock:")
