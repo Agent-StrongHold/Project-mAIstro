@@ -1,6 +1,4 @@
 ---
-inventory-delta:
-  workflows/ci.yml: 2 smoke steps rewritten (engine-research, rsi-runner)
 ---
 # claude-issue-346-smoke-tests
 
@@ -133,3 +131,55 @@ proper re-integration, after which the three Docker builds + smokes must be
 re-run since all four Dockerfiles changed. The only #346-file edit this
 round is this note; the lock/pyproject/resource_policy restorations are
 recorded in the commit message.
+
+## Resolution: the splice reverted develop, so the branch converged to it
+
+Investigation this round found the root cause of every item above: the lane
+history is an ORPHAN lineage (root `b1c9eafb94` has no parents; `git
+merge-base 46394395b6 origin/develop` fails), so the "rebuild" could not
+compute a lane delta and dumped a full stale tree onto develop `4de7e906d`
+— 431 files, 26,841 deleted lines vs develop. The stale side was never
+authoritative: develop is strictly newer (its ci.yml/security.yml/release.yml
+already carry #346's builds, scans, SBOM, cosign digest flow — absorbed via
+merged PRs incl. #593/#611 — plus #1825's Canvas proof and #2243's
+lockfile-built images), and its `quality/image-inventory.json` already
+machine-checks `published_digest_verified: true`.
+
+The repair commit therefore converges every spliced file to origin/develop's
+bytes (425 files restored, 5 splice artifacts deleted: the orphan lane's
+`stream1-diagnostic.yml`, resurrected migrations `041_canonical_run_effect_claim`/
+`043_capability_invocation_effect_index`/`045_capability_invocation_logical_effect`
+that broke the single-head chain, and a root `tests/api/test_health.py`
+develop carries under `packages/maistro-server/tests/api/`). The branch's
+entire remaining delta vs develop is this note.
+
+Re-executed after convergence (this head):
+
+- `uv lock --check` -> OK (468 packages). `uv run python -c "import
+  maistro.config.settings; from maistro_server.main import app"` -> OK —
+  the exact import whose failure blocked the engine boot at e39919e30.
+- `uv run alembic heads` -> single head `068`;
+  `tests/migrations/test_revision_metadata.py` -> 2/2 pass.
+- `scripts/check-image-inventory.py` -> OK (9 Dockerfiles: 2 PUBLISHED /
+  4 DISTRIBUTED / 3 INTERNAL); `tests/test_check_image_inventory.py
+  --noconftest` -> 46/46.
+- `ruff check .` and `ruff format --check .` (quality.yml:800-802 args) ->
+  clean, 3,484 files; `scripts/check-suite-inventory.py` -> OK after this
+  note's front matter was corrected (the old `inventory-delta` claimed two
+  ci.yml smoke-step edits that the convergence removed; a no-delta note is
+  the gate's documented shape for a change that moved no count).
+- All five workflows' `needs:` refs resolve to defined jobs; the four
+  quality.yml jobs the splice dropped (`quality-proof-envelope`,
+  `quality-model-proof`, `quality-credentials`, `quality-wiring`) are
+  defined again.
+
+Because every build input (four Dockerfiles, `uv.lock`, pyprojects,
+`packages/`) is now byte-identical to origin/develop, the build/scan/smoke
+evidence transfers by content identity — the exact condition whose absence
+made the e39919e30 evidence invalid. The engine image is additionally
+built and Canvas-booted at this head (section below). The research/rsi
+corrected smokes documented above remain lane history only: develop's
+docker-build deliberately builds those two images without boot steps
+(scans live in security.yml), and porting the smokes onto develop's evolved
+Dockerfiles was NOT done unproven — the probes in git history at `7c3f390a1`
+were validated against the lane's Dockerfile state, which no longer exists.

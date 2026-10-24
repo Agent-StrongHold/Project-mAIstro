@@ -20,6 +20,22 @@ from maistro_canvas.canvas.composition import (
     build_canvas_router,
     build_canvas_runtime,
 )
+from maistro_canvas.canvas.publishing import (
+    DesignExportProvider,
+    ExportError,
+    ExportFailed,
+    ExportFormatUnsupported,
+    ExportRequest,
+    ExportResult,
+    ExportRunSpine,
+    ExportStore,
+    ExportVersion,
+    ExportVersionExistsError,
+    GovernedCanvasExporter,
+    InMemoryExportStore,
+    canvas_state_digest,
+    export_media_type,
+)
 from maistro_canvas.export import (
     ExporterDependencyError,
     ExportLayer,
@@ -172,6 +188,7 @@ __all__ = [
     "bind_canvas_runner_lifecycle",
     "build_canvas_router",
     "build_canvas_runtime",
+    "canvas_state_digest",
     "export_html",
     "export_media_type",
     "export_pptx",

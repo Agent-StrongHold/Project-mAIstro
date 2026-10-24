@@ -41,6 +41,7 @@ from maistro.runs.concurrency import RunConcurrencyLimits
 from maistro.runs.lifecycle import transition_run
 from maistro.runs.model import TERMINAL_RUN_STATUSES, RunStatus
 from maistro.runs.store import RunStore
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 pytestmark = [pytest.mark.contract("behavioral")]
 
@@ -168,7 +169,9 @@ async def _crash_at_terminal_write(
     mirror and the Run mirror -- the two halves of `mirror_lifecycle`.
     """
     graph = _graph(spine, node)
-    admitted = await spine.run_store.create_run(graph, initial_status=RunStatus.QUEUED)
+    admitted = await spine.run_store.create_run(
+        graph, initial_status=RunStatus.QUEUED, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+    )
     real_update = spine.store.update
 
     async def crashing_update(record: DurableRunRecord) -> DurableRunRecord:
@@ -190,6 +193,7 @@ async def _crash_at_terminal_write(
                 node_resolver=lambda node_id, current: node,
                 run_id=admitted.run_id,
                 run_store=spine.run_store,
+                actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
             )
     finally:
         spine.store.update = real_update  # type: ignore[method-assign]
@@ -342,7 +346,9 @@ async def test_a_lost_race_to_the_same_repair_is_already_repaired(spine: _Spine)
 async def _claimed_but_not_running(spine: _Spine, *, claim_until: datetime) -> str:
     """The resume claim persisted QUEUED; the spine then stepped to RUNNING and died."""
     graph = _graph(spine, _Step(), name="claim window")
-    admitted = await spine.run_store.create_run(graph, initial_status=RunStatus.QUEUED)
+    admitted = await spine.run_store.create_run(
+        graph, initial_status=RunStatus.QUEUED, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+    )
     await spine.store.create(
         DurableRunRecord(
             run=admitted,
@@ -458,11 +464,19 @@ async def test_a_stranded_run_behind_many_running_runs_is_reached_within_bounded
     calls reaches the stranded Run.
     """
     filler = _graph(spine, _Step(), name="not graph work")
-    for _ in range(150):
-        other = await spine.run_store.create_run(filler, initial_status=RunStatus.QUEUED)
+    for index in range(150):
+        other = await spine.run_store.create_run(
+            filler,
+            initial_status=RunStatus.QUEUED,
+            actor_principal_id=f"filler-principal-{index}",
+        )
         await spine.run_store.transition_run(other.run_id, RunStatus.RUNNING)
-    for _ in range(150):
-        queued = await spine.run_store.create_run(filler, initial_status=RunStatus.QUEUED)
+    for index in range(150):
+        queued = await spine.run_store.create_run(
+            filler,
+            initial_status=RunStatus.QUEUED,
+            actor_principal_id=f"queued-principal-{index}",
+        )
         await spine.continuations.create(
             GraphContinuation(
                 run_id=queued.run_id,
@@ -537,7 +551,9 @@ async def test_a_waiting_run_under_a_completed_continuation_does_not_abort_the_t
 ) -> None:
     """No lifecycle edge leads from WAITING straight to COMPLETED; skip, do not raise."""
     graph = _graph(spine, _Step(), name="waiting")
-    admitted = await spine.run_store.create_run(graph, initial_status=RunStatus.QUEUED)
+    admitted = await spine.run_store.create_run(
+        graph, initial_status=RunStatus.QUEUED, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+    )
     await spine.run_store.transition_run(admitted.run_id, RunStatus.RUNNING)
     waiting = await spine.run_store.transition_run(admitted.run_id, RunStatus.WAITING)
     await spine.continuations.create(
@@ -602,7 +618,11 @@ async def test_the_running_sweep_does_not_spend_the_per_status_budget(spine: _Sp
     """A full page of RUNNING Runs must not starve the continuation-status repairs."""
     filler = _graph(spine, _Step(), name="not graph work")
     for _ in range(5):
-        other = await spine.run_store.create_run(filler, initial_status=RunStatus.QUEUED)
+        other = await spine.run_store.create_run(
+            filler,
+            initial_status=RunStatus.QUEUED,
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+        )
         await spine.run_store.transition_run(other.run_id, RunStatus.RUNNING)
     await spine.continuations.create(
         GraphContinuation(

@@ -56,6 +56,18 @@ jobs:
       - name: Install dependencies
         run: pip install -e formal/ && pip install -e packages/maistro-core && pip install -e packages/maistro-evolve
 
+      # Same drivers and migration step as formal-conformance.yml: asyncpg for
+      # PgRunStore, psycopg[binary] for alembic's synchronous engine, and the
+      # canonical schema applied before the models run so a missing relation
+      # cannot read as a broken model.
+      - name: Install PostgreSQL drivers and alembic
+        run: pip install asyncpg "psycopg[binary]>=3.2" alembic "aiosqlite>=0.20"
+
+      - name: Apply migrations
+        env:
+          DATABASE_URL: postgresql://maistro:maistro@127.0.0.1:5432/maistro_test
+        run: alembic upgrade head
+
       - name: Restore Hypothesis example database
         uses: actions/cache/restore@v6
         with:

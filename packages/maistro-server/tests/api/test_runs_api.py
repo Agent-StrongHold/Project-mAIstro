@@ -275,18 +275,6 @@ async def test_cancel_preserves_a_completed_canonical_winner(wired, client: Test
     assert _gauge_total(active_tasks) == pytest.approx(baseline)
 
 
-async def test_run_cancel_uses_the_canonical_lifecycle(wired, client: TestClient) -> None:
-    created = _submit(client)
-
-    response = client.post(f"/runs/{created['run_id']}/cancel")
-
-    assert response.status_code == 200
-    assert response.json()["status"] == "cancelled"
-    persisted = await wired.get_run(created["run_id"])
-    assert persisted is not None
-    assert persisted.status.value == "cancelled"
-
-
 async def test_node_runs_are_empty_until_the_task_executes(wired, client: TestClient) -> None:
     """Empty because nothing has run yet, not because nothing ever will."""
     created = _submit(client)
@@ -405,8 +393,17 @@ async def test_a_member_reads_a_run_they_did_not_initiate(wired, client: TestCli
     )
     other = await wired.create_run(graph, actor_principal_id="somebody-else")
 
-    assert client.get(f"/runs/{other.run_id}").status_code == 404
-    assert client.get(f"/runs/{other.run_id}/node-runs").status_code == 404
+    # "dev" is the Workspace owner: membership, not initiator identity, reads.
+    assert client.get(f"/runs/{other.run_id}").status_code == 200
+    assert client.get(f"/runs/{other.run_id}/node-runs").status_code == 200
+    assert client.post(f"/runs/{other.run_id}/cancel").status_code == 200
+
+    # A missing id and a refused id are the same answer, so the route leaks
+    # nothing about existence.
+    missing = client.get("/runs/no-such-run")
+    assert missing.status_code == 404
+    assert "Run not found" in missing.json()["error"]["message"]
+    assert (await wired.get_run(other.run_id)).status is RunStatus.CANCELLED
 
 
 def test_the_endpoint_says_so_when_no_store_is_configured(client: TestClient) -> None:

@@ -47,6 +47,7 @@ __all__ = [
     "AuthError",
     "AuthProvider",
     "CodeStructureIndex",
+    "CoinLedger",
     "CredentialNotApplicable",
     "DecayableEpisodicStore",
     "EmbeddingClient",

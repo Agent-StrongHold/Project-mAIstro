@@ -42,11 +42,27 @@ MACOS_RUNTIME="${MAISTRO_MACOS_RUNTIME:-}"
 INSTALL_CLI="${MAISTRO_INSTALL_CLI:-1}"
 OPEN_BROWSER="${MAISTRO_OPEN_BROWSER:-1}"
 
+# How this install was launched — recorded so `maistro upgrade` can report it.
+# get.sh sets MAISTRO_INSTALL_SURFACE=curl; a direct `./install.sh` is a checkout.
+INSTALL_SURFACE="${MAISTRO_INSTALL_SURFACE:-checkout}"
+# Marker an archive install leaves at the install root (get.sh writes it;
+# install.sh reads it to classify archive vs. source-tree upgrades).
+ARCHIVE_MARKER="${MAISTRO_ARCHIVE_MARKER:-.maistro-archive-install}"
+
 # Docker API floor the embedded docker CLI can negotiate (Engine 25 exposes
 # API 1.44; Engine 24 tops out at 1.43). The engine images COPY the CLI from
 # docker:29-cli, whose floor rose with the go1.26.8 toolchain rebuild that
 # fixed CVE-2025-68121 (+21 HIGHs) in the previously embedded go1.22.11 CLI.
 MIN_DOCKER_API_VERSION="1.44"
+
+# Compose floor the stack's schema needs. The compose files use conditional
+# `depends_on` (service_healthy / service_completed_successfully), healthcheck
+# wiring and secrets — Compose v2 features the legacy python `docker-compose`
+# (v1, EOL) cannot parse, which is why install.sh no longer falls back to it
+# (#407). The floor is a preflight convenience, not the real contract: when a
+# front-end hides a parseable version, the schema-parse probe in
+# ensure_compose_supported decides instead.
+MIN_COMPOSE_VERSION="2.17.0"
 
 # Container tag the generated image_pull compose pins to (E5/#298). get.sh
 # exports this to match the release it just checked out; when install.sh is run
@@ -973,6 +989,37 @@ docker_daemon_ready() {
     command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1
 }
 
+# True when Podman answers for the invoking account (#1820): `podman info`
+# proves the same thing for Podman's rootless store that `docker info` proves
+# for the Docker daemon — this account, unprivileged, can operate it.
+podman_runtime_ready() {
+    command -v podman >/dev/null 2>&1 && podman info >/dev/null 2>&1
+}
+
+# True when the SELECTED front-end's engine answers (#1820). Runtime
+# access validation uses the selected runtime — a Docker check must never
+# stand in for a Podman one, or vice versa.
+selected_runtime_ready() {
+    case "${COMPOSE_CMD[0]:-}" in
+        docker) docker_daemon_ready ;;
+        podman) podman_runtime_ready ;;
+        *) return 1 ;;
+    esac
+}
+
+# Platform-phrased remedy for a selected runtime with no working Compose v2
+# front-end (#1820).
+selected_runtime_install_hint() {
+    case "$1" in
+        podman)
+            echo "Install Podman and a Compose v2 provider — Fedora/RHEL: 'sudo dnf install podman podman-compose'; Debian/Ubuntu: 'sudo apt-get install -y podman podman-compose' (or provide Docker's compose plugin so 'podman compose' can use it); macOS: 'brew install podman && podman machine init && podman machine start'. Then re-run ./install.sh."
+            ;;
+        *)
+            echo "$(compose_upgrade_instructions) Then re-run ./install.sh."
+            ;;
+    esac
+}
+
 # Numeric dotted-version comparison: true when $1 >= $2. Pure bash on purpose —
 # macOS ships a sort too old for `sort -V`, and these are always short API
 # versions like "1.43".
@@ -997,6 +1044,64 @@ version_ge() {
 # with a cryptic negotiation error. Refuse it here instead. Skips quietly when
 # there is no docker CLI (podman-only hosts) or no answering daemon — the
 # bootstrap paths already report those.
+# Docker Desktop keeps registry credentials behind a helper backed by the macOS
+# keychain (`credsStore: desktop`). When the keychain cannot put up its prompt
+# -- an ssh session, launchd, a locked login keychain -- that helper blocks
+# forever, and so does every pull and every build behind it: `compose up
+# --build` sits at "load metadata for docker.io/library/python" with no output
+# and no end. It ignores SIGTERM and SIGALRM, so nothing short of SIGKILL
+# stops it. Measured on a real Mac: a 14-minute wait with docker-buildx's only
+# child a `docker-credential-desktop get` that never returned.
+#
+# One bounded probe up front turns that into a clear error in seconds. `list`
+# reads the keychain the same way `get` does but needs no input, and on a
+# healthy helper it answers in milliseconds.
+check_docker_credential_helper() {
+    command -v docker >/dev/null 2>&1 || return 0
+    [[ ${#PYTHON_CMD[@]} -gt 0 ]] || return 0
+    local config store helper secs rc
+    config="${DOCKER_CONFIG:-$HOME/.docker}/config.json"
+    [[ -f "$config" ]] || return 0
+    store="$("${PYTHON_CMD[@]}" - "$config" 2>/dev/null <<'PY'
+import json
+import sys
+
+try:
+    print(json.load(open(sys.argv[1], encoding="utf-8")).get("credsStore", ""))
+except Exception:
+    pass
+PY
+)"
+    [[ -n "$store" ]] || return 0
+    helper="docker-credential-$store"
+    command -v "$helper" >/dev/null 2>&1 || return 0
+
+    secs="${MAISTRO_CRED_HELPER_TIMEOUT:-15}"
+    rc=0
+    run_with_timeout "$secs" "$helper" list >/dev/null 2>&1 || rc=$?
+    if [[ $rc -eq 124 ]]; then
+        # Guidance in a heredoc so it reads as prose, not as shell words.
+        cat >&2 <<EOF
+
+Every image pull and build waits on $helper, so the install would hang here
+with no further output. On macOS this almost always means the keychain needs
+you:
+
+  - run the installer from Terminal on this Mac (not over ssh), and approve
+    the keychain prompt if one appears; or
+  - unlock the login keychain:
+      security unlock-keychain ~/Library/Keychains/login.keychain-db
+
+If you do not pull from private registries, removing "credsStore": "$store"
+from $config also works: the images this stack uses are public.
+Set MAISTRO_CRED_HELPER_TIMEOUT to wait longer than ${secs}s.
+
+EOF
+        fail "Docker's credential helper ($helper) did not answer within ${secs}s."
+    fi
+    return 0
+}
+
 ensure_docker_engine_supported() {
     command -v docker >/dev/null 2>&1 || return 0
 
@@ -1752,9 +1857,11 @@ start_engine() {
     fi
 
     ensure_compose_runtime
-    ensure_docker_engine_supported
-    record_docker_sock
-    report_arch
+    docker_only_preflight_checks
+    # compose_files first: report_arch reads the image list from the same
+    # file set `up` will use, so an addon's images are checked too — and
+    # ensure_compose_supported feature-probes that same set before anything
+    # is built or started.
     compose_files
     # Floor gate first: reject a front-end below the schema floor before
     # printing a plan for it (#407).
