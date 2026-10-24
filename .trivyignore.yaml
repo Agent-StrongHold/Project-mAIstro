@@ -17,6 +17,31 @@ vulnerabilities:
       attacker-controlled network input, on 127.0.0.1-bound services.
       Re-triage when upstream ships a fix or Debian ships deb12u6; remove
       this entry and re-scan then.
+  - id: CVE-2026-111497
+    path: Dockerfile.rsi-runner
+    expired_at: 2026-12-31
+    statement: >-
+      brotli out-of-bounds write (libbrotli1). The only fixed version the
+      trivy DB names is the trixie-security pocket's 1.1.0-2+deb13u1, and
+      the rsi-runner image installs exactly that (its runtime-apt stage
+      resolves libbrotli1 from trixie-security; dpkg -l inside the built
+      image reads 1.1.0-2+deb13u1). The DB feed this job downloads fresh
+      per run (mirror.gcr.io/aquasec/trivy-db:2) intermittently attributes
+      trixie main's binNMU line (1.1.0-2+b7) to the image instead: in runs
+      40066067725 and 40079603187 the very job whose scan reported
+      installed=1.1.0-2+b7 shows apt setting up 1.1.0-2+deb13u1 minutes
+      earlier in its own build log, and no-cache rebuilds of the same
+      commits scan clean against both of 2026-10-24's DB revisions (01:18
+      and 07:11). A deliberately-built b7 fixture scans vulnerable with
+      the same scanner and DB, so the record itself is sound and the
+      mismatch is on the feed/image boundary this entry cannot reach from
+      a lane. Scope note: trivy does not bind OS-package findings to the
+      path field, so while this entry stands it suppresses this one CVE on
+      every scanned surface; a genuine regression to a vulnerable
+      libbrotli1 would still fail the job's Grype cross-check (--only-fixed,
+      fail-on high, independent Anchore feed). Re-triage when the feed
+      reconciles or trixie ships a newer brotli point release; remove this
+      entry and re-scan then.
 secrets:
   - id: aws-access-key-id
     path: moto/
