@@ -46,9 +46,10 @@ history:
 
 ADR-086 proposes a durable event log (PostgreSQL table of immutable events) and trigger+handler
 model: operators define triggers ("on agent.delegated, run X"), the reactor processes events,
-and handlers are replayed durably (idempotent, no lost events on crash). ADR-086 remains Proposed
-and is retained as design context only; it is not shipped authority for this SPEC — the operative
-authority is this SPEC under its Accepted substrate (ADR-037).
+and handlers are replayed durably (at-least-once; effect idempotency is handler-owned, with no
+lost events on crash). ADR-086 remains Proposed and is retained as design context only; it is not
+shipped authority for this SPEC — the operative authority is this SPEC under its Accepted
+substrate (ADR-037).
 
 The 1kHz reactor loop (SPEC-013) currently emits events in-memory; this SPEC persists them.
 
@@ -162,26 +163,26 @@ effect contract above: local status is not evidence of a remote commit.
 ```python
 class Reactor:
     """1kHz loop that processes events and invokes handlers."""
-
+    
     async def process_events(self):
         """Called every 1ms by the event loop."""
         # Fetch unprocessed events
         pending_events = await event_log.get_pending(limit=100)
-
+        
         for event in pending_events:
             # Find triggers that match
             triggers = await trigger_store.get_matching(event.event_type)
-
+            
             for trigger in triggers:
                 # Check if already invoked (idempotency)
                 invocation = await invocation_store.get(trigger.id, event.id)
                 if invocation and invocation.status == "success":
                     continue
-
+                
                 # Invoke handler (async, with retry)
                 if not invocation:
                     invocation = await invocation_store.create(trigger.id, event.id)
-
+                
                 try:
                     await self.invoke_handler(trigger, event)
                     invocation.status = "success"
@@ -193,13 +194,17 @@ class Reactor:
                     else:
                         invocation.status = "failed"
                         emit("handler.failed", trigger=trigger.name, event=event.id)
-
+                
                 await invocation_store.save(invocation)
-
+    
     async def invoke_handler(self, trigger: TriggerDefinition, event: Event):
         """HTTP POST the event to the handler endpoint."""
         async with httpx.AsyncClient() as client:
-            response = await client.post(trigger.handler_url, json=event.to_dict(), timeout=5.0)
+            response = await client.post(
+                trigger.handler_url,
+                json=event.to_dict(),
+                timeout=5.0
+            )
             if response.status_code >= 400:
                 raise HTTPError(f"{response.status_code}: {response.text}")
 ```

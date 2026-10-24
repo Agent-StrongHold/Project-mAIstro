@@ -58,69 +58,23 @@ This spec documents the resulting design, already implemented in
 All schemas live in `src/maistro/agents/spec/schemas.py`:
 
 ```python
-class PlanSubtask(BaseModel):
-    id, description, depends_on, agent_role
+class PlanSubtask(BaseModel): id, description, depends_on, agent_role
+class PlanOutput(BaseModel): subtasks, reasoning, estimated_tiers
+class FileChange(BaseModel): path, action, description
+class CodeOutput(BaseModel): files_modified, summary, tests_added
+class ReviewScores(BaseModel): correctness, quality, safety, completeness, overall  # ge=0, le=10
+class ReviewOutput(BaseModel): scores, selected_candidate, feedback, approved
+class ScoutFile(BaseModel): path, lines, imports, exports, category
+class ScoutOutput(BaseModel): files, total_lines, dependency_graph, god_files, summary
+class ArchitectMapping(BaseModel): source, target, transforms, priority
+class ArchitectNewFile(BaseModel): path, description, template
+class ArchitectOutput(BaseModel): directory_structure, file_mappings, new_files, subtasks, reasoning
+class CheckpointArchitectureOutput(BaseModel): checkpoint_goal, allowed_files, non_goals, invariants, review_focus, test_focus, summary
+class ExtractorOutput(BaseModel): files_written, renames_applied, sanitizations, warnings, summary
+class ValidatorCheck(BaseModel): name, passed, output
+class ValidatorOutput(BaseModel): checks, all_passed, blocking_issues, summary
 
-
-class PlanOutput(BaseModel):
-    subtasks, reasoning, estimated_tiers
-
-
-class FileChange(BaseModel):
-    path, action, description
-
-
-class CodeOutput(BaseModel):
-    files_modified, summary, tests_added
-
-
-class ReviewScores(BaseModel):
-    correctness, quality, safety, completeness, overall  # ge=0, le=10
-
-
-class ReviewOutput(BaseModel):
-    scores, selected_candidate, feedback, approved
-
-
-class ScoutFile(BaseModel):
-    path, lines, imports, exports, category
-
-
-class ScoutOutput(BaseModel):
-    files, total_lines, dependency_graph, god_files, summary
-
-
-class ArchitectMapping(BaseModel):
-    source, target, transforms, priority
-
-
-class ArchitectNewFile(BaseModel):
-    path, description, template
-
-
-class ArchitectOutput(BaseModel):
-    directory_structure, file_mappings, new_files, subtasks, reasoning
-
-
-class CheckpointArchitectureOutput(BaseModel):
-    checkpoint_goal, allowed_files, non_goals, invariants, review_focus, test_focus, summary
-
-
-class ExtractorOutput(BaseModel):
-    files_written, renames_applied, sanitizations, warnings, summary
-
-
-class ValidatorCheck(BaseModel):
-    name, passed, output
-
-
-class ValidatorOutput(BaseModel):
-    checks, all_passed, blocking_issues, summary
-
-
-SCHEMA_REGISTRY: dict[str, type[BaseModel]]  # "schemas.PlanOutput" -> PlanOutput, ...
-
-
+SCHEMA_REGISTRY: dict[str, type[BaseModel]]   # "schemas.PlanOutput" -> PlanOutput, ...
 def resolve_schema(dotted_path: str) -> type[BaseModel] | None: ...
 ```
 

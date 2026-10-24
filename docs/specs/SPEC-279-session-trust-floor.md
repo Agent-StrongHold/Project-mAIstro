@@ -48,11 +48,11 @@ New dataclass in `maistro.types.security` (alongside `TrustTier`/`WardenVerdict`
 class TrustSignal:
     """One contributor's trust report, folded into a session's STF."""
 
-    source: str  # contributor id: agent id, tool name, input_source id, recipe id, ...
-    tier: TrustTier  # SKULL < T4 < T3 < T2 < T1 < T0 (existing enum, reused as-is)
+    source: str            # contributor id: agent id, tool name, input_source id, recipe id, ...
+    tier: TrustTier         # SKULL < T4 < T3 < T2 < T1 < T0 (existing enum, reused as-is)
     confidence: float = 1.0  # [0, 1] — emitter's confidence in `tier`
     rationale: str = ""
-    trace_ref: str = ""  # audit/trace entry this signal originated from
+    trace_ref: str = ""     # audit/trace entry this signal originated from
 ```
 
 `source` categories at minimum: `agent`, `recipe`, `node` (ADR-062 graph node), `tool`,
@@ -70,7 +70,7 @@ class SessionTrustState:
     """Session-scoped STF tracking. Independent of context-window contents —
     compaction/redaction of the window must not affect this state (anti-laundering)."""
 
-    floor: TrustTier = TrustTier.T0  # starts clean; only ever moves toward SKULL
+    floor: TrustTier = TrustTier.T0   # starts clean; only ever moves toward SKULL
     signals: list[TrustSignal] = field(default_factory=list)
 
     def observe(self, signal: TrustSignal) -> TrustTier:

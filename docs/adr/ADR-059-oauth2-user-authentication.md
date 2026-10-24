@@ -86,33 +86,29 @@ class OAuthProviderConfig:
     name: str
     authorization_url: str
     token_url: str
-    jwks_url: str | None  # for OIDC id_token verification
+    jwks_url: str | None        # for OIDC id_token verification
     userinfo_url: str | None
     client_id: str
     scopes: tuple[str, ...] = ("openid", "profile", "email")
     # client_secret resolved from vault, never stored here
 
-
 class OAuth2Client:
     def authorize_url(self, provider: str, redirect_uri: str) -> tuple[str, str]:  # (url, state)
         ...
-    async def exchange_code(
-        self, provider: str, code: str, state: str, redirect_uri: str
-    ) -> OAuthIdentity: ...  # validated; raises on bad code/state
+    async def exchange_code(self, provider: str, code: str, state: str,
+                            redirect_uri: str) -> OAuthIdentity: ...  # validated; raises on bad code/state
     async def refresh(self, provider: str, refresh_token: str) -> OAuthToken: ...
-
 
 @dataclass(frozen=True)
 class OAuthIdentity:
     provider: str
-    sub: str  # stable provider subject
+    sub: str                    # stable provider subject
     email: str | None
     email_verified: bool
     display_name: str | None
 
-
 class IdentityLinkStore(Protocol):
-    async def resolve(self, provider: str, sub: str) -> str | None: ...  # → HiveUser.id
+    async def resolve(self, provider: str, sub: str) -> str | None: ...      # → HiveUser.id
     async def link(self, provider: str, sub: str, user_id: str) -> None: ...
 ```
 

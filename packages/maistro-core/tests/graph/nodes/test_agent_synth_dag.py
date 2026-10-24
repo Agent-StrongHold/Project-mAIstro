@@ -394,6 +394,33 @@ async def test_registered_kind_config_dispatches_a_canonical_child_run() -> None
     assert "proportionality" not in child.run.provenance
 
 
+async def test_unavailable_judge_still_dispatches_and_records_degraded_provenance() -> None:
+    """#1191, at the node: an unavailable advisory critic proceeds under the
+    degraded policy — the child runs — but the spawn's durable provenance
+    records `proportionality: unavailable` so the audit trail never mistakes
+    a failed judge for an affirmative proportionality approval."""
+    from maistro.graph.durable_runs import InMemoryDurableRunStore
+
+    store = InMemoryDurableRunStore()
+    synthesizer = _CountingSynthesizer([_result([_ChildStep.kind])])
+    node = AgentSynthDagNode(
+        sentinel=_compat_sentinel(),
+        synthesizer=synthesizer,
+        proportionality_judge=_UnavailableJudge(),
+        run_store=store,
+    )
+
+    result = await node.run({"objective": "do one canonical step"}, _scoped_ctx())
+
+    assert result.status == "completed"
+    assert result.output.dispatched is True
+    child = await store.get(result.output.child_run_id)
+    assert child is not None
+    assert child.run.provenance["proportionality"] == "unavailable"
+    assert child.run.provenance["admission_source"] == "agent.synth_dag"
+    assert [nr.node_id for nr in child.node_runs] == [_ChildStep.kind]
+
+
 async def _child_runs(store: Any) -> list[Any]:
     from maistro.runs.model import RunStatus
 

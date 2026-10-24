@@ -88,21 +88,21 @@ area is entirely about *who supplies which model to try next* and *where that de
 class LLMRouter(Protocol):
     async def fallback_chain(self, name: str) -> list[ModelMetadata]: ...
 
-
 # agents/conductor.py — new optional parameter, threaded through from run_task
 async def _run_with_retry(
     call: ConductorCall,
     prompt: str,
     tier_config: TierConfig,
     max_tokens: int,
-    router: LLMRouter | None = None,  # NEW — optional, preserves default behavior when None
-) -> ConductorOutput: ...
-
+    router: LLMRouter | None = None,   # NEW — optional, preserves default behavior when None
+) -> ConductorOutput:
+    ...
 
 async def run_task(
     task: TaskCreate,
-    router: LLMRouter | None = None,  # NEW — optional, defaults to today's single-model behavior
-) -> ConductorOutput: ...
+    router: LLMRouter | None = None,   # NEW — optional, defaults to today's single-model behavior
+) -> ConductorOutput:
+    ...
 ```
 
 `router: LLMRouter | None = None` keeps `run_task`/`_run_with_retry` callable exactly as today for
@@ -119,9 +119,7 @@ constructs the executor closes over the router):
 def make_conductor_executor(router: LLMRouter | None = None) -> TaskExecutor:
     async def _executor(task: TaskCreate) -> ConductorOutput:
         return await run_task(task, router=router)
-
     return _executor
-
 
 runner = TaskRunner(queue=queue, executor=make_conductor_executor(router=my_router))
 ```

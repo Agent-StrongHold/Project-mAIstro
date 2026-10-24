@@ -77,13 +77,13 @@ persist.
 
 ```python
 # maistro/types/memory.py — new fields + constants
-DEFAULT_DECAY_RATE: float = 0.01  # weight lost per hour at rate=1.0
-BOOST_RATE: float = 1.5  # weight multiplier on thumbs-up
-DROP_RATE: float = 0.5  # weight multiplier on thumbs-down
-SLOW_DECAY: float = 0.5  # decay_rate multiplier on thumbs-up
-FAST_DECAY: float = 2.0  # decay_rate multiplier on thumbs-down
-WISDOM_PROMOTE_THRESHOLD: int = 5  # reinforcement_count to promote -> WISDOM
-REGRET_DEMOTE_THRESHOLD: int = 5  # contradiction_count to demote -> REGRET
+DEFAULT_DECAY_RATE: float = 0.01          # weight lost per hour at rate=1.0
+BOOST_RATE: float = 1.5                    # weight multiplier on thumbs-up
+DROP_RATE: float = 0.5                     # weight multiplier on thumbs-down
+SLOW_DECAY: float = 0.5                    # decay_rate multiplier on thumbs-up
+FAST_DECAY: float = 2.0                    # decay_rate multiplier on thumbs-down
+WISDOM_PROMOTE_THRESHOLD: int = 5          # reinforcement_count to promote -> WISDOM
+REGRET_DEMOTE_THRESHOLD: int = 5           # contradiction_count to demote -> REGRET
 
 # EpisodicMemory gains:
 #   decay_rate: float = DEFAULT_DECAY_RATE
@@ -93,15 +93,11 @@ REGRET_DEMOTE_THRESHOLD: int = 5  # contradiction_count to demote -> REGRET
 ```python
 # maistro/memory/episodic/tiers.py — new functions
 
-
 def on_access(memory: EpisodicMemory, *, now: datetime | None = None) -> EpisodicMemory: ...
-
 
 def on_feedback(memory: EpisodicMemory, signal: Literal["up", "down"]) -> EpisodicMemory: ...
 
-
 def reclassify(memory: EpisodicMemory) -> MemoryTier: ...
-
 
 def tick_decay(memory: EpisodicMemory, *, now: datetime | None = None) -> EpisodicMemory: ...
 ```

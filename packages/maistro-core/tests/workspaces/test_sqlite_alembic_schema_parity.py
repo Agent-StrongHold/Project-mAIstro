@@ -51,6 +51,15 @@ SCOPE_TABLES = (
     "canonical_project_resources",
 )
 
+#: The canonical Goal tables (#1572). The same dual-ship applies: SQLite
+#: deployments get the Goal store's own DDL (`goals/sqlite_store.py`),
+#: PostgreSQL deployments get migration 063 — and the two must not drift.
+GOAL_TABLES = (
+    "canonical_goals",
+    "canonical_goal_revisions",
+    "canonical_goal_transitions",
+)
+
 PG_TIMESTAMPTZ = frozenset({"timestamp with time zone"})
 PG_DOC = frozenset({"jsonb", "json"})
 PG_TEXT = frozenset({"text", "character varying", "uuid"})
@@ -201,12 +210,66 @@ def _spec() -> dict[str, TableSpec]:
             foreign_keys=(("project_id", "canonical_projects", "project_id", "r"),),
             indexes=frozenset({(("project_id", "resource_type"), "")}),
         ),
+        # The canonical Goal store's tables (#1572, migration 063). The
+        # compare-and-set pointer is a real column on both sides: the guarded
+        # UPDATE is the one cross-process CAS the PG store has, so it can not
+        # live only in the payload.
+        "canonical_goals": TableSpec(
+            columns={
+                "goal_id": ColumnSpec(nullable=False),
+                "workspace_id": ColumnSpec(nullable=False),
+                "project_id": ColumnSpec(nullable=False),
+                "agent_id": ColumnSpec(nullable=False),
+                "parent_goal_id": ColumnSpec(nullable=True),
+                "status": ColumnSpec(nullable=False),
+                "current_revision": ColumnSpec(
+                    nullable=False,
+                    pg_types=frozenset({"integer"}),
+                    sqlite_types=frozenset({"INTEGER"}),
+                ),
+                "created_at": ColumnSpec(nullable=False, pg_types=PG_TIMESTAMPTZ),
+                "updated_at": ColumnSpec(nullable=False, pg_types=PG_TIMESTAMPTZ),
+                "payload": ColumnSpec(nullable=False, pg_types=PG_DOC),
+            },
+            primary_key=("goal_id",),
+            foreign_keys=(("parent_goal_id", "canonical_goals", "goal_id", "c"),),
+            indexes=frozenset({(("project_id",), "")}),
+        ),
+        "canonical_goal_revisions": TableSpec(
+            columns={
+                "goal_id": ColumnSpec(nullable=False),
+                "revision": ColumnSpec(
+                    nullable=False,
+                    pg_types=frozenset({"integer"}),
+                    sqlite_types=frozenset({"INTEGER"}),
+                ),
+                "created_at": ColumnSpec(nullable=False, pg_types=PG_TIMESTAMPTZ),
+                "payload": ColumnSpec(nullable=False, pg_types=PG_DOC),
+            },
+            primary_key=("goal_id", "revision"),
+            foreign_keys=(("goal_id", "canonical_goals", "goal_id", "c"),),
+        ),
+        "canonical_goal_transitions": TableSpec(
+            columns={
+                "goal_id": ColumnSpec(nullable=False),
+                "seq": ColumnSpec(
+                    nullable=False,
+                    pg_types=frozenset({"integer"}),
+                    sqlite_types=frozenset({"INTEGER"}),
+                ),
+                "at": ColumnSpec(nullable=False, pg_types=PG_TIMESTAMPTZ),
+                "kind": ColumnSpec(nullable=False),
+                "payload": ColumnSpec(nullable=False, pg_types=PG_DOC),
+            },
+            primary_key=("goal_id", "seq"),
+            foreign_keys=(("goal_id", "canonical_goals", "goal_id", "c"),),
+        ),
     }
 
 
 async def _sqlite_actual(conn: aiosqlite.Connection) -> dict[str, ActualTable]:
     actual: dict[str, ActualTable] = {}
-    for table in SCOPE_TABLES:
+    for table in (*SCOPE_TABLES, *GOAL_TABLES):
         pk_cols: list[tuple[int, str]] = []
         columns: dict[str, tuple[bool, str]] = {}
         async with conn.execute(f"PRAGMA table_info({table})") as cur:
@@ -292,7 +355,7 @@ async def _pg_actual(dsn: str) -> dict[str, ActualTable]:
     conn = await asyncpg.connect(dsn)
     try:
         actual: dict[str, ActualTable] = {}
-        for table in SCOPE_TABLES:
+        for table in (*SCOPE_TABLES, *GOAL_TABLES):
             rows = await conn.fetch(
                 """
                 SELECT column_name, is_nullable, data_type
@@ -453,6 +516,7 @@ async def test_sqlite_alembic_schema_parity(side: str) -> None:
     if side == "sqlite":
         conn = await aiosqlite.connect(":memory:")
         try:
+            from maistro.goals.sqlite_store import SqliteGoalStore
             from maistro.projects.sqlite_scope_store import SqliteProjectScopeStore
             from maistro.workspaces.sqlite_store import SqliteWorkspaceStore
 
@@ -460,6 +524,7 @@ async def test_sqlite_alembic_schema_parity(side: str) -> None:
             workspace_store = SqliteWorkspaceStore(conn, project_store=project_store)
             await project_store.ensure_schema()
             await workspace_store.ensure_schema()
+            await SqliteGoalStore(conn).ensure_schema()
             _compare("SQLite", False, await _sqlite_actual(conn), spec)
         finally:
             await conn.close()

@@ -53,11 +53,9 @@ Extend existing `src/maistro/agents/types.py:AgentRole` by replacing the `CONDUC
 ```python
 # src/maistro/agents/spec/agent_spec.py
 
-
 class Lane(StrEnum):
     LIVE = "live-chat"
     BACKGROUND = "background-task"
-
 
 class AgentRole(StrEnum):
     PLANNER = "planner"
@@ -71,7 +69,6 @@ class AgentRole(StrEnum):
     ARTIFACT = "artifact"
     CONVERSATION = "conversation"
 
-
 class ErrorType(StrEnum):
     TIMEOUT = "timeout"
     PARSE_FAILURE = "parse_failure"
@@ -81,13 +78,11 @@ class ErrorType(StrEnum):
     TOOL_VIOLATION = "tool_violation"
     DEPENDENCY_FAILED = "dependency_failed"
 
-
 RECOVERABLE_ERRORS: frozenset[ErrorType]
 DEFAULT_TOOLS: dict[AgentRole, list[str]]
 
-
 class AgentSpec(BaseModel):
-    agent_id: str  # auto-generated hex-8
+    agent_id: str               # auto-generated hex-8
     role: AgentRole
     task_id: str
     subtask_id: str
@@ -114,7 +109,6 @@ class AgentSpec(BaseModel):
 
     def with_defaults(self) -> AgentSpec: ...  # fills tools_allowed + prompt_name from role
 
-
 class AgentOutput(BaseModel):
     agent_id: str
     role: AgentRole
@@ -138,9 +132,7 @@ class AgentOutput(BaseModel):
     langfuse_span_id: str | None = None
 
     def mark_complete(self) -> None: ...
-    def mark_error(
-        self, error: str, error_type: ErrorType, *, escalation_reason: str | None = None
-    ) -> None: ...
+    def mark_error(self, error: str, error_type: ErrorType, *, escalation_reason: str | None = None) -> None: ...
 ```
 
 ## Acceptance criteria

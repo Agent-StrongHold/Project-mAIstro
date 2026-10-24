@@ -82,20 +82,17 @@ Public surface (`from maistro.connectors import ...`), the entire integration an
 out-of-tree connector needs:
 
 ```python
-class MyConnector:  # implements ConnectorSource (Protocol)
+class MyConnector:            # implements ConnectorSource (Protocol)
     @property
-    def descriptor(self) -> ConnectorDescriptor:
-        ...  # id ("vendor.name"), version,
-        # capabilities, SecretRefs
-
+    def descriptor(self) -> ConnectorDescriptor: ...   # id ("vendor.name"), version,
+                                                       # capabilities, SecretRefs
     async def list_items(self, ctx: SyncContext) -> SyncPage: ...
-    async def query_items(self, ctx: SyncContext) -> SyncPage: ...  # ctx.query
+    async def query_items(self, ctx: SyncContext) -> SyncPage: ...   # ctx.query
     async def fetch_item(self, ctx: SyncContext, external_id: str) -> SourceItem: ...
 
-
-engine = SyncEngine(ingest_store, checkpoint_store)  # IngestStore/CheckpointStore ports
+engine = SyncEngine(ingest_store, checkpoint_store)     # IngestStore/CheckpointStore ports
 report = await engine.run(source, ConnectorInstance(descriptor, workspace_ids, secrets))
-violations = await run_connector_conformance(source)  # shared built-in/external suite
+violations = await run_connector_conformance(source)    # shared built-in/external suite
 ```
 
 Operator surface: `maistro connectors verify MODULE:CLASS [--workspace W ...] [--secret

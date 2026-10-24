@@ -101,18 +101,15 @@ class SandboxTier(StrEnum):
     LARGE = "large"
     GPU = "gpu"
 
-
 class SandboxLifecycle(Protocol):
     async def provision(self, task: TaskRecord, recipe: AgentRecipe) -> SandboxHandle: ...
     async def teardown(self, handle: SandboxHandle) -> None: ...
-
 
 class BudgetState(BaseModel):
     resource: str
     consumed: Decimal
     limit: Decimal | None
-    fraction: float  # consumed / limit; > 0.8 triggers escalation
-
+    fraction: float    # consumed / limit; > 0.8 triggers escalation
 
 class BudgetTracker(Protocol):
     async def consume(self, task_id: UUID, resource: str, amount: Decimal) -> BudgetState: ...

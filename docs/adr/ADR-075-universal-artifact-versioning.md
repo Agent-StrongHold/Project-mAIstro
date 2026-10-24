@@ -102,21 +102,18 @@ alpha  ->  beta  ->  canary  ->  tester  ->  stable
 ```python
 class ArtifactRef(BaseModel):
     name: str
-    version: str  # semver "1.4.2"
+    version: str                  # semver "1.4.2"
     channel: Literal["alpha", "beta", "canary", "tester", "stable"]
 
-
 class ResolveStrategy(str, Enum):
-    LOCK = "lock"  # exact version, never moves
-    DRIFT_GATE_MAJOR = "drift_gate"  # auto point releases, hold at major
-    BEST_AVAILABLE = "best_available"  # latest on the named dev channel
-
+    LOCK = "lock"                       # exact version, never moves
+    DRIFT_GATE_MAJOR = "drift_gate"     # auto point releases, hold at major
+    BEST_AVAILABLE = "best_available"   # latest on the named dev channel
 
 class ArtifactRegistry(Protocol):
     def resolve(self, name: str, *, strategy: ResolveStrategy, channel: str) -> ArtifactRef: ...
-    def rollback(self, name: str, to: str) -> ArtifactRef: ...  # any prior version, always
+    def rollback(self, name: str, to: str) -> ArtifactRef: ...      # any prior version, always
     def promote(self, ref: ArtifactRef, to: str, *, approved_by: str | None) -> ArtifactRef: ...
-
     #   to in {beta,canary} -> auto-allowed on passing metrics; to == "stable" -> approved_by required
 ```
 

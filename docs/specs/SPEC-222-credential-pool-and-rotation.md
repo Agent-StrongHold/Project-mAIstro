@@ -82,11 +82,9 @@ class SelectionStrategy(StrEnum):
 ```python
 class CredentialPool:
     def __init__(self, provider, entries=None, strategy=SelectionStrategy.ROUND_ROBIN) -> None: ...
-    def select(self) -> CredentialRecord: ...  # raises PoolExhaustedError when none available
+    def select(self) -> CredentialRecord: ...        # raises PoolExhaustedError when none available
     def record_success(self, key_id: str) -> None: ...
-    def record_failure(
-        self, key_id, status_code=0, error_code="", cooldown_seconds=0.0, block=False
-    ) -> None: ...
+    def record_failure(self, key_id, status_code=0, error_code="", cooldown_seconds=0.0, block=False) -> None: ...
     def clear_cooldown(self, key_id: str) -> None: ...
     def get_stats(self) -> PoolStats: ...
 ```
@@ -97,10 +95,7 @@ class CredentialPool:
 async def execute_with_pool[T](
     pool: CredentialPool,
     call_fn: Callable[[CredentialRecord], Awaitable[T]],
-    *,
-    max_retries=3,
-    backoff_config=None,
-    max_key_rotations=None,
+    *, max_retries=3, backoff_config=None, max_key_rotations=None,
 ) -> RotationResult[T]: ...
 ```
 

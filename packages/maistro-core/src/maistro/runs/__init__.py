@@ -1,5 +1,13 @@
 """Canonical logical and physical execution lifecycle."""
 
+from maistro.runs.admission_identity import (
+    AdmissionAssessment,
+    AdmissionBinding,
+    AdmissionRecordV2,
+    CanonicalJsonObject,
+    LegacyAdmissionRecord,
+    RootAdmissionEnvelope,
+)
 from maistro.runs.concurrency import RunConcurrencyExceeded, RunConcurrencyLimits
 from maistro.runs.eval import EvalSummary, eval_summary, open_re_eval_attempt
 from maistro.runs.execution import AttemptExecutionService, AttemptReconciler
@@ -71,6 +79,7 @@ __all__ = [
     "AttemptReconciler",
     "AttemptResult",
     "AttemptStatus",
+    "CanonicalJsonObject",
     "EvalJudge",
     "EvalMethod",
     "EvalSummary",
@@ -97,8 +106,10 @@ __all__ = [
     "RunStore",
     "SqliteRunStore",
     "StaleExecutionFence",
+    "artifact_lineage",
     "eval_summary",
     "open_re_eval_attempt",
+    "run_lineage",
     "transition_attempt",
     "transition_node_run",
     "transition_run",

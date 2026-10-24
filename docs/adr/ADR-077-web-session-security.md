@@ -139,7 +139,6 @@ async def session_middleware(request, call_next):
     request.state.principal = await resolver.resolve(sess.principal_id)  # ADR-068, live
     return await call_next(request)
 
-
 # WebSocket path: middleware does NOT run — authorize() in the handler.
 async def ws_handler(ws):
     sess = await session_store.load(ws.cookies.get("hive_session"))

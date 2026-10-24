@@ -112,12 +112,10 @@ class DeliveryTarget:
     address: str
     config_ref: str | None = None
 
-
 @dataclass(frozen=True)
 class DeliveryPayload:
     text: str
     metadata: dict[str, str] = field(default_factory=dict)
-
 
 @dataclass(frozen=True)
 class DeliveryResult:
@@ -127,27 +125,22 @@ class DeliveryResult:
     error: str | None
     attempts: int
 
-
 # maistro/delivery/protocols.py
 @dataclass(frozen=True)
 class ChannelHealth:
     healthy: bool
     detail: str = ""
 
-
 class Channel(Protocol):
     name: str
-
     async def send(self, target: DeliveryTarget, payload: DeliveryPayload) -> DeliveryResult: ...
     async def health(self) -> ChannelHealth: ...
-
 
 # maistro/delivery/registry.py
 class ChannelRegistry:
     def register(self, channel: Channel) -> None: ...
     def get(self, name: str) -> Channel: ...
     def list_channels(self) -> list[str]: ...
-
 
 # maistro/delivery/dispatch.py
 async def dispatch(

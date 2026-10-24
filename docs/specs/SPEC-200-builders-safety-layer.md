@@ -173,9 +173,9 @@ Responsibilities (Janitor's interface):
 ```python
 # Usage contract:
 ctx = RepoContext(repo_path, github_client)
-prs = ctx.list_stale_prs(older_than_days=30)  # no token needed
+prs = ctx.list_stale_prs(older_than_days=30)   # no token needed
 token = hitl_gate.request_confirmation(f"Close {len(prs)} stale PRs?")
-ctx.close_pr(prs[0].number, token=token)  # token consumed
+ctx.close_pr(prs[0].number, token=token)        # token consumed
 # token is now expired — next action needs a new token
 ```
 
@@ -212,7 +212,7 @@ runtime.register(
     worker=WorkerName.MASON,
     stage="tests_written",
     handler=mason_write_tests,
-    context=ExecutionContext.SANDBOX,  # new required field
+    context=ExecutionContext.SANDBOX,        # new required field
 )
 ```
 

@@ -38,7 +38,7 @@ owners:
 `001` creates the column twice, and the first spelling wins:
 
 ```python
-(sa.Column("embedding", sa.Text, nullable=True),)  # vector(1536) — managed by pgvector
+sa.Column("embedding", sa.Text, nullable=True),  # vector(1536) — managed by pgvector
 ...
 op.execute("ALTER TABLE memory_entries ADD COLUMN IF NOT EXISTS embedding vector(1536)")
 ```

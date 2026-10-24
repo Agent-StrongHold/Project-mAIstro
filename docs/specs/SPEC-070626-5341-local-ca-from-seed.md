@@ -86,7 +86,6 @@ generation, so this closes the ADR without adding a new dependency.
 
 _CA_PATH = "m/44'/9001'/0'"  # domain-separated from _PATHS["signing"]/wallet/identity paths
 
-
 def derive_ca_key(seed: ConductorSeed) -> DerivedKey:
     """The CA's Ed25519 keypair, deterministically derived. Same seed always
     produces the same CA key — no separate CA key material to generate or lose."""
@@ -98,9 +97,8 @@ def derive_ca_key(seed: ConductorSeed) -> DerivedKey:
 ```python
 @dataclass(frozen=True)
 class LocalCA:
-    certificate: x509.Certificate  # self-signed CA cert (cryptography.x509)
+    certificate: x509.Certificate       # self-signed CA cert (cryptography.x509)
     private_key: Ed25519PrivateKey
-
 
 def build_ca(
     seed: ConductorSeed,
@@ -112,11 +110,10 @@ def build_ca(
     it to allowed_suffixes (RFC 5280 permitted subtrees, DNS name form).
     A CA built this way cannot validly mint a cert for e.g. "example.com"."""
 
-
 def mint_leaf(
     ca: LocalCA,
     *,
-    common_name: str,  # must match one of ca's allowed_suffixes
+    common_name: str,          # must match one of ca's allowed_suffixes
     san_dns_names: tuple[str, ...],
     validity_days: int = 90,
 ) -> x509.Certificate:
@@ -130,12 +127,10 @@ def mint_leaf(
 ```python
 @dataclass(frozen=True)
 class RotationPolicy:
-    rotate_within_days: int = 14  # reissue when < 14 days remain on a 90-day leaf
-
+    rotate_within_days: int = 14   # reissue when < 14 days remain on a 90-day leaf
 
 def needs_rotation(leaf: x509.Certificate, policy: RotationPolicy, *, now: datetime) -> bool:
     """True when leaf.not_valid_after - now < policy.rotate_within_days."""
-
 
 async def rotate_leaf(
     ca: LocalCA, leaf: x509.Certificate, *, policy: RotationPolicy, now: datetime

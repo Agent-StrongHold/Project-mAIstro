@@ -77,17 +77,14 @@ class Actor(StrEnum):
     SYSTEM = "system"
     AGENT = "agent"
 
-
 class MemoryExposureMode(StrEnum):
     SYSTEM_MANAGED = "system_managed"
     AGENT_MANAGED = "agent_managed"
     HYBRID = "hybrid"
 
-
 class BlockExposure(StrEnum):
     SYSTEM_MANAGED = "system_managed"
     AGENT_MANAGED = "agent_managed"
-
 
 @dataclass(frozen=True)
 class MemoryWriteDenied(Exception):
@@ -96,7 +93,6 @@ class MemoryWriteDenied(Exception):
     mode: MemoryExposureMode
     reason: str
 
-
 def enforce_write(
     mode: MemoryExposureMode,
     actor: Actor,
@@ -104,7 +100,6 @@ def enforce_write(
     scope: str = "",
     block_exposure: BlockExposure | None = None,
 ) -> None: ...
-
 
 def enforce_promote(
     mode: MemoryExposureMode,

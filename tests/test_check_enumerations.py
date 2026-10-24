@@ -126,3 +126,55 @@ class TestInvokeSuffixCarveOutRemoved:
         route — /v1/chat is exempt-by-declaration, /v1/containers is not."""
         assert module._route_is_scoped("/v1/chat/foo/invoke", "POST", {})
         assert not module._route_is_scoped("/v1/containers/x/invoke", "POST", {})
+
+
+class TestEvaluatorOracleSurface:
+    """#109 check B2: the evaluator-oracle enumeration.
+
+    The oracle tier protects the artifacts that DEFINE success for an RSI
+    candidate — the scorer, its pinning tests, the scenario corpora, the
+    ratchet baselines, the AC trees. The enumeration is only as strong as its
+    pattern list, so the checker runs the REAL matcher over one representative
+    path per score-defining surface and ratchets patterns that match nothing.
+    These nodes prove the check both passes on the tree it ships with and
+    fires when a probe escapes the patterns — a checker that cannot fail is
+    decoration, not a ratchet (this file's own docstring, one tier deeper).
+    """
+
+    def test_oracle_surface_is_fully_covered_on_this_tree(self, module):
+        """Every score-defining probe matches EVALUATOR_ORACLE_PATTERNS and
+        every oracle pattern matches a tracked file — the shipped tree is
+        protected, with no bit-rotted pattern reading as if it guarded
+        anything."""
+        gaps, error = module.check_evaluator_oracle_paths()
+        assert error is None
+        assert gaps == []
+
+    def test_escaped_oracle_probe_is_reported_as_a_gap(self, module, monkeypatch):
+        """A score-defining path the patterns stop matching (the failure mode
+        this check exists for: a rename, a move, a deleted pattern) is a named
+        gap against the `evaluator_oracle` check — never silence."""
+        quarantine = pytest.importorskip("maistro_rsi.quarantine")
+        real_match = quarantine.matches_evaluator_oracle_pattern
+        escaped_probe = "packages/maistro-rsi/src/maistro_rsi/candidate_fitness.py"
+
+        def escaped(path: str) -> bool:
+            if path == escaped_probe:
+                return False
+            return real_match(path)
+
+        monkeypatch.setattr(quarantine, "matches_evaluator_oracle_pattern", escaped)
+        gaps, error = module.check_evaluator_oracle_paths()
+        assert error is None
+        assert [g.key() for g in gaps] == [f"evaluator_oracle::{escaped_probe}"]
+
+    def test_unimportable_oracle_module_is_an_error_not_silence(self, module, monkeypatch):
+        """If the oracle patterns cannot be imported at all, the check reports
+        an error — which main() turns into a failure — rather than an empty
+        gap list that would read as a pass (same contract as
+        test_check_that_cannot_run_is_a_failure_not_a_skip)."""
+        monkeypatch.setitem(sys.modules, "maistro_rsi.quarantine", None)
+        gaps, error = module.check_evaluator_oracle_paths()
+        assert gaps == []
+        assert error is not None
+        assert "could not import oracle patterns" in error

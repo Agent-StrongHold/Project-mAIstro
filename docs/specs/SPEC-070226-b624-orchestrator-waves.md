@@ -77,30 +77,29 @@ parallel execution with isolation, result aggregation, and integration with the 
 @dataclass
 class Wave:
     """A parallel branch with one or more sub-agents."""
-
     id: str
     agent_ids: list[str]  # agents in this wave (executed in sequence within the wave)
     context: AgentContext  # isolated context for this wave
     timeout_ms: int = 30000
     priority: int = 0  # execution priority (0=normal, higher=run first)
 
-
 @dataclass
 class SuperPlannerConfig:
     """Configuration for wave orchestration."""
-
     max_waves: int = 3  # max parallel waves
     result_comparator: Callable[[list[TaskResult]], TaskResult]  # pick best result
     timeout_ms: int = 60000  # total orchestration timeout
     checkpoint_interval_ms: int = 5000
     recovery_strategy: Literal["resume", "restart"] = "resume"
 
-
 class SuperPlanner(NodeStrategy):
     """Execute a task via multiple waves, return the best result."""
-
+    
     async def execute(
-        self, task: Task, context: AgentContext, config: SuperPlannerConfig
+        self,
+        task: Task,
+        context: AgentContext,
+        config: SuperPlannerConfig
     ) -> TaskResult:
         """
         1. Partition the task into waves (via an expander agent or config).
@@ -109,32 +108,39 @@ class SuperPlanner(NodeStrategy):
         4. Compare results, return best.
         """
         waves = self.expand_to_waves(task, config.max_waves)
-
+        
         # Checkpoint: record initial wave plan
-        checkpoint = Checkpoint(task_id=task.id, state="waves_planned", waves=waves)
+        checkpoint = Checkpoint(
+            task_id=task.id,
+            state="waves_planned",
+            waves=waves
+        )
         await self.checkpoint_store.save(checkpoint)
-
+        
         # Execute waves in parallel
         wave_results = await asyncio.gather(
-            *[self._run_wave(wave) for wave in waves], return_exceptions=True
+            *[self._run_wave(wave) for wave in waves],
+            return_exceptions=True
         )
-
+        
         # Checkpoint: record completion
-        await self.checkpoint_store.save(
-            Checkpoint(task_id=task.id, state="waves_complete", results=wave_results)
-        )
-
+        await self.checkpoint_store.save(Checkpoint(
+            task_id=task.id,
+            state="waves_complete",
+            results=wave_results
+        ))
+        
         # Compare and return best
         best_result = config.result_comparator(
             [r for r in wave_results if not isinstance(r, Exception)]
         )
         return best_result
-
+    
     async def _run_wave(self, wave: Wave) -> TaskResult:
         """Execute a single wave (sequence of agents in parallel isolation)."""
         graph_run = GraphRun(nodes=[...], context=wave.context)
         executor = GraphExecutor(graph_run, checkpoint_store=self.checkpoint_store)
-
+        
         try:
             return await executor.run(timeout_ms=wave.timeout_ms)
         except Exception as e:
@@ -148,18 +154,19 @@ class SuperPlanner(NodeStrategy):
 ```python
 class WaveExpander(Protocol):
     """Expand a task into waves (parallel branches)."""
-
     async def expand(self, task: Task, max_waves: int) -> list[Wave]:
         """Return a list of waves that collectively solve the task."""
         ...
 
-
 # Example: multi-strategy wave expansion
 class MultiStrategyExpander(WaveExpander):
     """Create waves that use different reasoning strategies."""
-
-    strategies = ["chain_of_thought", "tree_of_thought", "self_critique"]
-
+    strategies = [
+        "chain_of_thought",
+        "tree_of_thought",
+        "self_critique"
+    ]
+    
     async def expand(self, task: Task, max_waves: int) -> list[Wave]:
         waves = []
         for i, strategy in enumerate(self.strategies[:max_waves]):
@@ -168,8 +175,8 @@ class MultiStrategyExpander(WaveExpander):
                 agent_ids=[f"agent_{strategy}"],
                 context=AgentContext(
                     **task.context,
-                    reasoning_strategy=strategy,  # isolated config
-                ),
+                    reasoning_strategy=strategy  # isolated config
+                )
             )
             waves.append(wave)
         return waves
@@ -180,32 +187,30 @@ class MultiStrategyExpander(WaveExpander):
 ```python
 class ResultComparator(Protocol):
     """Compare wave results and pick the best."""
-
-    def compare(self, results: list[TaskResult]) -> TaskResult: ...
-
+    def compare(self, results: list[TaskResult]) -> TaskResult:
+        ...
 
 class QualityComparator(ResultComparator):
     """Pick the result with the highest quality score."""
-
+    
     def compare(self, results: list[TaskResult]) -> TaskResult:
         # Assume each result has a quality_score (0-1)
         return max(results, key=lambda r: r.metadata.get("quality_score", 0))
 
-
 class LLMJudgeComparator(ResultComparator):
     """Use an LLM to judge which result is better."""
-
+    
     async def compare(self, results: list[TaskResult]) -> TaskResult:
         if len(results) == 1:
             return results[0]
-
+        
         # Ask an LLM judge to score each result
         prompt = f"""
         The task was: {results[0].task}
-
+        
         Option A: {results[0].output}
         Option B: {results[1].output}
-
+        
         Which is better and why?
         """
         # Call LLM, parse score, return best
@@ -223,11 +228,10 @@ class NodeSpec:
     inputs: dict[str, str]
     ...
 
-
 graph = GraphSpec(
     nodes=[
         NodeSpec(id="plan", strategy=SuperPlanner(config=...)),
-        NodeSpec(id="execute", strategy=DirectAgent(...), inputs={"task": "plan.output"}),
+        NodeSpec(id="execute", strategy=DirectAgent(...), inputs={"task": "plan.output"})
     ]
 )
 
@@ -244,7 +248,6 @@ result = await executor.run()
 # On resume (crash recovery):
 #   1. If state is "waves_planned", resume from wave 1 (waves not started yet).
 #   2. If state is "waves_complete", use the saved results (don't re-run).
-
 
 async def recover_from_checkpoint(checkpoint: Checkpoint) -> TaskResult:
     if checkpoint.state == "waves_complete":

@@ -64,7 +64,8 @@ These are encoded as Hypothesis property tests using `stronghold`'s existing `Sp
     post=lambda x, result: result >= x,
     invariant=lambda state: state.tenant_id is not None,
 )
-def some_operation(x: int, *, state: TenantState) -> int: ...
+def some_operation(x: int, *, state: TenantState) -> int:
+    ...
 ```
 
 Behavioral contracts catch bugs that boundary contracts cannot — they assert what the system *does*, not just what shape its inputs and outputs take.
@@ -81,7 +82,7 @@ Every test names both axes via `pytest.mark`:
 
 ```python
 @pytest.mark.contract("boundary")  # boundary | behavioral | cross-service
-@pytest.mark.scope("unit")  # unit | property | integration | e2e
+@pytest.mark.scope("unit")         # unit | property | integration | e2e
 def test_x(): ...
 ```
 

@@ -75,15 +75,12 @@ sketch.
 ```python
 # maistro/identity/hardware_signing.py
 
-
 class SigningMode(IntEnum):
     """Lower value = higher priority in the fallback ladder."""
-
     HARDWARE_LEDGER = 1
     HARDWARE_TREZOR = 2
     HARDWARE_YUBIKEY = 3
-    SOFTWARE = 4  # ConductorSeed.sign — always available, the guaranteed floor
-
+    SOFTWARE = 4   # ConductorSeed.sign — always available, the guaranteed floor
 
 class SigningDevice(Protocol):
     mode: SigningMode
@@ -109,7 +106,6 @@ class SigningLadder:
     """Tries devices in SigningMode priority order; ConductorSeed software
     signing is always the final fallback (never itself in the `devices` list --
     it's the built-in floor)."""
-
     devices: tuple[SigningDevice, ...]
     software_seed: ConductorSeed
 
@@ -121,7 +117,6 @@ class SigningLadder:
         unavailable, falls back to software_seed.sign(path, message).
         Returns SignatureResult(signature, mode_used) so the caller/audit
         trail knows which mode actually signed."""
-
 
 @dataclass(frozen=True)
 class SignatureResult:
@@ -135,7 +130,6 @@ class SignatureResult:
 class SimulatedSigningDevice(SigningDevice):
     """In-memory fake: a fixed keypair, toggleable connected/rejects-next-sign
     state for exercising the ladder's fallback and user-rejection paths."""
-
     mode: SigningMode
 
     def __init__(self, mode: SigningMode, *, connected: bool = True) -> None: ...

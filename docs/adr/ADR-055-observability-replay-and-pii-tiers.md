@@ -79,16 +79,13 @@ class SensitivityTier(StrEnum):
     SENSITIVE = "sensitive"
     SECRET = "secret"
 
-
 class ReplayableLLMClient(Protocol):
-    async def call(self, request: LLMRequest) -> LLMResponse: ...  # records args+response
+    async def call(self, request: LLMRequest) -> LLMResponse: ...           # records args+response
     async def replay(self, trace_id: str) -> AsyncIterator[ReplayEvent]: ...
-
 
 class ReplayableToolDispatcher(Protocol):
-    async def call(self, tool_call: ToolCall) -> ToolResult: ...  # records args+result
+    async def call(self, tool_call: ToolCall) -> ToolResult: ...             # records args+result
     async def replay(self, trace_id: str) -> AsyncIterator[ReplayEvent]: ...
-
 
 class ToolRegistration(BaseModel):  # extends ADR-050
     name: str

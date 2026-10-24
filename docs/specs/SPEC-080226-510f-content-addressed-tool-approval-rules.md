@@ -90,9 +90,9 @@ of the implementation that will execute.
 ```python
 @dataclass(frozen=True)
 class ToolIdentity:
-    name: str  # human label, e.g. "file_access_write" or a skill name
+    name: str            # human label, e.g. "file_access_write" or a skill name
     version: str
-    code_sha256: str  # content hash — the actual matching key
+    code_sha256: str      # content hash — the actual matching key
 ```
 
 Resolution differs by source, computed once and cached, never per-call:
@@ -111,7 +111,7 @@ Resolution differs by source, computed once and cached, never per-call:
 @dataclass(frozen=True)
 class ToolApprovalRule:
     tool: ToolIdentity
-    args: dict[str, Any] | None  # None = any-args; else exact-match, MS's two-tier scope
+    args: dict[str, Any] | None   # None = any-args; else exact-match, MS's two-tier scope
     scope: Literal["session", "user", "team"]  # reuses existing scope axes, not tenant
 ```
 

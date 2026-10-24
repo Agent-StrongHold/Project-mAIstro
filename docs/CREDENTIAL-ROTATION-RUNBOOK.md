@@ -188,7 +188,6 @@ In-process equivalent (for an admin route or a maintenance hook, not the CLI):
 
 ```python
 import stores
-
 revoked = stores.purge_all_sessions()
 ```
 

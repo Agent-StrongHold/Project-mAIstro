@@ -68,9 +68,8 @@ First tranche of adapters: **Email (SMTP), Webhook (HTTPS POST), Telegram, Slack
 ```python
 class DeliveryTarget(BaseModel):
     channel: Literal["email", "webhook", "telegram", "slack", ...]
-    address: str  # e.g. chat_id, email, URL
-    config_ref: str | None  # vault key for per-channel creds
-
+    address: str                     # e.g. chat_id, email, URL
+    config_ref: str | None           # vault key for per-channel creds
 
 class DeliveryResult(BaseModel):
     target: DeliveryTarget
@@ -79,10 +78,8 @@ class DeliveryResult(BaseModel):
     error: str | None
     attempts: int
 
-
 class Channel(Protocol):
     name: str
-
     async def send(self, target: DeliveryTarget, payload: DeliveryPayload) -> DeliveryResult: ...
     async def health(self) -> ChannelHealth: ...
 ```

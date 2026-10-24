@@ -77,7 +77,6 @@ class HarnessAdvertisement:
     cost_multiplier: float = 1.0  # relative cost vs. local
     latency_multiplier: float = 1.0
 
-
 class HarnessRegistry(Protocol):
     async def list_harnesses(self) -> list[HarnessAdvertisement]:
         """Discover all connected foreign harnesses."""

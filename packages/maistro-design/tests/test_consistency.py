@@ -737,6 +737,113 @@ def test_design_system_compliance_flags_offpalette_colour() -> None:
     assert any("#123456" in f.evidence for f in warnings)
 
 
+def test_local_sibling_contradiction_targets_both_branches() -> None:
+    """Neither sibling is grounded in a consumed decision: the contradiction
+    is purely local. Origin attribution must degrade to LOCAL (never invent
+    a shared decision) and refinement must route both siblings' own branches
+    — the union of the two local closures — in both match orientations."""
+
+    def _flyer(artifact_id: str, promise: str, references: tuple[str, ...]) -> FamilyArtifact:
+        return FamilyArtifact(
+            artifact_id=artifact_id,
+            version=1,
+            kind="social",
+            title=f"Launch {artifact_id}",
+            content=f"Start your free trial. All plans include {promise}.",
+            references=references,
+        )
+
+    for left, right in (
+        ("24-hour delivery", "48-hour turnaround"),  # rule matches forward
+        ("48-hour turnaround", "24-hour delivery"),  # rule matches reversed
+    ):
+        base = _snapshot(d1_statement="All plans include 48-hour turnaround.")
+        snapshot = base.model_copy(
+            update={
+                "artifacts": (
+                    _flyer("flyer_a", left, ()),
+                    _flyer("flyer_b", right, ("flyer_a",)),
+                ),
+                "persona": None,
+                "evidence": (),
+            }
+        )
+        evaluation = evaluate_project_snapshot(snapshot)
+
+        sibling_errors = errors_by_dimension(evaluation, ConsistencyDimension.SIBLING_CONTRADICTION)
+        assert len(sibling_errors) == 1
+        finding = sibling_errors[0]
+        assert finding.origin is FindingOrigin.LOCAL
+        assert finding.decision_id is None
+        assert finding.affected_decision_ids == ()
+        # Both siblings' own branches — the union of two local closures.
+        assert set(finding.affected_artifact_ids) == {"flyer_a", "flyer_b"}
+
+        assert evaluation.refinement is not None
+        assert evaluation.refinement.root_cause is FindingOrigin.LOCAL
+        assert evaluation.refinement.shared_decision_ids == ()
+        assert target_ids(evaluation) == ["flyer_a", "flyer_b"]
+        assert all(not t.requires_unlock for t in evaluation.refinement.targets)
+
+
+def test_locked_decision_requires_unlock_on_consumers_only() -> None:
+    """Lock state flows to refinement targets through consumption edges: an
+    unlocked artifact that consumes a locked decision still requires an
+    explicit unlock, while a dependent that merely references a consumer
+    does not."""
+    locked_d1 = SharedDecision(
+        decision_id="D1",
+        version=2,
+        kind="delivery-promise",
+        statement="All plans include 24-hour delivery.",
+        locked=True,
+    )
+    evaluation = evaluate_project_snapshot(
+        _snapshot(decisions=(locked_d1, _snapshot().decisions[1]))
+    )
+
+    # The locked decision's consumers are reported, never silently rewritten.
+    locked = [
+        f for f in evaluation.findings if f.dimension is ConsistencyDimension.LOCKED_DECISIONS
+    ]
+    assert {f.artifact_id for f in locked} == {"poster", "social_copy", "landing_hero"}
+    assert {f.decision_id for f in locked} == {"D1"}
+
+    assert evaluation.refinement is not None
+    targets = {t.artifact_id: t for t in evaluation.refinement.targets}
+    # Consumers of the locked decision require an explicit unlock even though
+    # the artifacts themselves are not locked.
+    for consumer in ("poster", "social_copy"):
+        assert targets[consumer].locked is False
+        assert targets[consumer].requires_unlock is True
+    # The hero is locked in its own right (artifact lock, not just decision).
+    assert targets["landing_hero"].locked is True
+    assert targets["landing_hero"].requires_unlock is True
+    # promo_banner only references a consumer — its branch is freely refinable.
+    assert targets["promo_banner"].locked is False
+    assert targets["promo_banner"].requires_unlock is False
+    # website_copy consumes D2 and shares no defect with the D1 closure.
+    assert "website_copy" not in targets
+
+
+def test_target_reason_merges_every_finding_touching_the_artifact() -> None:
+    """One artifact hit by several errors (its own persona violation, the
+    shared decision defect and its accessibility miss) is proposed once, with
+    one reason per finding and exactly those finding ids attached."""
+    evaluation = evaluate_project_snapshot(_snapshot())
+
+    assert evaluation.refinement is not None
+    poster = next(t for t in evaluation.refinement.targets if t.artifact_id == "poster")
+    touching = [
+        f
+        for f in evaluation.findings
+        if f.severity is Severity.ERROR and "poster" in f.affected_artifact_ids
+    ]
+    assert len(touching) >= 2, "the planted snapshot gives poster several distinct errors"
+    assert poster.finding_ids == tuple(sorted(f.finding_id for f in touching))
+    assert poster.reason == "; ".join(f.evidence for f in touching)
+
+
 def test_clean_project_passes_every_dimension() -> None:
     base = _snapshot()
     fixed_decision = SharedDecision(

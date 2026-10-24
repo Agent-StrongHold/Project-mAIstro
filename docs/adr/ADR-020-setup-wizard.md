@@ -95,7 +95,6 @@ class WizardState:
     channels: list[ChannelConfig]
     crypto_mode: CryptoMode
 
-
 class SetupWizard:
     def start(self, mode: Literal["browser", "cli"]) -> None: ...
     def resume(self, state_path: Path) -> WizardState: ...

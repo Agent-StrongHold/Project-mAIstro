@@ -74,6 +74,37 @@ class SqliteQuotaTracker:
             await self._conn.execute(_EVIDENCE_SCHEMA)
             await self._conn.execute(_EVENT_SCHEMA)
 
+    async def _project_usage_locked(
+        self, provider: str, ck: str, input_tokens: int, output_tokens: int
+    ) -> None:
+        """Fold measured usage into the aggregate. Lock held; does not commit."""
+
+        await self._conn.execute(
+            """INSERT INTO quota_usage
+               (provider, cycle_key, input_tokens, output_tokens, total_tokens, request_count)
+               VALUES (?, ?, ?, ?, ?, 1)
+               ON CONFLICT (provider, cycle_key) DO UPDATE SET
+                 input_tokens = input_tokens + excluded.input_tokens,
+                 output_tokens = output_tokens + excluded.output_tokens,
+                 total_tokens = total_tokens + excluded.total_tokens,
+                 request_count = request_count + 1""",
+            (provider, ck, input_tokens, output_tokens, input_tokens + output_tokens),
+        )
+
+    async def _project_unreported_locked(self, provider: str, ck: str) -> None:
+        """Count a call whose usage never arrived. Lock held; does not commit."""
+
+        await self._conn.execute(
+            """INSERT INTO quota_usage
+               (provider, cycle_key, input_tokens, output_tokens, total_tokens,
+                request_count, unreported_count)
+               VALUES (?, ?, 0, 0, 0, 1, 1)
+               ON CONFLICT (provider, cycle_key) DO UPDATE SET
+                 request_count = request_count + 1,
+                 unreported_count = unreported_count + 1""",
+            (provider, ck),
+        )
+
     async def record_usage(
         self,
         provider: str,
@@ -85,7 +116,6 @@ class SqliteQuotaTracker:
         """Record one event, making retries harmless by ``event_id``."""
         event_id = event_id or uuid4().hex
         ck = cycle_key(billing_cycle)
-        total = input_tokens + output_tokens
         async with self._record_lock:
             cursor = await self._conn.execute(
                 "INSERT OR IGNORE INTO quota_usage_events "
@@ -102,17 +132,7 @@ class SqliteQuotaTracker:
                 if stored is None or stored != (provider, ck, input_tokens, output_tokens):
                     raise ValueError(f"event_id {event_id!r} was reused with different usage")
             else:
-                await self._conn.execute(
-                    """INSERT INTO quota_usage
-                       (provider, cycle_key, input_tokens, output_tokens, total_tokens, request_count)
-                       VALUES (?, ?, ?, ?, ?, 1)
-                       ON CONFLICT (provider, cycle_key) DO UPDATE SET
-                         input_tokens = input_tokens + excluded.input_tokens,
-                         output_tokens = output_tokens + excluded.output_tokens,
-                         total_tokens = total_tokens + excluded.total_tokens,
-                         request_count = request_count + 1""",
-                    (provider, ck, input_tokens, output_tokens, total),
-                )
+                await self._project_usage_locked(provider, ck, input_tokens, output_tokens)
             await self._conn.commit()
             cursor = await self._conn.execute(
                 "SELECT input_tokens, output_tokens, total_tokens, request_count "
@@ -132,18 +152,10 @@ class SqliteQuotaTracker:
     async def record_unreported(self, provider: str, billing_cycle: str) -> dict[str, object]:
         """Project a completed call with missing usage into the aggregate."""
         ck = cycle_key(billing_cycle)
-        await self._conn.execute(
-            """INSERT INTO quota_usage
-               (provider, cycle_key, input_tokens, output_tokens, total_tokens,
-                request_count, unreported_count)
-               VALUES (?, ?, 0, 0, 0, 1, 1)
-               ON CONFLICT (provider, cycle_key) DO UPDATE SET
-                 request_count = request_count + 1,
-                 unreported_count = unreported_count + 1""",
-            (provider, ck),
-        )
-        await self._conn.commit()
-        return await self._fetch_usage(provider, ck)
+        async with self._record_lock:
+            await self._project_unreported_locked(provider, ck)
+            await self._conn.commit()
+            return await self._fetch_usage(provider, ck)
 
     async def record_invocation(
         self,
@@ -156,18 +168,38 @@ class SqliteQuotaTracker:
     ) -> dict[str, object]:
         """Record one canonical Invocation without double-counting it."""
         ck = cycle_key(billing_cycle)
-        cursor = await self._conn.execute(
-            """INSERT INTO quota_invocation_evidence
-               (invocation_id, provider, cycle_key, input_tokens, output_tokens, usage_reported)
-               VALUES (?, ?, ?, ?, ?, ?)
-               ON CONFLICT (invocation_id) DO NOTHING""",
-            (invocation_id, provider, ck, input_tokens, output_tokens, int(usage_reported)),
-        )
-        if cursor.rowcount:
-            if usage_reported:
-                await self.record_usage(provider, billing_cycle, input_tokens, output_tokens)
-            else:
-                await self.record_unreported(provider, billing_cycle)
+        # One transaction for the evidence row and the aggregate it projects.
+        # Committing the evidence first and projecting afterwards left a window
+        # in which a crash lost the projection permanently: the retry's
+        # `ON CONFLICT DO NOTHING` reports nothing inserted, so it skips the
+        # projection too, and the understated totals can never be repaired
+        # (Codex, #1362). The PostgreSQL tracker already does both in one
+        # `conn.transaction()`; this is the SQLite half.
+        async with self._record_lock:
+            try:
+                cursor = await self._conn.execute(
+                    """INSERT INTO quota_invocation_evidence
+                       (invocation_id, provider, cycle_key, input_tokens, output_tokens,
+                        usage_reported)
+                       VALUES (?, ?, ?, ?, ?, ?)
+                       ON CONFLICT (invocation_id) DO NOTHING""",
+                    (invocation_id, provider, ck, input_tokens, output_tokens, int(usage_reported)),
+                )
+                if cursor.rowcount:
+                    if usage_reported:
+                        await self._project_usage_locked(provider, ck, input_tokens, output_tokens)
+                    else:
+                        await self._project_unreported_locked(provider, ck)
+            except BaseException:
+                # Explicit, because the evidence row is the idempotency key.
+                # Left uncommitted but un-rolled-back it is still visible on
+                # this connection, so the retry's `ON CONFLICT DO NOTHING`
+                # would suppress the projection a second time and the totals
+                # could never be repaired. `conn.transaction()` gives the
+                # PostgreSQL tracker this for free.
+                await self._conn.rollback()
+                raise
+            await self._conn.commit()
         return await self._fetch_usage(provider, ck)
 
     async def _fetch_usage(self, provider: str, ck: str) -> dict[str, object]:

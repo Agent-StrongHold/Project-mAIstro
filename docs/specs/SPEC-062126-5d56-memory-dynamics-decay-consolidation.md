@@ -79,7 +79,6 @@ class DecayStrategy(Protocol):
         """Return the weight after elapsed_seconds with no access/feedback."""
         ...
 
-
 @dataclass(frozen=True)
 class ExponentialDecay(DecayStrategy):
     """Default: weight * exp(-decay_rate * elapsed_seconds). Matches SPEC-240's existing curve."""
@@ -108,8 +107,7 @@ class ContradictionResolutionThreshold:
         floor = median_resolution_confidence + self.admin_offset
         start = 1.5  # > 1.0: unreachable since confidence in [0, 1]
         decay_rate = 0.9
-        return floor + (start - floor) * (decay_rate**self.samples_seen)
-
+        return floor + (start - floor) * (decay_rate ** self.samples_seen)
 
 class ContradictionResolver(Protocol):
     async def resolve(

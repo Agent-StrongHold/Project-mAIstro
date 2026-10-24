@@ -216,7 +216,8 @@ Tests reference the AC by marker:
 
 ```python
 @pytest.mark.ac("SPEC-201/AC-1")
-def test_turn_record_captures_all_signals(): ...
+def test_turn_record_captures_all_signals():
+    ...
 ```
 
 The linter enforces: for any spec at `Tests Passing` or `Implemented`, every

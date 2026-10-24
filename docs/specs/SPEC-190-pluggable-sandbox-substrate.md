@@ -66,29 +66,22 @@ migration.
 ```python
 class SandboxHandle(Protocol):
     id: str
-
-    async def exec(
-        self, argv: list[str], *, timeout_s: float, stdin: bytes | None = None
-    ) -> ExecResult: ...
+    async def exec(self, argv: list[str], *, timeout_s: float, stdin: bytes | None = None) -> ExecResult: ...
     async def write_file(self, path: str, data: bytes) -> None: ...
     async def read_file(self, path: str) -> bytes: ...
     async def stop(self) -> None: ...
 
-
 class SandboxProtocol(Protocol):
     async def spawn(self, spec: SandboxSpec) -> SandboxHandle: ...
-    def capabilities(
-        self,
-    ) -> SandboxCapabilities: ...  # isolation level, kvm_required, max_mem, net policy
-
+    def capabilities(self) -> SandboxCapabilities: ...   # isolation level, kvm_required, max_mem, net policy
 
 @dataclass(frozen=True)
 class SandboxSpec:
-    image_ref: str  # OCI ref or rootfs id
-    workspace: WorkspaceMount  # read-write scratch; host paths never bind-mounted raw
-    network: NetPolicy  # default DENY; explicit egress allowlist
-    limits: ResourceLimits  # cpu, mem, pids, wall-clock
-    env: Mapping[str, str]  # already passed through env_sanitize
+    image_ref: str                 # OCI ref or rootfs id
+    workspace: WorkspaceMount      # read-write scratch; host paths never bind-mounted raw
+    network: NetPolicy             # default DENY; explicit egress allowlist
+    limits: ResourceLimits         # cpu, mem, pids, wall-clock
+    env: Mapping[str, str]         # already passed through env_sanitize
 ```
 
 `SandboxCapabilities.isolation` is an enum, ordered weakest → strongest:

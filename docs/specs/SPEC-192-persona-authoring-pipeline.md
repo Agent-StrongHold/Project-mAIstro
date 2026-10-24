@@ -109,9 +109,9 @@ class PersonaSeed:
     audience: str
     tone: str
     business_model: str
-    hard_constraints: list[str]  # → hard_gates in spawns
-    agent_intents: list[str]  # rough description of each desired spawned agent
-    raw_interview: list[dict]  # full Q&A for provenance
+    hard_constraints: list[str]   # → hard_gates in spawns
+    agent_intents: list[str]      # rough description of each desired spawned agent
+    raw_interview: list[dict]     # full Q&A for provenance
 ```
 
 **Calibration signal:** After the first draft persona is shown to the user, any corrections feed
@@ -147,11 +147,11 @@ into the Tier 1 objective criteria.
 @dataclass
 class GoldenRecord:
     persona_id: str
-    version: int  # increments on re-research
-    sources: list[SourceEvidence]  # URL + title + full_text + fetch_ts
+    version: int                  # increments on re-research
+    sources: list[SourceEvidence] # URL + title + full_text + fetch_ts
     criteria: list[EvidencedCriterion]  # vocab-mapped + which sources support it
     created_at: datetime
-    supersedes: int | None  # previous version (never deleted)
+    supersedes: int | None        # previous version (never deleted)
 ```
 
 Re-researching a persona diffs against the previous `GoldenRecord` and surfaces added/removed/
@@ -312,19 +312,18 @@ Replace `NOISE_MARGIN = 5` with:
 ```python
 from scipy import stats
 
-
 def is_significant_improvement(baseline_scores, mutated_scores, alpha=0.05):
     delta = [m - b for m, b in zip(mutated_scores, baseline_scores)]
     if len(delta) < 5:
         return sum(delta) / len(delta) > 5  # fallback: small sample
-    stat, p = stats.wilcoxon(delta, alternative="greater")
+    stat, p = stats.wilcoxon(delta, alternative='greater')
     return p < alpha
 ```
 
 For the bootstrap variant (when score variance is available):
 
 ```python
-ci = stats.bootstrap((delta,), statistic=np.mean, confidence_level=0.95, method="bci")
+ci = stats.bootstrap((delta,), statistic=np.mean, confidence_level=0.95, method='bci')
 return ci.confidence_interval.low > 0  # 95% CI excludes zero
 ```
 

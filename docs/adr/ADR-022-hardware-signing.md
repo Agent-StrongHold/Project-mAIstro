@@ -94,7 +94,6 @@ bootstrap cycle).
 ```python
 from typing import Protocol
 
-
 class SigningDevice(Protocol):
     def is_connected(self) -> bool: ...
     def sign(self, path: str, message: bytes) -> bytes: ...

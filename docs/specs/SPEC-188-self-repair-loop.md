@@ -85,10 +85,8 @@ Slot protocol (`SelfRepair`, extends `CapabilityProvider`):
 ```python
 @runtime_checkable
 class SelfRepair(CapabilityProvider, Protocol):
-    async def evaluate(
-        self, health: InfraHealth
-    ) -> list[RepairProposal]: ...  # detect + diagnose + propose
-    async def run_once(self) -> RepairCycleResult: ...  # full cycle: snapshot → evaluate → act
+    async def evaluate(self, health: InfraHealth) -> list[RepairProposal]: ...   # detect + diagnose + propose
+    async def run_once(self) -> RepairCycleResult: ...                            # full cycle: snapshot → evaluate → act
 ```
 
 `run_once()` is the unit a scheduler/operator invokes; `evaluate()` is the pure, testable

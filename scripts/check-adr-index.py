@@ -78,7 +78,7 @@ class IndexProblem:
 
 def _front_matter() -> dict[str, object]:
     found: dict[str, object] = {}
-    for path in sorted(ADR_DIR.glob("*.md")):
+    for path in sorted(ADR_DIR.rglob("*.md")):
         if path.name in {INDEX.name, "OUT-OF-SCOPE.md", "DECISION-BACKLOG.md"}:
             continue
         result = validate_file(path)
@@ -89,11 +89,11 @@ def _front_matter() -> dict[str, object]:
 
 
 def _adr_path(adr_id: str) -> Path | None:
-    matches = sorted(ADR_DIR.glob(f"{adr_id}-*.md"))
+    matches = sorted(ADR_DIR.rglob(f"{adr_id}-*.md"))
     if matches:
         return matches[0]
-    exact = ADR_DIR / f"{adr_id}.md"
-    return exact if exact.exists() else None
+    exact_matches = sorted(ADR_DIR.rglob(f"{adr_id}.md"))
+    return exact_matches[0] if exact_matches else None
 
 
 def _git_meta(path: Path) -> tuple[str, str]:

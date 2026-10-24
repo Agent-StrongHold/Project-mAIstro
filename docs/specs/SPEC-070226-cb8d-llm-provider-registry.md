@@ -78,7 +78,6 @@ class ModelMetadata:
     max_tokens: int = 4096
     fallback_to: tuple[str, ...] = ()  # ("gpt-4-turbo", ...) — immutable
 
-
 @dataclass(frozen=True)
 class EmbeddingModelMetadata:
     name: str  # "text-embedding-ada-002"
@@ -87,23 +86,18 @@ class EmbeddingModelMetadata:
     cost_per_1k_tokens: float  # cents
     max_input_tokens: int = 8192
 
-
 @dataclass(frozen=True)
 class RouterBudget:
     """Typed budget (replaces the untyped budget dict of the original draft)."""
-
     max_cost_cents: float | None = None
     max_latency_ms: int | None = None
     reasoning: bool = False
 
-
 @dataclass(frozen=True)
 class RoutingTask:
     """Minimal task descriptor (core has no plain Task dataclass)."""
-
     task_type: str = "general"
     description: str = ""
-
 
 class LLMProviderRegistry(Protocol):
     async def list_models(self, filter_by: dict[str, str] | None = None) -> list[ModelMetadata]:
@@ -118,7 +112,6 @@ class LLMProviderRegistry(Protocol):
 
     def is_available(self, name: str) -> bool:
         """Availability flag (set by circuit-breaking per ADR-038)."""
-
 
 class LLMRouter(Protocol):
     async def select(self, task: RoutingTask, budget: RouterBudget | None = None) -> ModelMetadata:

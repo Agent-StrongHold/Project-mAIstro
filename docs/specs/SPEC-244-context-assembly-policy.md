@@ -106,14 +106,9 @@ method to `EpisodicStore` (additive, not a breaking change):
 
 ```python
 async def list_by_scope(
-    self,
-    *,
-    agent_id: str | None = None,
-    team_id: str | None = None,
-    org_id: str | None = None,
-    project_id: str | None = None,
-    min_weight: float = 0.0,
-    limit: int = 50,
+    self, *, agent_id: str | None = None, team_id: str | None = None,
+    org_id: str | None = None, project_id: str | None = None,
+    min_weight: float = 0.0, limit: int = 50,
 ) -> list[EpisodicMemory]:
     """Scope-filtered memories at or above min_weight, no content matching."""
 ```
@@ -153,11 +148,7 @@ class ContextAssemblyPolicy(Protocol):
     async def layer3(self, project_id: str, n: int = 20) -> str: ...
     async def layer4(self, project_id: str) -> str: ...
     async def assemble(
-        self,
-        project_id: str,
-        run_id: str,
-        agent_id: str,
-        session_id: str,
+        self, project_id: str, run_id: str, agent_id: str, session_id: str,
         budget_tokens: int,
     ) -> str: ...
 ```

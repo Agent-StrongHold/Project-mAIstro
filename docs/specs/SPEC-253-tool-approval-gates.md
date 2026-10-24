@@ -113,7 +113,6 @@ layer 3) is explicitly out of scope here — it is superseded by ADR-068's RLPHD
 ApprovalTarget = Literal["plan", "call"]
 ApprovalOutcome = Literal["approved", "denied", "timeout"]
 
-
 @dataclass(frozen=True)
 class ApprovalDecision:
     task_id: str
@@ -122,18 +121,15 @@ class ApprovalDecision:
     latency_ms: int
     decided_by: str
 
-
 @dataclass(frozen=True)
 class Impact:
     dimension: str
     value: float
 
-
 @dataclass(frozen=True)
 class Threshold:
     dimension: str
     gt: float
-
 
 # maistro/tools/approval/gate.py
 @dataclass(frozen=True)
@@ -141,7 +137,6 @@ class PlanApprovalState:
     task_id: str
     approved_calls: frozenset[str]
     approved_at: datetime | None
-
 
 def needs_plan_approval(state: PlanApprovalState | None) -> bool: ...
 def is_declared(state: PlanApprovalState, call: str) -> bool: ...

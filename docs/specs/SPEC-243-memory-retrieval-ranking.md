@@ -74,7 +74,6 @@ def score(
 ) -> float:
     return (lexical_fn(query, memory) + vector_fn(query, memory)) * memory.weight
 
-
 def rank(
     query: str,
     memories: list[EpisodicMemory],
@@ -83,11 +82,7 @@ def rank(
     lexical_fn: Callable[[str, EpisodicMemory], float],
     vector_fn: Callable[[str, EpisodicMemory], float],
 ) -> list[EpisodicMemory]:
-    scored = sorted(
-        memories,
-        key=lambda m: score(query, m, lexical_fn=lexical_fn, vector_fn=vector_fn),
-        reverse=True,
-    )
+    scored = sorted(memories, key=lambda m: score(query, m, lexical_fn=lexical_fn, vector_fn=vector_fn), reverse=True)
     return scored[:k]
 ```
 

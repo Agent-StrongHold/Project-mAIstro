@@ -103,7 +103,6 @@ PLUGIN: dict[str, object] = {
     "handler": "greet",
 }
 
-
 def greet(target: str = "world") -> str:
     return f"Hello, {target}!"
 ```

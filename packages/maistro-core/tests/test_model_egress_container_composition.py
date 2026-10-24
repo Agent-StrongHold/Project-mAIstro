@@ -11,7 +11,7 @@ from maistro.capabilities.binding_store import BindingDisabled, BindingNotFound
 from maistro.capabilities.model_chat import MODEL_CHAT_CAPABILITY
 from maistro.container import Container, build_node_resolver, create_container
 from maistro.graph.nodes.base import NodeContext
-from maistro.graph.nodes.llm_summarize import LlmSummarizeNode, LlmSummarizeOut
+from maistro.graph.nodes.llm_summarize import LlmSummarizeIn, LlmSummarizeNode, LlmSummarizeOut
 from maistro.types.config import AgentConfig
 
 
@@ -161,6 +161,11 @@ async def test_container_resolved_summarize_uses_real_authorities_and_governed_i
         calls.append(provider.name)
         assert provider.metadata is metadata
         assert endpoint.base_url == "https://gateway.test"
+        # #1078 decisive datum, pinned: the physical call authenticates with the
+        # POOL-ISSUED credential (the `litellm_key`-seeded pool record), not the
+        # `MAISTRO_LLM_API_KEY` env secret set below — the env var is a
+        # construction fallback, never a routing bypass.
+        assert endpoint.api_key == "test-litellm-key"
         return {
             "model": "yaml-model-2026-09",
             "choices": [{"message": {"content": "A governed summary."}}],
@@ -195,11 +200,28 @@ async def test_container_resolved_summarize_uses_real_authorities_and_governed_i
     assert result.output.summary == "A governed summary."
     assert calls == ["yaml-model"]
 
+    summarize_inputs = LlmSummarizeIn(
+        text="Long source text",
+        model="request-alias-that-binding-pin-outranks",
+        binding_id="model-prod",
+    )
+    invocation_ctx = NodeContext(
+        run_id="run-prod",
+        dag_id="graph-prod",
+        node_id="summarize",
+        node_run_id="node-run-prod",
+        attempt_id="attempt-prod",
+        workspace_id="ws-prod",
+        project_id="project-prod",
+    )
     invocations = await container.capability_effects.invocation_store.list_effect(
         run_id="run-prod",
         node_run_id="node-run-prod",
         binding_id="model-prod",
-        effect_key="llm.summarize.complete:request-alias-that-binding-pin-outranks",
+        # The Invocation files under the node's Run/node-scoped key, not a
+        # model-only alias, so a second summarize node on the same Binding
+        # and model can never adopt this one's completed effect.
+        effect_key=node.logical_effect_key(summarize_inputs, invocation_ctx),
     )
     assert len(invocations) == 1
     invocation = invocations[0]

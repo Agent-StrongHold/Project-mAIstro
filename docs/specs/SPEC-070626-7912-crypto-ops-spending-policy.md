@@ -86,31 +86,27 @@ impossible until a real backend is deliberately wired in.
 ```python
 # maistro/identity/crypto_ops.py
 
-
 @dataclass(frozen=True)
 class TransactionIntent:
     """An agent's proposed value-moving action. Immutable once created —
     any policy-driven modification (e.g. amount capped) produces a new intent,
     never mutates in place, so the audit trail is unambiguous about what was
     originally proposed vs. what was approved."""
-
     agent_id: str
-    amount_sats: int  # always integer satoshis; no float amounts anywhere
-    destination: str  # address/invoice/identifier, backend-interpreted
-    purpose: str  # human-readable justification, always required
+    amount_sats: int              # always integer satoshis; no float amounts anywhere
+    destination: str               # address/invoice/identifier, backend-interpreted
+    purpose: str                   # human-readable justification, always required
     key_class: Literal["hot", "cold"]
     network: Literal["testnet", "mainnet"] = "testnet"
-
 
 @dataclass(frozen=True)
 class SpendingPolicy:
     agent_id: str
     max_per_transaction_sats: int
     max_per_day_sats: int
-    hot_key_daily_cap_sats: int  # tighter cap specifically for hot-key intents
+    hot_key_daily_cap_sats: int     # tighter cap specifically for hot-key intents
     require_elevation_above_sats: int  # intents over this always need ADR-068 elevation
     allowed_networks: tuple[Literal["testnet", "mainnet"], ...] = ("testnet",)
-
 
 class SpendingPolicyStore(Protocol):
     async def get(self, agent_id: str) -> SpendingPolicy: ...
@@ -120,17 +116,16 @@ class SpendingPolicyStore(Protocol):
 
 ```python
 class PolicyVerdict(StrEnum):
-    APPROVED = "approved"  # within limits, no elevation needed
-    NEEDS_ELEVATION = "needs_elevation"  # over require_elevation_above_sats
-    DENIED_NETWORK = "denied_network"  # network not in allowed_networks
-    DENIED_LIMIT = "denied_limit"  # exceeds max_per_transaction or daily cap
-
+    APPROVED = "approved"                    # within limits, no elevation needed
+    NEEDS_ELEVATION = "needs_elevation"       # over require_elevation_above_sats
+    DENIED_NETWORK = "denied_network"         # network not in allowed_networks
+    DENIED_LIMIT = "denied_limit"             # exceeds max_per_transaction or daily cap
 
 async def evaluate_intent(
     intent: TransactionIntent,
     policy: SpendingPolicy,
     *,
-    spent_today_sats: int,  # caller-supplied running total for the agent/day
+    spent_today_sats: int,        # caller-supplied running total for the agent/day
 ) -> PolicyVerdict:
     """Pure function: network check first (mainnet fails closed unless
     explicitly allowed), then per-transaction cap, then daily cap (using the
@@ -145,17 +140,17 @@ deterministic given its three inputs, so it is trivially property-testable.
 
 ```python
 class CryptoExecutionBackend(Protocol):
-    async def execute(self, intent: TransactionIntent, *, signature: bytes) -> "ExecutionResult":
+    async def execute(
+        self, intent: TransactionIntent, *, signature: bytes
+    ) -> "ExecutionResult":
         """Actually move value. Real implementations plug in here; NOT part
         of this SPEC's shipped code beyond the testnet simulator below."""
-
 
 @dataclass(frozen=True)
 class ExecutionResult:
     tx_id: str
     network: Literal["testnet", "mainnet"]
     confirmed: bool
-
 
 class TestnetSimulatedBackend(CryptoExecutionBackend):
     """The only backend this SPEC ships. Maintains simulated per-agent
@@ -177,8 +172,8 @@ async def propose_and_execute(
     *,
     policy_store: SpendingPolicyStore,
     backend: CryptoExecutionBackend,
-    signing_ladder: SigningLadder,  # SPEC-070626-9460
-    approver_graph: ApproverGraph,  # SPEC-246, reused unchanged
+    signing_ladder: SigningLadder,     # SPEC-070626-9460
+    approver_graph: ApproverGraph,     # SPEC-246, reused unchanged
     spent_today_sats: int,
 ) -> ExecutionResult:
     """

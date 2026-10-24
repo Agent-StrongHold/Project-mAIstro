@@ -104,10 +104,8 @@ are read back only by an explicit restore, never silently on boot.
 ```python
 class ConfigStore(Protocol):
     async def get(self, key: str) -> ConfigValue: ...
-    async def set(
-        self, key: str, value: ConfigValue, *, principal: Principal
-    ) -> None: ...  # RBAC + audit
-    async def export(self) -> bytes: ...  # human-readable YAML/JSON snapshot for backup / git
+    async def set(self, key: str, value: ConfigValue, *, principal: Principal) -> None: ...  # RBAC + audit
+    async def export(self) -> bytes: ...   # human-readable YAML/JSON snapshot for backup / git
 ```
 
 ## Acceptance criteria

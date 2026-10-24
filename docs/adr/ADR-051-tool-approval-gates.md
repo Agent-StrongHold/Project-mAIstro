@@ -107,13 +107,8 @@ While waiting for any approval, the agent continues on non-dependent steps from 
 ```python
 class ApprovalGate(Protocol):
     async def request_plan_approval(self, task_id: UUID, plan: TaskPlan) -> ApprovalDecision: ...
-    async def request_escalation(
-        self, task_id: UUID, call: ToolCall, impact: Impact
-    ) -> ApprovalDecision: ...
-    async def record_decision(
-        self, decision: ApprovalDecision
-    ) -> None: ...  # feeds learned-trust store
-
+    async def request_escalation(self, task_id: UUID, call: ToolCall, impact: Impact) -> ApprovalDecision: ...
+    async def record_decision(self, decision: ApprovalDecision) -> None: ...  # feeds learned-trust store
 
 class ApprovalDecision(BaseModel):
     task_id: UUID

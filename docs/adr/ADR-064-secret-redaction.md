@@ -218,7 +218,6 @@ Callers should not pre-split by line.
 ```python
 from maistro.security.redact import redact, is_redaction_enabled
 
-
 def redact(text: str | None) -> str:
     """Redact all known secret patterns from text.
 
@@ -227,7 +226,6 @@ def redact(text: str | None) -> str:
     Never raises.
     """
     ...
-
 
 def is_redaction_enabled() -> bool:
     """Return whether redaction is active. Snapshotted at import time."""
@@ -240,9 +238,7 @@ def is_redaction_enabled() -> bool:
 import os
 
 _REDACT_ENABLED: bool = os.environ.get("REDACT_ENABLED", "true").lower() not in (
-    "false",
-    "0",
-    "no",
+    "false", "0", "no",
 )
 ```
 

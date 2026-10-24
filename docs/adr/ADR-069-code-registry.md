@@ -90,32 +90,24 @@ harness). A registry entry is content-addressed and versioned:
 
 ```python
 class CodeKind(StrEnum):
-    COMPENSATOR = "compensator"
-    IMPACT_ESTIMATOR = "impact_estimator"
-    IDEMPOTENCY_KEY = "idempotency_key"
-    MERGE_RESOLVER = "merge_resolver"
-    DYNAMIC_GATE = "dynamic_gate"
-
+    COMPENSATOR = "compensator"; IMPACT_ESTIMATOR = "impact_estimator"
+    IDEMPOTENCY_KEY = "idempotency_key"; MERGE_RESOLVER = "merge_resolver"; DYNAMIC_GATE = "dynamic_gate"
 
 class CodeEntry(BaseModel):
     name: str
-    version: str  # semver; refs are "name@version" (ADR-053 — unversioned refs refused)
+    version: str                 # semver; refs are "name@version" (ADR-053 — unversioned refs refused)
     kind: CodeKind
-    code_sha256: str  # content address of the body
-    signature: bytes  # signed by admin or the registry key (ADR-028 pattern)
-    trusted: bool = False  # engine-authored/shipped code may be trusted; everything else is not
+    code_sha256: str             # content address of the body
+    signature: bytes             # signed by admin or the registry key (ADR-028 pattern)
+    trusted: bool = False        # engine-authored/shipped code may be trusted; everything else is not
 ```
 
 ### Resolution (ADR-053 contract, made concrete)
 
 ```python
 class CodeRegistry(Protocol):
-    def resolve(
-        self, ref: str
-    ) -> CodeEntry: ...  # "name@version" -> entry; raises CodeRefUnresolved
-    def compatible(
-        self, base_ref: str, overlay_ref: str
-    ) -> bool: ...  # semver: v2.x accepts v2.y; major bump = explicit
+    def resolve(self, ref: str) -> CodeEntry: ...                  # "name@version" -> entry; raises CodeRefUnresolved
+    def compatible(self, base_ref: str, overlay_ref: str) -> bool: ...  # semver: v2.x accepts v2.y; major bump = explicit
     async def invoke(self, ref: str, payload: CodePayload, ctx: ExecContext) -> CodeResult: ...
 ```
 

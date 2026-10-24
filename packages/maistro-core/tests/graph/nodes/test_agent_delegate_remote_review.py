@@ -29,6 +29,8 @@ from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.runs import InMemoryRunStore, RunIntegrityError, RunStatus
 from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
+from ._delegation_governance import delegation_effects
+
 
 async def _spine(*, workspace_id: str = "workspace-1") -> tuple[InMemoryRunStore, Any]:
     project_store = InMemoryProjectScopeStore()
@@ -62,6 +64,21 @@ def _delegator() -> A2ADelegator:
     delegator = A2ADelegator()
     delegator.register_agent_capability("planner", ["researcher"])
     return delegator
+
+
+async def _governed_external(
+    store: InMemoryRunStore, project_id: str, peers: GuestPeerManager
+) -> AgentDelegateRemoteNode:
+    """The node with the issue #959 wiring: run store, Binding, effects."""
+    return AgentDelegateRemoteNode(
+        guest_peers=peers,
+        run_store=store,
+        effect_context=await delegation_effects(workspace_id="workspace-1", project_id=project_id),
+    )
+
+
+def _external_inputs() -> dict[str, Any]:
+    return {"from_agent": "planner", "task": "x", "peer_name": "hub", "binding_id": "binding-hub"}
 
 
 class _ReceiptFailingStore(InMemoryRunStore):
@@ -532,9 +549,11 @@ class TestAdmissionAndTransportConverge:
         node_run = await store.create_node_run(parent.run_id, node_id="delegate-1")
         peers = GuestPeerManager()
         peers.register_peer(peer)
-        node = AgentDelegateRemoteNode(guest_peers=peers, run_store=store)
-        inputs = {"from_agent": "planner", "task": "x", "peer_name": "hub"}
-        ctx = _ctx(run_id=parent.run_id, node_run_id=node_run.node_run_id)
+        node = await _governed_external(store, project.project_id, peers)
+        inputs = _external_inputs()
+        ctx = _ctx(run_id=parent.run_id, node_run_id=node_run.node_run_id).model_copy(
+            update={"attempt_id": "attempt-1", "workspace_id": "workspace-1"}
+        )
 
         first = await node.run(inputs, ctx)
         assert first.status == "paused"
@@ -637,9 +656,11 @@ class TestAdmissionAndTransportConverge:
         node_run = await store.create_node_run(parent.run_id, node_id="delegate-1")
         peers = GuestPeerManager()
         peers.register_peer(peer)
-        node = AgentDelegateRemoteNode(guest_peers=peers, run_store=store)
-        inputs = {"from_agent": "planner", "task": "x", "peer_name": "hub"}
-        ctx = _ctx(run_id=parent.run_id, node_run_id=node_run.node_run_id)
+        node = await _governed_external(store, project.project_id, peers)
+        inputs = _external_inputs()
+        ctx = _ctx(run_id=parent.run_id, node_run_id=node_run.node_run_id).model_copy(
+            update={"attempt_id": "attempt-1", "workspace_id": "workspace-1"}
+        )
 
         first = await node.run(inputs, ctx)
 
@@ -915,9 +936,11 @@ async def test_guest_peer_recovery_reconciles_without_a_second_post() -> None:
 
     first_peers = GuestPeerManager()
     first_peers.register_peer(peer)
-    first_node = AgentDelegateRemoteNode(guest_peers=first_peers, run_store=store)
-    inputs = {"from_agent": "planner", "task": "x", "peer_name": "hub"}
-    ctx = _ctx(run_id=parent.run_id, node_run_id=node_run.node_run_id)
+    first_node = await _governed_external(store, project.project_id, first_peers)
+    inputs = _external_inputs()
+    ctx = _ctx(run_id=parent.run_id, node_run_id=node_run.node_run_id).model_copy(
+        update={"attempt_id": "attempt-1", "workspace_id": "workspace-1"}
+    )
 
     first = await first_node.run(inputs, ctx)
     assert first.status == "failed"
@@ -926,7 +949,7 @@ async def test_guest_peer_recovery_reconciles_without_a_second_post() -> None:
     # peer's reconciliation endpoint instead of issuing a second POST.
     second_peers = GuestPeerManager()
     second_peers.register_peer(peer)
-    second_node = AgentDelegateRemoteNode(guest_peers=second_peers, run_store=store)
+    second_node = await _governed_external(store, project.project_id, second_peers)
     second = await second_node.run(inputs, ctx)
 
     assert second.status == "paused"

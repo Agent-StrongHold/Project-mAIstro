@@ -62,11 +62,9 @@ is filled unconditionally by the canvas floor.
 ```python
 class RenderProvider(Protocol):
     slots: tuple[str, ...]
-
-    async def discover(self) -> DiscoveryResult: ...  # never raises; up(slots) | down()
-    async def render(
-        self, prompt_stack: PromptStack, skill: DesignSkill
-    ) -> ArtifactNode: ...  # may raise -> resilience
+    async def discover(self) -> DiscoveryResult: ...      # never raises; up(slots) | down()
+    async def render(self, prompt_stack: PromptStack,
+                     skill: DesignSkill) -> ArtifactNode: ...  # may raise -> resilience
 ```
 
 ### Availability filter

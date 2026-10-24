@@ -99,36 +99,33 @@ Every import is a `SkillImportRequest` that runs the pipeline below; the gate re
 
 ```python
 class ImportSource(StrEnum):
-    REGISTRY = "registry"  # Medley/ClawHub
+    REGISTRY = "registry"     # Medley/ClawHub
     URL = "url"
     UPLOAD = "upload"
     PASTE = "paste"
 
-
 @dataclass(frozen=True)
 class SkillImportRequest:
     source: ImportSource
-    raw: str | None = None  # paste/upload body
-    url: str | None = None  # URL import
-    importer: Principal  # who is importing (authority bound, ADR-068)
-
+    raw: str | None = None        # paste/upload body
+    url: str | None = None        # URL import
+    importer: Principal           # who is importing (authority bound, ADR-068)
 
 @dataclass(frozen=True)
 class SkillImportReport:
     blocked: bool
-    scan_issues: tuple[str, ...]  # security_scan issues
-    fixes_applied: tuple[str, ...]  # what salvage changed
-    unfixable_issues: tuple[str, ...]  # why it was refused (empty if registered)
+    scan_issues: tuple[str, ...]          # security_scan issues
+    fixes_applied: tuple[str, ...]        # what salvage changed
+    unfixable_issues: tuple[str, ...]     # why it was refused (empty if registered)
     content_hash: str
     source: ImportSource
-    source_ref: str | None  # URL/registry id for abuse escalation
-
+    source_ref: str | None                # URL/registry id for abuse escalation
 
 @dataclass(frozen=True)
 class SkillImportVerdict:
     outcome: Literal["registered", "blocked"]
-    skill: SkillDefinition | None  # set iff registered
-    trust_tier: Literal["T3"] | None  # imports always start sandboxed
+    skill: SkillDefinition | None         # set iff registered
+    trust_tier: Literal["T3"] | None      # imports always start sandboxed
     report: SkillImportReport
 ```
 

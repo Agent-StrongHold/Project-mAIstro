@@ -104,16 +104,14 @@ class DIDDocument:
     verification_methods: list[dict]
     services: list[dict]
 
-
 @dataclass
 class VerifiableCredential:
     context: list[str]
     type: list[str]
-    issuer: str  # DID
-    valid_from: str  # ISO 8601
+    issuer: str              # DID
+    valid_from: str          # ISO 8601
     credential_subject: dict
     proof: dict
-
 
 class IdentityService:
     def get_did(self) -> DIDDocument: ...

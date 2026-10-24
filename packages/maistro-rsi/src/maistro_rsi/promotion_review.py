@@ -432,15 +432,25 @@ def _export_patch(export_dir: Path, stem: str, patch_text: str) -> Path:
     """Copy the patch into ``export_dir`` (the harvest/resume forward path).
     Idempotent: a resumed-then-approved patch is exported once, named for its
     first exit."""
+    if not stem or any(char in stem for char in ("/", "\\", "\x00")):
+        raise ValueError("patch stem must be a non-empty filename component")
+    export_dir = export_dir.resolve()
     export_dir.mkdir(parents=True, exist_ok=True)
     existing = [
         p for p in sorted(export_dir.glob("*.patch")) if p.name.endswith(f"{stem[:8]}.patch")
     ]
     if existing:
-        return existing[0]
+        dest = existing[0].resolve()
+        if not dest.is_relative_to(export_dir):
+            raise ValueError("patch must remain inside the export directory")
+        return dest
     next_n = len(sorted(export_dir.glob("*.patch"))) + 1
-    dest = export_dir / f"{next_n:04d}-approved-{stem[:8]}.patch"
-    dest.write_text(patch_text, encoding="utf-8")
+    dest = (export_dir / f"{next_n:04d}-approved-{stem[:8]}.patch").resolve()
+    if not dest.is_relative_to(export_dir):
+        raise ValueError("patch must remain inside the export directory")
+    # Exclusive creation refuses a link/file planted after the containment check.
+    with dest.open("x", encoding="utf-8") as patch_file:
+        patch_file.write(patch_text)
     return dest
 
 

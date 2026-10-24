@@ -309,18 +309,14 @@ from starlette.routing import Match, Route
 import asyncio
 from starlette.datastructures import Headers
 
-
 async def dummy_endpoint(request: Request):
     return {"hello": "world"}
-
 
 app = FastAPI()
 app.add_route("/users/{user_id}", dummy_endpoint)
 
-
 def _match_route_template(request: Request) -> str:
     from starlette.routing import Match
-
     try:
         for candidate in app.routes:
             match, _ = candidate.matches(request.scope)
@@ -332,14 +328,12 @@ def _match_route_template(request: Request) -> str:
         return "unrouted"
     return "unrouted"
 
-
 def _route_template(request: Request) -> str:
     route = request.scope.get("route")
     template = getattr(route, "path", None)
     if isinstance(template, str):
         return template
     return _match_route_template(request)
-
 
 async def main():
     from starlette.requests import Request
@@ -377,7 +371,6 @@ async def main():
     scope_unrouted["url"] = "/unknown"
     req_unrouted = Request(scope_unrouted)
     print(f"Test 3 (unrouted): {_route_template(req_unrouted)}")
-
 
 if __name__ == "__main__":
     asyncio.run(main())

@@ -48,12 +48,12 @@ Port `AgentRecipe` (Pydantic model) and `RecipeRegistry` (YAML loader + cache) i
 
 ```python
 class AgentRecipe(BaseModel):
-    name: str  # e.g. "coder.generate"
+    name: str                           # e.g. "coder.generate"
     role: AgentRole
     description: str = ""
     prompt_name: str
     prompt_variants: list[str] = ["production"]
-    result_schema: str | None = None  # dotted path into SCHEMA_REGISTRY
+    result_schema: str | None = None    # dotted path into SCHEMA_REGISTRY
     tools: list[str] = []
     min_tier: int = 2
     max_tier: int = 4
@@ -61,7 +61,6 @@ class AgentRecipe(BaseModel):
     max_tokens: int = 4096
     min_samples_before_selection: int = 20
     exploration_rate: float = 0.1
-
 
 class RecipeRegistry:
     def __init__(self, recipes_dir: str | Path | None = None) -> None: ...

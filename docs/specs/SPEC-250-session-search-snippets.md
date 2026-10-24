@@ -84,20 +84,16 @@ class SessionSummary:
     title: str
     body: str
 
-
 @dataclass(frozen=True)
 class SessionSearchResult(SessionSummary):
     snippet: str | None = None
-
 
 @dataclass(frozen=True)
 class SessionSearchPage:
     items: tuple[SessionSearchResult, ...]
     next_cursor: str | None
 
-
 def make_snippet(body: str, query: str, *, width: int = 80) -> str | None: ...
-
 
 def search_sessions(
     sessions: Sequence[SessionSummary],

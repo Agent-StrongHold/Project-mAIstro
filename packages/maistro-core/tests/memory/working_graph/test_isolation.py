@@ -11,6 +11,7 @@ from __future__ import annotations
 import pytest
 
 from maistro.memory.episodic.store import InMemoryEpisodicStore
+from maistro.memory.exposure import MemoryExposureMode
 from maistro.memory.working_graph import (
     DurableMemorySource,
     EmbeddedGraphBackend,
@@ -44,8 +45,8 @@ def _memory_node(memory_id: str, workspace_id: str, label: str) -> WorkingGraphN
 
 async def test_colliding_identifiers_stay_workspace_private() -> None:
     """The same memory id and label hydrate into both graphs; neither leaks."""
-    episodic_a = InMemoryEpisodicStore()
-    episodic_b = InMemoryEpisodicStore()
+    episodic_a = InMemoryEpisodicStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
+    episodic_b = InMemoryEpisodicStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
     await episodic_a.store(
         make_memory("mem-shared", "palette: slate and amber for the bakery brand")
     )
@@ -110,7 +111,7 @@ async def test_misscoped_hydration_cannot_poison_a_graph() -> None:
             snapshot.nodes.append(_memory_node("mem-foreign", WORKSPACE_B, "smuggled"))
             return snapshot
 
-    episodic = InMemoryEpisodicStore()
+    episodic = InMemoryEpisodicStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
     await episodic.store(make_memory("mem-1", "honest local note"))
     manager = WorkspaceWorkingMemoryManager(
         sources=[MisscopedSource(episodic=episodic, scope=SCOPE)]
@@ -125,8 +126,8 @@ async def test_misscoped_hydration_cannot_poison_a_graph() -> None:
 
 
 async def test_discarding_one_workspace_leaves_the_other_intact() -> None:
-    episodic_a = InMemoryEpisodicStore()
-    episodic_b = InMemoryEpisodicStore()
+    episodic_a = InMemoryEpisodicStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
+    episodic_b = InMemoryEpisodicStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
     await episodic_a.store(make_memory("mem-a", "workspace a fact"))
     await episodic_b.store(make_memory("mem-b", "workspace b fact"))
     manager = WorkspaceWorkingMemoryManager(

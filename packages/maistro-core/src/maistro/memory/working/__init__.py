@@ -1,15 +1,41 @@
-"""Durable log-as-context and measured per-Workspace working memory (M4-H, #301).
+"""Per-Workspace working memory (M4-H / #301, ADR-082226-5104).
 
-The append-only observation log (:mod:`maistro.memory.working.store` and its
-SQLite twin) is the system of record; the per-Workspace projection
-(:mod:`maistro.memory.working.projection`) is the disposable Ladybug-role
-working graph hydrated from it (ADR-082226-5104 §5-6); recall, the GUIDE and
-WORKING prompt representations, simplification/resets and the redundancy and
-fresh-vs-lineage measurements are derivations over that log.
+Two cooperating halves, neither authoritative:
+
+* the append-only observation log (:mod:`maistro.memory.working.store` and
+  its SQLite twin) is the durable system of record for working observations;
+  the per-Workspace projection over it (:mod:`maistro.memory.working.projection`)
+  is the disposable Ladybug-role working graph hydrated from that log —
+  recall, the GUIDE and WORKING prompt representations, simplification/resets
+  and the redundancy and fresh-vs-lineage measurements are derivations over it;
+* the indexed hot projection (:mod:`maistro.memory.working.indexed`) is the
+  first :class:`~maistro.memory.working.protocol.WorkingMemory` implementation:
+  BM25 over a tokenised inverted index, embeddings stored at write time, and
+  an entity graph with ``MentionedIn`` and co-occurrence edges, hydrated from
+  the authoritative episodic store. The protocol is the adoption seam a
+  LadybugDB-backed adapter will take; the patterns reused from the
+  Ladybug-Memory design are recorded in ``INSPIRATIONS.md``.
+
+MAIstro owns the protocol and the invariants: neither half ever becomes a
+second system of record, neither widens scope visibility, and both can be
+discarded and rebuilt from their durable sources with no durable loss.
 """
 
 from __future__ import annotations
 
+from maistro.memory.working.dreaming import DreamingCandidateSet, collect_candidates
+from maistro.memory.working.extraction import (
+    EntityExtractor,
+    GovernedEntityExtractor,
+    LexicalEntityExtractor,
+)
+from maistro.memory.working.indexed import WorkspaceWorkingMemoryProjection
+from maistro.memory.working.manager import (
+    WorkingMemoryError,
+)
+from maistro.memory.working.manager import (
+    WorkingMemoryManager as HotWorkingMemoryManager,
+)
 from maistro.memory.working.measurement import (
     FreshVsLineageMeasurement,
     RedundantHypothesisMeasurement,
@@ -20,6 +46,17 @@ from maistro.memory.working.projection import (
     ProjectionStats,
     WorkingMemoryManager,
     WorkspaceWorkingMemory,
+)
+from maistro.memory.working.protocol import (
+    DEFAULT_EMBEDDING_MODEL,
+    EntityContext,
+    EntityRecord,
+    HydrationReport,
+    RelationRecord,
+    ScoredWorkingMemory,
+    TraversalResult,
+    WorkingMemory,
+    WorkingMemoryStats,
 )
 from maistro.memory.working.recall import RecallHit, WorkingMemoryRecall
 from maistro.memory.working.render import (
@@ -49,20 +86,37 @@ from maistro.memory.working.types import (
 )
 
 __all__ = [
+    "DEFAULT_EMBEDDING_MODEL",
+    "DreamingCandidateSet",
+    "EntityContext",
+    "EntityExtractor",
+    "EntityRecord",
     "FreshVsLineageMeasurement",
+    "GovernedEntityExtractor",
+    "HotWorkingMemoryManager",
+    "HydrationReport",
     "InMemoryWorkspaceLogStore",
+    "LexicalEntityExtractor",
     "ObservationKind",
     "ProjectionStats",
     "RecallHit",
     "RedundantHypothesisMeasurement",
+    "RelationRecord",
     "RenderedWorkingContext",
+    "ScoredWorkingMemory",
+    "TraversalResult",
+    "WorkingMemory",
+    "WorkingMemoryError",
     "WorkingMemoryManager",
     "WorkingMemoryRecall",
+    "WorkingMemoryStats",
     "WorkingResult",
     "WorkspaceLogStore",
     "WorkspaceObservation",
     "WorkspaceWorkingMemory",
+    "WorkspaceWorkingMemoryProjection",
     "append_cycle_summary",
+    "collect_candidates",
     "content_digest",
     "hard_reset",
     "make_result_id",

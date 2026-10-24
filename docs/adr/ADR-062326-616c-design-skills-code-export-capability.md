@@ -52,7 +52,7 @@ Extend `maistro_design.types.OutputFormat` with `REACT_TSX = "react_tsx"`. This 
 
 Update built-in skills (`login-flow`, `agent-browser`, `landing-page`, `email-template`) to declare:
 ```python
-output_formats = [OutputFormat.HTML, OutputFormat.REACT_TSX]
+output_formats=[OutputFormat.HTML, OutputFormat.REACT_TSX]
 ```
 
 Update their `system_prompt` to instruct LLMs to emit a self-contained `.tsx` module:

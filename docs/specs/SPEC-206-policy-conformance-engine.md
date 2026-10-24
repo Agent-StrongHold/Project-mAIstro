@@ -74,19 +74,15 @@ invariants:
 
 ```python
 class Authority(StrEnum):
-    ADR = "adr"
-    SPEC = "spec"
-    PRIOR_POLICY = "prior_policy"
-
+    ADR = "adr"; SPEC = "spec"; PRIOR_POLICY = "prior_policy"
 
 class ConformanceVerdict(BaseModel):
     ok: bool
-    conflict_layer: Authority | None  # first layer that conflicted (None if ok)
-    conflict_ref: str | None  # e.g. "maistro-engine#ADR-068 / INV-068-budget-veto"
+    conflict_layer: Authority | None          # first layer that conflicted (None if ok)
+    conflict_ref: str | None                   # e.g. "maistro-engine#ADR-068 / INV-068-budget-veto"
     safety_critical: bool = False
-    artifacts: list[str] = []  # N deployed artifacts also in conflict
-    evidence: dict  # the learning's rationale (for the impact analysis)
-
+    artifacts: list[str] = []                  # N deployed artifacts also in conflict
+    evidence: dict                             # the learning's rationale (for the impact analysis)
 
 class ConformanceEngine(Protocol):
     async def check(self, candidate: PolicyDecision) -> ConformanceVerdict: ...

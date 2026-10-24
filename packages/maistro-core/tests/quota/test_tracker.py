@@ -116,6 +116,14 @@ class TestInMemoryQuotaTracker:
         tracker = InMemoryQuotaTracker()
         assert await tracker.get_all_usage() == []
 
+    async def test_record_usage_unknown_cycle_fails_explicitly(self) -> None:
+        """#1205: the accounting seam must not silently bucket an unknown cycle
+        as monthly — the enforced vocabulary fails at the tracker boundary."""
+        tracker = InMemoryQuotaTracker()
+
+        with pytest.raises(UnknownBillingCycleError, match="weekly"):
+            await tracker.record_usage("openai", "weekly", 100, 50)
+
     async def test_record_invocation_counts_once_per_invocation_id(self) -> None:
         """The tracker's own at-most-once guard (#718): terminalization retries
         hand the same physical Invocation back, and the ledger must ignore it

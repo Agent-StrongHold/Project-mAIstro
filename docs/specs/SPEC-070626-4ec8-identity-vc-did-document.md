@@ -73,46 +73,41 @@ processor or DIDComm stack.
 ```python
 # maistro/identity/vc.py
 
-
 @dataclass(frozen=True)
 class VerifiableCredential:
     """W3C VC Core-shaped credential. Canonical form (context+type+subject+issuer+
     issuance/expiration, sorted keys, no proof field) is what gets signed."""
-
-    context: tuple[str, ...]  # ("https://www.w3.org/ns/credentials/v2",)
-    id: str  # e.g. "urn:uuid:..."
-    type: tuple[str, ...]  # ("VerifiableCredential", "AuditLogEntry")
-    issuer: str  # issuer DID
-    credential_subject: dict[str, Any]  # the claim payload
-    issuance_date: str  # ISO-8601
+    context: tuple[str, ...]                  # ("https://www.w3.org/ns/credentials/v2",)
+    id: str                                    # e.g. "urn:uuid:..."
+    type: tuple[str, ...]                      # ("VerifiableCredential", "AuditLogEntry")
+    issuer: str                                # issuer DID
+    credential_subject: dict[str, Any]         # the claim payload
+    issuance_date: str                         # ISO-8601
     expiration_date: str | None = None
-    proof: "Proof | None" = None  # set by issue_vc, absent before signing
-
+    proof: "Proof | None" = None                # set by issue_vc, absent before signing
 
 @dataclass(frozen=True)
 class Proof:
-    type: str  # "Ed25519Signature2020"
-    created: str  # ISO-8601
-    verification_method: str  # issuer DID + key fragment, e.g. "did:key:z6Mk...#key-1"
-    proof_purpose: str  # "assertionMethod"
-    proof_value: str  # base64/base58-encoded signature bytes
-
+    type: str                                  # "Ed25519Signature2020"
+    created: str                                # ISO-8601
+    verification_method: str                    # issuer DID + key fragment, e.g. "did:key:z6Mk...#key-1"
+    proof_purpose: str                          # "assertionMethod"
+    proof_value: str                            # base64/base58-encoded signature bytes
 
 @dataclass(frozen=True)
 class VerificationMethod:
-    id: str  # DID + fragment
-    type: str  # "Ed25519VerificationKey2020"
-    controller: str  # the DID this key belongs to
-    public_key_multibase: str  # multibase-encoded raw public key
-
+    id: str                                     # DID + fragment
+    type: str                                   # "Ed25519VerificationKey2020"
+    controller: str                              # the DID this key belongs to
+    public_key_multibase: str                    # multibase-encoded raw public key
 
 @dataclass(frozen=True)
 class DIDDocument:
     context: tuple[str, ...]
-    id: str  # the DID itself
+    id: str                                      # the DID itself
     verification_method: tuple[VerificationMethod, ...]
-    authentication: tuple[str, ...]  # verification_method ids usable for auth
-    assertion_method: tuple[str, ...]  # verification_method ids usable for VC issuance
+    authentication: tuple[str, ...]              # verification_method ids usable for auth
+    assertion_method: tuple[str, ...]            # verification_method ids usable for VC issuance
 
     @staticmethod
     def from_identity(identity: AgentIdentity) -> "DIDDocument":
@@ -142,7 +137,6 @@ async def issue_vc(
     issuer's Ed25519 key (re-derived via secret_store, same pattern as
     issue_capability_token — private keys are never persisted). Returns the
     credential with `proof` populated."""
-
 
 def verify_vc(vc: VerifiableCredential, *, now: datetime | None = None) -> bool:
     """Recompute the canonical form, verify proof.proof_value against the

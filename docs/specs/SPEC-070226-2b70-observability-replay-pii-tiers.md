@@ -106,22 +106,19 @@ class SensitivityTier(StrEnum):
     SENSITIVE = "sensitive"
     SECRET = "secret"
 
-
 @dataclass(frozen=True)
 class ReplayEvent:
     trace_id: str
     span_id: str
-    seq: int  # monotonic per trace — replay ordering key
+    seq: int                       # monotonic per trace — replay ordering key
     kind: Literal["llm", "tool"]
-    request_hash: str  # sha256 of canonicalised args
-    payload: dict | None  # None for secret tier
+    request_hash: str              # sha256 of canonicalised args
+    payload: dict | None           # None for secret tier
     tier: SensitivityTier
-
 
 class ReplayableLLMClient(Protocol):
     async def call(self, request: LLMRequest) -> LLMResponse: ...
     async def replay(self, trace_id: str) -> AsyncIterator[ReplayEvent]: ...
-
 
 class ReplayableToolDispatcher(Protocol):
     async def call(self, tool_call: ToolCall) -> ToolResult: ...

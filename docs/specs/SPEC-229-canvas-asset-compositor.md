@@ -54,8 +54,7 @@ imports only `re`, `collections.abc`, `dataclasses`, `maistro_canvas.layers`,
 Public surface (matches the ADR closely; two minor signature differences noted):
 
 ```python
-class SceneNode: ...  # tree node wrapping AssetInstance + children
-
+class SceneNode: ...                     # tree node wrapping AssetInstance + children
 
 @dataclass(frozen=True)
 class PlannedRender:
@@ -67,7 +66,6 @@ class PlannedRender:
     skin_binding: dict[str, str] | None
     z_index: int
 
-
 @dataclass(frozen=True)
 class RenderPlan:
     canvas_id: str
@@ -75,37 +73,20 @@ class RenderPlan:
     world_style: WorldStyle
     rendered: tuple[PlannedRender, ...]
 
-
 def build_scene_graph(instances: Iterable[AssetInstance]) -> list[SceneNode]: ...
 def resolve_occlusion_order(instances: Sequence[AssetInstance]) -> list[AssetInstance]: ...
 def compile_personalization(
     instances: Sequence[AssetInstance],
     profile: ChildProfile | None,
     *,
-    registry: Callable[[str], AssetDefinition | None]
-    | None = None,  # ADR text says AssetRegistry | None
+    registry: Callable[[str], AssetDefinition | None] | None = None,  # ADR text says AssetRegistry | None
 ) -> list[AssetInstance]: ...
 def compose_prompt(
-    *,
-    world_style,
-    style_volumes: Sequence[StyleVolume] = (),  # ADR text has no default
-    page_index,
-    render_style,
-    base_prompt,
-    prompt_nudge,
-    skin_binding=None,
+    *, world_style, style_volumes: Sequence[StyleVolume] = (),  # ADR text has no default
+    page_index, render_style, base_prompt, prompt_nudge, skin_binding=None,
 ) -> str: ...
-def plan_render(
-    *,
-    canvas_id,
-    instances,
-    world_style,
-    style_volumes=(),
-    page_index=None,
-    render_style=None,
-    profile=None,
-    registry_lookup=None,
-) -> RenderPlan: ...
+def plan_render(*, canvas_id, instances, world_style, style_volumes=(), page_index=None,
+                 render_style=None, profile=None, registry_lookup=None) -> RenderPlan: ...
 ```
 
 Boundary contracts (all enforced and tested): `build_scene_graph` raises `ValueError`

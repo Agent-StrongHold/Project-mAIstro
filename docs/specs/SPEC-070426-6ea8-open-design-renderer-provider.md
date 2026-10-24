@@ -67,10 +67,11 @@ async def discover(self) -> DiscoveryResult:
     if not self.cfg.enabled:
         return DiscoveryResult.down()
     try:
-        r = await self._client.get(f"{self.base_url}/api/health", headers=self._auth, timeout=1.5)
+        r = await self._client.get(f"{self.base_url}/api/health",
+                                   headers=self._auth, timeout=1.5)
         return DiscoveryResult.up(self.slots) if r.ok else DiscoveryResult.down()
     except (ConnectionError, Timeout):
-        return DiscoveryResult.down()  # not installed => feature absent, silently
+        return DiscoveryResult.down()   # not installed => feature absent, silently
 ```
 
 ### Render
