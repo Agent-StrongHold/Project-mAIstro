@@ -68,16 +68,26 @@ _DUMP = (
 )
 
 
-def parse_expected(text: str) -> tuple[set[str], set[str]]:
-    """Returns (unconditional pins, marker-conditional pins).
+def parse_expected(text: str) -> tuple[set[str], set[str], dict[str, set[str]]]:
+    """Returns (unconditional pins, marker-conditional pins, versions per name).
 
     uv export lists every environment's entries: `pywin32 ; sys_platform ==
     'win32'` is in the export but correctly absent from a linux image, while
     `secretstorage ; sys_platform == 'linux'` is correctly present. A
     conditional pin matches either way — it gates nothing; its version is
     still checked when it does ship.
+
+    One name can also legitimately carry SEVERAL versions in one export: the
+    lock forks a package across marker partitions (beartype has done so since
+    fastmcp-slim 4.1.3 shipped its py>=3.15 extras pin — 0.22.9 on
+    python<3.15, 0.23.1 on python>=3.15), and uv export emits one line per
+    partition. Last-line-wins would judge every py<3.15 image skewed against
+    the 3.15 fork, so the per-name version SET is what a shipped version is
+    judged against: a skew means the image ships a version no fork of the
+    lock allows, not that it shipped a fork other than the last one listed.
     """
     pins: dict[str, str] = {}
+    versions: dict[str, set[str]] = {}
     conditional: set[str] = set()
     for line in text.splitlines():
         stripped = line.strip()
@@ -85,6 +95,7 @@ def parse_expected(text: str) -> tuple[set[str], set[str]]:
         if m:
             name = canon(m.group(1))
             pins[name] = f"{name}=={m.group(2)}"
+            versions.setdefault(name, set()).add(m.group(2))
             if ";" in stripped:
                 conditional.add(name)
     if not pins:
@@ -92,7 +103,11 @@ def parse_expected(text: str) -> tuple[set[str], set[str]]:
             "error: expected-file contains no `name==version` pins — is it "
             "a `uv export --format requirements-txt` output?"
         )
-    return {pins[n] for n in pins} - {pins[n] for n in conditional}, {pins[n] for n in conditional}
+    return (
+        {pins[n] for n in pins} - {pins[n] for n in conditional},
+        {pins[n] for n in conditional},
+        versions,
+    )
 
 
 def parse_actual(text: str) -> set[str]:
@@ -107,6 +122,13 @@ def parse_actual(text: str) -> set[str]:
     if not pins:
         raise SystemExit(f"error: no distributions dumped from the image:\n{text}")
     return set(pins.values())
+
+
+def _expected_display(name: str, versions: set[str]) -> str:
+    """The expected side of a mismatch line: the single pin, or every fork."""
+    if len(versions) == 1:
+        return f"{name}=={next(iter(versions))}"
+    return f"{name} in {{{', '.join(sorted(versions))}}} (any fork)"
 
 
 def main() -> int:
@@ -138,12 +160,15 @@ def main() -> int:
     expected_text = (
         sys.stdin.read() if args.expected_stdin else Path(args.expected_file).read_text()
     )
-    required, conditional = parse_expected(expected_text)
+    required, conditional, versions_by_name = parse_expected(expected_text)
     for m in args.member:
         name, _, version = m.partition("==")
         if not version:
             raise SystemExit(f"error: --member expects name==version, got: {m}")
         required.add(f"{canon(name)}=={version}")
+        # Members are excluded from the export but ARE installed; they join
+        # the expected universe here so the extra/skew checks below see them.
+        versions_by_name.setdefault(canon(name), set()).add(version)
 
     proc = subprocess.run(
         [
@@ -166,28 +191,31 @@ def main() -> int:
     actual = parse_actual(proc.stdout)
 
     # Conditional pins gate nothing: their marker may or may not apply on the
-    # image's platform. Every pin in the image must be expected (with the
-    # expected version); every unconditional expected pin must be in the image.
-    # Comparing by canonical NAME (not by pin string) is what makes a version
-    # skew nameable: `foo==1.0` expected and `foo==2.0` installed shares no
-    # exact string, so a set difference alone would report it as a confusing
-    # missing+extra pair — and the original string-keyed `skewed` comprehension
-    # (`for pin in actual & everything_expected ... .pop() != pin`) compared
-    # each pin against itself and could never fire at all.
-    everything_expected = required | conditional
+    # image's platform. Every pin in the image must be expected (with a
+    # version some entry of the lock names); every unconditional expected pin
+    # must be in the image. Comparing by canonical NAME (not by pin string) is
+    # what makes a version skew nameable: `foo==1.0` expected and `foo==2.0`
+    # installed shares no exact string, so a set difference alone would report
+    # it as a confusing missing+extra pair — and the original string-keyed
+    # `skewed` comprehension (`for pin in actual & everything_expected ...
+    # .pop() != pin`) compared each pin against itself and could never fire at
+    # all. A lock-forked name (beartype since fastmcp-slim 4.1.3) emits one
+    # expected line per marker partition, so a shipped version is checked
+    # against the set of fork versions, not against the last line's pin.
+    locked_pin_strings = {f"{name}=={v}" for name, vs in versions_by_name.items() for v in vs}
     actual_by_name = {p.partition("==")[0]: p for p in actual}
-    expected_by_name = {p.partition("==")[0]: p for p in everything_expected}
     skewed_names = {
         name
-        for name in actual_by_name.keys() & expected_by_name.keys()
-        if actual_by_name[name] != expected_by_name[name]
+        for name in actual_by_name.keys() & versions_by_name.keys()
+        if actual_by_name[name].partition("==")[2] not in versions_by_name[name]
     }
     missing = sorted(p for p in required - actual if p.partition("==")[0] not in skewed_names)
     extra = sorted(
-        p for p in actual - everything_expected if p.partition("==")[0] not in skewed_names
+        p for p in actual - locked_pin_strings if p.partition("==")[0] not in skewed_names
     )
     skewed = sorted(
-        f"{actual_by_name[name]} (image) != {expected_by_name[name]}" for name in skewed_names
+        f"{actual_by_name[name]} (image) != {_expected_display(name, versions_by_name[name])}"
+        for name in skewed_names
     )
     if missing or extra or skewed:
         print(f"image {args.image} does NOT reconcile to the lock:")
