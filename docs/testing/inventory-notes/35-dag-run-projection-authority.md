@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/hive-conductor/backend/tests: +12
+  packages/hive-conductor/backend/tests: +15
 ---
 # Issue #35: DAG-run projection cannot own terminal truth
 
@@ -23,7 +23,15 @@ Write side (`services.chat_completion._tool_run_workflow`): the chat
 workflow tool's success and canonical-failure paths copy the canonical
 outcome and `canonical_run_id` into the projection row instead of stamping a
 locally decided terminal status, and the failure-written row is reconciled
-by the same read path as every other row.
+by the same read path as every other row. The generic-exception branch is
+pinned from both sides: a facade crash before any canonical verdict still
+closes the row (#697) with the writer's witnessed attempt-local display
+fact and no invented correlation, and a crash after admission leaves the
+correlated row's locally stamped display `failed` outranked by the spine
+(the read overlay serves a still-running canonical Run over it). A
+bookkeeping crash after the facade returned records the canonical outcome
+it is holding -- status and canonical identity, under the same #1036
+contract as the success path -- not a bare locally re-decided status.
 
 Boundary: a source-level fitness assertion pins that the execution-side
 modules (scheduler, dag_recovery, canonical_dag_runner, dag_agents) never

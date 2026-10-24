@@ -9,8 +9,15 @@ This is projection storage, not execution authority (#35): the free-text
 `status` on a run row is a display receipt of the canonical Run's state,
 copied by the writers that record it under one terminality contract
 (#1036) — a terminal canonical outcome finishes the row, a non-terminal
-canonical state is mirrored open with no invented `finished_at`, and no
-writer fabricates a terminal outcome the spine never decided.
+canonical state is mirrored open with no invented `finished_at`, and a
+result with no canonical status records nothing. Canonical outcomes reach
+a row only through `record_outcome`. The one reviewed exception is the
+chat writer's unknown-outcome branch, which stamps the display status of
+an attempt it witnessed fail — its own attempt fact, never a guess about
+the spine — so a dead launch is not indistinguishable from a live one
+(#697); `services.dag_run_inspection` overlays the canonical Run's
+lifecycle over any such display stamp whenever the row's correlation
+resolves, so a local stamp cannot contradict spine truth at the read door.
 Run/NodeRun/Attempt on the canonical spine own whether work
 queued/ran/waited/completed/failed/cancelled;
 `services.dag_run_inspection` reconciles a row's served status against the
@@ -458,13 +465,18 @@ class DagRunStore:
     ) -> None:
         """Record a canonical-derived outcome under the #1036 terminality contract.
 
-        The one contract every projection writer applies, so no writer can
-        reintroduce the defect class on its own: a terminal canonical status
-        finishes the row with its outcome; a non-terminal canonical status is
-        mirrored open with no invented `finished_at`; a missing or
+        The one contract every canonical-outcome write applies, so a writer
+        cannot reintroduce the defect class on its own: a terminal canonical
+        status finishes the row with its outcome; a non-terminal canonical
+        status is mirrored open with no invented `finished_at`; a missing or
         non-canonical status records no outcome at all -- the row stays open
-        and the caller logs the miss, because a fabricated terminal outcome
+        and the caller logs the miss, because inventing a terminal verdict
         is exactly the locally-decided truth this projection gave up (#35).
+        The one reviewed writer outside this contract is the chat tool's
+        unknown-outcome branch (`finish_run` with the status of an attempt
+        it witnessed fail): a display stamp for the writer's own attempt,
+        never a copied or guessed canonical verdict, and read-side
+        reconciliation outranks it (#35).
         """
         parsed = parse_canonical_status(status)
         if parsed is not None and parsed in TERMINAL_RUN_STATUSES:

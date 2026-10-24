@@ -18,7 +18,12 @@ that defect in both directions:
 - **Write side** (the chat workflow tool, the one producer that minted an
   uncorrelated row key and stamped its own terminal status): the recorded
   status and the canonical correlation are copied from the canonical result
-  on both the success and the canonical-failure paths.
+  on the success, canonical-failure, and post-return bookkeeping-failure
+  paths. The unknown-outcome path (the facade died without deciding) is
+  pinned as the reviewed attempt-local display boundary: the row still
+  closes (#697) with the writer's witnessed fact and no invented
+  correlation, and a stamped row that is correlated at admission is
+  outranked by the spine at read time.
 
 - **Boundary**: a row with no correlation, or whose canonical Run no longer
   resolves, is served exactly as recorded — an honest receipt, not an
@@ -488,6 +493,137 @@ def test_chat_failure_row_is_reconciled_like_any_other(
     assert served and served[0]["status"] == "completed"
     stored = get_dag_run_store().get_run(row_id)
     assert stored is not None and stored["status"] == "failed"  # receipt preserved
+
+
+def test_chat_unknown_outcome_failure_records_the_attempt_fact(
+    authed_client: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A facade crash before any canonical verdict (here: before admission,
+    so the row carries no correlation) must still close the chat tool's row
+    (#697). The `failed` stamp it writes is the writer's witnessed,
+    attempt-local display fact -- the chat attempt ended without an outcome
+    -- and nothing about it is a copied or guessed canonical status."""
+    import services.graph_runner as graph_runner
+    from services.chat_completion import _tool_run_workflow
+    from services.dag_run_store import get_dag_run_store
+
+    ws = _workspace(authed_client, "Chat Attempt Fact")
+    dag_id = "dag-chat-attempt-fact"
+    _seed_dag(dag_id, ws)
+
+    async def _exploding_execute_dag(dag_data: Any, *, user_id: str = "", **kw: Any) -> dict:
+        raise ValueError("malformed graph never reached admission")
+
+    monkeypatch.setattr(graph_runner, "execute_dag", _exploding_execute_dag)
+
+    before = {r["id"] for r in get_dag_run_store().list_runs(limit=100)}
+    out = asyncio.run(
+        _tool_run_workflow({"dag_id": dag_id, "workspace_id": ws}, _AUTHED_USER_ID, None)
+    )
+    assert "error" in out, out
+
+    new_rows = {r["id"] for r in get_dag_run_store().list_runs(limit=100)} - before
+    assert new_rows, "the unknown-outcome branch must still close the row (#697)"
+    row = get_dag_run_store().get_run(next(iter(new_rows)))
+    assert row is not None
+    assert row["status"] == "failed"
+    assert row["canonical_run_id"] == ""  # nothing was admitted; no invented link
+
+
+def test_chat_unknown_outcome_stamp_cannot_contradict_the_spine(
+    authed_client: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A crash AFTER admission lands in the same unknown-outcome branch with
+    the row already correlated (#1332 writes the link before any node work).
+    The branch's locally stamped display `failed` must then never contradict
+    canonical truth: the read overlay serves the canonical Run's lifecycle
+    (here: still RUNNING) over the stamp, exactly as for any contradictory
+    planted row (#35)."""
+    import services.graph_runner as graph_runner
+    from services.chat_completion import _tool_run_workflow
+    from services.dag_run_store import get_dag_run_store
+
+    from maistro.runs.model import RunStatus
+
+    ws = _workspace(authed_client, "Chat Unknown Outcome")
+    dag_id = "dag-chat-unknown-outcome"
+    _seed_dag(dag_id, ws)
+
+    async def _crashing_execute_dag(dag_data: Any, *, user_id: str = "", **kw: Any) -> dict:
+        on_admitted = kw.get("on_admitted")
+        if on_admitted is not None:
+            await on_admitted("r-canonical-unknown")
+        raise RuntimeError("the walk died mid-flight; the Run's fate is unresolved")
+
+    monkeypatch.setattr(graph_runner, "execute_dag", _crashing_execute_dag)
+
+    before = {r["id"] for r in get_dag_run_store().list_runs(limit=100)}
+    out = asyncio.run(
+        _tool_run_workflow({"dag_id": dag_id, "workspace_id": ws}, _AUTHED_USER_ID, None)
+    )
+    assert "error" in out, out
+
+    new_rows = {r["id"] for r in get_dag_run_store().list_runs(limit=100)} - before
+    row_id = next(iter(new_rows))
+    stored = get_dag_run_store().get_run(row_id)
+    assert stored is not None
+    assert stored["status"] == "failed"  # the attempt-local display fact
+    assert stored["canonical_run_id"] == "r-canonical-unknown"  # correlated at admission
+
+    # The spine says the Run is still going: served truth is the spine's,
+    # not the locally stamped display status.
+    fake = _FakeCanonicalReader(
+        {"r-canonical-unknown": _canonical_record("r-canonical-unknown", RunStatus.RUNNING, ws)}
+    )
+    _point_reader(monkeypatch, fake)
+    served = [r for r in authed_client.get("/v1/dag-runs").json() if r["id"] == row_id]
+    assert served and served[0]["status"] == "running", served
+
+
+def test_chat_bookkeeping_failure_records_the_canonical_outcome(
+    authed_client: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A graph that completed and then tripped over a bookkeeping write is a
+    completed run: the branch records the canonical outcome it is holding --
+    status, result and correlation, under the same #1036 contract as the
+    success path -- rather than re-deciding a bare status locally (#35)."""
+    import services.graph_runner as graph_runner
+    from services.chat_completion import _tool_run_workflow
+    from services.dag_run_store import get_dag_run_store
+
+    ws = _workspace(authed_client, "Chat Bookkeeping Failure")
+    dag_id = "dag-chat-bookkeeping"
+    _seed_dag(dag_id, ws)
+
+    async def _fake_execute_dag(dag_data: Any, *, user_id: str = "", **kw: Any) -> dict:
+        return {
+            "status": "completed",
+            "run_id": "r-canonical-bookkeeping",
+            "node_results": {"n1": {"success": True, "role": "worker", "response": "ok"}},
+        }
+
+    async def _raising_append(run_id: str, **kw: Any) -> Any:
+        raise RuntimeError("history write exploded after the graph finished")
+
+    monkeypatch.setattr(graph_runner, "execute_dag", _fake_execute_dag)
+    monkeypatch.setattr(get_dag_run_store(), "append_event", _raising_append)
+
+    before = {r["id"] for r in get_dag_run_store().list_runs(limit=100)}
+    out = asyncio.run(
+        _tool_run_workflow({"dag_id": dag_id, "workspace_id": ws}, _AUTHED_USER_ID, None)
+    )
+    assert out.get("status") == "completed", out
+    assert "recording it did not" in str(out.get("warning", "")), out
+
+    new_rows = {r["id"] for r in get_dag_run_store().list_runs(limit=100)} - before
+    assert new_rows
+    row = get_dag_run_store().get_run(next(iter(new_rows)))
+    assert row is not None
+    assert row["status"] == "completed"  # the spine's verdict, not a re-decision
+    assert row["canonical_run_id"] == "r-canonical-bookkeeping"
+    # The fake never fired the admission seam, so this correlation can only
+    # have been written by the branch's canonical-outcome record itself.
+    assert row["finished_at"] is not None
 
 
 # ── the projection is not an execution authority ──────────────────────

@@ -1803,18 +1803,40 @@ async def _tool_run_workflow(
         # The failure branch has to finish the run too, or a chat-launched DAG
         # that failed is indistinguishable from one still running.
         #
-        # `executed` decides the status, not where the exception was caught:
-        # a graph that completed and then tripped over a bookkeeping write is
-        # a completed run whose history is incomplete, and calling it failed
-        # tells the reader the opposite of what happened. This branch only
-        # fires when the canonical outcome itself is unknown (a bookkeeping
-        # crash, not a decided Run): the row keeps the executor's last known
-        # fact and stays uncorrelated rather than guessing a terminal one.
-        status = "completed" if executed else "failed"
+        # `executed` decides what this branch may record, not where the
+        # exception was caught: a graph that completed and then tripped over
+        # a bookkeeping write is a completed run whose history is incomplete,
+        # and calling it failed tells the reader the opposite of what
+        # happened.
         with contextlib.suppress(Exception):
             from services.dag_run_store import get_dag_run_store
 
-            await get_dag_run_store().finish_run(exec_id, status=status)
+            if executed:
+                # The facade returned, so the canonical Run's outcome is
+                # decided and in hand -- record it under the same #1036
+                # contract as the success path, never a locally re-derived
+                # status (#35).
+                await get_dag_run_store().record_outcome(
+                    exec_id,
+                    status=str(result.get("status") or "completed"),
+                    result=result,
+                    canonical_run_id=str(result.get("run_id") or ""),
+                )
+            else:
+                # No canonical verdict exists to copy: the facade died before
+                # deciding one. The row MAY already carry the canonical
+                # correlation -- admission (#1332) writes it before any node
+                # work, and an unexpected crash after admission lands here --
+                # so this is not an uncorrelated row. `failed` is therefore
+                # the writer's witnessed attempt-local display fact ("this
+                # chat attempt ended without an outcome"), kept so a dead
+                # launch is not indistinguishable from a live one (#697); it
+                # is never a claim about the spine. dag_run_inspection
+                # overlays the canonical Run's lifecycle over this display
+                # stamp whenever the row's correlation resolves, and no
+                # execution-side code reads this store, so the stamp cannot
+                # contradict canonical truth or drive recovery (#35).
+                await get_dag_run_store().finish_run(exec_id, status="failed")
         if executed:
             logger.warning(
                 "dag_run_bookkeeping_failed run_id=%s dag_id=%s", exec_id, dag_id, exc_info=True
