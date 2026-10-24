@@ -61,6 +61,17 @@ fail-closed credential work collided with this branch's #1084 convergence:
   the adapter now reads is the contract, so the patches target
   `services.secrets.effective_llm_gateway_key` (also hermetic against a
   developer's `LITELLM_API_KEY` environment).
+- Cross-module ordering hazard surfaced by combining develop's suites in one
+  process: `test_dag_model_tools.py` boots its container under
+  `MAISTRO_LLM_API_KEY=ambient-key-must-not-win`, and `config.get_settings`
+  is lru_cached suite-wide, so the cached Settings outlived the fixture and
+  leaked the ambient key into
+  `test_legacy_dag_node_container_composition.py`'s pinned-credential
+  assertion (the full-suite alphabetical order masked it —
+  `test_effective_gateway_key.py`'s `cache_clear()` hygiene ran in between).
+  The legacy composition fixture now states its env and clears the settings
+  cache before boot — deterministic, not dependent on another file's
+  cleanup. Full backend suite re-run green after the change.
 
 ## Validation
 
