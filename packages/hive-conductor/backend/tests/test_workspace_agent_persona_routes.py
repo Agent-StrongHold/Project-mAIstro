@@ -47,9 +47,7 @@ def test_anonymous_callers_get_401(admin_client: TestClient) -> None:
     anon = TestClient(app)
     assert anon.get(f"/v1/workspaces/{ws}/agent").status_code == 401
     assert (
-        anon.put(
-            f"/v1/workspaces/{ws}/agent", json={"persona_template_id": "delivery"}
-        ).status_code
+        anon.put(f"/v1/workspaces/{ws}/agent", json={"persona_template_id": "delivery"}).status_code
         == 401
     )
 
@@ -89,9 +87,7 @@ def test_owner_put_keeps_agent_id_and_created_at(admin_client) -> None:
     created_at = body["created_at"]
     assert body["persona_template_id"] == "program_manager"
 
-    put = admin_client.put(
-        f"/v1/workspaces/{ws}/agent", json={"persona_template_id": "delivery"}
-    )
+    put = admin_client.put(f"/v1/workspaces/{ws}/agent", json={"persona_template_id": "delivery"})
     assert put.status_code == 200, put.text
     after = put.json()
     assert after["workspace_agent_id"] == agent_id
@@ -133,9 +129,10 @@ def test_agent_tool_matches_the_route(admin_client) -> None:
     via_api_again = admin_client.get(f"/v1/workspaces/{ws}/agent").json()
     assert via_api_again["persona_template_id"] == "risk_dependency"
     assert via_api_again["workspace_agent_id"] == via_api["workspace_agent_id"]
-    assert workspace_agent.persona_template_id(
-        stores.agents[via_api["workspace_agent_id"]]
-    ) == "risk_dependency"
+    assert (
+        workspace_agent.persona_template_id(stores.agents[via_api["workspace_agent_id"]])
+        == "risk_dependency"
+    )
 
 
 def asyncio_run(coro: Any) -> Any:
