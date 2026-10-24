@@ -133,3 +133,64 @@ next `Container scan + SBOM + cosign` run still shows CVE-2026-111497, re-run
 the job (it is a mirror race again — same evidence rules apply) rather than
 suppressing. The issue's owner-acceptance act on SPEC-101826-1836 remains open
 by design and is unaffected by this gate repair.
+
+## 7. Round 2026-10-24T08:20Z (head 822547d3, unchanged) — the predicted
+residual materialized, now on maistro-rsi-runner
+
+What failed at 822547d3 (job 120790272270, run 40066333928, fetched read-only
+via `gh api .../actions/jobs/120790272270/logs`): only the trivy scan of
+`maistro-rsi-runner:pr-2264` — `libbrotli1 1.1.0-2+b7` CVE-2026-111497 (HIGH,
+fixed `1.1.0-2+deb13u1`). The `npm audit fix` lines in the log digest are the
+hive frontend build stage's `npm ci` advisory summary (step `#27`, exits 0;
+the real audit gate, ci.yml:698 on canvas, passed — the `CI` workflow at this
+head is green). Every other workflow at this head is green: `quality`,
+`Vulture Ratchet`, Gate C, Formal Conformance, Registry CI, Integration Scope,
+SAST (Bandit/Semgrep/Gitleaks), pip-audit, DevSkim, Cage Guard.
+
+Forensics — the finding is not reproducible from the tree, and the job's own
+log contradicts its scan:
+
+- The rsi-runner build (05:38:15, `--no-cache-filter runtime-apt` present at
+  security.yml:289-295) rebuilt the apt stage fresh and **installed the fixed
+  version**: log lines `Get:54 ... libbrotli1 amd64 1.1.0-2+deb13u1`,
+  `Unpacking libbrotli1 (1.1.0-2+deb13u1)`, `Setting up libbrotli1
+  (1.1.0-2+deb13u1)` (05:38:25–05:38:32) — then exported and `--load`-ed
+  (05:39:40–05:40:30) before the 05:44:22 scan. Six minutes earlier the
+  research image's `production-apt` stage pulled the identical `deb13u1` from
+  the same `trixie-security` suite, and its scan is clean in the same job.
+- Fresh CI-exact rebuild on this host at the identical tree:
+  `docker buildx build -f Dockerfile.rsi-runner -t
+  maistro-rsi-runner:local-repair-1836 --no-cache-filter runtime-apt --load .`
+  → rc 0; fetched/unpacked/set up `1.1.0-2+deb13u1` (build log Get:54);
+  `/var/lib/dpkg/status` in the image: `Version: 1.1.0-2+deb13u1`; trivy
+  0.73.0 with CI's exact arguments (`--severity HIGH,CRITICAL --exit-code 1
+  --ignore-unfixed --ignorefile .trivyignore.yaml`) → **rc 0, zero
+  HIGH/CRITICAL**.
+
+Disposition: no in-tree defect — no Dockerfile, lock, workflow, or ignore-file
+change (suppressing the CVE would violate `.trivyignore.yaml`'s own policy;
+hand-pinning the package would go stale against the #795 design). The
+mechanism is the same one section 6 documented, now settled: the mirror serves
+`deb13u1` consistently (two independent hosts, three builds), and the red scan
+contradicts the job's own successful upgrade, so the next `Container scan +
+SBOM + cosign` run — which rebuilds `runtime-apt` fresh and scans the freshly
+loaded tag — is expected green. Evidence rules from section 6 apply to the
+next red, if any.
+
+No-ledger-change proof: `uv run python scripts/check-vulture-baseline.py
+packages/*/src --min-confidence 60 --exclude '*/third_party/*'` → rc 0, 1302
+reviewed identities == 1302 findings, unclassified 0, never_allowlist 0 — the
+CI-repair clause's amend/remove legs are both vacuous at this head; the branch
+carries no quality/ ledger delta beyond `quality/ac-state-notes/auto-1836.json`
+(+17/-0, numstat vs base `4de7e906d9dc`).
+
+Driver battery re-run live at this head: `uv run ruff check .` rc 0; `uv run
+ruff format --check .` rc 0; `scripts/check-adr-status-language.py` rc 0; `git
+diff --check` rc 0; `uv run python scripts/check-suite-inventory.py` rc 0 (21
+suites match — invoke via `uv run`, a bare `python3` lacks pydantic for the
+bare_python suites, same as CI's `uv pip install --system` step provides).
+Develop base motion re-resolved by fetch: origin/develop `4de7e906d9dc` ==
+merge-base == assigned base; branch is develop + exactly the six in-scope
+files; no sync conflict. No test added/moved/removed — no inventory delta
+(stays as recorded). The issue's owner-acceptance act on SPEC-101826-1836
+remains open by design and is the only non-environmental residual.
