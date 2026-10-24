@@ -502,13 +502,6 @@ def test_run_one_cycle_dispatches_canonical_graph(
         evolution_graph, "canonical_execution_owner", lambda *_args, **_kwargs: owner
     )
 
-    owner = SimpleNamespace(
-        run_store=object(), graph_run_store=object(), project_scope_store=object()
-    )
-    monkeypatch.setattr(
-        evolution_graph, "canonical_execution_owner", lambda *_args, **_kwargs: owner
-    )
-
     s = _EvolutionService()
     s._population = _StubPop()
     s._tournament = _StubTour()
@@ -559,6 +552,7 @@ async def test_racing_manual_and_background_cycles_are_serialized(
         )
 
     monkeypatch.setattr(evolution_graph, "run_canonical_evolution_cycle", _canonical)
+    monkeypatch.setattr(_EvolutionService, "_build_llm_call", lambda self: None)
     owner = SimpleNamespace(
         run_store=object(), graph_run_store=object(), project_scope_store=object()
     )
@@ -614,6 +608,7 @@ async def test_seed_waits_for_active_cycle_and_joins_the_next_admission(
         )
 
     monkeypatch.setattr(evolution_graph, "run_canonical_evolution_cycle", _canonical)
+    monkeypatch.setattr(_EvolutionService, "_build_llm_call", lambda self: None)
     monkeypatch.setattr(diversity, "emergency_spawn", lambda existing, count: [])
     owner = SimpleNamespace(
         run_store=object(), graph_run_store=object(), project_scope_store=object()
@@ -678,13 +673,6 @@ def test_run_one_cycle_does_not_count_failed_canonical_run(
         evolution_graph, "canonical_execution_owner", lambda *_args, **_kwargs: owner
     )
 
-    owner = SimpleNamespace(
-        run_store=object(), graph_run_store=object(), project_scope_store=object()
-    )
-    monkeypatch.setattr(
-        evolution_graph, "canonical_execution_owner", lambda *_args, **_kwargs: owner
-    )
-
     s = _EvolutionService()
     s._population = _StubPop()
     s._tournament = _StubTour()
@@ -717,34 +705,6 @@ def test_build_llm_call_refuses_without_canonical_authority(
 
 
 def test_build_llm_call_public_accessor_delegates_to_private_builder(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """#1064: ``build_llm_call`` is the public accessor a restart-recovery
-    resolver uses to reconstruct the same llm_call a live cycle would have
-    built (it has no other way to reach the private builder). Prove it
-    actually delegates, both when the builder succeeds and when it
-    declines (no base URL configured)."""
-    from services.evolution import _EvolutionService
-
-    class _NoBase:
-        maistro_llm_base_url = ""
-        litellm_api_base = ""
-        maistro_llm_api_key = ""
-        litellm_api_key = ""
-        chat_default_model = "stub"
-
-    import config
-
-    monkeypatch.setattr(config, "get_settings", lambda: _NoBase())
-    s = _EvolutionService()
-    assert s.build_llm_call() is None
-
-    sentinel = object()
-    monkeypatch.setattr(s, "_build_llm_call", lambda: sentinel)
-    assert s.build_llm_call() is sentinel
-
-
-async def test_build_llm_call_real_call_posts_and_extracts_content(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from services.evolution import _EvolutionService

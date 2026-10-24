@@ -50,7 +50,7 @@ jobs:
           # schema, and its entrypoint must ship, and the entrypoint must stay
           # invocable. It runs no installer and makes no provider call.
           test -f docs/testing/installed-workspace-proof.md
-          test -f docs/testing/installed-workspace-proof.schema.json
+          test -f docs/testing/installed-workspace-proof-manifest.schema.json
           test -f scripts/prove-installed-workspace.py
           python3 scripts/prove-installed-workspace.py --help >/dev/null
 

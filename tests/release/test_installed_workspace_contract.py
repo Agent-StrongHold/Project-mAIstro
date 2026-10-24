@@ -39,7 +39,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "prove-installed-workspace.py"
-SCHEMA_PATH = ROOT / "docs" / "testing" / "installed-workspace-proof.schema.json"
+SCHEMA_PATH = ROOT / "docs" / "testing" / "installed-workspace-proof-manifest.schema.json"
 PROOF_DOC = ROOT / "docs" / "testing" / "installed-workspace-proof.md"
 
 #: The four mandatory fail-closed cases the issue names.

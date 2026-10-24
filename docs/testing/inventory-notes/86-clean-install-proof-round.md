@@ -6,14 +6,50 @@ inventory-delta:
 # #86 M3-A4 clean-install/deployment-profile proof — verification round
 
 This round adds the #86 release proof itself: the harness
-(`scripts/prove-installed-workspace.py`), its shipped contract
-(`docs/testing/installed-workspace-proof.schema.json`), its runbook
+(`scripts/prove-installed-workspace.py`), its shipped input contract
+(`docs/testing/installed-workspace-proof-manifest.schema.json`), its runbook
 (`docs/testing/installed-workspace-proof.md`), and the contract suite that
 drives the real script (`tests/release/test_installed_workspace_contract.py`).
 `tests/: +54` is that suite in full — 50 test functions, 54 collected cases
 (`test_a_stop_before_command_blocks_its_family_without_executing` is
 parametrized over the five stop-before categories). No existing test was
 weakened, skipped, or deleted to make room for them.
+
+## Filename reconciliation with #1878
+
+The issue proposes the deliverable name
+`docs/testing/installed-workspace-proof.schema.json`, but develop already
+ships that exact path as the #1878 installed-workspace proof **envelope**
+schema (the reviewed-profile/manifest/results evidence bundle validated by
+`scripts/validate-installed-workspace-proof.py`). The two documents are
+different contracts: #1878's schema governs the evidence bundle an installed
+proof produces; this lane's schema governs the reviewed **manifest input**
+that drives `scripts/prove-installed-workspace.py`. Overwriting the #1878
+file would break its validator, its 96-case suite, and the `quality.yml`
+fail-closed gate step, so the manifest contract ships under the adjacent name
+`installed-workspace-proof-manifest.schema.json` and every reference (harness
+`SCHEMA_PATH`, contract test, runbook link, Gate C file check) points there.
+The envelope validator remains the fail-closed checker for any evidence
+bundle this harness eventually produces; the two lanes compose rather than
+compete.
+
+## Repair addendum: develop re-apply restored (this round)
+
+The lane's earlier history was rebuilt onto the assigned develop base
+(`4de7e906d`) as a single squash, and that rebuild accidentally reverted
+develop-side changes in ~440 files the lane never touched (stale `get.sh`
+upgrade functions from #353, `quality.yml`/`ci.yml` motion, `uv.lock`, the
+#1878 envelope schema, resurrected `041/043/045` duplicate-head migrations,
+and the RETIRED `stream1-diagnostic.yml`). This round restores every such
+file to its develop content and prunes the resurrected files, so the branch
+diff vs develop is exactly the seven deliverable paths above (with the
+manifest schema at its reconciled name). Re-derived after the restore:
+`alembic heads` is single-headed (`068`), `tests/release` is 237 passed (the
+lane's 54 plus develop's #1878/#1879 suites undamaged), full suite inventory
+matches across all 21 suites, `check-workflow-inventory`/`check-reachability`
++provenance/`check-ratchet-provenance`/`check-install-functions`
+/`check-required-checks`/`check-branch-protection`/`check-doc-links` all exit
+0, and `ruff check`/`ruff format --check` are clean.
 
 The harness is a release *orchestrator*: it launches the public
 installer/lifecycle/product-client commands a reviewed manifest names, collects

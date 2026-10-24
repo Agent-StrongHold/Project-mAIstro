@@ -15,6 +15,7 @@ from services.chat_gate import (
     gate_untrusted,
 )
 from services.chat_runs import admit_turn, execute_turn
+from services.request_principal import optional_actor_id
 
 logger = logging.getLogger(__name__)
 

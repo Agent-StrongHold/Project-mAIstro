@@ -52,7 +52,7 @@ not pass (or the bundle failed its own self-verification), `2` = misuse, an
 invalid manifest, or a bundle that could not be written.
 
 The machine-readable contract is
-[`installed-workspace-proof.schema.json`](installed-workspace-proof.schema.json).
+[`installed-workspace-proof-manifest.schema.json`](installed-workspace-proof-manifest.schema.json).
 The harness refuses to run against a schema file that uses a keyword it does
 not implement, so the schema can never claim a validation that is not
 happening.

@@ -18,8 +18,6 @@ from maistro.types.tool import ToolCall
 
 _TOOL_CONTEXT_MAX_TURNS = 8
 
-_TOOL_CONTEXT_MAX_TURNS = 8
-
 if TYPE_CHECKING:
     from maistro.protocols.llm import LLMClient
     from maistro.protocols.tracing import Trace
@@ -125,6 +123,7 @@ class ReactStrategy:
                     auth=kwargs.get("auth"),
                     context=list(tool_context),
                     security_pipeline=security_pipeline,
+                    tool_round=round_num,
                 )
                 tool_context.append(WardenContext(tool_result_str))
 
@@ -282,6 +281,7 @@ class ReactStrategy:
         auth: Any,
         context: list[WardenContext] | None = None,
         security_pipeline: bool = False,
+        tool_round: int = 0,
     ) -> tuple[dict[str, Any], str]:
         """Process a single tool call end-to-end: parse args, sentinel pre-call,
         execute, truncate, sanitize. Returns ``(tool_args, tool_result_str)``."""

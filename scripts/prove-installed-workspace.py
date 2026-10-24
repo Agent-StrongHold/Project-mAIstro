@@ -56,7 +56,7 @@ from pathlib import Path
 from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-SCHEMA_PATH = REPO_ROOT / "docs" / "testing" / "installed-workspace-proof.schema.json"
+SCHEMA_PATH = REPO_ROOT / "docs" / "testing" / "installed-workspace-proof-manifest.schema.json"
 
 MANIFEST_SCHEMA_VERSION = 1
 RESULTS_SCHEMA_VERSION = 1

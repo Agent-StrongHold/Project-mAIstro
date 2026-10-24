@@ -169,6 +169,11 @@ class TuringExecutionPlane:
             root = await self.project_store.root_for_workspace(workspace_id)
             return workspace_id, root.project_id
 
+    # Retained private alias: the canonical scope resolution was reachable
+    # only privately before #859 made state routes scope-aware.
+    async def _scope_for(self, user_id: str) -> tuple[str, str]:
+        return await self.scope_for(user_id)
+
     async def _track_admission(self, run_id: str, *, workspace_id: str) -> None:
         self._retained_runs[run_id] = None
         async with self._retention_lock:

@@ -22,8 +22,6 @@ from maistro.capabilities.pm_polling import (
 from . import register_node
 from .base import BaseNode, NodeContext, ReplaySemantics
 
-logger = logging.getLogger("maistro.nodes.jira")
-
 
 class JiraPollIn(BaseModel):
     binding_id: str = Field(description="Pre-authorized Jira Binding for this workspace/project")

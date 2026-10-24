@@ -23,6 +23,9 @@ if TYPE_CHECKING:
     import asyncpg
 
 
+# Column layout matches Alembic revision 040 (`capability_bindings`): the JSON
+# payload preserves the complete immutable record while the projected columns
+# keep scope lookups indexed and auditable.
 _SQLITE_SCHEMA = """
 CREATE TABLE IF NOT EXISTS capability_bindings (
     binding_id TEXT PRIMARY KEY,
@@ -98,17 +101,56 @@ class RevocableBindingStore(BindingStore, Protocol):
     :class:`InMemoryBindingStore` was the only implementation -- declared
     sync, because that store needs no I/O to register. No durable store can
     satisfy a synchronous write, so the one member that made this contract
-    unmeetable was the member no effect path uses: production calls
-    ``register`` in two places, both of which narrow to the concrete
-    in-memory class first. Revocation is what the runtime needs from this
-    protocol, and revocation is what it now asks for.
+    unmeetable was the member no effect path uses. Revocation is what the
+    runtime needs from this protocol, and revocation is what it asks for.
 
-    Boot registration on a durable backend is a separate gap, tracked apart
-    from this one: hive-conductor still disables self_repair and the harness
-    route when the store is durable.
+    Boot registration is :meth:`BindingStore.put`, which every backend
+    implements and which has the semantics boot needs on all three:
+    idempotent for an identical Binding, ``ValueError`` for a changed one,
+    and ``BindingNotFound`` over a revocation tombstone -- so a restart
+    cannot re-grant an identity an operator withdrew. hive-conductor's
+    self_repair and harness route went through the in-memory ``register``
+    and narrowed to that concrete class first, which turned both off on
+    exactly the deployments that persist anything; they call ``put`` now
+    (#1133).
     """
 
     async def revoke(self, binding_id: str) -> None: ...
+
+
+async def register_boot_binding(bindings: BindingStore, binding: Binding) -> Binding:
+    """Register a composition-time Binding once, and again on every restart.
+
+    Returns the registered record, which after the first boot is the one
+    already stored. A durable store compares the *whole* Binding, and a
+    freshly constructed one differs from the stored copy by ``created_at``
+    alone -- so a composition root that simply re-``put`` its boot Binding
+    succeeded on the first boot and raised ``ValueError`` on every one after,
+    taking the capability offline exactly when the deployment persisted
+    anything (Codex, #1760).
+
+    Reusing the stored record rather than stamping a fixed ``created_at``
+    keeps the real first-registration time, which is the only thing that
+    timestamp is for.
+
+    A *changed* definition is still refused. Equality is checked with the
+    candidate's own ``created_at`` substituted in, so the comparison asks the
+    question that matters -- has this identity been redefined -- rather than
+    the one that is answered differently on every process start.
+
+    Revocation survives this: a revoked identity is absent from ``get`` and
+    refused by ``put``, so a restart cannot re-grant what an operator withdrew.
+    """
+
+    existing = await bindings.get(binding.binding_id)
+    if existing is None:
+        return await bindings.put(binding)
+    if existing.model_copy(update={"created_at": binding.created_at}) != binding:
+        raise ValueError(
+            f"Binding {binding.binding_id!r} is registered with a different definition; "
+            "a boot Binding is immutable and cannot be redefined in place"
+        )
+    return existing
 
 
 def _scope_checked(
@@ -181,7 +223,12 @@ async def _resolve(
 
 
 class InMemoryBindingStore:
-    """Concurrency-safe process-local BindingStore for explicit ephemeral use."""
+    """Concurrency-safe process-local BindingStore for explicit ephemeral use.
+
+    Binding identities are immutable. Re-registering the exact same Binding is
+    idempotent; trying to change the definition behind an existing id is
+    rejected instead of silently widening authority.
+    """
 
     def __init__(self) -> None:
         self._items: dict[str, Binding] = {}
@@ -355,10 +402,48 @@ class SqliteBindingStore:
 
 
 class PgBindingStore:
-    """PostgreSQL-backed immutable Binding authority shared by replicas."""
+    """PostgreSQL-backed immutable Binding authority shared by replicas.
+
+    ``ensure_schema`` mirrors Alembic revision 040 so a deployment that has not
+    run migrations (local composition, tests) still gets the same table shape
+    the migration owns in production.
+    """
 
     def __init__(self, pool: asyncpg.Pool) -> None:
         self._pool = pool
+
+    async def ensure_schema(self) -> None:
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS capability_bindings (
+                    binding_id TEXT PRIMARY KEY,
+                    workspace_id TEXT NOT NULL,
+                    project_id TEXT NOT NULL,
+                    capability TEXT NOT NULL,
+                    node_id TEXT NOT NULL DEFAULT '',
+                    created_at TIMESTAMPTZ NOT NULL,
+                    payload_json TEXT NOT NULL
+                )
+                """
+            )
+            await conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_capability_binding_scope
+                    ON capability_bindings (workspace_id, project_id, capability, binding_id)
+                """
+            )
+            # Revocation tombstones (#1133). Created here as well as by alembic
+            # 047 so an effect context built outside the migration path does
+            # not query a table that does not exist.
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS capability_binding_revocations (
+                    binding_id TEXT PRIMARY KEY,
+                    revoked_at TIMESTAMPTZ NOT NULL
+                )
+                """
+            )
 
     async def _is_revoked(self, binding_id: str) -> bool:
         found = await self._pool.fetchval(
@@ -455,4 +540,5 @@ __all__ = [
     "PgBindingStore",
     "RevocableBindingStore",
     "SqliteBindingStore",
+    "register_boot_binding",
 ]
