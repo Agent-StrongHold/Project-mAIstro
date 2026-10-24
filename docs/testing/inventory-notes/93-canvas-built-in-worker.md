@@ -485,3 +485,57 @@ its runner, or the canonical-execution seam; the canvas suite results are
 identical to the prior rounds (581/75, 71 focused). Acceptance status is
 unchanged: the product-level E2E under #773/#95 is still pending and
 KNOWN-GAPS.md keeps the Canvas-runner entry open for exactly that reason.
+
+## Independent re-validation round at the lane head (`612d82565`)
+
+A fresh validation pass (dispatched after the previous worker's
+NEEDS-DEEP-REVIEW attention request, with no driver check-logs supplied)
+re-executed the whole battery at the final lane head; every result matches
+the recorded rounds — no tree defect surfaced and no production file
+changed in this round:
+
+- `uv run ruff check .` / `uv run ruff format --check .`: clean (3498
+  files).
+- CI's exact ten-tree `uv run mypy`: no issues in 1105 source files.
+- `uv run pytest packages/maistro-canvas/tests -q`: 581 passed, 75
+  skipped; focused acceptance suites (`test_worker_service.py` +
+  `test_runner_concurrency.py` + `test_canonical_execution.py` +
+  `tests/test_check_image_lock_reconciliation.py`): 140 passed.
+- CI-argv gates: `check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` → 1297 reviewed == 1297
+  findings at base `db4d3eb091fe`; `check-suite-inventory.py` → 21/21;
+  `check-convergence-matrix.py` → 52 subsystems / 1463 modules / 149
+  unreachable; `check-reachability.py` → 149 unreachable, dispositions
+  attributed; `check-ratchet-provenance.py` → OK, 54 consumers;
+  `check-shipped-surface-truth.py` → complete;
+  `check-backlog-consistency.py` → OK, 167 items.
+- The direct-dependency leg of the pip-audit gate was executed directly
+  for the first time this round (`pip_audit_gate.audit_direct_dependencies()`):
+  exit 0 — "11 packages, 66 runtime dependencies, 4 reviewed dispositions"
+  — proving the amended `direct-dependency-exceptions.json` (asyncpg row
+  removed because `worker_service.py:279` imports asyncpg directly) passes
+  its consumer gate, not just provenance.
+- `quality/*.json` merge-safety audit against `origin/develop` per the
+  row-drain hazard rule (`git diff --numstat origin/develop -- quality/`):
+  exactly three ledgers differ — `direct-dependency-exceptions.json`
+  (−7: the truthful asyncpg removal), `image-pins.json` (4/4: the
+  2026-10-24 `python:3.12-slim` digest refresh recorded in #93), and
+  `reachability-dispositions.json` (3/3: the `canvas-job-runner`
+  disposition rewritten from "unstarted wiring debt" to "paid by #93" with
+  `maistro_canvas.canvas.worker_service` as the declared root). Row counts
+  of the multiset ledgers (`vulture-baseline`, `radon-baseline`) match
+  develop; nothing drained in merge resolution.
+- Production-shape probe at this head: `uv run maistro-canvas-worker`
+  with an empty environment exits 2 with
+  `canvas_worker_config_error: MAISTRO_CANVAS_PG_DSN is required...`.
+- Acceptance-path spot re-reads: `DELETE /api/canvas/jobs/{id}` cancels
+  through `CanvasCanonicalExecution.cancel(run_id)` (canonical fencing,
+  not fake instant cancellation); `GET /jobs/{id}` reads the durable
+  `PgCanvasStore` (reconnectable state); the restart/recovery hinge is
+  pinned by `test_recovery_leaves_a_string_status_live_leased_receipt_alone`
+  and its degenerate companion
+  `test_recovery_requeues_a_string_status_receipt_whose_lease_expired`.
+
+Acceptance status remains as recorded: the only open criterion is the
+product-level E2E under #773/#95, which is that epic's work; KNOWN-GAPS.md
+correctly keeps the Canvas-runner entry open for it.
