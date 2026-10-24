@@ -1165,6 +1165,43 @@ class TestTheDockerSeamAndGatewayPlumbing:
         assert dispatch._detect_gateway_network() == "bridge"
 
 
+class TestWorkRootPublishesExportAllowlist:
+    """Promotion export containment reads ``RSI_WORK_ROOT`` (CodeQL path sinks)."""
+
+    def test_work_root_setdefault_publishes_resolved_path(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from services import rsi_container_dispatch as dispatch
+
+        root = tmp_path / "rsi-work"
+        monkeypatch.delenv("RSI_WORK_ROOT", raising=False)
+
+        class _Settings:
+            rsi_work_root = str(root)
+
+        monkeypatch.setattr(dispatch, "_settings", lambda: _Settings())
+        resolved = dispatch.work_root()
+        assert resolved == root
+        assert os.environ["RSI_WORK_ROOT"] == str(root.resolve())
+
+    def test_work_root_does_not_override_an_operator_env(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from services import rsi_container_dispatch as dispatch
+
+        root = tmp_path / "rsi-work"
+        prior = tmp_path / "operator-root"
+        prior.mkdir()
+        monkeypatch.setenv("RSI_WORK_ROOT", str(prior))
+
+        class _Settings:
+            rsi_work_root = str(root)
+
+        monkeypatch.setattr(dispatch, "_settings", lambda: _Settings())
+        dispatch.work_root()
+        assert os.environ["RSI_WORK_ROOT"] == str(prior)
+
+
 class TestTheLaunchFailureModes:
     """`launch` raises DispatchError, never a bare subprocess exception —
     the run record shows an operator-facing summary, not a traceback."""

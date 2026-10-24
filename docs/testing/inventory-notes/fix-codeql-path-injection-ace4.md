@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/hive-conductor/backend/tests: +2
+  packages/hive-conductor/backend/tests: +4
   packages/maistro-core/tests: +1
   packages/maistro-rsi/tests: +5
 ---
@@ -17,6 +17,8 @@ site to the sanitizer CodeQL models (``os.path.realpath`` +
   is still refused; existing symlink case now mkdir's the allowlisted root.
 - ``test_ui_auto_climb_defaults.py`` (+1 hive): ``main()`` parses argv and
   runs ``auto_climb`` (covers the climber CLI entry for diff-coverage).
+- ``test_rsi_container_dispatch.py`` (+2 hive): ``work_root()`` publishes
+  ``RSI_WORK_ROOT`` via ``setdefault`` and does not clobber an operator env.
 - ``test_promotion_export_paths.py`` (+5): stem allowlist gains space /
   semicolon / overlong cases; leaf-symlink race patches ``builtins.open``;
   export directory must sit under platform temp / ``RSI_WORK_ROOT`` /
