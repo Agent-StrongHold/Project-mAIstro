@@ -79,3 +79,51 @@ exactly this finding, matching CI job 120871881107).
   #1836 stays open; no closure actions taken.
 - The other steps of run 40093845270's containers job were green; the only
   red step was the reconcile step fixed above.
+
+## Round 3 — develop-sync re-anchor of the branch AC-state note (@ 4693f1f3d6b3)
+
+Assigned carry-over (verify verdict NEEDS-REPAIR at 4693f1f3d): the branch
+note `quality/ac-state-notes/auto-1836.json` still banked the **pre-merge**
+measurement (design_coverage 44.2377, banked at 8d31f1806), while the
+develop-sync merge 4693f1f3d moved the tree onto develop's doc corpus.
+`check-ac-state --run-tests --ratchet` reproduced red:
+`design_coverage: 39.641 falls below the floor of 44.2377`.
+
+Root cause, read from the gate's own machinery (not guessed):
+
+- The regression half of the ratchet was never the problem: the base fold at
+  f956a8142 carries the owner-authorized grant `design_coverage@39.641`
+  (`quality/ratchet-authorizations.json`, `ac-state`, #166, landed on develop
+  at 2ac960614 — "Two-merge rule observed: this authorization lands before
+  any candidate that needs it"), so the effective floor is 39.641 and the
+  measured 39.641 passes it. Not superseded (`MIN_SUPERSEDING_NOTES = 3`;
+  superseding-note count computed empty), not stale.
+- What failed is the **exact comparison**: `_exact_target` raises the target
+  by `_fresh_note_bound()` — notes new-or-different vs the base — and the
+  stale branch note at 44.2377 pinned the exact target there ("below it is a
+  regression the grant does not cover, above it is slack to bank").
+
+Repair (exactly the gate's printed remedy — "bank the fall with --bank and
+justify it in the diff"):
+
+- `uv run python scripts/check-ac-state.py --run-tests --ratchet --bank` →
+  re-banked the branch note at the actual measurement. Diff is the single
+  counter `design_coverage: 44.2377 -> 39.641`; every debt counter and
+  `measured_with_tests: true` unchanged. Justification lives in the diff via
+  the #166 grant the base already carries (owner-authorized measured
+  re-anchor; the folded floor 44.2377 came from a stacked-branch tree that
+  never reflected a develop tip) plus this note.
+- Re-ran the gate: `--run-tests --ratchet` → rc 0, "authorized floor:
+  design_coverage may fall to 39.641 — #166 …", "OK: 10 debt counters sit
+  exactly on their ceilings and 1 progress counter sits exactly on its
+  floor". CI's PR shape `--run-tests --ratchet --mandate f956a814275c` →
+  rc 0, "this change adds no spec, decision or criterion-less document to
+  the chain".
+- No-regression battery re-run at the post-fix tree: `ruff check .` clean,
+  `ruff format --check .` clean (3484 files), `check-workflow-inventory.py`
+  rc 0 (31 workflows dispositioned), `check-suite-inventory.py` rc 0
+  (21 suites match), `check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` rc 0 (1302 reviewed
+  identities == 1302 findings — no ledger amendment needed or made).
+
+Issue #1836 stays open; no closure actions.
