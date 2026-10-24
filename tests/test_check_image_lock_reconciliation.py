@@ -91,27 +91,6 @@ def test_parse_expected_empty_export_is_a_red_exit(gate, text):
         gate.parse_expected(text)
 
 
-def test_parse_expected_keeps_every_forked_version_of_a_name(gate):
-    """A resolution fork lists one line per fork of the same package, each
-    with its fork's marker — the real `uv export` on this repo now ships
-    beartype==0.22.9 for python_full_version < '3.15' alongside 0.23.1 for
-    >= '3.15'. Every locked version must survive parsing: a name-keyed dict
-    lets the last line overwrite the earlier ones and the image's correct
-    fork reads as a version skew."""
-    text = "\n".join(
-        [
-            "beartype==0.22.9 ; python_full_version < '3.15' \\",
-            "    --hash=sha256:" + "aa" * 8,
-            "beartype==0.23.1 ; python_full_version >= '3.15' \\",
-            "    --hash=sha256:" + "bb" * 8,
-            "",
-        ]
-    )
-    required, conditional = gate.parse_expected(text)
-    assert required == set()
-    assert conditional == {"beartype==0.22.9", "beartype==0.23.1"}
-
-
 def test_parse_expected_classifies_unconditional_and_conditional_versions_by_line(gate):
     """If one version of a name is unconditional and another is a marked
     alternate, the unconditional pin keeps gating presence — line-level,
@@ -121,6 +100,78 @@ def test_parse_expected_classifies_unconditional_and_conditional_versions_by_lin
     )
     assert required == {"widgetlib==1.0"}
     assert conditional == {"widgetlib==2.0"}
+
+
+# A lock that splits one package across environment markers exports several
+# `name==version` lines for the SAME name, each with its own marker — beartype
+# 0.22.9 for python_full_version < '3.15' and 0.23.1 for >= '3.15' in one
+# export (uv.lock since the fastmcp re-lock, merge-queue run 40085096483,
+# where a correct Python 3.13 engine image shipping 0.22.9 was failed against
+# the surviving >= '3.15' pin).
+SPLIT_EXPORT = "\n".join(
+    [
+        "beartype==0.22.9 ; python_full_version < '3.15' \\",
+        "    --hash=sha256:" + "aa" * 8,
+        "beartype==0.23.1 ; python_full_version >= '3.15' \\",
+        "    --hash=sha256:" + "bb" * 8,
+        "",
+    ]
+)
+
+
+def test_parse_expected_keeps_every_version_of_a_split_resolution(gate):
+    """The name-keyed dict kept only the LAST line's pin (0.23.1) and then
+    demanded it from an interpreter that correctly resolved 0.22.9."""
+    required, conditional = gate.parse_expected(SPLIT_EXPORT)
+    assert required == set()  # every line is marker-conditioned
+    assert conditional == {"beartype==0.22.9", "beartype==0.23.1"}
+
+
+@pytest.mark.parametrize("shipped", ["0.22.9", "0.23.1"])
+def test_split_resolution_reconciles_with_whichever_branch_the_image_resolved(
+    gate, tmp_path, monkeypatch, capsys, shipped
+):
+    expected = _write_expected(tmp_path, SPLIT_EXPORT)
+    _install_docker(monkeypatch, gate, _Docker(_dump(f"beartype=={shipped}")))
+    monkeypatch.setattr(sys, "argv", _argv(expected))
+    assert gate.main() == 0
+    out = capsys.readouterr().out
+    assert "ships exactly the locked set" in out
+    assert "2 marker-conditional pin(s)" in out
+
+
+def test_split_resolution_still_fails_on_a_version_neither_branch_pins(
+    gate, tmp_path, monkeypatch, capsys
+):
+    expected = _write_expected(tmp_path, SPLIT_EXPORT)
+    _install_docker(monkeypatch, gate, _Docker(_dump("beartype==0.20.0")))
+    monkeypatch.setattr(sys, "argv", _argv(expected))
+    assert gate.main() == 1
+    out = capsys.readouterr().out
+    assert (
+        "version mismatch     : beartype==0.20.0 (image)"
+        " != one of beartype==0.22.9, beartype==0.23.1" in out
+    )
+    # Still a single named mismatch — not a confusing missing/extra pair.
+    assert "locked, not in image" not in out
+    assert "in image, not locked" not in out
+
+
+def test_split_resolution_leaves_single_pin_skews_and_requirements_alone(
+    gate, tmp_path, monkeypatch, capsys
+):
+    """Adding a split package does not loosen anything else: an unconditional
+    pin still must ship at its exact version (single-candidate mismatch lines
+    keep their historical exact format)."""
+    expected = _write_expected(
+        tmp_path,
+        SPLIT_EXPORT + "fastapi==0.142.2\n",
+    )
+    _install_docker(monkeypatch, gate, _Docker(_dump("beartype==0.22.9", "fastapi==0.21.0")))
+    monkeypatch.setattr(sys, "argv", _argv(expected))
+    assert gate.main() == 1
+    out = capsys.readouterr().out
+    assert "version mismatch     : fastapi==0.21.0 (image) != fastapi==0.142.2" in out
 
 
 # ---------------------------------------------------------- parse_actual()
@@ -324,7 +375,7 @@ def test_version_outside_every_fork_is_a_mismatch(gate, tmp_path, monkeypatch, c
     assert gate.main() == 1
     out = capsys.readouterr().out
     assert (
-        "version mismatch     : beartype==0.24.0 (image) != beartype==0.22.9 or beartype==0.23.1"
+        "version mismatch     : beartype==0.24.0 (image) != one of beartype==0.22.9, beartype==0.23.1"
     ) in out
     assert "locked, not in image" not in out
     assert "in image, not locked" not in out

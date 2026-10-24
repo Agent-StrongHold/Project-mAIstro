@@ -77,15 +77,18 @@ def parse_expected(text: str) -> tuple[set[str], set[str]]:
     conditional pin matches either way — it gates nothing; its version is
     still checked when it does ship.
 
-    A resolution fork lists several versions of the same package, one line
-    per fork, each carrying its fork's marker — this repo's export ships
+    One name can also carry SEVERAL pins at different versions, because the
+    lock splits a package across environment markers: the same export ships
     `beartype==0.22.9 ; python_full_version < '3.15'` alongside
-    `beartype==0.23.1 ; python_full_version >= '3.15'`. Classification is
-    per line, not per name: keeping one pin per name in a dict let the last
-    fork line overwrite the earlier ones and red-flag the image's correct
-    fork as a version skew (security.yml containers, run 40093845270).
-    Every locked version of a name is accepted; a name gates presence only
-    when at least one of its lines is unconditional.
+    `beartype==0.23.1 ; python_full_version >= '3.15'` (security.yml
+    containers run 40093845270; merge-queue run 40085096483, where a correct
+    Python 3.13 engine image shipping 0.22.9 was failed against the
+    surviving >= '3.15' pin). Classification is per line, not per name:
+    keying one pin per name let the last fork line overwrite the earlier
+    ones and red-flag the image's correct fork as a version skew. Every
+    locked version of a name is accepted — the image's interpreter resolves
+    exactly one of them — and a name gates presence when at least one of its
+    lines is unconditional.
     """
     required: set[str] = set()
     conditional: set[str] = set()
@@ -105,6 +108,19 @@ def parse_expected(text: str) -> tuple[set[str], set[str]]:
             "a `uv export --format requirements-txt` output?"
         )
     return required, conditional
+
+
+def _expected_clause(candidates: set[str]) -> str:
+    """The expected-side half of a mismatch line.
+
+    A single pin reads exactly as it always has (`foo==1.0`); a split
+    resolution names every version the lock accepts for the name, so the
+    operator sees the full accepted set, not an arbitrary survivor.
+    """
+    ordered = sorted(candidates)
+    if len(ordered) == 1:
+        return ordered[0]
+    return "one of " + ", ".join(ordered)
 
 
 def parse_actual(text: str) -> set[str]:
@@ -206,7 +222,7 @@ def main() -> int:
         p for p in actual - everything_expected if p.partition("==")[0] not in skewed_names
     )
     skewed = sorted(
-        f"{actual_by_name[name]} (image) != {' or '.join(sorted(expected_versions[name]))}"
+        f"{actual_by_name[name]} (image) != {_expected_clause(expected_versions[name])}"
         for name in skewed_names
     )
     if missing or extra or skewed:
