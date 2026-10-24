@@ -39,3 +39,25 @@ image and the same fresh export reproduces the hosted failure verbatim:
 `version mismatch     : beartype==0.22.9 (image) != beartype==0.23.1`, exit 1.
 In an isolated prefix against that pre-fix script, 4/5 new tests fail and all
 32 pass at HEAD.
+
+Round-5 develop-sync resolution (2026-10-24, merge commit 72f116009): develop
+(f956a8142, via 461fb86b1) independently landed the SAME marker-split fix
+(merge-queue run 40085096483) and the sync left
+`scripts/check-image-lock-reconciliation.py` conflicted between the two
+equivalent implementations. Resolution adopts develop's script verbatim
+(`_expected_clause`, `one of ...` mismatch wording; the script is now
+byte-identical to trunk, minimizing the eventual merge-back diff) and re-pins
+the branch-added
+`test_version_outside_the_marker_split_fails_naming_every_branch` to develop's
+message format. The auto-merged test file carries both sides' split tests
+(net 37, all passing). Post-merge uv.lock differs from the pre-merge branch
+lock only cosmetically (lock revision 3->5, pyobjc marker phrasing) — zero
+version-pin changes — so the round-4 `-r5` images remain valid reconcile
+subjects: all four security.yml reconcile sub-commands re-run gate-exact at
+head 72f116009 against `/tmp` exports generated from the POST-merge lock and
+all four print `OK: ... ships exactly the locked set` (engine 128 dists with
+in-image `beartype==0.22.9` against an export emitting both 0.22.9 <'3.15' and
+0.23.1 >='3.15' at export lines 132/136; hive 72; research 148; rsi 220).
+`ruff check .` / `ruff format --check .`, the suite-inventory gate, and the
+vulture ledger gate (`packages/*/src --min-confidence 60 --exclude
+'*/third_party/*'`: 1302 reviewed == 1302 findings) are green at this head.
