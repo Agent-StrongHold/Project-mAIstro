@@ -427,3 +427,61 @@ the merged head:
 Front-matter delta unchanged (+28: no tests added or removed this round).
 Acceptance status is unchanged from the round above; the GH006 merge-queue
 block is queue-side, not a tree defect.
+
+## Develop-sync round: re-validation at the `db4d3eb091fe` merge head (`481733195`)
+
+Develop advanced again (M1 #35: `dag_run_store` rebuilt as a reconciled
+display projection under the shared #1036 terminality contract, with 27 new
+projection authority/lifecycle tests in hive-conductor) and the branch was
+synced by merging `db4d3eb091fe` into `auto-93`, producing `4817331952`.
+One file conflicted: `docs/architecture/CONVERGENCE-MATRIX.md`, resolved by
+keeping both sides where they touch different cells — develop's #35
+`dag_run_store` projection wording in the Agent Conductor rows, this
+branch's `maistro-canvas-worker` owner cell and the SPEC-203 queue note in
+the Canvas rows. `scripts/check-convergence-matrix.py` passes on the
+resolution (52 subsystems, 1463 modules, 149 unreachable).
+
+Ledger merge audit (per the `quality/*.json` clean-merge row-drain hazard):
+against the merge base `ffc27cc43`, develop changed none of the
+`quality/*.json` ledgers, so every merged ledger is byte-identical to the
+branch parent (`vulture-baseline`, `reachability-baseline`, `radon-baseline`;
+verified by blob hash) and to the branch's legitimate versions of
+`image-pins`, `direct-dependency-exceptions` and
+`reachability-dispositions`. The branch-side removal of the
+`packages/maistro-canvas/pyproject.toml` asyncpg direct-dependency exception
+remains truthful after the merge: `worker_service.py` now imports asyncpg
+directly (driver pool), so the "declared but never imported" exception no
+longer describes reality. Nothing to amend; no grant touched.
+
+Gate battery re-executed at `4817331952` against the new base `db4d3eb091fe`
+(no Python changes on this branch side; front-matter delta stays +28):
+
+- `uv run ruff check .` / `uv run ruff format --check .`: clean (3498 files).
+- CI's exact `uv run mypy` over the ten `packages/*/src` trees: no issues in
+  1105 source files.
+- `scripts/check-vulture-baseline.py packages/*/src --min-confidence 60
+  --exclude '*/third_party/*'` (CI argv): 1297 reviewed == 1297 findings,
+  base `db4d3eb091fe`; nothing unbanked, nothing to amend.
+- `scripts/check-reachability.py` (RATCHET_BASE_REV=db4d3eb091fe): 149
+  unreachable of 1463 modules, no expansion; dispositions: 46 groups cover
+  all 149 (128 CONNECT, 20 LIBRARY, 1 RETIRE).
+- `scripts/check-ratchet-provenance.py` (RATCHET_BASE_REV=db4d3eb091fe):
+  OK, 54 quality-JSON consumers with provenance.
+- `scripts/check-suite-inventory.py`: 21/21 suites match (34365 unique
+  identities); `scripts/check-backlog-consistency.py`: OK.
+- `scripts/check-merge-markers.py`: clean; `check-shipped-surface-truth.py`:
+  complete.
+- `uv run pytest packages/maistro-canvas/tests -q`: 581 passed, 75 skipped;
+  focused acceptance suites (`test_worker_service.py`,
+  `test_runner_concurrency.py`, `test_canonical_execution.py`): 71 passed;
+  `tests/test_check_image_lock_reconciliation.py`: 69 passed.
+- Production-shape probe re-run at this head: `uv run maistro-canvas-worker`
+  with no environment exits 2 with `canvas_worker_config_error:
+  MAISTRO_CANVAS_PG_DSN is required...` (true exit code captured without a
+  pipe this time).
+
+The #35 hive-conductor projection work does not touch the Canvas worker,
+its runner, or the canonical-execution seam; the canvas suite results are
+identical to the prior rounds (581/75, 71 focused). Acceptance status is
+unchanged: the product-level E2E under #773/#95 is still pending and
+KNOWN-GAPS.md keeps the Canvas-runner entry open for exactly that reason.
