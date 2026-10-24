@@ -149,10 +149,7 @@ class ReviewScore(RubricEval):
         {
             "name": "no_code_smells",
             "weight": 25,
-            # Smell vocabulary under test — not unfinished work markers.
-            "check": lambda o, c: not any(
-                w in o for w in ["TODO", "HACK", "FIXME"]  # DevSkim: ignore DS176209 until 2027-12-31
-            ),
+            "check": lambda o, c: not any(w in o for w in ["TODO", "HACK", "FIXME"]),
         },
         {
             "name": "handles_errors",

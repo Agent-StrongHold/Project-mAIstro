@@ -23,12 +23,12 @@ from routes.audit import log_audit
 def _public_failure(exc: BaseException) -> str:
     """What a caller may learn about an unexpected failure: the kind, not the text.
 
-    Exception messages carry file paths, connection strings, and provider
-    replies; the full detail is in the server log with the traceback, and the
-    response names only the exception class so a client can still tell a
-    timeout from a type error.
+    Delegates to ``graph_runner.public_failure`` so HTTP and WebSocket share
+    one contract (kind-only, with the ALLOW_STUB_LLM remediation preserved).
     """
-    return f"{type(exc).__name__}: execution failed; see server logs"
+    from services.graph_runner import public_failure
+
+    return public_failure(exc)
 
 
 router = APIRouter(tags=["dags"])

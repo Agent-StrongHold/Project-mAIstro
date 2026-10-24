@@ -108,8 +108,9 @@ async def test_outcome_store_failure_rolls_back_and_stays_unpublished(
     assert failed.state == "startup_failed"
     assert failed._agent_port is None
     assert failed._backend is None
-    # The sanitized cause is type-qualified and carries the message.
-    assert failed.health()["cause"] == "RuntimeError: synthetic outcome store failure"
+    # Public cause is kind-only (CodeQL py/stack-trace-exposure); the synthetic
+    # message stays in the server log / raised exception.
+    assert failed.health()["cause"] == "RuntimeError: startup failed; see server logs"
     assert engine_mod.engine_health()["state"] == "startup_failed"
 
 
@@ -134,10 +135,7 @@ async def test_agent_port_binding_failure_is_a_startup_failure(
     assert failed.state == "startup_failed"
     assert failed._agent_port is None
     assert failed._backend is None
-    assert (
-        failed.health()["cause"]
-        == "TypeError: _NotAPort does not satisfy AgentPort; the engine cannot route chat through it"
-    )
+    assert failed.health()["cause"] == "TypeError: startup failed; see server logs"
 
 
 async def test_metrics_reset_failure_rolls_back(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -199,7 +197,7 @@ async def test_canonical_recovery_failure_unwinds_started_dag_recovery(
 
     assert engine_mod._singleton is None
     assert dag_recovery._task is None, "started recovery cadence was unwound"
-    assert engine_mod.engine_health()["cause"] == "RuntimeError: canonical cadence refused"
+    assert engine_mod.engine_health()["cause"] == "RuntimeError: startup failed; see server logs"
 
 
 async def test_demo_backend_failure_unwinds_recovery_cadences(
@@ -624,7 +622,7 @@ def test_health_ready_gates_on_failed_engine_start() -> None:
 
     failed = engine_mod.EngineService()
     failed._state = "startup_failed"
-    failed._startup_error = "RuntimeError: canonical cadence refused"
+    failed._startup_error = "RuntimeError: startup failed; see server logs"
     engine_mod._singleton = None
     engine_mod._failed_startup = failed
 
@@ -637,7 +635,7 @@ def test_health_ready_gates_on_failed_engine_start() -> None:
 
     live = client.get("/health").json()
     assert live["engine"]["state"] == "startup_failed"
-    assert live["engine"]["cause"] == "RuntimeError: canonical cadence refused"
+    assert live["engine"]["cause"] == "RuntimeError: startup failed; see server logs"
     assert live["degraded"] is True
     # Liveness stays liveness: a failed engine is not an outage signal.
     assert live["status"] == "ok"

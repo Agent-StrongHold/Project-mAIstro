@@ -304,8 +304,9 @@ or placeholder-only section.
   DevSkim drops non-shipped trees (`systems/catalog`, `benchmarks/corpora`,
   `formal/`, `.github/`, `deploy/`, `alembic/`) and dated suppressions for
   integrity-pin / non-crypto RNG / intentional loopback defaults so the
-  Security tab is actionable again. Lockfile bumps `fastmcp` and `setuptools`
-  for the pip-audit gate.
+  Security tab is actionable again. Lockfile bumps `fastmcp`, `setuptools`, and
+  `pypdf` for pip-audit/Trivy; canvas frontend `npm audit fix` clears high
+  advisories; Trivyignore documents the bookworm-only libbrotli finding.
 
 - **Protected-branch secret scans recognize two historical soak false positives (#860).**
   Preserve full-history scanning and the default rules while carrying over the

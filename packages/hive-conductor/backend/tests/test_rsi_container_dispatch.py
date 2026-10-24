@@ -670,8 +670,9 @@ class TestTheDispatchedLifecycle:
         )
 
         assert response.status_code == 400
-        assert "no contained RSI backend" in response.json()["detail"]
-        assert "docker daemon" in response.json()["detail"]
+        # Kind-only public detail (CodeQL py/stack-trace-exposure); policy
+        # wording stays in the server log.
+        assert response.json()["detail"] == "RsiPolicyError: run refused; see server logs"
 
     def test_cancellation_stops_the_container(
         self,
