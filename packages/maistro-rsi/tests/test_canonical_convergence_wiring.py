@@ -21,9 +21,11 @@ from maistro.runs.model import RunStatus
 from maistro.runs.store import InMemoryRunStore
 from maistro.workspaces.backlog_history import InMemoryBacklogHistoryStore
 from maistro_evolve.improvement import ImprovementKind
-from maistro_rsi.autorun import AutorunConfig, run_autonomous
-from maistro_rsi.canonical_provenance import RsiCycleProvenance
-from maistro_rsi.coordinator import ExecutionReport, HypothesisEvidence
+from maistro_rsi.autorun import AutorunConfig, _settle_sourced_objective, run_autonomous
+from maistro_rsi.canonical_provenance import CanonicalCycleRecord, RsiCycleProvenance
+from maistro_rsi.coordinator import CoordinatorResult, ExecutionReport, HypothesisEvidence
+from maistro_rsi.htr import HypothesisTree
+from maistro_rsi.intervention import Intervention, ReseedDirection
 from maistro_rsi.local_loop import CycleOutcome, LocalRsiConfig, LocalRsiLoop
 from maistro_rsi.work_source import RsiWorkSource
 
@@ -156,6 +158,144 @@ class TestAutorunCanonicalWiring:
         # No proven improvement: the item stays open for the next claimant.
         item = await backlog.get_item("eng-002")
         assert item is not None and item.status != BacklogItemStatus.DONE
+
+    async def test_resumed_tree_never_closes_a_new_item_on_stale_evidence(self, tmp_path):
+        """A resumed tree is bound to the item actually claimed (P1 review).
+
+        After invocation 1 closes eng-001, invocation 2 resumes the persisted
+        tree and claims a *new* item eng-002. The tree's cumulative best
+        (eng-001's proven improvement) must not settle eng-002: the new
+        item's instruction is bound into the tree and worked, and closure is
+        restricted to evidence from the claimed item's own executed lineage.
+        """
+        provenance, work_source, backlog, _ = await _stack()
+        await backlog.create_item(
+            workspace_id=WS,
+            title="Improve the router",
+            details="make it faster",
+            actor="human:owner",
+            item_id="eng-001",
+        )
+        config = _autorun_config(tmp_path)
+        improving = ExecutionReport(
+            evidence=HypothesisEvidence(
+                tests_passed=True, benchmarks_won=1, battles=1, improved=True
+            )
+        )
+
+        async def improving_executor(context):
+            return improving
+
+        # Invocation 1: claims eng-001, works it, closes it on the improvement.
+        await run_autonomous(
+            config,
+            executor=improving_executor,
+            proposer=lambda ctx: "next",
+            provenance=provenance,
+            work_source=work_source,
+            work_actor="rsi-campaign",
+        )
+        closed = await backlog.get_item("eng-001")
+        assert closed is not None and closed.status == BacklogItemStatus.DONE
+
+        # Invocation 2 on the persisted tree: a new item is claimed ...
+        await backlog.create_item(
+            workspace_id=WS,
+            title="Harden the parser",
+            actor="human:owner",
+            item_id="eng-002",
+        )
+        seen: list[str] = []
+
+        async def unimproved_executor(context):
+            seen.append(context.node.hypothesis)
+            return ExecutionReport(
+                evidence=HypothesisEvidence(
+                    tests_passed=True, benchmarks_won=0, battles=1, improved=False
+                )
+            )
+
+        await run_autonomous(
+            config,
+            executor=unimproved_executor,
+            proposer=lambda ctx: "next",
+            provenance=provenance,
+            work_source=work_source,
+            work_actor="rsi-campaign",
+        )
+
+        # ... and its instruction actually entered the tree and was worked.
+        assert seen and seen[0].startswith("Harden the parser")
+        # eng-001's stale cumulative best cannot close eng-002: no proven
+        # improvement attributable to the newly claimed item's own work.
+        item = await backlog.get_item("eng-002")
+        assert item is not None and item.status != BacklogItemStatus.DONE
+
+    async def test_discovered_directions_survive_closing_the_claimed_item(self):
+        """Stall directions are filed even when settlement closes the item (P2).
+
+        A campaign that stalls and *then* improves settles with ``close``
+        before discovered work is filed — and the backlog forbids both
+        decomposing a terminal parent and closing a parent with open
+        children. Filing the directions as children of the claimed item
+        therefore raised an uncaught ``BacklogClosureError`` that lost the
+        campaign's discovered-work submissions. They must be filed
+        standalone, linked by provenance instead of parentage.
+        """
+        _, work_source, backlog, _ = await _stack()
+        await backlog.create_item(
+            workspace_id=WS,
+            title="Improve the router",
+            actor="human:owner",
+            item_id="eng-003",
+        )
+        sourced = await work_source.next_objective(actor="rsi-campaign", workspace_id=WS)
+        assert sourced is not None and sourced.item_id == "eng-003"
+
+        tree = HypothesisTree(root_hypothesis="Improve the router")
+        node = tree.expand(tree.root_id, "Improve the router")
+        node.evidence = HypothesisEvidence(
+            tests_passed=True, benchmarks_won=1, battles=1, improved=True
+        )
+        result = CoordinatorResult(
+            tree=tree,
+            steps=[node.id],
+            interventions=[
+                Intervention(
+                    index=0,
+                    trigger_node_id=node.id,
+                    stalled_cycles=2,
+                    stall_threshold=2,
+                    lineage=(),
+                    archive=(),
+                    directions=(ReseedDirection(text="Add caching to the parser"),),
+                )
+            ],
+        )
+        cycle = CanonicalCycleRecord(
+            campaign_id="c1",
+            cycle_id=node.id,
+            run_id="run-1",
+            node_run_id="nrun-1",
+            attempt_id="att-1",
+            run_status=RunStatus.COMPLETED.value,
+            node_run_status=RunStatus.COMPLETED.value,
+            attempt_status=RunStatus.COMPLETED.value,
+        )
+
+        # Must not raise: closure happens, and the direction is still filed.
+        await _settle_sourced_objective(work_source, sourced, result, [cycle], actor="rsi-campaign")
+
+        item = await backlog.get_item("eng-003")
+        assert item is not None and item.status == BacklogItemStatus.DONE
+        filed = await backlog.list_items(WS)
+        filed = [i for i in filed if i.item_id != "eng-003"]
+        assert len(filed) == 1
+        child = filed[0]
+        assert child.status == BacklogItemStatus.OPEN
+        assert child.source == "rsi"
+        assert child.parent_id is None
+        assert "eng-003" in child.details
 
 
 def _make_repo(path) -> None:

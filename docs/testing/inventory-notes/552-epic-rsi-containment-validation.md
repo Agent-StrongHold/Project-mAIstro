@@ -1,7 +1,7 @@
 ---
 inventory-delta:
   packages/maistro-core/tests: +1
-  packages/maistro-rsi/tests: +45
+  packages/maistro-rsi/tests: +47
 ---
 
 # 552 epic M5-B: RSI containment validation + canonical convergence (#50)
@@ -89,6 +89,36 @@ Salvage deltas: `packages/maistro-rsi/tests` +5
 `test_stale_snapshot_cannot_close_another_claimants_item`,
 `test_close_is_refused_when_workspace_access_is_revoked`),
 `packages/maistro-core/tests` +1 (`test_close_is_authorized_and_claim_checked`).
+
+## Repair round: closure attribution + standalone discovered work (+2 RSI)
+
+Review of the salvage head found two settlement bugs in the #50 wiring,
+both fixed in `autorun.py` and pinned by two new tests in
+`test_canonical_convergence_wiring.py`:
+
+- **P1 — stale-evidence closure.** A resumed (persisted) tree that claimed
+  a *new* item settled it against the tree's cumulative best — the
+  predecessor item's proven improvement. `_claim_seed_objective` now always
+  binds the claimed instruction into the tree (reusing an existing node on
+  crash-resume, same dedupe rule as config seeds), and
+  `_settle_sourced_objective` closes only when the best candidate descends
+  from the claimed item's own node (`_bind_objective_node`,
+  `_in_claimed_lineage`); anything less releases the claim with an explicit
+  reason. Pinned by
+  `test_resumed_tree_never_closes_a_new_item_on_stale_evidence`.
+- **P2 — lost discovered work.** Stall directions were filed as *children*
+  of the claimed item, so a campaign that improved *after* a stall crashed
+  settlement with an uncaught `BacklogClosureError` (the backlog forbids
+  both decomposing a terminal parent and closing a parent with open
+  children), losing the discovered-work submissions. They are now filed
+  standalone — the claimed item is named in each child's details and the
+  provenance link lives in the audit journal, not in parentage. Pinned by
+  `test_discovered_directions_survive_closing_the_claimed_item`.
+
+Executed this round: the six targeted suites — **87 passed**; vulture gate
+(CI-exact args) — **1302 findings == 1302 reviewed identities, exit 0**;
+suite-inventory gate for `packages/maistro-rsi/tests` — expected 1780 ==
+collected 1780 after this note's +47.
 
 Executed this pass: full `uv run pytest packages/maistro-rsi/tests -q` —
 **1774 passed, 4 skipped**; `packages/maistro-core/tests/backlog` —

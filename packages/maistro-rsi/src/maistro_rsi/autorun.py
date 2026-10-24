@@ -947,23 +947,57 @@ async def _claim_seed_objective(
     provenance: RsiCycleProvenance,
     tree: HypothesisTree,
     *,
-    fresh_tree: bool,
     actor: str,
 ) -> SourcedObjective | None:
     """Claim the campaign's seed objective from the generic work source.
 
-    The claim and its #101 receipt go through the authorized surface; a
-    fresh tree gains the objective as its first queued hypothesis (the
-    coordinator drains queued hypotheses first), while a resumed tree
-    already carries it as a node.
+    The claim and its #101 receipt go through the authorized surface; the
+    claimed item's instruction is always bound into the tree as a queued
+    hypothesis (the coordinator drains queued hypotheses first). A tree that
+    already carries a node with the same instruction — a crash-resume of this
+    very item — is reused rather than duplicated (the same dedupe rule as the
+    config seeds), so a *newly* claimed item is never settled on a resumed
+    tree's unrelated evidence (see :func:`_settle_sourced_objective`).
     """
     sourced = await work_source.next_objective(actor=actor, workspace_id=provenance.workspace_id)
     if sourced is None:
         return None
     await work_source.record_claim(sourced, actor_principal_id=actor)
-    if fresh_tree:
-        tree.expand(tree.root_id, sourced.instruction)
+    _bind_objective_node(tree, sourced.instruction)
     return sourced
+
+
+def _bind_objective_node(tree: HypothesisTree, instruction: str) -> HypothesisNode:
+    """Bind a claimed work item to the tree and return its node.
+
+    The binding is structural: the item's instruction becomes (or already is)
+    a node, so closure can later be restricted to executed work inside that
+    node's lineage instead of the tree's cumulative best.
+    """
+    existing = next((n for n in tree.nodes.values() if n.hypothesis == instruction), None)
+    if existing is not None:
+        return existing
+    return tree.expand(tree.root_id, instruction)
+
+
+def _in_claimed_lineage(
+    tree: HypothesisTree, node_id: str | None, claimed_node_id: str | None
+) -> bool:
+    """Whether a node's lineage runs through the claimed item's node.
+
+    A node descending from the claimed item's node is attributable to that
+    item's executed work: only an executed (non-abandoned) node can have been
+    expanded further, so a descendant best candidate implies the item itself
+    was worked.
+    """
+    if node_id is None or claimed_node_id is None:
+        return False
+    current: str | None = node_id
+    while current is not None:
+        if current == claimed_node_id:
+            return True
+        current = tree.nodes[current].parent_id
+    return False
 
 
 async def _maybe_claim_seed(
@@ -971,15 +1005,12 @@ async def _maybe_claim_seed(
     provenance: RsiCycleProvenance | None,
     tree: HypothesisTree,
     *,
-    fresh_tree: bool,
     actor: str,
 ) -> SourcedObjective | None:
     """Claim a seed objective when both adapters are wired, else None."""
     if work_source is None or provenance is None:
         return None
-    return await _claim_seed_objective(
-        work_source, provenance, tree, fresh_tree=fresh_tree, actor=actor
-    )
+    return await _claim_seed_objective(work_source, provenance, tree, actor=actor)
 
 
 def _wrap_canonical_executor(
@@ -1055,6 +1086,15 @@ async def _propose_discovered_work(
     as new items in the generic backlog — proposed work with visible RSI
     provenance, never a silent widening of the claimed item's scope — and
     journaled against the Run that discovered them.
+
+    They are filed *standalone*, not as children of the claimed item: the
+    backlog forbids both decomposing a terminal parent and closing a parent
+    with open children, so any parent link to the claimed item would either
+    crash settlement after closure (the uncaught ``BacklogClosureError``)
+    or block closure outright. The claimed item is named in each child's
+    details, and :meth:`record_discovered_work` journals the children
+    against the item with the discovering Run's identity — the provenance
+    link lives in the audit trail, not in parentage.
     """
     child_ids: list[str] = []
     for intervention in result.interventions:
@@ -1065,10 +1105,10 @@ async def _propose_discovered_work(
                     workspace_id=sourced.workspace_id,
                     title=direction.text,
                     details=(
-                        f"Discovered by RSI stall review (intervention {intervention.index}); "
-                        f"proposed as new work, not a widening of {sourced.item_id}."
+                        f"Discovered by RSI stall review (intervention {intervention.index}) "
+                        f"under {sourced.item_id}; proposed as new work, not a widening "
+                        f"of {sourced.item_id}."
                     ),
-                    parent_id=sourced.item_id,
                 )
             except RsiWorkSourceError as exc:
                 logger.warning("rsi_discovered_work_unfiled", error=str(exc))
@@ -1094,14 +1134,25 @@ async def _settle_sourced_objective(
     """File the claimed item's evidence/closure receipts after a campaign.
 
     Every receipt cites canonical Run identity (#101). Closure happens only
-    on a proven improvement, with the citing Run as one evidence ref beside
-    the campaign's own account — a completed Run alone is never closure
-    evidence (ADR-082426-19ed). Anything less releases the claim: the item
-    stays open for the next claimant instead of being quietly closed on an
-    unimproved campaign. Discovered work from any stall review is proposed
+    on a proven improvement *attributable to the claimed item* — the best
+    candidate must descend from the node bound to the item's instruction —
+    with the citing Run as one evidence ref beside the campaign's own
+    account; a completed Run alone is never closure evidence
+    (ADR-082426-19ed), and neither is a resumed tree's cumulative best from
+    a predecessor item. Anything less releases the claim: the item stays
+    open for the next claimant instead of being quietly closed on evidence
+    it never produced. Discovered work from any stall review is proposed
     back into the generic backlog either way.
     """
     cite = _citing_cycle(result, cycle_records)
+    claimed_node = next(
+        (n for n in result.tree.nodes.values() if n.hypothesis == sourced.instruction), None
+    )
+    attributable = _in_claimed_lineage(
+        result.tree,
+        result.best.id if result.best else None,
+        claimed_node.id if claimed_node else None,
+    )
     if cite is not None:
         await work_source.record_cycle_evidence(
             sourced,
@@ -1110,7 +1161,8 @@ async def _settle_sourced_objective(
             attempt_id=cite.attempt_id,
             summary=f"RSI campaign finished: {len(result.steps)} cycle(s) executed",
         )
-    if _proven_improved(result) and cite is not None:
+    improved = _proven_improved(result)
+    if improved and attributable and cite is not None:
         await work_source.close(
             sourced,
             actor=actor,
@@ -1121,7 +1173,7 @@ async def _settle_sourced_objective(
             run_id=cite.run_id,
             node_run_id=cite.node_run_id,
             attempt_id=cite.attempt_id,
-            closure_summary="RSI campaign produced an improved candidate",
+            closure_summary="RSI campaign produced an improved candidate for this item",
         )
     else:
         await work_source.release(
@@ -1129,8 +1181,12 @@ async def _settle_sourced_objective(
             actor=actor,
             reason=(
                 "no proven improvement"
-                if not _proven_improved(result)
-                else "no canonical run to cite"
+                if not improved
+                else (
+                    "improvement not attributable to this item's executed work"
+                    if not attributable
+                    else "no canonical run to cite"
+                )
             ),
         )
     await _propose_discovered_work(work_source, sourced, result, cite=cite, actor=actor)
@@ -1309,12 +1365,12 @@ async def run_autonomous(
     # Generic work-source consumption (#50/#98/#100): the campaign's first
     # objective is *claimed* from the authorized Workspace backlog rather
     # than invented — the coordinator still drains queued hypotheses first,
-    # so a fresh tree works the claimed item before proposing its own. A
-    # resumed tree already carries the seed node, so only a fresh tree gains
-    # one (re-expanding would duplicate it, same as config seeds).
-    sourced = await _maybe_claim_seed(
-        work_source, provenance, tree, fresh_tree=policy_state is None, actor=work_actor
-    )
+    # so the claimed item is worked before anything else is proposed. The
+    # instruction is always bound into the tree (a resumed tree reuses the
+    # node if this item is a crash-resume, otherwise it gains a new queued
+    # node), so settlement can restrict closure to the item's own lineage
+    # instead of the tree's cumulative best.
+    sourced = await _maybe_claim_seed(work_source, provenance, tree, actor=work_actor)
 
     # M5-B stall policy: N non-improving cycles trigger a lineage review over
     # the stalled branch's full evidence + the archived promising candidates,
