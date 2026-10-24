@@ -49,3 +49,28 @@ the three exploration policies, plus 3 source-level contracts):
   candidate-storage fields (`variants`/`candidates`/`theses`/`waves` — the
   forbidden client-side system of record), and proves wave history is
   reconstructible from the Run store alone with no design-side state.
+
+## Verification round (2026-10-24, branch `auto-984` @ 613da6451)
+
+No count delta — this round re-proved the suite above and extended its
+backend coverage rather than adding tests:
+
+- Full three-backend spine with a live PostgreSQL 18 leg
+  (`MAISTRO_TEST_PG_DSN` on a migrated `maistro_test`):
+  `test_exploration_waves.py` **45/45 passed** (the Postgres leg had only ever
+  been skipped locally before).
+- Both source-level contracts re-proved non-vacuous: the
+  `maistro.orchestrator.waves` scanner catches `from maistro.orchestrator
+  import waves`, `import maistro.orchestrator.waves`, and dynamic
+  `import_module(...)` shapes while ignoring `import maistro.orchestrator`;
+  the design-state scanner flags a mutated `DesignProject` carrying
+  `variants` / a `CreativeBrief` carrying `candidates`, and asserts the real
+  `maistro_design` source (and its class definitions) were found.
+- Adjacent suites on the changed stores (`create_node_run(provenance=...)`,
+  `record_node_run_provenance`): `tests/runs` 1823 passed / 3 skipped,
+  `tests/persistence` 835 passed / 84 skipped — every other `create_node_run`
+  caller is keyword-`node_id`-only, so the added optional provenance kwarg is
+  backward compatible.
+- Gates: `ruff check .`, `ruff format --check .`,
+  `scripts/check-suite-inventory.py` (21 suites match),
+  `scripts/check-doc-links.py` — all green.
