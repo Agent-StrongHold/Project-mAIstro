@@ -27,14 +27,15 @@ recorded below as URL-only with their owning issues.
 
 ## Canonical surfaces (primary/grouped navigation entry)
 
-22 destinations, each reachable from both the desktop icon rail and the
+23 destinations, each reachable from both the desktop icon rail and the
 narrow-screen drawer (asserted by
 `tests/e2e/navigation-coverage.spec.ts`):
 
 | Route | Surface | Nav label | Disposition (cutover plan §5/§9) | Replacement owner |
 |---|---|---|---|---|
+| `/home` | Home | Home | KEEP / default landing (Workspace Mission Control) | #1048 |
 | `/chat` | Chat | Chat | PROJECT → Workspace Agent chat | #1822 (M3-D; foundation #1037 closed) |
-| `/dashboard` | Dashboard | Dashboard | DELETE v1.0 → Workspace Home | #1048 |
+| `/dashboard` | Dashboard | Dashboard | DELETE v1.0 → Workspace Home | #1048 / retirement #2274 |
 | `/goals` | Goals | Goals | PROJECT → Goal/Run inspection | #65/#1036 |
 | `/design-studio` | Design Studio | Design Studio | KEEP / PROJECT v1.0 (blocker) | #95, #286, #773 |
 | `/dags` | DAG Builder | DAG Builder | PROJECT → Graph editing over canonical Graph | #65/#1036 |
@@ -92,7 +93,7 @@ One canonical entry per destination; no duplicate menu items.
 
 | Route | Resolves to | Kind |
 |---|---|---|
-| `/` | `/dashboard` (index `Navigate replace`) | default-route redirect |
+| `/` | `/home` (index `Navigate replace`; #1048) | default-route redirect |
 | `/optimization-inbox` | `/optimizer` (#1417: alias converted from a duplicate render to a redirect) | alias redirect |
 | `/cli/canvas` | `/design-studio` (#95 compatibility redirect; asserted by `tests/e2e/design-studio-truthfulness.spec.ts`) | compatibility redirect |
 
