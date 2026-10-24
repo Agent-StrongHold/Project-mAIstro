@@ -24,10 +24,11 @@ Both fail against the regression they name: with the rollback seam removed,
 the first test retains the user entry and the second accumulates one entry
 per failed turn. The delta was measured with
 `check-suite-inventory.py --suite packages/maistro-turing/tests` (net +2);
-the global `--update` run was refused by the gate because suites outside
-this change's scope (hive-conductor backend, rsi, parts of maistro-core)
-fail collection on this branch — that breakage predates and is independent
-of this change, which touches only the turing package and its tests.
+the global gate was re-run over the repaired branch (develop content fully
+restored) and passes — 21 suites, 34161 collected node IDs, including this
+suite's 227 — so the delta rides the ordinary baseline-plus-delta contract
+rather than a collection exception. This change touches only the turing
+package and its tests.
 
 Issue #9 is the M5 milestone; this change is the lane's bounded Turing
 hardening slice, not a milestone exit-condition claim.
