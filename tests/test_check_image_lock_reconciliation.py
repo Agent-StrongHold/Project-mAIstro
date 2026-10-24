@@ -435,6 +435,8 @@ def test_conditional_pin_with_multiple_marker_versions_still_names_an_unknown_br
     assert "beartype==0.22.9 or beartype==0.23.1" in out
     assert "locked, not in image" not in out
     assert "in image, not locked" not in out
+
+
 def test_member_pin_satisfies_the_contract(gate, tmp_path, monkeypatch, capsys):
     expected = _write_expected(tmp_path, "fastapi==0.142.2\n")
     _install_docker(
