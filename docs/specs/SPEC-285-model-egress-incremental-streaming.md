@@ -15,9 +15,9 @@ history:
 substrate:
   - maistro-engine#ADR-081226-6b46
   - maistro-engine#ADR-082326-5386
-implements:
-  - maistro-engine#SPEC-081226-6b46
+implements: []
 related:
+  - maistro-engine#SPEC-081226-6b46
   - maistro-engine#ADR-079
   - maistro-engine#SPEC-284
 supersedes: []
@@ -34,6 +34,7 @@ source:
   - packages/maistro-core/src/maistro/capabilities/providers/llm_gateway.py
   - packages/maistro-core/src/maistro/capabilities/model_chat.py
   - packages/hive-conductor/backend/adapters/llm_http.py
+layer: Ability
 owners:
   - '@BlakeMatthews-dev'
 ---

@@ -105,7 +105,14 @@ async def test_hive_builder_uses_container_governed_egress(
 class TestStreaming:
     """Both `stream()` branches — the two sites that had no coverage."""
 
+    @pytest.mark.contract("boundary")
     async def test_chat_completions_stream_yields_parsed_chunks(self) -> None:
+        """The one transport seam yields normalized chat.completions chunks.
+
+        Pins the boundary SPEC-285 declares: the adapter's `stream()` is the
+        approved seam -- same endpoint, same Authorization header -- and each
+        SSE `data:` event crosses it as a parsed chunk, not a buffered blob.
+        """
         seen: list[httpx.Request] = []
 
         def handler(request: httpx.Request) -> httpx.Response:
@@ -164,6 +171,7 @@ class TestStreaming:
         ):
             [c async for c in _adapter().stream(_req())]
 
+    @pytest.mark.contract("behavioral")
     async def test_stream_records_usage_on_the_governed_ledger(self) -> None:
         """The shipped streaming bridge is the governed one, and it accounts.
 
