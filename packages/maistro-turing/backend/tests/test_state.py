@@ -142,6 +142,9 @@ def test_snapshot_shape(authed_client):
     assert r.status_code == 200
     body = r.json()
     assert body["self_id"] == "turing"
+    # Provenance is explicit (#859): the snapshot names the canonical
+    # Workspace scope it was read from.
+    assert body["workspace_id"]
     assert set(body["mood"]) >= {"valence", "arousal", "focus"}
     assert set(body["drives"]) == {
         "creative_urge",
@@ -155,14 +158,17 @@ def test_snapshot_shape(authed_client):
     assert total_facets == 24
 
 
-def test_snapshot_reflects_the_calling_admins_own_mood_change(admin_client):
-    """Scoped cognitive state (#859): the caller's own view moves; nobody else's.
+def test_admin_mood_change_cannot_reach_another_users_snapshot(authed_client, admin_client):
+    """The audit's cross-user leak, now inverted into its regression test.
 
-    The pre-#859 version of this test asserted the audit's defect itself —
-    that a DIFFERENT authenticated user's snapshot reflected one admin's
-    PATCH. Cross-principal invisibility is pinned by
-    test_state_scoping.py::test_admin_mood_patch_is_invisible_to_other_principals.
+    An admin's mood PATCH edits the admin's own Workspace scope. Another
+    authenticated user's snapshot keeps the documented default mood — one
+    principal's self-model write can never surface in another's state.
     """
     admin_client.patch("/v1/admin/mood", json={"valence": -0.5})
-    body = admin_client.get("/v1/state/snapshot").json()
-    assert body["mood"]["valence"] == -0.5
+    admin_view = admin_client.get("/v1/state/snapshot").json()
+    user_view = authed_client.get("/v1/state/snapshot").json()
+
+    assert admin_view["mood"]["valence"] == -0.5
+    assert user_view["mood"]["valence"] == 0.2
+    assert admin_view["workspace_id"] != user_view["workspace_id"]

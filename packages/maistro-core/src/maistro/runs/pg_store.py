@@ -74,7 +74,7 @@ from maistro.runs.retention_scope import (
     RetentionScope,
     WorkspaceRetentionScope,
 )
-from maistro.runs.sources import SCHEDULED_FOR_KEY, occurrence_key
+from maistro.runs.sources import SCHEDULED_FOR_KEY, TASK_QUEUE_SOURCE, occurrence_key
 from maistro.runs.store import (
     DEFAULT_ARCHIVE_AFTER,
     DEFAULT_PURGE_BATCH,
@@ -520,9 +520,12 @@ class PgRunStore:
 
         Transaction-scoped advisory locks, so the caller's insert and count are
         one critical section on every replica and the locks go with the
-        transaction however it ends. Workspace before principal, always: each
-        admission takes one lock per namespace in that order, so two cannot
-        wait on each other.
+        transaction however it ends. Workspace before principal before system,
+        always: each admission takes one lock per namespace in that order, so
+        two cannot wait on each other. The system lock is taken only when a
+        system-wide ceiling is configured — the scoped ceilings already
+        serialize their own namespaces, and a deployment that did not opt into
+        the global ceiling should not queue behind one.
         """
         if run.parent_run_id is not None:
             return
@@ -536,6 +539,12 @@ class PgRunStore:
                 "SELECT pg_advisory_xact_lock($1, $2)",
                 _PRINCIPAL_ADMISSION_LOCK,
                 _admission_lock_key(run.actor_principal_id),
+            )
+        if self._concurrency_limits.system is not None:
+            await conn.execute(
+                "SELECT pg_advisory_xact_lock($1, $2)",
+                _SYSTEM_ADMISSION_LOCK,
+                0,
             )
 
     async def _admit_root(self, conn: Any, run: Run) -> None:
@@ -551,6 +560,7 @@ class PgRunStore:
         self._concurrency_limits.check(
             workspace_active=int(row["workspace_active"]) - 1,
             principal_active=int(row["principal_active"]) - 1 if principal is not None else None,
+            system_active=int(row["system_active"]) - 1,
         )
 
     async def purge_expired_runs(
@@ -1123,6 +1133,26 @@ class PgRunStore:
             )
         return Run.model_validate(payload) if payload is not None else None
 
+    async def find_run_by_task_id(
+        self,
+        task_id: str,
+        *,
+        admission_source: str | None = TASK_QUEUE_SOURCE,
+    ) -> Run | None:
+        # Through `_payload`, like `find_run_by_effect`: an archived Run must
+        # resolve for a receipt read exactly as `get_run` resolves it, not 404
+        # once the retention sweep touches it.
+        payload = await self._payload(
+            """SELECT run_id, payload, archive_key FROM canonical_runs
+               WHERE payload -> 'provenance' ->> 'task_id' = $1
+                 AND ($2::text IS NULL
+                      OR payload -> 'provenance' ->> 'admission_source' = $2)
+               LIMIT 1""",
+            task_id,
+            admission_source,
+        )
+        return Run.model_validate(payload) if payload is not None else None
+
     async def attach_delegation_receipt(
         self, run_id: str, task_id: str, *, target_agent: str | None = None
     ) -> Run:
@@ -1297,7 +1327,13 @@ class PgRunStore:
 
     # ── NodeRun ───────────────────────────────────────────────────
 
-    async def create_node_run(self, run_id: str, *, node_id: str) -> NodeRun:
+    async def create_node_run(
+        self,
+        run_id: str,
+        *,
+        node_id: str,
+        provenance: dict[str, Any] | None = None,
+    ) -> NodeRun:
         async with self._pool.acquire() as conn, conn.transaction():
             # The parent Run is locked before its ordinals are read, so two
             # concurrent creators under one Run cannot both allocate the same
@@ -1316,7 +1352,12 @@ class PgRunStore:
                     run_id,
                 )
             ) + 1
-            node_run = NodeRun(run_id=run_id, node_id=node_id, ordinal=ordinal)
+            node_run = NodeRun(
+                run_id=run_id,
+                node_id=node_id,
+                ordinal=ordinal,
+                provenance=dict(provenance or {}),
+            )
             await conn.execute(
                 """INSERT INTO canonical_node_runs
                    (node_run_id, run_id, node_id, ordinal, status, payload)
@@ -1390,6 +1431,23 @@ class PgRunStore:
                 error=error,
                 accepted_outcome=accepted_outcome,
             )
+            await self._write(conn, "canonical_node_runs", "node_run_id", node_run_id, updated)
+        return updated
+
+    async def record_node_run_provenance(
+        self, node_run_id: str, *, patch: dict[str, Any]
+    ) -> NodeRun:
+        """Merge ``patch`` into a NodeRun's provenance (top-level keys)."""
+        async with self._pool.acquire() as conn, conn.transaction():
+            node_run = NodeRun.model_validate(await self._peek_node_run(conn, node_run_id))
+            # Same lock order as `transition_node_run` right below: parent Run
+            # first, then the NodeRun row, so a wave provenance write cannot
+            # deadlock against a sibling transition or a Run cascade.
+            await self._refuse_under_terminal_run(conn, node_run)
+            node_run = NodeRun.model_validate(
+                await self._locked(conn, "canonical_node_runs", "node_run_id", node_run_id)
+            )
+            updated = node_run.model_copy(update={"provenance": {**node_run.provenance, **patch}})
             await self._write(conn, "canonical_node_runs", "node_run_id", node_run_id, updated)
         return updated
 
@@ -1905,16 +1963,21 @@ _NOT_FOUND: dict[str, type[Exception]] = {
 
 #: `pg_advisory_xact_lock(key1, key2)` namespaces for root-Run admission.
 #: Separate namespaces so a Workspace and a principal that hash alike never
-#: share a lock, which is what keeps the lock order acyclic.
+#: share a lock, which is what keeps the lock order acyclic. The system
+#: namespace exists only when a system-wide ceiling is configured: unlike the
+#: scoped locks, one deployment shares the single key `0`, so admissions into
+#: unrelated Workspaces serialize behind the one count they can both move.
 _WORKSPACE_ADMISSION_LOCK = 0x72617721  # "raw!"
 _PRINCIPAL_ADMISSION_LOCK = 0x72617021  # "rap!"
+_SYSTEM_ADMISSION_LOCK = 0x72617321  # "ras!"
 
 
 #: Literal statuses rather than a parameter, so the planner can prove the
 #: predicate implies the partial `ix_canonical_runs_live` index (migration 012).
 _ACTIVE_ROOT_COUNTS_SQL = """SELECT
        COUNT(*) FILTER (WHERE workspace_id = $1) AS workspace_active,
-       COUNT(*) FILTER (WHERE payload->>'actor_principal_id' = $2) AS principal_active
+       COUNT(*) FILTER (WHERE payload->>'actor_principal_id' = $2) AS principal_active,
+       COUNT(*) AS system_active
      FROM canonical_runs
     WHERE parent_run_id IS NULL AND status IN ({statuses})""".format(  # nosec B608
     statuses=", ".join(f"'{status}'" for status in ACTIVE_ROOT_STATUS_VALUES)
