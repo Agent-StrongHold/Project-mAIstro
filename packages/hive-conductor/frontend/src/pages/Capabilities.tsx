@@ -15,9 +15,10 @@ import { EmptyState, LoadingSpinner, PageHeader, useToast } from "../components/
 /**
  * Unified Capabilities surface (#2273 / conductor-407).
  *
- * Reads/writes only the public `/v1/capabilities*` APIs — the same authority
- * the CLI and any TUI use. Agents / MCP / Skills / Topology remain registered
- * for deep links until a follow-up deletes them; this page is the primary nav.
+ * Reads/writes only the public capabilities router (list / discover / slot
+ * enable) — the same authority the CLI and any TUI use. Agents / MCP / Skills
+ * / Topology remain registered for deep links until a follow-up deletes them;
+ * this page is the primary nav.
  */
 export default function CapabilitiesPage() {
   const toast = useToast();
