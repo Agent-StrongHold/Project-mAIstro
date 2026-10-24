@@ -7,8 +7,6 @@ from typing import Any
 import pytest
 from services.dag_execution_scope import DagExecutionScope
 
-from maistro.graph.durable_runs import InMemoryDurableRunStore
-
 
 def _safe_node(node_id: str) -> dict[str, Any]:
     return {
@@ -98,7 +96,9 @@ async def test_arbitrary_legacy_condition_cannot_silently_skip_successor(
         },
         llm_builder=_fake_llm_builder,
         scope=DagExecutionScope(
-            workspace_id="test-workspace", project_id="test-project", user_id="test-user"
+            workspace_id="test-workspace",
+            project_id=canonical_graph_spine.project_id,
+            user_id="test-user",
         ),
     )
 

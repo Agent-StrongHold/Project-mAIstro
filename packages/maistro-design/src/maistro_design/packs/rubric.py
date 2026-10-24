@@ -50,6 +50,9 @@ class GoalRubricCatalog(BaseModel):
     goal_id: str = Field(min_length=1)
     goal_revision: int = Field(ge=1)
     pack_id: PackId  # provenance of the dimension defaults, not an ownership claim
+    #: The pack release these defaults came from (M9-F3, #968). Provenance
+    #: only — a later pack upgrade never rewrites an instantiated catalog.
+    pack_version: str = Field(min_length=1, pattern=r"^\d+\.\d+\.\d+$")
     dimensions: tuple[GoalRubricDimension, ...] = Field(min_length=1)
 
     @classmethod
@@ -57,6 +60,7 @@ class GoalRubricCatalog(BaseModel):
         cls,
         *,
         pack_id: PackId,
+        pack_version: str,
         dimensions: tuple[RubricDimension, ...],
         goal_id: str,
         goal_revision: int,
@@ -75,6 +79,7 @@ class GoalRubricCatalog(BaseModel):
             goal_id=canonical_goal_id,
             goal_revision=goal_revision,
             pack_id=pack_id,
+            pack_version=pack_version,
             dimensions=tuple(
                 GoalRubricDimension(
                     dimension_id=dimension.dimension_id,

@@ -35,6 +35,11 @@ from maistro.observability.middleware import RequestIDMiddleware
 from maistro.runs.store_boundary import RunStoreBoundary
 from maistro.security.outbound import configure_outbound_policy, configured_endpoints
 from maistro.tasks.execution import TaskAttemptExecutor
+from maistro.tasks.http_contract import (
+    IDEMPOTENCY_KEY_HEADER,
+    WORKSPACE_ID_HEADER,
+    WORKSPACE_SCOPE_SIGNATURE_HEADER,
+)
 from maistro.tasks.models import TaskCreate
 from maistro.tasks.progress_webhook import ProgressWebhookNotifier
 from maistro.tasks.queue import configure_task_queue, get_task_queue, reset_task_queue
@@ -346,6 +351,45 @@ def _model_bindings() -> list[ModelBindingConfig]:
     return list(yaml_config.model_bindings)
 
 
+def _load_operator_yaml() -> None:
+    """Load the operator YAML inside this worker process (#1880).
+
+    `maistro_server.entrypoint.main` runs the migrations and then `os.execvp`s
+    uvicorn, so the parent that may have read `maistro.yaml` no longer exists
+    when the worker starts: `load_yaml_config`'s process-wide singleton dies
+    with the exec'd-away interpreter, and every reader below —
+    `_validate_startup`'s `_router_api_key`, then `_agent_config`'s
+    `_security_config` and `_model_bindings` on the way into
+    `create_container` — would see `None` and silently ship the fail-closed
+    defaults no matter what the operator declared. Loading here, before those
+    consumers, is what makes the declarations reach the Container the worker
+    actually builds.
+
+    A file that parses but violates the schema — and a malformed one — must
+    stop startup rather than degrade into those defaults, so the loader's
+    exception is logged sanitized and re-raised without its cause: parser
+    errors embed raw file contents (`_load_raw_yaml`'s "Invalid YAML in ...")
+    and a type-invalid value echoes the operator's input, so the event carries
+    only the config path and the exception type, and `from None` cuts the
+    chained traceback that would otherwise publish them to stderr.
+    """
+    config_path = os.getenv("MAISTRO_CONFIG", "config/maistro.yaml")
+    try:
+        load_yaml_config()
+    except Exception as exc:
+        logger.error(
+            "operator_yaml_config_invalid",
+            config_path=config_path,
+            reason=type(exc).__name__,
+        )
+        msg = (
+            f"Operator YAML configuration is invalid; refusing to start "
+            f"({config_path}). See the operator_yaml_config_invalid startup "
+            f"log event."
+        )
+        raise RuntimeError(msg) from None
+
+
 async def _build_container(settings: Settings, pg_pool: Any) -> tuple[Any, ModelChatEgress]:
     """The process's one Container and the governed egress it comes with.
 
@@ -385,7 +429,7 @@ async def _build_container(settings: Settings, pg_pool: Any) -> tuple[Any, Model
         router=container.llm_router,
         endpoint=GatewayEndpoint(
             base_url=settings.litellm.base_url,
-            api_key=settings.litellm.master_key,
+            api_key=_gateway_credential(settings),
         ),
     )
     # `Container.agents` is typed `dict[str, Agent]`, and `Agent` is a concrete
@@ -520,6 +564,12 @@ async def _runtime_lifespan(app: FastAPI) -> AsyncIterator[None]:
     # The handles these APIs return must resolve against the exact stores the
     # Container selected, not lookalike stores reconstructed by the server.
     runs.configure_run_store(run_store)
+    # Route visibility answers through the same Workspace-membership boundary
+    # the Container's stores back (#1152): missing and foreign ids fail closed
+    # identically at the one seam.
+    runs.configure_run_boundary(
+        RunStoreBoundary(run_store, container.workspace_store, container.project_scope_store)
+    )
     a2a.configure_a2a_admission(
         run_store,
         container.project_scope_store,
@@ -599,6 +649,7 @@ async def _runtime_lifespan(app: FastAPI) -> AsyncIterator[None]:
         await _drain_queue_singleton()
         reset_task_queue()
         runs.configure_run_store(None)
+        runs.configure_run_boundary(None)
         a2a.configure_a2a_admission(None, None)
         workspaces.configure_workspace_store(None)
 

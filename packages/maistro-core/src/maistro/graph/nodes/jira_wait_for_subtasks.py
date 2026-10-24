@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar
 
@@ -98,23 +99,18 @@ class JiraWaitForSubtasksNode(BaseNode[WaitForSubtasksIn, WaitForSubtasksOut]):
                 f"poll_interval_seconds ({inputs.poll_interval_seconds}) or the "
                 "deadline passes before the first poll can re-check"
             )
-        # Check the parent's subtasks right now. If they already match, we
-        # complete on first reach; otherwise we pause until the next poll.
-        statuses = await _fetch_subtask_statuses(inputs)
-        if not statuses:
-            # No subtasks — completed.
-            return WaitForSubtasksOut(
-                parent_key=inputs.parent_key,
-                subtask_keys=[],
-                statuses={},
-                all_match=True,
-                timed_out=False,
-            )
-
-        target_lower = {s.lower() for s in inputs.target_statuses}
-        all_match = all(s.lower() in target_lower for s in statuses.values())
-
-        if all_match:
+        binding = await self._authorized_binding(inputs, ctx)
+        poll_number = int(resumed_pause(ctx).get("poll_number", 0) or 0)
+        statuses = await _fetch_subtask_statuses(
+            inputs,
+            ctx=ctx,
+            effects=self._effects,
+            binding=binding,
+            poll_number=poll_number,
+        )
+        if not statuses or _all_match(statuses, inputs.target_statuses):
+            # No subtasks is vacuously satisfied: there is nothing left to wait
+            # for, and parking forever on an empty parent is the wrong answer.
             return WaitForSubtasksOut(
                 parent_key=inputs.parent_key,
                 subtask_keys=list(statuses.keys()),
@@ -122,57 +118,50 @@ class JiraWaitForSubtasksNode(BaseNode[WaitForSubtasksIn, WaitForSubtasksOut]):
                 all_match=True,
                 timed_out=False,
             )
+        return _wait_again_or_time_out(inputs, statuses=statuses, poll_number=poll_number, ctx=ctx)
 
-        # Have we exceeded the overall timeout?
-        first_seen = _first_seen(ctx)
-        now = now_utc()
-        if first_seen is None:
-            # First reach — store start timestamp, pause for the poll interval.
-            pause_until(
-                PAUSE_WAITING_ON_JIRA_SUBTASKS,
-                resume_at=now + timedelta(seconds=inputs.poll_interval_seconds),
-                metadata={
-                    "parent_key": inputs.parent_key,
-                    "current_statuses": statuses,
-                    "first_seen": now.isoformat(),
-                    "deadline": (now + timedelta(seconds=inputs.timeout_seconds)).isoformat(),
-                },
+    async def _authorized_binding(self, inputs: WaitForSubtasksIn, ctx: NodeContext) -> Any:
+        """The Binding this poll runs under, refused before any Jira request."""
+
+        if not inputs.binding_id.strip():
+            raise BindingNotFound(
+                "jira.wait_for_subtasks requires a pre-authorized Binding before any request"
             )
-        timed_out = _resume_wait(inputs, ctx, statuses, first_seen, now)
-        if timed_out is not None:
-            return timed_out
-        return WaitForSubtasksOut(parent_key=inputs.parent_key)
+        return await self._effects.bindings.resolve(
+            inputs.binding_id,
+            workspace_id=str(ctx.workspace_id or ""),
+            project_id=str(ctx.project_id or ""),
+            node_id=ctx.node_id,
+            capability=JIRA_SUBTASKS_CAPABILITY,
+        )
 
 
-def _resume_wait(
+def _all_match(statuses: dict[str, str], target_statuses: Sequence[str]) -> bool:
+    """Whether every subtask has reached one of the target statuses."""
+
+    target_lower = {status.lower() for status in target_statuses}
+    return all(status.lower() in target_lower for status in statuses.values())
+
+
+def _wait_again_or_time_out(
     inputs: WaitForSubtasksIn,
-    ctx: NodeContext,
+    *,
     statuses: dict[str, str],
-    first_seen: Any,
-    now: datetime,
-) -> WaitForSubtasksOut | None:
-    """Resume path: repair a corrupt anchor, answer a passed deadline, or pause.
+    poll_number: int,
+    ctx: NodeContext,
+) -> WaitForSubtasksOut:
+    """Park for another interval, or report the deadline as reached.
 
-    Returns a timed-out result when the deadline measured from the anchor has
-    passed; otherwise pauses for another poll interval (raising through
-    `pause_until`) and the caller's fallthrough return is unreachable.
+    The deadline runs from the *first* time this node saw unmatched subtasks,
+    carried across pauses, so a resumed Run does not restart the clock and wait
+    forever one interval at a time.
     """
-    first = _parse_first_seen(first_seen)
-    repair: dict[str, Any] | None = None
-    if first is None:
-        # Corrupt durable timing evidence. The old behaviour substituted `now`
-        # silently *and re-persisted the corrupt string*, so every evaluation
-        # reset the elapsed clock and the deadline could never arrive. The
-        # repair below is explicit and one-shot: the pause carries the
-        # canonical timestamp plus what it replaced, so the next evaluation
-        # reads a parseable anchor instead of restarting the clock again.
-        first = now
-        repair = {
-            "reason": "unparseable_first_seen",
-            "replaced": first_seen if isinstance(first_seen, str) else repr(first_seen),
-            "repaired_at": now.isoformat(),
-        }
-    if (now - first).total_seconds() >= inputs.timeout_seconds:
+
+    raw_first_seen = _first_seen(ctx)
+    now = now_utc()
+    anchor, repair = _resolve_anchor(raw_first_seen, now)
+
+    if raw_first_seen is not None and (now - anchor).total_seconds() >= inputs.timeout_seconds:
         return WaitForSubtasksOut(
             parent_key=inputs.parent_key,
             subtask_keys=list(statuses.keys()),
@@ -181,34 +170,51 @@ def _resume_wait(
             timed_out=True,
         )
 
-    # Still waiting — pause for another poll interval, carrying the canonical
-    # anchor forward (and the repair evidence, exactly once).
-    pause_metadata: dict[str, Any] = {
+    metadata: dict[str, Any] = {
         "parent_key": inputs.parent_key,
         "current_statuses": statuses,
-        "first_seen": first.isoformat(),
+        "first_seen": anchor.isoformat(),
+        "poll_number": poll_number + 1,
     }
+    if raw_first_seen is None:
+        metadata["deadline"] = (now + timedelta(seconds=inputs.timeout_seconds)).isoformat()
     if repair is not None:
-        pause_metadata["first_seen_repair"] = repair
+        metadata["first_seen_repair"] = repair
         # Converge the legacy sidecar key onto the same canonical value so a
         # later resume that reads the fallback (no carried pause) finds the
         # repaired anchor, not the corrupt string that caused this.
         if ctx.metadata is not None:
-            ctx.metadata[f"wait_first_seen:{ctx.node_id}"] = first.isoformat()
+            ctx.metadata[f"wait_first_seen:{ctx.node_id}"] = anchor.isoformat()
     pause_until(
         PAUSE_WAITING_ON_JIRA_SUBTASKS,
         resume_at=now + timedelta(seconds=inputs.poll_interval_seconds),
-        metadata=pause_metadata,
+        metadata=metadata,
     )
+    return WaitForSubtasksOut(parent_key=inputs.parent_key)
 
 
-def _first_seen(ctx: NodeContext) -> Any:
-    """Read the first-reach timestamp carried by this node's previous pause."""
+def _resolve_anchor(raw_first_seen: Any, now: datetime) -> tuple[datetime, dict[str, Any] | None]:
+    """The elapsed-time anchor to measure against, and repair evidence if any.
 
-    carried = resumed_pause(ctx).get("first_seen")
-    if carried:
-        return carried
-    return (ctx.metadata or {}).get(f"wait_first_seen:{ctx.node_id}")
+    A missing anchor (true first reach) or an unparseable one both resolve to
+    `now`, but only the latter is a repair: the old behaviour substituted
+    `now` silently *and re-persisted the corrupt string*, so every evaluation
+    reset the elapsed clock and the deadline could never arrive. The repair
+    recorded here is explicit and one-shot — the pause carries the canonical
+    timestamp plus what it replaced, so the next evaluation reads a parseable
+    anchor instead of restarting the clock again.
+    """
+    if raw_first_seen is None:
+        return now, None
+    parsed = _parse_first_seen(raw_first_seen)
+    if parsed is not None:
+        return parsed, None
+    repair = {
+        "reason": "unparseable_first_seen",
+        "replaced": raw_first_seen if isinstance(raw_first_seen, str) else repr(raw_first_seen),
+        "repaired_at": now.isoformat(),
+    }
+    return now, repair
 
 
 def _parse_first_seen(value: Any) -> datetime | None:
@@ -234,13 +240,33 @@ def _parse_first_seen(value: Any) -> datetime | None:
     return parsed.astimezone(UTC)
 
 
-async def _fetch_subtask_statuses(inputs: WaitForSubtasksIn) -> dict[str, str]:
-    """Return {subtask_key: status_name} for the parent issue."""
-    base = inputs.base_url.rstrip("/")
-    api_path = (
-        f"/rest/api/2/issue/{inputs.parent_key}"
-        if inputs.flavor == "server"
-        else f"/rest/api/3/issue/{inputs.parent_key}"
+def _first_seen(ctx: NodeContext) -> Any:
+    """Read the first-reach timestamp carried by this node's previous pause."""
+
+    carried = resumed_pause(ctx).get("first_seen")
+    if carried:
+        return carried
+    return (ctx.metadata or {}).get(f"wait_first_seen:{ctx.node_id}")
+
+
+async def _fetch_subtask_statuses(
+    inputs: WaitForSubtasksIn,
+    *,
+    ctx: NodeContext,
+    effects: CapabilityEffectContext,
+    binding: Any,
+    poll_number: int,
+) -> dict[str, str]:
+    invocation = await invoke_jira_poll(
+        effects,
+        binding=binding,
+        run_id=ctx.run_id,
+        node_run_id=ctx.node_run_id,
+        attempt_id=ctx.attempt_id,
+        effect_key=f"jira.wait_for_subtasks.status:{inputs.parent_key}:{poll_number}",
+        request=JiraSubtasksRequest(parent_key=inputs.parent_key),
+        timeout_s=inputs.timeout_s,
+        actor_id=str(ctx.user_id or ""),
     )
     data = invocation.result if isinstance(invocation.result, dict) else {}
     subtasks = (data.get("fields") or {}).get("subtasks") or []

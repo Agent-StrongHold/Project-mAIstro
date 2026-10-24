@@ -19,9 +19,12 @@ from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 from maistro.memory.exposure import Actor
+from maistro.memory.learnings.evidence import DEFAULT_MIN_PROMOTION_CONFIDENCE
 from maistro.memory.vectors import require_matching_dimension
 
 if TYPE_CHECKING:
+    from datetime import datetime
+
     from maistro.memory.learnings.lifecycle import StageTransition
     from maistro.persistence.pg_learnings import PgLearningStore
     from maistro.protocols.embeddings import EmbeddingClient

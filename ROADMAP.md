@@ -58,7 +58,7 @@ Every roadmap and backlog item is tagged by the part of the product it belongs t
 
 ## v1.0 release contract (ratified 2026-10-01)
 
-Ship **maistro-engine v1.0.0** as a stable library **and** a **Workspaces** product (`packages/hive-conductor`) that **deletes** legacy Conductor routes — not a rebrand. Item detail: [`BACKLOG.md`](BACKLOG.md) `[conductor-402]`–`[conductor-413]`, `[engine-112]`–`[engine-115]`. Cutover mechanics: [`docs/architecture/WORKSPACE-CUTOVER-PLAN.md`](docs/architecture/WORKSPACE-CUTOVER-PLAN.md).
+Ship **maistro-engine v1.0.0** as a stable library **and** a **Workspaces** product (`packages/hive-conductor`) that **deletes** legacy Conductor routes — not a rebrand. Item detail: [`BACKLOG.md`](BACKLOG.md) `[conductor-402]`–`[conductor-413]`, `[engine-112]`–`[engine-115]`. Cutover mechanics: [`docs/architecture/WORKSPACE-CUTOVER-PLAN.md`](docs/architecture/WORKSPACE-CUTOVER-PLAN.md). Per-feature Workspace-UI/API/CLI availability and owned gaps: [`docs/architecture/FEATURE-PARITY-MATRIX.md`](docs/architecture/FEATURE-PARITY-MATRIX.md) (#1874) — no parity or gap-completion claim counts without its executable evidence.
 
 ### Release blockers
 
