@@ -87,6 +87,15 @@ dependencies = [
     # with the image installing from uv.lock (#348), this declaration is what
     # puts msgpack in the locked closure the image actually installs.
     "msgpack>=1.2.1,<2",
+    # Not imported by backend/ either: a `sqlite:` DATABASE_URL (the homelab
+    # single-instance mode requirements.txt documents, and the compose test
+    # harness pins for the #290 scheduler proofs) makes create_container()
+    # put maistro.persistence's SQLite stores on core's `sqlite` extra, which
+    # imports aiosqlite. develop's #348 image installs the locked closure of
+    # this manifest instead of backend/requirements.txt, so the declaration
+    # below is what keeps that shipped mode bootable — without it the roster
+    # bridge fails closed and /health/ready serves 503 forever.
+    "aiosqlite>=0.20,<1",
 ]
 
 # `backend/adapters/telemetry_langfuse.py` exports spans to a Langfuse OTLP

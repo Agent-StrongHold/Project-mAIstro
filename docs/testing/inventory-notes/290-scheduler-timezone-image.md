@@ -134,3 +134,74 @@ CLI build of the same Dockerfile at tag `hive-conductor:290-reverify`):
   the two #290 probes, matching `test_api.py`'s existing pattern).
   `scripts/check-suite-inventory.py`: ok, 17 suites match the recorded
   inventory.
+
+## Re-verification after the second develop sync + image repair (2026-10-24)
+
+This round resolved the preserved develop-sync conflict (two merges:
+`e20e9f52` resolved in `b6dd05f66`, then `origin/develop` `4de7e906` in
+`f48deb0a3`) and re-proved every acceptance criterion against the merged
+tree. The sync exposed two real defects in the container proof, both fixed
+here:
+
+1. **The shipped image lost the sqlite `DATABASE_URL` mode.** develop's
+   #348 image rewrite installs `uv export --locked --package
+   hive-conductor` instead of `backend/requirements.txt`, and aiosqlite
+   lives only in core's `sqlite` extra — so the harness's
+   `DATABASE_URL=sqlite:////tmp/conductor/canonical.sqlite3` (and the
+   homelab single-instance mode requirements.txt documents) booted with
+   `No module named 'aiosqlite'`, the roster bridge failed closed (#37),
+   and `/health/ready` served 503 forever. Repair: `aiosqlite>=0.20,<1`
+   declared in `packages/hive-conductor/pyproject.toml` (same
+   carried-for-the-deployment precedent as msgpack) and locked
+   (`uv.lock` delta is exactly that one dependency).
+2. **The harness handed the compose-secrets gate a key-shaped literal.**
+   `MAISTRO_ROUTER_API_KEY=test-harness-not-a-real-key` fails
+   `scripts/check-compose-secrets.py` (#367) — and had since it landed in
+   3920ad7. The profile now requires the variable
+   (`${MAISTRO_ROUTER_API_KEY:?...}` — refuse-to-start, the shape the gate
+   blesses; verified: `compose config` without the var exits 1 printing
+   the actionable message), and the CI `hive-conductor-e2e` job exports a
+   throwaway stub at the job level.
+
+Re-verified against the rebuilt merged image, image id
+`sha256:d4673dfbeb3d2ee2d9bdbef0f0c01c7143f6744b72465ff591816c8018b92bfe`
+(`hive-conductor-hive:latest`, compose-built; `tzdata==2026.3`, aiosqlite
+present, base `python:3.13.16-slim-bookworm` digest-pinned):
+
+- Build-time tz smoke green (`tz smoke ok: UTC/America/New_York/
+  Europe/Berlin via /app/venv/lib/python3.13/site-packages/tzdata/zoneinfo`).
+  Negative proof: moving the wheel's `zoneinfo` dir away inside the built
+  image makes that smoke exit 1 and `ZoneInfo("UTC")` raise
+  `ZoneInfoNotFoundError` — the wheel is the only zone source, so the
+  Docker dependency cannot be removed without a failing smoke test.
+- CI-exact compose run
+  (`docker compose -f docker-compose.test.yml --profile test up --build
+  --abort-on-container-exit --exit-code-from api-tests api-tests`):
+  **14 passed / 14 skipped**, including UTC `*/5` natural fire (cursor
+  advanced by the tick alone), Berlin 04:30 wall time + season offset +
+  exact UTC instant against the api-tests image's own pinned wheel,
+  invalid-zone 422s, and `/health` tz/scheduler pins. Restart phase
+  (`start hive`, wait healthy, `SCHED_TZ_AFTER_RESTART=1 -k
+  restart_recovery`): **1 passed** — schedules and cursors survived, the
+  new process recomputed `next_run`, scheduler healthy. (Local runs
+  publish hive on 127.0.0.1:8102 via a /tmp port override: the developer
+  stack owns 127.0.0.1:8101. CI is unaffected — the publish is host-side
+  only.)
+- Timezone database source inside the image (required verification #4),
+  read from the live post-restart container's `/health`:
+  `tzdata-wheel:/app/venv/lib/python3.13/site-packages/tzdata/zoneinfo`.
+- Broken-tz boot (`PYTHONTZPATH=/nonexistent/tzdata`):
+  `/health` `degraded=true`, `tz_database.status=unavailable` with the
+  diagnostic naming the env var and the fix ("reinstall it (pip install
+  tzdata) or rebuild the image"); `/health/ready` reports
+  `checks.tz_database=false` and carries the same diagnostic in
+  `warnings` — loud, not silently healthy.
+- Backend suite on the merged tree: **3957 passed, 26 skipped**
+  (`packages/hive-conductor/backend/tests`), including the 13
+  `test_scheduler_timezone_health.py` pins. Gates: `ruff check .` and
+  `ruff format --check .` clean; `check-suite-inventory.py` ok (21
+  suites, no delta — this round adds no tests); `check-compose-secrets`
+  ok (9 profiles); `check-compose-resources`, `check-build-context`,
+  `check-dependency-namespaces`, `check-backlog-consistency`,
+  `check-doc-links` ok; CI-exact mypy (`packages/*/src`, 1001 files) no
+  issues; `tests/test_check_compose_secrets.py` 81 passed.
