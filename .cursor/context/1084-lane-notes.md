@@ -1,8 +1,8 @@
 ---
 lane: L1084
 issue: "#1084 [M1-D2][#56] Converge shipped Hive chat and Agent model egress onto canonical Provider/Binding/Invocation"
-round: "implement+repair, 2026-10-24 (SPEC-285 incremental streaming)"
-head: ee063fde9 (merge of origin/develop e20e9f52 into auto-1084 @ bfba2d4b9)
+round: "verify+repair, 2026-10-25 (pyright ratchet + fb416cf38 auto-close reword)"
+head: 849f134d (tip of auto-1084; tree-identical to pre-reword efed9c308)
 ---
 
 # 1084 lane notes (read before touching this branch)
@@ -17,9 +17,11 @@ head: ee063fde9 (merge of origin/develop e20e9f52 into auto-1084 @ bfba2d4b9)
 - The 2026-10-24 repair round resolves the NEEDS-DEEP-REVIEW streaming item:
   SPEC-285 (docs/specs/) specifies the narrow on_chunk observer seam, the
   gateway pumps chunks live, stream_chunks bridges them through a queue, and
-  streamed calls now record usage from the terminal usage chunk. reachability
-  stays red on admission_identity — verified identical on the pre-repair head,
-  still a pre-existing base condition.
+  streamed calls now record usage from the terminal usage chunk.
+- Reachability is GREEN (supersedes the earlier "stays red on
+  admission_identity" note in this file): `check-reachability.py` exits 0 at
+  this head (1462 modules, 149 unreachable, all ledgered), and the
+  `Quality / Reachability` check-run is success on PR #2296.
 
 ## Ratchet traps hit this round (do not rediscover)
 - radon: new/moved blocks must stay grade B; execute_model_chat and
@@ -35,10 +37,9 @@ head: ee063fde9 (merge of origin/develop e20e9f52 into auto-1084 @ bfba2d4b9)
   llm_gateway functions means rekeying both, dispositions unchanged.
 - suite inventory: note is docs/testing/inventory-notes/1084-model-egress-
   convergence.md (core +4, server +1, hive +2 vs develop).
-- reachability is RED on pure origin/develop too
-  (maistro.runs.admission_identity, the inactive #1851 leaf; see its module
-  docstring). Not ours; fixing it needs a reachability-baseline entry — a
-  ledger edit outside this lane.
+- reachability was RED on older heads (maistro.runs.admission_identity, the
+  inactive #1851 leaf) but is now ledgered — the gate exits 0 on this branch
+  and on origin/develop; do not re-litigate it here.
 
 ## 2026-10-24 CI-repair round (head ab0abeba3 -> bc3841989)
 
@@ -101,3 +102,37 @@ head: ee063fde9 (merge of origin/develop e20e9f52 into auto-1084 @ bfba2d4b9)
   (1302==1302), check-model-egress.py (16 physical callers, no expansion),
   check-design-model-egress.py, check-promotion-surface.py,
   check_direct_effects.py (51 sites dispositioned).
+
+## 2026-10-25 verify+repair round (reword 90bd607b, tip 849f134d)
+
+- Named merge-queue failure `Quality / Pyright` was repaired at efed9c308
+  (11 pyright errors vs baseline 21) and re-proven twice: locally with CI's
+  exact env/command (`uv sync --locked --all-extras`, `uv pip install -e
+  packages/maistro-evolve`, `uv pip install pyright` 1.1.414,
+  `pyright --outputjson packages/maistro-core/src` ->
+  `scripts/check-pyright-report.py pyright.json --baseline 21 --exit-code 1`
+  = gate exit 0) and in the captured check-runs at efed9c308 (success).
+- BLOCKING finding repaired: the lane-authored merge commit fb416cf38 said
+  "resolve #1824" — a GitHub auto-close keyword targeting the OPEN sibling
+  issue #1824; it would have closed #1824 when PR #2296 lands. Reworded to
+  "conflict resolution for #1824 x #1084 adapter collision (no auto-close)".
+- How the reword was done (do NOT redo with plain `git filter-branch --
+  fb416cf38^..HEAD` — that range walks develop-side commits merged in AFTER
+  fb416cf38^ and re-hashes them, duplicating develop history at merge time;
+  merge-base fell to e20e9f52 in a first attempt). Instead the 16 commits on
+  HEAD's first-parent chain from fb416cf38 to efed9c308 were rebuilt with
+  `git commit-tree`, preserving trees/authors/committers/dates/messages byte
+  for byte except the one subject line. New tip 849f134d: tree identical to
+  efed9c308 (empty `git diff`), develop-side parents (4de7e906d, b1c89cdbc,
+  ffc27cc43, db4d3eb09) untouched, `git merge-base HEAD origin/develop` =
+  b1c89cdbc.
+- RESIDUAL: the reword rewrote commit hashes, so local auto-1084 (849f134d)
+  and the remote PR #2296 head (still efed9c308) have diverged. The driver
+  must force-push this branch before merge; the PR diff/tree is unchanged.
+- All gates re-run green at the reworded head (same tree as efed9c308):
+  ruff check + format, pyright ratchet (11<=21), vulture CI args
+  (1297==1297), radon (127==127), reachability exit 0, wiring-reads,
+  check-model-egress, check-design-model-egress, check_direct_effects
+  (51 dispositioned); pytest: hive backend 4007 passed/26 skipped, server
+  647 passed/10 skipped, focused core egress/conductor/wiring/quota/warden
+  224 passed, root model-egress+bench 64 passed.
