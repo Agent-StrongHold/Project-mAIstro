@@ -16,6 +16,14 @@ everything_expected ... .pop() != pin`) and could never fire, so a version
 skew was misreported as a missing+extra pair. `test_version_skew_*` pins the
 fixed, name-keyed behaviour the script's own "version mismatch" heading
 documents.
+
+A second surfaced on 2026-10-24 (#1837 lane CI repair): fastmcp 4.1.3 made
+beartype the first marker-split name in the engine export, and the per-name
+collapse (last line wins) expected 0.23.1 while the python:3.13 image
+correctly installed 0.22.9 — the hosted gate failed a correct image with
+`version mismatch: beartype==0.22.9 (image) != beartype==0.23.1`.
+`test_marker_split_*` and `test_version_outside_the_marker_split_*` pin the
+name -> set-of-emitted-versions comparison.
 """
 
 from __future__ import annotations
@@ -245,6 +253,70 @@ def test_conditional_pin_version_is_checked_when_it_ships(gate, tmp_path, monkey
     assert gate.main() == 1
     out = capsys.readouterr().out
     assert "version mismatch     : secretstorage==3.6.0 (image) != secretstorage==3.5.0" in out
+
+
+# ------------------------------------------------- marker-split versions
+# fastmcp 4.1.3 resolves beartype per python_full_version, so the engine
+# export legitimately carries TWO pins for one name (`beartype==0.22.9 ;
+# python_full_version < '3.15'` and `beartype==0.23.1 ; python_full_version
+# >= '3.15'`). Collapsing the export to one pin per name made the hosted
+# 2026-10-24 gate fail a correct python:3.13 image that installed 0.22.9
+# because the last-emitted line said 0.23.1: the split, not the install,
+# chose that pair. Every emitted version of a split name must reconcile.
+
+_SPLIT = (
+    "fastapi==0.142.2\n"
+    "beartype==0.22.9 ; python_full_version < '3.15'\n"
+    "beartype==0.23.1 ; python_full_version >= '3.15'\n"
+)
+
+
+def test_parse_expected_keeps_every_marker_split_version(gate):
+    required, conditional = gate.parse_expected(_SPLIT)
+    assert required == {"fastapi==0.142.2"}
+    assert conditional == {"beartype==0.22.9", "beartype==0.23.1"}
+
+
+@pytest.mark.parametrize("installed", ["beartype==0.22.9", "beartype==0.23.1"])
+def test_marker_split_reconciles_whichever_branch_the_interpreter_chose(
+    gate, tmp_path, monkeypatch, capsys, installed
+):
+    expected = _write_expected(tmp_path, _SPLIT)
+    _install_docker(monkeypatch, gate, _Docker(_dump("fastapi==0.142.2", installed)))
+    monkeypatch.setattr(sys, "argv", _argv(expected))
+    assert gate.main() == 0
+    out = capsys.readouterr().out
+    assert "ships exactly the locked set" in out
+    assert "2 marker-conditional pin(s)" in out
+
+
+def test_marker_split_pin_absent_from_image_still_gates_nothing(
+    gate, tmp_path, monkeypatch, capsys
+):
+    # A split name is still all-conditional: no branch of it may become a
+    # missing obligation, exactly like `pywin32` on a linux image.
+    expected = _write_expected(tmp_path, _SPLIT)
+    _install_docker(monkeypatch, gate, _Docker(_dump("fastapi==0.142.2")))
+    monkeypatch.setattr(sys, "argv", _argv(expected))
+    assert gate.main() == 0
+
+
+def test_version_outside_the_marker_split_fails_naming_every_branch(
+    gate, tmp_path, monkeypatch, capsys
+):
+    expected = _write_expected(tmp_path, _SPLIT)
+    _install_docker(monkeypatch, gate, _Docker(_dump("fastapi==0.142.2", "beartype==0.24.0")))
+    monkeypatch.setattr(sys, "argv", _argv(expected))
+    assert gate.main() == 1
+    out = capsys.readouterr().out
+    assert (
+        "version mismatch     : beartype==0.24.0 (image) != "
+        "beartype==0.22.9 | beartype==0.23.1" in out
+    )
+    # The out-of-split version is a single named mismatch — not also a
+    # confusing missing/extra pair.
+    assert "locked, not in image" not in out
+    assert "in image, not locked" not in out
 
 
 def test_member_pin_satisfies_the_contract(gate, tmp_path, monkeypatch, capsys):

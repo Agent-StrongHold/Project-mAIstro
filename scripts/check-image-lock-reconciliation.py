@@ -76,23 +76,43 @@ def parse_expected(text: str) -> tuple[set[str], set[str]]:
     `secretstorage ; sys_platform == 'linux'` is correctly present. A
     conditional pin matches either way — it gates nothing; its version is
     still checked when it does ship.
+
+    One name may also resolve to SEVERAL marker-split versions — fastmcp
+    4.1.3 pins beartype as `beartype==0.22.9 ; python_full_version < '3.15'`
+    and `beartype==0.23.1 ; python_full_version >= '3.15'` — and the export
+    emits every branch. Collapsing those to one pin per name (the way a dict
+    keyed by name naturally would) makes the gate fail whichever branch the
+    image's interpreter correctly did not choose, so every emitted pin is
+    kept and the reconcile accepts any one of them (see `main`).
     """
-    pins: dict[str, str] = {}
+    required: set[str] = set()
     conditional: set[str] = set()
     for line in text.splitlines():
         stripped = line.strip()
         m = _REQ.match(stripped)
         if m:
-            name = canon(m.group(1))
-            pins[name] = f"{name}=={m.group(2)}"
+            pin = f"{canon(m.group(1))}=={m.group(2)}"
             if ";" in stripped:
-                conditional.add(name)
-    if not pins:
+                conditional.add(pin)
+            else:
+                required.add(pin)
+    if not required and not conditional:
         raise SystemExit(
             "error: expected-file contains no `name==version` pins — is it "
             "a `uv export --format requirements-txt` output?"
         )
-    return {pins[n] for n in pins} - {pins[n] for n in conditional}, {pins[n] for n in conditional}
+    return required, conditional
+
+
+def format_expected_versions(pins: set[str]) -> str:
+    """The expected side of a `version mismatch` line.
+
+    One expected version reads as before. A marker-split name lists every
+    branch the lock emits — the image installed exactly one of them, so all
+    of them are what "expected" means.
+    """
+    ordered = sorted(pins)
+    return ordered[0] if len(ordered) == 1 else " | ".join(ordered)
 
 
 def parse_actual(text: str) -> set[str]:
@@ -166,28 +186,35 @@ def main() -> int:
     actual = parse_actual(proc.stdout)
 
     # Conditional pins gate nothing: their marker may or may not apply on the
-    # image's platform. Every pin in the image must be expected (with the
-    # expected version); every unconditional expected pin must be in the image.
-    # Comparing by canonical NAME (not by pin string) is what makes a version
-    # skew nameable: `foo==1.0` expected and `foo==2.0` installed shares no
-    # exact string, so a set difference alone would report it as a confusing
-    # missing+extra pair — and the original string-keyed `skewed` comprehension
-    # (`for pin in actual & everything_expected ... .pop() != pin`) compared
-    # each pin against itself and could never fire at all.
+    # image's platform. Every pin in the image must be expected, and its
+    # version must be one the lock emits for that name; every unconditional
+    # expected pin must be in the image. Comparing by canonical NAME (not by
+    # pin string) is what makes a version skew nameable: `foo==1.0` expected
+    # and `foo==2.0` installed shares no exact string, so a set difference
+    # alone would report it as a confusing missing+extra pair — and the
+    # original string-keyed `skewed` comprehension (`for pin in actual &
+    # everything_expected ... .pop() != pin`) compared each pin against
+    # itself and could never fire at all. The expected side is a NAME ->
+    # SET-of-versions map, not name -> one pin: a marker-split name carries
+    # several legitimate versions and the image installed exactly one of
+    # them (beartype 0.22.9 vs 0.23.1 across python_full_version 3.15).
     everything_expected = required | conditional
     actual_by_name = {p.partition("==")[0]: p for p in actual}
-    expected_by_name = {p.partition("==")[0]: p for p in everything_expected}
+    expected_versions: dict[str, set[str]] = {}
+    for pin in everything_expected:
+        expected_versions.setdefault(pin.partition("==")[0], set()).add(pin)
     skewed_names = {
         name
-        for name in actual_by_name.keys() & expected_by_name.keys()
-        if actual_by_name[name] != expected_by_name[name]
+        for name in actual_by_name.keys() & expected_versions.keys()
+        if actual_by_name[name] not in expected_versions[name]
     }
     missing = sorted(p for p in required - actual if p.partition("==")[0] not in skewed_names)
     extra = sorted(
         p for p in actual - everything_expected if p.partition("==")[0] not in skewed_names
     )
     skewed = sorted(
-        f"{actual_by_name[name]} (image) != {expected_by_name[name]}" for name in skewed_names
+        f"{actual_by_name[name]} (image) != {format_expected_versions(expected_versions[name])}"
+        for name in skewed_names
     )
     if missing or extra or skewed:
         print(f"image {args.image} does NOT reconcile to the lock:")
