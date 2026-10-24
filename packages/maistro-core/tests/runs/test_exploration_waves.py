@@ -18,6 +18,7 @@ Two source-level contracts ride along:
 
 from __future__ import annotations
 
+import asyncio
 import re
 from functools import lru_cache
 from pathlib import Path
@@ -39,6 +40,7 @@ from maistro.runs.exploration import (
     ExplorationPlan,
     ExplorationPolicy,
     RubricRevisionMismatchError,
+    ThesisDisposition,
     ThesisNotInWaveError,
     ThesisProvenance,
     ThesisWidthMismatchError,
@@ -373,6 +375,57 @@ async def test_winner_can_be_named_only_once(spine) -> None:
         store, run.run_id, wave_index=1, node_run_id=wave_one[0].node_run_id
     )
     assert again.disposition.value == "winner"
+
+
+async def test_concurrent_winner_naming_leaves_exactly_one_winner(spine) -> None:
+    store, workspace, project_id = spine
+    run = await _new_run(store, workspace, project_id, plan=_plan(width=3))
+    wave_one = await _wave_one(store, run)
+    results = await asyncio.gather(
+        *(
+            name_wave_winner(store, run.run_id, wave_index=1, node_run_id=candidate.node_run_id)
+            for candidate in wave_one
+        ),
+        return_exceptions=True,
+    )
+    winners = [record for record in results if not isinstance(record, BaseException)]
+    assert len(winners) == 1
+    assert all(isinstance(record, WaveWinnerAlreadyNamedError) for record in results if isinstance(record, BaseException))
+    settled = await store.list_node_runs(run.run_id)
+    dispositions = [
+        ThesisDisposition(
+            node_run.provenance[PROVENANCE_KEY].get("disposition", ThesisDisposition.PROPOSED.value)
+        )
+        for node_run in settled
+        if node_run.provenance.get(PROVENANCE_KEY)
+    ]
+    assert sum(d is ThesisDisposition.WINNER for d in dispositions) == 1
+    assert sum(d is ThesisDisposition.LOSER for d in dispositions) == len(wave_one) - 1
+
+
+async def test_retry_after_interrupted_settlement_settles_remaining_siblings(spine) -> None:
+    store, workspace, project_id = spine
+    run = await _new_run(store, workspace, project_id, plan=_plan(width=3))
+    wave_one = await _wave_one(store, run)
+    winner = wave_one[0]
+    await name_wave_winner(store, run.run_id, wave_index=1, node_run_id=winner.node_run_id)
+    # Simulate an interruption after the winner write but before settlement:
+    # rewind the wave-mates to PROPOSED.
+    for mate in wave_one[1:]:
+        node_run = await store.get_node_run(mate.node_run_id)
+        assert node_run is not None
+        record = dict(node_run.provenance[PROVENANCE_KEY])
+        record["disposition"] = ThesisDisposition.PROPOSED.value
+        await store.record_node_run_provenance(mate.node_run_id, patch={PROVENANCE_KEY: record})
+    # The idempotent retry must finish the settlement, not return early.
+    await name_wave_winner(store, run.run_id, wave_index=1, node_run_id=winner.node_run_id)
+    for mate in wave_one[1:]:
+        node_run = await store.get_node_run(mate.node_run_id)
+        assert node_run is not None
+        settled = ThesisDisposition(
+            node_run.provenance[PROVENANCE_KEY].get("disposition", ThesisDisposition.PROPOSED.value)
+        )
+        assert settled is ThesisDisposition.LOSER
 
 
 async def test_settled_thesis_cannot_be_rescored_or_have_identity_rewritten(spine) -> None:

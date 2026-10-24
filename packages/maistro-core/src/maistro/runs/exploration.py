@@ -27,6 +27,7 @@ canonical ``Goal -> Graph -> Run -> NodeRun -> Attempt`` spine is.
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from collections.abc import Sequence
 from enum import StrEnum
@@ -514,6 +515,25 @@ async def _settle_wave_mates(
         )
 
 
+_wave_settlement_locks: dict[str, asyncio.Lock] = {}
+
+
+def _wave_settlement_lock(run_id: str) -> asyncio.Lock:
+    """The per-Run critical section that makes wave settlement atomic.
+
+    Naming a winner is a multi-write operation (winner + every wave-mate),
+    so the store's per-row write locks cannot cover it: two concurrent
+    callers could both observe an unsettled wave, each persist their own
+    winner, and each demote the other's candidate from a stale snapshot.
+    Validation, the winner write and sibling settlement all run under this
+    keyed lock, against wave state re-read *inside* the section.
+    """
+    lock = _wave_settlement_locks.get(run_id)
+    if lock is None:
+        lock = _wave_settlement_locks.setdefault(run_id, asyncio.Lock())
+    return lock
+
+
 async def name_wave_winner(
     store: ExplorationRunStore,
     run_id: str,
@@ -525,18 +545,24 @@ async def name_wave_winner(
 
     Losers remain queryable NodeRuns on the same Run — naming a winner
     settles a wave, it does not delete its history.
-    """
-    wave = await _require_wave_of_run(store, run_id, wave_index=wave_index, node_run_id=node_run_id)
-    sitting_winner = _existing_winner(wave_index, wave, node_run_id)
-    if sitting_winner is not None:
-        return sitting_winner
 
-    await _merge_thesis_provenance(
-        store, node_run_id, {"disposition": ThesisDisposition.WINNER.value}
-    )
-    await _settle_wave_mates(store, wave, winner_node_run_id=node_run_id)
-    winner_node_run = await _require_thesis_node_run(store, node_run_id)
-    return _thesis_record_of(winner_node_run)
+    Atomic: the whole read-validate-settle sequence runs under the per-Run
+    settlement lock against freshly read wave state. A retry after an
+    interrupted settlement re-runs :func:`_settle_wave_mates` (itself
+    idempotent) instead of returning early, so no sibling is left
+    permanently excluded from the rejected set.
+    """
+    async with _wave_settlement_lock(run_id):
+        wave = await _require_wave_of_run(
+            store, run_id, wave_index=wave_index, node_run_id=node_run_id
+        )
+        if _existing_winner(wave_index, wave, node_run_id) is None:
+            await _merge_thesis_provenance(
+                store, node_run_id, {"disposition": ThesisDisposition.WINNER.value}
+            )
+        await _settle_wave_mates(store, wave, winner_node_run_id=node_run_id)
+        winner_node_run = await _require_thesis_node_run(store, node_run_id)
+        return _thesis_record_of(winner_node_run)
 
 
 def merge_thesis_record(current: dict[str, Any], patch: dict[str, Any]) -> dict[str, Any]:
