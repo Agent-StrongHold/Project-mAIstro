@@ -96,8 +96,22 @@ def _shipped_sources() -> list[str]:
                     "dist",
                     "third_party",
                     "swagger-ui",
+                    "corpora",
                 }:
                     continue
+                # Bundled Open Design fixtures (json/md/css only) under
+                # systems/catalog — excluded as a location, not a filename shape.
+                if "systems" in rel.parts and "catalog" in rel.parts:
+                    try:
+                        systems_i = rel.parts.index("systems")
+                    except ValueError:
+                        systems_i = -1
+                    if (
+                        systems_i >= 0
+                        and systems_i + 1 < len(rel.parts)
+                        and rel.parts[systems_i + 1] == "catalog"
+                    ):
+                        continue
                 if ".test." in path.name:
                     continue
                 seen.add(rel.as_posix())
@@ -170,6 +184,9 @@ def test_a_shipped_template_under_a_docs_directory_stays_in_scope() -> None:
         "packages/maistro-canvas/frontend/server/security.test.js",
         "packages/maistro-evolve/src/maistro_evolve/benchmarks/third_party/ifeval/instructions.py",
         "packages/hive-conductor/backend/static/swagger-ui/swagger-ui-bundle.js",
+        "packages/maistro-design/src/maistro_design/systems/catalog/catalog.json",
+        "packages/maistro-evolve/src/maistro_evolve/benchmarks/corpora/repo_history_tasks.json",
+        "formal/models/test_pipeline_integration.py",
     ],
 )
 def test_the_noisy_trees_are_still_excluded(path: str) -> None:
