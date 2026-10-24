@@ -67,4 +67,69 @@ and re-ran the evidence rather than trusting the round above:
   workflows parse as YAML; `scripts/check-image-inventory.py` OK (9
   Dockerfiles) and `tests/test_check_image_inventory.py` 24/24 pass.
 
-No tree changes were needed this round; this note is the only edit.
+No tree changes were needed that round; that note was the only edit.
+
+## Re-execution at the rebuilt head e39919e30 (2026-10-23) — image work green,
+## lane-external splice damage blocks the boot battery
+
+The lane history was rebuilt onto develop `4de7e906d` as a single commit.
+All four shipped Dockerfiles changed relative to the last validated state
+(digest-pinned bases, new install stages), so the build/smoke evidence above
+does NOT transfer to this head. What was re-executed here:
+
+- `scripts/check-image-inventory.py` -> OK: 9 Dockerfiles (2 PUBLISHED /
+  4 DISTRIBUTED / 3 INTERNAL / 0 RETIRED), exit 0.
+- `pytest tests/test_check_image_inventory.py --noconftest` -> 46/46 pass
+  (develop's expanded suite; covers the `published_digest_verified: true`
+  wiring claim against release.yml's single-build `-rc` quarantine ->
+  scan -> `imagetools create` promotion -> cosign flow).
+- `ruff check` + `ruff format --check` on the gate script and tests -> clean.
+- ci.yml, security.yml, release.yml, quality.yml all parse as YAML; the
+  three smoke/boot steps (ci.yml:1110 engine boot + #1825 Canvas proof,
+  :1394 research, :1418 rsi-runner) are present; security.yml keeps the
+  four Trivy + Grype + syft blocks; quality.yml wires
+  `quality-image-inventory` (:1736-1775) into `quality-gate`.
+
+Why the boot/smoke battery could NOT be re-executed at this head — the
+rebuild splice is internally inconsistent, in increasing severity:
+
+1. `uv.lock` was corrupted at e39919e30: the `asyncpg 0.31.0` entry carried
+   `ast_serialize-0.11.1` sdist/wheel URLs (present in neither develop nor
+   the previous lane head), plus a `typeshed-client` entry with a missing
+   `source` field; `uv run` could not parse the lock at all. Repaired this
+   round by restoring develop's `uv.lock` plus the four pyprojects the
+   rebuild had reverted (root ruff `external` V105; maistro-core pydantic
+   2.7.0 and pyjwt[crypto]>=2.14 CVE floors; maistro-canvas pillow>=13.0.0
+   CVE floor; maistro-design pyyaml re-declaration). `uv lock --check`
+   green afterwards.
+2. `maistro-core` source is splice-broken: develop's `config/settings.py`
+   imports `MAX_CIRCUIT_DOMAINS` from `security/resource_policy.py`, which
+   the rebuild reverted to a version without it; restoring that file from
+   develop still leaves `import maistro.config.settings` failing (pydantic
+   `check_decorator_fields_exist` on `Settings._check_circuit_max_domains`).
+   The engine image pip-installs this exact tree, so the #1825 Canvas boot
+   proof cannot pass at this head — a tree problem, not a Dockerfile
+   problem. NOT repaired further: deciding which side of each splice is
+   authoritative is the deep-review question, not a lane edit.
+3. `quality.yml` `quality-gate` `needs:` (and its `check_ci_job_results.py`
+   argv) name `quality-proof-envelope`, `quality-model-proof`,
+   `quality-credentials`, `quality-wiring` — none of which the rebuilt
+   file defines — so the workflow fails at plan time on GitHub. The
+   image-inventory/pins/workflow-inventory jobs ARE present.
+4. The rebuild resurrected `alembic/versions/041_canonical_run_effect_claim.py`,
+   `043_capability_invocation_effect_index.py`,
+   `045_capability_invocation_logical_effect.py` (absent from develop);
+   `tests/migrations/test_revision_metadata.py::test_migration_chain_has_one_head`
+   FAILS at this head: the chain has more than one head.
+5. Quality ledgers lost rows vs develop: `ratchet-authorizations.json`
+   (-1370/+110), `durable-table-retention.json` (-636/+8),
+   `branch-independence.json` deleted — per docs/quality-gates.md these
+   merges are silent and will fail the ratchet gates at integration.
+
+Round verdict: the #346 gate surface (inventory, tests, wiring, workflow
+YAML, scan/SBOM/sign step presence) is green at this head, but the branch
+is not integrable until the splice damage (items 2-5) is resolved by a
+proper re-integration, after which the three Docker builds + smokes must be
+re-run since all four Dockerfiles changed. The only #346-file edit this
+round is this note; the lock/pyproject/resource_policy restorations are
+recorded in the commit message.
