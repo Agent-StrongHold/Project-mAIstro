@@ -52,7 +52,7 @@ from maistro.runs.retention_scope import (
     RetentionScope,
     WorkspaceRetentionScope,
 )
-from maistro.runs.sources import SCHEDULED_FOR_KEY, occurrence_key
+from maistro.runs.sources import SCHEDULED_FOR_KEY, TASK_QUEUE_SOURCE, occurrence_key
 from maistro.runs.store import (
     DEFAULT_PURGE_BATCH,
     DEFAULT_RECLAIM_BATCH,
@@ -836,6 +836,24 @@ class SqliteRunStore:
         )
         return model_of_json(Run, row[0]) if row is not None else None
 
+    async def find_run_by_task_id(
+        self,
+        task_id: str,
+        *,
+        admission_source: str | None = TASK_QUEUE_SOURCE,
+    ) -> Run | None:
+        # The SQLite expression twin of the PostgreSQL provenance query, the
+        # same way `find_run_by_effect` is spelled twice.
+        row = await self._fetchone(
+            """SELECT payload FROM canonical_runs
+               WHERE json_extract(payload, '$.provenance.task_id') = ?
+                 AND (? IS NULL
+                      OR json_extract(payload, '$.provenance.admission_source') = ?)
+               LIMIT 1""",
+            (task_id, admission_source, admission_source),
+        )
+        return model_of_json(Run, row[0]) if row is not None else None
+
     async def attach_delegation_receipt(
         self, run_id: str, task_id: str, *, target_agent: str | None = None
     ) -> Run:
@@ -1288,7 +1306,13 @@ class SqliteRunStore:
         rows = await cursor.fetchall()
         return [model_of_json(NodeRun, row[0]) for row in rows]
 
-    async def create_node_run(self, run_id: str, *, node_id: str) -> NodeRun:
+    async def create_node_run(
+        self,
+        run_id: str,
+        *,
+        node_id: str,
+        provenance: dict[str, Any] | None = None,
+    ) -> NodeRun:
         async with self._write_lock:
             run, snapshot = await self._require_run_snapshot(run_id)
             if run.status in TERMINAL_RUN_STATUSES:
@@ -1303,7 +1327,12 @@ class SqliteRunStore:
                 (run_id,),
             )
             ordinal = int(row[0]) + 1 if row is not None else 1
-            node_run = NodeRun(run_id=run_id, node_id=node_id, ordinal=ordinal)
+            node_run = NodeRun(
+                run_id=run_id,
+                node_id=node_id,
+                ordinal=ordinal,
+                provenance=dict(provenance or {}),
+            )
             # Validate the same nonterminal parent at the physical insert,
             # even if a sibling commit releases an intervening transaction.
             cursor = await self._conn.execute(
@@ -1361,6 +1390,23 @@ class SqliteRunStore:
         )
         rows = await cursor.fetchall()
         return [model_of_json(NodeRun, row[0]) for row in rows]
+
+    async def record_node_run_provenance(
+        self, node_run_id: str, *, patch: dict[str, Any]
+    ) -> NodeRun:
+        """Merge ``patch`` into a NodeRun's provenance (top-level keys)."""
+        async with self._write_lock:
+            node_run = await self._require_node_run(node_run_id)
+            await self._refuse_under_terminal_run(node_run)
+            updated = node_run.model_copy(update={"provenance": {**node_run.provenance, **patch}})
+            await self._update_payload(
+                "canonical_node_runs",
+                "node_run_id",
+                node_run_id,
+                updated.status.value,
+                json_of(updated),
+            )
+            return updated
 
     async def transition_node_run(
         self,
