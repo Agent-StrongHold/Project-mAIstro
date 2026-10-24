@@ -228,7 +228,10 @@ secret-shaped lines in code are fixed at source:
   the untouched-file finding set is otherwise unchanged.
 
 First-hand battery at `cd0eadd028a6` (pgvector:pg18 @ 127.0.0.1:5590,
-`alembic upgrade head` clean before pytest):
+`alembic upgrade head` clean before pytest), **re-confirmed at the branch
+tip** — every commit after `cd0eadd02` differs only by `.gitleaksignore`
+entries and this note, and the gitleaks range scan at the tip reports no
+leaks (the two historical patches are fingerprinted, not rewritten):
 
 - `uv run pytest packages/maistro-server/tests/test_task_cross_replica_visibility.py -v`
   with `MAISTRO_TEST_PG_DSN` → **2 passed in 14.04s** (the renamed auth test
