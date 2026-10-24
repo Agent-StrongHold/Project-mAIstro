@@ -61,3 +61,23 @@ in-image `beartype==0.22.9` against an export emitting both 0.22.9 <'3.15' and
 `ruff check .` / `ruff format --check .`, the suite-inventory gate, and the
 vulture ledger gate (`packages/*/src --min-confidence 60 --exclude
 '*/third_party/*'`: 1302 reviewed == 1302 findings) are green at this head.
+
+Verifier round (2026-10-24, head ecdc81256 = merge of db4d3eb09): the
+post-db4d3eb lock resolves beartype to a SINGLE unconditional pin —
+`uv export --locked --package maistro-server --extra image` emits only
+`beartype==0.23.1` (no split), so the marker-split failure mode this note
+documents no longer exists in the current lock; the marker-split tests remain
+as script-contract pins. Executed at this head: pytest
+tests/test_check_image_lock_reconciliation.py → 39 passed; scripts/
+check-adr-status-language.py + git diff --check → exit 0; check-adr-index.py,
+check-contract-markers.py, check-suite-inventory.py (21/21), ruff check → OK.
+Independent ADR-101826-c3f1 vector replay against webauthn==3.0.1 (scratch
+script outside the tree): recorded registration + assertion blobs verify with
+every recorded field (packed, sc 0→1, UV, single_device, all-zero aaguid) and
+I1–I6 raise the recorded messages verbatim — 8/8; the recorded wheel sha256
+matches PyPI's for webauthn-3.0.1-py3-none-any.whl. Diff vs base db4d3eb adds
+exactly the 5 test items this note's header records (base had lost the
+f956a8142-lineage marker-split cases; the script fix itself is byte-identical
+to base). Hosted `Container scan + SBOM + cosign` at this exact head was
+IN_PROGRESS with zero failures in the live rollup at review time — hosted
+green remains upstream-gated, not claimed here.
