@@ -503,3 +503,52 @@ async def test_purge_publishes_the_violation_evidence_volume(
     conn.queue_fetch([])
     await tracker.purge_expired(before=dt(2026, 8, 3, tzinfo=UTC))
     assert len([c for c in conn.calls if c.method == "fetchrow"]) == probe_calls_before
+
+
+async def test_the_two_security_stores_probe_independently(
+    patch_asyncpg: FakePool, conn: FakeConnection
+) -> None:
+    """The throttle ledger is per store: `PgStrikeTracker` and `PgRateLimiter`
+    must not share a probe key, or a sweep loop driving both back-to-back
+    starves whichever purges second — one of the two security tables'
+    series would never publish, forever (#325).
+
+    Ran against the shared-key regression: the limiter's purge below issued
+    no probe queries at all and `security_rate_limits` published nothing,
+    because the tracker's purge had just stamped the only key.
+    """
+    from datetime import datetime as dt
+
+    from maistro.observability import metrics as retention_health
+    from maistro.observability.metrics import retention_table_rows
+
+    retention_health._LAST_PROBE.clear()
+    old = dt(2026, 8, 1, tzinfo=UTC)
+    # Tracker purge: RETURNING fetch, then its probe's to_regclass, sample
+    # and size rows.
+    conn.queue_fetch([])
+    conn.queue_fetchrow({"ok": True})
+    conn.queue_fetchrow({"n": 1, "oldest": old})
+    conn.queue_fetchrow({"b": 8192})
+    tracker = PgStrikeTracker(db_url="postgres://x")
+    await tracker.purge_expired(before=dt(2026, 8, 2, tzinfo=UTC))
+
+    # Rate limiter purge, back-to-back in the same interval: its own probe
+    # must still run (to_regclass, sample, size) — a shared key would
+    # throttle it into publishing nothing.
+    conn.queue_fetch([])
+    conn.queue_fetchrow({"ok": True})
+    conn.queue_fetchrow({"n": 2, "oldest": old})
+    conn.queue_fetchrow({"b": 4096})
+    limiter = PgRateLimiter(db_url="postgres://x")
+    await limiter.purge_expired(before=dt(2026, 8, 2, tzinfo=UTC))
+
+    def _rows(table: str) -> list[float]:
+        return [
+            float(s["value"])
+            for s in retention_table_rows.collect()
+            if s.get("labels", {}) == {"table": table, "backend": "postgres"}
+        ]
+
+    assert _rows("security_violations") == [1.0]
+    assert _rows("security_rate_limits") == [2.0]

@@ -742,9 +742,9 @@
       "owner_module": "packages/maistro-core/src/maistro/events/durable_log.py",
       "data_class": "event_history",
       "retention": "undecided",
-      "deletion_path": null,
+      "deletion_path": "maistro.events.pg_stores:PgEventLog.purge_expired",
       "issue": "#325",
-      "notes": "No DELETE anywhere in the tree; rows accumulate for the life of the deployment."
+      "notes": "Delivery history appended before handling; the SQLite twin is maistro.events.durable_log:SqliteEventLog.purge_expired. Both purge_expired methods delete a bounded oldest-first batch in one transaction, skip legal-held entity ids, and publish the table's stored-volume health after committing. The horizon and the driving schedule are the importing product's (owner decision on #325); nothing in-process drives the purge yet, so retention stays undecided until it is driven."
     },
     {
       "table": "event_replay_cursors",

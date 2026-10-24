@@ -679,10 +679,12 @@ retention_oldest_record_timestamp = registry.gauge(
 #: tick's `non_terminal_run_stats` uses).
 OldestUnit = Literal["iso", "unix_s", "unix_us", "datetime"]
 
-#: The durable tables whose purge mechanisms this engine ships, and therefore
-#: the bounded `table` label set (#818). Mirrors the `deletion_path` rows of
-#: `quality/durable-table-retention.json`, which the CI inventory gate checks
-#: against migrations.
+#: The durable tables whose stored-volume probes this engine publishes, and
+#: therefore the bounded `table` label set (#818). A subset of the
+#: `deletion_path` rows of `quality/durable-table-retention.json` (the CI
+#: inventory gate checks those against migrations): only the stores whose
+#: purges publish this probe appear here, not every table with a driven
+#: delete elsewhere in the tree.
 _KNOWN_TABLES: frozenset[str] = frozenset(
     {
         "audit_log",
@@ -691,6 +693,7 @@ _KNOWN_TABLES: frozenset[str] = frozenset(
         "canonical_node_runs",
         "canonical_run_eval_scores",
         "canonical_runs",
+        "event_log",
         "graph_continuations",
         "security_rate_limits",
         "security_violations",

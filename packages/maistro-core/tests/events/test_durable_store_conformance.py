@@ -366,6 +366,58 @@ async def test_pg_replay_cursor_survives_a_pool_restart():
         await second_pool.close()
 
 
+async def test_pg_purge_publishes_the_delivery_log_stored_volume():
+    """The PostgreSQL leg of the delivery log's stored-volume probe (#325).
+
+    Same contract as the SQLite leg in `test_durable_log.py`, plus the
+    per-table size only PostgreSQL can measure. The truncation makes the
+    published levels this test's own rows, not a mixture with the other
+    PG tests' leftover rows (the isolation rule `_pg_pool` applies).
+    """
+    import time as time_mod
+
+    from maistro.events.pg_stores import PgEventLog
+    from maistro.observability import metrics as retention_health
+    from maistro.observability.metrics import (
+        retention_oldest_record_timestamp,
+        retention_table_bytes,
+        retention_table_rows,
+    )
+
+    retention_health._LAST_PROBE.clear()
+    pool = await _pg_pool()
+    try:
+        store = PgEventLog(pool)
+        old = time_mod.time() - 10_000
+        await store.append("old.event")
+        # The append API stamps `time.time()`; backdate the first row so the
+        # purge has an expired batch and the probe has a distinct survivor.
+        await pool.execute("UPDATE event_log SET created_at = $1", old)
+        await store.append("fresh.event")
+
+        assert await store.purge_expired(before=time_mod.time() - 1) == 1
+
+        def _series(metric) -> list[float]:
+            return [
+                float(s["value"])
+                for s in metric.collect()
+                if s.get("labels", {}) == {"table": "event_log", "backend": "postgres"}
+            ]
+
+        assert _series(retention_table_rows) == [1.0]
+        assert _series(retention_table_bytes) and _series(retention_table_bytes)[-1] > 0
+        assert _series(retention_oldest_record_timestamp) == [pytest.approx(time_mod.time(), abs=5)]
+
+        # Draining the log drops the oldest-record series, not the table
+        # level: an empty table is rows=0 with no oldest record to report.
+        retention_health._LAST_PROBE.clear()
+        await store.purge_expired(before=time_mod.time() + 1)
+        assert _series(retention_table_rows) == [0.0]
+        assert _series(retention_oldest_record_timestamp) == []
+    finally:
+        await pool.close()
+
+
 class TestTriggerStore:
     async def test_add_then_get_round_trips(self, trigger_store):
         trigger = TriggerDefinition(

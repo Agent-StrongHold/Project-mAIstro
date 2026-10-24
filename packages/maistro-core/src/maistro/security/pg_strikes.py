@@ -503,8 +503,14 @@ class PgRateLimiter:
         The window table is bounded by design (one row per key per minute);
         its level is how a deployment notices the throttle table itself
         growing without bound when keys are attacker-controlled.
+
+        The probe key is this store's own, not `PgStrikeTracker`'s
+        `security:postgres`: the throttle ledger is per store, and two
+        purges sharing one key starve whichever runs second — a sweep loop
+        that drives both back-to-back would publish exactly one of the two
+        security tables' series forever.
         """
-        if not retention_health_probe_due("security:postgres"):
+        if not retention_health_probe_due("security_rate_limits:postgres"):
             return
         pool = await self._get_pool()
         async with pool.acquire() as conn:

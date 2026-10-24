@@ -5,6 +5,7 @@ from __future__ import annotations
 import time
 from collections.abc import AsyncIterator
 from pathlib import Path
+from typing import Any
 
 import aiosqlite
 import pytest
@@ -75,6 +76,53 @@ class TestAppend:
         )
         assert removed == 1
         assert len(await log.query(limit=10)) == 1
+
+    async def test_a_sqlite_purge_publishes_the_delivery_log_stored_volume(self) -> None:
+        """The sweep contract's stored-volume clause for the delivery log:
+        the purge counters are rates, so a delivery log nobody bounds looks
+        exactly as healthy as one at steady state — the level is the signal
+        the bound is actually being driven (#325)."""
+        from maistro.observability import metrics as retention_health
+        from maistro.observability.metrics import (
+            retention_oldest_record_timestamp,
+            retention_table_rows,
+        )
+
+        retention_health._LAST_PROBE.clear()
+
+        def _series(metric: Any) -> list[float]:
+            return [
+                float(s["value"])
+                for s in metric.collect()
+                if s.get("labels", {}) == {"table": "event_log", "backend": "sqlite"}
+            ]
+
+        conn = await aiosqlite.connect(":memory:")
+        try:
+            store = SqliteEventLog(conn)
+            await store.ensure_schema()
+            old = time.time() - 10_000
+            await store.append("old.event")
+            # The append API stamps `time.time()`; backdate the first row so
+            # the purge has an expired batch and the probe has a distinct
+            # oldest survivor.
+            await conn.execute("UPDATE event_log SET created_at = ?", (old,))
+            await conn.commit()
+            await store.append("fresh.event")
+
+            assert await store.purge_expired(before=time.time() - 1) == 1
+
+            assert _series(retention_table_rows) == [1.0]
+            assert _series(retention_oldest_record_timestamp) == [pytest.approx(time.time(), abs=5)]
+
+            # Draining the log removes the oldest-record series rather than
+            # leaving the last value to stand in for history that is gone.
+            retention_health._LAST_PROBE.clear()
+            await store.purge_expired(before=time.time() + 1)
+            assert _series(retention_table_rows) == [0.0]
+            assert _series(retention_oldest_record_timestamp) == []
+        finally:
+            await conn.close()
 
 
 class TestReplayCursor:

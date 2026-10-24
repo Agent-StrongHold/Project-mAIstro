@@ -259,7 +259,16 @@ async def test_sequence_high_water_mark_survives_event_purge() -> None:
             await store.append(
                 EventEnvelope(event_id=f"event-{uuid4().hex}", type="e", workspace_id=workspace)
             )
-        assert await store.purge_expired(before=time.time() + 60) == 2
+        # The purge deletes across every stream in this shared database, so
+        # its return count is global: other tests' leftover rows (or a
+        # crashed run's orphans) legitimately inflate it. Assert what this
+        # test owns — its own stream drains to zero — instead of an exact
+        # global count that only a clean database satisfies.
+        assert await store.purge_expired(before=time.time() + 60) >= 2
+        drained = await pool.fetchval(
+            "SELECT COUNT(*) FROM canonical_event_log WHERE stream_id = $1", stream
+        )
+        assert drained == 0
         resumed = await store.append(
             EventEnvelope(event_id=f"event-{uuid4().hex}", type="after", workspace_id=workspace)
         )
