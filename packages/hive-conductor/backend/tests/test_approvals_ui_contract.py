@@ -33,9 +33,7 @@ def test_capability_approvals_foreign_id_404(admin_client: TestClient) -> None:
 def test_anonymous_cannot_list_or_resolve_capability_approvals() -> None:
     anon = TestClient(app)
     assert anon.get("/v1/capabilities/approvals").status_code == 401
-    assert (
-        anon.post("/v1/capabilities/approvals/x", json={"approved": False}).status_code == 401
-    )
+    assert anon.post("/v1/capabilities/approvals/x", json={"approved": False}).status_code == 401
 
 
 def test_hitl_pending_is_list_or_unavailable(admin_client: TestClient) -> None:

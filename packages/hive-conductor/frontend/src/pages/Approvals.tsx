@@ -19,7 +19,8 @@ import { EmptyState, LoadingSpinner, PageHeader, useToast } from "../components/
  * Minimal Workspace approvals projection (#2278 / Parity P-1).
  *
  * Lists and answers the same canonical capability inbox and HITL pending set
- * as `maistro approvals` / `/v1/hitl/*`. No parallel store.
+ * as `maistro approvals` and the HITL pending/answer/cancel routes. No
+ * parallel store.
  */
 export default function ApprovalsPage() {
   const toast = useToast();
