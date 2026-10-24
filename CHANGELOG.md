@@ -23,7 +23,32 @@ or placeholder-only section.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Workspace Attention no longer 500s without a graph spine (#1049).** Standalone
+  / e2e Conductor (no wired Container graph store) still returns Attention as a
+  200 with `summary.hitl_unavailable: true` and any failed-Run projections; HITL
+  pauses require the canonical spine and are omitted rather than crashing the
+  page.
+
 ### Added
+
+- **Durable Workspace landing + restore preferences (#1050, partial).** Authenticated
+  `/` reads `preferences.workspace_default_landing` from the canonical profile
+  store and navigates there (Home / Chat / Goals / Backlog / Work items). Profile
+  also exposes `workspace_restore_aggressiveness`
+  (`off`/`brief`/`balanced`/`generous`) for how eagerly a prior surface is
+  restored after absence — the durable band; exact windows are applied by
+  session continuity (#1822). Both fields PATCH/profile_set the same profile
+  document; out-of-allow-list writes are refused (400). Missing or invalid
+  reads still mean Workspace Home / balanced. Learned suggestions and Agent-
+  driven restoration behavior remain later #1050 slices.
+
+- **Workspace Attention page and nav (#1049, partial).** `/attention` lists the
+  existing Workspace Attention projection (HITL pauses + failed Runs) with the
+  backend summary and Run inspection links. Answering still uses the HITL API
+  named by `answer_href`; defer/dismiss and Messages/Optimizer MERGE remain
+  follow-ons.
 
 - **Workspace Home is the default Mission-Control landing (#1048, partial).**
   Authenticated `/` now opens `/home`, which reads the existing Home layout and
