@@ -97,7 +97,7 @@ def test_readiness_exposes_effective_resource_policy_to_admin_callers() -> None:
     }
 
 
-@pytest.mark.ac("SPEC-1182/AC-6")
+@pytest.mark.ac("SPEC-082226-2a10/AC-6")
 def test_readiness_exposes_run_concurrency_limits_to_admin_callers() -> None:
     """The effective root-Run ceilings — including the opt-in system-wide one
     (#1182) — are operator diagnostics: admins see them, anonymous probes do
