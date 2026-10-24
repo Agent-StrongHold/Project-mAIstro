@@ -1,0 +1,1057 @@
+"""M8-A6 research harness: Workspace noninterference across product state (#886).
+
+Issue #886 (epic #880) hypothesizes that cross-Workspace isolation is better
+tested as a global noninterference property than as scattered endpoint
+assertions: every operation scoped exclusively to Workspace A must leave the
+observable state of untouched Workspace B unchanged, modulo explicitly
+documented global state.
+
+This module is the bounded prototype the issue's deliverable names:
+
+- two real Workspaces owned by two fresh principals, created through the
+  product HTTP API, with the canonical `maistro.workspaces` authority and its
+  Root Project pairing underneath;
+- a normalized observable projection of the untouched party, taken through the
+  same product APIs the untouched principal can reach plus the persistence
+  stores underneath (canonical identity, memberships, Root Project, Hive
+  presentation);
+- a seeded, deterministic, mixed operation vocabulary executed against
+  Workspace A only -- workspace archive/recover, membership add/promote/
+  remove, schedule and Agent create/update/delete, memory put/delete, chat
+  session create/delete, persona feedback, A-side queries, and a store
+  re-initialization ("restart") -- with
+  `observable(B)_after == observable(B)_before` asserted after every step;
+- sensitivity controls proving the oracle can fail (a B-side write changes the
+  projection; A-side writes change A's own view), i.e. the property is not
+  vacuous;
+- the explicitly documented global-state exceptions, pinned as behavior:
+  persona feedback aggregates per persona template across every workspace
+  instantiating it (services/persona_feedback.py), and the chat-session
+  listing lazily seeds the reader's own starter session on first read;
+- a same-principal case: Alice owns A and holds an editor membership in B,
+  so her acting-user rows exist on both sides; A-scoped destructive
+  operations must still leave B untouched, and the review's named
+  regression -- a delete scoped to the acting *user* instead of the
+  Workspace -- is simulated against the store and proven to fail the
+  oracle (the AGENTS.md show-the-failure rule).
+
+Findings and the research disposition live in
+docs/research/886-workspace-noninterference.md.
+
+Out of scope for the deterministic prototype (recorded as limitations in the
+research note): DAG-run execution/invocation legs need the configured engine
+container, and cross-service task delegation needs the maistro-server task
+backend; neither runs in this in-memory, no-credentials suite. The covered
+vocabulary is exactly what the issue asks for "where supported" without them.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import random
+from typing import Any
+
+import pytest
+
+pytestmark = [pytest.mark.contract("behavioral"), pytest.mark.scope("property")]
+
+#: Elevation capabilities. Alice acts on Workspace A across every gated
+#: surface the vocabulary touches; Bob needs only the B-side product writes
+#: the sensitivity control performs. POST /v1/workspaces is deliberately
+#: ungated (an ordinary authenticated action), so neither needs
+#: workspaces.write to create their own Workspace.
+_A_PERMS = ["agents.write", "agents.delete", "schedules.write", "workspaces.write"]
+#: workspaces.write lets Bob grant Alice her B membership in the
+#: same-principal case (only an owner can add members).
+_B_PERMS = ["agents.write", "schedules.write", "workspaces.write"]
+
+_ALICE = "m8a6-alice"
+_BOB = "m8a6-bob"
+
+#: Distinct personas on purpose: B's observable state must not depend on A's
+#: persona-level surfaces. Same-persona feedback aggregation is a documented
+#: exception and gets its own pinned behavior test below.
+_A_PERSONA = "pm_fleet"
+_B_PERSONA = "content_creator"
+
+_SCHEDULE_BODY = {
+    "name": "m8a6-nightly",
+    "cron_expression": "0 9 * * *",
+    "mission_template_id": "tpl-m8a6",
+}
+
+#: Length of the seeded mixed sequence. Long enough that a fixed seed must
+#: exercise every vocabulary entry at least once (asserted below), short
+#: enough for a routine suite run.
+_SEQUENCE_LENGTH = 64
+
+
+class Harness:
+    """One A/B party pair plus the registries the operation vocabulary uses."""
+
+    def __init__(self, alice: Any, bob: Any, ws_a: Any, ws_b: Any) -> None:
+        self.alice = alice
+        self.bob = bob
+        self.ws_a = ws_a
+        self.ws_b = ws_b
+        self.rng = random.Random(3)  # fixed: covers all 19 ops in 64 draws
+        self.schedule_ids: list[str] = []
+        self.agent_ids: list[str] = []
+        self.memory_ids: list[str] = []
+        self.chat_ids: list[str] = []
+        self.feedback_ids: list[str] = []
+        #: Seeded B-side rows -- teardown-only, never A-op working sets.
+        #: Populated with Bob-owned rows by the `parties` fixture and with
+        #: Alice's B-side row (via her B membership) by the same-principal
+        #: case.
+        self.bob_schedule_ids: list[str] = []
+        self.bob_memory_ids: list[str] = []
+        #: Members currently added to A (removed ones are popped).
+        self.members: list[str] = []
+        #: Whether A is archived (active=False) right now; an archived
+        #: Workspace refuses DAG-scoped writes, so the schedule ops restore
+        #: that precondition first.
+        self.ws_a_archived = False
+        #: Accepted A-side mutations, per helper bookkeeping. Deliberately
+        #: NOT the anti-vacuity evidence (that is the observed A-side delta
+        #: in the sequence tests): this only uniquifies payloads and covers
+        #: the restart family, whose in-memory leg may be observationally
+        #: inert. A route returning success without persisting would still
+        #: increment it.
+        self.mutations = 0
+        #: Read-only A-side queries performed.
+        self.queries = 0
+        self.ws_a_deleted = False
+
+
+# ---------------------------------------------------------------------------
+# Observation: the normalized observable projection of untouched B
+# ---------------------------------------------------------------------------
+
+
+def _sorted_by(rows: list[dict[str, Any]], key: str) -> list[dict[str, Any]]:
+    return sorted(rows, key=lambda row: str(row.get(key, "")))
+
+
+def _store_level_projection(workspace_id: str) -> dict[str, Any]:
+    """The persistence-store half of B's observable state.
+
+    Read through the same authority the product reads: the canonical
+    Workspace record, its memberships, the paired Root Project, and the Hive
+    presentation row. Timestamps are included deliberately: an A-side
+    operation that merely *touches* B's rows (a spurious `updated_at` bump)
+    is a real noninterference defect this projection must catch.
+    """
+    from services.workspace_authority import canonical_store_for_tests, presentation_store
+
+    async def _read() -> dict[str, Any]:
+        store = canonical_store_for_tests()
+        canonical = await store.get(workspace_id)
+        assert canonical is not None, f"canonical Workspace {workspace_id} vanished"
+        memberships = await store.list_memberships(workspace_id)
+        root = await store.project_store.root_for_workspace(workspace_id)
+        presentation = presentation_store().get(workspace_id)
+        return {
+            "canonical": canonical.model_dump(mode="json"),
+            "memberships": sorted(
+                (m.model_dump(mode="json") for m in memberships),
+                key=lambda m: m["user_id"],
+            ),
+            "root_project_id": root.project_id,
+            "presentation": (
+                presentation.model_dump(mode="json") if presentation is not None else None
+            ),
+        }
+
+    return asyncio.run(_read())
+
+
+def _workspace_feedback_rows(workspace_id: str) -> list[dict[str, Any]]:
+    """Workspace-scoped persona-feedback rows, read at store level: there is
+    no per-Workspace read model (the persona-wide summary is the aggregated,
+    admin-gated surface pinned separately below). Filtering by workspace_id
+    keeps the documented cross-workspace persona aggregation out of this
+    projection while making A's own feedback writes observable."""
+    import stores
+
+    return _sorted_by(
+        [
+            f.model_dump(mode="json")
+            for f in stores.persona_feedback.values()
+            if f.workspace_id == workspace_id
+        ],
+        "id",
+    )
+
+
+def _projection(client: Any, workspace_id: str) -> dict[str, Any]:
+    """The observable projection of one Workspace, normalized: every HTTP
+    view its owner can reach plus the persistence stores underneath. Every
+    read is asserted successful: a projection read that silently degraded
+    to 403 would freeze a constant oracle and make the property vacuous."""
+    listed = client.get("/v1/workspaces")
+    detail = client.get(f"/v1/workspaces/{workspace_id}")
+    schedules = client.get("/v1/schedules")
+    agents = client.get(f"/v1/agents?workspace_id={workspace_id}")
+    entries = client.get("/v1/memory/entries")
+    namespaces = client.get("/v1/memory/namespaces")
+    chats = client.get("/v1/chat/sessions")
+    for response in (listed, detail, schedules, agents, entries, namespaces, chats):
+        assert response.status_code == 200, (
+            f"projection read degraded: {response.request.url} -> "
+            f"{response.status_code} {response.text}"
+        )
+
+    return {
+        # The workspace universe as this owner sees it.
+        "workspace_list_ids": sorted(w["id"] for w in listed.json()),
+        "workspace_detail": detail.json(),
+        "schedules": _sorted_by(schedules.json(), "id"),
+        "agents": _sorted_by(agents.json(), "id"),
+        "memory_entries": _sorted_by(entries.json(), "id"),
+        "memory_namespaces": sorted(namespaces.json(), key=lambda n: n["name"]),
+        "chat_sessions": _sorted_by(chats.json(), "id"),
+        "workspace_feedback": _workspace_feedback_rows(workspace_id),
+        "store_level": _store_level_projection(workspace_id),
+    }
+
+
+def _observe(h: Harness) -> dict[str, Any]:
+    """Everything the untouched B principal can observe, normalized.
+
+    Taken through Bob's authenticated session, so the projection is exactly
+    what the product would show B's owner.
+    """
+    return _projection(h.bob, h.ws_b.id)
+
+
+def _observe_a(h: Harness) -> dict[str, Any]:
+    """The same projection taken from A's side through Alice's warmed
+    readers. This is the anti-vacuity evidence: it shows A-scoped operations
+    actually changed A's observable state, rather than trusting that an
+    accepted HTTP response persisted something."""
+    return _projection(h.alice, h.ws_a.id)
+
+
+def _assert_untouched(before: dict[str, Any], after: dict[str, Any], step: str) -> None:
+    """The property: `observable(B)_after == observable(B)_before`."""
+    if before == after:
+        return
+    changed = [key for key in before if before[key] != after.get(key)]
+    raise AssertionError(
+        f"noninterference violated after {step!r}: observable(B) changed "
+        f"in {changed}; a Workspace-A-scoped operation leaked into "
+        f"Workspace B's observable state"
+    )
+
+
+# ---------------------------------------------------------------------------
+# The operation vocabulary -- every entry is scoped exclusively to A
+# ---------------------------------------------------------------------------
+
+
+def _op_archive_workspace_a(h: Harness) -> None:
+    r = h.alice.patch(f"/v1/workspaces/{h.ws_a.id}", json={"active": False})
+    assert r.status_code == 200, r.text
+    assert r.json()["active"] is False
+    h.ws_a_archived = True
+    h.mutations += 1
+
+
+def _op_recover_workspace_a(h: Harness) -> None:
+    r = h.alice.patch(f"/v1/workspaces/{h.ws_a.id}", json={"active": True})
+    assert r.status_code == 200, r.text
+    assert r.json()["active"] is True
+    h.ws_a_archived = False
+    h.mutations += 1
+
+
+def _ensure_a_active(h: Harness) -> None:
+    """An archived Workspace refuses DAG-scoped writes by design; recover it
+    first so the scheduled op still performs its own mutation."""
+    if h.ws_a_archived:
+        _op_recover_workspace_a(h)
+
+
+def _op_set_tool_bindings_a(h: Harness) -> None:
+    r = h.alice.put(
+        f"/v1/workspaces/{h.ws_a.id}/tool-bindings",
+        json={"bindings": [{"agent_id": f"agent-{h.mutations}", "tools": ["search"]}]},
+    )
+    assert r.status_code == 200, r.text
+    h.mutations += 1
+
+
+def _op_add_member_a(h: Harness) -> None:
+    r = h.alice.post(
+        f"/v1/workspaces/{h.ws_a.id}/members", json={"user_id": "m8a6-carol", "role": "viewer"}
+    )
+    assert r.status_code == 200, r.text
+    if "m8a6-carol" not in h.members:
+        h.members.append("m8a6-carol")
+    h.mutations += 1
+
+
+def _op_promote_member_a(h: Harness) -> None:
+    if "m8a6-carol" not in h.members:
+        _op_add_member_a(h)
+        return
+    r = h.alice.post(
+        f"/v1/workspaces/{h.ws_a.id}/members", json={"user_id": "m8a6-carol", "role": "editor"}
+    )
+    assert r.status_code == 200, r.text
+    h.mutations += 1
+
+
+def _op_remove_member_a(h: Harness) -> None:
+    if "m8a6-carol" not in h.members:
+        _op_add_member_a(h)
+    r = h.alice.delete(f"/v1/workspaces/{h.ws_a.id}/members/m8a6-carol")
+    assert r.status_code == 200, r.text
+    if "m8a6-carol" in h.members:
+        h.members.remove("m8a6-carol")
+    h.mutations += 1
+
+
+def _create_schedule_a(h: Harness) -> str:
+    _ensure_a_active(h)
+    r = h.alice.post("/v1/schedules", json={**_SCHEDULE_BODY, "workspace_id": h.ws_a.id})
+    assert r.status_code == 201, r.text
+    body = r.json()
+    assert body["workspace_id"] == h.ws_a.id
+    h.schedule_ids.append(body["id"])
+    h.mutations += 1
+    return body["id"]
+
+
+def _op_create_schedule_a(h: Harness) -> None:
+    _create_schedule_a(h)
+
+
+def _op_update_schedule_a(h: Harness) -> None:
+    if not h.schedule_ids:
+        _create_schedule_a(h)
+        return
+    sid = h.rng.choice(h.schedule_ids)
+    r = h.alice.put(f"/v1/schedules/{sid}", json={"name": f"m8a6-renamed-{h.mutations}"})
+    assert r.status_code == 200, r.text
+    h.mutations += 1
+
+
+def _op_delete_schedule_a(h: Harness) -> None:
+    if not h.schedule_ids:
+        _create_schedule_a(h)
+    sid = h.schedule_ids.pop()
+    r = h.alice.delete(f"/v1/schedules/{sid}")
+    assert r.status_code == 204, r.text
+    h.mutations += 1
+
+
+def _create_agent_a(h: Harness) -> str:
+    r = h.alice.post(
+        "/v1/agents",
+        json={
+            "name": f"m8a6-agent-{h.mutations}",
+            "description": "A-scoped harness agent",
+            "workspace_id": h.ws_a.id,
+        },
+    )
+    assert r.status_code == 201, r.text
+    body = r.json()
+    assert body["workspace_id"] == h.ws_a.id
+    h.agent_ids.append(body["id"])
+    h.mutations += 1
+    return body["id"]
+
+
+def _op_create_agent_a(h: Harness) -> None:
+    _create_agent_a(h)
+
+
+def _op_update_agent_a(h: Harness) -> None:
+    if not h.agent_ids:
+        _create_agent_a(h)
+        return
+    aid = h.rng.choice(h.agent_ids)
+    r = h.alice.put(f"/v1/agents/{aid}", json={"description": f"updated-{h.mutations}"})
+    assert r.status_code == 200, r.text
+    h.mutations += 1
+
+
+def _op_delete_agent_a(h: Harness) -> None:
+    if not h.agent_ids:
+        _create_agent_a(h)
+    aid = h.agent_ids.pop()
+    r = h.alice.delete(f"/v1/agents/{aid}")
+    assert r.status_code == 204, r.text
+    h.mutations += 1
+
+
+def _put_memory_a(h: Harness) -> str:
+    r = h.alice.post(
+        "/v1/memory/entries",
+        json={"key": f"m8a6-{h.mutations}", "value": f"value-{h.mutations}", "namespace": "m8a6"},
+    )
+    assert r.status_code == 200, r.text
+    eid = r.json()["id"]
+    h.memory_ids.append(eid)
+    h.mutations += 1
+    return eid
+
+
+def _op_put_memory_a(h: Harness) -> None:
+    _put_memory_a(h)
+
+
+def _op_delete_memory_a(h: Harness) -> None:
+    if not h.memory_ids:
+        _put_memory_a(h)
+    eid = h.memory_ids.pop()
+    r = h.alice.delete(f"/v1/memory/entries/{eid}")
+    assert r.status_code == 204, r.text
+    h.mutations += 1
+
+
+def _op_create_chat_session_a(h: Harness) -> None:
+    r = h.alice.post("/v1/chat/sessions", json={"title": f"m8a6-session-{h.mutations}"})
+    assert r.status_code == 200, r.text
+    h.chat_ids.append(r.json()["id"])
+    h.mutations += 1
+
+
+def _op_delete_chat_session_a(h: Harness) -> None:
+    if not h.chat_ids:
+        _op_create_chat_session_a(h)
+    cid = h.chat_ids.pop()
+    r = h.alice.delete(f"/v1/chat/sessions/{cid}")
+    assert r.status_code == 204, r.text
+    h.mutations += 1
+
+
+def _op_submit_feedback_a(h: Harness) -> None:
+    """A-scoped persona feedback.
+
+    Workspace A instantiates `pm_fleet`; B instantiates `content_creator`.
+    The aggregation exception (per-persona, cross-workspace) is pinned by
+    `test_persona_feedback_aggregates_across_workspaces_of_one_persona`.
+    """
+    r = h.alice.post(
+        f"/v1/workspaces/{h.ws_a.id}/feedback",
+        json={"thumb": "up", "comment": f"m8a6-feedback-{h.mutations}"},
+    )
+    assert r.status_code == 201, r.text
+    h.feedback_ids.append(r.json()["id"])
+    h.mutations += 1
+
+
+def _assert_a_payload_excludes_b(h: Harness, path: str, payload: Any) -> None:
+    """The disclosure half of isolation, checked from A's side: no row Alice
+    receives may carry B's identity. Without this, a 200 from a list/detail
+    handler that leaked B's data to Alice would pass -- the B-side projection
+    (and the `Bob cannot name A` baseline) cannot observe that disclosure."""
+    ws_b = h.ws_b.id
+    rows = payload if isinstance(payload, list) else [payload]
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        assert row.get("workspace_id") != ws_b, f"{path}: B-owned row leaked to A: {row}"
+        assert row.get("id") != ws_b, f"{path}: B's Workspace leaked to A: {row}"
+    if path == "/v1/schedules":
+        assert all(s["id"] not in h.bob_schedule_ids for s in payload), "B schedule leaked to A"
+    elif path == "/v1/memory/entries":
+        assert all(e["id"] not in h.bob_memory_ids for e in payload), "B memory leaked to A"
+        assert all(e.get("namespace") != "m8a6-b" for e in payload), "B memory namespace leaked"
+    elif path == "/v1/memory/namespaces":
+        assert all(n["name"] != "m8a6-b" for n in payload), "B memory namespace leaked"
+    elif path == "/v1/chat/sessions":
+        assert all(s["id"] != f"chat-seed-{_BOB}" for s in payload), "B chat session leaked"
+
+
+def _op_query_as_a(h: Harness) -> None:
+    """Read-only A-side traffic: queries must not alter the untouched party,
+    and their payloads must not disclose B's data to Alice (checked per
+    response by `_assert_a_payload_excludes_b`)."""
+    for path in (
+        "/v1/workspaces",
+        f"/v1/workspaces/{h.ws_a.id}",
+        "/v1/workspaces/persona-templates",
+        f"/v1/workspaces/persona-templates/{_A_PERSONA}/agents",
+        "/v1/schedules",
+        f"/v1/agents?workspace_id={h.ws_a.id}",
+        "/v1/memory/entries",
+        "/v1/memory/namespaces",
+        "/v1/chat/sessions",
+    ):
+        r = h.alice.get(path)
+        assert r.status_code == 200, f"{path} -> {r.status_code} {r.text}"
+        _assert_a_payload_excludes_b(h, path, r.json())
+    h.queries += 1
+
+
+def _op_restart_stores(h: Harness) -> None:
+    """A failure/restart sequence where the in-memory suite supports one.
+
+    `initialize_stores()` reloads every store from the persistence backend
+    and re-runs seed-if-empty plus the legacy-claims migration. With no
+    database configured this exercises the idempotent-recovery path; the
+    durable-reload leg needs the SQLite-backed suite (research limitation).
+    Global side effects it may legitimately have (claim migration, catalog
+    re-merge) are covered by the global-state exceptions in the research
+    note; none of them are part of B's projection.
+    """
+    import stores
+
+    stores.initialize_stores()
+    h.mutations += 1
+
+
+def _op_delete_workspace_a(h: Harness) -> None:
+    """The destructive corner: A's deletion must not cascade into B."""
+    _ensure_a_active(h)
+    r = h.alice.delete(f"/v1/workspaces/{h.ws_a.id}")
+    assert r.status_code == 204, r.text
+    h.ws_a_deleted = True
+    h.mutations += 1
+
+
+_VOCABULARY = [
+    _op_archive_workspace_a,
+    _op_recover_workspace_a,
+    _op_set_tool_bindings_a,
+    _op_add_member_a,
+    _op_promote_member_a,
+    _op_remove_member_a,
+    _op_create_schedule_a,
+    _op_update_schedule_a,
+    _op_delete_schedule_a,
+    _op_create_agent_a,
+    _op_update_agent_a,
+    _op_delete_agent_a,
+    _op_put_memory_a,
+    _op_delete_memory_a,
+    _op_create_chat_session_a,
+    _op_delete_chat_session_a,
+    _op_submit_feedback_a,
+    _op_query_as_a,
+    _op_restart_stores,
+]
+
+_FAMILY_CASES = [
+    ("archive_recover", [_op_archive_workspace_a, _op_recover_workspace_a]),
+    (
+        "members",
+        [_op_add_member_a, _op_promote_member_a, _op_remove_member_a],
+    ),
+    (
+        "schedules",
+        [_op_create_schedule_a, _op_update_schedule_a, _op_delete_schedule_a],
+    ),
+    ("agents", [_op_create_agent_a, _op_update_agent_a, _op_delete_agent_a]),
+    ("memory", [_op_put_memory_a, _op_delete_memory_a]),
+    ("chat_sessions", [_op_create_chat_session_a, _op_delete_chat_session_a]),
+    ("feedback", [_op_submit_feedback_a]),
+    ("restart", [_op_restart_stores]),
+]
+
+
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
+
+
+def _mint_principal(app: Any, username: str, permissions: list[str] | None = None) -> Any:
+    """A fresh authenticated principal backed by a real user row.
+
+    Elevated with ``permissions`` when given; read-only surfaces need no
+    elevation, and a permissions=[] mint is exactly the daily account.
+    """
+    import stores
+    from fastapi.testclient import TestClient
+
+    stores.users[username] = stores.users["user"].model_copy(
+        update={"id": username, "username": username, "permissions": list(permissions or [])}
+    )
+    client = TestClient(app)
+    login = client.post("/v1/auth/login", json={"username": username, "password": "testpass"})
+    assert login.status_code == 200, login.text
+    if permissions:
+        elevated = client.post(
+            "/v1/auth/elevate",
+            json={
+                "password": "testpass",
+                "permissions": list(permissions),
+                "task_id": "m8a6-noninterference",
+            },
+        )
+        assert elevated.status_code == 200, elevated.text
+    return client
+
+
+@pytest.fixture
+def parties():
+    """Workspace A (alice, pm_fleet) and untouched Workspace B (bob)."""
+    from main import app
+    from models.workspace import Workspace
+
+    alice = _mint_principal(app, _ALICE, _A_PERMS)
+    bob = _mint_principal(app, _BOB, _B_PERMS)
+    created_a = alice.post(
+        "/v1/workspaces", json={"persona_template_id": _A_PERSONA, "name": "M8A6 Workspace A"}
+    )
+    created_b = bob.post(
+        "/v1/workspaces", json={"persona_template_id": _B_PERSONA, "name": "M8A6 Workspace B"}
+    )
+    assert created_a.status_code == 201, created_a.text
+    assert created_b.status_code == 201, created_b.text
+    h = Harness(
+        alice=alice,
+        bob=bob,
+        ws_a=Workspace(**created_a.json()),
+        ws_b=Workspace(**created_b.json()),
+    )
+
+    # Warm the lazily-seeding readers (chat sessions seed per owner on first
+    # read) so the baseline is taken after the warm-up, not perturbed by it.
+    assert alice.get("/v1/chat/sessions").status_code == 200
+    assert bob.get("/v1/chat/sessions").status_code == 200
+    assert alice.get("/v1/memory/namespaces").status_code == 200
+    assert bob.get("/v1/memory/namespaces").status_code == 200
+
+    # Seed B-owned schedule and memory rows before any baseline is taken: a
+    # destructive A-side delete whose regression wipes the entire backing
+    # store must not pass vacuously against an empty `[] == []` projection.
+    seeded_schedule = bob.post("/v1/schedules", json={**_SCHEDULE_BODY, "workspace_id": h.ws_b.id})
+    assert seeded_schedule.status_code == 201, seeded_schedule.text
+    h.bob_schedule_ids.append(seeded_schedule.json()["id"])  # teardown
+    seeded_memory = bob.post(
+        "/v1/memory/entries",
+        json={"key": "m8a6-bob", "value": "b-owned", "namespace": "m8a6-b"},
+    )
+    assert seeded_memory.status_code == 200, seeded_memory.text
+    h.bob_memory_ids.append(seeded_memory.json()["id"])  # teardown
+
+    try:
+        yield h
+    finally:
+        _cleanup(h)
+
+
+def _cleanup(h: Harness) -> None:
+    import stores
+    from services.agent_materialization import delete_workspace_agents
+    from services.workspace_authority import delete_workspace
+
+    for sid in h.schedule_ids:
+        stores.schedules.pop(sid, None)
+    for sid in h.bob_schedule_ids:
+        stores.schedules.pop(sid, None)
+    for aid in h.agent_ids:
+        stores.agents.pop(aid, None)
+    for eid in h.memory_ids:
+        stores.memory_entries.pop(eid, None)
+    for eid in h.bob_memory_ids:
+        stores.memory_entries.pop(eid, None)
+    for cid in h.chat_ids:
+        stores.chat_sessions.pop(cid, None)
+    for fid in h.feedback_ids:
+        stores.persona_feedback.pop(fid, None)
+    for ws in (h.ws_a, h.ws_b):
+        with contextlib.suppress(Exception):
+            asyncio.run(delete_workspace(ws.id))
+        # The cascade the delete route performs for materialized personas.
+        delete_workspace_agents(ws.id)
+        stores.workspaces.pop(ws.id, None)
+    # End the principals' authenticated sessions and drop the warmed
+    # starter-chat rows before removing the users: sessions and lazily
+    # seeded chats live in process-global stores and this fixture runs
+    # once per parametrized case, so leftovers would accumulate across
+    # cases and leak into later backend tests.
+    for client, username in ((h.alice, _ALICE), (h.bob, _BOB)):
+        with contextlib.suppress(Exception):
+            client.post("/v1/auth/logout")
+        stores.chat_sessions.pop(f"chat-seed-{username}", None)
+    stores.users.pop(_ALICE, None)
+    stores.users.pop(_BOB, None)
+
+
+# ---------------------------------------------------------------------------
+# Baseline sanity
+# ---------------------------------------------------------------------------
+
+
+def test_parties_start_independent_and_b_projection_is_populated(parties) -> None:
+    h = parties
+    assert h.ws_a.id != h.ws_b.id
+
+    observed = _observe(h)
+
+    # B's projection is live, not a constant: the untouched party has real
+    # observable state (canonical identity, persona agents, Root Project).
+    assert observed["workspace_detail"]["id"] == h.ws_b.id
+    assert observed["workspace_detail"]["persona_template_id"] == _B_PERSONA
+    assert {a["workspace_id"] for a in observed["agents"]} == {h.ws_b.id}
+    assert observed["agents"], "persona materialization gave B no agents"
+    assert observed["store_level"]["canonical"]["workspace_id"] == h.ws_b.id
+    assert observed["store_level"]["root_project_id"]
+    assert observed["store_level"]["presentation"] is not None
+    # The fixture seeds B-owned rows precisely so destructive A-side deletes
+    # are checked against a populated B projection, never `[] == []`.
+    assert observed["schedules"], "expected the seeded B-owned schedule"
+    assert observed["memory_entries"], "expected the seeded B-owned memory entry"
+
+    # A is invisible to B's principal: the untouched party cannot even name A.
+    assert h.ws_a.id not in observed["workspace_list_ids"]
+    foreign = h.bob.get(f"/v1/workspaces/{h.ws_a.id}")
+    assert foreign.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# The property
+# ---------------------------------------------------------------------------
+
+
+def test_mixed_operation_sequence_preserves_untouched_workspace(parties) -> None:
+    h = parties
+    baseline = _observe(h)
+    a_projection = _observe_a(h)
+    steps: list[str] = []
+    observed_a_changes = 0
+
+    for i in range(_SEQUENCE_LENGTH):
+        op = h.rng.choice(_VOCABULARY)
+        op(h)
+        _assert_untouched(baseline, _observe(h), f"step {i}: {op.__name__}")
+        after_a = _observe_a(h)
+        if after_a != a_projection:
+            observed_a_changes += 1
+        a_projection = after_a
+        steps.append(op.__name__)
+
+    # Anti-vacuous guards, derived from observations of A rather than the
+    # helpers' own bookkeeping (a counter incremented on an accepted response
+    # would also be satisfied by a route that persists nothing): the sequence
+    # exercised every operation family, and A's observable state actually
+    # changed in at least half the steps. Read-only queries, the
+    # observationally-inert in-memory restart, and create/delete pairs that
+    # fall inside a single step legitimately may not change A.
+    exercised = set(steps)
+    missing = {op.__name__ for op in _VOCABULARY} - exercised
+    assert not missing, f"seeded sequence never exercised: {sorted(missing)}"
+    assert observed_a_changes >= _SEQUENCE_LENGTH // 2, (
+        f"only {observed_a_changes} of {len(steps)} steps changed A's "
+        f"observable state; the noninterference pass would be vacuous"
+    )
+
+    # The destructive corner, last: deleting A leaves B exactly as observed.
+    _op_delete_workspace_a(h)
+    _assert_untouched(baseline, _observe(h), "final: delete workspace A")
+    gone = h.alice.get(f"/v1/workspaces/{h.ws_a.id}")
+    assert gone.status_code == 404
+
+
+@pytest.mark.parametrize(("family", "ops"), _FAMILY_CASES, ids=[case[0] for case in _FAMILY_CASES])
+def test_operation_family_preserves_untouched_workspace(
+    parties, family: str, ops: list[Any]
+) -> None:
+    """Per-family attribution: when the mixed sequence ever fails, this
+    pinpoints which operation family introduced the leak."""
+    h = parties
+    baseline = _observe(h)
+    a_projection = _observe_a(h)
+    observed = 0
+    for op in ops:
+        op(h)
+        _assert_untouched(baseline, _observe(h), f"{family}:{op.__name__}")
+        after_a = _observe_a(h)
+        observed += after_a != a_projection
+        a_projection = after_a
+    if family == "restart":
+        # `initialize_stores()` is allowed to be observationally inert in the
+        # in-memory suite (no database configured; seeds already present), so
+        # there is no A-side delta to demand. Its value here is that a full
+        # re-initialization leaves B untouched, asserted above per step; the
+        # durable-reload leg is a recorded research limitation.
+        assert h.mutations > 0, f"family {family} never ran"
+    else:
+        assert observed > 0, (
+            f"family {family} performed no observable A-side mutation; "
+            f"its noninterference pass would be vacuous"
+        )
+
+
+def test_deleting_a_cascades_only_into_a(parties) -> None:
+    h = parties
+    # Give A and B durable product rows, then delete A.
+    _create_schedule_a(h)
+    bob_schedule = h.bob.post(
+        "/v1/schedules", json={**_SCHEDULE_BODY, "workspace_id": h.ws_b.id}
+    ).json()
+    h.schedule_ids.append(bob_schedule["id"])  # teardown
+    before = _observe(h)
+
+    _op_delete_workspace_a(h)
+
+    after = _observe(h)
+    _assert_untouched(before, after, "delete workspace A")
+    # B's records survive A's teardown, including the persona-agent cascade.
+    assert before["agents"] == after["agents"]
+    assert any(s["id"] == bob_schedule["id"] for s in after["schedules"])
+    assert h.bob.get(f"/v1/workspaces/{h.ws_b.id}").status_code == 200
+    # A is gone everywhere.
+    assert asyncio.run(_canonical_get(h.ws_a.id)) is None, (
+        "A's canonical record outlived its deletion"
+    )
+
+
+def test_deleting_a_cascades_only_into_a_with_matching_personas(parties) -> None:
+    """Review P2: the delete cascade must be scoped by Workspace, not persona.
+
+    The permanent fixture gives A and B different personas, so a faulty
+    cascade that deletes Agents by `persona_template_id` rather than by
+    `workspace_id` leaves B untouched and passes every deletion check. Here
+    Bob owns a second Workspace C that instantiates *A's* persona; deleting A
+    must not take C's Agents with it.
+    """
+    h = parties
+    from models.workspace import Workspace
+
+    created_c = h.bob.post(
+        "/v1/workspaces", json={"persona_template_id": _A_PERSONA, "name": "M8A6 Workspace C"}
+    )
+    assert created_c.status_code == 201, created_c.text
+    ws_c = Workspace(**created_c.json())
+
+    try:
+        before_c = _projection(h.bob, ws_c.id)
+        assert before_c["agents"], "C should have materialized Agents to observe"
+        assert {a["workspace_id"] for a in before_c["agents"]} == {ws_c.id}
+
+        _op_delete_workspace_a(h)
+
+        after_c = _projection(h.bob, ws_c.id)
+        assert after_c == before_c, (
+            "A's deletion touched C, which shares A's persona: the Agent "
+            "cascade is persona-scoped, not Workspace-scoped"
+        )
+
+        # Sensitivity (AGENTS.md L88-L92): simulate exactly the named
+        # regression -- a cascade that removes every Agent of A's persona --
+        # and prove the oracle fails against it, so the passes above are not
+        # vacuous.
+        import stores
+        from services.agent_materialization import workspace_agent_id
+
+        for aid, row in list(stores.agents.items()):
+            if row.workspace_id == ws_c.id:
+                stores.agents.pop(aid, None)
+        stores.agents.discard(workspace_agent_id(ws_c.id))
+        after_regression = _projection(h.bob, ws_c.id)
+        with pytest.raises(AssertionError, match="noninterference violated"):
+            _assert_untouched(before_c, after_regression, "persona-scoped cascade")
+        assert not after_regression["agents"]
+    finally:
+        import stores
+        from services.agent_materialization import delete_workspace_agents
+        from services.workspace_authority import delete_workspace
+
+        with contextlib.suppress(Exception):
+            asyncio.run(delete_workspace(ws_c.id))
+        delete_workspace_agents(ws_c.id)
+        stores.workspaces.pop(ws_c.id, None)
+
+
+async def _canonical_get(workspace_id: str) -> Any:
+    from services.workspace_authority import canonical_store_for_tests
+
+    return await canonical_store_for_tests().get(workspace_id)
+
+
+def test_same_principal_two_workspaces_destructive_ops_stay_workspace_scoped(
+    parties,
+) -> None:
+    """One principal authorized on both Workspaces (review P2).
+
+    The `parties` topology alone establishes cross-user isolation: B is
+    Bob-only, so a regression that keeps principal isolation but drops
+    Workspace isolation -- deleting every schedule or Agent owned by the
+    acting *user* -- finds no B-side rows of Alice's to damage and passes.
+    This case closes that gap without forking the fixture: Bob grants Alice
+    an editor membership in B, and Alice seeds real B-side rows through it,
+    so her acting-user rows exist on both sides while every operation stays
+    explicitly scoped to A. Memory entries and chat sessions are excluded
+    here: they are principal-owned records by design (the research note's
+    documented exception), so schedules and Agents are the surfaces where
+    user-scoping versus Workspace-scoping can disagree.
+    """
+    h = parties
+    # Alice's authorized universe now spans both Workspaces.
+    added = h.bob.post(
+        f"/v1/workspaces/{h.ws_b.id}/members", json={"user_id": _ALICE, "role": "editor"}
+    )
+    assert added.status_code == 200, added.text
+
+    # B-side row created by Alice *through her B membership*: exactly what
+    # a principal-scoped delete would take out. Teardown-only list, never
+    # the A-op working set the vocabulary pops from. (Agents have no
+    # equivalent row here: adding an Agent to a Workspace is owner-gated, so
+    # an editor membership cannot seed one -- schedules carry the case.)
+    b_schedule = h.alice.post("/v1/schedules", json={**_SCHEDULE_BODY, "workspace_id": h.ws_b.id})
+    assert b_schedule.status_code == 201, b_schedule.text
+    b_schedule_id = b_schedule.json()["id"]
+    assert b_schedule.json()["workspace_id"] == h.ws_b.id
+    h.bob_schedule_ids.append(b_schedule_id)
+
+    baseline = _observe(h)
+    # Anti-vacuity: B's projection carries Alice's cross-Workspace row, so
+    # a user-scoped regression has something real to damage.
+    assert any(s["id"] == b_schedule_id for s in baseline["schedules"])
+
+    # The destructive corner of the vocabulary, still explicitly scoped to A.
+    for op in (
+        _op_create_schedule_a,
+        _op_delete_schedule_a,
+        _op_create_agent_a,
+        _op_delete_agent_a,
+        _op_archive_workspace_a,
+        _op_recover_workspace_a,
+    ):
+        op(h)
+        _assert_untouched(baseline, _observe(h), f"same-principal: {op.__name__}")
+    _op_delete_workspace_a(h)
+    _assert_untouched(baseline, _observe(h), "same-principal: delete workspace A")
+
+    # Sensitivity (AGENTS.md L88-L92): simulate exactly the named regression
+    # -- a handler that deletes every schedule owned by the acting user,
+    # regardless of Workspace -- and prove the oracle fails against it, so
+    # the passes above are not vacuous.
+    import stores
+
+    for sid in [
+        sid
+        for sid, row in stores.schedules.items()
+        if row.user_id == _ALICE and row.workspace_id == h.ws_b.id
+    ]:
+        stores.schedules.pop(sid, None)
+    after_regression = _observe(h)
+    with pytest.raises(AssertionError, match="noninterference violated"):
+        _assert_untouched(
+            baseline, after_regression, "principal-scoped delete (the named regression)"
+        )
+    assert all(s["id"] != b_schedule_id for s in after_regression["schedules"])
+
+
+# ---------------------------------------------------------------------------
+# Sensitivity controls: the oracle can fail, so passing means something
+# ---------------------------------------------------------------------------
+
+
+def test_oracle_sensitivity_b_side_write_changes_the_projection(parties) -> None:
+    h = parties
+    baseline = _observe(h)
+
+    r = h.bob.post("/v1/schedules", json={**_SCHEDULE_BODY, "workspace_id": h.ws_b.id})
+    assert r.status_code == 201, r.text
+    h.schedule_ids.append(r.json()["id"])  # teardown
+
+    after = _observe(h)
+    assert after != baseline, "oracle is blind: a real B-side write changed nothing"
+    assert len(after["schedules"]) == len(baseline["schedules"]) + 1
+
+
+def test_a_operations_change_a_projection(parties) -> None:
+    h = parties
+    sid = _create_schedule_a(h)
+
+    listed = h.alice.get("/v1/schedules").json()
+    assert any(s["id"] == sid for s in listed), "A-side write never became visible to A"
+
+    # ...and B's principal still sees none of A's rows.
+    observed = _observe(h)
+    assert all(s["workspace_id"] != h.ws_a.id for s in observed["schedules"])
+    assert all(a["workspace_id"] != h.ws_a.id for a in observed["agents"])
+
+
+# ---------------------------------------------------------------------------
+# Documented global-state exceptions, pinned as behavior
+# ---------------------------------------------------------------------------
+
+
+def test_persona_feedback_aggregates_across_workspaces_of_one_persona(parties) -> None:
+    """The deliberate exception: `summarize()` matches by persona template,
+    not workspace, so feedback left in one Workspace is aggregated into every
+    other Workspace instantiating the same persona. The persona-wide summary
+    is an admin-gated read, so a non-admin untouched party cannot observe it
+    through the API -- but the store-level aggregation is the documented
+    cross-workspace surface, pinned here through the real implementation. A
+    naive projection that treated feedback rows as workspace-private would
+    false-positive; the harness avoids that by giving A and B distinct
+    personas and excepting this surface."""
+    h = parties
+    import stores
+    from services.persona_feedback import summarize
+
+    twin_a = h.alice.post(
+        "/v1/workspaces", json={"persona_template_id": _B_PERSONA, "name": "M8A6 twin A"}
+    ).json()
+    try:
+        r = h.alice.post(
+            f"/v1/workspaces/{twin_a['id']}/feedback",
+            json={"thumb": "down", "comment": "m8a6 exception probe"},
+        )
+        assert r.status_code == 201, r.text
+        probe_id = r.json()["id"]
+        h.feedback_ids.append(probe_id)
+
+        summary = summarize(_B_PERSONA, list(stores.persona_feedback.values()))
+        assert summary.thumbs_down >= 1
+        assert any(
+            f.workspace_id == twin_a["id"] and f.comment == "m8a6 exception probe"
+            for f in summary.recent
+        ), "expected the documented cross-workspace persona-feedback aggregation"
+
+        # Review P2: the admin gate the documented exception depends on. The
+        # persona-wide summary is an operator-only read (middleware/auth.py
+        # refuses a non-admin GET on the persona feedback path), so Bob -- a
+        # non-admin Workspace owner -- must be refused. If the middleware guard
+        # were removed, he could read other Workspaces' user ids and comments
+        # through this endpoint while every store-level assertion above still
+        # passed.
+        refused = h.bob.get(f"/v1/workspaces/persona-templates/{_B_PERSONA}/feedback")
+        assert refused.status_code == 403, (
+            "expected the persona-wide feedback summary to be admin-gated; got "
+            f"{refused.status_code} {refused.text}"
+        )
+        refused_alice = h.alice.get(f"/v1/workspaces/persona-templates/{_B_PERSONA}/feedback")
+        assert refused_alice.status_code == 403, (
+            "expected a non-admin A-side principal to be refused the summary too; got "
+            f"{refused_alice.status_code} {refused_alice.text}"
+        )
+    finally:
+        assert h.alice.delete(f"/v1/workspaces/{twin_a['id']}").status_code == 204
+
+
+def test_chat_listing_seeds_reader_state_on_first_read(parties) -> None:
+    """The false-positive source the harness must warm up around: the first
+    chat-session listing for a principal seeds their starter session, so a
+    naive first-read baseline changes between baseline capture and the next
+    read without any A-side operation running."""
+    import stores
+    from main import app
+
+    username = "m8a6-dave"
+    dave = _mint_principal(app, username)
+    try:
+        first = dave.get("/v1/chat/sessions")
+        assert first.status_code == 200
+        seeded = {s["id"] for s in first.json()}
+        assert f"chat-seed-{username}" in stores.chat_sessions, (
+            "expected the lazy starter-session seed on first read"
+        )
+        assert f"chat-seed-{username}" in seeded
+        second = dave.get("/v1/chat/sessions")
+        assert second.status_code == 200
+        assert {s["id"] for s in second.json()} == seeded, "warm state must be stable"
+    finally:
+        stores.users.pop(username, None)
+        stores.chat_sessions.pop(f"chat-seed-{username}", None)

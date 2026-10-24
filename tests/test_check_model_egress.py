@@ -431,12 +431,21 @@ def test_discover_sites_surfaces_reachability_classes_from_the_shipped_tree(
 
     gateway = findings["maistro.capabilities.providers.llm_gateway"]
     assert gate.classify(gateway, unreachable=unreachable) == gate.PROVIDER_BOUNDARY
-    assert any(site.qualname == "execute_model_chat" for site in gateway.sites)
+    # SPEC-285 renamed the physical dispatch inside the boundary: the
+    # gateway POST lives in `_post_model_chat`, adapter-backed dispatch in
+    # `_dispatch_adapter_model_chat`. The boundary quals — not a historical
+    # name — are what "no caller is invisible" pins.
+    gateway_quals = {site.qualname for site in gateway.sites}
+    assert {"_post_model_chat", "_dispatch_adapter_model_chat"} <= gateway_quals
 
     corpus = findings["services.canonical_corpus"]
     assert gate.classify(corpus, unreachable=unreachable) == gate.UNREACHABLE_LIBRARY
 
-    chat = findings["services.chat_completion"]
+    # The #1084 convergence removed `services.chat_completion`'s physical
+    # calls entirely — its census entry disappears exactly when the raw calls
+    # do. The shipped escape the tree still carries is the legacy DAG node's
+    # governed model egress.
+    chat = findings["services.legacy_dag_node"]
     assert gate.classify(chat, unreachable=unreachable) == gate.REACHABLE_ESCAPE
 
 

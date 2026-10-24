@@ -232,6 +232,14 @@ class SandboxSettings(BaseSettings):
     timeout: int = 300
     network_disabled: bool = True
     readiness_required: bool = False
+    # Host-selected bound (#1197) on command output a sandbox retains per
+    # exec. Numeric default on purpose: `maistro.config` sits *below*
+    # `maistro.sandbox` (fence -> runs -> config), so importing the protocol
+    # constant here would be a cycle. The equality with
+    # `DEFAULT_MAX_OUTPUT_BYTES` is pinned by a test; the backends clamp this
+    # to `MAX_OUTPUT_BYTES_CEILING`, so an env source can lower the bound per
+    # deployment but cannot raise it past the ceiling.
+    max_output_bytes: int = 1024 * 1024
     # microVM backend (SPEC-190): Firecracker / Cloud-Hypervisor boot a kernel +
     # ext4 rootfs, NOT an OCI image, so these are separate from `image` (the
     # Docker ref). Using `image` as a VM rootfs would fail to boot.
@@ -276,7 +284,17 @@ class Settings(BaseSettings):
     host: str = "127.0.0.1"
     port: int = 8000
 
-    api_keys: list[str] = Field(default_factory=list, description="Valid API bearer tokens")
+    api_keys: list[str] = Field(
+        default_factory=list,
+        description="Valid API bearer tokens (principal:secret entries)",
+    )
+    admin_api_keys: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Explicit administrator bearer tokens (principal:secret entries); "
+            "authority is selected by this separate configuration list"
+        ),
+    )
     require_auth: bool = Field(
         default=True,
         description="Refuse to start without API keys. Set REQUIRE_AUTH=false for local dev only.",

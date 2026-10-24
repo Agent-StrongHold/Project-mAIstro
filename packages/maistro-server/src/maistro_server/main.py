@@ -32,6 +32,7 @@ from maistro.graph.concurrency import configure_graph_concurrency
 from maistro.http import aclose_shared_clients, configure_shared_http
 from maistro.observability.logging import configure_logging
 from maistro.observability.middleware import RequestIDMiddleware
+from maistro.runs.store_boundary import RunStoreBoundary
 from maistro.security.outbound import configure_outbound_policy, configured_endpoints
 from maistro.tasks.execution import TaskAttemptExecutor
 from maistro.tasks.http_contract import (
@@ -60,7 +61,11 @@ from maistro_server.api import (
     workspaces,
     ws,
 )
-from maistro_server.api.auth import API_KEY_ENTRY_DOC, invalid_api_key_entries
+from maistro_server.api.auth import (
+    API_KEY_ENTRY_DOC,
+    ambiguous_api_key_entries,
+    invalid_api_key_entries,
+)
 from maistro_server.api.chat_completions import RUN_ID_HEADER
 from maistro_server.api.middleware import PayloadSizeLimitMiddleware, SecurityHeadersMiddleware
 from maistro_server.api.rate_limit import RateLimitMiddleware
@@ -120,10 +125,11 @@ SHUTDOWN_DRAIN_TIMEOUT = 30.0
 
 def _validate_startup(settings: Settings) -> None:
     """Fail-fast startup checks. Raises RuntimeError if critical config is missing."""
-    if settings.require_auth and not settings.api_keys:
+    if settings.require_auth and not settings.api_keys and not settings.admin_api_keys:
         raise RuntimeError(
             "CRITICAL: No API keys configured and REQUIRE_AUTH is true. "
-            "Set API_KEYS env var or set REQUIRE_AUTH=false for local development."
+            "Set API_KEYS or ADMIN_API_KEYS env var, or set REQUIRE_AUTH=false "
+            "for local development."
         )
     # #843: fail closed at boot rather than serving a config where keys
     # silently share an invented identity. Descriptions never echo key
@@ -131,12 +137,26 @@ def _validate_startup(settings: Settings) -> None:
     invalid_entries = invalid_api_key_entries(settings)
     if invalid_entries:
         raise RuntimeError(
-            "CRITICAL: API_KEYS entries without an explicit canonical "
+            "CRITICAL: API key entries without an explicit canonical "
             f"principal (#843): {'; '.join(invalid_entries)}. Rewrite every "
-            f"entry as {API_KEY_ENTRY_DOC}. A legacy plain key keeps working "
+            f"entry as {API_KEY_ENTRY_DOC}; put administrator entries in "
+            "ADMIN_API_KEYS. A legacy plain key keeps working "
             "once prefixed with its principal — the same secret keeps "
             "authenticating, now attributed to the named principal. See "
             "docs/install/api-key-identity.md for the migration path."
+        )
+    # #1095: one bearer credential must resolve to exactly one principal and
+    # authority. A secret shared across entries made configuration order the
+    # tiebreaker for who a request authenticates as, so the collision itself
+    # is a startup failure. Descriptions never echo key material
+    # (ambiguous_api_key_entries guarantees that).
+    ambiguous_entries = ambiguous_api_key_entries(settings)
+    if ambiguous_entries:
+        raise RuntimeError(
+            "CRITICAL: API key credentials that resolve to more than one "
+            f"principal (#1095): {'; '.join(ambiguous_entries)}. Give each "
+            "principal its own secret — which identity a credential carries "
+            "must never depend on configuration order."
         )
     if settings.require_webhook_secrets and not (
         settings.github_webhook_secret and settings.ci_webhook_secret
@@ -235,6 +255,24 @@ def _router_api_key() -> str:
     return os.getenv("ROUTER_API_KEY", "")
 
 
+def _gateway_credential(settings: Settings) -> str:
+    """The credential the deployment's gateway actually authenticates (#1824).
+
+    The bundled proxy authenticates with its master key; an external gateway
+    (LITELLM_BASE_URL pointed off-stack) authenticates with the key the
+    operator states for it, `LITELLM_API_KEY` — the same derivation the
+    shipped compose file applies when it fills the containers' environment:
+    `LITELLM_API_KEY=${LITELLM_API_KEY:-${LITELLM_MASTER_KEY}}`. Server
+    construction used to read only the bundled `LITELLM_MASTER_KEY` setting,
+    so a stack switched to an external gateway kept presenting the bundled
+    proxy's key to it and every governed call came back 401. The physical key
+    registered as the scoped `model.chat` gateway credential and the one the
+    roster-facing endpoint carries are resolved here, once, together — the
+    two doors cannot disagree (and neither value is ever logged).
+    """
+    return os.getenv("LITELLM_API_KEY") or settings.litellm.master_key
+
+
 def _agents_dir() -> str:
     """`agents_dir`, from the same place, for the same reason."""
     yaml_config = settings_module.get_yaml_config()
@@ -262,7 +300,7 @@ def _agent_config(settings: Settings) -> AgentConfig:
     return AgentConfig(
         router_api_key=_router_api_key(),
         litellm_url=settings.litellm.base_url,
-        litellm_key=settings.litellm.master_key,
+        litellm_key=_gateway_credential(settings),
         agents_dir=_agents_dir(),
         database_url=resolve_database_url(),
         workspace_id=settings.workspace_id,
@@ -391,7 +429,7 @@ async def _build_container(settings: Settings, pg_pool: Any) -> tuple[Any, Model
         router=container.llm_router,
         endpoint=GatewayEndpoint(
             base_url=settings.litellm.base_url,
-            api_key=settings.litellm.master_key,
+            api_key=_gateway_credential(settings),
         ),
     )
     # `Container.agents` is typed `dict[str, Agent]`, and `Agent` is a concrete
@@ -440,13 +478,15 @@ async def _runtime_lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
     configure_logging(debug=settings.debug, json_output=not settings.debug)
 
-    # The worker loads the operator YAML itself (#1880): the entrypoint parent
-    # exec'd uvicorn away, taking any preload with it, and every consumer
-    # below — `_validate_startup` through `_router_api_key`, then
-    # `_agent_config` through `_security_config`/`_model_bindings` on the way
-    # into `create_container` — reads the singleton this sets. An invalid file
-    # stops startup here rather than bringing the server up as if the
-    # operator had declared nothing.
+    # The worker loads the operator YAML itself (#1880, carrying #1824): the
+    # entrypoint parent exec'd uvicorn away, taking any preload with it, and
+    # every consumer below — `_validate_startup` through `_router_api_key`,
+    # then `_agent_config` through `_security_config`/`_model_bindings` on the
+    # way into `create_container` — reads the singleton this sets. An invalid
+    # file stops startup here rather than bringing the server up as if the
+    # operator had declared nothing. Loading only in the entrypoint parent
+    # cannot work — `os.execvp` replaces that process — and tests injecting
+    # the singleton do not prove the shipped path.
     _load_operator_yaml()
 
     # Fail-fast startup validation
@@ -524,6 +564,12 @@ async def _runtime_lifespan(app: FastAPI) -> AsyncIterator[None]:
     # The handles these APIs return must resolve against the exact stores the
     # Container selected, not lookalike stores reconstructed by the server.
     runs.configure_run_store(run_store)
+    # Route visibility answers through the same Workspace-membership boundary
+    # the Container's stores back (#1152): missing and foreign ids fail closed
+    # identically at the one seam.
+    runs.configure_run_boundary(
+        RunStoreBoundary(run_store, container.workspace_store, container.project_scope_store)
+    )
     a2a.configure_a2a_admission(
         run_store,
         container.project_scope_store,
@@ -603,6 +649,7 @@ async def _runtime_lifespan(app: FastAPI) -> AsyncIterator[None]:
         await _drain_queue_singleton()
         reset_task_queue()
         runs.configure_run_store(None)
+        runs.configure_run_boundary(None)
         a2a.configure_a2a_admission(None, None)
         workspaces.configure_workspace_store(None)
 
