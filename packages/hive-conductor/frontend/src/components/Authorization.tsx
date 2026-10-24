@@ -1,6 +1,7 @@
 import { useState, type ReactNode } from "react";
 import { useAuthorization } from "../context/AuthorizationContext";
 import { randomId } from "../lib/ids";
+import { SecretField } from "./shared";
 
 export function ElevationPrompt({
   permission,
@@ -55,17 +56,14 @@ export function ElevationPrompt({
         Your account is assigned <strong>{permission}</strong>. Re-authenticate to use it for this task.
       </div>
       <div style={{ display: "flex", gap: 6, alignItems: "end" }}>
-        <label style={{ flex: 1, fontFamily: "var(--mono)", fontSize: 9 }}>
-          Password
-          <input
-            className="input-field"
-            type="password"
-            autoComplete="current-password"
-            value={password}
-            onChange={(event) => setPassword(event.target.value)}
-            onKeyDown={(event) => { if (event.key === "Enter") void submit(); }}
-          />
-        </label>
+        <SecretField
+          label="Password"
+          value={password}
+          onChange={setPassword}
+          autoComplete="current-password"
+          style={{ flex: 1, fontFamily: "var(--mono)", fontSize: 9 }}
+          onKeyDown={(event) => { if (event.key === "Enter") void submit(); }}
+        />
         <button className="btn btn-accent" disabled={busy || !password} onClick={() => void submit()}>
           {busy ? "checking..." : "elevate"}
         </button>
