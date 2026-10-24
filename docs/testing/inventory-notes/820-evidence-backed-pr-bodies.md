@@ -76,3 +76,38 @@ Structural regression proof for the +4: develop's `selfbranch.py` contains no
 `_quarantine_result_line`, so `test_body_states_a_gate_that_never_ran_as_not_run`
 cannot pass on it — the NOT-RUN quarantine line exists only in this branch's
 renderer.
+
+## CI repair round (trunk dependency advisories at `b0777bdd5`)
+
+The merge-queue evaluation of `b0777bdd5` failed three hosted gates, all on
+newly published dependency advisories — none reachable from this lane's diff
+(Python under `packages/maistro-rsi` + docs). Root cause from the runner logs
+(jobs 120716926896, 120716927323, 120716927362):
+
+- `Supply chain (pip-audit)` and `security` (same gate script,
+  `scripts/pip_audit_gate.py`): `fastmcp==4.0.11` GHSA-7xgj-8392-5q4r /
+  GHSA-vqqp-x5qm-5qp4 and `setuptools==84.0.0` GHSA-xmj3-9gf7-h52w, all with
+  fixed versions available — so the gate's own remedy applies: upgrade, not
+  allowlist.
+- `test`: `npm audit --audit-level=high` in `packages/maistro-canvas/frontend`
+  — 6 advisories (body-parser, zod high; @vitest/mocker ×2, ip-address,
+  undici moderate), all with semver-compatible fixes.
+
+Repair (no source changes, no ledger edits): `uv lock --upgrade-package
+fastmcp --upgrade-package setuptools` (fastmcp 4.0.11→4.1.3, setuptools
+84.0.0→84.2.1, plus their transitive openapi-pydantic 0.5.1→0.6.0 and a
+beartype python-version split), and `npm audit fix` in the canvas frontend
+(package-lock only; `obug` 2→3 is transitive dev tooling within its parent's
+range). No `package.json`, no `ALLOWED` entries, no baselines touched.
+
+Local proof with CI's exact arguments, all on the repaired tree:
+`uv pip freeze --exclude-editable` → `pip-audit --strict --format=json -r`
+(only the allowlisted `ecdsa PYSEC-2026-1325` remains) →
+`pip_audit_gate.py` exit 0; `check-dependency-namespaces.py` exit 0 (no new
+namespace from fastmcp 4.1.3); `npm audit --audit-level=high` exit 0 (0
+vulnerabilities); canvas `npm ci` + `test:ci` 79 passed + `lint` 0 errors +
+`build` ok; `ruff check`/`format --check` clean; `pytest
+packages/maistro-rsi/tests -q` 1734 passed / 4 skipped (inventory still 1738
+collected, +5 note unchanged); `pytest packages/maistro-core/tests -q` 16586
+passed (fastmcp's importer); vulture ratchet 1302→1302 exit 0. Test counts
+are unchanged, so the `+5` delta above still folds.
