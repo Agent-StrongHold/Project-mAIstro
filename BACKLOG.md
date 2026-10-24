@@ -345,7 +345,8 @@ Single-tenant, multi-user self-hosted deployment — ships as `packages/hive-con
 - [#1048](https://github.com/Agent-StrongHold/Project-mAIstro/issues/1048): v1.0 blocker; replaces Dashboard as default landing
 
 **[conductor-404] Workspace Agent chat — Proposed; `gap-impl` — v1.0 M3-D**
-- [#1037](https://github.com/Agent-StrongHold/Project-mAIstro/issues/1037), [#804](https://github.com/Agent-StrongHold/Project-mAIstro/issues/804): persistent goals + reconciliation; M2 security (#66) follows this path
+- Durable chat UI: [#1822](https://github.com/Agent-StrongHold/Project-mAIstro/issues/1822); goals + reconciliation: [#804](https://github.com/Agent-StrongHold/Project-mAIstro/issues/804); closed foundation [#1037](https://github.com/Agent-StrongHold/Project-mAIstro/issues/1037); M2 security (#66) follows this path
+- Persona swap productization (API/UI/Agent same path): [#2277](https://github.com/Agent-StrongHold/Project-mAIstro/issues/2277)
 
 **[conductor-405] Attention surface — Proposed; `gap-impl` — v1.0**
 - [#1049](https://github.com/Agent-StrongHold/Project-mAIstro/issues/1049): v1.0 blocker
@@ -354,11 +355,12 @@ Single-tenant, multi-user self-hosted deployment — ships as `packages/hive-con
 - [#82](https://github.com/Agent-StrongHold/Project-mAIstro/issues/82): builders → Backlog wiring; replaces Missions/WorkItems pages
 
 **[conductor-407] Capabilities unified surface — Proposed; `gap-impl` — v1.0 M3**
-- [#59](https://github.com/Agent-StrongHold/Project-mAIstro/issues/59): repertoire → Capabilities; retire Agents/MCP/Skills/Topology pages
+- UI owner: [#2273](https://github.com/Agent-StrongHold/Project-mAIstro/issues/2273) — one Capabilities surface; retire Agents/MCP/Skills/Topology pages
+- Security deps only (not UI): [#59](https://github.com/Agent-StrongHold/Project-mAIstro/issues/59), [#848](https://github.com/Agent-StrongHold/Project-mAIstro/issues/848)
 
 **[conductor-408] Legacy Conductor page retirement — Accepted; `gap-impl` — v1.0**
-- Delete (not redirect) legacy routes per cutover plan §9 retirement ledger amendments
-- Delete map: [`docs/architecture/WORKSPACE-RETIREMENT-DELETE-MAP.md`](docs/architecture/WORKSPACE-RETIREMENT-DELETE-MAP.md) (#2274); coordinated deletes only after replacement ACs
+- [#2274](https://github.com/Agent-StrongHold/Project-mAIstro/issues/2274): Delete (not redirect) legacy routes per cutover plan §9 retirement ledger amendments
+- Delete map: [`docs/architecture/WORKSPACE-RETIREMENT-DELETE-MAP.md`](docs/architecture/WORKSPACE-RETIREMENT-DELETE-MAP.md); coordinated deletes only after replacement ACs
 
 **[conductor-409] Design Studio v1.0 scope — Proposed; `gap-impl` — v1.0**
 - Beyond discovery/prompt-only; persona template framework (book-maker skin v1.1)
@@ -367,10 +369,10 @@ Single-tenant, multi-user self-hosted deployment — ships as `packages/hive-con
 - [#735](https://github.com/Agent-StrongHold/Project-mAIstro/issues/735): `/v2/canvas` not 503 on default `docker compose up`
 
 **[conductor-411] Hide Evolution UI until v1.2 — Proposed — v1.0**
-- Remove Evolution from nav and routes for v1.0; restore in v1.2 when durable population lands
+- [#2275](https://github.com/Agent-StrongHold/Project-mAIstro/issues/2275): Remove Evolution from nav and routes for v1.0; restore in v1.2 when durable population lands (#51 remains Evolve implementation)
 
 **[conductor-412] Tool binding dispatch wiring — Proposed; `gap-impl` — v1.0**
-- Persona overrides applied at dispatch via `tool_binding.py`; sandbox enforces per Graph NodeRun scope
+- [#2276](https://github.com/Agent-StrongHold/Project-mAIstro/issues/2276): Persona/Workspace overrides applied at dispatch via `tool_binding.py`; sandbox enforces per Graph NodeRun scope
 
 **[conductor-413] Hive service wiring — Proposed; `gap-impl` — v1.0**
 - Wire `repo_scanner`, `pipeline_orchestrator`, `chatbot_integration` for Workspace product (#34 hive-unwired-services)

@@ -4,11 +4,17 @@ from datetime import UTC, datetime
 from typing import Literal
 from uuid import uuid4
 
-import stores
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
-from models.schemas import ChatCompletionRequest, ChatMessage, ChatSession, ChatSessionSummary
+from models.schemas import (
+    ChatCompletionRequest,
+    ChatMessage,
+    ChatSession,
+    ChatSessionSummary,
+    CreateSessionBody,
+)
 from pydantic import BaseModel, ConfigDict
+from services import conversation_sessions
 from services.brief_chat import brief_turn
 from services.chat_completion import _execute_workflow_with_approval, build_llm_port
 from services.chat_completion import conversation_only as _conversation_only
@@ -20,7 +26,6 @@ from services.chat_gate import (
     openai_refusal,
 )
 from services.chat_runs import admit_turn, cancel_unstarted, execute_turn
-from services.owned_records import chat_sessions_for
 from services.program_hyperagent import user_id_from_request
 from services.request_principal import require_actor_id
 
@@ -44,47 +49,83 @@ def _now() -> datetime:
     return datetime.now(UTC)
 
 
-class CreateSessionBody(BaseModel):
-    model_config = ConfigDict(extra="ignore")
+def _history_as_messages(session_id: str, history: list[dict[str, str]]) -> list[ChatMessage]:
+    """Build API ChatMessage rows from SessionStore history.
 
-    title: str = "New chat"
+    Stable ids are derived from history order (the store's seq) so a reload
+    sees the same identities without a second transcript index.
+    """
+    out: list[ChatMessage] = []
+    for seq, entry in enumerate(history):
+        role = entry.get("role", "user")
+        if role not in ("user", "assistant", "system", "tool"):
+            continue
+        out.append(
+            ChatMessage(
+                id=f"{session_id}:{seq}",
+                role=role,  # type: ignore[arg-type]
+                content=entry.get("content", ""),
+            )
+        )
+    return out
+
+
+def _to_chat_session(
+    record: conversation_sessions.ConversationSessionRecord,
+    history: list[dict[str, str]],
+) -> ChatSession:
+    return ChatSession(
+        id=record.session_id,
+        user_id=record.user_id,
+        workspace_id=record.workspace_id,
+        title=record.title,
+        messages=_history_as_messages(record.session_id, history),
+        created_at=record.created_at,
+        updated_at=record.updated_at,
+    )
 
 
 @router.get("/sessions", response_model=list[ChatSessionSummary])
-def list_sessions(request: Request) -> list[ChatSessionSummary]:
-    owned = chat_sessions_for(request)
-    stores.seed_chat_for(owned.owner_id)
-    out = [
-        ChatSessionSummary(
-            id=s.id,
-            user_id=s.user_id,
-            title=s.title,
-            message_count=len(s.messages),
-            updated_at=s.updated_at,
+async def list_sessions(
+    request: Request,
+    workspace_id: str = Query(...),
+) -> list[ChatSessionSummary]:
+    user_id = require_actor_id(request)
+    records = await conversation_sessions.list_for(user_id, workspace_id)
+    out: list[ChatSessionSummary] = []
+    for record in records:
+        _rec, history = await conversation_sessions.get(user_id, record.session_id)
+        out.append(
+            ChatSessionSummary(
+                id=record.session_id,
+                user_id=record.user_id,
+                workspace_id=record.workspace_id,
+                title=record.title,
+                message_count=len(history),
+                updated_at=record.updated_at,
+            )
         )
-        for s in owned.values()
-    ]
-    return sorted(out, key=lambda x: x.updated_at, reverse=True)
+    return out
 
 
 @router.post("/sessions", response_model=ChatSession)
-def create_session(body: CreateSessionBody, request: Request) -> ChatSession:
-    sid = str(uuid4())
-    t = _now()
-    session = ChatSession(id=sid, title=body.title, messages=[], created_at=t, updated_at=t)
-    return chat_sessions_for(request).create(sid, session)
+async def create_session(body: CreateSessionBody, request: Request) -> ChatSession:
+    user_id = require_actor_id(request)
+    record = await conversation_sessions.create(user_id, body.workspace_id, body.title)
+    return _to_chat_session(record, [])
 
 
 @router.get("/sessions/{session_id}", response_model=ChatSession)
-def get_session(session_id: str, request: Request) -> ChatSession:
-    owned = chat_sessions_for(request)
-    stores.seed_chat_for(owned.owner_id)
-    return owned.require(session_id)
+async def get_session(session_id: str, request: Request) -> ChatSession:
+    user_id = require_actor_id(request)
+    record, history = await conversation_sessions.get(user_id, session_id)
+    return _to_chat_session(record, history)
 
 
 @router.delete("/sessions/{session_id}", status_code=204)
-def delete_session(session_id: str, request: Request) -> None:
-    chat_sessions_for(request).discard(session_id)
+async def delete_session(session_id: str, request: Request) -> None:
+    user_id = require_actor_id(request)
+    await conversation_sessions.delete(user_id, session_id)
 
 
 class RunWorkflowBody(BaseModel):
@@ -112,20 +153,24 @@ class AppendMessageBody(BaseModel):
 
 
 @router.post("/sessions/{session_id}/messages", response_model=ChatMessage)
-def append_message(session_id: str, body: AppendMessageBody, request: Request) -> ChatMessage:
-    owned = chat_sessions_for(request)
-    stores.seed_chat_for(owned.owner_id)
-    session = owned.require(session_id)
-    msg = ChatMessage(
-        id=str(uuid4()),
+async def append_message(session_id: str, body: AppendMessageBody, request: Request) -> ChatMessage:
+    user_id = require_actor_id(request)
+    conversation_sessions.require_owned(user_id, session_id)
+    msg_id = str(uuid4())
+    # SessionStore only persists user/assistant turns; other roles are refused
+    # at the store boundary. The API still accepts the role for shape parity.
+    if body.role in ("user", "assistant"):
+        await conversation_sessions.append_turn(
+            session_id,
+            [{"role": body.role, "content": body.content}],
+            turn_id=msg_id,
+        )
+    return ChatMessage(
+        id=msg_id,
         role=body.role,
         content=body.content,
         timestamp=_now(),
     )
-    session.messages.append(msg)
-    session.updated_at = _now()
-    owned.persist(session_id)
-    return msg
 
 
 def _dashboard_edit_requested(req: ChatCompletionRequest) -> bool:

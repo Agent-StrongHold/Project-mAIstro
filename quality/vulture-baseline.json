@@ -392,7 +392,6 @@
         "packages/maistro-registry/src/maistro_registry/schema.py::unused variable 'GOVERNANCE'",
         "packages/maistro-registry/src/maistro_registry/schema.py::unused variable 'IDENTITY'",
         "packages/maistro-registry/src/maistro_registry/schema.py::unused variable 'OBSERVABILITY'",
-        "packages/maistro-registry/src/maistro_registry/schema.py::unused variable 'PROPOSED'",
         "packages/maistro-registry/src/maistro_registry/schema.py::unused variable 'RELIABILITY'",
         "packages/maistro-registry/src/maistro_registry/schema.py::unused variable 'USER_CLIENT'",
         "packages/maistro-registry/src/maistro_registry/schema.py::unused variable 'WILL_NOT_IMPLEMENT'",
