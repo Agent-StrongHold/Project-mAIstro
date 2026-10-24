@@ -225,7 +225,9 @@ def test_session_id_is_provenance_not_a_second_run_identity(
     authed_client: Any, container: Container, gateway: _Gateway
 ) -> None:
     ws = _workspace()
-    sid = authed_client.post("/v1/chat/sessions", json={"title": "t"}).json()["id"]
+    sid = authed_client.post(
+        "/v1/chat/sessions", json={"title": "t", "workspace_id": ws}
+    ).json()["id"]
 
     first = _complete(authed_client, workspace_id=ws, session_id=sid)
     second = _complete(authed_client, workspace_id=ws, session_id=sid)
@@ -242,23 +244,19 @@ def test_session_id_is_provenance_not_a_second_run_identity(
 def test_a_session_id_the_caller_does_not_own_is_not_recorded(
     authed_client: Any, container: Container, gateway: _Gateway
 ) -> None:
-    from datetime import UTC, datetime
+    from services import conversation_sessions
 
-    from models.schemas import ChatSession
-    from services.owned_records import Owner, owned_chat_sessions
-
-    now = datetime.now(UTC)
-    foreign = "someone-elses-session"
-    owned_chat_sessions(Owner(id="someone-else")).create(
-        foreign, ChatSession(id=foreign, title="t", messages=[], created_at=now, updated_at=now)
-    )
+    foreign_ws = _workspace(owner="someone-else", name="foreign")
+    foreign = _run(
+        conversation_sessions.create("someone-else", foreign_ws, "t")
+    ).session_id
 
     r = _complete(authed_client, session_id=foreign)
 
     assert r.status_code == 200
     run, _node_runs, _attempts = _evidence(container, r.json()["run_id"])
     assert "session_id" not in run.provenance
-    owned_chat_sessions(Owner(id="someone-else")).discard(foreign)
+    _run(conversation_sessions.delete("someone-else", foreign))
 
 
 @pytest.mark.contract("behavioral")
