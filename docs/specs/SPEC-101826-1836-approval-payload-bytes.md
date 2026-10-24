@@ -29,46 +29,12 @@ history:
     reason: >-
       Draft contract for decision gate #1836 ("Freeze exact-effect payload bytes"),
       prepared for the named ADR owner's review. Nothing here is accepted, and no
-      implementation is authorized or claimed by this document.
-  - status: Proposed
-    date: 2026-10-18
-    revision: 2
-    reason: >-
-      Corrected the V-17 DurableApproval legacy-fallback digest to the
-      reproducible value after independent re-execution against the production
-      model (erratum recorded inline at V-17). No other section changed.
-  - status: Proposed
-    date: 2026-10-20
-    revision: 4
-    reason: >-
-      Corrected the V-15 `set` row's "v1 would have digested" column: the
-      frozen v1 recipe digests a set silently through `default=str`
-      (rendering `{"issued_at":"{'a', 'b'}"}` with arbitrary element order),
-      it does not raise `TypeError`; re-executed against the production
-      helper. No other row, vector, byte, or digest value changed.
-  - status: Proposed
-    date: 2026-10-20
-    revision: 3
-    reason: >-
-      Renumbered the golden vectors so every vector has exactly one number.
-      The mutation table holds eleven rows (one mutation per protected field
-      plus a second, nested effect mutation) but was labeled "V-3 … V-12",
-      which spans only ten numbers; it is now V-3 … V-13, and the subsequent
-      vectors shift by one (distinct values V-14, unsupported types V-15, key
-      collision V-16, ensure_ascii pin V-17, legacy row V-18 — the erratum
-      location of revision 2). All cross-references updated; no input, byte,
-      or digest value changed.
-  - status: Proposed
-    date: 2026-10-24
-    revision: 5
-    reason: >-
-      Front matter now declares `contracts: []`: this document is an unaccepted
-      decision-gate review artifact, so it claims no contract kind yet. ADR-032's
-      marker cross-check applies to claims; the `boundary` kind is to be declared
-      in the acceptance act itself, together with the marked vectors in the listed
-      test file. Front-matter-only change: no section, vector, input, byte, or
-      digest value changed, so all previously recorded verification evidence
-      remains valid.
+      implementation is authorized or claimed by this document. The status has not
+      changed since first draft, so the ledger carries a single Proposed entry; the
+      per-revision record (draft, then revisions 2–5) is kept in the body under
+      "Revision history", because this ledger records status transitions only.
+---
+
 ---
 
 # SPEC-101826-1836: Exact-effect approval payload bytes — versioned canonical serialization contract
@@ -93,6 +59,14 @@ implementation and no test pass.
 
 What the deterministic hygiene command proves is exactly what the gate says it
 proves: prospective document hygiene. It cannot ratify a security contract.
+
+<!-- ac-state: non-measurable - Unaccepted decision-gate review artifact
+     (issue #1836): until the named ADR owner accepts it, this document claims
+     no implemented behavior and no test pass, so it states nothing checkable
+     yet. Its golden vectors V-1 … V-18 are prospective evidence only. The
+     acceptance-criteria section and the @AC-marked vectors are to be added in
+     the acceptance act itself, together with the boundary contract kind that
+     act declares. -->
 
 ## Context
 
@@ -427,6 +401,18 @@ the wrong value.)*
    fallback preserved for legacy rows.
 6. The helper module path and the downstream mapping section.
 7. The golden vectors V-1 … V-18 as the transition and regression contract.
+
+## Revision history
+
+The document status has been `Proposed` — under review, accepted by nobody —
+since first draft, so the front-matter history ledger carries one entry; the
+per-revision record lives here, in the order the revisions were applied:
+
+- **2026-10-18 (first draft).** Draft contract for decision gate #1836 ("Freeze exact-effect payload bytes"), prepared for the named ADR owner's review. Nothing here is accepted, and no implementation is authorized or claimed by this document.
+- **2026-10-18 (revision 2).** Corrected the V-17 DurableApproval legacy-fallback digest to the reproducible value after independent re-execution against the production model (erratum recorded inline at V-17). No other section changed.
+- **2026-10-20 (revision 4).** Corrected the V-15 `set` row's "v1 would have digested" column: the frozen v1 recipe digests a set silently through `default=str` (rendering `{"issued_at":"{'a', 'b'}"}` with arbitrary element order), it does not raise `TypeError`; re-executed against the production helper. No other row, vector, byte, or digest value changed.
+- **2026-10-20 (revision 3).** Renumbered the golden vectors so every vector has exactly one number. The mutation table holds eleven rows (one mutation per protected field plus a second, nested effect mutation) but was labeled "V-3 … V-12", which spans only ten numbers; it is now V-3 … V-13, and the subsequent vectors shift by one (distinct values V-14, unsupported types V-15, key collision V-16, ensure_ascii pin V-17, legacy row V-18 — the erratum location of revision 2). All cross-references updated; no input, byte, or digest value changed.
+- **2026-10-24 (revision 5).** Front matter now declares `contracts: []`: this document is an unaccepted decision-gate review artifact, so it claims no contract kind yet. ADR-032's marker cross-check applies to claims; the `boundary` kind is to be declared in the acceptance act itself, together with the marked vectors in the listed test file. Front-matter-only change: no section, vector, input, byte, or digest value changed, so all previously recorded verification evidence remains valid.
 
 ## Out of scope
 
