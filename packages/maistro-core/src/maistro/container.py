@@ -75,7 +75,7 @@ from maistro.memory.working_graph.wiring import (
 )
 from maistro.personas.wiring import PERSONA_PG_TABLES, wire_persona_store
 from maistro.projects.scope_store import ProjectScopeStore
-from maistro.quota.default_tracker import set_default_quota_tracker
+from maistro.quota.recorder import set_default_quota_tracker
 from maistro.quota.tracker import InMemoryQuotaTracker
 from maistro.quota.usage_log import InMemoryUsageLog, get_default_usage_log
 from maistro.router.selector import RouterEngine

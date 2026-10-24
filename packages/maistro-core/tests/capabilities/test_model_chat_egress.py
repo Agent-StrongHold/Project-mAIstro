@@ -1506,6 +1506,7 @@ def _streaming_client(
     )
 
 
+@pytest.mark.contract("behavioral")
 async def test_stream_reaches_the_consumer_while_the_invocation_is_running(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1612,6 +1613,7 @@ async def test_stream_failure_midstream_terminalizes_and_reaches_the_consumer(
     assert "wire cut mid-stream" in str(recorded.error)
 
 
+@pytest.mark.contract("boundary")
 async def test_stream_abandonment_never_leaves_a_completed_invocation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

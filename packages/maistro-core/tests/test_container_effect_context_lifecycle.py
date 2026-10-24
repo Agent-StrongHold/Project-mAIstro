@@ -21,7 +21,7 @@ from maistro.capabilities.effect_context import (
 )
 from maistro.container import create_container
 from maistro.persistence import get_pool, pool_count, release_pool
-from maistro.quota.default_tracker import (
+from maistro.quota.recorder import (
     get_default_quota_tracker,
     set_default_quota_tracker,
 )

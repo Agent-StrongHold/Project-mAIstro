@@ -38,8 +38,7 @@ from maistro.credentials.router import CredentialRouter
 from maistro.events.envelope import EventStore, InMemoryEventStore, SqliteEventStore
 from maistro.events.pg_envelope import PgEventStore
 from maistro.policy.types import Decision, PolicyVerdict
-from maistro.quota.default_tracker import get_default_quota_tracker
-from maistro.quota.recorder import CanonicalInvocationUsageRecorder
+from maistro.quota.recorder import CanonicalInvocationUsageRecorder, get_default_quota_tracker
 from maistro.quota.usage_log import InMemoryUsageLog, get_default_usage_log
 
 
