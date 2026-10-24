@@ -134,3 +134,78 @@ deb.debian.org trixie-security propagation window had fully passed:
 Residual action unchanged and now expected green: the next hosted evaluation
 of `Container scan + SBOM + cosign` (a rebuild re-consults the mirror per
 #795 and the race window has closed, as the r3 in-image versions above prove).
+
+## Round 4 (job 70562a49a9024bd0a94b31182e0a309b) — reconcile-step repair proven at 4cb4b70a9
+
+Named merge-queue failure at review head fe7020f5 (run 40096048976/job
+120878426851): the "Reconcile installed packages to uv.lock" step (last step
+of `Container scan + SBOM + cosign`; the four trivy scans and SBOM steps had
+already passed) failed on its FIRST sub-command: `image maistro-engine:pr-2268
+does NOT reconcile to the lock: version mismatch: beartype==0.22.9 (image)
+!= beartype==0.23.1`. Root cause (prior round): develop's fastmcp 4.0.11->4.1.3
+bump (461fb86b1) made beartype marker-split in uv.lock (0.22.9 for
+`python_full_version < '3.15'`, 0.23.1 for `>= '3.15'`); `parse_expected` was
+last-line-wins per name, so the py3.13 engine image installing the CORRECT
+0.22.9 was failed against the collapsed 0.23.1 expectation. The repair at
+4cb4b70a9 (already on this branch, one commit ahead of the PR-review head)
+keeps every emitted pin per name and accepts any of them at reconcile; a
+version outside the emitted set still fails, naming every branch.
+
+Fresh, deterministic local proof at this exact head (tree clean at
+4cb4b70a9d44649b150968ed0e6ccb9f201a2800):
+
+- Exports regenerated with the workflow's exact invocations: the engine export
+  carries `beartype==0.22.9 ; python_full_version < '3.15'` and
+  `beartype==0.23.1 ; python_full_version >= '3.15'` at lines 132/136;
+  research and rsi exports each carry the split; hive's carries none.
+- All four images REBUILT from this exact tree with CI flags (apt stage
+  `--no-cache-filter`): `maistro-engine:pr-2268-r5`,
+  `hive-conductor:pr-2268-r5` (VITE_POC_MODE=pm, VITE_BASE_PATH=/pm/),
+  `maistro-engine-research:pr-2268-r5`, `maistro-rsi-runner:pr-2268-r5`.
+  In-image engine python is 3.13.16 with `beartype==0.22.9` (importlib.metadata).
+- CI-exact reconcile step re-run end to end (all four sub-commands, workflow
+  lines 493-540 arguments, `set -e`): ALL FOUR print
+  `OK: ... ships exactly the locked set` and the step exits 0.
+- Regression direction proven on the same real inputs: the PRE-fix script
+  (extracted from parent fe7020f5a) run against the same fresh engine image +
+  same fresh export fails with the byte-identical hosted error
+  (`version mismatch     : beartype==0.22.9 (image) != beartype==0.23.1`,
+  exit 1). Root cause and fix are both demonstrated against production
+  behavior, not mocked fixtures.
+- Tests: `uv run pytest tests/test_check_image_lock_reconciliation.py -q` →
+  32 passed at HEAD. In an isolated prefix running the same test file against
+  the pre-fix script, the 4 outcome-bearing new tests FAIL there (and the
+  behavior-preservation guard `test_marker_split_pin_absent_from_image_still_
+  gates_nothing` passes on both sides, as designed); the inventory note's
+  "all five fail" wording was corrected to "four of the five" in
+  docs/testing/inventory-notes/1837-image-lock-marker-split.md this round.
+
+Gates re-run at this head, all exit 0: `uv sync --locked --extra dev`,
+`ruff check .`, `ruff format --check .` (3484 files),
+`scripts/check-adr-status-language.py` + `git diff --check` (the issue's own
+hygiene command), `scripts/check-adr-index.py`,
+`scripts/check-contract-markers.py`, `scripts/check-suite-inventory.py`
+(21 suites match), `scripts/check-vulture-baseline.py packages/*/src
+--min-confidence 60 --exclude '*/third_party/*'` (1302 identities = banked;
+no ledger amendment warranted — the changed script is under scripts/, outside
+the scanned surface).
+
+Issue acceptance re-verified INDEPENDENTLY this round (not inherited): in an
+ephemeral venv (`webauthn==3.0.1`, outside the tree), the ADR's RECORDED
+registration blob verifies with every recorded field (credential_id bytes,
+zero aaguid, fmt=packed, sign_count=0, user_verified=True,
+single_device, backed_up=False) and the RECORDED assertion blob verifies
+(new_sign_count=1, user_verified=True) against the registration's stored key;
+I1-I6 replay with EXACT exception-class + message-string equality to the ADR
+table (I3 via the appendix's signature-consistent regeneration, flags 0x41).
+The recorded wheel digest matches PyPI's sha256 for
+`webauthn-3.0.1-py3-none-any.whl` byte-for-byte
+(`9927b2f5…c93e31`). The ADR remains `Proposed` (owner acceptance is the
+@BlakeMatthews-dev process gate; not code-provable), `webauthn` stays
+unlocked, and #1837 stays open — as the issue requires.
+
+Residual action: the merge-queue re-evaluation of `Container scan + SBOM +
+cosign` against a head containing 4cb4b70a9. Everything the failing step
+executes has been re-run locally with CI-exact arguments and passes; the
+remaining risk is only hosted-runner variance (registry/trivy-DB), not this
+failure mode.
