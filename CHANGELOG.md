@@ -25,6 +25,12 @@ or placeholder-only section.
 
 ### Added
 
+- **Workspace Attention page and nav (#1049, partial).** `/attention` lists the
+  existing Workspace Attention projection (HITL pauses + failed Runs) with the
+  backend summary and Run inspection links. Answering still uses the HITL API
+  named by `answer_href`; defer/dismiss and Messages/Optimizer MERGE remain
+  follow-ons.
+
 - **`/health` names the Reactor's persistence authority beside every other
   store family (#1178).** `persistence.families` gains a `reactor` entry:
   `fire-and-forget` when the Reactor writes through the canonical `State`
