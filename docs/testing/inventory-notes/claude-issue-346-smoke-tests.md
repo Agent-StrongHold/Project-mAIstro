@@ -183,3 +183,25 @@ docker-build deliberately builds those two images without boot steps
 (scans live in security.yml), and porting the smokes onto develop's evolved
 Dockerfiles was NOT done unproven — the probes in git history at `7c3f390a1`
 were validated against the lane's Dockerfile state, which no longer exists.
+
+## Engine image built and Canvas-booted at this head (2026-10-24)
+
+Executed locally against the converged tree (docker 29.1.3):
+
+- `scripts/prepull-base-images.sh Dockerfile` -> digest-pinned bases
+  fetched; `scripts/buildx-build-retry.sh -- -f Dockerfile -t
+  maistro-engine:verify-346 --load .` -> exit 0.
+- `scripts/check-image-lock-reconciliation.py --image
+  maistro-engine:verify-346 --expected-file <uv export --locked --package
+  maistro-server --extra image ...>` (security.yml:464-471 verbatim) ->
+  "OK: maistro-engine:verify-346 ships exactly the locked set (128
+  distributions, incl. 3 workspace member(s))", exit 0.
+- `MAISTRO_SMOKE_PORT=18000 scripts/smoke-engine-canvas.sh
+  maistro-engine:verify-346` -> PASS, exit 0 (port 8000 is held on this
+  host by the rootless-docker forwarder — environment, not image): content-
+  only import probe reports `maistro-canvas 0.9.0 PgCanvasStore`; the
+  Canvas-less control image FAILS the same probe; PostgreSQL 18 volume
+  boots clean; liveness `{"status":"ok"}`; authenticated Canvas
+  create/read through `/v2/canvas` verified in PostgreSQL (design
+  `33d0d1b1-7701-475b-99cc-d90fdca665f6`); tested digest
+  `sha256:cd7e63f03eddd78b5267b6c4a90769dd7246a76560bec51d3b8164ecb23e0d06`.
