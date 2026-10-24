@@ -25,6 +25,30 @@ or placeholder-only section.
 
 ### Added
 
+- **Extension attribution evidence: identity, version, publisher, and provenance
+  through canonical telemetry (#976).** `maistro.extensions` now ships the
+  version-tagged `ExtensionAttribution` payload — the exact extension name,
+  strict-semver version, publisher, and package/manifest SHA-256 digests behind
+  one effect, plus its install/org/Workspace/catalog linkage — constructible
+  from B1 install records and governed B2 installs, and decodable fail-closed
+  from stored evidence with no registry, store, or installed package consulted
+  (historical evidence stays readable across upgrades and removal). Provider
+  adapter packages may declare the same identity on `ProviderAdapterSpec`
+  (all four fields or none; strict semver and digest shape enforced at
+  registration, with an optional `extension_id` naming the installed package
+  itself when the adapter is provided by an out-of-tree extension):
+  `bootstrap_provider_adapters` snapshots the payload into the wired
+  `model.chat` Binding, governed adapter calls log canonical
+  `extension_*` identity fields, adapter errors name the failing version and
+  publisher, and durable Invocation evidence carries the attribution beside —
+  never instead of — the canonical caller/Workspace/Run/NodeRun/Attempt/
+  Invocation ids. Attribution is provenance only: the canonical correlation
+  namespace rejects extension-defined ids, and the Event envelope's existing
+  provenance redaction applies to the fragment. The shipped out-of-tree
+  gallery adapter package proves the chain end to end: its manifest id,
+  version, publisher and the digests of the manifest and the wheel it
+  publishes travel with one governed call into the terminal audit event.
+
 - **`/health` names the Reactor's persistence authority beside every other
   store family (#1178).** `persistence.families` gains a `reactor` entry:
   `fire-and-forget` when the Reactor writes through the canonical `State`
