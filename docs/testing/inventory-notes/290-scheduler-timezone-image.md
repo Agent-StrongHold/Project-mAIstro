@@ -250,3 +250,54 @@ local run published no ports via a /tmp override — CI is unaffected):
   `ruff format --check .` clean; `check-suite-inventory.py` ok (21 suites,
   no delta); `check-compose-secrets` ok (9 profiles);
   `check-compose-resources`, `check-build-context` ok.
+
+## Repair round: the harness stops assuming the deployment's floor (2026-10-24)
+
+The validation driver runs this file bare from the host
+(`uv run pytest tests/e2e/test_scheduler_timezone_container.py`), where it
+answers whatever listens on `localhost:8101` — the shared dev stack, which
+runs the product-default 900s floor and, decisively, is built from another
+tree (live `/health` carries no `tz_database` key at all). The previous
+round (fc1145670) diagnosed that mismatch and re-ran the compose harness by
+hand, but left the file itself assuming the harness's 300s selection, so
+the bare command kept failing identically (`*/5 * * * *` → 422 "one fire
+per 900s"). This round makes the file environment-truthful instead of
+re-recording the workaround; **no production code changed**, and the test
+count is unchanged (delta: none).
+
+- Floor discovery: the suite asks the server under test what it enforces —
+  the create-time refusal of `* * * * *` names `schedule_min_frequency_gap_s`
+  and states the enforced number — and derives the fastest admitted UTC
+  recurrence (`*/(floor/60) * * * *`) and the natural-fire budget
+  (floor + 30s tick + 120s margin) from that answer. No fixed `*/5` and no
+  fixed 420s budget remain; the invalid-zone test uses the discovered
+  floor-passing cron so its 422 stays attributable to the zone.
+- Foreign-image guard: a module-scoped autouse fixture skips the suite with
+  an actionable reason when the server under test lacks this branch's tz
+  health surface — the only alternative evidence there is evidence about
+  code this change did not ship. The compose harness always exposes the
+  surface, so CI still runs everything.
+- Bare-host run of the exact driver command: **5 skipped, exit 0**, each
+  skip naming the foreign server and the compose fix (verified live against
+  the dev stack).
+- CI-exact compose re-run at this tree (image
+  `sha256:21cd2184ebeafb827d4b3b26c134271734c442f3a63afd486408ee804d6c8e7a`,
+  host port unpublished via /tmp override — the dev stack holds 8101; the
+  compose-internal `hive:8101` the tests target is unchanged):
+  phase 1 **14 passed / 14 skipped** in 182.13s (UTC floor-probe → `*/5`
+  create → natural fire by the tick alone, Berlin 04:30 wall time + season
+  offset + exact instant, invalid-zone 422s, `/health` tz + scheduler
+  pins); restart phase (`start hive`, wait healthy,
+  `SCHED_TZ_AFTER_RESTART=1 -k restart_recovery`) **1 passed** in 0.28s;
+  post-restart live `/health`: `tz_database.status=available`,
+  `source=tzdata-wheel:/app/venv/lib/python3.13/site-packages/tzdata/zoneinfo`,
+  `scheduler.running=true` (`degraded=true` is the harness's truthful F3
+  no-gateway surface, unchanged from prior rounds).
+- Targeted backend: `test_scheduler_timezone_health.py` +
+  `test_schedule_frequency_floor.py` = **24 passed**. Gates: `ruff check .`
+  and `ruff format --check .` clean; `check-suite-inventory.py` ok (21
+  suites, no delta).
+- Previous round's block (develop sync conflict preserved in the worktree)
+  was already resolved before this round: `origin/develop` (4de7e906d) is
+  an ancestor of this branch (merge-base == `origin/develop`, 0 commits
+  behind); the resolution commits are b6dd05f66 and f48deb0a3.
