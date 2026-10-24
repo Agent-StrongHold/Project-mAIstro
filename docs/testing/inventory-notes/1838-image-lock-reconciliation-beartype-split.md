@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  tests/: +3
+  tests/: +0
 ---
 # 1838-image-lock-reconciliation-beartype-split
 
@@ -43,25 +43,62 @@ version is still checked when it does ship") is unchanged in strength for
 single-version names; the defect was the last-line-wins collapse, not the
 leniency.
 
-## The +3 node IDs
+## Superseded by the origin/develop sync (round 9): delta now +0
 
-`tests/test_check_image_lock_reconciliation.py`:
+The round-8 tests above carried `tests/: +3`. The subsequent
+`origin/develop` sync (`f956a8142`, PR #2285) landed an **independent fix of
+the identical defect** under issue #1182, with its own tests and inventory
+note (`1182-image-lock-split-resolution.md`, `tests/: +5`). The sync conflict
+on `scripts/check-image-lock-reconciliation.py` and
+`tests/test_check_image_lock_reconciliation.py` (the only two files both
+sides touched since merge-base `4de7e906d`) was resolved by taking develop's
+canonical implementation and test file verbatim:
+
+- Behavior is equivalent: both sides keep every marker-conditional
+  alternative of a split name, reconcile a shipped split name against any of
+  its locked versions, and still reject a version the lock never named.
+  Develop's side additionally keeps
+  `test_split_resolution_leaves_single_pin_skews_and_requirements_alone`
+  (single-pin report format pinned).
+- The round-8 tests (`+3`) are the same regressions with a different internal
+  shape (`parse_expected` returning a name→set dict; `a or b` mismatch
+  format) and are fully covered by develop's five. Keeping both would
+  double-count one regression in the suite inventory.
+- The round-8 implementation remains reviewable at `475f42562`.
+
+Net effect: this note's delta is `tests/: +0`; the surviving split coverage
+is owned by `1182-image-lock-split-resolution.md` (+5).
+
+## Historical record: the original +3 node IDs
+
+`tests/test_check_image_lock_reconciliation.py` (superseded by develop's
+variants, same three regressions):
 
 - `test_parse_expected_keeps_every_version_of_a_python_version_split` — the
   split export (hash continuations included) parses to both alternatives.
+  → develop: `test_parse_expected_keeps_every_version_of_a_split_resolution`.
 - `test_python_version_split_reconciles_the_interpreter_appropriate_pin` —
   the CI regression reduced: split lock + image on the `< 3.15` side
   reconciles exit 0.
+  → develop:
+  `test_split_resolution_reconciles_with_whichever_branch_the_image_resolved`.
 - `test_python_version_split_still_rejects_a_version_the_lock_never_named` —
   the lenient comparison is not a waive: `0.19.0` (never locked) skews,
   naming both alternatives.
+  → develop: `test_split_resolution_still_fails_on_a_version_neither_branch_pins`.
 
-One existing test updated in place (no count change):
-`test_parse_expected_splits_conditional_from_required_pins` asserts the new
-by-name conditional mapping.
+## Structural regression proof (round 8, branch implementation)
 
-## Structural regression proof
+All four split tests failed against the pre-fix parser (old parse collapses
+the beartype alternative set to the last line; old reconcile compares against
+`0.23.1` only) and passed against the fixed script. Develop's merged tests
+were proven the same way in its own round (real-gate/real-Docker evidence in
+`1182-image-lock-split-resolution.md`); both are re-proven on the merged tree
+below.
 
-All four split tests fail against the pre-fix parser (old parse collapses the
-beartype alternative set to the last line; old reconcile compares against
-`0.23.1` only) and pass against the fixed script.
+## Merged-tree re-validation (round 9)
+
+At the merged head, with develop's script and tests in the tree: the
+round-8-style structural proof is re-run — all of develop's split tests fail
+against the pre-fix parser (`fe733ae4e` copy) and pass against the merged
+tree (see the round-9 repair notes for the executed commands).

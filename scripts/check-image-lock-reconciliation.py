@@ -68,8 +68,8 @@ _DUMP = (
 )
 
 
-def parse_expected(text: str) -> tuple[set[str], dict[str, set[str]]]:
-    """Returns (unconditional pins, marker-conditional pins by name).
+def parse_expected(text: str) -> tuple[set[str], set[str]]:
+    """Returns (unconditional pins, marker-conditional pins).
 
     uv export lists every environment's entries: `pywin32 ; sys_platform ==
     'win32'` is in the export but correctly absent from a linux image, while
@@ -77,31 +77,50 @@ def parse_expected(text: str) -> tuple[set[str], dict[str, set[str]]]:
     conditional pin matches either way — it gates nothing; its version is
     still checked when it does ship.
 
-    One name can carry SEVERAL conditional pins: the lock resolves different
-    versions per interpreter, and the export lists each with its marker —
-    e.g. the beartype split (`0.22.9 ; python_full_version < '3.15'` and
-    `0.23.1 ; >= '3.15'`). Every alternative is kept: an image on either side
-    of the marker reconciles against the version its own interpreter selects,
-    so one line must not overwrite the other.
+    One name can also carry SEVERAL conditional pins at different versions,
+    because the lock splits a package across environment markers: the same
+    export lists `beartype==0.22.9 ; python_full_version < '3.15'` and
+    `beartype==0.23.1 ; python_full_version >= '3.15'` (merge-queue run
+    40085096483). Every version is kept — the image's interpreter resolves
+    exactly one of them, and main() accepts whichever the environment
+    selects. Keying pins by name alone kept only the last line's version and
+    failed a correct Python 3.13 image that shipped the <'3.15' pin.
     """
-    unconditional: dict[str, str] = {}
-    conditional: dict[str, set[str]] = {}
+    by_name: dict[str, set[str]] = {}
+    conditional: set[str] = set()
     for line in text.splitlines():
         stripped = line.strip()
         m = _REQ.match(stripped)
         if m:
             name = canon(m.group(1))
-            pin = f"{name}=={m.group(2)}"
+            by_name.setdefault(name, set()).add(f"{name}=={m.group(2)}")
             if ";" in stripped:
-                conditional.setdefault(name, set()).add(pin)
-            else:
-                unconditional[name] = pin
-    if not unconditional and not conditional:
+                conditional.add(name)
+    if not by_name:
         raise SystemExit(
             "error: expected-file contains no `name==version` pins — is it "
             "a `uv export --format requirements-txt` output?"
         )
-    return set(unconditional.values()), conditional
+    required = {
+        pin for name, name_pins in by_name.items() if name not in conditional for pin in name_pins
+    }
+    conditional_pins = {
+        pin for name, name_pins in by_name.items() if name in conditional for pin in name_pins
+    }
+    return required, conditional_pins
+
+
+def _expected_clause(candidates: set[str]) -> str:
+    """The expected-side half of a mismatch line.
+
+    A single pin reads exactly as it always has (`foo==1.0`); a split
+    resolution names every version the lock accepts for the name, so the
+    operator sees the full accepted set, not an arbitrary survivor.
+    """
+    ordered = sorted(candidates)
+    if len(ordered) == 1:
+        return ordered[0]
+    return "one of " + ", ".join(ordered)
 
 
 def parse_actual(text: str) -> set[str]:
@@ -147,8 +166,7 @@ def main() -> int:
     expected_text = (
         sys.stdin.read() if args.expected_stdin else Path(args.expected_file).read_text()
     )
-    required, conditional_by_name = parse_expected(expected_text)
-    conditional = {pin for pins in conditional_by_name.values() for pin in pins}
+    required, conditional = parse_expected(expected_text)
     for m in args.member:
         name, _, version = m.partition("==")
         if not version:
@@ -184,28 +202,22 @@ def main() -> int:
     # missing+extra pair — and the original string-keyed `skewed` comprehension
     # (`for pin in actual & everything_expected ... .pop() != pin`) compared
     # each pin against itself and could never fire at all.
-    #
-    # A split name (several marker-conditional versions of one package, the
-    # beartype case) is reconciled against ANY of its locked versions: the
-    # image's interpreter decides which marker applies, and each alternative is
-    # a version the lock prescribes for some environment the scanners audit. A
-    # version the lock never named still skews.
     everything_expected = required | conditional
     actual_by_name = {p.partition("==")[0]: p for p in actual}
-    acceptable_by_name = {p.partition("==")[0]: {p} for p in everything_expected}
-    for name, pins in conditional_by_name.items():
-        acceptable_by_name.setdefault(name, set()).update(pins)
+    expected_by_name: dict[str, set[str]] = {}
+    for pin in everything_expected:
+        expected_by_name.setdefault(pin.partition("==")[0], set()).add(pin)
     skewed_names = {
         name
-        for name in actual_by_name.keys() & acceptable_by_name.keys()
-        if actual_by_name[name] not in acceptable_by_name[name]
+        for name in actual_by_name.keys() & expected_by_name.keys()
+        if actual_by_name[name] not in expected_by_name[name]
     }
     missing = sorted(p for p in required - actual if p.partition("==")[0] not in skewed_names)
     extra = sorted(
         p for p in actual - everything_expected if p.partition("==")[0] not in skewed_names
     )
     skewed = sorted(
-        f"{actual_by_name[name]} (image) != {' or '.join(sorted(acceptable_by_name[name]))}"
+        f"{actual_by_name[name]} (image) != {_expected_clause(expected_by_name[name])}"
         for name in skewed_names
     )
     if missing or extra or skewed:
