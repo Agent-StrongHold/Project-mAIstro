@@ -443,16 +443,7 @@
         "packages/maistro-turing/src/maistro_turing/types.py::unused variable 'I_IMAGINED'",
         "packages/maistro-turing/src/maistro_turing/types.py::unused variable 'I_WAS_TOLD'",
         "packages/maistro-turing/src/maistro_turing/types.py::unused variable 'immutable'",
-        "packages/maistro-turing/src/maistro_turing/types.py::unused variable 'origin_episode_id'",
-        "packages/maistro-core/src/maistro/code_registry/types.py::unused variable 'COMPENSATOR'",
-        "packages/maistro-core/src/maistro/code_registry/types.py::unused variable 'DYNAMIC_GATE'",
-        "packages/maistro-core/src/maistro/code_registry/types.py::unused variable 'IDEMPOTENCY_KEY'",
-        "packages/maistro-core/src/maistro/code_registry/types.py::unused variable 'IMPACT_ESTIMATOR'",
-        "packages/maistro-core/src/maistro/code_registry/types.py::unused variable 'MERGE_RESOLVER'",
-        "packages/maistro-core/src/maistro/config/settings.py::unused variable 'rate_limit'",
-        "packages/maistro-core/src/maistro/credentials/types.py::unused variable 'last_error_code'",
-        "packages/maistro-core/src/maistro/graph/harness.py::unused variable 'dispatched_at'",
-        "packages/maistro-core/src/maistro/types/config.py::unused variable 'rate_limit'"
+        "packages/maistro-turing/src/maistro_turing/types.py::unused variable 'origin_episode_id'"
       ]
     },
     {
@@ -569,9 +560,7 @@
         "packages/maistro-turing/src/maistro_turing/runtime/__init__.py::unused variable 'litellm_virtual_key'",
         "packages/maistro-turing/src/maistro_turing/runtime/__init__.py::unused variable 'pools_config_path'",
         "packages/maistro-turing/src/maistro_turing/runtime/__init__.py::unused variable 'use_fake_provider'",
-        "packages/maistro-turing/src/maistro_turing/runtime/__init__.py::unused variable 'voice_self_edit_enabled'",
-        "packages/maistro-bootstrap/src/maistro_bootstrap/builders/agent_loop.py::unused variable 'tool_definitions'",
-        "packages/maistro-core/src/maistro/personas/expander.py::unused variable 'criterion'"
+        "packages/maistro-turing/src/maistro_turing/runtime/__init__.py::unused variable 'voice_self_edit_enabled'"
       ]
     },
     {
@@ -1260,21 +1249,7 @@
         "packages/maistro-core/src/maistro/vault.py::unused method 'credential_prefixes'",
         "packages/maistro-core/src/maistro/vault.py::unused method 'has'",
         "packages/maistro-core/src/maistro/vault.py::unused method 'use'",
-        "packages/maistro-core/src/maistro/workspaces/model.py::unused method '_normalize_added_at'",
-        "packages/maistro-core/src/maistro/code_registry/registry.py::unused class 'CodeRegistry'",
-        "packages/maistro-core/src/maistro/config/loader.py::unused function 'load_yaml_config'",
-        "packages/maistro-core/src/maistro/credentials/pool.py::unused attribute 'last_error_code'",
-        "packages/maistro-core/src/maistro/credentials/pool.py::unused attribute 'last_error_code'",
-        "packages/maistro-core/src/maistro/credentials/pool.py::unused attribute 'last_error_code'",
-        "packages/maistro-core/src/maistro/credentials/pool.py::unused attribute 'last_error_code'",
-        "packages/maistro-core/src/maistro/personas/store.py::unused method 'get_for_workspace'",
-        "packages/maistro-core/src/maistro/personas/store.py::unused method 'get_for_workspace'",
-        "packages/maistro-core/src/maistro/projects/pg_scope_store.py::unused method 'bind_workspace_store'",
-        "packages/maistro-core/src/maistro/projects/scope_store.py::unused method 'bind_workspace_store'",
-        "packages/maistro-core/src/maistro/projects/sqlite_scope_store.py::unused method 'bind_workspace_store'",
-        "packages/maistro-core/src/maistro/security/pg_strikes.py::unused method 'enable'",
-        "packages/maistro-core/src/maistro/security/strike_recovery.py::unused method 'enable'",
-        "packages/maistro-core/src/maistro/security/strikes.py::unused method 'enable'"
+        "packages/maistro-core/src/maistro/workspaces/model.py::unused method '_normalize_added_at'"
       ]
     },
     {
@@ -1412,8 +1387,7 @@
         "packages/maistro-turing/src/maistro_turing/runtime/__init__.py::unused method 'handle_memory_event'",
         "packages/maistro-turing/src/maistro_turing/runtime/__init__.py::unused method 'handle_message'",
         "packages/maistro-turing/src/maistro_turing/runtime/__init__.py::unused method 'handle_tool_result'",
-        "packages/maistro-turing/src/maistro_turing/self_model/types.py::unused class 'ActivationContributor'",
-        "packages/maistro-bootstrap/src/maistro_bootstrap/builders/session.py::unused method 'add_user'"
+        "packages/maistro-turing/src/maistro_turing/self_model/types.py::unused class 'ActivationContributor'"
       ]
     },
     {
