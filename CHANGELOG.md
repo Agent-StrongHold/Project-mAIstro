@@ -304,6 +304,15 @@ or placeholder-only section.
 
 ### Security
 
+- **Image lock reconciliation and canvas npm audit follow-up after #2305
+  (no linked issue: supply-chain CI on develop).** Hive Conductor Dockerfile
+  and `security.yml` expected-member pin move from `setuptools==84.0.0` to
+  `84.2.1` so container reconcile matches the lock; `uv.lock` resolves
+  `beartype` to a single `0.23.1` (drops the dual 0.22.9/0.23.1 split that
+  left the image behind the expected export); canvas frontend
+  `package-lock.json` refreshed so `npm audit --omit=dev` reports zero
+  vulnerabilities.
+
 - **Protected-branch secret scans recognize two historical soak false positives (#860).**
   Preserve full-history scanning and the default rules while carrying over the
   exact commit/path/rule/line fingerprints for a synthetic local-stack fixture
