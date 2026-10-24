@@ -205,11 +205,13 @@ blocking evidence against this change.
 
 The gitleaks failure **was** from this branch: the `pull_request` scan mode
 (`gitleaks git --log-opts="$BASE_SHA..$HEAD_SHA"`, security.yml `sast-gitleaks`)
-scans the branch's own commits, and commit `593295177` assigned synthetic
-principal literals (`alice_token = "alice-secret-1690"`,
-`mallory_token = "mallory-secret-1690"`) in the auth-composition test — 2
-`generic-api-key` findings, reproduced locally with the pinned gitleaks
-8.30.1 and the exact CI argv. Repair, per the `.gitleaks.toml` guidance that
+scans the branch's own commits, and commit `593295177` assigned two synthetic
+principal literals — secret-shaped values on `*_token` variables, spelled with
+the literals recorded in the fingerprints below — in the auth-composition
+test. (Quoting the flagged lines verbatim here would re-trip the rule, as
+`.gitleaksignore`'s own header notes.) Two `generic-api-key` findings,
+reproduced locally with the pinned gitleaks 8.30.1 and the exact CI argv.
+Repair, per the `.gitleaks.toml` guidance that
 secret-shaped lines in code are fixed at source:
 
 - `test_task_cross_replica_visibility.py` renames the variables to
