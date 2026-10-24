@@ -287,6 +287,10 @@ export default function ChatPage() {
   const listEndRef = useRef<HTMLDivElement>(null);
   const streamAbortRef = useRef<AbortController | null>(null);
   const streamEpochRef = useRef(0);
+  // Monotonic generation for session open/create requests, bumped on every
+  // Workspace switch and before each drawer-triggered open/create, so a late
+  // response can never commit another Workspace's transcript or selection.
+  const sessionReqRef = useRef(0);
 
   useEffect(() => {
     const linked = searchParams.get("session");
@@ -334,7 +338,11 @@ export default function ChatPage() {
   }, []);
 
   const openSession = useCallback(async (sessionId: string) => {
+    const req = sessionReqRef.current;
     const detail = await apiGet<ChatSessionDetail>(sessionPath(sessionId));
+    // Superseded by a Workspace switch or a newer open/create: drop the
+    // response before it can touch React state.
+    if (sessionReqRef.current !== req) return null;
     const session = detailToSession(detail);
     setSessions((prev) => {
       const rest = prev.filter((s) => s.id !== session.id);
@@ -347,10 +355,12 @@ export default function ChatPage() {
   const createServerSession = useCallback(
     async (title = "New Chat") => {
       if (!activeWorkspaceId) throw new Error("No Workspace selected");
+      const req = sessionReqRef.current;
       const detail = await apiPost<ChatSessionDetail>("/v1/chat/sessions", {
         title,
         workspace_id: activeWorkspaceId,
       });
+      if (sessionReqRef.current !== req) return null;
       const session = detailToSession(detail);
       setSessions((prev) => [session, ...prev.filter((s) => s.id !== session.id)]);
       setActiveId(session.id);
@@ -364,6 +374,9 @@ export default function ChatPage() {
     streamAbortRef.current?.abort();
     streamAbortRef.current = null;
     streamEpochRef.current += 1;
+    // Invalidate any in-flight session open/create from the previous Workspace.
+    sessionReqRef.current += 1;
+    const sessionGeneration = sessionReqRef.current;
     setStreaming(false);
     setInput("");
     setLoadError(null);
@@ -381,10 +394,10 @@ export default function ChatPage() {
       void (async () => {
         try {
           const list = await apiGet<ChatSessionSummary[]>(sessionsListPath(activeWorkspaceId));
-          if (cancelled) return;
+          if (cancelled || sessionReqRef.current !== sessionGeneration) return;
           if (list.length === 0) {
             const created = await createServerSession();
-            if (cancelled) return;
+            if (cancelled || sessionReqRef.current !== sessionGeneration || !created) return;
             setSessions([created]);
             setActiveId(created.id);
             pendingDeepLinkRef.current = null;
@@ -394,7 +407,7 @@ export default function ChatPage() {
             const preferred =
               linked && list.some((s) => s.id === linked) ? linked : list[0].id;
             const opened = await openSession(preferred);
-            if (cancelled) return;
+            if (cancelled || sessionReqRef.current !== sessionGeneration || !opened) return;
             // Keep other summaries in the drawer without full histories yet.
             const others: Session[] = list
               .filter((s) => s.id !== opened.id)
@@ -413,7 +426,7 @@ export default function ChatPage() {
           }
           setLoadError(null);
         } catch (e) {
-          if (cancelled) return;
+          if (cancelled || sessionReqRef.current !== sessionGeneration) return;
           setSessions([]);
           setActiveId("");
           setLoadError(e instanceof ApiError ? e.message : "Couldn't load chat sessions.");
@@ -598,6 +611,8 @@ export default function ChatPage() {
   const newSession = () => {
     if (!activeWorkspaceId || loadingSessions) return;
     abortActiveStream();
+    // Invalidate any in-flight open/create before creating a new session.
+    sessionReqRef.current += 1;
     void (async () => {
       try {
         await createServerSession();
@@ -616,6 +631,8 @@ export default function ChatPage() {
       return;
     }
     abortActiveStream();
+    // Invalidate any in-flight open/create before requesting this session.
+    sessionReqRef.current += 1;
     void (async () => {
       try {
         await openSession(id);
