@@ -113,6 +113,12 @@ class TestImportAgent:
         assert result.exit_code == 1
         assert "cannot read" in _diagnostics(result)
 
+    def test_unwritable_output_path_is_reported(self, tmp_path: Path) -> None:
+        src = _write(tmp_path, "assistant.json", OPENAI_ASSISTANT)
+        result = runner.invoke(app, ["import-agent", str(src), "-o", str(tmp_path)])
+        assert result.exit_code == 1
+        assert "cannot write" in _diagnostics(result)
+
 
 class TestImportSkills:
     def test_mcp_manifest_imports_with_sanitized_names(self, tmp_path: Path) -> None:
@@ -223,3 +229,38 @@ class TestExport:
         result = runner.invoke(app, ["export", str(src)])
         assert result.exit_code == 1
         assert "not valid JSON" in _diagnostics(result)
+
+    def test_agent_json_that_is_not_an_object_is_rejected(self, tmp_path: Path) -> None:
+        src = _write(tmp_path, "card.json", "[]")
+        result = runner.invoke(app, ["export", str(src)])
+        assert result.exit_code == 1
+        assert "must contain a JSON object" in _diagnostics(result)
+
+    def test_invalid_skills_json_is_rejected(self, tmp_path: Path) -> None:
+        card = _write(tmp_path, "card.json", json.dumps({"id": "x", "name": "x"}))
+        skills = _write(tmp_path, "skills.json", "{not json")
+        result = runner.invoke(app, ["export", str(card), "--skills", str(skills)])
+        assert result.exit_code == 1
+        assert "not valid JSON" in _diagnostics(result)
+
+    def test_skill_entry_that_is_not_an_object_is_rejected(self, tmp_path: Path) -> None:
+        card = _write(tmp_path, "card.json", json.dumps({"id": "x", "name": "x"}))
+        skills = _write(tmp_path, "skills.json", json.dumps(["oops"]))
+        result = runner.invoke(app, ["export", str(card), "--skills", str(skills)])
+        assert result.exit_code == 1
+        assert "skills[0] is not a JSON object" in _diagnostics(result)
+
+    def test_skill_missing_required_field_is_named(self, tmp_path: Path) -> None:
+        card = _write(tmp_path, "card.json", json.dumps({"id": "x", "name": "x"}))
+        skills = _write(tmp_path, "skills.json", json.dumps([{"description": "no name"}]))
+        result = runner.invoke(app, ["export", str(card), "--skills", str(skills)])
+        assert result.exit_code == 1
+        assert "missing required field(s): name" in _diagnostics(result)
+
+    def test_unwritable_bundle_dir_is_reported(self, tmp_path: Path) -> None:
+        card = _write(tmp_path, "card.json", json.dumps({"id": "x", "name": "x"}))
+        blocker = tmp_path / "not-a-dir"
+        blocker.write_text("a file, not a directory", encoding="utf-8")
+        result = runner.invoke(app, ["export", str(card), "--out-dir", str(blocker)])
+        assert result.exit_code == 1
+        assert "cannot write bundle" in _diagnostics(result)
