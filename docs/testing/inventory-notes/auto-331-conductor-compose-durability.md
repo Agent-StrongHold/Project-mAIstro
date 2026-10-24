@@ -1,7 +1,7 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +13
   packages/hive-conductor/backend/tests: +10
+  packages/maistro-core/tests: +22
 ---
 
 # #331 Conductor Compose data-directory durability
@@ -74,14 +74,20 @@ real and testable.
 
 ## Test deltas
 
-- `packages/maistro-core/tests/cli/test_security.py`: +13 tests across
+- `packages/maistro-core/tests/cli/test_security.py`: +22 tests across
   backup and restore — atomic single-pass capture, staged rename, default
   output location, empty/missing-dir refusals, no-overwrite, dry-run
   inertness, coupled-file round trip with the master key still decrypting,
   owner-only restored directory, corrupt/truncated archive refusal before
   the target is touched, crash-before-the-swap recovery, and
-  path-traversal refusal. (The stale-staging-directory refusal in the
-  restore command has no dedicated test — code path present, untested.)
+  path-traversal refusal; plus the nine failure-path tests from the
+  diff-coverage repair round below (bad `--out` suffix, uncaptured-durable
+  notes, empty-inventory print, backup rename failure, empty-archive and
+  dirs-only refusals, restore-plan coupled-set warnings, device-node
+  extraction failure, second-rename failure recovery, and the
+  `_swap_after_extract` empty-extraction guard). (The
+  stale-staging-directory refusal in the restore command has no dedicated
+  test — code path present, untested.)
 - `packages/hive-conductor/backend/tests/test_data_dir_guard.py` (new, 10
   tests): creation+probe cleanup, unwritable refusal, uncreatable-parent
   refusal, in-container ephemeral refusal (deterministic via `_st_dev`
@@ -174,3 +180,32 @@ passed) and fixed by updating the corpus row to the extras the file
 actually holds. The earlier "could not be attributed ... load flake"
 sentence above is superseded by this attribution; the registration-policy
 load flake it referenced is unrelated to these two failures.
+
+## Repair round (diff coverage), this head
+
+After the corpus row above was fixed, the same `Coverage gate` job stayed
+red on its other leg: `scripts/check-diff-coverage.py` failed at head
+42527541b (gh job 120968418523, run 40125247349) on
+`packages/maistro-core/src/maistro/cli/_security.py` at 86.7% of 143
+changed lines (need 90%), uncovered 242,243,260,280,348-351,372,378,446,
+492,496,518,522-524,528,529 — every one a failure or reporting path of the
+backup/restore operators this branch added (bad `--out` suffix refusal,
+uncaptured-durable-file notes, empty-inventory print, backup's staged-
+rename OSError path, restore-plan missing/coupled-file warnings, the
+empty-extraction guard, empty-archive refusal, and restore's OSError path
+including the original-preserved-at report). Fixed with nine tests in
+`packages/maistro-core/tests/cli/test_security.py` that drive exactly
+those paths, including fault injection via `monkeypatch` on `os.replace`
+for the two rename-failure paths and a `CHRTYPE` member to trip
+`tar.extractall(filter="data")` mid-extraction. Re-verified at this head:
+scoped producers run exactly as quality.yml runs them (`coverage run
+--branch --source=packages/maistro-core/src/maistro` over
+test_security.py → 35 passed; `--source=packages/hive-conductor/backend`
+over the backend suite → 3966 passed, 26 skipped; `--source=scripts` over
+tests/test_bump_version.py → 18 passed), then
+`uv run python scripts/check-diff-coverage.py coverage.xml --base
+ffc27cc43` (the current PR merge base) → "ok: every measured file this
+change touches is at or above 90% lines / 80% branch arcs", 4 changed
+files measured, exit 0. Suite inventory re-recorded:
+`check-suite-inventory.py --note auto-331-conductor-compose-durability
+--update` → +9 in this note's `inventory-delta` (13 → 22), exit 0.

@@ -2,16 +2,26 @@
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import stat
+import tarfile
 from pathlib import Path
 
 import pytest
 import typer
 from cryptography.fernet import Fernet
 
-from maistro.cli._security import backup, purge_sessions, restore, rotate_credential_key
+from maistro.cli._security import (
+    _RESTORE_OLD_SUFFIX,
+    _RESTORE_STAGING_SUFFIX,
+    _swap_after_extract,
+    backup,
+    purge_sessions,
+    restore,
+    rotate_credential_key,
+)
 from maistro.credentials.store import (
     MASTER_KEY_FILENAME,
     STORE_FILENAME,
@@ -272,6 +282,77 @@ class TestBackup:
         assert exc.value.exit_code == 2
         assert archive.read_bytes() == b"previous backup"
 
+    def test_out_ending_in_gz_but_not_tar_gz_is_refused(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        data_dir = tmp_path / "data"
+        data_dir.mkdir()
+        _provisioned_data_dir(data_dir)
+
+        with pytest.raises(typer.Exit) as exc:
+            backup(data_dir=str(data_dir), out=str(tmp_path / "backup.gz"))
+
+        assert exc.value.exit_code == 2
+        assert "must end in .tar.gz" in capsys.readouterr().out
+        assert not (tmp_path / "backup.gz").exists()
+
+    def test_known_durable_files_that_are_absent_are_flagged(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        data_dir = tmp_path / "data"
+        data_dir.mkdir()
+        # A deployment that never used the vault legitimately lacks the age
+        # files; the backup must say what it did not capture, not pass silently.
+        (data_dir / "state.db").write_bytes(b"sqlite-bytes")
+        archive = tmp_path / "backup.tar.gz"
+
+        backup(data_dir=str(data_dir), out=str(archive))
+
+        out = capsys.readouterr().out
+        assert "note: secrets.age not present" in out
+        assert "note: admin.key not present" in out
+        assert "note: user_credentials.enc not present" in out
+        assert archive.is_file()
+
+    def test_directory_holding_no_known_durable_files_says_so(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        data_dir = tmp_path / "data"
+        data_dir.mkdir()
+        (data_dir / "cache.bin").write_bytes(b"not a known durable file")
+
+        backup(data_dir=str(data_dir), out=str(tmp_path / "backup.tar.gz"))
+
+        out = capsys.readouterr().out.replace("\n", "")
+        assert "(no known durable files present)" in out
+        assert "note: secrets.age not present" in out
+
+    def test_failed_rename_leaves_no_staged_or_final_archive(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        data_dir = tmp_path / "data"
+        data_dir.mkdir()
+        _provisioned_data_dir(data_dir)
+        archive = tmp_path / "backup.tar.gz"
+
+        def refused(src: object, dst: object, **_kw: object) -> None:
+            raise OSError("simulated: destination refused the rename")
+
+        monkeypatch.setattr("maistro.cli._security.os.replace", refused)
+
+        with pytest.raises(typer.Exit) as exc:
+            backup(data_dir=str(data_dir), out=str(archive))
+
+        assert exc.value.exit_code == 1
+        assert "Backup failed:" in capsys.readouterr().out.replace("\n", "")
+        # The staged archive is cleaned up; the final name never appears, so
+        # no partial backup is ever mistaken for a good one.
+        assert not archive.exists()
+        assert not (tmp_path / ".backup.tar.gz.tmp").exists()
+
 
 class TestRestore:
     def _roundtrip(self, tmp_path: Path) -> tuple[Path, Path]:
@@ -378,3 +459,115 @@ class TestRestore:
         assert exc.value.exit_code == 2
         assert not (tmp_path / "escape").exists()
         assert (data_dir / "state.db").read_bytes() == b"sqlite-bytes"
+
+    def test_archive_holding_no_files_is_refused(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        data_dir, _archive = self._roundtrip(tmp_path)
+        before = {p.name: p.read_bytes() for p in data_dir.iterdir()}
+        dirs_only = tmp_path / "dirs-only.tar.gz"
+        with tarfile.open(dirs_only, "w:gz") as tar:
+            member = tarfile.TarInfo("only-a-directory/")
+            member.type = tarfile.DIRTYPE
+            member.mode = 0o755
+            tar.addfile(member)
+
+        with pytest.raises(typer.Exit) as exc:
+            restore(data_dir=str(data_dir), from_archive=str(dirs_only), yes=True)
+
+        # Members that are not files count as "holds no files": restoring a
+        # directory skeleton over a live data directory would destroy it.
+        assert exc.value.exit_code == 2
+        assert "holds no files" in capsys.readouterr().out.replace("\n", "")
+        assert {p.name: p.read_bytes() for p in data_dir.iterdir()} == before
+
+    def test_plan_warns_when_a_coupled_file_arrives_without_its_partner(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        data_dir, _archive = self._roundtrip(tmp_path)
+        before = {p.name: p.read_bytes() for p in data_dir.iterdir()}
+        vault_only = tmp_path / "vault-only.tar.gz"
+        with tarfile.open(vault_only, "w:gz") as tar:
+            payload = b"age-ciphertext"
+            member = tarfile.TarInfo("secrets.age")
+            member.size = len(payload)
+            member.mode = 0o600
+            tar.addfile(member, io.BytesIO(payload))
+
+        restore(data_dir=str(data_dir), from_archive=str(vault_only), yes=False)
+
+        out = capsys.readouterr().out.replace("\n", "")
+        assert "note: admin.key not in archive" in out
+        assert "warning: archive holds secrets.age without admin.key" in out
+        # A dry run only prints the plan.
+        assert {p.name: p.read_bytes() for p in data_dir.iterdir()} == before
+
+    def test_special_member_failing_extraction_leaves_the_target_untouched(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        data_dir, _archive = self._roundtrip(tmp_path)
+        before = {p.name: p.read_bytes() for p in data_dir.iterdir()}
+        # A regular file carries the archive past the empty-index refusal;
+        # the device node is what filter="data" refuses mid-extraction.
+        hostile = tmp_path / "special-member.tar.gz"
+        with tarfile.open(hostile, "w:gz") as tar:
+            payload = b"sqlite-bytes"
+            member = tarfile.TarInfo("state.db")
+            member.size = len(payload)
+            tar.addfile(member, io.BytesIO(payload))
+            device = tarfile.TarInfo("sneaky-device")
+            device.type = tarfile.CHRTYPE
+            device.devmajor, device.devminor = 1, 3
+            tar.addfile(device)
+
+        with pytest.raises(typer.Exit) as exc:
+            restore(data_dir=str(data_dir), from_archive=str(hostile), yes=True)
+
+        assert exc.value.exit_code == 1
+        assert "Restore failed:" in capsys.readouterr().out.replace("\n", "")
+        assert {p.name: p.read_bytes() for p in data_dir.iterdir()} == before
+        assert not (data_dir.parent / f".{data_dir.name}{_RESTORE_STAGING_SUFFIX}").exists()
+
+    def test_failure_between_the_two_renames_preserves_the_original(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        data_dir, archive = self._roundtrip(tmp_path)
+        before = {p.name: p.read_bytes() for p in data_dir.iterdir()}
+        real_replace = os.replace
+        calls = {"n": 0}
+
+        def failing_second(src: object, dst: object, **_kw: object) -> None:
+            calls["n"] += 1
+            if calls["n"] == 2:
+                raise OSError("simulated: second rename refused")
+            real_replace(src, dst)  # type: ignore[arg-type]
+
+        monkeypatch.setattr("maistro.cli._security.os.replace", failing_second)
+
+        with pytest.raises(typer.Exit) as exc:
+            restore(data_dir=str(data_dir), from_archive=str(archive), yes=True)
+
+        # The first rename moved the original aside before the second failed:
+        # the failure report must name where it went instead of guessing.
+        assert exc.value.exit_code == 1
+        out = capsys.readouterr().out.replace("\n", "")
+        assert "Restore failed:" in out
+        assert "original directory preserved at:" in out
+        preserved = list(data_dir.parent.glob(f".{data_dir.name}{_RESTORE_OLD_SUFFIX}-*"))
+        assert len(preserved) == 1
+        assert {p.name: p.read_bytes() for p in preserved[0].iterdir()} == before
+        assert not (data_dir.parent / f".{data_dir.name}{_RESTORE_STAGING_SUFFIX}").exists()
+
+
+class TestSwapAfterExtract:
+    def test_an_extraction_that_produced_no_files_is_refused(self, tmp_path: Path) -> None:
+        staging = tmp_path / "staging"
+        staging.mkdir()
+
+        with pytest.raises(OSError, match="extracted to no files"):
+            _swap_after_extract(staging, tmp_path / "target", tmp_path / "previous")
+
+        assert not (tmp_path / "target").exists()
