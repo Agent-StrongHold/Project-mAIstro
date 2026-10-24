@@ -1,7 +1,7 @@
 ---
 inventory-delta:
   packages/maistro-core/tests: +1
-  packages/maistro-rsi/tests: +47
+  packages/maistro-rsi/tests: +58
 ---
 
 # 552 epic M5-B: RSI containment validation + canonical convergence (#50)
@@ -219,3 +219,109 @@ CI-shaped audit (`uv sync --locked --all-extras`, `uv pip freeze
   upstream via the develop sync and pass here.
 - Milestone re-parenting of children is GitHub hierarchy state, not
   verifiable from the repository.
+
+## CI-repair round at 90f272bb (this pass): radon/xenon, diff coverage, container scan — +11 RSI
+
+Repair against the merge-queue evaluation at head `90f272bb`. Four of the
+failing gates are fixed at their root and re-proven locally with CI's exact
+commands; the promotion-surface cluster is **not** fixable inside this
+round's authority and is documented below as blocked with the required
+owner action (the same resolution this repository recorded for the
+execution-lifecycles ratchet in `docs/1572-repair-checkpoint.md`).
+
+Fixed this round:
+
+- **Quality / Radon** — `autorun.py:_settle_sourced_objective` was a new
+  C(11) block (the only unbaselined finding;
+  `scripts/check-radon-baseline.py`: "127 reviewed C-or-worse blocks ->
+  128"). The nested release-reason ternaries moved into
+  `_release_reason` (A(3)); the block is now B(9) and the gate exits 0
+  with the ledger unchanged at 127 == 127 (no baseline edit, Boy-Scout
+  fix not a floor raise). `XENON_BASELINE` pin test
+  (`tests/test_complexity_gate_scope.py`) passes: 5 passed.
+- **Quality / Xenon** — block violations 128 -> **127** (== baseline
+  127), module-rank violations 0, project-average violations 0 (CI's
+  exact `xenon --max-absolute B --max-modules B --max-average A
+  -i third_party ...` over all ten shipped trees).
+- **Coverage gate (diff half)** — `canonical_provenance.py` measured
+  77.6% of 58 changed branch arcs (< 80% floor): twelve defensive
+  branches were untested. Eleven new white-box tests in
+  `TestDegenerateCanonicalPaths` pin them (terminal-run settlement,
+  terminal-NodeRun skip during failure projection, lost-record refusals
+  via a vanishing-lookups store wrapper, resume from QUEUED/RUNNING,
+  no-Attempt refusal, re-close idempotence, RUNNING-node leaves the Run
+  open, non-string hypothesis falls back to the neutral objective). The
+  twelfth (`wrap_executor`'s `if produced:` false arc) is unreachable by
+  construction — `_cycle` appends unconditionally before `run_cycle`
+  returns — and the floor clears without touching production code.
+  `scripts/check-diff-coverage.py` (base `4de7e906`): **"ok: every
+  measured file this change touches is at or above 90% lines / 80%
+  branch arcs"**.
+- **Container scan + SBOM + cosign** — the hive-conductor frontend lock
+  carried `zod` 4.4.3 (GHSA-mrhx-c7xc-m3w5, high) and the canvas lock
+  six advisories (zod, body-parser, undici, ip-address, @vitest/mocker).
+  Fixed by lockfile-only `npm audit fix` in both frontends (no
+  package.json change; all fixes in-range, none allowlisted):
+  `npm audit` now reports **0 vulnerabilities** in both trees, and
+  `npm ci` + `npm run build` pass inside the digest-pinned
+  `node:22-alpine@sha256:0a71...` builder; the full hive-conductor image
+  builds locally (exit 0). `exact-debt-ledger`'s vulture component
+  (CI-exact args) exits 0 — no ledger amendment required.
+
+## Promotion-surface: blocked on an owner act (two-merge), not repairable here
+
+The branch's #50 convergence wires `local_loop`/`autorun` (both
+promotion roots) through `work_source` / `canonical_provenance` /
+`promotion_contract` into the canonical core. Any static import of a
+`maistro.runs.*` / `maistro.workspaces.*` / `maistro.graph.*` /
+`maistro.runtime` submodule executes that package's `__init__` re-export
+shim, which eagerly imports the wiring/stores — so the derived closure
+grows from 278 modules (150 core) at base to **703 (≈562 core)**, leaving
+**386 modules** "reachable from the promotion path and not protected"
+(scripts/check-promotion-surface.py, exit 1; same finding reds
+`check-ratchet-provenance.py` -> `check-promotion-surface-provenance.py`
+inside exact-debt-ledger, the ci.yml escalation step, and the real-tree
+tests in `tests/test_check_promotion_surface.py`).
+
+The gate offers exactly two remedies and this round can take neither:
+
+1. *Tolerate with reasons* — `ratchet_provenance.load_authorizations`
+   reads `quality/ratchet-authorizations.json` **from the merge base**
+   (`4de7e906`): 50 promotion-surface grants exist there and all 50
+   already sit in the tolerated ledger; **none** of the 386 is
+   authorized at base. A candidate-side ledger edit is refused by
+   design ("candidate baseline edits cannot approve them"), so this is
+   mechanically impossible in the change that grows the closure.
+2. *Protect via `SENSITIVE_PATH_PATTERNS`* — the reached set spans ~40
+   core directories, so any pattern set that covers it escalates
+   ordinary application surface, which the pinned policy test
+   `packages/maistro-rsi/tests/test_sensitive_paths.py::
+   TestItStaysASurfaceAndNotAWildcard::test_ordinary_application_surface
+   _does_not_escalate` forbids by name
+   (`maistro/memory/learnings/store.py` must not escalate). Rewriting
+   that pin would defeat its documented purpose (a wildcard escalation
+   surface) and is a policy act, not a repair.
+
+Shrinking the closure instead would mean deleting the implemented,
+tested #50 convergence (destroying this lane's acceptance work),
+re-exporting it through dynamic imports (gate evasion), or a repo-wide
+public-facade refactor of the four package inits (far outside a focused
+repair). **Unblock path** (matches the #1572 precedent): an owner lands
+the promotion-surface decision on develop — either the tolerance grants
+for the ordinary-infrastructure remainder plus baseline entries, or a
+deliberate seam-level protection tier for the canonical
+backlog/workspaces/runs/graph/runtime/governance packages — after which
+this branch requeues unchanged. No ledger, grant, pin, or workflow was
+edited this round.
+
+Executed this round (CI-exact commands, all exit 0 unless noted):
+`uv run ruff check .`; `uv run ruff format --check .`; the six targeted
+driver suites; `uv run python scripts/check-suite-inventory.py --suite
+packages/maistro-rsi/tests` (expected 1791 == collected 1791 after this
+note's +58); `uv run python scripts/check-suite-inventory.py --suite
+packages/maistro-core/tests` (ok); `uv run python scripts/check-radon-baseline.py`; the xenon
+scan above; `uv run python scripts/check-vulture-baseline.py
+packages/*/src --min-confidence 60 --exclude '*/third_party/*'`;
+`scripts/check-diff-coverage.py` (above); CI's ten-package mypy (no
+issues in 1105 files); full `packages/maistro-rsi/tests` 1787 passed +
+`packages/maistro-core/tests/backlog` 97 passed.

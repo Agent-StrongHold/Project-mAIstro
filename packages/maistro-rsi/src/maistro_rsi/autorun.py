@@ -1123,6 +1123,19 @@ async def _propose_discovered_work(
         )
 
 
+def _release_reason(improved: bool, attributable: bool, cite: CanonicalCycleRecord | None) -> str:
+    """Why the claim is being released instead of the item being closed.
+
+    Ordered so the reason names the FIRST failed requirement: evidence,
+    attribution, then citability. The close branch above requires all three.
+    """
+    if not improved:
+        return "no proven improvement"
+    if not attributable:
+        return "improvement not attributable to this item's executed work"
+    return "no canonical run to cite"
+
+
 async def _settle_sourced_objective(
     work_source: RsiWorkSource,
     sourced: SourcedObjective,
@@ -1179,15 +1192,7 @@ async def _settle_sourced_objective(
         await work_source.release(
             sourced,
             actor=actor,
-            reason=(
-                "no proven improvement"
-                if not improved
-                else (
-                    "improvement not attributable to this item's executed work"
-                    if not attributable
-                    else "no canonical run to cite"
-                )
-            ),
+            reason=_release_reason(improved, attributable, cite),
         )
     await _propose_discovered_work(work_source, sourced, result, cite=cite, actor=actor)
 

@@ -8,10 +8,13 @@ cycle execute under, and where is its evidence durable?
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from maistro.projects.scope_store import InMemoryProjectScopeStore
-from maistro.runs.model import AttemptStatus, RunStatus
+from maistro.runs.lifecycle import transition_path
+from maistro.runs.model import AcceptedNodeOutcome, AttemptResult, AttemptStatus, RunStatus
 from maistro.runs.sources import ADMISSION_SOURCE
 from maistro.runs.store import InMemoryRunStore
 from maistro_rsi.canonical_provenance import (
@@ -336,3 +339,259 @@ class TestFindCycle:
         assert found is not None and found.run_id == run.run_id
         assert await provenance.find_cycle("camp-1", "cycle-missing") is None
         assert await provenance.find_cycle("other-campaign", "cycle-1") is None
+
+
+class _VanishingRunStore:
+    """An ``InMemoryRunStore`` whose point lookups can be made to lose a record.
+
+    The seam's defensive branches answer one question: what happens when a run
+    or NodeRun that admission just filed disappears from the store before the
+    seam reads it back. Rather than reconstruct every store failure mode, the
+    tests flip a flag and the lookup returns ``None`` — the same answer a
+    concurrent purge or a retention sweep would produce.
+    """
+
+    def __init__(self, inner: InMemoryRunStore) -> None:
+        self._inner = inner
+        self.drop_get_run = False
+        self.drop_get_node_run = False
+
+    async def get_run(self, run_id: str, **kwargs: object):
+        if self.drop_get_run:
+            return None
+        return await self._inner.get_run(run_id)  # type: ignore[arg-type]
+
+    async def get_node_run(self, node_run_id: str, **kwargs: object):
+        if self.drop_get_node_run:
+            return None
+        return await self._inner.get_node_run(node_run_id)  # type: ignore[arg-type]
+
+    def __getattr__(self, name: str):
+        return getattr(self._inner, name)
+
+
+class TestDegenerateCanonicalPaths:
+    """White-box pins for the seam's defensive branches.
+
+    These branches are the seam's answer to a store that changes under it —
+    a run that went terminal between two reads, a NodeRun a reconciliation
+    sweep removed, an Attempt that never landed. Each one must fail loudly
+    (or settle quietly, where settling is the correct disposition) instead of
+    inventing canonical evidence (#552).
+    """
+
+    async def test_fail_run_settles_quietly_when_the_run_is_already_terminal(self):
+        provenance, runs, _ = await _provenance()
+        run = await provenance.admit_cycle(
+            campaign_id="camp-1",
+            cycle_id="cycle-1",
+            objective="o",
+            actor_principal_id="human:op-1",
+        )
+        for status in transition_path(run.status, RunStatus.FAILED):
+            run = await runs.transition_run(run.run_id, status)
+        # Already FAILED: the projection must not walk it again (a terminal
+        # status has no legal outgoing transition, so doing so would raise).
+        await provenance._fail_run(run.run_id, error="late failure")
+        settled = await runs.get_run(run.run_id)
+        assert settled is not None and settled.status is RunStatus.FAILED
+
+    async def test_fail_run_skips_terminal_node_runs_and_fails_the_rest(self):
+        provenance, runs, _ = await _provenance()
+        run = await provenance.admit_cycle(
+            campaign_id="camp-1",
+            cycle_id="cycle-1",
+            objective="o",
+            actor_principal_id="human:op-1",
+        )
+        node_id = run.graph.materialize().nodes[0].node_id
+        for status in transition_path(run.status, RunStatus.RUNNING):
+            run = await runs.transition_run(run.run_id, status)
+        settled = await runs.create_node_run(run.run_id, node_id=node_id)
+        # A NodeRun only reaches COMPLETED through a completed Attempt's
+        # accepted outcome — walk the spine's own sequence, exactly as
+        # execute_node does, so the terminal state is a legal one.
+        for status in transition_path(settled.status, RunStatus.RUNNING):
+            settled = await runs.transition_node_run(settled.node_run_id, status)
+        attempt = await runs.create_attempt(settled.node_run_id, executor_id="rsi-cycle")
+        token = (
+            attempt.execution_lease.fencing_token if attempt.execution_lease is not None else None
+        )
+        await runs.transition_attempt(
+            attempt.attempt_id, AttemptStatus.RUNNING, fencing_token=token
+        )
+        attempt = await runs.transition_attempt(
+            attempt.attempt_id, AttemptStatus.COMPLETED, result={"ok": True}, fencing_token=token
+        )
+        settled = await runs.transition_node_run(
+            settled.node_run_id,
+            RunStatus.COMPLETED,
+            result={"ok": True},
+            accepted_outcome=AcceptedNodeOutcome(
+                node_run_id=settled.node_run_id,
+                attempt_result=AttemptResult(
+                    attempt_id=attempt.attempt_id,
+                    node_run_id=settled.node_run_id,
+                    ordinal=attempt.ordinal,
+                    status=AttemptStatus.COMPLETED,
+                    result={"ok": True},
+                    finished_at=attempt.finished_at,
+                ),
+                logical_status=RunStatus.COMPLETED,
+                result={"ok": True},
+            ),
+        )
+        pending = await runs.create_node_run(run.run_id, node_id=node_id)
+        await provenance._fail_run(run.run_id, error="boom")
+        still = await runs.get_node_run(settled.node_run_id)
+        assert still is not None and still.status is RunStatus.COMPLETED
+        failed = await runs.get_node_run(pending.node_run_id)
+        assert failed is not None and failed.status is RunStatus.FAILED
+
+    async def test_resume_refuses_a_run_that_lost_its_record(self):
+        projects = InMemoryProjectScopeStore()
+        inner = InMemoryRunStore(project_store=projects)
+        root = await projects.create_root(WORKSPACE)
+        store = _VanishingRunStore(inner)
+        provenance = RsiCycleProvenance(store, workspace_id=WORKSPACE, project_id=root.project_id)
+        run = await provenance.admit_cycle(
+            campaign_id="camp-1",
+            cycle_id="cycle-1",
+            objective="o",
+            actor_principal_id="human:op-1",
+        )
+        store.drop_get_run = True
+        with pytest.raises(RsiProvenanceError, match="disappeared"):
+            await provenance.run_cycle(run, lambda: _return_value(None))
+
+    async def test_resume_accepts_a_run_already_queued(self):
+        provenance, runs, _ = await _provenance()
+        run = await provenance.admit_cycle(
+            campaign_id="camp-1",
+            cycle_id="cycle-1",
+            objective="o",
+            actor_principal_id="human:op-1",
+        )
+        for status in transition_path(run.status, RunStatus.QUEUED):
+            run = await runs.transition_run(run.run_id, status)
+        record = await provenance.run_cycle(run, lambda: _return_value({"ok": True}))
+        assert record.completed
+
+    async def test_resume_accepts_a_run_already_running(self):
+        provenance, runs, _ = await _provenance()
+        run = await provenance.admit_cycle(
+            campaign_id="camp-1",
+            cycle_id="cycle-1",
+            objective="o",
+            actor_principal_id="human:op-1",
+        )
+        for status in transition_path(run.status, RunStatus.RUNNING):
+            run = await runs.transition_run(run.run_id, status)
+        record = await provenance.run_cycle(run, lambda: _return_value({"ok": True}))
+        assert record.completed
+
+    async def test_close_refuses_a_run_that_lost_its_record(self):
+        provenance, runs, _ = await _provenance()
+        run = await provenance.admit_cycle(
+            campaign_id="camp-1",
+            cycle_id="cycle-1",
+            objective="o",
+            actor_principal_id="human:op-1",
+        )
+        record = await provenance.run_cycle(run, lambda: _return_value({"ok": True}))
+        store = _VanishingRunStore(runs)
+        store.drop_get_run = True
+        provenance2 = RsiCycleProvenance(store, workspace_id=WORKSPACE, project_id=run.project_id)
+        with pytest.raises(RsiProvenanceError, match="disappeared"):
+            await provenance2._close_run_from_node(run.run_id, record.node_run_id)
+
+    async def test_close_refuses_a_node_run_that_lost_its_record(self):
+        provenance, runs, _ = await _provenance()
+        run = await provenance.admit_cycle(
+            campaign_id="camp-1",
+            cycle_id="cycle-1",
+            objective="o",
+            actor_principal_id="human:op-1",
+        )
+        record = await provenance.run_cycle(run, lambda: _return_value({"ok": True}))
+        store = _VanishingRunStore(runs)
+        store.drop_get_node_run = True
+        provenance2 = RsiCycleProvenance(store, workspace_id=WORKSPACE, project_id=run.project_id)
+        with pytest.raises(RsiProvenanceError, match="disappeared"):
+            await provenance2._close_run_from_node(run.run_id, record.node_run_id)
+
+    async def test_close_refuses_a_node_run_without_an_attempt(self):
+        provenance, runs, _ = await _provenance()
+        run = await provenance.admit_cycle(
+            campaign_id="camp-1",
+            cycle_id="cycle-1",
+            objective="o",
+            actor_principal_id="human:op-1",
+        )
+        node_id = run.graph.materialize().nodes[0].node_id
+        for status in transition_path(run.status, RunStatus.RUNNING):
+            run = await runs.transition_run(run.run_id, status)
+        node_run = await runs.create_node_run(run.run_id, node_id=node_id)
+        with pytest.raises(RsiProvenanceError, match="no Attempt"):
+            await provenance._close_run_from_node(run.run_id, node_run.node_run_id)
+
+    async def test_close_is_quiet_when_the_run_is_already_terminal(self):
+        provenance, runs, _ = await _provenance()
+        run = await provenance.admit_cycle(
+            campaign_id="camp-1",
+            cycle_id="cycle-1",
+            objective="o",
+            actor_principal_id="human:op-1",
+        )
+        record = await provenance.run_cycle(run, lambda: _return_value({"ok": True}))
+        # The run settled COMPLETED on the first close; reading the same
+        # NodeRun again must return the same record, not re-transition it.
+        again = await provenance._close_run_from_node(run.run_id, record.node_run_id)
+        assert again.run_id == record.run_id
+        assert again.attempt_id == record.attempt_id
+        settled = await runs.get_run(run.run_id)
+        assert settled is not None and settled.status is RunStatus.COMPLETED
+
+    async def test_close_leaves_a_nonterminal_run_open_while_its_node_is_running(self):
+        provenance, runs, _ = await _provenance()
+        run = await provenance.admit_cycle(
+            campaign_id="camp-1",
+            cycle_id="cycle-1",
+            objective="o",
+            actor_principal_id="human:op-1",
+        )
+        node_id = run.graph.materialize().nodes[0].node_id
+        for status in transition_path(run.status, RunStatus.RUNNING):
+            run = await runs.transition_run(run.run_id, status)
+        node_run = await runs.create_node_run(run.run_id, node_id=node_id)
+        for status in transition_path(node_run.status, RunStatus.RUNNING):
+            node_run = await runs.transition_node_run(node_run.node_run_id, status)
+        await runs.create_attempt(node_run.node_run_id, executor_id="rsi-cycle")
+        # The NodeRun has physical evidence but no observed disposition yet:
+        # closing now would invent an outcome, so the Run stays RUNNING.
+        record = await provenance._close_run_from_node(run.run_id, node_run.node_run_id)
+        assert record.run_status == RunStatus.RUNNING.value
+        assert record.node_run_status == RunStatus.RUNNING.value
+        live = await runs.get_run(run.run_id)
+        assert live is not None and live.status is RunStatus.RUNNING
+
+    async def test_cycle_objective_falls_back_when_the_hypothesis_is_not_usable(self):
+        provenance, _, _ = await _provenance()
+
+        async def executor(context):
+            return {"seen": context.node.id}
+
+        wrapped = provenance.wrap_executor(
+            executor,
+            campaign_id="camp-1",
+            actor_principal_id="human:op-1",
+        )
+        # A context whose node carries no usable hypothesis (not a string):
+        # the cycle still runs, and the objective degrades to the neutral
+        # "RSI cycle" instead of failing admission.
+        report = await wrapped(SimpleNamespace(node=SimpleNamespace(id="anon-node", hypothesis=42)))
+        assert report == {"seen": "anon-node"}
+        run = await provenance.find_cycle("camp-1", "anon-node")
+        assert run is not None
+        objective = run.graph.materialize().nodes[0].parameters["objective"]
+        assert objective == "RSI cycle"
