@@ -217,23 +217,10 @@ def _results_rows(results: list[EvalResult]) -> list[dict[str, Any]]:
     return rows
 
 
-def build_evidence_manifest(
-    run_id: str,
-    results: list[EvalResult],
-    *,
-    lift_reports: list[LiftReport] | None = None,
-    metering: RunMetering | None = None,
-    metering_absent_reason: str | None = None,
-    refused_diffs: list[RefusedDiff] | None = None,
-    verdict_conformance: ConformanceReport | None = None,
-) -> dict[str, Any]:
-    """Assemble the manifest dict. Raises on inputs it refuses to represent.
-
-    Building is where the unquotable is stopped: a numeric ``gap_closure``
-    without ``baseline_version`` raises here, and a verdict-conformance
-    report that does not hold raises here too, so the error surfaces at the
-    producer rather than at every consumer.
-    """
+def _require_verdict_conformance(
+    verdict_conformance: ConformanceReport | None,
+) -> ConformanceReport:
+    """Refuse to represent a run whose verdicts were not shown host-owned."""
     if verdict_conformance is None:
         raise ValueError(
             "an evidence manifest requires a verdict-conformance report: the "
@@ -247,9 +234,11 @@ def build_evidence_manifest(
             "refusing to build an evidence manifest whose verdict conformance "
             "does not hold: " + "; ".join(conformance_problems)
         )
+    return verdict_conformance
 
-    results_rows = _results_rows(results)
 
+def _lift_section_rows(lift_reports: list[LiftReport] | None) -> list[dict[str, Any]]:
+    """Lift rows; refuse a numeric ``gap_closure`` without its baseline (AC-10)."""
     lift_rows = []
     for report in lift_reports or []:
         if report.gap_closure is not None and not report.baseline_version:
@@ -274,7 +263,15 @@ def build_evidence_manifest(
                 "transfer_stale": report.transfer_stale,
             }
         )
+    return lift_rows
 
+
+def _resolve_metering_block(
+    results: list[EvalResult],
+    metering: RunMetering | None,
+    metering_absent_reason: str | None,
+) -> tuple[dict[str, Any] | None, str | None]:
+    """Resolve the metering pair (block, absent_reason); a run claims one, never both."""
     if metering is None:
         metering = _metering_from_results(results)
     if metering is not None:
@@ -284,17 +281,41 @@ def build_evidence_manifest(
                 "either measured its cost/security tax/RHAE or did not; it "
                 "cannot claim both"
             )
-        metering_block: dict[str, Any] | None = metering.to_block()
-        absent_reason = None
-    else:
-        metering_block = None
-        absent_reason = (metering_absent_reason or "").strip()
-        if not absent_reason:
-            raise ValueError(
-                "no metering block and no metering_absent_reason — a manifest "
-                "must carry the run's metered cost / security tax / RHAE, or "
-                "say why it could not be measured. Absence is not silence"
-            )
+        return metering.to_block(), None
+    absent_reason = (metering_absent_reason or "").strip()
+    if not absent_reason:
+        raise ValueError(
+            "no metering block and no metering_absent_reason — a manifest "
+            "must carry the run's metered cost / security tax / RHAE, or "
+            "say why it could not be measured. Absence is not silence"
+        )
+    return None, absent_reason
+
+
+def build_evidence_manifest(
+    run_id: str,
+    results: list[EvalResult],
+    *,
+    lift_reports: list[LiftReport] | None = None,
+    metering: RunMetering | None = None,
+    metering_absent_reason: str | None = None,
+    refused_diffs: list[RefusedDiff] | None = None,
+    verdict_conformance: ConformanceReport | None = None,
+) -> dict[str, Any]:
+    """Assemble the manifest dict. Raises on inputs it refuses to represent.
+
+    Building is where the unquotable is stopped: a numeric ``gap_closure``
+    without ``baseline_version`` raises here, and a verdict-conformance
+    report that does not hold raises here too, so the error surfaces at the
+    producer rather than at every consumer.
+    """
+    conformance = _require_verdict_conformance(verdict_conformance)
+
+    results_rows = _results_rows(results)
+    lift_rows = _lift_section_rows(lift_reports)
+    metering_block, absent_reason = _resolve_metering_block(
+        results, metering, metering_absent_reason
+    )
 
     refused_rows = [
         {
@@ -304,7 +325,7 @@ def build_evidence_manifest(
         }
         for d in (refused_diffs or [])
     ]
-    conformance_rows = verdict_conformance.to_section()
+    conformance_rows = conformance.to_section()
     trace_rows = _build_trace(results_rows, lift_rows, conformance_rows, refused_rows)
 
     sections: dict[str, Any] = {
@@ -374,32 +395,35 @@ def _verify_checksums(manifest: dict[str, Any], checksums: dict[str, Any]) -> li
     return errors
 
 
+def _result_row_errors(row: Any) -> list[str]:
+    """One results row's unquotability reasons (SPEC-281 §4)."""
+    if not isinstance(row, dict):
+        return ["results row is not an object"]
+    errors: list[str] = []
+    name = row.get("benchmark", "<unnamed>")
+    if "samples_evaluated" not in row:
+        errors.append(
+            f"result {name!r}: no samples_evaluated — a percentage without "
+            "its sample count is unquotable (SPEC-281 §4)"
+        )
+    elif not isinstance(row.get("samples_evaluated"), int) or row["samples_evaluated"] < 0:
+        errors.append(f"result {name!r}: samples_evaluated must be a non-negative int")
+    if "score" in row and row.get("samples_evaluated") == 0:
+        score = row.get("score")
+        if isinstance(score, (int, float)) and not isinstance(score, bool) and score > 0:
+            errors.append(
+                f"result {name!r}: score {score} with zero samples evaluated is unquotable"
+            )
+    return errors
+
+
 def _verify_results(results: Any) -> list[str]:
     """A percentage without its sample count is unquotable (SPEC-281 §4)."""
-    errors: list[str] = []
     if not isinstance(results, list) or not results:
         return [
             "results section missing or empty — an evidence manifest with no results is not evidence"
         ]
-    for row in results:
-        if not isinstance(row, dict):
-            errors.append("results row is not an object")
-            continue
-        name = row.get("benchmark", "<unnamed>")
-        if "samples_evaluated" not in row:
-            errors.append(
-                f"result {name!r}: no samples_evaluated — a percentage without "
-                "its sample count is unquotable (SPEC-281 §4)"
-            )
-        elif not isinstance(row.get("samples_evaluated"), int) or row["samples_evaluated"] < 0:
-            errors.append(f"result {name!r}: samples_evaluated must be a non-negative int")
-        if "score" in row and row.get("samples_evaluated") == 0:
-            score = row.get("score")
-            if isinstance(score, (int, float)) and not isinstance(score, bool) and score > 0:
-                errors.append(
-                    f"result {name!r}: score {score} with zero samples evaluated is unquotable"
-                )
-    return errors
+    return [error for row in results for error in _result_row_errors(row)]
 
 
 def _verify_lift(lift: Any) -> list[str]:

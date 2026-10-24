@@ -123,6 +123,33 @@ def _is_grid(value: Any) -> bool:
     return len(widths) == 1
 
 
+def _validate_train_pair(pair: Any, source: Path) -> None:
+    """One train pair: both sides must be well-formed grids."""
+    if (
+        not isinstance(pair, dict)
+        or not _is_grid(pair.get("input"))
+        or not _is_grid(pair.get("output"))
+    ):
+        raise ArcAgiUnavailableError(
+            f"{source.name}: train pair without well-formed input/output grids"
+        )
+
+
+def _validate_test_entry(entry: Any, source: Path) -> None:
+    """One test entry: input grid present, and the withheld answer exists in the file.
+
+    The expected output grades the task but is never shown to the candidate —
+    see render_task.
+    """
+    if not isinstance(entry, dict) or not _is_grid(entry.get("input")):
+        raise ArcAgiUnavailableError(f"{source.name}: test entry without input grid")
+    if not _is_grid(entry.get("output")):
+        raise ArcAgiUnavailableError(
+            f"{source.name}: test entry without expected output grid — "
+            "cannot be graded, refusing to score it"
+        )
+
+
 def _validate_task(obj: Any, source: Path) -> dict[str, Any]:
     """Structural validation of one ARC task file; raises on anything off."""
     if not isinstance(obj, dict) or "train" not in obj or "test" not in obj:
@@ -136,24 +163,9 @@ def _validate_task(obj: Any, source: Path) -> dict[str, Any]:
     if not isinstance(test, list) or not test:
         raise ArcAgiUnavailableError(f"{source.name}: 'test' must be a non-empty array")
     for pair in train:
-        if (
-            not isinstance(pair, dict)
-            or not _is_grid(pair.get("input"))
-            or not _is_grid(pair.get("output"))
-        ):
-            raise ArcAgiUnavailableError(
-                f"{source.name}: train pair without well-formed input/output grids"
-            )
+        _validate_train_pair(pair, source)
     for entry in test:
-        if not isinstance(entry, dict) or not _is_grid(entry.get("input")):
-            raise ArcAgiUnavailableError(f"{source.name}: test entry without input grid")
-        # The withheld answer must exist in the file (it grades the task) but
-        # must never be shown to the candidate — see render_task.
-        if not _is_grid(entry.get("output")):
-            raise ArcAgiUnavailableError(
-                f"{source.name}: test entry without expected output grid — "
-                "cannot be graded, refusing to score it"
-            )
+        _validate_test_entry(entry, source)
     return obj
 
 

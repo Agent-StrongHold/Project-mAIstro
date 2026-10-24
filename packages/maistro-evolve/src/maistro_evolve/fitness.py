@@ -367,6 +367,38 @@ def _evidence_hash(
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
 
+def _inversion_entry_failures(transfers: dict, epsilon: float) -> list[str]:
+    """Rule 1: a measured ``transfer < -epsilon`` disqualifies, however big the lift."""
+    failures: list[str] = []
+    for bench, entry in sorted(transfers.items()):
+        if not isinstance(entry, dict) or "transfer" not in entry:
+            failures.append(f"{bench} transfer evidence present but has no 'transfer' value")
+            continue
+        transfer = entry["transfer"]
+        if not isinstance(transfer, (int, float)) or isinstance(transfer, bool):
+            failures.append(f"{bench} transfer value is not a number: {transfer!r}")
+            continue
+        if transfer < -epsilon:
+            stale = " (stale measurement)" if entry.get("transfer_stale") else ""
+            failures.append(
+                f"{bench} transfer {transfer:.3f} < -{epsilon:.2f}: harness "
+                f"inverts on the frontier model{stale} — disqualified"
+            )
+    return failures
+
+
+def _missing_transfer_evidence(genome: PipelineGenome, transfers: dict) -> list[str]:
+    """Rule 2: a promotion candidate carries transfer evidence for every scored benchmark."""
+    if not genome.approved_for_promotion:
+        return []
+    return [
+        f"promotion candidate lacks transfer evidence for {bench} "
+        "(SPEC-281: stale is acceptable, absent is not)"
+        for bench in sorted(genome.eval_scores)
+        if bench not in transfers
+    ]
+
+
 def _check_transfer_inversion(genome: PipelineGenome) -> list[str]:
     """SPEC-281 §2 / AC-3 + AC-4: inversion is a hard gate, absence blocks promotion.
 
@@ -384,7 +416,6 @@ def _check_transfer_inversion(genome: PipelineGenome) -> list[str]:
     still evidence; an absent one is not" (SPEC-281 §2) — stale entries pass
     this gate, absent ones do not.
     """
-    failures: list[str] = []
     transfers: dict = genome.harness_params.get("transfer_by_benchmark") or {}
     if not isinstance(transfers, dict):
         return [
@@ -392,28 +423,9 @@ def _check_transfer_inversion(genome: PipelineGenome) -> list[str]:
             "{'transfer': float, 'transfer_stale': bool}"
         ]
     epsilon = float(genome.harness_params.get("transfer_epsilon", TRANSFER_EPSILON))
-    for bench, entry in sorted(transfers.items()):
-        if not isinstance(entry, dict) or "transfer" not in entry:
-            failures.append(f"{bench} transfer evidence present but has no 'transfer' value")
-            continue
-        transfer = entry["transfer"]
-        if not isinstance(transfer, (int, float)) or isinstance(transfer, bool):
-            failures.append(f"{bench} transfer value is not a number: {transfer!r}")
-            continue
-        if transfer < -epsilon:
-            stale = " (stale measurement)" if entry.get("transfer_stale") else ""
-            failures.append(
-                f"{bench} transfer {transfer:.3f} < -{epsilon:.2f}: harness "
-                f"inverts on the frontier model{stale} — disqualified"
-            )
-    if genome.approved_for_promotion:
-        for bench in sorted(genome.eval_scores):
-            if bench not in transfers:
-                failures.append(
-                    f"promotion candidate lacks transfer evidence for {bench} "
-                    "(SPEC-281: stale is acceptable, absent is not)"
-                )
-    return failures
+    return _inversion_entry_failures(transfers, epsilon) + _missing_transfer_evidence(
+        genome, transfers
+    )
 
 
 def compute_fitness(
