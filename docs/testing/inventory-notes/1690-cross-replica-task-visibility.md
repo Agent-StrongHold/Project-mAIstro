@@ -94,3 +94,30 @@ configured). Both reproduce identically at `4de7e906d` in a detached checkout
 with the same env, and both pass without the env — an environment-coupled
 hazard of the #91/#849 durable-receipt wiring, recorded here so it is not
 re-diagnosed as a #1690 regression.
+
+## Re-validation 2026-10-24 (head 35055b17833a)
+
+Independent re-run at the current merge head (pgvector:pg18 @ 127.0.0.1:5590,
+`alembic upgrade head` clean before pytest):
+
+- `uv run ruff check .` / `uv run ruff format --check .` → clean.
+- `uv run pytest packages/maistro-core/tests/runs/test_find_run_by_task_id.py
+  packages/maistro-core/tests/tasks/test_admission.py
+  packages/maistro-core/tests/tasks/test_cross_replica_receipt_reads.py
+  packages/maistro-core/tests/tasks/test_workspace_routing.py
+  packages/maistro-server/tests/test_task_cross_replica_visibility.py
+  packages/maistro-server/tests/test_task_restart_recovery.py -q` (with
+  `MAISTRO_TEST_PG_DSN` set) → **101 passed**.
+- `uv run pytest packages/maistro-server/tests/test_task_cross_replica_visibility.py -v`
+  → **2 passed**; `test_task_restart_recovery.py -v` → **1 passed**.
+- `uv run python scripts/check-suite-inventory.py --suite packages/maistro-core/tests`
+  and `--suite packages/maistro-server/tests` → both ok.
+- `uv run python scripts/check-vulture-baseline.py packages/*/src --min-confidence 60
+  --exclude '*/third_party/*'` → 1302 findings, ratchet ok.
+- `uv run python scripts/check-radon-baseline.py` → 127 blocks, ratchet ok.
+- `uv run python scripts/check-promotion-surface.py` / `check-reachability.py` → ok.
+- `uv run mypy` (canonical 7-package command) → Success, 937 source files.
+
+The three env-coupled server failures recorded above reproduce identically at
+the develop base `4de7e906d` in a detached checkout with the same env, so they
+are not #1690 regressions.
