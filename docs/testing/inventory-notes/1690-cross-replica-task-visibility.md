@@ -261,7 +261,7 @@ first-hand evidence (read-only `gh` queries of the runs at both heads):
 
 - `test` job: every pytest step and the OpenAPI-types freshness step pass;
   the job fails at `npm audit --audit-level=high` on the unchanged canvas
-  frontend lockfile.
+  frontend lockfile. **Fixed this round** — see the repair below.
 - `Supply chain (pip-audit)` / `security`: `fastmcp==4.0.11`
   (GHSA-7xgj-8392-5q4r, GHSA-vqqp-x5qm-5qp4 → 4.1.2) and `setuptools==84.0.0`
   (GHSA-xmj3-9gf7-h52w → 84.1.0) — locked-dependency advisories published
@@ -275,3 +275,47 @@ first-hand evidence (read-only `gh` queries of the runs at both heads):
   SAST (bandit + semgrep + gitleaks); ci.yml run 40033451855 → test,
   security. ci.yml was green at `161dedc063` the same day, pinning the
   breakage's arrival to trunk dependency data, not this branch.
+
+## Repair 2026-10-24 (head 3994c8e039f6 +1) — the `test` job's npm audit gate
+
+The gate named by this repair round. Reproduced first-hand at the branch tip:
+`npm audit --audit-level=high` in `packages/maistro-canvas/frontend` exits 1
+with 6 advisories (3 high: body-parser GHSA-27r3-jxmh-p828, undici
+GHSA-4qv8-2p9j-2685/GHSA-f72v-6w45-q472/GHSA-xjj6-f33q-929c, zod
+GHSA-mrhx-c7xc-m3w5; 3 moderate: @vitest/mocker, ip-address). All are in-range
+semver fixes; `npm audit fix` (no `--force`) updates only
+`packages/maistro-canvas/frontend/package-lock.json` — package.json is
+untouched, so the dependency contract itself does not move.
+
+Every CI `test`-job step for that tree re-proven first-hand against the fixed
+lockfile (node 22.22.1 / npm 9.2.0, the CI versions' majors):
+
+- `npm ci` → clean install, 0 vulnerabilities (also proves lock ↔ manifest
+  sync).
+- `npm run test:ci` → **79 passed** (5 files).
+- `npm run lint` → 0 errors (13 pre-existing warnings; the CI step sets no
+  `--max-warnings`).
+- `npm run build` → succeeds.
+- `npm audit --audit-level=high` → **exit 0, 0 vulnerabilities** (re-run after
+  the clean `npm ci`).
+
+The canvas frontend's npm tree enters no container image (root `Dockerfile:106`
+installs the maistro-canvas *wheel*; `Dockerfile:191` notes the wheel carries
+no on-disk frontend), so this lockfile cannot move the `Container scan` job.
+
+Correction to the residual list above: the `Container scan + SBOM + cosign`
+job does **not** fail on npm audit (its `npm audit fix` log lines are npm's
+informational report from `npm ci`); the failing step is `Trivy scan
+maistro-engine-research (HIGH/CRITICAL only)` — re-pinned first-hand via the
+job's step list at both this branch's head and develop's `4de7e906d9`
+(security.yml run 40092758331, the latest at repair time — still failing
+identically on the base head, as are `Supply chain (pip-audit)` at the
+pip-audit gate step and the full-history Gitleaks jobs). Those three gates
+remain trunk residuals with inputs (`uv.lock`, `Dockerfile.research`) this
+diff never touches.
+
+Re-confirmed at the repair commit, tree otherwise identical to `3994c8e039f6`:
+`uv run ruff check .` / `ruff format --check .` → clean; the six-file targeted
+battery → **90 passed, 11 skipped**; `check-suite-inventory.py` for
+`packages/maistro-core/tests` and `packages/maistro-server/tests` → both ok
+(no test added or removed; the frontmatter delta above is unchanged).
