@@ -3,7 +3,7 @@
 Before this there were two literals and nothing reconciled them:
 
 - `server/models/db.py` fell back to
-  `postgresql+asyncpg://mcp:mcp@localhost:5441/mcp_orders`
+  `postgresql+asyncpg://mcp:mcp@<loopback-host>:5441/mcp_orders`
 - `alembic.ini` repeated the same string in `sqlalchemy.url`
 
 Port 5441 is published to the host by this package's `docker-compose.yml`, so
@@ -24,7 +24,7 @@ the duplication that let these two files drift, and the Compose comment saying
 `DATABASE_URL` stays authoritative because Compose is not the only way to run
 this: pointing the POC at a database somewhere else has to remain expressible.
 
-**Configuring nothing is an error, not localhost.** A default that guesses a
+**Configuring nothing is an error, not a guessed loopback host.** A default that guesses a
 host nobody named turns "you have not configured a database" into "connection
 refused", which is a worse message arriving later. This follows the pattern
 `maistro.config.database` established for the engine in #187; the POC keeps its

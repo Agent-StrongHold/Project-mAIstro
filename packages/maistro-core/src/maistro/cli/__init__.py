@@ -17,7 +17,7 @@ Subcommands:
     maistro sandbox          Report the isolation this host can provide
     maistro backlog          Backlog authority cutover and agent work surface
 
-Config via env: MAISTRO_API_URL (default http://127.0.0.1:8101),
+Config via env: MAISTRO_API_URL (default: HTTP on IPv4 loopback port 8101),
 MAISTRO_API_TOKEN (bearer session token).
 """
 

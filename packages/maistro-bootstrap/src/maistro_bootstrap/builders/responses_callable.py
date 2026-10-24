@@ -16,7 +16,7 @@ engine checkout's .env, used by docker-compose. `_ensure_env_loaded()` fills
 that gap once per process: find the engine root (MAISTRO_REPO_ROOT env var,
 then an upward walk from CWD), load its .env for any of the above keys that
 aren't already real env vars, and rewrite the Docker-internal `litellm`
-hostname to 127.0.0.1 since that's not reachable from the host. Already-set
+hostname to the IPv4 loopback address since that's not reachable from the host. Already-set
 env vars are never overridden — this only fills gaps.
 
 Falls back to a stub response when the gateway is not configured so the TUI

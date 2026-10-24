@@ -13,7 +13,7 @@ Runs end-to-end:
 10. Repeat until converged or max passes
 
 Usage:
-    python -m services.ui_auto_climb --component Chat --passes 10 --url http://localhost:8101
+    python -m services.ui_auto_climb --component Chat --passes 10 --url <conductor-base-url>
 """
 
 from __future__ import annotations
@@ -266,13 +266,5 @@ def build_cli_parser() -> Any:
 
 
 if __name__ == "__main__":
-    import argparse
-
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--component", default="Chat.tsx")
-    parser.add_argument("--passes", type=int, default=5)
-    parser.add_argument("--url", default="http://localhost:8101")
-    parser.add_argument("--path", default="/chat")
-    args = parser.parse_args()
-
+    args = build_cli_parser().parse_args()
     asyncio.run(auto_climb(args.component, args.url, args.path, args.passes))
