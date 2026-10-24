@@ -8,6 +8,8 @@ Covers services/data_dir_guard.py:
 - inside a container: mounted data dir passes
 - inside a container: CONDUCTOR_ALLOW_EPHEMERAL_DATA_DIR=1 is the escape hatch
 - outside a container: plain directories pass without any mount requirement
+- missing data dir beside .restore-old-*/.restore-staging* debris → refused
+  (DATA_DIR_RESTORE_RECOVERY); an existing dir beside such debris still passes
 - Foundation.start refuses before initializing any subsystem
 """
 
@@ -54,6 +56,47 @@ def test_unwritable_dir_is_refused(tmp_path: Path) -> None:
             verify_durable_data_dir(target)
     finally:
         os.chmod(target, 0o700)
+
+
+# --- interrupted-restore debris -----------------------------------------
+
+
+def test_missing_dir_beside_restore_old_artifact_is_refused(tmp_path: Path) -> None:
+    """The kill-between-renames window: target gone, original in .restore-old-*.
+
+    Startup must refuse instead of recreating the directory (which would
+    open a fresh state database and reopen first-run provisioning).
+    """
+    target = tmp_path / "data"
+    old = tmp_path / ".data.restore-old-4711"
+    old.mkdir()
+    (old / "state.db").write_bytes(b"original")
+
+    with pytest.raises(DataDirRefused, match="DATA_DIR_RESTORE_RECOVERY"):
+        verify_durable_data_dir(target)
+
+    assert not target.exists()  # nothing was fresh-initialized
+    assert (old / "state.db").read_bytes() == b"original"
+
+
+def test_missing_dir_beside_stale_staging_is_refused(tmp_path: Path) -> None:
+    target = tmp_path / "data"
+    (tmp_path / ".data.restore-staging").mkdir()
+
+    with pytest.raises(DataDirRefused, match="DATA_DIR_RESTORE_RECOVERY"):
+        verify_durable_data_dir(target)
+
+    assert not target.exists()
+
+
+def test_existing_dir_beside_restore_artifacts_still_passes(tmp_path: Path) -> None:
+    """Leftover debris beside an intact data dir is harmless — do not refuse."""
+    target = tmp_path / "data"
+    target.mkdir()
+    (tmp_path / ".data.restore-old-4711").mkdir()
+    (tmp_path / ".data.restore-staging").mkdir()
+
+    assert verify_durable_data_dir(target) == target
 
 
 def test_uncreatable_parent_is_refused(tmp_path: Path) -> None:

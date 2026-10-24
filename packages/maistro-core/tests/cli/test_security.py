@@ -528,6 +528,29 @@ class TestRestore:
         assert {p.name: p.read_bytes() for p in data_dir.iterdir()} == before
         assert not (data_dir.parent / f".{data_dir.name}{_RESTORE_STAGING_SUFFIX}").exists()
 
+    def test_rerun_after_a_kill_between_the_renames_recovers_the_original(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Kill between the renames, then re-run: original back, fresh swap.
+
+        This is the window the data-dir guard refuses at startup; the re-run
+        here is the documented recovery path out of it.
+        """
+        data_dir, archive = self._roundtrip(tmp_path)
+        previous = data_dir.parent / f".{data_dir.name}{_RESTORE_OLD_SUFFIX}-4711"
+        os.replace(data_dir, previous)
+        staging = data_dir.parent / f".{data_dir.name}{_RESTORE_STAGING_SUFFIX}"
+        staging.mkdir()
+        (staging / "state.db").write_bytes(b"stale-staged-tree")
+
+        restore(data_dir=str(data_dir), from_archive=str(archive), yes=True)
+
+        out = capsys.readouterr().out.replace("\n", "")
+        assert "Recovered an interrupted restore" in out
+        assert (data_dir / "state.db").read_bytes() == b"sqlite-bytes"
+        assert not list(data_dir.parent.glob(f".{data_dir.name}{_RESTORE_OLD_SUFFIX}-*"))
+        assert not staging.exists()
+
     def test_failure_between_the_two_renames_preserves_the_original(
         self,
         tmp_path: Path,

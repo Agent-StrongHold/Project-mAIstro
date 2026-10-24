@@ -440,8 +440,8 @@ def _refuse_stale_staging(staging: Path) -> None:
     """Refuse a staging tree left behind by a killed restore.
 
     Nothing has been lost — the original directory is either still in place
-    or in a .restore-old-* sibling — but this staging tree is unusable now.
-    Ask rather than guess.
+    or in a .restore-old-* sibling (recovered just below) — but this staging
+    tree is unusable now. Ask rather than guess.
     """
     if not staging.exists():
         return
@@ -459,6 +459,36 @@ def _swap_after_extract(staging: Path, target: Path, previous: Path) -> None:
         raise OSError("archive extracted to no files")
 
     _swap_into_place(staging, target, previous)
+
+
+def _recover_interrupted_swap(target: Path, staging: Path) -> None:
+    """Roll back a restore killed between its two renames.
+
+    If the target directory is absent but a `.restore-old-*` sibling holds
+    the original, a previous restore was killed between the renames: the
+    Conductor's startup guard refuses this state, and a naive re-run would
+    refuse on the stale staging tree. Move the original back, clear the
+    debris, and let the caller proceed with a normal restore. With no
+    `.restore-old-*` to recover, a stale staging tree beside a missing
+    target is still unusable debris — clear it too.
+    """
+    if target.exists():
+        return
+    olds = sorted(target.parent.glob(f".{target.name}{_RESTORE_OLD_SUFFIX}-*"))
+    if olds:
+        newest = max(olds, key=lambda p: p.stat().st_mtime)
+        os.replace(newest, target)
+        for stray in olds:
+            if stray is not newest:
+                shutil.rmtree(stray, ignore_errors=True)
+        _fsync_dir(target.parent)
+        console.print(
+            f"[yellow]Recovered an interrupted restore:[/yellow] moved the "
+            f"original directory back from {newest.name}. Proceeding with a "
+            "fresh restore of the requested archive."
+        )
+    if staging.exists():
+        shutil.rmtree(staging)
 
 
 @app.command("restore")
@@ -486,7 +516,10 @@ def restore(
     old directory or the restored one on disk — never a half-restored mix of
     coupled files (a vault without its identity key, a credential store
     without its master key). If a previous restore was killed between those
-    two renames, re-running this command completes the swap.
+    two renames, re-running this command moves the original back from its
+    `.restore-old-*` sibling and proceeds with a fresh swap; starting the
+    Conductor in that window is refused by the data-dir guard instead of
+    silently fresh-initializing.
     """
     archive_path = Path(from_archive).expanduser()
     if not archive_path.is_file():
@@ -518,6 +551,7 @@ def restore(
     if not _confirmed(yes, f"replace {target} with the archive contents"):
         return
 
+    _recover_interrupted_swap(target, staging)
     _refuse_stale_staging(staging)
 
     try:

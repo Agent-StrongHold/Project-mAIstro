@@ -8,7 +8,7 @@ persistence gets it or gets a refusal — never a Conductor that starts,
 accepts logins and provisions accounts, and throws all of it away on the
 next ``docker compose down/up`` or image replacement.
 
-Two refusals, both fail-closed before any subsystem touches the directory:
+Three refusals, all fail-closed before any subsystem touches the directory:
 
 - **DATA_DIR_UNWRITABLE** — the directory cannot be created or written by
   this process (wrong volume ownership, read-only mount, missing host
@@ -39,6 +39,13 @@ Two refusals, both fail-closed before any subsystem touches the directory:
 hatch for harnesses that *deliberately* want throwaway state (e2e runners
 exercising the one-shot setup wizard). It is an acknowledgement, not a
 default: the guard still verifies writability with it set.
+
+- **DATA_DIR_RESTORE_RECOVERY** — the configured directory does not exist,
+  but a ``.restore-old-*`` or ``.restore-staging*`` sibling (the debris
+  ``maistro security restore`` leaves when it is killed mid-swap) does.
+  Creating the directory here would look like a fresh install: an empty
+  state database, first-run provisioning, live accounts stranded in the
+  ``.restore-old-*`` sibling. Refuse instead and point at the recovery.
 """
 
 from __future__ import annotations
@@ -52,6 +59,10 @@ logger = logging.getLogger("hive.data_dir")
 
 _PROBE_FILENAME = ".conductor-data-dir-probe"
 _ESCAPE_HATCH_ENV = "CONDUCTOR_ALLOW_EPHEMERAL_DATA_DIR"
+
+#: Debris of an interrupted `maistro security restore` swap, named by the
+#: same convention in maistro.cli._security (staging may carry a pid too).
+_RESTORE_ARTIFACT_SUFFIXES = (".restore-old", ".restore-staging")
 
 #: Markers a container runtime drops into the container's own filesystem.
 #: Docker creates ``/.dockerenv``; Podman creates ``/run/.containerenv``.
@@ -152,6 +163,41 @@ def _probe_mounted(data_dir: Path) -> None:
     )
 
 
+def _refuse_restore_recovery_artifacts(data_dir: Path) -> None:
+    """Refuse to fresh-initialize beside an interrupted backup restore.
+
+    ``maistro security restore`` swaps the directory in with two renames;
+    a kill between them leaves the configured directory absent while the
+    original survives in a ``.restore-old-*`` sibling. mkdir() would
+    happily recreate an empty directory here and the state layer would
+    open a fresh database — first-run provisioning over live accounts.
+    Only checked when the data directory itself is missing: leftover
+    artifacts beside an existing directory are harmless leftovers.
+    """
+    parent = data_dir.parent
+    if not parent.is_dir():
+        return
+    artifacts = sorted(
+        artifact
+        for suffix in _RESTORE_ARTIFACT_SUFFIXES
+        for artifact in parent.glob(f".{data_dir.name}{suffix}*")
+    )
+    if not artifacts:
+        return
+    names = ", ".join(artifact.name for artifact in artifacts)
+    raise DataDirRefused(
+        f"DATA_DIR_RESTORE_RECOVERY: {data_dir} does not exist, but "
+        f"interrupted-restore artifacts sit beside it ({names}). Creating "
+        "the directory now would open a fresh, empty state database and "
+        "provision new accounts while the original data sits in the "
+        ".restore-old-* sibling. Recover first: re-run `maistro security "
+        f"restore --data-dir {data_dir} --from <archive>` (it moves the "
+        f"original back before swapping), or `mv <the .restore-old-* "
+        f"directory> {data_dir}` to keep the pre-restore state, then "
+        "remove the inspected `.restore-staging*` sibling."
+    )
+
+
 def verify_durable_data_dir(data_dir: Path) -> Path:
     """Create, prove writable, and (in containers) prove mounted.
 
@@ -160,6 +206,8 @@ def verify_durable_data_dir(data_dir: Path) -> Path:
     directory, so a refused startup has written nothing.
     """
     resolved = data_dir.expanduser()
+    if not resolved.exists():
+        _refuse_restore_recovery_artifacts(resolved)
     try:
         resolved.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
