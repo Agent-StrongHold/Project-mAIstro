@@ -8,16 +8,12 @@
 
 import { useEffect, useState } from "react";
 import { Navigate } from "react-router-dom";
-import { apiGet } from "../lib/api";
 import {
   DEFAULT_LANDING_PATH,
   LANDING_PREF_KEY,
   resolveLandingPath,
 } from "../lib/landing";
-
-type ProfilePayload = {
-  preferences?: Record<string, unknown>;
-};
+import { loadProfile } from "../lib/profile";
 
 export function DefaultLandingRedirect() {
   const [target, setTarget] = useState<string | null>(null);
@@ -26,7 +22,7 @@ export function DefaultLandingRedirect() {
     let cancelled = false;
     (async () => {
       try {
-        const profile = await apiGet<ProfilePayload>("/v1/profile");
+        const profile = await loadProfile();
         if (cancelled) return;
         setTarget(resolveLandingPath(profile.preferences?.[LANDING_PREF_KEY]));
       } catch {

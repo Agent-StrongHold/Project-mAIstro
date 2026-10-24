@@ -90,3 +90,39 @@ def test_normalize_helpers_fall_back_safely() -> None:
 
 def test_validate_preference_field_passes_unknown_keys() -> None:
     assert validate_preference_field("name", "Blake") == "Blake"
+
+
+def test_patch_refuses_invalid_landing_with_http_400(authed_client) -> None:
+    """PreferenceValueError on PATCH must surface as 400 (routes/profile.py)."""
+    response = authed_client.patch(
+        "/v1/profile",
+        json={"field": LANDING_KEY, "value": "/dashboard"},
+    )
+    assert response.status_code == 400
+    assert LANDING_KEY in response.json()["detail"]
+    # Nothing durable was written for any principal — refused before commit.
+    assert all(
+        LANDING_KEY not in profile_store.preferences(uid) for uid in profile_store.user_ids()
+    )
+
+
+def test_put_refuses_invalid_restore_with_http_400(authed_client) -> None:
+    """PreferenceValueError on PUT must surface as 400 (routes/profile.py)."""
+    response = authed_client.put(
+        "/v1/profile",
+        json={"preferences": {RESTORE_KEY: "always"}},
+    )
+    assert response.status_code == 400
+    assert RESTORE_KEY in response.json()["detail"]
+
+
+async def test_profile_set_tool_refuses_invalid_landing() -> None:
+    """Chat profile_set maps PreferenceValueError to a model-readable error."""
+    result = await chat_completion._tool_profile_set(
+        {"field": LANDING_KEY, "value": "/dashboard"},
+        "admin",
+    )
+    assert "error" in result
+    assert LANDING_KEY in result["error"]
+    assert result.get("updated") is not True
+    assert LANDING_KEY not in profile_store.preferences("admin")

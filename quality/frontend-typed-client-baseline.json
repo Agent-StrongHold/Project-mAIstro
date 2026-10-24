@@ -3,7 +3,7 @@
   "metric_definition_version": "1",
   "summary": {
     "hand_typed": 136,
-    "raw_fetch": 53
+    "raw_fetch": 48
   },
   "tolerated": {
     "hand_typed::packages/hive-conductor/frontend/src/components/ErrorBoundary.tsx:3:Props": "local interface/type in pages/ or components/",
@@ -183,11 +183,6 @@
     "raw_fetch::packages/hive-conductor/frontend/src/pages/Login.tsx:122": "bare fetch outside src/lib/",
     "raw_fetch::packages/hive-conductor/frontend/src/pages/Login.tsx:62": "bare fetch outside src/lib/",
     "raw_fetch::packages/hive-conductor/frontend/src/pages/Login.tsx:83": "bare fetch outside src/lib/",
-    "raw_fetch::packages/hive-conductor/frontend/src/pages/Profile.tsx:15": "bare fetch outside src/lib/",
-    "raw_fetch::packages/hive-conductor/frontend/src/pages/Profile.tsx:20": "bare fetch outside src/lib/",
-    "raw_fetch::packages/hive-conductor/frontend/src/pages/Profile.tsx:27": "bare fetch outside src/lib/",
-    "raw_fetch::packages/hive-conductor/frontend/src/pages/Profile.tsx:63": "bare fetch outside src/lib/",
-    "raw_fetch::packages/hive-conductor/frontend/src/pages/Profile.tsx:69": "bare fetch outside src/lib/",
     "raw_fetch::packages/hive-conductor/frontend/src/pages/RSI.tsx:122": "bare fetch outside src/lib/",
     "raw_fetch::packages/hive-conductor/frontend/src/pages/RSI.tsx:382": "bare fetch outside src/lib/",
     "raw_fetch::packages/hive-conductor/frontend/src/pages/RSI.tsx:416": "bare fetch outside src/lib/",

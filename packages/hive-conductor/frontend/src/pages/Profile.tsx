@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useState } from "react";
 import { useToast } from "../components/shared";
-import { apiGet, apiPatch } from "../lib/api";
+import { apiPatch } from "../lib/api";
 import {
   DEFAULT_LANDING_PATH,
   DEFAULT_RESTORE_VALUE,
@@ -12,10 +12,19 @@ import {
   resolveRestoreAggressiveness,
   restoreLabel,
 } from "../lib/landing";
+import {
+  loadMemoryEntries,
+  loadProfile,
+  loadRecentAuditEntries,
+  loadRecentChatSessions,
+  loadWhoamiUser,
+  summarizeMemoriesFromContext,
+} from "../lib/profile";
+import type { ProfileUser } from "../lib/profile";
 import { claimUiState, clearUiState, storedUiState } from "../lib/uiState";
 
 export default function Profile() {
-  const [user, setUser] = useState<any>(null);
+  const [user, setUser] = useState<ProfileUser | null>(null);
   const [summary, setSummary] = useState<string>("");
   const [summaryLoading, setSummaryLoading] = useState(true);
   const [activity, setActivity] = useState<any[]>([]);
@@ -28,70 +37,43 @@ export default function Profile() {
   const [stored, setStored] = useState(() => storedUiState());
 
   useEffect(() => {
-    fetch("/v1/auth/whoami", { credentials: "same-origin" })
-      .then(r => r.json())
-      .then(d => { if (d.user) setUser(d.user); });
+    loadWhoamiUser()
+      .then((next) => {
+        if (next) setUser(next);
+      })
+      .catch(() => {});
 
-    apiGet<{ preferences?: Record<string, unknown> }>("/v1/profile")
+    loadProfile()
       .then((p) => {
         setLanding(resolveLandingPath(p.preferences?.[LANDING_PREF_KEY]));
         setRestore(resolveRestoreAggressiveness(p.preferences?.[RESTORE_PREF_KEY]));
       })
       .catch(() => {});
 
-    // Fetch memories and generate summary
-    fetch("/v1/memory/entries", { credentials: "same-origin" })
-      .then(r => r.json())
-      .then(async (memories) => {
-        const memoryContext = Array.isArray(memories)
-          ? memories.map((m: any) => `[${m.namespace}] ${m.key}: ${m.value}`).join("\n")
-          : "No memories stored yet.";
-
-        const r = await fetch("/v1/chat/stream", {
-          method: "POST", credentials: "same-origin",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            messages: [
-              { role: "system", content: "You are summarizing what you know about a user based on their stored memories. Be concise, warm, and specific. Write 2-3 sentences about who they are, what they work on, and their preferences. If no memories exist, say so briefly." },
-              { role: "user", content: `Here are my stored memories:\n${memoryContext}\n\nSummarize what you know about me.` }
-            ]
-          })
-        });
-        const reader = r.body?.getReader();
-        const decoder = new TextDecoder();
-        let acc = "";
-        if (reader) {
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            for (const line of decoder.decode(value, { stream: true }).split("\n")) {
-              if (!line.startsWith("data: ")) continue;
-              try {
-                const e = JSON.parse(line.slice(6));
-                if (e.type === "token" || e.type === "content") acc += e.content || e.token || "";
-                else if (e.type === "done" && e.content && !acc) acc = e.content;
-              } catch {
-                // SSE chunk split a JSON payload mid-object — wait for the rest.
-              }
-            }
-            setSummary(acc);
-          }
-        }
-        if (!acc) setSummary("No memories stored yet — start chatting to build context.");
+    (async () => {
+      try {
+        const memories = await loadMemoryEntries();
+        const memoryContext =
+          memories.length > 0
+            ? memories
+                .map((m: any) => `[${m.namespace}] ${m.key}: ${m.value}`)
+                .join("\n")
+            : "No memories stored yet.";
+        const acc = await summarizeMemoriesFromContext(memoryContext);
+        setSummary(acc || "No memories stored yet — start chatting to build context.");
+      } catch {
+        setSummary("Could not load memories.");
+      } finally {
         setSummaryLoading(false);
-      })
-      .catch(() => { setSummary("Could not load memories."); setSummaryLoading(false); });
+      }
+    })();
 
-    // Recent audit activity — a page envelope {entries, next_cursor} (#358).
-    fetch("/v1/audit", { credentials: "same-origin" })
-      .then(r => r.json())
-      .then(d => setActivity(Array.isArray(d?.entries) ? d.entries.slice(0, 10) : []))
+    loadRecentAuditEntries(10)
+      .then((entries) => setActivity(entries as any[]))
       .catch(() => {});
 
-    // Recent chat sessions
-    fetch("/v1/chat/sessions", { credentials: "same-origin" })
-      .then(r => r.json())
-      .then(d => setSessions(Array.isArray(d) ? d.slice(0, 5) : []))
+    loadRecentChatSessions(5)
+      .then((rows) => setSessions(rows as any[]))
       .catch(() => {});
   }, []);
 
