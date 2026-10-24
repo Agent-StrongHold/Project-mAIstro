@@ -156,3 +156,45 @@ Test deltas (this round):
   `test_compose_runtime_builds_the_canonical_seam`.
 
 Front matter `+27` -> `+28`.
+
+## Repair round: radon ratchet — decompress the two new C blocks (no test delta)
+
+The merge queue's radon ratchet flagged two new C-grade blocks introduced by
+this lane and never re-checked after the last code commit:
+`CanvasJobRunner.start` (runner.py, C 13) and `run_worker`
+(worker_service.py, C 11). A grant cannot authorize them in the same merge
+(`ratchet_provenance.load_authorizations` reads
+`quality/ratchet-authorizations.json` from the merge base), so the repair is
+the behavior-preserving decomposition the blocks were missing:
+
+- `start()` delegates its four per-round concerns — `_drain_one_round`
+  (post-stop drain), `_retire_finished`, `_fill_free_slots`,
+  `_reap_periodically` (returns the new reap counter) — and the
+  `CancelledError` path delegates to `_cancel_in_flight`. The in-flight set
+  is mutated in place (`difference_update`); the former single-body loop's
+  `-=` rebind only worked because everything shared one local frame.
+- `run_worker()` delegates the bounded runner shutdown to
+  `_shutdown_runner_task`, which returns the exit-code contribution:
+  graceful stop, deadline cancel, abandoned-on-suppressed-cancellation
+  (done-callback, never re-awaited), crashed runner => exit 1.
+
+No test added or removed: the pre-existing suites already pin every extracted
+path (`test_stop_drains_claimed_jobs_before_start_returns`,
+`test_cancelled_start_cancels_in_flight_execution`,
+`test_start_loop_reaps_expired_leases_while_running`, the three
+`test_worker_service.run_worker` shutdown tests), which is the point — the
+decomposition changed structure, not behavior. Evidence this round: radon
+127 -> 127 reviewed blocks (exit 0); canvas suite 581 passed; ruff check/
+format clean; CI's exact multi-package `uv run mypy` invocation clean (1103
+files); diff-coverage gate over the canvas + scripts producers at the develop
+base passes (90% lines / 80% branches, runner.py and worker_service.py
+included); vulture, reachability, reachability-dispositions, promotion
+surface, convergence-matrix, suite inventory, backlog consistency,
+interrogate, `uv lock --check`, and the Supply chain (pip-audit) gate with
+CI's exact sequence all exit 0. The one root-suite failure observed while
+collecting the scripts producer
+(`test_every_quality_json_state_surface_is_classified_once`) was reproduced
+as environmental, not branch-caused: the gitignored runtime artifact
+`quality/ac-state.json` (written by `check-ac-state.py --run-tests` in this
+worktree) is the only unclassified surface, and the test passes with it
+moved aside.
