@@ -236,7 +236,6 @@ class GovernedInvocationExecutionService:
             return
         await self._append_terminal_event(
             invocation,
-            binding=invocation.binding,
             causation_id=(
                 f"capability-reconciliation-{invocation.invocation_id}-"
                 f"{len(invocation.reconciliation_history)}"
@@ -341,7 +340,6 @@ class GovernedInvocationExecutionService:
 
         await self._append_terminal_event(
             invocation,
-            binding=binding,
             causation_id=policy_event.event_id,
         )
         return invocation
@@ -644,7 +642,6 @@ class GovernedInvocationExecutionService:
             return
         await self._append_terminal_event(
             invocation,
-            binding=binding,
             causation_id=causation_id,
         )
 
@@ -652,10 +649,16 @@ class GovernedInvocationExecutionService:
         self,
         invocation: Invocation,
         *,
-        binding: Binding | ResolvedBinding,
         causation_id: str,
     ) -> None:
-        """Append one idempotent terminal audit fact for a persisted Invocation."""
+        """Append one idempotent terminal audit fact for a persisted Invocation.
+
+        Provenance reads the Invocation's own resolved snapshot, not the
+        caller's Binding: a programmatically registered declaring adapter
+        (#976) then leaves the same extension attribution evidence as a
+        bootstrapped one, because the snapshot captured the identity of the
+        adapter that actually resolved.
+        """
 
         await self._events.append(
             EventEnvelope(
@@ -663,8 +666,8 @@ class GovernedInvocationExecutionService:
                     f"capability-invocation-{invocation.invocation_id}-{invocation.status.value}"
                 ),
                 type=f"capability.invocation.{invocation.status.value}",
-                workspace_id=binding.workspace_id,
-                project_id=binding.project_id,
+                workspace_id=invocation.binding.workspace_id,
+                project_id=invocation.binding.project_id,
                 run_id=invocation.run_id,
                 node_run_id=invocation.node_run_id,
                 attempt_id=invocation.attempt_id,
@@ -672,7 +675,7 @@ class GovernedInvocationExecutionService:
                 correlation_id=invocation.run_id,
                 causation_id=causation_id,
                 source="maistro.capabilities",
-                provenance=_extension_provenance(binding),
+                provenance=_extension_provenance(invocation.binding),
                 payload={
                     "binding_id": invocation.binding.binding_id,
                     "capability": invocation.binding.capability,

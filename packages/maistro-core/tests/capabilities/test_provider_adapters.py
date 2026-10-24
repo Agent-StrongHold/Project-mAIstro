@@ -1900,6 +1900,50 @@ async def test_adapter_call_log_names_the_declared_identity(
 
 @pytest.mark.contract("behavioral")
 @pytest.mark.ac("#976/AC-2")
+async def test_programmatic_registration_leaves_full_attribution_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A declaring adapter registered onto an existing Binding still attributes.
+
+    ``register_adapter_models()`` → ``complete()`` never runs the bootstrap
+    that copies the identity into ``Binding.config``, so the evidence must
+    come from the resolved adapter itself: the Invocation snapshot names the
+    package and the terminal audit event carries it in ``provenance``.
+    """
+
+    captured = _CapturedGateway(_acme_response())
+    monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **kw: captured.client())
+    catalog, store = await _catalog_with(AcmeAdapter(_declaring_spec()))
+    effects = _effects()
+
+    result = await _egress(effects, catalog, store).complete(
+        binding=_binding(),  # non-bootstrapped: config names no attribution
+        run_id="run-prog",
+        node_run_id="nr-prog",
+        attempt_id="att-prog",
+        effect_key="test:programmatic-provenance",
+        request=ModelChatRequest(model="acme-mini", messages=[{"role": "user", "content": "h"}]),
+    )
+
+    stored = await effects.invocation_store.get(result.invocation_id)
+    assert stored is not None
+    # the snapshot carries the identity of the adapter that actually resolved
+    decoded = attribution_from_payload(stored.binding.config["extension_attribution"])
+    assert decoded.extension_id == "acme.models"
+    assert decoded.version == "2.3.1"
+
+    events = await effects.event_store.list_stream("workspace:ws1")
+    terminal = [e for e in events if e.type == "capability.invocation.completed"]
+    assert terminal
+    event = terminal[-1]
+    assert event.invocation_id == stored.invocation_id
+    from_payload = attribution_from_payload(event.provenance["extension"])
+    assert from_payload.extension_id == "acme.models"
+    assert from_payload.publisher == "acme"
+
+
+@pytest.mark.contract("behavioral")
+@pytest.mark.ac("#976/AC-2")
 async def test_undeclared_adapter_log_claims_no_identity(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
