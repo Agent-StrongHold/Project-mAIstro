@@ -54,3 +54,26 @@ contract is unchanged: `foundation._init_state` still configures the
 registered store, and it still shares the state database for restart and
 replica reads. `test_the_projection_store_is_registered_not_declared_in_stores_py`
 pins the ownership invariant.
+
+## Develop sync reconciliation (base `4de7e906d9`)
+
+The next develop sync arrived as a preserved in-flight merge of the older
+snapshot `e20e9f52e` plus a fresh merge of `origin/develop` (`4de7e906d9`,
+59 commits past it). Both resolved in place: merge `148944a03` kept the
+branch's `_fresh_store` reload-before-inspection helper in
+`services/dag_run_inspection.py` (the merged snapshot had made no change to
+that region), and merge `153757ca7` unioned the `dag_run_store` import
+(branch's `DagRunStore` binding beside develop's `MAX_EVENTS_PER_RUN` for the
+bounded canonical events page).
+
+The sync brought develop's new `tests/test_goal_inspection.py` (#2181), whose
+projection double patched `get_dag_run_store` with a `SimpleNamespace`
+carrying only `get_run` — written against develop's direct-store contract.
+The M1-E refresh contract
+(`test_history_inspection_refreshes_before_http_reads`, marked
+`M1-E/history-replica-refresh`) requires every production inspection to
+reload the shared projection first, so the double gained a `reload=lambda:
+None` seam: a reload that finds nothing and a `get_run` that answers None is
+exactly the "projection unavailable" state the test models. No test was
+added, removed, or renamed — no inventory delta; the suite total stays
+3983 (3957 passed + 26 skipped locally at the merged head).
