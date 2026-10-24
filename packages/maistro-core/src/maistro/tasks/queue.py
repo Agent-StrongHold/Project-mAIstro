@@ -471,6 +471,16 @@ class TaskQueue:
         factory = get_async_session_factory()
         if factory is None:
             return
+        # Best-effort fire-and-forget (ADR-018): scheduling requires a running
+        # event loop. A synchronous caller outside an async context (e.g. a
+        # direct in-process `set_result`) has no loop to schedule on, so the
+        # durable write is skipped rather than crashing the caller. The
+        # in-memory receipt stays authoritative for this process; the durable
+        # tier converges on the async paths that do run under a loop.
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return
         values = _record_values(task)
         previous = self._last_write.get(task.task_id)
         write = asyncio.create_task(_write_after(previous, factory, values))
