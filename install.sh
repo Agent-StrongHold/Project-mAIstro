@@ -691,10 +691,10 @@ DATABASE_URL=postgresql://maistro:${db_pass}@postgres:5432/maistro
 
 # LiteLLM gateway
 LITELLM_MASTER_KEY=${litellm_key}
-LITELLM_URL=http://litellm:4000
-LITELLM_BASE_URL=http://litellm:4000
-LITELLM_PROXY_URL=http://litellm:4000
-LITELLM_API_BASE=http://litellm:4000/v1
+LITELLM_URL=http://litellm:4000  # DevSkim: ignore DS137138 until 2027-12-31
+LITELLM_BASE_URL=http://litellm:4000  # DevSkim: ignore DS137138 until 2027-12-31
+LITELLM_PROXY_URL=http://litellm:4000  # DevSkim: ignore DS137138 until 2027-12-31
+LITELLM_API_BASE=http://litellm:4000/v1  # DevSkim: ignore DS137138 until 2027-12-31
 LITELLM_API_KEY=${litellm_key}
 LITELLM_PROXY_KEY=${litellm_key}
 
@@ -795,10 +795,10 @@ repair_existing_env() {
     fill_env_value DB_PASSWORD "$db_pass"
     append_env_once DATABASE_URL "postgresql://maistro:${db_pass}@postgres:5432/maistro"
     fill_env_value LITELLM_MASTER_KEY "$litellm_key"
-    append_env_once LITELLM_URL "http://litellm:4000"
-    append_env_once LITELLM_BASE_URL "http://litellm:4000"
-    append_env_once LITELLM_PROXY_URL "http://litellm:4000"
-    append_env_once LITELLM_API_BASE "http://litellm:4000/v1"
+    append_env_once LITELLM_URL "http://litellm:4000"  # DevSkim: ignore DS137138 until 2027-12-31
+    append_env_once LITELLM_BASE_URL "http://litellm:4000"  # DevSkim: ignore DS137138 until 2027-12-31
+    append_env_once LITELLM_PROXY_URL "http://litellm:4000"  # DevSkim: ignore DS137138 until 2027-12-31
+    append_env_once LITELLM_API_BASE "http://litellm:4000/v1"  # DevSkim: ignore DS137138 until 2027-12-31
     fill_env_value LITELLM_API_KEY "$litellm_key"
     fill_env_value LITELLM_PROXY_KEY "$litellm_key"
     append_env_once DEFAULT_MODEL "gemini/gemini-2.5-flash"

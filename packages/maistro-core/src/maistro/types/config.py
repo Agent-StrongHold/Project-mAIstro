@@ -118,8 +118,10 @@ class CORSConfig(BaseModel):
     """CORS configuration for browser-based clients."""
 
     allowed_origins: list[str] = Field(
-        default_factory=lambda: ["http://localhost:3200"]
-    )  # DevSkim: ignore DS162092 until 2027-12-31
+        default_factory=lambda: [
+            "http://localhost:3200",  # DevSkim: ignore DS162092 until 2027-12-31; ignore DS137138 until 2027-12-31
+        ]
+    )
     allowed_methods: list[str] = Field(
         default_factory=lambda: ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
     )
@@ -282,7 +284,7 @@ class AgentConfig(BaseModel):
     redis_url: str = ""
     agents_dir: str = ""
     provider_config_path: str = ""
-    litellm_url: str = "http://litellm:4000"
+    litellm_url: str = "http://litellm:4000"  # DevSkim: ignore DS137138 until 2027-12-31
     litellm_key: str = ""
     router_api_key: str = ""
     jwt_secret: str = ""

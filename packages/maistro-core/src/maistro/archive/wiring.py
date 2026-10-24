@@ -106,7 +106,7 @@ def _endpoint(scheme: str, query: str) -> str | None:
     if not endpoint:
         raise ArchiveError(f"{scheme}:// requires an ?endpoint=host:port")
     transport = "http" if scheme == "s3+http" else "https"
-    if endpoint.startswith(("http://", "https://")):
+    if endpoint.startswith(("http://", "https://")):  # DevSkim: ignore DS137138 until 2027-12-31
         return endpoint
     return f"{transport}://{endpoint}"
 
