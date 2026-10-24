@@ -1749,7 +1749,7 @@ def _declaring_spec() -> ProviderAdapterSpec:
 
 
 @pytest.mark.contract("boundary")
-@pytest.mark.ac("#976/AC-1")
+@pytest.mark.ac("SPEC-102426-976a/AC-1")
 async def test_governed_call_records_declared_identity_in_invocation_evidence(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1799,7 +1799,7 @@ async def test_governed_call_records_declared_identity_in_invocation_evidence(
 
 
 @pytest.mark.contract("behavioral")
-@pytest.mark.ac("#976/AC-1")
+@pytest.mark.ac("SPEC-102426-976a/AC-1")
 async def test_adapter_errors_name_the_declared_identity(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1852,7 +1852,7 @@ async def test_undeclared_adapter_errors_keep_the_legacy_message_shape(
 
 
 @pytest.mark.contract("behavioral")
-@pytest.mark.ac("#976/AC-2")
+@pytest.mark.ac("SPEC-102426-976a/AC-2")
 async def test_adapter_call_log_names_the_declared_identity(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
@@ -1899,7 +1899,7 @@ async def test_adapter_call_log_names_the_declared_identity(
 
 
 @pytest.mark.contract("behavioral")
-@pytest.mark.ac("#976/AC-2")
+@pytest.mark.ac("SPEC-102426-976a/AC-2")
 async def test_programmatic_registration_leaves_full_attribution_evidence(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1943,7 +1943,7 @@ async def test_programmatic_registration_leaves_full_attribution_evidence(
 
 
 @pytest.mark.contract("behavioral")
-@pytest.mark.ac("#976/AC-2")
+@pytest.mark.ac("SPEC-102426-976a/AC-2")
 async def test_undeclared_adapter_log_claims_no_identity(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
@@ -1979,7 +1979,7 @@ async def test_undeclared_adapter_log_claims_no_identity(
     assert "extension_" not in rendered
 
 
-@pytest.mark.ac("#976/AC-6")
+@pytest.mark.ac("SPEC-102426-976a/AC-6")
 async def test_bootstrap_snapshots_declared_identity_into_the_binding() -> None:
     """Wiring a declaring adapter pins its identity into the Binding snapshot."""
 
@@ -2009,7 +2009,7 @@ async def test_bootstrap_snapshots_declared_identity_into_the_binding() -> None:
     assert legacy[0].config == {"adapter_id": "acme.models"}
 
 
-@pytest.mark.ac("#976/AC-6")
+@pytest.mark.ac("SPEC-102426-976a/AC-6")
 async def test_end_to_end_reference_proof_bootstrap_to_decoded_evidence(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2053,7 +2053,7 @@ async def test_end_to_end_reference_proof_bootstrap_to_decoded_evidence(
 
 
 @pytest.mark.contract("behavioral")
-@pytest.mark.ac("#976/AC-1")
+@pytest.mark.ac("SPEC-102426-976a/AC-1")
 async def test_terminal_invocation_event_carries_the_extension_in_provenance(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2098,7 +2098,7 @@ async def test_terminal_invocation_event_carries_the_extension_in_provenance(
     assert decoded.publisher == "acme"
 
 
-@pytest.mark.ac("#976/AC-3")
+@pytest.mark.ac("SPEC-102426-976a/AC-3")
 async def test_undeclared_binding_emits_no_extension_provenance(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2216,7 +2216,7 @@ class _GalleryAdapter(ReferenceChatAdapter):
         return bool(self._plugin.health_from(payload))
 
 
-@pytest.mark.ac("#976/AC-6")
+@pytest.mark.ac("SPEC-102426-976a/AC-6")
 async def test_shipped_reference_extension_correlates_end_to_end(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

@@ -61,7 +61,7 @@ def _attribution(**overrides: object) -> ExtensionAttribution:
 
 
 @pytest.mark.contract("boundary")
-@pytest.mark.ac("#976/AC-1")
+@pytest.mark.ac("SPEC-102426-976a/AC-1")
 async def test_attribution_from_install_record_names_the_exact_identity() -> None:
     bundle = install_bundle(name="ext-tool", version="1.0.0")
     from maistro.extensions.store import InMemoryExtensionInstallStore
@@ -90,7 +90,7 @@ async def test_attribution_from_install_record_names_the_exact_identity() -> Non
 
 
 @pytest.mark.contract("boundary")
-@pytest.mark.ac("#976/AC-1")
+@pytest.mark.ac("SPEC-102426-976a/AC-1")
 async def test_attribution_from_governed_install_carries_canonical_scope() -> None:
     """The B2 governed install links identity to its authorization scope."""
 
@@ -158,7 +158,7 @@ async def test_attribution_from_governed_install_carries_canonical_scope() -> No
     assert attribution.workspace_id == "ws-1"
 
 
-@pytest.mark.ac("#976/AC-1")
+@pytest.mark.ac("SPEC-102426-976a/AC-1")
 async def test_attribution_refuses_an_uninstalled_governed_record() -> None:
     """A record with no installed artifact digest names no exact package."""
 
@@ -247,7 +247,7 @@ def test_payload_round_trips_equal() -> None:
     assert ExtensionAttribution.from_json(attribution.to_json()) == attribution
 
 
-@pytest.mark.ac("#976/AC-4")
+@pytest.mark.ac("SPEC-102426-976a/AC-4")
 def test_historical_payload_decodes_without_registry_store_or_extension() -> None:
     """Old evidence stays readable after the extension is gone.
 
@@ -278,7 +278,7 @@ def test_historical_payload_decodes_without_registry_store_or_extension() -> Non
     assert decoded.version == "1.4.0"
 
 
-@pytest.mark.ac("#976/AC-4")
+@pytest.mark.ac("SPEC-102426-976a/AC-4")
 def test_unknown_format_version_refuses_loudly() -> None:
     payload = _attribution().to_payload()
     payload["format"] = "extension-attribution:v999"
@@ -316,7 +316,7 @@ def test_decode_refuses_non_object_payloads() -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.ac("#976/AC-3")
+@pytest.mark.ac("SPEC-102426-976a/AC-3")
 def test_extension_identity_cannot_join_the_correlation_namespace() -> None:
     """Canonical correlation ids are a closed vocabulary; attribution rides
     beside them, never in them."""
@@ -331,7 +331,7 @@ def test_extension_identity_cannot_join_the_correlation_namespace() -> None:
         pass  # pragma: no cover - never reached
 
 
-@pytest.mark.ac("#976/AC-3")
+@pytest.mark.ac("SPEC-102426-976a/AC-3")
 def test_stamped_event_keeps_canonical_correlation_and_uses_provenance() -> None:
     """Attribution on an Event lives in provenance; correlation is untouched."""
 
@@ -362,7 +362,7 @@ def test_stamped_event_keeps_canonical_correlation_and_uses_provenance() -> None
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.ac("#976/AC-5")
+@pytest.mark.ac("SPEC-102426-976a/AC-5")
 async def test_attribution_from_record_carries_no_manifest_content_or_secrets() -> None:
     """The manifest body may contain anything; attribution copies identity only."""
 
@@ -392,7 +392,7 @@ async def test_attribution_from_record_carries_no_manifest_content_or_secrets() 
     assert "should-not-leak" not in flat
 
 
-@pytest.mark.ac("#976/AC-5")
+@pytest.mark.ac("SPEC-102426-976a/AC-5")
 def test_provenance_fragment_is_redacted_by_the_canonical_envelope() -> None:
     """Even a hostile value in the identity fields cannot cross the envelope."""
 
@@ -415,7 +415,7 @@ def test_provenance_fragment_is_redacted_by_the_canonical_envelope() -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.ac("#976/AC-2")
+@pytest.mark.ac("SPEC-102426-976a/AC-2")
 async def test_attribution_survives_an_asynchronous_delegation_hop() -> None:
     """The payload rides delegation metadata and decodes equal on arrival."""
 
@@ -470,7 +470,7 @@ def _acme_spec(**overrides: object) -> object:
     return ProviderAdapterSpec.model_validate(values)
 
 
-@pytest.mark.ac("#976/AC-1")
+@pytest.mark.ac("SPEC-102426-976a/AC-1")
 def test_declared_adapter_identity_yields_canonical_attribution() -> None:
     spec = _acme_spec(
         version="2.3.1",
@@ -537,7 +537,7 @@ def test_declaring_adapter_passes_the_unchanged_conformance_suite() -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.ac("#976/AC-1")
+@pytest.mark.ac("SPEC-102426-976a/AC-1")
 async def test_governed_activation_logs_the_declared_identity(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
@@ -588,7 +588,7 @@ async def test_governed_activation_logs_the_declared_identity(
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.ac("#976/AC-1")
+@pytest.mark.ac("SPEC-102426-976a/AC-1")
 def test_extension_surface_re_exports_the_one_canonical_carrier() -> None:
     """The extension surface and the capabilities carrier are the same type.
 
@@ -611,7 +611,7 @@ def test_extension_surface_re_exports_the_one_canonical_carrier() -> None:
     assert attribution_from_payload is carrier_attribution_from_payload
 
 
-@pytest.mark.ac("#976/AC-1")
+@pytest.mark.ac("SPEC-102426-976a/AC-1")
 def test_carrier_version_rule_matches_the_extension_contract_parser() -> None:
     """The carrier's strict-version rule and the contract parser agree.
 
@@ -651,7 +651,7 @@ def test_carrier_version_rule_matches_the_extension_contract_parser() -> None:
         assert is_strict_version(text) is contract_accepts, text
 
 
-@pytest.mark.ac("#976/AC-1")
+@pytest.mark.ac("SPEC-102426-976a/AC-1")
 def test_capabilities_layer_does_not_import_the_extensions_package() -> None:
     """No module under ``maistro/capabilities`` may import ``maistro.extensions``.
 
