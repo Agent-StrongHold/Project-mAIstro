@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from maistro_rsi.promotion_review import _export_patch
+from maistro_rsi.promotion_review import _authorized_export_roots, _export_patch
 
 
 @pytest.mark.parametrize(
@@ -44,6 +44,23 @@ def test_export_preserves_symlinked_root_and_idempotence(tmp_path: Path) -> None
     assert result.read_text() == "candidate"
     assert _export_patch(export, "abc123456789", "second") == result
     assert result.read_text() == "candidate"
+
+
+def test_authorized_export_roots_honor_env_pathsep(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """RSI_WORK_ROOT / RSI_EXPORT_ROOTS entries are realpath'd into the allowlist."""
+    work = tmp_path / "work"
+    a = tmp_path / "a"
+    b = tmp_path / "b"
+    for path in (work, a, b):
+        path.mkdir()
+    monkeypatch.setenv("RSI_WORK_ROOT", str(work))
+    monkeypatch.setenv("RSI_EXPORT_ROOTS", f"{a}{os.pathsep}{b}{os.pathsep}")
+    roots = _authorized_export_roots()
+    assert os.path.realpath(str(work)) in roots
+    assert os.path.realpath(str(a)) in roots
+    assert os.path.realpath(str(b)) in roots
 
 
 def test_export_rejects_directory_outside_authorized_roots(

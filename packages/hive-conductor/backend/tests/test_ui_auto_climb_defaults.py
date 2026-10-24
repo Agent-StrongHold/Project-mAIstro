@@ -25,6 +25,27 @@ def test_cli_parser_defaults_to_the_module_loopback_url() -> None:
     assert args.url == ui_auto_climb.DEFAULT_CLIMB_URL
 
 
+def test_main_parses_argv_and_runs_auto_climb(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``main()`` is the covered entry for ``python -m services.ui_auto_climb``."""
+    from services import ui_auto_climb
+
+    seen: dict[str, Any] = {}
+
+    async def fake_climb(component: str, url: str, path: str, max_passes: int) -> dict[str, Any]:
+        seen.update(component=component, url=url, path=path, max_passes=max_passes)
+        return {"best_score": 1, "passes": max_passes, "history": []}
+
+    monkeypatch.setattr(ui_auto_climb, "auto_climb", fake_climb)
+    out = ui_auto_climb.main(["--component", "X.tsx", "--passes", "2", "--path", "/x"])
+    assert out["best_score"] == 1
+    assert seen == {
+        "component": "X.tsx",
+        "url": ui_auto_climb.DEFAULT_CLIMB_URL,
+        "path": "/x",
+        "max_passes": 2,
+    }
+
+
 def test_loopback_service_defaults_import() -> None:
     """Module-level loopback defaults must execute under coverage (diff-coverage)."""
     from services import mcp_defaults, pipeline_orchestrator, ui_climb_vm

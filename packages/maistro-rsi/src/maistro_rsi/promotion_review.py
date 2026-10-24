@@ -456,24 +456,30 @@ def _policy_snapshot(review: PendingReview) -> dict[str, Any]:
     }
 
 
-def _export_patch(export_dir: Path, stem: str, patch_text: str) -> Path:
-    """Copy the patch into ``export_dir`` (the harvest/resume forward path).
-    Idempotent: a resumed-then-approved patch is exported once, named for its
-    first exit.
+def _under_authorized_export_root(export_str: str) -> bool:
+    """Whether ``export_str`` equals or sits under an authorized export root."""
+    return any(
+        export_str == root or export_str.startswith(root + os.sep)
+        for root in _authorized_export_roots()
+    )
 
-    Stem is allowlisted (CodeQL clears taint on ``fullmatch``). The export
-    directory itself must sit under an authorized root, and every sink
-    (``makedirs`` / ``glob`` / ``open``) sits in that ``startswith``-
-    dominated branch — ``Path.resolve`` / ``is_relative_to`` alone are not
-    modeled as a path-injection sanitizer.
+
+def _require_inside_export(dest_str: str, export_str: str) -> str:
+    """Refuse a leaf that escaped ``export_str`` (symlink race / traversal)."""
+    if dest_str != export_str and not dest_str.startswith(export_str + os.sep):
+        raise ValueError("patch must remain inside the export directory")
+    return dest_str
+
+
+def _write_export_patch(export_str: str, stem: str, patch_text: str) -> Path:
+    """Create or reuse the stem's patch file under an authorized export root.
+
+    Every sink (``makedirs`` / ``glob`` / ``open``) sits in a
+    ``startswith``-dominated branch so CodeQL ``py/path-injection`` clears.
     """
-    if not _SAFE_PATCH_STEM.fullmatch(stem or ""):
-        raise ValueError("patch stem must be a non-empty filename component")
-    export_str = os.path.realpath(str(export_dir))
     for root in _authorized_export_roots():
         if export_str != root and not export_str.startswith(root + os.sep):
             continue
-        # Sinks dominated by the authorized-root startswith check.
         os.makedirs(export_str, exist_ok=True)
         safe_stem = stem[:8]
         existing = [
@@ -482,17 +488,14 @@ def _export_patch(export_dir: Path, stem: str, patch_text: str) -> Path:
             if p.name.endswith(f"{safe_stem}.patch")
         ]
         if existing:
-            dest_str = os.path.realpath(str(existing[0]))
-            if dest_str != export_str and not dest_str.startswith(export_str + os.sep):
-                raise ValueError("patch must remain inside the export directory")
+            dest_str = _require_inside_export(os.path.realpath(str(existing[0])), export_str)
             return Path(dest_str)
         next_n = len(sorted(Path(export_str).glob("*.patch"))) + 1
-        dest_str = os.path.realpath(
-            os.path.join(export_str, f"{next_n:04d}-approved-{safe_stem}.patch")
+        dest_str = _require_inside_export(
+            os.path.realpath(os.path.join(export_str, f"{next_n:04d}-approved-{safe_stem}.patch")),
+            export_str,
         )
-        if dest_str != export_str and not dest_str.startswith(export_str + os.sep):
-            raise ValueError("patch must remain inside the export directory")
-        # Exclusive creation refuses a link/file planted after the containment check.
+        # Exclusive creation refuses a link/file planted after the check.
         with open(dest_str, "x", encoding="utf-8") as patch_file:
             patch_file.write(patch_text)
         return Path(dest_str)
@@ -500,6 +503,27 @@ def _export_patch(export_dir: Path, stem: str, patch_text: str) -> Path:
         "export directory must be under an authorized export root "
         "(platform temp, RSI_WORK_ROOT, or RSI_EXPORT_ROOTS)"
     )
+
+
+def _export_patch(export_dir: Path, stem: str, patch_text: str) -> Path:
+    """Copy the patch into ``export_dir`` (the harvest/resume forward path).
+    Idempotent: a resumed-then-approved patch is exported once, named for its
+    first exit.
+
+    Stem is allowlisted (CodeQL clears taint on ``fullmatch``). The export
+    directory itself must sit under an authorized root before any write —
+    ``Path.resolve`` / ``is_relative_to`` alone are not modeled as a
+    path-injection sanitizer.
+    """
+    if not _SAFE_PATCH_STEM.fullmatch(stem or ""):
+        raise ValueError("patch stem must be a non-empty filename component")
+    export_str = os.path.realpath(str(export_dir))
+    if not _under_authorized_export_root(export_str):
+        raise ValueError(
+            "export directory must be under an authorized export root "
+            "(platform temp, RSI_WORK_ROOT, or RSI_EXPORT_ROOTS)"
+        )
+    return _write_export_patch(export_str, stem, patch_text)
 
 
 def _read_patch(flagged_dir: Path, stem: str) -> str:

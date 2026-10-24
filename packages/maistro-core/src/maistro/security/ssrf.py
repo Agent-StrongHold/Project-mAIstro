@@ -32,9 +32,9 @@ belt-and-braces: stage 2 catches every one of them wherever they do resolve.
 
 Both stage-1 rules read the **parsed** hostname. An earlier version matched
 `url.startswith("https://kubernetes.")` and friends against the raw string,
-which refused `https://kubernetes.io/docs/` and read the userinfo field of
-`http://<loopback-userinfo>@example.com/` as if it were the host. A guard that refuses
-real public URLs teaches its callers to route around it.
+which refused `https://kubernetes.io/docs/` and read a userinfo-shaped
+loopback authority on a public host as if it were the host. A guard that
+refuses real public URLs teaches its callers to route around it.
 
 **Refusing is the default.** A host that cannot be resolved is refused rather
 than allowed: the previous behaviour returned "not blocked" on `gaierror` with

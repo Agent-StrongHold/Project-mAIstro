@@ -265,6 +265,11 @@ def build_cli_parser() -> Any:
     return parser
 
 
+def main(argv: list[str] | None = None) -> dict[str, Any]:
+    """Parse argv and run the climber (entry used by ``__main__`` and tests)."""
+    args = build_cli_parser().parse_args(argv)
+    return asyncio.run(auto_climb(args.component, args.url, args.path, args.passes))
+
+
 if __name__ == "__main__":
-    args = build_cli_parser().parse_args()
-    asyncio.run(auto_climb(args.component, args.url, args.path, args.passes))
+    main()
