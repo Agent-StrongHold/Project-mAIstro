@@ -130,3 +130,30 @@ isolation on branch auto-331.
   First run of the same script (pre-repair) failed at the backup step with
   the `aiosqlite` import error above — the failure the dependency repair
   fixes; the passing run is post-repair.
+
+## Repair round (gitleaks), re-verified on top
+
+The SAST / Gitleaks CI leg failed at the previous head. Reproduced locally
+with gitleaks 8.30.1 and security.yml's exact PR-arm invocation over the
+merge base: one `generic-api-key` finding at the harness's
+`PROBE_SECRET=` line, introduced by 1e4058c3c. Fixed in 9e490755a with both
+halves of the pattern `.gitleaks.toml` documents: the literal split in the
+working tree (runtime value asserted byte-identical) and a commit-, path-,
+rule-scoped allowlist entry for 1e4058c3c (the introducing commit's patch
+stays in every PR-range scan regardless of the working-tree fix — same
+situation as the de04b449/4806d967 entries). Post-fix scans of both CI arms
+(merge-base..HEAD and HEAD^..HEAD) report no leaks.
+
+Independent CI-failure attribution at the repair base (merge base
+4de7e906d9dc): `Supply chain (pip-audit)` / `security` fail on ecdsa
+0.19.2, fastmcp 4.0.11 and setuptools 84.0.0 — all three versions
+byte-identical in the merge base's uv.lock, i.e. inherited trunk red; the
+hive-conductor image built from this tree scans clean under trivy with
+CI's flags (HIGH,CRITICAL, --ignore-unfixed, exit 0), so the container-scan
+failure likewise comes from the engine-family images carrying those same
+inherited advisories. `SAST (bandit + semgrep + gitleaks)` is explained by
+the gitleaks leg (bandit verified 0 Medium+ locally; 66 semgrep-rule pin
+tests pass). The `test` and `Coverage gate` failures could not be
+attributed from local evidence alone (no CI logs available); every
+lane-relevant suite is green locally and the known pre-existing load flake
+is documented above.
