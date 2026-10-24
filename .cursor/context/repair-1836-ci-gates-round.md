@@ -89,3 +89,47 @@ inventory gate re-run green above).
 - Advisories keep landing against locks on unchanged trees; every "green"
   verify round that does not re-run `npm audit`/trivy is one advisory away
   from this shape.
+
+## 6. Round 2026-10-24T05:00Z (head d71dc03) — `Container scan + SBOM + cosign`
+
+What failed at d71dc03 (job 120767046648, fetched read-only): step 14, trivy
+scan of maistro-engine-research — **only** OS `libbrotli1 1.1.0-2+b7`
+CVE-2026-111497 (fixed 1.1.0-2+deb13u1); all four builds, the other three
+scans, and the earlier `npm audit` digest text were not the failure.
+
+Root cause: **apt mirror-propagation race, not a tree defect.** CI rebuilt
+`production-apt` fresh (`--no-cache-filter`, line 6882 of the job log) at
+03:35Z and the mirror still served b7; the deb13u1 upload reached the public
+CDN shortly after (three independent fresh builds on this host resolve it:
+`local-repair` ~04:00Z, `pr-2262` ~04:30Z, `repair-verify` ~04:50Z on
+2026-10-24). The d71dc03 commit message's mirror theory was directionally
+right but its timing claim ("a fresh build heals it") was not yet true when
+CI ran — it is true now.
+
+No code, lock, Dockerfile, workflow or `.trivyignore.yaml` change: the finding
+is fixed upstream, so suppressing it would violate the ignore file's own
+policy ("removed rather than silently renewed") and weaken the gate. The
+gate's `--no-cache-filter production-apt` (#795) is exactly the mechanism that
+self-heals this on the next run.
+
+Fresh proof, CI-exact commands (trivy 0.73.0, DB 2026-10-24, ignorefile
+`.trivyignore.yaml`, `--severity HIGH,CRITICAL --exit-code 1 --ignore-unfixed`):
+
+- `docker buildx build --no-cache-filter production-apt -f Dockerfile.research
+  --load .` → image carries `libbrotli1 1.1.0-2+deb13u1` (dpkg-query) and
+  `pypdf 6.21.2` (importlib.metadata); trivy → **rc 0, zero HIGH/CRITICAL**.
+- Same fresh-stage rebuild + scan for the other three gated images: maistro-engine,
+  maistro-rsi-runner, hive-conductor (with VITE build args per security.yml) →
+  all **rc 0**, all layers "0: Clean".
+- Canvas `npm audit --audit-level=high` (ci.yml:698) → rc 0, 0 vulnerabilities.
+- `uv sync --locked --all-extras`; `pip-audit --strict` +
+  `scripts/pip_audit_gate.py` → rc 0 (only triaged ecdsa PYSEC-2026-1325).
+- `uv run ruff check .` / `ruff format --check .` clean;
+  `scripts/check-adr-status-language.py` ok; `git diff --check` clean; tree
+  clean before this note.
+
+Residual: GH-runner CDN edges may lag this host by minutes-to-hours; if the
+next `Container scan + SBOM + cosign` run still shows CVE-2026-111497, re-run
+the job (it is a mirror race again — same evidence rules apply) rather than
+suppressing. The issue's owner-acceptance act on SPEC-101826-1836 remains open
+by design and is unaffected by this gate repair.
