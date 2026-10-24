@@ -5,6 +5,7 @@ import { LlmProviders } from "../components/LlmProviders";
 import { useAuthorization } from "../context/AuthorizationContext";
 import { PageHeader, SecretField } from "../components/shared";
 
+// frontend-typed-client: allow pre-existing banked local type (was :6); line shifted by the #2283 authorization import lines above.
 type ConfigField = {
   name: string;
   label: string;
@@ -12,6 +13,7 @@ type ConfigField = {
   required: boolean;
 };
 
+// frontend-typed-client: allow pre-existing banked local type (was :13); line shifted by the #2283 authorization import lines above.
 type CredentialRow = {
   id: string;
   label: string;

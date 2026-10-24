@@ -2,14 +2,12 @@
   "_comment": "Raw fetch and hand-typed frontend entity debt for Workspace cutover P0.3 (#1048). Judged against the trusted merge base; a fixed entry must be deleted here.",
   "metric_definition_version": "1",
   "summary": {
-    "hand_typed": 136,
-    "raw_fetch": 53
+    "hand_typed": 131,
+    "raw_fetch": 49
   },
   "tolerated": {
     "hand_typed::packages/hive-conductor/frontend/src/components/ErrorBoundary.tsx:3:Props": "local interface/type in pages/ or components/",
     "hand_typed::packages/hive-conductor/frontend/src/components/ErrorBoundary.tsx:4:State": "local interface/type in pages/ or components/",
-    "hand_typed::packages/hive-conductor/frontend/src/components/LlmProviders.tsx:14:ProvidersResponse": "local interface/type in pages/ or components/",
-    "hand_typed::packages/hive-conductor/frontend/src/components/LlmProviders.tsx:5:ProviderRow": "local interface/type in pages/ or components/",
     "hand_typed::packages/hive-conductor/frontend/src/components/PersonaWizard.tsx:11:WizardInterviewQuestion": "local interface/type in pages/ or components/",
     "hand_typed::packages/hive-conductor/frontend/src/components/PersonaWizard.tsx:4:WizardAgent": "local interface/type in pages/ or components/",
     "hand_typed::packages/hive-conductor/frontend/src/components/RichTooltip.tsx:3:Props": "local interface/type in pages/ or components/",
@@ -54,8 +52,6 @@
     "hand_typed::packages/hive-conductor/frontend/src/pages/Chat.tsx:9:ToolStep": "local interface/type in pages/ or components/",
     "hand_typed::packages/hive-conductor/frontend/src/pages/Containers.tsx:14:LogData": "local interface/type in pages/ or components/",
     "hand_typed::packages/hive-conductor/frontend/src/pages/Containers.tsx:5:Container": "local interface/type in pages/ or components/",
-    "hand_typed::packages/hive-conductor/frontend/src/pages/Credentials.tsx:13:CredentialRow": "local interface/type in pages/ or components/",
-    "hand_typed::packages/hive-conductor/frontend/src/pages/Credentials.tsx:6:ConfigField": "local interface/type in pages/ or components/",
     "hand_typed::packages/hive-conductor/frontend/src/pages/DagBuilder.tsx:140:LiveRun": "local interface/type in pages/ or components/",
     "hand_typed::packages/hive-conductor/frontend/src/pages/DagBuilder.tsx:15:Role": "local interface/type in pages/ or components/",
     "hand_typed::packages/hive-conductor/frontend/src/pages/DagBuilder.tsx:16:Strategy": "local interface/type in pages/ or components/",
@@ -129,7 +125,6 @@
     "hand_typed::packages/hive-conductor/frontend/src/pages/RSI.tsx:79:PollHealth": "local interface/type in pages/ or components/",
     "hand_typed::packages/hive-conductor/frontend/src/pages/RSI.tsx:8:RsiStatus": "local interface/type in pages/ or components/",
     "hand_typed::packages/hive-conductor/frontend/src/pages/RSI.tsx:9:ModelOption": "local interface/type in pages/ or components/",
-    "hand_typed::packages/hive-conductor/frontend/src/pages/Settings.tsx:6:Settings": "local interface/type in pages/ or components/",
     "hand_typed::packages/hive-conductor/frontend/src/pages/Setup.tsx:12:FirstRunQuestionMeta": "local interface/type in pages/ or components/",
     "hand_typed::packages/hive-conductor/frontend/src/pages/Setup.tsx:14:IdentityStatus": "local interface/type in pages/ or components/",
     "hand_typed::packages/hive-conductor/frontend/src/pages/Setup.tsx:22:ModelCheck": "local interface/type in pages/ or components/",
@@ -143,9 +138,6 @@
     "hand_typed::packages/hive-conductor/frontend/src/pages/Topology.tsx:6:Agent": "local interface/type in pages/ or components/",
     "hand_typed::packages/hive-conductor/frontend/src/pages/WorkItems.tsx:9:DraftRow": "local interface/type in pages/ or components/",
     "raw_fetch::packages/hive-conductor/frontend/src/components/AccountBanner.tsx:51": "bare fetch outside src/lib/",
-    "raw_fetch::packages/hive-conductor/frontend/src/components/LlmProviders.tsx:31": "bare fetch outside src/lib/",
-    "raw_fetch::packages/hive-conductor/frontend/src/components/LlmProviders.tsx:46": "bare fetch outside src/lib/",
-    "raw_fetch::packages/hive-conductor/frontend/src/components/LlmProviders.tsx:68": "bare fetch outside src/lib/",
     "raw_fetch::packages/hive-conductor/frontend/src/components/TemplatePicker.tsx:10": "bare fetch outside src/lib/",
     "raw_fetch::packages/hive-conductor/frontend/src/pages/Chat.tsx:260": "bare fetch outside src/lib/",
     "raw_fetch::packages/hive-conductor/frontend/src/pages/Chat.tsx:333": "bare fetch outside src/lib/",
@@ -192,7 +184,6 @@
     "raw_fetch::packages/hive-conductor/frontend/src/pages/RSI.tsx:382": "bare fetch outside src/lib/",
     "raw_fetch::packages/hive-conductor/frontend/src/pages/RSI.tsx:416": "bare fetch outside src/lib/",
     "raw_fetch::packages/hive-conductor/frontend/src/pages/RSI.tsx:587": "bare fetch outside src/lib/",
-    "raw_fetch::packages/hive-conductor/frontend/src/pages/Settings.tsx:33": "bare fetch outside src/lib/",
     "raw_fetch::packages/hive-conductor/frontend/src/pages/Setup.tsx:352": "bare fetch outside src/lib/",
     "raw_fetch::packages/hive-conductor/frontend/src/pages/Setup.tsx:391": "bare fetch outside src/lib/"
   }

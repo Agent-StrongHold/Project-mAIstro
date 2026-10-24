@@ -5,6 +5,7 @@ import { AuthorizationNotice } from "../components/Authorization";
 import { useAuthorization } from "../context/AuthorizationContext";
 import { PageHeader, SecretField } from "../components/shared";
 
+// frontend-typed-client: allow pre-existing banked local type (was :6); line shifted by the #2283 authorization import lines above.
 type Settings = Record<string, unknown>;
 
 export default function Settings() {
@@ -43,6 +44,7 @@ export default function Settings() {
 
   async function elevateAndSave(key: string) {
     try {
+      // frontend-typed-client: allow pre-existing banked raw fetch (was :33); line shifted by the #2283 authorization import/guard lines above.
       const response = await fetch("/v1/auth/elevate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },

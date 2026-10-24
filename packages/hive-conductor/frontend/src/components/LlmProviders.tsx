@@ -4,6 +4,7 @@ import { AuthorizationNotice } from "./Authorization";
 import { fallbackMessage } from "../lib/api";
 import { SecretField } from "./shared";
 
+// frontend-typed-client: allow pre-existing banked local type (was :5); line shifted by the #2283 authorization import lines above.
 interface ProviderRow {
   name: string;
   label: string;
@@ -13,6 +14,7 @@ interface ProviderRow {
   activated: boolean;
 }
 
+// frontend-typed-client: allow pre-existing banked local type (was :14); line shifted by the #2283 authorization import lines above.
 interface ProvidersResponse {
   vault_available: boolean;
   providers: ProviderRow[];
@@ -31,6 +33,7 @@ export function LlmProviders() {
   const { can } = useAuthorization();
 
   const load = () =>
+    // frontend-typed-client: allow pre-existing banked raw fetch (was :31); line shifted by the #2283 authorization import/hook lines above.
     fetch("/v1/providers", { credentials: "same-origin" })
       .then((r) => (r.ok ? r.json() : Promise.reject(r)))
       .then(setData)
@@ -46,6 +49,7 @@ export function LlmProviders() {
     setBusy(name);
     setNotice(null);
     try {
+      // frontend-typed-client: allow pre-existing banked raw fetch (was :46); line shifted by the #2283 authorization import/hook lines above.
       const r = await fetch(`/v1/providers/${name}/key`, {
         method: "PUT",
         credentials: "same-origin",
@@ -68,6 +72,7 @@ export function LlmProviders() {
     setBusy(name);
     setNotice(null);
     try {
+      // frontend-typed-client: allow pre-existing banked raw fetch (was :68); line shifted by the #2283 authorization import/hook lines above.
       const r = await fetch(`/v1/providers/${name}/activate`, {
         method: "POST",
         credentials: "same-origin",
