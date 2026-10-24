@@ -42,3 +42,32 @@ is no longer written into the adapter-owned `metadata` dict. The existing
 `test_e2e_sandbox_loop.py` assertion on the exact `metadata` contract
 (`{"stub": False, "exit_code": 0}`) is what pinned that decision — metering
 needed its own field rather than a metadata key.
+
+## Develop reconciliation (branch rebuild)
+
+The branch was re-landed onto develop (`4de7e906d`) after the earlier
+single-commit graft reverted unrelated develop work. This change now is
+exactly the 22 files above on top of develop; the nine files develop had
+also advanced were re-merged three-way (base `fa2deb0a4`, lane
+`63ceaaf8a7`, develop), keeping both sides' semantics. Consequences for
+this note:
+
+- The ledger delta above (`packages/maistro-evolve/tests: +168`) is
+  unchanged and still describes this change's own contribution. On the
+  reconciled branch the suite collects 1172 nodes = 651 (folded baseline)
+  + 521 (sum of unfolded deltas, of which this note's change is +168);
+  `scripts/check-suite-inventory.py` passes on exactly that arithmetic.
+  The "722 → 890" absolutes earlier in this note describe the change
+  measured at its original lane base, not the current tree.
+- Two develop-side test stubs were adapted, with no node-count movement:
+  the inline `_Cfg` doubles in `test_champion_provenance.py` gained
+  `evidence_dir: None`, mirroring the new `EvolutionConfig` field's default
+  (no evidence target ⇒ nothing published), which the folded-evidence tests
+  now also implicitly pin.
+- The radon ratchet (see `check-radon-baseline.py`) is met without a grant:
+  the four C-grade blocks this change first introduced were refactored
+  under rank B (`_inversion_entry_failures`/`_missing_transfer_evidence`,
+  `_require_verdict_conformance`/`_lift_section_rows`/
+  `_resolve_metering_block`, `_result_row_errors`,
+  `_validate_train_pair`/`_validate_test_entry`), messages byte-identical,
+  with the same 1166-pass suite pinning the behaviour.
