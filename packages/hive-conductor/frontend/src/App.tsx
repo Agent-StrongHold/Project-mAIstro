@@ -31,6 +31,7 @@ const DeckBuilder = lazy(() => import("./pages/DeckBuilder"));
 const Docs = lazy(() => import("./pages/Docs"));
 const Evolution = lazy(() => import("./pages/Evolution"));
 const Goals = lazy(() => import("./pages/Goals"));
+const Home = lazy(() => import("./pages/Home"));
 const RSI = lazy(() => import("./pages/RSI"));
 const MCP = lazy(() => import("./pages/MCP"));
 const Memory = lazy(() => import("./pages/Memory"));
@@ -183,7 +184,11 @@ function AppRoutes() {
             <Suspense fallback={<AppShellSkeleton />}>
               <Routes>
                 <Route path="/" element={<AppShell />}>
-                  <Route index element={<Navigate to="dashboard" replace />} />
+                  {/* #1048: Workspace Home is the default Mission-Control
+                      landing. Dashboard stays registered until retirement
+                      burn-down (#2274) deletes it. */}
+                  <Route index element={<Navigate to="home" replace />} />
+                  <Route path="home" element={<Home />} />
                   <Route path="dashboard" element={<Dashboard />} />
                   <Route path="chat" element={<Chat />} />
                   {/* #1049: Attention is the Workspace orchestration inbox

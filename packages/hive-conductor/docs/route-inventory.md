@@ -33,8 +33,9 @@ narrow-screen drawer (asserted by
 
 | Route | Surface | Nav label | Disposition (cutover plan §5/§9) | Replacement owner |
 |---|---|---|---|---|
+| `/home` | Home | Home | KEEP / default landing (Workspace Mission Control) | #1048 |
 | `/chat` | Chat | Chat | PROJECT → Workspace Agent chat | #1822 (M3-D; foundation #1037 closed) |
-| `/dashboard` | Dashboard | Dashboard | DELETE v1.0 → Workspace Home | #1048 |
+| `/dashboard` | Dashboard | Dashboard | DELETE v1.0 → Workspace Home | #1048 / retirement #2274 |
 | `/goals` | Goals | Goals | PROJECT → Goal/Run inspection | #65/#1036 |
 | `/attention` | Attention | Attention | KEEP — Workspace orchestration projection (#1049; API requires `dags.write`) | #1049 |
 | `/design-studio` | Design Studio | Design Studio | KEEP / PROJECT v1.0 (blocker) | #95, #286, #773 |
@@ -93,7 +94,7 @@ One canonical entry per destination; no duplicate menu items.
 
 | Route | Resolves to | Kind |
 |---|---|---|
-| `/` | `/dashboard` (index `Navigate replace`) | default-route redirect |
+| `/` | `/home` (index `Navigate replace`; #1048) | default-route redirect |
 | `/optimization-inbox` | `/optimizer` (#1417: alias converted from a duplicate render to a redirect) | alias redirect |
 | `/cli/canvas` | `/design-studio` (#95 compatibility redirect; asserted by `tests/e2e/design-studio-truthfulness.spec.ts`) | compatibility redirect |
 
