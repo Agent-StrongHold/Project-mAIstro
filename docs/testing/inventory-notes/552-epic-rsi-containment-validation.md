@@ -1,6 +1,7 @@
 ---
 inventory-delta:
-  packages/maistro-rsi/tests: +40
+  packages/maistro-core/tests: +1
+  packages/maistro-rsi/tests: +45
 ---
 
 # 552 epic M5-B: RSI containment validation + canonical convergence (#50)
@@ -52,7 +53,54 @@ the sole author and unchanged by the sync; all gates were re-run and pass.
   public package API (`from maistro_rsi import RsiWorkSource`), so it is
   reachable from any `import maistro_rsi` — not built-but-never-wired.
 
-## Tests added (+40 node IDs, all in packages/maistro-rsi/tests)
+## Salvage pass (this round): executor report identity, claim-checked closure, real fragment matching
+
+Post-rate-limit salvage of the lane's uncommitted work, plus the named CI
+gate failure (`Supply chain (pip-audit)`), fixed at its root:
+
+- `canonical_provenance.wrap_executor` returns the executor's own report
+  object. The Attempt's durable result round-trips through `evidence_json`
+  (Sqlite and Pg), so the old read-back handed `HtrCoordinator.run` a plain
+  dict after the first executed cycle — `report.evidence` would trip. The
+  spine still persists the payload; the caller keeps object identity.
+- `LocalRsiLoop` derives a unique default campaign id (`local-loop-<hex>`) so
+  two loops sharing a provenance store cannot file cycles 1..n against each
+  other's terminal Runs (#50 collision); an explicit `campaign_id` still wins.
+- `rsi_promotion_contract` matches the CODE-scope protected set through the
+  shared segment-boundary matcher (`_matches_segment_patterns`), so repo-root
+  diff paths like `packages/maistro-rsi/src/maistro_rsi/candidate_fitness.py`
+  are refused — verbatim matching let them evade the #109 fence the contract
+  claims to enforce.
+- `AgentBacklogSurface.close` (new, claim-checked like `write`) and
+  `RsiWorkSource.close` now route the terminal status move through the
+  authorized surface instead of the raw store: a stale snapshot can no
+  longer close work another actor holds, and revoked access fails closed.
+- **pip-audit gate repair** (CI-exact commands re-run locally, exit 0):
+  `uv.lock` upgraded `fastmcp` 4.0.11 → 4.1.3 and `setuptools` 84.0.0 →
+  84.2.1 — both advisories (GHSA-7xgj-8392-5q4r, GHSA-vqqp-x5qm-5qp4,
+  GHSA-xmj3-9gf7-h52w) have fixed versions, so per the gate's own policy
+  they are upgraded, not allowlisted. The only remaining finding is the
+  already-triaged ecdsa pair.
+
+Salvage deltas: `packages/maistro-rsi/tests` +5
+(`test_sqlite_backend_returns_the_executor_report_object`,
+`test_default_campaign_ids_are_unique_per_loop`,
+`test_refuses_evaluator_edits_at_real_repository_paths`,
+`test_stale_snapshot_cannot_close_another_claimants_item`,
+`test_close_is_refused_when_workspace_access_is_revoked`),
+`packages/maistro-core/tests` +1 (`test_close_is_authorized_and_claim_checked`).
+
+Executed this pass: full `uv run pytest packages/maistro-rsi/tests -q` —
+**1774 passed, 4 skipped**; `packages/maistro-core/tests/backlog` —
+**97 passed, 20 skipped**; `uv run ruff check .` and
+`uv run ruff format --check .` — clean (3491 files); CI's exact ten-package
+`uv run mypy` — no issues in 1105 source files; `uv run mypy --strict
+packages/maistro-core/src` — no issues in 826 files;
+`uv run python scripts/pip_audit_gate.py pip-audit.json` on a fresh
+CI-shaped audit (`uv sync --locked --all-extras`, `uv pip freeze
+--exclude-editable`, `pip-audit --strict --format=json`) — exit 0.
+
+## Tests added (+45 node IDs in packages/maistro-rsi/tests, +1 in packages/maistro-core/tests)
 
 - `test_canonical_provenance.py` (12): admission provenance + idempotency,
   Goal binding both-or-neither, run-through-the-spine with durable Attempt

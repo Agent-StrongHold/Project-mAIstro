@@ -105,6 +105,15 @@ class TestKeptPromotion:
         with pytest.raises(ProtectedConstituentEdit):
             _record(touched_paths=(protected, "packages/app/src/thing.py"))
 
+    def test_refuses_evaluator_edits_at_real_repository_paths(self):
+        # The protected entries are fragments, and diffs name repo-root
+        # paths: the fence must match at segment boundaries, exactly as the
+        # in-loop oracle veto does, not just on verbatim pattern strings.
+        with pytest.raises(ProtectedConstituentEdit):
+            _record(touched_paths=("packages/maistro-rsi/src/maistro_rsi/candidate_fitness.py",))
+        with pytest.raises(ProtectedConstituentEdit):
+            _record(touched_paths=("packages/maistro-rsi/tests/test_scoring.py",))
+
     def test_refuses_self_approval(self):
         # An approval whose deciding authority collapses into the authoring
         # path ("rsi") is a self-approved promotion, whichever field carries it.

@@ -105,11 +105,11 @@ class RsiWorkSource:
     """One RSI campaign's authorized window onto the generic work source.
 
     ``surface`` is the embedder's authorized :class:`AgentBacklogSurface`
-    (list/select/claim/write/release, each fail-closed behind the embedder's
-    ``authorize`` callable). ``history`` (optional) is the generic
+    (list/select/claim/write/release/close, each fail-closed behind the
+    embedder's ``authorize`` callable). ``history`` (optional) is the generic
     #101 journal; ``backlog_store`` (optional, the same store the surface
-    wraps) is needed only for the paths the surface deliberately does not
-    own: filing new discovered work and closing an item with evidence.
+    wraps) is needed only for the one path the surface deliberately does not
+    own: filing new discovered work.
     """
 
     def __init__(
@@ -302,23 +302,22 @@ class RsiWorkSource:
 
         Closure is refused without evidence refs — a completed Run is
         supporting evidence at best, never sufficient alone (ADR-082426-19ed)
-        — and the terminal status move goes through the store's own
-        ``close_item`` (the only path into a terminal status), with the #101
-        journal receipt citing the canonical Run identity beside it.
+        — and the terminal status move goes through the authorized surface's
+        ``close`` (the only path into a terminal status), so the actor is
+        re-checked against the embedder's authorization and, while an active
+        claim exists, must still be its holder with a matching claim id — a
+        stale snapshot cannot close work another actor now holds. The #101
+        journal receipt cites the canonical Run identity beside it.
         """
-        if self._store is None:
-            raise RsiWorkSourceError(
-                "close needs the generic BacklogStore; construct RsiWorkSource "
-                "with backlog_store to close items"
-            )
         if not evidence_refs:
             raise RsiWorkSourceError(
                 "closing a BacklogItem requires evidence_refs; a completed Run is "
                 "not closure evidence by itself"
             )
-        await self._store.close_item(
+        await self._surface.close(
             sourced.item_id,
             expected_version=sourced.expected_version,
+            claim_id=sourced.claim_id,
             actor=actor,
             outcome=outcome,
             closure_summary=closure_summary or f"closed by {RSI_AGENT_ID} campaign",

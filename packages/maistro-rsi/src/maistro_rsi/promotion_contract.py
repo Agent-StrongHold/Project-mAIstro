@@ -43,7 +43,10 @@ from maistro.governance.promotion import (
     PromotionRecord,
     PromotionScope,
 )
-from maistro_rsi.sensitive_paths import EVALUATOR_ORACLE_PATTERNS
+from maistro_rsi.sensitive_paths import (
+    EVALUATOR_ORACLE_PATTERNS,
+    _matches_segment_patterns,
+)
 
 #: The provenance path that authors an RSI candidate, verbatim from the
 #: shared contract's vocabulary ("rsi", "evolve", "learning", "human:<id>").
@@ -74,13 +77,32 @@ def rsi_promotion_contract(
     family gets the written decision "no protected constituents", which is
     also the truth: an RSI candidate never carries refs in those families.
     """
-    return PromotionContract(
+    return _RsiPromotionContract(
         protected_refs={
             scope: (tuple(code_protected_refs) if scope is PromotionScope.CODE else ())
             for scope in PromotionScope
         },
         ledger=ledger,
     )
+
+
+class _RsiPromotionContract(PromotionContract):
+    """The shared contract, with RSI's fragment patterns matched correctly.
+
+    ``EVALUATOR_ORACLE_PATTERNS`` are path fragments (``"maistro_rsi/"``,
+    ``"maistro-rsi/tests/"``) matched at segment boundaries — the same
+    semantics the in-loop oracle veto applies. The base contract's matcher
+    only does exact/directory-prefix matching, so a repo-root diff path such
+    as ``packages/maistro-rsi/src/maistro_rsi/candidate_fitness.py`` evaded
+    the very fence this contract claims to enforce. Matching through the
+    shared segment-boundary matcher keeps the gate and RSI's one pattern
+    list (#109) in lockstep; a protected set that is empty (every non-CODE
+    scope) matches nothing, as written.
+    """
+
+    @staticmethod
+    def _is_protected(ref: str, protected: frozenset[str]) -> bool:
+        return _matches_segment_patterns(ref, tuple(protected))
 
 
 def candidate_change(

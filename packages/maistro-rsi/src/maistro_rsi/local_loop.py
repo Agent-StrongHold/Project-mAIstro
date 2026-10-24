@@ -1315,7 +1315,13 @@ class LocalRsiLoop:
         # evaluation evidence through the shared M4 contract. Unwired, the
         # loop behaves exactly as before and its promotion records say so.
         self._provenance = provenance
-        self._campaign_id = campaign_id
+        # Provenance campaigns must not collide (#50): two loops sharing a
+        # provenance store each restart their cycle index at one, so a static
+        # default would file the second loop's cycles against the first's
+        # already-terminal Runs — _record_cycle_provenance would swallow the
+        # rejection and the new work would lose its canonical evidence. Give
+        # every instance a unique campaign unless the caller names one.
+        self._campaign_id = campaign_id or f"local-loop-{uuid.uuid4().hex[:8]}"
         self._actor_principal_id = actor_principal_id
         # Shared M4 promotion-contract state (#116): the lazily created
         # contract and, per promoted subject, the (version, content hash)
@@ -3100,7 +3106,7 @@ class LocalRsiLoop:
             return
         try:
             record = self._provenance.record_completed_cycle_sync(
-                campaign_id=self._campaign_id or "local-loop",
+                campaign_id=self._campaign_id,
                 cycle_id=f"cycle-{outcome.index}",
                 objective=outcome.target or outcome.note or "RSI local cycle",
                 actor_principal_id=self._actor_principal_id,

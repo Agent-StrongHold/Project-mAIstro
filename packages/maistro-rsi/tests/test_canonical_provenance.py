@@ -24,6 +24,8 @@ from maistro_rsi.canonical_provenance import (
     RsiCycleProvenance,
     RsiProvenanceError,
 )
+from maistro_rsi.coordinator import ExecutionReport
+from maistro_rsi.htr import HypothesisEvidence
 
 WORKSPACE = "rsi-provenance-test"
 
@@ -216,6 +218,67 @@ class TestRecordCompletedCycle:
 
 
 class TestWrapExecutor:
+    async def test_sqlite_backend_returns_the_executor_report_object(self, tmp_path):
+        """The durable Attempt is JSON, the caller's report is not (#552).
+
+        SqliteRunStore (and PgRunStore) round-trip the Attempt result through
+        `evidence_json`, so a read-back is a plain dict — `HtrCoordinator.run`
+        would then trip on `report.evidence` after the first executed cycle.
+        The wrap must return the executor's own report object while the spine
+        still persists the payload.
+        """
+        aiosqlite = pytest.importorskip("aiosqlite")
+        from maistro.runs.sqlite_store import SqliteRunStore
+
+        projects = InMemoryProjectScopeStore()
+        root = await projects.create_root(WORKSPACE)
+        conn = await aiosqlite.connect(tmp_path / "runs.db")
+        runs = SqliteRunStore(conn, project_store=projects)
+        await runs.ensure_schema()
+        try:
+            provenance = RsiCycleProvenance(
+                runs, workspace_id=WORKSPACE, project_id=root.project_id
+            )
+            report = ExecutionReport(
+                evidence=HypothesisEvidence(
+                    tests_passed=True, benchmarks_won=1, battles=2, improved=True
+                ),
+                diff="diff --git a/x b/x",
+            )
+
+            async def executor(context):
+                return report
+
+            wrapped = provenance.wrap_executor(
+                executor,
+                campaign_id="camp-1",
+                actor_principal_id="human:op-1",
+            )
+            from maistro_rsi.coordinator import HtrContext
+            from maistro_rsi.htr import HypothesisTree
+
+            tree = HypothesisTree("root idea")
+            returned = await wrapped(
+                HtrContext(node=tree.nodes[tree.root_id], insights=[], tree=tree)
+            )
+            # The executor's own object, attribute access intact: exactly what
+            # `HtrCoordinator.run` consumes (`report.evidence`, `report.diff`).
+            assert returned is report
+            assert returned.evidence.improved is True
+            assert returned.diff == "diff --git a/x b/x"
+            # The durable Attempt still carries the payload (dict after the
+            # JSON round-trip), so provenance loses nothing.
+            run = await provenance.find_cycle("camp-1", tree.root_id)
+            assert run is not None
+            node_runs = await runs.list_node_runs(run.run_id)
+            attempt = (await runs.list_attempts(node_runs[0].node_run_id))[-1]
+            payload = attempt.result
+            assert isinstance(payload, dict)
+            assert payload["evidence"]["improved"] is True
+            assert payload["diff"] == "diff --git a/x b/x"
+        finally:
+            await conn.close()
+
     async def test_every_executor_call_is_one_canonical_cycle(self):
         provenance, runs, _ = await _provenance()
         records: list[CanonicalCycleRecord] = []

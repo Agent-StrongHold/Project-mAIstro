@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from maistro.backlog.agent_surface import AgentBacklogSurface
+from maistro.backlog.agent_surface import AgentBacklogSurface, AgentSurfaceError
 from maistro.backlog.model import BacklogItemStatus
 from maistro.backlog.store import InMemoryBacklogStore
 from maistro.workspaces.backlog_history import (
@@ -21,6 +21,7 @@ from maistro_rsi.work_source import (
     RSI_WORK_SOURCE,
     RsiWorkSource,
     RsiWorkSourceError,
+    SourcedObjective,
     objective_instruction,
 )
 
@@ -143,6 +144,58 @@ class TestClaimAndEvidenceReceipts:
         # The item stays open: a completed Run alone is not closure evidence.
         item = await store.get_item("eng-001")
         assert item is not None and item.status != BacklogItemStatus.DONE
+
+    async def test_stale_snapshot_cannot_close_another_claimants_item(self):
+        store = InMemoryBacklogStore()
+        await _seed(store, "eng-001", "Improve the thing")
+        surface = AgentBacklogSurface(
+            store, _roles({"rsi-campaign": "editor", "agent:b": "editor"})
+        )
+        source = RsiWorkSource(surface, backlog_store=store, project_id=PROJECT)
+        sourced = await source.next_objective(actor="rsi-campaign", workspace_id=WS)
+        assert sourced is not None
+
+        # The RSI lease ends and agent:b claims the item; claims do not move
+        # the item version, so only the authorized surface's claim check can
+        # stop the campaign's stale closure.
+        await source.release(sourced, actor="rsi-campaign")
+        await surface.claim("eng-001", actor="agent:b")
+        with pytest.raises(AgentSurfaceError, match="claimed by 'agent:b'"):
+            await source.close(
+                sourced,
+                actor="rsi-campaign",
+                evidence_refs=("run:run-1",),
+                run_id="run-1",
+            )
+        item = await store.get_item("eng-001")
+        assert item is not None and item.status != BacklogItemStatus.DONE
+
+    async def test_close_is_refused_when_workspace_access_is_revoked(self):
+        store = InMemoryBacklogStore()
+        await _seed(store, "eng-001", "Improve the thing")
+        # This embedder knows no rsi-campaign at all: access revoked.
+        revoked_surface = AgentBacklogSurface(store, _roles({}))
+        source = RsiWorkSource(revoked_surface, backlog_store=store, project_id=PROJECT)
+        item = await store.get_item("eng-001")
+        assert item is not None
+        sourced = SourcedObjective(
+            item_id=item.item_id,
+            workspace_id=item.workspace_id,
+            title=item.title,
+            instruction="",
+            claim_id="claim-gone",
+            claimed_by="rsi-campaign",
+            lease_expires_at=item.created_at,
+            priority=item.priority,
+            expected_version=item.version,
+        )
+        with pytest.raises(AgentSurfaceError, match="may not close"):
+            await source.close(
+                sourced,
+                actor="rsi-campaign",
+                evidence_refs=("run:run-1",),
+                run_id="run-1",
+            )
 
     async def test_release_leaves_the_item_open_for_the_next_claimant(self):
         store = InMemoryBacklogStore()

@@ -447,9 +447,23 @@ class RsiCycleProvenance:
                 actor_principal_id=actor_principal_id,
                 budget=budget,
             )
-            record = await self.run_cycle(run, lambda: executor(context), timeout_s=timeout_s)
+            produced: list[Any] = []
+
+            async def _cycle() -> Any:
+                report = await executor(context)
+                produced.append(report)
+                return report
+
+            record = await self.run_cycle(run, _cycle, timeout_s=timeout_s)
             if records is not None:
                 records.append(record)
+            if produced:
+                # The caller gets the executor's own report object. The
+                # Attempt's durable result survives only as JSON (Sqlite and
+                # Pg stores round-trip it through `evidence_json`), so a
+                # read-back would hand attribute-accessing callers a plain
+                # dict rather than the report the executor returned.
+                return produced[0]
             return await executor_result(self._runs, record)
 
         return _canonical
@@ -533,9 +547,11 @@ def _cycle_objective(context: Any) -> str:
 async def executor_result(runs: RunStore, record: CanonicalCycleRecord) -> Any:
     """The wrapped executor's durable report, read back from its Attempt.
 
-    The canonical Attempt is the record: rather than double-holding the
-    report in memory, this reads the terminal Attempt's result so callers
-    and tests see exactly the evidence the spine persisted.
+    The canonical Attempt is the record: this reads the terminal Attempt's
+    result — exactly the evidence the spine persisted. Note the SQL stores
+    round-trip it through JSON, so what comes back is the payload shape (a
+    dict), not the executor's original object; `wrap_executor` therefore
+    returns the in-memory report and keeps this only as a fallback.
     """
     attempts = await runs.list_attempts(record.node_run_id)
     return attempts[-1].result if attempts else None
