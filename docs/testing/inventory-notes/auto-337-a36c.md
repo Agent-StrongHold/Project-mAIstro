@@ -51,3 +51,19 @@ entry of a forked name and accepts any of them; the three new tests pin the
 parse (both entries survive), the acceptance (a 0.22.9 image reconciles),
 and the refusal (an undeclared 0.30.0 is still named as a mismatch). No
 existing test changed meaning.
+
+## Develop sync (base `f956a8142`): twin split-resolution fixes reconciled
+
+develop's 1182 lane (its note `1182-image-lock-split-resolution.md`,
+`tests/: +5`) landed the same `parse_expected` fix independently, so the
+sync merge `64256fabc` resolved the overlapping gate in place: the script
+took develop's canonical implementation (per-name version sets for
+unconditional and conditional pins alike, `_expected_clause` rendering a
+multi-candidate mismatch as `one of a, b`) — a functional superset of this
+branch's version — and this round's three tests stay beside develop's five,
+with the undeclared-version assertion re-pointed at the `one of ...` clause
+form. 35 gate tests pass at the merged head; no test was added, removed or
+renamed by the sync itself, so this note's delta is unchanged (develop's
+`+5` rides on its own note). `uv.lock` and both frontend package-locks
+auto-merged; `uv lock --check` passes and the merged canvas lock is
+byte-identical to both parents.
