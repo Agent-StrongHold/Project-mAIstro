@@ -337,3 +337,62 @@ Local proof at this head (no Python/test changes; front-matter stays +28):
   files), vulture ledger with CI argv exit 0 (1302 == 1302, base
   4de7e906d9dc, nothing to amend), full canvas suite 581 passed / 75
   skipped, suite inventory matches the recorded baseline (21 suites).
+
+## Develop-sync round: re-validation at the 5ecfab63e merge head
+
+Develop advanced (Workspace Home shell #1048, `maistro portability` CLI #34)
+and the branch was synced by merging `5ecfab63e040` into `auto-93`, producing
+`e8109594ac25`. The only files resolved against both parents are
+`docs/architecture/CONVERGENCE-MATRIX.md` and
+`quality/reachability-dispositions.json`; both resolutions were verified
+row-by-row rather than trusted:
+
+- `reachability-dispositions.json`: develop's removal of the superseded
+  `portability` CONNECT group (its modules now ship a real CLI entry point,
+  so they are reachable and out of the unreachable ledger) combined with this
+  branch's rewritten `canvas-legacy-layerrecord` / `canvas-job-runner`
+  rationales — 46 groups, covering 149 unreachable modules.
+- The per-identity ledgers that a quiet merge can silently drain
+  (`vulture-baseline.json`, `reachability-baseline.json`) came through
+  byte-identical to the parent that legitimately owns each side: no #93 rows
+  were dropped (the branch added none), and develop's portability row
+  removals landed.
+- `quality/image-pins.json` and `quality/direct-dependency-exceptions.json`
+  are exactly this branch's versions (develop touched neither); the merged
+  CONVERGENCE-MATRIX carries both develop's portability rows and this
+  branch's `maistro-canvas-worker` rows.
+- `scripts/check-merge-markers.py`: no conflict markers in tracked files.
+
+Full gate battery re-executed at `e8109594ac25` (no code changes this round,
+so the front-matter delta stays +28):
+
+- `uv run ruff check .` / `uv run ruff format --check .`: clean (3496 files).
+- `uv run mypy` over the ten CI-listed `packages/*/src` trees: no issues in
+  1105 source files.
+- `scripts/check-vulture-baseline.py packages/*/src --min-confidence 60
+  --exclude '*/third_party/*'` (CI argv): 1297 reviewed == 1297 findings,
+  no unbanked identities, nothing to amend.
+- `scripts/check-reachability.py` (RATCHET_BASE_REV=5ecfab63e040): 149
+  unreachable of 1463 modules, no expansion;
+  `scripts/check-reachability-dispositions.py`: 46 groups cover all 149.
+- `scripts/check-ratchet-provenance.py` (all nine ratchets against the
+  develop base) and `scripts/check-shipped-surface-truth.py`: OK.
+- `uv run pytest packages/maistro-canvas/tests -q`: 581 passed, 75 skipped
+  (PG-gated legs); `tests/test_check_image_lock_reconciliation.py`: 69
+  passed.
+- Suite inventory reconciles for every touched suite:
+  `packages/maistro-canvas/tests` 636, `tests/` 5916,
+  `packages/maistro-core/tests` and `packages/hive-conductor/tests/e2e`
+  (develop-side additions) all match baseline + folded deltas.
+- Production-shape probe of the shipped entry point at this head:
+  `uv run maistro-canvas-worker` with no environment exits 2 with
+  `canvas_worker_config_error: MAISTRO_CANVAS_PG_DSN is required...` — the
+  documented fail-visible startup contract.
+
+The regression guard added in the earlier repair round
+(`test_recovery_leaves_a_string_status_live_leased_receipt_alone` and its
+expired-lease companion) still passes against the merged
+`store._coerce_job_status` hydration and the `==`-based live-lease guard in
+`canonical_execution._project_receipt`. Acceptance remains as recorded:
+the product-level E2E under #773/#95 is still pending and KNOWN-GAPS.md
+keeps the Canvas-runner entry open for exactly that reason.
