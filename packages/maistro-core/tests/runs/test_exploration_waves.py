@@ -44,6 +44,7 @@ from maistro.runs.exploration import (
     ThesisNotInWaveError,
     ThesisProvenance,
     ThesisWidthMismatchError,
+    WaveAlreadyFannedOutError,
     exploration_plan_of,
     fan_out_wave,
     merge_thesis_record,
@@ -211,6 +212,39 @@ async def test_scoring_uses_the_waves_rubric_revision_and_losers_remain_queryabl
 
 
 # ── Wave 2: same Run, rejected theses are forbidden input ────────────────────
+
+
+async def test_fanning_the_same_wave_twice_is_refused_without_persisting(spine) -> None:
+    store, workspace, project_id = spine
+    run = await _new_run(store, workspace, project_id, plan=_plan(width=3))
+
+    await _wave_one(store, run)
+    with pytest.raises(WaveAlreadyFannedOutError):
+        await _wave_one(store, run)
+
+    # The refused retry appended nothing: the wave still holds exactly its
+    # declared width, so wave_records and winner naming see one batch.
+    stored = await store.list_node_runs(run.run_id)
+    records = wave_records(stored, wave_index=1)
+    assert len(records) == 3
+    assert [record.thesis.slot for record in records] == [0, 1, 2]
+
+
+async def test_concurrent_fan_out_of_one_wave_leaves_exactly_one_batch(spine) -> None:
+    store, workspace, project_id = spine
+    run = await _new_run(store, workspace, project_id, plan=_plan(width=3))
+
+    results = await asyncio.gather(
+        *(_wave_one(store, run) for _ in range(3)),
+        return_exceptions=True,
+    )
+    batches = [batch for batch in results if not isinstance(batch, BaseException)]
+    assert len(batches) == 1
+    assert all(
+        isinstance(result, WaveAlreadyFannedOutError) for result in results if isinstance(result, BaseException)
+    )
+    stored = await store.list_node_runs(run.run_id)
+    assert len(wave_records(stored, wave_index=1)) == 3
 
 
 async def test_wave_two_on_same_run_consumes_rejected_and_cannot_repeat_one(spine) -> None:

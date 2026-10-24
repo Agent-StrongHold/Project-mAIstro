@@ -114,6 +114,10 @@ class ThesisNotInWaveError(ExplorationContractError):
     """A winner or score was addressed to a NodeRun outside the target wave."""
 
 
+class WaveAlreadyFannedOutError(ExplorationContractError):
+    """A wave index that already has persisted theses was fanned out again."""
+
+
 class ThesisSettledError(ExplorationContractError):
     """A settled thesis (winner/loser/parked/redirected) was mutated again."""
 
@@ -363,11 +367,19 @@ async def fan_out_wave(
       fills it);
     - no intra-wave duplicates — the theses are divergent bets, not copies;
     - no thesis already in ``rejected_theses`` — repeating a rejected thesis
-      is a contract failure (:class:`DuplicateThesisError`).
+      is a contract failure (:class:`DuplicateThesisError`);
+    - the wave index must have no persisted theses yet on ``run`` — a retry
+      that fans the same wave out again is a contract failure
+      (:class:`WaveAlreadyFannedOutError`), never a second batch of children
+      under one wave index.
 
     The child NodeRuns stay on ``run`` — one canonical Run, no new Run
     identity per wave — and each carries its :class:`ThesisProvenance` under
     ``NodeRun.provenance[PROVENANCE_KEY]``.
+
+    The persisted-wave check and every child creation run under the per-Run
+    wave lock against wave state re-read inside the section, so two
+    concurrent fan-outs of the same wave index cannot both pass the check.
     """
     _validate_wave_fanout(
         run,
@@ -378,31 +390,40 @@ async def fan_out_wave(
         rejected_theses=rejected_theses,
     )
 
-    created: list[NodeRun] = []
-    for slot, thesis in enumerate(theses):
-        provenance = ThesisProvenance(
-            thesis=thesis,
-            wave_index=wave_index,
-            slot=slot,
-            policy=plan.policy,
-            width=plan.width,
-            parent_node_id=parent_node_id,
-            goal_revision=plan.goal_revision,
-            rubric_revision=plan.rubric_revision,
-        )
-        created.append(
-            await store.create_node_run(
-                run.run_id,
-                node_id=parent_node_id,
-                provenance={
-                    PROVENANCE_KEY: {
-                        "thesis": provenance.model_dump(mode="json"),
-                        "disposition": ThesisDisposition.PROPOSED.value,
-                    }
-                },
+    async with _wave_settlement_lock(run.run_id):
+        persisted = wave_records(await store.list_node_runs(run.run_id), wave_index=wave_index)
+        if persisted:
+            raise WaveAlreadyFannedOutError(
+                f"wave {wave_index} already has {len(persisted)} persisted "
+                f"thesis(es) on Run {run.run_id!r} "
+                f"(first: {persisted[0].node_run_id!r}); fan it out only once"
             )
-        )
-    return created
+
+        created: list[NodeRun] = []
+        for slot, thesis in enumerate(theses):
+            provenance = ThesisProvenance(
+                thesis=thesis,
+                wave_index=wave_index,
+                slot=slot,
+                policy=plan.policy,
+                width=plan.width,
+                parent_node_id=parent_node_id,
+                goal_revision=plan.goal_revision,
+                rubric_revision=plan.rubric_revision,
+            )
+            created.append(
+                await store.create_node_run(
+                    run.run_id,
+                    node_id=parent_node_id,
+                    provenance={
+                        PROVENANCE_KEY: {
+                            "thesis": provenance.model_dump(mode="json"),
+                            "disposition": ThesisDisposition.PROPOSED.value,
+                        }
+                    },
+                )
+            )
+        return created
 
 
 async def record_thesis_score(
@@ -522,11 +543,13 @@ def _wave_settlement_lock(run_id: str) -> asyncio.Lock:
     """The per-Run critical section that makes wave settlement atomic.
 
     Naming a winner is a multi-write operation (winner + every wave-mate),
-    so the store's per-row write locks cannot cover it: two concurrent
-    callers could both observe an unsettled wave, each persist their own
-    winner, and each demote the other's candidate from a stale snapshot.
-    Validation, the winner write and sibling settlement all run under this
-    keyed lock, against wave state re-read *inside* the section.
+    and fanning a wave out is a multi-write check-then-create against the
+    same wave index, so the store's per-row write locks cannot cover either:
+    two concurrent callers could both observe an unsettled (or un-fanned)
+    wave, each persist their own winner or children, and each demote or
+    duplicate from a stale snapshot. Validation, the writes and any sibling
+    settlement all run under this keyed lock, against wave state re-read
+    *inside* the section.
     """
     lock = _wave_settlement_locks.get(run_id)
     if lock is None:
@@ -619,6 +642,7 @@ __all__ = [
     "ThesisScore",
     "ThesisSettledError",
     "ThesisWidthMismatchError",
+    "WaveAlreadyFannedOutError",
     "WaveWinnerAlreadyNamedError",
     "exploration_plan_of",
     "fan_out_wave",
