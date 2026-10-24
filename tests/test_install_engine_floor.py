@@ -110,7 +110,9 @@ def test_the_floor_constant_is_present_and_pins_engine_25s_api() -> None:
     )
 
 
-def test_start_engine_enforces_the_floor_before_first_daemon_use() -> None:
+def test_start_engine_enforces_the_floor_before_first_daemon_use(
+    tmp_path: Path,
+) -> None:
     """The floor check follows the runtime check directly, and precedes every
     step that talks to the daemon.
 
@@ -118,16 +120,30 @@ def test_start_engine_enforces_the_floor_before_first_daemon_use() -> None:
     version broke when an unrelated preflight (the credential-helper probe,
     which talks to no daemon) was added after the floor check -- the property
     held, the regex did not.
+
+    #1820 wrapped the floor check and its two daemon-adjacent companions in
+    ``docker_only_preflight_checks`` so a Podman selection never validates the
+    unselected Docker engine. The property is now pinned one level down: the
+    wrapped helper must still open with the floor check, and start_engine
+    must still call the helper before anything that touches a daemon.
     """
     body = INSTALL_SH.read_text(encoding="utf-8")
     start = body.index("\nstart_engine() {")
     steps = body[start : body.index("\n}\n", start)]
-    assert re.search(r"ensure_compose_runtime\n\s+ensure_docker_engine_supported\n", steps), (
-        "start_engine must check the engine floor right after the runtime is ready"
+    assert re.search(r"ensure_compose_runtime\n\s+docker_only_preflight_checks\n", steps), (
+        "start_engine must run the docker-only preflight right after the runtime is ready"
     )
-    floor = steps.index("ensure_docker_engine_supported")
-    for daemon_user in ("record_docker_sock", "report_arch", '"${COMPOSE_UP_ARGS[@]}"'):
-        assert floor < steps.index(daemon_user), f"{daemon_user} runs before the engine floor"
+    helper = steps.index("docker_only_preflight_checks")
+    for daemon_user in ("report_arch", '"${COMPOSE_UP_ARGS[@]}"'):
+        assert helper < steps.index(daemon_user), f"{daemon_user} runs before the preflight gate"
+
+    gate_start = body.index("\ndocker_only_preflight_checks() {")
+    gate = body[gate_start : body.index("\n}\n", gate_start)]
+    floor = gate.index("ensure_docker_engine_supported")
+    for later_call in ("check_docker_credential_helper", "record_docker_sock"):
+        assert floor < gate.index(later_call), (
+            f"{later_call} runs before the engine floor inside the preflight gate"
+        )
 
 
 def test_engine_24_daemon_is_refused_with_an_upgrade_pointer(tmp_path: Path) -> None:

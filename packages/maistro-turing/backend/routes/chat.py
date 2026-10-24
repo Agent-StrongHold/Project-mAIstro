@@ -40,6 +40,13 @@ router = APIRouter(tags=["chat"])
 
 _PUBLIC_CHAT_FAILURE = "Turing chat execution failed"
 
+# Sessions live in the composed state's bounded, workspace-owned registry
+# (#859): keyed by the canonical Workspace resolved for the authenticated
+# principal plus the client-supplied session id, TTL- and cardinality-bounded,
+# and disposable. The client id selects a conversation inside the caller's
+# scope; it never decides ownership, and guessing another user's id yields an
+# isolated fresh session in the guesser's own scope.
+
 
 class ChatBody(BaseModel):
     model_config = ConfigDict(extra="ignore")
@@ -67,13 +74,25 @@ async def chat(
         raise HTTPException(status_code=400, detail="message is required")
 
     session_id = body.session_id or str(uuid4())
-    # Cognitive state is scoped to the authenticated principal and bounded in
-    # cardinality/lifetime (#27/#859): the session key includes the caller's
-    # canonical principal id, so a client-supplied session id alone — or one
-    # guessed from another user — never selects someone else's conversation.
-    session = get_state().chat_sessions.get_or_create(user.actor_id(), session_id)
-
     plane = get_execution_plane()
+    st = get_state()
+    workspace_id, project_id = await plane.scope_for(user.user_id)
+    try:
+        session = st.sessions.resolve(
+            workspace_id=workspace_id,
+            session_id=session_id,
+            # The factory binds the caller's resolved scope, so the session's
+            # episodic chat capture persists with the caller's provenance
+            # instead of blank user/project fields (#859).
+            factory=lambda: st.new_chat_session(
+                user_id=user.user_id,
+                workspace_id=workspace_id,
+                project_id=project_id,
+            ),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     try:
         record = await plane.run_chat(
             session=session,

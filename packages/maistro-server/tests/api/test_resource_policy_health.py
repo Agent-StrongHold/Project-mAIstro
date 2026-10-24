@@ -41,7 +41,8 @@ def _pristine_settings() -> Settings:
 def _secured_settings() -> Settings:
     """Auth-enabled deployment with one admin and one user key (#365/#1567)."""
     return Settings(
-        api_keys=["ops:admin:admin-secret", "alice:user-secret"],
+        api_keys=["alice:user-secret"],
+        admin_api_keys=["ops:admin-secret"],
         max_request_body_bytes=512_000,
         max_webhook_body_bytes=256_000,
         rate_limit_per_minute=30,

@@ -14,6 +14,11 @@ from maistro.a2a import (
     LocalTransport,
 )
 from maistro.agents.catalog import AgentCard, AgentCatalog
+from maistro.security.sentinel.authz_types import Principal
+from maistro.security.sentinel.delegation import (
+    DelegationGrant,
+    InMemoryDelegationAuthority,
+)
 
 
 def _budget(**overrides: object) -> DelegationBudget:
@@ -66,6 +71,35 @@ async def _echo_invoker(task: A2ATask, budget: DelegationBudget) -> str:
 
 def _broker() -> A2ABroker:
     return A2ABroker(resolver=_catalog(), local=LocalTransport(_echo_invoker))
+
+
+def _host_authority(*, artifact: str = "write tests") -> InMemoryDelegationAuthority:
+    """A host-owned grant bound to planner -> coder for one exact artifact."""
+    return InMemoryDelegationAuthority(
+        [
+            DelegationGrant(
+                grant_ref="grant-1",
+                principal_id="planner",
+                owner_id="user-1",
+                delegating_agent_id="planner",
+                target_agent_id="coder",
+                goal_id="goal-1",
+                run_id="run-1",
+                invocation_id="inv-1",
+                scope="scope-1",
+                action="agent.delegate",
+                actions=frozenset(),
+                artifact=artifact,
+                expires_at=datetime.now(UTC) + timedelta(minutes=5),
+                granted_by="host-policy",
+                provenance="human-approval:approval-1",
+            )
+        ]
+    )
+
+
+def _principal() -> Principal:
+    return Principal(id="planner", kind="agent", owner="user-1")
 
 
 @pytest.mark.asyncio
@@ -141,7 +175,8 @@ async def test_trust_tier_escalation_refused() -> None:
 
 
 @pytest.mark.asyncio
-async def test_explicit_allow_list_overrides_trust_tier() -> None:
+async def test_explicit_allow_list_cannot_override_trust_tier() -> None:
+    """A manifest request cannot grant a higher-privilege target."""
     catalog = _catalog()
     catalog.register(
         AgentCard(
@@ -153,8 +188,8 @@ async def test_explicit_allow_list_overrides_trust_tier() -> None:
         )
     )
     broker = A2ABroker(resolver=catalog, local=LocalTransport(_echo_invoker))
-    result = await broker.delegate(from_agent="ops", to="admin", task="x", budget=_budget())
-    assert result.status == "completed"
+    with pytest.raises(DelegationRefused, match="trust-tier escalation"):
+        await broker.delegate(from_agent="ops", to="admin", task="x", budget=_budget())
 
 
 @pytest.mark.asyncio
@@ -163,6 +198,83 @@ async def test_unknown_caller_and_target_refused() -> None:
         await _broker().delegate(from_agent="ghost", to="coder", task="x", budget=_budget())
     with pytest.raises(DelegationRefused, match="unknown delegation target"):
         await _broker().delegate(from_agent="planner", to="ghost", task="x", budget=_budget())
+
+
+@pytest.mark.asyncio
+async def test_delegate_under_host_authority_records_the_grant() -> None:
+    # When a host authority is wired, delegation is authorized by the grant
+    # and the task carries the grant provenance to the transport.
+    broker = A2ABroker(
+        resolver=_catalog(),
+        local=LocalTransport(_echo_invoker),
+        delegation_authority=_host_authority(),
+    )
+
+    result = await broker.delegate(
+        from_agent="planner",
+        to="coder",
+        task="write tests",
+        budget=_budget(),
+        user_id="user-1",
+        principal=_principal(),
+        owner_id="user-1",
+        goal_id="goal-1",
+        run_id="run-1",
+        invocation_id="inv-1",
+        scope="scope-1",
+        artifact="write tests",
+    )
+
+    assert result.status == "completed"
+
+
+@pytest.mark.asyncio
+async def test_delegate_under_host_authority_requires_an_authenticated_principal() -> None:
+    broker = A2ABroker(
+        resolver=_catalog(),
+        local=LocalTransport(_echo_invoker),
+        delegation_authority=_host_authority(),
+    )
+
+    with pytest.raises(DelegationRefused, match="requires an authenticated agent principal"):
+        await broker.delegate(
+            from_agent="planner",
+            to="coder",
+            task="write tests",
+            budget=_budget(),
+            user_id="user-1",
+            owner_id="user-1",
+            goal_id="goal-1",
+            run_id="run-1",
+            invocation_id="inv-1",
+            scope="scope-1",
+            artifact="write tests",
+        )
+
+
+@pytest.mark.asyncio
+async def test_delegate_under_host_authority_is_refused_without_a_matching_grant() -> None:
+    broker = A2ABroker(
+        resolver=_catalog(),
+        local=LocalTransport(_echo_invoker),
+        delegation_authority=_host_authority(artifact="a different task"),
+    )
+
+    with pytest.raises(DelegationRefused, match="host delegation refused"):
+        await broker.delegate(
+            from_agent="planner",
+            to="coder",
+            task="write tests",
+            budget=_budget(),
+            user_id="user-1",
+            principal=_principal(),
+            owner_id="user-1",
+            goal_id="goal-1",
+            run_id="run-1",
+            invocation_id="inv-1",
+            scope="scope-1",
+            artifact="write tests",
+        )
 
 
 @pytest.mark.asyncio
@@ -182,3 +294,213 @@ def test_budget_spend_decrements_depth_and_appends_chain() -> None:
     assert hop.max_depth == 1
     assert hop.chain == ("a", "b")
     assert hop.trace_id == budget.trace_id
+
+
+def _host_grant(
+    *, principal_id: str = "planner", actions: frozenset[str] = frozenset({"read_file"})
+) -> DelegationGrant:
+    from datetime import UTC, datetime, timedelta
+
+    return DelegationGrant(
+        grant_ref="grant-broker-1",
+        principal_id=principal_id,
+        owner_id="owner-1",
+        delegating_agent_id="planner",
+        target_agent_id="coder",
+        goal_id="goal-1",
+        run_id="run-1",
+        invocation_id="inv-1",
+        scope="project-1",
+        action="agent.delegate",
+        actions=actions,
+        artifact="delegate this exact task",
+        expires_at=datetime.now(UTC) + timedelta(minutes=5),
+        granted_by="host-policy",
+        provenance="human-approval:approval-1",
+    )
+
+
+@pytest.mark.asyncio
+async def test_broker_host_authority_requires_principal() -> None:
+    authority = InMemoryDelegationAuthority([_host_grant()])
+    broker = A2ABroker(
+        resolver=_catalog(), local=LocalTransport(_echo_invoker), delegation_authority=authority
+    )
+    with pytest.raises(
+        DelegationRefused, match="host delegation requires an authenticated agent principal"
+    ):
+        await broker.delegate(
+            from_agent="planner", to="coder", task="delegate this exact task", budget=_budget()
+        )
+
+
+@pytest.mark.asyncio
+async def test_broker_host_authority_refused_without_grant() -> None:
+    authority = InMemoryDelegationAuthority()
+    broker = A2ABroker(
+        resolver=_catalog(), local=LocalTransport(_echo_invoker), delegation_authority=authority
+    )
+    principal = Principal(id="planner", kind="agent", roles=(), scopes=(), owner="owner-1")
+    with pytest.raises(DelegationRefused, match="host delegation refused"):
+        await broker.delegate(
+            from_agent="planner",
+            to="coder",
+            task="delegate this exact task",
+            budget=_budget(),
+            principal=principal,
+            owner_id="owner-1",
+            goal_id="goal-1",
+            run_id="run-1",
+            invocation_id="inv-1",
+            scope="project-1",
+            artifact="delegate this exact task",
+        )
+
+
+@pytest.mark.asyncio
+async def test_broker_host_authority_grant_carries_effective_subset() -> None:
+    authority = InMemoryDelegationAuthority([_host_grant(actions=frozenset({"read_file"}))])
+    catalog = AgentCatalog()
+    catalog.register(
+        AgentCard(
+            id="planner",
+            name="planner",
+            trust_tier="t2",
+            delegation_mode="allow_list",
+            sub_agents=("coder",),
+        )
+    )
+    catalog.register(
+        AgentCard(id="coder", name="coder", trust_tier="t2", tools=("read_file", "write_file"))
+    )
+    principal = Principal(id="planner", kind="agent", roles=(), scopes=(), owner="owner-1")
+    captured: dict[str, object] = {}
+
+    async def _capturing_invoker(task: A2ATask, budget: DelegationBudget) -> str:
+        captured["metadata"] = dict(task.metadata)
+        return f"handled:{task.to_agent}:{task.task}"
+
+    broker2 = A2ABroker(
+        resolver=catalog, local=LocalTransport(_capturing_invoker), delegation_authority=authority
+    )
+    result = await broker2.delegate(
+        from_agent="planner",
+        to="coder",
+        task="delegate this exact task",
+        budget=_budget(),
+        principal=principal,
+        owner_id="owner-1",
+        goal_id="goal-1",
+        run_id="run-1",
+        invocation_id="inv-1",
+        scope="project-1",
+        artifact="delegate this exact task",
+    )
+    assert result.status == "completed"
+    assert captured["metadata"]["delegated_actions"] == ["read_file"]
+    assert captured["metadata"]["delegation_grant_ref"] == "grant-broker-1"
+
+
+@pytest.mark.asyncio
+async def test_broker_delegates_through_the_durable_async_authority(tmp_path) -> None:
+    """The shipped durable authority decides asynchronously: the broker must
+
+    await the decision and carry its grant, not treat the awaitable itself as
+    the decision object (#845; the SQLite twin of the in-memory path).
+    """
+    import aiosqlite
+
+    from maistro.security.sentinel.delegation_durable import (
+        DurableDelegationAuthority,
+        SqliteDelegationStore,
+    )
+
+    catalog = AgentCatalog()
+    catalog.register(
+        AgentCard(
+            id="planner",
+            name="planner",
+            trust_tier="t2",
+            delegation_mode="allow_list",
+            sub_agents=("coder",),
+        )
+    )
+    catalog.register(
+        AgentCard(id="coder", name="coder", trust_tier="t2", tools=("read_file", "write_file"))
+    )
+    principal = Principal(id="planner", kind="agent", roles=(), scopes=(), owner="owner-1")
+    captured: dict[str, object] = {}
+
+    async def _capturing_invoker(task: A2ATask, budget: DelegationBudget) -> str:
+        captured["metadata"] = dict(task.metadata)
+        return f"handled:{task.to_agent}:{task.task}"
+
+    conn = await aiosqlite.connect(tmp_path / "delegation.sqlite")
+    try:
+        authority = DurableDelegationAuthority(SqliteDelegationStore(conn))
+        await authority.ensure_schema()
+        await authority.add_host_grant(_host_grant(actions=frozenset({"read_file"})))
+        broker = A2ABroker(
+            resolver=catalog,
+            local=LocalTransport(_capturing_invoker),
+            delegation_authority=authority,
+        )
+        result = await broker.delegate(
+            from_agent="planner",
+            to="coder",
+            task="delegate this exact task",
+            budget=_budget(),
+            principal=principal,
+            owner_id="owner-1",
+            goal_id="goal-1",
+            run_id="run-1",
+            invocation_id="inv-1",
+            scope="project-1",
+            artifact="delegate this exact task",
+        )
+    finally:
+        await conn.close()
+
+    assert result.status == "completed"
+    assert captured["metadata"]["delegated_actions"] == ["read_file"]
+    assert captured["metadata"]["delegation_grant_ref"] == "grant-broker-1"
+    assert captured["metadata"]["delegation_granted_by"] == "host-policy"
+
+
+@pytest.mark.asyncio
+async def test_broker_durable_authority_refusal_names_the_host_reason(tmp_path) -> None:
+    """An async refusal from the durable authority still refuses the hop, with
+
+    the host's own reason surfaced — not a silent pass-through.
+    """
+    import aiosqlite
+
+    from maistro.security.sentinel.delegation_durable import (
+        DurableDelegationAuthority,
+        SqliteDelegationStore,
+    )
+
+    principal = Principal(id="planner", kind="agent", roles=(), scopes=(), owner="owner-1")
+    conn = await aiosqlite.connect(tmp_path / "delegation.sqlite")
+    try:
+        authority = DurableDelegationAuthority(SqliteDelegationStore(conn))
+        await authority.ensure_schema()
+        broker = A2ABroker(
+            resolver=_catalog(), local=LocalTransport(_echo_invoker), delegation_authority=authority
+        )
+        with pytest.raises(DelegationRefused, match="no host grant matches this delegation"):
+            await broker.delegate(
+                from_agent="planner",
+                to="coder",
+                task="delegate this exact task",
+                budget=_budget(),
+                principal=principal,
+                owner_id="owner-1",
+                goal_id="goal-1",
+                run_id="run-1",
+                invocation_id="inv-1",
+                scope="project-1",
+                artifact="delegate this exact task",
+            )
+    finally:
+        await conn.close()

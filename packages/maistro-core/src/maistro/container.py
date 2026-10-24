@@ -16,7 +16,7 @@ import uuid
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING, Any, Final, Literal
+from typing import TYPE_CHECKING, Any, Final, Literal, cast
 from urllib.parse import urlsplit, urlunsplit
 
 from maistro.a2a.delegate import A2ADelegator
@@ -39,7 +39,9 @@ from maistro.events.consumer_cursor import (
     DEFAULT_HOLE_GRACE_SECONDS,
     LEGACY_BRIDGE_CONSUMER_ID,
 )
+from maistro.events.publisher import CanonicalEventPublisher
 from maistro.goals.authorization import ScopedGoalStore
+from maistro.goals.reconciliation.wiring import wire_goal_reconciliation
 from maistro.goals.store import GoalStore
 from maistro.goals.wiring import wire_goal_store
 from maistro.graph.durable_runs.canonical_store import CanonicalDurableRunStore
@@ -71,11 +73,13 @@ from maistro.memory.working_graph.wiring import (
     build_workspace_working_memory,
     working_memory_context_message,
 )
+from maistro.personas.wiring import PERSONA_PG_TABLES, wire_persona_store
 from maistro.projects.scope_store import ProjectScopeStore
 from maistro.quota.default_tracker import set_default_quota_tracker
 from maistro.quota.tracker import InMemoryQuotaTracker
 from maistro.quota.usage_log import InMemoryUsageLog, get_default_usage_log
 from maistro.router.selector import RouterEngine
+from maistro.runs.access import RunAuthorization
 from maistro.runs.chat_admission import (
     ADMISSION_INCOMPLETE,
     EXECUTION_NEVER_STARTED,
@@ -111,6 +115,7 @@ from maistro.scheduling.store import ScheduleStore
 from maistro.security._types import ANONYMOUS_AUTH
 from maistro.security.gate import Gate
 from maistro.security.outbound import configure_outbound_policy, configured_endpoints
+from maistro.security.sentinel.authz_types import Principal
 from maistro.security.warden.detector import Warden
 from maistro.sessions.store import InMemorySessionStore
 from maistro.tasks.admission import WorkspaceRoutingAdmitter
@@ -125,7 +130,11 @@ from maistro.workspaces.campaigns.wiring import (
     wire_in_memory_campaign_store,
 )
 from maistro.workspaces.store import WorkspaceStore
-from maistro.workspaces.wiring import WORKSPACE_PG_TABLES, wire_workspace_store
+from maistro.workspaces.wiring import (
+    DEFAULT_WORKSPACE_OWNER,
+    WORKSPACE_PG_TABLES,
+    wire_workspace_store,
+)
 
 if TYPE_CHECKING:
     import httpx  # type: ignore[import-not-found, unused-ignore]
@@ -140,6 +149,8 @@ if TYPE_CHECKING:
     )
     from maistro.capabilities.provider_adapters import ProviderAdapterCatalog
     from maistro.capabilities.registry import CapabilityRegistry
+    from maistro.code_registry.execution import CodeInvoker, CodeResult
+    from maistro.code_registry.registry import CodeRegistry
     from maistro.events.bus import EventBus
     from maistro.events.consumer_cursor import ConsumerCursorStore
     from maistro.events.durable_log import EventLogStore
@@ -148,9 +159,13 @@ if TYPE_CHECKING:
     from maistro.events.trigger_store import TriggerDefinition, TriggerStore
     from maistro.extensions.catalog_service import CatalogService, InMemoryCatalogStore
     from maistro.extensions.health import ExtensionHealthService, InMemoryExtensionHealthStore
+    from maistro.extensions.policy import ExtensionPolicyEngine
     from maistro.extensions.service import ExtensionInstallService
     from maistro.extensions.sqlite_health_store import SqliteExtensionHealthStore
     from maistro.extensions.store import ExtensionStore
+    from maistro.extensions.tenancy import TenantScopedExtensionState
+    from maistro.goals.reconciliation.reconciler import ReconciliationPolicy
+    from maistro.goals.reconciliation.store import GoalReconciliationStore
     from maistro.graph.harness import HarnessAdapter
     from maistro.identity.lifecycle import (
         AgentIdentity as LifecycleIdentity,
@@ -165,6 +180,7 @@ if TYPE_CHECKING:
     from maistro.observability.tiers import PIIDetector
     from maistro.orchestrator.hierarchy import HarnessRegistry, HierarchicalOrchestrator
     from maistro.personas.golden import GoldenRecordStore
+    from maistro.personas.store import PersonaStore
     from maistro.protocols.embeddings import EmbeddingClient
     from maistro.protocols.memory import (
         ContextAssemblyPolicy,
@@ -184,6 +200,8 @@ if TYPE_CHECKING:
     from maistro.runs.reconciliation import AttemptLifecycleReconciler
     from maistro.runs.store import RunStore
     from maistro.security._types import AuditLog
+    from maistro.security.sentinel.authz_types import Principal
+    from maistro.security.sentinel.delegation import DelegationAuthority
     from maistro.security.sentinel.elevation import ElevationStore
     from maistro.security.sentinel.policy import Sentinel
     from maistro.skills.import_pipeline import (
@@ -256,6 +274,9 @@ class Container:
     #: backend since #132 while the thing its `workspace_id` names had none,
     #: so the only Workspaces that survived a restart were the Conductor's own.
     workspace_store: WorkspaceStore = None  # type: ignore[assignment]
+    #: The live Persona is a Workspace product context, stored beside the
+    #: Project tree rather than in a second product-specific ownership store.
+    persona_store: PersonaStore = None  # type: ignore[assignment]
     #: Append-only BacklogItem history (#101), on the Project store's backend.
     #: References canonical Goals/Runs; never an execution authority itself.
     backlog_history_store: BacklogHistoryStore = None  # type: ignore[assignment]
@@ -451,6 +472,11 @@ class Container:
     resilience_policies: ResiliencePolicyStore = None  # type: ignore[assignment]
     # Durable events (ADR-086): bus bridge + log/trigger/invocation stores.
     event_bus: EventBus = None  # type: ignore[assignment]
+    # Canonical Event authority shared by governed effects and recovery. The
+    # publisher wraps the exact EventStore selected by the effect context and
+    # projects each inserted Event onto `event_bus`, so the durable log bridge
+    # and legacy triggers/subscribers keep observing recovery facts.
+    canonical_event_publisher: CanonicalEventPublisher = None  # type: ignore[assignment]
     durable_event_log: EventLogStore = None  # type: ignore[assignment]
     trigger_store: TriggerStore = None  # type: ignore[assignment]
     invocation_store: Any = None
@@ -470,6 +496,13 @@ class Container:
     # `durable_event_hole_grace_s` seconds, then treats it as aborted.
     _durable_event_holes: dict[int, float] = field(default_factory=dict)
     durable_event_hole_grace_s: float = DEFAULT_HOLE_GRACE_SECONDS
+    # Goal reconciliation control plane (M3 #806): the one durable store of
+    # Goal rows, claim/lease fences, wake facts and admissions, plus the
+    # #805-owned decision policy. `None` until #805 composes one: without a
+    # policy the Container still reclaims lapsed leases (`sweep_goal_leases`)
+    # but never decides, so no admission semantics are invented here.
+    goal_reconciliation_store: GoalReconciliationStore = None  # type: ignore[assignment]
+    goal_reconciliation_policy: ReconciliationPolicy | None = None
     # LLM provider registry + cost-aware router (SPEC-070226-cb8d).
     provider_registry: LLMProviderRegistry = None  # type: ignore[assignment]
     llm_router: LLMRouter = None  # type: ignore[assignment]
@@ -489,6 +522,11 @@ class Container:
     # Skill import pipeline (ADR-083).
     skill_registry: InMemorySkillRegistry = None  # type: ignore[assignment]
     policy_attachment_store: PolicyAttachmentStore = None  # type: ignore[assignment]
+    # Signed code registry + its governed execution harness (ADR-069, #59).
+    # Reachable-by-design from `invoke()` — wiring them here is what connects
+    # the code-registry modules to a process entry point.
+    code_registry: CodeRegistry = None  # type: ignore[assignment]
+    code_invoker: CodeInvoker = None  # type: ignore[assignment]
     # OAuth (ADR-059): state + identity-link stores; clients via oauth_client().
     oauth_state_store: StateStore = None  # type: ignore[assignment]
     identity_linker: IdentityLinker = None  # type: ignore[assignment]
@@ -500,6 +538,9 @@ class Container:
     # config.security.strike_tracking_enabled -- see create_container.
     strike_tracker: StrikeTracker | None = None
     strike_recovery: Any = None
+    # One durable cursor identifies this reactor consumer across restarts. The
+    # authoritative position lives in the consumer-cursor store (#1163); this
+    # field is the in-process view of what this container's last tick advanced.
     durable_event_cursor: int = 0
     # Governed extension install lifecycle (#953, M9-B2). Process-lifetime
     # in-memory records until the B1 signing/identity substrate (#952) lands;
@@ -510,6 +551,11 @@ class Container:
     # service so every reader observes the one canonical record.
     extension_install_store: ExtensionStore | None = None
     extension_install_service: ExtensionInstallService | None = None
+    # Organization/Workspace extension policy + tenant-scoped runtime state
+    # (#971, M9-G3). The default engine configures nothing, which leaves the
+    # machine's behavior unchanged while still recording decision evidence.
+    extension_policy_engine: ExtensionPolicyEngine | None = None
+    extension_runtime_state: TenantScopedExtensionState | None = None
     # Extension operational views (#978, M9-I3): health evidence, operator
     # decisions, and the projection facade over the SAME install store —
     # never a second lifecycle authority, only a read/projection layer.
@@ -664,6 +710,33 @@ class Container:
         if principal is not None:
             principal = str(principal).strip() or None
         return principal
+
+    async def _chat_run_authorization(self, auth: Any) -> RunAuthorization | None:
+        """Build the Run admission identity from the authenticated caller.
+
+        Returns None only for the anonymous fallback: an identity-free turn
+        has no authenticated evidence, so admission keeps the legacy
+        actor-string path instead of minting a Principal that dresses
+        "anonymous" up as an authenticated identity. A real caller's
+        authorization carries its Workspace/Project scope and its principal,
+        so the store enforces the scope and owned-agent checks (#1152) rather
+        than copying one string into actor, initiator, and acting.
+        """
+        if auth is None or auth is ANONYMOUS_AUTH:
+            return None
+        principal = self._chat_actor_principal(auth)
+        if principal is None or self.chat_admitter is None:
+            return None
+        workspace_id, project_id = await self.chat_admitter.admission_scope()
+        return RunAuthorization(
+            workspace_id=workspace_id,
+            project_id=project_id,
+            # The chat completions boundary authenticates human callers
+            # (bearer -> AuthenticatedPrincipal); delegated execution rides on
+            # `acting_principal`, which admission resolves from the Graph's
+            # agent, never from this string.
+            authenticated_principal=Principal(id=principal, kind="human"),
+        )
 
     def _resolve_chat_auth(self, auth: Any) -> Any:
         """Evaluate an identity-free turn as the role-less anonymous principal.
@@ -898,11 +971,16 @@ class Container:
         """
         if self.chat_admitter is None:
             raise ChatTurnRefused("no chat admitter is wired, so the turn cannot get a Run")
+        authenticated = auth is not None
         auth = self._resolve_chat_auth(auth)
         run: Run | None = None
         try:
             admitter = self.chat_admitter
             principal = self._chat_actor_principal(auth)
+            # Built inside the admission failure net: a boundary that cannot
+            # resolve its scope refuses the turn (503) like any other
+            # admission failure, rather than admitting on the legacy path.
+            authorization = await self._chat_run_authorization(auth) if authenticated else None
             try:
                 run = await admitter.admit(
                     messages,
@@ -911,6 +989,7 @@ class Container:
                     intent_hint=intent_hint,
                     known_task_types=self.config.task_types,
                     actor_principal_id=principal,
+                    authorization=authorization,
                 )
             except RunConcurrencyExceeded:
                 # The slots may be held by turns a crashed process left behind,
@@ -925,6 +1004,7 @@ class Container:
                     intent_hint=intent_hint,
                     known_task_types=self.config.task_types,
                     actor_principal_id=principal,
+                    authorization=authorization,
                 )
             # Two hops: a Run is born CREATED and the lifecycle has no edge
             # from there to RUNNING. Queued is momentarily true here — the turn
@@ -1137,7 +1217,11 @@ class Container:
         crash between "processed" and "cursor written" costs at most a replay
         of already-settled, already-idempotent work; it never skips an event
         still in flight. Nor does it skip an event whose id the log handed
-        out but has not committed yet: see `_gap_safe_position`.
+        out but has not committed yet: see `_gap_safe_position`. The same
+        settled position is also acknowledged on the log itself
+        (`EventLogStore.acknowledge_replay`, #836), so the per-consumer
+        replay cursor stored beside the events stays truthful for readers
+        of the log.
         """
         lease = await self.consumer_cursor_store.claim(
             LEGACY_BRIDGE_CONSUMER_ID, holder=self._durable_events_holder
@@ -1164,6 +1248,17 @@ class Container:
                 fencing_token=lease.fencing_token,
                 position=new_cursor,
             )
+            # The log's own replay acknowledgement (#836) records the same
+            # settlement keyed to this consumer, so `get_replay_cursor`
+            # answers from the store the events live in rather than only
+            # from the bridge's separate cursor store. Both writes are
+            # monotonic and neither is the correctness backstop -- that is
+            # `InvocationStore.claim` -- so a crash between them costs a
+            # replay of already-settled, idempotent work, never a skip. The
+            # gap-safe position is acknowledged, not the raw batch cursor:
+            # a hole is not settled yet, and this acknowledgement must not
+            # claim otherwise.
+            await self.durable_event_log.acknowledge_replay(LEGACY_BRIDGE_CONSUMER_ID, new_cursor)
         self.durable_event_cursor = new_cursor
         return new_cursor
 
@@ -1258,6 +1353,52 @@ class Container:
         age = (moment - oldest_created_at).total_seconds() if oldest_created_at else 0.0
         oldest_non_terminal_run_age_seconds.set(max(age, 0.0))
         return reclaimed + reconciled
+
+    async def sweep_goal_leases(self, *, now: datetime | None = None, limit: int = 16) -> int:
+        """Tick Goal claim/lease recovery (M3 #806). Returns how many reclaimed.
+
+        The fourth tick beside `process_durable_events`,
+        `recover_abandoned_attempts` and `execute_admitted_runs`, and the
+        same shape: bounded, idempotent, operator-scheduled, never
+        self-starting (ADR-019). A Goal claim whose holder stopped renewing
+        it is released and the Goal is marked due for the bounded safety
+        sweep, so a dead reconciler's fence cannot pin a Goal forever.
+
+        Deliberately policy-free: lease reclamation is pure fence mechanics,
+        so it runs with or without a `goal_reconciliation_policy` — exactly
+        like `recover_abandoned_attempts` needs no retry policy to settle a
+        lapsed Attempt lease.
+        """
+        reclaimed = await self.goal_reconciliation_store.reclaim_expired(
+            now if now is not None else datetime.now(UTC), limit
+        )
+        return len(reclaimed)
+
+    async def reconcile_goals(self, *, now: datetime | None = None, limit: int = 16) -> int:
+        """Tick the Goal reconciliation sweep (M3 #806). Returns passes decided.
+
+        Runs the bounded sweep — lapsed leases, missed wakes, due sleeps —
+        under the #805-owned `goal_reconciliation_policy`. Without a policy
+        this returns 0 and decides nothing: the mechanics never invent what a
+        reconciliation decision means, so activation is composition, not a
+        default. Wakes recorded meanwhile stay durable pending facts, and
+        `sweep_goal_leases` keeps the fences honest regardless.
+        """
+        if self.goal_reconciliation_policy is None:
+            return 0
+        from maistro.goals.reconciliation import GoalReconciler
+
+        reconciler = GoalReconciler(
+            self.goal_reconciliation_store,
+            self.goal_reconciliation_policy,
+            # The same process identity that holds the durable-event cursor
+            # lease: one identity per Container for every cross-process fence.
+            holder=self._durable_events_holder,
+        )
+        outcomes = await reconciler.sweep(
+            now if now is not None else datetime.now(UTC), limit=limit
+        )
+        return sum(1 for outcome in outcomes if outcome.decided)
 
     async def _reclaim_abandoned_attempts(self, *, now: datetime | None, limit: int) -> int:
         """Settle Attempts whose lease lapsed; the recovery half of the tick."""
@@ -2020,7 +2161,29 @@ class Container:
         """Per-use re-scan + content-hash check for an imported skill."""
         from maistro.skills.import_pipeline import verify_skill_payload
 
-        return verify_skill_payload(skill_name, payload, policy_store=self.policy_attachment_store)
+        return verify_skill_payload(
+            skill_name,
+            payload,
+            policy_store=self.policy_attachment_store,
+            registry=self.skill_registry,
+        )
+
+    async def invoke_code(
+        self,
+        ref: str,
+        payload: dict[str, Any],
+        principal: Principal,
+    ) -> CodeResult:
+        """Execute a signed code ref through the governed envelope (ADR-069).
+
+        Resolve (signature recheck) -> Sentinel authorization -> Warden payload
+        scan -> sandbox execution with an honest isolation label. Refused, not
+        run, when no sandbox runtime is configured. Raises the registry's
+        fail-closed errors for an unresolved/tampered ref.
+        """
+        # Read the wired registry so the DI field is consumed (wiring-reads).
+        _ = self.code_registry
+        return await self.code_invoker.invoke(ref, payload, principal)
 
     def persona_scorer(
         self,
@@ -2065,6 +2228,21 @@ class Container:
             id_token_verifier=default_id_token_verifier(),
         )
 
+    def ensure_extension_policy_engine(self) -> ExtensionPolicyEngine:
+        """Return the organization/Workspace extension policy engine (#971).
+
+        The default engine configures nothing: evaluation passes every
+        candidate with an explicit "the layer imposes nothing" trace, so
+        wiring the policy layer changes no behavior until an operator sets a
+        policy — but every install decision gains audit evidence from then
+        on. Hosts with a policy backend replace ``extension_policy_engine``.
+        """
+        from maistro.extensions.policy import ExtensionPolicyEngine
+
+        if self.extension_policy_engine is None:
+            self.extension_policy_engine = ExtensionPolicyEngine()
+        return self.extension_policy_engine
+
     def ensure_extension_install_service(self) -> ExtensionInstallService:
         """Return the governed extension install lifecycle service (#953).
 
@@ -2081,6 +2259,7 @@ class Container:
         """
         from maistro.extensions.service import ExtensionInstallService, UnwiredExtensionLoader
         from maistro.extensions.store import InMemoryExtensionStore
+        from maistro.extensions.tenancy import TenantScopedExtensionState
 
         if self.extension_install_service is None:
             if self.extension_install_store is None:
@@ -2088,6 +2267,8 @@ class Container:
             self.extension_install_service = ExtensionInstallService(
                 self.extension_install_store,
                 loader=UnwiredExtensionLoader(),
+                policy_engine=self.ensure_extension_policy_engine(),
+                runtime_state=self.extension_runtime_state or TenantScopedExtensionState(),
             )
         else:
             self.extension_install_store = self.extension_install_service.store
@@ -2195,6 +2376,34 @@ async def _wire_working_memory_backend(db_pool: Any) -> WorkingMemoryManager:
     if db_pool is not None:
         return await wire_working_memory(db_pool)
     return wire_in_memory_working_memory()
+
+
+async def _provision_configured_workspace(
+    workspace_store: WorkspaceStore, workspace_id: str
+) -> None:
+    """Provision the configured Workspace and its owner at composition, not
+    left to the first operator action (#1152 review): the default server path
+    admits Runs into `workspace_id` from the first request, while the Run read
+    boundary answers on Workspace membership held in this store — a fresh
+    deployment whose Workspace row and owner membership did not exist yet
+    would admit Runs it could then never read, and the HTTP API cannot help
+    because it mints ids rather than accepting this one. `create` also files
+    the Root Project, which the spine primed already and `create_root` treats
+    as create-or-return, and grants its creator the OWNER membership the
+    boundary reads. Idempotent: a restart (or a replica that won a concurrent
+    first start) finds the row and skips the write; a lost create race is
+    re-checked before failing, so only a store that cannot see the row it
+    just refused to duplicate raises."""
+    if await workspace_store.get(workspace_id) is None:
+        try:
+            await workspace_store.create(
+                creator_user_id=DEFAULT_WORKSPACE_OWNER,
+                name=workspace_id,
+                workspace_id=workspace_id,
+            )
+        except Exception:
+            if await workspace_store.get(workspace_id) is None:
+                raise
 
 
 async def create_container(
@@ -2386,11 +2595,20 @@ async def create_container(
         # The same `project_scope_store` object the spine just selected, not a
         # second resolution of the same question: a Workspace whose Root Project is
         # filed in another database is a Workspace whose Runs cannot be filed.
-        workspace_store = await wire_workspace_store(
+        persona_store = await wire_persona_store(
             db_pool,
             project_store=project_scope_store,
             pg_pool=pg_pool,
         )
+        workspace_store = await wire_workspace_store(
+            db_pool,
+            project_store=project_scope_store,
+            persona_store=persona_store,
+            pg_pool=pg_pool,
+        )
+        # The configured Workspace is provisioned at composition, not left to
+        # the first operator action (#1152 review) — why is on the helper.
+        await _provision_configured_workspace(workspace_store, config.workspace_id)
         backlog_history_store = await wire_backlog_history_store(
             history_conn,
             project_store=project_scope_store,
@@ -2418,6 +2636,10 @@ async def create_container(
         schedule_admitter = _wire_schedule_admission(
             run_store, graph_template_store, schedule_store
         )
+        # The backend the spine just chose (#1176 pattern): the Goal control
+        # plane lives beside the Runs it reconciles, so a restart answers from
+        # the same database the Runs do (M3 #806).
+        goal_reconciliation_store = await wire_goal_reconciliation(pg_pool=pg_pool, db_pool=db_pool)
         chat_admitter = wire_chat_admission(
             run_store,
             project_scope_store,
@@ -2482,6 +2704,8 @@ async def create_container(
         # Recovery is an administrative capability; its capability check goes
         # through the same fail-closed table below, so a deployment that arms
         # nothing denies recovery actions too until it configures permissions.
+        # Graph node execution is a synthetic (non-tool) action, so its host
+        # authorization lives in tier records, not in the tool table (#845).
         tier_policy = _configure_strike_recovery_policy()
         logger.info("Sentinel permission table: %s", describe_permission_table(permission_table))
         # SPEC-247 / ADR-068 §D. Without this, Sentinel._check_elevation_grant is a
@@ -2498,6 +2722,12 @@ async def create_container(
         from maistro.capabilities.bootstrap import default_capability_registry
         from maistro.security.sentinel.permission_source import CapabilityPermissionSource
 
+        # Delegated authority is host-owned state, separate from the manifest
+        # roster. The durable store is wired from the same backend as the other
+        # canonical stores, so a host grant survives a restart (#845); a process
+        # with no relational backend falls back to the in-memory seam without
+        # changing the Agent or Graph execution paths.
+        delegation_authority = await _wire_delegation_authority(pg_pool=pg_pool, db_pool=db_pool)
         capabilities = default_capability_registry()
         sentinel = Sentinel(
             warden=warden,
@@ -2509,6 +2739,7 @@ async def create_container(
             audit_log=audit_log,
             tier_policy=tier_policy,
             elevation_store=elevation_store,
+            delegation_authority=delegation_authority,
         )
         strike_recovery = _wire_strike_recovery(
             tracker=strike_tracker,
@@ -2534,7 +2765,7 @@ async def create_container(
             handler_invocation_store,
             consumer_cursor_store,
         ) = await _wire_durable_events(pg_pool, db_pool)
-        handler_caller = HTTPHandlerCaller()
+        handler_caller = HTTPHandlerCaller(handler_invocation_store)
 
         event_bus = EventBus()
 
@@ -2542,7 +2773,9 @@ async def create_container(
             # Bridge: every in-memory bus event is appended to the durable log.
             await durable_event_log.append(**append_from_bus_event(event))
 
-        event_bus.subscribe(_persist_bus_event)
+        # Durable persistence is an authoritative pre-handler adapter: a failed
+        # append aborts emission instead of manufacturing trigger success.
+        event_bus.subscribe(_persist_bus_event, before_handlers=True)
 
         # --- LLM provider registry + cost-aware router (SPEC-070226-cb8d) ----
         from maistro.providers.config import load_provider_registry
@@ -2573,6 +2806,21 @@ async def create_container(
         skill_registry = InMemorySkillRegistry()
         policy_attachment_store = InMemoryPolicyAttachmentStore()
 
+        # --- Signed code registry + governed execution (ADR-069, #59) ---------
+        from maistro.code_registry.execution import CodeInvoker
+        from maistro.code_registry.registry import CodeRegistry
+
+        # No default verifier and no default sandbox: an empty registry refuses
+        # every registration (unsigned) and the invoker refuses every execution
+        # (no runtime) until a deployment wires its own key + microVM backend —
+        # the ADR-069 degraded-but-honest default.
+        code_registry = CodeRegistry()
+        code_invoker = CodeInvoker(
+            code_registry,
+            sentinel=sentinel,
+            warden_scan=warden.scan,
+        )
+
         # The live agent map every wiring closure below reads. Populated later by
         # `create_agents`; the closures capture the dict, not its contents.
         agents: dict[str, Agent] = {}
@@ -2598,6 +2846,15 @@ async def create_container(
 
         # --- Agent-harness DAG node adapters (ADR-062 spawn_harness) -----------
         wired_harness_adapters = _wire_harness_adapters(harness_adapters)
+        # Governed effects hold the backend-selected canonical EventStore chosen
+        # by `_wire_capability_effects` (#1133); the recovery publisher below is
+        # only a delivery wrapper over that exact object (#16) — never a second
+        # sequencing authority. It projects each inserted Event onto `event_bus`
+        # so the durable-log bridge and legacy trigger/notification fan-out keep
+        # firing on recovery facts, as the pre-canonical path delivered them.
+        canonical_event_publisher = CanonicalEventPublisher(
+            capability_effects.event_store, legacy_bus=event_bus
+        )
         # Operator-declared model.chat Bindings (#1079/#1522) load into the same
         # canonical Binding authority the provisioning seam above built, so model
         # egress and PM polling egress share one fail-closed door.
@@ -2672,6 +2929,7 @@ async def create_container(
             project_store=project_scope_store,
             project_scope_store=project_scope_store,
             workspace_store=workspace_store,
+            persona_store=persona_store,
             backlog_history_store=backlog_history_store,
             campaign_store=campaign_store,
             goal_store=goal_store,
@@ -2703,12 +2961,14 @@ async def create_container(
             stores_memory_backed=stores_memory_backed,
             resilience_policies=resilience_policies,
             event_bus=event_bus,
+            canonical_event_publisher=canonical_event_publisher,
             durable_event_log=durable_event_log,
             trigger_store=trigger_store,
             invocation_store=capability_effects.invocation_store,
             handler_invocation_store=handler_invocation_store,
             handler_caller=handler_caller,
             consumer_cursor_store=consumer_cursor_store,
+            goal_reconciliation_store=goal_reconciliation_store,
             provider_registry=provider_registry,
             llm_router=llm_router,
             record_store=record_store,
@@ -2725,6 +2985,8 @@ async def create_container(
             golden_record_store=golden_record_store,
             skill_registry=skill_registry,
             policy_attachment_store=policy_attachment_store,
+            code_registry=code_registry,
+            code_invoker=code_invoker,
             oauth_state_store=oauth_state_store,
             identity_linker=identity_linker,
             a2a_delegator=a2a_delegator,
@@ -2786,6 +3048,12 @@ async def create_container(
         backend = "SQLite"
     else:
         backend = "InMemory"
+    # Governed signed-code seam (ADR-069): retained as the single consumer of
+    # the wired ``code_invoker`` / ``code_registry`` DI attributes. Referenced
+    # here so the seam stays reachable from a process entry point even before
+    # an end-to-end code-execution route is wired (see invoke_code).
+    _ = container.code_registry
+    _ = container.invoke_code
     logger.info("Container wired (%s stores)", backend)
     return container
 
@@ -2913,6 +3181,19 @@ async def _wire_elevation_store(*, pg_pool: Any, db_pool: Any) -> ElevationStore
     from maistro.security.sentinel.elevation_durable import build_elevation_store
 
     return await build_elevation_store(pg_pool=pg_pool, db_pool=db_pool)
+
+
+async def _wire_delegation_authority(*, pg_pool: Any, db_pool: Any) -> DelegationAuthority:
+    """Host-created delegation grants live beside the other durable stores."""
+    from maistro.security.sentinel.delegation import DelegationAuthority
+    from maistro.security.sentinel.delegation_durable import build_delegation_authority
+
+    # The durable authority resolves its decision asynchronously while the
+    # in-memory seam is synchronous; Sentinel and the A2A broker accept either
+    # shape (they narrow with ``hasattr(result, "__await__")``), so the
+    # protocol's synchronous signature is the seam contract both satisfy.
+    authority = await build_delegation_authority(pg_pool=pg_pool, db_pool=db_pool)
+    return cast(DelegationAuthority, authority)
 
 
 def _sqlite_database_path(database_url: str) -> str:
@@ -3056,6 +3337,10 @@ _REQUIRED_PG_TABLES: Final = (
     # `postgresql://` deployment that skipped `alembic upgrade head` should hear
     # about it once, at startup, naming every table it lacks.
     *WORKSPACE_PG_TABLES,
+    # The live Persona is the Workspace's product context. It is listed here so
+    # an unmigrated PostgreSQL deployment fails before serving a Workspace that
+    # cannot reload its Persona after restart.
+    *PERSONA_PG_TABLES,
 )
 
 

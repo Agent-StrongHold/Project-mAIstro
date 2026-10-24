@@ -15,6 +15,7 @@ from maistro.runs.model import AttemptStatus, CancellationCause, RunStatus
 from maistro.runs.reconciliation import AttemptLifecycleReconciler
 from maistro.runs.recovery_events import (
     RECOVERY_EVENT_TYPE,
+    CanonicalEventStoreSink,
     CanonicalRecoveryEventSink,
     RecoveryDispositionEvent,
 )
@@ -221,3 +222,71 @@ async def test_a_failed_attempt_parks_and_says_it_parked() -> None:
     assert recorded.events[0].payload["disposition"] == "parked"
     assert recorded.events[0].payload["attempt_status"] == AttemptStatus.FAILED.value
     assert recorded.events[0].payload["error"] == "node raised"
+
+
+class _RecordingEventStore:
+    """Records EventEnvelope append operations."""
+
+    def __init__(self) -> None:
+        self.events: list[EventEnvelope] = []
+
+    async def append(self, event: EventEnvelope) -> EventEnvelope:
+        self.events.append(event)
+        return event
+
+
+@pytest.mark.ac("ADR-082826-08f0/AC-7")
+async def test_canonical_event_store_sink_appends_to_store() -> None:
+    """CanonicalEventStoreSink forwards recovery events to the wrapped EventStore."""
+    recorded = _RecordingEventStore()
+    sink = CanonicalEventStoreSink(recorded)
+
+    envelope = EventEnvelope(
+        type=RECOVERY_EVENT_TYPE,
+        event_id="test-event-1",
+        workspace_id="ws-1",
+        project_id="project-1",
+        run_id="run-1",
+        node_run_id="node-1",
+        attempt_id="attempt-1",
+        correlation_id="run-1",
+        source="recovery-test",
+        payload={"disposition": "parked", "error": "worker exited"},
+    )
+    result = await sink.emit(envelope)
+
+    assert len(recorded.events) == 1
+    assert recorded.events[0] is envelope
+    assert result is envelope
+    assert recorded.events[0].type == RECOVERY_EVENT_TYPE
+    assert recorded.events[0].run_id == "run-1"
+    assert recorded.events[0].node_run_id == "node-1"
+    assert recorded.events[0].attempt_id == "attempt-1"
+
+
+@pytest.mark.ac("ADR-082826-08f0/AC-7")
+async def test_canonical_event_store_sink_returns_appended_envelope() -> None:
+    """CanonicalEventStoreSink returns the EventEnvelope from the store."""
+    recorded = _RecordingEventStore()
+    sink = CanonicalEventStoreSink(recorded)
+
+    envelope = EventEnvelope(
+        type=RECOVERY_EVENT_TYPE,
+        event_id="test-event-2",
+        workspace_id="ws-2",
+        project_id="project-2",
+        run_id="run-2",
+        node_run_id="node-2",
+        attempt_id="attempt-2",
+        correlation_id="run-2",
+        source="recovery-test",
+        payload={"disposition": "accepted"},
+    )
+    result = await sink.emit(envelope)
+
+    assert result is envelope
+    assert result.type == RECOVERY_EVENT_TYPE
+    assert result.run_id == "run-2"
+    assert result.payload["disposition"] == "accepted"
+    # The same envelope instance is returned.
+    assert result is recorded.events[0]
