@@ -31,6 +31,16 @@ or placeholder-only section.
   prompt-fragment append. UI/API-saved bindings share that path; persona
   templates are not mutated.
 
+- **Workspace chat sessions are durable and Workspace-scoped (#1822).**
+  Hive Conductor keeps conversation metadata in a service-owned
+  `conversation_sessions` index and transcripts in `maistro.sessions`
+  (SessionStore), not the retiring unscoped `stores.chat_sessions` shim.
+  `/v1/chat/sessions` requires `workspace_id`; stream/complete admit with
+  `session_id` so turns append into SessionStore. The Chat UI hydrates the
+  drawer from that API, restores history on switch, aborts in-flight streams
+  on Workspace/session change, and honors Home's `/chat?session=` deep link.
+  Home projections read the same index (legacy unscoped rows stay quarantined).
+
 - **`/health` names the Reactor's persistence authority beside every other
   store family (#1178).** `persistence.families` gains a `reactor` entry:
   `fire-and-forget` when the Reactor writes through the canonical `State`
