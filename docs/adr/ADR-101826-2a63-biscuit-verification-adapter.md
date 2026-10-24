@@ -17,10 +17,9 @@ related:
 supersedes: []
 blocks: []
 blocked-by: []
-contracts:
-  - boundary
-  - behavioral
-tests: []
+contracts: []     # kinds are declared with their marked tests, at implementation
+                  # (ADR-032 cross-check: a declared kind with no marked test is vacuous)
+tests: []         # no implementation test is claimed by this document gate
 layer: Crypto
 owners:
   - '@BlakeMatthews-dev'
@@ -213,10 +212,13 @@ reviewed by the dependency owner; they do not replace the upstream corpus.
 ## Acceptance criteria
 
 Layered contracts per [ADR-032](ADR-032-contracts-as-acceptance-criteria.md). **This
-document records a proposed contract; no implementation test is claimed by it.** The `tests:`
-front-matter field stays empty and `ac-modules` anchors are added only when the owner accepts
-this contract and an implementation task is assigned — anchors may not name modules that do
-not exist.
+document records a proposed contract; no implementation test is claimed by it.** The
+front-matter `contracts:` and `tests:` fields both stay empty until the owner accepts this
+contract and an implementation task is assigned: ADR-032's cross-check counts a declared
+kind with no marked test as a vacuous claim, so this document records its kinds in prose
+only (AC-1 boundary; AC-2–AC-6 behavioral) and the implementation change declares the kinds
+in front matter together with the marked tests that prove each. `ac-modules` anchors are
+added at the same time — anchors may not name modules that do not exist.
 
 - **AC-1 (boundary)**: `biscuit_auth` is imported in exactly one module,
   `maistro.capabilities.biscuit_adapter`; the dependency line pins
