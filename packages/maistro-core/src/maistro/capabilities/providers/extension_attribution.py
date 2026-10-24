@@ -237,6 +237,19 @@ class ExtensionAttribution:
         return attribution_from_payload(payload)
 
 
+def log_fields_suffix(fields: dict[str, str]) -> str:
+    """Render flat log fields as the ``k=v`` tail of a stdlib log message.
+
+    The shipped ``configure_logging`` emits stdlib records as ``%(message)s``
+    (``CorrelatingFormatter`` appends only the execution-context ids), so a
+    value passed only through ``extra=`` never reaches the line a reader
+    sees. Attribution emitters render the identity into the message itself
+    and keep ``extra=`` for handlers that consume record attributes.
+    """
+
+    return " ".join(f"{name}={value}" for name, value in fields.items())
+
+
 def attribution_from_payload(payload: Any) -> ExtensionAttribution:
     """Rebuild an attribution from its payload, refusing anything foreign.
 
@@ -306,4 +319,5 @@ __all__ = [
     "attribution_identity_key",
     "is_sha256_digest",
     "is_strict_version",
+    "log_fields_suffix",
 ]

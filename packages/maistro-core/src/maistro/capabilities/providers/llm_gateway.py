@@ -35,6 +35,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from maistro.capabilities.binding import ResolvedCapabilityProvider
 from maistro.capabilities.invocation import EffectNotApplied
+from maistro.capabilities.providers.extension_attribution import log_fields_suffix
 from maistro.http import shared_client
 from maistro.providers.types import ModelMetadata
 
@@ -397,12 +398,17 @@ async def execute_model_chat(
         # execution-correlation processor joins the canonical Workspace/Run/
         # NodeRun/Attempt/Invocation ids to it. Extension metadata rides in
         # these fields and in the Invocation's Binding snapshot — never as a
-        # correlation id of its own.
+        # correlation id of its own. The fields are rendered into the message,
+        # not only passed via ``extra``: the configured stdlib formatter emits
+        # ``%(message)s`` (plus the correlation ids), so an ``extra`` value
+        # alone is a field nobody sees.
+        fields = _adapter_log_fields(adapter_provider)
         logger.info(
-            "extension adapter model call: adapter=%s model=%s",
+            "extension adapter model call: adapter=%s model=%s %s",
             adapter_provider.spec.adapter_id,
             adapter_provider.model,
-            extra=_adapter_log_fields(adapter_provider),
+            log_fields_suffix(fields),
+            extra=fields,
         )
         if response.status_code >= 400:
             raise _adapter_error(

@@ -69,7 +69,10 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import Protocol
 
-from maistro.extensions.attribution import attribution_from_governed_install
+from maistro.extensions.attribution import (
+    attribution_from_governed_install,
+    log_fields_suffix,
+)
 from maistro.extensions.authority import AuthorityBaseline, compute_authority_delta
 from maistro.extensions.compatibility import CompatibilityPolicy, evaluate_compatibility
 from maistro.extensions.effective_authority import (
@@ -981,10 +984,16 @@ class ExtensionInstallService:
         # linkage, so every effect of this extension is traceable to the
         # identity that produced it — including after upgrade or removal.
         attribution = attribution_from_governed_install(record)
+        # Rendered into the message, not only ``extra``: the configured stdlib
+        # formatter emits ``%(message)s``, so an ``extra`` field alone never
+        # reaches the line — describe() names only part of the identity, and
+        # the digests and install/scope linkage must be on it too.
+        fields = attribution.to_log_fields()
         logger.info(
-            "extension active: %s",
+            "extension active: %s %s",
             attribution.describe(),
-            extra=attribution.to_log_fields(),
+            log_fields_suffix(fields),
+            extra=fields,
         )
         return record
 

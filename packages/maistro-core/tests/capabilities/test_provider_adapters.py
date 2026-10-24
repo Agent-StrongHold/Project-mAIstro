@@ -1883,6 +1883,17 @@ async def test_adapter_call_log_names_the_declared_identity(
     assert record.extension_id == "acme.models"  # type: ignore[attr-defined]
     assert record.extension_version == "2.3.1"  # type: ignore[attr-defined]
     assert record.extension_publisher == "acme"  # type: ignore[attr-defined]
+    # The configured output renders the identity: stdlib logging emits
+    # ``%(message)s`` and ``CorrelatingFormatter`` appends only the
+    # execution-context ids, so the fields must be in the message itself.
+    from maistro.observability.correlation import CorrelatingFormatter
+
+    rendered = CorrelatingFormatter(logging.Formatter("%(message)s")).format(record)
+    assert "extension_id=acme.models" in rendered
+    assert "extension_version=2.3.1" in rendered
+    assert "extension_publisher=acme" in rendered
+    assert "extension_package_sha256=" + "a" * 64 in rendered
+    assert "extension_manifest_sha256=" + "b" * 64 in rendered
     flat = record.getMessage() + str(record.__dict__)
     assert "resolved-acme-secret" not in flat
 
@@ -1917,6 +1928,11 @@ async def test_undeclared_adapter_log_claims_no_identity(
     record = records[-1]
     assert record.adapter_id == "acme.models"  # type: ignore[attr-defined]
     assert not hasattr(record, "extension_version")
+    # and the rendered line claims no undeclared identity either
+    from maistro.observability.correlation import CorrelatingFormatter
+
+    rendered = CorrelatingFormatter(logging.Formatter("%(message)s")).format(record)
+    assert "extension_" not in rendered
 
 
 @pytest.mark.ac("#976/AC-6")

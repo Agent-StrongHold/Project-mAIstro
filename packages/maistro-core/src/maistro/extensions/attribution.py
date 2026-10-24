@@ -52,6 +52,7 @@ from maistro.capabilities.providers.extension_attribution import (
     InvalidAttribution,
     attribution_from_payload,
     attribution_identity_key,
+    log_fields_suffix,
 )
 from maistro.extensions.types import ExtensionInstallRecord, InstallRecord
 
@@ -116,4 +117,5 @@ __all__ = [
     "attribution_from_install_record",
     "attribution_from_payload",
     "attribution_identity_key",
+    "log_fields_suffix",
 ]

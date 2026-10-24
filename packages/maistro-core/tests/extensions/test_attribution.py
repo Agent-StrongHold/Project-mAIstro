@@ -566,6 +566,17 @@ async def test_governed_activation_logs_the_declared_identity(
     assert line.extension_publisher == "acme"  # type: ignore[attr-defined]
     assert line.extension_install_id == installed.install_id  # type: ignore[attr-defined]
     assert line.extension_workspace_id == "ws-1"  # type: ignore[attr-defined]
+    # The configured output renders the identity: the stdlib formatter emits
+    # ``%(message)s`` and ``CorrelatingFormatter`` appends only the execution-
+    # context ids, so the fields absent from describe() (the digests and the
+    # install/scope linkage) must be in the message itself.
+    from maistro.observability.correlation import CorrelatingFormatter
+
+    rendered = CorrelatingFormatter(logging.Formatter("%(message)s")).format(line)
+    assert "extension_manifest_sha256=" + attribution.manifest_sha256 in rendered
+    assert "extension_package_sha256=" + attribution.package_sha256 in rendered
+    assert f"extension_install_id={installed.install_id}" in rendered
+    assert "extension_workspace_id=ws-1" in rendered
     # identity only: no manifest body, no payload bytes in the line
     flat = line.getMessage() + str(line.__dict__)
     assert "extension-payload-v1" not in flat

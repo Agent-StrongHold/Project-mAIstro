@@ -134,6 +134,7 @@ from maistro.extensions.attribution import (
     attribution_from_install_record,
     attribution_from_payload,
     attribution_identity_key,
+    log_fields_suffix,
 )
 from maistro.extensions.authority import (
     AuthorityBaseline,
@@ -890,6 +891,7 @@ __all__ = [
     "instantiate_persona_asset",
     "instantiate_rubric_asset",
     "latest_decision",
+    "log_fields_suffix",
     "manifest_snapshot",
     "materialize_lock",
     "negotiate",
