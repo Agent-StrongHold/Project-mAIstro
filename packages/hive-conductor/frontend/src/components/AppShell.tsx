@@ -31,12 +31,16 @@ import {
   ScrollText,
   Terminal,
   Container,
+  ClipboardCheck,
 } from "lucide-react";
 
 const fullNav = [
   { to: "/chat", icon: MessageCircle, label: "Chat" },
   { to: "/dashboard", icon: LayoutDashboard, label: "Dashboard" },
   { to: "/goals", icon: Flag, label: "Goals" },
+  // #2278: minimal approvals projection (capability inbox + HITL) — same
+  // authority as API/CLI; not a parallel store.
+  { to: "/approvals", icon: ClipboardCheck, label: "Approvals" },
   // #95: Design Studio is the parent creative-production surface, so it is a
   // first-class nav destination at its canonical route. Canvas is a tool it
   // consumes, not a sibling studio; the implementation-era /cli/canvas path is
