@@ -49,6 +49,13 @@ or placeholder-only section.
   version, publisher and the digests of the manifest and the wheel it
   publishes travel with one governed call into the terminal audit event.
 
+- **Workspace Home is the default Mission-Control landing (#1048, partial).**
+  Authenticated `/` now opens `/home`, which reads the existing Home layout and
+  projections APIs, supports pin/unpin against that authority, and shows honest
+  empty/unavailable section states (including Goals until #65). Legacy
+  Dashboard remains reachable until retirement burn-down. Chat projections use
+  the durable Workspace-scoped session index (#1822).
+
 - **Workspace chat sessions are durable and Workspace-scoped (#1822).**
   Hive Conductor keeps conversation metadata in a service-owned
   `conversation_sessions` index and transcripts in `maistro.sessions`
