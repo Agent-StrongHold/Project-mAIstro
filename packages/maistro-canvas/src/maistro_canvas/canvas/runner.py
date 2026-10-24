@@ -95,28 +95,13 @@ class CanvasJobRunner:
             while self._running or in_flight:
                 if not self._running:
                     # Draining after stop(): wait for claimed jobs to finish.
-                    done, _pending = await asyncio.wait(
-                        in_flight, return_when=asyncio.FIRST_COMPLETED
-                    )
-                    in_flight -= done
-                    for task in done:
-                        self._consume_tick(task)
+                    await self._drain_one_round(in_flight)
                     continue
                 # Retire finished units first so their slots free up and no
                 # exception sits unretrieved.
-                finished = {task for task in in_flight if task.done()}
-                in_flight -= finished
-                for task in finished:
-                    self._consume_tick(task)
-                while len(in_flight) < self._concurrency:
-                    in_flight.add(asyncio.create_task(self.tick_once()))
-                reap_counter += self._poll_interval
-                if reap_counter >= self._reap_interval:
-                    reap_counter = 0.0
-                    try:
-                        await self.reap_once()
-                    except Exception:
-                        logger.exception("canvas_runner_reap_error")
+                self._retire_finished(in_flight)
+                self._fill_free_slots(in_flight)
+                reap_counter = await self._reap_periodically(reap_counter)
                 await asyncio.sleep(self._poll_interval)
         except asyncio.CancelledError:
             # Bounded shutdown (bind_canvas_runner_lifecycle) cancelled this
@@ -125,12 +110,47 @@ class CanvasJobRunner:
             # the service was told to stop, and the canonical adapter records
             # the cancellation like it does for the serial design.
             self._running = False
-            for task in in_flight:
-                task.cancel()
-            await asyncio.gather(*in_flight, return_exceptions=True)
+            await self._cancel_in_flight(in_flight)
             raise
         finally:
             self._running = False
+
+    async def _drain_one_round(self, in_flight: set[asyncio.Task[bool]]) -> None:
+        """Wait for one claimed job to finish while draining after stop()."""
+        done, _pending = await asyncio.wait(in_flight, return_when=asyncio.FIRST_COMPLETED)
+        in_flight.difference_update(done)
+        for task in done:
+            self._consume_tick(task)
+
+    def _retire_finished(self, in_flight: set[asyncio.Task[bool]]) -> None:
+        """Consume finished tick outcomes so their slots free up cleanly."""
+        finished = {task for task in in_flight if task.done()}
+        in_flight.difference_update(finished)
+        for task in finished:
+            self._consume_tick(task)
+
+    def _fill_free_slots(self, in_flight: set[asyncio.Task[bool]]) -> None:
+        """Top the in-flight set back up to the configured concurrency."""
+        while len(in_flight) < self._concurrency:
+            in_flight.add(asyncio.create_task(self.tick_once()))
+
+    async def _reap_periodically(self, reap_counter: float) -> float:
+        """Run the lease reaper once per reap interval; return the new counter."""
+        reap_counter += self._poll_interval
+        if reap_counter < self._reap_interval:
+            return reap_counter
+        try:
+            await self.reap_once()
+        except Exception:
+            logger.exception("canvas_runner_reap_error")
+        return 0.0
+
+    @staticmethod
+    async def _cancel_in_flight(in_flight: set[asyncio.Task[bool]]) -> None:
+        """Cancel every in-flight tick and wait for the cancellations to land."""
+        for task in in_flight:
+            task.cancel()
+        await asyncio.gather(*in_flight, return_exceptions=True)
 
     @staticmethod
     def _consume_tick(task: asyncio.Task[bool]) -> None:

@@ -381,30 +381,7 @@ async def run_worker(
         remove_signal_handlers()
         runtime.runner.stop()
         if runner_task is not None:
-            _done, pending = await asyncio.wait({runner_task}, timeout=_SHUTDOWN_GRACE_SECONDS)
-            if pending:
-                logger.warning(
-                    "canvas_worker_shutdown_timeout timeout=%ss; cancelling in-flight tick",
-                    _SHUTDOWN_GRACE_SECONDS,
-                )
-                runner_task.cancel()
-                _done2, pending2 = await asyncio.wait(
-                    {runner_task}, timeout=_SHUTDOWN_GRACE_SECONDS
-                )
-                if pending2:
-                    logger.error(
-                        "canvas_worker_shutdown_abandoned; runner task ignored cancellation"
-                    )
-                    # Never await it again: a coroutine that suppressed
-                    # CancelledError would hang shutdown forever. Attach a
-                    # done callback so a late exception is still retrieved.
-                    runner_task.add_done_callback(_consume_runner_outcome)
-                elif runner_task.exception() is not None:
-                    logger.error("canvas_worker_runner_failed", exc_info=runner_task.exception())
-                    exit_code = 1
-            elif runner_task.exception() is not None:
-                logger.error("canvas_worker_runner_failed", exc_info=runner_task.exception())
-                exit_code = 1
+            exit_code = await _shutdown_runner_task(runner_task)
         if stop_waiter is not None and not stop_waiter.done():
             stop_waiter.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -422,6 +399,37 @@ def _consume_runner_outcome(task: asyncio.Task[None]) -> None:
     exc = task.exception()
     if exc is not None:
         logger.error("canvas_worker_runner_failed", exc_info=exc)
+
+
+async def _shutdown_runner_task(runner_task: asyncio.Task[None]) -> int:
+    """Stop the runner boundedly; return the exit-code contribution.
+
+    Grace-period waits first; a runner that ignores the deadline is cancelled,
+    and one that suppresses even that cancellation is abandoned with a done
+    callback (never awaited again — a coroutine suppressing CancelledError
+    would hang shutdown forever). A runner that died on its own is a crash:
+    the service must exit non-zero so the supervisor restarts it.
+    """
+    _done, pending = await asyncio.wait({runner_task}, timeout=_SHUTDOWN_GRACE_SECONDS)
+    if not pending:
+        if runner_task.exception() is not None:
+            logger.error("canvas_worker_runner_failed", exc_info=runner_task.exception())
+            return 1
+        return 0
+    logger.warning(
+        "canvas_worker_shutdown_timeout timeout=%ss; cancelling in-flight tick",
+        _SHUTDOWN_GRACE_SECONDS,
+    )
+    runner_task.cancel()
+    _done2, pending2 = await asyncio.wait({runner_task}, timeout=_SHUTDOWN_GRACE_SECONDS)
+    if pending2:
+        logger.error("canvas_worker_shutdown_abandoned; runner task ignored cancellation")
+        runner_task.add_done_callback(_consume_runner_outcome)
+        return 0
+    if runner_task.exception() is not None:
+        logger.error("canvas_worker_runner_failed", exc_info=runner_task.exception())
+        return 1
+    return 0
 
 
 def install_signal_handlers(stop: asyncio.Event) -> None:
