@@ -1,17 +1,20 @@
-"""Two users, every chat operation, and nothing crosses between them (#312).
+"""Two users, every chat operation, and nothing crosses between them (#312/#1822).
 
-`test_chat_routes.py` covers the route surface for one user and passes
-unchanged against this fix — a single user's experience of chat is the same as
-it was. What it cannot show is the defect, because a defect about *whose* data
-a handler returns is invisible until there are two people's data in the store.
+`test_chat_routes.py` covers the route surface for one user. What it cannot
+show is the defect, because a defect about *whose* data a handler returns is
+invisible until there are two people's data in the store.
 
 So every test here has both. `alice` is the conftest `testuser`; `bob` is a
 second ordinary account this module creates, because the only other seeded
 account is the admin, and the admin is refused the whole `/v1/chat/` surface.
+
+Workspace scope (#1822): create/list require a Workspace the caller is a
+member of; transcript bodies live in SessionStore, not `stores.chat_sessions`.
 """
 
 from __future__ import annotations
 
+import asyncio
 import pathlib
 import sys
 from datetime import UTC, datetime
@@ -26,6 +29,7 @@ if str(_BACKEND) not in sys.path:
 
 import stores  # noqa: E402
 from main import app  # noqa: E402
+from services import conversation_sessions, workspace_authority  # noqa: E402
 
 BOB_ID = "user-bob-312"
 BOB_USERNAME = "bob-312"
@@ -35,9 +39,14 @@ BOB_PASSWORD = "bob-password-312"
 _MISSING = object()
 
 
+def _run(coro: Any) -> Any:
+    return asyncio.run(coro)
+
+
 def _clear_chat() -> None:
     for key in list(stores.chat_sessions.keys()):
         stores.chat_sessions.pop(key, None)
+    conversation_sessions.reset_for_tests()
 
 
 @pytest.fixture(autouse=True)
@@ -75,80 +84,122 @@ def bob() -> Any:
     stores.users.pop(BOB_ID, None)
 
 
-def _create(client: Any, title: str = "a chat") -> str:
-    response = client.post("/v1/chat/sessions", json={"title": title})
+def _workspace_for(user_id: str, name: str = "chat ws") -> str:
+    view = _run(
+        workspace_authority.create_workspace(
+            creator_user_id=user_id,
+            name=name,
+            persona_template_id="personal",
+            checklist=[],
+            theme_id="default",
+            voice_tone_override=None,
+        )
+    )
+    return view.id
+
+
+def _create(client: Any, title: str = "a chat", *, workspace_id: str) -> str:
+    response = client.post(
+        "/v1/chat/sessions", json={"title": title, "workspace_id": workspace_id}
+    )
     assert response.status_code == 200, response.text
     return response.json()["id"]
 
 
+def _alice_ws() -> str:
+    return _workspace_for("user", "alice ws")
+
+
+def _bob_ws() -> str:
+    return _workspace_for(BOB_ID, "bob ws")
+
+
+def _list(client: Any, workspace_id: str) -> list[dict]:
+    return client.get(f"/v1/chat/sessions?workspace_id={workspace_id}").json()
+
+
 class TestASessionIsBoundToWhoeverCreatedIt:
     def test_the_new_session_carries_the_callers_id(self, authed_client: Any) -> None:
-        body = authed_client.post("/v1/chat/sessions", json={"title": "mine"}).json()
+        ws = _alice_ws()
+        body = authed_client.post(
+            "/v1/chat/sessions", json={"title": "mine", "workspace_id": ws}
+        ).json()
 
         assert body["user_id"]
-        assert stores.chat_sessions[body["id"]].user_id == body["user_id"]
+        assert body["workspace_id"] == ws
+        meta = conversation_sessions.require_owned(body["user_id"], body["id"])
+        assert meta.user_id == body["user_id"]
+        assert meta.workspace_id == ws
 
     def test_a_user_id_in_the_body_is_not_believed(self, authed_client: Any, bob: Any) -> None:
         """The client naming an owner is the whole failure mode this prevents.
         Whether the field is dropped by the schema or overwritten on write, the
         stored owner must be the authenticated one."""
+        ws = _alice_ws()
         sid = authed_client.post(
-            "/v1/chat/sessions", json={"title": "stolen", "user_id": BOB_ID}
+            "/v1/chat/sessions",
+            json={"title": "stolen", "user_id": BOB_ID, "workspace_id": ws},
         ).json()["id"]
 
-        assert stores.chat_sessions[sid].user_id != BOB_ID
+        meta = conversation_sessions.require_owned("user", sid)
+        assert meta.user_id != BOB_ID
 
     def test_the_owner_is_the_session_not_the_first_writer(
         self, authed_client: Any, bob: Any
     ) -> None:
         """Appending does not re-stamp: a message from the owner leaves the
         owner alone, and nobody else can append at all."""
-        sid = _create(authed_client)
-        before = stores.chat_sessions[sid].user_id
+        ws = _alice_ws()
+        sid = _create(authed_client, workspace_id=ws)
+        before = conversation_sessions.require_owned("user", sid).user_id
 
         authed_client.post(f"/v1/chat/sessions/{sid}/messages", json={"content": "hi"})
 
-        assert stores.chat_sessions[sid].user_id == before
+        assert conversation_sessions.require_owned("user", sid).user_id == before
 
 
 class TestOneUsersSessionIsInvisibleToAnother:
     def test_the_list_holds_only_your_own(self, authed_client: Any, bob: Any) -> None:
-        mine = _create(authed_client, "alice's")
-        theirs = _create(bob, "bob's")
+        alice_ws = _alice_ws()
+        bob_ws = _bob_ws()
+        mine = _create(authed_client, "alice's", workspace_id=alice_ws)
+        theirs = _create(bob, "bob's", workspace_id=bob_ws)
 
-        alice_ids = {s["id"] for s in authed_client.get("/v1/chat/sessions").json()}
-        bob_ids = {s["id"] for s in bob.get("/v1/chat/sessions").json()}
+        alice_ids = {s["id"] for s in _list(authed_client, alice_ws)}
+        bob_ids = {s["id"] for s in _list(bob, bob_ws)}
 
         assert mine in alice_ids and mine not in bob_ids
         assert theirs in bob_ids and theirs not in alice_ids
 
     def test_reading_someone_elses_by_exact_id_is_a_404(self, authed_client: Any, bob: Any) -> None:
-        theirs = _create(bob, "bob's")
+        theirs = _create(bob, "bob's", workspace_id=_bob_ws())
 
         assert authed_client.get(f"/v1/chat/sessions/{theirs}").status_code == 404
 
     def test_appending_to_someone_elses_is_a_404_and_writes_nothing(
         self, authed_client: Any, bob: Any
     ) -> None:
-        theirs = _create(bob, "bob's")
+        bob_ws = _bob_ws()
+        theirs = _create(bob, "bob's", workspace_id=bob_ws)
 
         response = authed_client.post(
             f"/v1/chat/sessions/{theirs}/messages", json={"content": "not yours"}
         )
 
         assert response.status_code == 404
-        assert stores.chat_sessions[theirs].messages == []
+        _rec, messages = _run(conversation_sessions.get(BOB_ID, theirs))
+        assert messages == []
 
     def test_deleting_someone_elses_leaves_it_where_it_was(
         self, authed_client: Any, bob: Any
     ) -> None:
         """204 either way — see the enumeration test below — so the assertion
         that matters is on the store, not the status."""
-        theirs = _create(bob, "bob's")
+        theirs = _create(bob, "bob's", workspace_id=_bob_ws())
 
         authed_client.delete(f"/v1/chat/sessions/{theirs}")
 
-        assert theirs in stores.chat_sessions
+        assert conversation_sessions.require_owned(BOB_ID, theirs).session_id == theirs
         assert bob.get(f"/v1/chat/sessions/{theirs}").status_code == 200
 
 
@@ -158,7 +209,7 @@ class TestGuessingIdsTellsYouNothing:
     ) -> None:
         """Status *and* body. A 403 here, or a differently-worded 404, turns id
         guessing into a census of who has how many chats."""
-        theirs = _create(bob, "bob's")
+        theirs = _create(bob, "bob's", workspace_id=_bob_ws())
 
         foreign = authed_client.get(f"/v1/chat/sessions/{theirs}")
         absent = authed_client.get("/v1/chat/sessions/definitely-not-a-session")
@@ -167,7 +218,7 @@ class TestGuessingIdsTellsYouNothing:
         assert foreign.json() == absent.json()
 
     def test_appending_answers_the_same_either_way(self, authed_client: Any, bob: Any) -> None:
-        theirs = _create(bob, "bob's")
+        theirs = _create(bob, "bob's", workspace_id=_bob_ws())
         payload = {"role": "user", "content": "x"}
 
         foreign = authed_client.post(f"/v1/chat/sessions/{theirs}/messages", json=payload)
@@ -177,7 +228,7 @@ class TestGuessingIdsTellsYouNothing:
         assert foreign.json() == absent.json()
 
     def test_deleting_answers_the_same_either_way(self, authed_client: Any, bob: Any) -> None:
-        theirs = _create(bob, "bob's")
+        theirs = _create(bob, "bob's", workspace_id=_bob_ws())
 
         foreign = authed_client.delete(f"/v1/chat/sessions/{theirs}")
         absent = authed_client.delete("/v1/chat/sessions/no-such-thing")
@@ -188,7 +239,11 @@ class TestGuessingIdsTellsYouNothing:
 
 class TestARowWithNoOwnerBelongsToNobody:
     """The disposition for sessions written before ownership was bound: they
-    are quarantined, not adopted by the first caller and not deleted."""
+    are quarantined, not adopted by the first caller and not deleted.
+
+    Unscoped legacy `stores.chat_sessions` rows stay inaccessible via the
+    Workspace-scoped APIs (#1822 AC-6) — they are not auto-migrated.
+    """
 
     @pytest.fixture
     def legacy(self) -> str:
@@ -205,8 +260,10 @@ class TestARowWithNoOwnerBelongsToNobody:
         return "legacy-unowned"
 
     def test_it_is_in_nobodys_list(self, legacy: str, authed_client: Any, bob: Any) -> None:
-        assert legacy not in {s["id"] for s in authed_client.get("/v1/chat/sessions").json()}
-        assert legacy not in {s["id"] for s in bob.get("/v1/chat/sessions").json()}
+        alice_ws = _alice_ws()
+        bob_ws = _bob_ws()
+        assert legacy not in {s["id"] for s in _list(authed_client, alice_ws)}
+        assert legacy not in {s["id"] for s in _list(bob, bob_ws)}
 
     def test_nobody_can_read_it(self, legacy: str, authed_client: Any, bob: Any) -> None:
         assert authed_client.get(f"/v1/chat/sessions/{legacy}").status_code == 404
@@ -220,27 +277,18 @@ class TestARowWithNoOwnerBelongsToNobody:
         assert legacy in stores.chat_sessions
 
 
-class TestTheWelcomeSeedIsPerUser:
-    def test_each_user_gets_their_own(self, authed_client: Any, bob: Any) -> None:
-        """A single deployment-wide seed row would belong to nobody once
-        ownership is enforced, so it would be seeded and then invisible."""
-        alice_titles = [s["title"] for s in authed_client.get("/v1/chat/sessions").json()]
-        bob_titles = [s["title"] for s in bob.get("/v1/chat/sessions").json()]
+class TestWorkspaceListStartsEmpty:
+    def test_a_new_workspace_lists_no_sessions(self, authed_client: Any) -> None:
+        ws = _alice_ws()
+        assert _list(authed_client, ws) == []
 
-        assert "Welcome" in alice_titles
-        assert "Welcome" in bob_titles
+    def test_sessions_do_not_cross_workspaces(self, authed_client: Any) -> None:
+        ws_a = _workspace_for("user", "A")
+        ws_b = _workspace_for("user", "B")
+        sid = _create(authed_client, "only A", workspace_id=ws_a)
 
-    def test_they_are_different_rows(self, authed_client: Any, bob: Any) -> None:
-        alice_ids = {s["id"] for s in authed_client.get("/v1/chat/sessions").json()}
-        bob_ids = {s["id"] for s in bob.get("/v1/chat/sessions").json()}
-
-        assert alice_ids.isdisjoint(bob_ids)
-
-    def test_seeding_is_not_repeated_for_a_user_who_has_one(self, authed_client: Any) -> None:
-        first = authed_client.get("/v1/chat/sessions").json()
-        second = authed_client.get("/v1/chat/sessions").json()
-
-        assert len(first) == len(second) == 1
+        assert sid in {s["id"] for s in _list(authed_client, ws_a)}
+        assert sid not in {s["id"] for s in _list(authed_client, ws_b)}
 
 
 class TestTheAdminIsNotAnExceptionHere:
@@ -248,21 +296,19 @@ class TestTheAdminIsNotAnExceptionHere:
         """Why `Owner` carries no role: the middleware settles the admin
         question before a handler runs, so there is no admin-sees-everything
         branch in the ownership check to get wrong."""
-        assert admin_client.get("/v1/chat/sessions").status_code == 403
+        assert admin_client.get("/v1/chat/sessions?workspace_id=any").status_code == 403
 
 
 class TestTheChecklistCountsChatsYouWrote:
-    def test_a_seed_alone_does_not_complete_the_item(self, authed_client: Any) -> None:
+    def test_an_empty_index_does_not_complete_the_item(self, authed_client: Any) -> None:
         from routes.setup_checklist import _has_chat_session
-
-        authed_client.get("/v1/chat/sessions")  # seeds
 
         assert _has_chat_session("user") is False
 
     def test_a_session_you_created_does(self, authed_client: Any) -> None:
         from routes.setup_checklist import _has_chat_session
 
-        _create(authed_client)
+        _create(authed_client, workspace_id=_alice_ws())
 
         assert _has_chat_session("user") is True
 
@@ -271,7 +317,7 @@ class TestTheChecklistCountsChatsYouWrote:
     ) -> None:
         from routes.setup_checklist import _has_chat_session
 
-        _create(bob)
+        _create(bob, workspace_id=_bob_ws())
 
         assert _has_chat_session("user") is False
 
