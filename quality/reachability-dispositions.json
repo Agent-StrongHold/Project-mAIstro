@@ -15,8 +15,7 @@
         "@flat/hive-conductor/services.onboard_db",
         "@flat/hive-conductor/services.pipeline_orchestrator",
         "@flat/hive-conductor/services.preference_calibration",
-        "@flat/hive-conductor/services.repo_scanner",
-        "@flat/hive-conductor/services.tool_binding"
+        "@flat/hive-conductor/services.repo_scanner"
       ]
     },
     {
