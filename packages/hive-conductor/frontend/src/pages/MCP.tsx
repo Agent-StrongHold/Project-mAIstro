@@ -138,7 +138,11 @@ export default function MCP() {
             <input className="input-field" placeholder="description" value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} />
             <input className="input-field" placeholder="URL (e.g. http://localhost:9999/mcp)" value={form.url} onChange={(e) => setForm((f) => ({ ...f, url: e.target.value }))} />
             <div style={{ display: "flex", gap: 4 }}>
-              <button className="btn btn-accent" style={{ fontSize: 12, padding: "2px 10px" }} onClick={() => void addServer()} disabled={!form.name.trim() || !form.url.trim()}>add</button>
+              {/* Gated by the same permission as the "+ add server" opener
+                  (#373): the opener is disabled without mcp.write, but the
+                  form it opens must not carry a live submit button either —
+                  a control guaranteed to 403 must never look actionable. */}
+              <button className="btn btn-accent" style={{ fontSize: 12, padding: "2px 10px" }} onClick={() => void addServer()} disabled={!authorization.can(mcpPermission) || !form.name.trim() || !form.url.trim()}>add</button>
               <button className="btn" style={{ fontSize: 12, padding: "2px 10px" }} onClick={() => setAdding(false)}>cancel</button>
             </div>
           </div>

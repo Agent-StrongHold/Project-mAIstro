@@ -268,7 +268,10 @@ export default function Credentials() {
                   <button
                     type="button"
                     className="btn"
-                    disabled={saving === row.id}
+                    /* The toggle issues the same credentials.write PUT as
+                       save/delete (#373): without the authority it must sit
+                       disabled beside them, not look actionable and 403. */
+                    disabled={!authorization.can(credentialPermission) || saving === row.id}
                     onClick={() => void setEnabled(row.id, !row.enabled)}
                     style={{ fontSize: 9 }}
                   >
@@ -371,7 +374,11 @@ export default function Credentials() {
                     <button
                       type="button"
                       className="btn btn-accent"
-                      disabled={saving === row.id}
+                      /* POST /v1/credentials/{id}/test is a credentials.write
+                         op (#373): the probe button is gated like every other
+                         write control on the page, or an unauthorized user
+                         gets a primary-looking button that can only 403. */
+                      disabled={!authorization.can(credentialPermission) || saving === row.id}
                       onClick={() => void testGateway(row.id)}
                       style={{ fontSize: 9, marginTop: 4, marginLeft: 6 }}
                     >

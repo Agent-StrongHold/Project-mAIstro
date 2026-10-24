@@ -94,6 +94,27 @@ test.describe("authorization reflects effective capability policy", () => {
     // Admin controls are actionable, not decorative.
     await page.goto("/settings");
     await expect(page.getByRole("button", { name: "edit", exact: true }).first()).toBeEnabled();
+
+    // The same holds for the write controls on Credentials and MCP, including
+    // the ones that only mount after another gated control (#373 repair):
+    // the MCP "add" submit exists solely inside the form the "+ add server"
+    // opener mounts, and the credentials probe button renders for the generic
+    // gateway regardless of configured state. Both must be live for a
+    // principal the policy authorizes — form validity still applies to the
+    // add button until the form is filled. The form is cancelled, not
+    // submitted: this asserts the control, it does not mutate the catalog.
+    await page.goto("/credentials");
+    const gatewayCard = page.locator("article", { hasText: "OpenAI-compatible gateway" });
+    await expect(gatewayCard.getByRole("button", { name: "test & discover models" })).toBeEnabled();
+    await page.goto("/mcp");
+    await page.getByRole("button", { name: "+ add server" }).click();
+    const formAdd = page.getByRole("button", { name: "add", exact: true });
+    await expect(formAdd).toBeDisabled();
+    await page.getByPlaceholder("server name").fill("authorization-probe");
+    await page.getByPlaceholder(/URL \(e\.g\./).fill("http://localhost:9999/mcp");
+    await expect(formAdd).toBeEnabled();
+    await page.getByRole("button", { name: "cancel", exact: true }).click();
+    await expect(formAdd).toHaveCount(0);
   });
 
   test("daily user: unauthorized surfaces filtered, controls disabled, API authoritative", async ({
@@ -141,6 +162,35 @@ test.describe("authorization reflects effective capability policy", () => {
     await expect(page.getByRole("button", { name: "edit", exact: true }).first()).toBeDisabled();
     await page.goto("/credentials");
     await expect(page.getByText("Credential changes is not currently actionable")).toBeVisible();
+    // The notice alone is not the contract (#373 repair): every write control
+    // on the page is disabled too. The probe button renders unconditionally
+    // (the generic gateway always lists config fields), so it is the
+    // deterministic canary; filling the token and config inputs proves the
+    // permission — not an empty draft — is what keeps save/save config off.
+    // The enable/disable toggle renders only for an already-configured
+    // gateway, which this account cannot create (it requires exactly the
+    // authority under test), so the invariant is asserted over whatever the
+    // policy renders: none of it actionable.
+    const pmGatewayCard = page.locator("article", { hasText: "OpenAI-compatible gateway" });
+    await expect(
+      pmGatewayCard.getByRole("button", { name: "test & discover models" }),
+    ).toBeDisabled();
+    // getByLabel would also hit the SecretField's "show" reveal button (its
+    // aria-label embeds the same text), so match the textbox role instead.
+    await pmGatewayCard
+      .getByRole("textbox", { name: "OpenAI-compatible gateway token" })
+      .fill("not-a-real-token");
+    await expect(pmGatewayCard.getByRole("button", { name: "save", exact: true })).toBeDisabled();
+    await pmGatewayCard.locator("#openai_compatible-display_name").fill("Unauthorized probe");
+    await pmGatewayCard.locator("#openai_compatible-base_url").fill("http://127.0.0.1:9/v1");
+    await expect(
+      pmGatewayCard.getByRole("button", { name: "save config", exact: true }),
+    ).toBeDisabled();
+    const toggles = page.getByRole("button", { name: /^(enable|disable)$/ });
+    const toggleCount = await toggles.count();
+    for (let i = 0; i < toggleCount; i += 1) {
+      await expect(toggles.nth(i)).toBeDisabled();
+    }
     await page.goto("/mcp");
     await expect(page.getByText("Integration changes is not currently actionable")).toBeVisible();
     await expect(page.getByRole("button", { name: "+ add server" })).toBeDisabled();
