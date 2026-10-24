@@ -444,7 +444,6 @@ def test_conditional_pin_with_multiple_marker_versions_still_names_an_unknown_br
     assert "in image, not locked" not in out
 
 
-
 def test_member_pin_satisfies_the_contract(gate, tmp_path, monkeypatch, capsys):
     expected = _write_expected(tmp_path, "fastapi==0.142.2\n")
     _install_docker(
