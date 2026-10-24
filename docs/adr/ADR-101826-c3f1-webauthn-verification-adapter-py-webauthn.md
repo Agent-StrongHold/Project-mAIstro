@@ -18,9 +18,12 @@ related:
 supersedes: []
 blocks: []
 blocked-by: []
-contracts:
-  - boundary
-  - behavioral
+# ADR-032's cross-check: `contracts:` kinds must be proven by marker-carrying
+# tests listed in `tests:`. This document is an unaccepted decision candidate
+# that claims no implementation test (see "Acceptance boundary"), so no kinds
+# are declared yet — the accepting revision, together with its implementation
+# task, declares them alongside the tests that prove them.
+contracts: []
 tests: []
 layer: Crypto
 owners:
