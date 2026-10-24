@@ -1013,6 +1013,7 @@ class InMemoryRunStore:
                     if principal is not None
                     else None
                 ),
+                system_active=len(active),
             )
         except RunConcurrencyExceeded:
             self._release_occurrence_claim(run, run.run_id)
