@@ -192,3 +192,78 @@ any change on this branch; the durable remedy (a bounded rescan for the
 transient-DB window, mirroring the pip-audit retry pattern already in
 security.yml) is an owner decision on the workflow, not a lane-level
 edit.
+
+## Repair round 4 (2026-10-24): the round-3 prediction failed — feed
+## mismatch is durable; suppress with a documented, expiring entry
+
+Round 3's residual risk materialized: the merge queue re-ran the job at
+`5cb41974aef4` (run 40079603187, job 120830201262, 08:50–09:03Z) and the
+same step failed with the same contradiction — Trivy reporting
+CVE-2026-111497 with *installed* `1.1.0-2+b7` while the same job's own
+build log shows the runtime-apt stage fetching, unpacking and setting up
+`1.1.0-2+deb13u1` from trixie-security (`Get:54`, `Setting up
+libbrotli1:amd64 (1.1.0-2+deb13u1)`). "Wait for a good DB draw" is
+therefore not a remedy; this round measured the mechanism and repaired
+within the gate's own suppression policy.
+
+New measurements (all local, this commit, no tree changes during):
+
+- The DB feed publishes **several revisions per day**, not one: pulling
+  `mirror.gcr.io/aquasec/trivy-db:2` (the exact source CI's trivy-action
+  downloads, per the job log) at 10:02Z returned `UpdatedAt 2026-10-24
+  07:11:13`, while the local cache held `01:18:19`. The 09:03Z failure
+  thus used a revision that did not exist when round 3 scanned.
+- The rebuilt artifact is clean against **both** of those revisions.
+  `docker buildx build --load --no-cache-filter runtime-apt` (CI's
+  flags) from `5cb41974aef4`: `dpkg -l libbrotli1` → `1.1.0-2+deb13u1`,
+  `/etc/debian_version` → `13.7`, 168 installed packages — exactly the
+  `pkg_num=168` the failing CI scan itself reports. trivy v0.73.0 (CI's
+  exact version) with either DB revision: 0 HIGH/CRITICAL.
+- A **positive control** reproduces CI's row deterministically: an image
+  forced to `apt-get install libbrotli1=1.1.0-2+b7` (trixie main's
+  current binNMU) scans as `CVE-2026-111497 | installed=1.1.0-2+b7 |
+  fixed=1.1.0-2+deb13u1 | status=fixed` — the record is sound, so CI's
+  verdict describes an image state our artifact demonstrably does not
+  have, and the scanner+DB pair flags a real b7 reliably.
+- **Ignore semantics measured** on that fixture: a `.trivyignore.yaml`
+  entry with `path:` suppresses OS-package findings regardless of the
+  path value (trivy does not bind OS findings to the path field), and an
+  id-only entry does the same. This also explains the one green run in
+  this queue: PR #2288 (`581a86c0`, run 40070347802, 06:28Z) carried a
+  documented CVE-2026-111497 entry for its research leg, and its
+  rsi-runner leg reported `debian Total: 0` on the same image recipe.
+
+Repair, matching the ignore file's own policy (named, documented,
+expiring, cross-checked):
+
+- `.trivyignore.yaml` gains one CVE-2026-111497 entry scoped
+  `path: Dockerfile.rsi-runner`, `expired_at: 2026-12-31`, stating the
+  dpkg-verified installed fix, the feed-attribution evidence (runs
+  40066067725 / 40079603187), the honest scope caveat (the entry
+  suppresses this one CVE on every scanned surface while it stands), and
+  the backstop that a genuine regression to a vulnerable libbrotli1
+  still fails the job via the Grype cross-check step (`--only-fixed`,
+  `--fail-on high`, independent Anchore feed).
+- No workflow change, no Dockerfile change, no `--ignore-status`, no
+  gate weakened: `ignore-unfixed` stays on, every other finding still
+  blocks, and the entry goes inert after 2026-12-31 (trivy drops expired
+  entries), re-opening the question then.
+
+Proof matrix executed locally (trivy v0.73.0, DB 07:11 revision):
+
+- rebuilt rsi-runner image + repo ignore file, CI-style invocation
+  (`--severity HIGH,CRITICAL --ignore-unfixed --exit-code 1`, vuln +
+  secret legs): **exit 0** (moto fixture secrets suppressed by the
+  pre-existing entries; without the ignore file the same scan exits 1).
+- b7 fixture + repo ignore file: **exit 0** (the entry fires on exactly
+  the row CI reported); b7 fixture without ignore file: **exit 1** (the
+  gate is alive, not blind).
+- clean `debian:trixie-slim` + repo ignore file: exit 0 (no collateral).
+
+Residual risk: if the feed's attribution flips back and forth, this
+entry holds the trivy leg green while grype — whose Debian data is
+independent — remains the scanner of record for a real libbrotli1
+regression. If upstream later serves a revision that names a *newer*
+fix (deb13u2+), a rebuilt image would carry deb13u1 and re-trigger the
+row; at that point trixie ships a newer point release and the entry is
+due for removal per its own statement.
