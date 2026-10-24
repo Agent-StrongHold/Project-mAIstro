@@ -77,38 +77,31 @@ def parse_expected(text: str) -> tuple[set[str], set[str]]:
     conditional pin matches either way — it gates nothing; its version is
     still checked when it does ship.
 
-    One name can carry SEVERAL pins at different versions, because the lock
-    forks a package across environment markers: the same export lists
-    `beartype==0.22.9 ; python_full_version < '3.15'` and `beartype==0.23.1 ;
-    python_full_version >= '3.15'` (merge-queue run 40085096483). Every
-    variant must survive this parse — keying by bare name kept only the last
-    variant and failed a correct Python 3.13 image that shipped the <'3.15'
-    pin (#330). The image's interpreter resolves exactly one of them, and
-    main() accepts whichever the environment selects. A name with any
-    conditional variant is classified conditional as a whole, as before.
+    A name may appear several times, once per marker branch (beartype 0.22.9
+    for `python_full_version < '3.15'`, 0.23.1 for `>= '3.15'`; merge-queue
+    run 40085096483, issue #330). Every pin is kept — collapsing by name
+    dropped all but the last branch, so the image's installed branch looked
+    like a mismatch against the other branch and failed a correct Python
+    3.13 image under one PYTHONHASHSEED and not the next. The image's
+    interpreter resolves exactly one branch, and main() accepts whichever
+    the environment selects.
     """
-    by_name: dict[str, set[str]] = {}
+    pins: set[str] = set()
     conditional: set[str] = set()
     for line in text.splitlines():
         stripped = line.strip()
         m = _REQ.match(stripped)
         if m:
-            name = canon(m.group(1))
-            by_name.setdefault(name, set()).add(f"{name}=={m.group(2)}")
+            pin = f"{canon(m.group(1))}=={m.group(2)}"
+            pins.add(pin)
             if ";" in stripped:
-                conditional.add(name)
-    if not by_name:
+                conditional.add(pin)
+    if not pins:
         raise SystemExit(
             "error: expected-file contains no `name==version` pins — is it "
             "a `uv export --format requirements-txt` output?"
         )
-    required = {
-        pin for name, name_pins in by_name.items() if name not in conditional for pin in name_pins
-    }
-    conditional_pins = {
-        pin for name, name_pins in by_name.items() if name in conditional for pin in name_pins
-    }
-    return required, conditional_pins
+    return pins - conditional, conditional
 
 
 def _expected_clause(candidates: set[str]) -> str:
@@ -121,7 +114,7 @@ def _expected_clause(candidates: set[str]) -> str:
     ordered = sorted(candidates)
     if len(ordered) == 1:
         return ordered[0]
-    return "one of " + ", ".join(ordered)
+    return "one of " + ", ".join(ordered) + " (" + " or ".join(ordered) + ")"
 
 
 def reconcile_variance(
@@ -165,7 +158,7 @@ def reconcile_variance(
 
 
 def parse_actual(text: str) -> set[str]:
-    pins: set[str] = {}
+    pins: dict[str, str] = {}
     for line in text.splitlines():
         line = line.strip()
         if not line or line.startswith(("+", "*", "-", "WARN", "Using", "Checked")):

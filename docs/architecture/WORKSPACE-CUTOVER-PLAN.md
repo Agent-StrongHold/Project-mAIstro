@@ -317,7 +317,7 @@ Sequencing inside Phase 1 (each row blocks the next):
 |---|---|---|---|
 | 1 | Workspace Home shell + generated client + Principal-aware nav (#1048 first slice) | `Dashboard.tsx`, `AppShell` static nav, `dashboard_layouts` JsonStore | P0.1–P0.3 |
 | 2 | Goal/Run inspection projections (#65, #1036) | `DagRuns.tsx`, `dag_runs` JsonStore, `services/dag_run_store.py` | step 1, #53, P0.8 |
-| 3 | Workspace Agent chat as the front door (#1037, #53) | `Chat.tsx` raw `/v1/chat/stream` path, `chat_sessions` scoping shim | P0.4, P0.7, P0.9, A |
+| 3 | Workspace Agent chat as the front door (#1822 UI; foundation #1037 closed; #53) | `Chat.tsx` raw `/v1/chat/stream` path, `chat_sessions` scoping shim | P0.4, P0.7, P0.9, A |
 | 4 | Backlog / work items (#82, #98–#103) | `WorkItems.tsx`, `Missions.tsx`, `missions`/`mission_steps`/`work_item_drafts` | step 2 |
 | 5 | Attention + Waiting (#1049), settings via canonical service (#1050) | `Settings.tsx` elevation body, `user_provider_config`, `Profile.tsx` | P0.5 |
 | 6 | Memory / user model (#776, #1047) | `Memory.tsx`, `KnowledgeBase.tsx`, `memory_entries`/`memory_namespaces` dicts, `routes/memory.py` global handlers | #364 |
@@ -346,16 +346,16 @@ into another surface; **KEEP** — outside the Workspace (installer, auth).
 | Dashboard.tsx (1,329 lines, 15 raw fetch) | PROJECT | Workspace Home #1048 | M3-E |
 | DagRuns.tsx, DagBuilder.tsx | PROJECT | Goal/Run inspection #65/#1036, Graph editing over canonical Graph | M3 |
 | Missions.tsx, WorkItems.tsx | MERGE | Workspace backlog #82 | M3-C |
-| Chat.tsx | PROJECT | Workspace Agent chat #1037 | M3-D |
+| Chat.tsx | PROJECT | Workspace Agent chat UI #1822 (foundation #1037 closed) | M3-D |
 | Memory.tsx, KnowledgeBase.tsx | PROJECT | user model / Workspace memory #776/#1047 | M3-E |
-| Agents.tsx, Topology.tsx, Skills.tsx, MCP.tsx | PROJECT | one "capabilities" projection over the capability registry (#59 supply chain) | M3 |
+| Agents.tsx, Topology.tsx, Skills.tsx, MCP.tsx | PROJECT | one Capabilities surface (#2273 UI); #59/#848 supply-chain security deps only | M3 |
 | Schedules.tsx | PROJECT | canonical `ScheduleStore` (#92) | M3-B |
 | Settings.tsx, Profile.tsx | PROJECT | settings service #1050 | M3-E |
 | AuditLog.tsx | PROJECT | core audit store (P0.4) | M3 |
 | Credentials.tsx | PROJECT | credential router scope (#58 consumers) | M3 |
 | Quotas.tsx | PROJECT | Invocation usage (#718 says the ledger is empty today) | M3 |
 | MessageBoard.tsx, OptimizationInbox.tsx | MERGE | Attention/Waiting #1049 | M3-E |
-| Evolution.tsx, RSI.tsx | PROJECT | Run inspection over canonical Evolve/RSI Runs (#51/#50) | M4/M5 |
+| Evolution.tsx, RSI.tsx | PROJECT | Evolution hide v1.0 (#2275); Run inspection over canonical Evolve/RSI Runs (#51/#50); restore Evolution v1.2 | M4/M5 |
 | Containers.tsx, CLI.tsx | RETIRE unless #382/#292 give them a contract | — | M4 |
 | DesignStudio.tsx, DeckBuilder.tsx | KEEP (own lane #286/#773) | — | — |
 | Docs.tsx | RETIRE | — | M3 |
@@ -514,7 +514,7 @@ Ratified decisions that tighten this plan for the v1.0 tag. Item IDs: [BACKLOG.m
 ### Critical path
 
 ```text
-Phase 0 (contract)  →  M1 RunStore (#251)  →  Phase 1 steps 1–6  →  M2 security on Workspace Agent (#1037)  →  v1.0 tag
+Phase 0 (contract)  →  M1 RunStore (#251)  →  Phase 1 steps 1–6  →  M2 security on Workspace Agent path (#1822 UI; foundation #1037)  →  v1.0 tag
 ```
 
 M2 security (#66) runs **after** Workspace Agent exists — not on legacy `Chat.tsx`.
@@ -525,7 +525,7 @@ M2 security (#66) runs **after** Workspace Agent exists — not on legacy `Chat.
 |------|-------|-------|
 | 1 Workspace Home | #1048 | Yes |
 | 2 Goal/Run inspection | #65, #1036 | Yes — requires RunStore unification first |
-| 3 Workspace Agent chat | #1037 | Yes |
+| 3 Workspace Agent chat | #1822 (UI); #1037 closed foundation; #804 reconciliation | Yes |
 | 4 Backlog / work items | #82 | Yes |
 | 5 Attention + settings | #1049, #1050 | Yes (Attention); settings partial OK |
 | 6 Memory / user model | #776, #1047 | Yes — workspace + user + global; team deferred v1.1 |
@@ -535,9 +535,9 @@ M2 security (#66) runs **after** Workspace Agent exists — not on legacy `Chat.
 
 | Module | v1.0 |
 |--------|------|
-| `tool_binding.py` dispatch | Yes |
+| `tool_binding.py` dispatch | Yes — owner [#2276](https://github.com/Agent-StrongHold/Project-mAIstro/issues/2276) |
 | `repo_scanner`, `pipeline_orchestrator`, `chatbot_integration` | Yes |
-| repertoire → Capabilities (#59) | Yes |
+| repertoire → Capabilities UI (#2273); security deps #59/#848 | Yes |
 | builders → Backlog (#49) | Yes |
 | delivery gateway (#57) | Yes |
 
@@ -547,10 +547,10 @@ M2 security (#66) runs **after** Workspace Agent exists — not on legacy `Chat.
 |------|-------------------|----------------|
 | Dashboard.tsx | PROJECT, delete M3-E | **DELETE v1.0** (Home replaces) |
 | Chat.tsx | PROJECT, delete M3-D | **DELETE v1.0** |
-| Agents/Skills/MCP/Topology | PROJECT, delete M3 | **DELETE v1.0** (Capabilities) |
+| Agents/Skills/MCP/Topology | PROJECT, delete M3 | **DELETE v1.0** (Capabilities UI #2273; retirement burn-down #2274) |
 | Memory/KnowledgeBase | PROJECT, delete M3-E | **DELETE v1.0** |
 | Missions/WorkItems | MERGE backlog M3-C | **DELETE v1.0** (Backlog) |
-| Evolution.tsx | PROJECT M4/M5 | **DELETE/HIDE v1.0** (restore v1.2) |
+| Evolution.tsx | PROJECT M4/M5 | **DELETE/HIDE v1.0** (#2275; restore v1.2) |
 | CLI.tsx | RETIRE unless contract | **PROJECT v1.0** (#292 implement) |
 | Containers.tsx | RETIRE unless contract | **PROJECT v1.0** (#382 implement) |
 | DesignStudio.tsx | KEEP | **PROJECT v1.0** (blocker scope) |
@@ -570,8 +570,13 @@ Workspace + user + **global** for v1.0. Team axis returns `NotImplemented` or hi
 |------------|--------|
 | Cutover epic | #1046, #804, #53, #65, #82 |
 | Phase 0 | #53, #373, #325, #364, #1082 |
-| Workspace UI | #1048, #1037, #1049, #776 |
+| Workspace UI | #1048, #1822 (chat UI), #1049, #776; foundation #1037 closed |
 | Run unification | #251, #736, #1036 |
 | Canvas | #735, #851, #93 |
-| Capabilities | #59, #848 |
+| Capabilities UI | [#2273](https://github.com/Agent-StrongHold/Project-mAIstro/issues/2273) |
+| Capabilities security deps | #59, #848 |
+| Retirement burn-down | [#2274](https://github.com/Agent-StrongHold/Project-mAIstro/issues/2274) |
+| Evolution hide v1.0 | [#2275](https://github.com/Agent-StrongHold/Project-mAIstro/issues/2275) |
+| Tool-binding dispatch | [#2276](https://github.com/Agent-StrongHold/Project-mAIstro/issues/2276) |
+| Workspace Agent persona swap | [#2277](https://github.com/Agent-StrongHold/Project-mAIstro/issues/2277) |
 | Security on Agent | #66, #1171, #1202 |

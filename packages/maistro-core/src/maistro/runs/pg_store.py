@@ -74,7 +74,7 @@ from maistro.runs.retention_scope import (
     RetentionScope,
     WorkspaceRetentionScope,
 )
-from maistro.runs.sources import SCHEDULED_FOR_KEY, occurrence_key
+from maistro.runs.sources import SCHEDULED_FOR_KEY, TASK_QUEUE_SOURCE, occurrence_key
 from maistro.runs.store import (
     DEFAULT_ARCHIVE_AFTER,
     DEFAULT_PURGE_BATCH,
@@ -1133,6 +1133,26 @@ class PgRunStore:
             )
         return Run.model_validate(payload) if payload is not None else None
 
+    async def find_run_by_task_id(
+        self,
+        task_id: str,
+        *,
+        admission_source: str | None = TASK_QUEUE_SOURCE,
+    ) -> Run | None:
+        # Through `_payload`, like `find_run_by_effect`: an archived Run must
+        # resolve for a receipt read exactly as `get_run` resolves it, not 404
+        # once the retention sweep touches it.
+        payload = await self._payload(
+            """SELECT run_id, payload, archive_key FROM canonical_runs
+               WHERE payload -> 'provenance' ->> 'task_id' = $1
+                 AND ($2::text IS NULL
+                      OR payload -> 'provenance' ->> 'admission_source' = $2)
+               LIMIT 1""",
+            task_id,
+            admission_source,
+        )
+        return Run.model_validate(payload) if payload is not None else None
+
     async def attach_delegation_receipt(
         self, run_id: str, task_id: str, *, target_agent: str | None = None
     ) -> Run:
@@ -1307,7 +1327,13 @@ class PgRunStore:
 
     # ── NodeRun ───────────────────────────────────────────────────
 
-    async def create_node_run(self, run_id: str, *, node_id: str) -> NodeRun:
+    async def create_node_run(
+        self,
+        run_id: str,
+        *,
+        node_id: str,
+        provenance: dict[str, Any] | None = None,
+    ) -> NodeRun:
         async with self._pool.acquire() as conn, conn.transaction():
             # The parent Run is locked before its ordinals are read, so two
             # concurrent creators under one Run cannot both allocate the same
@@ -1326,7 +1352,12 @@ class PgRunStore:
                     run_id,
                 )
             ) + 1
-            node_run = NodeRun(run_id=run_id, node_id=node_id, ordinal=ordinal)
+            node_run = NodeRun(
+                run_id=run_id,
+                node_id=node_id,
+                ordinal=ordinal,
+                provenance=dict(provenance or {}),
+            )
             await conn.execute(
                 """INSERT INTO canonical_node_runs
                    (node_run_id, run_id, node_id, ordinal, status, payload)
@@ -1400,6 +1431,23 @@ class PgRunStore:
                 error=error,
                 accepted_outcome=accepted_outcome,
             )
+            await self._write(conn, "canonical_node_runs", "node_run_id", node_run_id, updated)
+        return updated
+
+    async def record_node_run_provenance(
+        self, node_run_id: str, *, patch: dict[str, Any]
+    ) -> NodeRun:
+        """Merge ``patch`` into a NodeRun's provenance (top-level keys)."""
+        async with self._pool.acquire() as conn, conn.transaction():
+            node_run = NodeRun.model_validate(await self._peek_node_run(conn, node_run_id))
+            # Same lock order as `transition_node_run` right below: parent Run
+            # first, then the NodeRun row, so a wave provenance write cannot
+            # deadlock against a sibling transition or a Run cascade.
+            await self._refuse_under_terminal_run(conn, node_run)
+            node_run = NodeRun.model_validate(
+                await self._locked(conn, "canonical_node_runs", "node_run_id", node_run_id)
+            )
+            updated = node_run.model_copy(update={"provenance": {**node_run.provenance, **patch}})
             await self._write(conn, "canonical_node_runs", "node_run_id", node_run_id, updated)
         return updated
 
