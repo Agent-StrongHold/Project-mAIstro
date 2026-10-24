@@ -250,6 +250,24 @@ def sqlalchemy_asyncpg_url(dsn: str) -> str:
     return dsn
 
 
+def _require_adapter_methods(target: str, adapter: Any, *names: str) -> Any:
+    """Assert a resolved adapter exposes the callables its consumer awaits.
+
+    ``resolve_target`` accepts whatever the target returns, including a
+    factory's ``None``. An adapter missing a required method would otherwise
+    pass composition and fail only inside a claimed job, spending that job's
+    retry budget and terminalizing its canonical Run as failed. Checked here
+    so the mismatch is a :class:`WorkerConfigError` at startup instead.
+    """
+    for name in names:
+        if not callable(getattr(adapter, name, None)):
+            raise WorkerConfigError(
+                f"adapter target {target!r} resolved to {type(adapter).__name__!r}, "
+                f"which lacks a callable {name!r} method required by the Canvas worker"
+            )
+    return adapter
+
+
 async def compose_runtime(settings: CanvasWorkerSettings) -> tuple[CanvasRuntime, Any, Any]:
     """Build the canonical Canvas runtime from resolved settings.
 
@@ -287,11 +305,32 @@ async def compose_runtime(settings: CanvasWorkerSettings) -> tuple[CanvasRuntime
 
     engine = create_async_engine(sqlalchemy_asyncpg_url(settings.pg_dsn))
     store = PgCanvasStore(engine)
+    # Every adapter the executor will call is checked here: a target that
+    # resolves to a factory's ``None`` (or an object missing a method) must be
+    # a startup config error, not a job that terminalizes a canonical Run as
+    # failed after spending its retry budget.
+    image_client = _require_adapter_methods(
+        settings.image_client_target,
+        await resolve_target(settings.image_client_target),
+        "generate",
+        "refine",
+    )
+    model_registry = _require_adapter_methods(
+        settings.model_registry_target,
+        await resolve_target(settings.model_registry_target),
+        "is_registered",
+        "get_default_draft",
+    )
+    warden = _require_adapter_methods(
+        settings.warden_target,
+        await resolve_target(settings.warden_target),
+        "scan_prompt",
+    )
     runtime = build_canvas_runtime(
         store=store,
-        image_client=cast(Any, await resolve_target(settings.image_client_target)),
-        model_registry=cast(Any, await resolve_target(settings.model_registry_target)),
-        warden=cast(Any, await resolve_target(settings.warden_target)),
+        image_client=cast(Any, image_client),
+        model_registry=cast(Any, model_registry),
+        warden=cast(Any, warden),
         run_store=run_store,
         workspace_id=settings.workspace_id,
         project_id=settings.project_id,

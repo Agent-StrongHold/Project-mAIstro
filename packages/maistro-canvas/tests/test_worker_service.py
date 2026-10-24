@@ -33,6 +33,7 @@ from __future__ import annotations
 import asyncio
 import os
 import socket
+from dataclasses import replace
 from types import SimpleNamespace
 from typing import Any
 
@@ -92,6 +93,18 @@ def _image_client_factory() -> _StubImageClient:
 async def _image_client_async_factory() -> _StubImageClient:
     await asyncio.sleep(0)
     return _StubImageClient()
+
+
+class _GenerateOnlyImageClient:
+    """Resolves, but lacks the ``refine`` method the executor awaits."""
+
+    async def generate(self, **_kwargs: object) -> list[Any]:
+        return []
+
+
+def _none_image_client_factory() -> None:
+    """A target that resolves successfully to ``None``."""
+    return None
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -310,6 +323,49 @@ async def test_compose_runtime_builds_the_canonical_seam(
     assert runtime.canonical_execution._project_id == "project-1"
     assert runtime.runner._worker_id == "canvas-worker-test"
     assert runtime.runner._concurrency == 2
+
+
+async def test_compose_runtime_rejects_adapters_the_executor_cannot_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A resolved adapter missing an executor method must fail at startup.
+
+    ``resolve_target`` accepts whatever a factory returns, including ``None``.
+    Composing past that would let the worker claim a job and only then fail
+    the provider call inside it — spending the job's retry budget and
+    terminalizing its canonical Run as failed. The guard turns the mismatch
+    into a :class:`WorkerConfigError` before any claim.
+    """
+    pool = _FakePool()
+
+    async def fake_create_pool(*, dsn: str) -> Any:
+        return pool
+
+    async def fake_wire_execution_spine(_conn: Any, **kwargs: Any) -> tuple[Any, ...]:
+        scope = InMemoryProjectScopeStore()
+        store = InMemoryRunStore(project_store=scope)
+        return (scope, store, object(), object(), object(), object())
+
+    class _FakeEngine:
+        async def dispose(self) -> None:
+            return None
+
+    monkeypatch.setattr("asyncpg.create_pool", fake_create_pool)
+    monkeypatch.setattr("maistro.runs.wiring.wire_execution_spine", fake_wire_execution_spine)
+    monkeypatch.setattr(worker_service, "create_async_engine", lambda _dsn: _FakeEngine())
+
+    with pytest.raises(WorkerConfigError, match="refine"):
+        await compose_runtime(
+            replace(_settings(), image_client_target=f"{__name__}:_GenerateOnlyImageClient")
+        )
+    with pytest.raises(WorkerConfigError, match="generate"):
+        await compose_runtime(
+            replace(_settings(), image_client_target=f"{__name__}:_none_image_client_factory")
+        )
+    with pytest.raises(WorkerConfigError, match="scan_prompt"):
+        await compose_runtime(
+            replace(_settings(), warden_target=f"{__name__}:_GenerateOnlyImageClient")
+        )
 
 
 # ─────────────────────────────────────────────────────────────────────

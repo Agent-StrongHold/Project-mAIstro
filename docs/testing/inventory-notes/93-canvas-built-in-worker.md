@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-canvas/tests: +25
+  packages/maistro-canvas/tests: +27
 ---
 # #93 Built-in Canvas worker service and runner concurrency
 
@@ -104,3 +104,26 @@ Test deltas (this round):
   hydrates to the `JobStatus` member (through `_coerce_job`, the real row
   coercion path), and an unrecognized legacy value passes through as a plain
   string instead of crashing a read path.
+
+## Repair round: reject adapter targets the executor cannot call
+
+`resolve_target` accepts whatever a `module:attr` target returns, including a
+factory's `None`. The worker's executor awaits `image_client.generate` /
+`.refine`, calls `model_registry.is_registered` / `.get_default_draft`, and
+awaits `warden.scan_prompt`; an adapter missing one of those composed cleanly
+and failed only inside a claimed job — spending that job's retry budget and
+terminalizing its canonical Run as failed. `compose_runtime` now validates
+every resolved adapter and raises `WorkerConfigError` at startup instead.
+
+Test deltas (this round):
+
+- Added to `packages/maistro-canvas/tests/test_worker_service.py` (+1 test):
+  `test_compose_runtime_rejects_adapters_the_executor_cannot_call` drives
+  `compose_runtime` with a target that resolves to an object missing `refine`,
+  a factory that resolves to `None`, and a warden target missing
+  `scan_prompt`, asserting each is a startup `WorkerConfigError` rather than a
+  first-claim crash.
+
+(The prior round's hydration test above was collected but not reflected in
+this note's `inventory-delta`; the front matter now records both it and this
+round's guard test, `+25` -> `+27`.)
