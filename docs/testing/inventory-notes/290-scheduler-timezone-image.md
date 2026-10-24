@@ -205,3 +205,48 @@ present, base `python:3.13.16-slim-bookworm` digest-pinned):
   `check-dependency-namespaces`, `check-backlog-consistency`,
   `check-doc-links` ok; CI-exact mypy (`packages/*/src`, 1001 files) no
   issues; `tests/test_check_compose_secrets.py` 81 passed.
+
+## Independent verifier re-run (2026-10-24, head `4a01f8c39`)
+
+A verification driver re-ran the container file with a bare host-side
+`uv run pytest packages/hive-conductor/tests/e2e/test_scheduler_timezone_container.py`
+and recorded a failure. That run never reached the harness: outside the
+api-tests container `HIVE_BASE_URL` defaults to `http://localhost:8101`, and
+the dev stack answering there runs the product default floor (900s), so the
+harness-planned `*/5 * * * *` create was refused 422 — the shipped boundary
+behaving correctly in the wrong environment, not a regression. This file is
+meaningful only inside the compose harness (`docker-compose.test.yml` sets
+`SCHEDULE_MIN_FREQUENCY_GAP_S=300`); do not run it bare from the host.
+
+The full CI-exact battery was then re-executed first-hand against this head,
+compose-built image `sha256:580a111b860f3f4f781051a942c3be2070bf19dd86ef186b586d3720d00840da`
+(`auto-290e2e-hive`; host 8101 was occupied by the developer stack, so this
+local run published no ports via a /tmp override — CI is unaffected):
+
+- Phase 1 (`up --build --abort-on-container-exit --exit-code-from api-tests
+  api-tests`): **14 passed / 14 skipped** in 147.85s — UTC `*/5` create +
+  natural fire, Berlin 04:30 wall time/season offset/exact instant, invalid
+  -zone 422s, `/health` tz + scheduler pins, restart-marked test skipped
+  pre-restart as designed.
+- Phase 2 (CI restart step verbatim: `start hive`, wait healthy,
+  `SCHED_TZ_AFTER_RESTART=1 -k restart_recovery`): **1 passed** in 0.43s.
+- Post-restart live `/health`: `tz_database`
+  `{status: available, source: tzdata-wheel:/app/venv/lib/python3.13/site-packages/tzdata/zoneinfo}`,
+  `scheduler.running=true` with fresh `last_tick_at`; `/health/ready` 200
+  with `scheduler=true`, `tz_database=true`, `warnings=[]`.
+- Negative A (dependency cannot be removed): inside the built image, moving
+  the wheel's `zoneinfo` dir away makes the Dockerfile's build-smoke snippet
+  raise `AssertionError` and `ZoneInfo("UTC")` raise `ZoneInfoNotFoundError`
+  — the pinned wheel is the *only* consulted source (the Debian base's
+  apt-installed `/usr/share/zoneinfo` does not rescue it).
+- Negative B (broken-tz boot): a container booted with
+  `PYTHONTZPATH=/nonexistent/tzdata` reports `/health` `degraded=true`,
+  `tz_database.status=unavailable` with the actionable diagnostic naming the
+  env var and the fix; `/health/ready` carries `checks.tz_database=false`
+  and the same diagnostic in `warnings`.
+- Backend suite: **3957 passed, 26 skipped** (`packages/hive-conductor/backend/tests`).
+  Targeted: `test_scheduler_timezone_health.py` + `test_schedule_frequency_floor.py`
+  + `test_degraded_mode_surface.py` = 31 passed. Gates: `ruff check .` /
+  `ruff format --check .` clean; `check-suite-inventory.py` ok (21 suites,
+  no delta); `check-compose-secrets` ok (9 profiles);
+  `check-compose-resources`, `check-build-context` ok.
