@@ -1,6 +1,7 @@
 ---
 inventory-delta:
   packages/hive-conductor/backend/tests: +8
+  tests/: +3
 ---
 # auto-337-a36c
 
@@ -35,3 +36,18 @@ The `/v1/dag-metrics/retention` endpoint
 (`test_node_metrics.py`, +1): a deployment reports `durable: false`, the
 observation bound and its no-ad-hoc-delete policy instead of leaving the
 route unmeasured.
+
+## Round 3 (CI repair): reconciliation-gate fork handling (`tests/`, +3)
+
+The containers lane failed at 976ad2f on trivy HIGH CVEs in pypdf 6.21.1
+(uv.lock -> 6.21.2), and the fix exposed a second, latent failure in the
+reconciliation gate: the previous repair round's fastmcp 4.1.3 bump forked
+beartype into two marker-conditional lock entries (`0.22.9 ; python < 3.15`,
+`0.23.1 ; python >= 3.15`), and `check-image-lock-reconciliation.py` kept
+only the last line per name — so any image on Python <= 3.14 (all of them)
+would have been red-flagged as a version skew the moment trivy passed.
+`scripts/check-image-lock-reconciliation.py` now records every declared
+entry of a forked name and accepts any of them; the three new tests pin the
+parse (both entries survive), the acceptance (a 0.22.9 image reconciles),
+and the refusal (an undeclared 0.30.0 is still named as a mismatch). No
+existing test changed meaning.

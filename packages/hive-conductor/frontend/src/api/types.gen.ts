@@ -1349,6 +1349,31 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/dag-metrics/retention": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Retention
+         * @description State the observation bound and whether this deployment persists it.
+         *
+         *     Observations are a query projection, not an execution ledger. The oldest
+         *     rows are deleted automatically when the bound is reached; this API has no
+         *     ad-hoc deletion operation because canonical Run retention owns execution
+         *     deletion and replaying a completion can rebuild a projection row.
+         */
+        get: operations["retention_v1_dag_metrics_retention_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/dag-runs": {
         parameters: {
             query?: never;
@@ -10388,6 +10413,28 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    retention_v1_dag_metrics_retention_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
                 };
             };
         };

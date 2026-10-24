@@ -85,6 +85,28 @@ def test_parse_expected_names_are_canonicalized(gate):
     assert required == {"some-pkg==1.0"}
 
 
+def test_parse_expected_keeps_every_entry_of_a_forked_conditional_name(gate):
+    # fastmcp 4.1.3 forks beartype by interpreter: both entries are
+    # marker-conditional and BOTH must survive the parse. The original
+    # name-keyed dict kept only the last line, so the fork that ships on
+    # Python <= 3.14 was silently dropped and the reconcile gate branded a
+    # perfectly locked 3.12 image a version skew.
+    text = "\n".join(
+        [
+            "fastapi==0.142.2",
+            "beartype==0.22.9 ; python_full_version < '3.15'",
+            "beartype==0.23.1 ; python_full_version >= '3.15'",
+            "",
+        ]
+    )
+    required, conditional = gate.parse_expected(text)
+    assert required == {"fastapi==0.142.2"}
+    assert conditional == {
+        "beartype==0.22.9",
+        "beartype==0.23.1",
+    }
+
+
 @pytest.mark.parametrize("text", ["", "# only comments\n", "\n\n"])
 def test_parse_expected_empty_export_is_a_red_exit(gate, text):
     with pytest.raises(SystemExit, match="requirements-txt"):
@@ -245,6 +267,48 @@ def test_conditional_pin_version_is_checked_when_it_ships(gate, tmp_path, monkey
     assert gate.main() == 1
     out = capsys.readouterr().out
     assert "version mismatch     : secretstorage==3.6.0 (image) != secretstorage==3.5.0" in out
+
+
+def test_forked_conditional_pin_accepts_any_declared_version(gate, tmp_path, monkeypatch, capsys):
+    # The fastmcp-4.1.3 beartype fork, verbatim from `uv export`: a Python-3.12
+    # image legitimately ships 0.22.9 even though 0.23.1 is the last-declared
+    # line — either fork satisfies the lock, and neither is a skew.
+    expected = _write_expected(
+        tmp_path,
+        "\n".join(
+            [
+                "fastapi==0.142.2",
+                "beartype==0.22.9 ; python_full_version < '3.15'",
+                "beartype==0.23.1 ; python_full_version >= '3.15'",
+            ]
+        ),
+    )
+    _install_docker(monkeypatch, gate, _Docker(_dump("fastapi==0.142.2", "beartype==0.22.9")))
+    monkeypatch.setattr(sys, "argv", _argv(expected))
+    assert gate.main() == 0
+    out = capsys.readouterr().out
+    assert "ships exactly the locked set" in out
+    assert "2 marker-conditional pin(s)" in out
+
+
+def test_forked_conditional_pin_rejects_an_undeclared_version(gate, tmp_path, monkeypatch, capsys):
+    expected = _write_expected(
+        tmp_path,
+        "\n".join(
+            [
+                "beartype==0.22.9 ; python_full_version < '3.15'",
+                "beartype==0.23.1 ; python_full_version >= '3.15'",
+            ]
+        ),
+    )
+    _install_docker(monkeypatch, gate, _Docker(_dump("beartype==0.30.0")))
+    monkeypatch.setattr(sys, "argv", _argv(expected))
+    assert gate.main() == 1
+    out = capsys.readouterr().out
+    # The mismatch names the shipped pin against every declared fork.
+    assert (
+        "version mismatch     : beartype==0.30.0 (image) != beartype==0.22.9 or beartype==0.23.1"
+    ) in out
 
 
 def test_member_pin_satisfies_the_contract(gate, tmp_path, monkeypatch, capsys):
