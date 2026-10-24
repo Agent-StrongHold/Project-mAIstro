@@ -10,6 +10,7 @@ import { WorkspaceToolBindings } from "./WorkspaceToolBindings";
 import { PersonaWizard } from "./PersonaWizard";
 import {
   MessageCircle,
+  Home,
   LayoutDashboard,
   Target,
   Flag,
@@ -34,6 +35,9 @@ import {
 } from "lucide-react";
 
 const fullNav = [
+  // #1048: Home is the default Workspace landing; Dashboard remains until
+  // retirement (#2274) deletes the legacy page.
+  { to: "/home", icon: Home, label: "Home" },
   { to: "/chat", icon: MessageCircle, label: "Chat" },
   { to: "/dashboard", icon: LayoutDashboard, label: "Dashboard" },
   { to: "/goals", icon: Flag, label: "Goals" },

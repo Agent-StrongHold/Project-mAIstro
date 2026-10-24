@@ -25,6 +25,13 @@ or placeholder-only section.
 
 ### Added
 
+- **Workspace Home is the default Mission-Control landing (#1048, partial).**
+  Authenticated `/` now opens `/home`, which reads the existing Home layout and
+  projections APIs, supports pin/unpin against that authority, and shows honest
+  empty/unavailable section states (including Goals until #65). Legacy
+  Dashboard remains reachable until retirement burn-down. Durable chat /
+  quick-chat projections still wait on #1822.
+
 - **`/health` names the Reactor's persistence authority beside every other
   store family (#1178).** `persistence.families` gains a `reactor` entry:
   `fire-and-forget` when the Reactor writes through the canonical `State`
