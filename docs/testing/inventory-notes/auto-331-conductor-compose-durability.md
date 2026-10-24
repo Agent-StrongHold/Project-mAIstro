@@ -209,3 +209,45 @@ change touches is at or above 90% lines / 80% branch arcs", 4 changed
 files measured, exit 0. Suite inventory re-recorded:
 `check-suite-inventory.py --note auto-331-conductor-compose-durability
 --update` → +9 in this note's `inventory-delta` (13 → 22), exit 0.
+
+## Verification round (independent, head e5cc427d4, develop b1c89cdb merged in)
+
+Re-derived acceptance from the issue and re-executed the evidence at the
+merged head (diff vs merge base b1c89cdb = exactly PR #2301's 22 files; no
+production code changed in this round, inventory deltas unchanged):
+
+- `uv run pytest packages/maistro-core/tests/cli/test_security.py
+  packages/hive-conductor/backend/tests/test_data_dir_guard.py -q` → 45
+  passed; `uv run pytest tests/test_bump_version.py -q` → 18 passed;
+  `scripts/bump_version.py --check` → 42 sites agree.
+- Coverage-gate diff leg re-proven at the NEW merge base: the three
+  producers whose `--source` covers this diff's changed files
+  (maistro-core over test_security.py, hive-conductor/backend over
+  test_data_dir_guard.py, scripts over tests/test_bump_version.py) →
+  `scripts/check-diff-coverage.py coverage.xml --base b1c89cdbc` → ok,
+  every measured file ≥90% lines / ≥80% branch arcs (4 measured, 3 test
+  files exempt). Scoped runs are conservative: fuller CI producers can
+  only add coverage.
+- `uv run mypy` over the seven AGENTS.md packages → clean (939 files).
+- `check-branch-protection.py` (19 develop / 33 main, every PR check
+  required or advisory), `check-compose-secrets.py`,
+  `check-compose-resources.py`, `check-doc-links.py`,
+  `check-required-checks.py` (76 checks match), full
+  `check-suite-inventory.py` (21 suites) → all exit 0.
+- Full compose durability scenario re-executed independently against real
+  Docker 29.1.3 via the same
+  `packages/hive-conductor/scripts/verify-compose-durability.sh` the CI
+  job runs (isolated: `COMPOSE_PROJECT_NAME`, `CONDUCTOR_PORT=8131`;
+  8101 was occupied by an unrelated local listener): **33 checks passed,
+  0 failed, exit 0** — both guard refusals stop the process, create,
+  write, down/up recreate, image-rebuild recreate, reads (session cookie,
+  login, settings, credential) after each recreate, backup of all five
+  durable files, and restore onto a destroyed volume with everything
+  readable again.
+- Closure-keyword audit: no `fixes/closes/resolves #331` in the PR body or
+  any commit message on this branch ("Refs #331" only).
+- Residual (cosmetic, non-blocking): the `restore` docstring says a
+  re-run "completes the swap" after a kill between the two renames, but
+  `_refuse_stale_staging` actually refuses the re-run (exit 1) until the
+  stale staging tree is inspected and removed manually — fail-closed and
+  correct, just over-automated in prose.
