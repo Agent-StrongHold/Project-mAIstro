@@ -38,3 +38,21 @@ marker-conditional pins still gate nothing when absent. Diff coverage of the
 changed script measured with CI's own producer shape (`coverage run --branch
 --source=scripts` over the suite, then `check-diff-coverage.py --base
 4de7e906d9dc`): 100% lines / 100% branches on the changed file.
+
+## Executed discrimination evidence (develop-sync merge round, 2026-10-24)
+
+The fail-before/pass-after claim was executed directly at merge head
+4c6eb7f1c by installing each historical parser into `scripts/` and running the
+six fork node IDs:
+
+- Against the old single-pin-per-name parser (`pins[name] = ...`, last line
+  wins, as at 4de7e906d9dc): **5 of 6 fail**, 1 passes — exactly as claimed;
+  the survivor is `test_resolution_fork_any_locked_version_reconciles`
+  (shipping the last fork's version reconciles under last-line-wins).
+- Against the merge base f956a8142 (by-name *sets*, classification by NAME):
+  **2 of 6 fail** — `test_required_name_with_conditional_alternate_is_missing_only_when_absent`
+  (a name with one unconditional + one marked pin must gate presence; the
+  name-keyed classification empties `required`) and develop's
+  `..._still_names_an_unknown_branch` (its `(a or b)` clause suffix did not
+  exist at the base). Both fixed parsers pass all six.
+- The full file is green against the resolved script: 39 passed.
