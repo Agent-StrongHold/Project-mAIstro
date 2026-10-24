@@ -76,23 +76,28 @@ def parse_expected(text: str) -> tuple[set[str], set[str]]:
     `secretstorage ; sys_platform == 'linux'` is correctly present. A
     conditional pin matches either way — it gates nothing; its version is
     still checked when it does ship.
+
+    A name may appear several times, once per marker branch (beartype 0.22.9
+    for `python_full_version < '3.15'`, 0.23.1 for `>= '3.15'`). Every pin is
+    kept — collapsing by name dropped all but the last branch, so the image's
+    installed branch looked like a mismatch against the other branch.
     """
-    pins: dict[str, str] = {}
+    pins: set[str] = set()
     conditional: set[str] = set()
     for line in text.splitlines():
         stripped = line.strip()
         m = _REQ.match(stripped)
         if m:
-            name = canon(m.group(1))
-            pins[name] = f"{name}=={m.group(2)}"
+            pin = f"{canon(m.group(1))}=={m.group(2)}"
+            pins.add(pin)
             if ";" in stripped:
-                conditional.add(name)
+                conditional.add(pin)
     if not pins:
         raise SystemExit(
             "error: expected-file contains no `name==version` pins — is it "
             "a `uv export --format requirements-txt` output?"
         )
-    return {pins[n] for n in pins} - {pins[n] for n in conditional}, {pins[n] for n in conditional}
+    return pins - conditional, conditional
 
 
 def parse_actual(text: str) -> set[str]:
@@ -174,20 +179,34 @@ def main() -> int:
     # missing+extra pair — and the original string-keyed `skewed` comprehension
     # (`for pin in actual & everything_expected ... .pop() != pin`) compared
     # each pin against itself and could never fire at all.
+    #
+    # A single name can resolve to several marker-conditional versions in one
+    # lock (e.g. beartype 0.22.9 for `python_full_version < '3.15'` and 0.23.1
+    # for `>= '3.15'`). The image ships exactly one of them, so the acceptable
+    # set for a name is every version the lock names: the image matches when it
+    # carries ANY of them. Collapsing the name to one pin (the previous
+    # `expected_by_name`) compared the installed branch against the *other*
+    # branch and red-lit a correct image — and which branch it picked was a set
+    # iteration order, so the gate was also hash-seed flaky.
     everything_expected = required | conditional
     actual_by_name = {p.partition("==")[0]: p for p in actual}
-    expected_by_name = {p.partition("==")[0]: p for p in everything_expected}
+    expected_versions: dict[str, set[str]] = {}
+    for pin in everything_expected:
+        name, _, version = pin.partition("==")
+        expected_versions.setdefault(name, set()).add(version)
     skewed_names = {
         name
-        for name in actual_by_name.keys() & expected_by_name.keys()
-        if actual_by_name[name] != expected_by_name[name]
+        for name, pin in actual_by_name.items()
+        if name in expected_versions and pin.partition("==")[2] not in expected_versions[name]
     }
     missing = sorted(p for p in required - actual if p.partition("==")[0] not in skewed_names)
     extra = sorted(
         p for p in actual - everything_expected if p.partition("==")[0] not in skewed_names
     )
     skewed = sorted(
-        f"{actual_by_name[name]} (image) != {expected_by_name[name]}" for name in skewed_names
+        f"{actual_by_name[name]} (image) != "
+        + " or ".join(sorted(f"{name}=={v}" for v in expected_versions[name]))
+        for name in skewed_names
     )
     if missing or extra or skewed:
         print(f"image {args.image} does NOT reconcile to the lock:")
