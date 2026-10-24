@@ -341,19 +341,19 @@ def test_conditional_pin_version_is_checked_when_it_ships(gate, tmp_path, monkey
     assert "version mismatch     : secretstorage==3.6.0 (image) != secretstorage==3.5.0" in out
 
 
-def test_forked_conditional_pin_accepts_any_declared_version(gate, tmp_path, monkeypatch, capsys):
-    # The fastmcp-4.1.3 beartype fork, verbatim from `uv export`: a Python-3.12
-    # image legitimately ships 0.22.9 even though 0.23.1 is the last-declared
-    # line — either fork satisfies the lock, and neither is a skew.
+def test_conditional_pin_with_multiple_marker_versions_accepts_either_branch(
+    gate, tmp_path, monkeypatch, capsys
+):
+    """A lock can resolve one name to several marker-conditional versions
+    (beartype 0.22.9 for python<3.15 and 0.23.1 for python>=3.15). The image
+    ships one branch, so matching ANY branch must reconcile. Regression for
+    #5: collapsing the name to one pin compared the installed branch against
+    the other branch and red-lit a correct image."""
     expected = _write_expected(
         tmp_path,
-        "\n".join(
-            [
-                "fastapi==0.142.2",
-                "beartype==0.22.9 ; python_full_version < '3.15'",
-                "beartype==0.23.1 ; python_full_version >= '3.15'",
-            ]
-        ),
+        "fastapi==0.142.2\n"
+        "beartype==0.22.9 ; python_full_version < '3.15'\n"
+        "beartype==0.23.1 ; python_full_version >= '3.15'\n",
     )
     _install_docker(monkeypatch, gate, _Docker(_dump("fastapi==0.142.2", "beartype==0.22.9")))
     monkeypatch.setattr(sys, "argv", _argv(expected))
@@ -363,26 +363,25 @@ def test_forked_conditional_pin_accepts_any_declared_version(gate, tmp_path, mon
     assert "2 marker-conditional pin(s)" in out
 
 
-def test_forked_conditional_pin_rejects_an_undeclared_version(gate, tmp_path, monkeypatch, capsys):
+def test_conditional_pin_with_multiple_marker_versions_still_names_an_unknown_branch(
+    gate, tmp_path, monkeypatch, capsys
+):
+    """The leniency is for the lock's OWN branches. A third, unnamed version
+    is still a real divergence and must be reported as a version mismatch."""
     expected = _write_expected(
         tmp_path,
-        "\n".join(
-            [
-                "beartype==0.22.9 ; python_full_version < '3.15'",
-                "beartype==0.23.1 ; python_full_version >= '3.15'",
-            ]
-        ),
+        "fastapi==0.142.2\n"
+        "beartype==0.22.9 ; python_full_version < '3.15'\n"
+        "beartype==0.23.1 ; python_full_version >= '3.15'\n",
     )
-    _install_docker(monkeypatch, gate, _Docker(_dump("beartype==0.30.0")))
+    _install_docker(monkeypatch, gate, _Docker(_dump("fastapi==0.142.2", "beartype==0.24.0")))
     monkeypatch.setattr(sys, "argv", _argv(expected))
     assert gate.main() == 1
     out = capsys.readouterr().out
-    # The mismatch names the shipped pin against every declared fork
-    # (develop's `_expected_clause` renders the multi-candidate form).
-    assert (
-        "version mismatch     : beartype==0.30.0 (image)"
-        " != one of beartype==0.22.9, beartype==0.23.1" in out
-    )
+    assert "version mismatch     : beartype==0.24.0 (image) != " in out
+    assert "beartype==0.22.9 or beartype==0.23.1" in out
+    assert "locked, not in image" not in out
+    assert "in image, not locked" not in out
 
 
 def test_member_pin_satisfies_the_contract(gate, tmp_path, monkeypatch, capsys):

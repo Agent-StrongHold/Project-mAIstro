@@ -1,7 +1,7 @@
 ---
 inventory-delta:
   packages/hive-conductor/backend/tests: +8
-  tests/: +3
+  tests/: +1
 ---
 # auto-337-a36c
 
@@ -51,6 +51,35 @@ entry of a forked name and accepts any of them; the three new tests pin the
 parse (both entries survive), the acceptance (a 0.22.9 image reconciles),
 and the refusal (an undeclared 0.30.0 is still named as a mismatch). No
 existing test changed meaning.
+
+## Develop sync (base `ffc27cc43`): two of the three fork tests superseded — delta now `tests/: +1`
+
+The next develop sync brought `issue-5-reconcile-multi-conditional-pins.md`
+(`tests/: +2`): develop landed an independent fix of the same forked-pin
+defect from the #5 CI-repair round, with its own accept/reject pair. The
+sync merge on `tests/test_check_image_lock_reconciliation.py` (the only
+conflicted file) was resolved per the `1838-image-lock-reconciliation`
+precedent — develop's canonical block verbatim, this branch's superseded
+tests removed rather than doubled:
+
+- `test_parse_expected_keeps_every_entry_of_a_forked_conditional_name`
+  **stays** (counted by this note): its fixture keeps a required pin
+  (`fastapi==0.142.2`) beside the forked name, which develop's all-split
+  `SPLIT_EXPORT` fixture does not cover.
+- `test_forked_conditional_pin_accepts_any_declared_version` — superseded
+  byte-for-byte by develop's
+  `test_conditional_pin_with_multiple_marker_versions_accepts_either_branch`
+  (same fixture, same assertions). Still reviewable at `54f579117`.
+- `test_forked_conditional_pin_rejects_an_undeclared_version` — superseded
+  by develop's
+  `test_conditional_pin_with_multiple_marker_versions_still_names_an_unknown_branch`,
+  which additionally pins the full `one of a, b (a or b)` mismatch clause
+  and the absence of a confusing missing/extra pair. Still reviewable at
+  `54f579117`.
+
+35 gate tests pass at the merged head; this note's `tests/` delta drops
+from +3 to +1 (the surviving parse test). The hive-backend `+8` is
+untouched by the sync.
 
 ## Develop sync (base `f956a8142`): twin split-resolution fixes reconciled
 
