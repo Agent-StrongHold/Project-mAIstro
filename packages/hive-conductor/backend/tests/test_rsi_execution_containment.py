@@ -44,7 +44,8 @@ class TestTheExploit:
         )
 
         assert response.status_code == 400
-        assert "not beneath an authorized root" in response.json()["detail"]
+        # Kind-only public detail (CodeQL py/stack-trace-exposure).
+        assert response.json()["detail"] == "RsiPolicyError: run refused; see server logs"
 
     def test_a_shell_command_is_refused(self, admin_client, tmp_path: Path) -> None:
         """The payload writes a canary. The assertion is that it does not
@@ -97,7 +98,8 @@ class TestTheExploit:
         )
 
         assert response.status_code == 400
-        assert "unknown test profile" in response.json()["detail"]
+        # Kind-only public detail (CodeQL py/stack-trace-exposure).
+        assert response.json()["detail"] == "RsiPolicyError: run refused; see server logs"
 
 
 class TestPathContainment:
