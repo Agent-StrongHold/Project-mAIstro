@@ -128,6 +128,13 @@ def canon(name: str) -> str:
     return re.sub(r"[-_.]+", "-", name).lower()
 
 
+def _expected_clause(candidates: set[str]) -> str:
+    ordered = sorted(candidates)
+    if len(ordered) == 1:
+        return ordered[0]
+    return "one of " + ", ".join(ordered) + " (" + " or ".join(ordered) + ")"
+
+
 def parse_expected(text: str) -> tuple[set[str], set[str]]:
     """Returns (unconditional pins, marker-conditional pins).
 
@@ -233,7 +240,7 @@ def _skewed(
     actual_by_name: dict[str, str],
     expected_by_name: dict[str, str],
     applicable: dict[str, str],
-    variant_names: set[str],
+    variants: dict[str, list[tuple[str, str | None]]],
 ) -> dict[str, str]:
     """Map each name whose installed pin is not the expected one to the pin
     it should have carried.
@@ -244,15 +251,20 @@ def _skewed(
     which reported the correct image as skewed whenever the set happened to
     surface the other row. When the applicable pin cannot be determined (no
     dumped interpreter version, markers this gate cannot evaluate), the name
-    falls back to the lenient treatment and gates nothing: excluding it is an
-    explicit fallback, not a coin-flip between the two rows — which is exactly
-    what comparing against the set-arbitrary `expected_by_name` entry would be.
+    falls back to the lenient treatment — but only for the lock's OWN
+    branches: a shipped version the split never named is still a real
+    divergence and is reported against the whole named set. The fallback
+    excludes rather than guesses; it never whitelists a version the lock
+    does not offer at all.
     """
 
     def _expected_pin(name: str) -> str | None:
         if name in applicable:
             return applicable[name]
-        if name in variant_names:
+        if name in variants:
+            branches = {pin for pin, _ in variants[name]}
+            if actual_by_name[name] not in branches:
+                return _expected_clause(branches)
             return None
         return expected_by_name[name]
 
@@ -332,11 +344,12 @@ def main() -> int:
     everything_expected = required | conditional
     actual_by_name = {p.partition("==")[0]: p for p in actual}
     expected_by_name = {p.partition("==")[0]: p for p in everything_expected}
+    variants = parse_marker_variants(expected_text)
     skewed = _skewed(
         actual_by_name,
         expected_by_name,
         _applicable_variant_pins(expected_text, image_python_version(proc.stdout)),
-        set(parse_marker_variants(expected_text)),
+        variants,
     )
     skewed_names = set(skewed)
     missing = sorted(p for p in required - actual if p.partition("==")[0] not in skewed_names)

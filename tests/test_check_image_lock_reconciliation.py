@@ -554,8 +554,10 @@ def test_marker_split_wrong_pin_for_the_image_python_is_a_skew(gate, tmp_path, m
 
 def test_marker_split_with_unevaluatable_marker_stays_lenient(gate, tmp_path, monkeypatch, capsys):
     """No dumped interpreter version (an older-format dump) means the
-    applicable pin cannot be chosen: the name falls back to gating nothing —
-    the conditional treatment — rather than guessing a row and crying skew."""
+    applicable pin cannot be chosen: a shipped LOCK BRANCH falls back to the
+    conditional treatment rather than a guessed row crying skew. The leniency
+    stops at the lock's own branches — a version the split never named is a
+    real divergence (the unknown-branch test above)."""
     expected = _write_expected(
         tmp_path,
         "beartype==0.22.9 ; python_full_version < '3.15'\n"
