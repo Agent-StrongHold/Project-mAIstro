@@ -25,6 +25,14 @@ or placeholder-only section.
 
 ### Added
 
+- **Workspace Agent persona swap on one API/UI/Agent path (#2277).**
+  `GET`/`PUT /v1/workspaces/{id}/agent` read and swap the stable Workspace
+  Agent's `persona_template_id` without changing its id or `created_at`.
+  Owners only for writes; the chat tool `set_workspace_agent_persona` calls
+  the same `services.workspace_agent.set_workspace_agent_persona` door. The
+  toolbar "Agent persona" control is distinct from WorkspaceTabs /
+  PersonaWizard template chrome.
+
 - **`/health` names the Reactor's persistence authority beside every other
   store family (#1178).** `persistence.families` gains a `reactor` entry:
   `fire-and-forget` when the Reactor writes through the canonical `State`

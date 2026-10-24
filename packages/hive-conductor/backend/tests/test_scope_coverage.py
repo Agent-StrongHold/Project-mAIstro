@@ -27,6 +27,7 @@ CASES = [
     ("patch", "/v1/workspaces/ws1", "workspaces.write"),
     ("delete", "/v1/workspaces/ws1", "workspaces.write"),
     ("put", "/v1/workspaces/ws1/tool-bindings", "workspaces.write"),
+    ("put", "/v1/workspaces/ws1/agent", "workspaces.write"),
     ("put", "/v1/schedules/s1", "schedules.write"),
     ("delete", "/v1/schedules/s1", "schedules.write"),
     ("put", "/v1/credentials/jira", "credentials.write"),
