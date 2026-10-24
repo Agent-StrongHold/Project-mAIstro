@@ -442,11 +442,14 @@ async def run_dag(
         result = exc.result
         await _record_run_projection(dag_id=dag_id, user_id=actor, result=result)
         run_id = result.get("run_id")
+        # Exception text mirrors result["error"] and can carry node/provider
+        # detail; the browser gets the kind only (CodeQL py/stack-trace-exposure).
+        logger.warning("Canonical DAG execution failed: %s", exc, exc_info=exc)
         return {
             "status": result.get("status", "failed"),
             "execution_id": run_id,
             "run_id": run_id,
-            "error": str(exc),
+            "error": _public_failure(exc),
             "result": result,
         }
     except Exception as exc:

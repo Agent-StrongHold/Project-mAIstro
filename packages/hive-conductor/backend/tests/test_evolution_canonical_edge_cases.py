@@ -218,7 +218,12 @@ def test_stub_cycle_route_returns_explicit_availability_error(
     assert caught.value.status_code == 503
     assert caught.value.detail["code"] == "evolution_unavailable"
     assert caught.value.detail["availability"] == "degraded"
-    assert "no Container" in caught.value.detail["message"]
+    # CanonicalExecutionUnavailable text stays in the server log; /cycle
+    # returns the public kind only (CodeQL py/stack-trace-exposure).
+    assert caught.value.detail["message"] == (
+        "CanonicalExecutionUnavailable: evolution failed; see server logs"
+    )
+    assert "no Container" not in caught.value.detail["message"]
 
 
 def test_unavailable_cycle_is_distinguishable_from_execution_failure(
@@ -226,6 +231,7 @@ def test_unavailable_cycle_is_distinguishable_from_execution_failure(
 ) -> None:
     class _Unavailable:
         async def _run_one_cycle(self, **_: Any) -> str:
+            # Intentional operator-facing DomainError message — already safe.
             raise EvolutionUnavailableError(
                 "canonical engine Container is unavailable", availability="degraded"
             )
