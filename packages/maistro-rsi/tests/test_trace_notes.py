@@ -84,6 +84,33 @@ def test_inventory_evidence_round_trips_and_stays_optional() -> None:
     assert legacy.inventory is None
 
 
+def test_gate_evidence_round_trip_and_stays_optional() -> None:
+    # #820 (from #304): the note records, per gate, its state, reason, and
+    # provenance — the evidence summaries must render from. A note written
+    # before the field existed parses with gate_evidence None, which readers
+    # must treat as "not recorded", never "all passed".
+    note = _note(7, 0.6)
+    note.gate_evidence = {
+        "tests_pass": {
+            "state": "passed",
+            "passed": True,
+            "reason": "exit 0: ok",
+            "provenance": {"command": ["pytest"]},
+        },
+        "no_bandit_high": {
+            "state": "not_run",
+            "passed": False,
+            "reason": "bandit did not run (missing) — required gate not_run",
+            "provenance": {"cause": "missing", "tool_version": None},
+        },
+    }
+    back = TraceNote.from_json(note.to_json())
+    assert back.gate_evidence == note.gate_evidence
+
+    legacy = TraceNote.from_json(_note(1, 0.1).to_json())
+    assert legacy.gate_evidence is None
+
+
 def test_from_json_tolerates_unknown_fields() -> None:
     # A note written by a newer schema must not crash an older reader.
     blob = '{"cycle": 1, "target": "x", "accepted": true, "kind": "doc", "model": "m",'

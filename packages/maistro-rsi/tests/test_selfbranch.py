@@ -82,6 +82,7 @@ class FakeGitOps:
     async def github_create_pr(self, repo, branch, title, body, base="main"):
         self.calls.append("create_pr")
         self.pr_created = True
+        self.pr_body = body
         return {"url": "https://github.com/org/repo/pull/1"}
 
 
@@ -327,6 +328,78 @@ class TestRunSelfBranchAttempt:
         )
 
         assert result.quarantine is verdict
+
+
+class TestDefaultPrBodyRendersRecordedOutcomes:
+    """#820 (from #304): the default PR body is rendered from the attempt's
+    recorded outcomes — the test exit code and the quarantine verdict — never
+    a static success sentence. Only gates that actually ran are named, and a
+    gate with no recorded verdict is stated as NOT RUN."""
+
+    @staticmethod
+    def _quarantine(*, cleared: bool = True, reason: str | None = None) -> QuarantineVerdict:
+        return QuarantineVerdict(
+            cleared=cleared,
+            requires_adversarial_review=not cleared,
+            flags=() if cleared else ("flagged",),
+            reason=reason,
+        )
+
+    def test_body_lists_gates_that_ran_with_their_recorded_results(self):
+        attempt = new_attempt("https://github.com/org/repo", "pytest -q")
+        body = selfbranch._default_pr_body(
+            attempt, "3 passed", 0, "a" * 40, quarantine=self._quarantine()
+        )
+        # The old static claim is gone — the body states recorded results.
+        assert "Tests passed before" not in body
+        assert "full fitness scorecard" not in body
+        assert "`pytest -q` exited 0" in body
+        assert "- quarantine: cleared" in body
+        assert "3 passed" in body  # the recorded output tail
+
+    def test_body_renders_failed_tests_and_denied_quarantine_truthfully(self):
+        attempt = new_attempt("https://github.com/org/repo", "pytest -q")
+        body = selfbranch._default_pr_body(
+            attempt,
+            "2 failed",
+            1,
+            None,
+            quarantine=self._quarantine(cleared=False, reason="pending review"),
+        )
+        assert "`pytest -q` exited 1" in body
+        assert "- quarantine: DENIED — pending review" in body
+
+    def test_body_states_a_gate_that_never_ran_as_not_run(self):
+        # #820 AC-2's rendering half: a missing/unrun gate is named as NOT
+        # RUN in the generated text — never omitted, never success-shaped.
+        attempt = new_attempt("https://github.com/org/repo", "pytest -q")
+        body = selfbranch._default_pr_body(attempt, "3 passed", 0, None, quarantine=None)
+        assert "- quarantine: NOT RUN — no verdict was recorded" in body
+
+    @pytest.mark.asyncio
+    async def test_opened_pr_body_is_the_rendered_record(self, patch_git_ops):
+        """The body handed to github_create_pr is generated from the attempt's
+        recorded outcomes, not a template."""
+        fake = patch_git_ops
+        attempt = new_attempt("https://github.com/org/repo.git", "pytest -q")
+
+        async def cleared_check(diff, touched_paths):
+            return QuarantineVerdict(cleared=True, requires_adversarial_review=False, flags=())
+
+        await run_self_branch_attempt(
+            FakeSandbox(exec_result=(0, "5 passed")),
+            "/ws",
+            attempt,
+            _noop_patch,
+            open_pr=True,
+            quarantine_check=cleared_check,
+        )
+        assert "create_pr" in fake.calls
+        body = fake.pr_body
+        assert "Tests passed before" not in body
+        assert "`pytest -q` exited 0" in body
+        assert "- quarantine: cleared" in body
+        assert "5 passed" in body
 
 
 class TestPathsTouchedByDiff:
