@@ -780,3 +780,122 @@ class TestTheReport:
         )
         assert proc.returncode == 0, proc.stdout + proc.stderr
         assert "ok: all" in proc.stdout
+
+
+class TestAttemptOrdering:
+    @pytest.mark.parametrize("reverse", [False, True])
+    @pytest.mark.parametrize(
+        ("name", "leg", "old_id", "new_id"),
+        [
+            ("durable-events", "durable_events", 114113275971, 114113361906),
+            ("object storage (MinIO)", "object_storage", 114113275772, 114113362044),
+            ("strike-ladder", "strike_ladder", 114113275571, 114113362255),
+        ],
+    )
+    def test_newer_scoped_skip_replaces_superseded_cancellation(
+        self, check: ModuleType, reverse: bool, name: str, leg: str, old_id: int, new_id: int
+    ) -> None:
+        """#2110 job IDs/conclusions, reconstructed in both possible API orders."""
+        runs = [
+            {**_run(name, conclusion="cancelled"), "id": old_id},
+            {**_run(name, conclusion="skipped"), "id": new_id},
+        ]
+        if reverse:
+            runs.reverse()
+        verdict = check.evaluate([name], runs, require_complete=True, scope={leg: False})
+        assert verdict.ok and verdict.ran == []
+
+    @pytest.mark.parametrize("reverse", [False, True])
+    @pytest.mark.parametrize("conclusion", ["cancelled", "action_required", "stale"])
+    def test_newer_non_execution_is_not_excused_by_old_scoped_skip(
+        self, check: ModuleType, reverse: bool, conclusion: str
+    ) -> None:
+        runs = [
+            {**_run("durable-events", conclusion="skipped"), "id": 10},
+            {**_run("durable-events", conclusion=conclusion), "id": 20},
+        ]
+        if reverse:
+            runs.reverse()
+        verdict = check.evaluate(
+            ["durable-events"], runs, require_complete=True, scope={"durable_events": False}
+        )
+        assert verdict.not_executed == ["durable-events"] and not verdict.ok
+
+    @pytest.mark.parametrize("reverse", [False, True])
+    @pytest.mark.parametrize("conclusion", ["success", "failure", "timed_out"])
+    def test_execution_precedence_is_unchanged(
+        self, check: ModuleType, reverse: bool, conclusion: str
+    ) -> None:
+        executed = {**_run("durable-events", conclusion=conclusion), "id": 10}
+        skipped = {**_run("durable-events", conclusion="skipped"), "id": 20}
+        runs = [executed, skipped]
+        if reverse:
+            runs.reverse()
+        verdict = check.evaluate(
+            ["durable-events"], runs, require_complete=True, scope={"durable_events": False}
+        )
+        # This evaluator proves execution, not success. A failed producer remains
+        # selected and counted as run; its own required check enforces its failure.
+        assert verdict.ran == ["durable-events"]
+        assert check._supersedes(executed, skipped)
+        assert not check._supersedes(skipped, executed)
+
+    @pytest.mark.parametrize("reverse", [False, True])
+    def test_newer_pending_attempt_is_not_hidden_by_older_success(
+        self, check: ModuleType, reverse: bool
+    ) -> None:
+        runs = [
+            {**_run("a"), "id": 10, "started_at": "2026-10-10T02:00:00Z"},
+            {**_run("a", status="queued", conclusion=None), "id": 20, "started_at": None},
+        ]
+        if reverse:
+            runs.reverse()
+        verdict = check.evaluate(["a"], runs, require_complete=True)
+        assert verdict.unfinished == ["a"] and verdict.pending
+
+    @pytest.mark.parametrize("reverse", [False, True])
+    def test_latest_skip_still_needs_measured_out_of_scope_evidence(
+        self, check: ModuleType, reverse: bool
+    ) -> None:
+        runs = [
+            {**_run("durable-events", conclusion="cancelled"), "id": 10},
+            {**_run("durable-events", conclusion="skipped"), "id": 20},
+        ]
+        if reverse:
+            runs.reverse()
+        required = ["durable-events"]
+        assert check.evaluate(required, runs, require_complete=True).not_executed == required
+        assert (
+            check.evaluate(
+                required, runs, require_complete=True, scope={"durable_events": True}
+            ).not_executed
+            == required
+        )
+        assert (
+            check.evaluate(required, runs, require_complete=True, scope_measured=False).unfinished
+            == required
+        )
+
+    def test_ids_override_equal_missing_or_misleading_timestamps(self, check: ModuleType) -> None:
+        for timestamp in (None, "2026-10-10T01:00:00Z", "2026-10-10T03:00:00Z"):
+            older = {
+                **_run("a"),
+                "id": 10,
+                "started_at": timestamp,
+                "completed_at": "2026-10-10T04:00:00Z",
+            }
+            newer = {
+                **_run("a", conclusion="failure"),
+                "id": 20,
+                "started_at": "2026-10-10T01:00:00Z",
+                "completed_at": "2026-10-10T02:00:00Z",
+            }
+            assert check._supersedes(newer, older)
+            assert not check._supersedes(older, newer)
+            assert not check._supersedes(newer, newer)
+
+    def test_legacy_payloads_without_ids_keep_the_ordered_list_contract(
+        self, check: ModuleType
+    ) -> None:
+        assert check._supersedes(_run("a", conclusion="failure"), _run("a"))
+        assert check._supersedes(_run("a"), _run("a", conclusion="failure"))

@@ -45,6 +45,13 @@ One service owns every transition. The contract, in order:
    A version displaced by a newer activation becomes ``SUPERSEDED``: out of
    service, but rollback-eligible with its original grant frozen.
 
+Extension modules: :mod:`maistro.extensions.policy` (organization/Workspace
+policy, pinning and audit, #971) and :mod:`maistro.extensions.tenancy`
+(tenant-scoped runtime state, #971) compose with this machine: inspection,
+authorization and activation each consult the policy engine, and the
+authorization/activation critical sections hold the engine's per-org
+enforcement window so a pin change can never split check from act.
+
 Every transition is appended to the store's audit trail with actor, org /
 workspace scope, extension id and version, and a reason. Pin and unpin do not
 change state, but they are lifecycle decisions, so they land on the same
@@ -56,6 +63,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 from collections.abc import Callable
+from contextlib import AbstractAsyncContextManager, nullcontext
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import Protocol
@@ -73,7 +81,9 @@ from maistro.extensions.manifest import (
     sha256_hex,
     verify_package_payload,
 )
+from maistro.extensions.policy import ExtensionCandidate, ExtensionPolicyEngine, PolicyDecision
 from maistro.extensions.store import ExtensionStore
+from maistro.extensions.tenancy import ScopeBoundExtensionState, TenantScopedExtensionState
 from maistro.extensions.trust import TrustPolicy, evaluate_trust
 from maistro.extensions.types import (
     REMOVABLE_STATES,
@@ -98,6 +108,18 @@ from maistro.extensions.types import (
 
 def _utc_now() -> datetime:
     return datetime.now(UTC)
+
+
+class ExtensionPolicyViolation(ExtensionLifecycleError):
+    """Extension policy refused an activation; nothing was activated.
+
+    Raised at the install boundary while the record keeps its AUTHORIZED
+    state: the operator's approval stands, but the current
+    organization/Workspace policy (deny-list, pin, enablement, ceiling)
+    refuses to let the artifact activate. The decision itself is on the
+    policy audit trail; re-deciding under the current policy — or changing
+    the policy — is the way forward.
+    """
 
 
 #: States whose records must carry the reason on the record itself, so the
@@ -206,6 +228,8 @@ class ExtensionInstallService:
         janitor: OwnedResourceJanitor | None = None,
         clock: Callable[[], datetime] = _utc_now,
         install_id_factory: Callable[[], str] | None = None,
+        policy_engine: ExtensionPolicyEngine | None = None,
+        runtime_state: TenantScopedExtensionState | None = None,
     ) -> None:
         self._store = store
         self._loader = loader
@@ -217,6 +241,8 @@ class ExtensionInstallService:
         self._janitor = janitor or RetainAllJanitor()
         self._clock = clock
         self._install_id_factory = install_id_factory or (lambda: uuid.uuid4().hex)
+        self._policy = policy_engine
+        self._runtime = runtime_state if runtime_state is not None else TenantScopedExtensionState()
         self._locks: dict[str, asyncio.Lock] = {}
         self._extension_locks: dict[tuple[str, str, str], asyncio.Lock] = {}
 
@@ -269,6 +295,47 @@ class ExtensionInstallService:
         assert_snapshot_intact(record.manifest)
         return record.requested_permissions
 
+    async def extension_state(
+        self, scope: ExtensionScope, extension_id: str
+    ) -> ScopeBoundExtensionState:
+        """A tenant-bound state handle for one active extension (#971).
+
+        Configuration, caches and checkpoints are keyed by the full tenant
+        triple, so whatever happens through this handle can never reach — or
+        be reached by — another scope's state. The handle is refused unless
+        the extension is ACTIVE in exactly this scope: a Workspace cannot
+        obtain a state handle for an extension it has not activated, so a
+        foreign Workspace cannot even probe another's extension ids through
+        this seam (the error is the scope-blind ``UnknownInstall``).
+        """
+        installed = await self._store.installed_versions(scope)
+        if extension_id not in installed:
+            raise UnknownInstall(f"no active extension {extension_id!r} in {scope.describe}")
+        return self._runtime.bind(scope, extension_id)
+
+    def _policy_decision(
+        self, scope: ExtensionScope, manifest: ExtensionManifest, *, actor: str
+    ) -> PolicyDecision | None:
+        """The policy decision for this candidate, or ``None`` when unwired."""
+        if self._policy is None:
+            return None
+        return self._policy.evaluate(
+            ExtensionCandidate(
+                extension_id=manifest.extension_id,
+                version=manifest.version,
+                publisher=manifest.publisher,
+                permissions=manifest.permissions,
+            ),
+            scope,
+            actor=actor,
+        )
+
+    def _policy_window(self, org_id: str) -> AbstractAsyncContextManager[None]:
+        """The enforcement window for one org (no-op when policy is unwired)."""
+        if self._policy is None:
+            return nullcontext()
+        return self._policy.enforcement_window(org_id)
+
     # -- phase 1: inspect ---------------------------------------------------
 
     async def _reinspection_outcome(
@@ -317,6 +384,7 @@ class ExtensionInstallService:
             raise ValueError("actor is required: every transition needs an accountable actor")
 
         manifest = inspect_manifest(package.manifest_bytes)
+        policy_decision = self._policy_decision(scope, manifest, actor=actor)
         existing = await self._store.latest_record(scope, manifest.extension_id, manifest.version)
         reinspection = await self._reinspection_outcome(scope, manifest, existing)
         if reinspection is not None:
@@ -338,6 +406,18 @@ class ExtensionInstallService:
             created_at=now,
             updated_at=now,
         )
+
+        if policy_decision is not None and not policy_decision.allowed:
+            # The org/Workspace policy layer fails the candidate at the door:
+            # a denied extension never reaches AWAITING_AUTHORIZATION, no
+            # matter what a Workspace request asks for.
+            return await self._transition(
+                record,
+                ExtensionState.REJECTED,
+                actor=actor,
+                reason=f"denied by extension policy: {policy_decision.explanation}",
+                now=now,
+            )
 
         try:
             verify_package_payload(manifest, package.payload)
@@ -456,10 +536,44 @@ class ExtensionInstallService:
         # mutable copy: verify the bytes still hash to the inspected digest.
         assert_snapshot_intact(record.manifest)
 
-        # #969: when the deployment supplies authority inputs, the grant is
-        # frozen to the effective authority — the intersection of manifest,
-        # publisher trust, host policy, caller delegation and Workspace
-        # policy — never to the request alone.
+        # The whole decision — policy re-check and grant — sits inside the
+        # org's enforcement window, so a policy change cannot land between
+        # "policy allowed it" and "the grant was recorded" (and a deny that
+        # lands first wins: org policy overrides a Workspace enable request).
+        async with self._policy_window(scope.org_id):
+            return await self._grant_within_policy_window(
+                record, actor=actor, scope=scope, reason=reason, now=now
+            )
+
+    async def _grant_within_policy_window(
+        self,
+        record: ExtensionInstallRecord,
+        *,
+        actor: str,
+        scope: ExtensionScope,
+        reason: str,
+        now: datetime,
+    ) -> ExtensionInstallRecord:
+        """Grant — or policy-refuse — one approved request inside the window.
+
+        The #971 org/Workspace policy decides first: a deny is terminal and
+        overrides any Workspace enablement. When the policy allows and the
+        deployment supplies #969 authority inputs, the grant is frozen to the
+        effective authority — the intersection of manifest, publisher trust,
+        host policy, caller delegation and Workspace policy — never to the
+        request alone.
+        """
+        decision = self._policy_decision(scope, record.manifest, actor=actor)
+        if decision is not None and not decision.allowed:
+            return await self._transition(
+                record,
+                ExtensionState.DENIED,
+                actor=actor,
+                reason=f"denied: extension policy overrides this enablement: "
+                f"{decision.explanation}",
+                now=now,
+            )
+
         if self._authority_inputs is not None:
             return await self._authorize_with_effective_authority(
                 record, actor=actor, reason=reason, now=now
@@ -600,7 +714,10 @@ class ExtensionInstallService:
         pointer swapped once) or ``FAILED`` (recorded with the reason; nothing
         active). Raises ``ArtifactMismatch`` without recording a transition
         when the presented payload is not the inspected artifact — a payload
-        that fails the digest check never happened to the machine. When the
+        that fails the digest check never happened to the machine — and
+        ``ExtensionPolicyViolation`` (record unchanged) when the current
+        organization/Workspace policy refuses activation, so a policy that
+        denies the identity never happened to the machine either. When the
         scope already had a different active version, that record is retired
         to ``SUPERSEDED`` — rollback-eligible, grant frozen — as part of the
         same locked swap. Activation of a different version while the
@@ -760,6 +877,51 @@ class ExtensionInstallService:
         )
         if retry is not None:
             return retry
+
+        # Activation holds the org's enforcement window end to end: the
+        # policy re-check, the INSTALLING transition, the loader — the only
+        # code-execution seam — and the active-pointer swap. A pin or deny
+        # that lands concurrently is therefore ordered entirely before this
+        # activation (which then never starts) or entirely after it; a
+        # non-pinned version can never activate *across* a pin change.
+        async with self._policy_window(scope.org_id):
+            return await self._activate_locked(
+                record,
+                actor=actor,
+                scope=scope,
+                payload=payload,
+                payload_digest=payload_digest,
+                install_id=install_id,
+                now=now,
+                why=why,
+                detail=detail,
+            )
+
+    async def _activate_locked(
+        self,
+        record: ExtensionInstallRecord,
+        *,
+        actor: str,
+        scope: ExtensionScope,
+        payload: bytes,
+        payload_digest: str,
+        install_id: str,
+        now: datetime,
+        why: str,
+        detail: str,
+    ) -> ExtensionInstallRecord:
+        """Run the activation sequence; the caller holds both locks.
+
+        The org's enforcement window is held by the caller, so the policy
+        refusal below is ordered against concurrent policy changes: a deny
+        that lands first wins and no activation ever starts.
+        """
+        decision = self._policy_decision(scope, record.manifest, actor=actor)
+        if decision is not None and not decision.allowed:
+            raise ExtensionPolicyViolation(
+                f"extension policy refuses activation of {record.extension_id} "
+                f"{record.version} in {scope.describe}: {decision.explanation}"
+            )
 
         record = await self._transition(
             record,

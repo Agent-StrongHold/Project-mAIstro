@@ -64,6 +64,11 @@ PROTECTED_OPERATIONS: tuple[ProtectedOperation, ...] = (
     # existing chat dispatch path, so authentication alone is not enough.
     ProtectedOperation("POST", "/v1/chat/workflows", "dags.write", "run a chat workflow"),
     ProtectedOperation("POST", "/v1/audit", "audit.write", "write audit entries"),
+    # A credential test can send a draft API key to an operator-supplied
+    # endpoint, so it is the same trust decision as saving the credential;
+    # otherwise an ordinary session would gain an SSRF/probe primitive.
+    # Kept in sync with the inline policy on develop during the merge.
+    ProtectedOperation("POST", "/v1/credentials", "credentials.write", "test a credential"),
     ProtectedOperation("POST", "/v1/harness", "harness.execute", "run harness sessions"),
     ProtectedOperation("POST", "/v1/rsi", "rsi.execute", "run RSI"),
     # Resolving an approval is an authority-bearing decision, not a

@@ -58,6 +58,7 @@ async def _fixture(
     *,
     template: bool = True,
     max_runs: int | None = None,
+    workspace: bool = False,
 ) -> tuple[Any, Any, Any]:
     from maistro.graph.definitions import GraphTemplate, Node
     from maistro.graph.templates import InMemoryGraphTemplateStore
@@ -67,7 +68,25 @@ async def _fixture(
     from maistro.scheduling.store import InMemoryScheduleStore
 
     projects = InMemoryProjectScopeStore()
-    root = await projects.create_root("ws-1")
+    workspace_store: Any = None
+    if workspace:
+        from maistro.workspaces.store import InMemoryWorkspaceStore
+
+        # The canonical workspace provisions ws-1's Root Project itself, so
+        # identity and membership come from the one authority the scheduler's
+        # scope resolution consults.
+        workspace_store = InMemoryWorkspaceStore(project_store=projects)
+        await workspace_store.create(
+            creator_user_id="ws-admin", name="Schedule WS", workspace_id="ws-1"
+        )
+        from maistro.workspaces.model import WorkspaceRole
+
+        await workspace_store.set_membership(
+            "ws-1", user_id="user-1", role=WorkspaceRole.CONTRIBUTOR
+        )
+    else:
+        await projects.create_root("ws-1")
+    root = await projects.root_for_workspace("ws-1")
     runs = InMemoryRunStore(project_store=projects)
     templates = InMemoryGraphTemplateStore()
     schedules = InMemoryScheduleStore()
@@ -95,6 +114,7 @@ async def _fixture(
         schedule_store=schedules,
         schedule_admitter=ScheduleRunAdmitter(runs, templates, schedules),
         project_scope_store=projects,
+        workspace_store=workspace_store,
     )
     row = _Row(
         "s-1",
@@ -117,6 +137,147 @@ def _remove_row(row: Any) -> None:
     stores.schedules._data.pop(row.id, None)  # type: ignore[attr-defined]
 
 
+def test_a_schedule_whose_actor_lost_workspace_membership_is_not_admitted(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Revocation is explicit on the production automatic-fire path: a due
+    definition re-read under the definition lock still re-runs the scope
+    resolution, so an actor whose Workspace membership is gone loses
+    eligibility even though the definition was persisted while they were a
+    member. ``_tick_due`` is the only recurring path a configured Hive takes
+    — this test drives it, not a side entry.
+    """
+    import logging
+
+    from services.scheduler import _ScheduleRunner, put_canonical_definition
+
+    async def scenario() -> None:
+        container, row, _root = await _fixture(workspace=True)
+        _install_row(row)
+        monkeypatch.setattr(
+            _ScheduleRunner, "_canonical_container", staticmethod(lambda: container)
+        )
+        # The routes persist the canonical definition while the actor is
+        # still a member; the tick then works from the store, not the row.
+        await put_canonical_definition("s-1", row)
+        runner = _ScheduleRunner()
+
+        await runner._tick_due(
+            datetime(2026, 8, 21, 12, 5, tzinfo=UTC), container, container.schedule_admitter
+        )
+        recorded = await container.schedule_store.get("s-1")
+        assert recorded is not None
+        assert recorded.runs_so_far == 1
+        assert recorded.actor_principal_id == "user-1"
+        assert len(container.run_store._runs) == 1  # type: ignore[attr-defined]
+
+        await container.workspace_store.remove_membership("ws-1", user_id="user-1")
+
+        with caplog.at_level(logging.WARNING, logger="services.scheduler"):
+            await runner._tick_due(
+                datetime(2026, 8, 21, 13, 5, tzinfo=UTC),
+                container,
+                container.schedule_admitter,
+            )
+        assert "no longer a Workspace member" in caplog.text
+        still = await container.schedule_store.get("s-1")
+        assert still is not None
+        assert still.runs_so_far == 1, "revocation stops future automatic fires"
+        assert len(container.run_store._runs) == 1, (  # type: ignore[attr-defined]
+            "the revoked actor's next occurrence never admits"
+        )
+
+    asyncio.run(scenario())
+
+
+def test_revocation_serializes_with_an_in_flight_admission(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Codex P1-2: the eligibility check and Run admission are separated by
+    several awaits, and membership removal holds no definition lock — so a
+    removal that lands inside that window used to be followed by a Run
+    admitted under the already-revoked principal. Admission now holds the
+    same membership-mutation serialization point ``remove_member`` does: a
+    concurrent removal either completes before the check (the tick refuses)
+    or waits until the Run exists. This test pauses the tick inside
+    admission and proves the removal cannot land there.
+    """
+    import logging
+
+    from services import workspace_authority
+    from services.scheduler import _ScheduleRunner, put_canonical_definition
+
+    async def scenario() -> None:
+        container, row, _root = await _fixture(workspace=True)
+        _install_row(row)
+        monkeypatch.setattr(
+            _ScheduleRunner, "_canonical_container", staticmethod(lambda: container)
+        )
+        # Production has one Container, so ``remove_member`` and the
+        # scheduler read the same canonical store there; this fixture's
+        # monkeypatched Container is a separate object, so point the
+        # authority's no-database fallback at the very store the tick reads.
+        monkeypatch.setattr(workspace_authority, "_fallback_store", container.workspace_store)
+        # ``remove_member`` returns the composed Hive view, so the Workspace
+        # needs its presentation record as every product Workspace has.
+        from models.workspace import WorkspacePresentation
+
+        workspace_authority.presentation_store()["ws-1"] = WorkspacePresentation(
+            workspace_id="ws-1",
+            persona_template_id="default",
+            updated_at=datetime(2026, 8, 1, tzinfo=UTC),
+        )
+        await put_canonical_definition("s-1", row)
+        runner = _ScheduleRunner()
+
+        entered, release = asyncio.Event(), asyncio.Event()
+        admit = container.schedule_admitter.admit_due
+
+        async def paused(*args: Any, **kwargs: Any) -> Any:
+            entered.set()
+            await release.wait()
+            return await admit(*args, **kwargs)
+
+        monkeypatch.setattr(container.schedule_admitter, "admit_due", paused)
+        tick = asyncio.create_task(
+            runner._tick_due(
+                datetime(2026, 8, 21, 12, 5, tzinfo=UTC),
+                container,
+                container.schedule_admitter,
+            )
+        )
+        await asyncio.wait_for(entered.wait(), timeout=5)
+        # The tick is now inside admission, holding the serialization point.
+        removal = asyncio.create_task(workspace_authority.remove_member("ws-1", user_id="user-1"))
+        # Event-loop turns, never wall clock: let the removal coroutine run
+        # up to the lock and prove it stops there.
+        for _ in range(10):
+            await asyncio.sleep(0)
+        assert not removal.done(), "a revocation must not complete inside an admission"
+        release.set()
+        await asyncio.gather(tick, removal)
+
+        # The Run was admitted while the actor still held membership; the
+        # removal completed only after admission, not inside its window.
+        assert len(container.run_store._runs) == 1  # type: ignore[attr-defined]
+        assert not await workspace_authority.is_member("user-1", "ws-1")
+
+        with caplog.at_level(logging.WARNING, logger="services.scheduler"):
+            await runner._tick_due(
+                datetime(2026, 8, 21, 13, 5, tzinfo=UTC),
+                container,
+                container.schedule_admitter,
+            )
+        assert "no longer a Workspace member" in caplog.text
+        assert len(container.run_store._runs) == 1, (  # type: ignore[attr-defined]
+            "the completed revocation admits no further Run"
+        )
+
+    asyncio.run(scenario())
+
+
 def test_two_live_runners_claim_one_occurrence(monkeypatch: pytest.MonkeyPatch) -> None:
     from services.scheduler import _ScheduleRunner
 
@@ -136,6 +297,9 @@ def test_two_live_runners_claim_one_occurrence(monkeypatch: pytest.MonkeyPatch) 
             assert recorded is not None
             assert recorded.runs_so_far == 1
             assert recorded.last_run_id
+            assert recorded.workspace_id == "ws-1"
+            assert recorded.project_id == root.project_id
+            assert recorded.actor_principal_id == "user-1"
 
             run = await container.run_store.get_run(recorded.last_run_id)
             assert run is not None
@@ -143,6 +307,8 @@ def test_two_live_runners_claim_one_occurrence(monkeypatch: pytest.MonkeyPatch) 
             assert run.project_id == root.project_id
             assert run.provenance["admission_source"] == "schedule"
             assert run.provenance["schedule_id"] == "s-1"
+            assert run.actor_principal_id == "user-1"
+            assert run.provenance["scheduler_service_id"] == "hive-scheduler"
             assert (
                 run.provenance["scheduled_for"]
                 == datetime(2026, 8, 21, 12, 0, tzinfo=UTC).isoformat()
@@ -228,7 +394,20 @@ def test_scheduler_tick_executes_the_admitted_run_to_completion(
         container = await create_container(
             AgentConfig(router_api_key="test-key", workspace_id="ws-1")
         )
-        root = await container.project_scope_store.create_root("ws-1")
+        # Composition now provisions the configured Workspace (#1152), so the
+        # actor's membership is the piece this scenario owns: the row may
+        # already exist with a different owner.
+        if await container.workspace_store.get("ws-1") is None:
+            await container.workspace_store.create(
+                creator_user_id="user-1", name="Schedule WS", workspace_id="ws-1"
+            )
+        else:
+            from maistro.workspaces.model import WorkspaceRole
+
+            await container.workspace_store.set_membership(
+                "ws-1", user_id="user-1", role=WorkspaceRole.CONTRIBUTOR
+            )
+        root = await container.project_scope_store.root_for_workspace("ws-1")
         await container.template_store.put(
             GraphTemplate(
                 template_id="scheduled-template",
@@ -512,7 +691,24 @@ async def _wired_container(database_url: str = "") -> tuple[Any, Any]:
             database_url=database_url,
         )
     )
-    root = await container.project_scope_store.create_root("ws-1")
+    # The fire paths re-check the actor's Workspace membership (#1201), so
+    # the scenario provisions the membership the routes verify at create
+    # time; the canonical Workspace provisions its own Root Project.
+    # Idempotent: the restart scenarios build a second container over the
+    # same database, and composition itself now provisions the configured
+    # Workspace (#1152), so an already-present row gets the actor's
+    # membership rather than a second create.
+    if await container.workspace_store.get("ws-1") is None:
+        await container.workspace_store.create(
+            creator_user_id="user-1", name="Schedule WS", workspace_id="ws-1"
+        )
+    else:
+        from maistro.workspaces.model import WorkspaceRole
+
+        await container.workspace_store.set_membership(
+            "ws-1", user_id="user-1", role=WorkspaceRole.CONTRIBUTOR
+        )
+    root = await container.project_scope_store.root_for_workspace("ws-1")
     await container.template_store.put(
         GraphTemplate(
             template_id=_DUE_TEMPLATE,

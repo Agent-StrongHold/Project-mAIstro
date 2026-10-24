@@ -83,6 +83,26 @@ async def _run(spine: Any) -> Any:
     )
 
 
+async def test_recent_run_discovery_is_scoped_bounded_and_detached(spine: Any) -> None:
+    store, workspace, _ = spine
+    first = await _run(spine)
+    second = await _run(spine)
+    await store.transition_run(first.run_id, RunStatus.QUEUED)
+    assert [run.run_id for run in await store.list_recent_runs(workspace, limit=1)] == [
+        second.run_id
+    ]
+    page = await store.list_recent_runs(workspace, limit=1, offset=1)
+    assert [run.run_id for run in page] == [first.run_id]
+    assert page[0].status is RunStatus.QUEUED
+    assert await store.list_recent_runs(workspace, offset=2) == []
+    assert await store.list_recent_runs("missing-workspace") == []
+    page[0].provenance["not-persisted"] = True
+    assert (await store.get_run(first.run_id)).provenance == {}
+    for kwargs in ({"limit": 0}, {"offset": -1}):
+        with pytest.raises(ValueError):
+            await store.list_recent_runs(workspace, **kwargs)
+
+
 async def _node_run(spine: Any) -> Any:
     """A NodeRun under a fresh Run — what most of the Attempt tests need."""
     store, _workspace, _project_id = spine

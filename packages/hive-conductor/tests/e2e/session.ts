@@ -101,6 +101,35 @@ export async function setupIfNeeded(page: Page) {
 // Mode is detected from the form itself rather than from body text: the login
 // view also renders a "Register" toggle, so a body.includes("Register") check
 // takes the register branch while sitting on the login form.
+/**
+ * The admin account the setup wizard creates. Admin holds every permission
+ * without task-scoped elevation (middleware/auth.py `principal_has_permission`),
+ * which is what a spec needs when the action under test is a protected write
+ * the daily-user account is never granted -- archiving a workspace, saving
+ * its tool bindings, and the Credentials page's `credentials.write`
+ * operations (#289: saving a credential and testing a draft gateway
+ * endpoint; `_DEFAULT_DAILY_USER_PERMISSIONS` is `dags.write` only). The
+ * selectors are loginAsPM's, for the reasons recorded above it.
+ */
+export async function loginAsAdmin(page: Page) {
+  await page.goto("/login");
+
+  const usernameInput = page.locator('input[autocomplete="username"]').first();
+  const passwordInput = page.locator('input[autocomplete="current-password"]').first();
+
+  await usernameInput.waitFor({ state: "visible" });
+  await usernameInput.fill(ADMIN_USER);
+  await passwordInput.fill(ADMIN_PASS);
+
+  await Promise.all([
+    page.waitForResponse(
+      (r) => r.url().includes("/v1/auth/login") && r.request().method() === "POST",
+      { timeout: 15000 },
+    ),
+    page.locator('form button[type="submit"]').click(),
+  ]);
+}
+
 export async function loginAsPM(page: Page) {
   await page.goto("/login");
 
@@ -123,30 +152,6 @@ export async function loginAsPM(page: Page) {
   //
   // Awaiting the response rather than a fixed timeout means a login that stops
   // working fails here, loudly, instead of leaking into a downstream 401.
-  await Promise.all([
-    page.waitForResponse(
-      (r) => r.url().includes("/v1/auth/login") && r.request().method() === "POST",
-      { timeout: 15000 },
-    ),
-    page.locator('form button[type="submit"]').click(),
-  ]);
-}
-
-/**
- * The admin account the setup wizard creates. Admin holds every permission
- * without task-scoped elevation (middleware/auth.py `principal_has_permission`),
- * which is what a spec needs when the action under test is a protected write
- * the daily-user account is never granted -- archiving a workspace, saving
- * its tool bindings. The selectors are loginAsPM's, for the reasons recorded
- * above it.
- */
-export async function loginAsAdmin(page: Page) {
-  await page.goto("/login");
-  const usernameInput = page.locator('input[autocomplete="username"]').first();
-  const passwordInput = page.locator('input[autocomplete="current-password"]').first();
-  await usernameInput.waitFor({ state: "visible" });
-  await usernameInput.fill(ADMIN_USER);
-  await passwordInput.fill(ADMIN_PASS);
   await Promise.all([
     page.waitForResponse(
       (r) => r.url().includes("/v1/auth/login") && r.request().method() === "POST",

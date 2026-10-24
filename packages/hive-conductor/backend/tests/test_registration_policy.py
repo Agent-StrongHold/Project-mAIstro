@@ -1592,6 +1592,16 @@ class TestRestartDurability:
         third.close()
 
 
+class TestHostUserRole:
+    """The host-assigned role seam (#60): resolved from the user store, never
+    a request field; an anonymous actor resolves to no role (fail-closed)."""
+
+    def test_anonymous_actor_resolves_to_no_role(self) -> None:
+        from services import registration_policy
+
+        assert registration_policy.host_user_role("") == ""
+
+
 class TestPublicSurfaceDoesNotLeakAccounts:
     """`/v1/setup/status` publishes the mode, not the user list (#313 AC)."""
 

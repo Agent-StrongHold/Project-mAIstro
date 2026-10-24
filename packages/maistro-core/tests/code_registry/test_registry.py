@@ -3,12 +3,19 @@
 from __future__ import annotations
 
 import hashlib
+from dataclasses import replace
 
 import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from maistro.code_registry.registry import CodeRegistry
-from maistro.code_registry.types import CodeEntry, CodeKind, CodeRefUnresolved, InvalidSignature
+from maistro.code_registry.types import (
+    CodeEntry,
+    CodeEntryConflict,
+    CodeKind,
+    CodeRefUnresolved,
+    InvalidSignature,
+)
 from maistro.code_registry.verify import Ed25519Verifier
 
 
@@ -16,7 +23,7 @@ def _make_signed_entry(
     *, name: str = "my_compensator", version: str = "1.0.0", signer: Ed25519PrivateKey
 ) -> CodeEntry:
     code_sha256 = hashlib.sha256(b"body").hexdigest()
-    payload = f"{name}@{version}:{code_sha256}".encode()
+    payload = f"{name}@{version}:{CodeKind.COMPENSATOR.value}:{code_sha256}".encode()
     signature = signer.sign(payload)
     return CodeEntry(
         name=name,
@@ -94,6 +101,76 @@ class TestRegisterAndResolve:
         registry = CodeRegistry()
         with pytest.raises(CodeRefUnresolved):
             registry.register(entry, verifier=verifier)
+
+    def test_register_without_a_verifier_raises(self) -> None:
+        # Signed code only enters the registry through a verifier: with none
+        # configured there is nothing that could vouch for the body.
+        signer = Ed25519PrivateKey.generate()
+        entry = _make_signed_entry(signer=signer)
+
+        registry = CodeRegistry()
+        with pytest.raises(InvalidSignature):
+            registry.register(entry)
+
+        with pytest.raises(CodeRefUnresolved):
+            registry.resolve("my_compensator@1.0.0")
+
+
+def test_resolve_rechecks_signature_after_registration() -> None:
+    class RotatingVerifier:
+        valid = True
+
+        def verify(self, message: bytes, signature: bytes) -> bool:
+            return self.valid
+
+    signer = Ed25519PrivateKey.generate()
+    entry = _make_signed_entry(signer=signer)
+    verifier = RotatingVerifier()
+    registry = CodeRegistry()
+    registry.register(entry, verifier=verifier)
+    verifier.valid = False
+    with pytest.raises(InvalidSignature):
+        registry.resolve("my_compensator@1.0.0")
+
+
+def test_register_does_not_replace_an_existing_ref() -> None:
+    signer = Ed25519PrivateKey.generate()
+    verifier = Ed25519Verifier(signer.public_key().public_bytes_raw())
+    registry = CodeRegistry()
+    entry = _make_signed_entry(signer=signer)
+    registry.register(entry, verifier=verifier)
+    changed_hash = hashlib.sha256(b"changed").hexdigest()
+    replacement = replace(
+        entry,
+        code_sha256=changed_hash,
+        signature=signer.sign(
+            f"{entry.name}@{entry.version}:{entry.kind.value}:{changed_hash}".encode()
+        ),
+    )
+    with pytest.raises(CodeEntryConflict, match="already registered"):
+        registry.register(replacement, verifier=verifier)
+
+
+def test_register_rejects_kind_relabel_with_stale_signature() -> None:
+    """A signature vouches for the kind: relabeling an entry into a kind whose
+    ``code.invoke.<kind>`` action the principal holds must invalidate the
+    original signature (P1 review finding on #59)."""
+    signer = Ed25519PrivateKey.generate()
+    verifier = Ed25519Verifier(signer.public_key().public_bytes_raw())
+    registry = CodeRegistry()
+    entry = _make_signed_entry(signer=signer)  # signed as COMPENSATOR
+    relabeled = replace(entry, kind=CodeKind.MERGE_RESOLVER)
+    with pytest.raises(InvalidSignature, match="invalid signature"):
+        registry.register(relabeled, verifier=verifier)
+    with pytest.raises(CodeRefUnresolved):
+        registry.resolve("my_compensator@1.0.0")
+
+
+def test_signing_payload_binds_kind() -> None:
+    entry = CodeEntry(
+        name="n", version="1.0.0", kind=CodeKind.DYNAMIC_GATE, code_sha256="h", signature=b""
+    )
+    assert CodeRegistry.signing_payload(entry) == b"n@1.0.0:dynamic_gate:h"
 
 
 class TestCompatible:

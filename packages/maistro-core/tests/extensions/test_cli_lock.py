@@ -13,9 +13,12 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import pytest
+from rich.console import Console
 from typer.testing import CliRunner
 
 from extensions.extension_fixtures import catalog_entry, install_bundle
+from maistro.cli import _extensions
 from maistro.cli._extensions import app
 from maistro.extensions.resolution import (
     ExtensionCatalog,
@@ -129,13 +132,21 @@ def test_lock_commands_exit_nonzero_for_a_missing_file(tmp_path: Path) -> None:
     assert "Cannot read" in result.output
 
 
-def test_lock_commands_exit_nonzero_for_an_invalid_lock(tmp_path: Path) -> None:
+@pytest.mark.parametrize("terminal_width", [40, 80, 120])
+def test_lock_commands_exit_nonzero_for_an_invalid_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, terminal_width: int
+) -> None:
+    monkeypatch.setattr(_extensions, "console", Console(width=terminal_width))
     (tmp_path / "garbage.json").write_text('{"format": "something-else"}')
 
     result = runner.invoke(app, ["explain", str(tmp_path / "garbage.json"), "tool-a"])
 
     assert result.exit_code == 1
-    assert "not a valid extension lock" in result.output
+    # Rich wraps the diagnostic according to terminal width and path length.
+    output = " ".join(result.output.split())
+    assert "not a valid extension lock" in output
+    assert "lock payload names format 'something-else'" in output
+    assert "reads 'maistro-extension-lock:v1'" in output
 
 
 def test_explain_renders_rejected_candidates_with_their_reason(tmp_path: Path) -> None:

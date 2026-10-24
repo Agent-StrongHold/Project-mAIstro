@@ -22,9 +22,27 @@ class _FakeProc:
         self._stdout = stdout
         self._stderr = stderr
         self.returncode = returncode
+        # docker.py's exec drains these streams (bounded capture, #1197);
+        # destroy/create still go through communicate().
+        self.stdout = _reader_with(stdout)
+        self.stderr = _reader_with(stderr)
 
     async def communicate(self) -> tuple[bytes, bytes]:
         return self._stdout, self._stderr
+
+    async def wait(self) -> int | None:
+        # communicate_bounded reaps the child after both streams reach EOF
+        # (#1197 review): a fake has no real child, so the reap just publishes
+        # the terminal code the way the real Process.wait does.
+        return self.returncode
+
+
+def _reader_with(data: bytes) -> asyncio.StreamReader:
+    reader = asyncio.StreamReader()
+    if data:
+        reader.feed_data(data)
+    reader.feed_eof()
+    return reader
 
 
 def test_shell_quote_escapes_dangerous_characters() -> None:
@@ -81,6 +99,47 @@ async def test_exec_runs_command_and_returns_output() -> None:
     assert args == ("docker", "exec", "abc123", "bash", "-c", "echo hello")
 
 
+async def test_exec_output_is_bounded_at_the_container_limit() -> None:
+    """#1197: a command that emits far beyond the bound gets its retained
+    output cut at the byte limit and the truncation declared in the output —
+    the `(exit_code, output)` shape has no structured flags, so the notice is
+    the truthfulness mechanism here."""
+    container = SandboxContainer("abc123", "/host", max_output_bytes=1000)
+    fake_proc = _FakeProc(stdout=b"y" * 50_000, returncode=0)
+    with (
+        patch("maistro.tools.sandbox.docker.is_dangerous_command", return_value=[]),
+        patch(
+            "maistro.tools.sandbox.docker.asyncio.create_subprocess_exec",
+            new=AsyncMock(return_value=fake_proc),
+        ),
+    ):
+        code, output = await container.exec("emitter")
+    assert code == 0
+    assert output[:1000] == "y" * 1000
+    assert output.endswith("[maistro: output truncated at 1000 bytes; the rest was discarded]")
+
+
+async def test_exec_under_the_limit_has_no_truncation_notice() -> None:
+    container = SandboxContainer("abc123", "/host")
+    fake_proc = _FakeProc(stdout=b"small", returncode=0)
+    with (
+        patch("maistro.tools.sandbox.docker.is_dangerous_command", return_value=[]),
+        patch(
+            "maistro.tools.sandbox.docker.asyncio.create_subprocess_exec",
+            new=AsyncMock(return_value=fake_proc),
+        ),
+    ):
+        code, output = await container.exec("small")
+    assert (code, output) == (0, "small")
+
+
+def test_container_limit_is_clamped_to_the_protocol_ceiling() -> None:
+    from maistro.tools.sandbox._capture import MAX_OUTPUT_BYTES_CEILING
+
+    container = SandboxContainer("abc123", "/host", max_output_bytes=10**9)
+    assert container.max_output_bytes == MAX_OUTPUT_BYTES_CEILING
+
+
 async def test_exec_returns_nonzero_default_zero_when_returncode_none() -> None:
     container = SandboxContainer("abc123", "/host")
     fake_proc = _FakeProc(stdout=b"", returncode=None)
@@ -101,10 +160,12 @@ async def test_exec_times_out() -> None:
 
     class _HangingProc:
         returncode = None
+        # A stream that never reaches EOF, so the bounded drain would block
+        # forever if the timeout did not fire.
+        stdout = asyncio.StreamReader()
+        stderr = asyncio.StreamReader()
 
         async def communicate(self) -> tuple[bytes, bytes]:
-            import asyncio
-
             await asyncio.sleep(10)
             return b"", b""
 
@@ -390,9 +451,25 @@ async def test_destroy_survives_a_stalled_docker_rm_without_raising() -> None:
 async def test_create_sandbox_uses_default_settings_when_none_provided(tmp_path: Any) -> None:
     workspace = f"/tmp/maistro-workspace/{tmp_path.name}"
     fake_proc = _FakeProc(stdout=b"abc123\n", returncode=0)
+
     with patch(
         "maistro.tools.sandbox.docker.asyncio.create_subprocess_exec",
         new=AsyncMock(return_value=fake_proc),
     ):
         container = await create_sandbox(workspace)
     assert container.ttl == SandboxSettings().timeout
+
+
+async def test_create_sandbox_passes_the_output_bound_through(tmp_path: Any) -> None:
+    """The settings knob is host-selected policy; the container must inherit
+    it (clamped), not a hardcoded default."""
+    workspace = f"/tmp/maistro-workspace/{tmp_path.name}"
+    fake_proc = _FakeProc(stdout=b"abc123\n", returncode=0)
+    settings = SandboxSettings(max_output_bytes=4096)
+
+    with patch(
+        "maistro.tools.sandbox.docker.asyncio.create_subprocess_exec",
+        new=AsyncMock(return_value=fake_proc),
+    ):
+        container = await create_sandbox(workspace, settings=settings)
+    assert container.max_output_bytes == 4096

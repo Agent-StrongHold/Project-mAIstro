@@ -176,6 +176,33 @@ _all_json_stores: list[JsonStore] = [
 ]
 
 
+def register_json_store(store: JsonStore) -> JsonStore:
+    """Adopt a service-owned durable store into the central persistence wiring.
+
+    New durable state does not belong in this module: every `stores.py` store
+    is a row in the cutover retirement ledger (#1046) and a retiring surface
+    may not gain consumers, so a store added today would be born unable to
+    name a reader. Service-owned stores — `services.settings_store` since
+    #334, `services.home_layouts` and `services.home_projections` since
+    #1048 — declare their own `JsonStore` beside the only code that writes
+    it, and register here so `configure_persistence` and `initialize_stores`
+    still reach it: a store that missed the deployment's persistence
+    configuration would silently stop surviving a restart.
+
+    Registration is idempotent and ordered: before `configure_persistence`, an
+    append is enough because the central wiring runs later; after it, the
+    store is wired and initialized immediately so the caller's next write is
+    durable without waiting for a restart that will not come.
+    """
+    if any(existing is store for existing in _all_json_stores):
+        return store
+    _all_json_stores.append(store)
+    if _persisted is not None:
+        store._persisted = _persisted
+        store.initialize()
+    return store
+
+
 def configure_persistence(persisted_store: Any) -> None:
     """Wire a PersistedStore into all mutable stores."""
     global _persisted

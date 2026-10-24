@@ -35,8 +35,10 @@ from maistro.personas.store import (
     PersonaStore,
     WorkspacePersonaAlreadyExists,
 )
+from maistro.personas.wiring import PERSONA_PG_TABLES, wire_persona_store
 
 __all__ = [
+    "PERSONA_PG_TABLES",
     "BrandSpec",
     "CapabilityItem",
     "CriterionSpec",
@@ -70,4 +72,5 @@ __all__ = [
     "expand_persona",
     "load_evals",
     "load_templates",
+    "wire_persona_store",
 ]

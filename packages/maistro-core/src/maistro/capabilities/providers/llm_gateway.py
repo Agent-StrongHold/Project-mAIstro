@@ -64,6 +64,8 @@ class GatewayEndpoint(BaseModel):
 
     base_url: str
     api_key: str = ""
+    organization: str = ""
+    project: str = ""
     timeout_s: float = 120.0
     base_url_is_api_base: bool = False
 
@@ -76,6 +78,10 @@ class GatewayEndpoint(BaseModel):
         headers = {"Content-Type": "application/json"}
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
+        if self.organization:
+            headers["OpenAI-Organization"] = self.organization
+        if self.project:
+            headers["OpenAI-Project"] = self.project
         return headers
 
 
