@@ -54,18 +54,78 @@ from pathlib import Path
 # (which are separate lines and never match this prefix pattern).
 _REQ = re.compile(r"^([A-Za-z0-9][A-Za-z0-9._-]*)==([^\s\\;]+)")
 
+# One `python_full_version <op> '<version>'` clause inside a PEP 508 marker.
+# Only python-version clauses are evaluated; every other variable (platform,
+# implementation) is irrelevant to choosing between two pins of the same
+# distribution, which is the only case this gate needs to disambiguate.
+_PYFULL_CLAUSE = re.compile(r"python_full_version\s*(==|!=|<=|>=|<|>)\s*['\"]([^'\"]+)['\"]")
+
+#: The first line `_DUMP` prints, before the distribution pins: the image
+#: interpreter's own `python_full_version`. The marker-variant disambiguation
+#: below needs it — `uv export` lists a marker-split dependency (e.g.
+#: `beartype==0.22.9 ; python_full_version < '3.15'` beside
+#: `beartype==0.23.1 ; python_full_version >= '3.15'`) as two rows, and the
+#: image carries exactly one of them.
+_PYFULL_LINE = "python-full-version "
+
+_DUMP = (
+    "import sys, importlib.metadata as m; "
+    "print('python-full-version', '.'.join(str(p) for p in sys.version_info[:3])); "
+    "print(*sorted(f\"{d.metadata['Name']}=={d.version}\" for d in m.distributions()), "
+    "sep='\\n')"
+)
+
+
+def _version_tuple(text: str) -> tuple[int, ...] | None:
+    """`'3.13.16'` -> `(3, 13, 16)`, or `None` for anything else."""
+    parts = text.strip().split(".")
+    if not parts or not all(p.isdigit() for p in parts):
+        return None
+    return tuple(int(p) for p in parts)
+
+
+def _python_full_version_clause_holds(op: str, bound: str, image_version: str) -> bool | None:
+    """Whether `image_version <op> bound` holds, compared the way PEP 508 says
+    `python_full_version` compares (release tuples, zero-padded). `None` for a
+    bound this stdlib-only comparison cannot represent."""
+    left, right = _version_tuple(image_version), _version_tuple(bound)
+    if left is None or right is None:
+        return None
+    width = max(len(left), len(right))
+    left, right = left + (0,) * (width - len(left)), right + (0,) * (width - len(right))
+    return {
+        "==": left == right,
+        "!=": left != right,
+        "<=": left <= right,
+        ">=": left >= right,
+        "<": left < right,
+        ">": left > right,
+    }[op]
+
+
+def _marker_selects_version(marker: str | None, image_version: str | None) -> bool | None:
+    """Whether `marker` applies on the image interpreter, or `None` when this
+    gate cannot tell (no image version dumped, or clauses it cannot evaluate).
+    Clauses other than `python_full_version` are ignored, not failed: a
+    `sys_platform` split carries one version per platform, and the image IS on
+    its own platform."""
+    if marker is None:
+        return True
+    if image_version is None:
+        return None
+    result = True
+    for op, bound in _PYFULL_CLAUSE.findall(marker):
+        holds = _python_full_version_clause_holds(op, bound, image_version)
+        if holds is None:
+            return None
+        result = result and holds
+    return result
+
 
 def canon(name: str) -> str:
     """PEP 503 normalized name: the lock says `bip-utils`, the wheel metadata
     says `bip_utils` (or `PyJWT` vs `pyjwt`) — same distribution."""
     return re.sub(r"[-_.]+", "-", name).lower()
-
-
-_DUMP = (
-    "import importlib.metadata as m; "
-    "print(*sorted(f\"{d.metadata['Name']}=={d.version}\" for d in m.distributions()), "
-    "sep='\\n')"
-)
 
 
 def parse_expected(text: str) -> tuple[set[str], set[str]]:
@@ -76,23 +136,69 @@ def parse_expected(text: str) -> tuple[set[str], set[str]]:
     `secretstorage ; sys_platform == 'linux'` is correctly present. A
     conditional pin matches either way — it gates nothing; its version is
     still checked when it does ship.
+
+    Every marker-carrying row lands in the conditional set — a name the export
+    splits across markers (one distribution, several python-version rows)
+    keeps all of its rows here, so the image's one build is never mistaken for
+    an un-locked extra just because a name-keyed dict could hold only the
+    last row.
     """
-    pins: dict[str, str] = {}
+    unconditional: dict[str, str] = {}
     conditional: set[str] = set()
     for line in text.splitlines():
         stripped = line.strip()
         m = _REQ.match(stripped)
         if m:
             name = canon(m.group(1))
-            pins[name] = f"{name}=={m.group(2)}"
+            pin = f"{name}=={m.group(2)}"
             if ";" in stripped:
-                conditional.add(name)
-    if not pins:
+                conditional.add(pin)
+            else:
+                unconditional[name] = pin
+    if not unconditional and not conditional:
         raise SystemExit(
             "error: expected-file contains no `name==version` pins — is it "
             "a `uv export --format requirements-txt` output?"
         )
-    return {pins[n] for n in pins} - {pins[n] for n in conditional}, {pins[n] for n in conditional}
+    required = set(unconditional.values()) - {
+        pin for pin in conditional if pin.partition("==")[0] in unconditional
+    }
+    return required, conditional
+
+
+def parse_marker_variants(text: str) -> dict[str, list[tuple[str, str | None]]]:
+    """Names the export pins under MORE THAN ONE version, with their markers.
+
+    A python-version split (`beartype==0.22.9 ; < '3.15'` beside
+    `beartype==0.23.1 ; >= '3.15'`) is one distribution the image carries
+    exactly one build of, not a skew: the lenient conditional treatment cannot
+    disambiguate which pin the image should carry. Each entry lists
+    `(pin, marker)` per version — `marker` is `None` for an unconditioned row
+    — so the skew check can select the pin whose marker applies to the image's
+    own interpreter instead of an arbitrary one of the set.
+    """
+    by_name: dict[str, dict[str, str | None]] = {}
+    for line in text.splitlines():
+        stripped = line.strip()
+        m = _REQ.match(stripped)
+        if not m:
+            continue
+        marker = stripped.split(";", 1)[1].strip() if ";" in stripped else None
+        name = canon(m.group(1))
+        by_name.setdefault(name, {})[m.group(2)] = marker
+    return {
+        name: [(f"{name}=={version}", marker) for version, marker in versions.items()]
+        for name, versions in by_name.items()
+        if len(versions) > 1
+    }
+
+
+def image_python_version(dump_text: str) -> str | None:
+    """The `python-full-version` line `_DUMP` prints first, or `None`."""
+    for line in dump_text.splitlines():
+        if line.startswith(_PYFULL_LINE):
+            return line[len(_PYFULL_LINE) :].strip()
+    return None
 
 
 def parse_actual(text: str) -> set[str]:
@@ -107,6 +213,55 @@ def parse_actual(text: str) -> set[str]:
     if not pins:
         raise SystemExit(f"error: no distributions dumped from the image:\n{text}")
     return set(pins.values())
+
+
+def _applicable_variant_pins(expected_text: str, py_version: str | None) -> dict[str, str]:
+    """For every marker-split name this gate can disambiguate: the one pin
+    whose marker applies on the image interpreter. Names whose applicable pin
+    cannot be determined are absent — their caller must gate nothing."""
+    applicable: dict[str, str] = {}
+    for name, rows in parse_marker_variants(expected_text).items():
+        selected = {
+            pin for pin, marker in rows if _marker_selects_version(marker, py_version) is True
+        }
+        if len(selected) == 1:
+            applicable[name] = next(iter(selected))
+    return applicable
+
+
+def _skewed(
+    actual_by_name: dict[str, str],
+    expected_by_name: dict[str, str],
+    applicable: dict[str, str],
+    variant_names: set[str],
+) -> dict[str, str]:
+    """Map each name whose installed pin is not the expected one to the pin
+    it should have carried.
+
+    A marker-split dependency is pinned under two versions whose markers
+    partition the python versions; the image carries the one its interpreter
+    selects. Compare against that pin — not an arbitrary member of the set,
+    which reported the correct image as skewed whenever the set happened to
+    surface the other row. When the applicable pin cannot be determined (no
+    dumped interpreter version, markers this gate cannot evaluate), the name
+    falls back to the lenient treatment and gates nothing: excluding it is an
+    explicit fallback, not a coin-flip between the two rows — which is exactly
+    what comparing against the set-arbitrary `expected_by_name` entry would be.
+    """
+
+    def _expected_pin(name: str) -> str | None:
+        if name in applicable:
+            return applicable[name]
+        if name in variant_names:
+            return None
+        return expected_by_name[name]
+
+    skewed: dict[str, str] = {}
+    for name in actual_by_name.keys() & expected_by_name.keys():
+        expected = _expected_pin(name)
+        if expected is not None and expected != actual_by_name[name]:
+            skewed[name] = expected
+    return skewed
 
 
 def main() -> int:
@@ -177,25 +332,27 @@ def main() -> int:
     everything_expected = required | conditional
     actual_by_name = {p.partition("==")[0]: p for p in actual}
     expected_by_name = {p.partition("==")[0]: p for p in everything_expected}
-    skewed_names = {
-        name
-        for name in actual_by_name.keys() & expected_by_name.keys()
-        if actual_by_name[name] != expected_by_name[name]
-    }
+    skewed = _skewed(
+        actual_by_name,
+        expected_by_name,
+        _applicable_variant_pins(expected_text, image_python_version(proc.stdout)),
+        set(parse_marker_variants(expected_text)),
+    )
+    skewed_names = set(skewed)
     missing = sorted(p for p in required - actual if p.partition("==")[0] not in skewed_names)
     extra = sorted(
         p for p in actual - everything_expected if p.partition("==")[0] not in skewed_names
     )
-    skewed = sorted(
-        f"{actual_by_name[name]} (image) != {expected_by_name[name]}" for name in skewed_names
+    skewed_lines = sorted(
+        f"{actual_by_name[name]} (image) != {expected}" for name, expected in skewed.items()
     )
-    if missing or extra or skewed:
+    if missing or extra or skewed_lines:
         print(f"image {args.image} does NOT reconcile to the lock:")
         for p in missing:
             print(f"  locked, not in image : {p}")
         for p in extra:
             print(f"  in image, not locked : {p}")
-        for p in skewed:
+        for p in skewed_lines:
             print(f"  version mismatch     : {p}")
         return 1
     print(
