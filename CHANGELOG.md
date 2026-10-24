@@ -23,6 +23,15 @@ or placeholder-only section.
 
 ## [Unreleased]
 
+### Changed
+
+- **Feature-parity decisions for v1.0 (#2279, #2280).** Run retry is a
+  deliberate v1.0 non-goal (post-v1.0 must be a new Attempt under the same
+  Run/NodeRun — never a `RetryRun`). CLI stays operator-lifecycle only; product
+  CRUD remains Workspace UI + public HTTP APIs. Recorded in
+  `FEATURE-PARITY-MATRIX.md`, `ROADMAP.md` explicit non-goals, and the
+  retirement delete map (#2274).
+
 ### Added
 
 - **`/health` names the Reactor's persistence authority beside every other
