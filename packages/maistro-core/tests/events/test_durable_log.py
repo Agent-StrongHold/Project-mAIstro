@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import AsyncIterator
+from pathlib import Path
 
 import aiosqlite
 import pytest
@@ -65,6 +66,18 @@ class TestAppend:
         assert len(events) == 50
 
 
+class TestReplayCursor:
+    async def test_acknowledgement_is_monotonic(self, log: EventLogStore) -> None:
+        assert await log.get_replay_cursor("reactor") == 0
+        assert await log.acknowledge_replay("reactor", 4) == 4
+        assert await log.acknowledge_replay("reactor", 2) == 4
+        assert await log.get_replay_cursor("reactor") == 4
+
+    async def test_negative_acknowledgement_is_rejected(self, log: EventLogStore) -> None:
+        with pytest.raises(ValueError, match="non-negative"):
+            await log.acknowledge_replay("reactor", -1)
+
+
 class TestQuery:
     async def test_filter_by_type(self, log: EventLogStore) -> None:
         await log.append("agent.created")
@@ -95,6 +108,24 @@ class TestQuery:
             await log.append("e.o")
         events = await log.query()
         assert [e.id for e in events] == sorted(e.id for e in events)
+
+
+async def test_sqlite_replay_cursor_survives_restart(tmp_path: Path) -> None:
+    database = tmp_path / "event-log.db"
+    first_connection = await aiosqlite.connect(database)
+    first = SqliteEventLog(first_connection)
+    await first.ensure_schema()
+    event = await first.append("agent.created")
+    assert await first.acknowledge_replay("reactor", event.id) == event.id
+    await first_connection.close()
+
+    restarted_connection = await aiosqlite.connect(database)
+    restarted = SqliteEventLog(restarted_connection)
+    await restarted.ensure_schema()
+    try:
+        assert await restarted.get_replay_cursor("reactor") == event.id
+    finally:
+        await restarted_connection.close()
 
 
 def test_append_from_bus_event() -> None:

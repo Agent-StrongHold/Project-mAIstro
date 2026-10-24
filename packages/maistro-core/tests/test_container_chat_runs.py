@@ -28,6 +28,7 @@ from maistro.runs.chat_refusal import ChatTurnRefused
 from maistro.runs.lifecycle import InvalidLifecycleTransition
 from maistro.runs.model import TERMINAL_RUN_STATUSES, Run, RunStatus
 from maistro.runs.store import RunIntegrityError, RunNotFound
+from maistro.security._types import ANONYMOUS_AUTH
 from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 from maistro.types.config import AgentConfig
 
@@ -66,6 +67,40 @@ async def test_a_turn_yields_a_run_id_that_resolves() -> None:
     assert run.provenance[ADMISSION_SOURCE] == CHAT_SOURCE
     assert run.provenance[SESSION_ID_KEY] == "sess-1"
     assert run.provenance["request_id"] == "req-1"
+
+
+@pytest.mark.ac("ADR-082326-c126/AC-3")
+async def test_an_authenticated_turn_admits_through_run_authorization() -> None:
+    """A caller that crossed the auth boundary admits as that identity (#1152).
+
+    The container must construct a `RunAuthorization` from the authenticated
+    principal -- not copy the actor string into every identity field -- so the
+    store's scope and owned-agent checks actually run on production admissions.
+    """
+
+    class _Auth:
+        user_id = "operator-9"
+
+    container = await _container()
+    container.conduit = _Conduit()
+
+    result = await container.route_request(
+        [{"role": "user", "content": "what broke?"}],
+        auth=_Auth(),
+    )
+
+    run = await container.run_store.get_run(result["run_id"])
+    assert run.initiating_principal_id == "operator-9"
+    assert run.acting_principal_id == "operator-9"
+    assert run.actor_principal_id == "operator-9"
+    workspace_id, project_id = await container.chat_admitter.admission_scope()
+    assert (run.workspace_id, run.project_id) == (workspace_id, project_id)
+
+
+async def test_an_anonymous_turn_keeps_the_legacy_admission_path() -> None:
+    container = await _container()
+    assert await container._chat_run_authorization(ANONYMOUS_AUTH) is None
+    assert await container._chat_run_authorization(None) is None
 
 
 async def test_the_openai_shape_is_untouched() -> None:

@@ -235,7 +235,7 @@ class TestContextAndBlackboard:
             "r-ctx",
             blackboard_snapshot={"metadata": "not-a-dict-and-not-iterable-pairs"},
         )
-        ctx = _build_ctx(record, "n1")
+        ctx = _build_ctx(record, "n1", _node_spec(record.run.graph.materialize(), "n1"))
         assert ctx.blackboard is None
         assert ctx.metadata["synth_depth"] == 0
 

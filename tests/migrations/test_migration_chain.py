@@ -117,6 +117,9 @@ EXPECTED_TABLES = frozenset(
         # until migration 019 gave the Workspace a table of its own.
         "canonical_workspaces",
         "canonical_workspace_memberships",
+        # The live Persona beside that Workspace (#12, 064): one row per
+        # Workspace, removed by the foreign key when the owner row goes.
+        "canonical_personas",
         # NOTE: tables the runtime provisions at wire time (capability
         # approvals/bindings/invocation effects, canonical_workspace_lifecycle)
         # are deliberately absent: they are not chain-owned, and a clean
@@ -139,8 +142,16 @@ EXPECTED_TABLES = frozenset(
         # a restart still answers `find_valid` instead of silently failing
         # closed and re-prompting. Lives at the end of the chain (039).
         "elevation_grants",
+        # Host-authorized delegation grants (#845): the durable backing of the
+        # delegation authority a Sentinel consults before honoring any
+        # agent-to-agent handoff. Lives at the end of the chain (067; the
+        # merged identity develop shipped, kept verbatim).
+        "delegation_grants",
         "episodic_memories",
         "event_log",
+        # The durable legacy replay acknowledgement (#836, 065): one row per
+        # replay consumer, mirroring `consumer_cursors`' shape and rationale.
+        "event_replay_cursors",
         "graph_continuations",
         "graph_templates",
         "handler_invocations",
@@ -162,6 +173,11 @@ EXPECTED_TABLES = frozenset(
         # restart (#556).
         "node_templates",
         "outcomes",
+        # The durable record that the installer-era `default` principal became
+        # `conductor` (068, #1095). The chain asserts on the live catalog, so a
+        # migration that leaves a table behind must see it named here — the
+        # suite failed until it did, which is the check working.
+        "principal_identity_mappings",
         # A version and the label pointing at it were one row until 022; a
         # version may carry several labels, which that shape had no room for
         # (#328).

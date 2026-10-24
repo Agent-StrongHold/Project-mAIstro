@@ -57,6 +57,21 @@ class ScopedRunReader:
         self.project_store = project_store
         self._authorizer = WorkspaceAuthorizer(workspace_store)
 
+    async def list_recent_runs(
+        self, workspace_id: str, *, principal_id: str, limit: int = 100, offset: int = 0
+    ) -> list[Run]:
+        """Discover canonical Runs through the same Workspace/Project policy."""
+        try:
+            await self._authorizer.require(principal_id, workspace_id, WorkspaceAction.VIEW)
+        except WorkspaceAuthorizationDenied:
+            raise RunNotVisible from None
+        runs = await self.run_store.list_recent_runs(workspace_id, limit=limit, offset=offset)
+        visible = []
+        for run in runs:
+            if run.workspace_id == workspace_id and await self._admits(run, principal_id):
+                visible.append(run)
+        return visible
+
     async def get_run(self, run_id: str, *, principal_id: str) -> Run:
         return await self._visible_run(run_id, principal_id)
 
