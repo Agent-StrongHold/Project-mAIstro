@@ -231,6 +231,49 @@ def _durable_inventory(directory: Path) -> list[tuple[str, str]]:
     return [(name, desc) for name, desc in _DURABLE_FILES if (directory / name).is_file()]
 
 
+def _backup_archive_path(path: Path, out: str) -> Path:
+    """Resolve ``--out`` (or the timestamped default) and refuse a bad target."""
+    out_path = (
+        Path(out).expanduser()
+        if out
+        else path.parent / (f"conductor-data-{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}.tar.gz")
+    )
+    if out_path.suffix == ".gz" and not out_path.name.endswith(".tar.gz"):
+        console.print(f"[red]--out must end in .tar.gz (got {out_path.name}).[/red]")
+        raise typer.Exit(code=2)
+    if out_path.exists():
+        console.print(
+            f"[red]Refusing to overwrite existing archive:[/red] {out_path}. "
+            "Choose another --out name (or move the old archive aside)."
+        )
+        raise typer.Exit(code=2)
+    return out_path
+
+
+def _note_uncaptured_durable_files(inventory: list[tuple[str, str]]) -> None:
+    """Flag known durable files the directory does not hold (optional ones)."""
+    captured = {name for name, _ in inventory}
+    for missing, _desc in _DURABLE_FILES:
+        if missing in {"state.db", "credential_master.key"}:
+            continue
+        if missing not in captured:
+            console.print(
+                f"  [yellow]note: {missing} not present — not used by this "
+                "deployment, or already lost.[/yellow]"
+            )
+
+
+def _write_staged_archive(files: list[Path], root: Path, tmp_path: Path) -> None:
+    """Write every file into one tar.gz at ``tmp_path`` and fsync the archive."""
+    with tarfile.open(tmp_path, "w:gz") as tar:
+        for file_path in files:
+            tar.add(file_path, arcname=file_path.relative_to(root).as_posix())
+    # The rename is the atomicity boundary: fsync the archive first so
+    # the final name never resolves to bytes that are not yet on disk.
+    with open(tmp_path, "rb") as handle:
+        os.fsync(handle.fileno())
+
+
 def _print_inventory(items: list[tuple[str, str]], label: str) -> None:
     console.print(f"  {label}:")
     if not items:
@@ -278,21 +321,7 @@ def backup(
     material: it contains the credential master key and every vault entry.
     """
     path = _resolve_data_dir(data_dir)
-
-    out_path = (
-        Path(out).expanduser()
-        if out
-        else path.parent / (f"conductor-data-{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}.tar.gz")
-    )
-    if out_path.suffix == ".gz" and not out_path.name.endswith(".tar.gz"):
-        console.print(f"[red]--out must end in .tar.gz (got {out_path.name}).[/red]")
-        raise typer.Exit(code=2)
-    if out_path.exists():
-        console.print(
-            f"[red]Refusing to overwrite existing archive:[/red] {out_path}. "
-            "Choose another --out name (or move the old archive aside)."
-        )
-        raise typer.Exit(code=2)
+    out_path = _backup_archive_path(path, out)
 
     files = sorted(p for p in path.rglob("*") if p.is_file())
     if not files:
@@ -309,24 +338,11 @@ def backup(
     console.print(f"  archive: {out_path}")
     console.print(f"  files  : {len(files)} ({total_bytes} bytes)")
     _print_inventory(inventory, "captured durable files")
-    for missing, _desc in _DURABLE_FILES:
-        if missing in {"state.db", "credential_master.key"}:
-            continue
-        if missing not in {name for name, _ in inventory}:
-            console.print(
-                f"  [yellow]note: {missing} not present — not used by this "
-                "deployment, or already lost.[/yellow]"
-            )
+    _note_uncaptured_durable_files(inventory)
 
     tmp_path = out_path.with_name(f".{out_path.name}.tmp")
     try:
-        with tarfile.open(tmp_path, "w:gz") as tar:
-            for file_path in files:
-                tar.add(file_path, arcname=file_path.relative_to(path).as_posix())
-        # The rename is the atomicity boundary: fsync the archive first so
-        # the final name never resolves to bytes that are not yet on disk.
-        with open(tmp_path, "rb") as handle:
-            os.fsync(handle.fileno())
+        _write_staged_archive(files, path, tmp_path)
         os.replace(tmp_path, out_path)
         _fsync_dir(out_path.parent)
     except OSError as exc:
@@ -407,6 +423,31 @@ def _swap_into_place(staging: Path, target: Path, previous: Path) -> None:
     _fsync_dir(target.parent)
 
 
+def _refuse_stale_staging(staging: Path) -> None:
+    """Refuse a staging tree left behind by a killed restore.
+
+    Nothing has been lost — the original directory is either still in place
+    or in a .restore-old-* sibling — but this staging tree is unusable now.
+    Ask rather than guess.
+    """
+    if not staging.exists():
+        return
+    console.print(
+        f"[red]Stale staging directory exists:[/red] {staging}. Inspect it "
+        "and remove it (the original directory is untouched), then re-run."
+    )
+    raise typer.Exit(code=1)
+
+
+def _swap_after_extract(staging: Path, target: Path, previous: Path) -> None:
+    """Verify the extraction produced files, then swap the staging tree in."""
+    restored = [p for p in staging.rglob("*") if p.is_file()]
+    if not restored:
+        raise OSError("archive extracted to no files")
+
+    _swap_into_place(staging, target, previous)
+
+
 @app.command("restore")
 def restore(
     data_dir: str = Option(
@@ -464,16 +505,7 @@ def restore(
     if not _confirmed(yes, f"replace {target} with the archive contents"):
         return
 
-    if staging.exists():
-        # A previous restore was killed after extracting but before (or
-        # during) the swap. Nothing has been lost — the original directory is
-        # either still in place or in a .restore-old-* sibling — but this
-        # staging tree is unusable now. Ask rather than guess.
-        console.print(
-            f"[red]Stale staging directory exists:[/red] {staging}. Inspect it "
-            "and remove it (the original directory is untouched), then re-run."
-        )
-        raise typer.Exit(code=1)
+    _refuse_stale_staging(staging)
 
     try:
         staging.mkdir(mode=0o700)
@@ -482,11 +514,7 @@ def restore(
             # traversal, and device/link attacks; the explicit check above
             # exists to name the offending member in the error.
             tar.extractall(staging, filter="data")  # filtered + path-validated above
-        restored = [p for p in staging.rglob("*") if p.is_file()]
-        if not restored:
-            raise OSError("archive extracted to no files")
-
-        _swap_into_place(staging, target, previous)
+        _swap_after_extract(staging, target, previous)
     except (tarfile.TarError, OSError, EOFError) as exc:
         # The swap is two renames; a failure here leaves the original in
         # place (or in `previous` if the first rename landed). Report both
