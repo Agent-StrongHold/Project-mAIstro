@@ -110,6 +110,30 @@ def _ids(body: dict[str, Any]) -> list[str]:
     return [item["source_id"] for item in body["items"]]
 
 
+async def test_attention_answers_when_the_hitl_spine_is_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Standalone / e2e Conductor has no graph spine — Attention must still 200.
+
+    HITL pauses are unavailable (honest flag); failed-Run projections may still
+    populate. A missing spine must not turn the Attention door into a 500.
+    """
+    from services import dag_agents
+    from services.dag_agents import CanonicalGraphUnavailable
+
+    def _refuse() -> None:
+        raise CanonicalGraphUnavailable("canonical graph execution spine is unavailable")
+
+    monkeypatch.setattr(dag_agents, "get_run_store", _refuse)
+    ws = await _workspace("admin", "Attention standalone")
+    body = await list_attention("admin", ws, now=_NOW)
+    assert body is not None
+    assert body["workspace_id"] == ws
+    assert body["items"] == []
+    assert body["summary"]["hitl_unavailable"] is True
+    assert body["summary"]["truncated"] is False
+
+
 async def test_each_member_sees_only_their_own_workspace(run_store) -> None:
     ws_admin = await _workspace("admin", "Attention admin")
     ws_user = await _workspace("user", "Attention user")
@@ -123,6 +147,7 @@ async def test_each_member_sees_only_their_own_workspace(run_store) -> None:
     assert _ids(admin_view) == ["att-admin/ask"]
     assert _ids(user_view) == ["att-user/ask"]
     assert admin_view["items"][0]["workspace_id"] == ws_admin
+    assert admin_view["summary"]["hitl_unavailable"] is False
     # A non-member gets exactly what a Workspace that does not exist gets.
     assert await list_attention("user", ws_admin, now=_NOW) is None
     assert await list_attention("user", "ws-does-not-exist", now=_NOW) is None
@@ -164,6 +189,7 @@ async def test_a_near_deadline_outranks_an_older_undated_question(run_store) -> 
         "highest_class": "time_sensitive",
         "rising": ["att-due/ask"],
         "truncated": False,
+        "hitl_unavailable": False,
     }
 
     # The horizon is configurable, and widening it is the only thing that
@@ -224,6 +250,7 @@ async def test_a_long_old_backlog_cannot_push_out_a_near_deadline(run_store) -> 
         "highest_class": "time_sensitive",
         "rising": ["att-urgent/ask"],
         "truncated": True,
+        "hitl_unavailable": False,
     }
 
 
@@ -299,6 +326,7 @@ async def test_a_machine_wait_is_not_attention(run_store) -> None:
         "highest_class": None,
         "rising": [],
         "truncated": False,
+        "hitl_unavailable": False,
     }
 
 
