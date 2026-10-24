@@ -20,15 +20,22 @@ store (#1176). The product path across a forced (SIGKILL) restart — recover,
 execute exactly once on the same Run, idempotent replay — is pinned by
 `packages/maistro-server/tests/test_task_restart_recovery.py`.
 
-What remains limited: the task *receipt* a fresh process serves is still the
-living queue's answer (ADR-018 best-effort rows), so terminal state after a
-restart is read through the canonical Run (`GET /v1/runs/{run_id}`) and
-idempotent resubmission rather than rehydrating every historical receipt
-into memory; and without a database the spine is in-process only, so
-admitted tasks are still lost on restart (`run_store_in_process_only`).
-Wave-level crash recovery (crash-loop quarantine, checkpoint version
-gating) remains [ADR-056](docs/adr/ADR-056-task-crash-recovery.md)'s
-orchestrator path.
+What remains limited: task **dispatch** is per-process — a replica's queue runs
+what it admitted or recovered at its own startup, so a queued task waits for
+its accepting replica (or a successor's recovery) rather than being dequeued by
+a peer mid-flight — and the in-memory receipt store holds only this process's
+own tasks. Cross-replica **visibility** is closed (#1690): `GET /v1/tasks/{id}`
+and `GET /v1/tasks/{id}/result` read the shared durable tier (TaskRecord row,
+then canonical Run, projected over both) when the local queue cannot answer,
+and `DELETE /v1/tasks/{id}` cancels through the canonical Run from any replica,
+so behind round-robin a client that creates a task and polls it converges on
+the Run's truth from every replica; a foreign principal gains nothing through
+the durable lookup. Historical receipts for tasks a process never admitted are
+served by projection rather than rehydrated into memory; without a database the
+spine is in-process only, so admitted tasks are still lost on restart
+(`run_store_in_process_only`). Wave-level crash recovery (crash-loop
+quarantine, checkpoint version gating) remains
+[ADR-056](docs/adr/ADR-056-task-crash-recovery.md)'s orchestrator path.
 
 ### Canvas background job runner
 
