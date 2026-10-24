@@ -279,3 +279,61 @@ Evidence this round (no test delta; the front-matter stays +28):
   steps 12–14 passed on the hosted run at this head and the rebuilt
   rsi-runner passes both its scanners locally, so a hosted re-run is the
   expected green path.
+
+## CI-repair round at 62220a55e9c0 (hosted run 40088232144, 2026-10-24 11:01Z)
+
+The "expected green path" above did not hold: the next hosted run failed the
+same step (**Trivy scan maistro-rsi-runner**) with the npm audit log lines in
+the step tail again belonging to a succeeded hive-conductor frontend stage
+(verified via `gh run view --json` — that job's only failing step is the
+rsi-runner trivy scan). The scan's one finding: `libbrotli1 1.1.0-2+b7`
+(CVE-2026-111497, HIGH, DSA-6582-1, fixed in 1.1.0-2+deb13u1).
+
+This round the root cause was **proven, and it is not mirror lag** — the
+prior round's diagnosis is superseded:
+
+- The same runs' build logs show the re-executed `runtime-apt` stage
+  **installing 1.1.0-2+deb13u1** (`Get:54 ... libbrotli1 amd64
+  1.1.0-2+deb13u1`, runs 40088232144 at 11:10Z and 40091186336 at 11:55Z),
+  yet both scans report the pre-DSA **1.1.0-2+b7** as installed. The loaded
+  `maistro-rsi-runner:pr-NNNN` tag was not assembled from the freshly
+  executed stage.
+- Mechanism: buildx cache keys are computed **pre-execution** (instruction
+  string + parent key chain), never from a RUN's fresh bytes. `--no-cache-filter
+  runtime-apt` (#795) forces the stage to re-execute but cannot propagate:
+  downstream stage keys still match pre-advisory cache entries, and those
+  restored layer chains / mode=max cached manifests carry the old OS layer
+  into the exported image. The 09:13Z run (40081082641) shows the apt stage
+  fully CACHED (pre-DSA chain origin); the auto-373 run independently shows
+  the same build-vs-scan contradiction. This failure class already hit the
+  bookworm bases once — the #1152 pin-note documents the identical remedy.
+- Repair (repo doctrine, same as #1152): bump the digest-pinned
+  `python:3.12-slim` base `a6e34c598…` (recorded 2026-10-19) → `a0f57064cbd…`
+  (current index digest, still Python 3.12.15, post-DSA OS serialization) so
+  the key chain changes from the FROM down and the rebuilt image assembles
+  the freshly executed layers. References updated together per the pins
+  contract: `Dockerfile.rsi-runner`, `Dockerfile.research` (×2),
+  `packages/hive-conductor/tests/Dockerfile`,
+  `deploy/sbx/template/Dockerfile.tests`, `quality/image-pins.json`.
+  No `.trivyignore.yaml` entry: the fix is real and published, so suppressing
+  it would ship a known-fixable HIGH in a containment-boundary image.
+
+Local proof at this head (no Python/test changes; front-matter stays +28):
+
+- Full `Dockerfile.rsi-runner` build from the new digest with CI's shape
+  (`--no-cache-filter runtime-apt`): final image
+  `docker run dpkg -l libbrotli1` = **1.1.0-2+deb13u1**; trivy 0.73.0 with
+  CI's exact invocation (`--severity HIGH,CRITICAL --exit-code 1
+  --ignore-unfixed --ignorefile .trivyignore.yaml`): **exit 0**, 0 findings
+  (debian 13.7, pkg_num=168 — same analyzer path as the hosted scan).
+- `Dockerfile.research` `production-apt` stage rebuilt from the new digest
+  and scanned with the same invocation: **exit 0**, 0 findings.
+- hive e2e test image builds via its real CI invocation
+  (`docker compose -f docker-compose.test.yml --profile test build
+  api-tests`): exit 0.
+- `check-image-pins.py`: 8 pins across 10 Dockerfiles, all registered; zero
+  remaining references to the old digest.
+- Gates unchanged by this round re-run: ruff check / format clean (3487
+  files), vulture ledger with CI argv exit 0 (1302 == 1302, base
+  4de7e906d9dc, nothing to amend), full canvas suite 581 passed / 75
+  skipped, suite inventory matches the recorded baseline (21 suites).
