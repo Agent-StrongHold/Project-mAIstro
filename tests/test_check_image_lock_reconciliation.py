@@ -503,6 +503,56 @@ def test_conditional_pin_version_is_checked_when_it_ships(gate, tmp_path, monkey
     assert "version mismatch     : secretstorage==3.6.0 (image) != secretstorage==3.5.0" in out
 
 
+def test_conditional_pin_with_multiple_marker_versions_accepts_either_branch(
+    gate, tmp_path, monkeypatch, capsys
+):
+    """A lock can resolve one name to several marker-conditional versions
+    (beartype 0.22.9 for python<3.15 and 0.23.1 for python>=3.15). The image
+    ships one branch, so matching ANY branch must reconcile. Regression for
+    #5: collapsing the name to one pin compared the installed branch against
+    the other branch and red-lit a correct image."""
+    expected = _write_expected(
+        tmp_path,
+        "fastapi==0.142.2\n"
+        "beartype==0.22.9 ; python_full_version < '3.15'\n"
+        "beartype==0.23.1 ; python_full_version >= '3.15'\n",
+    )
+    _install_docker(monkeypatch, gate, _Docker(_dump("fastapi==0.142.2", "beartype==0.22.9")))
+    monkeypatch.setattr(sys, "argv", _argv(expected))
+    assert gate.main() == 0
+    out = capsys.readouterr().out
+    assert "ships exactly the locked set" in out
+    # Reporting contract of the merged gate: without an @image-env@ line the
+    # fork degrades to the lenient rule and the OK line says so (the develop-
+    # side phrasing counted lenient conditionals; this gate names the fork
+    # degradation explicitly instead).
+    assert (
+        "forks evaluated against the image interpreter's environment: no @image-env@ line — lenient"
+        in out
+    )
+
+
+def test_conditional_pin_with_multiple_marker_versions_still_names_an_unknown_branch(
+    gate, tmp_path, monkeypatch, capsys
+):
+    """The leniency is for the lock's OWN branches. A third, unnamed version
+    is still a real divergence and must be reported as a version mismatch."""
+    expected = _write_expected(
+        tmp_path,
+        "fastapi==0.142.2\n"
+        "beartype==0.22.9 ; python_full_version < '3.15'\n"
+        "beartype==0.23.1 ; python_full_version >= '3.15'\n",
+    )
+    _install_docker(monkeypatch, gate, _Docker(_dump("fastapi==0.142.2", "beartype==0.24.0")))
+    monkeypatch.setattr(sys, "argv", _argv(expected))
+    assert gate.main() == 1
+    out = capsys.readouterr().out
+    assert "version mismatch     : beartype==0.24.0 (image) != " in out
+    assert "beartype==0.22.9 or beartype==0.23.1" in out
+    assert "locked, not in image" not in out
+    assert "in image, not locked" not in out
+
+
 def test_member_pin_satisfies_the_contract(gate, tmp_path, monkeypatch, capsys):
     expected = _write_expected(tmp_path, "fastapi==0.142.2\n")
     _install_docker(

@@ -58,3 +58,62 @@ The other two #1182 tests pass verbatim once `_expected_clause` is ported.
 - `check-suite-inventory.py --suite tests/` and `--suite
   packages/maistro-canvas/tests` — ok (the union count still matches
   baseline + Σ deltas, both prior notes' rows still true).
+
+## Second develop sync: #2306 collapsed the fork on develop's side (this round)
+
+Develop advanced to `17746da75` and repaired the same hosted red from the
+other direction: `#2306` collapsed `beartype` to a single unconditional
+`0.23.1` in `uv.lock` (so `uv export` no longer emits two forks at all),
+bumped the `security.yml` expected-member pin to `setuptools==84.2.1`, and
+rewrote `parse_expected` back to flat pin sets (fork handling deleted as no
+longer reachable) plus two new tests asserting the lenient any-branch rule
+and the `one of X, Y (X or Y)` report clause.
+
+Merge resolution (conflict in `scripts/check-image-lock-reconciliation.py`
+only; every other overlapping file auto-merged coherently):
+
+- The gate keeps this branch's superset: per-name pin lists, `@image-env@`
+  interpreter capture, and the PEP 508 marker evaluator. It is strictly
+  stronger than develop's flat-pin version and remains correct now that the
+  lock no longer forks (single pins take the historical exact path; the fork
+  machinery is dormant, not dead weight — the next fork re-arms it). The only
+  develop-side change folded in is `_expected_clause`'s richer report
+  (`one of X, Y (X or Y)`), which is compatible with both suites'
+  substring assertions.
+- `tests/test_check_image_lock_reconciliation.py` keeps every test from both
+  sides (67 + 2 = 69; net node count unchanged vs develop's recorded
+  baseline, hence `inventory-delta: +0`). Develop's
+  `test_conditional_pin_with_multiple_marker_versions_accepts_either_branch`
+  asserted develop's `2 marker-conditional pin(s)` OK-line phrasing; adapted
+  (name and intent preserved, semantics identical — exit 0, lenient
+  acceptance) to this gate's explicit fork-degradation phrasing
+  (`no @image-env@ line — lenient`). Its companion unknown-branch test passes
+  verbatim on the merged `_expected_clause`.
+- `uv.lock`/`security.yml`/Dockerfiles/KNOWN-GAPS take the union: develop's
+  beartype collapse + setuptools 84.2.1 + explicit `libbrotli1`, and this
+  branch's digest bumps + worker docs.
+
+Evidence (executed this round at the merged head):
+
+- All four real exports (engine 130, hive 67, research 315, rsi-runner 220
+  names): **zero forked names, zero `UnsupportedMarker`** — the hosted
+  failure mode is doubly dead (gate understands forks; lock no longer forks).
+- Real-docker proof on the merged gate: an image shipping the locked
+  `beartype==0.23.1` on Python 3.13.16 reconciles (`OK … forks evaluated
+  against the image interpreter's environment: yes`; this also proves the
+  collapsed pin installs and imports on the images' interpreter), while a
+  stale `0.22.9` image now fails with
+  `version mismatch : beartype==0.22.9 (image) != beartype==0.23.1` — the
+  gate still bites when the lock and an image diverge.
+- `uv run pytest tests/test_check_image_lock_reconciliation.py` — 69 passed.
+- `uv run pytest packages/maistro-canvas/tests` — 581 passed, 75 skipped.
+- `ruff check .` / `ruff format --check .` — clean (3494 files).
+- `uv run mypy --strict packages/maistro-core/src` — clean (827 files;
+  CI's exact argv).
+- Vulture ledger with CI's exact argv — exit 0, 0 unclassified (the merged
+  ledger is develop's; the 1-row dormancy exists on develop's own checkout
+  too, verified in a scratch worktree, not merge-created).
+- Suite inventory: `tests/` 5916 == recorded; canvas 636 == recorded.
+- `check-image-pins.py` (8 pins / 10 Dockerfiles, merged digest + libbrotli1
+  present), `check-backlog-consistency.py`, canvas + hive-conductor frontend
+  `npm audit --audit-level=high` — all clean.

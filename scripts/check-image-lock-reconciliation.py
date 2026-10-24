@@ -425,7 +425,7 @@ def _expected_clause(candidates: set[str]) -> str:
     ordered = sorted(candidates)
     if len(ordered) == 1:
         return ordered[0]
-    return "one of " + ", ".join(ordered)
+    return "one of " + ", ".join(ordered) + " (" + " or ".join(ordered) + ")"
 
 
 def _skew_message(
