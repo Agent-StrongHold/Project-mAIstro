@@ -52,7 +52,7 @@ def _capture_runtime_seams(monkeypatch, container: SimpleNamespace) -> dict[str,
 
     monkeypatch.setattr("maistro.container.create_container", fake_create_container)
     monkeypatch.setattr("maistro.agents.factory.create_agents", fake_create_agents)
-    monkeypatch.setattr("services.secrets.maistro_llm_api_key", lambda _settings: "")
+    monkeypatch.setattr("services.secrets.effective_llm_gateway_key", lambda _settings: "")
     return captured
 
 
@@ -96,7 +96,7 @@ async def test_start_passes_container_prompt_manager_to_agent_factory(monkeypatc
 
     monkeypatch.setattr("maistro.container.create_container", fake_create_container)
     monkeypatch.setattr("maistro.agents.factory.create_agents", fake_create_agents)
-    monkeypatch.setattr("services.secrets.maistro_llm_api_key", lambda _settings: "")
+    monkeypatch.setattr("services.secrets.effective_llm_gateway_key", lambda _settings: "")
 
     bridge = MaistroCoreBridge()
     await bridge.start(
@@ -276,7 +276,7 @@ async def test_start_populates_the_dict_the_hierarchy_closed_over(monkeypatch):
 
     monkeypatch.setattr("maistro.container.create_container", fake_create_container)
     monkeypatch.setattr("maistro.agents.factory.create_agents", fake_create_agents)
-    monkeypatch.setattr("services.secrets.maistro_llm_api_key", lambda _settings: "")
+    monkeypatch.setattr("services.secrets.effective_llm_gateway_key", lambda _settings: "")
 
     bridge = MaistroCoreBridge()
     await bridge.start(Settings(maistro_agents_dir="agents"))
@@ -333,7 +333,7 @@ async def test_start_carries_the_permission_grants_onto_the_container_config(mon
 
     monkeypatch.setattr("maistro.container.create_container", fake_create_container)
     monkeypatch.setattr("maistro.agents.factory.create_agents", fake_create_agents)
-    monkeypatch.setattr("services.secrets.maistro_llm_api_key", lambda _settings: "")
+    monkeypatch.setattr("services.secrets.effective_llm_gateway_key", lambda _settings: "")
 
     await MaistroCoreBridge().start(
         Settings(
@@ -368,7 +368,7 @@ async def test_start_carries_the_model_bindings_onto_the_container_config(monkey
 
     monkeypatch.setattr("maistro.container.create_container", fake_create_container)
     monkeypatch.setattr("maistro.agents.factory.create_agents", fake_create_agents)
-    monkeypatch.setattr("services.secrets.maistro_llm_api_key", lambda _settings: "")
+    monkeypatch.setattr("services.secrets.effective_llm_gateway_key", lambda _settings: "")
 
     await MaistroCoreBridge().start(
         Settings(

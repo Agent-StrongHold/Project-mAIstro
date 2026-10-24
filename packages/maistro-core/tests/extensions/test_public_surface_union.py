@@ -79,3 +79,35 @@ def test_both_merged_halves_are_exported() -> None:
         "ensure_compatible",
     ):
         assert name in exported, f"compat surface missing from __all__: {name}"
+
+
+def test_workspace_policy_names_stay_distinct() -> None:
+    """The two Workspace-policy meanings keep separate root exports.
+
+    The develop-sync merge that brought the #971 org/Workspace policy engine
+    together with #969's effective-authority inputs hit a name clash: both
+    lanes define a ``WorkspaceExtensionPolicy`` on different modules. Per the
+    same precedent as the dual ``CompatibilityReport`` (M9-C1 vs M9-B2), the
+    root keeps the #969 effective-authority input under the historical name
+    and publishes the #971 enablement/ceiling policy as
+    ``WorkspaceExtensionEnablementPolicy``. The #971 class remains importable
+    under its own name from ``maistro.extensions.policy``. Pinning the pair
+    here so a future sync cannot silently collapse either surface.
+    """
+    from maistro.extensions.effective_authority import (
+        WorkspaceExtensionPolicy as EffectiveAuthorityWorkspacePolicy,
+    )
+    from maistro.extensions.policy import (
+        WorkspaceExtensionPolicy as EngineWorkspacePolicy,
+    )
+
+    exported = set(maistro.extensions.__all__)
+    assert "WorkspaceExtensionPolicy" in exported
+    assert "WorkspaceExtensionEnablementPolicy" in exported
+    # The root name binds the #969 input; the alias binds the #971 policy.
+    assert maistro.extensions.WorkspaceExtensionPolicy is EffectiveAuthorityWorkspacePolicy
+    assert maistro.extensions.WorkspaceExtensionEnablementPolicy is EngineWorkspacePolicy
+    # And the two are genuinely different contracts, not one class re-exported.
+    assert maistro.extensions.WorkspaceExtensionPolicy is not (
+        maistro.extensions.WorkspaceExtensionEnablementPolicy
+    )

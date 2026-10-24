@@ -8,6 +8,8 @@ from httpx import ASGITransport, AsyncClient
 
 from maistro.config.settings import get_settings
 from maistro.observability.middleware import REQUEST_ID_HEADER
+from maistro.runs.model import RunStatus
+from maistro.runs.store_boundary import RunStoreBoundary
 from maistro.runs.wiring import wire_execution_spine
 from maistro.tasks import queue as queue_module
 from maistro.tasks.http_contract import (
@@ -18,7 +20,8 @@ from maistro.tasks.http_contract import (
     sign_workspace_scope,
 )
 from maistro.tasks.queue import configure_task_queue
-from maistro_server.api.runs import configure_run_store
+from maistro.workspaces import InMemoryWorkspaceStore, WorkspaceRole
+from maistro_server.api.runs import configure_run_boundary, configure_run_store
 from maistro_server.main import app
 
 TASK_WORKSPACE = "/tmp/maistro-workspace/test"  # nosec B108 -- API contract fixture
@@ -41,12 +44,20 @@ async def durable_spine(tmp_path, monkeypatch):
         _schedules,
         _continuations,
     ) = await wire_execution_spine(conn, workspace_id="default")
+    # Route visibility is Workspace membership (#1152, owner decision
+    # 2026-09-23): alice and bob are members; carol is nobody.
+    workspaces = InMemoryWorkspaceStore(project_store=scope_store)
+    await workspaces.create(creator_user_id="dev", name="default", workspace_id="default")
+    for member in ("alice", "bob"):
+        await workspaces.set_membership("default", user_id=member, role=WorkspaceRole.MEMBER)
     configure_task_queue(admitter=admitter)
     configure_run_store(run_store)
+    configure_run_boundary(RunStoreBoundary(run_store, workspaces, scope_store))
     try:
         yield scope_store, run_store
     finally:
         configure_run_store(None)
+        configure_run_boundary(None)
         queue_module._queue = previous
         await conn.close()
 
@@ -131,16 +142,84 @@ async def test_delegated_users_keep_distinct_task_and_run_ownership(
     own_run = await client.get(
         f"/runs/{alice_body['run_id']}", headers=_delegation_headers("alice")
     )
-    cross_run = await client.get(
+    # Owner decision 2026-09-23 (#1152): Run visibility is Workspace
+    # membership. Bob is a member of the same Workspace, so he reads Alice's
+    # Run even though she initiated it; the initiating principal is
+    # provenance, not a gate. Carol is not a member and is refused exactly
+    # like a missing id.
+    member_run = await client.get(
         f"/runs/{alice_body['run_id']}", headers=_delegation_headers("bob")
+    )
+    outsider_run = await client.get(
+        f"/runs/{alice_body['run_id']}", headers=_delegation_headers("carol")
     )
     assert own_run.status_code == 200
     assert own_run.json()["provenance"]["service_principal_id"] == "conductor"
-    assert cross_run.status_code == 404
+    assert member_run.status_code == 200
+    assert member_run.json()["run_id"] == alice_body["run_id"]
+    assert outsider_run.status_code == 404
+    missing_run = await client.get("/runs/no-such-run", headers=_delegation_headers("carol"))
+    assert missing_run.status_code == 404
+    # Word-for-word the same refusal (modulo the per-request id): an outsider
+    # learns nothing about existence.
+    assert missing_run.json()["error"]["message"] == outsider_run.json()["error"]["message"]
+    assert missing_run.json()["error"]["type"] == outsider_run.json()["error"]["type"]
     cross_cancel = await client.delete(
         f"/tasks/{alice_body['task_id']}", headers=_delegation_headers("bob")
     )
     assert cross_cancel.status_code == 404
+
+
+async def test_cancel_stays_with_the_initiator_or_an_administrator(
+    durable_spine, client: AsyncClient, monkeypatch
+) -> None:
+    """View-level Workspace membership admits reads, never lifecycle mutation.
+
+    Bob reads Alice's Run as an ordinary member, yet cancelling it would let a
+    peer terminate work they did not start, so it is refused with the same 404
+    the read seam answers. The initiating principal suffices without any
+    elevated role, and a Workspace administrator (who never initiated) also
+    suffices.
+    """
+    _scope_store, run_store = durable_spine
+    monkeypatch.setenv("API_KEYS", '["conductor:service-secret"]')
+    monkeypatch.setenv("TASK_DELEGATION_KEY", DELEGATION_KEY)
+    get_settings.cache_clear()
+
+    alice = await client.post(
+        "/tasks",
+        headers=_delegation_headers("alice"),
+        json={"description": "Alice task", "workspace": TASK_WORKSPACE},
+    )
+    member_run = await client.post(
+        "/tasks",
+        headers=_delegation_headers("bob"),
+        json={"description": "Bob task", "workspace": TASK_WORKSPACE},
+    )
+    assert alice.status_code == 202 and member_run.status_code == 202
+    alice_run_id = alice.json()["run_id"]
+    bob_run_id = member_run.json()["run_id"]
+
+    peer_cancel = await client.post(
+        f"/runs/{alice_run_id}/cancel", headers=_delegation_headers("bob")
+    )
+    assert peer_cancel.status_code == 404
+    persisted = await run_store.get_run(alice_run_id)
+    assert persisted is not None and persisted.status is not RunStatus.CANCELLED
+
+    initiator_cancel = await client.post(
+        f"/runs/{alice_run_id}/cancel", headers=_delegation_headers("alice")
+    )
+    assert initiator_cancel.status_code == 200
+    assert initiator_cancel.json()["status"] == "cancelled"
+
+    # The Workspace's creator ("dev") is its owner: an administrator who did
+    # not initiate Bob's Run may still cancel it.
+    admin_cancel = await client.post(
+        f"/runs/{bob_run_id}/cancel", headers=_delegation_headers("dev")
+    )
+    assert admin_cancel.status_code == 200
+    assert admin_cancel.json()["status"] == "cancelled"
 
 
 async def test_a_forged_originating_principal_is_rejected(

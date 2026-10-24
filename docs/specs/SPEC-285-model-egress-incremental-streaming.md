@@ -129,6 +129,35 @@ untouched.**
   stream replays without re-dispatch, and the Hive adapter test proves the
   shipped port's stream lands on the ledger with usage.
 
+## Acceptance Criteria
+
+Each criterion below is pinned by the suites named in the `tests:` front-matter;
+the structural proofs deliberately avoid wall-clock assertions.
+
+1. **Incremental delivery under one Invocation.** While the provider wire is
+   still producing, an observer-bridged chunk reaches the consumer through
+   `stream_chunks` (`test_stream_reaches_the_consumer_while_the_invocation_is_running`);
+   a buffering regression aborts the wire loudly instead of passing.
+2. **Failure cannot fabricate success.** A mid-stream provider failure
+   terminalizes the Invocation non-COMPLETED and propagates to the consumer
+   (`test_stream_failure_midstream_terminalizes_and_reaches_the_consumer`);
+   a generic error records UNKNOWN, `EffectNotApplied` records FAILED.
+3. **Abandonment is truthful.** A consumer that closes the stream early
+   cancels the pump and terminalizes UNKNOWN — never COMPLETED, never an
+   orphaned dispatch
+   (`test_stream_abandonment_never_leaves_a_completed_invocation`).
+4. **Dedup replay without re-dispatch.** A logical effect whose Invocation
+   already terminalized COMPLETED replays the recorded chunks with zero live
+   provider calls (`test_deduplicated_stream_replays_the_record_without_dispatch`).
+5. **Usage accounting for streamed calls.** The terminal usage measurement on
+   the wire reaches the Invocation ledger for streamed dispatches (the Hive
+   adapter suite pins the ledger row); an unmeasured stream records
+   `usage=None`, never zero.
+6. **One execution authority.** The streaming path admits, dedups, records,
+   quotas and terminalizes through the same Invocation lifecycle as
+   non-streaming dispatch; the observer receives parsed chunks only and cannot
+   alter admission, policy, or the terminal record.
+
 ## Ratification note
 
 The chunk-granularity and cancellation semantics above were authored and

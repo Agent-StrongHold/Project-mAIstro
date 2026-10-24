@@ -74,7 +74,7 @@ async def _construct_runtime(settings: Settings) -> EmbeddedRuntime:
     """
     import os
 
-    from services.secrets import maistro_llm_api_key
+    from services.secrets import effective_llm_gateway_key
     from services.tool_executor import admitted_tool_executor
 
     from maistro.agents.factory import _load_preamble, create_agents
@@ -87,7 +87,15 @@ async def _construct_runtime(settings: Settings) -> EmbeddedRuntime:
     from maistro.types.errors import ConfigError
 
     llm_base = (settings.litellm_api_base or "").strip()
-    llm_key = maistro_llm_api_key(settings) or ""
+    # The one effective gateway credential per the documented precedence
+    # matrix (#1824): vault -> MAISTRO_LLM_API_KEY -> LITELLM_API_KEY ->
+    # supported proxy aliases -> None. Empty is fail-closed: every governed
+    # door below (the Container's roster client, the admitted model calls and
+    # this runtime's governed egress) then dispatches under no credential at
+    # all -- there is no placeholder key to bear, and no adapter-local HTTP
+    # path left that could synthesize one (#1084).
+    llm_key = effective_llm_gateway_key(settings) or ""
+
     config = AgentConfig(
         router_api_key=settings.maistro_router_api_key or "",
         litellm_url=llm_base or "http://localhost:4000",
