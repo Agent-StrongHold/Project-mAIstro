@@ -63,3 +63,34 @@ without executing again. The second pins authorization end to end: a foreign
 authenticated principal gets 404s on every read shape through the durable tier
 and the per-replica listing never leaks the task. Both skip without
 `MAISTRO_TEST_PG_DSN`.
+
+## Re-validation 2026-10-24 (head ab69178370ab)
+
+Independent re-run of the full battery at the exact head this note ships on
+(pgvector:pg18 `pgvector/pgvector:pg18` @ 127.0.0.1:5590, `alembic upgrade head`
+clean before pytest):
+
+- `uv run ruff check .` / `uv run ruff format --check .` → clean.
+- `uv run pytest packages/maistro-core/tests/tasks -q` → **542 passed**
+  (includes the 18 projection/cancellation reads and the 4-file +23 delta
+  above).
+- `uv run pytest packages/maistro-core/tests/runs -q` → **1659 passed,
+  3 skipped**; `tests/runs/test_find_run_by_task_id.py` → **4 passed** with the
+  PostgreSQL JSONB leg active.
+- `uv run pytest packages/maistro-server/tests/test_task_cross_replica_visibility.py -v`
+  → **2 passed in 13.15s**; `test_task_restart_recovery.py -v` → **1 passed**.
+- `uv run python scripts/check-suite-inventory.py --suite
+  packages/maistro-core/tests` and `--suite packages/maistro-server/tests` →
+  both ok (recorded inventory still matches collection).
+- `uv run mypy` (canonical 7-package command) → Success, 905 source files.
+
+Residual, **pre-existing at the develop base** `4de7e906d` (not this diff):
+three server tests fail only when `DATABASE_URL`/`MAISTRO_TEST_PG_DSN` is set —
+`api/test_tasks.py::TestGetTaskResult::test_task_with_result_returns_result_body`
+(`_persist` calls `asyncio.create_task` from the sync `set_result` test path,
+`RuntimeError: no running event loop`) and the two
+`api/test_taskrunner_quota_ledger.py` cases (`request_count` 4 vs 1 with a DB
+configured). Both reproduce identically at `4de7e906d` in a detached checkout
+with the same env, and both pass without the env — an environment-coupled
+hazard of the #91/#849 durable-receipt wiring, recorded here so it is not
+re-diagnosed as a #1690 regression.
