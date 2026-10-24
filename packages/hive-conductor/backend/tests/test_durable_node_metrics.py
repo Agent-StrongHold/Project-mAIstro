@@ -63,7 +63,7 @@ def _observation(**overrides: Any) -> NodeObservation:
     return NodeObservation(**values)
 
 
-@pytest.mark.ac("M1-E/metrics-restart-and-replica")
+@pytest.mark.ac("SPEC-083026-2642/AC-6")
 def test_metrics_survive_restart_and_refresh_an_existing_replica() -> None:
     rows: dict[str, str] = {}
     writer = NodeMetricsStore(records=SharedRecords(rows))
@@ -80,7 +80,7 @@ def test_metrics_survive_restart_and_refresh_an_existing_replica() -> None:
     assert found.workspace_id == "workspace-1"
 
 
-@pytest.mark.ac("M1-E/metrics-idempotent-correlation")
+@pytest.mark.ac("SPEC-083026-2642/AC-7")
 def test_canonical_attempt_is_the_idempotency_key() -> None:
     rows: dict[str, str] = {}
     store = NodeMetricsStore(records=SharedRecords(rows))
@@ -92,7 +92,7 @@ def test_canonical_attempt_is_the_idempotency_key() -> None:
     assert list(rows) == ["attempt-1"]
 
 
-@pytest.mark.ac("M1-E/history-replica-refresh")
+@pytest.mark.ac("SPEC-083026-2601/AC-1")
 def test_history_inspection_refreshes_before_http_reads(monkeypatch: pytest.MonkeyPatch) -> None:
     from services import dag_run_inspection
 
@@ -109,7 +109,7 @@ def test_history_inspection_refreshes_before_http_reads(monkeypatch: pytest.Monk
     assert store.refreshed is True
 
 
-@pytest.mark.ac("M1-E/metrics-canonical-correlation")
+@pytest.mark.ac("SPEC-083026-2642/AC-8")
 def test_completion_projection_carries_all_canonical_ids() -> None:
     from services import node_metrics_store
 
@@ -168,7 +168,7 @@ def test_completion_projection_carries_all_canonical_ids() -> None:
     assert found.workspace_id == "workspace-1"
 
 
-@pytest.mark.ac("M1-E/metrics-retention")
+@pytest.mark.ac("SPEC-083026-2642/AC-9")
 def test_metrics_retention_evicts_the_oldest_durable_row() -> None:
     rows: dict[str, str] = {}
     store = NodeMetricsStore(max_observations=1, records=SharedRecords(rows))
@@ -179,7 +179,7 @@ def test_metrics_retention_evicts_the_oldest_durable_row() -> None:
     assert [item.attempt_id for item in store.observations(window_seconds=3600)] == ["attempt-new"]
 
 
-@pytest.mark.ac("M1-E/metrics-scope-authorization")
+@pytest.mark.ac("SPEC-083026-2642/AC-10")
 def test_workspace_scoped_reads_are_fail_closed() -> None:
     """The HTTP seam scopes reads to a caller's Workspace universe (#1174).
 
@@ -204,7 +204,7 @@ def test_workspace_scoped_reads_are_fail_closed() -> None:
     assert store.aggregate(window_seconds=3600)["count"] == 3
 
 
-@pytest.mark.ac("M1-E/metrics-restart-and-replica")
+@pytest.mark.ac("SPEC-083026-2642/AC-6")
 def test_the_projection_store_is_registered_not_declared_in_stores_py() -> None:
     """The durable store is owned here and adopted by the central wiring.
 
@@ -222,3 +222,85 @@ def test_the_projection_store_is_registered_not_declared_in_stores_py() -> None:
 
     assert node_metrics_store.node_metrics in stores._all_json_stores
     assert not hasattr(stores, "node_metrics")
+
+
+# --- store mechanics the durability contract leans on ---------------------
+
+
+def test_a_non_positive_bound_is_refused_at_construction() -> None:
+    """A bound of zero would silently evict every row as it is written; the
+    store refuses the configuration instead of wearing it."""
+    with pytest.raises(ValueError, match="max_observations must be positive"):
+        NodeMetricsStore(max_observations=0)
+
+
+def test_a_records_store_without_initialize_still_refreshes() -> None:
+    """Any mapping is a legal records store. One without the `initialize`
+    seam degenerates to a plain load on every refresh — the durable contract
+    may not require a richer protocol than the deployment provides."""
+    rows: dict[str, Any] = {}
+    writer = NodeMetricsStore(records=rows)
+    writer.append(_observation())
+
+    assert len(writer) == 1
+    assert set(rows) == {"attempt-1"}
+    # A reader over the same plain mapping loads it on construction.
+    assert len(NodeMetricsStore(records=rows)) == 1
+
+
+def test_a_record_that_already_carries_a_datetime_loads() -> None:
+    """Records are not required to round-trip through JSON: a records store
+    whose values keep the native timestamp loads them as-is, and one whose
+    values carry the ISO string parses it. Both door load the same row."""
+    from dataclasses import asdict
+
+    observation = _observation()
+    native = asdict(observation)  # recorded_at stays a datetime
+    encoded = SharedRecords({})
+    encoded["attempt-1"] = NodeMetricsStore._to_record(observation)  # ISO string
+
+    from_native = NodeMetricsStore(records={"attempt-1": native})
+    from_string = NodeMetricsStore(records=encoded)
+
+    (a,) = from_native.observations(window_seconds=3600)
+    (b,) = from_string.observations(window_seconds=3600)
+    assert a.attempt_id == b.attempt_id == "attempt-1"
+    assert a.recorded_at == b.recorded_at == observation.recorded_at
+
+
+def test_load_time_retention_trims_the_records_to_the_bound() -> None:
+    """A store over pre-existing rows keeps the newest within its bound and
+    drops the evicted keys from the records themselves — a bound enforced
+    only in memory would let the durable rows grow without it."""
+    rows: dict[str, str] = {}
+    shared = SharedRecords(rows)
+    for attempt in ("attempt-1", "attempt-2", "attempt-3"):
+        shared[attempt] = NodeMetricsStore._to_record(_observation(attempt_id=attempt))
+
+    store = NodeMetricsStore(max_observations=2, records=shared)
+
+    assert set(rows) == {"attempt-2", "attempt-3"}
+    # Buffer order is ascending by recorded_at, after a load just as after
+    # an append (test_list_observations_returns_newest_first pins append
+    # order; this pins that a reload does not scramble it).
+    assert [item.attempt_id for item in store.observations(window_seconds=3600)] == [
+        "attempt-2",
+        "attempt-3",
+    ]
+
+
+def test_clear_empties_the_durable_records_too() -> None:
+    """Clear on a durable store drops the records' rows, not just the buffer:
+    a cleared store that reloaded its own records would resurrect what it
+    was asked to forget."""
+    rows: dict[str, str] = {}
+    store = NodeMetricsStore(records=SharedRecords(rows))
+    store.append(_observation())
+    assert len(store) == 1 and rows
+
+    store.clear()
+
+    assert len(store) == 0
+    assert rows == {}
+    # And the emptiness survives a restart: nothing is left to reload.
+    assert len(NodeMetricsStore(records=SharedRecords(rows))) == 0

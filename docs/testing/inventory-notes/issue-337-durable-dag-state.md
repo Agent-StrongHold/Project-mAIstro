@@ -71,7 +71,7 @@ projection double patched `get_dag_run_store` with a `SimpleNamespace`
 carrying only `get_run` — written against develop's direct-store contract.
 The M1-E refresh contract
 (`test_history_inspection_refreshes_before_http_reads`, marked
-`M1-E/history-replica-refresh`) requires every production inspection to
+`SPEC-083026-2601/AC-1`) requires every production inspection to
 reload the shared projection first, so the double gained a `reload=lambda:
 None` seam: a reload that finds nothing and a `get_run` that answers None is
 exactly the "projection unavailable" state the test models. No test was

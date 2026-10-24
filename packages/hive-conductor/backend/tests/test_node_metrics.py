@@ -649,3 +649,23 @@ def test_metrics_endpoint_unauthenticated_returns_401() -> None:
     client = TestClient(app)
     r = client.get("/v1/dag-metrics")
     assert r.status_code == 401
+
+
+def test_metrics_retention_endpoint_states_the_bound(
+    authed_client: Any, isolated_store: Any
+) -> None:
+    """The retention answer is deployment-level, so a client can tell a
+    durable projection from an ephemeral one before it reads history
+    (ADR-083026-a91e: durability is reported, never implied)."""
+    from services.node_metrics_store import DEFAULT_MAX_OBSERVATIONS
+
+    r = authed_client.get("/v1/dag-metrics/retention")
+    assert r.status_code == 200
+    body = r.json()
+    # The test deployment wires no persistence: the honest answer is
+    # `durable: false`, not a silent implication of restart survival.
+    assert body["durable"] is False
+    assert body["max_observations"] == DEFAULT_MAX_OBSERVATIONS
+    assert body["window_seconds_default"] == 3600
+    assert body["max_window_seconds"] == 7 * 24 * 3600
+    assert "no ad-hoc delete" in body["deletion"]

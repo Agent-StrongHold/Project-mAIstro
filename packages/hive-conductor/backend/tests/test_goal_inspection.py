@@ -345,7 +345,7 @@ async def test_run_detail_reads_events_from_canonical_store(
 
     # The projection double models a reconnect that finds no row. The
     # inspection path refreshes the shared projection before every read
-    # (#337, M1-E/history-replica-refresh), so the double carries the
+    # (#337, SPEC-083026-2601/AC-1), so the double carries the
     # store's reload seam too -- a reload that finds nothing, and a get_run
     # that answers None, is exactly 'projection unavailable'.
     monkeypatch.setattr(

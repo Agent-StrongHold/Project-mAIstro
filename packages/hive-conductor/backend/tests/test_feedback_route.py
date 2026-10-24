@@ -515,6 +515,66 @@ def test_feedback_route_comment_too_long_returns_422(
     assert r.status_code == 422
 
 
+async def test_execution_identity_helper_refuses_an_invisible_run(
+    authed_client: Any, fresh_outcome_store: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The helper's own door, not just the route's earlier one.
+
+    `_record_feedback` refuses an invisible run before it reaches the helper;
+    the helper re-checks because it is the seam that resolves execution
+    identity, and a future caller must not inherit the route's prior as a
+    precondition. Called directly against a run that does not exist, the
+    helper raises the same 404-shaped refusal and writes nothing.
+    """
+    import routes.feedback as fb
+    from fastapi import HTTPException
+
+    monkeypatch.setattr(fb, "require_actor_id", lambda _request: "user")
+
+    request = SimpleNamespace(state=SimpleNamespace())
+    with pytest.raises(HTTPException) as exc_info:
+        await fb._execution_identity(request, run_id="never-existed", node_id="")  # type: ignore[arg-type]
+    assert exc_info.value.status_code == 404
+    assert exc_info.value.detail == "run not found"
+    assert fresh_outcome_store._outcomes == []
+
+
+async def test_execution_identity_helper_translates_a_dead_spine_to_503(
+    authed_client: Any,
+    fresh_outcome_store: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A visible run whose canonical spine cannot answer is a 503, not a
+    silently uncorrelated thumb: the helper refuses rather than record an
+    Outcome that names no NodeRun/Attempt."""
+    import routes.feedback as fb
+    import services.engine as engine_mod
+    from fastapi import HTTPException
+
+    ws = _own_workspace(authed_client, "Spine unavailable")
+    _store, canonical_run_id, _node_run_id, _attempt_id = _canonical_spine(ws)
+    _seed_visible_run(
+        authed_client,
+        "run-dead-spine",
+        canonical_run_id=canonical_run_id,
+        workspace_id=ws,
+        project_id="proj",
+    )
+    monkeypatch.setattr(fb, "require_actor_id", lambda _request: "user")
+    # A deployment whose engine has no run store: the spine is configured
+    # away, and node-level correlation is impossible (services/engine.py).
+    monkeypatch.setattr(engine_mod, "_singleton", SimpleNamespace(run_store=None))
+
+    request = SimpleNamespace(state=SimpleNamespace())
+    with pytest.raises(HTTPException) as exc_info:
+        await fb._execution_identity(  # type: ignore[arg-type]
+            request, run_id="run-dead-spine", node_id="jira_poll"
+        )
+    assert exc_info.value.status_code == 503
+    assert "spine unavailable" in exc_info.value.detail
+    assert fresh_outcome_store._outcomes == []
+
+
 # --- outcome → next-run prompt invariant --------------------------------
 
 
