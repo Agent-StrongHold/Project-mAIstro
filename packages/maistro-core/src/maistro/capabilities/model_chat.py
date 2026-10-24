@@ -21,6 +21,7 @@ registry metadata, then attached to the persisted canonical Invocation.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from contextlib import contextmanager, suppress
 from contextvars import ContextVar
@@ -504,6 +505,7 @@ class ModelChatEgress:
         request: ModelChatRequest,
         setup: Callable[[], Awaitable[None]] | None = None,
         actor_id: str = "",
+        on_chunk: Callable[[dict[str, Any]], None] | None = None,
     ) -> ModelCallResult:
         """Run one governed model call, optionally performing provider setup.
 
@@ -513,6 +515,12 @@ class ModelChatEgress:
         (e.g. a gateway's model registration) must be passed here rather than
         performed by the caller beforehand: a denied policy then causes zero
         HTTP, not a credential-bearing side request ahead of authorization.
+
+        ``on_chunk`` is the streaming observer (SPEC-285): a streaming request's
+        normalized chunks are handed to it as the provider emits them, while
+        the Invocation is still RUNNING. It carries no authority — admission,
+        dedup, policy, usage, and terminalization are untouched — so a stream
+        consumer cannot end up with effects the ledger does not own.
         """
         resolver = resolve_model_chat_provider(
             self._registry,
@@ -542,7 +550,7 @@ class ModelChatEgress:
             if setup is not None:
                 await setup()
             endpoint = self._endpoint.model_copy(update={"api_key": provider.credential.api_key})
-            return await execute_model_chat(base, payload, endpoint=endpoint)
+            return await execute_model_chat(base, payload, endpoint=endpoint, on_chunk=on_chunk)
 
         routing = self._effects.credential_routing()
         routed_resolver = routing.resolver(tracked_resolve)
@@ -679,6 +687,7 @@ class GovernedModelChatClient:
         metadata: dict[str, Any] | None = None,
         stream: bool = False,
         tool_choice: str | None = None,
+        on_chunk: Callable[[dict[str, Any]], None] | None = None,
     ) -> ModelCallResult:
         merged = self._merged_metadata(metadata)
         binding = self._scoped_binding(merged)
@@ -703,6 +712,7 @@ class GovernedModelChatClient:
             node_run_id=identity["node_run_id"],
             attempt_id=identity["attempt_id"],
             effect_key=identity["effect_key"],
+            on_chunk=on_chunk,
         )
 
     async def complete(
@@ -743,27 +753,64 @@ class GovernedModelChatClient:
         response_format: dict[str, Any] | None = None,
         tool_choice: str | None = None,
     ) -> Any:
-        result = await self._call(
-            messages,
-            model,
-            tools=tools,
-            metadata=metadata,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            response_format=response_format,
-            tool_choice=tool_choice,
-            stream=True,
-        )
-        chunks = result.body.get("_stream_chunks")
-        if isinstance(chunks, list):
-            for chunk in chunks:
-                if isinstance(chunk, dict):
-                    yield chunk
-            return
-        content = ""
-        with suppress(KeyError, IndexError, TypeError):
-            content = str(result.body["choices"][0]["message"].get("content") or "")
-        yield {"choices": [{"delta": {"content": content}, "finish_reason": "stop"}]}
+        """Yield the provider's chunks as they arrive, inside one Invocation.
+
+        The governed lifecycle is unchanged from :meth:`complete`: this call is
+        admitted before dispatch, and its Invocation terminalizes only when the
+        provider stream is exhausted, fails, or is abandoned (SPEC-285). What
+        changes is delivery — chunks cross to the caller live through the
+        egress observer while the Invocation is still RUNNING, instead of being
+        held until the terminal record exists. Cancellation is truthful too: a
+        consumer that stops early cancels the dispatch, and the Invocation
+        records the provider outcome as UNKNOWN, never a fabricated success.
+        """
+
+        queue: asyncio.Queue[Any] = asyncio.Queue()
+
+        def observe(chunk: dict[str, Any]) -> None:
+            queue.put_nowait(chunk)
+
+        async def run() -> ModelCallResult:
+            try:
+                return await self._call(
+                    messages,
+                    model,
+                    tools=tools,
+                    metadata=metadata,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    response_format=response_format,
+                    tool_choice=tool_choice,
+                    stream=True,
+                    on_chunk=observe,
+                )
+            finally:
+                queue.put_nowait(_STREAM_ENDED)
+
+        pump = asyncio.ensure_future(run())
+        delivered = 0
+        result: ModelCallResult | None = None
+        try:
+            async for item in _pump_chunks(queue, pump):
+                delivered += 1
+                if isinstance(item, dict):
+                    yield item
+            result = await pump
+        except BaseException:
+            if not pump.done():
+                pump.cancel()
+            raise
+        finally:
+            if not pump.done():
+                pump.cancel()
+            with suppress(BaseException):
+                await pump
+        if delivered == 0:
+            # No live chunk crossed: either admission replayed a prior
+            # completed Invocation for this effect, or the provider finished
+            # without chunks. The terminal record is the truth to replay.
+            for chunk in _replay_result_chunks(result):
+                yield chunk
 
     async def stream(
         self,
@@ -775,6 +822,36 @@ class GovernedModelChatClient:
             delta = chunk.get("choices", [{}])[0].get("delta", {})
             if isinstance(delta, dict) and delta.get("content"):
                 yield str(delta["content"])
+
+
+_STREAM_ENDED: Any = object()
+
+
+async def _pump_chunks(queue: asyncio.Queue[Any], pump: asyncio.Future[Any]) -> Any:
+    """Yield live chunks until the governed pump signals it is done."""
+
+    while True:
+        item = await queue.get()
+        if item is _STREAM_ENDED:
+            return
+        yield item
+
+
+def _replay_result_chunks(result: ModelCallResult | None) -> Any:
+    """Replay a terminal record's chunks for a stream that saw none live."""
+
+    if result is None:
+        return
+    chunks = result.body.get("_stream_chunks")
+    if isinstance(chunks, list):
+        for chunk in chunks:
+            if isinstance(chunk, dict):
+                yield chunk
+        return
+    content = ""
+    with suppress(KeyError, IndexError, TypeError):
+        content = str(result.body["choices"][0]["message"].get("content") or "")
+    yield {"choices": [{"delta": {"content": content}, "finish_reason": "stop"}]}
 
 
 def build_model_chat_client(
