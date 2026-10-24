@@ -1,10 +1,10 @@
 ---
 inventory-delta:
-  tests/: +14
+  tests/: +15
 ---
 # 330-mutation-pr-gate
 
-Fourteen additions in `tests/test_mutation_pr_gate.py`; nothing removed.
+Fifteen additions in `tests/test_mutation_pr_gate.py`; nothing removed.
 
 **`TestTimeoutDerivation` (+3).** The cosmic-ray timeout in the generated
 config is derived from the selected-test baseline duration (not the old

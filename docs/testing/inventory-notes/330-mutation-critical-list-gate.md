@@ -1,10 +1,10 @@
 ---
 inventory-delta:
-  tests/: +12
+  tests/: +15
 ---
 # 330-mutation-critical-list-gate
 
-Twelve additions, all in `tests/test_mutation_critical.py`. Nothing was
+Fifteen additions, all in `tests/test_mutation_critical.py`. Nothing was
 removed or renamed.
 
 **`TestLoadRejectsUnusableLists` (+7).** The critical-file list decides where
@@ -19,9 +19,9 @@ validates, the three demonstrated modules (#320/#321/#322: `secret_equal.py`,
 `resource_policy.py`, `privilege.py`) are present, and every declared audit
 domain has at least one entry.
 
-**`TestIntersectAndEmit` (+4, two share assertions).** Critical∩changed
-intersection, TSV emission, the unresolvable-test-scope error (zero selected
-tests must be an error, never a silent widening to the whole suite), and the
-explicit zero-overlap path.
+**`TestIntersectAndEmit` (+5).** Critical∩changed intersection, TSV emission,
+the unresolvable-test-scope error (zero selected tests must be an error, never
+a silent widening to the whole suite), the explicit zero-overlap path, and the
+`--sources` mode that lists every entry.
 
 All fail against the pre-#330 tree: there was no loader and no artifact.

@@ -161,6 +161,14 @@
       "reason": "Reviewed per-workflow disposition specification (#400); changing a workflow's disposition, declared triggers or reference-liveness claim is the substantive change."
     },
     {
+      "id": "mutation-critical-files",
+      "kind": "specification",
+      "paths": [
+        "quality/mutation-critical-files.json"
+      ],
+      "reason": "Reviewed mutation-critical file list (#330): the source/domain/reason/evidence entries are the governance scope the PR gate mutates and the nightly sweep measures first; changing the list is the substantive, reviewable scope decision rather than a repository-wide measurement that unrelated branches must rewrite."
+    },
+    {
       "id": "citation-baseline",
       "kind": "legacy_shared_aggregate",
       "paths": [

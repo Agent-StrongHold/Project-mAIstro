@@ -66,11 +66,17 @@ def coverage_contexts(coverage_json: dict, source: str) -> dict[int, list[str]]:
 def context_to_node_id(context: str, collected: dict[str, str]) -> list[str]:
     """Resolve a coverage context name to runnable pytest node ids.
 
-    Contexts look like `test_mod.test_add` or `test_mod.TestX.test_y[param]`;
-    collected node ids look like `tests/test_mod.py::TestX::test_y[param]`.
-    The mapping key is the file stem joined to the `::`-parts by dots. Ambiguous
-    stems resolve to EVERY candidate: over-selection costs runner seconds, but
-    under-selection could drop the one test that kills a mutant.
+    Contexts look like `test_mod.TestX.test_y[param]`; collected node ids look
+    like `tests/test_mod.py::TestX::test_y[param]`. The mapping key is the file
+    stem joined to the `::`-parts by dots. Ambiguous stems resolve to EVERY
+    candidate: over-selection costs runner seconds, but under-selection could
+    drop the one test that kills a mutant.
+
+    Coverage roots context names at the test module's import path, which for a
+    packaged suite carries a package prefix the stem mapping lacks
+    (`security.test_mod.TestX.test_y` vs key `test_mod.TestX.test_y`). When the
+    exact forms do not line up, a collected key still matches when it is a
+    dotted-path suffix of the context — the same over-selection bias.
     """
     _stem, _sep, qualname = context.partition(".")
     if not qualname:
@@ -80,6 +86,11 @@ def context_to_node_id(context: str, collected: dict[str, str]) -> list[str]:
         # Parameterized contexts keep the param suffix; try stripping it.
         base = context.split("[", 1)[0]
         matches = [node for key, node in collected.items() if key.split("[", 1)[0] == base]
+    if not matches:
+        base = context.split("[", 1)[0]
+        matches = [
+            node for key, node in collected.items() if base.endswith("." + key.split("[", 1)[0])
+        ]
     return sorted(set(matches))
 
 

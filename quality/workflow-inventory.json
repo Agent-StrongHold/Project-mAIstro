@@ -104,9 +104,9 @@
     {
       "id": "mutation",
       "file": ".github/workflows/mutation.yml",
-      "disposition": "MANUAL_DIAGNOSTIC",
-      "triggers": ["workflow_dispatch"],
-      "rationale": "Full cosmic-ray mutation run on demand; the PR-blocking mutation subset lives in quality.yml, so this is the deep-measurement diagnostic."
+      "disposition": "ACTIVE",
+      "triggers": ["pull_request", "schedule", "workflow_dispatch"],
+      "rationale": "Diff-scoped mutation gate on pull requests that touch Python: mutates the changed lines of changed mutation-critical files (quality/mutation-critical-files.json) with the tests coverage says execute each line, and fails fast on the first un-baselined survivor. A nightly sharded full-tree measurement of the critical set publishes killed/survived/timeout/no-coverage/error counts plus candidate baseline/history artifacts; on-demand dispatch reruns either."
     },
     {
       "id": "quality",

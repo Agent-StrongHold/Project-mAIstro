@@ -463,18 +463,10 @@
       "id": "mutation-testing-tooling",
       "subsystem": "Repo tooling",
       "disposition": "CONNECT",
-      "rationale": "The mutation-testing pillar's scripts, unreachable because .github/workflows/mutation.yml is currently a stub. That is a deliberate, documented parking rather than a gap: the workflow's own header states that mutation is disabled until self-hosted runner capacity is restored, that it must not consume GitHub-hosted Actions minutes while parked, and that the implementation, scheduler, checkpointing, history and baselines are kept in the repository precisely so they can be restored. These nine are therefore retained on purpose, and they all become reachable together the moment that workflow runs again. Recorded here because tooling only entered the reachability graph in ADR-082526-aef8 \u2014 the decision was always written down, in the workflow file.",
-      "root": ".github/workflows/mutation.yml, once self-hosted runner capacity is restored and its real job replaces the parked stub",
+      "rationale": "The mutation-testing pillar's scripts still unreachable after the #330 restoration. The parked workflow stub was replaced (#330) and eight of these ten became reachable through the live mutation gate and were pruned from the reachability baseline; the two that remain are invoked only dynamically (subprocess with sys.executable), so the static import graph still cannot see them. They become reachable the same way the other eight did — a workflow or gate script referencing them by path — and the restoration decision recorded in ADR-082526-aef8 covers them.",
+      "root": "the PR mutation gate or nightly packet runner invoking scripts/mutation_filter_annotations.py and scripts/mutation_viability.py from a statically visible entry point",
       "modules": [
-        "@tool/check_mutation_baseline",
-        "@tool/mutation_aggregate",
         "@tool/mutation_filter_annotations",
-        "@tool/mutation_history",
-        "@tool/mutation_packet",
-        "@tool/mutation_ratchet",
-        "@tool/mutation_resume",
-        "@tool/mutation_scheduler",
-        "@tool/mutation_targets",
         "@tool/mutation_viability"
       ]
     },

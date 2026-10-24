@@ -1,10 +1,10 @@
 ---
 inventory-delta:
-  tests/: +14
+  tests/: +11
 ---
 # 330-mutation-diff-scope
 
-Fourteen additions in `tests/test_mutation_diff_scope.py`; nothing removed.
+Eleven additions in `tests/test_mutation_diff_scope.py`; nothing removed.
 
 **`TestChangedLineParsing` (+5).** Only `+` lines on the new side of a
 single-file unified diff count as changed; deleted lines have no new-side

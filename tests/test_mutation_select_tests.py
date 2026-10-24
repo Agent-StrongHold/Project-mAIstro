@@ -12,6 +12,7 @@ from __future__ import annotations
 import importlib.util
 import sys
 from pathlib import Path
+from typing import ClassVar
 
 import pytest
 
@@ -72,6 +73,38 @@ class TestContextResolution:
 
     def test_a_bare_module_context_resolves_to_nothing(self, mod, by_key):
         assert mod.context_to_node_id("test_mod", by_key) == []
+
+
+class TestPackageRootedContexts:
+    """Coverage roots contexts at the test module's import path.
+
+    For a packaged suite that prefix is the package name, so a real critical
+    file's context (`security.test_secret_equal.TestX.test_y`) never equals the
+    stem-based collected key (`test_secret_equal.TestX.test_y`). Under-selection
+    here silently drops the only killing test, so the suffix match must find it.
+    """
+
+    PACKAGE_COLLECTED: ClassVar[list[str]] = [
+        "packages/maistro-core/tests/security/test_secret_equal.py::TestSecretEqual::test_equal_strings",
+        "packages/maistro-core/tests/security/test_secret_equal.py::TestSecretEqual::test_unequal_strings",
+    ]
+
+    def test_a_package_prefixed_context_resolves_through_the_suffix(self, mod):
+        by_key = mod.parse_collected(self.PACKAGE_COLLECTED)
+        assert mod.context_to_node_id(
+            "security.test_secret_equal.TestSecretEqual.test_equal_strings", by_key
+        ) == [
+            "packages/maistro-core/tests/security/test_secret_equal.py::TestSecretEqual::test_equal_strings"
+        ]
+
+    def test_a_package_prefixed_context_never_swallows_a_foreign_stem(self, mod):
+        by_key = mod.parse_collected(self.PACKAGE_COLLECTED)
+        assert (
+            mod.context_to_node_id(
+                "security.test_other_module.TestSecretEqual.test_equal_strings", by_key
+            )
+            == []
+        )
 
 
 class TestCoverageParsing:
