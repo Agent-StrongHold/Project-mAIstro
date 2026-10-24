@@ -423,6 +423,55 @@ async def test_run_worker_exits_nonzero_when_the_runner_dies() -> None:
     assert pool.closed, "resources are released even after a runner crash"
 
 
+async def test_run_worker_shutdown_survives_cancellation_suppressing_runner() -> None:
+    """A runner that swallows ``CancelledError`` cannot hang shutdown.
+
+    Mirrors the bound in ``bind_canvas_runner_lifecycle``: after cancelling,
+    the service waits one more bounded grace window and then abandons the
+    stuck task (with an error log), still reaching pool/engine cleanup (the
+    unbounded ``gather`` here would never return — Codex review, #93).
+    """
+
+    class _StuckRunner:
+        def __init__(self) -> None:
+            self.stopped = False
+
+        async def start(self) -> None:
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                # The pathological case: suppress cancellation and stall.
+                await asyncio.sleep(3600)
+
+        def stop(self) -> None:
+            self.stopped = True
+
+    runner = _StuckRunner()
+    composed = SimpleNamespace(runner=runner)
+    pool = _FakePool()
+
+    class _Engine:
+        async def dispose(self) -> None:
+            return None
+
+    stop_event = asyncio.Event()
+    asyncio.get_running_loop().call_later(0.05, stop_event.set)
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(worker_service, "_SHUTDOWN_GRACE_SECONDS", 0.05)
+        exit_code = await asyncio.wait_for(
+            run_worker(
+                _settings(),  # type: ignore[arg-type]
+                runtime_factory=lambda _settings: (composed, pool, _Engine()),
+                stop_event=stop_event,
+            ),
+            timeout=10,
+        )
+
+    assert exit_code == 0
+    assert pool.closed, "the bounded wait lets shutdown reach resource cleanup"
+
+
 # ─────────────────────────────────────────────────────────────────────
 # Console entry point
 # ─────────────────────────────────────────────────────────────────────

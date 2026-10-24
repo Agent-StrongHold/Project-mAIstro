@@ -349,7 +349,20 @@ async def run_worker(
                     _SHUTDOWN_GRACE_SECONDS,
                 )
                 runner_task.cancel()
-                await asyncio.gather(runner_task, return_exceptions=True)
+                _done2, pending2 = await asyncio.wait(
+                    {runner_task}, timeout=_SHUTDOWN_GRACE_SECONDS
+                )
+                if pending2:
+                    logger.error(
+                        "canvas_worker_shutdown_abandoned; runner task ignored cancellation"
+                    )
+                    # Never await it again: a coroutine that suppressed
+                    # CancelledError would hang shutdown forever. Attach a
+                    # done callback so a late exception is still retrieved.
+                    runner_task.add_done_callback(_consume_runner_outcome)
+                elif runner_task.exception() is not None:
+                    logger.error("canvas_worker_runner_failed", exc_info=runner_task.exception())
+                    exit_code = 1
             elif runner_task.exception() is not None:
                 logger.error("canvas_worker_runner_failed", exc_info=runner_task.exception())
                 exit_code = 1
@@ -361,6 +374,15 @@ async def run_worker(
         await engine.dispose()
     logger.info("canvas_worker_stopped worker=%s", settings.worker_id)
     return exit_code
+
+
+def _consume_runner_outcome(task: asyncio.Task[None]) -> None:
+    """Retrieve an abandoned runner task's outcome, logging its error."""
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        logger.error("canvas_worker_runner_failed", exc_info=exc)
 
 
 def install_signal_handlers(stop: asyncio.Event) -> None:
