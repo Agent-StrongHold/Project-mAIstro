@@ -4,7 +4,7 @@ inventory-delta:
 ---
 # Issue #35: DAG-run projection cannot own terminal truth
 
-Twelve contract tests in
+Fifteen contract tests in
 `packages/hive-conductor/backend/tests/test_dag_run_projection_authority.py`
 pin the "DagRunStore class of defect" closure from issue #35's census: a
 surviving product projection may not independently terminalize or resurrect

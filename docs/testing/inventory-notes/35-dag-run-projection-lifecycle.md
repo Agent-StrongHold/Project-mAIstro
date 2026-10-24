@@ -4,7 +4,7 @@ inventory-delta:
 ---
 # Issue #35 / #1036: projection lifecycle metadata is mirrored, never invented
 
-Fifteen collected test node IDs (thirteen functions; the non-terminal
+Fifteen collected test node IDs (eleven functions; the non-terminal
 mirror case is parametrized over all five canonical non-terminal states) in
 `packages/hive-conductor/backend/tests/test_dag_run_projection_lifecycle.py`
 close the #1036 closure-safety finding under issue #35's census: a canonical
@@ -53,6 +53,6 @@ overlay work; the writer pins were adapted to that merged semantics (the
 route writer fail-closes before opening a row on malformed input; the
 read-side overlay carries displayed lifecycle truth), the read-side pins
 were re-pointed at the merged scoped-reader seam, and all 15 still pass
-alongside the 12 authority tests, with the full hive-conductor backend
+alongside the 15 authority tests, with the full hive-conductor backend
 suite (3971 passed, 26 skipped) and `ruff check` / `ruff format --check`
 green at the rebuilt head.
