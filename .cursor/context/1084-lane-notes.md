@@ -74,3 +74,30 @@ head: ee063fde9 (merge of origin/develop e20e9f52 into auto-1084 @ bfba2d4b9)
   which the buffered path lost entirely. Owner ratification of the streaming
   semantics is requested in the spec's ratification note; the admission owner
   decision (2026-09-23) is untouched.
+
+## 2026-10-24 verify+repair round (head c26de4290)
+
+- The develop-sync block is resolved and provable: `origin/develop` still is
+  `4de7e906d`, `git merge-base HEAD origin/develop` equals it (0 commits
+  behind), and the merge commit is `fb416cf38`; worktree clean.
+- The named merge-queue gate failure (`integration-scope`) was the
+  `durable-events` leg concluding failure at `b2447ac4` (UndefinedTableError
+  on `capability_binding_revocations` at Container boot). The c26de4290 fix
+  (PgBindingStore.ensure_schema in _select_effect_backend) was proven locally
+  against postgres:17 with CI's exact job steps: events suite 490 passed,
+  tests/migrations/test_event_schema_agreement.py 5 passed, both under
+  MAISTRO_REQUIRE_PG_LEGS=1. Repro pair: booting a Container with the binding
+  tables dropped succeeds with the fix and fails with the exact
+  UndefinedTableError when ensure_schema is no-op'd.
+- Added the missing regression test
+  (tests/events/test_container_pg_durable_events.py::
+  TestTheBindingStoreComesUpToo, +1 core test; note
+  docs/testing/inventory-notes/1084-durable-events-binding-schema-boot.md).
+  It fails against the regression when ensure_schema is bypassed and passes
+  with the fix.
+- Green on this head: ruff check/format, focused core+server pytest (191
+  passed/2 skipped), hive-conductor focused pytest (109 passed), suite
+  inventory (21 suites), check-vulture-baseline.py with CI args
+  (1302==1302), check-model-egress.py (16 physical callers, no expansion),
+  check-design-model-egress.py, check-promotion-surface.py,
+  check_direct_effects.py (51 sites dispositioned).
