@@ -77,3 +77,16 @@ None` seam: a reload that finds nothing and a `get_run` that answers None is
 exactly the "projection unavailable" state the test models. No test was
 added, removed, or renamed — no inventory delta; the suite total stays
 3983 (3957 passed + 26 skipped locally at the merged head).
+
+## Supply-chain CI repair (no inventory delta)
+
+The merge-queue evaluation of `e44f03a4` failed the pip-audit and frontend
+audit gates on locked dependency advisories, not on this issue's diff. Both
+fixed versions existed, so per the gate's own rule no allowlist entry was
+added: `uv.lock` moved fastmcp 4.0.11 → 4.1.3 (GHSA-7xgj-8392-5q4r,
+GHSA-vqqp-x5qm-5qp4), setuptools 84.0.0 → 84.2.1 (GHSA-xmj3-9gf7-h52w), and
+`packages/maistro-canvas/frontend/package-lock.json` took `npm audit fix` for
+undici/zod (3 HIGH). No test was added, removed, or renamed — the suite total
+stays 3983; the branch's own suites were re-run green at the repaired head
+(root `tests/` 5638 passed, hive-conductor backend 3957 passed + 26 skipped,
+canvas 79 passed, `pip-audit` gate OK, `npm audit --audit-level=high` OK).
