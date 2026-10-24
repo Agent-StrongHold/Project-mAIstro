@@ -312,6 +312,20 @@
       "notes": "Deleted with its Run in the purge transaction. Only chat-admitted Runs carry a retention deadline, so children of scheduled or graph Runs are not purged. Reference policy: runs/retention_scope.py."
     },
     {
+      "table": "canonical_personas",
+      "backends": [
+        "postgres",
+        "sqlite"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/personas/sqlite_store.py",
+      "data_class": "configuration",
+      "retention": "bounded_by_parent",
+      "deletion_path": "maistro.workspaces.sqlite_store:SqliteWorkspaceStore.delete",
+      "issue": null,
+      "parent": "canonical_workspaces",
+      "notes": "The one live Workspace Persona (#12): deleted inside the Workspace delete transaction through its canonical store, and by the ON DELETE CASCADE foreign key if the owner row ever leaves another way. No retention of its own."
+    },
+    {
       "table": "canonical_project_memberships",
       "backends": [
         "postgres",
@@ -668,6 +682,19 @@
       "notes": "No DELETE anywhere in the tree; rows accumulate for the life of the deployment."
     },
     {
+      "table": "delegation_grants",
+      "backends": [
+        "postgres",
+        "sqlite"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/security/sentinel/delegation_durable.py",
+      "data_class": "security_evidence",
+      "retention": "undecided",
+      "deletion_path": null,
+      "issue": "#72",
+      "notes": "Host-signed delegation grants (#845), created by alembic 067 on PostgreSQL and ensure_schema on SQLite (guarded DDL, one definition; the merged identity develop shipped, kept verbatim — a landed trunk migration never moves). Validity is TTL-filtered at read time in the shared decide() path; no DELETE anywhere, so expired rows accumulate. A driven expiry sweep is the same open owner decision as elevation_grants."
+    },
+    {
       "table": "elevation_grants",
       "backends": [
         "postgres",
@@ -705,6 +732,19 @@
       "deletion_path": null,
       "issue": "#325",
       "notes": "No DELETE anywhere in the tree; rows accumulate for the life of the deployment."
+    },
+    {
+      "table": "event_replay_cursors",
+      "backends": [
+        "postgres",
+        "sqlite"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/events/durable_log.py",
+      "data_class": "runtime_state",
+      "retention": "undecided",
+      "deletion_path": null,
+      "issue": "#325",
+      "notes": "One row per replay consumer (#836); bounded by the consumer count, not by time. Same shape as consumer_cursors."
     },
     {
       "table": "feature_corrections",
@@ -997,6 +1037,18 @@
       "deletion_path": null,
       "issue": "#325",
       "notes": "No DELETE anywhere in the tree; rows accumulate for the life of the deployment."
+    },
+    {
+      "table": "principal_identity_mappings",
+      "backends": [
+        "postgres"
+      ],
+      "owner_module": "alembic/versions/068_legacy_principal_ownership.py",
+      "data_class": "security_evidence",
+      "retention": "indefinite_by_decision",
+      "deletion_path": null,
+      "issue": "#1095",
+      "notes": "One row per retired installer-era principal ('default' -> 'conductor'), written by the supported legacy-ownership migration. The mapping is the durable evidence that pre-migration rows were authored under the legacy principal; 068's downgrade drops the table but deliberately does not reverse ownership. Bounded by the number of supported identity migrations."
     },
     {
       "table": "prompts",
@@ -1443,6 +1495,54 @@
       "deletion_path": null,
       "issue": "#325",
       "notes": "Per-(scope_key, day) accounting totals that raw usage_events rows are folded into before deletion (SqliteUsageLog.purge_expired, same transaction as the delete). This is the long-lived half of the raw-versus-aggregate split the issue requires: the raw reconciliation evidence retires, the spend totals stay. Kept indefinitely by that decision; one row per scope per day with usage, so growth is bounded by scopes x days."
+    },
+    {
+      "table": "goals",
+      "backends": [
+        "sqlite"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/goals/reconciliation/store.py",
+      "data_class": "runtime_state",
+      "retention": "undecided",
+      "deletion_path": null,
+      "issue": "#806",
+      "notes": "One canonical Goal row per goal_id; terminal postures (settled/withdrawn) keep the row for lineage inspection. Retention follows the Goal lifecycle decision tracked on #806. Control-plane row set of the #806 reconciliation mechanics (maistro.goals.reconciliation); distinct from #1572's canonical_goals."
+    },
+    {
+      "table": "goal_claims",
+      "backends": [
+        "sqlite"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/goals/reconciliation/store.py",
+      "data_class": "runtime_state",
+      "retention": "undecided",
+      "deletion_path": null,
+      "issue": "#806",
+      "notes": "At most one claim/lease row per Goal; released on pass end, reclaim, cancel or settle."
+    },
+    {
+      "table": "goal_wakes",
+      "backends": [
+        "sqlite"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/goals/reconciliation/store.py",
+      "data_class": "runtime_state",
+      "retention": "undecided",
+      "deletion_path": null,
+      "issue": "#806",
+      "notes": "Deduplicated wakeup facts; dispatched facts are control metadata kept for inspection. Bounded sweep reads only undispatched rows."
+    },
+    {
+      "table": "goal_admissions",
+      "backends": [
+        "sqlite"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/goals/reconciliation/store.py",
+      "data_class": "runtime_state",
+      "retention": "undecided",
+      "deletion_path": null,
+      "issue": "#806",
+      "notes": "Idempotent admission records naming canonical artifacts; the lineage record for restart convergence and audit."
     }
   ]
 }

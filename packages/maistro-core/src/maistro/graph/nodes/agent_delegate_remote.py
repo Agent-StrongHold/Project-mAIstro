@@ -78,6 +78,7 @@ from maistro.capabilities.invocation import (
 )
 from maistro.capabilities.types import Unavailable
 from maistro.graph.nodes.capability_effect import invoke_capability_effect
+from maistro.graph.verification.taxonomy import RESULT_STATE_METADATA_KEY, ResultState
 from maistro.runs.model import (
     TERMINAL_ATTEMPT_STATUSES,
     TERMINAL_RUN_STATUSES,
@@ -159,6 +160,14 @@ _RECONCILIATION_POLL = timedelta(seconds=60)
 #: cannot drift apart. A remote status outside this contract is normalized —
 #: never guessed into a completion — before it settles a child Run.
 DelegationStatus = Literal["completed", "failed", "rejected", "timed_out", "uncertain"]
+
+#: Delegation outcomes whose next move belongs to the delegating *actor*, not
+#: to the graph (epic M4-I). A refusal, a timeout or an unresolved answer
+#: parks the decision — re-delegate, escalate to a person, give up — with
+#: whoever owns the delegation, which is exactly the taxonomy's ACTIONABLE
+#: state. ``failed`` is deliberately absent: a failed delegation ran, its
+#: evidence is durable, and the graph may branch on the status on its own.
+_ACTOR_OWNED_DELEGATION_STATUSES = frozenset({"rejected", "timed_out", "uncertain"})
 
 
 class _PeerAdmissionRefused(Exception):
@@ -382,19 +391,41 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
         answers = (ctx.metadata or {}).get("hitl_answers") or {}
         resumed = answers.get(ctx.node_id)
         if resumed is not None:
-            return await self._resume(inputs, ctx, resumed)
+            out = await self._resume(inputs, ctx, resumed)
+        else:
+            verdict = await scan_inbound(self._warden, inputs.model_dump(mode="json"))
+            if not verdict.clean:
+                await self._record_scan(inputs, ctx, verdict=verdict, decision="denied")
+                out = DelegateRemoteOut(
+                    status="rejected",
+                    error="inbound A2A content refused by Warden",
+                )
+            elif inputs.peer_name is not None:
+                out = await self._dispatch_cross_instance(inputs, ctx, verdict)
+            else:
+                out = await self._dispatch_in_process(inputs, ctx, verdict)
+        self._declare_result_state(ctx, out)
+        return out
 
-        verdict = await scan_inbound(self._warden, inputs.model_dump(mode="json"))
-        if not verdict.clean:
-            await self._record_scan(inputs, ctx, verdict=verdict, decision="denied")
-            return DelegateRemoteOut(
-                status="rejected",
-                error="inbound A2A content refused by Warden",
-            )
+    @staticmethod
+    def _declare_result_state(ctx: NodeContext, out: DelegateRemoteOut) -> None:
+        """Self-report the M4-I result state for an actor-owed delegation.
 
-        if inputs.peer_name is not None:
-            return await self._dispatch_cross_instance(inputs, ctx, verdict)
-        return await self._dispatch_in_process(inputs, ctx, verdict)
+        The actionable/transitional/terminal taxonomy (epic M4-I) needs the
+        flagship actor-gated node to say where its result leaves the world:
+        a *paused* delegation is already ACTIONABLE through the shared pause
+        table (``awaiting_remote_delegation`` is answer-gated), and a terminal
+        outcome that hands the next move back to the delegating actor — the
+        peer refused, timed out, or never answered decidably — declares
+        ACTIONABLE itself so plan supervision and downstream consumers read
+        the same fact from the metadata the taxonomy reads. A completed
+        delegation declares nothing: TRANSITIONAL (the conservative default)
+        is correct because in-graph work follows on the delegated result.
+        A Warden-refused dispatch is a rejection nobody but the delegating
+        actor can act on, so it declares ACTIONABLE like any other refusal.
+        """
+        if out.status in _ACTOR_OWNED_DELEGATION_STATUSES:
+            ctx.result_metadata[RESULT_STATE_METADATA_KEY] = ResultState.ACTIONABLE.value
 
     def _delegation_key(self, inputs: DelegateRemoteIn, ctx: NodeContext) -> str:
         """The canonical replay identity for one logical delegation.

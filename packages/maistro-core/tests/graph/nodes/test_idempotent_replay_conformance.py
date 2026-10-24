@@ -266,6 +266,68 @@ async def test_poll_replay_is_read_only_and_stable(
     assert observed["second"].output == observed["first"].output
 
 
+@pytest.mark.asyncio
+async def test_design_explore_replay_leaves_one_wave_envelope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The explore coordinator's effect channel is authorization, not a model call.
+
+    ``design.explore`` declares IDEMPOTENT: the coordinator authorizes the wave
+    and emits the wave envelope, and the wave's Invocations belong to the
+    thesis slots. Replaying it against the same logical input must therefore
+    resolve the same authorized Binding, produce the same envelope, and
+    dispatch no model work at all.
+    """
+    from maistro.capabilities.model_chat import MODEL_CHAT_CAPABILITY
+    from maistro_design.explore import DesignExploreNode
+
+    seen: dict[str, Any] = {}
+    _patch_read_only_transport(monkeypatch, {"choices": []}, seen)
+
+    effects = new_in_memory_effect_context(policy_evaluator=binding_scope_policy)
+    await effects.bindings.put(
+        Binding(
+            binding_id="design-model-binding",
+            workspace_id="ws-1",
+            project_id="project-1",
+            node_id="node-1",
+            capability=MODEL_CHAT_CAPABILITY,
+            provider_name="openai",
+            config={},
+            credential_refs=("openai-key",),
+        )
+    )
+    node = DesignExploreNode(effect_context=effects)
+    inputs = {
+        "goal_id": "goal-1",
+        "goal_revision": 3,
+        "goal_desired_state": "A compelling design thesis",
+        "goal_success_conditions": ["clear narrative"],
+        "rubric_id": "rubric-1",
+        "rubric_revision": 2,
+        "rubric_criteria": "novelty 0.5; gate: all",
+        "width": 2,
+        "binding_id": "design-model-binding",
+    }
+
+    first = await node.run(inputs, _ctx(node_run_id="node-run-1"))
+    second = await node.run(inputs, _ctx(node_run_id="node-run-retry-2"))
+
+    assert first.success and second.success
+    out_model = node.output_schema
+    assert isinstance(first.output, out_model) and isinstance(second.output, out_model)
+    # The replay produces the same wave envelope — one wave, not two.
+    assert first.output == second.output
+    assert first.output.authorized_binding_id == "design-model-binding"
+    # And the coordinator authorizes; it never dispatches a model call.
+    assert seen.get("methods", []) == [], "the coordinator reached the model host"
+    # No Invocation was recorded either: the wave's model work belongs to the
+    # thesis slots, not to the coordinator that plans the wave.
+    ledger = getattr(effects.invocation_store, "_items", None)
+    assert ledger is not None, "the in-memory Invocation ledger is not observable"
+    assert not ledger, sorted(ledger)
+
+
 # --- the registry sweep -----------------------------------------------------
 
 
@@ -276,8 +338,11 @@ def test_every_idempotent_kind_has_a_conformance_case() -> None:
     kind that declares the semantics without landing here fails this test --
     the catalog flag can no longer outrun the enforceable contract.
     """
+    import maistro_design.explore  # noqa: F401  (the import is the registration)
+
     covered = {
         "dashboard.append_section",
+        "design.explore",
         "jira.poll",
         "airtable.poll",
         "jira.wait_for_subtasks",
