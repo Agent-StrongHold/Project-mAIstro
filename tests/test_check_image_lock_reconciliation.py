@@ -77,7 +77,38 @@ def test_parse_expected_splits_conditional_from_required_pins(gate):
     )
     required, conditional = gate.parse_expected(text)
     assert required == {"fastapi==0.142.2", "cffi==2.0.0"}
-    assert conditional == {"secretstorage==3.5.0", "pywin32==311"}
+    assert conditional == {
+        "secretstorage": {"secretstorage==3.5.0"},
+        "pywin32": {"pywin32==311"},
+    }
+
+
+def test_parse_expected_keeps_every_version_of_a_python_version_split(gate):
+    """One name, several marker-conditional versions — the CI failure that
+    motivated this gate.
+
+    `uv lock --upgrade-package fastmcp` split beartype across interpreters,
+    and uv export lists both entries with their markers. The original parser
+    keyed pins by name, so the later export line overwrote the earlier one and
+    the gate compared a py3.13 image's legitimate 0.22.9 against 0.23.1 only —
+    a red reconciliation for an image that shipped exactly the locked set.
+    Each alternative must survive the parse (hash continuations included;
+    they are separate lines and never match the pin pattern).
+    """
+    text = "\n".join(
+        [
+            "beartype==0.22.9 ; python_full_version < '3.15' \\",
+            "    --hash=sha256:" + "bb" * 8,
+            "beartype==0.23.1 ; python_full_version >= '3.15' \\",
+            "    --hash=sha256:" + "cc" * 8,
+            "",
+        ]
+    )
+    required, conditional = gate.parse_expected(text)
+    assert required == set()
+    assert conditional == {
+        "beartype": {"beartype==0.22.9", "beartype==0.23.1"},
+    }
 
 
 def test_parse_expected_names_are_canonicalized(gate):
@@ -245,6 +276,58 @@ def test_conditional_pin_version_is_checked_when_it_ships(gate, tmp_path, monkey
     assert gate.main() == 1
     out = capsys.readouterr().out
     assert "version mismatch     : secretstorage==3.6.0 (image) != secretstorage==3.5.0" in out
+
+
+def test_python_version_split_reconciles_the_interpreter_appropriate_pin(
+    gate, tmp_path, monkeypatch, capsys
+):
+    """The CI regression, reduced: a split lock, an image on one side of the
+    marker. The engine image's python 3.13.16 makes pip select
+    `beartype==0.22.9 ; python_full_version < '3.15'` — a locked pin — so the
+    gate must reconcile against THAT alternative, not against the last line
+    of the export (`0.23.1 ; >= '3.15'`), which was the red build.
+    """
+    expected = _write_expected(
+        tmp_path,
+        "\n".join(
+            [
+                "fastapi==0.142.2",
+                "beartype==0.22.9 ; python_full_version < '3.15'",
+                "beartype==0.23.1 ; python_full_version >= '3.15'",
+            ]
+        ),
+    )
+    _install_docker(monkeypatch, gate, _Docker(_dump("fastapi==0.142.2", "beartype==0.22.9")))
+    monkeypatch.setattr(sys, "argv", _argv(expected))
+    assert gate.main() == 0
+    out = capsys.readouterr().out
+    assert "ships exactly the locked set" in out
+    assert "2 marker-conditional pin(s)" in out
+
+
+def test_python_version_split_still_rejects_a_version_the_lock_never_named(
+    gate, tmp_path, monkeypatch, capsys
+):
+    """The lenient split comparison is not a waive: a shipped version that is
+    neither locked alternative is still a named version mismatch, reporting
+    both pins it was measured against.
+    """
+    expected = _write_expected(
+        tmp_path,
+        "\n".join(
+            [
+                "beartype==0.22.9 ; python_full_version < '3.15'",
+                "beartype==0.23.1 ; python_full_version >= '3.15'",
+            ]
+        ),
+    )
+    _install_docker(monkeypatch, gate, _Docker(_dump("beartype==0.19.0")))
+    monkeypatch.setattr(sys, "argv", _argv(expected))
+    assert gate.main() == 1
+    out = capsys.readouterr().out
+    assert (
+        "version mismatch     : beartype==0.19.0 (image) != beartype==0.22.9 or beartype==0.23.1"
+    ) in out
 
 
 def test_member_pin_satisfies_the_contract(gate, tmp_path, monkeypatch, capsys):
