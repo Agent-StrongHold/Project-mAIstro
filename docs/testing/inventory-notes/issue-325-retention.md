@@ -44,7 +44,9 @@ Not counted here, on purpose:
   `deletion_path` importability, with its own root test) is the one
   machine-checked inventory for #325, so the duplicate gate and its tests
   were retired rather than merged alongside it. Net root delta: 0.
-- Run-retention spine tests are unchanged from trunk (`m2-1175.md` records
-  those); the resolved merge kept trunk's reviewed versions of
-  `test_retention_policy.py`, `test_retention_conformance.py`,
+- Run-retention spine tests are otherwise trunk's reviewed versions
+  (`m2-1175.md` records those); the resolved merge kept trunk's reviewed
+  versions of `test_retention_conformance.py`,
   `test_retention_scope_conformance.py`, and `test_wiring.py` verbatim.
+  `test_retention_policy.py` gained the sweep-health-metric cases recorded in
+  `auto-325-cb9e.md` after this note was written.

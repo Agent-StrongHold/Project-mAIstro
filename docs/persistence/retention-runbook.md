@@ -22,7 +22,12 @@ Every destructive sweep follows the same contract:
    accounts for NodeRuns, Attempts, graph continuations, schedule cursors and
    retained provenance references.
 5. Return deleted and retained counts. Operators expose those counts with the
-   retention health metrics; a failed sweep is not reported as successful.
+   retention health metrics — `maistro_retention_purged_total`,
+   `maistro_retention_backlog_remaining`, `maistro_retention_backlog_age_seconds`,
+   `maistro_retention_sweep_last_success_timestamp`, and
+   `maistro_retention_sweep_failures_total`, each labeled by authorization mode
+   — and a failed sweep is not reported as successful: it advances the failure
+   counter, never the last-success timestamp.
 
 PostgreSQL replicas coordinate through database transactions and row/key
 locking. SQLite replicas coordinate through `BEGIN IMMEDIATE` and the

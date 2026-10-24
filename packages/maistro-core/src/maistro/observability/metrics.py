@@ -610,3 +610,18 @@ retention_backlog_remaining = registry.gauge(
     "Retention scopes whose last completed sweep hit its batch limit before the "
     "scope drained; by authorization mode (#1175)",
 )
+retention_backlog_age_seconds = registry.gauge(
+    "maistro_retention_backlog_age_seconds",
+    "Age in seconds of the oldest scope still counted by "
+    "maistro_retention_backlog_remaining, by authorization mode; 0 when no scope "
+    "is backlogged (#1175)",
+)
+retention_sweep_last_success_timestamp = registry.gauge(
+    "maistro_retention_sweep_last_success_timestamp",
+    "Unix timestamp of the last retention sweep that completed and committed, "
+    "by authorization mode; a failed sweep never advances it",
+)
+retention_sweep_failures_total = registry.counter(
+    "maistro_retention_sweep_failures_total",
+    "Retention sweeps that failed before committing anything, by authorization mode",
+)
