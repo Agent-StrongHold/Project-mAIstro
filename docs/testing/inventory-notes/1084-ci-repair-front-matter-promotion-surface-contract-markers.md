@@ -3,7 +3,7 @@ inventory-delta:
   packages/maistro-core/tests: 0
   packages/maistro-server/tests: 0
   packages/hive-conductor/backend/tests: 0
-  tests: 0
+  tests/: 0
 ---
 
 # #1084 CI-repair round: registry front matter, promotion-surface closure, contract markers, bench ledger honesty
