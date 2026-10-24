@@ -433,7 +433,7 @@
       "id": "canvas-legacy-layerrecord",
       "subsystem": "Canvas ability",
       "disposition": "RETIRE",
-      "rationale": "ADR-044 (Accepted) names store.py, compositor.py and tool.py the legacy LayerRecord path, superseded by the AssetInstance modules, with no data migration and new work on AssetInstance. Verified against the ADR body, not inferred. Retired once ADR-045's cutover lands; ADR-045 is still Proposed and routes.py still wires the legacy executor. store.py left this list when the supported server wired it as the /v2/canvas persistence layer (#851): reachable production code is not an unreachable-module disposition.",
+      "rationale": "ADR-044 (Accepted) names compositor.py and tool.py the legacy LayerRecord path, superseded by the AssetInstance modules, with no data migration and new work on AssetInstance. Verified against the ADR body, not inferred. Retired once ADR-045's cutover lands; ADR-045 is still Proposed and routes.py still wires the legacy executor. store.py left this list: the supported server wired it as the /v2/canvas persistence layer (#851), and #93's built-in worker makes it also the host of the SPEC-203 generation-job queue (PgCanvasStore), which the shipped maistro-canvas-worker claims from, so it has a production entry point regardless of the layer-model cutover.",
       "replaced_by": "maistro_canvas.canvas.asset_store / asset_tool (ADR-044)",
       "modules": [
         "maistro_canvas.canvas.tool"
@@ -443,8 +443,8 @@
       "id": "canvas-job-runner",
       "subsystem": "Canvas ability",
       "disposition": "CONNECT",
-      "rationale": "CanvasJobRunner is unstarted, not dead. canvas/executor.py \u2014 which is reachable \u2014 documents the 'CanvasJobRunner contract' on _execute_claimed; alembic revision 003_canvas_job_lease_203 exists specifically so the runner can take leases and retry; and two dedicated suites cover it, including single-claim-under-contention and lease reaping. An earlier disposition marked it RETIRE because its claim/lease/reap states duplicate the ADR-081626-f383 fence. They do, and #52 is where that is resolved \u2014 but a module with a migration, a documented contract from reachable code and concurrency tests is wiring owed, not debt to delete.",
-      "root": "a canvas worker process started at deploy time; #52 folds it into Attempt execution",
+      "rationale": "The wiring debt this disposition names was paid by #93: the maistro-canvas-worker service (maistro_canvas.canvas.worker_service, a declared reachability root) builds the runner through build_canvas_runtime and starts it at deploy time, so PENDING jobs advance without an external ad-hoc process. It stays in the baseline only because the module graph deliberately cannot see composition.py's constant-string importlib.import_module(\"maistro_canvas.canvas.runner\") edge \u2014 the same gate refuses to guess at non-literal-sweep dynamic imports \u2014 so the graph identity remains 'no static import path' even though a real process entry point reaches it. canvas/executor.py documents the 'CanvasJobRunner contract' on _execute_claimed; alembic revision 003_canvas_job_lease_203 exists specifically so the runner can take leases and retry; and dedicated suites cover it, including single-claim-under-contention and lease reaping.",
+      "root": "maistro-canvas-worker (maistro_canvas.canvas.worker_service), reached through build_canvas_runtime",
       "modules": [
         "maistro_canvas.canvas.runner"
       ]
