@@ -47,7 +47,11 @@ The reconciler therefore groups pins by name and splits them three ways:
   image env line — or if a marker uses syntax this stdlib-only evaluator does
   not implement — the fork degrades to the lenient rule: any of the locked
   fork versions satisfies the gate. Unknown markers can only *relax* toward
-  the old behavior, never invent a requirement.
+  the old behavior, never invent a requirement. A lenient-fork mismatch line
+  names the full accepted set (`one of beartype==0.22.9, beartype==0.23.1`) —
+  the reporting contract merged from the develop-side #1182 fix — so the
+  operator sees every version the lock accepts rather than an arbitrary
+  survivor.
 
 Usage:
     uv export --locked --package maistro-server \
@@ -410,6 +414,20 @@ def _classify_expected(
     return required, conditional, forked
 
 
+def _expected_clause(candidates: set[str]) -> str:
+    """The expected-side half of a mismatch line.
+
+    A single pin reads exactly as it always has (`foo==1.0`); a fork evaluated
+    leniently names every version the lock accepts for the name, so the
+    operator sees the full accepted set rather than an arbitrary survivor
+    (reporting contract merged from the develop-side #1182 fix).
+    """
+    ordered = sorted(candidates)
+    if len(ordered) == 1:
+        return ordered[0]
+    return "one of " + ", ".join(ordered)
+
+
 def _skew_message(
     name: str,
     actual_pin: str,
@@ -425,7 +443,7 @@ def _skew_message(
     detail = (
         " or ".join(f"{p.pin} (marker: {p.marker})" for p in applicable)
         if applicable
-        else " or ".join(sorted(f"{name}=={v}" for v in versions))
+        else _expected_clause({f"{name}=={v}" for v in versions})
     )
     return f"{actual_pin} (image) != {detail}"
 
