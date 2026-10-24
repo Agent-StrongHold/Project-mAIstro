@@ -9,16 +9,17 @@ Three contracts are pinned here:
    value at any layer is *unset* and falls through; a conflict resolves to the
    earlier layer; nothing is ever synthesized.
 
-2. **No placeholder credential** (#1824 removes ``sk-noop``): the embedded
-   runtime's legacy model client is built with the effective key, and an
-   unconfigured deployment has no key at all -- the client refuses dispatch
-   *before* any HTTP with a sanitized error instead of bearing a fake token a
-   real gateway can only answer 401.
+2. **No placeholder credential, no adapter-local dispatch door** (#1824
+   removes ``sk-noop``; #1084 removes the legacy client that bore it): the
+   embedded runtime composes no HTTP model client of its own -- roster and
+   off-roster calls cross the governed Invocation boundary -- and an
+   unconfigured deployment has no key at all, never a fake token a real
+   gateway can only answer 401.
 
 3. **One contract, two doors**: the canonical governed egress endpoint
    (`services.governed_model._endpoint`) resolves the same credential through
-   the same contract as the roster's legacy client, so the two doors cannot
-   drift onto different credentials.
+   the same contract as the embedded runtime, so the doors cannot drift onto
+   different credentials.
 """
 
 from __future__ import annotations
@@ -28,8 +29,6 @@ from typing import Any
 
 import pytest
 from config import Settings
-
-from maistro.agents.types import LLMProviderError
 
 #: Every alias the matrix reads, cleared so a test's result reflects only the
 #: variables it states itself.
@@ -170,104 +169,65 @@ class TestEffectiveKeyMatrix:
 
 
 class TestNoPlaceholderCredential:
-    """#1824 removes `sk-noop`: absent configuration refuses before dispatch."""
+    """#1824 removes `sk-noop`; #1084 removes the client that bore it.
 
-    async def test_unconfigured_client_refuses_complete_before_any_http(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    The legacy ``_HttpOpenAILLMClient`` was the only hive-side code that could
+    synthesize or carry a placeholder credential, because it was the only
+    model dispatch door the adapter owned. The #1084 convergence deleted that
+    door: roster and off-roster model calls cross the governed Invocation
+    boundary through the Container's canonical model-chat client. These tests
+    pin the structural form of both removals, so neither the placeholder nor
+    an unrecorded transport can return quietly.
+    """
+
+    def test_adapter_defines_no_legacy_http_client(self) -> None:
+        """The #1824 refusal tests' subject is gone, and stays gone."""
         import adapters.maistro_core as adapter
 
-        def _no_http(*_a: object, **_kw: object) -> None:
-            raise AssertionError("an unconfigured client must not open an HTTP dispatch")
-
-        monkeypatch.setattr(adapter, "shared_client", _no_http)
-        client = adapter._HttpOpenAILLMClient(
-            base_url="http://localhost:4000/v1", api_key="", model="m"
+        assert not hasattr(adapter, "_HttpOpenAILLMClient"), (
+            "an adapter-local model client is an unrecorded dispatch door; "
+            "model egress crosses the governed Invocation boundary (#1084)"
         )
-        with pytest.raises(LLMProviderError, match="credential is not configured"):
-            await client.complete([{"role": "user", "content": "hi"}], "m")
 
-    async def test_unconfigured_client_refuses_stream_before_any_http(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_adapter_source_bears_no_placeholder_credential(self) -> None:
+        """No placeholder literal -- and no HTTP headers of its own -- exists
+        anywhere in the adapter: transport belongs to the governed provider
+        adapters, and the adapter composes none."""
+        import inspect
+
         import adapters.maistro_core as adapter
 
-        monkeypatch.setattr(
-            adapter,
-            "shared_client",
-            lambda *_a, **_kw: (_ for _ in ()).throw(AssertionError("no dispatch")),
+        source = inspect.getsource(adapter)
+        assert "sk-noop" not in source
+        assert "Authorization" not in source, (
+            "the adapter composes no HTTP dispatch of its own (#1084)"
         )
-        client = adapter._HttpOpenAILLMClient(
-            base_url="http://localhost:4000/v1", api_key="", model="m"
-        )
-        with pytest.raises(LLMProviderError, match="credential is not configured"):
-            async for _chunk in client.stream([{"role": "user", "content": "hi"}], "m"):
-                pass
 
-    def test_refusal_names_no_secret_material(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """The sanitized error carries the remediation, never key material."""
+    def test_adapter_imports_no_private_transport(self) -> None:
+        """`shared_client` was the legacy client's transport seam; the
+        converged adapter owns no transport at all."""
         import adapters.maistro_core as adapter
 
-        client = adapter._HttpOpenAILLMClient(
-            base_url="http://localhost:4000/v1", api_key="", model="m"
-        )
-        with pytest.raises(LLMProviderError) as excinfo:
-            client._require_credential()
-        message = str(excinfo.value)
-        assert "sk-noop" not in message
-        assert "MAISTRO_LLM_API_KEY" in message
+        assert "shared_client" not in vars(adapter)
 
-    async def test_configured_client_dispatches_with_the_effective_credential(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """The other half of the guard (#1824): a configured client passes it.
+    def test_runtime_key_flows_through_the_one_contract(self) -> None:
+        """The adapter resolves its credential through the effective-key
+        contract, never by assembling the alias chain beneath it (#1824)."""
+        import inspect
 
-        ``_require_credential`` must be a no-op when the effective key is
-        present — the refusal is fail-closed for absent configuration only,
-        never a blanket refusal. The dispatch that then happens carries the
-        intended credential as the bearer token for the gateway it names.
-        (``stream`` delegates to ``complete``, so this one passage covers the
-        guard for both entry points.)
-        """
         import adapters.maistro_core as adapter
 
-        captured: dict[str, Any] = {}
-        payload = {"choices": [{"message": {"content": "ok"}}]}
-
-        class _FakeResponse:
-            def raise_for_status(self) -> None:
-                return None
-
-            def json(self) -> dict[str, Any]:
-                return payload
-
-        class _FakeAsyncClient:
-            async def __aenter__(self) -> _FakeAsyncClient:
-                return self
-
-            async def __aexit__(self, *exc: object) -> None:
-                return None
-
-            async def post(self, url: str, **kwargs: Any) -> _FakeResponse:
-                captured["url"] = url
-                captured.update(kwargs)
-                return _FakeResponse()
-
-        monkeypatch.setattr(adapter, "shared_client", lambda *_a, **_kw: _FakeAsyncClient())
-        client = adapter._HttpOpenAILLMClient(
-            base_url="http://localhost:4000/v1", api_key="sk-effective-key", model="m"
+        source = inspect.getsource(adapter)
+        assert "effective_llm_gateway_key" in source
+        assert "maistro_llm_api_key" not in source.replace("effective_llm_gateway_key", ""), (
+            "the adapter must not bypass the one-contract precedence matrix"
         )
-        result = await client.complete([{"role": "user", "content": "hi"}], "m")
 
-        assert result == payload, "a configured client dispatches, it does not refuse"
-        assert captured["headers"]["Authorization"] == "Bearer sk-effective-key"
-        assert captured["url"] == "http://localhost:4000/v1/chat/completions"
-
-    async def test_runtime_builds_the_legacy_client_with_the_effective_key(
+    async def test_runtime_builds_the_roster_client_with_the_effective_key(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Only LITELLM_API_KEY stated: the roster's client and the governed
-        egress endpoint both carry it -- and the placeholder is gone."""
+        """Only LITELLM_API_KEY stated: the roster's governed client and the
+        governed egress endpoint both carry it -- and the placeholder is gone."""
         from adapters.maistro_core import _construct_runtime
 
         monkeypatch.setenv("LITELLM_API_KEY", "sk-effective-key")
@@ -285,10 +245,13 @@ class TestNoPlaceholderCredential:
             capability_effects=object(),
             provider_registry=object(),
             llm_router=object(),
+            # The canonical client the Container composes; None keeps the
+            # fallback composition under test (#1084 seam).
+            model_chat_client=None,
             a2a_delegator=object(),
             agents={},
-            # The real Container always carries these; develop's admitted-model
-            # wiring in _construct_runtime reads them (#1152, #1824 merge).
+            # The real Container always carries these; the merged
+            # _construct_runtime reads them (#1152, #1824 merge).
             run_store=None,
             provider_adapter_catalog=None,
         )
@@ -307,7 +270,9 @@ class TestNoPlaceholderCredential:
         runtime = await _construct_runtime(_settings(litellm_api_base="http://gw.test/v1"))
 
         assert captured["model_endpoint"].api_key == "sk-effective-key"
-        assert runtime.llm._key == "sk-effective-key"
+        # The roster's client is the governed compatibility client composed
+        # over the configured gateway, carrying the effective credential (#1084).
+        assert runtime.llm._egress._endpoint.api_key == "sk-effective-key"
         # The two doors share one endpoint object: they cannot drift.
         assert runtime.governed_egress._endpoint is captured["model_endpoint"]
 
@@ -331,6 +296,7 @@ class TestNoPlaceholderCredential:
             capability_effects=object(),
             provider_registry=object(),
             llm_router=object(),
+            model_chat_client=None,
             a2a_delegator=object(),
             agents={},
             run_store=None,
@@ -348,7 +314,7 @@ class TestNoPlaceholderCredential:
 
         runtime = await _construct_runtime(_settings(litellm_api_base="http://gw.test/v1"))
 
-        assert runtime.llm._key == ""
+        assert runtime.llm._egress._endpoint.api_key == ""
         assert runtime.governed_egress._endpoint.api_key == ""
 
 

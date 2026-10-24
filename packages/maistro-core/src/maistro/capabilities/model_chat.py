@@ -21,9 +21,12 @@ registry metadata, then attached to the persisted canonical Invocation.
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Awaitable, Callable
+import asyncio
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
+from contextlib import contextmanager, suppress
 from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any
+from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict
 
@@ -61,6 +64,25 @@ if TYPE_CHECKING:
     from maistro.capabilities.effect_context import CapabilityEffectContext
     from maistro.capabilities.provider_adapters import ProviderAdapterCatalog
     from maistro.providers.protocols import LLMProviderRegistry, LLMRouter
+
+
+_DEFAULT_PROJECT_ID = "default"
+_MODEL_EXECUTION_CONTEXT: ContextVar[dict[str, str] | None] = ContextVar(
+    "model_execution_context", default=None
+)
+
+
+@contextmanager
+def model_execution_context(**values: str) -> Iterator[None]:
+    """Expose the active canonical Run scope to compatibility LLM clients."""
+
+    token = _MODEL_EXECUTION_CONTEXT.set(
+        {key: value for key, value in values.items() if isinstance(value, str) and value}
+    )
+    try:
+        yield
+    finally:
+        _MODEL_EXECUTION_CONTEXT.reset(token)
 
 
 def _gateway_usage(
@@ -483,6 +505,7 @@ class ModelChatEgress:
         request: ModelChatRequest,
         setup: Callable[[], Awaitable[None]] | None = None,
         actor_id: str = "",
+        on_chunk: Callable[[dict[str, Any]], None] | None = None,
     ) -> ModelCallResult:
         """Run one governed model call, optionally performing provider setup.
 
@@ -492,6 +515,12 @@ class ModelChatEgress:
         (e.g. a gateway's model registration) must be passed here rather than
         performed by the caller beforehand: a denied policy then causes zero
         HTTP, not a credential-bearing side request ahead of authorization.
+
+        ``on_chunk`` is the streaming observer (SPEC-285): a streaming request's
+        normalized chunks are handed to it as the provider emits them, while
+        the Invocation is still RUNNING. It carries no authority — admission,
+        dedup, policy, usage, and terminalization are untouched — so a stream
+        consumer cannot end up with effects the ledger does not own.
         """
         resolver = resolve_model_chat_provider(
             self._registry,
@@ -521,7 +550,7 @@ class ModelChatEgress:
             if setup is not None:
                 await setup()
             endpoint = self._endpoint.model_copy(update={"api_key": provider.credential.api_key})
-            return await execute_model_chat(base, payload, endpoint=endpoint)
+            return await execute_model_chat(base, payload, endpoint=endpoint, on_chunk=on_chunk)
 
         routing = self._effects.credential_routing()
         routed_resolver = routing.resolver(tracked_resolve)
@@ -553,11 +582,320 @@ class ModelChatEgress:
         )
 
 
+class GovernedModelChatClient:
+    """Compatibility LLM client backed exclusively by :class:`ModelChatEgress`.
+
+    Domain adapters can keep their existing LLM interfaces while this client
+    supplies the execution correlation and active Binding required by the
+    canonical boundary. It intentionally exposes no transport or provider
+    objects to callers.
+    """
+
+    def __init__(
+        self,
+        egress: ModelChatEgress,
+        binding: Binding,
+        *,
+        protocol: str = "chat_completions",
+    ) -> None:
+        self._egress = egress
+        self._binding = binding
+        self._protocol = protocol
+
+    def _merged_metadata(self, metadata: dict[str, Any] | None) -> dict[str, Any]:
+        """Turn scope: the ambient execution context, then the explicit caller."""
+
+        from maistro.observability.correlation import current_execution_context
+
+        return {
+            **current_execution_context().as_log_fields(),
+            **(_MODEL_EXECUTION_CONTEXT.get() or {}),
+            **(metadata or {}),
+        }
+
+    def _request(
+        self,
+        messages: list[dict[str, Any]],
+        model: str,
+        *,
+        tools: list[dict[str, Any]] | None,
+        max_tokens: int | None,
+        temperature: float | None,
+        response_format: dict[str, Any] | None,
+        stream: bool,
+        tool_choice: str | None,
+    ) -> ModelChatRequest:
+        return ModelChatRequest(
+            model=model,
+            messages=messages,
+            tools=tools,
+            max_tokens=max_tokens,
+            temperature=temperature if temperature is not None else 0.7,
+            response_format=response_format,
+            protocol=("chat_completions" if tools else self._protocol),
+            stream=stream,
+            tool_choice=tool_choice,
+        )
+
+    def _scoped_binding(self, metadata: dict[str, Any]) -> Binding:
+        """The active Binding, re-scoped when the turn carries its own scope.
+
+        A caller-specified Workspace/Project derives a scoped copy rather than
+        reaching past the caller's authority: the copy names the same gateway
+        credential reference, and registration below is what makes it the
+        active Binding that admission resolves — in the caller's scope only.
+        """
+
+        workspace_id = str(metadata.get("workspace_id") or self._binding.workspace_id)
+        project_id = str(metadata.get("project_id") or self._binding.project_id)
+        if workspace_id == self._binding.workspace_id and project_id == self._binding.project_id:
+            return self._binding
+        return self._binding.model_copy(
+            update={
+                "binding_id": f"model-chat:{workspace_id}:{project_id}",
+                "workspace_id": workspace_id,
+                "project_id": project_id,
+            }
+        )
+
+    @staticmethod
+    def _execution_identity(metadata: dict[str, Any]) -> dict[str, str]:
+        """Run/NodeRun/Attempt/effect identity from the caller that holds one.
+
+        The canonical tuple wins when present; a compatibility caller with none
+        derives a correlation-scoped identity — unique per call and recorded on
+        the ledger, never an all-blank best-effort tuple.
+        """
+
+        correlation = str(metadata.get("correlation_id") or uuid4().hex)
+        return {
+            "run_id": str(metadata.get("run_id") or correlation),
+            "node_run_id": str(metadata.get("node_run_id") or f"llm:{correlation}"),
+            "attempt_id": str(metadata.get("attempt_id") or f"attempt:{correlation}"),
+            "effect_key": str(metadata.get("effect_key") or f"llm:{correlation}"),
+        }
+
+    async def _call(
+        self,
+        messages: list[dict[str, Any]],
+        model: str,
+        *,
+        tools: list[dict[str, Any]] | None = None,
+        max_tokens: int | None = None,
+        temperature: float | None = None,
+        response_format: dict[str, Any] | None = None,
+        metadata: dict[str, Any] | None = None,
+        stream: bool = False,
+        tool_choice: str | None = None,
+        on_chunk: Callable[[dict[str, Any]], None] | None = None,
+    ) -> ModelCallResult:
+        merged = self._merged_metadata(metadata)
+        binding = self._scoped_binding(merged)
+        # Registration is idempotent and keeps compatibility callers on the
+        # same active Binding authority as graph/effect consumers.
+        await self._egress._effects.bindings.put(binding)
+        request = self._request(
+            messages,
+            model,
+            tools=tools,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            response_format=response_format,
+            stream=stream,
+            tool_choice=tool_choice,
+        )
+        identity = self._execution_identity(merged)
+        return await self._egress.complete(
+            binding=binding,
+            request=request,
+            run_id=identity["run_id"],
+            node_run_id=identity["node_run_id"],
+            attempt_id=identity["attempt_id"],
+            effect_key=identity["effect_key"],
+            on_chunk=on_chunk,
+        )
+
+    async def complete(
+        self,
+        messages: list[dict[str, Any]],
+        model: str,
+        *,
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: str | None = None,
+        stream: bool = False,
+        max_tokens: int | None = None,
+        temperature: float | None = None,
+        response_format: dict[str, Any] | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        result = await self._call(
+            messages,
+            model,
+            tools=tools,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            response_format=response_format,
+            metadata=metadata,
+            stream=stream,
+            tool_choice=tool_choice,
+        )
+        return result.body
+
+    async def stream_chunks(
+        self,
+        messages: list[dict[str, Any]],
+        model: str,
+        *,
+        tools: list[dict[str, Any]] | None = None,
+        metadata: dict[str, Any] | None = None,
+        max_tokens: int | None = None,
+        temperature: float | None = None,
+        response_format: dict[str, Any] | None = None,
+        tool_choice: str | None = None,
+    ) -> Any:
+        """Yield the provider's chunks as they arrive, inside one Invocation.
+
+        The governed lifecycle is unchanged from :meth:`complete`: this call is
+        admitted before dispatch, and its Invocation terminalizes only when the
+        provider stream is exhausted, fails, or is abandoned (SPEC-285). What
+        changes is delivery — chunks cross to the caller live through the
+        egress observer while the Invocation is still RUNNING, instead of being
+        held until the terminal record exists. Cancellation is truthful too: a
+        consumer that stops early cancels the dispatch, and the Invocation
+        records the provider outcome as UNKNOWN, never a fabricated success.
+        """
+
+        queue: asyncio.Queue[Any] = asyncio.Queue()
+
+        def observe(chunk: dict[str, Any]) -> None:
+            queue.put_nowait(chunk)
+
+        async def run() -> ModelCallResult:
+            try:
+                return await self._call(
+                    messages,
+                    model,
+                    tools=tools,
+                    metadata=metadata,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    response_format=response_format,
+                    tool_choice=tool_choice,
+                    stream=True,
+                    on_chunk=observe,
+                )
+            finally:
+                queue.put_nowait(_STREAM_ENDED)
+
+        pump = asyncio.ensure_future(run())
+        delivered = 0
+        result: ModelCallResult | None = None
+        try:
+            async for item in _pump_chunks(queue, pump):
+                delivered += 1
+                if isinstance(item, dict):
+                    yield item
+            result = await pump
+        except BaseException:
+            if not pump.done():
+                pump.cancel()
+            raise
+        finally:
+            if not pump.done():
+                pump.cancel()
+            with suppress(BaseException):
+                await pump
+        if delivered == 0:
+            # No live chunk crossed: either admission replayed a prior
+            # completed Invocation for this effect, or the provider finished
+            # without chunks. The terminal record is the truth to replay.
+            for chunk in _replay_result_chunks(result):
+                yield chunk
+
+    async def stream(
+        self,
+        messages: list[dict[str, Any]],
+        model: str,
+        **kwargs: Any,
+    ) -> Any:
+        async for chunk in self.stream_chunks(messages, model, **kwargs):
+            delta = chunk.get("choices", [{}])[0].get("delta", {})
+            if isinstance(delta, dict) and delta.get("content"):
+                yield str(delta["content"])
+
+
+_STREAM_ENDED: Any = object()
+
+
+async def _pump_chunks(queue: asyncio.Queue[Any], pump: asyncio.Future[Any]) -> Any:
+    """Yield live chunks until the governed pump signals it is done."""
+
+    while True:
+        item = await queue.get()
+        if item is _STREAM_ENDED:
+            return
+        yield item
+
+
+def _replay_result_chunks(result: ModelCallResult | None) -> Any:
+    """Replay a terminal record's chunks for a stream that saw none live."""
+
+    if result is None:
+        return
+    chunks = result.body.get("_stream_chunks")
+    if isinstance(chunks, list):
+        for chunk in chunks:
+            if isinstance(chunk, dict):
+                yield chunk
+        return
+    content = ""
+    with suppress(KeyError, IndexError, TypeError):
+        content = str(result.body["choices"][0]["message"].get("content") or "")
+    yield {"choices": [{"delta": {"content": content}, "finish_reason": "stop"}]}
+
+
+def build_model_chat_client(
+    *,
+    endpoint: GatewayEndpoint,
+    workspace_id: str = "default",
+    project_id: str = _DEFAULT_PROJECT_ID,
+    effects: CapabilityEffectContext | None = None,
+    registry: LLMProviderRegistry | None = None,
+    router: LLMRouter | None = None,
+    protocol: str = "chat_completions",
+    binding: Binding | None = None,
+) -> GovernedModelChatClient:
+    """Compose the canonical compatibility client for an app boundary."""
+
+    if effects is None:
+        from maistro.capabilities.effect_context import default_effect_context
+
+        effects = default_effect_context()
+    if registry is None:
+        from maistro.providers.registry import InMemoryProviderRegistry
+
+        registry = InMemoryProviderRegistry()
+    if router is None:
+        from maistro.providers.router import CostAwareRouter
+
+        router = CostAwareRouter(registry)
+    active_binding = binding or Binding(
+        workspace_id=workspace_id,
+        project_id=project_id,
+        capability=MODEL_CHAT_CAPABILITY,
+    )
+    egress = ModelChatEgress(effects, registry=registry, router=router, endpoint=endpoint)
+    return GovernedModelChatClient(egress, active_binding, protocol=protocol)
+
+
 __all__ = [
     "MODEL_CHAT_CAPABILITY",
     "GovernedLLMClient",
+    "GovernedModelChatClient",
     "ModelCallResult",
     "ModelChatEgress",
     "ModelChatRequest",
+    "build_model_chat_client",
+    "model_execution_context",
     "resolve_model_chat_provider",
 ]

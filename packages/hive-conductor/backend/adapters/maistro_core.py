@@ -2,18 +2,13 @@
 
 StubAgentPort  — explicit unavailable response when maistro-core is not configured.
 MaistroCoreBridge — embeds maistro-core in-process; chat routes through Container.route_request().
-HttpOpenAILLMClient — thin httpx wrapper implementing maistro.protocols.llm.LLMClient.
+The Agent roster receives the Container's canonical model client.
 """
 
 from __future__ import annotations
 
-import contextlib
-from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple
-
-from maistro.agents.types import LLMProviderError
-from maistro.http import shared_client
 
 if TYPE_CHECKING:
     from config import Settings
@@ -41,85 +36,6 @@ class StubAgentPort:
     ) -> dict[str, Any]:
         del messages, auth, session_id, intent_hint
         raise RuntimeError("maistro-core Agent runtime is unavailable")
-
-
-class _HttpOpenAILLMClient:
-    """Concrete LLMClient (maistro.protocols.llm.LLMClient) backed by an OpenAI-compatible endpoint."""
-
-    def __init__(self, *, base_url: str, api_key: str, model: str) -> None:
-        self._base = base_url.rstrip("/")
-        self._key = api_key
-        self._model = model
-
-    def _headers(self) -> dict[str, str]:
-        return {"Authorization": f"Bearer {self._key}", "Content-Type": "application/json"}
-
-    def _require_credential(self) -> None:
-        """Refuse before dispatch when no gateway credential was configured (#1824).
-
-        A deployment with no effective key (see
-        ``services.secrets.effective_llm_gateway_key``) has no model
-        authorization; this client used to paper over that with a placeholder
-        ``sk-noop`` bearer token, which turned "not configured" into a
-        gateway-dependent 401 that looked like an outage. Absent configuration
-        is a sanitized unavailable/error *before* any HTTP dispatch instead,
-        and the message names no secret material because there is none.
-        """
-        if not self._key:
-            raise LLMProviderError(
-                "model gateway credential is not configured; "
-                "model dispatch is unavailable (set MAISTRO_LLM_API_KEY or "
-                "LITELLM_API_KEY)"
-            )
-
-    async def complete(
-        self,
-        messages: list[dict[str, Any]],
-        model: str,
-        *,
-        tools: list[dict[str, Any]] | None = None,
-        tool_choice: str | None = None,
-        stream: bool = False,
-        max_tokens: int | None = None,
-        temperature: float | None = None,
-        metadata: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        self._require_credential()
-        payload: dict[str, Any] = {
-            "model": model or self._model,
-            "messages": messages,
-            "stream": False,
-        }
-        if temperature is not None:
-            payload["temperature"] = temperature
-        if max_tokens is not None:
-            payload["max_tokens"] = max_tokens
-        if tools:
-            payload["tools"] = tools
-        if tool_choice:
-            payload["tool_choice"] = tool_choice
-
-        async with shared_client(timeout=120.0) as client:
-            r = await client.post(
-                f"{self._base}/chat/completions",
-                headers=self._headers(),
-                json=payload,
-            )
-            r.raise_for_status()
-            return r.json()
-
-    async def stream(
-        self,
-        messages: list[dict[str, Any]],
-        model: str,
-        **kwargs: Any,
-    ) -> AsyncIterator[str]:
-        # Minimal streaming: fall back to non-streaming and yield as single chunk
-        result = await self.complete(messages, model, **kwargs)
-        content = ""
-        with contextlib.suppress(KeyError, IndexError):
-            content = result["choices"][0]["message"]["content"]
-        yield content
 
 
 class EmbeddedRuntime(NamedTuple):
@@ -163,6 +79,7 @@ async def _construct_runtime(settings: Settings) -> EmbeddedRuntime:
 
     from maistro.agents.factory import _load_preamble, create_agents
     from maistro.capabilities.admitted_model import AdmittedModelCalls
+    from maistro.capabilities.model_chat import build_model_chat_client
     from maistro.capabilities.providers.llm_gateway import GatewayEndpoint
     from maistro.config.database import resolve_database_url
     from maistro.container import create_container
@@ -172,11 +89,12 @@ async def _construct_runtime(settings: Settings) -> EmbeddedRuntime:
     llm_base = (settings.litellm_api_base or "").strip()
     # The one effective gateway credential per the documented precedence
     # matrix (#1824): vault -> MAISTRO_LLM_API_KEY -> LITELLM_API_KEY ->
-    # supported proxy aliases -> None. Empty is fail-closed: the legacy client
-    # below refuses dispatch on it and no scoped credential is registered,
-    # rather than dispatching under a placeholder key.
+    # supported proxy aliases -> None. Empty is fail-closed: every governed
+    # door below (the Container's roster client, the admitted model calls and
+    # this runtime's governed egress) then dispatches under no credential at
+    # all -- there is no placeholder key to bear, and no adapter-local HTTP
+    # path left that could synthesize one (#1084).
     llm_key = effective_llm_gateway_key(settings) or ""
-    model = settings.maistro_model
 
     config = AgentConfig(
         router_api_key=settings.maistro_router_api_key or "",
@@ -219,20 +137,22 @@ async def _construct_runtime(settings: Settings) -> EmbeddedRuntime:
 
     container = await create_container(config)
 
-    # The deployment's gateway base, resolved once for both the roster's
-    # model clients and this runtime's governed egress (#718) so the two
-    # doors cannot drift onto different credentials or bases.
-    gateway_base = llm_base or _BUNDLED_GATEWAY_BASE
-    llm_client = _HttpOpenAILLMClient(
-        base_url=gateway_base,
-        # No ``or "sk-noop"`` (#1824): an unconfigured credential must reach
-        # the gateway as a sanitized refusal before dispatch, not as a fake
-        # bearer token a real gateway can only answer with a 401.
-        api_key=llm_key,
-        model=model,
-    )
+    # Agent calls and Hive chat share the Container-owned governed client;
+    # there is no adapter-local HTTP authority. The fallback only supports
+    # container-shaped test seams and still composes the same core boundary.
+    llm_client = container.model_chat_client
+    if llm_client is None:
+        llm_client = build_model_chat_client(
+            endpoint=GatewayEndpoint(base_url=config.litellm_url, api_key=config.litellm_key),
+            workspace_id=config.workspace_id,
+        )
+    # The deployment's gateway base, resolved once for the runtime's governed
+    # egress (#718) so the tool seam cannot drift onto different credentials
+    # or bases than the roster's clients.
     model_endpoint = GatewayEndpoint(
-        base_url=gateway_base, api_key=llm_key, base_url_is_api_base=True
+        base_url=config.litellm_url,
+        api_key=config.litellm_key,
+        base_url_is_api_base=True,
     )
     admitted_calls = AdmittedModelCalls(
         container.capability_effects,

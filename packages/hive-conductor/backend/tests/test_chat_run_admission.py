@@ -39,7 +39,14 @@ def container(monkeypatch: pytest.MonkeyPatch) -> Iterator[Container]:
     from services.engine import get_engine
 
     built = asyncio.run(
-        create_container(AgentConfig(router_api_key="test-key", database_url="memory://"))
+        create_container(
+            AgentConfig(
+                router_api_key="test-key",
+                database_url="memory://",
+                litellm_url="https://gateway.invalid",
+                litellm_key="test-gateway-key",
+            )
+        )
     )
     monkeypatch.setattr(get_engine(), "_agent_port", SimpleNamespace(container=built))
     chat_runs.reset_for_tests()

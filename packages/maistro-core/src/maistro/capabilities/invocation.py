@@ -578,9 +578,11 @@ InvocationCompletionHook = Callable[["Invocation"], Awaitable[None]]
 class InvocationExecutionService:
     """Resolve one Binding, persist one provider call, and guard effect retries.
 
-    The service is the lifecycle authority for capability effects. Provider
-    adapters can report evidence, but only this service changes Invocation
-    state.
+    Production model and capability consumers reach this service through their
+    composed effect context; the retry guard is the single authority for those
+    live calls. The service is the lifecycle authority for capability effects:
+    provider adapters can report evidence, but only this service changes
+    Invocation state.
     """
 
     def __init__(
