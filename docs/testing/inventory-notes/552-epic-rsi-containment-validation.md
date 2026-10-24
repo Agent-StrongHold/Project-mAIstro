@@ -325,3 +325,70 @@ packages/*/src --min-confidence 60 --exclude '*/third_party/*'`;
 `scripts/check-diff-coverage.py` (above); CI's ten-package mypy (no
 issues in 1105 files); full `packages/maistro-rsi/tests` 1787 passed +
 `packages/maistro-core/tests/backlog` 97 passed.
+
+## Re-verification round at e656361d9 (independent first-hand pass)
+
+Every claim in the previous section was re-executed from scratch at the
+repair head; no file was changed by this round (the tree at `e656361d9`
+is bit-identical to what the previous round left), so the inventory
+delta above is unchanged. Results:
+
+- `check-radon-baseline.py` → **exit 0**: 127 C-or-worse blocks == 127
+  baseline entries, 0 new / 0 regressed / 0 improved / 0 stale.
+- xenon, CI's exact ten-package argv → **127 blocks** (`==` baseline),
+  0 module-rank, 0 project-average.
+- `check-vulture-baseline.py` (CI-exact args) → **exit 0**, 1302 == 1302.
+- `check-frontend-typed-client.py` → **exit 0** (53 raw-fetch + 136
+  hand-typed tolerances, none new).
+- CI's ten-package `mypy` → **Success: no issues found in 1105 files**.
+- Diff-coverage gate reproduced end-to-end: fresh `coverage run --branch`
+  producers (`packages/maistro-rsi/tests`: **1787 passed, 4 skipped**;
+  `packages/maistro-core/tests/backlog`: 97 passed, 20 skipped) → `coverage xml` → `check-diff-coverage.py --base
+  4de7e906` → **"ok: every measured file this change touches is at or
+  above 90% lines / 80% branch arcs"** (7 changed files measured; 6
+  test files exempt by declaration). The publish-set aggregate floor
+  (87%) was not re-run in full; every non-exempt file this branch
+  changes measures ≥90% lines, which can only raise an aggregate the
+  base already passes.
+- Container gate: `npm audit` → **0 vulnerabilities** in both frontend
+  trees (prod-only and full); the previously failing `frontend` stage of
+  `packages/hive-conductor/Dockerfile` builds at the digest-pinned
+  `node:22-alpine@sha256:0a7108…` (**exit 0**), the **full
+  hive-conductor image builds (exit 0)**, and the canvas frontend
+  `npm ci` + `npm run build` pass in a clean scratch copy (the worktree
+  copy has a root-owned stale `node_modules` that EACCESes `npm ci` —
+  environmental, not a lock defect; the audit reads the same lock).
+- `tests/test_check_promotion_surface.py` → **3 failed, 40 passed**;
+  the 3 are the same real-tree findings documented below, unchanged.
+
+The blocked half was re-derived, not assumed. `git fetch origin` first:
+**origin/develop is still `4de7e906`** — no grant landed, so the
+merge-origin/develop remedy has nothing to merge. The provenance
+mechanics were re-read from `scripts/ratchet_provenance.py`
+(`resolve_baseline` reads the ledger at the merge base;
+`load_authorizations` reads grants at the base sha): a candidate-side
+row is refused by construction. The closure growth was measured with
+the checker's own graph functions: cutting every `maistro.*` import
+from `work_source.py` removes only **4** uncovered modules, while
+cutting them from `canonical_provenance.py` removes **380** (closure
+703 → 283) — the amplifier is the acceptance-mandated import of
+`maistro.runs.service` etc. behind the #50 convergence, and every
+module that could host the concrete import instead (autorun, cli,
+`__main__`, campaign_cli, `services.rsi`, `local_loop`) is itself a
+promotion root, so no import shape shrinks the closure without dynamic-
+import evasion or deleting the convergence. Escalating the ~40 reached
+core directories instead is pinned out by name
+(`TestItStaysASurfaceAndNotAWildcard` requires
+`maistro/memory/learnings/store.py` — in the uncovered set — to stay
+non-escalating).
+
+**Disposition (unchanged): BLOCKED on an owner act.** All in-branch-
+repairable CI reds from the 90f272bb evaluation are fixed and now
+verified first-hand (radon, xenon, diff-coverage, container scan,
+vulture, frontend-typed-client + mypy). The remaining cluster —
+`check-promotion-surface.py`, the three real-tree tests,
+`check-promotion-surface-provenance.py` inside exact-debt-ledger, and
+the dependent Quality-gate summary — resolves only when an owner lands
+the promotion-surface tolerances (or a deliberate protection tier) on
+develop under the two-merge rule, after which this branch requeues
+**unchanged**. Same resolution shape as the #1572 checkpoint.
