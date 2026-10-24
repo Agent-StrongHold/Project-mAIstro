@@ -25,7 +25,9 @@ the load balancer alternates across replicas:
 Needs `MAISTRO_TEST_PG_DSN` pointed at a migrated PostgreSQL; skips without
 one, like every other PostgreSQL-backed test in this repository. The second
 test pins the authorization half on the same durable path: a foreign
-principal gets 404s through it, from a differently-keyed replica.
+principal is denied through it on a *peer* replica — one that never accepted
+the `POST` and therefore holds no live receipt to scope against — so the
+durable lookup's own principal filter is what refuses the foreign caller.
 """
 
 from __future__ import annotations
@@ -495,8 +497,15 @@ def test_a_queued_task_is_visible_on_every_replica_and_failover_runs_it_exactly_
 def test_a_foreign_principal_cannot_read_a_task_through_the_durable_tier(
     tmp_path: Path, workspace_root: Path, pg_dsn: str
 ) -> None:
-    """The shared read is scoped to the originating principal, end to end."""
-    port = _free_port()
+    """The shared read is scoped to the originating principal, end to end.
+
+    Two real processes: the admitting replica answers from its live receipt,
+    the peer from the durable tier alone. The foreign principal is refused by
+    the peer, where only the durable projection's own owner check can refuse
+    it — the live-receipt scoping the single-process shape would exercise
+    never runs there.
+    """
+    port_admit, port_peer = _free_port(), _free_port()
     # Opaque synthetic bearer values for this test's own API_KEYS stub —
     # they authenticate to nothing outside the spawned server. Named and
     # spelled so no line presents a credential shape to the scanner
@@ -510,31 +519,59 @@ def test_a_foreign_principal_cannot_read_a_task_through_the_durable_tier(
             "API_KEYS": json.dumps([f"alice:{alice_bearer}", f"mallory:{mallory_bearer}"]),
         }
     )
-    proc = _spawn(_ADMIT_ONLY_DRIVER.format(port=port), env)
+    procs: list[subprocess.Popen[str]] = []
     try:
-        _wait_ready(proc, port)
+        # The peer starts first and idle: its startup recovery has nothing to
+        # pick up, so it never admits or dispatches this task — every answer
+        # it gives is the durable projection.
+        peer = _spawn(_STOCK_DRIVER.format(port=port_peer), env)
+        procs.append(peer)
+        _wait_ready(peer, port_peer)
+
+        admitting = _spawn(_ADMIT_ONLY_DRIVER.format(port=port_admit), env)
+        procs.append(admitting)
+        _wait_ready(admitting, port_admit)
+
         status, body = _submit_task_with_token(
-            port, f"alice only {uuid.uuid4().hex}", str(workspace_root / "auth"), alice_bearer
+            port_admit, f"alice only {uuid.uuid4().hex}", str(workspace_root / "auth"), alice_bearer
         )
         assert status == 202, (status, body)
         task_id = body["task_id"]  # type: ignore[index]
+        run_id = body["run_id"]  # type: ignore[index]
 
         # The owner reads it back through the same door.
-        status, receipt = _request(port, "GET", f"/v1/tasks/{task_id}", token=alice_bearer)
+        status, receipt = _request(port_admit, "GET", f"/v1/tasks/{task_id}", token=alice_bearer)
         assert status == 200 and receipt is not None, (status, receipt)
         assert receipt["task_id"] == task_id
 
-        # A different authenticated principal gets 404s on every read shape —
-        # the durable lookup grants nothing the live one would refuse.
-        assert _request(port, "GET", f"/v1/tasks/{task_id}", token=mallory_bearer)[0] == 404
-        assert _request(port, "GET", f"/v1/tasks/{task_id}/result", token=mallory_bearer)[0] == 404
-        assert _request(port, "DELETE", f"/v1/tasks/{task_id}", token=mallory_bearer)[0] == 404
+        # …and through the peer, which never saw the `POST`: the durable
+        # lookup answers the originating principal with the same identities.
+        status, peer_receipt = _request(
+            port_peer, "GET", f"/v1/tasks/{task_id}", token=alice_bearer
+        )
+        assert status == 200, (status, peer_receipt)
+        assert peer_receipt is not None
+        assert peer_receipt["task_id"] == task_id, peer_receipt
+        assert peer_receipt["run_id"] == run_id, peer_receipt
+        assert peer_receipt["status"] == "queued", peer_receipt
 
-        # And the per-replica listing never hands Alice's work to Mallory.
-        status, listing = _request(port, "GET", "/v1/tasks?limit=200", token=mallory_bearer)
-        assert status == 200 and listing is not None
-        assert all(item["task_id"] != task_id for item in listing["items"]), listing
+        # A different authenticated principal gets 404s on every read shape,
+        # on both doors — the durable lookup grants nothing the live one
+        # would refuse. On the peer there is no live receipt to refuse it, so
+        # this is the projection's own owner check.
+        for port in (port_admit, port_peer):
+            assert _request(port, "GET", f"/v1/tasks/{task_id}", token=mallory_bearer)[0] == 404
+            assert (
+                _request(port, "GET", f"/v1/tasks/{task_id}/result", token=mallory_bearer)[0] == 404
+            )
+            assert _request(port, "DELETE", f"/v1/tasks/{task_id}", token=mallory_bearer)[0] == 404
+
+            # And the per-replica listing never hands Alice's work to Mallory.
+            status, listing = _request(port, "GET", "/v1/tasks?limit=200", token=mallory_bearer)
+            assert status == 200 and listing is not None
+            assert all(item["task_id"] != task_id for item in listing["items"]), listing
     finally:
-        if proc.poll() is None:
-            proc.kill()
-            proc.wait(timeout=30)
+        for proc in procs:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=30)

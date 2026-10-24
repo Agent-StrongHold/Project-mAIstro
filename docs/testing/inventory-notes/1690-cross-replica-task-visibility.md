@@ -319,3 +319,99 @@ Re-confirmed at the repair commit, tree otherwise identical to `3994c8e039f6`:
 battery → **90 passed, 11 skipped**; `check-suite-inventory.py` for
 `packages/maistro-core/tests` and `packages/maistro-server/tests` → both ok
 (no test added or removed; the frontmatter delta above is unchanged).
+
+## Repair 2026-10-24 (head ad40a37561b4) — the named `Container scan` gate, and
+the E2E foreign-principal leg
+
+The gate this round names is `Container scan + SBOM + cosign`. It **was**
+failing at `55f506401948`, and it is **green at the current head**
+`ad40a37561b4` — not by a change to this diff, but because the develop sync
+this branch already carries supplies the fix. The step-level evidence, read
+from the two jobs rather than inferred:
+
+- Failing job `120902903427` (`actions/runs/40104376632`, head
+  `55f506401948`): **every** build, Trivy, Grype, frontend and SBOM step
+  passed; the failure is step 22, `Reconcile installed packages to uv.lock`,
+  whose log line is
+  `version mismatch : beartype==0.22.9 (image) != beartype==0.23.1`.
+  The lock splits `beartype` across `python_full_version` markers, the
+  Python 3.13 image correctly ships the `<'3.15'` pin, and the then-current
+  `scripts/check-image-lock-reconciliation.py` keyed pins by name alone and
+  kept only the last line's version.
+- The develop commit `f956a814275c` (`#2285`), merged into this branch at
+  `ad40a37561b4`, is the fix: `scripts/check-image-lock-reconciliation.py`
+  now keeps every version per name and accepts whichever the environment
+  selects (`_expected_clause`, split-pin sets). Same commit also adds the
+  `.trivyignore` `CVE-2026-111497` entry and bumps the hive-conductor
+  frontend lockfile.
+- At the branch tip the gate passes: job `120916183586` (security.yml run
+  `40108870387`), `completed`/`success` at `2026-10-24T16:11:31Z`, with step
+  22 `Reconcile installed packages to uv.lock` → `success`. A live `gh api
+  repos/Agent-StrongHold/Project-mAIstro/commits/ad40a37561b4.../check-runs`
+  at repair time returns 70 `success`, 2 `skipped` (MinIO / durable-events,
+  services this job does not need) and 1 `in_progress` (`Coverage gate`) —
+  **zero failures**.
+
+Correcting the paragraph above it: the earlier attribution of this job's
+failure to `Trivy scan maistro-engine-research` was wrong — all four Trivy
+steps passed at `55f506401948` (step list of job `120902903427`). The
+failing step was the `uv.lock` reconciliation, and the develop sync above is
+what closes it. Nothing in this branch's own diff (`git diff
+f956a814275c...ad40a37561b4 --name-only`) feeds that step: its inputs are
+`uv.lock`, the Dockerfiles and the reconciliation script, none of which this
+branch touches. (The canvas frontend `package-lock.json` this branch does
+carry feeds only the job's `Build frontend license surfaces` step, which
+passed at both heads.)
+
+### E2E foreign-principal leg now reads through a peer replica
+
+The issue's first acceptance clause pairs "read from either replica,
+authorized as the originating principal" with "foreign principals cannot
+gain visibility through the durable lookup". The authorization half was
+pinned only against the *admitting* replica, whose live receipt answers
+`get()` before any durable lookup runs — so the projection's own owner check
+was never exercised end to end, and the module docstring's "from a
+differently-keyed replica" was not true of the code.
+`test_a_foreign_principal_cannot_read_a_task_through_the_durable_tier` now
+spawns a **stock peer replica first** (its startup recovery has nothing to
+pick up, so it never admits or dispatches this task), submits through the
+admitting replica, and asserts:
+
+- Alice (originating principal) reads the **same** `task_id`, `run_id` and
+  `queued` state through the peer, which holds no receipt for it;
+- Mallory gets 404 on `GET /v1/tasks/{id}`, `GET .../result` and `DELETE`
+  through **both** doors, and never sees the task in either replica's
+  listing.
+
+Both halves were shown load-bearing by mutation at this head (each mutation
+applied, the test run, the file restored byte-identically — `git status`
+shows only the test edit):
+
+- `get_shared` → durable lookup unscoped (`_shared_receipt(..., user_id=None)`)
+  ⇒ **fails** at `assert 200 == 404` (Mallory reads Alice's receipt through
+  the peer): the peer's denial is the durable owner filter, not the absence
+  of a local receipt.
+- route read → pre-#1690 `queue.get` ⇒ **fails** at `assert 404 == 200` on the
+  peer: the Alice assertion is the shared read, not process memory.
+
+### Re-validation at ad40a37561b4 (pgvector:pg18 @ 127.0.0.1:5590)
+
+`alembic upgrade head` clean at revision `068` before pytest:
+
+- `uv run pytest` over the six-file targeted battery (this suite's two cases
+  among them, `MAISTRO_TEST_PG_DSN` set) → **101 passed**.
+- `uv run pytest packages/maistro-server/tests/test_task_cross_replica_visibility.py -v`
+  → **2 passed in 14.86s** (the extended peer leg included); without the DSN
+  the same file → **2 skipped**, unchanged.
+- `uv run ruff check .` / `uv run ruff format --check .` → clean (the edited
+  test file was reformatted by `ruff format` before the battery re-run).
+- `check-suite-inventory.py` for `packages/maistro-core/tests` and
+  `packages/maistro-server/tests` → both ok. No test added or removed, so the
+  front-matter delta above is unchanged.
+- `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'` → 1302 reviewed == 1302 findings, ratchet ok;
+  `check-radon-baseline.py` → 127 == 127; `check-promotion-surface.py`,
+  `check-reachability.py` (1459 modules), `check-wiring-reads.py` (11 == 11)
+  → ok; `check-deployment-claims.py` and `check-doc-links.py` (2980 files, 0
+  broken) → ok; `mypy` (canonical 7-package command) → Success, 937 source
+  files.
