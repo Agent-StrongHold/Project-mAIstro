@@ -752,7 +752,7 @@ class GovernedModelChatClient:
         temperature: float | None = None,
         response_format: dict[str, Any] | None = None,
         tool_choice: str | None = None,
-    ) -> Any:
+    ) -> AsyncIterator[dict[str, Any]]:
         """Yield the provider's chunks as they arrive, inside one Invocation.
 
         The governed lifecycle is unchanged from :meth:`complete`: this call is
@@ -817,7 +817,7 @@ class GovernedModelChatClient:
         messages: list[dict[str, Any]],
         model: str,
         **kwargs: Any,
-    ) -> Any:
+    ) -> AsyncIterator[str]:
         async for chunk in self.stream_chunks(messages, model, **kwargs):
             # A chunk may carry no choices at all: the chat.completions
             # terminal usage frame is {"usage": …, "choices": []}. It is a
@@ -832,7 +832,7 @@ class GovernedModelChatClient:
 _STREAM_ENDED: Any = object()
 
 
-async def _pump_chunks(queue: asyncio.Queue[Any], pump: asyncio.Future[Any]) -> Any:
+async def _pump_chunks(queue: asyncio.Queue[Any], pump: asyncio.Future[Any]) -> AsyncIterator[Any]:
     """Yield live chunks until the governed pump signals it is done."""
 
     while True:

@@ -73,6 +73,7 @@ either seam.
 from __future__ import annotations
 
 from collections import deque
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urljoin, urlsplit
@@ -213,8 +214,10 @@ class BrowserNetworkGuard:
         # the failure happened, not the original request URL.
         decided = [url]
         try:
-            fetch = getattr(route, "fetch", None)
-            fulfill = getattr(route, "fulfill", None)
+            # Playwright is optional and duck-typed; the explicit callable
+            # types keep the awaited calls below from reading as bare `object`.
+            fetch: Callable[..., Awaitable[Any]] | None = getattr(route, "fetch", None)
+            fulfill: Callable[..., Awaitable[Any]] | None = getattr(route, "fulfill", None)
             if not callable(fetch) or not callable(fulfill):
                 raise RuntimeError("Playwright route lacks fetch/fulfill")
 
