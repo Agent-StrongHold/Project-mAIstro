@@ -7,7 +7,7 @@
  */
 
 import { expect, test, type BrowserContext, type Page } from "@playwright/test";
-import { loginAsPM, setupIfNeeded } from "./session";
+import { loginAsAdmin, setupIfNeeded } from "./session";
 
 test.describe.configure({ mode: "serial" });
 
@@ -23,7 +23,7 @@ test.beforeAll(async ({ browser }) => {
   });
   page = await context.newPage();
   await setupIfNeeded(page);
-  await loginAsPM(page);
+  await loginAsAdmin(page);
 });
 
 test.afterAll(async () => {
