@@ -60,7 +60,12 @@ KNOWN_GAPS: frozenset[str] = frozenset()
 #: denies every real tool. That is how `dangerous_tools_admin` passed the old
 #: truthiness-only assertion here while granting Hive no usable authority.
 HIVE_PROFILES: frozenset[str] = frozenset(
-    {"dev:hive-conductor", "pm-poc:hive-conductor", "hive-standalone:hive-conductor"}
+    {
+        "dev:hive-conductor",
+        "pm-poc:hive-conductor",
+        "hive-standalone:hive-conductor",
+        "cloud-prod:hive-conductor",
+    }
 )
 
 #: Process variables either composition root reads, cleared so the result
@@ -155,6 +160,12 @@ PROFILES: dict[str, tuple[tuple[Path, ...], Callable[[], dict[str, str]], str, _
         lambda: _example_env(PROD_ENV_EXAMPLE),
         "maistro-server-2",
         _server_table,
+    ),
+    "cloud-prod:hive-conductor": (
+        (PROD,),
+        lambda: _example_env(PROD_ENV_EXAMPLE),
+        "hive-conductor",
+        _hive_table,
     ),
     "hive-standalone:hive-conductor": ((HIVE_STANDALONE,), dict, "hive-conductor", _hive_table),
 }

@@ -28,7 +28,6 @@ from pydantic import BaseModel, ConfigDict
 from maistro.graph.durable_runs import DurableRunRecord
 from maistro.identity import Principal
 from maistro.runs.model import RunStatus
-from maistro_turing.runtime import TuringChatSession
 
 from ..execution import TuringAdmissionUnavailable, get_execution_plane
 from ..middleware.auth import require_user
@@ -40,12 +39,6 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["chat"])
 
 _PUBLIC_CHAT_FAILURE = "Turing chat execution failed"
-
-# (user_id, session_id) -> TuringChatSession. Lives for the process; a
-# production version persists history through the memory bridge. Keying by
-# user_id too prevents one authenticated caller from attaching to another
-# user's session (and its prior _history) by reusing/guessing a session id.
-_SESSIONS: dict[tuple[str, str], TuringChatSession] = {}
 
 
 class ChatBody(BaseModel):
@@ -74,11 +67,11 @@ async def chat(
         raise HTTPException(status_code=400, detail="message is required")
 
     session_id = body.session_id or str(uuid4())
-    key = (user.user_id, session_id)
-    session = _SESSIONS.get(key)
-    if session is None:
-        session = get_state().new_chat_session()
-        _SESSIONS[key] = session
+    # Cognitive state is scoped to the authenticated principal and bounded in
+    # cardinality/lifetime (#27/#859): the session key includes the caller's
+    # canonical principal id, so a client-supplied session id alone — or one
+    # guessed from another user — never selects someone else's conversation.
+    session = get_state().chat_sessions.get_or_create(user.actor_id(), session_id)
 
     plane = get_execution_plane()
     try:
