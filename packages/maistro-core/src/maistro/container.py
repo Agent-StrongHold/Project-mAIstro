@@ -3929,7 +3929,15 @@ async def _select_effect_backend(
         pg_quota = PgInvocationQuota(pg_pool, estimate=estimate)
         await pg_quota.ensure_schema()
         await pg_approvals.ensure_schema()
-        bindings, approvals, quota = PgBindingStore(pg_pool), pg_approvals, pg_quota
+        # The boot model-chat Binding registration below `put`s into this
+        # store, and `put` reads the revocation tombstone first (#1133) —
+        # without ensure_schema a container wired against an unmigrated
+        # database dies on `capability_binding_revocations` before it can
+        # come up (durable-events job, #1084 CI repair). Mirrors the SQLite
+        # branch and new_postgres_effect_context, both of which ensure it.
+        bindings = PgBindingStore(pg_pool)
+        await bindings.ensure_schema()
+        approvals, quota = pg_approvals, pg_quota
     elif db_pool is not None:
         sqlite_bindings = SqliteBindingStore(db_pool)
         sqlite_approvals = SqliteApprovalStore(db_pool)
