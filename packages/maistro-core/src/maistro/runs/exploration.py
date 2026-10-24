@@ -366,8 +366,12 @@ async def fan_out_wave(
     - exactly ``plan.width`` theses (the pack declared the width; the wave
       fills it);
     - no intra-wave duplicates — the theses are divergent bets, not copies;
-    - no thesis already in ``rejected_theses`` — repeating a rejected thesis
-      is a contract failure (:class:`DuplicateThesisError`);
+    - no thesis already in ``rejected_theses`` or durably rejected on the Run
+      — repeating a rejected thesis is a contract failure
+      (:class:`DuplicateThesisError`). The forbidden set is the union of the
+      caller-supplied list and the rejected theses read back from the Run's
+      stored thesis records, so an omitted or stale caller list cannot slip a
+      known loser past validation;
     - the wave index must have no persisted theses yet on ``run`` — a retry
       that fans the same wave out again is a contract failure
       (:class:`WaveAlreadyFannedOutError`), never a second batch of children
@@ -391,13 +395,23 @@ async def fan_out_wave(
     )
 
     async with _wave_settlement_lock(run.run_id):
-        persisted = wave_records(await store.list_node_runs(run.run_id), wave_index=wave_index)
+        node_runs = await store.list_node_runs(run.run_id)
+        persisted = wave_records(node_runs, wave_index=wave_index)
         if persisted:
             raise WaveAlreadyFannedOutError(
                 f"wave {wave_index} already has {len(persisted)} persisted "
                 f"thesis(es) on Run {run.run_id!r} "
                 f"(first: {persisted[0].node_run_id!r}); fan it out only once"
             )
+
+        forbidden = {_normalize_thesis(thesis) for thesis in rejected_theses} | {
+            _normalize_thesis(thesis) for thesis in rejected_thesis_texts(node_runs)
+        }
+        for slot, thesis in enumerate(theses):
+            if _normalize_thesis(thesis) in forbidden:
+                raise DuplicateThesisError(
+                    f"wave {wave_index} slot {slot} repeats a thesis an earlier wave rejected"
+                )
 
         created: list[NodeRun] = []
         for slot, thesis in enumerate(theses):
@@ -453,7 +467,11 @@ async def record_thesis_score(
             f"thesis {provenance.thesis_id!r} of wave {provenance.wave_index} "
             f"is already {existing.disposition.value}"
         )
-    if _normalize_thesis(rubric_revision) != _normalize_thesis(provenance.rubric_revision):
+    # Revision identifiers are opaque and case/whitespace sensitive; compare
+    # them exactly. Normalizing like thesis text would let a score naming
+    # "rubric-a" settle a thesis emitted under "Rubric-A" while the persisted
+    # ThesisScore records the mismatched revision as the original.
+    if rubric_revision != provenance.rubric_revision:
         raise RubricRevisionMismatchError(
             f"thesis {provenance.thesis_id!r} was emitted under Rubric "
             f"{provenance.rubric_revision!r}, not {rubric_revision!r}"

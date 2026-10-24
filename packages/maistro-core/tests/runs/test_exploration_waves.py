@@ -241,7 +241,9 @@ async def test_concurrent_fan_out_of_one_wave_leaves_exactly_one_batch(spine) ->
     batches = [batch for batch in results if not isinstance(batch, BaseException)]
     assert len(batches) == 1
     assert all(
-        isinstance(result, WaveAlreadyFannedOutError) for result in results if isinstance(result, BaseException)
+        isinstance(result, WaveAlreadyFannedOutError)
+        for result in results
+        if isinstance(result, BaseException)
     )
     stored = await store.list_node_runs(run.run_id)
     assert len(wave_records(stored, wave_index=1)) == 3
@@ -298,6 +300,38 @@ async def test_wave_two_on_same_run_consumes_rejected_and_cannot_repeat_one(spin
     after = {node_run.node_run_id: node_run.provenance[PROVENANCE_KEY] for node_run in stored}
     for node_run_id, record in before.items():
         assert after[node_run_id] == record
+
+
+@pytest.mark.parametrize("supplied_rejections", [None, ["A typographic poster wall"]])
+async def test_wave_two_rejections_come_from_the_run_not_just_the_caller(
+    spine, supplied_rejections
+) -> None:
+    """The durable rejection history is enforced even when the caller omits or
+    passes a stale ``rejected_theses`` list."""
+    store, workspace, project_id = spine
+    run = await _new_run(store, workspace, project_id, plan=_plan(width=3))
+    wave_one = await _wave_one(store, run)
+    for node_run in wave_one:
+        await record_thesis_score(
+            store, node_run.node_run_id, rubric_revision="rubric-rev-1", score=0.5
+        )
+    await name_wave_winner(store, run.run_id, wave_index=1, node_run_id=wave_one[0].node_run_id)
+
+    with pytest.raises(DuplicateThesisError):
+        await fan_out_wave(
+            store,
+            run,
+            plan=_plan(width=2),
+            wave_index=2,
+            parent_node_id=EXPLORE_NODE_ID,
+            theses=[
+                "A dense DASHBOARD-first console",  # rejected in wave one
+                "A cartographic navigation shell",
+            ],
+            rejected_theses=supplied_rejections or (),
+        )
+    # The refused wave left nothing behind.
+    assert len(await store.list_node_runs(run.run_id)) == 3
 
 
 # ── Policies: pack-declared, visible on the Run, not three products ──────────
@@ -424,7 +458,11 @@ async def test_concurrent_winner_naming_leaves_exactly_one_winner(spine) -> None
     )
     winners = [record for record in results if not isinstance(record, BaseException)]
     assert len(winners) == 1
-    assert all(isinstance(record, WaveWinnerAlreadyNamedError) for record in results if isinstance(record, BaseException))
+    assert all(
+        isinstance(record, WaveWinnerAlreadyNamedError)
+        for record in results
+        if isinstance(record, BaseException)
+    )
     settled = await store.list_node_runs(run.run_id)
     dispositions = [
         ThesisDisposition(
