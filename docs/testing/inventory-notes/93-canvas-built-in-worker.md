@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-canvas/tests: +27
+  packages/maistro-canvas/tests: +28
 ---
 # #93 Built-in Canvas worker service and runner concurrency
 
@@ -127,3 +127,32 @@ Test deltas (this round):
 (The prior round's hydration test above was collected but not reflected in
 this note's `inventory-delta`; the front matter now records both it and this
 round's guard test, `+25` -> `+27`.)
+
+## Salvage round: supply-chain gate re-verification + DSN-qualification pin
+
+Re-verified the `Supply chain (pip-audit)` gate at the branch head with CI's
+exact sequence (`uv sync --locked --all-extras`; `uv pip install pip-audit`;
+`uv pip freeze --exclude-editable`; `uv run pip-audit --strict --format=json`;
+`scripts/pip_audit_gate.py`): exit 0, one known advisory (`ecdsa`,
+PYSEC-2026-1325) triaged in the allowlist. The three advisories the prior
+round cleared were reproduced against the pre-fix versions: `fastmcp==4.0.11`
+carries GHSA-7xgj-8392-5q4r and GHSA-vqqp-x5qm-5qp4 (fix >= 4.1.2) and
+`setuptools==84.0.0` carries GHSA-xmj3-9gf7-h52w (fix >= 84.1.0); the locked
+`fastmcp==4.1.3` / `setuptools==84.2.1` carry none. `uv lock --check` and the
+offline direct-dependency ratchet (`pip_audit_gate.audit_direct_dependencies`)
+both pass.
+
+Test deltas (this round):
+
+- Added to `packages/maistro-canvas/tests/test_worker_service.py` (+1 test):
+  `test_sqlalchemy_asyncpg_url_qualifies_bare_postgres_and_passes_through_qualified`
+  pins the DSN driver-qualification contract end to end — bare
+  `postgresql://` and `postgres://` are rewritten to `postgresql+asyncpg://`,
+  already-qualified URLs (`postgresql+asyncpg://`, `postgresql+psycopg://`,
+  `sqlite+aiosqlite://`) pass through, and an unrecognized scheme is passed
+  through rather than rewritten to a driver the service does not ship. This is
+  the live-found engine-creation crash (`create_async_engine` receiving the
+  bare DSN); only the bare-postgres rewrite was asserted before, through
+  `test_compose_runtime_builds_the_canonical_seam`.
+
+Front matter `+27` -> `+28`.

@@ -252,6 +252,39 @@ async def test_preflight_passes_when_every_table_exists() -> None:
     await assert_database_migrated(_FakePool())
 
 
+def test_sqlalchemy_asyncpg_url_qualifies_bare_postgres_and_passes_through_qualified() -> None:
+    """The engine must never resolve a bare Postgres URL to psycopg2.
+
+    ``asyncpg.create_pool`` takes the plain ``postgresql://`` form, but
+    SQLAlchemy resolves that scheme to psycopg2, which this service does not
+    depend on — the first real start against a migrated database crashed in
+    engine creation on the documented DSN form (#93). Already driver-qualified
+    URLs are untouched, and an unrecognized scheme is passed through rather
+    than silently rewritten to a driver the service does not ship.
+    """
+    assert (
+        worker_service.sqlalchemy_asyncpg_url("postgresql://u:p@db:5432/canvas")
+        == "postgresql+asyncpg://u:p@db:5432/canvas"
+    )
+    assert (
+        worker_service.sqlalchemy_asyncpg_url("postgres://u:p@db:5432/canvas")
+        == "postgresql+asyncpg://u:p@db:5432/canvas"
+    )
+    assert (
+        worker_service.sqlalchemy_asyncpg_url("postgresql+asyncpg://u:p@db/canvas")
+        == "postgresql+asyncpg://u:p@db/canvas"
+    )
+    assert (
+        worker_service.sqlalchemy_asyncpg_url("postgresql+psycopg://u:p@db/canvas")
+        == "postgresql+psycopg://u:p@db/canvas"
+    )
+    assert (
+        worker_service.sqlalchemy_asyncpg_url("sqlite+aiosqlite:///canvas.db")
+        == "sqlite+aiosqlite:///canvas.db"
+    )
+    assert worker_service.sqlalchemy_asyncpg_url("mysql://u:p@db/canvas") == "mysql://u:p@db/canvas"
+
+
 # ─────────────────────────────────────────────────────────────────────
 # Production composition path
 # ─────────────────────────────────────────────────────────────────────
