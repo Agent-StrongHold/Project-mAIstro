@@ -253,9 +253,19 @@ def _legacy_registration_implementation_tests(request: pytest.FixtureRequest):
 def _chat_spine_container():
     from maistro.container import create_container
     from maistro.types import AgentConfig
+    from maistro.types.config import SecurityConfig
 
     return asyncio.run(
-        create_container(AgentConfig(router_api_key="test-key", database_url="memory://"))
+        create_container(
+            AgentConfig(
+                router_api_key="test-key",
+                database_url="memory://",
+                security=SecurityConfig(
+                    permission_preset="none",
+                    permissions={"graph.node.execute": ["admin", "user"]},
+                ),
+            )
+        )
     )
 
 
@@ -279,6 +289,7 @@ def chat_run_spine(_chat_spine_container, monkeypatch: pytest.MonkeyPatch):
         intent_registry=c.intent_registry,
         _close_chat_run=c._close_chat_run,
         _cancel_incomplete_admission=c._cancel_incomplete_admission,
+        sentinel=getattr(c, "sentinel", None),
     )
     monkeypatch.setattr(get_engine(), "_agent_port", SimpleNamespace(container=spine))
     chat_runs.reset_for_tests()

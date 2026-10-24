@@ -114,3 +114,15 @@ def test_harness_case_list_matches_the_python_enumeration() -> None:
     assert {line[len("scenario:") :] for line in listed if line.startswith("scenario:")} == set(
         SCENARIO_CASES
     )
+
+
+def test_download_example_requires_review_before_execution() -> None:
+    """Do not teach operators to execute an uninspected HTTP response."""
+    help_text = GET_PS1.read_text(encoding="utf-8").split("#>", 1)[0]
+    assert "| iex" not in help_text.lower()
+    assert "invoke-expression" not in help_text.lower()
+    download = help_text.index("Invoke-WebRequest")
+    inspect = help_text.index("Get-Content .\\get.ps1", download)
+    review = help_text.index("Review the downloaded script", inspect)
+    execute = help_text.index("\n  .\\get.ps1", review)
+    assert download < inspect < review < execute

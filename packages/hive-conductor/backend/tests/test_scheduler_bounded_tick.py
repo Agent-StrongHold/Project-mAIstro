@@ -1,7 +1,7 @@
 """The live scheduler tick exercises the bounded catch-up contract (#1200).
 
 `test_enumeration_limits.py` pins the pure engine bounds; this file proves
-them through the real seam: `_ScheduleRunner._tick()` reading the Hive row,
+them through the real seam: `_ScheduleRunner._tick()` reading canonical due state after startup backfill,
 admitting through `ScheduleRunAdmitter`, and reporting what a bound cost.
 The host-selected limits are passed exactly the way a host would — the same
 admitter seam the container wires, with `EnumerationLimits` supplied.
@@ -142,7 +142,7 @@ def test_a_walk_cut_short_by_its_budget_is_reported_and_reamined(
     """A zero budget stops the walk before examining anything: the tick must
     say so, run nothing, leave the cursor alone — and the next tick under the
     host's ordinary limits must re-examine the same occurrence and fire it."""
-    from services.scheduler import _ScheduleRunner
+    from services.scheduler import _ScheduleRunner, backfill_canonical_definitions
 
     async def scenario() -> None:
         container, row = await _fixture()
@@ -153,6 +153,7 @@ def test_a_walk_cut_short_by_its_budget_is_reported_and_reamined(
             _ScheduleRunner, "_canonical_container", staticmethod(lambda: container)
         )
         try:
+            await backfill_canonical_definitions()
             with caplog.at_level("WARNING", logger="services.scheduler"):
                 await _ScheduleRunner()._tick()
             assert "catch-up walk stopped" in caplog.text
@@ -180,7 +181,7 @@ def test_a_window_the_host_clamps_is_reported_at_the_tick(
     """A row filed with a seven-day window under a host that allows one hour
     fires normally, and the tick says the configured window was not the one
     applied — operator visibility for the clamped backlog (#1200)."""
-    from services.scheduler import _ScheduleRunner
+    from services.scheduler import _ScheduleRunner, backfill_canonical_definitions
 
     async def scenario() -> None:
         container, row = await _fixture()
@@ -194,6 +195,7 @@ def test_a_window_the_host_clamps_is_reported_at_the_tick(
             _ScheduleRunner, "_canonical_container", staticmethod(lambda: container)
         )
         try:
+            await backfill_canonical_definitions()
             with caplog.at_level("INFO", logger="services.scheduler"):
                 await _ScheduleRunner()._tick()
             assert "capped at the host bound" in caplog.text
@@ -215,7 +217,7 @@ def test_a_zero_window_is_honored_not_replaced_by_the_default(
     than the now-relative horizon and are skipped, not fired — an ``or``
     fallback would read the falsy zero as "missing" and backfill an hour the
     client refused (#1200)."""
-    from services.scheduler import _ScheduleRunner
+    from services.scheduler import _ScheduleRunner, backfill_canonical_definitions
 
     async def scenario() -> None:
         container, row = await _fixture()
@@ -226,6 +228,7 @@ def test_a_zero_window_is_honored_not_replaced_by_the_default(
             _ScheduleRunner, "_canonical_container", staticmethod(lambda: container)
         )
         try:
+            await backfill_canonical_definitions()
             await _ScheduleRunner()._tick()
             recorded = await container.schedule_store.get("s-1")
             assert recorded is not None
@@ -248,7 +251,7 @@ def test_a_stale_backlog_tick_stays_within_bounded_wall_time(
     for days must not stall the tick's event loop. Under the substrate's
     default limits the whole tick — evaluate, admit, record — returns in a
     bounded slice of time, whatever the backlog size."""
-    from services.scheduler import _ScheduleRunner
+    from services.scheduler import _ScheduleRunner, backfill_canonical_definitions
 
     async def scenario() -> None:
         container, row = await _fixture()
@@ -258,6 +261,7 @@ def test_a_stale_backlog_tick_stays_within_bounded_wall_time(
             _ScheduleRunner, "_canonical_container", staticmethod(lambda: container)
         )
         try:
+            await backfill_canonical_definitions()
             start = time.monotonic()
             await _ScheduleRunner()._tick()
             elapsed = time.monotonic() - start

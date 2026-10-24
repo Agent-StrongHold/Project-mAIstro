@@ -9,6 +9,7 @@ from collections import deque
 from collections.abc import Callable, Coroutine
 from typing import TYPE_CHECKING, Any
 
+from maistro.agents.tool_dispatch import dispatch_tool_call
 from maistro.security.normalize import to_scan_string
 from maistro.security.warden.detector import WardenContext
 from maistro.types.agent import ReasoningResult
@@ -135,6 +136,7 @@ class ArtificerStrategy:
                     warden=kwargs.get("warden"),
                     context=list(tool_context),
                     security_pipeline=security_pipeline,
+                    tool_round=round_num,
                 )
                 tool_context.append(WardenContext(result_str))
                 tool_history.append(
@@ -270,6 +272,7 @@ class ArtificerStrategy:
         warden: Any,
         context: list[WardenContext] | None = None,
         security_pipeline: bool = False,
+        tool_round: int = 0,
     ) -> tuple[dict[str, Any], str]:
         """Process a single tool call end-to-end. Returns ``(tool_args, result_str)``."""
         fn = tc.get("function", {})
@@ -290,7 +293,14 @@ class ArtificerStrategy:
         logger.info("Tool call: %s(%s)", tool_name, list(tool_args.keys()))
 
         if not tool_blocked:
-            tool_result = await self._run_tool(tool_name, tool_args, tool_executor, trace)
+            tool_result = await self._run_tool(
+                tool_name,
+                tool_args,
+                tool_executor,
+                trace,
+                tool_call_id=tc.get("id", ""),
+                tool_round=tool_round,
+            )
 
         result_str = self._truncate_result(tool_result)
         result_str = await self._sanitize_result(

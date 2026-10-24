@@ -91,10 +91,14 @@ async def _seed_expired(store: Any, count: int) -> list[str]:
     """
     scopes = [_scope(f"old-{index}") for index in range(count)]
     for scope in scopes:
-        assert isinstance(
-            await store.claim(scope, fingerprint="fp", request="{}", now=_NOW), Claimed
+        claimed = await store.claim(scope, fingerprint="fp", request="{}", now=_NOW)
+        assert isinstance(claimed, Claimed)
+        # Completing is claimant-fenced (#1176): the outcome lands only with
+        # the token the claim itself minted.
+        assert (
+            await store.complete(scope, token=claimed.token, task_id=f"t-{scope}", run_id=None)
+            is True
         )
-        assert await store.complete(scope, task_id=f"t-{scope}", run_id=None) is True
     return scopes
 
 
@@ -139,8 +143,9 @@ async def test_a_claim_inside_the_interval_does_not_purge_again(store: Any, cloc
 
     # Expired by the next claim's clock, but the throttle has not reopened.
     newer = [_scope("newer")]
-    await store.claim(newer[0], fingerprint="fp", request="{}", now=_EXPIRED)
-    await store.complete(newer[0], task_id="t-newer", run_id=None)
+    newer_claim = await store.claim(newer[0], fingerprint="fp", request="{}", now=_EXPIRED)
+    assert isinstance(newer_claim, Claimed)
+    await store.complete(newer[0], token=newer_claim.token, task_id="t-newer", run_id=None)
     clock.value += idem.IDEMPOTENCY_PURGE_INTERVAL_SECONDS - 1
     later = _EXPIRED + DEFAULT_REPLAY_WINDOW + timedelta(seconds=1)
     await store.claim(_scope("second"), fingerprint="fp", request="{}", now=later)
@@ -237,12 +242,13 @@ async def test_a_full_batch_keeps_purging_until_the_backlog_drains(
     assert len(await _surviving(store, old)) == 3
     await store.claim(_scope("b"), fingerprint="fp", request="{}", now=_EXPIRED)
     assert len(await _surviving(store, old)) == 1
-    await store.claim(_scope("c"), fingerprint="fp", request="{}", now=_EXPIRED)
+    claim_c = await store.claim(_scope("c"), fingerprint="fp", request="{}", now=_EXPIRED)
+    assert isinstance(claim_c, Claimed)
     assert await _surviving(store, old) == []
 
     # The last batch came up short, so the throttle is back in force.
     newer = _scope("newer")
-    await store.complete(_scope("c"), task_id="t-c", run_id=None)
+    await store.complete(_scope("c"), token=claim_c.token, task_id="t-c", run_id=None)
     later = _EXPIRED + DEFAULT_REPLAY_WINDOW + timedelta(seconds=1)
     await store.claim(newer, fingerprint="fp", request="{}", now=later)
     assert await store.get(_scope("c")) is not None

@@ -28,6 +28,8 @@ from typing import TYPE_CHECKING
 from maistro.memory.episodic.retrieval import ScoredEpisodicRetrieval
 
 if TYPE_CHECKING:
+    from maistro.memory.working.manager import WorkingMemoryManager
+    from maistro.memory.working.protocol import EntityContext
     from maistro.projects.scope_store import ProjectScopeStore
     from maistro.protocols.embeddings import EmbeddingClient
     from maistro.protocols.memory import EpisodicStore, OutcomeStore

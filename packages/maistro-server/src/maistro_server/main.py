@@ -351,8 +351,47 @@ def _model_bindings() -> list[ModelBindingConfig]:
     return list(yaml_config.model_bindings)
 
 
-async def _build_container(settings: Settings, pg_pool: Any) -> Any:
-    """The process's one Container, with a roster it can actually route to.
+def _load_operator_yaml() -> None:
+    """Load the operator YAML inside this worker process (#1880).
+
+    `maistro_server.entrypoint.main` runs the migrations and then `os.execvp`s
+    uvicorn, so the parent that may have read `maistro.yaml` no longer exists
+    when the worker starts: `load_yaml_config`'s process-wide singleton dies
+    with the exec'd-away interpreter, and every reader below —
+    `_validate_startup`'s `_router_api_key`, then `_agent_config`'s
+    `_security_config` and `_model_bindings` on the way into
+    `create_container` — would see `None` and silently ship the fail-closed
+    defaults no matter what the operator declared. Loading here, before those
+    consumers, is what makes the declarations reach the Container the worker
+    actually builds.
+
+    A file that parses but violates the schema — and a malformed one — must
+    stop startup rather than degrade into those defaults, so the loader's
+    exception is logged sanitized and re-raised without its cause: parser
+    errors embed raw file contents (`_load_raw_yaml`'s "Invalid YAML in ...")
+    and a type-invalid value echoes the operator's input, so the event carries
+    only the config path and the exception type, and `from None` cuts the
+    chained traceback that would otherwise publish them to stderr.
+    """
+    config_path = os.getenv("MAISTRO_CONFIG", "config/maistro.yaml")
+    try:
+        load_yaml_config()
+    except Exception as exc:
+        logger.error(
+            "operator_yaml_config_invalid",
+            config_path=config_path,
+            reason=type(exc).__name__,
+        )
+        msg = (
+            f"Operator YAML configuration is invalid; refusing to start "
+            f"({config_path}). See the operator_yaml_config_invalid startup "
+            f"log event."
+        )
+        raise RuntimeError(msg) from None
+
+
+async def _build_container(settings: Settings, pg_pool: Any) -> tuple[Any, ModelChatEgress]:
+    """The process's one Container and the governed egress it comes with.
 
     `Conduit.route_request` answers "No agents available." when `agents` is
     empty, and this server has never built any. `run_task` needs no roster,
@@ -411,23 +450,6 @@ async def _build_container(settings: Settings, pg_pool: Any) -> Any:
     )
     await logger.ainfo("container_wired", agents=sorted(container.agents))
     return container, governed_egress
-
-
-async def _drain_queue_singleton() -> None:
-    """Drain the task queue's in-flight receipt writes before teardown (#849).
-
-    The runner drains its own workers' writes in `stop()`; this covers a
-    straggler request that terminalized a task after the runner stopped, whose
-    scheduled write would otherwise be abandoned when the singleton is dropped.
-    Idempotent after the runner's drain — a queue with nothing scheduled returns
-    immediately — and best-effort, because shutdown must proceed even if the
-    drain itself fails (the canonical Run still holds the truth, and recovery
-    reconciles from it).
-    """
-    try:
-        await get_task_queue().drain_persistence()
-    except Exception:
-        await logger.awarning("task_receipt_drain_on_shutdown_failed", exc_info=True)
 
 
 async def _drain_queue_singleton() -> None:
@@ -542,6 +564,12 @@ async def _runtime_lifespan(app: FastAPI) -> AsyncIterator[None]:
     # The handles these APIs return must resolve against the exact stores the
     # Container selected, not lookalike stores reconstructed by the server.
     runs.configure_run_store(run_store)
+    # Route visibility answers through the same Workspace-membership boundary
+    # the Container's stores back (#1152): missing and foreign ids fail closed
+    # identically at the one seam.
+    runs.configure_run_boundary(
+        RunStoreBoundary(run_store, container.workspace_store, container.project_scope_store)
+    )
     a2a.configure_a2a_admission(
         run_store,
         container.project_scope_store,
@@ -621,6 +649,7 @@ async def _runtime_lifespan(app: FastAPI) -> AsyncIterator[None]:
         await _drain_queue_singleton()
         reset_task_queue()
         runs.configure_run_store(None)
+        runs.configure_run_boundary(None)
         a2a.configure_a2a_admission(None, None)
         workspaces.configure_workspace_store(None)
 

@@ -579,16 +579,29 @@ async def test_delegate_success_posts_to_tasks_create_with_auth_header(
         )
     )
     result = await manager.delegate(
-        "hub", "planner", [{"role": "user", "content": "do x"}], idempotency_key="effect-1"
+        "hub",
+        "planner",
+        [{"role": "user", "content": "do x"}],
+        idempotency_key="effect-1",
+        context=_context(),
     )
     assert seen["url"] == "http://hub.example/a2a/tasks/create"
     assert seen["method"] == "POST"
     assert seen["auth"] == "Bearer secret-token"
     assert seen["idempotency"] == "effect-1"
-    assert result == DelegationResult(task_id="remote-42", peer_name="hub", status="submitted")
+    assert result == DelegationResult(
+        task_id="remote-42",
+        peer_name="hub",
+        status="submitted",
+        peer_url="http://hub.example/",
+    )
     assert (
         await manager.delegate(
-            "hub", "planner", [{"role": "user", "content": "do x"}], idempotency_key="effect-1"
+            "hub",
+            "planner",
+            [{"role": "user", "content": "do x"}],
+            idempotency_key="effect-1",
+            context=_context(),
         )
         == result
     )
@@ -845,10 +858,148 @@ async def test_delegate_returns_the_cached_receipt_for_the_same_idempotency_key(
     manager = GuestPeerManager()
     manager.register_peer(PeerTrust(peer_url="http://hub", peer_name="hub"))
     first = await manager.delegate(
-        "hub", "planner", [{"role": "user", "content": "x"}], idempotency_key="key-1"
+        "hub",
+        "planner",
+        [{"role": "user", "content": "x"}],
+        idempotency_key="key-1",
+        context=_context(delegation_key="key-1"),
     )
     second = await manager.delegate(
-        "hub", "planner", [{"role": "user", "content": "x"}], idempotency_key="key-1"
+        "hub",
+        "planner",
+        [{"role": "user", "content": "x"}],
+        idempotency_key="key-1",
+        context=_context(delegation_key="key-1"),
     )
     assert posts["n"] == 1
     assert second == first
+
+
+async def test_delegate_derives_transport_key_from_context_delegation_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: dict[str, Any] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["idempotency"] = request.headers.get("idempotency-key")
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"task_id": "remote-6"})
+
+    _patch_transport(monkeypatch, handler)
+    manager = GuestPeerManager()
+    manager.register_peer(PeerTrust(peer_url="http://hub", peer_name="hub"))
+    result = await manager.delegate(
+        "hub",
+        "planner",
+        [{"role": "user", "content": "x"}],
+        context=_context(),
+    )
+    assert result.status == "submitted"
+    assert seen["idempotency"] == seen["body"]["delegation_context"]["delegation_key"]
+    assert seen["idempotency"] == "effect-1"
+
+
+async def test_delegate_rejects_idempotency_key_diverging_from_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sent: dict[str, Any] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        sent["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"task_id": "remote-7"})
+
+    _patch_transport(monkeypatch, handler)
+    audit = InMemoryAuditLogger()
+    manager = GuestPeerManager(audit=audit)
+    manager.register_peer(PeerTrust(peer_url="http://hub", peer_name="hub"))
+    refused = await manager.delegate(
+        "hub",
+        "planner",
+        [{"role": "user", "content": "x"}],
+        idempotency_key="other-key",
+        context=_context(),
+    )
+    assert refused.status == "rejected"
+    assert "idempotency_key" in (refused.error or "")
+    assert "body" not in sent, "nothing reached the peer"
+    assert "refused" in audit.entries[-1]["detail"]
+
+
+# --- canonical inbound representation (maistro.a2a.inbound) ----------------
+
+
+class _Flavor(Enum):
+    MINT = "mint"
+
+
+class _Modelish:
+    """Stands in for any payload value carrying its own JSON projection."""
+
+    def model_dump(self, *, mode: str = "python") -> dict[str, Any]:
+        return {"projected": mode}
+
+
+class _Opaque:
+    """A value with no unambiguous JSON form at all."""
+
+
+async def test_canonical_representation_encodes_rich_value_types() -> None:
+    """Enums, timestamps and self-projecting values survive canonicalization.
+
+    The scanned text is the peer-visible truth: each encoded value appears in
+    its unambiguous JSON form, under sorted keys, so Warden judges exactly
+    what a downstream consumer would act on.
+    """
+    warden = _RecordingWarden()
+    verdict = await scan_inbound(
+        warden,
+        {
+            "flavor": _Flavor.MINT,
+            "when": datetime(2026, 1, 2, 3, 4, 5),
+            "day": date(2026, 1, 2),
+            "model": _Modelish(),
+        },
+    )
+
+    assert verdict.clean is True
+    scanned = warden.contents[0]
+    assert '"day":"2026-01-02"' in scanned
+    assert '"flavor":"mint"' in scanned
+    assert '"model":{"projected":"json"}' in scanned
+    assert '"when":"2026-01-02T03:04:05"' in scanned
+    # Keys are sorted: the canonical form is deterministic across senders.
+    assert scanned == canonicalize_inbound(
+        {
+            "when": datetime(2026, 1, 2, 3, 4, 5),
+            "model": _Modelish(),
+            "flavor": _Flavor.MINT,
+            "day": date(2026, 1, 2),
+        }
+    )
+
+
+async def test_unserializable_payload_fails_closed_without_reaching_the_scanner() -> None:
+    """A value json cannot represent is an ingress refusal, not a scan."""
+    warden = _RecordingWarden()
+
+    verdict = await scan_inbound(warden, {"payload": _Opaque()})
+
+    assert verdict.clean is False
+    assert verdict.blocked is True
+    assert verdict.flags == ("warden_unavailable",)
+    # The scanner saw nothing: there is no canonical text to judge.
+    assert warden.contents == []
+
+
+async def test_scanner_failure_fails_closed() -> None:
+    class _ExplodingWarden:
+        policy_version = "exploding"
+
+        async def scan(self, content: str, boundary: str) -> WardenVerdict:
+            raise RuntimeError("scanner backend down")
+
+    verdict = await scan_inbound(_ExplodingWarden(), {"answer": "looks harmless"})
+
+    assert verdict.clean is False
+    assert verdict.blocked is True
+    assert verdict.flags == ("warden_unavailable",)

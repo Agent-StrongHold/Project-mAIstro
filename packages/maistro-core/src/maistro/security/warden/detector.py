@@ -417,13 +417,12 @@ class Warden:
     ``policy_version`` identifies this canonical detector mechanism for audit
     correlation; consumers must not replace it with a product-local policy.
 
-    ``policy_version`` identifies this canonical detector mechanism for audit
-    correlation; consumers must not replace it with a product-local policy.
-
     Layers 1-2.5 are always active (free, instant).
     Layer 3 (LLM) is optional -- requires an LLM client and model to be configured.
     """
 
+    # Stable identifier included in boundary audit evidence. Detector changes
+    # must update this value when the applicable policy meaningfully changes.
     policy_version = WARDEN_POLICY_VERSION
 
     def __init__(

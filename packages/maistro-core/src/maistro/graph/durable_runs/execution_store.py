@@ -235,7 +235,10 @@ class DurableRunExecutionStore:
             canonical_node = await self._run_store.get_node_run(node_run_id)
             if canonical_node is None:
                 raise RunIntegrityError(f"NodeRun {node_run_id!r} does not exist")
-            if canonical_node.status is not target:
+            if canonical_node.status is not target or _supplies_new_evidence(
+                canonical_node,
+                accepted_outcome=accepted_outcome,
+            ):
                 canonical_node = await self._run_store.transition_node_run(
                     node_run_id,
                     target,

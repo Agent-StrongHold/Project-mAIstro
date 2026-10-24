@@ -1,6 +1,13 @@
 from __future__ import annotations
 
+import hashlib
+import json
+from typing import Any
+
+from .curriculum import RESERVED_BENCHMARK_PREFIX
+from .diversity import trait_vector
 from .lift_matrix import TRANSFER_EPSILON
+from .objective import DEFAULT_OBJECTIVE, EvaluationObjective
 from .types import FitnessComponents, PipelineGenome
 
 # Tuned per-benchmark minimums. A genome scoring below any of these on a

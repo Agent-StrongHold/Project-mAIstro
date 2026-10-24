@@ -8,12 +8,16 @@ export const API_BASE = "";
 /** Thrown by a failed request. `message` is human copy safe to show a user
  * (#1436); `status`/`path` carry the raw transport detail for developer
  * diagnostics (also already logged to the console by `debugApi`) without
- * putting it in front of someone who can't act on a route string. */
+ * putting it in front of someone who can't act on a route string. `detail`
+ * is the backend's structured error payload, when it sent one (FastAPI's
+ * `HTTPException.detail`), for callers that branch on a machine-readable
+ * error code rather than prose (#292). */
 export class ApiError extends Error {
   constructor(
     message: string,
     readonly status: number,
     readonly path: string,
+    readonly detail?: unknown,
   ) {
     super(message);
     this.name = "ApiError";
@@ -63,7 +67,18 @@ async function request<T>(
     // `detail` from -- so it gets the same human treatment as a bad status
     // (#1436), not a raw `TypeError: Failed to fetch` or `AbortError`.
     const timedOut = err instanceof DOMException && err.name === "AbortError";
-    debugApi(method, path, 0, performance.now() - started, timedOut ? "timed out" : err);
+    const failedMs = performance.now() - started;
+    debugApi(method, path, 0, failedMs, timedOut ? "timed out" : err);
+    // #1420: a transport failure is its own outcome and carries NO request
+    // id -- there was no response, so none is fabricated.
+    rumApiRequest({
+      method,
+      path,
+      status: 0,
+      outcome: timedOut ? "timeout" : "network_error",
+      durationMs: failedMs,
+      rawRequestId: null,
+    });
     throw new ApiError(
       timedOut
         ? "This took too long and was cancelled. Try again."
@@ -99,9 +114,20 @@ async function request<T>(
   if (!r.ok) {
     const detailObj =
       parsed && typeof parsed === "object" && "detail" in parsed
-        ? String((parsed as { detail: unknown }).detail)
+        ? (parsed as { detail: unknown }).detail
         : undefined;
-    throw new ApiError(detail || fallbackMessage(r.status), r.status, path);
+    // Human copy: a string detail verbatim, a structured detail's message/error
+    // code, otherwise the status fallback — never "[object Object]".
+    let detail: string | undefined;
+    if (typeof detailObj === "string") {
+      detail = detailObj;
+    } else if (detailObj && typeof detailObj === "object") {
+      const code =
+        (detailObj as { message?: unknown }).message ??
+        (detailObj as { error?: unknown }).error;
+      if (typeof code === "string") detail = code;
+    }
+    throw new ApiError(detail || fallbackMessage(r.status), r.status, path, detailObj);
   }
   return { data: parsed as T, status: r.status };
 }

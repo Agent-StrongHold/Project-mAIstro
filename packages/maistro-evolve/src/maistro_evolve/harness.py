@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from typing import Any, Literal
 
+from .curriculum import RESERVED_BENCHMARK_PREFIX
 from .eval_metering import attach_run_metering
 from .types import EvalResult, PipelineGenome
 from .verdict_probes import ConformanceReport, require_conformance, run_conformance

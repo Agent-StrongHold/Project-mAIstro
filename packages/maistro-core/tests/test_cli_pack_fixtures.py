@@ -119,9 +119,19 @@ def test_seed_command_table_output_names_the_canonical_workspace(tmp_path: Path)
     db_path = tmp_path / "pack-fixtures.db"
     result = runner.invoke(cli_app, ["fixtures", "seed", "--db", str(db_path)])
     assert result.exit_code == 0, result.output
-    assert PACK_FIXTURE_WORKSPACE_ID in result.output
-    assert str(db_path) in result.output
-    assert "completed" in result.output and "waiting" in result.output
+
+    # Compare with whitespace collapsed. Rich hard-breaks a token too long for
+    # the console width, so an absolute path can arrive split across lines --
+    # and `_fixtures` builds its Console at import time, which bakes `COLUMNS`
+    # in before the runner can override it. Paths carry no whitespace of their
+    # own, so this still pins the whole path, just not the line it landed on.
+    def _flat(text: str) -> str:
+        return "".join(text.split())
+
+    flat = _flat(result.output)
+    assert _flat(PACK_FIXTURE_WORKSPACE_ID) in flat
+    assert _flat(str(db_path)) in flat
+    assert "completed" in flat and "waiting" in flat
 
 
 def test_unified_cli_routes_the_fixtures_command() -> None:

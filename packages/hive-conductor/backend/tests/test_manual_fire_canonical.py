@@ -538,6 +538,20 @@ def test_the_manual_fire_route_runs_the_canonical_spine_end_to_end(
         await workspace_authority.canonical_store_for_tests().create(
             creator_user_id="admin", name="Route schedules", workspace_id="ws-route"
         )
+        # The scheduler re-checks the schedule ACTOR's membership on the
+        # Container's own store (#1201 revocation gate). Production has one
+        # Container, so this and the route-facing seed above are the same
+        # instance there; the test's monkeypatched Container is a separate
+        # object and must carry the actor's membership for the fire to be
+        # judged as production would.
+        from maistro.workspaces.model import WorkspaceRole
+
+        await container.workspace_store.create(
+            creator_user_id="admin", name="Route schedules", workspace_id="ws-route"
+        )
+        await container.workspace_store.set_membership(
+            "ws-route", user_id="user-1", role=WorkspaceRole.CONTRIBUTOR
+        )
         monkeypatch.setattr(
             _ScheduleRunner, "_canonical_container", staticmethod(lambda: container)
         )
@@ -621,11 +635,22 @@ def test_an_idempotency_key_meets_the_fire_id_contract(
         row.workspace_id = "ws-idem"
         _install_row(row)
         # Same #1201 route authority as the spine E2E: seed the Workspace with
-        # the seeded admin (id "admin") as owner so the fire is admitted.
+        # the seeded admin (id "admin") as owner so the fire is admitted — on
+        # the route-facing store, and on the monkeypatched Container's own
+        # store for the schedule ACTOR (row user "user-1"), which in
+        # production are one instance (#1201 revocation gate).
         from services import workspace_authority
+
+        from maistro.workspaces.model import WorkspaceRole
 
         await workspace_authority.canonical_store_for_tests().create(
             creator_user_id="admin", name="Idem schedules", workspace_id="ws-idem"
+        )
+        await container.workspace_store.create(
+            creator_user_id="admin", name="Idem schedules", workspace_id="ws-idem"
+        )
+        await container.workspace_store.set_membership(
+            "ws-idem", user_id="user-1", role=WorkspaceRole.CONTRIBUTOR
         )
         monkeypatch.setattr(
             _ScheduleRunner, "_canonical_container", staticmethod(lambda: container)

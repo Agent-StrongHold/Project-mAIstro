@@ -4,8 +4,13 @@ from datetime import UTC, datetime
 
 import pytest
 
-from maistro_evolve.cycle import EvolutionConfig, EvolutionCycle
+from maistro_evolve.cycle import (
+    EvolutionConfig,
+    EvolutionCycle,
+    FitnessEvidenceDriftError,
+)
 from maistro_evolve.evidence_manifest import load_evidence_manifest
+from maistro_evolve.fitness import compute_fitness
 from maistro_evolve.harness import EvalHarness
 from maistro_evolve.objective import (
     DEFAULT_OBJECTIVE,

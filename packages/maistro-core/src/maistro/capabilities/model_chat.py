@@ -21,7 +21,8 @@ registry metadata, then attached to the persisted canonical Invocation.
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ConfigDict
@@ -481,6 +482,7 @@ class ModelChatEgress:
         effect_key: str,
         request: ModelChatRequest,
         setup: Callable[[], Awaitable[None]] | None = None,
+        actor_id: str = "",
     ) -> ModelCallResult:
         """Run one governed model call, optionally performing provider setup.
 
@@ -491,8 +493,13 @@ class ModelChatEgress:
         performed by the caller beforehand: a denied policy then causes zero
         HTTP, not a credential-bearing side request ahead of authorization.
         """
-        resolver = resolve_model_chat_provider(self._registry, self._router, alias=request.model)
-        selected: list[LlmGatewayProvider] = []
+        resolver = resolve_model_chat_provider(
+            self._registry,
+            self._router,
+            alias=request.model,
+            adapters=self._adapters,
+        )
+        selected: list[LlmGatewayProvider | AdapterGatewayProvider] = []
 
         async def tracked_resolve(candidate: Binding) -> ResolvedCapabilityProvider | Unavailable:
             provider = await resolver(candidate)
@@ -509,7 +516,7 @@ class ModelChatEgress:
                     "model-chat physical execution requires a Binding-scoped credential"
                 )
             base = provider.base
-            if not isinstance(base, LlmGatewayProvider):
+            if not isinstance(base, (LlmGatewayProvider, AdapterGatewayProvider)):
                 raise TypeError(f"credential routed a non-gateway provider: {base!r}")
             if setup is not None:
                 await setup()

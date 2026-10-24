@@ -590,7 +590,9 @@ def test_provenance_is_capped(admin_client, monkeypatch) -> None:
 def test_list_and_detail_carry_the_non_authoritative_marker(admin_client) -> None:
     """Until #102's cutover, the UI is a preview over the canonical service.
 
-    The payload says so, so the UI cannot quietly claim authority.
+    The payload says so, so the UI cannot quietly claim authority. The
+    statement is read live from the committed authority marker (#102), which
+    ships at the pre-cutover default: markdown, revision 0.
     """
     item = _create_item(admin_client)
     listed = admin_client.get("/v1/backlog").json()
@@ -598,6 +600,8 @@ def test_list_and_detail_carry_the_non_authoritative_marker(admin_client) -> Non
         "canonical_service": "services.backlog",
         "ui_authoritative": False,
         "cutover_issue": 102,
+        "authority": "markdown",
+        "authority_revision": 0,
     }
     detail = admin_client.get(f"/v1/backlog/{item['id']}").json()
     assert detail["authority"]["ui_authoritative"] is False
