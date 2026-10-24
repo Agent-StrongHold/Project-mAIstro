@@ -63,3 +63,26 @@ test("Profile can set the preference through the same API", async () => {
   const body = (await profile.json()) as { preferences?: { workspace_default_landing?: string } };
   expect(body.preferences?.workspace_default_landing).toBe("/goals");
 });
+
+test("Profile can set restore aggressiveness on the same profile", async () => {
+  await page.goto("/profile");
+  const select = page.getByLabel("Workspace restore aggressiveness");
+  await expect(select).toBeVisible();
+  await select.selectOption("generous");
+  await expect(page.getByRole("status").filter({ hasText: /Generous/i })).toBeVisible({
+    timeout: 10000,
+  });
+  const profile = await page.request.get("/v1/profile");
+  expect(profile.status()).toBe(200);
+  const body = (await profile.json()) as {
+    preferences?: { workspace_restore_aggressiveness?: string };
+  };
+  expect(body.preferences?.workspace_restore_aggressiveness).toBe("generous");
+});
+
+test("API refuses an out-of-allow-list landing path", async () => {
+  const res = await page.request.patch("/v1/profile", {
+    data: { field: "workspace_default_landing", value: "/dashboard" },
+  });
+  expect(res.status()).toBe(400);
+});

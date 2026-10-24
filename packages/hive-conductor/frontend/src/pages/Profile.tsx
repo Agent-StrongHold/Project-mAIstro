@@ -3,9 +3,14 @@ import { useToast } from "../components/shared";
 import { apiGet, apiPatch } from "../lib/api";
 import {
   DEFAULT_LANDING_PATH,
+  DEFAULT_RESTORE_VALUE,
   LANDING_OPTIONS,
   LANDING_PREF_KEY,
+  RESTORE_OPTIONS,
+  RESTORE_PREF_KEY,
   resolveLandingPath,
+  resolveRestoreAggressiveness,
+  restoreLabel,
 } from "../lib/landing";
 import { claimUiState, clearUiState, storedUiState } from "../lib/uiState";
 
@@ -17,6 +22,8 @@ export default function Profile() {
   const [sessions, setSessions] = useState<any[]>([]);
   const [landing, setLanding] = useState(DEFAULT_LANDING_PATH);
   const [landingBusy, setLandingBusy] = useState(false);
+  const [restore, setRestore] = useState(DEFAULT_RESTORE_VALUE);
+  const [restoreBusy, setRestoreBusy] = useState(false);
   const toast = useToast();
   const [stored, setStored] = useState(() => storedUiState());
 
@@ -26,7 +33,10 @@ export default function Profile() {
       .then(d => { if (d.user) setUser(d.user); });
 
     apiGet<{ preferences?: Record<string, unknown> }>("/v1/profile")
-      .then((p) => setLanding(resolveLandingPath(p.preferences?.[LANDING_PREF_KEY])))
+      .then((p) => {
+        setLanding(resolveLandingPath(p.preferences?.[LANDING_PREF_KEY]));
+        setRestore(resolveRestoreAggressiveness(p.preferences?.[RESTORE_PREF_KEY]));
+      })
       .catch(() => {});
 
     // Fetch memories and generate summary
@@ -134,6 +144,44 @@ export default function Profile() {
             {LANDING_OPTIONS.map((o) => (
               <option key={o.path} value={o.path}>
                 {o.label}
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
+
+      <div className="card" style={{ marginBottom: 12 }} data-testid="workspace-restore-aggressiveness">
+        <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", marginBottom: 8 }}>
+          SESSION RESTORATION
+        </div>
+        <div style={{ fontFamily: "var(--hand)", fontSize: 13, color: "var(--pencil)", marginBottom: 8 }}>
+          How eagerly Workspace restores the surface you left after an absence.
+          Exact windows are applied by session continuity; this preference is the
+          durable aggressiveness band. Same profile record as chat profile_set.
+        </div>
+        <label style={{ display: "grid", gap: 6, fontFamily: "var(--mono)", fontSize: 12 }}>
+          <span>Restore aggressiveness</span>
+          <select
+            value={restore}
+            disabled={restoreBusy}
+            aria-label="Workspace restore aggressiveness"
+            onChange={async (e) => {
+              const next = resolveRestoreAggressiveness(e.target.value);
+              setRestore(next);
+              setRestoreBusy(true);
+              try {
+                await apiPatch("/v1/profile", { field: RESTORE_PREF_KEY, value: next });
+                toast(`Restore aggressiveness set to ${restoreLabel(next)}`, "ok");
+              } catch {
+                toast("Couldn't save restore aggressiveness", "error");
+              } finally {
+                setRestoreBusy(false);
+              }
+            }}
+          >
+            {RESTORE_OPTIONS.map((o) => (
+              <option key={o.value} value={o.value}>
+                {o.label} — {o.hint}
               </option>
             ))}
           </select>

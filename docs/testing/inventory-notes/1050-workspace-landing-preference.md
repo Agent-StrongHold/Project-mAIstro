@@ -1,19 +1,22 @@
 ---
 inventory-delta:
-  packages/hive-conductor/backend/tests: +3
+  packages/hive-conductor/backend/tests: +8
   packages/hive-conductor/tests/e2e: +0
 ---
 
-# 1050 — Workspace default landing preference (first slice)
+# 1050 — Workspace landing + restore preferences (first slices)
 
-Adds the explicit default-surface preference for Workspace cutover (#1050):
+Adds explicit Workspace product preferences for cutover (#1050):
 
-- `PROFILE_SCHEMA` lists `workspace_default_landing` so chat `profile_set` and
-  the Profile panel share one field on the canonical profile store
-- `frontend/src/lib/landing.ts` — allow-list + safe path resolve (Home baseline)
-- `DefaultLandingRedirect` — authenticated index reads the preference
-- Profile select PATCHes `/v1/profile` with that field
-- `backend/tests/test_workspace_landing_preference.py` — schema + store round-trip
-- `tests/e2e/workspace-landing-preference.spec.ts` — Playwright (index steering,
-  Profile write). Count stays +0: suite inventory collects pytest `test_*.py`
-  only; Playwright runs in `hive-conductor-e2e-ui`.
+- `PROFILE_SCHEMA` lists `workspace_default_landing` and
+  `workspace_restore_aggressiveness` so chat `profile_set` and the Profile
+  panel share one field each on the canonical profile store
+- `services/workspace_preferences.py` — allow-lists + write validation (400)
+- `frontend/src/lib/landing.ts` — client normalize helpers
+- `DefaultLandingRedirect` — authenticated index reads the landing preference
+- Profile selects PATCH `/v1/profile` for both fields
+- `backend/tests/test_workspace_landing_preference.py` — schema, round-trip,
+  per-user, refuse invalid writes, normalize helpers (8 cases)
+- `tests/e2e/workspace-landing-preference.spec.ts` — Playwright (index
+  steering, Profile writes, API 400). Count stays +0: suite inventory collects
+  pytest `test_*.py` only; Playwright runs in `hive-conductor-e2e-ui`.

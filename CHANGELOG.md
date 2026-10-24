@@ -25,14 +25,16 @@ or placeholder-only section.
 
 ### Added
 
-- **Durable Workspace default-landing preference (#1050, partial).** Authenticated
+- **Durable Workspace landing + restore preferences (#1050, partial).** Authenticated
   `/` reads `preferences.workspace_default_landing` from the canonical profile
-  store and navigates there (Home / Chat / Goals / Backlog / Work items). Missing
-  or invalid values still land on Workspace Home. Profile exposes a control that
-  PATCHes the same field chat `profile_set` writes — one durable owner, no
-  browser-local product authority. Recent-session restoration, learned
-  suggestions, and Agent-driven edits remain later #1050 slices (#1822 for
-  conversation continuity).
+  store and navigates there (Home / Chat / Goals / Backlog / Work items). Profile
+  also exposes `workspace_restore_aggressiveness`
+  (`off`/`brief`/`balanced`/`generous`) for how eagerly a prior surface is
+  restored after absence — the durable band; exact windows are applied by
+  session continuity (#1822). Both fields PATCH/profile_set the same profile
+  document; out-of-allow-list writes are refused (400). Missing or invalid
+  reads still mean Workspace Home / balanced. Learned suggestions and Agent-
+  driven restoration behavior remain later #1050 slices.
 
 - **Workspace Home is the default Mission-Control landing (#1048, partial).**
   Authenticated `/` now opens `/home`, which reads the existing Home layout and
