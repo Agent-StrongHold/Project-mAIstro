@@ -35,9 +35,11 @@ from maistro.capabilities.model_chat import (
     MODEL_CHAT_CAPABILITY,
     GovernedLLMClient,
     GovernedModelChatClient,
+    ModelCallResult,
     ModelChatEgress,
     ModelChatRequest,
     _gateway_usage,
+    _replay_result_chunks,
     build_model_chat_client,
     resolve_model_chat_provider,
 )
@@ -1386,17 +1388,18 @@ class _LiveStreamResponse:
         *,
         after_line: Callable[[], Awaitable[None]] | None = None,
         fail_at_line: int | None = None,
+        status: int = 200,
     ) -> None:
         self._lines = lines
         self._after_line = after_line
         self._fail_at_line = fail_at_line
         self._served = 0
-        self.status_code = 200
+        self.status_code = status
         self.headers: dict[str, str] = {}
 
     @property
     def is_success(self) -> bool:
-        return True
+        return self.status_code < 400
 
     async def __aenter__(self) -> _LiveStreamResponse:
         return self
@@ -1426,12 +1429,14 @@ class _LiveStreamClient:
         *,
         after_line: Callable[[], Awaitable[None]] | None = None,
         fail_at_line: int | None = None,
+        status: int = 200,
     ) -> None:
         self._args: tuple[Any, ...] = ()
         self._kwargs: dict[str, Any] = {}
         self._lines = lines
         self._after_line = after_line
         self._fail_at_line = fail_at_line
+        self._status = status
         self.dispatches = 0
 
     async def __aenter__(self) -> _LiveStreamClient:
@@ -1444,7 +1449,10 @@ class _LiveStreamClient:
         self.dispatches += 1
         self._args, self._kwargs = args, kwargs
         return _LiveStreamResponse(
-            self._lines, after_line=self._after_line, fail_at_line=self._fail_at_line
+            self._lines,
+            after_line=self._after_line,
+            fail_at_line=self._fail_at_line,
+            status=self._status,
         )
 
 
@@ -1454,8 +1462,11 @@ def _stream_client(
     *,
     after_line: Callable[[], Awaitable[None]] | None = None,
     fail_at_line: int | None = None,
+    status: int = 200,
 ) -> _LiveStreamClient:
-    client = _LiveStreamClient(lines, after_line=after_line, fail_at_line=fail_at_line)
+    client = _LiveStreamClient(
+        lines, after_line=after_line, fail_at_line=fail_at_line, status=status
+    )
     monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **k: client)
     return client
 
@@ -1482,7 +1493,10 @@ _IDENTITY = {
 
 
 def _streaming_client(
-    effects: CapabilityEffectContext, registry: Any, timeout_s: float
+    effects: CapabilityEffectContext,
+    registry: Any,
+    timeout_s: float,
+    protocol: str = "chat_completions",
 ) -> GovernedModelChatClient:
     """The compatibility client over real in-memory canonical authorities.
 
@@ -1497,6 +1511,7 @@ def _streaming_client(
         effects=effects,
         registry=registry,
         router=CostAwareRouter(registry),
+        protocol=protocol,
         binding=Binding(
             workspace_id="ws1",
             project_id="p1",
@@ -1507,6 +1522,7 @@ def _streaming_client(
 
 
 @pytest.mark.contract("behavioral")
+@pytest.mark.ac("SPEC-285/AC-1")
 async def test_stream_reaches_the_consumer_while_the_invocation_is_running(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1578,6 +1594,7 @@ async def test_stream_reaches_the_consumer_while_the_invocation_is_running(
     assert recorded.result["choices"][0]["finish_reason"] == "stop"
 
 
+@pytest.mark.ac("SPEC-285/AC-2")
 async def test_stream_failure_midstream_terminalizes_and_reaches_the_consumer(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1614,6 +1631,7 @@ async def test_stream_failure_midstream_terminalizes_and_reaches_the_consumer(
 
 
 @pytest.mark.contract("boundary")
+@pytest.mark.ac("SPEC-285/AC-3")
 async def test_stream_abandonment_never_leaves_a_completed_invocation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1654,6 +1672,7 @@ async def test_stream_abandonment_never_leaves_a_completed_invocation(
     assert "cancelled" in str(recorded.error)
 
 
+@pytest.mark.ac("SPEC-285/AC-4")
 async def test_deduplicated_stream_replays_the_record_without_dispatch(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1680,3 +1699,367 @@ async def test_deduplicated_stream_replays_the_record_without_dispatch(
 
     assert live.dispatches == 1, "a deduplicated stream must not re-dispatch"
     assert [c["choices"][0]["delta"] for c in second] == [c["choices"][0]["delta"] for c in first]
+
+
+@pytest.mark.ac("SPEC-285/AC-2")
+async def test_stream_http_refusal_records_failed_not_unknown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A not-applied HTTP refusal on the stream records FAILED, not UNKNOWN.
+
+    SPEC-285's failure table: the wire refusing before any chunk is an
+    `EffectNotApplied` (nothing was delivered, safe to reconcile), not an
+    unknown-outcome abort — the Invocation must say FAILED for the same
+    request a non-streaming call would fail with.
+    """
+
+    effects = _stream_effects()
+    registry = _registry()
+    _stream_client(monkeypatch, [], status=503)
+    client = _streaming_client(effects, registry, timeout_s=105.0)
+
+    with pytest.raises(RuntimeError, match="status=503"):
+        async for _ in client.stream_chunks(
+            [{"role": "user", "content": "hello"}],
+            "fast-model",
+            metadata=dict(_IDENTITY),
+        ):
+            pass
+
+    (recorded,) = await effects.invocation_store.list_effect(
+        run_id="run-stream",
+        node_run_id="node-stream",
+        binding_id=client._binding.binding_id,
+        effect_key="stream:model",
+    )
+    assert recorded.status is InvocationStatus.FAILED
+    assert "status=503" in str(recorded.error)
+
+
+async def test_stream_text_helper_yields_only_content_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`stream()` is the text-only view: content deltas only, in order.
+
+    Reasoning deltas and empty terminal chunks are chunks on the wire but are
+    not assistant text — the compatibility helper must not leak them as text.
+    """
+
+    lines = _sse_lines(
+        '{"choices":[{"delta":{"content":"Hel"}}]}',
+        '{"choices":[{"delta":{"reasoning_content":"thinking"}}]}',
+        '{"choices":[{"delta":{},"finish_reason":"stop"}]}',
+        '{"usage":{"prompt_tokens":1,"completion_tokens":1},"choices":[]}',
+    )
+    effects = _stream_effects()
+    registry = _registry()
+    _stream_client(monkeypatch, lines)
+    client = _streaming_client(effects, registry, timeout_s=106.0)
+
+    text = [
+        part
+        async for part in client.stream(
+            [{"role": "user", "content": "hello"}], "fast-model", metadata=dict(_IDENTITY)
+        )
+    ]
+
+    assert text == ["Hel"]
+
+
+async def test_stream_with_caller_scope_dispatches_under_the_scoped_binding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A caller-named scope derives the scoped Binding and records under it.
+
+    The stream path scopes exactly like `complete`: the turn's metadata names
+    a foreign Workspace, so the client derives (never reaches past its
+    authority for) the scoped copy and the Invocation lands under it.
+    """
+
+    lines = _sse_lines(
+        '{"choices":[{"delta":{"content":"scoped"}}]}',
+        '{"choices":[{"delta":{},"finish_reason":"stop"}]}',
+    )
+    effects = _stream_effects()
+    effects.credentials.add(
+        workspace_id="ws2",
+        project_id="p2",
+        record=CredentialRecord(
+            key_id=DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,
+            provider=MODEL_GATEWAY_CREDENTIAL_PROVIDER,
+            api_key="scoped-key",
+        ),
+    )
+    registry = _registry()
+    _stream_client(monkeypatch, lines)
+    client = _streaming_client(effects, registry, timeout_s=107.0)
+
+    chunks = [
+        chunk
+        async for chunk in client.stream_chunks(
+            [{"role": "user", "content": "hello"}],
+            "fast-model",
+            metadata={**_IDENTITY, "workspace_id": "ws2", "project_id": "p2"},
+        )
+    ]
+    assert [c["choices"][0]["delta"].get("content") for c in chunks if c.get("choices")] == [
+        "scoped",
+        None,
+    ]
+
+    (recorded,) = await effects.invocation_store.list_effect(
+        run_id="run-stream",
+        node_run_id="node-stream",
+        binding_id="model-chat:ws2:p2",
+        effect_key="stream:model",
+    )
+    assert recorded.binding.workspace_id == "ws2"
+    assert recorded.binding.project_id == "p2"
+    assert recorded.status is InvocationStatus.COMPLETED
+
+
+@pytest.mark.ac("SPEC-285/AC-5")
+async def test_stream_without_terminal_usage_records_none_not_zero(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A wire that never reports usage leaves the Invocation unmeasured.
+
+    `usage=None` is the truthful record; zero would fabricate a measurement
+    the provider never made.
+    """
+
+    lines = _sse_lines(
+        '{"choices":[{"delta":{"content":"bare"}}]}',
+        '{"choices":[{"delta":{},"finish_reason":"stop"}]}',
+    )
+    effects = _stream_effects()
+    registry = _registry()
+    _stream_client(monkeypatch, lines)
+    client = _streaming_client(effects, registry, timeout_s=108.0)
+
+    _ = [
+        chunk
+        async for chunk in client.stream_chunks(
+            [{"role": "user", "content": "hello"}],
+            "fast-model",
+            metadata=dict(_IDENTITY),
+        )
+    ]
+
+    (recorded,) = await effects.invocation_store.list_effect(
+        run_id="run-stream",
+        node_run_id="node-stream",
+        binding_id=client._binding.binding_id,
+        effect_key="stream:model",
+    )
+    assert recorded.status is InvocationStatus.COMPLETED
+    assert recorded.usage is None
+
+
+def test_replay_falls_back_to_the_recorded_completion_body() -> None:
+    """A record without stored chunks replays its completion body once."""
+
+    result = ModelCallResult(
+        invocation_id="inv-1",
+        model="fast-model",
+        body={"choices": [{"message": {"role": "assistant", "content": "recorded"}}]},
+    )
+    chunks = list(_replay_result_chunks(result))
+    assert chunks == [{"choices": [{"delta": {"content": "recorded"}, "finish_reason": "stop"}]}]
+
+
+def test_replay_without_a_record_yields_nothing() -> None:
+    """No terminal record, no replayed chunks — silence, not fabrication."""
+
+    assert list(_replay_result_chunks(None)) == []
+
+
+@pytest.mark.ac("SPEC-285/AC-6")
+async def test_responses_protocol_streams_normalized_chunks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`auto` streams the Responses endpoint through the same one Invocation.
+
+    The shipped default variant tries /responses first: its events cross the
+    observer normalized to chat.completions chunks, unusable wire noise is
+    skipped rather than fatal, and the same admitted, deduplicated Invocation
+    terminalizes with the usage the terminal event reported. A malformed
+    usage measurement stays unmeasured (`usage=None`), never zero.
+    """
+
+    lines = [
+        "data: not-json",  # unparseable: skipped, not fatal
+        "data: 123",  # JSON but not an object: skipped
+        'data: {"type":"response.output_text.delta","delta":"Hel"}',
+        'data: {"type":"response.reasoning_summary_text.delta","delta":"hm"}',
+        'data: {"type":"response.output_text.delta","delta":"lo"}',
+        'data: {"type":"response.some_future_event","x":1}',  # unrecognized: skipped
+        "data: {broken json",  # unparseable: skipped, not fatal
+        'data: {"type":"response.completed",'
+        '"response":{"usage":{"input_tokens":"many","output_tokens":3}}}',  # malformed usage
+    ]
+    effects = _stream_effects()
+    registry = _registry()
+    live = _stream_client(monkeypatch, lines)
+    client = _streaming_client(effects, registry, timeout_s=109.0, protocol="auto")
+
+    chunks = [
+        chunk
+        async for chunk in client.stream_chunks(
+            [{"role": "user", "content": "hello"}],
+            "fast-model",
+            metadata=dict(_IDENTITY),
+        )
+    ]
+
+    # The request went to the Responses endpoint with the Responses payload…
+    assert "/responses" in str(live._args[1])
+    payload = live._kwargs["json"]
+    assert payload["stream"] is True
+    assert payload["input"] == [{"role": "user", "content": "hello"}]
+    # …normalized: text deltas crossed as content chunks, reasoning as
+    # reasoning_content, the terminal event as a stop chunk.
+    contents = [
+        c["choices"][0]["delta"]["content"]
+        for c in chunks
+        if c.get("choices") and c["choices"][0].get("delta", {}).get("content") is not None
+    ]
+    assert contents == ["Hel", "lo"]
+    assert any(c["choices"][0]["delta"].get("reasoning_content") == "hm" for c in chunks)
+    assert any(c.get("choices") and c["choices"][0].get("finish_reason") == "stop" for c in chunks)
+
+    (recorded,) = await effects.invocation_store.list_effect(
+        run_id="run-stream",
+        node_run_id="node-stream",
+        binding_id=client._binding.binding_id,
+        effect_key="stream:model",
+    )
+    # One governed Invocation for the streamed call; the malformed usage
+    # measurement is absent, not zeroed.
+    assert live.dispatches == 1
+    assert recorded.status is InvocationStatus.COMPLETED
+    assert recorded.usage is None
+
+
+async def test_auto_protocol_reraises_a_response_auth_refusal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A 401 from /responses must surface, not silently retry as chat."""
+
+    class _Resp:
+        status_code = 401
+
+        def json(self) -> dict[str, Any]:
+            return {"error": "bad key"}
+
+    posts: list[str] = []
+
+    class _Client:
+        def __init__(self, *a: Any, **kw: Any) -> None: ...
+
+        async def __aenter__(self) -> _Client:
+            return self
+
+        async def __aexit__(self, *a: Any) -> None: ...
+
+        async def post(self, url: str, **kw: Any) -> _Resp:
+            posts.append(url)
+            return _Resp()
+
+    monkeypatch.setattr(httpx, "AsyncClient", _Client)
+
+    effects = _effects()
+    registry = _registry()
+    egress = ModelChatEgress(
+        effects,
+        registry=registry,
+        router=CostAwareRouter(registry),
+        endpoint=GatewayEndpoint(base_url="http://gw:4000"),
+    )
+    request = ModelChatRequest(
+        model="fast-model", messages=[{"role": "user", "content": "hi"}], protocol="auto"
+    )
+    with pytest.raises(RuntimeError, match="status=401"):
+        await egress.complete(
+            binding=_binding(),
+            run_id="r-auto",
+            node_run_id="nr-auto",
+            attempt_id="a-auto",
+            effect_key="auto:model",
+            request=request,
+        )
+    assert len(posts) == 1, "an auth refusal must not be retried on the other protocol"
+
+
+async def test_auto_protocol_falls_back_when_responses_refuses_the_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`auto` retries the chat endpoint when /responses refuses the request.
+
+    A not-applied refusal that is not an auth failure (here: the endpoint
+    rejecting the Responses payload with 404) falls back to
+    chat.completions; an auth refusal does not (the previous test).
+    """
+
+    posts: list[str] = []
+
+    class _Resp:
+        def __init__(self, status_code: int, body: dict[str, Any]) -> None:
+            self.status_code = status_code
+            self._body = body
+
+        def json(self) -> dict[str, Any]:
+            return self._body
+
+    class _Client:
+        def __init__(self, *a: Any, **kw: Any) -> None: ...
+
+        async def __aenter__(self) -> _Client:
+            return self
+
+        async def __aexit__(self, *a: Any) -> None: ...
+
+        async def post(self, url: str, **kw: Any) -> _Resp:
+            posts.append(url)
+            if url.endswith("/responses"):
+                return _Resp(404, {"error": "no responses route"})
+            return _Resp(200, _OK_BODY)
+
+    monkeypatch.setattr(httpx, "AsyncClient", _Client)
+
+    effects = _effects()
+    registry = _registry()
+    egress = ModelChatEgress(
+        effects,
+        registry=registry,
+        router=CostAwareRouter(registry),
+        endpoint=GatewayEndpoint(base_url="http://gw:4000"),
+    )
+    request = ModelChatRequest(
+        model="fast-model", messages=[{"role": "user", "content": "hi"}], protocol="auto"
+    )
+    result = await egress.complete(
+        binding=_binding(),
+        run_id="r-auto2",
+        node_run_id="nr-auto2",
+        attempt_id="a-auto2",
+        effect_key="auto2:model",
+        request=request,
+    )
+    assert [u.endswith("/responses") or u.endswith("/chat/completions") for u in posts] == [
+        True,
+        True,
+    ]
+    assert result.body["choices"][0]["message"]["content"] == "hi"
+
+
+def test_build_model_chat_client_supplies_default_authorities_when_omitted() -> None:
+    """Omitting the effect context composes the process-default one.
+
+    The compatibility constructor must not silently return an ungoverned
+    client: with no effects supplied it binds the process default context,
+    so a caller that forgets the authority still lands on the ledger.
+    """
+
+    client = build_model_chat_client(endpoint=GatewayEndpoint(base_url="http://gw", timeout_s=1.0))
+    assert isinstance(client, GovernedModelChatClient)

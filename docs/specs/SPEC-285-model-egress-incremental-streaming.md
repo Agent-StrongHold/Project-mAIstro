@@ -15,7 +15,8 @@ history:
 substrate:
   - maistro-engine#ADR-081226-6b46
   - maistro-engine#ADR-082326-5386
-implements: []
+implements:
+  - maistro-engine#ADR-081226-6b46
 related:
   - maistro-engine#SPEC-081226-6b46
   - maistro-engine#ADR-079
@@ -30,6 +31,13 @@ contracts:
 tests:
   - packages/maistro-core/tests/capabilities/test_model_chat_egress.py
   - packages/hive-conductor/backend/tests/test_llm_http_adapter.py
+ac-modules:
+  AC-1: maistro.capabilities.model_chat
+  AC-2: maistro.capabilities.model_chat
+  AC-3: maistro.capabilities.model_chat
+  AC-4: maistro.capabilities.model_chat
+  AC-5: maistro.capabilities.providers.llm_gateway
+  AC-6: maistro.capabilities.providers.llm_gateway
 source:
   - packages/maistro-core/src/maistro/capabilities/providers/llm_gateway.py
   - packages/maistro-core/src/maistro/capabilities/model_chat.py
@@ -135,29 +143,37 @@ untouched.**
 Each criterion below is pinned by the suites named in the `tests:` front-matter;
 the structural proofs deliberately avoid wall-clock assertions.
 
-1. **Incremental delivery under one Invocation.** While the provider wire is
-   still producing, an observer-bridged chunk reaches the consumer through
-   `stream_chunks` (`test_stream_reaches_the_consumer_while_the_invocation_is_running`);
-   a buffering regression aborts the wire loudly instead of passing.
-2. **Failure cannot fabricate success.** A mid-stream provider failure
-   terminalizes the Invocation non-COMPLETED and propagates to the consumer
-   (`test_stream_failure_midstream_terminalizes_and_reaches_the_consumer`);
-   a generic error records UNKNOWN, `EffectNotApplied` records FAILED.
-3. **Abandonment is truthful.** A consumer that closes the stream early
-   cancels the pump and terminalizes UNKNOWN — never COMPLETED, never an
-   orphaned dispatch
-   (`test_stream_abandonment_never_leaves_a_completed_invocation`).
-4. **Dedup replay without re-dispatch.** A logical effect whose Invocation
-   already terminalized COMPLETED replays the recorded chunks with zero live
-   provider calls (`test_deduplicated_stream_replays_the_record_without_dispatch`).
-5. **Usage accounting for streamed calls.** The terminal usage measurement on
-   the wire reaches the Invocation ledger for streamed dispatches (the Hive
-   adapter suite pins the ledger row); an unmeasured stream records
-   `usage=None`, never zero.
-6. **One execution authority.** The streaming path admits, dedups, records,
-   quotas and terminalizes through the same Invocation lifecycle as
-   non-streaming dispatch; the observer receives parsed chunks only and cannot
-   alter admission, policy, or the terminal record.
+- [x] **AC-1** Incremental delivery under one Invocation: while the provider
+  wire is still producing, an observer-bridged chunk reaches the consumer
+  through `stream_chunks`
+  (`test_stream_reaches_the_consumer_while_the_invocation_is_running`); a
+  buffering regression aborts the wire loudly instead of passing.
+- [x] **AC-2** Failure cannot fabricate success: a mid-stream provider failure
+  terminalizes the Invocation non-COMPLETED and propagates to the consumer
+  (`test_stream_failure_midstream_terminalizes_and_reaches_the_consumer`);
+  a generic wire error records UNKNOWN
+  (`..._midstream_...`), a not-applied HTTP refusal records FAILED
+  (`test_stream_http_refusal_records_failed_not_unknown`).
+- [x] **AC-3** Abandonment is truthful: a consumer that closes the stream
+  early cancels the pump and terminalizes UNKNOWN — never COMPLETED, never an
+  orphaned dispatch
+  (`test_stream_abandonment_never_leaves_a_completed_invocation`).
+- [x] **AC-4** Dedup replay without re-dispatch: a logical effect whose
+  Invocation already terminalized COMPLETED replays the recorded chunks with
+  zero live provider calls
+  (`test_deduplicated_stream_replays_the_record_without_dispatch`); a record
+  without stored chunks replays its completion body, and no record replays
+  nothing.
+- [x] **AC-5** Usage accounting for streamed calls: the terminal usage
+  measurement on the wire reaches the Invocation ledger for streamed
+  dispatches (the Hive adapter suite pins the ledger row);
+  an unmeasured stream records `usage=None`, never zero.
+- [x] **AC-6** One execution authority: the streaming path crosses the same
+  one gateway seam and Invocation lifecycle as non-streaming dispatch under
+  every shipped protocol selection — `auto` streams the Responses endpoint's
+  normalized chunks through the identical admitted, deduplicated, terminalized
+  Invocation (`test_responses_protocol_streams_normalized_chunks`), and the
+  observer receives parsed chunks only, never lifecycle authority.
 
 ## Ratification note
 

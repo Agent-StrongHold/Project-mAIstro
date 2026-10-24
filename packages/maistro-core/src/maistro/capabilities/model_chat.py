@@ -819,7 +819,12 @@ class GovernedModelChatClient:
         **kwargs: Any,
     ) -> Any:
         async for chunk in self.stream_chunks(messages, model, **kwargs):
-            delta = chunk.get("choices", [{}])[0].get("delta", {})
+            # A chunk may carry no choices at all: the chat.completions
+            # terminal usage frame is {"usage": …, "choices": []}. It is a
+            # real chunk on the wire, not text, so it is skipped here rather
+            # than crashing the text view.
+            choices = chunk.get("choices") or []
+            delta = choices[0].get("delta", {}) if choices else {}
             if isinstance(delta, dict) and delta.get("content"):
                 yield str(delta["content"])
 
