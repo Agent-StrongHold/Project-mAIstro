@@ -435,3 +435,48 @@ untracked override, deleted after use — CI is unaffected):
   raw fetch / 129 hand-typed, unchanged from base `3825fb9b5`); hive
   frontend `npm run build` green on the regenerated types; `ruff check .`
   and `ruff format --check .` clean.
+
+## Round: final develop-M1 sync + first-hand re-verification (2026-10-24, head `42e32bc11`)
+
+The independent verifier round at PR head `631aa7417` (job `b604d602931848b29e3d88e8f91d4202`) recorded a first-hand compose harness run against image
+`sha256:5d4264629424a60f655b46b6780a2e88026a9c8ed665e9e65e37cf3cace7424f`, built from that head: api phase **14 passed / 14 skipped** (~302s) plus the restart
+phase **1 passed**. That evidence was pending recording here; it is hereby recorded.
+
+The branch then merged the final develop-M1 drop (`b1c89cdb5`, #2308 durable
+Workspace landing + #2284 Attention shell) at `42e32bc11`. No #290 surface
+changed — every timezone file is byte-identical to `631aa7417` (`git diff`
+empty over Dockerfile, scheduler.py, health.py, both test files, ci.yml,
+compose file). `uv.lock` and the Dockerfile are also unchanged, but backend and
+maistro-core sources moved, so the shipped image was rebuilt from this head and
+re-verified first-hand:
+
+- Image `sha256:68a2a5d9286d040d2242cfbd52c4ec74776b9662a8a2768c6ac8391f8a47844e`
+  (`hive-conductor-hive:latest`, compose build). In-image timezone source,
+  recorded per the issue's definition of done:
+  `PYTHONTZPATH=/app/venv/lib/python3.13/site-packages/tzdata/zoneinfo`,
+  `tzdata` wheel **2026.3**; `ZoneInfo("UTC")` and `ZoneInfo("America/New_York")`
+  resolve through it.
+- CI-exact api phase (`compose --profile test up --build --abort-on-container-exit
+  --exit-code-from api-tests api-tests`): **14 passed / 14 skipped in 152s** —
+  UTC natural fire, Berlin 04:30 wall time + CET/CEST offset + exact instant,
+  invalid-zone 422s, `/health` tz/scheduler pins; restart-marked test skipped
+  pre-restart as designed. Restart phase (`start hive`, wait healthy,
+  `SCHED_TZ_AFTER_RESTART=1 -k restart_recovery`): **1 passed**.
+- Negative mechanism proof (in the shipped image): with the wheel's
+  `zoneinfo/` directory shadowed empty, the Dockerfile's literal build-time
+  smoke command exits **1** with `ZoneInfoNotFoundError: 'No time zone found
+  with key UTC'` — the tz dependency cannot be removed without failing that
+  smoke test.
+- Backend suite at the merged head: **4012 passed, 25 skipped** (develop's new
+  Workspace/dag-run tests included; was 3969/26 at `1f154d256`).
+- Gates at this head, all green: `ruff check .` + `ruff format --check .`;
+  vulture ledger with CI-exact args (1297 identities = 1297 findings);
+  suite inventory for `packages/hive-conductor/backend/tests` and
+  `packages/hive-conductor/tests`; `check-test-duplicates.py`;
+  `check-frontend-typed-client.py` (46 raw fetch / 129 hand-typed, none new);
+  the CI `test` job's OpenAPI step (`dump-hive-openapi.py` + `gen:api`) regenerates
+  with zero diff at this head.
+- Local-only deviation, as in prior rounds: a foreign stack held host 8101, so
+  the run published `127.0.0.1:18101` via an untracked /tmp compose override,
+  deleted after use. The harness talks over the compose network
+  (`http://hive:8101`), so CI behavior is unaffected. Tree left clean.
