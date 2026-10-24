@@ -63,7 +63,7 @@ as **`biscuit_auth`**, pinned exactly, Ed25519-only, behind a single adapter mod
 | License | Apache-2.0 | Repository `LICENSE` (Apache License 2.0); compatible with the engine's Apache-2.0 |
 | Platform | Prebuilt CPython wheels incl. cp312 `manylinux_2_17_x86_64` and `musllinux_1_2_x86_64` | PyPI 0.4.0 file manifest; matches the repo's Python 3.12 + Ubuntu target with no local Rust toolchain requirement |
 | Transitive surface | Zero Python-level runtime dependencies | PyPI metadata `requires_dist: None`; the Rust core is statically compiled into the wheel (PyO3), so there is no Python transitive dependency graph to audit |
-| Typing | Ships type stubs | `biscuit_auth.pyi` in the binding repository (added in 0.3.0); note: at the pinned revision the stub lags the extension — `set_time`/`set_limits` exist in `src/lib.rs` but not yet in the `.pyi` — so the adapter carries a narrow local stub override for those two methods (no code, signatures only) |
+| Typing | Ships type stubs | `biscuit_auth.pyi` in the binding repository (added in 0.3.0); note: at the pinned revision the stub lags the extension — `set_time`/`set_limits` exist in `src/lib.rs` but not yet in the `.pyi` — so the adapter carries a narrow local stub override for those methods plus `AuthorizerBuilder.limits()` (no code, signatures only) |
 | Dependency owner | `@BlakeMatthews-dev` | Sole owner of the pin and of every version-bump review, per the owners of ADR-090726-9a4e and ADR-039 |
 
 Maintainer-signal gate ([ADR-039](ADR-039-external-library-adoption-policy.md) §3): the
@@ -140,7 +140,11 @@ narrowed = token.append(BlockBuilder("check if ...", params))
 token = Biscuit.from_base64(wire, public_key_or_key_selector)
 authorizer_builder = AuthorizerBuilder(policies, params)
 authorizer_builder.set_time()               # no argument: stamps the host clock
-authorizer_builder.set_limits(pinned_limits)  # AuthorizerLimits(max_facts, max_iterations, max_time)
+limits = authorizer_builder.limits()        # no Python constructor in 0.4.0: fetch, mutate, set back
+limits.max_facts = 1_000                    # pinned bounds (fields are writable)
+limits.max_iterations = 100
+limits.max_time = timedelta(seconds=1)
+authorizer_builder.set_limits(limits)
 authorizer = authorizer_builder.build(token)
 policy_id = authorizer.authorize()          # raises on any failure
 ```
@@ -152,7 +156,14 @@ policy_id = authorizer.authorize()          # raises on any failure
   `BiscuitBlockError`, `DataLogError`, or any other error — maps to DENY. A verify call never
   interprets an error into an allow.
 - `set_limits` is pinned to bounded facts/rules/checks/loop values at the adapter so a
-  hostile token cannot spend unbounded authorizer work.
+  hostile token cannot spend unbounded authorizer work. In `biscuit-python==0.4.0` the
+  `AuthorizerLimits` type is not exported from the `biscuit_auth` module at all (the PyO3
+  class is `builtins.AuthorizerLimits`; referencing `biscuit_auth.AuthorizerLimits`
+  raises `AttributeError`), so there is no reachable Python constructor. The adapter
+  retrieves the limits object via `AuthorizerBuilder.limits()`, mutates its writable
+  `max_facts`/`max_iterations`/`max_time` fields, and passes it back through
+  `set_limits(limits)` — any construction attempt fails before `authorize()` is ever
+  reached, and the fetch-mutate-set pattern is the only path that can succeed.
 - `UnverifiedBiscuit` may be used only to read `revocation_ids` / `block_source` for
   inspection and revocation bookkeeping. It is never an authorization basis; enforcement
   always re-verifies with `Biscuit.from_base64(...)` + `Authorizer`.
@@ -173,9 +184,13 @@ Ed25519). The adapter performs only these mechanical mappings:
 
 | Substrate form | Binding form |
 |---|---|
-| raw 32-byte Ed25519 private key (SLIP-0010-derived at a named path) | `PrivateKey.from_bytes(raw)` |
-| raw 32-byte Ed25519 public key (`DerivedKey.public_key`) | `PublicKey.from_bytes(raw)` |
-| `did:key:z...` (multicodec `0xed 0x01` prefix + base58btc body) | strip prefix, base58-decode → raw 32 bytes → `PublicKey.from_bytes` |
+| raw 32-byte Ed25519 private key (SLIP-0010-derived at a named path) | `PrivateKey.from_bytes(raw, Algorithm.Ed25519)` |
+| raw 32-byte Ed25519 public key (`DerivedKey.public_key`) | `PublicKey.from_bytes(raw, Algorithm.Ed25519)` |
+| `did:key:z...` (multicodec `0xed 0x01` prefix + base58btc body) | strip prefix, base58-decode → raw 32 bytes → `PublicKey.from_bytes(raw, Algorithm.Ed25519)` |
+
+The algorithm argument is mandatory in `biscuit-python==0.4.0` (`src/lib.rs`
+`from_bytes` bindings); passing `Algorithm.Ed25519` explicitly is what enforces
+this adapter's Ed25519-only rule at the type level.
 
 The biscuit root keypair for a workspace is the substrate's Ed25519 key at the delegation
 path the approval contract names; the adapter takes already-derived raw bytes and never
