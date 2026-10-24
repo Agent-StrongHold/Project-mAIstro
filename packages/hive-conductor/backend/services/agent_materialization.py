@@ -742,7 +742,6 @@ async def _build_runtime_agent(defn: Agent, source: RuntimeSource) -> Any:
     """
     from maistro.agents.factory import _render_preamble, instantiate_agent
     from maistro.types.agent import AgentIdentity
-
     from services.tool_binding import binding_prompt_fragment, binding_tools_override
 
     config = defn.config if isinstance(defn.config, dict) else {}
@@ -765,14 +764,17 @@ async def _build_runtime_agent(defn: Agent, source: RuntimeSource) -> Any:
     soul_body = str(config.get("soul") or identity.description)
     if fragment:
         soul_body = f"{soul_body}\n\n{fragment}"
-    full_soul = _render_preamble(
-        source.preamble,
-        {
-            "name": name,
-            "description": identity.description,
-            "capabilities": ", ".join(identity.tools),
-        },
-    ) + soul_body
+    full_soul = (
+        _render_preamble(
+            source.preamble,
+            {
+                "name": name,
+                "description": identity.description,
+                "capabilities": ", ".join(identity.tools),
+            },
+        )
+        + soul_body
+    )
     container = source.container
     await container.prompt_manager.upsert(
         identity.soul_prompt_name,

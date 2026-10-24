@@ -330,9 +330,7 @@ def _set_binding(workspace_id: str, agent_id: str, tools: list[str], *, fragment
     store[workspace_id] = WorkspacePresentation(
         workspace_id=workspace_id,
         persona_template_id="pm_fleet",
-        tool_bindings=[
-            AgentToolBinding(agent_id=agent_id, tools=tools, prompt_fragment=fragment)
-        ],
+        tool_bindings=[AgentToolBinding(agent_id=agent_id, tools=tools, prompt_fragment=fragment)],
         updated_at=datetime.now(UTC),
     )
 
