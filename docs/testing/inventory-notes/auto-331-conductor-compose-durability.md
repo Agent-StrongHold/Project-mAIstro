@@ -51,6 +51,22 @@ real and testable.
   files (vault without identity key, credential store without master key).
   Dry-run by default, like the other `maistro security` operators; refuse
   corrupt/truncated archives and unsafe paths before touching the target.
+- `packages/hive-conductor/pyproject.toml` (repair round, driven by the
+  first full local durability run): `maistro-core[bcrypt,identity]` →
+  `maistro-core[bcrypt,identity,sqlite]`. The shipped `maistro` CLI
+  hard-imports aiosqlite at startup (`maistro.cli` registers
+  `maistro.cli._fixtures`, whose module body imports aiosqlite unguarded),
+  and the image resolves its venv from `uv export --locked --package
+  hive-conductor --no-dev` — which did not carry aiosqlite — so every CLI
+  subcommand, including the `security backup`/`restore` operators this
+  issue documents and its CI job runs, died at import inside the image
+  (`ModuleNotFoundError: No module named 'aiosqlite'` at the backup step).
+  The Conductor is exactly the homelab/single-instance deployment
+  maistro-core's `sqlite` extra exists for, and the file's own `[bcrypt]`
+  precedent governs: the requirement is expressed by the package whose
+  code imports it. `scripts/bump_version.py`'s `_INTERPKG_SITES` row is
+  updated in lockstep (its regex names the expression the file holds, or
+  the version bound stops being checked silently).
 - `packages/hive-conductor/scripts/verify-compose-durability.sh` (new) +
   `hive-conductor-compose-durability` CI job: guard refusals, then
   create → write → recreate (down/up AND image rebuild) → read → backup →
@@ -88,10 +104,29 @@ isolation on branch auto-331.
 ## Validation
 
 - `uv run pytest packages/maistro-core/tests/cli/test_security.py
-  packages/hive-conductor/backend/tests/test_data_dir_guard.py -q` → 34 passed.
-- `uv run pytest packages/hive-conductor/backend/tests -q` → 2938 passed,
-  6 skipped, 1 pre-existing load flake (above), before and after identical
-  except for that flake.
+  packages/hive-conductor/backend/tests/test_data_dir_guard.py -q` → 36
+  passed (26 in test_security.py — 13 of them added by this work — plus 10
+  guard tests).
+- `uv run ruff check .` and `uv run ruff format --check .` → clean.
+- `uv lock --check` → clean; `uv run python scripts/bump_version.py
+  --check` → "42 sites agree on '0.9.0'".
+- `scripts/check-dependency-namespaces.py` → no unreviewed top-level
+  namespaces.
+- `scripts/check-image-lock-reconciliation.py` with CI's exact arguments
+  (hive-conductor export + members) against the image the durability run
+  built → "ships exactly the locked set (73 distributions, incl. 6
+  workspace member(s))".
 - Full compose durability scenario executed locally against real Docker
-  (results in the PR/lane notes) — guard refusals and the complete
-  create/write/recreate/read/backup/restore round trip.
+  (docker 29.1.3), via the same `scripts/verify-compose-durability.sh` the
+  `hive-conductor-compose-durability` CI job runs, isolated from sibling
+  stacks with `COMPOSE_PROJECT_NAME`/`CONDUCTOR_PORT`: **33 checks passed,
+  0 failed, exit 0** — both guard refusals (process stops, not serves),
+  create, write, on-volume inventory (all five durable files present:
+  `state.db`(+wal/shm), `secrets.age`, `admin.key`,
+  `credential_master.key`, `user_credentials.enc`) with volume root and
+  data dir owned by uid 65532, down/up recreate, image-rebuild recreate,
+  session/login/settings/credential reads after each, backup archive, and
+  full restore onto a destroyed volume with everything readable again.
+  First run of the same script (pre-repair) failed at the backup step with
+  the `aiosqlite` import error above — the failure the dependency repair
+  fixes; the passing run is post-repair.
