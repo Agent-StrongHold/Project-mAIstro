@@ -117,7 +117,9 @@ class SecurityConfig(BaseModel):
 class CORSConfig(BaseModel):
     """CORS configuration for browser-based clients."""
 
-    allowed_origins: list[str] = Field(default_factory=lambda: ["http://localhost:3200"])
+    allowed_origins: list[str] = Field(
+        default_factory=lambda: ["http://localhost:3200"]
+    )  # DevSkim: ignore DS162092 until 2027-12-31
     allowed_methods: list[str] = Field(
         default_factory=lambda: ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
     )

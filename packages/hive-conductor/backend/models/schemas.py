@@ -287,7 +287,7 @@ class CapabilitySetting(BaseModel):
 class SettingsModel(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
-    api_base_url: str = "http://127.0.0.1:8101"
+    api_base_url: str = "http://127.0.0.1:8101"  # DevSkim: ignore DS162092 until 2027-12-31
     default_model: str = "cerebras-qwen-3-235b-a22b-2507"
     temperature: float = 0.2
     max_tokens: int = 8192

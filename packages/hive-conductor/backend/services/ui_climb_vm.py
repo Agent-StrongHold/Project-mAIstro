@@ -20,7 +20,9 @@ from maistro.http import shared_client
 
 logger = logging.getLogger("hive.ui_climb_vm")
 
-BROKER_URL = os.environ.get("SANDBOX_BROKER_URL", "http://localhost:8090/api/v1")
+BROKER_URL = os.environ.get(
+    "SANDBOX_BROKER_URL", "http://localhost:8090/api/v1"
+)  # DevSkim: ignore DS162092 until 2027-12-31
 
 
 async def request_hill_climb_vm(component: str = "Chat.tsx", passes: int = 5) -> dict[str, Any]:

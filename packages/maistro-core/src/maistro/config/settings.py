@@ -64,7 +64,7 @@ def _is_http_loopback_origin(origin: str) -> bool:
         return _has_http_origin_authority(parsed) and parsed.hostname in {
             "localhost",  # DevSkim: ignore DS162092 until 2027-12-31
             "127.0.0.1",  # DevSkim: ignore DS162092 until 2027-12-31
-            "::1",
+            "::1",  # DevSkim: ignore DS162092 until 2027-12-31
         }
     except ValueError:
         return False
@@ -280,7 +280,7 @@ class Settings(BaseSettings):
     allow_unsafe_resource_overrides: bool = False
     # Default to loopback so a careless dev-server start doesn't expose the
     # API on every interface. Container deployments override this via the
-    # HOST env var (e.g. HOST=0.0.0.0 in docker-compose for the server svc).
+    # HOST env var (e.g. HOST=0.0.0.0 in docker-compose for the server svc).  # DevSkim: ignore DS162092 until 2027-12-31
     host: str = "127.0.0.1"  # DevSkim: ignore DS162092 until 2027-12-31
     port: int = 8000
 
@@ -309,7 +309,9 @@ class Settings(BaseSettings):
     )
 
     cors_origins: list[str] = Field(
-        default_factory=lambda: ["http://localhost:3080"],  # DevSkim: ignore DS162092 until 2027-12-31
+        default_factory=lambda: [
+            "http://localhost:3080"
+        ],  # DevSkim: ignore DS162092 until 2027-12-31
         description="Allowed CORS origins. This is the field the FastAPI apps "
         "actually pass to CORSMiddleware — validated here, at the boundary "
         "that is read.",
@@ -476,7 +478,9 @@ class SecurityConfig(BaseModel):
 
 
 class CORSConfig(BaseModel):
-    allowed_origins: list[str] = Field(default_factory=lambda: ["http://localhost:3200"])  # DevSkim: ignore DS162092 until 2027-12-31
+    allowed_origins: list[str] = Field(
+        default_factory=lambda: ["http://localhost:3200"]
+    )  # DevSkim: ignore DS162092 until 2027-12-31
     allowed_methods: list[str] = Field(
         default_factory=lambda: ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
     )

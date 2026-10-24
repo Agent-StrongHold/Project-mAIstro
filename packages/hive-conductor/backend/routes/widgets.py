@@ -492,11 +492,20 @@ async def capture_screenshot(request: Request) -> dict[str, Any]:
             browser = await p.chromium.launch(headless=True)
             ctx = await browser.new_context(viewport={"width": 1440, "height": 900})
             await ctx.add_cookies(
-                [{"name": "hive_session", "value": session_id, "domain": "localhost", "path": "/"}]
+                [
+                    {
+                        "name": "hive_session",
+                        "value": session_id,
+                        "domain": "localhost",
+                        "path": "/",
+                    }
+                ]  # DevSkim: ignore DS162092 until 2027-12-31
             )
             page = await ctx.new_page()
             await page.goto(
-                "http://localhost:5173/dashboard", wait_until="networkidle", timeout=15000
+                "http://localhost:5173/dashboard",
+                wait_until="networkidle",
+                timeout=15000,  # DevSkim: ignore DS162092 until 2027-12-31
             )
             await page.wait_for_timeout(3000)
             # Dismiss onboarding if present

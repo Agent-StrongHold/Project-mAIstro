@@ -50,7 +50,7 @@ class OpenDesignConfig:
     """Connection settings. ``token`` is resolved from the vault by the caller."""
 
     enabled: bool = True
-    base_url: str = "http://127.0.0.1:7456"
+    base_url: str = "http://127.0.0.1:7456"  # DevSkim: ignore DS162092 until 2027-12-31
     token: str | None = None
     timeout: float = 1.5
 

@@ -128,7 +128,9 @@ def _open_design_config(settings: Any | None = None) -> Any | None:
 
     return OpenDesignConfig(
         enabled=True,
-        base_url=_field("open_design_url", "OPEN_DESIGN_URL", "http://127.0.0.1:7456"),
+        base_url=_field(
+            "open_design_url", "OPEN_DESIGN_URL", "http://127.0.0.1:7456"
+        ),  # DevSkim: ignore DS162092 until 2027-12-31
         token=token,
     )
 

@@ -215,7 +215,8 @@ def _is_local_mcp_url(url: str) -> bool:
         port = parsed.port
         return (
             parsed.scheme == "http"
-            and parsed.hostname in {"127.0.0.1", "localhost"}
+            and parsed.hostname
+            in {"127.0.0.1", "localhost"}  # DevSkim: ignore DS162092 until 2027-12-31
             and parsed.username is None
             and parsed.password is None
             and (port is None or port > 0)

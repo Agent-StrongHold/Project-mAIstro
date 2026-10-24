@@ -386,7 +386,10 @@ class TestTheProfileListingIsTheHonestAnswer:
         response = admin_client.get("/v1/rsi/test-profiles")
 
         assert response.status_code == 500
-        assert "malformed" in response.json()["detail"]
+        # Public detail is kind-only (CodeQL py/stack-trace-exposure); the
+        # policy message stays in the server log.
+        assert "RsiPolicyError" in response.json()["detail"]
+        assert "malformed" not in response.json()["detail"]
 
 
 class TestTheServiceRefusesWhatTheRouteWouldNotSend:

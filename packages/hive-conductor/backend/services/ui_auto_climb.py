@@ -182,7 +182,10 @@ def apply_edit(component_path: Path, edit: dict) -> bool:
 
 
 async def auto_climb(
-    component: str, url: str = "http://localhost:8101", path: str = "/chat", max_passes: int = 10
+    component: str,
+    url: str = "http://localhost:8101",
+    path: str = "/chat",
+    max_passes: int = 10,  # DevSkim: ignore DS162092 until 2027-12-31
 ) -> dict[str, Any]:
     """Autonomous hill-climb loop. No human needed.
 
@@ -255,7 +258,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--component", default="Chat.tsx")
     parser.add_argument("--passes", type=int, default=5)
-    parser.add_argument("--url", default="http://localhost:8101")
+    parser.add_argument(
+        "--url", default="http://localhost:8101"
+    )  # DevSkim: ignore DS162092 until 2027-12-31
     parser.add_argument("--path", default="/chat")
     args = parser.parse_args()
 

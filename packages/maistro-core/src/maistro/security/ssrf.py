@@ -24,7 +24,7 @@ Two stages, and the order matters:
    `0x7f000001`, `127.1`, `[::ffff:169.254.169.254]` and
    `metadata.google.internal` all arrive here as the address they denote.
 
-Stage 1 also refuses a host that *names* an internal endpoint — `localhost`,  # DevSkim: ignore DS162092 until 2027-12-31
+Stage 1 also refuses a host that *names* an internal endpoint — `localhost`,
 `metadata.google.internal`, in-cluster Kubernetes DNS — because whether those
 resolve at all is environment-dependent, and refusing them by name is clearer
 than relying on the unresolvable-host rule to refuse them by accident. It is
@@ -33,7 +33,7 @@ belt-and-braces: stage 2 catches every one of them wherever they do resolve.
 Both stage-1 rules read the **parsed** hostname. An earlier version matched
 `url.startswith("https://kubernetes.")` and friends against the raw string,
 which refused `https://kubernetes.io/docs/` and read the userinfo field of
-`http://localhost@example.com/` as if it were the host. A guard that refuses  # DevSkim: ignore DS162092 until 2027-12-31
+`http://localhost@example.com/` as if it were the host. A guard that refuses
 real public URLs teaches its callers to route around it.
 
 **Refusing is the default.** A host that cannot be resolved is refused rather
@@ -66,7 +66,7 @@ ALLOWED_SCHEMES = frozenset({"http", "https"})
 #: Matched against the **parsed hostname**, never against the raw URL. The
 #: previous version compared `url.startswith("https://kubernetes.")` and friends,
 #: which refused `https://kubernetes.io/docs/` — a public documentation site —
-#: along with `https://10.example.com/` and `http://localhost@example.com/`,
+#: along with `https://10.example.com/` and `http://localhost@example.com/`,  # DevSkim: ignore DS162092 until 2027-12-31
 #: where the userinfo field is not the host at all. A guard that refuses real
 #: public URLs teaches its callers to route around it, which costs more than the
 #: obfuscation the prefix list was reaching for.
@@ -184,7 +184,7 @@ def _is_blocked_address(addr: ipaddress.IPv4Address | ipaddress.IPv6Address) -> 
 
     Why the predicates cannot be left to see through the mapping themselves:
     they do for *some* embeddings on *some* Pythons — 3.12's `is_private` and
-    `is_loopback` inspect the embedded address, which is why `::ffff:127.0.0.1`  # DevSkim: ignore DS162092 until 2027-12-31
+    `is_loopback` inspect the embedded address, which is why `::ffff:127.0.0.1`
     was refused all along — but not for all of them: `::ffff:100.64.0.1` passed
     every predicate (the stdlib does not file RFC 6598 under *private*, which
     is the entire reason `_BLOCKED_NETWORKS` exists), and `IPv4Network.__contains__`
@@ -193,7 +193,7 @@ def _is_blocked_address(addr: ipaddress.IPv4Address | ipaddress.IPv6Address) -> 
     mapped-CGNAT bypass shipped (#67, reopened).
 
     `is_unspecified` is listed explicitly. `0.0.0.0` is not `is_reserved`, and
-    on many stacks connecting to it reaches localhost — so leaving it to the  # DevSkim: ignore DS162092 until 2027-12-31
+    on many stacks connecting to it reaches localhost — so leaving it to the
     other predicates would let the most quietly dangerous address through.
     `_BLOCKED_NETWORKS` covers the ranges no predicate names; see its comment.
     """
@@ -232,8 +232,8 @@ def _offending_address(addresses: list[str]) -> str | None:
 def _blocked_hostname(hostname: str) -> bool:
     """Whether `hostname` names an internal endpoint by name.
 
-    The trailing dot of a fully-qualified name is stripped first: `localhost.`  # DevSkim: ignore DS162092 until 2027-12-31
-    and `localhost` denote the same host, and an exact-match set that sees only  # DevSkim: ignore DS162092 until 2027-12-31
+    The trailing dot of a fully-qualified name is stripped first: `localhost.`
+    and `localhost` denote the same host, and an exact-match set that sees only
     one of them is a bypass rather than a check.
     """
     host = hostname.strip().rstrip(".").lower()
@@ -245,13 +245,13 @@ def _check_shape(url: str) -> str:
 
     Parsing comes first, and every rule below is applied to what parsing
     produced. Deciding anything from the raw string means deciding it about
-    text that may not be the host — which is how `http://localhost@example.com/`  # DevSkim: ignore DS162092 until 2027-12-31
+    text that may not be the host — which is how `http://localhost@example.com/`
     was refused for a hostname it does not have.
     """
     try:
         parsed = urlsplit(url.strip())
     except ValueError as exc:
-        # `urlsplit` raises on things like `http://[::1` (unterminated IPv6).
+        # `urlsplit` raises on things like `http://[::1` (unterminated IPv6).  # DevSkim: ignore DS162092 until 2027-12-31
         # Letting that escape would mean the guard raised something its callers
         # do not catch as a block — `browse()` handles `SSRFBlockedError`, so a
         # bare `ValueError` would surface as an unhandled error rather than a

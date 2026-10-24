@@ -105,7 +105,7 @@ services:
       # (#1820: the rootless-Podman profile must actually complete). Docker
       # runs CMD-SHELL through sh unchanged, so both runtimes probe the same
       # endpoint the same way.
-      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health/live')\""]
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health/live')\""]  # DevSkim: ignore DS162092 until 2027-12-31
       interval: 10s
       timeout: 5s
       retries: 3
@@ -179,8 +179,8 @@ services:
     image: ghcr.io/berriai/litellm@sha256:af8050ea45707c42a0572c5cceaa5cebaa89cee4c5cd0585cf879a529804b898
     container_name: maistro-litellm
     ports:
-      # Host interface the gateway binds to. Default 127.0.0.1 = loopback only
-      # (this machine). Set LITELLM_BIND_ADDR=0.0.0.0 in .env to expose it to your
+      # Host interface the gateway binds to. Default 127.0.0.1 = loopback only  # DevSkim: ignore DS162092 until 2027-12-31
+      # (this machine). Set LITELLM_BIND_ADDR=0.0.0.0 in .env to expose it to your  # DevSkim: ignore DS162092 until 2027-12-31
       # LAN. See .env.example for the trade-offs.
       - "${LITELLM_BIND_ADDR:-127.0.0.1}:4000:4000"  # DevSkim: ignore DS162092 until 2027-12-31
     environment:
@@ -280,7 +280,7 @@ services:
       # Engine router for DAG execution. Settings.maistro_base_url /
       # maistro_router_api_key (config.py) read these MAISTRO_* names directly;
       # CONDUCTOR_ROUTER_URL/ROUTER_API_KEY are not bound to any field, so task
-      # dispatch silently fell back to localhost with no auth. Required (#402):
+      # dispatch silently fell back to localhost with no auth. Required (#402):  # DevSkim: ignore DS162092 until 2027-12-31
       # the value must exist in .env -- under this name, which is what the
       # installer writes -- because an empty key means the Workspace bridge
       # never starts (ADR-092326-97c4). MAISTRO_ACCESS_TOKEN, the name this
@@ -340,7 +340,7 @@ services:
     restart: unless-stopped
     healthcheck:
       # Same podman-safe quoting as the engine healthcheck above (#1820).
-      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8101/health/ready')\""]
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8101/health/ready')\""]  # DevSkim: ignore DS162092 until 2027-12-31
       interval: 15s
       timeout: 5s
       retries: 3

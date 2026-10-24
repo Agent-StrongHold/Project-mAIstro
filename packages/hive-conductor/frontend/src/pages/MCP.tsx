@@ -129,7 +129,7 @@ export default function MCP() {
           <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
             <input className="input-field" placeholder="server name" value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} autoFocus />
             <input className="input-field" placeholder="description" value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} />
-            <input className="input-field" placeholder="URL (e.g. http://localhost:9999/mcp)" value={form.url} onChange={(e) => setForm((f) => ({ ...f, url: e.target.value }))} />
+            <input className="input-field" placeholder="URL (e.g. http://localhost:9999/mcp)" value={form.url} onChange={(e) => setForm((f) => ({ ...f, url: e.target.value }))} />  // DevSkim: ignore DS162092 until 2027-12-31
             <div style={{ display: "flex", gap: 4 }}>
               <button className="btn btn-accent" style={{ fontSize: 12, padding: "2px 10px" }} onClick={() => void addServer()} disabled={!form.name.trim() || !form.url.trim()}>add</button>
               <button className="btn" style={{ fontSize: 12, padding: "2px 10px" }} onClick={() => setAdding(false)}>cancel</button>
