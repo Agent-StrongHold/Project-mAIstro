@@ -126,3 +126,59 @@ Local proof (this worktree):
 - hive-conductor's export contains no beartype pin at all, so the second reconcile
   invocation never had this failure mode; hive/research/rsi images were not rebuilt
   locally (heavy) — remote CI verifies those invocations on the merged tree.
+
+## Round 3 (this head, 54016b11b84f) — `coverage (PostgreSQL)` cancelled at 7eeab371d
+
+CI evaluation at 7eeab371d reported `coverage (PostgreSQL) = cancelled` (run 40112437614,
+job 120926788502, log unavailable) and `gates-ran = failure` (run 40116108932). Evidence
+round, no production change:
+
+Root cause of the pair: the named gate is `coverage-postgres` in quality.yml (name:
+`coverage (PostgreSQL)`, line 340). quality.yml line 62 sets `cancel-in-progress: true`
+for `pull_request` events, grouped per PR — every push to PR #2302 (dc1bb7e9 → 7be3b70ef →
+7eeab371d) cancels the previous run's in-flight jobs. A `cancelled` conclusion is
+non-execution by definition (`scripts/check-gates-ran.py` line 37, `NON_EXECUTED`), so the
+`gates-ran` evaluator with `--require-complete` reds on the cancelled producer. Neither
+status indicates a test or code failure on this branch.
+
+Reproduction (this worktree, head 54016b11b84f, the develop merge): the job was re-run
+locally step-for-step with the workflow's exact env (DB_*, MAISTRO_TEST_PG_DSN,
+MAISTRO_TEST_DATABASE_URL, MAISTRO_REQUIRE_PG_LEGS=1, REQUIRE_AUTH=false,
+MAISTRO_DRY_RUN=1) against a real `pgvector/pgvector:pg17` service container. One
+deviation: the service is reached on host port 15432 instead of 5432 because a
+pre-existing host listener owns 5432; the steps consume the env vars, so the wiring is
+equivalent. Every step exit 0:
+
+- `coverage run --branch --source=packages/maistro-core/src/maistro -m pytest tests/migrations`
+  → 173 passed (4m35s).
+- `alembic upgrade head`, then the 17-suite producer list (persistence,
+  test_container_postgres, events, capabilities/test_backend_effect_context, runs, graph,
+  projects, workspaces, personas, goals, scheduling, tasks/test_idempotency_purge_driven,
+  tasks/test_pg_admission_atomicity_live, security/test_elevation_durable,
+  security/test_delegation_durable, memory/user_model, quota) → 6872 passed, 92 skipped,
+  4 xfailed (10m12s).
+- backlog suite → 114 passed, 2 skipped; canvas suite (`--source=packages/maistro-canvas/src/maistro_canvas`,
+  `--timeout=30`) → 605 passed, 3 skipped. Combined `.coverage` produced (4.2 MB), then deleted.
+
+Beyond the named gate, ci.yml's `postgres` matrix job (pg17 AND pg18 legs) was also run
+end-to-end on this head — all 12 steps exit 0 on both majors (migration chain 18 passed,
+legacy-principal live 3 passed, upgrade/downgrade/upgrade round trip, persistence 835
+passed, container 15 passed, workspaces 355 + personas 130 + goals 184, canvas supported
+path 7 + design supported path 4, scheduling 327 + canonical-due 32) — so the cancelled
+producer is proven green for every surface the cancelled run would have measured.
+
+CI-exact vulture ledger repair command (lane brief):
+`uv run python scripts/check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'`
+→ exit 0 on this head (base 3825fb9b57f0, candidate 54016b11b84f, 1298 findings / 1302
+reviewed, no unbanked identities) — no ledger amendment needed this round.
+
+Issue-#34 acceptance surface unchanged and green on the merged head:
+check-reachability.py (1461 modules, 149 unreachable), check-convergence-matrix.py
+(52 subsystems, all attributed), check-reachability-dispositions.py (46 groups, 128
+CONNECT / 20 LIBRARY / 1 RETIRE), check-backlog-consistency.py (167 items) — all exit 0.
+`quality/` row diff vs origin/develop contains deletions only (the documented tranche
+prunes; no row added). `uv lock --check` consistent. No commit on this branch closes #34.
+
+Residual: remote CI must still observe the green run itself — a cancelled job can only be
+cleared by a fresh execution on the candidate head, which the next CI evaluation of this
+branch provides. Nothing in the tree needs to change for it.
