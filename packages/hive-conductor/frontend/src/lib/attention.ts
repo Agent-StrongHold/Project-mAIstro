@@ -16,6 +16,8 @@ export type AttentionSummary = {
   highest_class: string | null;
   rising: string[];
   truncated: boolean;
+  /** True when the canonical graph spine cannot supply HITL pauses. */
+  hitl_unavailable?: boolean;
 };
 
 export type AttentionPayload = {

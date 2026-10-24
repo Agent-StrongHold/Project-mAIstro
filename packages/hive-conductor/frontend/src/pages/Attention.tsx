@@ -148,6 +148,11 @@ export default function Attention() {
               {summary?.truncated ? (
                 <Hex variant="warn">Truncated</Hex>
               ) : null}
+              {summary?.hitl_unavailable ? (
+                <Hex variant="warn" data-testid="attention-hitl-unavailable">
+                  HITL pauses unavailable
+                </Hex>
+              ) : null}
               {summary && summary.rising.length > 0 ? (
                 <span style={{ fontSize: 12, color: "var(--pencil)" }}>
                   Rising: {summary.rising.length}
