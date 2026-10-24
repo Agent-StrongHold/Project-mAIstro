@@ -256,6 +256,40 @@ async def test_runtime_dispatcher_maps_agents_to_workers() -> None:
 
 
 @pytest.mark.asyncio
+async def test_builder_pipeline_production_composition_uses_canonical_run_store() -> None:
+    projects = InMemoryProjectScopeStore()
+    root = await projects.create_root("builders-product")
+    runs = InMemoryRunStore(project_store=projects)
+    durable = CanonicalDurableRunStore(runs, InMemoryGraphContinuationStore())
+    dispatcher = ScriptedDispatcher({"implement": "canonical result"})
+    pipeline = BuilderPipeline(
+        dispatcher,
+        nodes=[PipelineNode(name="implement", agent_name="mason", prompt_template="{title}")],
+        run_store=runs,
+        durable_store=durable,
+        workspace_id="builders-product",
+        project_id=root.project_id,
+    )
+
+    receipt = await pipeline.execute(issue_number=49, title="Cut over Builders", repo="acme/repo")
+
+    assert receipt.status == "completed"
+    assert receipt.canonical_run_id is not None
+    assert receipt.canonical_graph_id is not None
+    stored = await runs.get_run(receipt.canonical_run_id)
+    assert stored is not None
+    assert stored.status is CanonicalRunStatus.COMPLETED
+    assert stored.workspace_id == "builders-product"
+    assert stored.project_id == root.project_id
+    assert stored.graph.graph_id == receipt.canonical_graph_id
+    assert stored.provenance["admission_source"] == "builders"
+    node_runs = await runs.list_node_runs(receipt.canonical_run_id)
+    assert [node.node_id for node in node_runs] == ["builders-stage:implement"]
+    attempts = await runs.list_attempts(node_runs[0].node_run_id)
+    assert len(attempts) == 1
+
+
+@pytest.mark.asyncio
 async def test_runtime_dispatcher_surfaces_failure() -> None:
     runtime = BuildersRuntime()
 

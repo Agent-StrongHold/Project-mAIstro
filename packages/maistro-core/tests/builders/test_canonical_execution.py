@@ -518,6 +518,7 @@ async def test_stale_guard_defer_does_not_survive_a_genuine_later_failure() -> N
 
 @pytest.mark.asyncio
 async def test_gate_without_revise_target_reoffers_itself_and_records_new_evidence() -> None:
+    """#1067 defect 2: a gate without a target revises itself, never false-completes."""
     graph = PipelineGraph([_node("review", gate=lambda _ctx: False, max_revisions=1)])
     dispatcher = ScriptedDispatcher()
 
@@ -878,6 +879,7 @@ def test_projection_maps_running_queued_and_non_failed_terminal_node_runs() -> N
             },
         ),
     )
+    # Two stages failed in the same concurrent frontier (#1067 defect 4).
     assert failed.status == "failed at tests"
     assert failed.failed_stage_error == "tests broke"
     stage_by_name = {stage.name: stage for stage in failed.stages}

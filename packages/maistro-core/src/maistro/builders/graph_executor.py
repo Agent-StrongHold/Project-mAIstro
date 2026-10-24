@@ -885,6 +885,8 @@ class CanonicalGraphPipelineExecutor:
             provenance=provenance,
             initial_status=RunStatus.QUEUED,
         )
+        # These are receipt links only; canonical records remain authoritative.
+        run.canonical_graph_id = canonical.graph_id
         run.canonical_run_id = admitted.run_id
         # Compatibility projection only. Canonical Run/NodeRun/Attempt remain
         # authoritative for lifecycle; legacy hooks may still inspect this receipt.
