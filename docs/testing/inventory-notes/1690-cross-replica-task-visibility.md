@@ -151,3 +151,52 @@ Final repair pass on the exact head above (pgvector:pg18 @ 127.0.0.1:5590,
   `RuntimeError: no running event loop`; the durable tier converges from the
   canonical Run on the async paths. `GET /tasks/{id}/result` now resolves on
   a replica that never held the receipt.
+
+## Re-validation 2026-10-24 (head a71b9a7f8e0a)
+
+`a71b9a7f8e0a` is a docs-only commit over `15a051f366e0` (one inventory-note
+file), so the code evidence carries over; every command below was re-run
+first-hand at that exact head (pgvector:pg18 @ 127.0.0.1:5590, migrated):
+
+- `uv run pytest packages/maistro-server/tests/test_task_cross_replica_visibility.py -v`
+  with `MAISTRO_TEST_PG_DSN` → **2 passed in 14.04s** — the two-process
+  composition: replica-B 200 on a task it never admitted, SIGKILL of the
+  accepting replica before claim, two gated replicas recovering and racing
+  the same task to exactly one execution / one NodeRun / one Attempt on the
+  spine, every door answering 200 through terminal, idempotent replay
+  executing nothing (#1176); and the foreign-principal 404s end to end.
+- The five remaining targeted files (`runs/test_find_run_by_task_id.py`,
+  `tasks/test_admission.py`, `tasks/test_cross_replica_receipt_reads.py`,
+  `tasks/test_workspace_routing.py`,
+  `server/test_task_restart_recovery.py`) with the DSN → **99 passed**.
+- `uv run pytest packages/maistro-core/tests/tasks
+  packages/maistro-core/tests/runs -q` → **2093 passed, 365 skipped**.
+- `uv run pytest packages/maistro-server/tests -q` (whole suite) →
+  **644 passed, 8 skipped** beyond the E2E file above.
+- Root tests around the branch surface (`tests/test_check_frontend_api_routes.py`,
+  `tests/migrations/test_migration_chain.py`, the first eleven
+  `tests/test_a*` files incl. the autonomous-merge/quality classes the CI
+  log showed) → **385 passed, 18 skipped**, no `Event loop is closed`
+  reproduction.
+- `uv run ruff check .` / `uv run ruff format --check .` → clean.
+- `uv run python scripts/check-suite-inventory.py --suite
+  packages/maistro-core/tests` and `--suite packages/maistro-server/tests`
+  → both ok; `check-vulture-baseline.py packages/*/src --min-confidence 60
+  --exclude '*/third_party/*'` → 1302 identities, ratchet ok;
+  `check-radon-baseline.py` → 127 blocks, ratchet ok;
+  `check-promotion-surface.py` / `check-reachability.py` /
+  `check-wiring-reads.py` → ok; `mypy` (canonical 7-package command) →
+  Success, 937 source files.
+
+Hosted-CI residual at this head, **not from this branch**: the failing
+`Container scan + SBOM + cosign`, `SAST / Gitleaks` ("dependency did not
+succeed"), `security` / `Supply chain (pip-audit)` ("produced no usable
+report after 3 attempts … registry/network outage"), and `test` (npm audit)
+jobs all have inputs this diff never touches — `git diff 4de7e906d..HEAD
+--name-only` lists no `package.json`, `package-lock.json`, `Dockerfile*`,
+workflow, or `uv.lock` file. Reproduced locally: `npm audit --audit-level=high`
+fails on the unchanged frontend lockfiles (zod < 4.6.6,
+GHSA-mrhx-c7xc-m3w5, published after the base pins; `npm ci` itself exits 0),
+so the identical tree at the develop base fails these jobs the same way.
+They are trunk/environment failures to retry or fix on the trunk, not
+blocking evidence against this change.
