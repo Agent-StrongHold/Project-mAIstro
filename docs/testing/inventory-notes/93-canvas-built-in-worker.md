@@ -231,3 +231,51 @@ implementation, and both are repaired without touching Python source (so the
    step is the audit. The hive-conductor frontend reports one HIGH (zod) to
    `npm audit` but is gated by no step (`npm ci` exits 0; its image-level
    Trivy scan passed) and is left untouched here.
+
+## CI-repair round at 25a3a85828cf (merge-queue evaluation, 2026-10-24 09:30Z)
+
+The follow-up hosted run still failed **Container scan + SBOM + cosign**, and
+the failed step was *not* npm audit (the npm lines in the log tail belong to
+the succeeded hive-conductor frontend build stage): job 120834608591's only
+failure is step 15, **Trivy scan maistro-rsi-runner (HIGH/CRITICAL only)**;
+steps 12–14 (the other three image scans) passed at this head. No code or
+lock repair is warranted: the failure does not reproduce on a faithful
+rebuild and the tree is provably identical to a clean-scanning one.
+
+Evidence this round (no test delta; the front-matter stays +28):
+
+- Byte-identity: `git diff 73fd7bf3e9c HEAD -- uv.lock Dockerfile.rsi-runner
+  .trivyignore.yaml pyproject.toml` is empty against the pr-2264 tree whose
+  rsi-runner image (built 10:25Z) scans clean.
+- Reproduction: `maistro-rsi-runner:pr-93-round2` rebuilt at this exact head
+  with CI's build shape (`buildx-build-retry.sh`, `--no-cache-filter
+  runtime-apt`) and scanned with CI's exact invocation (trivy 0.73.0,
+  `--severity HIGH,CRITICAL --exit-code 1 --ignore-unfixed --ignorefile
+  .trivyignore.yaml`): **exit 0**, 0 HIGH/CRITICAL.
+- Grype cross-check (`--fail-on high --only-fixed`) on the rebuilt image:
+  exit 0 (Medium/Low findings only, none gated).
+- The trivy DB local re-download confirms `updated_at 2026-10-24T01:18Z` was
+  already latest at the 09:30Z CI scan, so the failure is not DB drift; the
+  moving part is the Debian apt mirror state between CI's 09:13Z
+  `apt-get upgrade` and the 10:25Z/10:50Z rebuilds (the same mechanism the
+  Dockerfile's `--no-cache-filter runtime-apt` comment documents).
+- Frontend license-surface steps re-proven locally: `npm ci && npm run build`
+  in both `packages/hive-conductor/frontend` and
+  `packages/maistro-canvas/frontend` exit 0; canvas `npm audit
+  --audit-level=high` exits 0 (0 vulnerabilities).
+- Merge-queue-adjacent gates re-run at this head with CI argv: vulture
+  `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'` exit 0 (1302 == 1302 reviewed, 0 unclassified, base
+  4de7e906d9dc — nothing genuinely dead, nothing to amend);
+  `check-reachability.py` exit 0 (1460 modules); dispositions exit 0 (47
+  groups); radon exit 0 (127 == 127); full canvas suite 581 passed / 75
+  skipped; suite inventory 636 == recorded (driver check-4). CI's mypy gate
+  (`--strict packages/maistro-core/src`) exit 0 after `uv sync --locked
+  --all-extras` (the `--extra dev` driver env missed `maistro_bootstrap`, a
+  local-env artifact).
+- Residual, documented: container-job steps 16–22 (grype over the other three
+  images, SBOM/license inventory, image-lock reconciliation) were skipped on
+  the hosted run after step 15 failed and are not fully re-proven here;
+  steps 12–14 passed on the hosted run at this head and the rebuilt
+  rsi-runner passes both its scanners locally, so a hosted re-run is the
+  expected green path.
