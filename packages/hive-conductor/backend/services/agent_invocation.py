@@ -47,8 +47,19 @@ def _capabilities_of(agent: Agent) -> frozenset[str]:
     `pm_fleet.yaml` declares every capability under `skills` with `tools: []`.
     A caller naming a capability does not know, and should not have to know,
     which side of that split it landed on.
+
+    When this Workspace has a sticky `tool_bindings` row for the spawn
+    (#2276), the binding's `tools` replace the materialized `capabilities`
+    (persona tools) — including an explicit `tools: []` narrowing. Skills are
+    unchanged; the shared persona template is never mutated.
     """
-    return frozenset(agent.skills) | frozenset(agent.capabilities)
+    from services.tool_binding import binding_tools_override
+
+    skills = frozenset(agent.skills)
+    override = binding_tools_override(agent.workspace_id, _spawn_name(agent))
+    if override is not None:
+        return skills | frozenset(override)
+    return skills | frozenset(agent.capabilities)
 
 
 def _spawn_name(agent: Agent) -> str:
