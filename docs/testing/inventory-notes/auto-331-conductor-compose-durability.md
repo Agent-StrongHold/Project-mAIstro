@@ -153,7 +153,24 @@ CI's flags (HIGH,CRITICAL, --ignore-unfixed, exit 0), so the container-scan
 failure likewise comes from the engine-family images carrying those same
 inherited advisories. `SAST (bandit + semgrep + gitleaks)` is explained by
 the gitleaks leg (bandit verified 0 Medium+ locally; 66 semgrep-rule pin
-tests pass). The `test` and `Coverage gate` failures could not be
-attributed from local evidence alone (no CI logs available); every
-lane-relevant suite is green locally and the known pre-existing load flake
-is documented above.
+tests pass).
+
+Correction (CI logs obtained after the note above was written): the
+`test` and `Coverage gate` failures are the same single lane-caused red,
+not unattributable. gh run 40115875517 (job 120936917946, `test`) and
+quality run 40115875569 (job 120939743737, `Coverage gate`) both failed on
+exactly one test —
+`tests/test_bump_version.py::TestTheRegisteredCorpus::test_the_conductor_site_is_registered[inter-package
+dep:packages/hive-conductor/pyproject.toml:maistro-core[bcrypt,identity]]`
+— with the Coverage gate otherwise at "1 failed, 5757 passed, 143
+skipped". The stale corpus row was introduced by c35cf8a8a: that commit
+updated `packages/hive-conductor/pyproject.toml` to
+`maistro-core[bcrypt,identity,sqlite]` and `scripts/bump_version.py`'s
+`_INTERPKG_SITES` row in lockstep, but left this test's parametrize row
+pinning the old extras string, so the registered-site assertion fails
+against the real tree. Reproduced locally (`uv run pytest
+tests/test_bump_version.py::TestTheRegisteredCorpus` → 1 failed, 3
+passed) and fixed by updating the corpus row to the extras the file
+actually holds. The earlier "could not be attributed ... load flake"
+sentence above is superseded by this attribution; the registration-policy
+load flake it referenced is unrelated to these two failures.
