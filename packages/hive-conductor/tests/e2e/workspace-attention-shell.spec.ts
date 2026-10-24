@@ -14,23 +14,35 @@ test.describe.configure({ mode: "serial" });
 let context: BrowserContext;
 let page: Page;
 let seededWorkspaceId: string;
+let seededWorkspaceName: string;
+
+type WorkspaceRow = { id: string; name: string; active?: boolean };
 
 /** Attention skips its API until a Workspace is active — mint one for admin. */
-async function seedActiveWorkspace(p: Page): Promise<string> {
+async function seedActiveWorkspace(p: Page): Promise<WorkspaceRow> {
   const listed = await p.request.get("/v1/workspaces");
   expect(listed.status()).toBe(200);
-  const rows = ((await listed.json()) as { id: string; active?: boolean }[]).filter(
-    (w) => w.active !== false,
-  );
-  let workspaceId = rows[0]?.id;
-  if (!workspaceId) {
-    const created = await p.request.post("/v1/workspaces", {
-      data: { persona_template_id: "pm_fleet", name: `Attention e2e ${Date.now()}` },
-    });
-    expect(created.status()).toBe(201);
-    workspaceId = (await created.json()).id as string;
-  }
-  return workspaceId;
+  const rows = ((await listed.json()) as WorkspaceRow[]).filter((w) => w.active !== false);
+  if (rows[0]) return rows[0];
+  const name = `Attention e2e ${Date.now()}`;
+  const created = await p.request.post("/v1/workspaces", {
+    data: { persona_template_id: "pm_fleet", name },
+  });
+  expect(created.status()).toBe(201);
+  const body = (await created.json()) as WorkspaceRow;
+  return { id: body.id, name: body.name ?? name, active: true };
+}
+
+/** Drive React selection through the tab strip — localStorage alone has raced
+ * past WorkspaceProvider's first paint in CI. */
+async function selectSeededWorkspaceTab(p: Page, name: string, workspaceId: string): Promise<void> {
+  const tab = p.getByRole("tab", { name }).first();
+  await expect(tab).toBeVisible({ timeout: 15000 });
+  await tab.click();
+  await expect(tab).toHaveAttribute("aria-selected", "true");
+  await p.evaluate((id) => {
+    window.localStorage.setItem("hive_active_workspace_id", id);
+  }, workspaceId);
 }
 
 test.beforeAll(async ({ browser }) => {
@@ -41,22 +53,28 @@ test.beforeAll(async ({ browser }) => {
   await setupIfNeeded(page);
   await loginAsAdmin(page);
 
-  seededWorkspaceId = await seedActiveWorkspace(page);
-  // Init script so every navigation (including same-URL remounts) sees an
-  // active Workspace before WorkspaceProvider's first paint — setting
-  // localStorage only after the first /attention visit left the second test
-  // waiting forever for an API call that never fired.
+  const seeded = await seedActiveWorkspace(page);
+  seededWorkspaceId = seeded.id;
+  seededWorkspaceName = seeded.name;
+
   await context.addInitScript(
-    ({ onboarded, workspaceId }) => {
+    ({ workspaceId }) => {
       window.localStorage.setItem("hive_onboarded", "1");
       window.localStorage.setItem("hive_active_workspace_id", workspaceId);
     },
-    { onboarded: "1", workspaceId: seededWorkspaceId },
+    { workspaceId: seededWorkspaceId },
   );
   await page.evaluate((id) => {
     window.localStorage.setItem("hive_onboarded", "1");
     window.localStorage.setItem("hive_active_workspace_id", id);
   }, seededWorkspaceId);
+
+  // Backend door must answer for admin before we blame the SPA.
+  const probe = await page.request.get(`/v1/workspaces/${seededWorkspaceId}/attention`);
+  expect(
+    probe.status(),
+    `admin GET attention for ${seededWorkspaceId}: ${await probe.text()}`,
+  ).toBe(200);
 });
 
 test.afterAll(async () => {
@@ -65,6 +83,7 @@ test.afterAll(async () => {
 
 test("Attention is reachable from the icon rail", async () => {
   await page.goto("/dashboard");
+  await selectSeededWorkspaceTab(page, seededWorkspaceName, seededWorkspaceId);
   const link = page.locator(".icon-sidebar").getByRole("link", { name: "Attention", exact: true });
   await expect(link).toBeVisible();
   await link.click();
@@ -73,24 +92,34 @@ test("Attention is reachable from the icon rail", async () => {
 });
 
 test("Attention loads the Workspace projection API and shows summary", async () => {
-  // Leave /attention first: a same-URL goto can soft-reuse the document and
-  // miss the waitForResponse registration window.
   await page.goto("/dashboard", { waitUntil: "domcontentloaded" });
+  await selectSeededWorkspaceTab(page, seededWorkspaceName, seededWorkspaceId);
 
-  const attention = page.waitForResponse(
+  // Match any workspace attention GET (ok or not) so a 403/404 surfaces as an
+  // assertion on status instead of a silent timeout.
+  const attentionPromise = page.waitForResponse(
     (res) =>
-      res.url().includes(`/v1/workspaces/${seededWorkspaceId}/attention`) &&
-      res.request().method() === "GET" &&
-      res.ok(),
-    { timeout: 15000 },
+      /\/v1\/workspaces\/[^/?#]+\/attention(?:\?|$)/.test(res.url()) &&
+      res.request().method() === "GET",
+    { timeout: 20000 },
   );
+
   await page.goto("/attention", { waitUntil: "domcontentloaded" });
-  const response = await attention;
-  expect(response.ok()).toBeTruthy();
+  // If Provider came up without a selection, click the seeded tab — that
+  // flips activeWorkspaceId and triggers Attention's load effect.
+  const noWorkspace = page.getByText("No Workspace selected");
+  if (await noWorkspace.isVisible().catch(() => false)) {
+    await selectSeededWorkspaceTab(page, seededWorkspaceName, seededWorkspaceId);
+  }
+
+  const response = await attentionPromise;
+  expect(
+    response.ok(),
+    `SPA attention GET ${response.url()} → ${response.status()}`,
+  ).toBeTruthy();
 
   await expect(page.getByTestId("workspace-attention")).toBeVisible();
   await expect(page.getByTestId("attention-summary")).toBeVisible({ timeout: 10000 });
-  // Empty or populated — never a fabricated importance ladder.
   const empty = page.getByText("Nothing needs attention right now");
   const list = page.getByTestId("attention-items");
   await expect(empty.or(list)).toBeVisible();
