@@ -14,6 +14,7 @@ from maistro.archive.protocols import ArchiveStore
 from maistro.archive.types import ArchiveKey
 from maistro.graph.definitions import Graph
 from maistro.projects.scope_store import ProjectScopeStore
+from maistro.runs.access import RunAuthorization, admission_identity_fields
 from maistro.runs.concurrency import (
     ACTIVE_ROOT_STATUSES,
     RunConcurrencyExceeded,
@@ -505,6 +506,7 @@ class RunStore(Protocol):
         allow_cross_project: bool = False,
         persona_id: str | None = None,
         actor_principal_id: str | None = None,
+        authorization: RunAuthorization | None = None,
         provenance: dict[str, Any] | None = None,
         retention_expires_at: datetime | None = None,
         initial_status: RunStatus = RunStatus.CREATED,
@@ -520,6 +522,11 @@ class RunStore(Protocol):
         of the Run leaves it untouched, so a historical Run always reads with
         the revision it used. Set both or neither; the model refuses half a
         binding.
+
+        ``authorization`` is the delegated-identity seam (#1152): when given,
+        it — not the caller-supplied actor string — fixes the Run's immutable
+        initiating/acting identity facts, and the acting principal must be the
+        authenticated principal or an agent it owns.
         """
         ...
 
@@ -546,6 +553,17 @@ class RunStore(Protocol):
     ) -> list[Run]: ...
 
     async def non_terminal_run_stats(self) -> tuple[int, datetime | None]: ...
+
+    async def list_recent_runs(
+        self, workspace_id: str, *, limit: int = 100, offset: int = 0
+    ) -> list[Run]:
+        """Retained hot Runs in one Workspace, newest first (created_at, run_id).
+
+        Filters scope before pagination. Cold archive payloads are outside
+        discovery, as with list_by_status; by-id inspection remains available.
+        Product readers use ScopedRunReader for authorization.
+        """
+        ...
 
     async def get_run(self, run_id: str, *, principal_id: str | None = None) -> Run | None: ...
 
@@ -923,12 +941,18 @@ class InMemoryRunStore:
         allow_cross_project: bool = False,
         persona_id: str | None = None,
         actor_principal_id: str | None = None,
+        authorization: RunAuthorization | None = None,
         provenance: dict[str, Any] | None = None,
         retention_expires_at: datetime | None = None,
         initial_status: RunStatus = RunStatus.CREATED,
         goal_id: str | None = None,
         goal_revision: int | None = None,
     ) -> Run:
+        identities = admission_identity_fields(
+            graph,
+            authorization=authorization,
+            legacy_actor_principal_id=actor_principal_id,
+        )
         await self._validate_graph_scope(graph)
         if parent_node_run_id is not None and parent_run_id is None:
             raise RunIntegrityError("parent_node_run_id requires parent_run_id")
@@ -951,7 +975,9 @@ class InMemoryRunStore:
             parent_run_id=parent_run_id,
             parent_node_run_id=parent_node_run_id,
             persona_id=persona_id,
-            actor_principal_id=require_admitted_actor(actor_principal_id),
+            actor_principal_id=identities["actor_principal_id"],
+            initiating_principal_id=identities["initiating_principal_id"],
+            acting_principal_id=identities["acting_principal_id"],
             provenance=dict(provenance or {}),
             retention_expires_at=retention_expires_at,
             goal_id=goal_id,
@@ -1279,6 +1305,22 @@ class InMemoryRunStore:
         )
         if after is not None:
             matching = [run for run in matching if run_cursor_key(run) > after]
+        return [run.model_copy(deep=True) for run in matching[offset : offset + limit]]
+
+    async def list_recent_runs(
+        self, workspace_id: str, *, limit: int = 100, offset: int = 0
+    ) -> list[Run]:
+        if limit <= 0 or offset < 0:
+            raise ValueError("limit must be positive and offset non-negative")
+        matching = sorted(
+            (
+                run
+                for run in self._runs.values()
+                if run.workspace_id == workspace_id and run.run_id not in self._archived
+            ),
+            key=run_cursor_key,
+            reverse=True,
+        )
         return [run.model_copy(deep=True) for run in matching[offset : offset + limit]]
 
     async def get_run(self, run_id: str, *, principal_id: str | None = None) -> Run | None:

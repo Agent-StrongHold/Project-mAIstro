@@ -5,13 +5,21 @@ from __future__ import annotations
 import logging
 import os
 import re
+from collections.abc import Mapping
 from typing import Any
+from uuid import uuid4
 
 import httpx
 
 from maistro.http import shared_client
 
 logger = logging.getLogger("hive.mcp_client")
+
+
+def _identity_secret(secret: Any) -> Any:
+    """Return credential material only inside the credential-store callback."""
+    return secret
+
 
 _SITE_RE = re.compile(r"^https://[a-zA-Z0-9.-]+\.atlassian\.net/?$")
 
@@ -48,7 +56,7 @@ def resolve_atlassian_token(user_id: str | None) -> str | None:
         for provider in ("jira", "atlassian_rovo_mcp"):
             try:
                 if store.has_secret(user_id, provider):
-                    return store.use_secret(user_id, provider, lambda s: s)
+                    return store.use_secret(user_id, provider, _identity_secret)
             except Exception as _exc:
                 __import__("logging").getLogger("hive.services.mcp_client").warning(
                     "error_swallowed file=%s line=%d: %s",
@@ -61,6 +69,95 @@ def resolve_atlassian_token(user_id: str | None) -> str | None:
         # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure -- logs the exception, never credential material
         logger.debug("credential_lookup_failed: %s", exc)
     return None
+
+
+class MCPAuthorizationError(PermissionError):
+    """An MCP operation is not authorized by the active canonical Binding."""
+
+
+class AtlassianMCPClient:
+    """Governed Atlassian MCP caller.
+
+    A PAT authenticates a user; it does not authorize arbitrary MCP methods.
+    Callers must pass the already-resolved canonical Binding, whose config
+    contains a finite ``allowed_tools`` list. No Binding or no list is a hard
+    denial, so this client cannot become a broad-PAT escape hatch.
+    """
+
+    def __init__(
+        self,
+        *,
+        user_id: str,
+        binding: Any | None,
+        url: str = "",
+        timeout: float = 10.0,
+    ) -> None:
+        self._user_id = user_id
+        self._binding = binding
+        self._url = _normalize_mcp_url(url)
+        self._timeout = timeout
+
+    def _allowed_tools(self) -> frozenset[str]:
+        binding = self._binding
+        config = getattr(binding, "config", None)
+        if not isinstance(config, Mapping):
+            return frozenset()
+        raw = config.get("allowed_tools")
+        if not isinstance(raw, (list, tuple, set, frozenset)):
+            return frozenset()
+        return frozenset(tool for tool in raw if isinstance(tool, str) and tool)
+
+    def _authorize(self, tool_name: str) -> None:
+        binding = self._binding
+        if binding is None:
+            raise MCPAuthorizationError("MCP call requires an active canonical Binding")
+        if not getattr(binding, "workspace_id", "") or not getattr(binding, "project_id", ""):
+            raise MCPAuthorizationError("MCP Binding is missing Workspace/Project scope")
+        config = getattr(binding, "config", {})
+        configured_server = config.get("server_id", "") if isinstance(config, Mapping) else ""
+        from services.mcp_defaults import ATLASSIAN_ROVO_SERVER_ID
+
+        if configured_server and configured_server != ATLASSIAN_ROVO_SERVER_ID:
+            raise MCPAuthorizationError("MCP Binding is not for the Atlassian server")
+        if not tool_name or tool_name not in self._allowed_tools():
+            raise MCPAuthorizationError(f"MCP tool '{tool_name}' is not allowed by its Binding")
+
+    async def call_tool(self, tool_name: str, arguments: Mapping[str, Any] | None = None) -> Any:
+        """Call one Binding-allowlisted Atlassian tool under the user's PAT."""
+        self._authorize(tool_name)
+        token = resolve_atlassian_token(self._user_id)
+        if not token:
+            raise MCPAuthorizationError("No Atlassian credential for authenticated user")
+        if not self._url:
+            raise MCPAuthorizationError("Invalid Atlassian MCP endpoint")
+
+        payload = {
+            "jsonrpc": "2.0",
+            "id": uuid4().hex,
+            "method": "tools/call",
+            "params": {"name": tool_name, "arguments": dict(arguments or {})},
+        }
+        async with shared_client(timeout=self._timeout) as client:
+            response = await client.post(
+                self._url,
+                headers={"Authorization": f"Bearer {token}"},
+                json=payload,
+            )
+        response.raise_for_status()
+        return response.json()
+
+
+def _normalize_mcp_url(url: str) -> str:
+    """Accept only the Atlassian MCP origin; never let a Binding redirect PATs."""
+    candidate = (url or os.getenv("ATLASSIAN_ROVO_MCP_URL", "")).strip()
+    if not candidate:
+        candidate = "https://mcp.atlassian.com/v1/mcp/authv2"
+    try:
+        from services.mcp_defaults import is_atlassian_rovo_url
+
+        return candidate if is_atlassian_rovo_url(candidate) else ""
+    except Exception:
+        return ""
 
 
 async def test_jira_rest(*, user_id: str | None = None) -> dict[str, Any]:

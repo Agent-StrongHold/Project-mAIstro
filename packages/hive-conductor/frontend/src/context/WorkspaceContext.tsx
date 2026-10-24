@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import { apiDelete, apiGet, apiPatch, apiPost } from "../lib/api";
 import { applyAppearance } from "../lib/appearance";
 
@@ -31,11 +31,19 @@ type CreateWorkspaceInput = {
   persona_template_id: string;
 };
 
+/** The named read behind the workspace tab strip (#1421). `loading` is the
+ * request in flight, `ready` a settled answer — populated or genuinely
+ * empty — and `error` a failed or refused read, so the tab bar can tell
+ * "this account has no workspaces" from "we never got an answer" instead
+ * of showing the empty state for both. */
+export type WorkspaceLoadStatus = "loading" | "ready" | "error";
+
 type WorkspaceCtxValue = {
   workspaces: Workspace[];
   activeWorkspaceId: string | null;
   activeWorkspace: Workspace | null;
   ready: boolean;
+  status: WorkspaceLoadStatus;
   selectWorkspace: (id: string) => void;
   createWorkspace: (input: CreateWorkspaceInput) => Promise<Workspace>;
   archiveWorkspace: (id: string, active: boolean) => Promise<void>;
@@ -50,6 +58,7 @@ const WorkspaceCtx = createContext<WorkspaceCtxValue>({
   activeWorkspaceId: null,
   activeWorkspace: null,
   ready: false,
+  status: "loading",
   selectWorkspace: noop,
   createWorkspace: () => Promise.reject(new Error("WorkspaceProvider not mounted")),
   archiveWorkspace: () => Promise.reject(new Error("WorkspaceProvider not mounted")),
@@ -94,18 +103,28 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     localStorage.getItem(ACTIVE_WORKSPACE_KEY),
   );
   const [ready, setReady] = useState(false);
+  const [status, setStatus] = useState<WorkspaceLoadStatus>("loading");
+  // Each in-flight list read carries a sequence number; only the newest one
+  // may commit (#1421). A late answer from a superseded refresh — a retry
+  // that raced the first request, or two panels refreshing at once — used to
+  // be applied unconditionally, so a stale list could replace the selection
+  // the user just moved to.
+  const refreshSeq = useRef(0);
 
   async function refresh() {
+    const seq = ++refreshSeq.current;
     try {
       const list = await apiGet<Workspace[]>("/v1/workspaces");
+      if (seq !== refreshSeq.current) return;
       setWorkspaces(list);
       setActiveWorkspaceId((current) => nextActiveId(current, list));
+      setStatus("ready");
     } catch {
-      // No workspaces yet, or the account can't reach the route -- the tab
-      // bar degrades to "no tabs" rather than breaking the app shell.
-      setWorkspaces([]);
-    } finally {
-      setReady(true);
+      if (seq !== refreshSeq.current) return;
+      // A failed background refresh keeps whatever is already on screen
+      // rather than blanking it; only a first load that never succeeded
+      // ends in the error state, where the tab bar offers a retry.
+      setStatus((current) => (current === "loading" ? "error" : current));
     }
   }
 
@@ -115,14 +134,19 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     // avoids react-hooks/set-state-in-effect flagging a top-level effect
     // call that eventually setStates.
     let cancelled = false;
+    const seq = ++refreshSeq.current;
     (async () => {
       try {
         const list = await apiGet<Workspace[]>("/v1/workspaces");
-        if (cancelled) return;
+        if (cancelled || seq !== refreshSeq.current) return;
         setWorkspaces(list);
         setActiveWorkspaceId((current) => nextActiveId(current, list));
+        setStatus("ready");
       } catch {
-        if (!cancelled) setWorkspaces([]);
+        if (cancelled) return;
+        // A refused or failed read must not read as "no workspaces yet"
+        // (#1421): the tab bar renders the error state with a retry.
+        setStatus("error");
       } finally {
         if (!cancelled) setReady(true);
       }
@@ -200,6 +224,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
         activeWorkspaceId,
         activeWorkspace,
         ready,
+        status,
         selectWorkspace,
         createWorkspace,
         archiveWorkspace,
