@@ -56,3 +56,10 @@ were re-pointed at the merged scoped-reader seam, and all 15 still pass
 alongside the 15 authority tests, with the full hive-conductor backend
 suite (3971 passed, 26 skipped) and `ruff check` / `ruff format --check`
 green at the rebuilt head.
+
+At the head the merge queue actually shipped (develop `db4d3eb09`, the
+squash of PR #2300 — tree-identical to this lane's head), the same full
+backend suite measures 3987 passed, 25 skipped and the suite-inventory gate
+matches the recorded inventory; the delta comes from develop's merged line,
+not from this note's tests — the 15 lifecycle nodes and 15 authority nodes
+are unchanged (61 passed across the three lane test files).
