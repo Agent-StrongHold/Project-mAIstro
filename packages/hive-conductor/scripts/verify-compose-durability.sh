@@ -92,7 +92,7 @@ note "preconditions"
 docker info >/dev/null 2>&1 || { echo "docker unavailable" >&2; exit 1; }
 # `timeout` bounds the probe: a mirrored/odd network stack can hang a closed-port
 # connect instead of returning ECONNREFUSED, which would stall this check forever.
-if env -i timeout 5 bash -c "exec 3<>/dev/tcp/localhost/${PORT}" 2>/dev/null; then
+if env -i timeout 5 bash -c "exec 3<>/dev/tcp/localhost/${PORT}" 2>/dev/null; then  # DevSkim: ignore DS162092 until 2027-12-31
   echo "something already listens on ${PORT}; set CONDUCTOR_PORT" >&2
   exit 1
 fi
