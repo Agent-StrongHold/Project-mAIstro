@@ -82,7 +82,7 @@ class _Item:
 
 async def _paused_records(
     user_id: str, workspace_id: str
-) -> tuple[list[tuple[Any, PendingHumanWork]], bool]:
+) -> tuple[list[tuple[Any, PendingHumanWork]], bool, bool]:
     """Human pauses in one Workspace, walked the way `/v1/hitl/pending` walks them.
 
     The same canonical walk (`pending_hitl_records`, #1109): the store's
@@ -95,10 +95,20 @@ async def _paused_records(
     behind such pages is still reached within one request's inspection
     ceiling. What the second value reports is the one honest remaining cap:
     the record ceiling stopped the walk early, so a later read may find more.
-    """
-    from services.dag_agents import get_run_store
 
-    store = get_run_store()
+    The third value is ``True`` when the canonical graph spine is not wired
+    (standalone Conductor / e2e without a Container). HITL pauses cannot be
+    read then — that is an unavailable source, not an empty queue — but
+    failed-Run projections still answer, so Attention stays a 200 read
+    rather than a 500 for a missing HITL owner.
+    """
+    from services.dag_agents import CanonicalGraphUnavailable, get_run_store
+
+    try:
+        store = get_run_store()
+    except CanonicalGraphUnavailable:
+        return [], False, True
+
     authorization = HitlAuthorization(
         effective_principal=user_id,
         workspace_ids=frozenset({workspace_id}),
@@ -116,7 +126,7 @@ async def _paused_records(
     for record in scan.records:
         for item in _pending_items(record):
             found.append((record, item))
-    return found, not scan.exhausted
+    return found, not scan.exhausted, False
 
 
 def _deadline(record: Any, node_id: str) -> datetime | None:
@@ -195,7 +205,7 @@ async def _failed_runs(user_id: str, workspace_id: str) -> list[_Item]:
     ]
 
 
-def _summary(items: list[_Item], *, truncated: bool) -> dict[str, Any]:
+def _summary(items: list[_Item], *, truncated: bool, hitl_unavailable: bool) -> dict[str, Any]:
     counts = Counter(item.attention_class for item in items)
     return {
         "counts_by_class": {name: counts[name] for name in ATTENTION_CLASSES if counts[name]},
@@ -206,6 +216,9 @@ def _summary(items: list[_Item], *, truncated: bool) -> dict[str, Any]:
             if item.attention_class == "time_sensitive"
         ],
         "truncated": truncated,
+        # Honest source status: HITL pauses need the canonical graph spine.
+        # When it is down, failed-Run items may still populate the page.
+        "hitl_unavailable": hitl_unavailable,
     }
 
 
@@ -239,7 +252,7 @@ async def list_attention(
     now = settlement_time(now)
     if not await is_member(user_id, workspace_id):
         return None
-    paused, scan_capped = await _paused_records(user_id, workspace_id)
+    paused, scan_capped, hitl_unavailable = await _paused_records(user_id, workspace_id)
     items = [_human_item(record, pending, now=now, horizon=horizon) for record, pending in paused]
     items.extend(await _failed_runs(user_id, workspace_id))
     items.sort(key=_Item.sort_key)
@@ -247,5 +260,5 @@ async def list_attention(
     return {
         "workspace_id": workspace_id,
         "items": [_public(item, rank) for rank, item in enumerate(items[:_MAX_ITEMS], start=1)],
-        "summary": _summary(items, truncated=truncated),
+        "summary": _summary(items, truncated=truncated, hitl_unavailable=hitl_unavailable),
     }
