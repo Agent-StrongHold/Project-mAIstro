@@ -616,6 +616,7 @@ async def create_agents(
         db_agents = await _load_agents_from_db(sa_engine, prompt_manager, deps)
         if db_agents is not None:
             _register_delegation_capabilities(db_agents, a2a_delegator)
+            _wire_agent_runtime_extensions(db_agents, llm=llm, prompt_manager=prompt_manager)
             return db_agents
 
     agents_path = Path(agents_dir)
@@ -649,4 +650,17 @@ async def create_agents(
         logger.warning("No agents loaded from %s", agents_dir)
 
     _register_delegation_capabilities(agents, a2a_delegator)
+    _wire_agent_runtime_extensions(agents, llm=llm, prompt_manager=prompt_manager)
     return agents
+
+
+def _wire_agent_runtime_extensions(
+    agents: dict[str, Agent],
+    *,
+    llm: Any,
+    prompt_manager: Any,
+) -> None:
+    """Attach auditor/feedback/spawner/store/tournament onto the live roster (#2312)."""
+    from maistro.agents.wiring import wire_agent_implementations
+
+    wire_agent_implementations(agents, llm=llm, prompt_manager=prompt_manager)

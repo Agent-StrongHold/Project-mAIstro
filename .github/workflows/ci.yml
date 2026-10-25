@@ -406,6 +406,10 @@ jobs:
         env:
           MAISTRO_REQUIRE_PG_LEGS: "1"
         run: uv run pytest packages/maistro-core/tests/workspaces -v --tb=short
+      - name: Hive Workspace import preserves canonical authority across restart
+        env:
+          MAISTRO_REQUIRE_PG_LEGS: "1"
+        run: uv run pytest packages/hive-conductor/backend/tests/test_workspace_authority_durable.py -v --tb=short
       # The durable Persona beside that Workspace (#12). Same contract: its
       # live-PostgreSQL leg (`test_durable_store_pg.py`) gates on
       # MAISTRO_TEST_PG_DSN, so without a step in the one job matrixed over
