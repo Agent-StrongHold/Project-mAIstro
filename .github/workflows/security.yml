@@ -240,11 +240,7 @@ jobs:
       # only that stage, so the venv/Go/npm layers stay cached while the OS
       # patch state is re-consulted from the security mirror on every
       # candidate. release.yml builds cold (no cache-from) and needs no
-      # flag. The rsi-runner image below goes further and builds cold
-      # outright: --no-cache-filter provably did not stop a restored
-      # mode=max cache from re-attaching a pre-advisory apt layer to its
-      # exported image (CVE-2026-111497, 2026-10-24 — see the comment at
-      # that build).
+      # flag.
       - name: Build hive-conductor image
         run: >-
           scripts/buildx-build-retry.sh --
@@ -290,40 +286,22 @@ jobs:
           --load --cache-from type=gha,scope=engine-research
           --cache-to type=gha,scope=engine-research,mode=max .
 
-      # This image builds COLD: no --cache-from/--cache-to (CVE-2026-111497
-      # gate repair, 2026-10-24). The GHA cache is the only cross-job store
-      # that can hand this build a pre-advisory `runtime-apt` layer. Evidence:
-      # on libbrotli1 CVE-2026-111497, two consecutive hosted jobs (runs
-      # 40074187701 and 40085182349) both logged the fixed 1.1.0-2+deb13u1
-      # being unpacked by the freshly re-run `runtime-apt` stage, yet both
-      # exported a `maistro-rsi-runner` image whose dpkg state still read
-      # 1.1.0-2+b7 — a version that exists only in an apt layer resolved
-      # before the trixie-security advisory published, because the
-      # digest-pinned base image carries no brotli at all. `--no-cache-filter`
-      # re-runs the named stage but cannot govern what a restored mode=max
-      # cache re-attaches downstream, so for this image the cache import is
-      # itself the staleness vector: remove it. Cost is one cold `uv sync` per
-      # run (a hosted cold build of this image measured ~2.5 min, and
-      # release.yml has always built cold for the same reason). The
-      # `--no-cache-filter` flag stays so the stage stays honest if caching is
-      # ever reintroduced.
+      # The scope carries a `-r2` rotation (PR #2283, CI run 40091186336 job
+      # 120864018186): `--no-cache-filter runtime-apt` forces the apt stage to
+      # re-execute, but the scan of the freshly loaded image still reported the
+      # pre-advisory libbrotli1 1.1.0-2+b7 while the same build's own log showed
+      # deb13u1 unpacked — a stale result read out of this week-old cache scope
+      # is the only state source that can carry that layer, and it is the same
+      # replay class #795 closed at instruction level. Rotation severs every
+      # cached vertex under the old scope; a cache miss rebuilds, so the worst
+      # case is one cold build per workflow.
       - name: Build maistro-rsi-runner image
         run: >-
           scripts/buildx-build-retry.sh --
           -f Dockerfile.rsi-runner -t "maistro-rsi-runner:pr-${CANDIDATE_TAG}"
           --no-cache-filter runtime-apt
-          --load .
-
-      # Diagnostic: records the dpkg facts the trivy step below is about to
-      # read for CVE-2026-111497, so any future disagreement between what the
-      # build installed and what the scanner reports is attributable from a
-      # single run's log. A non-zero exit here is itself the diagnosis: the
-      # scanned image's dpkg state is not the one the Dockerfile prescribes.
-      - name: Record rsi-runner OS package state
-        run: >-
-          docker run --rm --entrypoint dpkg-query
-          "maistro-rsi-runner:pr-${CANDIDATE_TAG}"
-          -W 'libbrotli1' 'ca-certificates' 'curl'
+          --load --cache-from type=gha,scope=rsi-runner-r2
+          --cache-to type=gha,scope=rsi-runner-r2,mode=max .
 
       - name: Verify live Python packages and Conductor identity contract
         run: |

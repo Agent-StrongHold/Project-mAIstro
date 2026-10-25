@@ -487,3 +487,83 @@ async def test_a_pathless_sqlite_url_keeps_the_mirror_as_recovery_evidence(
     finally:
         await process.stop()
         workspace_authority.reset_for_tests()
+
+
+@pytest.mark.ac("ADR-092326-97c4/AC-3")
+@BACKENDS
+@pytest.mark.parametrize("canonical_change", ["revoke", "delete"])
+@pytest.mark.asyncio
+async def test_interrupted_import_never_replays_over_canonical_changes(
+    hive: _HiveProcess, monkeypatch: pytest.MonkeyPatch, canonical_change: str
+) -> None:
+    """A crash after canonical writes cannot make a stale roster authoritative."""
+    workspace_id = f"interrupted-{uuid.uuid4().hex}"
+    legacy = _legacy(
+        workspace_id,
+        [
+            WorkspaceMember(user_id="alice", role="owner"),
+            WorkspaceMember(user_id="bob", role="editor"),
+        ],
+    )
+    persisted = hive.open_hive_state()
+    persisted.put("workspaces", workspace_id, legacy)
+    hive.close_hive_state()
+    await hive.boot()
+    original_write = workspace_authority._write_journal
+
+    def fail_completion(workspace_id: str, *, status: str, mode: str) -> None:
+        if status == "complete":
+            raise OSError("crash before import receipt commit")
+        original_write(workspace_id, status=status, mode=mode)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(workspace_authority, "_write_journal", fail_completion)
+        with pytest.raises(OSError, match="crash before import receipt commit"):
+            await workspace_authority.visible_view("bob", workspace_id)
+    assert await hive.canonical.get_membership(workspace_id, user_id="bob") is not None
+    if canonical_change == "revoke":
+        await hive.canonical.remove_membership(workspace_id, user_id="bob")
+    else:
+        await hive.canonical.delete(workspace_id)
+
+    for _ in range(2):
+        await hive.stop()
+        await hive.boot()
+        assert not await workspace_authority.is_member("bob", workspace_id)
+        if canonical_change == "delete":
+            assert await hive.canonical.get(workspace_id) is None
+        else:
+            assert await workspace_authority.is_member("alice", workspace_id)
+        quarantine = workspace_authority.quarantine_store().get(workspace_id)
+        assert quarantine is not None
+        assert "interrupted durable import" in quarantine["reason"]
+        assert hive.mirror_rows()[workspace_id] == legacy
+        assert workspace_authority._journal_status(workspace_id) == "importing"
+    if canonical_change == "revoke":
+        await hive.canonical.delete(workspace_id)
+
+
+@pytest.mark.ac("ADR-092326-97c4/AC-3")
+@BACKENDS
+@pytest.mark.asyncio
+async def test_interrupted_import_before_create_is_quarantined_without_blocking_fresh_rows(
+    hive: _HiveProcess,
+) -> None:
+    """An incomplete journal cannot prove that an absent Workspace was never created."""
+    blocked_id, fresh_id = f"blocked-{uuid.uuid4().hex}", f"fresh-{uuid.uuid4().hex}"
+    persisted = hive.open_hive_state()
+    for workspace_id in (blocked_id, fresh_id):
+        persisted.put(
+            "workspaces",
+            workspace_id,
+            _legacy(workspace_id, [WorkspaceMember(user_id="alice", role="owner")]),
+        )
+    hive.close_hive_state()
+    await hive.boot()
+    workspace_authority.quarantine_store()  # Bind the existing journal to durable Hive state.
+    workspace_authority._write_journal(blocked_id, status="importing", mode="legacy_import")
+    assert await workspace_authority.visible_view("alice", fresh_id) is not None
+    assert await hive.canonical.get(blocked_id) is None
+    assert workspace_authority.quarantine_store().get(blocked_id) is not None
+    assert blocked_id in hive.mirror_rows()
+    await hive.canonical.delete(fresh_id)
