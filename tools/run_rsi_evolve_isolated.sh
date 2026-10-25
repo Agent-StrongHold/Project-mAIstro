@@ -60,7 +60,7 @@ if [[ -z "$NETWORK" ]]; then
         2>/dev/null | head -1)"
     NETWORK="${NETWORK:-maistro_default}"
 fi
-GATEWAY_URL="${MAISTRO_RSI_GATEWAY_URL:-http://maistro-litellm:4000}"
+GATEWAY_URL="${MAISTRO_RSI_GATEWAY_URL:-http://maistro-litellm:4000}"  # DevSkim: ignore DS137138 until 2027-12-31
 
 # Windows/git-bash mount hygiene (see the run wrapper for the war story).
 ENV_MOUNT="$ENV_FILE"

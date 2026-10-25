@@ -10,7 +10,7 @@ from maistro.events.bus import Trigger, TriggerCondition
 
 
 def coinswarm_fitness_alert(
-    conductor_url: str = "http://localhost:8100",
+    conductor_url: str = "http://localhost:8100",  # DevSkim: ignore DS162092 until 2027-12-31
     conductor_api_key: str = "",
     fitness_threshold: float = 0.3,
 ) -> Trigger:
@@ -33,7 +33,7 @@ def coinswarm_fitness_alert(
 
 
 def coinswarm_drawdown_alert(
-    conductor_url: str = "http://localhost:8100",
+    conductor_url: str = "http://localhost:8100",  # DevSkim: ignore DS162092 until 2027-12-31
     conductor_api_key: str = "",
     max_drawdown: float = 0.15,
 ) -> Trigger:
@@ -56,7 +56,7 @@ def coinswarm_drawdown_alert(
 
 
 def coinswarm_evolution_complete(
-    ha_url: str = "http://localhost:8123",
+    ha_url: str = "http://localhost:8123",  # DevSkim: ignore DS162092 until 2027-12-31
     ha_token: str = "",  # nosec B107 — empty-string default; real token comes from caller
     entity_id: str = "sensor.coinswarm_evolution_status",
 ) -> Trigger:
@@ -77,7 +77,7 @@ def coinswarm_evolution_complete(
 
 
 def ha_device_triggers_conductor(
-    conductor_url: str = "http://localhost:8100",
+    conductor_url: str = "http://localhost:8100",  # DevSkim: ignore DS162092 until 2027-12-31
     conductor_api_key: str = "",
     entity_id: str = "",
     message: str = "",
@@ -98,7 +98,7 @@ def ha_device_triggers_conductor(
 
 
 def turing_reflection_trigger(
-    turing_url: str = "http://localhost:9101",
+    turing_url: str = "http://localhost:9101",  # DevSkim: ignore DS162092 until 2027-12-31
 ) -> Trigger:
     return Trigger(
         name="turing-daily-reflection",
@@ -113,7 +113,7 @@ def turing_reflection_trigger(
 
 
 def security_event_escalation(
-    conductor_url: str = "http://localhost:8100",
+    conductor_url: str = "http://localhost:8100",  # DevSkim: ignore DS162092 until 2027-12-31
     conductor_api_key: str = "",
 ) -> Trigger:
     return Trigger(
