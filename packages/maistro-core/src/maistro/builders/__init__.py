@@ -34,6 +34,7 @@ from maistro.builders.interactive import (
     CanonicalInteractiveTurnExecutor,
     InteractiveTurnResult,
 )
+from maistro.builders.logger import BuilderAction, BuildersLogger, LearningEvent
 from maistro.builders.orchestrator import BuildersOrchestrator, RunState
 from maistro.builders.pipeline import (
     BUILDER_PIPELINE,
@@ -53,15 +54,20 @@ from maistro.builders.services import (
     PullRequestRef,
     WorkspaceRef,
 )
+from maistro.builders.spec_coverage import check_spec_coverage
+from maistro.builders.spec_templates import SpecTemplateStore
+from maistro.builders.verifier import InvariantVerifier
 
 __all__ = [
     "BUILDER_PIPELINE",
     "ArtifactRef",
+    "BuilderAction",
     "BuilderPipeline",
     "BuildersDAG",
     "BuildersDagFailure",
     "BuildersDagResult",
     "BuildersExecutionSpine",
+    "BuildersLogger",
     "BuildersOrchestrator",
     "BuildersRuntime",
     "CanonicalGraphPipelineExecutor",
@@ -74,7 +80,9 @@ __all__ = [
     "InMemoryGitHubService",
     "InMemoryWorkspaceService",
     "InteractiveTurnResult",
+    "InvariantVerifier",
     "IssueUpdate",
+    "LearningEvent",
     "PipelineDispatcher",
     "PipelineGraph",
     "PipelineNode",
@@ -87,6 +95,7 @@ __all__ = [
     "RunState",
     "RunStatus",
     "RuntimeDispatcher",
+    "SpecTemplateStore",
     "StageResult",
     "StageSpec",
     "StageStatus",
@@ -94,6 +103,7 @@ __all__ = [
     "WorkerStatus",
     "WorkspaceRef",
     "builders_dag_to_graph",
+    "check_spec_coverage",
     "coverage_gate",
     "default_builders_dag",
     "review_gate",
