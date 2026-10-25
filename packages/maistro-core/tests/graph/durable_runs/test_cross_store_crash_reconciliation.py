@@ -643,6 +643,17 @@ async def test_the_running_sweep_does_not_spend_the_per_status_budget(spine: _Sp
 # writes another. So a walker that dies anywhere after its first frontier leaves
 # a RUNNING Run under a RUNNING continuation the due index never lists (#1151
 # windows 1 and 2, and any crash inside a later node).
+#
+# End-to-end acceptance cases: they drive the real executor into that state and
+# hold the shipped reconcile to its contract -- the stranded continuation is
+# made due (an elapsed claim, version+1) and `resume_due_graph_runs` finishes
+# the walk from the persisted frontier without re-running committed nodes. The
+# RUNNING/RUNNING unclaimed state itself is owned by the stalled-active-frontier
+# repair; the per-version-observation repair this branch originally added was
+# superseded by that reviewed design (#1942, #1861) and removed during the
+# develop merge -- it was unreachable behind the frontier repair, and its
+# restarted-replica and lease-less stanzas contradicted the landed quiet-period
+# oracle in `test_live_walker_final_checkpoint.py`.
 
 
 class _Counted(_Step):
@@ -670,7 +681,9 @@ def _two_step_graph(spine: _Spine) -> Graph:
 async def _die_after_frontier_checkpoint(spine: _Spine, graph: Graph) -> str:
     """Walk until the first frontier checkpoint is durable, then die."""
     _Counted.executions.clear()
-    admitted = await spine.run_store.create_run(graph, initial_status=RunStatus.QUEUED)
+    admitted = await spine.run_store.create_run(
+        graph, initial_status=RunStatus.QUEUED, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+    )
     real_update = spine.store.update
 
     async def crashing_update(record: DurableRunRecord) -> DurableRunRecord:
@@ -750,27 +763,13 @@ async def test_the_repair_gives_an_elapsed_claim_and_is_idempotent(spine: _Spine
     assert await spine.store.reconcile_persistence(now=moment) == 0
 
 
-async def test_a_stalled_walk_waits_out_the_observation_period(spine: _Spine) -> None:
-    """Each frontier writes a new version, so only one unchanged for the period is stalled."""
-    run_id = await _die_after_frontier_checkpoint(spine, _two_step_graph(spine))
-    patient = CanonicalDurableRunStore(spine.run_store, spine.continuations)
-    quiet = datetime.now(UTC) + TERMINAL_SETTLE_QUIET_PERIOD * 2
-
-    assert await patient.reconcile_persistence(now=quiet) == 0
-    assert await patient.reconcile_persistence(now=quiet + timedelta(seconds=59)) == 0
-    unclaimed = await spine.continuations.get(run_id)
-    assert unclaimed is not None and unclaimed.resume_at is None
-
-    assert await patient.reconcile_persistence(now=quiet + TERMINAL_SETTLE_QUIET_PERIOD) == 1
-
-
 async def test_a_walk_whose_spine_just_moved_is_left_to_its_walker(spine: _Spine) -> None:
-    """Observed unchanged long enough, but the spine itself moved within the period."""
+    """The stranded continuation is not claimed while the spine is inside the quiet period."""
     run_id = await _die_after_frontier_checkpoint(spine, _two_step_graph(spine))
     patient = CanonicalDurableRunStore(spine.run_store, spine.continuations)
     now = datetime.now(UTC)
-    # First sighting well before the spine's last write, so only the spine
-    # check stands between this tick and the repair.
+    # Ticks before the period, and while the spine moved within it, must not
+    # claim the continuation out from under a possibly-live walker.
     assert await patient.reconcile_persistence(now=now - TERMINAL_SETTLE_QUIET_PERIOD * 2) == 0
 
     assert await patient.reconcile_persistence(now=now + timedelta(seconds=30)) == 0
@@ -800,7 +799,9 @@ async def test_a_walker_that_died_inside_a_later_node_is_recovered_once_its_leas
     """
     _Counted.executions.clear()
     graph = _two_step_graph(spine)
-    admitted = await spine.run_store.create_run(graph, initial_status=RunStatus.QUEUED)
+    admitted = await spine.run_store.create_run(
+        graph, initial_status=RunStatus.QUEUED, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+    )
     with pytest.raises(_InjectedCrash):
         await run_durable_graph(
             graph,
@@ -829,18 +830,6 @@ async def test_a_walker_that_died_inside_a_later_node_is_recovered_once_its_leas
     assert due is not None and due.resume_at == lapsed
 
 
-async def test_an_open_attempt_without_a_lease_is_never_presumed_dead(spine: _Spine) -> None:
-    """No lease means no liveness evidence either way, so the sweep does not guess."""
-    run_id = await _die_after_frontier_checkpoint(spine, _two_step_graph(spine))
-    second = await spine.run_store.create_node_run(run_id, node_id="second")
-    unleased = await spine.run_store.create_attempt(second.node_run_id)
-    assert unleased.execution_lease is None
-
-    assert await spine.store.reconcile_persistence(now=datetime.now(UTC) + timedelta(hours=1)) == 0
-    held = await spine.continuations.get(run_id)
-    assert held is not None and held.resume_at is None
-
-
 async def test_a_claimed_walk_is_not_reclaimed(spine: _Spine) -> None:
     """A recovering walker's claim is its own; the due index sees it when it lapses."""
     run_id = await _die_after_frontier_checkpoint(spine, _two_step_graph(spine))
@@ -856,47 +845,3 @@ async def test_a_claimed_walk_is_not_reclaimed(spine: _Spine) -> None:
     assert await spine.store.reconcile_persistence() == 0
     held = await spine.continuations.get(run_id)
     assert held is not None and held.resume_at == claim
-
-
-async def test_a_walk_that_finished_is_forgotten(spine: _Spine) -> None:
-    """A Run observed while RUNNING and then settled by its own walker leaves no residue.
-
-    The RUNNING sweep never visits a finished Run again, and the per-status
-    loop reads only a bounded, oldest-first prefix of a COMPLETED bucket that
-    only grows -- here one older completed Run fills a one-Run prefix. So the
-    first sighting would otherwise live as long as the process. This reads the
-    store's private bookkeeping because that growth is the defect.
-    """
-    older = _graph(spine, _Step(), name="already finished")
-    admitted = await spine.run_store.create_run(older, initial_status=RunStatus.QUEUED)
-    await run_durable_graph(
-        older,
-        store=spine.store,
-        node_resolver=lambda node_id, current: _Step(),
-        run_id=admitted.run_id,
-        run_store=spine.run_store,
-    )
-    run_id = await _die_after_frontier_checkpoint(spine, _two_step_graph(spine))
-    patient = CanonicalDurableRunStore(spine.run_store, spine.continuations)
-    assert await patient.reconcile_persistence() == 0
-    assert run_id in patient._stalled_first_seen
-
-    assert await _resume_due(spine, now=datetime.now(UTC) + timedelta(hours=1)) == 1
-    finished = await spine.run_store.get_run(run_id)
-    assert finished is not None and finished.status is RunStatus.COMPLETED
-
-    assert await patient.reconcile_persistence(limit=1) == 0
-    assert run_id not in patient._stalled_first_seen
-
-
-async def test_a_run_still_running_keeps_its_first_sighting(spine: _Spine) -> None:
-    """Forgetting settled Runs must not restart the observation of a stalled one."""
-    run_id = await _die_after_frontier_checkpoint(spine, _two_step_graph(spine))
-    patient = CanonicalDurableRunStore(spine.run_store, spine.continuations)
-    quiet = datetime.now(UTC) + TERMINAL_SETTLE_QUIET_PERIOD * 2
-
-    assert await patient.reconcile_persistence(now=quiet) == 0
-    first = patient._stalled_first_seen[run_id]
-    assert await patient.reconcile_persistence(now=quiet + timedelta(seconds=30)) == 0
-    assert patient._stalled_first_seen[run_id] == first
-    assert await patient.reconcile_persistence(now=quiet + TERMINAL_SETTLE_QUIET_PERIOD) == 1
