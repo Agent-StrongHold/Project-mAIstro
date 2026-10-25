@@ -73,8 +73,6 @@
     "maistro.delivery.registry",
     "maistro.delivery.types",
     "maistro.events.convergence",
-    "maistro.events.handlers",
-    "maistro.events.recipes",
     "maistro.governance.conformance",
     "maistro.governance.conformance_types",
     "maistro.graph.compaction",

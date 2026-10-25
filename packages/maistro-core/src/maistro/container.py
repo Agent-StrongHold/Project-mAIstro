@@ -2769,6 +2769,12 @@ async def create_container(
 
         event_bus = EventBus()
 
+        # ADR-086 builtin action handlers + recipe catalog (#2313 CONNECT).
+        # Recipes land disabled so localhost defaults cannot fire until ops arm them.
+        from maistro.events.wiring import wire_legacy_trigger_surface
+
+        wire_legacy_trigger_surface(event_bus)
+
         async def _persist_bus_event(event: Any) -> None:
             # Bridge: every in-memory bus event is appended to the durable log.
             await durable_event_log.append(**append_from_bus_event(event))
