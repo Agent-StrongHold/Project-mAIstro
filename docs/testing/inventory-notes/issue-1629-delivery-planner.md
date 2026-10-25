@@ -1,3 +1,7 @@
+---
+inventory-delta:
+  tests/: +54
+---
 # #1629: acceptance-based repository delivery planner
 
 Suite: `tests/`
@@ -16,7 +20,7 @@ Local validation: 54 passed, zero skipped. Branch coverage of the planner report
 This is isolated local validation, not a full locked-monorepo or PG proof.
 Exact-head repository CI and independent review remain required.
 
-Contribution follow-up before merge: add a root CHANGELOG Unreleased/Added entry
-for the read-only delivery-planning command and link #1629. The current root
-CHANGELOG has not been replaced from a partial fetch. No release completion is
-claimed by this note.
+The follow-up CHANGELOG Unreleased/Added entry for the read-only
+delivery-planning command, linked to #1629, is now present in the root
+CHANGELOG (added from a complete checkout; the file was not replaced from a
+partial fetch). No release completion is claimed by this note.

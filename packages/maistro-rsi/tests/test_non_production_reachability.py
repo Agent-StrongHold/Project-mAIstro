@@ -13,11 +13,14 @@ What "disabled" concretely means in this repository, and what these tests pin:
   must not be able to reach it without this file failing first.
 - The one product surface that does reference RSI is the Conductor app, which
   treats maistro-rsi as an optional dependency confined to its services and
-  routes. Its single HTTP-reachable run path fails closed:
-  ``IN_PROCESS_ISOLATION_AVAILABLE`` stays ``False`` (see
-  ``rsi_execution_policy.py`` — an argument vector is not an isolation
-  boundary) and ``POST /v1/rsi/runs`` resolves that gate through
-  ``require_isolation()`` before dispatching anything.
+  routes. Its single HTTP-reachable run path is gated on a real containment
+  attestation: ``IN_PROCESS_ISOLATION_AVAILABLE`` defaults to ``None`` (a
+  gate, not a constant — see ``rsi_execution_policy.py``) and is answered by
+  the container dispatch backend's probe, and ``POST /v1/rsi/runs`` resolves
+  that gate through ``require_isolation()`` before dispatching anything. A
+  bare ``True`` or ``False`` constant there would be the check silenced —
+  attesting containment nobody verified, or refusing runs the backend can
+  actually contain.
 
 Flip the flag, drop the call, or wire RSI into an engine package, and these
 tests fail. The scanner-sensitivity cases build the offending trees in
@@ -143,17 +146,21 @@ def _module_constant(tree: ast.Module, name: str) -> Any:
     return None
 
 
-def isolation_flag_is_disabled(path: Path) -> bool:
-    """Whether ``IN_PROCESS_ISOLATION_AVAILABLE`` is the literal ``False``.
+def hardcoded_isolation_flag(path: Path) -> bool | None:
+    """The isolation flag's value *when it is a bare bool*, else ``None``.
 
-    Parsed, not string-matched: the pin is on the semantic default the HTTP run
-    gate reads, not on how the line is spelled. Anything else — ``True``, a
-    missing assignment, or a value that stopped being a plain constant — reads
-    as *not* disabled, because an activation default that cannot be audited as
-    a literal cannot be proven fail-closed from outside the process.
+    Parsed, not string-matched. The shipped gate must be ``None`` — the answer
+    comes from the dispatch backend's probe (#509). A bare ``True`` attests
+    containment nobody verified (the silenced check); a bare ``False`` is
+    #305's refuse-everything constant, which #509 replaced with a working
+    path. Either constant is returned here so the pin can flag it; anything
+    else — a missing assignment or a non-bool — reads as *not* a bare bool and
+    is reported as ``None`` by the type, which the pin's assertion on the real
+    file distinguishes from a genuine ``None`` default.
     """
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-    return _module_constant(tree, "IN_PROCESS_ISOLATION_AVAILABLE") is False
+    value = _module_constant(tree, "IN_PROCESS_ISOLATION_AVAILABLE")
+    return value if isinstance(value, bool) else None
 
 
 def route_requires_isolation(path: Path, function_name: str = "start_run") -> bool:
@@ -207,15 +214,17 @@ def test_product_rsi_references_stay_confined_to_the_policy_gated_conductor() ->
 
 
 @pytest.mark.ac("SPEC-092526-c41d/AC-8")
-def test_the_http_run_gate_stays_disabled_until_containment_exists() -> None:
-    """``POST /v1/rsi/runs`` must keep failing closed until #552/#509 land.
+def test_the_http_run_gate_attests_a_real_backend_not_a_constant() -> None:
+    """``POST /v1/rsi/runs`` is gated on containment that is actually probed.
 
-    Two halves, both load-bearing: the isolation flag is literally ``False``
-    (an in-process loop runs candidate-authored tests on the host), and the
-    run route resolves that flag before dispatching. Either half regressing
+    Two halves, both load-bearing: the isolation flag's module default is not
+    a bare bool (a ``True`` would attest containment nobody verified; a
+    ``False`` would be #305's refusal that #509 replaced with a working path —
+    the shipped answer must come from the dispatch backend's probe), and the
+    run route resolves that gate before dispatching. Either half regressing
     re-opens the HTTP activation path this acceptance criterion forbids.
     """
-    assert isolation_flag_is_disabled(EXECUTION_POLICY)
+    assert hardcoded_isolation_flag(EXECUTION_POLICY) is None
     assert route_requires_isolation(RUN_ROUTE)
 
 
@@ -251,10 +260,18 @@ def test_the_import_scanner_flags_every_way_to_reach_rsi(
 def test_the_activation_pins_flag_the_violations_they_exist_to_catch(
     tmp_path: Path,
 ) -> None:
-    """Flipping the isolation default or dropping the route call fails loudly."""
+    """A hardcoded isolation default or a dropped route call fails loudly."""
     enabled = tmp_path / "enabled_policy.py"
     enabled.write_text("IN_PROCESS_ISOLATION_AVAILABLE: Final = True\n", encoding="utf-8")
-    assert not isolation_flag_is_disabled(enabled)
+    assert hardcoded_isolation_flag(enabled) is True
+
+    refused = tmp_path / "refused_policy.py"
+    refused.write_text("IN_PROCESS_ISOLATION_AVAILABLE: Final = False\n", encoding="utf-8")
+    assert hardcoded_isolation_flag(refused) is False
+
+    gated = tmp_path / "gated_policy.py"
+    gated.write_text("IN_PROCESS_ISOLATION_AVAILABLE: bool | None = None\n", encoding="utf-8")
+    assert hardcoded_isolation_flag(gated) is None
 
     unguarded = tmp_path / "unguarded_route.py"
     unguarded.write_text(

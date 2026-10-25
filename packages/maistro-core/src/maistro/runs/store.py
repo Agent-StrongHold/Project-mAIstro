@@ -298,6 +298,31 @@ def validate_child_scope(
         )
 
 
+def validate_effect_claim_parent(
+    parent: Run | None,
+    parent_node_run: NodeRun | None,
+    *,
+    parent_run_id: str | None,
+    parent_node_run_id: str | None,
+    workspace_id: str,
+    project_id: str,
+    allow_cross_project: bool,
+) -> None:
+    """Validate optional parent evidence before admitting an effect-keyed child Run."""
+    if parent_node_run_id is not None and parent_run_id is None:
+        raise RunIntegrityError("parent_node_run_id requires parent_run_id")
+    if parent is None:
+        return
+    validate_child_scope(
+        parent,
+        workspace_id=workspace_id,
+        project_id=project_id,
+        allow_cross_project=allow_cross_project,
+    )
+    if parent_node_run is not None and parent_node_run.run_id != parent_run_id:
+        raise RunIntegrityError("parent_node_run_id does not belong to parent_run_id")
+
+
 @runtime_checkable
 class ContinuationPurge(Protocol):
     """The slice of a Graph continuation store that a purge needs (#1175).
@@ -337,13 +362,15 @@ class PurgeOutcome:
     Dispositions, and why each is what it is:
 
     - ``runs`` / ``node_runs`` / ``attempts`` — owned spine rows, deleted.
-    - ``continuations`` — owned resumable state (the graph-continuation and
-      durable-graph-run tables), deleted. The reference is logical — no foreign
-      key — so nothing would notice it dangling, and a recovery scan would pick
-      the orphan up and try to resume a Run whose identity no longer exists.
-      The append-only Event log and the producer-provenance tables are kept
-      uncounted: nothing in retention reads those counts, so they stayed
-      write-only and were removed.
+    - ``continuations`` — owned resumable state in ``graph_continuations``,
+      deleted. The reference is logical — no foreign key — so nothing would
+      notice it dangling, and a recovery scan would pick the orphan up and try
+      to resume a Run whose identity no longer exists.
+
+    Attribution history — the Event log, task and effect receipts, session
+    turns, producer provenance — is preserved and uncounted. The per-table
+    policy, including what the purge does not reach, is the inventory in
+    `maistro.runs.retention_scope` (``RUN_REFERENCING_TABLES``).
 
     ``backlog_remaining`` is the difference between "the scope is drained"
     and "the batch ran out" — the one bit a bare count could never carry, and
@@ -641,51 +668,6 @@ class RunStore(Protocol):
         """Cancel only an unchanged chat admission with no NodeRuns, atomically."""
         ...
 
-    async def find_occurrence_run(
-        self,
-        provenance: Mapping[str, Any] | None,
-    ) -> Run | None:
-        """The Run that already claims this provenance's occurrence, if any.
-
-        The read half of the occurrence claim (#220, #1120). A duplicate
-        admission is refused by `create_run`, but the refusal does not name the
-        Run that won — and the loser of a manual-fire race owes its caller the
-        same receipt the winner produced, which means resolving that Run. None
-        means nobody holds the claim (the common case: nothing was admitted
-        twice), not that the occurrence is free to double-fire — admission
-        still owns that decision. Understands both claim shapes: nominal
-        occurrences resolve by `scheduled_for`, manual fires by their
-        `schedule_fire_id` token.
-        """
-        ...
-
-    async def get_run_for_occurrence(self, schedule_id: str, scheduled_for: str) -> Run | None:
-        """Resolve the canonical Run claiming one scheduled occurrence."""
-        ...
-
-    async def get_runs_for_occurrences(
-        self, schedule_id: str, scheduled_fors: Sequence[str]
-    ) -> dict[str, Run]:
-        """Resolve every claim among `scheduled_fors`, in one round trip.
-
-        The batched twin of `get_run_for_occurrence` (#1533): a caller
-        checking many occurrences of the same schedule at once — the
-        scheduling admitter's truncated-tail recovery walk — issues one query
-        instead of one per occurrence, which is the difference between a
-        single lookup and tens of thousands of serial ones on a schedule
-        whose enumeration cap dropped a large tail. An occurrence with no
-        claim is simply absent from the result, the same "no claim"
-        `get_run_for_occurrence` answers with `None`.
-        """
-        ...
-
-    async def find_delegation_run(self, delegation_key: str) -> Run | None: ...
-
-    async def attach_delegation_receipt(
-        self, run_id: str, task_id: str, *, target_agent: str | None = None
-    ) -> Run: ...
-
-    async def claim_delegation_transport_attempt(self, run_id: str) -> bool: ...
     async def transition_run(
         self,
         run_id: str,
@@ -784,6 +766,12 @@ class RunStore(Protocol):
 
     async def delete_run(self, run_id: str, *, force: bool = False) -> bool: ...
 
+    async def record_eval_score(self, eval_score: RunEvalScore) -> RunEvalScore: ...
+
+    async def list_eval_scores(self, run_id: str) -> list[RunEvalScore]: ...
+
+    async def get_eval_score(self, eval_id: str) -> RunEvalScore | None: ...
+
 
 #: Retention bound for the in-memory store. Not a tuning knob so much as an
 #: admission that this store is used by long-lived processes: maistro-server
@@ -816,10 +804,13 @@ class InMemoryRunStore:
         prune_target: int = RUN_PRUNE_TARGET,
         archive_store: ArchiveStore | None = None,
         continuation_store: ContinuationPurge | None = None,
+        concurrency_limits: RunConcurrencyLimits | None = None,
     ) -> None:
         if prune_target > max_runs:
             raise ValueError("prune_target cannot exceed max_runs")
         self._project_store = project_store
+        self._workspace_store = workspace_store
+        self._concurrency_limits = concurrency_limits or RunConcurrencyLimits.configured()
         # The same seam `archive_store` is: a capability the reference store
         # may be wired with, so a retention sweep reclaims Graph continuation
         # state along with the Run it belongs to (#1175). None — the default —
@@ -855,6 +846,17 @@ class InMemoryRunStore:
         # either inserts, and this is the claim that refuses the second one
         # rather than leaving two Runs that agree on one job id.
         self._canvas_job_claims: dict[str, str] = {}
+        # Append-only eval evidence keyed by eval_id (M7-A3). No per-run index:
+        # the volume is the scored dimensions of the Runs held here, and the
+        # spine maps run_id -> node_run_ids already.
+        self._eval_scores: dict[str, RunEvalScore] = {}
+
+    def _run_boundary(self) -> RunStoreBoundary:
+        if self._workspace_store is None:
+            from maistro.runs.scoped_reads import RunNotVisible
+
+            raise RunNotVisible
+        return RunStoreBoundary(self, self._workspace_store, self._project_store)
 
     def _prune_terminal_runs(self) -> None:
         """Evict the oldest terminal Runs once the store exceeds its bound.
@@ -1005,9 +1007,36 @@ class InMemoryRunStore:
         run = admit_in_state(run, initial_status)
         self._claim_occurrence(run)
         self._claim_canvas_job(run)
+        # After the claims, so a duplicate is refused as one rather than as
+        # backpressure; no await between this count and the insert below.
+        self._admit_root(run)
         self._runs[run.run_id] = run
         self._prune_terminal_runs()
         return run.model_copy(deep=True)
+
+    def _admit_root(self, run: Run) -> None:
+        if run.parent_run_id is not None:
+            return
+        principal = run.actor_principal_id or None
+        active = [
+            other
+            for other in self._runs.values()
+            if other.parent_run_id is None and other.status in ACTIVE_ROOT_STATUSES
+        ]
+        try:
+            self._concurrency_limits.check(
+                workspace_active=sum(other.workspace_id == run.workspace_id for other in active),
+                principal_active=(
+                    sum(other.actor_principal_id == principal for other in active)
+                    if principal is not None
+                    else None
+                ),
+                system_active=len(active),
+            )
+        except RunConcurrencyExceeded:
+            self._release_occurrence_claim(run, run.run_id)
+            self._release_canvas_job_claim(run, run.run_id)
+            raise
 
     def _claim_occurrence(self, run: Run) -> None:
         """Atomically claim `run`'s schedule occurrence, if it names one.
@@ -1479,56 +1508,6 @@ class InMemoryRunStore:
         if self._node_runs_of(expected.run_id):
             return False
         self._runs[expected.run_id] = transition_run(current, RunStatus.CANCELLED, error=error)
-        return True
-
-    async def get_run_for_occurrence(self, schedule_id: str, scheduled_for: str) -> Run | None:
-        """Resolve an occurrence through its claim index, never by scanning Runs."""
-        run_id = self._occurrences.get((schedule_id, scheduled_for))
-        return await self.get_run(run_id) if run_id is not None else None
-
-    async def get_runs_for_occurrences(
-        self, schedule_id: str, scheduled_fors: Sequence[str]
-    ) -> dict[str, Run]:
-        """The batched twin of `get_run_for_occurrence`, from the same index."""
-        found: dict[str, Run] = {}
-        for scheduled_for in scheduled_fors:
-            run_id = self._occurrences.get((schedule_id, scheduled_for))
-            if run_id is None:
-                continue
-            run = await self.get_run(run_id)
-            if run is not None:
-                found[scheduled_for] = run
-        return found
-
-    async def find_delegation_run(self, delegation_key: str) -> Run | None:
-        for run in self._runs.values():
-            if run.provenance.get("delegation_key") == delegation_key:
-                return run.model_copy(deep=True)
-        return None
-
-    async def attach_delegation_receipt(
-        self, run_id: str, task_id: str, *, target_agent: str | None = None
-    ) -> Run:
-        run = self._require_run(run_id)
-        existing = str(run.provenance.get("a2a_task_id") or "")
-        if existing and existing != task_id:
-            raise RunIntegrityError("delegation receipt conflicts with canonical receipt")
-        provenance = dict(run.provenance)
-        provenance["a2a_task_id"] = task_id
-        if target_agent:
-            provenance["target_agent"] = target_agent
-        updated = run.model_copy(update={"provenance": provenance})
-        self._runs[run_id] = updated
-        return updated.model_copy(deep=True)
-
-    async def claim_delegation_transport_attempt(self, run_id: str) -> bool:
-        """Claim the only allowed attempt to cross the transport boundary."""
-        run = self._require_run(run_id)
-        if run.provenance.get("transport_attempted"):
-            return False
-        provenance = dict(run.provenance)
-        provenance["transport_attempted"] = True
-        self._runs[run_id] = run.model_copy(update={"provenance": provenance})
         return True
 
     async def transition_run(

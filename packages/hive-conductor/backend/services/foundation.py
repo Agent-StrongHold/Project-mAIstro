@@ -131,7 +131,12 @@ class Foundation:
 
             stores.configure_persistence(persisted)
             stores.initialize_stores()
-            configure_settings(PersistedSettingsRecordStore(persisted, state.flush))
+            # Settings, profiles, and registration policy ride the same
+            # acknowledgement rule as every other store (#333, #1179): their
+            # put_raw/delete do not return until the State writer commits and
+            # raise its failure, so no caller is told a write is durable
+            # because it entered the writer queue.
+            configure_settings(PersistedSettingsRecordStore(persisted))
 
             # After `initialize_stores()`, which is what fills `stores.dag_runs`
             # from SQLite. Building the run store before that would rehydrate
@@ -144,7 +149,7 @@ class Foundation:
             from services.profile_store import PersistedProfileRecordStore
             from services.profile_store import configure as configure_profiles
 
-            configure_profiles(PersistedProfileRecordStore(persisted, state.flush))
+            configure_profiles(PersistedProfileRecordStore(persisted))
             _warn_if_postgrest_profiles_are_being_left_behind()
 
             # The registration policy record rides the same acknowledgement
@@ -154,7 +159,7 @@ class Foundation:
             from services.registration_policy import PersistedRegistrationRecordStore
             from services.registration_policy import configure as configure_registration_policy
 
-            configure_registration_policy(PersistedRegistrationRecordStore(persisted, state.flush))
+            configure_registration_policy(PersistedRegistrationRecordStore(persisted))
 
             state.flush()
             self.state = state

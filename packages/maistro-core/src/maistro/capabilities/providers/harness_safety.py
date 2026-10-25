@@ -137,6 +137,19 @@ class SafeHarnessRunner:
                 raise HarnessInputBlocked(verdict.flags)
             prior.append(context)
 
+    async def _allow_action(self, action: dict[str, Any]) -> bool:
+        try:
+            return await self._gate.allow(action)
+        except Exception:
+            # Policy dependencies are on the effect boundary. A broken policy
+            # must remove authority rather than turn the wrapper into allow-all.
+            import logging
+
+            logging.getLogger("maistro.capabilities.harness").warning(
+                "harness action policy failed; denying action", exc_info=True
+            )
+            return False
+
     async def _gate_list(self, items: list[Any]) -> list[Any]:
         allowed: list[Any] = []
         for item in items:

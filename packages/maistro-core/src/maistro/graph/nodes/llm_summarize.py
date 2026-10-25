@@ -86,9 +86,6 @@ def _scoped_effect_key(ctx: NodeContext, inputs: LlmSummarizeIn, supervised_rung
         {"rung": rung, "inputs": inputs.model_dump(mode="json")},
     )
 
-if TYPE_CHECKING:
-    from maistro.providers.protocols import LLMProviderRegistry, LLMRouter
-
 
 class LlmSummarizeIn(BaseModel):
     text: str = Field(
@@ -207,6 +204,22 @@ class LlmSummarizeNode(BaseNode[LlmSummarizeIn, LlmSummarizeOut]):
             registry if registry is not None else InMemoryProviderRegistry()
         )
         self._router: LLMRouter = router if router is not None else CostAwareRouter(self._registry)
+
+    def logical_effect_key(self, inputs: LlmSummarizeIn, ctx: NodeContext) -> str | None:
+        """The rung-scoped logical key for one governed completion.
+
+        Epic M4-I escalation re-visits a quality shortfall at the next ladder
+        rung; the node's Invocation for that re-visit files under a *new*
+        keyed effect (``llm.summarize.complete:{rung}``), never a blind
+        replay of an unbilled one — so the node-level key is rung-scoped too.
+        Within one visit the key is stable, so a lease-loss retry reconciles
+        against the same claim. Developing the key from the visit's effective
+        rung (``escalated_model``, else the seeded ladder start) keeps the
+        fail-closed executor contract (#1194): an EFFECT_KEY node proves
+        replay safety with a concrete key, it does not merely label itself
+        retryable.
+        """
+        return _scoped_effect_key(ctx, inputs, _effective_rung(ctx))
 
     async def _execute(self, inputs: LlmSummarizeIn, ctx: NodeContext) -> LlmSummarizeOut:
         # Gateway configuration is read before the Binding is resolved, as it

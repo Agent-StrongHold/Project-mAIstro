@@ -21,11 +21,20 @@ NOW = datetime(2026, 9, 27, 8, tzinfo=UTC)
 
 def task(identifier="core", issue=1047, **changes):
     value = {
-        "id": identifier, "issue": issue, "milestone": 1, "kind": "implement",
-        "implemented": False, "build_points": 3, "verify_points": 2,
-        "depends_on": [], "external_blockers": [], "acceptance": ["behavior"],
+        "id": identifier,
+        "issue": issue,
+        "milestone": 1,
+        "kind": "implement",
+        "implemented": False,
+        "build_points": 3,
+        "verify_points": 2,
+        "depends_on": [],
+        "external_blockers": [],
+        "acceptance": ["behavior"],
         "sources": [f"https://github.com/Agent-StrongHold/Project-mAIstro/issues/{issue}"],
-        "paths": [f"packages/{identifier}"], "resources": [], "evidence": [],
+        "paths": [f"packages/{identifier}"],
+        "resources": [],
+        "evidence": [],
     }
     value.update(changes)
     return value
@@ -34,28 +43,47 @@ def task(identifier="core", issue=1047, **changes):
 def snapshot(*tasks):
     rows = list(tasks) or [task()]
     return {
-        "version": 1, "repository": planner.REPOSITORY, "base_sha": BASE,
+        "version": 1,
+        "repository": planner.REPOSITORY,
+        "base_sha": BASE,
         "observed_at": NOW.isoformat(),
-        "coverage": {"open_prs_complete": True, "branches_complete": True,
-                     "issue_comments_complete": True},
-        "issues": [{"number": number, "state": "open"}
-                   for number in sorted({row["issue"] for row in rows})],
-        "reservations": [], "tasks": rows,
+        "coverage": {
+            "open_prs_complete": True,
+            "branches_complete": True,
+            "issue_comments_complete": True,
+        },
+        "issues": [
+            {"number": number, "state": "open"} for number in sorted({row["issue"] for row in rows})
+        ],
+        "reservations": [],
+        "tasks": rows,
     }
 
 
 def proof(criterion="behavior", **changes):
-    value = {"criterion": criterion, "result": "passed", "sha": BASE,
-             "command": "pytest test_behavior.py", "reference": "https://example.test/evidence/1",
-             "author": "implementer", "reviewer": "independent-reviewer"}
+    value = {
+        "criterion": criterion,
+        "result": "passed",
+        "sha": BASE,
+        "command": "pytest test_behavior.py",
+        "reference": "https://example.test/evidence/1",
+        "author": "implementer",
+        "reviewer": "independent-reviewer",
+    }
     value.update(changes)
     return value
 
 
 def reservation(*, owner="PR #1575", tasks=None, paths=None, active=True, resources=None):
-    return {"owner": owner, "tasks": tasks or [], "paths": paths or ["packages/core"],
-            "resources": resources or [], "active": active, "head_sha": "b" * 40,
-            "reference": "https://github.com/Agent-StrongHold/Project-mAIstro/pull/1575"}
+    return {
+        "owner": owner,
+        "tasks": tasks or [],
+        "paths": paths or ["packages/core"],
+        "resources": resources or [],
+        "active": active,
+        "head_sha": "b" * 40,
+        "reference": "https://github.com/Agent-StrongHold/Project-mAIstro/pull/1575",
+    }
 
 
 def run(value, **kwargs):
@@ -84,18 +112,30 @@ def test_landed_code_without_execution_evidence_is_verification_work():
 
 
 def test_docs_only_proof_does_not_complete_full_feature():
-    row = task(implemented=True, acceptance=["decision", "durability"], evidence=[proof("decision")])
+    row = task(
+        implemented=True, acceptance=["decision", "durability"], evidence=[proof("decision")]
+    )
     assert run(snapshot(row))["evidenced_slices"] == []
 
 
 @pytest.mark.parametrize("result", ["failed", "skipped", "error", "pending"])
 def test_nonpassing_evidence_is_never_completion(result):
-    assert not run(snapshot(task(implemented=True, evidence=[proof(result=result)])))["evidenced_slices"]
+    assert not run(snapshot(task(implemented=True, evidence=[proof(result=result)])))[
+        "evidenced_slices"
+    ]
 
 
-@pytest.mark.parametrize("changes", [{"sha": "c" * 40}, {"reviewer": "implementer"},
-                                     {"command": ""}, {"reference": ""}, {"author": ""},
-                                     {"reviewer": " "}])
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"sha": "c" * 40},
+        {"reviewer": "implementer"},
+        {"command": ""},
+        {"reference": ""},
+        {"author": ""},
+        {"reviewer": " "},
+    ],
+)
 def test_stale_unreviewed_or_untraceable_evidence_gets_no_credit(changes):
     report = run(snapshot(task(implemented=True, evidence=[proof(**changes)])))
     assert report["evidenced_slices"] == []
@@ -127,7 +167,9 @@ def test_conflicting_duplicate_proof_is_rejected():
         run(snapshot(row))
 
 
-@pytest.mark.parametrize("coverage", ["open_prs_complete", "branches_complete", "issue_comments_complete"])
+@pytest.mark.parametrize(
+    "coverage", ["open_prs_complete", "branches_complete", "issue_comments_complete"]
+)
 def test_incomplete_census_suppresses_dispatch(coverage):
     value = snapshot()
     value["coverage"][coverage] = False
@@ -166,8 +208,19 @@ def test_duplicate_task_is_not_overwritten():
         run(snapshot(task(), task()))
 
 
-@pytest.mark.parametrize("path", ["../secrets", "/tmp", "packages/../core", "packages\\core",
-                                  "packages/*", "packages//core", "./packages/core", "."])
+@pytest.mark.parametrize(
+    "path",
+    [
+        "../secrets",
+        "/tmp",
+        "packages/../core",
+        "packages\\core",
+        "packages/*",
+        "packages//core",
+        "./packages/core",
+        ".",
+    ],
+)
 def test_invalid_write_scope_fails_closed(path):
     with pytest.raises(planner.PlanError):
         run(snapshot(task(paths=[path])))
@@ -216,7 +269,10 @@ def test_inactive_reservation_still_protects_ownership():
 
 def test_multiple_owners_require_reconciliation():
     value = snapshot()
-    value["reservations"] = [reservation(tasks=["core"]), reservation(owner="PR #999", tasks=["core"])]
+    value["reservations"] = [
+        reservation(tasks=["core"]),
+        reservation(owner="PR #999", tasks=["core"]),
+    ]
     report = run(value)
     assert not report["frontier"]
     assert "multiple owners" in report["blocked"][0]["blockers"][0]
@@ -229,7 +285,9 @@ def test_one_owner_cannot_receive_two_simultaneous_tasks():
 
 
 def test_critical_chain_prioritizes_dependency_work_over_isolated_cleanup():
-    report = run(snapshot(task("cleanup", build_points=0), task(), task("child", depends_on=["core"])))
+    report = run(
+        snapshot(task("cleanup", build_points=0), task(), task("child", depends_on=["core"]))
+    )
     assert report["frontier"][0]["id"] == "core"
     assert report["critical_chain"] == ["core", "child"]
 

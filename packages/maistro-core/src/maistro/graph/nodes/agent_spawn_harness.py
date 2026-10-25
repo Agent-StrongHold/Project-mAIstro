@@ -10,6 +10,8 @@ canonical Run until the harness result is supplied on resume.
 
 from __future__ import annotations
 
+import asyncio
+import json
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta

@@ -161,22 +161,6 @@
       ]
     },
     {
-      "id": "quota-verification",
-      "subsystem": "Quota and billing",
-      "disposition": "CONNECT",
-      "rationale": "ADR-085 provider-side quota verification and reconciliation. #56 attaches token and cost metadata to the Invocation, which is where these belong.",
-      "root": "the Invocation cost path (#56)",
-      "modules": [
-        "maistro.quota.ambient",
-        "maistro.quota.reconciliation",
-        "maistro.quota.recorder",
-        "maistro.quota.verifiers",
-        "maistro.quota.verifiers.mistral",
-        "maistro.quota.verifiers.openrouter",
-        "maistro.quota.verify"
-      ]
-    },
-    {
       "id": "rsi-unwired",
       "subsystem": "RSI autorun",
       "disposition": "CONNECT",
@@ -359,12 +343,13 @@
       "id": "operator-cli-tooling",
       "subsystem": "Repo tooling",
       "disposition": "LIBRARY",
-      "rationale": "Operator-invoked CLIs rather than CI gates, and each says so itself. check_assertion_quality reports syntax-level assertion risks and its own docstring defers the real evidence to the mutation ratchet, so wiring it as a blocking gate would assert something it states it cannot certify. generate_repo_tasks (with its _impl) mines retained development history on demand. openrouter_rpm_pacer paces a live account against OpenRouter's shared daily budget, which is an operational act against a real external quota and not something a PR should trigger. Unreachable from CI is the correct state for all four, not a gap to close.",
+      "rationale": "Operator-invoked CLIs rather than CI gates, and each says so itself. check_assertion_quality reports syntax-level assertion risks and its own docstring defers the real evidence to the mutation ratchet, so wiring it as a blocking gate would assert something it states it cannot certify. generate_repo_tasks (with its _impl) mines retained development history on demand. openrouter_rpm_pacer paces a live account against OpenRouter's shared daily budget, which is an operational act against a real external quota and not something a PR should trigger. plan_delivery (#1629) is a read-only planning CLI an operator or the external orchestrator runs on demand over a reviewed snapshot; the delivery-plan skill documents the refresh handoff and the integrating workflow is deliberately not reconfigured by its PR, so unreachable from CI is the correct state for all five, not a gap to close.",
       "modules": [
         "@tool/check_assertion_quality",
         "@tool/generate_repo_tasks",
         "@tool/generate_repo_tasks_impl",
-        "@tool/openrouter_rpm_pacer"
+        "@tool/openrouter_rpm_pacer",
+        "@tool/plan_delivery"
       ]
     },
     {

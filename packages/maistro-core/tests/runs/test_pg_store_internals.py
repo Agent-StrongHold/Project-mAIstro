@@ -95,6 +95,7 @@ class TestStatusListingEvidence:
             project_id=root.project_id,
             graph=GraphSnapshot.from_graph(graph),
             provenance=_occurrence_provenance(),
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         )
         store = PgRunStore(
             _PoolReturning([{"payload": json_of(run), "archive_key": None}]),

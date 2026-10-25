@@ -2,6 +2,7 @@ import { type ReactNode, useState } from "react";
 import { clearUiState } from "../lib/uiState";
 import { NavLink, Outlet } from "react-router-dom";
 import { useUser } from "../App";
+import { useAuthorization } from "../context/AuthorizationContext";
 import { AppearanceToggle } from "./AppearanceToggle";
 import { DegradedBanner } from "./DegradedBanner";
 import { WorkspaceTabs } from "./WorkspaceTabs";
@@ -121,6 +122,23 @@ export function AppShell({ children }: { children?: ReactNode }) {
   const user = useUser();
   const authorization = useAuthorization();
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const nav = fullNav.filter((item) => {
+    // One canonical filter for both gating spellings: `surface` resolves
+    // through the SURFACE_POLICY contract served at /v1/auth/capabilities,
+    // `scope` (#1417) names the same API-enforced permission directly. UI
+    // filtering is convenience only — the API re-checks every request (#373).
+    const permission = item.surface
+      ? authorization.surfacePermission(item.surface)
+      : item.scope;
+    if (!permission) {
+      // A gated entry whose permission cannot be resolved fails closed;
+      // ungated entries stay for every authenticated session.
+      return !item.surface && !item.scope;
+    }
+    // Keep a grant that only needs self-elevation reachable so the user can
+    // see the explanation and elevate; hide surfaces they cannot ever use.
+    return authorization.can(permission) || authorization.canElevate(permission);
+  });
   const shellTitle = "Hive Conductor";
 
   return (
@@ -152,7 +170,7 @@ export function AppShell({ children }: { children?: ReactNode }) {
           </div>
         )}
         <div className="drawer-nav">
-          {fullNav.map((item) => (
+          {nav.map((item) => (
             <NavLink
               key={item.to}
               to={item.to}
@@ -174,7 +192,7 @@ export function AppShell({ children }: { children?: ReactNode }) {
       </nav>
 
       <nav className="icon-sidebar">
-        {fullNav.map((item) => (
+        {nav.map((item) => (
           <NavLink
             key={item.to}
             to={item.to}
