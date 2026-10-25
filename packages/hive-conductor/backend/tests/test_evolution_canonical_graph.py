@@ -318,6 +318,7 @@ async def test_battle_and_finalization_failures_are_canonical_run_failures(
         config=_config(population_size=2, eval_batch_size=2),
         harness=_Harness(),
         container=owner,
+        actor_principal_id="evolve-user",
     )
 
     assert record.run.status is RunStatus.FAILED
@@ -395,6 +396,9 @@ async def test_cycle_route_projects_real_canonical_failures(
     population = _Population([_Genome("g1"), _Genome("g2")])
     tournament = _BattleFailureTournament() if failure_stage == "battle" else _Tournament()
     service = _EvolutionService()
+    # This domain/execution fixture performs no model work; the governed path
+    # is covered separately by test_evolution_model_correlation.
+    monkeypatch.setattr(service, "_build_llm_call", lambda: None)
     service._population = population
     service._tournament = tournament
     monkeypatch.setattr(evolution_module, "get_evolution_service", lambda: service)
@@ -459,6 +463,9 @@ async def test_successful_cycle_route_projects_completed_canonical_run(
     monkeypatch.setattr(cycle_module, "EvolutionCycle", _Cycle)
 
     service = _EvolutionService()
+    # This domain/execution fixture performs no model work; the governed path
+    # is covered separately by test_evolution_model_correlation.
+    monkeypatch.setattr(service, "_build_llm_call", lambda: None)
     service._population = _Population([_Genome("g1"), _Genome("g2")])
     service._tournament = _Tournament()
     monkeypatch.setattr(evolution_module, "get_evolution_service", lambda: service)
@@ -471,6 +478,12 @@ async def test_successful_cycle_route_projects_completed_canonical_run(
     stored = await owner.run_store.get_run(response["run_id"])
     assert stored is not None
     assert stored.status is RunStatus.COMPLETED
+    # #853: Elo publication is gated on battle evidence — a genome that fought
+    # gets the rating AND the battle count (fitness's Elo term fires only on
+    # recorded battles), published together or not at all.
+    published = {g.id: dict(g.harness_params) for g in service._population.list_all()}
+    assert published["g1"].get("avg_elo") == 1000.0
+    assert published["g1"].get("elo_battles", 0) > 0
 
 
 @pytest.mark.asyncio
@@ -505,6 +518,7 @@ async def test_seeding_during_evaluation_cannot_expand_frozen_pair_plan(
         config=_config(population_size=3, eval_batch_size=2),
         harness=_SeedingHarness(),
         container=owner,
+        actor_principal_id="evolve-user",
     )
 
     stored = await owner.run_store.get_run(record.run_id)
@@ -527,7 +541,6 @@ async def test_post_seed_during_real_cycle_is_admitted_after_pair_plan(
 ) -> None:
     import httpx
     import services.evolution as evolution_service
-    from fastapi import FastAPI
     from routes import evolution as evolution_routes
 
     import maistro_evolve.harness as harness_module
@@ -572,13 +585,14 @@ async def test_post_seed_during_real_cycle_is_admitted_after_pair_plan(
 
     population = _Population([_Genome("g1"), _Genome("g2")])
     service = evolution_service._EvolutionService()
+    # The pausing domain double does not call a model.
+    monkeypatch.setattr(service, "_build_llm_call", lambda: None)
     service._population = population
     service._tournament = _Tournament()
     previous = evolution_service._service
     evolution_service._service = service
     try:
-        app = FastAPI()
-        app.include_router(evolution_routes.router, prefix="/v1/evolution")
+        app = _evolution_route_app(evolution_routes.router)
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
             cycle_task = asyncio.create_task(client.post("/v1/evolution/cycle"))
@@ -616,7 +630,6 @@ async def test_post_seed_during_battle_traversal_cannot_change_persisted_pairs(
     import httpx
     import services.evolution as evolution_service
     import services.evolution_graph as evolution_graph
-    from fastapi import FastAPI
     from routes import evolution as evolution_routes
 
     battle_started = asyncio.Event()
@@ -659,13 +672,14 @@ async def test_post_seed_during_battle_traversal_cannot_change_persisted_pairs(
 
     population = _Population([_Genome(f"g{index}") for index in range(1, 5)])
     service = evolution_service._EvolutionService()
+    # The pausing domain double does not call a model.
+    monkeypatch.setattr(service, "_build_llm_call", lambda: None)
     service._population = population
     service._tournament = _Tournament()
     previous = evolution_service._service
     evolution_service._service = service
     try:
-        app = FastAPI()
-        app.include_router(evolution_routes.router, prefix="/v1/evolution")
+        app = _evolution_route_app(evolution_routes.router)
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
             cycle_task = asyncio.create_task(client.post("/v1/evolution/cycle"))
@@ -713,7 +727,6 @@ async def test_racing_post_cycle_requests_persist_separate_canonical_plans(
 ) -> None:
     import httpx
     import services.evolution as evolution_service
-    from fastapi import FastAPI
     from routes import evolution as evolution_routes
 
     evaluation_started = asyncio.Event()
@@ -754,13 +767,14 @@ async def test_racing_post_cycle_requests_persist_separate_canonical_plans(
 
     population = _Population([_Genome(f"g{index}") for index in range(1, 5)])
     service = evolution_service._EvolutionService()
+    # The pausing domain double does not call a model.
+    monkeypatch.setattr(service, "_build_llm_call", lambda: None)
     service._population = population
     service._tournament = _Tournament()
     previous = evolution_service._service
     evolution_service._service = service
     try:
-        app = FastAPI()
-        app.include_router(evolution_routes.router, prefix="/v1/evolution")
+        app = _evolution_route_app(evolution_routes.router)
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
             first = asyncio.create_task(client.post("/v1/evolution/cycle"))
@@ -832,6 +846,7 @@ async def test_missing_has_more_successor_fails_before_recording_unroutable_batt
         config=_config(population_size=5, eval_batch_size=4),
         harness=_Harness(),
         container=owner,
+        actor_principal_id="evolve-user",
     )
 
     assert record.run.status is RunStatus.FAILED

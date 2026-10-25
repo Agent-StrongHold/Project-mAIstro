@@ -35,10 +35,15 @@ from maistro.observability.middleware import RequestIDMiddleware
 from maistro.runs.store_boundary import RunStoreBoundary
 from maistro.security.outbound import configure_outbound_policy, configured_endpoints
 from maistro.tasks.execution import DEFAULT_TASK_LEASE_TTL, TaskAttemptExecutor
+from maistro.tasks.http_contract import (
+    IDEMPOTENCY_KEY_HEADER,
+    WORKSPACE_ID_HEADER,
+    WORKSPACE_SCOPE_SIGNATURE_HEADER,
+)
+from maistro.tasks.models import TaskCreate
 from maistro.tasks.progress_webhook import ProgressWebhookNotifier
 from maistro.tasks.queue import configure_task_queue, get_task_queue, reset_task_queue
 from maistro.tasks.runner import TaskRunner
-from maistro.tools.sandbox.server import cleanup_all_containers
 from maistro.types.config import AgentConfig, ModelBindingConfig, SecurityConfig
 from maistro_server.abandoned_attempt_recovery import (
     start_abandoned_attempt_recovery,
@@ -350,8 +355,47 @@ def _model_bindings() -> list[ModelBindingConfig]:
     return list(yaml_config.model_bindings)
 
 
-async def _build_container(settings: Settings, pg_pool: Any) -> Any:
-    """The process's one Container, with a roster it can actually route to.
+def _load_operator_yaml() -> None:
+    """Load the operator YAML inside this worker process (#1880).
+
+    `maistro_server.entrypoint.main` runs the migrations and then `os.execvp`s
+    uvicorn, so the parent that may have read `maistro.yaml` no longer exists
+    when the worker starts: `load_yaml_config`'s process-wide singleton dies
+    with the exec'd-away interpreter, and every reader below —
+    `_validate_startup`'s `_router_api_key`, then `_agent_config`'s
+    `_security_config` and `_model_bindings` on the way into
+    `create_container` — would see `None` and silently ship the fail-closed
+    defaults no matter what the operator declared. Loading here, before those
+    consumers, is what makes the declarations reach the Container the worker
+    actually builds.
+
+    A file that parses but violates the schema — and a malformed one — must
+    stop startup rather than degrade into those defaults, so the loader's
+    exception is logged sanitized and re-raised without its cause: parser
+    errors embed raw file contents (`_load_raw_yaml`'s "Invalid YAML in ...")
+    and a type-invalid value echoes the operator's input, so the event carries
+    only the config path and the exception type, and `from None` cuts the
+    chained traceback that would otherwise publish them to stderr.
+    """
+    config_path = os.getenv("MAISTRO_CONFIG", "config/maistro.yaml")
+    try:
+        load_yaml_config()
+    except Exception as exc:
+        logger.error(
+            "operator_yaml_config_invalid",
+            config_path=config_path,
+            reason=type(exc).__name__,
+        )
+        msg = (
+            f"Operator YAML configuration is invalid; refusing to start "
+            f"({config_path}). See the operator_yaml_config_invalid startup "
+            f"log event."
+        )
+        raise RuntimeError(msg) from None
+
+
+async def _build_container(settings: Settings, pg_pool: Any) -> tuple[Any, ModelChatEgress]:
+    """The process's one Container and the governed egress it comes with.
 
     `Conduit.route_request` answers "No agents available." when `agents` is
     empty, and this server has never built any. `run_task` needs no roster,
@@ -517,7 +561,9 @@ async def _runtime_lifespan(app: FastAPI) -> AsyncIterator[None]:
     )
     # Rebuild receipts from canonical QUEUED task Runs before starting workers.
     # This is the restart-safe handoff for both admission/receipt gaps; the Run
-    # already contains the immutable payload needed to execute the original id.
+    # already contains the immutable payload needed to execute the original id —
+    # including the originating-principal evidence (#1057), which survives the
+    # restart in the same committed payload the admission wrote.
     await queue.recover(run_store)
     # The handles these APIs return must resolve against the exact stores the
     # Container selected, not lookalike stores reconstructed by the server.
@@ -593,7 +639,10 @@ async def _runtime_lifespan(app: FastAPI) -> AsyncIterator[None]:
         # Stop the sweep before the runner drains and the spine is dropped, so
         # a tick cannot reclaim against a store this process is tearing down.
         await stop_abandoned_attempt_recovery()
-        # Graceful shutdown: drain tasks → cleanup containers → flush observability
+        # Graceful shutdown: drain tasks → flush quota snapshots → cleanup.
+        # Reached via Uvicorn's SIGTERM/SIGINT handling — the drain is bounded
+        # (`SHUTDOWN_DRAIN_TIMEOUT`), tasks the deadline cancels are marked
+        # FAILED, and shutdown continues to process exit either way.
         if _runner:
             await _runner.stop(drain_timeout=SHUTDOWN_DRAIN_TIMEOUT)
         container = getattr(app.state, "container", None)
@@ -755,8 +804,8 @@ async def http_exception_handler(request: Request, exc: HTTPException) -> JSONRe
                 request_id=request_id,
             ),
         ).model_dump(),
-        # Kept, not rebuilt: a 503's Retry-After or a 401's WWW-Authenticate
-        # is part of the status the route chose.
+        # Kept, not rebuilt: a 429's or 503's Retry-After or a 401's
+        # WWW-Authenticate is part of the status the route chose.
         headers=exc.headers,
     )
 

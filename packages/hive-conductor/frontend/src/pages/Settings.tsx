@@ -137,7 +137,7 @@ export default function Settings() {
                   ) : (
                     <input aria-label={`New value for ${key}`} className="input-field" value={editVal} onChange={(e) => setEditVal(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") void saveSetting(key); if (e.key === "Escape") setEditing(null); }} />
                   )}
-                  <button className="btn btn-accent" style={{ fontSize: 12, padding: "2px 8px" }} onClick={() => void saveSetting(key)}>save</button>
+                  <button className="btn btn-accent" disabled={!authorization.can(configPermission)} style={{ fontSize: 12, padding: "2px 8px" }} onClick={() => void saveSetting(key)}>save</button>
                   <button className="btn" style={{ fontSize: 12, padding: "2px 8px" }} onClick={() => setEditing(null)}>cancel</button>
                 </div>
               ) : (
@@ -154,7 +154,7 @@ export default function Settings() {
                 </div>
               )}
               {editing !== key && (
-                <button className="btn" style={{ fontSize: 12, padding: "1px 6px", opacity: 0.6 }} onClick={() => startEdit(key)}>edit</button>
+                <button className="btn" disabled={!authorization.can(configPermission)} style={{ fontSize: 12, padding: "1px 6px", opacity: authorization.can(configPermission) ? 0.6 : 0.35 }} onClick={() => startEdit(key)}>edit</button>
               )}
             </div>
           ))}

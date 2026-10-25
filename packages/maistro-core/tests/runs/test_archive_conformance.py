@@ -38,6 +38,7 @@ from maistro.graph import Graph, Node
 from maistro.runs.model import AttemptStatus, RunStatus
 from maistro.runs.sources import SCHEDULE_ID_KEY, SCHEDULED_FOR_KEY
 from maistro.runs.store import DuplicateOccurrence
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 NOW = datetime(2026, 8, 25, 12, 0, tzinfo=UTC)
 COLD = NOW - timedelta(days=200)
@@ -198,6 +199,7 @@ async def test_a_scheduled_run_is_never_archived_and_the_claim_survives_a_sweep(
             SCHEDULE_ID_KEY: "sched-arch",
             SCHEDULED_FOR_KEY: scheduled_for,
         },
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
     await store.transition_run(run.run_id, RunStatus.QUEUED)
     await store.transition_run(run.run_id, RunStatus.RUNNING)
@@ -222,6 +224,7 @@ async def test_a_scheduled_run_is_never_archived_and_the_claim_survives_a_sweep(
                 SCHEDULE_ID_KEY: "sched-arch",
                 SCHEDULED_FOR_KEY: scheduled_for,
             },
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         )
     assert plain.run_id
 

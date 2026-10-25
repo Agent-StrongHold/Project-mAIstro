@@ -18,7 +18,7 @@ import logging
 from datetime import UTC, datetime
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 
 router = APIRouter(tags=["providers"])
 logger = logging.getLogger("hive.providers")
@@ -167,7 +167,7 @@ def put_provider_key(name: str, body: dict[str, Any]) -> dict[str, Any]:
 
 
 @router.post("/{name}/activate")
-async def activate_provider(name: str) -> dict[str, Any]:
+async def activate_provider(name: str, request: Request) -> dict[str, Any]:
     """Register the provider's models with LiteLLM and run a one-token test
     completion. Success is the install journey's first model call."""
     p = _provider_or_404(name)
@@ -196,11 +196,13 @@ async def activate_provider(name: str) -> dict[str, Any]:
         resolve_binding,
         settle_operation_identity,
     )
+    from services.request_principal import require_actor_id
 
     from maistro.capabilities.binding_store import BindingResolutionError
 
     try:
         runtime = _runtime()
+        actor_principal_id = require_actor_id(request)
         settings = get_settings()
         workspace_id = settings.hive_default_workspace_id
         if runtime.project_scope_store is None:
@@ -224,6 +226,7 @@ async def activate_provider(name: str) -> dict[str, Any]:
             operation=f"provider-activation:{name}",
             workspace_id=workspace_id,
             project_id=root_project.project_id,
+            actor_principal_id=actor_principal_id,
             provenance={"activation_source": "routes.providers", "provider": name},
         )
     except (BindingResolutionError, LookupError) as exc:

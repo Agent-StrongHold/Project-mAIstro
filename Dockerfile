@@ -55,28 +55,8 @@ ENV UV_MAX_RETRIES=10
 # extension is not installed and never reaches the runtime stage; its
 # metadata is what the lock check needs.
 COPY pyproject.toml uv.lock README.md ./
-COPY packages/maistro-core   packages/maistro-core
-COPY packages/maistro-server packages/maistro-server
-# Non-editable install so the venv is fully self-contained (nothing from the
-# source trees is needed on sys.path at runtime).
-# psycopg is listed for alembic, not for the application. Alembic reaches
-# PostgreSQL through SQLAlchemy's *sync* engine, and `to_sync_url` names psycopg
-# 3 explicitly because a bare `postgresql://` resolves to psycopg2 instead; the
-# app path uses asyncpg and touches neither. The driver is declared in the
-# workspace root, which this image never installs — it installs the two packages
-# by path — so without naming it here `alembic upgrade head` in the shipped
-# container stops at ModuleNotFoundError before it reaches the schema.
-# pydantic-ai-slim is deliberately NOT installed: ADR-094 cut pydantic-ai from
-# the codebase (zero src imports) and the CVE-2026-25580 fix line (>=1.56.0)
-# requires openai>=2, which cannot co-install with the openai pin below.
-RUN pip install --no-cache-dir \
-      "./packages/maistro-core[identity,llm,sandbox,observability]" \
-      "./packages/maistro-server" \
-      "alembic>=1.14" \
-      "psycopg[binary]>=3.2" \
-      "openai>=1.40,<2" \
-      "anyio>=4.14.2" \
-      "httpx>=0.27.0"
+COPY packages/ packages/
+COPY extensions/ extensions/
 
 # Export the exact locked requirement set for THIS image's contract, then
 # install it with --require-hashes:
@@ -217,10 +197,20 @@ COPY alembic/ alembic/
 COPY alembic.ini .
 COPY config/ config/
 COPY pyproject.toml uv.lock README.md ./
-# Static docker CLI (talks to a mounted /var/run/docker.sock) — a single static
-# binary, no daemon. 29-cli ships a binary built with go1.26.8; older 27-cli
-# binaries embedded go1.22.11 (CVE-2025-68121 crypto/tls + 21 HIGHs, trivy).
-COPY --from=docker:29-cli /usr/local/bin/docker /usr/local/bin/docker
+# Static docker CLI built from the pinned upstream release tag on the patched
+# Go toolchain (stage above) — talks to a mounted /var/run/docker.sock, a single
+# static binary, no daemon. Historically: 29-cli's published binary embedded
+# go1.26.8 stdlib (trivy HIGHs); before that 27-cli embedded go1.22.11
+# (CVE-2025-68121 crypto/tls + 21 HIGHs, trivy).
+COPY --from=dockerclibuild /out/docker /usr/local/bin/docker
+# pip (and its vendored dependency tree — trivy flagged msgpack 1.1.2,
+# urllib3 2.7.0 and setuptools 70.3.0 from pip/_vendor/vendor.txt in both the
+# venv's pip and the base interpreter's) is build tooling; nothing in the
+# shipped app invokes it at runtime.
+RUN rm -rf /app/venv/lib/python3.13/site-packages/pip* \
+           /app/venv/bin/pip* \
+           /usr/local/lib/python3.13/site-packages/pip* \
+           /usr/local/bin/pip*
 EXPOSE 8000
 STOPSIGNAL SIGTERM
 # Drop to an unprivileged numeric uid for runtime.

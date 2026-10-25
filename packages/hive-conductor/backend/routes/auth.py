@@ -20,7 +20,7 @@ from config import get_settings, is_valid_oauth_provider_name
 from fastapi import APIRouter, Cookie, HTTPException, Request, Response
 from models.schemas import HiveUser
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
-from services import registration_policy, username_registry
+from services import authorization, registration_policy, username_registry
 from services.human_auth_mode import HumanAuthModePolicy
 from services.oauth_login import (
     OAUTH_MAX_PENDING_STATES,
@@ -128,6 +128,7 @@ _SESSION_COOKIE = "hive_session"
 # eligible authenticated activity and never live longer than seven days.
 # These are server-side limits; browser restoration/preferences cannot change them.
 _COOKIE_MAX_AGE = 60 * 60 * 24 * 7
+_ELEVATION_TTL_SECONDS = 15 * 60
 _SESSION_IDLE_TIMEOUT = 60 * 30
 _SESSION_ABSOLUTE_TTL = _COOKIE_MAX_AGE
 _SESSION_ACTIVITY_EXCLUDED_PATHS = frozenset({"/v1/auth/whoami"})
@@ -339,6 +340,15 @@ def _active_grants(sess: dict[str, Any]) -> dict[str, list[str]]:
     return active
 
 
+def _grant_expiries(sess: dict[str, Any]) -> dict[str, str]:
+    expiries = sess.get("elevated_grant_expires", {})
+    return (
+        {task_id: str(value) for task_id, value in expiries.items()}
+        if isinstance(expiries, dict)
+        else {}
+    )
+
+
 def refresh_session_activity(session_id: str | None) -> bool:
     """Refresh one eligible session, failing closed on concurrent revocation."""
     return _resolve_session(session_id or "", refresh_activity=True) is not None
@@ -376,6 +386,11 @@ def get_current_user(
         "did": user.did,
         "elevated_permissions": all_elevated,
         "elevated_tasks": list(grants.keys()),
+        "elevated_task_expiries": {
+            task_id: expiry
+            for task_id, expiry in _grant_expiries(sess).items()
+            if task_id in grants
+        },
         # This is policy/health metadata only. The opaque session id is never
         # included in the response.
         "session_policy": {
@@ -444,6 +459,7 @@ def _issue_session(user: Any, response: Response) -> dict[str, Any]:
             "role": user.role,
             "permissions": user.permissions,
             "elevated_grants": {},
+            "elevated_grant_expires": {},
             "created_at": issued_at.isoformat(),
             "last_activity_at": issued_at.isoformat(),
         }
@@ -476,7 +492,13 @@ def revoke_task_elevation(session_id: str, task_id: str) -> None:
         grants = sess.get("elevated_grants", {})
         if task_id in grants:
             del grants[task_id]
-            stores.sessions[session_id] = {**sess, "elevated_grants": grants}
+            expiries = _grant_expiries(sess)
+            expiries.pop(task_id, None)
+            stores.sessions[session_id] = {
+                **sess,
+                "elevated_grants": grants,
+                "elevated_grant_expires": expiries,
+            }
 
 
 def _normalized_oauth_provider(provider: str) -> str:
@@ -976,9 +998,10 @@ def logout(response: Response, hive_session: str | None = Cookie(None)) -> dict[
 
 
 @router.get("/whoami")
-def whoami(hive_session: str | None = Cookie(None)) -> dict[str, Any]:
+def whoami(response: Response, hive_session: str | None = Cookie(None)) -> dict[str, Any]:
     # Intentionally observational: the SPA may call this during restoration,
     # but a health check must not keep an unattended session alive.
+    response.headers["Cache-Control"] = "no-store"
     user = get_current_user(hive_session, refresh_activity=False)
     if user is None:
         return {"authenticated": False}
@@ -1040,13 +1063,21 @@ def elevate(
 
     grants: dict[str, list[str]] = sess.get("elevated_grants", {})
     grants[body.task_id] = granted
+    expiries = _grant_expiries(sess)
+    ttl_seconds = _elevation_ttl_seconds()
+    expiry = datetime.now(UTC).timestamp() + ttl_seconds
+    expiries[body.task_id] = datetime.fromtimestamp(expiry, UTC).isoformat()
     with _SESSION_LOCK:
         # Re-read under the same lock as expiry/revocation so an elevation
         # cannot overwrite a concurrent logout or session purge.
         current = _resolve_session(hive_session)
         if current is None:
             raise HTTPException(status_code=401, detail="No session")
-        stores.sessions[hive_session] = {**current, "elevated_grants": grants}
+        stores.sessions[hive_session] = {
+            **current,
+            "elevated_grants": grants,
+            "elevated_grant_expires": expiries,
+        }
     log_audit(
         "elevate",
         user.username,

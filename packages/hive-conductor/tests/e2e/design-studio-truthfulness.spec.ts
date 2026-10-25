@@ -174,7 +174,7 @@ test("Design Studio is the parent surface and never enables fake visual executio
     if (request.url().includes("/v1/canvas/")) canvasRequests.push(request.url());
   });
 
-  await page.goto("/cli/canvas", { waitUntil: "domcontentloaded" });
+  await page.goto("/design-studio", { waitUntil: "domcontentloaded" });
   // Scope to the page heading: the fixed-page editor mounts by default in
   // poster mode and its safe template legitimately contains the words
   // "Design Studio" as body text.
@@ -238,15 +238,15 @@ test("Design Studio reports unavailable persistence instead of an empty durable 
     await route.fulfill({
       status: 503,
       contentType: "application/json",
-      body: JSON.stringify({ detail: "Design persistence unavailable (DATABASE_URL not set)" }),
+      body: JSON.stringify({ detail: "Design persistence unavailable (no database URL configured)" }),
     });
   });
 
-  await page.goto("/cli/canvas", { waitUntil: "domcontentloaded" });
+  await page.goto("/design-studio", { waitUntil: "domcontentloaded" });
 
   const projectsHeader = page.getByText("Persisted Design projects", { exact: true }).locator("..");
   await expect(projectsHeader.getByText("unavailable", { exact: true })).toBeVisible();
-  await expect(page.getByText(/Persisted Design projects are unavailable:.*DATABASE_URL not set/)).toBeVisible();
+  await expect(page.getByText(/Persisted Design projects are unavailable:.*no database URL configured/)).toBeVisible();
   await expect(page.getByText("No persisted Design projects in this scope.", { exact: true })).toHaveCount(0);
 
   // Keep the shared serial browser state truthful for the following catalog test.
@@ -257,7 +257,7 @@ test("Design Studio reports unavailable persistence instead of an empty durable 
 });
 
 test("Deck is a contained Design Studio mode with keyboard-safe editing", async () => {
-  await page.goto("/cli/canvas", { waitUntil: "domcontentloaded" });
+  await page.goto("/design-studio", { waitUntil: "domcontentloaded" });
   const artifactTypes = page.getByRole("group", { name: "Design artifact types" });
   await artifactTypes.getByRole("button").filter({ hasText: "Presentation / Deck" }).press("Enter");
   await page.getByLabel("Describe the artifact").fill("A durable execution pitch deck");
@@ -267,7 +267,7 @@ test("Deck is a contained Design Studio mode with keyboard-safe editing", async 
   await expect(page.getByRole("listbox", { name: "Ordered deck pages" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Present" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Export HTML" })).toBeVisible();
-  await expect(page).toHaveURL(/\/cli\/canvas$/);
+  await expect(page).toHaveURL(/\/design-studio$/);
 });
 
 test("fixed-page artifacts rehydrate through the shared boundary", async () => {
@@ -280,7 +280,7 @@ test("fixed-page artifacts rehydrate through the shared boundary", async () => {
     );
   });
 
-  await page.goto("/cli/canvas", { waitUntil: "domcontentloaded" });
+  await page.goto("/design-studio", { waitUntil: "domcontentloaded" });
   const editor = page.getByTestId("fixed-page-editor");
   const preview = editor.locator('[contenteditable="true"]');
   await expect(preview).toContainText("Persisted safely");

@@ -11,7 +11,9 @@ from maistro.types.memory import CONTRADICT_DELTA, REINFORCE_DELTA
 if TYPE_CHECKING:
     from datetime import datetime
 
+    from maistro.memory.learnings.lifecycle import StageTransition
     from maistro.memory.user_model.types import UserModelFact
+    from maistro.persistence.audit_pages import AuditPage
     from maistro.types.memory import (
         DecaySweep,
         EpisodicMemory,

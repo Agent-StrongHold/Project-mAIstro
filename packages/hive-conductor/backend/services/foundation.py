@@ -56,8 +56,22 @@ class Foundation:
         self.reactor_available = False
 
     async def start(self, settings: Settings) -> None:
-        data_dir = Path(settings.conductor_data_dir).expanduser()
-        data_dir.mkdir(parents=True, exist_ok=True)
+        # Before the vault, state, privilege, or reactor touch a single file:
+        # refuse a data directory that cannot hold this deployment's durable
+        # state (unwritable, or — inside a container — sitting on the
+        # container's own root filesystem, i.e. silently ephemeral across
+        # recreate). #331. A refusal here propagates out of the lifespan,
+        # which stops the process (uvicorn refuses to serve after a failed
+        # startup): the alternative to refusing is a Conductor that
+        # provisions accounts and accepts vault entries into storage it is
+        # about to throw away.
+        from services.data_dir_guard import DataDirRefused, verify_durable_data_dir
+
+        try:
+            data_dir = verify_durable_data_dir(Path(settings.conductor_data_dir))
+        except DataDirRefused as exc:
+            logger.error("%s", exc)
+            raise
 
         self._init_vault(settings, data_dir)
         self._init_credentials(data_dir)
@@ -117,7 +131,12 @@ class Foundation:
 
             stores.configure_persistence(persisted)
             stores.initialize_stores()
-            configure_settings(PersistedSettingsRecordStore(persisted, state.flush))
+            # Settings, profiles, and registration policy ride the same
+            # acknowledgement rule as every other store (#333, #1179): their
+            # put_raw/delete do not return until the State writer commits and
+            # raise its failure, so no caller is told a write is durable
+            # because it entered the writer queue.
+            configure_settings(PersistedSettingsRecordStore(persisted))
 
             # After `initialize_stores()`, which is what fills `stores.dag_runs`
             # from SQLite. Building the run store before that would rehydrate
@@ -130,7 +149,7 @@ class Foundation:
             from services.profile_store import PersistedProfileRecordStore
             from services.profile_store import configure as configure_profiles
 
-            configure_profiles(PersistedProfileRecordStore(persisted, state.flush))
+            configure_profiles(PersistedProfileRecordStore(persisted))
             _warn_if_postgrest_profiles_are_being_left_behind()
 
             # The registration policy record rides the same acknowledgement
@@ -140,7 +159,7 @@ class Foundation:
             from services.registration_policy import PersistedRegistrationRecordStore
             from services.registration_policy import configure as configure_registration_policy
 
-            configure_registration_policy(PersistedRegistrationRecordStore(persisted, state.flush))
+            configure_registration_policy(PersistedRegistrationRecordStore(persisted))
 
             state.flush()
             self.state = state

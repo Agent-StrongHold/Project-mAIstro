@@ -7,8 +7,10 @@ let the resolver's generic fallback build a success-shaped node that did no
 work. The repair is structural: a node declares its authorities on the class,
 `register_node` refuses a declaration the resolver could not honour, and
 `compose_node` refuses to build a kind whose required authority is missing.
-The guards here enumerate every registered kind, so the next node cannot
-recreate the class of defect without failing this file.
+The guards here enumerate every registered kind through the reconciled
+production registration universe (`_production_registration`: source
+identities, the reachability ledger and the live registry must agree), so the
+next node cannot recreate the class of defect without failing this file.
 """
 
 from __future__ import annotations
@@ -31,6 +33,14 @@ from maistro.graph.nodes import (
     list_kinds,
     register_node,
 )
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+
+# Importing the helper performs the production loading itself (the reachable
+# registration modules, `maistro_design.creative_nodes` included), so the
+# parametrizations below cover the reconciled universe regardless of which
+# test modules this process happened to collect first. The universe's
+# completeness is proven in test_production_registration_universe.
+from ._production_registration import LOADED_REGISTRATION_MODULES  # noqa: F401
 
 _SYNTH_DAG = {"nodes": [{"id": "s", "kind": "agent.synth_dag"}]}
 
@@ -54,8 +64,25 @@ def shipped_kinds() -> list[str]:
 
 
 def _sentinel_authorities() -> dict[str, object]:
-    """One distinct object per authority, so identity can be asserted."""
-    return {name: object() for name in AUTHORITY_NAMES}
+    """One distinct object per authority, so identity can be asserted.
+
+    The `harness_adapters` authority is shape-validated at construction
+    (#1613: every value must be a HarnessAdapter or HarnessRunner), so its
+    sentinel is a real mapping of a shape-valid stub — still one distinct
+    object, still identity-assertable.
+    """
+
+    class _StubHarnessAdapter:
+        async def dispatch(self, request: object) -> object: ...
+
+        async def poll(self, handle: object) -> object: ...
+
+        async def cancel(self, handle: object) -> None: ...
+
+    stub = _StubHarnessAdapter()
+    sentinels: dict[str, object] = {name: object() for name in AUTHORITY_NAMES}
+    sentinels["harness_adapters"] = {"stub": stub}
+    return sentinels
 
 
 # --- the declarations themselves ----------------------------------------------
@@ -293,6 +320,7 @@ async def test_the_container_composed_node_admits_canonical_work(
             nodes=[Node(node_id="s", node_type="agent.synth_dag")],
         ),
         initial_status=RunStatus.QUEUED,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
     parent = await container.run_store.transition_run(parent.run_id, RunStatus.RUNNING)
     parent_node_run = await container.run_store.create_node_run(parent.run_id, node_id="s")
@@ -328,6 +356,7 @@ async def test_the_container_composed_node_admits_canonical_work(
             node_run_id=parent_node_run.node_run_id,
             workspace_id="ws-composition",
             project_id=root.project_id,
+            user_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         ),
     )
 

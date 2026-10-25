@@ -3,9 +3,13 @@ import { Navigate, Route, Routes } from "react-router-dom";
 import { AppShell } from "./components/AppShell";
 import { DefaultLandingRedirect } from "./components/DefaultLandingRedirect";
 import { ErrorBoundary } from "./components/ErrorBoundary";
+import { PermissionBoundary } from "./components/Authorization";
+import { AuthorizationProvider } from "./context/AuthorizationContext";
 import { Onboarding } from "./components/Onboarding";
 import { ToastProvider } from "./components/shared";
 import { claimUiState } from "./lib/uiState";
+// #1420: the startup probes' explicit instrumentation (see lib/rum.ts).
+import { instrumentedGet } from "./lib/rum";
 import { WorkspaceProvider } from "./context/WorkspaceContext";
 import Login from "./pages/Login";
 import Setup from "./pages/Setup";
@@ -16,7 +20,11 @@ import Setup from "./pages/Setup";
 // first paint of every session, so splitting them would only add a round
 // trip with nothing to show meanwhile.
 const Agents = lazy(() => import("./pages/Agents"));
+const Approvals = lazy(() => import("./pages/Approvals"));
+const Attention = lazy(() => import("./pages/Attention"));
 const AuditLog = lazy(() => import("./pages/AuditLog"));
+const Backlog = lazy(() => import("./pages/Backlog"));
+const Capabilities = lazy(() => import("./pages/Capabilities"));
 const Chat = lazy(() => import("./pages/Chat"));
 const CLI = lazy(() => import("./pages/CLI"));
 const Containers = lazy(() => import("./pages/Containers"));
@@ -26,7 +34,8 @@ const Dashboard = lazy(() => import("./pages/Dashboard"));
 const DesignStudio = lazy(() => import("./pages/DesignStudio"));
 const DeckBuilder = lazy(() => import("./pages/DeckBuilder"));
 const Docs = lazy(() => import("./pages/Docs"));
-const Evolution = lazy(() => import("./pages/Evolution"));
+const Goals = lazy(() => import("./pages/Goals"));
+const Home = lazy(() => import("./pages/Home"));
 const RSI = lazy(() => import("./pages/RSI"));
 const MCP = lazy(() => import("./pages/MCP"));
 const Memory = lazy(() => import("./pages/Memory"));
@@ -96,7 +105,7 @@ function AuthGuard({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<UserInfo | null>(null);
 
   async function loadSession(): Promise<UserInfo | null> {
-    const whoRes = await fetch("/v1/auth/whoami", { credentials: "same-origin" });
+    const whoRes = await instrumentedGet("/v1/auth/whoami");
     return whoamiToUser(await whoRes.json());
   }
 
@@ -111,8 +120,8 @@ function AuthGuard({ children }: { children: React.ReactNode }) {
         // Setup wizard: on a fresh, unconfigured instance a slow or
         // never-settling whoami must not hold up detecting that setup isn't
         // done, so whoami is only awaited once setup is confirmed complete.
-        const setupPromise = fetch("/v1/setup/status", { credentials: "same-origin" });
-        const whoPromise = fetch("/v1/auth/whoami", { credentials: "same-origin" });
+        const setupPromise = instrumentedGet("/v1/setup/status");
+        const whoPromise = instrumentedGet("/v1/auth/whoami");
         const setupData = await (await setupPromise).json();
         if (!setupData.setup_complete) {
           setSetupDone(false);
@@ -181,13 +190,30 @@ function AppRoutes() {
             <Suspense fallback={<AppShellSkeleton />}>
               <Routes>
                 <Route path="/" element={<AppShell />}>
-                  <Route index element={<Navigate to="dashboard" replace />} />
+                  {/* #1048 / #1050: default landing is Workspace Home unless
+                      the user set preferences.workspace_default_landing on
+                      the canonical profile. Dashboard stays registered until
+                      retirement burn-down (#2274) deletes it. */}
+                  <Route index element={<DefaultLandingRedirect />} />
+                  <Route path="home" element={<Home />} />
                   <Route path="dashboard" element={<Dashboard />} />
                   <Route path="chat" element={<Chat />} />
+                  {/* #1049: Attention is the Workspace orchestration inbox
+                      (read-only projection). Home links default here. */}
+                  <Route path="attention" element={<Attention />} />
                   <Route path="missions" element={<Missions />} />
+                  <Route path="backlog" element={<Backlog />} />
+                  {/* #2278 / Parity P-1: approvals projection over the same
+                      /v1/capabilities/approvals and /v1/hitl/* doors as CLI. */}
+                  <Route path="approvals" element={<Approvals />} />
                   <Route path="dags" element={<DagBuilder />} />
                   <Route path="dag-runs" element={<DagRuns />} />
+                  <Route path="goals" element={<Goals />} />
                   <Route path="schedules" element={<Schedules />} />
+                  {/* #2273: Capabilities is the primary product surface; Agents /
+                      MCP / Skills / Topology stay registered for deep links
+                      until the retirement slice deletes them. */}
+                  <Route path="capabilities" element={<Capabilities />} />
                   <Route path="agents" element={<Agents />} />
                   <Route path="work-items" element={<WorkItems />} />
                   <Route path="knowledge" element={<KnowledgeBase />} />
@@ -200,16 +226,36 @@ function AppRoutes() {
                   <Route path="mcp" element={<MCP />} />
                   <Route path="topology" element={<Topology />} />
                   <Route path="optimizer" element={<OptimizationInbox />} />
-                  <Route path="optimization-inbox" element={<OptimizationInbox />} />
+                  {/* #1417: /optimization-inbox is an alias, not a second
+                      surface -- it redirects to the canonical /optimizer so
+                      a direct hit lands on the one nav-linked destination
+                      instead of rendering the same page with no active nav
+                      entry. */}
+                  <Route path="optimization-inbox" element={<Navigate to="/optimizer" replace />} />
                   <Route path="messages" element={<MessageBoard />} />
                   <Route path="quotas" element={<Quotas />} />
                   <Route path="audit" element={<AuditLog />} />
                   <Route path="cli" element={<CLI />} />
-                  <Route path="cli/canvas" element={<DesignStudio />} />
+                  {/* #95: Design Studio is the product, so its deep link is the
+                      product's name. Capability APIs keep their /v1/canvas and
+                      /v1/design namespaces; the UI route namespace is product
+                      identity and does not borrow the Canvas tool's name. The
+                      implementation-era /cli/canvas path survives only as a
+                      compatibility redirect, asserted by
+                      design-studio-truthfulness.spec.ts. */}
+                  <Route path="design-studio" element={<DesignStudio />} />
+                  <Route path="cli/canvas" element={<Navigate to="/design-studio" replace />} />
                   <Route path="containers" element={<Containers />} />
                   <Route path="docs" element={<Docs />} />
-                  <Route path="evolution" element={<Evolution />} />
-                  <Route path="rsi" element={<RSI />} />
+                  {/* #2275 / conductor-411: Evolution is HIDE for v1.0 — no
+                      shipped route, no stub claiming availability. The page
+                      module stays in-tree for v1.2 restore (#51). Direct
+                      /evolution hits fall through the shell outlet empty
+                      rather than advertise a product surface. */}
+                  {/* #373: the RSI page's controls fail 403 without the
+                      rsi.execute scope; the boundary renders the safe
+                      explanation + elevation entry instead of the page. */}
+                  <Route path="rsi" element={<PermissionBoundary permission="rsi.execute"><RSI /></PermissionBoundary>} />
                   <Route path="memory" element={<Memory />} />
                   <Route path="settings" element={<Settings />} />
                   <Route path="profile" element={<Profile />} />

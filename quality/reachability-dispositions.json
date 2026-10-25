@@ -171,22 +171,6 @@
       ]
     },
     {
-      "id": "quota-verification",
-      "subsystem": "Quota and billing",
-      "disposition": "CONNECT",
-      "rationale": "ADR-085 provider-side quota verification and reconciliation. #56 attaches token and cost metadata to the Invocation, which is where these belong.",
-      "root": "the Invocation cost path (#56)",
-      "modules": [
-        "maistro.quota.ambient",
-        "maistro.quota.reconciliation",
-        "maistro.quota.recorder",
-        "maistro.quota.verifiers",
-        "maistro.quota.verifiers.mistral",
-        "maistro.quota.verifiers.openrouter",
-        "maistro.quota.verify"
-      ]
-    },
-    {
       "id": "rsi-unwired",
       "subsystem": "RSI autorun",
       "disposition": "CONNECT",

@@ -100,9 +100,11 @@ wait forever for an `Expected` result.
 | Workflow | Check name | Runs on |
 |---|---|---|
 | CI | `Compliance registry` | every PR |
+| CI | `cross-product-parity` | every PR |
 | CI | `docker-build` | every PR |
 | CI | `docker-rebuild-compare` | every PR |
 | CI | `durable-events` | every PR |
+| CI | `hive-conductor-compose-durability` | every PR |
 | CI | `hive-conductor-e2e` | every PR |
 | CI | `hive-conductor-e2e-ui` | every PR |
 | CI | `lint-and-type-check` | every PR |
@@ -184,11 +186,6 @@ required on `main` only. `Container scan + SBOM + cosign` also runs for
 `develop`-based PRs and develop merge groups (and on pushes to `develop`) so
 license and final-filesystem evidence exists before release promotion; branch
 protection still requires the check on `main`.
-
-`DevSkim` is a documented advisory check for `develop`-based PRs. It is
-intentionally excluded from both protected required-check sets until the owner
-promotes it into the merge contract; its base-coupled workflow scope remains
-listed in the generated table above.
 
 `DevSkim` is a documented advisory check for `develop`-based PRs. It is
 intentionally excluded from both protected required-check sets until the owner
