@@ -22,26 +22,6 @@ from maistro.capabilities.providers.llm_gateway import (
 from maistro.credentials.types import CredentialRecord
 
 
-def stub_completion(req: ChatCompletionRequest) -> dict[str, Any]:
-    from uuid import uuid4
-
-    return {
-        "id": str(uuid4()),
-        "model": req.model,
-        "choices": [
-            {
-                "message": {
-                    "role": "assistant",
-                    "content": (
-                        "(stub) Set LITELLM_API_BASE (…/v1) and LITELLM_API_KEY to call your gateway "
-                        "through the governed model adapter."
-                    ),
-                }
-            }
-        ],
-    }
-
-
 def _normalize_to_chat_completions(body: dict[str, Any]) -> dict[str, Any]:
     """Keep the historical Responses-to-chat shape at the ingress adapter."""
     if "choices" in body:
@@ -81,17 +61,6 @@ def _responses_event_to_chunk(ev: dict[str, Any]) -> dict[str, Any] | None:
     if event_type in ("response.completed", "response.output_text.done"):
         return {"choices": [{"delta": {}, "finish_reason": "stop"}]}
     return None
-
-
-class StubLLMPort:
-    async def complete(self, req: ChatCompletionRequest) -> dict[str, Any]:
-        return stub_completion(req)
-
-    async def stream(self, req: ChatCompletionRequest) -> AsyncIterator[dict[str, Any]]:
-        text = stub_completion(req)["choices"][0]["message"]["content"]
-        for word in text.split(" "):
-            yield {"choices": [{"delta": {"content": word + " "}, "finish_reason": None}]}
-        yield {"choices": [{"delta": {}, "finish_reason": "stop"}]}
 
 
 class HttpOpenAIProtocolLLM:

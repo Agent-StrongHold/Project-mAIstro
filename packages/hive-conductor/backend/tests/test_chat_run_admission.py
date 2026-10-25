@@ -799,6 +799,41 @@ def test_settling_a_turn_never_turns_a_failed_sweep_into_a_failed_answer() -> No
     assert admitter.calls == ["release:run-1", "sweep"]
 
 
+@pytest.mark.contract("behavioral")
+def test_a_turn_past_admission_without_gateway_config_fails_closed(
+    authed_client: Any, container: Container, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#1084 gap 2: a missing gateway configuration must never answer a turn.
+
+    `build_llm_port` used to fall back to a success-shaped stub port once a
+    turn was already admitted, so the Run completed on a fabricated answer
+    with zero model effects. The door now fails closed: retryable 503, the
+    admitted Run closes failed, and nothing resembling a model answer ships.
+    """
+    from config import Settings
+    from services import chat_completion as chat_completion_service
+
+    monkeypatch.delenv("LITELLM_API_BASE", raising=False)
+    monkeypatch.delenv("LITELLM_PROXY_URL", raising=False)
+    monkeypatch.delenv("LITELLM_API_KEY", raising=False)
+    monkeypatch.delenv("LITELLM_PROXY_KEY", raising=False)
+    unconfigured = Settings(litellm_api_base=None, litellm_api_key=None)
+    monkeypatch.setattr(chat_completion_service, "get_settings", lambda: unconfigured)
+
+    ws = _workspace()
+    response = _complete(authed_client, workspace_id=ws)
+
+    assert response.status_code == 503
+    assert response.headers.get("retry-after") == "5"
+    assert "(stub)" not in response.text
+    # The turn was admitted, so its Run exists -- terminalized failed, never
+    # completed on stub content.
+    runs = _runs_in(container, ws)
+    assert len(runs) == 1
+    assert runs[0].status is RunStatus.FAILED
+    assert not str(runs[0].result or "").strip() or "(stub)" not in str(runs[0].result)
+
+
 @pytest.mark.asyncio
 async def test_persist_conversation_turn_skips_non_string_model_content(
     monkeypatch: pytest.MonkeyPatch,

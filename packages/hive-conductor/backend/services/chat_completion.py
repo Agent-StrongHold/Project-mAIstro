@@ -15,7 +15,7 @@ import os
 from collections.abc import AsyncIterator, Collection
 from typing import Any
 
-from adapters.llm_http import HttpOpenAIProtocolLLM, StubLLMPort
+from adapters.llm_http import HttpOpenAIProtocolLLM
 from adapters.telemetry_langfuse import telemetry
 from config import get_settings
 from fastapi import HTTPException
@@ -43,6 +43,7 @@ from services.chat_gate import (
     new_gate_id,
     refusal_content,
 )
+from services.chat_runs import RETRY_AFTER_SECONDS
 from services.owned_records import Owner, owned_memory_entries
 from services.secrets import litellm_api_key as _resolve_litellm_api_key
 from services.tool_primitives import (
@@ -84,11 +85,23 @@ def build_llm_port() -> LLMPort:
     if not base:
         base = os.environ.get("LITELLM_PROXY_URL")
     if not base or not key:
-        return StubLLMPort()
+        # Fail closed (#1084 gap 2): an unconfigured model door must never
+        # answer an admitted turn with a success-shaped stub. The 503 escapes
+        # through `execute_turn`, which closes the admitted Run as failed — a
+        # retryable refusal with zero model effects, the same contract the
+        # admission boundary already gives an inadmissible turn.
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "model egress is not configured (set LITELLM_API_BASE and its "
+                "key); the turn was admitted but never dispatched to a model"
+            ),
+            headers={"Retry-After": RETRY_AFTER_SECONDS},
+        )
 
     # Prefer the real Container's registry, Binding store, and Invocation
-    # ledger. The fallback composes the same core seam for stub/dev processes;
-    # it never restores adapter-owned HTTP dispatch.
+    # ledger. The no-engine fallback composes the same core seam for dev
+    # processes; it never restores adapter-owned HTTP dispatch.
     client = None
     try:
         from services.engine import get_engine

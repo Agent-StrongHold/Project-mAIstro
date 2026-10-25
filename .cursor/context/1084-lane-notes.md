@@ -7,6 +7,55 @@ head: 67400d014 (tip of auto-1084; true merge of origin/develop 9cc09cd57 on top
 
 # 1084 lane notes (read before touching this branch)
 
+## 2026-10-25 CI-repair round (stub removal + Pyright root cause; this head)
+
+- Named merge-queue failure `Quality / Pyright` root-caused: it fired at the
+  OLD pre-reword tip `5769e4ac3` (not an ancestor of this branch) with
+  "pyright regression: 22 errors exceeds baseline of 21" (job log 121005725910).
+  The repair already in this branch's history is `849f134d5`. Proof at the
+  current state: CI check-run `Quality / Pyright` = success at `7bc1e3c81`
+  (run 40147725687, completed 2026-10-25T00:43:54Z) and local CI-exact replay
+  (`uv sync --locked --all-extras`, `uv pip install -e packages/maistro-evolve`,
+  `uv pip install pyright` -> 1.1.414, `pyright --outputjson
+  packages/maistro-core/src` -> `check-pyright-report.py --baseline 21`)
+  = 11 errors, gate exit 0.
+- Develop sync is resolved and stays resolved: `origin/develop` = `9cc09cd57`
+  = merge-base(HEAD, origin/develop), 0 behind, via true merge `67400d014`.
+- Issue #1084 gap 2's letter is now closed: `build_llm_port` no longer selects
+  the success-shaped `StubLLMPort` when LITELLM base/key are missing — it
+  raises retryable 503 (Retry-After 5, same shape as admission's refusal),
+  `execute_turn` closes the admitted Run FAILED, zero model effects.
+  `stub_completion`/`StubLLMPort` are deleted from adapters/llm_http.py.
+  NOTE: the earlier "unreachable post-admission (admission 503s first)"
+  parenthetical was wrong — the bridge boots the Container with a placeholder
+  URL and empty key (adapters/maistro_core.py), admission does not consult the
+  gateway env, so the stub WAS reachable in an admitted turn.
+- Regression pin: test_chat_run_admission.py::
+  test_a_turn_past_admission_without_gateway_config_fails_closed — A/B proof:
+  the identical test FAILS at `7bc1e3c81` (200 + stub content) and passes with
+  the fix (503, Run FAILED). test_api.py's two former 200-stub smoke pins
+  (`test_user_can_chat`, `test_chat_complete_stub`) were rewritten to the
+  fail-closed contract count-neutrally (the latter renamed
+  test_chat_complete_without_gateway_config_has_no_choices).
+- Suite inventory: docs/testing/inventory-notes/1084-model-egress-
+  convergence.md hive delta +3 -> +4 (one new node; renames count-neutral);
+  all 21 suites match the ledger.
+- Green at the repair tip: ruff check/format, hive backend suite 4022 passed
+  /26 skipped, core egress/composition + server conductor + vision/voice/
+  adapter focused suites 119 passed, vulture (CI args) 1297==1297, radon
+  127==127, model-egress, design-model-egress, promotion-surface,
+  direct-effects 51 dispositioned, reachability OK, ratchet-provenance 54
+  consumers, suite-inventory 21 suites, pyright 11<=21 gate exit 0.
+- RESIDUAL (owner decision; dedicated history round): closure keywords in
+  commit bodies reachable from HEAD but absent from origin/develop —
+  `e9aad7356` body line 34 "Closes #1127, #1098, #1056, #1109, #1143"
+  (#1098/#1109/#1143 re-confirmed OPEN 2026-10-25; #1127/#1056 closed),
+  `c44240217` body line 16 "fix #13" (#13 OPEN), `61f22af23` body line 8
+  quoted 'resolve #1824' (#1824 OPEN; quotes do not stop GitHub's regex).
+  Landing PR #2296 would auto-close those OPEN issues. Removal needs a
+  `--rebase-merges` rebuild of ~20 commits incl. 6 merge commits — do not
+  attempt ad hoc.
+
 ## State
 - Branch = origin/develop (9cc09cd57, the current tip) + this issue's diff
   (55 files). Every develop sync so far was resolved as a true merge
