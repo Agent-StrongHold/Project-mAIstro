@@ -80,10 +80,12 @@ METRIC_DEFINITION_VERSION = "2"
 #: so documentation examples containing `**Status:**` inside fences are not flagged.
 #: Blockquote prefixes (`> ` or `>**Status:**`) are supported — they render as
 #: body text and should be treated as declarations.
-#: Four-space indentation exempts unmarked code blocks; marked list markers
-#: at any reasonable depth are treated as declarations (the PR retires body status).
+#: Four-space indentation exempts unmarked code blocks (including indented
+#: code blocks detected from Markdown structure); a list marker at any
+#: indentation is a declaration, including markers nested inside a list.
 _BODY_STATUS_RE = re.compile(
-    r"^(?:(?: {0,3}> ?)* ?){0,3}(?:(?:[-*+]|[0-9]{1,9}[.)])[ \t]+)?\*\*Status:\*\*.*$",
+    r"^(?:(?: {0,3}> ?)* ?){0,3}(?:(?:[-*+]|[0-9]{1,9}[.)])[ \t]+)?\*\*Status:\*\*.*$"
+    r"|^[ \t]+(?:[-*+]|[0-9]{1,9}[.)])[ \t]+\*\*Status:\*\*.*$",
     re.M,
 )
 
@@ -203,35 +205,42 @@ def _body_without_front_matter(path: Path) -> str:
 
 
 def _outside_fenced_blocks(text: str) -> str:
-    """Return text with every fenced code block (``` ... ``` / ~~~ ... ~~~) replaced by a single space.
+    """Return text with code-block lines (fenced and indented) blanked.
 
-    This prevents lines like ```` Status: Accepted ```` inside fences from being
-    flagged as body status declarations.  Unclosed fences consume the rest of the
-    file (fail-closed).  The function works line-by-line to avoid catastrophic
-    backtracking on malformed input.
+    Fenced (``` / ~~~) and four-space-indented Markdown code blocks are
+    excluded from matching, so examples containing ``**Status:**`` inside them
+    are not flagged.  Markdown structure is used to tell an indented code
+    block from a list item nested at the same column, which a fixed
+    indentation cutoff cannot do.  Blockquote lines are retained.
     """
-    out: list[str] = []
-    in_fence = False
-    fence_char: str | None = None
-    for line in text.splitlines():
-        stripped = line.strip()
-        if not in_fence and (stripped.startswith("```") or stripped.startswith("~~~")):
-            in_fence = True
-            fence_char = stripped[:3]
-            out.append(" ")  # replace the fence opener line itself
-            continue
-        if in_fence:
-            if fence_char and stripped.startswith(fence_char):
-                # closing fence
-                in_fence = False
-                fence_char = None
-                out.append(" ")  # replace the fence closer line
+    lines = text.splitlines()
+    blanked: set[int] = set()
+    try:
+        from markdown_it import MarkdownIt
+
+        for token in MarkdownIt().parse(text):
+            if token.type in ("fence", "code_block") and token.map:
+                for index in range(token.map[0], token.map[1]):
+                    if 0 <= index < len(lines):
+                        blanked.add(index)
+    except Exception:  # pragma: no cover - defensive fallback
+        in_fence = False
+        fence_char: str | None = None
+        for index, line in enumerate(lines):
+            stripped = line.strip()
+            if not in_fence and (stripped.startswith("```") or stripped.startswith("~~~")):
+                in_fence = True
+                fence_char = stripped[:3]
+                blanked.add(index)
                 continue
-            else:
-                # content inside fence → skip
-                continue
-        out.append(line)
-    return "\n".join(out)
+            if in_fence:
+                if fence_char and stripped.startswith(fence_char):
+                    in_fence = False
+                    fence_char = None
+                    blanked.add(index)
+                else:
+                    blanked.add(index)
+    return "\n".join(" " if index in blanked else line for index, line in enumerate(lines))
 
 
 def _load_baseline() -> frozenset[str]:

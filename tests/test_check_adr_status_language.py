@@ -273,7 +273,9 @@ def _front_matter_status(path: Path) -> str:
 #: A body status declaration in either spelling: bare, or as a Markdown list
 #: item. Multiline so it can be searched against a whole document.
 _BODY_STATUS_LINE_RE = re.compile(
-    r"^ {0,3}(?:(?:[-*+]|[0-9]{1,9}[.)])[ \t]+)?\*\*Status:\*\*.*$", re.M
+    r"^(?:(?: {0,3}> ?)* ?){0,3}(?:(?:[-*+]|[0-9]{1,9}[.)])[ \t]+)?\*\*Status:\*\*.*$"
+    r"|^[ \t]+(?:[-*+]|[0-9]{1,9}[.)])[ \t]+\*\*Status:\*\*.*$",
+    re.M,
 )
 
 
@@ -526,3 +528,34 @@ def test_the_script_runs_as_a_script() -> None:
     )
 
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+# --- code-block and blockquote handling (P2 findings 4301014681, 4301014687) ---
+
+
+def test_a_status_line_inside_a_fenced_code_block_is_not_a_finding(sandbox) -> None:
+    path = _an_adr(sandbox.DOC_ROOTS[0])
+    path.write_text(path.read_text() + "\n```\n**Status:** Accepted\n```\n")
+
+    assert not any(p.path == path and p.kind == "body-status-line" for p in sandbox.audit())
+
+
+def test_a_status_line_inside_an_indented_code_block_is_not_a_finding(sandbox) -> None:
+    path = _an_adr(sandbox.DOC_ROOTS[0])
+    path.write_text(path.read_text() + "\n    **Status:** Accepted\n")
+
+    assert not any(p.path == path and p.kind == "body-status-line" for p in sandbox.audit())
+
+
+def test_a_blockquoted_status_line_is_still_a_finding(sandbox) -> None:
+    path = _an_adr(sandbox.DOC_ROOTS[0])
+    path.write_text(path.read_text() + "\n> **Status:** Accepted\n")
+
+    assert any(p.path == path and p.kind == "body-status-line" for p in sandbox.audit())
+
+
+def test_a_nested_list_status_line_is_still_a_finding(sandbox) -> None:
+    path = _an_adr(sandbox.DOC_ROOTS[0])
+    path.write_text(path.read_text() + "\n- Metadata:\n    - **Status:** Accepted\n")
+
+    assert any(p.path == path and p.kind == "body-status-line" for p in sandbox.audit())
