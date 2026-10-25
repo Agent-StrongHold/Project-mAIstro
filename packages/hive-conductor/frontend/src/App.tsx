@@ -3,6 +3,8 @@ import { Navigate, Route, Routes } from "react-router-dom";
 import { AppShell } from "./components/AppShell";
 import { DefaultLandingRedirect } from "./components/DefaultLandingRedirect";
 import { ErrorBoundary } from "./components/ErrorBoundary";
+import { PermissionBoundary } from "./components/Authorization";
+import { AuthorizationProvider } from "./context/AuthorizationContext";
 import { Onboarding } from "./components/Onboarding";
 import { ToastProvider } from "./components/shared";
 import { claimUiState } from "./lib/uiState";
@@ -157,10 +159,12 @@ function AuthGuard({ children }: { children: React.ReactNode }) {
 
   return (
     <UserCtx.Provider value={user}>
-      <WorkspaceProvider>
-        <OnboardingGate />
-        {children}
-      </WorkspaceProvider>
+      <AuthorizationProvider>
+        <WorkspaceProvider>
+          <OnboardingGate />
+          {children}
+        </WorkspaceProvider>
+      </AuthorizationProvider>
     </UserCtx.Provider>
   );
 }
@@ -248,7 +252,10 @@ function AppRoutes() {
                       module stays in-tree for v1.2 restore (#51). Direct
                       /evolution hits fall through the shell outlet empty
                       rather than advertise a product surface. */}
-                  <Route path="rsi" element={<RSI />} />
+                  {/* #373: the RSI page's controls fail 403 without the
+                      rsi.execute scope; the boundary renders the safe
+                      explanation + elevation entry instead of the page. */}
+                  <Route path="rsi" element={<PermissionBoundary permission="rsi.execute"><RSI /></PermissionBoundary>} />
                   <Route path="memory" element={<Memory />} />
                   <Route path="settings" element={<Settings />} />
                   <Route path="profile" element={<Profile />} />
