@@ -39,9 +39,14 @@ from maistro.builders.graph_executor import (
     DispatchResult,
     PipelineDispatcher,
 )
+from maistro.builders.logger import BuildersLogger
 from maistro.builders.runtime import BuildersRuntime
+from maistro.builders.spec_coverage import check_spec_coverage
+from maistro.builders.spec_templates import SpecTemplateStore
+from maistro.builders.verifier import InvariantVerifier
 
 logger = logging.getLogger("maistro.builders.pipeline")
+_BUILDERS_LOGGER = BuildersLogger()
 
 _SPEC_SUMMARY_LIMIT = 2000
 _CLEAN_SIGNALS = ("no violations", "lgtm", "approved", "all checks pass", "clean")
@@ -249,12 +254,29 @@ async def _decompose_on_complete(run: PipelineRun, output: str) -> None:
         return
     if run.context.get("_spec") is not None:
         return
-    spec = _emit_spec(run.issue_number, run.title, output)
+    # Prefer a verified template for this issue class when Quartermaster
+    # tagged one (#2317 / SpecTemplateStore CONNECT).
+    templates = run.context.get("_spec_templates")
+    issue_class = str(run.context.get("issue_class") or "")
+    spec = None
+    if isinstance(templates, SpecTemplateStore) and issue_class:
+        spec = templates.adapt(
+            issue_class,
+            issue_number=run.issue_number,
+            title=run.title,
+        )
+    if spec is None:
+        spec = _emit_spec(run.issue_number, run.title, output)
     await spec_store.save(spec)
     run.context["_spec"] = spec
     run.context["spec"] = spec.to_dict()
     run.context["verifications"] = []
     run.context["spec_summary"] = build_spec_summary(spec)
+    _BUILDERS_LOGGER.log_builder_action(
+        "quartermaster",
+        "decompose_spec",
+        f"issue {run.issue_number}: {run.title}",
+    )
 
 
 async def _scaffold_on_complete(run: PipelineRun, output: str) -> None:
@@ -277,23 +299,41 @@ async def _review_on_complete(run: PipelineRun, output: str) -> None:
     *implemented* code. A no-op (empty findings) when no ``code_index`` is
     configured or no ``workspace_path`` was given — this is what keeps the
     hard-fail gate backward-compatible with callers who opt out.
+
+    Always folds :func:`check_spec_coverage` findings into the same bag so
+    uncovered invariants gate review the same way structural violations do
+    (#2317). When no optional ``spec_verifier`` wrap is configured, records a
+    one-shot :class:`InvariantVerifier` snapshot under
+    ``spec_coverage_verification`` without mutating the wrap's
+    ``verifications`` list.
     """
+    findings: list[Any] = []
     code_index = run.context.get("_code_index")
     workspace_path = run.context.get("workspace_path", "")
-    if code_index is None or not workspace_path:
-        run.context["structural_findings"] = []
-        return
+    if code_index is not None and workspace_path:
+        from maistro.codebase.violations import check_structural_violations
 
-    from maistro.codebase.violations import check_structural_violations
+        report = await code_index.build(workspace_path)
+        run.context["_code_structure_report"] = report
+        findings.extend(check_structural_violations(report))
 
-    report = await code_index.build(workspace_path)
-    run.context["_code_structure_report"] = report
-    findings = check_structural_violations(report)
+    spec = run.context.get("_spec")
+    findings.extend(check_spec_coverage(spec))
     run.context["structural_findings"] = findings
     if findings:
         run.context["structural_findings_summary"] = "\n".join(
             f"- [{f.category}] {f.description}: {f.suggestion}" for f in findings
         )
+
+    if spec is not None and run.context.get("_spec_verifier") is None:
+        verification = await InvariantVerifier().verify(spec, "review", {})
+        run.context["spec_coverage_verification"] = verification.to_dict()
+
+    _BUILDERS_LOGGER.log_builder_action(
+        "auditor",
+        "review_complete",
+        f"issue {run.issue_number}: {len(findings)} finding(s)",
+    )
 
 
 # ── Default pipeline nodes ───────────────────────────────────────────────────
@@ -479,6 +519,8 @@ class BuilderPipeline:
         spec_store: Any | None = None,
         spec_verifier: Any | None = None,
         code_index: Any | None = None,
+        spec_templates: SpecTemplateStore | None = None,
+        builders_logger: BuildersLogger | None = None,
         nodes: list[PipelineNode] | None = None,
         run_store: RunStore | None = None,
         durable_store: DurableRunStore | None = None,
@@ -490,6 +532,8 @@ class BuilderPipeline:
         self._spec_store = spec_store
         self._spec_verifier = spec_verifier
         self._code_index = code_index
+        self._spec_templates = spec_templates if spec_templates is not None else SpecTemplateStore()
+        self._builders_logger = builders_logger if builders_logger is not None else _BUILDERS_LOGGER
         self._nodes = list(nodes) if nodes is not None else list(BUILDER_PIPELINE)
         self._runs: dict[str, PipelineRun] = {}
         # Canonical wiring is held, not pre-built: the executor is constructed
@@ -565,7 +609,14 @@ class BuilderPipeline:
                 "_spec_verifier": self._spec_verifier,
                 "workspace_path": workspace_path,
                 "_code_index": self._code_index,
+                "_spec_templates": self._spec_templates,
+                "_builders_logger": self._builders_logger,
             }
+        )
+        self._builders_logger.log_builder_action(
+            "pipeline",
+            "execute_start",
+            f"issue {issue_number}: {title} ({repo})",
         )
 
         spec = await self._load_spec_context(run, issue_number, title, skip_decompose)
