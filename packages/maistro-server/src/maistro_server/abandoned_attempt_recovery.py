@@ -19,6 +19,10 @@ from typing import Any
 logger = logging.getLogger("maistro_server.abandoned_attempt_recovery")
 
 _INTERVAL_S = 10.0
+# How long a graceful stop waits for the tick in flight before cancelling it.
+# A module constant rather than a literal so the join deadline is a seam tests
+# can shorten instead of sleeping five real seconds.
+_STOP_TIMEOUT_S = 5.0
 _LIMIT = 100
 _task: asyncio.Task[None] | None = None
 _stopping: asyncio.Event | None = None
@@ -78,7 +82,7 @@ async def stop_abandoned_attempt_recovery() -> None:
     if stopping is not None:
         stopping.set()
     try:
-        await asyncio.wait_for(asyncio.shield(task), timeout=5)
+        await asyncio.wait_for(asyncio.shield(task), timeout=_STOP_TIMEOUT_S)
     except asyncio.CancelledError:
         if not task.cancelled():
             raise
