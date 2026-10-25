@@ -8430,3 +8430,77 @@ Every number below re-derived first-hand this round; no prior claim inherited.
   head landing the reviewed runtime consumer, which must pass the unchanged
   gates at its final head. The stack stays unmerged per the issue contract.
   Note-only commit; no code, gate, or quality-ledger file changed.
+
+## Round 130 (2026-10-25, job 7e531fa29fe7434d89b37a4a84a263ea): develop sync to
+## 09d56b6a0b35 (#2263) + full four-mutation battery first-hand at merged head
+## 69efdb04e553 — blocker invariant, amendment empty (127th consecutive round)
+
+Dispatched exact head bf6157a4de05 verified against the job manifest and
+reproduced CI's red set as the sanctioned unwired-leaf blocker; origin/develop
+had moved exactly one commit ahead (09d56b6a0b35, EPIC M5-B #2263 — ADDS
+maistro_rsi canonical_provenance/promotion_contract/sensitive_paths/
+work_source/autorun modules and their suites; two-dot rsi "deletions" were
+this develop-side addition seen in reverse, not branch edits). Sync
+discharged per the branch's standing policy: `git merge origin/develop` →
+clean auto-merge at 69efdb04e553 (no conflicts; develop did not touch
+scripts/check-reachability.py, and `git diff --numstat origin/develop --
+quality/` is empty on BOTH sides — no ledger rows moved in either direction).
+
+First-hand battery at merged head 69efdb04e553:
+
+- Focused suites: admission-generation assessment 132P;
+  root_admission_identity + idempotency 146P; publication + new pack-collision
+  test 4P; combined 278P.
+- `ruff check .` clean; `ruff format --check .` 3531 files clean;
+  `mypy packages/maistro-core/src/maistro/tasks/admission_generation.py`
+  Success.
+- `check-suite-inventory.py` ok: 21 suites, 34814 identities (grown by
+  develop's #2263 suites; recorded baseline matches the merged tree).
+- exact-debt-ledger job decomposed at CI's exact workflow steps
+  (vulture-ratchet.yml): check-ratchet-provenance (RATCHET_BASE_REV=
+  origin/develop) rc=1 with 8/9 sub-ratchets OK (adr-status-language,
+  citation-status, promotion-surface 430 modules, reachability-dispositions
+  109, shell-execution 3, contract-markers 358, enumerations 1, lifecycle 0)
+  and sole FAIL reachability; check-shipped-surface-truth rc=0;
+  check-vulture-baseline at CI argv rc=0 EXACT 1263=1263, unclassified 0,
+  never_allowlist 0 (base 09d56b6a, candidate 69efdb04e) — the lane's
+  amendment prescription is again empty: zero unbanked identities exist, so
+  quality/vulture-baseline.json has nothing to amend (127th consecutive
+  empty round) and the job's red is solely the reachability sub-ratchet.
+- check-reachability.py rc=1: exactly ONE module NEWLY UNREACHABLE —
+  maistro.tasks.admission_generation (grep count 1); dispositions and
+  promotion-surface rc=0.
+- CI test trio reproduced: test_baseline_matches_the_tree +
+  test_the_committed_baseline_passes_the_gate_it_now_carries +
+  test_the_baseline_is_exactly_the_unreachable_set → 3 failed / 12 passed,
+  pytest's own set diff showing the sole delta
+  'maistro.tasks.admission_generation'.
+- ALL FOUR issue-named regression mutations re-derived and killed first-hand
+  at this head (each applied to the decision-order table, focused suite run,
+  then module restored from a /tmp cp backup — never git restore):
+  (1) TAKEOVER/REPLACE_EXPIRED swapped → 50 failed / 82 passed;
+  (2) lease row moved before the binding row → 14 failed / 118 passed;
+  (3) LEGACY_UNRESOLVED predicate negated (legacy pending treated as v2
+  lease) → 10 failed / 122 passed;
+  (4) mismatch row moved before expiry with no expiry exception →
+  22 failed / 110 passed.
+  Module md5 before/after every mutation: 257a6e45c382349dd12f559099663fbc
+  (identical to rounds 128–129); worktree clean after restore.
+- Scope guards re-proven: grep over packages/*/src finds admission_generation
+  referenced by no production module (the leaf file only); the branch-side
+  three-dot diff touches nothing else under tasks/, runs/ or quality/.
+- Runtime-consumer status (fresh `gh` read this round): PR #2178
+  ([DRAFT][#1845] integration) state=OPEN, draft=false,
+  mergeable=CONFLICTING (with develop's #2263 — the integration branch's own
+  sync, outside this leaf), head 5261e12718ee. Integration still absent
+  upstream.
+- Verdict: unchanged by 130 rounds of evidence — implementation/test
+  readiness proven at the merged head; the sole residual red (reachability
+  sub-ratchet + test trio + downstream Quality/Coverage jobs) is the
+  #1852-mandated newly-unreachable inactive leaf whose every in-leaf remedy
+  (baseline entry, disposition, grant, dummy caller, keep-alive import, gate
+  edit) the issue explicitly prohibits, reserving activation for the #1845
+  integration head landing the reviewed runtime consumer, which must pass
+  the unchanged gates at its final head. The stack stays unmerged per the
+  issue contract. This round's tree change: the develop sync merge plus this
+  note; no code, gate, or quality-ledger file changed.
