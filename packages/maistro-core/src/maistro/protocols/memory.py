@@ -13,6 +13,7 @@ if TYPE_CHECKING:
 
     from maistro.memory.learnings.lifecycle import StageTransition
     from maistro.memory.user_model.types import UserModelFact
+    from maistro.persistence.audit_pages import AuditPage
     from maistro.types.memory import (
         DecaySweep,
         EpisodicMemory,
@@ -560,6 +561,19 @@ class ContextAssemblyPolicy(Protocol):
 @runtime_checkable
 class AuditLog(Protocol):
     """Immutable audit log for boundary crossings."""
+
+    async def get_page(
+        self,
+        *,
+        org_id: str = "",
+        user_id: str | None = None,
+        boundary: str | None = None,
+        denied: bool | None = None,
+        limit: int = 50,
+        cursor: str | None = None,
+    ) -> AuditPage:
+        """Exact-scope keyset page, ordered by timestamp and immutable row ID."""
+        ...
 
     async def log(self, entry: AuditEntry) -> None:
         """Record an audit entry."""

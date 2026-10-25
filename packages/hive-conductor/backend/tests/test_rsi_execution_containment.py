@@ -44,7 +44,8 @@ class TestTheExploit:
         )
 
         assert response.status_code == 400
-        assert "not beneath an authorized root" in response.json()["detail"]
+        # Kind-only public detail (CodeQL py/stack-trace-exposure).
+        assert response.json()["detail"] == "RsiPolicyError: run refused; see server logs"
 
     def test_a_shell_command_is_refused(self, admin_client, tmp_path: Path) -> None:
         """The payload writes a canary. The assertion is that it does not
@@ -97,7 +98,8 @@ class TestTheExploit:
         )
 
         assert response.status_code == 400
-        assert "unknown test profile" in response.json()["detail"]
+        # Kind-only public detail (CodeQL py/stack-trace-exposure).
+        assert response.json()["detail"] == "RsiPolicyError: run refused; see server logs"
 
 
 class TestPathContainment:
@@ -197,6 +199,50 @@ class TestPathContainment:
 
         with pytest.raises(policy.RsiPolicyError, match="git"):
             policy.resolve_repo(str(root / "plain"))
+
+    def test_a_file_beneath_the_root_is_not_a_directory(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from services import rsi_execution_policy as policy
+
+        root = tmp_path / "root"
+        root.mkdir()
+        plain = root / "plain.txt"
+        plain.write_text("not a repo\n", encoding="utf-8")
+        monkeypatch.setattr(policy, "_authorized_roots", lambda: (root.resolve(),))
+
+        with pytest.raises(policy.RsiPolicyError, match="not a directory"):
+            policy.resolve_repo(str(plain))
+
+    def test_startswith_match_that_fails_beneath_check_is_refused(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Defensive break when the CodeQL-visible guard and dual check disagree."""
+        from services import rsi_execution_policy as policy
+
+        root = tmp_path / "root"
+        repo = root / "repo"
+        (repo / ".git").mkdir(parents=True)
+        monkeypatch.setattr(policy, "_authorized_roots", lambda: (root.resolve(),))
+        monkeypatch.setattr(policy, "_beneath_an_authorized_root", lambda *_a, **_k: False)
+
+        with pytest.raises(policy.RsiPolicyError, match="not beneath"):
+            policy.resolve_repo(str(repo))
+
+    def test_dotdot_traversal_out_of_the_root_is_refused(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``realpath`` collapses ``..`` before the startswith guard runs."""
+        from services import rsi_execution_policy as policy
+
+        root = tmp_path / "root"
+        root.mkdir()
+        outside = tmp_path / "outside"
+        (outside / ".git").mkdir(parents=True)
+        monkeypatch.setattr(policy, "_authorized_roots", lambda: (root.resolve(),))
+
+        with pytest.raises(policy.RsiPolicyError, match="not beneath"):
+            policy.resolve_repo(str(root / ".." / "outside"))
 
     def test_no_configured_root_fails_closed(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -371,7 +417,10 @@ class TestTheProfileListingIsTheHonestAnswer:
         response = admin_client.get("/v1/rsi/test-profiles")
 
         assert response.status_code == 500
-        assert "malformed" in response.json()["detail"]
+        # Public detail is kind-only (CodeQL py/stack-trace-exposure); the
+        # policy message stays in the server log.
+        assert "RsiPolicyError" in response.json()["detail"]
+        assert "malformed" not in response.json()["detail"]
 
 
 class TestTheServiceRefusesWhatTheRouteWouldNotSend:

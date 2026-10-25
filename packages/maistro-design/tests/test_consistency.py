@@ -39,6 +39,8 @@ from maistro_design.consistency import (
     Severity,
     SharedDecision,
     TermRule,
+    _contains,
+    _mentions_affirmatively,
     evaluate_project_snapshot,
 )
 
@@ -62,17 +64,17 @@ def _snapshot(**overrides: Any) -> CreativeProjectSnapshot:
         goal_revision="goal-rev-7",
         audience="indie studio founders",
         objective="drive launch-week signups",
-        objective_keywords=(r"sign ?ups?", r"launch"),
+        objective_keywords=("signups", "launch"),
         allowed_claims=(
             ClaimRule(
                 claim_id="turnaround",
-                pattern=r"48-hour turnaround",
+                pattern="48-hour turnaround",
                 source="provided_evidence",
                 evidence_id="ev-turnaround",
             ),
             ClaimRule(
                 claim_id="express-promise",
-                pattern=r"24-hour delivery",
+                pattern="24-hour delivery",
                 source="model_asserted",
             ),
         ),
@@ -80,23 +82,23 @@ def _snapshot(**overrides: Any) -> CreativeProjectSnapshot:
             ContradictionRule(
                 rule_id="rule-turnaround",
                 description="delivery promise conflict",
-                pattern_a=r"24-hour delivery",
-                pattern_b=r"48-hour turnaround",
+                pattern_a="24-hour delivery",
+                pattern_b="48-hour turnaround",
             ),
         ),
-        terminology=(TermRule(preferred="workspace", banned_aliases=(r"\bapp\b",)),),
+        terminology=(TermRule(preferred="workspace", banned_aliases=("app",)),),
         required_messages=(
             RequiredMessage(
                 message_id="cta-signup",
-                pattern=r"start your (free )?trial",
+                pattern="start your free trial",
                 required_in=("*",),
             ),
         ),
         channel_requirements=(
             ChannelRequirement(
                 artifact_kind="poster",
-                required_elements=(r"<title>",),
-                forbidden_elements=(r"lorem ipsum",),
+                required_elements=("<title>",),
+                forbidden_elements=("lorem ipsum",),
             ),
         ),
         accessibility_constraints=(
@@ -106,7 +108,7 @@ def _snapshot(**overrides: Any) -> CreativeProjectSnapshot:
     persona = PersonaSnapshot(
         persona_id="persona-meridian",
         name="Meridian",
-        banned_markers=(r"guaranteed results",),
+        banned_markers=("guaranteed results",),
         required_markers=(),
     )
     d1 = SharedDecision(
@@ -546,11 +548,11 @@ def test_claim_rule_shape_is_enforced() -> None:
     # A provided_evidence claim must name its evidence; an asserted claim must
     # not cite one.
     with pytest.raises(Exception, match="provided_evidence"):
-        ClaimRule(claim_id="no-evidence", pattern=r"anything", source="provided_evidence")
+        ClaimRule(claim_id="no-evidence", pattern="anything", source="provided_evidence")
     with pytest.raises(Exception, match="model_asserted"):
         ClaimRule(
             claim_id="with-evidence",
-            pattern=r"anything",
+            pattern="anything",
             source="model_asserted",
             evidence_id="ev-turnaround",
         )
@@ -563,7 +565,7 @@ def test_claim_rule_shape_is_enforced() -> None:
             "allowed_claims": (
                 ClaimRule(
                     claim_id="orphan",
-                    pattern=r"free trial",
+                    pattern="free trial",
                     source="provided_evidence",
                     evidence_id="does-not-exist",
                 ),
@@ -737,6 +739,113 @@ def test_design_system_compliance_flags_offpalette_colour() -> None:
     assert any("#123456" in f.evidence for f in warnings)
 
 
+def test_local_sibling_contradiction_targets_both_branches() -> None:
+    """Neither sibling is grounded in a consumed decision: the contradiction
+    is purely local. Origin attribution must degrade to LOCAL (never invent
+    a shared decision) and refinement must route both siblings' own branches
+    — the union of the two local closures — in both match orientations."""
+
+    def _flyer(artifact_id: str, promise: str, references: tuple[str, ...]) -> FamilyArtifact:
+        return FamilyArtifact(
+            artifact_id=artifact_id,
+            version=1,
+            kind="social",
+            title=f"Launch {artifact_id}",
+            content=f"Start your free trial. All plans include {promise}.",
+            references=references,
+        )
+
+    for left, right in (
+        ("24-hour delivery", "48-hour turnaround"),  # rule matches forward
+        ("48-hour turnaround", "24-hour delivery"),  # rule matches reversed
+    ):
+        base = _snapshot(d1_statement="All plans include 48-hour turnaround.")
+        snapshot = base.model_copy(
+            update={
+                "artifacts": (
+                    _flyer("flyer_a", left, ()),
+                    _flyer("flyer_b", right, ("flyer_a",)),
+                ),
+                "persona": None,
+                "evidence": (),
+            }
+        )
+        evaluation = evaluate_project_snapshot(snapshot)
+
+        sibling_errors = errors_by_dimension(evaluation, ConsistencyDimension.SIBLING_CONTRADICTION)
+        assert len(sibling_errors) == 1
+        finding = sibling_errors[0]
+        assert finding.origin is FindingOrigin.LOCAL
+        assert finding.decision_id is None
+        assert finding.affected_decision_ids == ()
+        # Both siblings' own branches — the union of two local closures.
+        assert set(finding.affected_artifact_ids) == {"flyer_a", "flyer_b"}
+
+        assert evaluation.refinement is not None
+        assert evaluation.refinement.root_cause is FindingOrigin.LOCAL
+        assert evaluation.refinement.shared_decision_ids == ()
+        assert target_ids(evaluation) == ["flyer_a", "flyer_b"]
+        assert all(not t.requires_unlock for t in evaluation.refinement.targets)
+
+
+def test_locked_decision_requires_unlock_on_consumers_only() -> None:
+    """Lock state flows to refinement targets through consumption edges: an
+    unlocked artifact that consumes a locked decision still requires an
+    explicit unlock, while a dependent that merely references a consumer
+    does not."""
+    locked_d1 = SharedDecision(
+        decision_id="D1",
+        version=2,
+        kind="delivery-promise",
+        statement="All plans include 24-hour delivery.",
+        locked=True,
+    )
+    evaluation = evaluate_project_snapshot(
+        _snapshot(decisions=(locked_d1, _snapshot().decisions[1]))
+    )
+
+    # The locked decision's consumers are reported, never silently rewritten.
+    locked = [
+        f for f in evaluation.findings if f.dimension is ConsistencyDimension.LOCKED_DECISIONS
+    ]
+    assert {f.artifact_id for f in locked} == {"poster", "social_copy", "landing_hero"}
+    assert {f.decision_id for f in locked} == {"D1"}
+
+    assert evaluation.refinement is not None
+    targets = {t.artifact_id: t for t in evaluation.refinement.targets}
+    # Consumers of the locked decision require an explicit unlock even though
+    # the artifacts themselves are not locked.
+    for consumer in ("poster", "social_copy"):
+        assert targets[consumer].locked is False
+        assert targets[consumer].requires_unlock is True
+    # The hero is locked in its own right (artifact lock, not just decision).
+    assert targets["landing_hero"].locked is True
+    assert targets["landing_hero"].requires_unlock is True
+    # promo_banner only references a consumer — its branch is freely refinable.
+    assert targets["promo_banner"].locked is False
+    assert targets["promo_banner"].requires_unlock is False
+    # website_copy consumes D2 and shares no defect with the D1 closure.
+    assert "website_copy" not in targets
+
+
+def test_target_reason_merges_every_finding_touching_the_artifact() -> None:
+    """One artifact hit by several errors (its own persona violation, the
+    shared decision defect and its accessibility miss) is proposed once, with
+    one reason per finding and exactly those finding ids attached."""
+    evaluation = evaluate_project_snapshot(_snapshot())
+
+    assert evaluation.refinement is not None
+    poster = next(t for t in evaluation.refinement.targets if t.artifact_id == "poster")
+    touching = [
+        f
+        for f in evaluation.findings
+        if f.severity is Severity.ERROR and "poster" in f.affected_artifact_ids
+    ]
+    assert len(touching) >= 2, "the planted snapshot gives poster several distinct errors"
+    assert poster.finding_ids == tuple(sorted(f.finding_id for f in touching))
+    assert poster.reason == "; ".join(f.evidence for f in touching)
+
+
 def test_clean_project_passes_every_dimension() -> None:
     base = _snapshot()
     fixed_decision = SharedDecision(
@@ -748,7 +857,7 @@ def test_clean_project_passes_every_dimension() -> None:
     persona = PersonaSnapshot(
         persona_id="persona-meridian",
         name="Meridian",
-        banned_markers=(r"guaranteed results",),
+        banned_markers=("guaranteed results",),
     )
     fixed_poster = base.artifacts[0].model_copy(
         update={
@@ -969,3 +1078,60 @@ async def test_retry_after_refinement_preserves_failed_evaluation_record() -> No
     assert preserved_result is not None
     assert preserved_result["passed"] is False
     assert preserved_result["evaluation"]["provenance"]["decision_versions"]["D1"] == 2
+
+
+def test_untrusted_markers_are_matched_as_literals() -> None:
+    """Snapshot markers must not be compiled as caller-controlled regexes.
+
+    A pattern like ``a+`` must match the two characters ``a+`` in content, not
+    one-or-more ``a``. Metacharacters arriving from the Design Studio HTTP body
+    (or the graph node) are escaped before search.
+    """
+    assert _contains("a+", "xaa+yy") is True
+    assert _contains("a+", "xaaayy") is False
+    assert _contains(".*", "literal.*here") is True
+    assert _contains(".*", "anything else") is False
+    # Affirmative mention uses the same literal compile path.
+    assert _mentions_affirmatively("app?", "ship the app? today") is True
+    assert _mentions_affirmatively("app?", "ship the app today") is False
+
+
+def test_ci_safe_marker_with_regex_metacharacters_does_not_widen_findings() -> None:
+    """A planted ``.*`` banned marker must not match every artifact."""
+    base = _snapshot(d1_statement="All plans include 48-hour turnaround.")
+    persona = base.persona.model_copy(update={"banned_markers": (".*",)})
+    # Strip the planted local persona ban and required-message noise so the
+    # only possible finding would be a regex-wildcard match on ``.*``.
+    brief = base.brief.model_copy(
+        update={
+            "required_messages": (),
+            "channel_requirements": (),
+            "contradiction_rules": (),
+            "terminology": (),
+            "objective_keywords": (),
+            "allowed_claims": (),
+            "accessibility_constraints": (),
+        }
+    )
+    clean_artifacts = tuple(
+        a.model_copy(
+            update={
+                "content": (
+                    '<html lang="en"><title>Ok</title><body>'
+                    '<img src="x.png" alt="x"><p>Start your free trial.</p>'
+                    "</body></html>"
+                )
+            }
+        )
+        if a.kind == "poster"
+        else a.model_copy(update={"content": "Start your free trial. workspace."})
+        for a in base.artifacts
+    )
+    snap = base.model_copy(
+        update={"persona": persona, "brief": brief, "artifacts": clean_artifacts, "evidence": ()}
+    )
+    evaluation = evaluate_project_snapshot(snap)
+    persona_hits = [
+        f for f in evaluation.findings if f.dimension is ConsistencyDimension.PERSONA_VOICE
+    ]
+    assert persona_hits == [], persona_hits

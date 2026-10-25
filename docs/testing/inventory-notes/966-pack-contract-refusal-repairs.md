@@ -1,9 +1,27 @@
----
-inventory-delta:
-  packages/maistro-core/tests: +6
----
 
 # 966 repair round — publisher-slug grammar and non-finite rubric numbers
+
+> **Develop-line round, folded into `966-installable-pack-contracts.md` by the
+> 2026-10 develop sync.** In the merged tree the surviving coverage is counted
+> in the main note's `inventory-delta` (+125 → +133), so this note carries **no
+> delta block**:
+> - `test_hyphenated_publisher_slug_is_accepted` — subsumed by the main
+>   branch's grammar, where the publisher half reuses `_PUBLISHER_RE`
+>   (`^[a-z0-9][a-z0-9._-]*$`) and the name segment allows hyphens too
+>   (`test_publisher_slugs_allowed_by_manifests_can_publish` pins
+>   `pub-1.my_pack` and the dotted `a.b.my_pack`; the two-segment split and
+>   this round's `pack_id name segment must be a slug` refusal were not
+>   kept).
+> - `test_non_finite_rubric_numbers_are_rejected` — subsumed: the main
+>   branch's `test_rubric_payload_is_rejected_fail_closed` covers the same
+>   `_require_finite_number` guard including the bool arm and the
+>   weight/pass_value/gate numbers.
+> - The graph-node missing-keys, literal-integer manifest version, rubric
+>   revalidation, and install-order resolution repairs from the later
+>   rounds below survive as behavior; the main branch pins them with its own
+>   message text (`graph node missing required keys: …`,
+>   `unsupported manifest_version:`, pydantic `ValidationError`), and the
+>   install-order regression is ported verbatim.
 
 Follow-up to `966-installable-pack-contracts.md` (same module,
 `packages/maistro-core/src/maistro/extensions/packs.py`): two P1 review

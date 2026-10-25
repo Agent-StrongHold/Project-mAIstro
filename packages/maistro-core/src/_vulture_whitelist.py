@@ -27,6 +27,7 @@ from maistro.cli._backlog import cutover as backlog_cutover_command
 from maistro.cli._backlog import import_cmd as backlog_import_command
 from maistro.cli._backlog import revert as backlog_revert_command
 from maistro.cli._connectors import connectors_describe, connectors_verify
+from maistro.cli._extension_authoring import extension_new
 from maistro.cli._extensions import (
     extensions_certify,
     extensions_compat,
@@ -54,6 +55,11 @@ from maistro.extensions.compat import (
 )
 from maistro.extensions.context import ExtensionCancellation, ExtensionConfigView, ExtensionContext
 from maistro.extensions.effective_authority import EffectiveAuthority
+from maistro.extensions.health import (
+    ExtensionHealthService,
+    ExtensionHealthStore,
+    InMemoryExtensionHealthStore,
+)
 from maistro.extensions.host import ExtensionHost
 from maistro.extensions.isolation import SandboxViolationLog
 from maistro.extensions.metering import (
@@ -62,12 +68,23 @@ from maistro.extensions.metering import (
     ExtensionUsageEvent,
 )
 from maistro.extensions.packs import InstallablePackRegistry
+from maistro.extensions.quarantine import (
+    ActorKind,
+    AdmissionDecision,
+    ExtensionGovernanceService,
+    GovernanceDecision,
+    InFlightDisposition,
+)
 from maistro.extensions.resolution import LockState
-from maistro.extensions.service import ExtensionInstallService
+from maistro.extensions.sqlite_health_store import SqliteExtensionHealthStore
 from maistro.extensions.sqlite_store import SqliteExtensionInstallStore
 from maistro.extensions.store import (
     ExtensionInstallStore,
     InMemoryExtensionInstallStore,
+)
+from maistro.extensions.tenancy import (
+    ScopeBoundExtensionState,
+    TenantScopedExtensionState,
 )
 from maistro.extensions.tool_skill.registration import ExtensionToolCatalog
 from maistro.extensions.ui import (
@@ -75,6 +92,13 @@ from maistro.extensions.ui import (
     RenderedComponent,
     SandboxPolicy,
     UiProjectionService,
+)
+from maistro.goals.reconciliation.model import WakeReason
+from maistro.goals.reconciliation.reconciler import ReconciliationOutcome
+from maistro.goals.reconciliation.store import (
+    GoalReconciliationStore,
+    InMemoryGoalStore,
+    SqliteGoalStore,
 )
 from maistro.governance.promotion import PromotionContract, PromotionLedger
 from maistro.graph.harness_targets import HarnessEvolutionProposal, HarnessTargetKind
@@ -93,12 +117,20 @@ from maistro.ontology.rubric import (
     RubricScale,
     RubricSemantic,
 )
+from maistro.persistence.pg_audit import PgAuditLog
+from maistro.persistence.sqlite_audit import SqliteAuditLog
 from maistro.projects.rubric_store import RubricStore
+from maistro.protocols.memory import AuditLog
+from maistro.runs import AdmissionAssessment  # published surface, not the submodule
 from maistro.runs.model import EvalJudge, EvalMethod, RunEvalScore
 from maistro.runs.pg_store import PgRunStore
 from maistro.runs.scoped_reads import ScopedRunReader
 from maistro.runs.sqlite_store import SqliteRunStore
 from maistro.runs.store import InMemoryRunStore, RunStore
+from maistro.security.sentinel.audit import InMemoryAuditLog
+from maistro.security.sentinel.delegation import InMemoryDelegationAuthority
+from maistro.security.strikes import InMemoryStrikeTracker
+from maistro.skills.parser import SKILL_SECURITY_SCAN_VERSION
 from maistro.state import PersistedStore
 from maistro.workspaces.campaigns.model import (
     Actor,
@@ -130,6 +162,14 @@ _VULTURE_REFERENCES = (record_exception, set_status_on_exception)
 # safe at name level.
 latest_by_dimension = "latest_by_dimension"
 
+# Root-admission envelope snapshot fields (#1851, parent #1845). Frozen-dataclass
+# instance attributes like latest_by_dimension above: a class-object reference
+# would not typecheck, so they are named through these module variables instead.
+# The names are distinctive enough to be safe at name level.
+receipt_snapshot = "receipt_snapshot"
+provenance_snapshot = "provenance_snapshot"
+format_version = "format_version"
+
 _VULTURE_WHITELIST = (
     # P0.1 identity split (#53): Principal is always importable; crypto and lifecycle
     # symbols load through __getattr__ and ConductorSeed's public API.
@@ -160,6 +200,14 @@ _VULTURE_WHITELIST = (
     # this `packages/*/src` scan does not walk.
     Container.run_reader,
     ScopedRunReader.get_runs,
+    # Audit cursor reads (#358) are called through AuditLog by Hive's
+    # backend/services/audit_bridge.py::page_core_audit_entries. That real
+    # consumer lies outside the packages/*/src scan. Preserve the protocol
+    # and all three Container-bound adapters, not a list-and-slice fallback.
+    AuditLog.get_page,
+    PgAuditLog.get_page,
+    SqliteAuditLog.get_page,
+    InMemoryAuditLog.get_page,
     # --- #102 backlog work-source (maistro.backlog) -----------------------
     # Pydantic invokes these field/model validators at runtime; static import
     # scanning cannot see decorator-based dispatch (same shape as
@@ -358,6 +406,29 @@ _VULTURE_WHITELIST = (
     RubricStore.instantiate_from_catalog,
     RubricStore.record_run_binding,
     RubricStore.binding_for_run,
+    # Root-admission identity contracts (#1851, parent #1845): the inactive
+    # contract leaf ships the types first, and production activation is a
+    # separately scoped #1845 integration step — no scanned call site reads
+    # these names yet, the exact "contract ships first by design" posture of
+    # CampaignSelector and the learning lifecycle above. The snapshot fields
+    # are validated by name in __post_init__ (a getattr loop the scanner
+    # cannot see through) and consumed by the future admission backend; they
+    # are named through the module variables above. format_version is the
+    # decoder discriminator every record stamps via field(init=False). The
+    # StrEnum members are the prospective C2 assessment vocabulary — serialized
+    # values that need not appear as static reads, the same posture as the
+    # HarnessTargetKind and EvalMethod members above. This is scanner input
+    # only (this module never executes and ships in no wheel); it is not a
+    # caller of the contract and wires nothing.
+    receipt_snapshot,
+    provenance_snapshot,
+    format_version,
+    AdmissionAssessment.MISMATCH,
+    AdmissionAssessment.REPLAYED,
+    AdmissionAssessment.PENDING,
+    AdmissionAssessment.TAKEOVER,
+    AdmissionAssessment.REPLACE_EXPIRED,
+    AdmissionAssessment.LEGACY_UNRESOLVED,
     # The one governed promotion contract (M4-A9, #116; ADR/SPEC-100126-a9c4).
     # The contract ships first by design, the same posture as
     # CampaignSelector and the learning lifecycle above: its in-tree consumers
@@ -421,6 +492,7 @@ _VULTURE_WHITELIST = (
     ExtensionInstallStore.all_installs,
     InMemoryExtensionInstallStore.all_installs,
     SqliteExtensionInstallStore.all_installs,
+    extension_new,
     extensions_history,
     extensions_preflight,
     extensions_show,
@@ -444,6 +516,19 @@ _VULTURE_WHITELIST = (
     extensions_lock,
     extensions_explain,
     LockState.identity_keys,
+    # Extension operational evidence (M9-I3, #978). `record_observation` is
+    # the HOST's invocation seam — health evidence is canonical precisely
+    # because extensions cannot reach it; the invocation hosts that call it
+    # land with the M9-E connector/adapter and M9-G sandbox runs. The store
+    # twins' `append_error` records standalone classified failures (loader,
+    # policy, platform) that are not tied to one invocation; its in-tree
+    # consumers are the conformance suite
+    # (packages/maistro-core/tests/extensions/). Same
+    # contract-ships-first posture as the M9-B1/M9-C2 seams above.
+    ExtensionHealthService.record_observation,
+    ExtensionHealthStore.append_error,
+    InMemoryExtensionHealthStore.append_error,
+    SqliteExtensionHealthStore.append_error,
     # Third-party tool/Skill contracts (M9-E3, #964): the host catalog's
     # exposure and Binding seams are consumed by the products that embed
     # maistro-core (model-facing tool surface, workspace binding flows), not
@@ -499,6 +584,24 @@ _VULTURE_WHITELIST = (
     ExternalAgentRegistry.refresh_descriptor,
     ExternalAgentRegistry.report_availability,
     ExternalAgentRegistry.eligible_specialists,
+    # Tenant-scoped extension runtime state (#971, M9-G3). Configuration is
+    # served over the operator API (GET/PUT /v1/extensions/state); the cache
+    # and checkpoint namespaces are the host/runtime substrate — the
+    # activation substrate (M9-B2's ExtensionCodeLoader hosts) and the
+    # quarantine flow (#972) bind them through
+    # ExtensionInstallService.extension_state, so their in-tree callers are
+    # the cross-tenant noninterference suites
+    # (packages/maistro-core/tests/extensions/test_org_workspace_policy.py)
+    # until those hosts land. Same contract-ships-first posture as the store
+    # seams above.
+    ScopeBoundExtensionState.delete_config,
+    ScopeBoundExtensionState.cache_set,
+    ScopeBoundExtensionState.cache_get,
+    ScopeBoundExtensionState.cache_delete,
+    ScopeBoundExtensionState.checkpoint_save,
+    ScopeBoundExtensionState.checkpoint_load,
+    ScopeBoundExtensionState.checkpoint_names,
+    TenantScopedExtensionState.clear_scope,
     # Pre-publication extension certification (M9-H3, #975). The
     # `maistro extensions certify` / `verify-certification` commands are
     # typer-dispatched like the lock commands above: their production caller
@@ -531,14 +634,6 @@ _VULTURE_WHITELIST = (
     # conformance suites in packages/maistro-core/tests/extensions/ — the
     # same contract-ships-first posture as the M9-B1 store seams above.
     SandboxViolationLog.violations_for,
-    # Effective-authority evidence linkage (M9-G1, #969). `with_execution_context`
-    # pins a computed intersection to canonical Run evidence (run/node-run/attempt
-    # ids) without mutating the digest-anchored result; its consumers are the
-    # Invocation/Run wiring that lands with the M9-G2/G3 enforcement and policy
-    # issues. Until then its callers are the conformance suite
-    # (packages/maistro-core/tests/extensions/test_effective_authority.py) — the
-    # same contract-ships-first posture as the seams above.
-    EffectiveAuthority.with_execution_context,
     # Installable domain-pack contracts (M9-F1, #966). The pack contract
     # ships first by design, the same posture as the M9-B1 store seams and
     # the M9-D1 registry above: its in-tree consumers are the conformance
@@ -554,18 +649,99 @@ _VULTURE_WHITELIST = (
     InstallablePackRegistry.instantiate_graph,
     InstallablePackRegistry.instantiate_persona,
     InstallablePackRegistry.instantiate_rubric,
-    # Extension post-install lifecycle decisions (M9, #954). The operator
-    # decisions — re-enabling a disabled version and pinning/unpinning the
-    # active version — are enforced by the service state machine and exercised
-    # by the lifecycle suite
-    # (packages/maistro-core/tests/extensions/test_post_install_lifecycle.py)
-    # and the #981 proof harness (scripts/extension_lifecycle_proof.py); the
-    # operator-facing route/CLI surfaces that call them land with later M9
-    # issues, so no scanned src call site exists yet. disable/rollback/remove
-    # survive the scan today only through unrelated name collisions
-    # (`disable` locals in maistro.scheduling, `conn.rollback()` and
-    # `list.remove()`), which is not protection — but only the two unshadowed
-    # verbs are named here, as the reviewed public API they are.
-    ExtensionInstallService.enable,
-    ExtensionInstallService.set_pinned,
+    # Effective-authority evidence linkage (M9-G1, #969). `with_execution_context`
+    # pins a computed intersection to canonical Run evidence (run/node-run/attempt
+    # ids) without mutating the digest-anchored result; its consumers are the
+    # Invocation/Run wiring that lands with the M9-G2/G3 enforcement and policy
+    # issues. Until then its callers are the conformance suite
+    # (packages/maistro-core/tests/extensions/test_effective_authority.py) — the
+    # same contract-ships-first posture as the seams above.
+    EffectiveAuthority.with_execution_context,
+    # Extension quarantine/suspension (M9-G4, #972). The governance service is
+    # the single admission gate and the only writer of suspension state; hosts
+    # call it from their invocation seams and consume decisions
+    # (`AdmissionDecision.governing_state`), leases, and the TERMINATE
+    # disposition policy; the EXTENSION actor kind exists to be refused. Its
+    # in-tree callers are the quarantine suite
+    # (packages/maistro-core/tests/extensions/test_extension_quarantine.py)
+    # until host wiring lands — the same contract-ships-first posture.
+    ExtensionGovernanceService.begin_invocation,
+    ExtensionGovernanceService.finish_invocation,
+    ExtensionGovernanceService.disable_version,
+    ExtensionGovernanceService.quarantine_package,
+    ExtensionGovernanceService.quarantine_publisher,
+    ExtensionGovernanceService.re_enable_version,
+    ExtensionGovernanceService.re_enable_package,
+    ExtensionGovernanceService.re_enable_publisher,
+    AdmissionDecision.governing_state,
+    GovernanceDecision.suspended,
+    ActorKind.EXTENSION,
+    InFlightDisposition.TERMINATE,
+    # Strike-tracker admin verb (M3 lockout ladder, #134). The protocol
+    # (maistro.protocols.strikes) deliberately keeps `enable` off the DI seam:
+    # it "exist[s] on the in-memory implementation and [is] admin surface
+    # reached through other paths", and no operator console exists yet
+    # (types/config.py strike_tracking_enabled documents the missing recovery
+    # path). The durable twins carry reviewed ledger grants (#1172:
+    # PgStrikeTracker.enable, StrikeRecoveryService.enable -- consumers outside
+    # the packages/*/src scan); the in-memory verb is the same reviewed public
+    # admin API, so it is named here as retained surface rather than banked as
+    # unclassified debt.
+    InMemoryStrikeTracker.enable,
+    # Goal reconciliation control-plane mechanics (M3-D2, #806). These are
+    # control metadata, not an execution authority: the canonical work they
+    # name is still admitted as Goal -> Graph -> Run -> NodeRun -> Attempt.
+    # The two Container ticks are operator-scheduled by ADR-019's
+    # bounded/idempotent/never-self-starting pattern (the same shape as
+    # recover_stranded_chat_admissions above), so no scanned in-package call
+    # site drives them; the issue's activation composition is #805/#804's
+    # wiring round. The store methods are the control-plane port and its two
+    # durable twins, exercised by the three-backend reconciliation suite
+    # (packages/maistro-core/tests/goals/) rather than by package-local code.
+    # WakeReason.SAFETY_SWEEP is the serialized reason the bounded sweep
+    # records; ReconciliationOutcome's two fields are the inspectable
+    # "skipped a sleeping Goal" / "slept into this status" evidence callers
+    # assert on. Named here as reviewed retained surface, not banked as new
+    # vulture debt (a ledger floor-raise needs a separately landed grant).
+    Container.sweep_goal_leases,
+    Container.reconcile_goals,
+    GoalReconciliationStore.cancel_goal,
+    InMemoryGoalStore.cancel_goal,
+    SqliteGoalStore.cancel_goal,
+    GoalReconciliationStore.reconciliation_view,
+    InMemoryGoalStore.reconciliation_view,
+    SqliteGoalStore.reconciliation_view,
+    WakeReason.SAFETY_SWEEP,
+    ReconciliationOutcome.skipped_asleep,
+    ReconciliationOutcome.slept_as,
+    # Host-authorized delegation seam (#845): the grant mutation entry point
+    # is consumed by the host and operator tooling outside this
+    # packages/*/src scan (the shipped composition wires the durable authority
+    # in maistro.security.sentinel.delegation_durable, whose async
+    # ``add_host_grant`` provisions the same store); it is reviewed public
+    # surface, not dead code. The execution-mode resolver this row used to
+    # name moved to the hive-conductor adapter (services/execution_mode.py),
+    # which the scan does not walk.
+    InMemoryDelegationAuthority.add_host_grant,
+    # Installable domain-pack contracts (M9-F1, #966). The pack contract
+    # ships first by design, the same posture as the M9-B1 store seams and
+    # the M9-D1 registry above: its in-tree consumers are the conformance
+    # suite (packages/maistro-core/tests/extensions/test_pack_contracts.py),
+    # and the Workspace-scoped activation/configuration lifecycle that drives
+    # these verbs in production is M9-F3 (#968). `activate` is the disable
+    # gate's reversal (new use only — nothing was deleted; named activate,
+    # not enable, so the scanner's name-level matching cannot un-bank the
+    # unrelated security-store `enable` rows); the three `instantiate_*`
+    # methods are the gated instantiation entrypoints that compose the
+    # module-level pure functions behind the registry's active check.
+    InstallablePackRegistry.activate,
+    InstallablePackRegistry.instantiate_graph,
+    InstallablePackRegistry.instantiate_persona,
+    InstallablePackRegistry.instantiate_rubric,
+    # #288 scan-surface provenance: `security_scan` (maistro.skills.parser) is a
+    # public content scanner, but its policy-version identity is surfaced only
+    # by the HTTP scan route (packages/hive-conductor/backend/routes/skills.py),
+    # which this packages/*/src scan does not walk. Whitelist the identity, not
+    # a stub -- the route names the rule set a `clean` verdict was judged by.
+    SKILL_SECURITY_SCAN_VERSION,
 )

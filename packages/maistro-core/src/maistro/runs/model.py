@@ -42,10 +42,47 @@ def _validate_finished_at(
         raise ValueError(f"non-terminal {subject} cannot have finished_at")
 
 
-def _serialize_attempt_without_unknown_cause(
+def _validate_identity_projection(run: Run) -> None:
+    """The explicit identity facts, when present, are non-empty and coherent (#1152).
+
+    ``acting_principal_id`` is the identity accounting attributes to, so a Run
+    whose ``actor_principal_id`` projects a different acting identity is
+    internally contradictory and refused rather than silently re-projected.
+    """
+    for field_name in ("initiating_principal_id", "acting_principal_id"):
+        value = getattr(run, field_name)
+        if value is not None:
+            _require_non_empty(value, field_name)
+    if (
+        run.actor_principal_id is not None
+        and run.acting_principal_id is not None
+        and run.actor_principal_id != run.acting_principal_id
+    ):
+        raise ValueError("actor_principal_id must project acting_principal_id")
+
+
+def _project_historical_actor(run: Run) -> None:
+    """Backfill the explicit facts on rows that only carried ``actor_principal_id``.
+
+    Historical rows remain readable, while new delegated rows carry both
+    explicit facts from admission (#1152).
+    """
+    if run.acting_principal_id is None and run.actor_principal_id is not None:
+        object.__setattr__(run, "acting_principal_id", run.actor_principal_id)
+    if run.initiating_principal_id is None and run.acting_principal_id is not None:
+        object.__setattr__(run, "initiating_principal_id", run.acting_principal_id)
+
+
+# Unannotated return, deliberately: pydantic derives the serialization-mode
+# JSON schema for a model with a wrap serializer from that serializer's return
+# annotation, so ``-> dict[str, Any]`` collapses Attempt's serialization schema
+# to ``{"type": "object", "additionalProperties": true}`` and hides every
+# field from schema consumers. Unannotated, pydantic keeps the declared fields;
+# mypy strict's no-untyped-def is suppressed for exactly this one site.
+def _serialize_attempt_without_unknown_cause(  # type: ignore[no-untyped-def]
     self: Attempt,
     handler: SerializerFunctionWrapHandler,
-) -> dict[str, Any]:
+):
     """Omit exactly one serialized key -- the unknown cancellation cause.
 
     Every pre-existing Attempt has ``cancellation_cause`` unknown, and the
@@ -297,7 +334,13 @@ class Run(BaseModel):
     parent_run_id: str | None = None
     parent_node_run_id: str | None = None
     persona_id: str | None = None
+    # ``actor_principal_id`` is retained as a read-compatible projection for
+    # older rows. New admissions populate the explicit initiating/acting facts
+    # from RunAuthorization rather than accepting caller text as accounting
+    # identity (#1152).
     actor_principal_id: str | None = None
+    initiating_principal_id: str | None = None
+    acting_principal_id: str | None = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     started_at: datetime | None = None
@@ -310,6 +353,15 @@ class Run(BaseModel):
     #: default so that task Runs, graph Runs and every Run recorded before this
     #: field existed keep exactly the retention they already had.
     retention_expires_at: datetime | None = None
+    #: The Goal this Run works on, bound at admission as immutable provenance
+    #: (#1572): `goal_id` names the canonical Goal (`maistro.goals`) and
+    #: `goal_revision` pins the exact desired state the Run was admitted
+    #: against. Historical Runs keep the revision they used — a later revision
+    #: supersedes but never rewrites them — and neither field is writable after
+    #: admission: no store API takes them, so only ``create_run`` sets them.
+    #: ``None`` on both is a Run with no Goal; exactly one set is invalid.
+    goal_id: str | None = None  # noqa: V107
+    goal_revision: int | None = Field(default=None, ge=1)  # noqa: V107
     result: Any | None = None
     error: str | None = None
 
@@ -319,9 +371,18 @@ class Run(BaseModel):
         _require_non_empty(self.project_id, "project_id")
         if self.actor_principal_id is None or not self.actor_principal_id.strip():
             raise ValueError("actor_principal_id is required")
+        _validate_identity_projection(self)
+        _project_historical_actor(self)
         self._validate_scope_identity()
         if self.parent_run_id == self.run_id:
             raise ValueError("Run cannot be its own parent")
+        if (self.goal_id is None) != (self.goal_revision is None):
+            raise ValueError(
+                "Run Goal binding must be paired: goal_id and goal_revision are "
+                "set or cleared together"
+            )
+        if self.goal_id is not None and not self.goal_id.strip():
+            raise ValueError("goal_id must be a non-empty string when bound")
         _validate_finished_at(
             terminal=self.status in TERMINAL_RUN_STATUSES,
             finished_at=self.finished_at,
@@ -334,6 +395,11 @@ class Run(BaseModel):
             raise ValueError("Run and Graph snapshot must belong to the same Workspace")
         if self.graph.project_id != self.project_id:
             raise ValueError("Run and Graph snapshot must belong to the same Project")
+
+    @property
+    def accounting_principal_id(self) -> str | None:
+        """The acting identity, never a separately supplied accounting id."""
+        return self.acting_principal_id or self.actor_principal_id
 
 
 class ExecutionLease(BaseModel):
@@ -457,6 +523,11 @@ class NodeRun(BaseModel):
     started_at: datetime | None = None
     finished_at: datetime | None = None
     accepted_outcome: AcceptedNodeOutcome | None = None
+    #: Durable key/value provenance recorded beside the lifecycle evidence —
+    #: explore-wave thesis identity (M7-A8) lives here, not in prompt text and
+    #: not in any client-side candidate list. Written at NodeRun creation and
+    #: only ever extended by contract-checked writers afterwards.
+    provenance: dict[str, Any] = Field(default_factory=dict)
     result: Any | None = None
     error: str | None = None
 

@@ -36,9 +36,11 @@ from routes import (
     dashboard_layout,
     eval_judge,
     feedback,
+    goals,
     harness,
     health,
     hitl,
+    home,
     install,
     mcp,
     memory,
@@ -107,7 +109,10 @@ def _include_optional_router(
         module = import_module(module_name)
         app.include_router(module.router, prefix=prefix)
     except Exception as exc:
-        state[module_name] = f"{type(exc).__name__}: {exc}"
+        # /health returns this string to browsers (CodeQL
+        # py/stack-trace-exposure). Keep the kind only; full import text
+        # stays in the warning log and audit detail below.
+        state[module_name] = f"{type(exc).__name__}: router failed to mount; see server logs"
         _log.warning(
             "optional_router_unavailable: module=%s error=%s",
             module_name,
@@ -127,7 +132,10 @@ def _include_optional_router(
                 "optional_router_degraded",
                 "system",
                 target=module_name,
-                detail={"error": state[module_name]},
+                detail={
+                    "error": state[module_name],
+                    "cause": f"{type(exc).__name__}: {exc}",
+                },
                 severity="warning",
             )
         except Exception as audit_exc:
@@ -383,6 +391,10 @@ def create_app() -> FastAPI:
     app.include_router(backlog.router)
     app.include_router(workspaces.router, prefix="/v1/workspaces")
     app.include_router(attention.router, prefix="/v1/workspaces")
+    # Workspace Home (#1048): same /v1/workspaces prefix as Attention, so the
+    # route-permissions registry's existing entry covers it — no new prefix,
+    # no new exemption.
+    app.include_router(home.router, prefix="/v1/workspaces")
     app.include_router(mcp.router, prefix="/v1/mcp")
     app.include_router(cli.router, prefix="/v1/cli")
     app.include_router(containers.router, prefix="/v1/containers")
@@ -399,6 +411,13 @@ def create_app() -> FastAPI:
     app.include_router(dags.router, prefix="/v1/dags")
     app.include_router(dashboard_layout.router)
     app.include_router(dag_runs.router, prefix="/v1/dag-runs")
+    # M3 #65: the Goal-centric inspection layer, mounted under the already-
+    # declared /v1/workspaces prefix (the Home #1048 / Attention #1049 mount)
+    # rather than a new /v1/goals prefix the route-permission registry would
+    # have to re-review. Read-only — runs listed, identified, and controlled
+    # only through the /v1/dag-runs seam above, so the Goal view can never
+    # become a second run or Goal authority.
+    app.include_router(goals.router, prefix="/v1/workspaces")
     # Phase 5 Signal #4: thumbs feedback piggybacks on /v1/dag-runs path
     # space so the SSE stream + feedback live together for the client.
     app.include_router(feedback.router, prefix="/v1/dag-runs")
