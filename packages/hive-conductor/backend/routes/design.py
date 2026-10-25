@@ -105,48 +105,18 @@ def _require_store() -> Any:
     service returns ``None`` for a disabled store during startup and older
     callers can still expose its initialization ``RuntimeError``; normalize
     both forms to the same explicit unavailable response.
-
-    When startup recorded a store cause (#1826), that sanitized failure is the
-    answer — a configured database whose engine would not build must not be
-    reported with the same words as one nobody named, and not as a durable
-    success either.
     """
-    status = get_design_status()
     try:
         store = get_design_store()
     except RuntimeError as exc:
-        # Startup degraded before it could build the store. Its recorded cause
-        # is the truth; a ready service with no cause is the deliberate
-        # no-database mode (#1826); anything else is a service that never
-        # started, and the initialization error is the honest answer for it.
-        if status.store_cause:
-            raise HTTPException(
-                status_code=503,
-                detail=f"Design persistence unavailable: {status.store_cause}",
-            ) from None
-        if status.ready:
-            raise HTTPException(
-                status_code=503,
-                detail="Design persistence unavailable (no database URL configured)",
-            ) from None
         raise HTTPException(
             status_code=503,
             detail=f"Design persistence unavailable: {exc}",
         ) from None
     if store is None:
-        # Two ways to be here (#1826): nothing configured -- the supported
-        # no-database mode -- or a URL that was configured and failed. The
-        # second carries its own recorded, sanitized cause, and answering it
-        # with "DATABASE_URL not set" is exactly the conflation that kept a
-        # broken deployment indistinguishable from a deliberate one.
-        if status.store_cause:
-            raise HTTPException(
-                status_code=503,
-                detail=f"Design persistence unavailable: {status.store_cause}",
-            )
         raise HTTPException(
             status_code=503,
-            detail="Design persistence unavailable (no database URL configured)",
+            detail="Design persistence unavailable (DATABASE_URL not set)",
         )
     return store
 
@@ -416,46 +386,6 @@ async def create_render_job(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Render job creation failed: {e!s}") from None
-
-
-@router.post("/projects/{project_id}/consistency")
-async def evaluate_project_consistency(
-    project_id: str, snapshot: CreativeProjectSnapshot
-) -> dict[str, Any]:
-    """Inspect one creative family for cross-artifact consistency (#779).
-
-    The Design Studio submits the project's frozen snapshot — brief, persona,
-    design system, shared decisions, artifacts and provided evidence as the
-    creative session holds them — and receives the evaluator's full result
-    contract back: per-dimension verdicts, evidence-backed findings, exact
-    brief/decision/artifact versions that were evaluated, and a refinement
-    proposal for the affected branches only. The evaluation is deliberately
-    read-only: it proposes work, it never rewrites the project — canonical
-    DAG/Run logic decides what actually runs, under the user's locks and
-    control mode. The same evaluation is available as the canonical graph node
-    ``design.consistency_eval`` (kind registered in ``maistro_design.nodes``)
-    when it must run inside a Run with NodeRun/Attempt provenance; this route
-    is the Design Studio's synchronous inspection surface over the identical
-    pure evaluator, so both surfaces cannot disagree.
-
-    Body: a ``CreativeProjectSnapshot``. A snapshot naming a different
-    project than the path is refused (400) instead of silently mis-filing the
-    result — the same canonical-provenance guard the graph node applies.
-
-    Returns:
-      The ``ConsistencyEvaluation`` result contract (passed, provenance,
-      dimension_results, findings, refinement).
-    """
-    _require_ready()
-    if snapshot.project_id != project_id:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"snapshot project_id {snapshot.project_id!r} does not match "
-                f"the requested project {project_id!r}"
-            ),
-        )
-    return evaluate_project_snapshot(snapshot).model_dump(mode="json")
 
 
 @router.get("/projects/{project_id}/render/{job_id}")

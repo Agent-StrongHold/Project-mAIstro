@@ -268,12 +268,9 @@ export default function Credentials() {
                   <button
                     type="button"
                     className="btn"
-                    /* The toggle issues the same credentials.write PUT as
-                       save/delete (#373): without the authority it must sit
-                       disabled beside them, not look actionable and 403. */
-                    disabled={!authorization.can(credentialPermission) || saving === row.id}
-                    onClick={() => void setEnabled(row.id, !row.enabled)}
-                    style={{ fontSize: 9 }}
+                    disabled={saving === row.id}
+                    onClick={() => void remove(row.id)}
+                    style={{ fontSize: 12 }}
                   >
                     {row.enabled ? "disable" : "enable"}
                   </button>

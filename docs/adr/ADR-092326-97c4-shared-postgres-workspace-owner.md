@@ -127,15 +127,11 @@ run everywhere.
   maistro-server authorizes in Hive but is not listed in Hive's UI until one
   exists.
 - An import can be interrupted after its canonical `create`, leaving its
-  journal entry at `importing`. Durable recovery quarantines that source without
-  recreating identity or replaying its roster: a later canonical revocation or
-  deletion must win. The source and incomplete journal remain available for the
-  operational recovery owner; they are not silently marked complete. An import
-  interrupted before `create` is also held because absence does not prove that
-  it was never created. The ephemeral development recovery path still resumes.
-  The initial roster copy still holds only a process-local lock, so a concurrent
-  revocation through maistro-server during that first copy remains an open
-  transaction-boundary requirement under #37/#1419.
+  journal entry at `importing`. The next start then replays that row's legacy
+  roster. Any canonical revocation made in that window is lost, and so is a
+  deletion, because a missing Workspace is created again. The roster copy
+  holds a process-local lock only, so a concurrent revocation through
+  maistro-server can also be overwritten while the copy runs.
 - The journal that makes the import idempotent lives in Hive's local state. If
   that state is lost while the mirror rows survive, the next start imports the
   surviving rows again. That could bring back a Workspace deleted from the

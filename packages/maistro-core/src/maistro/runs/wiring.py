@@ -192,7 +192,6 @@ async def wire_execution_spine(
     archive_store: ArchiveStore | None = None,
     prime: bool = True,
     schedule_conn: Any = None,
-    concurrency_limits: RunConcurrencyLimits | None = None,
 ) -> tuple[
     ProjectScopeStore,
     RunStore,
@@ -241,11 +240,6 @@ async def wire_execution_spine(
     store has its own connection (#327). None falls back to `conn`, which is
     only sound for a caller that never writes schedules while another store
     writes, such as the read-only repair CLI.
-
-    `concurrency_limits` are the active root-Run ceilings the Run store
-    enforces (#1182). None reads them from the validated settings, so the
-    ceiling an operator tightened is the one enforced and the one `/health`
-    reports.
     """
     limits = concurrency_limits or RunConcurrencyLimits.configured()
     project_scope_store: ProjectScopeStore

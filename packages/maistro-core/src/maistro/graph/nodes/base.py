@@ -19,7 +19,6 @@ import json
 import time
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime, timedelta
-from enum import StrEnum
 from typing import Any, ClassVar, Generic, Literal, NoReturn, Protocol, TypeVar, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, SerializeAsAny

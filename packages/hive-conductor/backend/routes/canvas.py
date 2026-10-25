@@ -10,7 +10,6 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 from services.canvas_dag import CANVAS_DAG, CanvasHillClimber, visual_quality_eval
 from services.dag_run_inspection import authorized_workspace_ids
-from services.request_principal import require_actor_id
 
 from maistro.capabilities.binding_store import BindingResolutionError
 from maistro.capabilities.invocation import CapabilityUnavailable
@@ -79,7 +78,8 @@ async def _canonical_canvas_run(request: Request, run_id: str) -> Any:
     or missing Run gets one answer so the response never confirms that a Run
     id exists.
     """
-    principal = require_actor_id(request).strip()
+    user = getattr(request.state, "user", None) or {}
+    principal = str(user.get("id") or user.get("username") or "").strip()
     if not principal:
         raise HTTPException(status_code=401, detail="Authentication required")
 

@@ -114,8 +114,6 @@ from maistro.runs.sources import (
 )
 from maistro.runs.store import DuplicateOccurrence, RunIntegrityError
 from maistro.scheduling.engine import (
-    DEFAULT_ENUMERATION_LIMITS,
-    EnumerationLimits,
     FireDecision,
     SkippedFire,
     SkipReason,
@@ -134,11 +132,6 @@ if TYPE_CHECKING:
     from maistro.scheduling.store import ScheduleStore
 
 logger = logging.getLogger("maistro.scheduling.admission")
-
-#: Provenance key recording the service that performed the background admission.
-SCHEDULER_SERVICE_ID_KEY = "scheduler_service_id"
-#: The fixed process identity is distinct from the schedule's acting principal.
-SCHEDULER_SERVICE_ID = "hive-scheduler"
 
 #: Provenance key recording a scheduled Run's own correlation root (#1063).
 #: `admit_due` runs on the background tick loop, never inside an incoming
@@ -188,27 +181,8 @@ class ManualFireRefused(Exception):
 
 
 def _owes(decision: ScheduleEvaluation) -> bool:
-    """Whether the evaluation left work that still has to happen.
-
-    Two kinds of owing, and both keep the due cursor where it is so the next
-    tick comes back (#1199):
-
-    - an occurrence that still has to run: BUFFERED says the cursor does not
-      advance because "run one queued occurrence afterwards" is what
-      BUFFER_ONE means, and TRUNCATED says a caller advancing on it "would
-      otherwise lose the occurrence with no record of it";
-    - a range that was never examined (#1200): an incomplete catch-up walk —
-      budget or step bound reached — considered neither the occurrences in the
-      unexamined range nor their absence. Advancing the due cursor past it
-      would hide the schedule from `due()` until long after that range should
-      have been looked at, so an incomplete walk owes a re-examination.
-
-    Every other reason is a decision not to run that occurrence at all, and
-    the cursor consumes it.
-    """
-    return decision.enumeration_incomplete or any(
-        skip.reason in _UNCONSUMED_SKIPS for skip in decision.skipped
-    )
+    """Whether the evaluation left an occurrence that still has to run."""
+    return any(skip.reason in _UNCONSUMED_SKIPS for skip in decision.skipped)
 
 
 #: Skips whose occurrences the policy never acts on, so their claims are not
@@ -526,6 +500,57 @@ class ScheduleRunAdmitter:
             fires=fires,
         )
 
+    async def _record_fire(
+        self,
+        schedule_id: str,
+        *,
+        fired_at: datetime | None,
+        run_id: str | None,
+        next_due_at: datetime | None,
+        fires: int | None,
+        recovered: frozenset[datetime],
+    ) -> Schedule | None:
+        """`ScheduleStore.record_fire`, naming `recovered=` only when there
+        is something to credit.
+
+        `record_fire` grew `recovered` with a default value (`frozenset()`,
+        #1059), which is exactly what protects a downstream `ScheduleStore`
+        implementation that predates the parameter — *as long as nothing
+        calls it by name*. This admitter used to name it on every call
+        regardless, so an external implementation using the previously valid
+        signature — `record_fire(self, schedule_id, *, fired_at, run_id,
+        next_due_at, fires=None, disable=False)`, no `recovered` parameter
+        at all — raised `TypeError: unexpected keyword argument 'recovered'`
+        on every ordinary recurring fire after upgrading, not merely a
+        recovering one (Codex review, #1533).
+
+        Two literal calls rather than one built from `**kwargs`: a
+        conditionally-assembled kwargs dict cannot be checked against
+        `record_fire`'s mixed-type keyword signature under `mypy --strict`,
+        and this reads exactly as directly. The common, no-recovery case
+        stays compatible with an old implementation; a genuinely recovered
+        claim still names the keyword, and still fails loudly against a
+        store that cannot accept it — the correct outcome, since silently
+        omitting it there would silently drop the credit, reintroducing the
+        exact under-counting bug `recovered` exists to close (#1059, #1533).
+        """
+        if recovered:
+            return await self._schedules.record_fire(
+                schedule_id,
+                fired_at=fired_at,
+                run_id=run_id,
+                next_due_at=next_due_at,
+                fires=fires,
+                recovered=recovered,
+            )
+        return await self._schedules.record_fire(
+            schedule_id,
+            fired_at=fired_at,
+            run_id=run_id,
+            next_due_at=next_due_at,
+            fires=fires,
+        )
+
     async def admit_due(
         self,
         schedule: Schedule,
@@ -534,7 +559,6 @@ class ScheduleRunAdmitter:
         active_run: bool = False,
         manual: bool = False,
         fire_id: str | None = None,
-        requested_by: str | None = None,
     ) -> ScheduleAdmission:
         """Admit due occurrences, or one explicit manual occurrence.
 
@@ -548,16 +572,10 @@ class ScheduleRunAdmitter:
         logical request reconcile to the Run the first call created (#1120),
         the same authority, template, Run, occurrence claim, and cursor as a
         nominal occurrence. A manual fire without a `fire_id` mints one, which
-        makes each call its own deliberate firing. `requested_by` is the
-        authenticated principal that asked for the manual fire, recorded on
-        the Run separately from the schedule's acting principal (#1201) —
-        the fire consumes the actor's authority, but provenance names the
-        caller that spent it.
+        makes each call its own deliberate firing.
         """
         if manual:
-            return await self._admit_manual(
-                schedule, now=now, fire_id=fire_id, requested_by=requested_by
-            )
+            return await self._admit_manual(schedule, now=now, fire_id=fire_id)
 
         if schedule.pending_fires:
             # A manual fire died mid-window and left its marker behind
@@ -566,7 +584,7 @@ class ScheduleRunAdmitter:
             # actually holds markers triggers the reconciliation read.
             schedule = await self._reconcile_pending_fires(schedule.schedule_id) or schedule
 
-        decision = evaluate(schedule, now=now, active_run=active_run, limits=self._limits)
+        decision = evaluate(schedule, now=now, active_run=active_run)
         decision, claims, active_run_id, recovered_moments = await self._reconcile_claims(
             schedule, decision, now=now, active_run=active_run
         )
@@ -650,9 +668,6 @@ class ScheduleRunAdmitter:
                 cancel_active_run=decision.cancel_active_run,
                 active_run_id=active_run_id,
                 failures=tuple(failures),
-                enumeration_incomplete=decision.enumeration_incomplete,
-                enumeration_stopped_at=decision.enumeration_stopped_at,
-                window_clamped=decision.window_clamped,
             )
 
         # `next_due_at` is recomputed only when the whole batch landed and
@@ -694,9 +709,6 @@ class ScheduleRunAdmitter:
             active_run_id=active_run_id,
             already_fired=tuple(sorted(already_fired)),
             failures=tuple(failures),
-            enumeration_incomplete=decision.enumeration_incomplete,
-            enumeration_stopped_at=decision.enumeration_stopped_at,
-            window_clamped=decision.window_clamped,
         )
 
     async def _admit_batch(
@@ -907,9 +919,7 @@ class ScheduleRunAdmitter:
                 claims[moment] = run
         claims.update(await self._lookup_truncated_claims(schedule, decision))
         walk: list[datetime] = []
-        for moment in self._claims_before(
-            schedule, enumeration_start(schedule, now=now, limits=self._limits)
-        ):
+        for moment in self._claims_before(schedule, enumeration_start(schedule, now=now)):
             run = await self._lookup_claim(schedule, moment)
             if run is not None:
                 claims[moment] = run
@@ -936,12 +946,10 @@ class ScheduleRunAdmitter:
         if not truncated:
             return {}
         probe = truncated[-_MAX_TRUNCATED_CLAIM_PROBES:]
-        # The canonical instant, not the zone-local rendering: the claims on
-        # disk were written by whatever timezone the schedule had when its
-        # ticker fired (#850).
-        probe_keys = [canonical_occurrence_instant(moment) for moment in probe]
         try:
-            found = await self._runs.get_runs_for_occurrences(schedule.schedule_id, probe_keys)
+            found = await self._runs.get_runs_for_occurrences(
+                schedule.schedule_id, [moment.isoformat() for moment in probe]
+            )
         except Exception as exc:
             logger.warning(
                 "schedule %s could not batch-probe %d truncated claim(s): %s",
@@ -950,7 +958,7 @@ class ScheduleRunAdmitter:
                 exc,
             )
             return {}
-        by_moment = dict(zip(probe_keys, probe, strict=True))
+        by_moment = {moment.isoformat(): moment for moment in probe}
         return {
             by_moment[scheduled_for]: run
             for scheduled_for, run in found.items()
@@ -968,9 +976,7 @@ class ScheduleRunAdmitter:
         that the reactive design rides out (#1059).
         """
         try:
-            return await self._runs.get_run_for_occurrence(
-                schedule.schedule_id, canonical_occurrence_instant(moment)
-            )
+            return await self._runs.get_run_for_occurrence(schedule.schedule_id, moment.isoformat())
         except Exception as exc:
             logger.warning(
                 "schedule %s could not probe the claim on %s: %s",
@@ -1044,7 +1050,6 @@ class ScheduleRunAdmitter:
         *,
         now: datetime,
         fire_id: str | None = None,
-        requested_by: str | None = None,
     ) -> ScheduleAdmission:
         """Admit the one occurrence the caller asked for *now*, off the cron.
 
@@ -1132,9 +1137,7 @@ class ScheduleRunAdmitter:
 
         fire = FireDecision(scheduled_for=now, catchup=False)
         try:
-            run_id = await self._admit_one(
-                reserved, template, fire, fire_id=token, requested_by=requested_by
-            )
+            run_id = await self._admit_one(reserved, template, fire, fire_id=token)
         except DuplicateOccurrence:
             return await self._duplicate_manual_receipt(schedule, now, token)
         except BaseException:
@@ -1390,9 +1393,6 @@ class ScheduleRunAdmitter:
                 cancel_active_run=decision.cancel_active_run,
                 active_run_id=active_run_id,
                 already_fired=tuple(claimed),
-                enumeration_incomplete=decision.enumeration_incomplete,
-                enumeration_stopped_at=decision.enumeration_stopped_at,
-                window_clamped=decision.window_clamped,
             )
         if _due_cursor_changed(schedule, next_due_at):
             # Nothing fired and nothing was dropped, but the evaluation still
@@ -1414,9 +1414,6 @@ class ScheduleRunAdmitter:
             next_due_at=decision.next_due_at,
             cancel_active_run=decision.cancel_active_run,
             active_run_id=active_run_id,
-            enumeration_incomplete=decision.enumeration_incomplete,
-            enumeration_stopped_at=decision.enumeration_stopped_at,
-            window_clamped=decision.window_clamped,
         )
 
     async def _admit_one(
@@ -1426,7 +1423,6 @@ class ScheduleRunAdmitter:
         fire: FireDecision,
         *,
         fire_id: str | None = None,
-        requested_by: str | None = None,
     ) -> str:
         graph = template.instantiate(project_id=schedule.project_id, name=schedule.name or None)
         provenance: dict[str, Any] = {
@@ -1452,13 +1448,6 @@ class ScheduleRunAdmitter:
             # Run from before the distinction existed (#1120), which is a
             # different fact from "this was a nominal occurrence".
             provenance[SCHEDULE_TRIGGER_KEY] = SCHEDULE_TRIGGER_MANUAL
-            if requested_by:
-                # The fire spends the schedule actor's authority, but a
-                # specific authenticated principal asked for it (#1201).
-                # Named only when known: a tick fire has no requester, and
-                # the key's absence must keep meaning "no requester", not
-                # "nobody looked".
-                provenance[SCHEDULE_REQUESTED_BY_KEY] = requested_by
         else:
             provenance[SCHEDULE_TRIGGER_KEY] = SCHEDULE_TRIGGER_RECURRING
         if schedule.inputs:

@@ -394,28 +394,17 @@ async def add_project_membership(
         # the `set_membership` write, and the upsert then resurrected the
         # revoked principal carrying the stale grants the stale read had
         # "preserved".
-        try:
-            return await project_store.merge_membership(
-                ProjectMembership(
-                    workspace_id=workspace_id,
-                    project_id=project_id,
-                    principal_id=body.principal_id,
-                    role=role,
-                    grants=grants,
-                    denies=denies,
-                    delegable_grants=delegable_grants,
-                ),
-                principal_id=requester,
+        return await project_store.merge_membership(
+            ProjectMembership(
+                workspace_id=workspace_id,
+                project_id=project_id,
+                principal_id=body.principal_id,
+                role=role,
+                grants=grants,
+                denies=denies,
+                delegable_grants=delegable_grants,
             )
-        except ProjectScopeDenied as exc:
-            # The boundary re-resolved the requester's delegable authority
-            # and refused (#1150) -- an owner's revocation can land after the
-            # pre-check above. Answer with the pre-check's own refusal shape
-            # rather than letting the store's denial escape as a 500.
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=(f"principal {requester!r} cannot delegate the requested Project grants"),
-            ) from exc
+        )
 
     membership = ProjectMembership(
         workspace_id=workspace_id,
@@ -450,29 +439,9 @@ async def remove_project_membership(
     project_store: Annotated[ProjectScopeStore, Depends(get_project_scope_store)],
 ) -> None:
     """Revoke one Project membership without leaving a stale grant row."""
-    requester = user_id(auth)
-    await require_workspace_owner(workspace_store, workspace_id, requester)
-    await _require_project(
-        project_store,
-        workspace_id=workspace_id,
-        project_id=project_id,
-        principal_id=requester,
-    )
-    try:
-        await project_store.remove_membership(
-            project_id,
-            principal_id=principal_id,
-            acting_principal_id=requester,
-        )
-    except ProjectScopeDenied as exc:
-        # The boundary re-resolved the requester's ADMINISTER authority and
-        # refused (#1150): their ownership was revoked after the route's own
-        # check. The route's answer to that is its owner-permission 403, not
-        # an unhandled store denial.
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Workspace owner permission required",
-        ) from exc
+    await require_workspace_owner(workspace_store, workspace_id, user_id(auth))
+    await _require_project(project_store, workspace_id=workspace_id, project_id=project_id)
+    await project_store.remove_membership(project_id, principal_id=principal_id)
 
 
 __all__ = ["get_project_scope_store", "remove_project_membership", "router"]

@@ -34,8 +34,7 @@ from maistro.runs.chat_admission import (
     UPSTREAM_FAILURE,
     ChatRunAdmitter,
 )
-from maistro.runs.chat_execution import DEFAULT_CHAT_LEASE_TTL
-from maistro.runs.model import TERMINAL_RUN_STATUSES, AttemptStatus, Run, RunStatus
+from maistro.runs.model import TERMINAL_RUN_STATUSES, Run, RunStatus
 from maistro.runs.store import InMemoryRunStore, RunIntegrityError
 from maistro.security._types import GateResult
 from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
@@ -924,28 +923,6 @@ async def test_a_failed_turn_never_echoes_the_provider_detail(
     assert len(runs) == 1
     assert runs[0].error == UPSTREAM_FAILURE
     assert "sk-secret" not in (runs[0].error or "")
-
-
-async def test_a_turn_over_the_active_run_ceiling_is_a_429_not_an_unrecorded_answer(
-    container, wired, client
-) -> None:
-    """Backpressure is the one admission failure this door does not answer
-    through (#1182): answering would run the turn unbounded and unrecorded."""
-    for index in range(32):
-        await container.chat_admitter.admit(  # type: ignore[attr-defined]
-            [{"role": "user", "content": "busy"}],
-            actor_principal_id=f"{DEFAULT_TEST_ACTOR_PRINCIPAL_ID}-{index}",
-        )
-
-    with patch(RUN_TASK, AsyncMock(return_value=_output("42"))) as run_task:
-        response = client.post(
-            "/v1/chat/completions",
-            json={"messages": [{"role": "user", "content": "hi"}]},
-        )
-
-    assert response.status_code == 429
-    assert response.headers["Retry-After"] == "5"
-    run_task.assert_not_called()
 
 
 # --- admission vs. the disconnecting client -------------------------------

@@ -403,7 +403,6 @@ async def run_optimizer(
     now: datetime | None = None,
     org_id: str = "",
     project_id: str = "",
-    workspace_id: str = "",
 ) -> dict[str, Any]:
     """Run one optimizer pass on the given DAG.
 
@@ -553,89 +552,56 @@ async def run_optimizer(
     }
 
 
-async def _apply_auto_proposal(
-    raw: dict[str, Any],
-    *,
-    dag_id: str,
-    source_hash: str,
-    proposal_id: str,
-    actor: str,
-    target_node_id: str = "",
-    workspace_id: str = "",
-) -> dict[str, Any]:
-    """Attempt one auto-apply through the candidate/promotion contract.
+_MIN_INDEPENDENT_RESULTS = 2
 
-    Returns the apply record. Kinds that name no concrete value to commit are
-    `unsupported` — recorded as evidence, never reported as applied (#861).
-    Execution-tier kinds are `escalated` on this path exactly as on the
-    accept path: a REQUEST recorded for the delegated authority, never a
-    mutation and never an approval stamp.
+
+def _result_identity(result: Any) -> str:
+    """Identity of one evaluation result, or empty when it cannot be told apart."""
+    if isinstance(result, str):
+        return result.strip()
+    if isinstance(result, dict):
+        for key in ("result_id", "run_id"):
+            value = result.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    return ""
+
+
+def _independent_result_count(results: Any) -> int:
+    if not isinstance(results, list):
+        return 0
+    identities = {_result_identity(item) for item in results}
+    identities.discard("")
+    return len(identities)
+
+
+def _require_graph_apply_evidence(proposal: dict[str, Any]) -> None:
+    """Refuse a live graph apply that is not backed by governed evidence.
+
+    The apply path used to commit an accepted topology edit with no candidate
+    and no comparison to what is already serving (#861, #854). It now fails
+    closed unless ``proposal["evidence"]`` names an immutable ``candidate_id``,
+    carries at least two independent results (distinct ``result_id`` or
+    ``run_id`` values — a repeated id is one sample), and names
+    ``incumbent_id``. This is a gate on the existing apply, not a new
+    optimizer and not an unattended promotion loop.
     """
-    from routes.audit import log_audit
-
-    if raw.get("kind", "") in ESCALATION_KINDS:
-        return record_escalation(
-            {
-                "id": proposal_id,
-                "dag_id": dag_id,
-                "topology_proposal": raw.get("topology_proposal")
-                or {
-                    "kind": raw.get("kind", ""),
-                    "target_node_id": target_node_id,
-                    "to_value": raw.get("to_value"),
-                },
-            },
-            actor=actor,
+    evidence = proposal.get("evidence")
+    if not isinstance(evidence, dict):
+        raise ValueError("refusing graph apply: evidence record is required")
+    candidate_id = evidence.get("candidate_id")
+    if not isinstance(candidate_id, str) or not candidate_id.strip():
+        raise ValueError("refusing graph apply: evidence record has no candidate id")
+    if _independent_result_count(evidence.get("independent_results")) < _MIN_INDEPENDENT_RESULTS:
+        raise ValueError(
+            "refusing graph apply: evidence record needs at least two independent results"
         )
-
-    candidate, outcome, detail = _mutated_snapshot(
-        {
-            "id": proposal_id,
-            "dag_id": dag_id,
-            "source_dag_hash": source_hash,
-            "kind": raw["kind"],
-            "topology_proposal": raw.get("topology_proposal")
-            or {
-                "kind": raw["kind"],
-                "target_node_id": target_node_id,
-                "to_value": raw.get("to_value"),
-            },
-        }
-    )
-    record: dict[str, Any] = {
-        "outcome": outcome,
-        "detail": detail,
-        "resulting_version": None,
-        "candidate_hash": None,
-    }
-    if outcome != BUILT:
-        log_audit(
-            action="optimizer_auto_apply",
-            actor=actor,
-            target=dag_id,
-            detail={
-                "proposal_id": proposal_id,
-                "kind": raw["kind"],
-                "outcome": outcome,
-                "detail": detail,
-            },
-        )
-        return record
-    from services.optimizer_candidates import commit_candidate as _commit
-
-    committed = await _commit(
-        dag_id,
-        candidate,
-        actor=actor,
-        proposal_id=proposal_id,
-        source_hash=source_hash,
-        reason=raw.get("rationale", ""),
-        workspace_id=workspace_id,
-    )
-    return committed
+    incumbent_id = evidence.get("incumbent_id")
+    if not isinstance(incumbent_id, str) or not incumbent_id.strip():
+        raise ValueError("refusing graph apply: evidence record does not name the incumbent")
 
 
-async def record_decision(
+def record_decision(
     proposal_id: str,
     decision: str,
     *,
@@ -664,45 +630,18 @@ async def record_decision(
     if payload is None:
         raise KeyError(proposal_id)
     payload = dict(payload)
+    applying_topology = decision == DECISION_ACCEPTED and payload.get("kind") == KIND_TOPOLOGY
+    # Refuse before the decision is stored, so a single sample or an
+    # anonymous edit cannot be recorded as accepted (#861, #854).
+    if applying_topology:
+        _require_graph_apply_evidence(payload)
     payload["decision"] = decision
     payload["decided_by"] = actor
     payload["decided_at"] = datetime.now(UTC).isoformat()
 
-    if decision == DECISION_ACCEPTED:
-        if payload.get("kind") == KIND_TOPOLOGY:
-            payload.update(await _apply_accepted_topology(payload, actor=actor))
-        elif payload.get("class") == CLASS_AUTO_APPLY:
-            # A human accepted what the optimizer would have auto-applied;
-            # same contract, the human is the approver of record.
-            raw = {
-                "kind": payload.get("kind", ""),
-                "rationale": payload.get("rationale", ""),
-                "to_value": payload.get("to_value"),
-                "topology_proposal": payload.get("topology_proposal"),
-            }
-            outcome = await _apply_auto_proposal(
-                raw,
-                dag_id=payload.get("dag_id", ""),
-                source_hash=payload.get("source_dag_hash", ""),
-                proposal_id=proposal_id,
-                actor=actor,
-                target_node_id=payload.get("target_node_id", ""),
-                workspace_id=payload.get("workspace_id", ""),
-            )
-            payload["apply_outcome"] = outcome["outcome"]
-            payload["apply_detail"] = outcome["detail"]
-            payload["resulting_version"] = outcome.get("resulting_version")
-            payload["candidate_hash"] = outcome.get("candidate_hash")
-            payload["applied"] = outcome["outcome"] == "applied"
-        else:
-            # A proposal the optimizer cannot author itself (e.g. a prompt
-            # rewrite needs the human's words). The DECISION is recorded; the
-            # change itself is authored in the editor. Saying nothing here
-            # would leave the only apply-ish signal the old fake `applied`.
-            payload["apply_outcome"] = MANUAL
-            payload["apply_detail"] = "decision recorded; author the change in the DAG editor"
-
-    stores.optimizer_proposals[proposal_id] = payload
+    # Apply accepted topology mutations to the DAG
+    if applying_topology:
+        _apply_topology_mutation(payload)
 
     # Track rejected edits so optimizer doesn't re-propose them (SkillOpt rejected-edit buffer)
     if decision == DECISION_REJECTED:
@@ -936,51 +875,14 @@ def _apply_structural_mutation(
     return nodes, edges
 
 
-def _mutate_node_fields(
-    nodes: list[dict[str, Any]], kind: str, target: str, tp: dict[str, Any]
-) -> str:
-    """Apply a node-field mutation to the one matching node. Empty detail = ok."""
-    for n in nodes:
-        if n.get("id") == target:
-            _apply_node_field_mutation(n, kind, tp)
-            return ""
-    return f"no node {target!r} in the bound snapshot"
+def _apply_topology_mutation(proposal: dict[str, Any]) -> None:
+    """Apply an accepted topology mutation to the DAG in stores.
 
-
-def _mutate_edge_fields(
-    edges: list[dict[str, Any]], kind: str, target: str, tp: dict[str, Any]
-) -> str:
-    """Apply an edge-field mutation to the matching edge. Empty detail = ok."""
-    for e in edges:
-        if e.get("from_node") == target and e.get("to_node") == tp.get("from_value"):
-            _apply_edge_field_mutation(e, kind, tp)
-            return ""
-    return f"no edge {target!r} -> {tp.get('from_value')!r}"
-
-
-def _mutate_retry_count(nodes: list[dict[str, Any]], target: str, tp: dict[str, Any]) -> str:
-    """The one auto-apply kind: set the target node's retry budget to the
-    proposal's concrete value (defaulting to the rationale's 3)."""
-    try:
-        to_value = int(tp.get("to_value", 3))
-    except (TypeError, ValueError):
-        return "retry-count proposal carries no integer target value"
-    for n in nodes:
-        if n.get("id") == target:
-            n.setdefault("config", {})["max_retries"] = to_value
-            return ""
-    return f"no node {target!r} in the bound snapshot"
-
-
-def _bound_source(proposal: dict[str, Any]) -> tuple[dict[str, Any] | None, str, str]:
-    """The DAG snapshot a proposal is bound to, or a refusal.
-
-    The binding check is the anti-retarget guard: a proposal whose recorded
-    source hash no longer matches the current DAG content is refused (`stale`)
-    rather than applied to whatever the DAG now holds — which is how verdict
-    fallback used to mutate a different DAG than the one the proposal was
-    authored against (#861).
+    Fails closed (#861, #854) unless the proposal's evidence record names a
+    candidate, at least two independent results, and the incumbent. A missing
+    DAG is still a no-op after that gate: there is nothing to mutate.
     """
+    _require_graph_apply_evidence(proposal)
     import stores
 
     dag_id = proposal.get("dag_id", "")

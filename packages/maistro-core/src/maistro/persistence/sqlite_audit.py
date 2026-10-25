@@ -6,8 +6,6 @@ import logging
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
-from maistro.persistence.audit_pages import AUDIT_PAGE_INDEXES, AuditPage, make_page, page_query
-from maistro.security.sentinel.signing import SIGNING_KEY_ENV, AuditSigner
 from maistro.sqlite_schema import serialized_schema_upgrade
 from maistro.types.security import AuditEntry
 
@@ -43,11 +41,6 @@ _ALLOWED_FILTER_COLUMNS: frozenset[str] = frozenset(
         "org_id",
     }
 )
-
-
-def _proof_from_row(row: Any) -> tuple[str, str, str]:
-    """Normalize the ADR-073 proof columns persisted alongside a decision."""
-    return (row[11] or "", row[12] or "", row[13] or "")
 
 
 def _build_filter_clause(
@@ -88,14 +81,13 @@ class SqliteAuditLog:
             )
 
     async def ensure_schema(self) -> None:
-        """Create or upgrade the audit_log table, its scope and page indexes.
+        """Create or upgrade the audit_log table and its scope index.
 
         SQLite has no ``ADD COLUMN IF NOT EXISTS``. Inspecting the table keeps
         existing homelab databases readable while making the empty string an
-        explicit representation for legacy system/unscoped entries, and adds
-        the ADR-073 proof columns to databases created before signed records.
-        The whole read-then-DDL sequence runs under the shared schema-upgrade
-        lock so concurrent processes cannot both decide a column is absent.
+        explicit representation for legacy system/unscoped entries. The whole
+        read-then-DDL sequence runs under the shared schema-upgrade lock so
+        concurrent processes cannot both decide the column is absent.
         """
         async with serialized_schema_upgrade(self._conn):
             await self._conn.execute(_SCHEMA)
@@ -105,42 +97,9 @@ class SqliteAuditLog:
                 await self._conn.execute(
                     "ALTER TABLE audit_log ADD COLUMN org_id TEXT NOT NULL DEFAULT ''"
                 )
-            for name in ("signature", "signing_key_id", "proof_type"):
-                if name not in columns:
-                    await self._conn.execute(
-                        f"ALTER TABLE audit_log ADD COLUMN {name} TEXT NOT NULL DEFAULT ''"  # nosec B608
-                    )
             await self._conn.execute(
                 "CREATE INDEX IF NOT EXISTS ix_audit_log_scope ON audit_log (org_id, timestamp)"
             )
-
-            for name, fields in AUDIT_PAGE_INDEXES.items():
-                await self._conn.execute(
-                    f"CREATE INDEX IF NOT EXISTS {name} ON audit_log ({', '.join(fields)})"
-                )
-
-    async def get_page(
-        self,
-        *,
-        org_id: str = "",
-        user_id: str | None = None,
-        boundary: str | None = None,
-        denied: bool | None = None,
-        limit: int = 50,
-        cursor: str | None = None,
-    ) -> AuditPage:
-        query, params = page_query(
-            org_id=org_id,
-            user_id=user_id,
-            boundary=boundary,
-            denied=denied,
-            limit=limit,
-            cursor=cursor,
-        )
-        async with self._conn.execute(query, params) as result:
-            names = [column[0] for column in result.description]
-            rows = [dict(zip(names, row, strict=True)) for row in await result.fetchall()]
-        return make_page(rows, limit)
 
     async def log(self, entry: AuditEntry) -> None:
         """Sign and record an audit entry."""
@@ -148,24 +107,20 @@ class SqliteAuditLog:
         await self._conn.execute(
             """INSERT INTO audit_log
                (timestamp, boundary, user_id, org_id, team_id, agent_id,
-                tool_name, verdict, detail, trace_id, request_id,
-                signature, signing_key_id, proof_type)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                tool_name, verdict, detail, trace_id, request_id)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
             (
-                getattr(signed, "timestamp", datetime.now(UTC)).isoformat(),
-                signed.boundary,
-                signed.user_id,
-                getattr(signed, "org_id", "") or "",
-                getattr(signed, "team_id", ""),
-                signed.agent_id,
-                getattr(signed, "tool_name", "") or "",
-                signed.verdict,
-                signed.detail,
-                getattr(signed, "trace_id", ""),
-                getattr(signed, "request_id", ""),
-                signed.signature,
-                signed.signing_key_id,
-                signed.proof_type,
+                entry.timestamp.isoformat(),
+                entry.boundary,
+                entry.user_id,
+                getattr(entry, "org_id", "") or "",
+                getattr(entry, "team_id", ""),
+                entry.agent_id,
+                getattr(entry, "tool_name", "") or "",
+                entry.verdict,
+                entry.detail,
+                entry.trace_id,
+                entry.request_id,
             ),
         )
         await self._conn.commit()
@@ -197,34 +152,28 @@ class SqliteAuditLog:
         params.append(limit)
         query = (
             f"SELECT timestamp, boundary, user_id, org_id, team_id, agent_id, tool_name, "
-            f"verdict, detail, trace_id, request_id, signature, signing_key_id, proof_type "
-            f"FROM audit_log "
+            f"verdict, detail, trace_id, request_id FROM audit_log "
             f"WHERE {where} ORDER BY timestamp DESC LIMIT ?"  # nosec B608
         )
 
         cursor = await self._conn.execute(query, params)
         rows = await cursor.fetchall()
 
-        entries: list[AuditEntry] = []
-        for r in rows:
-            signature, signing_key_id, proof_type = _proof_from_row(r)
-            entries.append(
-                AuditEntry(
-                    timestamp=datetime.fromisoformat(r[0]),
-                    boundary=r[1] or "",
-                    user_id=r[2] or "",
-                    org_id=r[3] or "",
-                    team_id=r[4] or "",
-                    agent_id=r[5] or "",
-                    tool_name=r[6],
-                    verdict=r[7] or "allowed",
-                    detail=r[8] or "",
-                    trace_id=r[9] or "",
-                    request_id=r[10] or "",
-                    signature=signature,
-                    signing_key_id=signing_key_id,
-                    proof_type=proof_type,
-                )
+        from datetime import datetime
+
+        return [
+            AuditEntry(
+                timestamp=datetime.fromisoformat(r[0]),
+                boundary=r[1] or "",
+                user_id=r[2] or "",
+                org_id=r[3] or "",
+                team_id=r[4] or "",
+                agent_id=r[5] or "",
+                tool_name=r[6],
+                verdict=r[7] or "allowed",
+                detail=r[8] or "",
+                trace_id=r[9] or "",
+                request_id=r[10] or "",
             )
         return entries
 

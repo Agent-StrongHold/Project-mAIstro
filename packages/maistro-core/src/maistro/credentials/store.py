@@ -376,12 +376,15 @@ class UserCredentialStore:
             env_var_active=env_var_active,
         )
         # stdlib logger — keyword args raise TypeError. Use % formatting.
-        # Avoid the substrings "credential"/"secret" in the format string.
+        # Counts only: the key file path is on the returned result for the
+        # caller that asked for the rotation, and nothing key-shaped is logged.
+        # The rule matches the word "credential" in the message, not the
+        # arguments, so it fires on the event name alone.
         # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure -- logs counts and a boolean, never key material or its path
         logger.warning(
-            "master_key_rotated users=%d entries=%d env_override=%s",
-            user_count,
-            entry_count,
+            "credential_master_key_rotated users=%d secrets=%d env_override=%s",
+            result.users,
+            result.secrets,
             env_var_active,
         )
         return result
