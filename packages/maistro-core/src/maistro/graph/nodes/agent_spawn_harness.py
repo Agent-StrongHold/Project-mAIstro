@@ -724,15 +724,25 @@ class AgentSpawnHarnessNode(BaseNode[SpawnHarnessIn, SpawnHarnessOut]):
         _park(wait)
         raise AssertionError("pause_until must raise")
 
+    async def _resume_harness_wait(
+        self, pause: Mapping[str, Any], answer: Any, inputs: SpawnHarnessIn, ctx: NodeContext
+    ) -> SpawnHarnessOut:
+        if pause.get("paused_reason") != PAUSE_AWAITING_HARNESS:
+            raise ValueError("harness continuation has the wrong pause reason")
+        if isinstance(answer, Mapping) and answer.get("handle_id"):
+            terminal = self._resume_output(answer)
+            if terminal.handle_id != str(pause.get("handle_id") or ""):
+                raise ValueError("harness terminal answer has a foreign handle")
+            return terminal
+        return await self._poll(await self._load_wait(pause, inputs, ctx), inputs, ctx, pause)
+
     async def _resume(self, inputs: SpawnHarnessIn, ctx: NodeContext) -> SpawnHarnessOut | None:
         pause, answer = self._resume_evidence(ctx)
         reason = pause.get("paused_reason")
         if reason == PAUSE_AWAITING_HUMAN_APPROVAL:
             return await self._resume_approval(pause, inputs, ctx)
         if "harness_wait_version" in pause:
-            if reason != PAUSE_AWAITING_HARNESS:
-                raise ValueError("harness continuation has the wrong pause reason")
-            return await self._poll(await self._load_wait(pause, inputs, ctx), inputs, ctx, pause)
+            return await self._resume_harness_wait(pause, answer, inputs, ctx)
         if {"dispatch_invocation_id", "observation_index", "deadline_at"}.intersection(pause):
             raise ValueError("harness continuation is missing its version")
         if reason == PAUSE_AWAITING_HARNESS and "invocation_id" in pause:

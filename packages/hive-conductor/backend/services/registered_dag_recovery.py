@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from maistro.graph.durable_runs import (
     NodeResolver,
+    poll_external_results,
     recover_queued_graph_runs,
     resume_due_graph_runs,
 )
@@ -73,11 +74,42 @@ async def recover_stranded_registered_dag_runs(*, limit: int = 100) -> int:
 
 
 async def wake_due_registered_dag_runs(*, limit: int = 100) -> int:
-    """Resume schedule Runs whose persisted ``resume_at`` has elapsed."""
+    """Resume schedule Runs whose persisted ``resume_at`` has elapsed.
+
+    Cross-instance peer and harness completions have no shared receipt object,
+    so this tick is their production result ingress for schedule-admitted Runs,
+    mirroring the legacy-DAG wake half. Polling only writes through the
+    canonical external-result seam; queued recovery and the timed resume remain
+    the sole authorities for whether physical work may start.
+    """
     container = _container()
     if container is None or container.graph_run_store is None:
         return 0
-    return await resume_due_graph_runs(
+
+    guest_peers = getattr(container, "guest_peers", None)
+    harness_adapters = getattr(container, "harness_adapters", None) or {}
+    polled = 0
+    if guest_peers is not None or harness_adapters:
+        polled = await poll_external_results(
+            store=container.graph_run_store,
+            guest_peers=guest_peers,
+            harness_adapters=harness_adapters,
+            limit=limit,
+            eligible=_owned,
+        )
+    recovered = 0
+    if polled:
+        recovered = await recover_queued_graph_runs(
+            store=container.graph_run_store,
+            run_store=container.run_store,
+            node_resolver_factory=_resolver,
+            eligible=_owned_traversal,
+            admission_source="schedule",
+            events=container.event_bus,
+            limit=limit,
+            scan=scan_continuation("recover_queued_registered_dag_runs", container.run_store),
+        )
+    resumed = await resume_due_graph_runs(
         store=container.graph_run_store,
         run_store=container.run_store,
         node_resolver_factory=_resolver,
@@ -86,6 +118,7 @@ async def wake_due_registered_dag_runs(*, limit: int = 100) -> int:
         limit=limit,
         scan=scan_continuation("resume_due_registered_dag_runs", container.graph_run_store),
     )
+    return recovered + resumed
 
 
 __all__ = ["recover_stranded_registered_dag_runs", "wake_due_registered_dag_runs"]
