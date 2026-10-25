@@ -52,12 +52,10 @@ from maistro.types.intent import TIER_ORDER, Intent
 from maistro.types.memory import (
     CONTRADICT_DELTA,
     INHERITANCE_PRIORITY,
-    LEARNING_STAGE_ORDER,
     REINFORCE_DELTA,
     WEIGHT_BOUNDS,
     EpisodicMemory,
     Learning,
-    LearningStage,
     MemoryScope,
     MemoryTier,
     Outcome,
@@ -97,7 +95,6 @@ from maistro.types.tool import ToolCall, ToolDefinition, ToolResult
 __all__ = [
     "CONTRADICT_DELTA",
     "INHERITANCE_PRIORITY",
-    "LEARNING_STAGE_ORDER",
     "REINFORCE_DELTA",
     "TIER_ORDER",
     "WEIGHT_BOUNDS",
@@ -123,7 +120,6 @@ __all__ = [
     "Invariant",
     "InvariantKind",
     "Learning",
-    "LearningStage",
     "LearningsConfig",
     "MaistroConfig",
     "MaistroError",

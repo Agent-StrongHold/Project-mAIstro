@@ -336,9 +336,7 @@ class SkillModeError(DesignError):
 class DesignOutputShapeError(DesignError):
     """Raised when a single-file accessor (.content/.format) is used on a multi-artifact output."""
 
-    # DevSkim DS440010 false-positive: the rule matches the substring "SHA"
-    # inside SHAPE (not an SSL/TLS version pin).
-    code = "DESIGN_OUTPUT_SHAPE_ERROR"  # DevSkim: ignore DS440010 until 2027-12-31
+    code = "DESIGN_OUTPUT_SHAPE_ERROR"
 
 
 class DesignProjectNotFoundError(DesignError):

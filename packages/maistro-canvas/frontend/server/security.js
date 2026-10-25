@@ -1,6 +1,6 @@
 import { timingSafeEqual } from "crypto";
 
-const LOOPBACK = new Set(["127.0.0.1", "::1", "localhost"]);  // DevSkim: ignore DS162092 until 2027-12-31
+const LOOPBACK = new Set(["127.0.0.1", "::1", "localhost"]);
 
 // A plain `Number(env.X || fallback)` turns any non-numeric value into NaN, and
 // every `>`/`>=` comparison against NaN is false — so a typo (or "unlimited")
@@ -18,10 +18,10 @@ function positiveIntOr(raw, fallback) {
 }
 
 export function resolveSecurityConfig(env = process.env) {
-  const host = env.CANVAS_HOST || "127.0.0.1";  // DevSkim: ignore DS162092 until 2027-12-31
+  const host = env.CANVAS_HOST || "127.0.0.1";
   const token = env.CANVAS_API_TOKEN || "";
   const origins = (env.CANVAS_ALLOWED_ORIGINS ||
-    "http://localhost:5173,http://127.0.0.1:5173,http://localhost:5174,http://127.0.0.1:5174")  // DevSkim: ignore DS162092 until 2027-12-31
+    "http://localhost:5173,http://127.0.0.1:5173,http://localhost:5174,http://127.0.0.1:5174")
     .split(",").map(s => s.trim()).filter(Boolean);
   const bodyLimit = env.CANVAS_BODY_LIMIT || "200mb";
   const maxExportPages = positiveIntOr(env.CANVAS_MAX_EXPORT_PAGES, 400);

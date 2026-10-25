@@ -21,7 +21,7 @@ class ServiceKeyClient:
             identity=ServiceIdentity(name="conductor-router", ...),
             key="sk-svc-conductor-xxxx",
         )
-        async with client.stream("POST", "https://coinswarm.example/agents", json={...}) as resp:
+        async with client.stream("POST", "http://coinswarm:8080/agents", json={...}) as resp:
             ...
     """
 

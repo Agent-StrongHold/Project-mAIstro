@@ -18,8 +18,8 @@ logger = logging.getLogger("maistro.integrations.turing")
 class TuringIntegration:
     def __init__(
         self,
-        chat_url: str = "http://localhost:9101",  # DevSkim: ignore DS162092 until 2027-12-31
-        metrics_url: str = "http://localhost:9100",  # DevSkim: ignore DS162092 until 2027-12-31
+        chat_url: str = "http://localhost:9101",
+        metrics_url: str = "http://localhost:9100",
         event_bus: EventBus | None = None,
     ) -> None:
         self._chat_url = chat_url.rstrip("/")

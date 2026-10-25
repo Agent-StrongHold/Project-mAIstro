@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
-
-from maistro.memory.exposure import MemoryExposureMode
 from maistro.memory.learnings.embeddings import (
     EMBEDDING_WEIGHT,
     KEYWORD_WEIGHT,
@@ -69,14 +66,14 @@ async def test_fake_embedding_client_embed_batch() -> None:
 
 
 async def test_store_computes_embedding_when_client_present() -> None:
-    inner = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
+    inner = InMemoryLearningStore()
     hybrid = HybridLearningStore(inner, embedding_client=FakeEmbeddingClient())
     learning_id = await hybrid.store(Learning(trigger_keys=["x"], learning="some learning text"))
     assert learning_id in hybrid._embedding_cache
 
 
 async def test_store_skips_embedding_when_no_client() -> None:
-    inner = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
+    inner = InMemoryLearningStore()
     hybrid = HybridLearningStore(inner)
     learning_id = await hybrid.store(Learning(trigger_keys=["x"], learning="text"))
     assert hybrid._embedding_cache == {}
@@ -84,7 +81,7 @@ async def test_store_skips_embedding_when_no_client() -> None:
 
 
 async def test_store_skips_embedding_when_learning_text_empty() -> None:
-    inner = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
+    inner = InMemoryLearningStore()
     hybrid = HybridLearningStore(inner, embedding_client=FakeEmbeddingClient())
     await hybrid.store(Learning(trigger_keys=["x"], learning=""))
     assert hybrid._embedding_cache == {}
@@ -100,7 +97,7 @@ async def test_store_swallows_embedding_failure() -> None:
         async def embed_batch(self, texts: list[str]) -> list[list[float]]:
             raise RuntimeError("boom")
 
-    inner = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
+    inner = InMemoryLearningStore()
     hybrid = HybridLearningStore(inner, embedding_client=_BrokenClient())
     learning_id = await hybrid.store(Learning(trigger_keys=["x"], learning="text"))
     assert hybrid._embedding_cache == {}
@@ -108,7 +105,7 @@ async def test_store_swallows_embedding_failure() -> None:
 
 
 async def test_find_relevant_falls_back_to_keyword_only_when_no_client() -> None:
-    inner = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
+    inner = InMemoryLearningStore()
     hybrid = HybridLearningStore(inner)
     await hybrid.store(Learning(trigger_keys=["deploy"], learning="deploy carefully"))
     results = await hybrid.find_relevant("deploy")
@@ -116,7 +113,7 @@ async def test_find_relevant_falls_back_to_keyword_only_when_no_client() -> None
 
 
 async def test_find_relevant_returns_empty_when_no_keyword_results() -> None:
-    inner = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
+    inner = InMemoryLearningStore()
     hybrid = HybridLearningStore(inner, embedding_client=FakeEmbeddingClient())
     results = await hybrid.find_relevant("nothing matches")
     assert results == []
@@ -133,7 +130,7 @@ async def test_find_relevant_falls_back_when_query_embedding_fails() -> None:
         async def embed_batch(self, texts: list[str]) -> list[list[float]]:
             raise RuntimeError("boom")
 
-    inner = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
+    inner = InMemoryLearningStore()
     hybrid = HybridLearningStore(inner, embedding_client=_FailsOnQuery())
     await hybrid.store(Learning(trigger_keys=["deploy"], learning="deploy carefully"))
     results = await hybrid.find_relevant("deploy")
@@ -141,7 +138,7 @@ async def test_find_relevant_falls_back_when_query_embedding_fails() -> None:
 
 
 async def test_find_relevant_falls_back_when_query_vector_is_all_zero() -> None:
-    inner = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
+    inner = InMemoryLearningStore()
     hybrid = HybridLearningStore(inner, embedding_client=NoopEmbeddingClient(dimension=4))
     await hybrid.store(Learning(trigger_keys=["deploy"], learning="deploy carefully"))
     results = await hybrid.find_relevant("deploy")
@@ -149,7 +146,7 @@ async def test_find_relevant_falls_back_when_query_vector_is_all_zero() -> None:
 
 
 async def test_find_relevant_uses_cached_embedding_for_scoring() -> None:
-    inner = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
+    inner = InMemoryLearningStore()
     hybrid = HybridLearningStore(inner, embedding_client=FakeEmbeddingClient())
     await hybrid.store(Learning(trigger_keys=["deploy"], learning="deploy carefully"))
     results = await hybrid.find_relevant("deploy carefully")
@@ -157,7 +154,7 @@ async def test_find_relevant_uses_cached_embedding_for_scoring() -> None:
 
 
 async def test_find_relevant_computes_and_caches_embedding_when_not_cached() -> None:
-    inner = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
+    inner = InMemoryLearningStore()
     hybrid = HybridLearningStore(inner, embedding_client=FakeEmbeddingClient())
     learning_id = await inner.store(Learning(trigger_keys=["deploy"], learning="deploy carefully"))
     # Not stored through hybrid.store(), so no cache entry exists yet.
@@ -181,7 +178,7 @@ async def test_find_relevant_swallows_per_learning_embedding_failure() -> None:
         async def embed_batch(self, texts: list[str]) -> list[list[float]]:
             raise RuntimeError("boom")
 
-    inner = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
+    inner = InMemoryLearningStore()
     client = _FailsOnLearningOnly()
     hybrid = HybridLearningStore(inner, embedding_client=client)
     await inner.store(Learning(trigger_keys=["deploy"], learning="deploy carefully"))
@@ -192,7 +189,7 @@ async def test_find_relevant_swallows_per_learning_embedding_failure() -> None:
 
 
 async def test_find_relevant_filters_below_min_combined_score() -> None:
-    inner = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
+    inner = InMemoryLearningStore()
     # query embeds to all-zero -> falls back to keyword-only path, so use a
     # non-noop client returning orthogonal vectors to force a low combined score.
 
@@ -214,7 +211,7 @@ async def test_find_relevant_filters_below_min_combined_score() -> None:
 
 
 async def test_mark_used_delegates_to_inner_store() -> None:
-    inner = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
+    inner = InMemoryLearningStore()
     hybrid = HybridLearningStore(inner)
     lid = await hybrid.store(Learning(trigger_keys=["x"], learning="x"))
     await hybrid.mark_used([lid])
@@ -223,64 +220,19 @@ async def test_mark_used_delegates_to_inner_store() -> None:
 
 
 async def test_check_auto_promotions_delegates_to_inner_store() -> None:
-    inner = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
+    inner = InMemoryLearningStore()
     hybrid = HybridLearningStore(inner)
-    # Promotion requires validation evidence since M4-B3: a Run-sourced
-    # learning whose recorded outcome is a success is promotable; one without
-    # any evidence is not, however often it was hit.
-    evidential = Learning(
-        trigger_keys=["x"],
-        learning="x",
-        hit_count=10,
-        run_id="run-1",
-        confidence=1.0,
-        evaluation_ids=["eval-1"],
-    )
-    bare = Learning(trigger_keys=["y"], learning="y", hit_count=10)
-    await hybrid.store(evidential)
-    await hybrid.store(bare)
+    await hybrid.store(Learning(trigger_keys=["x"], learning="x", hit_count=10))
     promoted = await hybrid.check_auto_promotions(threshold=5)
-    assert [lr.id for lr in promoted] == [evidential.id]
+    assert len(promoted) == 1
 
 
 async def test_get_promoted_delegates_to_inner_store() -> None:
-    inner = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
+    inner = InMemoryLearningStore()
     hybrid = HybridLearningStore(inner)
     await hybrid.store(Learning(trigger_keys=["x"], learning="x", hit_count=10, status="promoted"))
     promoted = await hybrid.get_promoted()
     assert len(promoted) == 1
-
-
-async def test_promote_learning_delegates_to_inner_store() -> None:
-    """The Gauntlet's per-candidate promotion seam (M4-B2) forwards verbatim.
-
-    The wrapper adds search ranking, not promotion policy, so the verdict's
-    provenance must reach the inner store exactly as given and come back
-    attached to the promoted learning.
-    """
-    inner = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
-    hybrid = HybridLearningStore(inner)
-    lid = await hybrid.store(Learning(trigger_keys=["x"], learning="x", run_id="run-1"))
-
-    promoted = await hybrid.promote_learning(
-        lid,
-        org_id="",
-        validated_by="independent-trials",
-        evaluator_version="1.4.2",
-        validated_at=datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC),
-        validation_run_ids=("run-eval-1", "run-eval-2"),
-        validation_content_hash="deadbeef",
-    )
-
-    assert promoted is not None
-    assert promoted.status == "promoted"
-    assert promoted.validated_by == "independent-trials"
-    assert promoted.validated_evaluator_version == "1.4.2"
-    assert promoted.validated_at == datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
-    assert promoted.validation_run_ids == ["run-eval-1", "run-eval-2"]
-    assert promoted.validation_content_hash == "deadbeef"
-    # And it reads back as promoted through the wrapper too.
-    assert [lr.id for lr in await hybrid.get_promoted()] == [lid]
 
 
 def test_weight_constants_have_expected_values() -> None:

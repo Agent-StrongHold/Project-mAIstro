@@ -7,9 +7,7 @@ skills (skills don't override existing tool names).
 
 from __future__ import annotations
 
-import hashlib
 import logging
-from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -57,11 +55,7 @@ class FilesystemSkillLoader:
             logger.warning("Invalid skill file (parse failed): %s", path)
             return None
 
-        return replace(
-            skill,
-            content_hash=hashlib.sha256(content.encode("utf-8")).hexdigest(),
-            provenance=str(path),
-        )
+        return skill
 
     def load_all(self) -> list[SkillDefinition]:
         """Load all *.md files from the skills directory."""

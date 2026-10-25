@@ -1,6 +1,6 @@
 import { defineConfig } from "@playwright/test";
 
-const BASE_URL = process.env.PLAYWRIGHT_BASE_URL || "http://localhost:8101";  // DevSkim: ignore DS162092 until 2027-12-31
+const BASE_URL = process.env.PLAYWRIGHT_BASE_URL || "http://localhost:8101";
 
 export default defineConfig({
   testDir: "./e2e",

@@ -11,7 +11,6 @@ from typing import Any
 
 import pytest
 
-from maistro.memory.exposure import MemoryExposureMode
 from maistro.persistence.pg_outcomes import PgOutcomeStore
 from maistro.types.memory import Outcome
 
@@ -78,7 +77,7 @@ def conn() -> FakeConnection:
 
 @pytest.fixture
 def store(conn: FakeConnection) -> PgOutcomeStore:
-    return PgOutcomeStore(FakePool(conn), exposure_mode=MemoryExposureMode.AGENT_MANAGED)
+    return PgOutcomeStore(FakePool(conn))
 
 
 #: A fixed recording time, so the insert tuple is assertable.

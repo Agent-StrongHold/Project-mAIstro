@@ -3,12 +3,10 @@
 import os
 
 from maistro.http import shared_client
+from services import tork_client
 
 LAUNCH_API = os.environ.get("DEPLOY_API_URL") or os.environ.get("DEPLOY_TARGET_API_URL") or ""
-FANTASIA_BASE = os.environ.get(
-    "FANTASIA_BASE_URL",
-    "http://127.0.0.1:8101",  # DevSkim: ignore DS162092 until 2027-12-31
-)
+FANTASIA_BASE = os.environ.get("FANTASIA_BASE_URL", "http://127.0.0.1:8101")
 
 
 async def trigger_deploy(
@@ -20,10 +18,6 @@ async def trigger_deploy(
     force: bool = False,
 ) -> dict:
     """Submit build+test job to the external CI system. Raises if scan is blocking and force=False."""
-    # Lazy: ``tork_client`` is an optional deploy adapter not present in every
-    # checkout; importing it at module load blocked coverage of loopback defaults.
-    from services import tork_client
-
     if scan_summary and scan_summary.get("blocking") and not force:
         raise Exception("blocking: scan has critical/high findings. Use force=True to override.")
 

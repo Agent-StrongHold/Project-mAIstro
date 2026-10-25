@@ -64,9 +64,5 @@ def publish_artifact(
 ) -> dict:
     if body.kind not in ARTIFACT_KINDS:
         raise HTTPException(status_code=400, detail=f"unknown kind: {body.kind}")
-    try:
-        artifact = get_state().add_artifact(body.kind, body.title, body.body)
-    except ValueError as exc:
-        # Published-content bounds are enforced at the state write seam.
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    artifact = get_state().add_artifact(body.kind, body.title, body.body)
     return artifact.to_dict()

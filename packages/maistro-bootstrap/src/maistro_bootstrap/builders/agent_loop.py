@@ -7,7 +7,7 @@ import logging
 import os
 import shlex
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from maistro_bootstrap.builders.errors import BlockedCommandError
@@ -83,17 +83,13 @@ class AgentLoopConfig:
     # None → resolved per-worker via model_for_worker(); set explicitly to override.
     model: str | None = None
     worker: str = "frank"
-    # Restored at the #777 develop sync (352aea3f4): `system_prompt` had no
-    # readers when the dead-code pass removed it, but M5-B evaluator-oracle
-    # immunity introduced one — maistro_rsi.local_loop.make_builders_apply_patch
-    # falls back to `config.system_prompt` when no genome strategy prompt is
-    # supplied (packages/maistro-rsi/src/maistro_rsi/local_loop.py:755).
     system_prompt: str = (
         "You are a precise coding assistant working inside an isolated git worktree. "
         "Use the provided tools to read files, write changes, and run commands. "
         "Always confirm destructive actions before executing them. "
         "Never access paths outside the workspace root."
     )
+    tool_definitions: list[dict[str, Any]] = field(default_factory=list)
 
     def resolved_model(self) -> str:
         return self.model or model_for_worker(self.worker)
@@ -394,8 +390,8 @@ def _dispatch_tool(session: BuilderSession, name: str, inputs: dict[str, Any]) -
         if result is not None:
             return result
         if name == "run_command":
-            # Tracked follow-up (#329 / ADR-090726-9a4e): `requires_human_approval`
-            # is model-authored — the same model that wants to run the command
+            # TODO(#329 / ADR-090726-9a4e): `requires_human_approval` is
+            # model-authored — the same model that wants to run the command
             # decides whether to flag it — so the gate only binds when the
             # model cooperates. Phase 1 deliberately does not change these
             # semantics; the ADR routes the builders' approval gate toward

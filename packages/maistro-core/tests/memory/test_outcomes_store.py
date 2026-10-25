@@ -6,7 +6,6 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from maistro.memory.exposure import MemoryExposureMode
 from maistro.memory.outcomes import InMemoryOutcomeStore
 from maistro.memory.types import Outcome
 
@@ -20,7 +19,7 @@ def _outcome(**kwargs: object) -> Outcome:
 class TestRecord:
     @pytest.mark.asyncio
     async def test_record_assigns_incrementing_ids(self) -> None:
-        store = InMemoryOutcomeStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
+        store = InMemoryOutcomeStore()
         first_id = await store.record(_outcome())
         second_id = await store.record(_outcome())
         assert first_id == 1
@@ -28,7 +27,7 @@ class TestRecord:
 
     @pytest.mark.asyncio
     async def test_record_evicts_oldest_when_at_capacity(self) -> None:
-        store = InMemoryOutcomeStore(max_outcomes=2, exposure_mode=MemoryExposureMode.AGENT_MANAGED)
+        store = InMemoryOutcomeStore(max_outcomes=2)
         await store.record(_outcome(task_type="first"))
         await store.record(_outcome(task_type="second"))
         await store.record(_outcome(task_type="third"))
@@ -39,7 +38,7 @@ class TestRecord:
 class TestGetTaskCompletionRate:
     @pytest.mark.asyncio
     async def test_empty_store_returns_zero_rate(self) -> None:
-        store = InMemoryOutcomeStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
+        store = InMemoryOutcomeStore()
         result = await store.get_task_completion_rate()
         assert result["total"] == 0
         assert result["rate"] == 0.0
@@ -47,7 +46,7 @@ class TestGetTaskCompletionRate:
 
     @pytest.mark.asyncio
     async def test_filters_by_task_type_and_aggregates_by_model(self) -> None:
-        store = InMemoryOutcomeStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
+        store = InMemoryOutcomeStore()
         await store.record(_outcome(task_type="code", model_used="gpt", success=True))
         await store.record(_outcome(task_type="code", model_used="gpt", success=False))
         await store.record(_outcome(task_type="chat", model_used="claude", success=True))
@@ -61,7 +60,7 @@ class TestGetTaskCompletionRate:
 
     @pytest.mark.asyncio
     async def test_excludes_outcomes_outside_cutoff_window(self) -> None:
-        store = InMemoryOutcomeStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
+        store = InMemoryOutcomeStore()
         old = _outcome(created_at=datetime.now(UTC) - timedelta(days=10))
         await store.record(old)
         result = await store.get_task_completion_rate(days=7)
@@ -69,7 +68,7 @@ class TestGetTaskCompletionRate:
 
     @pytest.mark.asyncio
     async def test_org_id_filters_results(self) -> None:
-        store = InMemoryOutcomeStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
+        store = InMemoryOutcomeStore()
         await store.record(_outcome(org_id="org-a"))
         await store.record(_outcome(org_id="org-b"))
         result = await store.get_task_completion_rate(org_id="org-a")
@@ -79,13 +78,13 @@ class TestGetTaskCompletionRate:
 class TestGetExperienceContext:
     @pytest.mark.asyncio
     async def test_no_matches_returns_empty_string(self) -> None:
-        store = InMemoryOutcomeStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
+        store = InMemoryOutcomeStore()
         result = await store.get_experience_context("code")
         assert result == ""
 
     @pytest.mark.asyncio
     async def test_hard_failures_render_as_markdown(self) -> None:
-        store = InMemoryOutcomeStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
+        store = InMemoryOutcomeStore()
         await store.record(
             _outcome(task_type="code", success=False, error_type="TimeoutError", model_used="gpt")
         )
@@ -96,14 +95,14 @@ class TestGetExperienceContext:
 
     @pytest.mark.asyncio
     async def test_unknown_error_type_defaults_label(self) -> None:
-        store = InMemoryOutcomeStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
+        store = InMemoryOutcomeStore()
         await store.record(_outcome(task_type="code", success=False, error_type=""))
         result = await store.get_experience_context("code")
         assert "unknown" in result
 
     @pytest.mark.asyncio
     async def test_thumb_down_outcomes_render_as_markdown(self) -> None:
-        store = InMemoryOutcomeStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
+        store = InMemoryOutcomeStore()
         await store.record(
             _outcome(
                 task_type="code",
@@ -120,7 +119,7 @@ class TestGetExperienceContext:
 
     @pytest.mark.asyncio
     async def test_thumb_down_without_comment_omits_tail(self) -> None:
-        store = InMemoryOutcomeStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
+        store = InMemoryOutcomeStore()
         await store.record(_outcome(task_type="code", success=True, thumb="down", node_id=""))
         result = await store.get_experience_context("code")
         assert "node=(unknown)" in result
@@ -128,7 +127,7 @@ class TestGetExperienceContext:
 
     @pytest.mark.asyncio
     async def test_both_failures_and_thumb_downs_render_with_blank_line_between(self) -> None:
-        store = InMemoryOutcomeStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
+        store = InMemoryOutcomeStore()
         await store.record(_outcome(task_type="code", success=False, error_type="E"))
         await store.record(_outcome(task_type="code", success=True, thumb="down"))
         result = await store.get_experience_context("code")
@@ -139,7 +138,7 @@ class TestGetExperienceContext:
 
     @pytest.mark.asyncio
     async def test_tool_name_filter_excludes_non_matching(self) -> None:
-        store = InMemoryOutcomeStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
+        store = InMemoryOutcomeStore()
         await store.record(
             _outcome(
                 task_type="code",
@@ -152,7 +151,7 @@ class TestGetExperienceContext:
 
     @pytest.mark.asyncio
     async def test_tool_name_filter_includes_matching(self) -> None:
-        store = InMemoryOutcomeStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
+        store = InMemoryOutcomeStore()
         await store.record(
             _outcome(
                 task_type="code",
@@ -166,21 +165,21 @@ class TestGetExperienceContext:
 
     @pytest.mark.asyncio
     async def test_org_id_filter_excludes_non_matching(self) -> None:
-        store = InMemoryOutcomeStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
+        store = InMemoryOutcomeStore()
         await store.record(_outcome(task_type="code", success=False, org_id="org-a"))
         result = await store.get_experience_context("code", org_id="org-b")
         assert result == ""
 
     @pytest.mark.asyncio
     async def test_project_id_filter_excludes_non_matching(self) -> None:
-        store = InMemoryOutcomeStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
+        store = InMemoryOutcomeStore()
         await store.record(_outcome(task_type="code", success=False, project_id="proj-a"))
         result = await store.get_experience_context("code", project_id="proj-b")
         assert result == ""
 
     @pytest.mark.asyncio
     async def test_project_id_filter_includes_matching(self) -> None:
-        store = InMemoryOutcomeStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
+        store = InMemoryOutcomeStore()
         await store.record(
             _outcome(task_type="code", success=False, error_type="E", project_id="proj-a")
         )
@@ -189,7 +188,7 @@ class TestGetExperienceContext:
 
     @pytest.mark.asyncio
     async def test_excludes_outside_cutoff_window(self) -> None:
-        store = InMemoryOutcomeStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
+        store = InMemoryOutcomeStore()
         old = _outcome(
             task_type="code",
             success=False,
@@ -201,14 +200,14 @@ class TestGetExperienceContext:
 
     @pytest.mark.asyncio
     async def test_non_matching_task_type_excluded(self) -> None:
-        store = InMemoryOutcomeStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
+        store = InMemoryOutcomeStore()
         await store.record(_outcome(task_type="chat", success=False))
         result = await store.get_experience_context("code")
         assert result == ""
 
     @pytest.mark.asyncio
     async def test_limit_truncates_to_most_recent(self) -> None:
-        store = InMemoryOutcomeStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
+        store = InMemoryOutcomeStore()
         for i in range(3):
             await store.record(_outcome(task_type="code", success=False, error_type=f"Err{i}"))
         result = await store.get_experience_context("code", limit=1)
@@ -219,7 +218,7 @@ class TestGetExperienceContext:
 class TestGetUsageBreakdown:
     @pytest.mark.asyncio
     async def test_groups_by_default_user_id(self) -> None:
-        store = InMemoryOutcomeStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
+        store = InMemoryOutcomeStore()
         await store.record(_outcome(user_id="u1", input_tokens=10, output_tokens=5, success=True))
         await store.record(_outcome(user_id="u1", input_tokens=20, output_tokens=10, success=False))
         result = await store.get_usage_breakdown()
@@ -235,14 +234,14 @@ class TestGetUsageBreakdown:
 
     @pytest.mark.asyncio
     async def test_unknown_group_key_falls_back_to_placeholder(self) -> None:
-        store = InMemoryOutcomeStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
+        store = InMemoryOutcomeStore()
         await store.record(_outcome(user_id=""))
         result = await store.get_usage_breakdown(group_by="user_id")
         assert result[0]["group"] == "(unknown)"
 
     @pytest.mark.asyncio
     async def test_sorted_descending_by_total_tokens(self) -> None:
-        store = InMemoryOutcomeStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
+        store = InMemoryOutcomeStore()
         await store.record(_outcome(user_id="small", input_tokens=1, output_tokens=1))
         await store.record(_outcome(user_id="big", input_tokens=100, output_tokens=100))
         result = await store.get_usage_breakdown()
@@ -250,7 +249,7 @@ class TestGetUsageBreakdown:
 
     @pytest.mark.asyncio
     async def test_org_id_filters_results(self) -> None:
-        store = InMemoryOutcomeStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
+        store = InMemoryOutcomeStore()
         await store.record(_outcome(org_id="org-a", user_id="u1"))
         await store.record(_outcome(org_id="org-b", user_id="u2"))
         result = await store.get_usage_breakdown(org_id="org-a")
@@ -259,7 +258,7 @@ class TestGetUsageBreakdown:
 
     @pytest.mark.asyncio
     async def test_excludes_outside_cutoff_window(self) -> None:
-        store = InMemoryOutcomeStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
+        store = InMemoryOutcomeStore()
         await store.record(
             _outcome(user_id="u1", created_at=datetime.now(UTC) - timedelta(days=10))
         )
@@ -268,7 +267,7 @@ class TestGetUsageBreakdown:
 
     @pytest.mark.asyncio
     async def test_group_by_arbitrary_field(self) -> None:
-        store = InMemoryOutcomeStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
+        store = InMemoryOutcomeStore()
         await store.record(_outcome(task_type="code", input_tokens=5))
         result = await store.get_usage_breakdown(group_by="task_type")
         assert result[0]["group"] == "code"
@@ -277,7 +276,7 @@ class TestGetUsageBreakdown:
 class TestGetDailyTimeseries:
     @pytest.mark.asyncio
     async def test_buckets_by_day_without_group(self) -> None:
-        store = InMemoryOutcomeStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
+        store = InMemoryOutcomeStore()
         await store.record(_outcome(input_tokens=10, output_tokens=5))
         result = await store.get_daily_timeseries()
         assert len(result) == 1
@@ -287,7 +286,7 @@ class TestGetDailyTimeseries:
 
     @pytest.mark.asyncio
     async def test_buckets_by_day_and_group(self) -> None:
-        store = InMemoryOutcomeStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
+        store = InMemoryOutcomeStore()
         await store.record(_outcome(user_id="u1", input_tokens=10))
         await store.record(_outcome(user_id="u2", input_tokens=20))
         result = await store.get_daily_timeseries(group_by="user_id")
@@ -296,7 +295,7 @@ class TestGetDailyTimeseries:
 
     @pytest.mark.asyncio
     async def test_results_sorted_by_date(self) -> None:
-        store = InMemoryOutcomeStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
+        store = InMemoryOutcomeStore()
         await store.record(_outcome(created_at=datetime.now(UTC) - timedelta(days=2)))
         await store.record(_outcome(created_at=datetime.now(UTC)))
         result = await store.get_daily_timeseries(days=7)
@@ -305,7 +304,7 @@ class TestGetDailyTimeseries:
 
     @pytest.mark.asyncio
     async def test_org_id_filters_results(self) -> None:
-        store = InMemoryOutcomeStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
+        store = InMemoryOutcomeStore()
         await store.record(_outcome(org_id="org-a"))
         await store.record(_outcome(org_id="org-b"))
         result = await store.get_daily_timeseries(org_id="org-a")
@@ -313,7 +312,7 @@ class TestGetDailyTimeseries:
 
     @pytest.mark.asyncio
     async def test_excludes_outside_cutoff_window(self) -> None:
-        store = InMemoryOutcomeStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
+        store = InMemoryOutcomeStore()
         await store.record(_outcome(created_at=datetime.now(UTC) - timedelta(days=10)))
         result = await store.get_daily_timeseries(days=7)
         assert result == []
@@ -322,7 +321,7 @@ class TestGetDailyTimeseries:
 class TestListOutcomes:
     @pytest.mark.asyncio
     async def test_filters_by_task_type(self) -> None:
-        store = InMemoryOutcomeStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
+        store = InMemoryOutcomeStore()
         await store.record(_outcome(task_type="code"))
         await store.record(_outcome(task_type="chat"))
         result = await store.list_outcomes(task_type="code")
@@ -331,7 +330,7 @@ class TestListOutcomes:
 
     @pytest.mark.asyncio
     async def test_limit_truncates_to_most_recent(self) -> None:
-        store = InMemoryOutcomeStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
+        store = InMemoryOutcomeStore()
         for i in range(5):
             await store.record(_outcome(task_type=f"t{i}"))
         result = await store.list_outcomes(limit=2)
@@ -339,7 +338,7 @@ class TestListOutcomes:
 
     @pytest.mark.asyncio
     async def test_org_id_filters_results(self) -> None:
-        store = InMemoryOutcomeStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
+        store = InMemoryOutcomeStore()
         await store.record(_outcome(org_id="org-a"))
         await store.record(_outcome(org_id="org-b"))
         result = await store.list_outcomes(org_id="org-a")
@@ -347,7 +346,7 @@ class TestListOutcomes:
 
     @pytest.mark.asyncio
     async def test_excludes_outside_cutoff_window(self) -> None:
-        store = InMemoryOutcomeStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
+        store = InMemoryOutcomeStore()
         await store.record(_outcome(created_at=datetime.now(UTC) - timedelta(days=10)))
         result = await store.list_outcomes(days=7)
         assert result == []

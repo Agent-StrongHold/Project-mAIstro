@@ -30,19 +30,8 @@ class ProjectScopeStore(Protocol):
 
         ...
 
-    async def root_for_workspace(
-        self, workspace_id: str, *, principal_id: str | None = None
-    ) -> Project:
+    async def root_for_workspace(self, workspace_id: str) -> Project:
         """Return the canonical Root Project for a Workspace."""
-
-        ...
-
-    def bind_workspace_store(self, workspace_store: WorkspaceStore) -> None:
-        """Pair this Project store with the Workspace store it resolves scope in.
-
-        The Workspace store calls this at construction, so a composed pair
-        cannot leave Project scoping unwired (#1150).
-        """
 
         ...
 
@@ -54,7 +43,6 @@ class ProjectScopeStore(Protocol):
         name: str,
         defaults: dict[str, Any] | None = None,
         metadata: dict[str, Any] | None = None,
-        principal_id: str | None = None,
     ) -> Project:
         """Create a child Project beneath a same-Workspace parent."""
 
@@ -65,25 +53,17 @@ class ProjectScopeStore(Protocol):
 
         ...
 
-    async def lineage(self, project_id: str, *, principal_id: str | None = None) -> list[Project]:
+    async def lineage(self, project_id: str) -> list[Project]:
         """Return the Project lineage ordered from Root Project to target."""
 
         ...
 
-    async def list_children(
-        self, project_id: str, *, principal_id: str | None = None
-    ) -> list[Project]:
+    async def list_children(self, project_id: str) -> list[Project]:
         """Return the target Project's direct children."""
 
         ...
 
-    async def move_project(
-        self,
-        project_id: str,
-        *,
-        parent_project_id: str,
-        principal_id: str | None = None,
-    ) -> Project:
+    async def move_project(self, project_id: str, *, parent_project_id: str) -> Project:
         """Move a non-root Project beneath a valid same-Workspace parent."""
 
         ...
@@ -99,7 +79,7 @@ class ProjectScopeStore(Protocol):
 
         ...
 
-    async def delete(self, project_id: str, *, principal_id: str | None = None) -> None:
+    async def delete(self, project_id: str) -> None:
         """Delete an empty non-root Project."""
 
         ...
@@ -115,12 +95,7 @@ class ProjectScopeStore(Protocol):
 
         ...
 
-    async def set_membership(
-        self,
-        membership: ProjectMembership,
-        *,
-        principal_id: str | None = None,
-    ) -> ProjectMembership:
+    async def set_membership(self, membership: ProjectMembership) -> ProjectMembership:
         """Create or update the one canonical membership for this principal.
 
         Keyed on `(project_id, principal_id)`, not on `membership_id`: a
@@ -132,12 +107,7 @@ class ProjectScopeStore(Protocol):
 
         ...
 
-    async def merge_membership(
-        self,
-        membership: ProjectMembership,
-        *,
-        principal_id: str | None = None,
-    ) -> ProjectMembership:
+    async def merge_membership(self, membership: ProjectMembership) -> ProjectMembership:
         """Merge a delegated re-grant into the canonical row atomically.
 
         The read that decides what to preserve and the write that stores it
@@ -155,51 +125,28 @@ class ProjectScopeStore(Protocol):
         ...
 
     async def memberships_for(
-        self,
-        project_id: str,
-        *,
-        principal_id: str | None = None,
-        acting_principal_id: str | None = None,
+        self, project_id: str, *, principal_id: str | None = None
     ) -> list[ProjectMembership]:
-        """List memberships at one Project, optionally for one principal.
-
-        ``principal_id`` narrows the list to one subject; the optional
-        ``acting_principal_id`` is the requester whose VIEW authority is
-        enforced at the boundary (#1150).
-        """
+        """List memberships at one Project, optionally for one principal."""
 
         ...
 
-    async def remove_membership(
-        self,
-        project_id: str,
-        *,
-        principal_id: str,
-        acting_principal_id: str | None = None,
-    ) -> None:
+    async def remove_membership(self, project_id: str, *, principal_id: str) -> None:
         """Revoke a principal's membership at one Project.
 
         A no-op when the principal has no membership there: revocation is
         idempotent the same way `WorkspaceStore.remove_membership` is.
-        ``acting_principal_id`` is the requester whose authority is checked;
-        ``None`` is the internal/system shape, not a self-service fallback.
         """
 
         ...
 
-    async def put_resource(
-        self, resource: ProjectScopedResource, *, principal_id: str | None = None
-    ) -> ProjectScopedResource:
+    async def put_resource(self, resource: ProjectScopedResource) -> ProjectScopedResource:
         """Create or replace a resource owned by a Project."""
 
         ...
 
     async def visible_resources(
-        self,
-        project_id: str,
-        *,
-        resource_type: str | None = None,
-        principal_id: str | None = None,
+        self, project_id: str, *, resource_type: str | None = None
     ) -> list[ProjectScopedResource]:
         """List resources visible from the target Project's ancestry."""
 
@@ -337,16 +284,12 @@ class InMemoryProjectScopeStore:
         self._root_by_workspace[workspace_id] = root.project_id
         return root.model_copy(deep=True)
 
-    async def root_for_workspace(
-        self, workspace_id: str, *, principal_id: str | None = None
-    ) -> Project:
+    async def root_for_workspace(self, workspace_id: str) -> Project:
         """Return the canonical Root Project for a Workspace."""
 
         root_id = self._root_by_workspace.get(workspace_id)
         if root_id is None:
             raise ProjectNotFound(f"Root Project for Workspace {workspace_id!r}")
-        if principal_id is not None:
-            await self._authorize_view(root_id, principal_id)
         return self._projects[root_id].model_copy(deep=True)
 
     async def create(
@@ -357,11 +300,10 @@ class InMemoryProjectScopeStore:
         name: str,
         defaults: dict[str, Any] | None = None,
         metadata: dict[str, Any] | None = None,
-        principal_id: str | None = None,
     ) -> Project:
         """Create a child Project beneath a same-Workspace parent."""
 
-        parent = await self._authorize_administer(parent_project_id, principal_id)
+        parent = self._require(parent_project_id)
         if parent.workspace_id != workspace_id:
             raise ProjectIntegrityError("Project parent must belong to the same Workspace")
         project = Project(
@@ -384,66 +326,6 @@ class InMemoryProjectScopeStore:
             raise ProjectScopeDenied("Project not found")
         await require_project_view(project, workspace_store, principal_id)
 
-    async def _require_project_administer(self, project: Project, principal_id: str) -> None:
-        from maistro.workspaces.store_boundary import (
-            is_blank_principal,
-            require_project_administer,
-        )
-
-        workspace_store = self._workspace_store
-        if workspace_store is None:
-            raise ProjectScopeDenied("Project not found")
-        if is_blank_principal(principal_id):
-            raise ProjectScopeDenied("Project not found")
-        await require_project_administer(project, workspace_store, principal_id)
-
-    async def _resolve_for_authorization(
-        self, project_id: str, principal_id: str | None
-    ) -> Project:
-        """Resolve the Project, collapsing not-found into the scoped denial.
-
-        The store boundary must not be an existence oracle: with an acting
-        principal, an unknown Project and one in a foreign Workspace are
-        indistinguishable, so both surface as the same `ProjectScopeDenied`.
-        """
-        try:
-            return self._require(project_id)
-        except ProjectNotFound:
-            if principal_id is None:
-                raise
-            raise ProjectScopeDenied("Project not found") from None
-
-    async def _authorize_view(self, project_id: str, principal_id: str | None) -> Project:
-        """Resolve the Project and enforce VIEW when a principal is supplied."""
-        project = await self._resolve_for_authorization(project_id, principal_id)
-        if principal_id is not None:
-            await self._require_project_view(project, principal_id)
-        return project
-
-    async def _authorize_administer(self, project_id: str, principal_id: str | None) -> Project:
-        """Resolve the Project and enforce ADMINISTER when a principal is supplied."""
-        project = await self._resolve_for_authorization(project_id, principal_id)
-        if principal_id is not None:
-            await self._require_project_administer(project, principal_id)
-        return project
-
-    async def _authorize_membership_write(
-        self, membership: ProjectMembership, principal_id: str | None, *, replacement: bool
-    ) -> Project:
-        project = await self._authorize_view(membership.project_id, principal_id)
-        if principal_id is not None and self._workspace_store is not None:
-            from maistro.projects.authorization import authorize_membership_write
-
-            await authorize_membership_write(
-                self,
-                project=project,
-                workspace_store=self._workspace_store,
-                membership=membership,
-                principal_id=principal_id,
-                replacement=replacement,
-            )
-        return project
-
     async def get(self, project_id: str, *, principal_id: str | None = None) -> Project | None:
         """Return a detached Project snapshot by ID when present."""
 
@@ -454,10 +336,9 @@ class InMemoryProjectScopeStore:
             await self._require_project_view(project, principal_id)
         return project.model_copy(deep=True)
 
-    async def lineage(self, project_id: str, *, principal_id: str | None = None) -> list[Project]:
+    async def lineage(self, project_id: str) -> list[Project]:
         """Return validated ancestry ordered from Root Project to target."""
 
-        await self._authorize_view(project_id, principal_id)
         lineage: list[Project] = []
         seen: set[str] = set()
         current = self._require(project_id)
@@ -479,12 +360,10 @@ class InMemoryProjectScopeStore:
         lineage.reverse()
         return [project.model_copy(deep=True) for project in lineage]
 
-    async def list_children(
-        self, project_id: str, *, principal_id: str | None = None
-    ) -> list[Project]:
+    async def list_children(self, project_id: str) -> list[Project]:
         """Return detached snapshots of the target's direct children."""
 
-        await self._authorize_view(project_id, principal_id)
+        self._require(project_id)
         children = [
             project.model_copy(deep=True)
             for project in self._projects.values()
@@ -493,16 +372,10 @@ class InMemoryProjectScopeStore:
         children.sort(key=lambda item: (item.created_at, item.project_id))
         return children
 
-    async def move_project(
-        self,
-        project_id: str,
-        *,
-        parent_project_id: str,
-        principal_id: str | None = None,
-    ) -> Project:
+    async def move_project(self, project_id: str, *, parent_project_id: str) -> Project:
         """Move a non-root Project without crossing Workspaces or forming a cycle."""
 
-        project = await self._authorize_administer(project_id, principal_id)
+        project = self._require(project_id)
         if project.is_root:
             raise ProjectIntegrityError("Root Project cannot be moved")
         parent = self._require(parent_project_id)
@@ -533,7 +406,9 @@ class InMemoryProjectScopeStore:
     ) -> Project:
         """Replace a Project's defaults and advance its update timestamp."""
 
-        project = await self._authorize_administer(project_id, principal_id)
+        project = self._require(project_id)
+        if principal_id is not None:
+            await self._require_project_view(project, principal_id)
         updated = project.model_copy(
             deep=True,
             update={"defaults": dict(defaults), "updated_at": datetime.now(UTC)},
@@ -541,10 +416,10 @@ class InMemoryProjectScopeStore:
         self._projects[project_id] = updated
         return updated.model_copy(deep=True)
 
-    async def delete(self, project_id: str, *, principal_id: str | None = None) -> None:
+    async def delete(self, project_id: str) -> None:
         """Delete an empty non-root Project while preserving owned records."""
 
-        project = await self._authorize_administer(project_id, principal_id)
+        project = self._require(project_id)
         if project.is_root:
             raise ProjectIntegrityError("Root Project cannot be deleted")
         if any(item.parent_project_id == project_id for item in self._projects.values()):
@@ -572,20 +447,10 @@ class InMemoryProjectScopeStore:
             resolved.update(project.defaults)
         return resolved
 
-    async def set_membership(
-        self,
-        membership: ProjectMembership,
-        *,
-        principal_id: str | None = None,
-    ) -> ProjectMembership:
-        """Create or update the one canonical membership per (project, principal).
+    async def set_membership(self, membership: ProjectMembership) -> ProjectMembership:
+        """Create or update the one canonical membership per (project, principal)."""
 
-        This upsert replaces the row wholesale, so a supplied ``principal_id``
-        must hold ADMINISTER (#1150); delegated additions go through
-        `merge_membership`.
-        """
-
-        project = await self._authorize_membership_write(membership, principal_id, replacement=True)
+        project = self._require(membership.project_id)
         if project.workspace_id != membership.workspace_id:
             raise ProjectIntegrityError("ProjectMembership Workspace does not match Project")
         key = (membership.project_id, membership.principal_id)
@@ -600,12 +465,7 @@ class InMemoryProjectScopeStore:
         self._memberships[key] = updated
         return updated.model_copy(deep=True)
 
-    async def merge_membership(
-        self,
-        membership: ProjectMembership,
-        *,
-        principal_id: str | None = None,
-    ) -> ProjectMembership:
+    async def merge_membership(self, membership: ProjectMembership) -> ProjectMembership:
         """Merge-or-create the canonical membership in one atomic step.
 
         The in-memory store runs on one event loop and this method has no
@@ -613,9 +473,7 @@ class InMemoryProjectScopeStore:
         no other coroutine can interleave a `remove_membership` between the
         two the way it could against the API's read-then-write (#1148).
         """
-        project = await self._authorize_membership_write(
-            membership, principal_id, replacement=False
-        )
+        project = self._require(membership.project_id)
         if project.workspace_id != membership.workspace_id:
             raise ProjectIntegrityError("ProjectMembership Workspace does not match Project")
         key = (membership.project_id, membership.principal_id)
@@ -642,11 +500,10 @@ class InMemoryProjectScopeStore:
         project_id: str,
         *,
         principal_id: str | None = None,
-        acting_principal_id: str | None = None,
     ) -> list[ProjectMembership]:
         """List detached memberships at a Project, optionally for one principal."""
 
-        await self._authorize_view(project_id, acting_principal_id)
+        self._require(project_id)
         memberships = [
             membership.model_copy(deep=True)
             for membership in self._memberships.values()
@@ -656,24 +513,15 @@ class InMemoryProjectScopeStore:
         memberships.sort(key=lambda item: (item.created_at, item.membership_id))
         return memberships
 
-    async def remove_membership(
-        self,
-        project_id: str,
-        *,
-        principal_id: str,
-        acting_principal_id: str | None = None,
-    ) -> None:
+    async def remove_membership(self, project_id: str, *, principal_id: str) -> None:
         """Revoke a principal's membership at one Project, if any exists."""
 
-        await self._authorize_administer(project_id, acting_principal_id)
         self._memberships.pop((project_id, principal_id), None)
 
-    async def put_resource(
-        self, resource: ProjectScopedResource, *, principal_id: str | None = None
-    ) -> ProjectScopedResource:
+    async def put_resource(self, resource: ProjectScopedResource) -> ProjectScopedResource:
         """Create or replace a Project resource without crossing Workspaces."""
 
-        project = await self._authorize_administer(resource.project_id, principal_id)
+        project = self._require(resource.project_id)
         if project.workspace_id != resource.workspace_id:
             raise ProjectIntegrityError("resource Workspace does not match Project")
         existing = self._resources.get(resource.resource_id)
@@ -687,14 +535,10 @@ class InMemoryProjectScopeStore:
         project_id: str,
         *,
         resource_type: str | None = None,
-        principal_id: str | None = None,
     ) -> list[ProjectScopedResource]:
         """Return resources owned by the target Project or its ancestors."""
 
-        ancestry = {
-            project.project_id
-            for project in await self.lineage(project_id, principal_id=principal_id)
-        }
+        ancestry = {project.project_id for project in await self.lineage(project_id)}
         resources = [
             resource.model_copy(deep=True)
             for resource in self._resources.values()

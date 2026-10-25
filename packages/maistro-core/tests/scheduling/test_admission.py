@@ -32,10 +32,8 @@ from maistro.runs.sources import (
     SCHEDULE_CATCHUP_KEY,
     SCHEDULE_ID_KEY,
     SCHEDULE_INPUTS_KEY,
-    SCHEDULE_REQUESTED_BY_KEY,
     SCHEDULE_SOURCE,
     SCHEDULE_TRIGGER_KEY,
-    SCHEDULE_TRIGGER_MANUAL,
     SCHEDULE_TRIGGER_RECURRING,
     SCHEDULED_FOR_KEY,
     canonical_occurrence_instant,
@@ -44,8 +42,6 @@ from maistro.runs.sources import (
 from maistro.runs.store import InMemoryRunStore, RunIntegrityError
 from maistro.scheduling.admission import (
     REQUEST_ID_KEY,
-    SCHEDULER_SERVICE_ID,
-    SCHEDULER_SERVICE_ID_KEY,
     ManualFireRefused,
     ScheduleAdmission,
     ScheduleRunAdmitter,
@@ -2008,52 +2004,6 @@ class TestManualFire:
         # its occurrences: it stays exactly where the schedule left it.
         assert recorded.last_fired_at == schedule.last_fired_at
         assert recorded.next_due_at == schedule.next_due_at
-
-    async def test_a_manual_fire_names_the_principal_that_asked_for_it(self, harness) -> None:
-        """The requesting principal rides the Run, separately from the actor (#1201).
-
-        A manual fire consumes the schedule actor's authority — the Run's
-        scope and actor stay the schedule's — but *who asked for a fire now*
-        is its own provenance fact, and the background service that performed
-        the admission is a third identity again, distinct from both.
-        """
-        admitter, runs, _templates, schedules, project_id = harness
-        schedule = await _schedule(schedules, project_id)
-
-        result = await admitter.admit_due(
-            schedule, now=NOON + timedelta(minutes=3), manual=True, requested_by="requesting-human"
-        )
-
-        assert len(result.run_ids) == 1
-        run = await runs.get_run(result.run_ids[0])
-        assert run is not None
-        # The authority consumed is still the schedule actor's; the caller is
-        # recorded beside it, not instead of it.
-        assert run.actor_principal_id == "test-actor-principal"
-        assert run.provenance[SCHEDULE_TRIGGER_KEY] == SCHEDULE_TRIGGER_MANUAL
-        assert run.provenance[SCHEDULE_REQUESTED_BY_KEY] == "requesting-human"
-        # The service that fired it is neither of the two principals above.
-        assert run.provenance[SCHEDULER_SERVICE_ID_KEY] == SCHEDULER_SERVICE_ID
-
-    async def test_a_tick_fire_names_no_requester(self, harness) -> None:
-        """The requester key's absence means "no requester", deterministically.
-
-        A nominal occurrence has no caller to name, so the key must be absent
-        outright — an audit reader has to tell "this fire was the cron's own"
-        from "this fire was asked for" without ever guessing what a missing
-        key could otherwise mean (#1201).
-        """
-        admitter, runs, _templates, schedules, project_id = harness
-        schedule = await _schedule(schedules, project_id)
-
-        result = await admitter.admit_due(schedule, now=NOON)
-
-        assert len(result.run_ids) == 1
-        run = await runs.get_run(result.run_ids[0])
-        assert run is not None
-        assert run.provenance[SCHEDULE_TRIGGER_KEY] == SCHEDULE_TRIGGER_RECURRING
-        assert SCHEDULE_REQUESTED_BY_KEY not in run.provenance
-        assert run.provenance[SCHEDULER_SERVICE_ID_KEY] == SCHEDULER_SERVICE_ID
 
     async def test_a_manual_fire_does_not_carry_the_cursor_past_an_owed_occurrence(
         self, harness

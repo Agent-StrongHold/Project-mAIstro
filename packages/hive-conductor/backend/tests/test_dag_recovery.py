@@ -6,12 +6,8 @@ from types import SimpleNamespace
 import pytest
 from services.dag_execution_scope import DagExecutionScope
 
-from maistro.events.bus import EventBus
-from maistro.events.envelope import InMemoryEventStore
-from maistro.events.publisher import CanonicalEventPublisher
 from maistro.graph.definitions import Graph
 from maistro.runs.model import GraphSnapshot, Run, RunStatus
-from maistro.runs.recovery_events import CanonicalRecoveryEventSink
 
 
 def _legacy_dag() -> dict:
@@ -84,11 +80,9 @@ async def test_recovery_owns_only_hive_legacy_admissions(monkeypatch: pytest.Mon
 
     graph_store = object()
     run_store = object()
-    canonical_events = CanonicalEventPublisher(InMemoryEventStore(), legacy_bus=EventBus())
+    event_bus = object()
     container = SimpleNamespace(
-        graph_run_store=graph_store,
-        run_store=run_store,
-        canonical_event_publisher=canonical_events,
+        graph_run_store=graph_store, run_store=run_store, event_bus=event_bus
     )
     captured: dict = {}
 
@@ -103,7 +97,7 @@ async def test_recovery_owns_only_hive_legacy_admissions(monkeypatch: pytest.Mon
     assert captured["store"] is graph_store
     assert captured["run_store"] is run_store
     assert captured["limit"] == 7
-    assert isinstance(captured["events"], CanonicalRecoveryEventSink)
+    assert captured["events"] is event_bus
     assert captured["admission_source"] == "hive_legacy_dag"
 
     owned, _ = _queued_run(source="hive_legacy_dag")
@@ -130,7 +124,7 @@ async def test_admitted_run_persists_execution_mode_needed_after_restart(
 
     async def _scope(*args, **kwargs):
         del args, kwargs
-        return "ws-1", "project-1"
+        return "ws-1", "project-1", canonical_run_store
 
     async def _run_durable_graph(graph, **kwargs):
         seen["execute_graph"] = graph
@@ -151,11 +145,7 @@ async def test_admitted_run_persists_execution_mode_needed_after_restart(
         )
 
     monkeypatch.setattr(runner, "_scope", _scope)
-    monkeypatch.setattr(
-        runner,
-        "_container",
-        lambda: SimpleNamespace(run_store=canonical_run_store, graph_run_store=object()),
-    )
+    monkeypatch.setattr(runner, "get_run_store", lambda: object())
     monkeypatch.setattr(runner, "run_durable_graph", _run_durable_graph)
 
     result = await runner.execute_dag(
@@ -291,14 +281,14 @@ async def test_starting_the_recovery_cadence_twice_keeps_one_task(
 async def test_wakeup_owns_only_hive_legacy_admissions(monkeypatch: pytest.MonkeyPatch) -> None:
     """The timed half of the recovery cadence wakes due continuations through
     the canonical seam with the same ownership rule as the bootstrap half, and
-    reports its crash dispositions on the Container's canonical EventStore."""
+    reports its crash dispositions on the Container's canonical Event bus."""
     import services.canonical_dag_runner as runner
 
-    canonical_events = CanonicalEventPublisher(InMemoryEventStore(), legacy_bus=EventBus())
+    event_bus = object()
     container = SimpleNamespace(
         graph_run_store=object(),
         run_store=object(),
-        canonical_event_publisher=canonical_events,
+        event_bus=event_bus,
     )
     captured: dict = {}
 
@@ -312,7 +302,7 @@ async def test_wakeup_owns_only_hive_legacy_admissions(monkeypatch: pytest.Monke
     assert await runner.wake_due_dag_runs(limit=5) == 2
     assert captured["store"] is container.graph_run_store
     assert captured["run_store"] is container.run_store
-    assert isinstance(captured["events"], CanonicalRecoveryEventSink)
+    assert captured["events"] is event_bus
     assert captured["limit"] == 5
 
     owned, _ = _queued_run(source="hive_legacy_dag")
@@ -379,42 +369,3 @@ async def test_recovery_cadence_wakes_due_runs_and_survives_a_failed_half(
 async def _observed(calls: list[str], expected: list[str]) -> None:
     while calls[: len(expected)] != expected:
         await asyncio.sleep(0.01)
-
-
-@pytest.mark.asyncio
-async def test_canonical_recovery_events_requires_canonical_publisher(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """_canonical_recovery_events must raise when the publisher is not a
-    CanonicalEventPublisher (#1133)."""
-    import services.canonical_dag_runner as runner
-
-    container = SimpleNamespace(
-        run_store=object(),
-        canonical_event_publisher=EventBus(),  # Not a CanonicalEventPublisher
-    )
-    monkeypatch.setattr(runner, "_container", lambda: container)
-
-    with pytest.raises(RuntimeError, match="canonical recovery Event publisher is not configured"):
-        runner._canonical_recovery_events(container)
-
-
-@pytest.mark.asyncio
-async def test_canonical_recovery_events_returns_canonical_sink(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """_canonical_recovery_events returns a CanonicalRecoveryEventSink when
-    the publisher is correctly configured."""
-    import services.canonical_dag_runner as runner
-
-    canonical_events = CanonicalEventPublisher(InMemoryEventStore(), legacy_bus=EventBus())
-    container = SimpleNamespace(
-        run_store=object(),
-        canonical_event_publisher=canonical_events,
-    )
-    monkeypatch.setattr(runner, "_container", lambda: container)
-
-    sink = runner._canonical_recovery_events(container)
-    assert isinstance(sink, CanonicalRecoveryEventSink)
-    assert sink._runs is container.run_store
-    assert sink._events is canonical_events

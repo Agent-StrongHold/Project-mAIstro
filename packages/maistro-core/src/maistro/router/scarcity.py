@@ -11,8 +11,6 @@ from __future__ import annotations
 import math
 from typing import TYPE_CHECKING
 
-from maistro.types.model import normalized_daily_budget
-
 if TYPE_CHECKING:
     from maistro.types.model import ProviderConfig
 
@@ -32,15 +30,11 @@ INELIGIBLE_COST: float = 999.0
 
 
 def _daily_budget(provider: ProviderConfig) -> float:
-    """Normalize free_tokens to a daily budget regardless of billing cycle.
-
-    Delegates to the single canonical formula (`maistro.types.model.
-    normalized_daily_budget`, #1205) — scarcity is its production authority,
-    not a second implementation. An unknown `provider.billing_cycle` raises
-    `UnknownBillingCycleError` here instead of silently pricing the provider
-    as a monthly plan.
-    """
-    return normalized_daily_budget(provider.free_tokens, provider.billing_cycle)
+    """Normalize free_tokens to a daily budget regardless of billing cycle."""
+    free_tokens = provider.free_tokens
+    if provider.billing_cycle == "daily":
+        return float(free_tokens)
+    return float(free_tokens) / 30.0
 
 
 def compute_effective_cost(usage_pct: float, provider: ProviderConfig) -> float:

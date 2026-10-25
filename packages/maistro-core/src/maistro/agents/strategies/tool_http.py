@@ -11,10 +11,7 @@ from maistro.http import shared_client
 class HTTPToolExecutor:
     """Calls tools on HTTP servers like dev-tools-mcp."""
 
-    def __init__(
-        self,
-        base_url: str = "http://dev-tools-mcp:8300",  # DevSkim: ignore DS137138 until 2027-12-31
-    ) -> None:
+    def __init__(self, base_url: str = "http://dev-tools-mcp:8300") -> None:
         self._base_url = base_url.rstrip("/")
 
     async def call(self, tool_name: str, args: dict[str, Any]) -> str:

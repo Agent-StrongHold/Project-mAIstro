@@ -14,7 +14,7 @@ from typer import Typer
 from maistro.http import sync_client
 from maistro.security.outbound import configure_outbound_policy
 
-_DEFAULT_BASE = "http://127.0.0.1:8101"  # DevSkim: ignore DS162092 until 2027-12-31
+_DEFAULT_BASE = "http://127.0.0.1:8101"
 
 console = Console()
 app = Typer(help="Manage the HITL approval inbox.")

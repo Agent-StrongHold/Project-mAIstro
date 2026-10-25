@@ -27,7 +27,6 @@ class ChatSession(BaseModel):
 
     id: str
     user_id: str = ""
-    workspace_id: str | None = None
     title: str
     messages: list[ChatMessage] = Field(default_factory=list)
     created_at: datetime
@@ -39,17 +38,9 @@ class ChatSessionSummary(BaseModel):
 
     id: str
     user_id: str = ""
-    workspace_id: str | None = None
     title: str
     message_count: int
     updated_at: datetime
-
-
-class CreateSessionBody(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-
-    title: str = "New chat"
-    workspace_id: str
 
 
 class ChatCompletionRequest(BaseModel):
@@ -67,7 +58,6 @@ class Mission(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     id: str
-    run_id: str | None = None
     user_id: str = ""
     name: str
     description: str
@@ -207,14 +197,6 @@ class MCPServer(BaseModel):
     last_ping: datetime | None = None
     version: str | None = None
     capabilities: list[str] = Field(default_factory=list)
-    # Host-owned supply-chain facts. A request body cannot set these because
-    # CreateServerBody deliberately has a smaller schema.
-    approved: bool = False
-    approved_by: str = ""
-    trust_tier: str = "t3"
-    provenance: str = ""
-    content_hash: str = ""
-    allowed_tools: list[str] = Field(default_factory=list)
 
 
 class MCPTool(BaseModel):
@@ -227,7 +209,6 @@ class MCPTool(BaseModel):
     description: str
     input_schema: dict[str, Any] = Field(default_factory=dict)
     category: str = "general"
-    content_hash: str = ""
 
 
 class Container(BaseModel):
@@ -296,7 +277,7 @@ class CapabilitySetting(BaseModel):
 class SettingsModel(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
-    api_base_url: str = "http://127.0.0.1:8101"  # DevSkim: ignore DS162092 until 2027-12-31
+    api_base_url: str = "http://127.0.0.1:8101"
     default_model: str = "cerebras-qwen-3-235b-a22b-2507"
     temperature: float = 0.2
     max_tokens: int = 8192

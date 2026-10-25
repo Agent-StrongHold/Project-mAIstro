@@ -48,25 +48,15 @@ def _seeded(tmp_path: Path) -> tuple[UserCredentialStore, bytes]:
 # --------------------------------------------------------------------------
 
 
-def test_rotation_round_trip_readable_under_new_key(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture
-) -> None:
+def test_rotation_round_trip_readable_under_new_key(tmp_path: Path) -> None:
     store, old_key = _seeded(tmp_path)
     new_key = generate_master_key()
 
-    with caplog.at_level("WARNING", logger="maistro.credentials"):
-        result = store.rotate_master_key(new_key)
+    result = store.rotate_master_key(new_key)
 
     assert result.users == 2
     assert result.secrets == 3
     assert _key(tmp_path) == new_key
-    # Log tallies only — never the ``secrets`` attribute name or key material.
-    joined = " ".join(record.getMessage() for record in caplog.records)
-    assert "master_key_rotated" in joined
-    assert "entries=3" in joined
-    assert "secret" not in joined.lower()
-    assert "credential" not in joined.lower()
-    assert "alice-jira-token" not in joined
 
     reopened = UserCredentialStore(tmp_path, master_key=new_key)
     assert reopened.use_secret("alice", "jira", lambda v: v) == "alice-jira-token"

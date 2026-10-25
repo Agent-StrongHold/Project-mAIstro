@@ -25,20 +25,6 @@ FLOOR = 0.90
 RATCHET = "mutation"
 METRIC_DEFINITION_VERSION = "2"
 
-#: Bounded analyzer implementation manifests (#319). This gate never executes
-#: Cosmic Ray: it evaluates scheduler telemetry and raw outcome rows with the
-#: bundled evaluator/parser in this repository. Cosmic Ray names the INPUT
-#: FORMAT of those artifacts and nothing more, so no installed cosmic-ray
-#: version is attested -- that would falsely credit today's installation with
-#: an older or externally produced artifact. The scheduler path additionally
-#: executes scripts/mutation_ratchet.py; the legacy paths run this file's own
-#: `scores` parser over the supplied JSONL.
-SCHEDULER_ANALYZER_MANIFEST = (
-    "scripts/check_mutation_baseline.py",
-    "scripts/mutation_ratchet.py",
-)
-LEGACY_ANALYZER_MANIFEST = ("scripts/check_mutation_baseline.py",)
-
 
 def _provenance() -> ModuleType:
     spec = importlib.util.spec_from_file_location("_ratchet_provenance", _PROVENANCE_SOURCE)
@@ -55,33 +41,6 @@ def _provenance() -> ModuleType:
         del sys.modules[spec.name]
         raise
     return module
-
-
-def _tool_version(prov: ModuleType, manifest: tuple[str, ...]) -> str:
-    """Implementation identity of the bundled evaluator that runs (#319)."""
-    version: str = prov.bundled_implementation_fingerprint(
-        Path(__file__).resolve().parents[1], manifest
-    )
-    return version
-
-
-def _analyzer_versions(prov: ModuleType) -> tuple[str, str]:
-    """``(scheduler, legacy)`` bundled-evaluator implementation identities.
-
-    Called from ``main``'s trusted-state resolution, so both identities are
-    known before any write path can touch the baseline or the health report:
-    a gate that cannot name the implementation that produced a verdict must
-    not publish under its name. Failures are re-raised naming the bundled
-    evaluator, so the CLI diagnostic says what could not be identified.
-    """
-    try:
-        scheduler: str = _tool_version(prov, SCHEDULER_ANALYZER_MANIFEST)
-        legacy: str = _tool_version(prov, LEGACY_ANALYZER_MANIFEST)
-    except prov.RatchetProvenanceError as exc:
-        raise prov.RatchetProvenanceError(
-            f"cannot identify the bundled mutation evaluator: {exc}"
-        ) from exc
-    return scheduler, legacy
 
 
 def scores(rows_path: Path) -> dict[str, tuple[int, int]]:
@@ -138,10 +97,7 @@ def enforce(current: dict[str, tuple[int, int]], baseline: dict[str, Any]) -> li
         prior = entry.get("kill_rate", FLOOR) if isinstance(entry, dict) else FLOOR
         required = max(FLOOR, float(prior))
         if rate < required:
-            # Message uses only measured values from ``current`` plus the
-            # constant floor label — never interpolate baseline payload fields
-            # into CI annotations (clear-text-logging of reviewed JSON).
-            failures.append(f"{source}: {rate:.1%} below required floor")
+            failures.append(f"{source}: {rate:.1%} below required {required:.1%}")
     return failures
 
 
@@ -262,45 +218,35 @@ def _new_candidate_entry_failures(
 
 def candidate_baseline_failures(
     current: dict[str, tuple[int, int]],
-    reviewed: dict[str, Any],
+    trusted: dict[str, Any],
     candidate: dict[str, Any],
 ) -> list[str]:
     """Reject candidate bookkeeping that weakens or invents reviewed floors."""
-    reviewed_entries = _entries(reviewed)
+    trusted_entries = _entries(trusted)
     candidate_entries = _entries(candidate)
     failures: list[str] = []
 
-    for source, reviewed_entry in sorted(reviewed_entries.items()):
+    for source, trusted_entry in sorted(trusted_entries.items()):
         if source not in candidate_entries:
-            failures.append(f"{source}: candidate baseline removed a reviewed source floor")
+            failures.append(f"{source}: candidate baseline removed a trusted source floor")
             continue
         failures.extend(
             _base_entry_failures(
                 source,
-                reviewed_entry,
+                trusted_entry,
                 candidate_entries[source],
                 _measured_rate(current, source),
             )
         )
 
     for source, candidate_entry in sorted(candidate_entries.items()):
-        if source not in reviewed_entries:
+        if source not in trusted_entries:
             failures.extend(
                 _new_candidate_entry_failures(
                     source, candidate_entry, _measured_rate(current, source)
                 )
             )
     return failures
-
-
-def _ci_error_annotation(message: str) -> str:
-    """Rebuild a CI error line through an allowlisted character class.
-
-    Keeps path/metric diagnostics readable while ensuring reviewed baseline
-    JSON bytes never reach the log sink verbatim (clear-text-logging).
-    """
-    cleaned = "".join(ch if (ch.isalnum() or ch in " .:_/%()+-") else "?" for ch in message)
-    return f"::error::{cleaned}"
 
 
 def _candidate_json(path: Path) -> dict[str, Any]:
@@ -320,7 +266,6 @@ def _write_scheduler_candidate(
     trusted_history: dict[str, Any],
     provenance: object,
     prov: ModuleType,
-    tool_version: str,
 ) -> int:
     import mutation_ratchet
 
@@ -339,8 +284,7 @@ def _write_scheduler_candidate(
         prov.Provenance(
             ratchet=RATCHET,
             baseline=provenance,
-            tool="bundled mutation ratchet (cosmic-ray scheduler telemetry input)",
-            tool_version=tool_version,
+            tool="cosmic-ray scheduler telemetry",
             metric_definition_version=METRIC_DEFINITION_VERSION,
             old_value=f"{len(trusted_baseline.get('entries', {}))} reviewed source floor(s)",
             new_value=f"{len(telemetry)} measured source(s)",
@@ -357,7 +301,7 @@ def _write_scheduler_candidate(
         f"newly_surviving_sources={len(report['newly_surviving'])}"
     )
     for failure in report["quality_failures"]:
-        print(_ci_error_annotation(failure), file=sys.stderr)
+        print(f"::error::{failure}", file=sys.stderr)
     return 1 if report["quality_failures"] else 0
 
 
@@ -372,11 +316,6 @@ def main(argv: list[str]) -> int:
     try:
         trusted_baseline, baseline_ref = _trusted_json(args.baseline, prov=prov)
         trusted_history, _history_ref = _trusted_json(DEFAULT_HISTORY, prov=prov)
-        # The bundled evaluator/parser identity (#319) resolves here, before
-        # any write path can touch the baseline or health report, and inside
-        # the same fail-closed block: resolution failure is a clear nonzero
-        # diagnostic, never a silent 'unknown' or a write without identity.
-        scheduler_tool_version, legacy_tool_version = _analyzer_versions(prov)
     except prov.RatchetProvenanceError as exc:
         print(f"::error::{exc}", file=sys.stderr)
         return 2
@@ -390,7 +329,6 @@ def main(argv: list[str]) -> int:
                 trusted_history=trusted_history,
                 provenance=baseline_ref,
                 prov=prov,
-                tool_version=scheduler_tool_version,
             )
         except (ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
             print(f"::error::{exc}", file=sys.stderr)
@@ -420,8 +358,7 @@ def main(argv: list[str]) -> int:
             prov.Provenance(
                 ratchet=RATCHET,
                 baseline=baseline_ref,
-                tool="bundled mutation ratchet (cosmic-ray raw outcome input)",
-                tool_version=legacy_tool_version,
+                tool="cosmic-ray raw outcomes",
                 metric_definition_version="1",
                 old_value=f"{len(trusted_baseline.get('entries', {}))} reviewed source floor(s)",
                 new_value=f"{len(current)} measured source(s)",
@@ -449,8 +386,7 @@ def main(argv: list[str]) -> int:
         prov.Provenance(
             ratchet=RATCHET,
             baseline=baseline_ref,
-            tool="bundled mutation ratchet (cosmic-ray raw outcome input)",
-            tool_version=legacy_tool_version,
+            tool="cosmic-ray raw outcomes",
             metric_definition_version="1",
             old_value=f"{len(trusted_baseline.get('entries', {}))} reviewed source floor(s)",
             new_value=f"{len(current)} measured source(s)",
@@ -461,7 +397,7 @@ def main(argv: list[str]) -> int:
         f"mutation baseline summary: {len(current)} source file(s), {len(failures)} regression(s)"
     )
     for failure in failures:
-        print(_ci_error_annotation(failure), file=sys.stderr)
+        print(f"::error::{failure}", file=sys.stderr)
     return 1 if failures else 0
 
 

@@ -236,23 +236,11 @@ class TaskRunner:
         try:
             await self._execute_task(task_id)
         except asyncio.CancelledError:
-            # Cancellation arrives here with two different stories (#1337):
-            # a shutdown drain cancelling the worker, and a user-initiated
-            # `TaskQueue.cancel` that fenced its Run CANCELLED and settled the
-            # Attempt before this handler ran. Only the first may write the
-            # shutdown disposition. When the Run refuses FAILED (it is already
-            # CANCELLED) `update_status` returns False — and has already
-            # reconciled the receipt to the Run's own terminal state (#849) —
-            # so the shutdown result must not be written: overwriting that
-            # projection stamped a cancelled receipt with a shutdown failure
-            # it never had and pushed it to the progress webhook. Emit either
-            # way: the receipt read at emit time is whichever disposition
-            # actually holds.
-            accepted = await self._queue.update_status(
+            # Graceful shutdown — mark task as failed rather than leaving it stuck
+            await self._queue.update_status(
                 task_id, TaskStatus.FAILED, error="Task cancelled during shutdown"
             )
-            if accepted:
-                self._queue.set_result(task_id, TaskResult(error="Task cancelled during shutdown"))
+            self._queue.set_result(task_id, TaskResult(error="Task cancelled during shutdown"))
             await self._emit_progress_webhook(task_id)
         except Exception as exc:
             await logger.aexception("task_execution_failed", task_id=task_id)
@@ -318,11 +306,6 @@ class TaskRunner:
         if task is None:
             return
 
-        # Set when another dispatcher wins the canonical claim: the worker's
-        # receipt is no longer authoritative, and once the local claim is
-        # released the receipt is dropped so this process's reads project the
-        # owner's Run truth instead of a stale non-terminal copy (#1690).
-        claim_lost = False
         async with self._queue.claim(task_id):
             # Planning phase
             if not await self._queue.update_status(task_id, TaskStatus.PLANNING):
@@ -370,53 +353,38 @@ class TaskRunner:
                 # here, so there is nothing to fail: recording a failure would
                 # terminalize the winner's Run out from under it. Same
                 # disposition as a refused Run — put the receipt down and let
-                # the claim's owner finish the work. The claim-lost flag keeps
-                # this worker from writing any outcome of its own; once the
-                # local claim releases, the receipt itself is dropped so this
-                # process's reads project the winner's Run instead of a stale
-                # non-terminal copy (#1690).
-                claim_lost = True
+                # the claim's owner finish the work.
                 await logger.awarning("task_abandoned_claim_lost", task_id=task_id)
+                return
             except TaskExecutionFailed as exc:
                 # The Attempt already recorded the failure. The receipt's own
                 # failure branch below is unchanged, so a `/tasks` caller reads
                 # what it always read.
                 result = exc.output
 
-            if not claim_lost:
-                await self._settle_outcome(task_id, result)
-
-        if claim_lost:
-            # Past the local claim's release, so `abandon_local_receipt` sees
-            # the task as unclaimed. The durable projection takes over the
-            # reads; the winner's worker owns every further write.
-            self._queue.abandon_local_receipt(task_id)
-
-    async def _settle_outcome(self, task_id: str, result: ConductorOutput) -> None:
-        """Write one finished execution's outcome to the Run and the receipt.
-
-        Phase 1 is single-pass — transition to COMPLETED or FAILED directly.
-        The outcome goes to both: the Run because it is the execution identity
-        a caller follows, the receipt because that is what the /tasks API
-        returns. Passing it only to `set_result` left every terminal Run
-        reporting result=None and error=None.
-        """
-        if result.success:
-            files_changed = result.code.files_changed if result.code else []
-            await self._queue.update_status(
-                task_id,
-                TaskStatus.COMPLETED,
-                result={"files_changed": files_changed},
-            )
-            self._queue.set_result(
-                task_id,
-                TaskResult(files_changed=files_changed),
-            )
-            await self._emit_progress_webhook(task_id)
-        else:
-            await self._queue.update_status(task_id, TaskStatus.FAILED, error=result.final_answer)
-            self._queue.set_result(
-                task_id,
-                TaskResult(error=result.final_answer),
-            )
-            await self._emit_progress_webhook(task_id)
+            # Phase 1 is single-pass — transition to COMPLETED or FAILED directly
+            # The outcome goes to both: the Run because it is the execution
+            # identity a caller follows, the receipt because that is what the
+            # /tasks API returns. Passing it only to `set_result` left every
+            # terminal Run reporting result=None and error=None.
+            if result.success:
+                files_changed = result.code.files_changed if result.code else []
+                await self._queue.update_status(
+                    task_id,
+                    TaskStatus.COMPLETED,
+                    result={"files_changed": files_changed},
+                )
+                self._queue.set_result(
+                    task_id,
+                    TaskResult(files_changed=files_changed),
+                )
+                await self._emit_progress_webhook(task_id)
+            else:
+                await self._queue.update_status(
+                    task_id, TaskStatus.FAILED, error=result.final_answer
+                )
+                self._queue.set_result(
+                    task_id,
+                    TaskResult(error=result.final_answer),
+                )
+                await self._emit_progress_webhook(task_id)

@@ -37,7 +37,6 @@ from services.workspace_agent import (
     WorkspaceNotFound,
     persona_template_id,
     resolve_workspace_agent,
-    set_workspace_agent_persona,
 )
 from services.workspace_authority import create_workspace as create_canonical_workspace
 from services.workspace_authority import delete_workspace as delete_canonical_workspace
@@ -52,25 +51,9 @@ from services.workspace_authority import (
 
 from maistro.personas.checklist import CapabilityItem, capability_checklist, default_checklist_ids
 from maistro.personas.schema import InterviewQuestionSpec, SpawnSpec
-from maistro.workspaces.authorization import WorkspaceAuthorizationDenied
 from maistro.workspaces.model import WorkspaceAccessDenied
 
 router = APIRouter(tags=["workspaces"])
-
-
-def _workspace_denial(exc: WorkspaceAuthorizationDenied, detail: str) -> HTTPException:
-    """Render a canonical Workspace refusal as this route's own answer (#1150).
-
-    The canonical store re-resolves the acting principal's authority inside
-    the store call, so an ownership revocation that lands between the route's
-    own check and the store call arrives here as a refusal. A principal who
-    is no longer a member gets the same 404 an invisible Workspace gets; a
-    member who lost the action gets the route's own 403. The refusal never
-    escapes as a 500.
-    """
-    if exc.membership is None:
-        return HTTPException(status_code=404, detail="workspace not found")
-    return HTTPException(status_code=403, detail=detail)
 
 
 def _now() -> datetime:
@@ -313,12 +296,7 @@ async def add_workspace_member(
         raise HTTPException(status_code=404, detail="workspace not found")
     if await member_role(requester, workspace_id) != "owner":
         raise HTTPException(status_code=403, detail="only an owner can add workspace members")
-    try:
-        return await set_member(
-            workspace_id, user_id=body.user_id, role=body.role, principal_id=requester
-        )
-    except WorkspaceAuthorizationDenied as exc:
-        raise _workspace_denial(exc, "only an owner can add workspace members") from exc
+    return await set_member(workspace_id, user_id=body.user_id, role=body.role)
 
 
 @router.delete("/{workspace_id}/members/{user_id}", response_model=Workspace)
@@ -336,13 +314,11 @@ async def remove_workspace_member(workspace_id: str, user_id: str, request: Requ
         raise HTTPException(status_code=403, detail="only an owner can remove other members")
 
     try:
-        return await remove_member(workspace_id, user_id=user_id, principal_id=requester)
+        return await remove_member(workspace_id, user_id=user_id)
     except WorkspaceAccessDenied as exc:
         raise HTTPException(
             status_code=400, detail="cannot remove the workspace's last owner"
         ) from exc
-    except WorkspaceAuthorizationDenied as exc:
-        raise _workspace_denial(exc, "only an owner can remove other members") from exc
 
 
 class WorkspaceFeedbackBody(BaseModel):
@@ -419,77 +395,6 @@ async def update_tool_bindings(
     return await update_presentation(workspace_id, tool_bindings=body.bindings)
 
 
-class WorkspaceAgentPersonaResponse(BaseModel):
-    """The one Workspace Agent's identity + current persona (#2277 / #1037)."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    workspace_id: str
-    workspace_agent_id: str
-    persona_template_id: str
-    created_at: datetime
-
-
-class SetWorkspaceAgentPersonaBody(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-
-    persona_template_id: str
-
-
-@router.get("/{workspace_id}/agent", response_model=WorkspaceAgentPersonaResponse)
-async def get_workspace_agent(workspace_id: str, request: Request) -> WorkspaceAgentPersonaResponse:
-    """Read the Workspace Agent's stable id and current persona (#2277)."""
-    requester = _user_id(request)
-    if await visible_view(requester, workspace_id) is None:
-        raise HTTPException(status_code=404, detail="workspace not found")
-    try:
-        agent = await resolve_workspace_agent(workspace_id)
-    except WorkspaceNotFound as exc:
-        raise HTTPException(status_code=404, detail="workspace not found") from exc
-    except WorkspaceAgentConflict as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    return WorkspaceAgentPersonaResponse(
-        workspace_id=workspace_id,
-        workspace_agent_id=agent.id,
-        persona_template_id=persona_template_id(agent),
-        created_at=agent.created_at,
-    )
-
-
-@router.put("/{workspace_id}/agent", response_model=WorkspaceAgentPersonaResponse)
-async def put_workspace_agent_persona(
-    workspace_id: str,
-    body: SetWorkspaceAgentPersonaBody,
-    request: Request,
-) -> WorkspaceAgentPersonaResponse:
-    """Swap the Workspace Agent's persona without changing its id (#2277).
-
-    Same durable write as the Agent tool `set_workspace_agent_persona` —
-    `services.workspace_agent.set_workspace_agent_persona` is the one door.
-    """
-    requester = _user_id(request)
-    if await visible_view(requester, workspace_id) is None:
-        raise HTTPException(status_code=404, detail="workspace not found")
-    if await member_role(requester, workspace_id) != "owner":
-        raise HTTPException(
-            status_code=403, detail="only an owner can swap the Workspace Agent persona"
-        )
-    try:
-        agent = await set_workspace_agent_persona(workspace_id, body.persona_template_id)
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-    except WorkspaceNotFound as exc:
-        raise HTTPException(status_code=404, detail="workspace not found") from exc
-    except WorkspaceAgentConflict as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    return WorkspaceAgentPersonaResponse(
-        workspace_id=workspace_id,
-        workspace_agent_id=agent.id,
-        persona_template_id=persona_template_id(agent),
-        created_at=agent.created_at,
-    )
-
-
 @router.delete("/{workspace_id}", status_code=204)
 async def delete_workspace(workspace_id: str, request: Request) -> None:
     requester = _user_id(request)
@@ -497,10 +402,7 @@ async def delete_workspace(workspace_id: str, request: Request) -> None:
         raise HTTPException(status_code=404, detail="workspace not found")
     if await member_role(requester, workspace_id) != "owner":
         raise HTTPException(status_code=403, detail="only an owner can delete this workspace")
-    try:
-        await delete_canonical_workspace(workspace_id, principal_id=requester)
-    except WorkspaceAuthorizationDenied as exc:
-        raise _workspace_denial(exc, "only an owner can delete this workspace") from exc
+    await delete_canonical_workspace(workspace_id)
     # The workspaces store's pop hook (registered in
     # `services.agent_materialization`) already cascades this deletion; call
     # it explicitly rather than re-implementing the pop inline -- a second

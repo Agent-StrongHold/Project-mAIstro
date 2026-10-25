@@ -32,11 +32,11 @@ def build_archive_store(archive_url: str) -> ArchiveStore | None:
 
     ``file:///var/lib/maistro/archive`` selects the local directory backend.
 
-    ``s3://bucket`` selects object storage; ``s3+http`` / ``s3+https`` URLs
-    with an explicit endpoint query point at an S3-compatible service. The
-    endpoint is part of the URL rather than an environment variable because
-    "which bucket, on which service" is one decision and splitting it across
-    two places is how a deployment ends up writing to the wrong one.
+    ``s3://bucket`` selects object storage; ``s3+http://bucket?endpoint=host:9000``
+    and ``s3+https://…`` point at an S3-compatible service. The endpoint is part
+    of the URL rather than an environment variable because "which bucket, on
+    which service" is one decision and splitting it across two places is how a
+    deployment ends up writing to the wrong one.
 
     Credentials are *not* accepted here. They resolve through the vault
     (ADR decision 8, SPEC-011) or boto3's own chain — a URL is configuration,
@@ -106,7 +106,7 @@ def _endpoint(scheme: str, query: str) -> str | None:
     if not endpoint:
         raise ArchiveError(f"{scheme}:// requires an ?endpoint=host:port")
     transport = "http" if scheme == "s3+http" else "https"
-    if endpoint.startswith(("http://", "https://")):  # DevSkim: ignore DS137138 until 2027-12-31
+    if endpoint.startswith(("http://", "https://")):
         return endpoint
     return f"{transport}://{endpoint}"
 

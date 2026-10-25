@@ -73,7 +73,7 @@ _CORPUS = Path(__file__).parent / "third_party" / "ifeval" / "data" / "input_dat
 # Pinned in scripts/vendor_ifeval.py; duplicated here so loading fails closed
 # even if the vendoring script is absent. The corpus is the exam — if its bytes
 # are not the bytes we pinned, the score is not the score we think it is.
-_CORPUS_SHA256 = "67ffeee0fcb87c317c5b08a2de85557b4a7e96ada6178aa645b4954fe4b53d49"  # DevSkim: ignore DS173237 until 2027-12-31
+_CORPUS_SHA256 = "67ffeee0fcb87c317c5b08a2de85557b4a7e96ada6178aa645b4954fe4b53d49"
 _EXPECTED_PROMPTS = 541
 
 # Fraction of prompts assigned to the holdout. 20% of 541 is ~108 prompts, which

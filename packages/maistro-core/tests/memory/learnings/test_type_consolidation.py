@@ -11,7 +11,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from maistro.memory.exposure import MemoryExposureMode
 from maistro.memory.learnings.embeddings import FakeEmbeddingClient, HybridLearningStore
 from maistro.memory.learnings.extractor import RCAExtractor
 from maistro.memory.learnings.store import InMemoryLearningStore
@@ -132,7 +131,7 @@ class TestRCAExtractorPopulatesRcaFields:
 
 class TestHybridFindRelevantHonorsOrgId:
     async def test_org_id_isolation(self) -> None:
-        store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
+        store = InMemoryLearningStore()
         await store.store(_lr(keys=["python"], org="org-A"))
         await store.store(_lr(keys=["python"], org="org-B"))
         hybrid = HybridLearningStore(store, FakeEmbeddingClient())
@@ -143,7 +142,7 @@ class TestHybridFindRelevantHonorsOrgId:
         assert results[0].org_id == "org-A"
 
     async def test_org_id_keyword_only_fallback(self) -> None:
-        store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
+        store = InMemoryLearningStore()
         await store.store(_lr(keys=["docker"], org="org-A"))
         await store.store(_lr(keys=["docker"], org="org-B"))
         hybrid = HybridLearningStore(store, embedding_client=None)

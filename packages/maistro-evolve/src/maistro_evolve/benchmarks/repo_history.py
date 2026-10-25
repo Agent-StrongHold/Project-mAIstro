@@ -78,7 +78,7 @@ _CORPUS = Path(__file__).parent / "corpora" / "repo_history_tasks.json"
 # SENSITIVE_PATH_PATTERNS) and makes every refresh a visible code change.
 #
 # Regenerate with `python3 scripts/generate_repo_tasks.py`; it prints the digest.
-_CORPUS_SHA256 = "34b73f2dd46731453c12550988c23b3eb375a1c46e9bbc5320b1e0da94d36e14"  # DevSkim: ignore DS173237 until 2027-12-31
+_CORPUS_SHA256 = "34b73f2dd46731453c12550988c23b3eb375a1c46e9bbc5320b1e0da94d36e14"
 
 # Training cutoffs for models this repo scores against. Deliberately explicit
 # and deliberately incomplete: adding a model is a decision someone makes on

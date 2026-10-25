@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import subprocess
 import sys
-from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -163,8 +162,6 @@ def run_test_selection(
     *,
     timeout: int = 600,
     extra_args: tuple[str, ...] = (),
-    interpreter: str | None = None,
-    execute: Callable[[list[str]], tuple[int, str]] | None = None,
 ) -> tuple[int, str]:
     """Run pytest on specific files/selectors in ``repo_dir``; return (exit_code, output).
 
@@ -184,27 +181,19 @@ def run_test_selection(
     # two runs, often within the same second, and a cached .pyc would make the
     # baseline run reuse the candidate's bytecode and wrongly pass.
     # -p no:cacheprovider drops pytest's own cache too.
-    # ``interpreter`` and ``execute`` are the containment seam (#614): a caller
-    # that must run the candidate's tests inside a sandbox composes the SAME
-    # argv — one builder, so a contained run cannot drift from the host shape —
-    # and routes it through ``execute`` instead of this process tree. The
-    # default stays the host subprocess the CLI paths have always used.
-    argv = [
-        interpreter if interpreter is not None else sys.executable,
-        "-m",
-        "pytest",
-        "-q",
-        "-p",
-        "no:cacheprovider",
-        *extra_args,
-        *selectors,
-    ]
-    if execute is not None:
-        return execute(argv)
     env = candidate_env()
     try:
         proc = subprocess.run(
-            argv,
+            [
+                sys.executable,
+                "-m",
+                "pytest",
+                "-q",
+                "-p",
+                "no:cacheprovider",
+                *extra_args,
+                *selectors,
+            ],
             cwd=str(repo_dir),
             capture_output=True,
             text=True,

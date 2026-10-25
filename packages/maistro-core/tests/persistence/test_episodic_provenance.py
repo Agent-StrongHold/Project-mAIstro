@@ -16,7 +16,6 @@ from typing import Any
 
 import pytest
 
-from maistro.memory.exposure import MemoryExposureMode
 from maistro.observability.correlation import bind_execution_context
 from maistro.types.memory import EpisodicMemory, MemoryScope
 
@@ -45,13 +44,13 @@ async def episodic(request: pytest.FixtureRequest, pg_pool: Any) -> Any:
     if request.param == "memory":
         from maistro.memory.episodic.store import InMemoryEpisodicStore
 
-        yield InMemoryEpisodicStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
+        yield InMemoryEpisodicStore()
         return
     if request.param == "sqlite":
         from maistro.persistence.sqlite_episodic import SqliteEpisodicStore
 
         conn = await aiosqlite.connect(":memory:")
-        store = SqliteEpisodicStore(conn, exposure_mode=MemoryExposureMode.AGENT_MANAGED)
+        store = SqliteEpisodicStore(conn)
         await store.ensure_schema()
         try:
             yield store, conn
@@ -62,7 +61,7 @@ async def episodic(request: pytest.FixtureRequest, pg_pool: Any) -> Any:
         pytest.skip("MAISTRO_TEST_PG_DSN is not set")
     from maistro.persistence.pg_episodic import PgEpisodicStore
 
-    store = PgEpisodicStore(pg_pool, exposure_mode=MemoryExposureMode.AGENT_MANAGED)
+    store = PgEpisodicStore(pg_pool)
     await store.ensure_schema()
     yield store, pg_pool
 
@@ -79,7 +78,7 @@ async def durable_episodic(request: pytest.FixtureRequest, pg_pool: Any) -> Any:
         from maistro.persistence.sqlite_episodic import SqliteEpisodicStore
 
         conn = await aiosqlite.connect(":memory:")
-        store = SqliteEpisodicStore(conn, exposure_mode=MemoryExposureMode.AGENT_MANAGED)
+        store = SqliteEpisodicStore(conn)
         await store.ensure_schema()
         try:
             yield store, conn
@@ -90,7 +89,7 @@ async def durable_episodic(request: pytest.FixtureRequest, pg_pool: Any) -> Any:
         pytest.skip("MAISTRO_TEST_PG_DSN is not set")
     from maistro.persistence.pg_episodic import PgEpisodicStore
 
-    store = PgEpisodicStore(pg_pool, exposure_mode=MemoryExposureMode.AGENT_MANAGED)
+    store = PgEpisodicStore(pg_pool)
     await store.ensure_schema()
     yield store, pg_pool
 
@@ -233,9 +232,7 @@ class TestTheVolatileBackendFillsItToo:
 
         memory = _memory("m-volatile")
         with bind_execution_context(run_id="r-v", node_run_id="nr-v", attempt_id="a-v"):
-            await InMemoryEpisodicStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED).store(
-                memory
-            )
+            await InMemoryEpisodicStore().store(memory)
 
         assert (memory.run_id, memory.node_run_id, memory.attempt_id) == ("r-v", "nr-v", "a-v")
 
@@ -289,7 +286,7 @@ class TestAnOlderSqliteFileIsUpgradedInPlace:
         )
         await conn.commit()
 
-        store = SqliteEpisodicStore(conn, exposure_mode=MemoryExposureMode.AGENT_MANAGED)
+        store = SqliteEpisodicStore(conn)
         await store.ensure_schema()
 
         cursor = await conn.execute("PRAGMA table_info(episodic_memories)")

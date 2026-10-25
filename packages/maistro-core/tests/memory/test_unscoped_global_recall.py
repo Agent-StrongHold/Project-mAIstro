@@ -14,7 +14,6 @@ from typing import Any
 import pytest
 
 from maistro.memory.episodic.store import InMemoryEpisodicStore
-from maistro.memory.exposure import MemoryExposureMode
 from maistro.persistence.pg_episodic import _scoped_list_query
 from maistro.types.memory import EpisodicMemory, MemoryScope
 
@@ -42,7 +41,7 @@ def _corpus() -> list[EpisodicMemory]:
 
 async def test_unscoped_recall_hides_org_bound_globals() -> None:
     """A caller with no org sees unbound globals and project rows, not org-bound globals."""
-    volatile = InMemoryEpisodicStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
+    volatile = InMemoryEpisodicStore()
     for memory in _corpus():
         await volatile.store(memory)
 
@@ -61,7 +60,7 @@ async def test_unscoped_recall_hides_org_bound_globals() -> None:
     try:
         from maistro.persistence.sqlite_episodic import SqliteEpisodicStore
 
-        durable = SqliteEpisodicStore(conn, exposure_mode=MemoryExposureMode.AGENT_MANAGED)
+        durable = SqliteEpisodicStore(conn)
         await durable.ensure_schema()
         for memory in _corpus():
             await durable.store(memory)

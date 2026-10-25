@@ -89,10 +89,7 @@ async def webhook_action(trigger: Trigger, event: Event) -> None:
 
 
 async def conductor_chat_action(trigger: Trigger, event: Event) -> None:
-    base_url = trigger.action_config.get(
-        "conductor_url",
-        "http://localhost:8100",  # DevSkim: ignore DS162092 until 2027-12-31
-    )
+    base_url = trigger.action_config.get("conductor_url", "http://localhost:8100")
     api_key = trigger.action_config.get("api_key", "")
     model = trigger.action_config.get("model", "auto")
     message_template = trigger.action_config.get("message", "")
@@ -132,10 +129,7 @@ async def conductor_chat_action(trigger: Trigger, event: Event) -> None:
 
 
 async def coinswarm_action(trigger: Trigger, event: Event) -> None:
-    base_url = trigger.action_config.get(
-        "coinswarm_url",
-        "http://localhost:8080",  # DevSkim: ignore DS162092 until 2027-12-31
-    )
+    base_url = trigger.action_config.get("coinswarm_url", "http://localhost:8080")
     endpoint = trigger.action_config.get("endpoint", "")
     params = trigger.action_config.get("params", {})
 
@@ -155,10 +149,7 @@ async def coinswarm_action(trigger: Trigger, event: Event) -> None:
 
 
 async def ha_action(trigger: Trigger, event: Event) -> None:
-    base_url = trigger.action_config.get(
-        "ha_url",
-        "http://localhost:8123",  # DevSkim: ignore DS162092 until 2027-12-31
-    )
+    base_url = trigger.action_config.get("ha_url", "http://localhost:8123")
     token = trigger.action_config.get("ha_token", "")
     domain = trigger.action_config.get("domain", "automation")
     service = trigger.action_config.get("service", "trigger")

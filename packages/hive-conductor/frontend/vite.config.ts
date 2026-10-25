@@ -14,11 +14,11 @@ export default defineConfig({
   server: {
     proxy: {
       "/v1": {
-        target: "http://localhost:8101",  // DevSkim: ignore DS162092 until 2027-12-31
+        target: "http://localhost:8101",
         changeOrigin: true,
       },
       "/health": {
-        target: "http://localhost:8101",  // DevSkim: ignore DS162092 until 2027-12-31
+        target: "http://localhost:8101",
         changeOrigin: true,
       },
     },

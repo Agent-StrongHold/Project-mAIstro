@@ -88,17 +88,6 @@ class NodeContext(BaseModel):
     # Caller-provided budget hint; nodes may decline to run if exceeded.
     deadline_at: datetime | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
-    #: Self-reported result metadata (epic M4-I). A node's ``_execute`` may
-    #: write here -- ``quality`` for the executor's escalation gate, an
-    #: explicit ``result_state`` for plan supervision -- and ``BaseNode.run``
-    #: merges it into the *successful* NodeResult's metadata after
-    #: ``_execute`` returns. This is per-visit context: the executor builds a
-    #: fresh ``NodeContext`` for every dispatch, so a report written here
-    #: cannot leak into another visit. It is a report *about* an output, not a
-    #: side channel for outcomes: failure metadata still travels on the
-    #: raised exception (``result_metadata`` attribute) and pause metadata on
-    #: ``pause_until``.
-    result_metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class NodeResult(BaseModel):
@@ -169,7 +158,7 @@ class Node(Protocol):
 
     async def run(self, inputs: BaseModel, ctx: NodeContext) -> NodeResult: ...
 
-    def logical_effect_key(self, inputs: BaseModel, ctx: NodeContext) -> str | None: ...
+    def replay_effect_key(self, inputs: BaseModel, ctx: NodeContext) -> str: ...
 
 
 class BaseNode(Generic[InputT, OutputT]):
@@ -223,21 +212,17 @@ class BaseNode(Generic[InputT, OutputT]):
         else:
             validated = inputs  # type: ignore[assignment]
         start = time.perf_counter()
+        effect_key = ""
         try:
+            effect_key = self.replay_effect_key(validated, ctx)
             output = await self._execute(validated, ctx)
             latency_ms = int((time.perf_counter() - start) * 1000)
-            # Self-reported result metadata first (epic M4-I): a node may
-            # declare where its result leaves the world (e.g. the delegation
-            # taxonomy's ACTIONABLE state). The executor owns the logical
-            # effect key, so a node cannot spoof the reconciliation boundary
-            # from its report.
-            metadata = dict(ctx.result_metadata or {})
             return NodeResult(
                 success=True,
                 output=output,
                 latency_ms=latency_ms,
                 status="completed",
-                metadata=metadata,
+                metadata={"replay_effect_key": effect_key} if effect_key else {},
             )
         except _NodePaused as exc:
             latency_ms = int((time.perf_counter() - start) * 1000)
@@ -247,7 +232,11 @@ class BaseNode(Generic[InputT, OutputT]):
                 latency_ms=latency_ms,
                 status="paused",
                 resume_at=exc.resume_at,
-                metadata={"paused_reason": exc.reason, **exc.metadata},
+                metadata={
+                    "paused_reason": exc.reason,
+                    **exc.metadata,
+                    **({"replay_effect_key": effect_key} if effect_key else {}),
+                },
             )
         except Exception as exc:
             latency_ms = int((time.perf_counter() - start) * 1000)
@@ -258,17 +247,23 @@ class BaseNode(Generic[InputT, OutputT]):
                 status="failed",
                 error_code=type(exc).__name__,
                 error_message=str(exc)[:512],
-                metadata=_failure_metadata(exc),
+                metadata={
+                    **_failure_metadata(exc),
+                    **({"replay_effect_key": effect_key} if effect_key else {}),
+                },
             )
 
-    def logical_effect_key(self, inputs: InputT, ctx: NodeContext) -> str | None:
-        """Return the stable key that makes an EFFECT_KEY replay safe.
+    def replay_effect_key(self, inputs: InputT, ctx: NodeContext) -> str:
+        """Return the stable key a retryable effect must reconcile.
 
-        Nodes that do not expose a key fail closed in the graph retry fold;
-        merely labeling a node retryable must not authorize a second effect.
+        The executor records and checks this key on every outcome. Effectful
+        subclasses may override it when their external adapter uses a narrower
+        operation namespace, but they must still bind it to the same Run/node
+        logical identity rather than to a physical Attempt or NodeRun.
         """
-        del inputs, ctx
-        return None
+        if self.replay_semantics is ReplaySemantics.EFFECT_KEY:
+            return replay_effect_key(ctx, self.kind, inputs.model_dump(mode="json"))
+        return ""
 
     async def _execute(self, inputs: InputT, ctx: NodeContext) -> OutputT:
         """Subclasses implement this. Return the typed output (or raise)."""
@@ -401,10 +396,7 @@ PAUSE_RESUME_CONDITIONS: dict[str, str] = {
     PAUSE_AWAITING_HUMAN_REVIEW: RESUME_ON_ANSWER,
     PAUSE_AWAITING_ROLE_DELEGATE: RESUME_ON_ANSWER,
     PAUSE_AWAITING_REMOTE_DELEGATION: RESUME_ON_ANSWER,
-    # The node checkpoints a canonical dispatch receipt and observation ordinal
-    # before polling. Timer re-entry observes that same effect; it never repeats
-    # the dispatch or manufactures a human/system answer (#1192).
-    PAUSE_AWAITING_HARNESS: RESUME_ON_ELAPSED,
+    PAUSE_AWAITING_HARNESS: RESUME_ON_ANSWER,
     PAUSE_WAITING_ON_JIRA_SUBTASKS: RESUME_ON_ELAPSED,
     # Reconciliation is the polling half of a delegation whose transport
     # acceptance is unknown: re-entering re-reads the receipt sources (the
