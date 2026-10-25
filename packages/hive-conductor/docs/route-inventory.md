@@ -27,7 +27,7 @@ recorded below as URL-only with their owning issues.
 
 ## Canonical surfaces (primary/grouped navigation entry)
 
-24 destinations, each reachable from both the desktop icon rail and the
+25 destinations, each reachable from both the desktop icon rail and the
 narrow-screen drawer (asserted by
 `tests/e2e/navigation-coverage.spec.ts`):
 
