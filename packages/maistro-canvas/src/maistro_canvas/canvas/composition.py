@@ -219,12 +219,12 @@ def build_canvas_router(
     owns the runtime worker lifecycle and starts it with the FastAPI
     application, so admitted receipts do not remain pending indefinitely.
 
-    The ADR-044 AssetInstance router is merged onto the same app mount so
-    ``asset_*`` modules stay process-reachable from this composition root
-    (#2311) without colliding with LayerRecord design paths.
+    AssetInstance stays rooted on this module's import edge and via
+    :func:`build_asset_instance_surface` (server lifespan mounts that router).
+    It is **not** nested under this return value — legacy ``create_canvas`` uses
+    path ``""``, which FastAPI rejects when included under an empty parent
+    prefix (#2311).
     """
-    from fastapi import APIRouter as _APIRouter
-
     runtime = build_canvas_runtime(
         store=store,
         image_client=image_client,
@@ -241,14 +241,10 @@ def build_canvas_router(
     )
     from maistro_canvas.canvas.routes import make_canvas_router
 
-    legacy = make_canvas_router(runtime=runtime, compositor=compositor)
-    assets = build_asset_instance_surface()
-    # Parent router carries both trees; asset routes keep their own /v2/canvas
-    # prefix while the legacy canvas router uses its /api/canvas mount.
-    combined = _APIRouter()
-    combined.include_router(legacy)
-    combined.include_router(assets.router)
-    return combined
+    # Touch the AssetInstance factory so composition callers keep the CONNECT
+    # edge hot without merging routers.
+    _ = build_asset_instance_surface()
+    return make_canvas_router(runtime=runtime, compositor=compositor)
 
 
 def bind_canvas_runner_lifecycle(
