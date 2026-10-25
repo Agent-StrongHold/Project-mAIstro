@@ -2,7 +2,7 @@
 inventory-delta:
   packages/hive-conductor/backend/tests: +19
   packages/maistro-core/tests: +24
-  tests/: +4
+  tests/: +3
 ---
 
 # #331 Conductor Compose data-directory durability
@@ -101,14 +101,13 @@ real and testable.
   refusing before any subsystem initializes.
 - `tests/test_compose_durability_harness.py` (new, 3 tests): the CI
   durability harness must resolve the Conductor image by service, not by
-  `head -1` over every service's image. `+4` in the `tests` suite covers
-  these three plus the one node ID that this head already collected over
-  the recorded expectation before this file existed (measured: 5889
-  collected vs 5888 expected with the new file moved aside). No file under
-  `tests/` other than `tests/test_bump_version.py` differs from develop on
-  this branch, and that edit changes a parametrized *value*, not the case
-  count — so the extra node ID is not attributable to a branch change here
-  and is recorded rather than left as silent drift.
+  `head -1` over every service's image. The `+3` in the `tests` suite is
+  exactly these three node IDs (measured: 5889 collected with the file
+  moved aside, 5892 with it, on the pre-merge head; and 5891 -> 5894 on the
+  merged tree that also carries develop's `tests/: +3` from #2336). No file
+  under `tests/` other than `tests/test_bump_version.py` differs from
+  develop on this branch, and that edit changes a parametrized *value*, not
+  the case count.
 
 ## Known pre-existing, out of scope
 
