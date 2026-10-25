@@ -142,6 +142,64 @@ class TestAFailedRsiRunRecordsAKindNotAMessage:
         assert run.last_error is None
 
 
+class TestADispatchErrorAlsoNamesItsKind:
+    async def test_the_stored_last_error_drops_docker_detail(self) -> None:
+        """DispatchError text is composed for operators but still reaches the
+        browser via the run record — same boundary as a generic Exception."""
+        from services import rsi
+        from services import rsi_container_dispatch as dispatch
+
+        service = rsi._RsiService()
+        run = rsi.RunState(run_id="r-dispatch", mode="cleanup", config={})
+
+        async def _fail(_run: rsi.RunState) -> None:
+            raise dispatch.DispatchError(
+                "docker refused the run request (exit 125): /srv/secrets/openai.key"
+            )
+
+        service._drive_cleanup = _fail  # type: ignore[method-assign]
+        await service._drive(run)
+
+        assert run.status == "errored"
+        assert run.last_error == "DispatchError: run failed; see server logs"
+        assert "/srv/secrets" not in (run.last_error or "")
+
+
+class TestEvolutionStatusNeverPublishesExceptionText:
+    def test_canonical_unavailability_is_a_kind_not_a_message(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import services.evolution_graph as evolution_graph
+        from services.evolution import _EvolutionService
+
+        def _boom() -> Any:
+            raise evolution_graph.CanonicalExecutionUnavailable(
+                "Evolve requires the canonical engine Container (#51): "
+                "dsn=postgresql://ops:s3cr3t@db.internal/hive"
+            )
+
+        monkeypatch.setattr(evolution_graph, "canonical_execution_owner", _boom)
+        service = _EvolutionService()
+        out = service.status()
+
+        assert out["availability_reason"] == (
+            "CanonicalExecutionUnavailable: evolution failed; see server logs"
+        )
+        assert "s3cr3t" not in str(out)
+        assert "db.internal" not in str(out)
+
+
+class TestEngineHealthCauseNeverPublishesExceptionText:
+    def test_sanitize_cause_drops_seeded_internal_detail(self) -> None:
+        from services.engine import _sanitize_cause
+
+        seeded = "connect to db-primary.internal:5432 failed for user svc_hive"
+        assert _sanitize_cause(RuntimeError(seeded)) == (
+            "RuntimeError: startup failed; see server logs"
+        )
+        assert "db-primary.internal" not in _sanitize_cause(RuntimeError(seeded))
+
+
 class TestAnAirtableTokenFingerprintIsNotAnOfflineOracle:
     """The fingerprint keys a cache entry. A bare digest of the token lets
     anyone holding a candidate token confirm it from a log line, so the

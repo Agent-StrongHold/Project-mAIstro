@@ -16,7 +16,10 @@ ATLASSIAN_ROVO_MCP_URL = os.getenv(
 
 ATLASSIAN_ROVO_SERVER_ID = "mcp-atlassian-rovo"
 FILESYSTEM_SERVER_ID = "mcp-filesystem-local"
-FILESYSTEM_MCP_URL = os.getenv("FILESYSTEM_MCP_URL", "http://127.0.0.1:9999/mcp").strip()
+FILESYSTEM_MCP_URL = os.getenv(
+    "FILESYSTEM_MCP_URL",
+    "http://127.0.0.1:9999/mcp",  # DevSkim: ignore DS162092 until 2027-12-31
+).strip()
 
 ATLASSIAN_ROVO_TOOLS: tuple[dict[str, str], ...] = (
     {
@@ -79,12 +82,33 @@ FILESYSTEM_TOOLS: tuple[dict[str, str], ...] = (
 )
 
 
+# The concrete counter-examples this predicate refuses (the genuine host over
+# a plaintext scheme, and the genuine host on an odd port) are written out in
+# backend/tests/test_mcp_trust_boundary.py rather than here: a URL written in
+# a docstring is a string literal in the source, and the insecure-URL rule
+# (DS137138) reads code scope, so it annotates the documentation and fails
+# the scan on it.
 def is_atlassian_rovo_url(url: str) -> bool:
-    """Whether ``url`` is the Atlassian Rovo MCP host, by hostname, not substring."""
+    """Whether ``url`` is the Atlassian Rovo MCP origin, safely.
+
+    Hostname-based, never substring — and transport-checked: this predicate
+    gates where a bearer token may be sent, so a plaintext scheme (anything
+    but ``https``) and a non-standard port are refused even when the
+    hostname is genuine. A hostname-only check would admit the genuine host
+    on a plaintext scheme and on an odd port, and put the PAT on the wire
+    unencrypted.
+    """
     try:
-        host = (urlparse(url or "").hostname or "").lower()
+        parsed = urlparse(url or "")
+        host = (parsed.hostname or "").lower()
+        port = parsed.port
     except ValueError:
-        # A malformed URL (an unbalanced IPv6 literal, say) is not Rovo's.
+        # A malformed URL (an unbalanced IPv6 literal, an invalid port, say)
+        # is not Rovo's.
+        return False
+    if parsed.scheme.lower() != "https":
+        return False
+    if port not in (None, 443):
         return False
     return host == "mcp.atlassian.com" or host.endswith(".mcp.atlassian.com")
 
@@ -104,6 +128,10 @@ def atlassian_rovo_server(*, now: datetime | None = None) -> MCPServer:
         last_ping=t,
         version="rovo-mcp",
         capabilities=["jira", "confluence", "compass"],
+        approved=True,
+        approved_by="platform",
+        provenance="platform:mcp-atlassian-rovo",
+        allowed_tools=[spec["name"] for spec in ATLASSIAN_ROVO_TOOLS],
     )
 
 
@@ -119,6 +147,10 @@ def filesystem_local_server(*, now: datetime | None = None) -> MCPServer:
         last_ping=t,
         version="0.4.0",
         capabilities=["tools"],
+        approved=False,
+        approved_by="",
+        provenance="platform:mcp-filesystem-local",
+        allowed_tools=[],
     )
 
 
@@ -191,6 +223,14 @@ def merge_manifest_catalog(
                 last_ping=datetime.now(UTC),
                 version=str(raw.get("version")) if raw.get("version") else None,
                 capabilities=list(raw.get("capabilities") or []),
+                approved=False,
+                approved_by="",
+                provenance=str(raw.get("_manifest_path", "manifest")),
+                allowed_tools=[
+                    str(spec.get("name"))
+                    for spec in raw.get("tools") or []
+                    if isinstance(spec, dict) and spec.get("name")
+                ],
             )
         else:
             existing = by_id[sid]
@@ -201,6 +241,9 @@ def merge_manifest_catalog(
                     "url": raw.get("url", existing.url),
                     "version": raw.get("version", existing.version),
                     "capabilities": raw.get("capabilities", existing.capabilities),
+                    # Manifest refreshes may add descriptions, never approval
+                    # or the host-owned tool exposure ceiling.
+                    "allowed_tools": existing.allowed_tools,
                 }
             )
         for idx, spec in enumerate(raw.get("tools") or [], start=1):

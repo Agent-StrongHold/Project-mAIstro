@@ -319,3 +319,92 @@ class TestDispatchWithManifestRowsPresent:
 
         with pytest.raises(ValueError, match="not valid for"):
             resolve_agent_task("intake", "poll_jira", {})
+
+
+def _set_binding(workspace_id: str, agent_id: str, tools: list[str], *, fragment: str = "") -> None:
+    """Sticky presentation binding — same store UI/API writes (#2276)."""
+    from models.workspace import AgentToolBinding, WorkspacePresentation
+    from services.workspace_authority import presentation_store
+
+    store = presentation_store()
+    store[workspace_id] = WorkspacePresentation(
+        workspace_id=workspace_id,
+        persona_template_id="pm_fleet",
+        tool_bindings=[AgentToolBinding(agent_id=agent_id, tools=tools, prompt_fragment=fragment)],
+        updated_at=datetime.now(UTC),
+    )
+
+
+class TestToolBindingAtDispatch:
+    """#2276 — Workspace tool_bindings apply at the agent gate."""
+
+    def test_binding_removing_a_tool_refuses_invoke(self) -> None:
+        t = datetime.now(UTC)
+        stores.agents["ws-1.builder"] = Agent(
+            id="ws-1.builder",
+            workspace_id="ws-1",
+            name="engineering.builder",
+            description="",
+            model="x",
+            status="idle",
+            capabilities=["run_build", "deploy"],
+            skills=[],
+            created_at=t,
+        )
+        _set_binding("ws-1", "builder", ["run_build"])
+        resolve_agent_task("builder", "run_build", {}, workspace_id="ws-1")
+        with pytest.raises(ValueError, match="not valid for"):
+            resolve_agent_task("builder", "deploy", {}, workspace_id="ws-1")
+
+    def test_explicit_empty_tools_binding_narrows_to_zero_tools(self) -> None:
+        t = datetime.now(UTC)
+        stores.agents["ws-1.builder"] = Agent(
+            id="ws-1.builder",
+            workspace_id="ws-1",
+            name="engineering.builder",
+            description="",
+            model="x",
+            status="idle",
+            capabilities=["run_build"],
+            skills=[],
+            created_at=t,
+        )
+        _set_binding("ws-1", "builder", [])
+        with pytest.raises(ValueError, match="not valid for"):
+            resolve_agent_task("builder", "run_build", {}, workspace_id="ws-1")
+        roster = pulse_roster("ws-1")
+        assert roster[0].capabilities == frozenset()
+
+    def test_foreign_workspace_binding_does_not_affect_this_roster(self) -> None:
+        t = datetime.now(UTC)
+        for ws in ("ws-a", "ws-b"):
+            stores.agents[f"{ws}.builder"] = Agent(
+                id=f"{ws}.builder",
+                workspace_id=ws,
+                name="engineering.builder",
+                description="",
+                model="x",
+                status="idle",
+                capabilities=["run_build"],
+                skills=[],
+                created_at=t,
+            )
+        _set_binding("ws-b", "builder", [])
+        resolve_agent_task("builder", "run_build", {}, workspace_id="ws-a")
+        with pytest.raises(ValueError, match="not valid for"):
+            resolve_agent_task("builder", "run_build", {}, workspace_id="ws-b")
+
+    def test_persona_fallback_when_no_binding(self) -> None:
+        t = datetime.now(UTC)
+        stores.agents["ws-1.builder"] = Agent(
+            id="ws-1.builder",
+            workspace_id="ws-1",
+            name="engineering.builder",
+            description="",
+            model="x",
+            status="idle",
+            capabilities=["run_build"],
+            skills=[],
+            created_at=t,
+        )
+        resolve_agent_task("builder", "run_build", {}, workspace_id="ws-1")

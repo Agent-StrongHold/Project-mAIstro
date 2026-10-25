@@ -8,7 +8,11 @@ from pathlib import Path
 import pytest
 
 from maistro_bootstrap.materialize import materialize_install_artifacts
-from maistro_bootstrap.plan import DEFAULT_CURL_INSTALL_URL, build_install_plan
+from maistro_bootstrap.plan import (
+    DEFAULT_CURL_INSTALL_URL,
+    build_install_plan,
+    effective_runtime,
+)
 from maistro_bootstrap.schema import parse_answers_dict
 
 
@@ -277,3 +281,61 @@ def test_source_build_delivery_has_same_behavior_contract() -> None:
     assert any("takes longer" in note for note in plan["preview_notes"])
     service = plan["generated_artifacts"]["compose_override_preview"]["services"]["maistro-reactor"]
     assert service["environment"]["MAISTRO_DELIVERY_MODE"] == "source_build"
+
+
+# --- container runtime selection (#1820) -------------------------------------
+
+
+def test_effective_runtime_explicit_selection_survives() -> None:
+    """An explicit docker/podman answer is the resolved runtime, untouched."""
+    for runtime in ("docker", "podman"):
+        answers = parse_answers_dict({"container_runtime": runtime})
+        assert effective_runtime(answers) == runtime
+
+
+def test_effective_runtime_auto_policy_is_documented_and_deterministic() -> None:
+    """`auto` resolves by the documented policy: the Podman-oriented
+    deployment tier selects podman; every other tier selects docker. The
+    policy must not depend on what happens to be installed — it is a pure
+    function of the answers, so the same fixture always plans the same
+    runtime."""
+    assert (
+        effective_runtime(
+            parse_answers_dict({"container_runtime": "auto", "deployment_tier": "local_podman"})
+        )
+        == "podman"
+    )
+    for tier in ("local_docker", "vm", "lxc", "proxmox", "bare_metal"):
+        answers = parse_answers_dict({"container_runtime": "auto", "deployment_tier": tier})
+        assert effective_runtime(answers) == "docker", tier
+    # the schema default tier (local_docker) resolves like its explicit spelling
+    assert effective_runtime(parse_answers_dict({"container_runtime": "auto"})) == "docker"
+
+
+def test_plan_delivery_artifact_records_resolved_and_selected_runtime() -> None:
+    """delivery.json carries both the resolved runtime (what install.sh and
+    the generated artifacts must honor) and the raw selection (what the
+    operator chose) — the machine-written pair the shell installer greps."""
+    plan = build_install_plan(parse_answers_dict({"container_runtime": "podman"}), repo_root=None)
+    delivery = plan["generated_artifacts"]["delivery"]
+    assert delivery["container_runtime"] == "podman"
+    assert delivery["container_runtime_selection"] == "podman"
+
+    plan = build_install_plan(parse_answers_dict({"container_runtime": "auto"}), repo_root=None)
+    delivery = plan["generated_artifacts"]["delivery"]
+    assert delivery["container_runtime"] == "docker"  # default tier resolves by policy
+    assert delivery["container_runtime_selection"] == "auto"
+
+
+def test_materialized_delivery_json_names_the_resolved_runtime(tmp_path: Path) -> None:
+    """install.sh reads the selection from delivery.json — so the materialized
+    file, not just the in-memory plan, must carry the resolved value."""
+    answers = parse_answers_dict({"container_runtime": "podman"})
+    plan = build_install_plan(answers, repo_root=None)
+    target = tmp_path / "out"
+    materialize_install_artifacts(plan, target)
+    import json
+
+    delivery = json.loads((target / "delivery.json").read_text(encoding="utf-8"))
+    assert delivery["container_runtime"] == "podman"
+    assert delivery["container_runtime_selection"] == "podman"
