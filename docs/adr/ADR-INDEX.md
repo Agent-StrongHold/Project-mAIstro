@@ -26,13 +26,13 @@ Turing / deferred-to-vN) and **`DECISION-BACKLOG.md`** (in-scope but not yet dec
 | ADR-008 | v2 | Accepted | 2026-04-26 | 2026-04-26† | 2026-05-29 22:00 CDT | StructuredOutputParser — typed/validated LLM output with retry context. |
 | ADR-009 | v2 | Accepted | 2026-04-26 | 2026-04-26† | 2026-05-29 22:00 CDT | Spawner pattern for constructing agents. |
 | ADR-010 | v2 | Accepted | 2026-04-26 | 2026-04-26† | 2026-05-29 22:00 CDT | Lane-based scheduling — LIVE (interactive) vs BACKGROUND. |
-| ADR-011 | v2 | Accepted | 2026-04-26 | 2026-04-26† | 2026-05-29 22:00 CDT | Memory engine + session-factory wiring (init, DB-URL handling). |
+| ADR-011 | v2 | Implemented | 2026-04-26 | 2026-04-26† | 2026-05-29 22:00 CDT | Memory engine + session-factory wiring (init, DB-URL handling). |
 | ADR-012 | v2 | Accepted | 2026-04-26 | 2026-04-26† | 2026-05-29 22:00 CDT | First Alembic migration — memory tables + pgvector. |
-| ADR-013 | v2 | Accepted | 2026-04-26 | 2026-04-26† | 2026-05-29 22:00 CDT | Memory types — Learning/Episodic/Outcome + scopes + 7 tiers + weight bounds. |
-| ADR-014 | v2 | Accepted | 2026-04-26 | 2026-04-26† | 2026-05-29 22:00 CDT | Memory protocols (store interfaces for DI). |
-| ADR-015 | v2 | Accepted | 2026-04-26 | 2026-04-26† | 2026-05-29 22:00 CDT | Learning type + InMemoryLearningStore (dedup, isolation, auto-promotion). |
-| ADR-016 | v2 | Accepted | 2026-04-26 | 2026-04-26† | 2026-05-29 22:00 CDT | EpisodicMemory + 7-tier weights + store (reinforce/decay/retrieve). |
-| ADR-017 | v2 | Accepted | 2026-04-26 | 2026-04-26† | 2026-05-29 22:00 CDT | Outcome + InMemoryOutcomeStore (records outcomes, success rates). |
+| ADR-013 | v2 | Implemented | 2026-04-26 | 2026-04-26† | 2026-05-29 22:00 CDT | Memory types — Learning/Episodic/Outcome + scopes + 7 tiers + weight bounds. |
+| ADR-014 | v2 | Implemented | 2026-04-26 | 2026-04-26† | 2026-05-29 22:00 CDT | Memory protocols (store interfaces for DI). |
+| ADR-015 | v2 | Implemented | 2026-04-26 | 2026-04-26† | 2026-05-29 22:00 CDT | Learning type + InMemoryLearningStore (dedup, isolation, auto-promotion). |
+| ADR-016 | v2 | Implemented | 2026-04-26 | 2026-04-26† | 2026-05-29 22:00 CDT | EpisodicMemory + 7-tier weights + store (reinforce/decay/retrieve). |
+| ADR-017 | v2 | Implemented | 2026-04-26 | 2026-04-26† | 2026-05-29 22:00 CDT | Outcome + InMemoryOutcomeStore (records outcomes, success rates). |
 | ADR-018 | v2 | Accepted | 2026-04-26 | 2026-04-26† | 2026-05-29 22:00 CDT | Persist TaskRecord at queue/runner boundaries (fire-and-forget durability). |
 | ADR-019 | v4 | Accepted | 2026-05-06 | 2026-05-06 | 2026-05-30 00:14 CDT | Canonical source split — core is product-agnostic; multi-tenancy is Stronghold's. |
 | ADR-020 | v2 | Accepted | 2026-05-07 | 2026-06-10 | 2026-05-29 22:00 CDT | Setup wizard — browser-first install ceremony (mandatory 2-user). |

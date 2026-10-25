@@ -30,6 +30,7 @@ def _outcome(
 
 
 class TestRecord:
+    @pytest.mark.ac("ADR-017/AC-1")
     async def test_returns_id(self) -> None:
         store = InMemoryOutcomeStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         id_ = await store.record(_outcome())
@@ -41,6 +42,7 @@ class TestRecord:
         id2 = await store.record(_outcome())
         assert id2 == id1 + 1
 
+    @pytest.mark.ac("ADR-017/AC-2")
     async def test_eviction_at_cap(self) -> None:
         store = InMemoryOutcomeStore(max_outcomes=3, exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         for _ in range(4):
@@ -50,6 +52,7 @@ class TestRecord:
 
 
 class TestCompletionRate:
+    @pytest.mark.ac("ADR-017/AC-3")
     async def test_basic_rate(self) -> None:
         store = InMemoryOutcomeStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         await store.record(_outcome(success=True))
@@ -61,6 +64,7 @@ class TestCompletionRate:
         assert rate["failed"] == 1
         assert abs(rate["rate"] - 2 / 3) < 1e-9
 
+    @pytest.mark.ac("ADR-017/AC-4")
     async def test_day_window_excludes_old(self) -> None:
         store = InMemoryOutcomeStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         await store.record(_outcome(age_days=0))
@@ -68,6 +72,7 @@ class TestCompletionRate:
         rate = await store.get_task_completion_rate(days=7)
         assert rate["total"] == 1
 
+    @pytest.mark.ac("ADR-017/AC-5")
     async def test_org_filter(self) -> None:
         store = InMemoryOutcomeStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         await store.record(_outcome(org="org-A"))
@@ -75,6 +80,7 @@ class TestCompletionRate:
         rate = await store.get_task_completion_rate(org_id="org-A")
         assert rate["total"] == 1
 
+    @pytest.mark.ac("ADR-017/AC-3")
     async def test_by_model_breakdown(self) -> None:
         store = InMemoryOutcomeStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         await store.record(_outcome(model="gpt-4", success=True))

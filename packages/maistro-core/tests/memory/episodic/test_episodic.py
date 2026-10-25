@@ -35,12 +35,15 @@ def _mem(
 
 
 class TestClampWeight:
+    @pytest.mark.ac("ADR-016/AC-1")
     def test_regret_floor_enforced(self) -> None:
         assert clamp_weight(MemoryTier.REGRET, 0.0) == pytest.approx(0.6)
 
+    @pytest.mark.ac("ADR-016/AC-2")
     def test_wisdom_floor_enforced(self) -> None:
         assert clamp_weight(MemoryTier.WISDOM, 0.5) == pytest.approx(0.9)
 
+    @pytest.mark.ac("ADR-016/AC-3")
     def test_observation_ceiling_enforced(self) -> None:
         assert clamp_weight(MemoryTier.OBSERVATION, 0.8) == pytest.approx(0.5)
 
@@ -54,26 +57,32 @@ class TestClampWeight:
 
 
 class TestReinforceDecay:
+    @pytest.mark.ac("ADR-016/AC-4")
     def test_reinforce_increases_weight(self) -> None:
         mem = _mem(tier=MemoryTier.OPINION, weight=0.4)
         reinforced = reinforce(mem, delta=0.05)
         assert reinforced.weight > mem.weight
+        assert reinforced is not mem
 
     def test_reinforce_increments_count(self) -> None:
         mem = _mem()
         reinforced = reinforce(mem)
         assert reinforced.reinforcement_count == mem.reinforcement_count + 1
 
+    @pytest.mark.ac("ADR-016/AC-4")
     def test_reinforce_respects_ceiling(self) -> None:
         mem = _mem(tier=MemoryTier.OBSERVATION, weight=0.5)
         reinforced = reinforce(mem, delta=0.1)
         assert reinforced.weight == pytest.approx(0.5)
 
+    @pytest.mark.ac("ADR-016/AC-5")
     def test_decay_decreases_weight(self) -> None:
         mem = _mem(tier=MemoryTier.OPINION, weight=0.6)
         decayed = decay(mem, delta=0.05)
         assert decayed.weight < mem.weight
+        assert decayed is not mem
 
+    @pytest.mark.ac("ADR-016/AC-5")
     def test_decay_to_floor_for_regret(self) -> None:
         mem = _mem(tier=MemoryTier.REGRET, weight=0.6)
         decayed = decay(mem, delta=0.1)
@@ -91,6 +100,7 @@ class TestReinforceDecay:
 
 
 class TestInMemoryEpisodicStore:
+    @pytest.mark.ac("ADR-016/AC-6")
     async def test_store_and_retrieve(self) -> None:
         store = InMemoryEpisodicStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         mem = _mem(content="python import error fix", agent_id="a1")
@@ -105,12 +115,14 @@ class TestInMemoryEpisodicStore:
         results = await store.retrieve("python error", agent_id="a1")
         assert results == []
 
+    @pytest.mark.ac("ADR-016/AC-10")
     async def test_retrieve_excludes_deleted(self) -> None:
         store = InMemoryEpisodicStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         await store.store(_mem(content="important lesson", deleted=True))
         results = await store.retrieve("important", agent_id="agent-1")
         assert results == []
 
+    @pytest.mark.ac("ADR-016/AC-7")
     async def test_retrieve_team_scope_requires_org(self) -> None:
         store = InMemoryEpisodicStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         mem = _mem(scope=MemoryScope.TEAM, team_id="alpha", org_id="org-A", content="team secret")
@@ -126,6 +138,7 @@ class TestInMemoryEpisodicStore:
         results = await store.retrieve("team info", team_id="alpha", org_id="org-A")
         assert len(results) == 1
 
+    @pytest.mark.ac("ADR-016/AC-9")
     async def test_reinforce_updates_weight(self) -> None:
         store = InMemoryEpisodicStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         mem = _mem(tier=MemoryTier.OPINION, weight=0.4, agent_id="a1")

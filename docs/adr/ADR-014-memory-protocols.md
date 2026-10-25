@@ -15,7 +15,13 @@ blocks: []
 blocked-by: []
 contracts:
   - boundary
-tests: []
+tests:
+  - packages/maistro-core/tests/memory/test_protocols.py
+ac-modules:
+  AC-1: maistro.protocols.memory
+  AC-2: maistro.protocols.memory
+  AC-3: maistro.protocols.memory
+  AC-4: maistro.protocols.memory
 layer: Memory
 owners:
   - '@BlakeMatthews-dev'
@@ -69,10 +75,10 @@ Create `src/maistro/protocols/memory.py` with `LearningStore`, `EpisodicStore`, 
 
 ## Acceptance criteria
 
-- [x] `isinstance(InMemoryLearningStore(), LearningStore)` is `True`
-- [x] `isinstance(InMemoryEpisodicStore(), EpisodicStore)` is `True`
-- [x] `isinstance(InMemoryOutcomeStore(), OutcomeStore)` is `True`
-- [x] A stub class that only has some methods returns `False` for `isinstance`
+- [x] **AC-1** `isinstance(InMemoryLearningStore(), LearningStore)` is `True`
+- [x] **AC-2** `isinstance(InMemoryEpisodicStore(), EpisodicStore)` is `True`
+- [x] **AC-3** `isinstance(InMemoryOutcomeStore(), OutcomeStore)` is `True`
+- [x] **AC-4** A stub class that only has some methods returns `False` for `isinstance`
 
 ## Source references
 

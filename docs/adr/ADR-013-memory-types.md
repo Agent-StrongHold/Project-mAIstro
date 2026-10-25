@@ -15,7 +15,16 @@ blocks: []
 blocked-by: []
 contracts:
   - boundary
-tests: []
+tests:
+  - packages/maistro-core/tests/memory/test_types_and_scopes.py
+ac-modules:
+  AC-1: maistro.memory.types
+  AC-2: maistro.memory.types
+  AC-3: maistro.memory.types
+  AC-4: maistro.memory.scopes
+  AC-5: maistro.memory.scopes
+  AC-6: maistro.memory.scopes
+  AC-7: maistro.memory.types
 layer: Memory
 owners:
   - '@BlakeMatthews-dev'
@@ -77,13 +86,13 @@ def matches_scope(mem: EpisodicMemory, filters) -> bool: ...  # cross-tenant lea
 
 ## Acceptance criteria
 
-- [x] `WEIGHT_BOUNDS[MemoryTier.REGRET] == (0.6, 1.0)` — structurally unforgettable
-- [x] `WEIGHT_BOUNDS[MemoryTier.WISDOM] == (0.9, 1.0)` — survives across versions
-- [x] `WEIGHT_BOUNDS[MemoryTier.OBSERVATION] == (0.1, 0.5)`
-- [x] `build_scope_filter()` always includes `(GLOBAL, None)` entry
-- [x] `matches_scope()` — TEAM scope requires BOTH team_id AND org_id match
-- [x] `matches_scope()` — GLOBAL memory with org_id skips different-org callers
-- [x] `Learning` dataclass round-trips through field access
+- [x] **AC-1** `WEIGHT_BOUNDS[MemoryTier.REGRET] == (0.6, 1.0)` — structurally unforgettable
+- [x] **AC-2** `WEIGHT_BOUNDS[MemoryTier.WISDOM] == (0.9, 1.0)` — survives across versions
+- [x] **AC-3** `WEIGHT_BOUNDS[MemoryTier.OBSERVATION] == (0.1, 0.5)`
+- [x] **AC-4** `build_scope_filter()` always includes `(GLOBAL, None)` entry
+- [x] **AC-5** `matches_scope()` — TEAM scope requires BOTH team_id AND org_id match
+- [x] **AC-6** `matches_scope()` — GLOBAL memory with org_id skips different-org callers
+- [x] **AC-7** `Learning` dataclass round-trips through field access
 
 ## Test plan
 

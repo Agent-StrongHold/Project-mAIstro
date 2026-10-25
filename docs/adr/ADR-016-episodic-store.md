@@ -16,7 +16,20 @@ blocks: []
 blocked-by: []
 contracts:
   - boundary
-tests: []
+tests:
+  - packages/maistro-core/tests/memory/episodic/test_episodic.py
+  - packages/maistro-core/tests/memory/episodic/test_ranking.py
+ac-modules:
+  AC-1: maistro.memory.episodic.tiers
+  AC-2: maistro.memory.episodic.tiers
+  AC-3: maistro.memory.episodic.tiers
+  AC-4: maistro.memory.episodic.tiers
+  AC-5: maistro.memory.episodic.tiers
+  AC-6: maistro.memory.episodic.store
+  AC-7: maistro.memory.episodic.store
+  AC-8: maistro.memory.episodic.ranking
+  AC-9: maistro.memory.episodic.store
+  AC-10: maistro.memory.episodic.store
 layer: Memory
 owners:
   - '@BlakeMatthews-dev'
@@ -49,16 +62,16 @@ Port `InMemoryEpisodicStore` + `tiers.py` (clamp_weight, reinforce, decay) into 
 
 ## Acceptance criteria
 
-- [x] `clamp_weight(REGRET, 0.0)` returns 0.6 (floor enforced)
-- [x] `clamp_weight(WISDOM, 0.5)` returns 0.9 (floor enforced)
-- [x] `clamp_weight(OBSERVATION, 0.8)` returns 0.5 (ceiling enforced)
-- [x] `reinforce()` returns new `EpisodicMemory` with weight increased, clamped
-- [x] `decay()` returns new `EpisodicMemory` with weight decreased, clamped to floor
-- [x] `store()` + `retrieve()` returns matching memories by keyword
-- [x] `retrieve()` blocks cross-org memory leakage (team scope requires org match)
-- [x] `retrieve()` scores by weight × word-overlap
-- [x] `reinforce()` (store method) updates the stored memory weight
-- [x] Deleted memories are excluded from retrieval
+- [x] **AC-1** `clamp_weight(REGRET, 0.0)` returns 0.6 (floor enforced)
+- [x] **AC-2** `clamp_weight(WISDOM, 0.5)` returns 0.9 (floor enforced)
+- [x] **AC-3** `clamp_weight(OBSERVATION, 0.8)` returns 0.5 (ceiling enforced)
+- [x] **AC-4** `reinforce()` returns new `EpisodicMemory` with weight increased, clamped
+- [x] **AC-5** `decay()` returns new `EpisodicMemory` with weight decreased, clamped to floor
+- [x] **AC-6** `store()` + `retrieve()` returns matching memories by keyword
+- [x] **AC-7** `retrieve()` blocks cross-org memory leakage (team scope requires org match)
+- [x] **AC-8** `retrieve()` scores by weight × word-overlap
+- [x] **AC-9** `reinforce()` (store method) updates the stored memory weight
+- [x] **AC-10** Deleted memories are excluded from retrieval
 
 ## Test plan
 

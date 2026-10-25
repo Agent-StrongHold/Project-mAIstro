@@ -16,7 +16,17 @@ blocks: []
 blocked-by: []
 contracts:
   - boundary
-tests: []
+tests:
+  - packages/maistro-core/tests/memory/learnings/test_learning_store.py
+ac-modules:
+  AC-1: maistro.memory.learnings.store
+  AC-2: maistro.memory.learnings.store
+  AC-3: maistro.memory.learnings.store
+  AC-4: maistro.memory.learnings.store
+  AC-5: maistro.memory.learnings.store
+  AC-6: maistro.memory.learnings.store
+  AC-7: maistro.memory.learnings.store
+  AC-8: maistro.memory.learnings.store
 layer: Memory
 owners:
   - '@BlakeMatthews-dev'
@@ -49,14 +59,14 @@ Port `InMemoryLearningStore` into `src/maistro/memory/learnings/store.py`. Key f
 
 ## Acceptance criteria
 
-- [x] `store()` deduplicates: same tool + same org + ≥50% key overlap → overwrites, does not add
-- [x] `store()` does NOT dedup across different orgs
-- [x] `store()` evicts oldest when at capacity
-- [x] `find_relevant()` returns learnings with matching trigger keys, org-filtered
-- [x] `find_relevant()` excludes learnings from other orgs
-- [x] `mark_used()` increments `hit_count` for all provided IDs
-- [x] `check_auto_promotions()` changes status to "promoted" at threshold
-- [x] `get_promoted()` only returns status="promoted" entries
+- [x] **AC-1** `store()` deduplicates: same tool + same org + ≥50% key overlap → overwrites, does not add
+- [x] **AC-2** `store()` does NOT dedup across different orgs
+- [x] **AC-3** `store()` evicts oldest when at capacity
+- [x] **AC-4** `find_relevant()` returns learnings with matching trigger keys, org-filtered
+- [x] **AC-5** `find_relevant()` excludes learnings from other orgs
+- [x] **AC-6** `mark_used()` increments `hit_count` for all provided IDs
+- [x] **AC-7** `check_auto_promotions()` changes status to "promoted" at threshold
+- [x] **AC-8** `get_promoted()` only returns status="promoted" entries
 
 ## Test plan
 

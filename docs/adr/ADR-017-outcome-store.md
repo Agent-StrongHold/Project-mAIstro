@@ -16,7 +16,14 @@ blocks: []
 blocked-by: []
 contracts:
   - boundary
-tests: []
+tests:
+  - packages/maistro-core/tests/memory/test_outcome_store.py
+ac-modules:
+  AC-1: maistro.memory.outcomes
+  AC-2: maistro.memory.outcomes
+  AC-3: maistro.memory.outcomes
+  AC-4: maistro.memory.outcomes
+  AC-5: maistro.memory.outcomes
 layer: Memory
 owners:
   - '@BlakeMatthews-dev'
@@ -49,11 +56,11 @@ Port `InMemoryOutcomeStore` into `src/maistro/memory/outcomes.py`. FIFO eviction
 
 ## Acceptance criteria
 
-- [x] `record()` stores outcome and returns an integer ID
-- [x] `record()` evicts oldest when at cap
-- [x] `get_task_completion_rate()` returns `{total, succeeded, failed, rate, by_model}`
-- [x] `get_task_completion_rate()` respects the `days` window
-- [x] `get_task_completion_rate()` is org-filtered when `org_id` provided
+- [x] **AC-1** `record()` stores outcome and returns an integer ID
+- [x] **AC-2** `record()` evicts oldest when at cap
+- [x] **AC-3** `get_task_completion_rate()` returns `{total, succeeded, failed, rate, by_model}`
+- [x] **AC-4** `get_task_completion_rate()` respects the `days` window
+- [x] **AC-5** `get_task_completion_rate()` is org-filtered when `org_id` provided
 
 ## Test plan
 

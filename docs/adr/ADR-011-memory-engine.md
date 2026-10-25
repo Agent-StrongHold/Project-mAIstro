@@ -15,7 +15,16 @@ blocks: []
 blocked-by: []
 contracts:
   - behavioral
-tests: []
+tests:
+  - packages/maistro-core/tests/memory/test_engine.py
+  - packages/maistro-server/tests/api/test_main.py
+ac-modules:
+  AC-1: maistro.memory.store
+  AC-2: maistro.memory.store
+  AC-3: maistro.memory.store
+  AC-4: maistro.memory.store
+  AC-5: maistro_server.main
+  AC-6: maistro.memory.store
 layer: Memory
 owners:
   - '@BlakeMatthews-dev'
@@ -60,12 +69,12 @@ def reset_engine_cache() -> None: ...               # test helper, clears lru_ca
 
 ## Acceptance criteria
 
-- [x] `get_engine()` returns `None` when `DATABASE_URL` unset
-- [x] `get_engine()` returns an `AsyncEngine` when `DATABASE_URL` is set
-- [x] `get_engine()` is idempotent (same object returned on repeated calls)
-- [x] `reset_engine_cache()` clears the cache for test isolation
-- [x] `main.lifespan` creates engine on startup, disposes on shutdown
-- [x] `get_db_session()` yields a usable `AsyncSession`
+- [x] **AC-1** `get_engine()` returns `None` when `DATABASE_URL` unset
+- [x] **AC-2** `get_engine()` returns an `AsyncEngine` when `DATABASE_URL` is set
+- [x] **AC-3** `get_engine()` is idempotent (same object returned on repeated calls)
+- [x] **AC-4** `reset_engine_cache()` clears the cache for test isolation
+- [x] **AC-5** `main.lifespan` creates engine on startup, disposes on shutdown
+- [x] **AC-6** `get_db_session()` yields a usable `AsyncSession`
 
 ## Test plan
 

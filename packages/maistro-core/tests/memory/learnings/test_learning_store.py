@@ -48,6 +48,7 @@ class TestStore:
         assert await store.get(id_) is not None
         assert await store.get(id_ + 999) is None
 
+    @pytest.mark.ac("ADR-015/AC-1")
     async def test_store_dedup_same_org_same_tool_overlapping_keys(self) -> None:
         store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         lr1 = _lr(keys=["foo", "bar"])
@@ -102,6 +103,7 @@ class TestStore:
         after = await store.find_relevant("deploy", org_id="org-1")
         assert [lr.id for lr in after] == [reported_id, tested_id]
 
+    @pytest.mark.ac("ADR-015/AC-2")
     async def test_store_no_dedup_different_org(self) -> None:
         store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         lr1 = _lr(org="org-A", keys=["foo", "bar"])
@@ -111,6 +113,7 @@ class TestStore:
         all_lr = await store.list_all(org_id="__system__")
         assert len(all_lr) == 2
 
+    @pytest.mark.ac("ADR-015/AC-3")
     async def test_store_eviction_at_cap(self) -> None:
         store = InMemoryLearningStore(
             max_learnings=3, exposure_mode=MemoryExposureMode.AGENT_MANAGED
@@ -124,6 +127,7 @@ class TestStore:
 
 
 class TestFindRelevant:
+    @pytest.mark.ac("ADR-015/AC-4")
     async def test_finds_by_trigger_key(self) -> None:
         store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         await store.store(_lr(keys=["python", "import"]))
@@ -136,6 +140,7 @@ class TestFindRelevant:
         results = await store.find_relevant("python import error", org_id="org-1")
         assert results == []
 
+    @pytest.mark.ac("ADR-015/AC-5")
     async def test_org_isolation(self) -> None:
         store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         await store.store(_lr(keys=["python"], org="org-A"))
@@ -153,6 +158,7 @@ class TestFindRelevant:
 
 
 class TestMarkUsed:
+    @pytest.mark.ac("ADR-015/AC-6")
     async def test_increments_hit_count(self) -> None:
         store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         id_ = await store.store(_lr(keys=["key"]))
@@ -233,6 +239,7 @@ class TestListIneffective:
 
 class TestPromotion:
     @pytest.mark.ac("SPEC-100126-5445/AC-3")
+    @pytest.mark.ac("ADR-015/AC-7")
     async def test_auto_promotion_at_threshold(self) -> None:
         store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         id_ = await store.store(_lr(keys=["key"], evidence=True))
@@ -256,6 +263,7 @@ class TestPromotion:
         assert stored.status == "active"
 
     @pytest.mark.ac("SPEC-100126-5445/AC-3")
+    @pytest.mark.ac("ADR-015/AC-8")
     async def test_get_promoted_returns_only_promoted(self) -> None:
         store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         await store.store(_lr(keys=["active"]))
