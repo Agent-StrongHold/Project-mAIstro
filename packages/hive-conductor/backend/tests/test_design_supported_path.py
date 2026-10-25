@@ -48,8 +48,7 @@ if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
 
 from routes import design as design_routes  # noqa: E402
-from services import default_workspace  # noqa: E402
-from services import design_service  # noqa: E402
+from services import default_workspace, design_service  # noqa: E402
 from services import engine as engine_service  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[4]
