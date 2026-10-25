@@ -265,3 +265,23 @@ async def test_record_runs_maybe_reconcile_when_verifier_installed() -> None:
         )
     )
     assert verifier.calls == 2
+
+
+def test_default_invocation_quota_verifier_idle_without_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from maistro.quota.recorder import default_invocation_quota_verifier
+
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    assert default_invocation_quota_verifier() is None
+
+
+def test_default_invocation_quota_verifier_builds_openrouter_when_keyed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from maistro.quota.recorder import default_invocation_quota_verifier
+    from maistro.quota.verifiers import OpenRouterKeyVerifier
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test-openrouter")
+    verifier = default_invocation_quota_verifier()
+    assert isinstance(verifier, OpenRouterKeyVerifier)

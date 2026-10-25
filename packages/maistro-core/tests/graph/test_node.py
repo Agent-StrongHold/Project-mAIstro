@@ -421,6 +421,35 @@ class TestExecuteSingleFailureModes:
             node_module.compute_backoff = original
         assert node.phase == NodePhase.FAILED
 
+    async def test_stage_delay_raises_backoff_when_larger(self) -> None:
+        """#2318: READ-stage floor can lift a tiny classifier retry_after."""
+        node = _planner_node(max_retries=3)
+        attempts = 0
+
+        async def llm_call(*args: object, **kwargs: object) -> str:
+            nonlocal attempts
+            attempts += 1
+            if attempts < 2:
+                raise TimeoutError("connection timed out, please retry")
+            return VALID_PLAN_JSON
+
+        import maistro.graph.node as node_module
+
+        original_backoff = node_module.compute_backoff
+        original_stage = node_module.get_delay
+        # Tiny backoff so stage_delay (READ base 0.25) wins the max().
+        node_module.compute_backoff = lambda *a, **k: 0.01  # type: ignore[assignment]
+        node_module.get_delay = lambda *a, **k: 0.25  # type: ignore[assignment]
+        try:
+            await node.execute(
+                llm_call, backoff_config=BackoffConfig(base_delay=0.001, max_delay=0.01)
+            )
+        finally:
+            node_module.compute_backoff = original_backoff
+            node_module.get_delay = original_stage
+        assert node.phase == NodePhase.SUCCEEDED
+        assert attempts == 2
+
     async def test_retrying_emits_node_retrying_event(self) -> None:
         events: list[GraphEvent] = []
 
