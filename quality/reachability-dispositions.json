@@ -12,10 +12,7 @@
         "@flat/hive-conductor/services.chatbot_integration",
         "@flat/hive-conductor/services.entra_entitlements",
         "@flat/hive-conductor/services.eval_bootstrap",
-        "@flat/hive-conductor/services.onboard_db",
-        "@flat/hive-conductor/services.pipeline_orchestrator",
-        "@flat/hive-conductor/services.preference_calibration",
-        "@flat/hive-conductor/services.repo_scanner"
+        "@flat/hive-conductor/services.preference_calibration"
       ]
     },
     {
@@ -299,16 +296,6 @@
       ]
     },
     {
-      "id": "hive-project-onboarding",
-      "subsystem": "Agent Conductor HTTP surface",
-      "disposition": "CONNECT",
-      "rationale": "routes/projects.py is a project onboarding flow \u2014 intake, scan, deploy, persisted through the Launch DB/Cache/Store \u2014 declaring prefix=/v1/projects and never registered in main.py. An earlier disposition called it a duplicate of the canonical project scope surface and marked it RETIRE. That was wrong: maistro.projects owns Workspace/Project *scope*, which is a different thing from an onboarding wizard.",
-      "root": "main.py route registration",
-      "modules": [
-        "@flat/hive-conductor/routes.projects"
-      ]
-    },
-    {
       "id": "builders-domain-logic",
       "subsystem": "Builders pipeline",
       "disposition": "CONNECT",
@@ -355,7 +342,7 @@
       "id": "mutation-testing-tooling",
       "subsystem": "Repo tooling",
       "disposition": "CONNECT",
-      "rationale": "The mutation-testing pillar's scripts still unreachable after the #330 restoration. The parked workflow stub was replaced (#330) and eight of these ten became reachable through the live mutation gate and were pruned from the reachability baseline; the two that remain are invoked only dynamically (subprocess with sys.executable), so the static import graph still cannot see them. They become reachable the same way the other eight did — a workflow or gate script referencing them by path — and the restoration decision recorded in ADR-082526-aef8 covers them.",
+      "rationale": "The mutation-testing pillar's scripts still unreachable after the #330 restoration. The parked workflow stub was replaced (#330) and eight of these ten became reachable through the live mutation gate and were pruned from the reachability baseline; the two that remain are invoked only dynamically (subprocess with sys.executable), so the static import graph still cannot see them. They become reachable the same way the other eight did \u2014 a workflow or gate script referencing them by path \u2014 and the restoration decision recorded in ADR-082526-aef8 covers them.",
       "root": "the PR mutation gate or nightly packet runner invoking scripts/mutation_filter_annotations.py and scripts/mutation_viability.py from a statically visible entry point",
       "modules": [
         "@tool/mutation_filter_annotations",
