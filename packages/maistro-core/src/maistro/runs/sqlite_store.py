@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any
 
 from maistro.graph.definitions import Graph
 from maistro.projects.scope_store import ProjectScopeStore
+from maistro.runs.access import RunAuthorization, admission_identity_fields
 from maistro.runs.concurrency import (
     ACTIVE_ROOT_STATUS_VALUES,
     RunConcurrencyLimits,
@@ -45,7 +46,7 @@ from maistro.runs.retention_scope import (
     RetentionScope,
     WorkspaceRetentionScope,
 )
-from maistro.runs.sources import SCHEDULED_FOR_KEY, occurrence_key
+from maistro.runs.sources import SCHEDULED_FOR_KEY, TASK_QUEUE_SOURCE, occurrence_key
 from maistro.runs.store import (
     DEFAULT_PURGE_BATCH,
     DEFAULT_RECLAIM_BATCH,
@@ -233,6 +234,13 @@ CREATE TABLE IF NOT EXISTS canonical_runs (
     FOREIGN KEY (parent_node_run_id) REFERENCES canonical_node_runs(node_run_id)
 );
 
+-- Recovery enumerates the bounded live prefix from this index, matching the
+-- PostgreSQL `ix_canonical_runs_live` partial index. The ordering expressions
+-- follow `status` so `list_by_status` walks the index in `(created_at,
+-- run_id)` order instead of building a temporary B-tree over the whole live
+-- population on every recovery tick.
+CREATE INDEX IF NOT EXISTS idx_canonical_runs_status
+    ON canonical_runs(status, json_extract(payload, '$.created_at'), run_id);
 CREATE INDEX IF NOT EXISTS idx_canonical_runs_workspace_project
     ON canonical_runs(workspace_id, project_id);
 CREATE INDEX IF NOT EXISTS idx_canonical_runs_parent
@@ -366,14 +374,18 @@ CREATE INDEX IF NOT EXISTS idx_canonical_runs_active_root_principal
     WHERE {_ACTIVE_ROOT_PREDICATE};
 """
 
-#: Active root Runs in one Workspace and for one principal (#1182). The
-#: principal ceiling spans Workspaces, so its count has no Workspace predicate.
+#: Active root Runs in one Workspace, for one principal, and system-wide
+#: (#1182). The principal ceiling spans Workspaces, so its count has no
+#: Workspace predicate; the system ceiling spans both, so its count has no
+#: predicate at all beyond the active-root one.
 _ACTIVE_ROOT_COUNTS_SQL = f"""SELECT
     (SELECT COUNT(*) FROM canonical_runs
       WHERE {_ACTIVE_ROOT_PREDICATE} AND workspace_id = ?),
     (SELECT COUNT(*) FROM canonical_runs
       WHERE {_ACTIVE_ROOT_PREDICATE}
-        AND json_extract(payload, '$.actor_principal_id') = ?)"""  # nosec B608
+        AND json_extract(payload, '$.actor_principal_id') = ?),
+    (SELECT COUNT(*) FROM canonical_runs
+      WHERE {_ACTIVE_ROOT_PREDICATE})"""  # nosec B608
 
 
 _PAYLOAD_TABLES = frozenset(
@@ -456,12 +468,18 @@ class SqliteRunStore:
         allow_cross_project: bool = False,
         persona_id: str | None = None,
         actor_principal_id: str | None = None,
+        authorization: RunAuthorization | None = None,
         provenance: dict[str, Any] | None = None,
         retention_expires_at: datetime | None = None,
         initial_status: RunStatus = RunStatus.CREATED,
         goal_id: str | None = None,
         goal_revision: int | None = None,
     ) -> Run:
+        identities = admission_identity_fields(
+            graph,
+            authorization=authorization,
+            legacy_actor_principal_id=actor_principal_id,
+        )
         async with self._write_lock:
             await self._validate_graph_scope(graph)
             if parent_node_run_id is not None and parent_run_id is None:
@@ -487,7 +505,9 @@ class SqliteRunStore:
                 parent_run_id=parent_run_id,
                 parent_node_run_id=parent_node_run_id,
                 persona_id=persona_id,
-                actor_principal_id=require_admitted_actor(actor_principal_id),
+                actor_principal_id=identities["actor_principal_id"],
+                initiating_principal_id=identities["initiating_principal_id"],
+                acting_principal_id=identities["acting_principal_id"],
                 provenance=dict(provenance or {}),
                 retention_expires_at=retention_expires_at,
                 goal_id=goal_id,
@@ -566,6 +586,7 @@ class SqliteRunStore:
             self._concurrency_limits.check(
                 workspace_active=int(row[0]) - 1,
                 principal_active=int(row[1]) - 1 if principal is not None else None,
+                system_active=int(row[2]) - 1,
             )
         except BaseException:
             # A refusal, or a count that could not be read: either way the row
@@ -574,6 +595,20 @@ class SqliteRunStore:
             await connection.execute(f"ROLLBACK TO SAVEPOINT {_ROOT_ADMISSION_SAVEPOINT}")
             await connection.execute(f"RELEASE SAVEPOINT {_ROOT_ADMISSION_SAVEPOINT}")
             raise
+
+    async def list_recent_runs(
+        self, workspace_id: str, *, limit: int = 100, offset: int = 0
+    ) -> list[Run]:
+        if limit <= 0 or offset < 0:
+            raise ValueError("limit must be positive and offset non-negative")
+        async with self._conn.execute(
+            """SELECT payload FROM canonical_runs WHERE workspace_id = ?
+               ORDER BY json_extract(payload, '$.created_at') DESC, run_id DESC
+               LIMIT ? OFFSET ?""",
+            (workspace_id, limit, offset),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return [model_of_json(Run, row[0]) for row in rows]
 
     async def get_run(self, run_id: str, *, principal_id: str | None = None) -> Run | None:
         row = await self._fetchone(
@@ -778,6 +813,24 @@ class SqliteRunStore:
             """SELECT payload FROM canonical_runs
                WHERE json_extract(payload, '$.provenance.delegation_key') = ?""",
             (delegation_key,),
+        )
+        return model_of_json(Run, row[0]) if row is not None else None
+
+    async def find_run_by_task_id(
+        self,
+        task_id: str,
+        *,
+        admission_source: str | None = TASK_QUEUE_SOURCE,
+    ) -> Run | None:
+        # The SQLite expression twin of the PostgreSQL provenance query, the
+        # same way `find_run_by_effect` is spelled twice.
+        row = await self._fetchone(
+            """SELECT payload FROM canonical_runs
+               WHERE json_extract(payload, '$.provenance.task_id') = ?
+                 AND (? IS NULL
+                      OR json_extract(payload, '$.provenance.admission_source') = ?)
+               LIMIT 1""",
+            (task_id, admission_source, admission_source),
         )
         return model_of_json(Run, row[0]) if row is not None else None
 
@@ -1208,7 +1261,13 @@ class SqliteRunStore:
         rows = await cursor.fetchall()
         return [model_of_json(NodeRun, row[0]) for row in rows]
 
-    async def create_node_run(self, run_id: str, *, node_id: str) -> NodeRun:
+    async def create_node_run(
+        self,
+        run_id: str,
+        *,
+        node_id: str,
+        provenance: dict[str, Any] | None = None,
+    ) -> NodeRun:
         async with self._write_lock:
             run, snapshot = await self._require_run_snapshot(run_id)
             if run.status in TERMINAL_RUN_STATUSES:
@@ -1223,7 +1282,12 @@ class SqliteRunStore:
                 (run_id,),
             )
             ordinal = int(row[0]) + 1 if row is not None else 1
-            node_run = NodeRun(run_id=run_id, node_id=node_id, ordinal=ordinal)
+            node_run = NodeRun(
+                run_id=run_id,
+                node_id=node_id,
+                ordinal=ordinal,
+                provenance=dict(provenance or {}),
+            )
             # Validate the same nonterminal parent at the physical insert,
             # even if a sibling commit releases an intervening transaction.
             cursor = await self._conn.execute(
@@ -1281,6 +1345,23 @@ class SqliteRunStore:
         )
         rows = await cursor.fetchall()
         return [model_of_json(NodeRun, row[0]) for row in rows]
+
+    async def record_node_run_provenance(
+        self, node_run_id: str, *, patch: dict[str, Any]
+    ) -> NodeRun:
+        """Merge ``patch`` into a NodeRun's provenance (top-level keys)."""
+        async with self._write_lock:
+            node_run = await self._require_node_run(node_run_id)
+            await self._refuse_under_terminal_run(node_run)
+            updated = node_run.model_copy(update={"provenance": {**node_run.provenance, **patch}})
+            await self._update_payload(
+                "canonical_node_runs",
+                "node_run_id",
+                node_run_id,
+                updated.status.value,
+                json_of(updated),
+            )
+            return updated
 
     async def transition_node_run(
         self,

@@ -1,7 +1,9 @@
 """M7-A14 contract-forbid: no second design product (#990).
 
 Contract under test: #990 (M7-A14), extending #790 (ADR-092926-7a01 kind
-fencing) and #796 (Evolve/RSI consumer guards). Where #790 fences the
+fencing, enforced by ``test_canonical_loop_kind_authority.py``) and the
+#796 consumer mapping (Evolve/RSI as consumers only; that issue owns its
+guards). Where #790 fences the
 *runtime* registry against a competing Goal/Rubric/EvalRun kind, this suite
 freezes the *product boundary* in CI: M7 is continued development of the Hive
 Conductor Design Studio plus the maistro-core Goal/Rubric/Run loop — not a
@@ -305,6 +307,7 @@ def test_no_atelier_product_copy_in_hive_surfaces() -> None:
 
 
 @pytest.mark.contract("boundary")
+@pytest.mark.ac("SPEC-092926-7a02/AC-2")
 @pytest.mark.parametrize("name", _COMPETING_LIFECYCLE_NAMES)
 def test_no_competing_execution_lifecycle_name(name: str) -> None:
     """Production code may not declare a second execution lifecycle (#990).

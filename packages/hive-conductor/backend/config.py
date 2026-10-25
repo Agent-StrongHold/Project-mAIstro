@@ -233,7 +233,9 @@ class Settings(BaseSettings):
     # The embedded Container's Sentinel permission table (ADR-072726-0d6b,
     # #1165). Fail-closed: the shipped empty table denies every tool, so a
     # Conductor that wants its agents to hold tool authority states it here --
-    # `MAISTRO_PERMISSION_PRESET=dangerous_tools_admin` and/or
+    # `MAISTRO_PERMISSION_PRESET=hive_conductor_tools` (the preset matching
+    # services/tool_executor's executable registry; `dangerous_tools_admin`
+    # grants only engine-side names this runtime cannot dispatch) and/or
     # `MAISTRO_PERMISSIONS='{"tool_name": ["admin", "user"]}'` (JSON).
     maistro_permission_preset: str = "none"
     maistro_permissions: dict[str, list[str]] = Field(default_factory=dict)
@@ -271,7 +273,7 @@ class Settings(BaseSettings):
     # Open Design renderer plugin (SPEC-070426-6ea8). Off by default; when enabled the
     # design service registers the provider and /design/skills gains web/video skills.
     open_design_enabled: bool = False
-    open_design_url: str = "http://127.0.0.1:7456"
+    open_design_url: str = "http://127.0.0.1:7456"  # DevSkim: ignore DS162092 until 2027-12-31
     open_design_token: SecretStr | None = None
 
     # CORS allow-list. Defaults to local-dev origins; set CORS_ORIGINS (JSON list)
@@ -287,10 +289,10 @@ class Settings(BaseSettings):
     # `Access-Control-Allow-Credentials: true`, so the browser accepts it and
     # any site can make credentialed cross-origin requests.
     cors_origins: list[str] = [
-        "http://localhost:5173",
-        "http://localhost:8101",
-        "http://127.0.0.1:5173",
-        "http://127.0.0.1:8101",
+        "http://localhost:5173",  # DevSkim: ignore DS162092 until 2027-12-31
+        "http://localhost:8101",  # DevSkim: ignore DS162092 until 2027-12-31
+        "http://127.0.0.1:5173",  # DevSkim: ignore DS162092 until 2027-12-31
+        "http://127.0.0.1:8101",  # DevSkim: ignore DS162092 until 2027-12-31
     ]
 
     _check_cors_origins = field_validator("cors_origins")(validate_cors_origins)
@@ -358,7 +360,7 @@ class Settings(BaseSettings):
 
     hardware_preset: Literal["potato", "laptop", "desktop", "beast"] = "laptop"
     poc_mode: str = ""
-    maistro_base_url: str = "http://localhost:8000"
+    maistro_base_url: str = "http://localhost:8000"  # DevSkim: ignore DS162092 until 2027-12-31
     # ADR-096: maistro-server is the canonical backend for production task
     # execution. "demo" is the only mode allowed to run an in-process
     # in-process LocalTaskBackend — see SPEC-226.

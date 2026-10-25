@@ -96,6 +96,18 @@ SCHEDULE_FIRE_ID_KEY = "schedule_fire_id"
 #: intersect, so a manual fire can never consume a scheduled tick's slot.
 MANUAL_OCCURRENCE_PREFIX = "manual:"
 
+#: The principal that asked for a manual fire, recorded separately from the
+#: schedule's acting principal (#1201).
+#:
+#: A manual fire runs on the schedule owner's authority — the Run's
+#: `actor_principal_id` is the schedule's actor — but it was a *specific*
+#: authenticated caller that pressed the button, and that fact is provenance,
+#: not an implementation detail: audit must be able to tell "the schedule's
+#: actor" from "this human/Agent asked for a fire now". Set only when the
+#: admission knows its requester (an HTTP manual fire); absent on tick fires,
+#: where there is no requester to name.
+SCHEDULE_REQUESTED_BY_KEY = "manual_requesting_principal_id"
+
 
 def canonical_occurrence_instant(moment: datetime) -> str:
     """The one text a nominal occurrence's instant is claimed by (#850).
@@ -175,6 +187,7 @@ __all__ = [
     "SCHEDULE_FIRE_ID_KEY",
     "SCHEDULE_ID_KEY",
     "SCHEDULE_INPUTS_KEY",
+    "SCHEDULE_REQUESTED_BY_KEY",
     "SCHEDULE_SOURCE",
     "SCHEDULE_TRIGGER_KEY",
     "SCHEDULE_TRIGGER_MANUAL",

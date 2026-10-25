@@ -57,7 +57,7 @@ Three further rules follow from the columns' meanings. A `KEEP` column whose eve
 | Recurrence / schedules | `maistro.scheduling` | Trigger definition → Run | canonical: `evaluate()` decides, the Run owns execution | `scheduling.store` + `scheduling.pg_store` (PostgreSQL, SQLite, in-memory) | schedule's `actor_principal_id` |
 | Repo tooling | `scripts`, `_vulture_whitelist` | CI gate / ratchet ledger | the workflow step that runs it | `quality/*.json` ledgers | — |
 | Planning and wave orchestration | `maistro.orchestrator` | Graph synthesis | wave state in `orchestrator.waves` | — | — |
-| Builders pipeline | `maistro.builders` | Graph of spec→tests→code→review Nodes | `builders.runtime` (unreachable) + `builders.graph_executor` (unreachable; fourth universal lifecycle) | `builders.logger` (unreachable) | — |
+| Builders pipeline | `maistro.builders` via `maistro.cli._builders_tui` | ReAct interactive turn plus reusable five-stage Builders domain composition | `maistro.graph.durable_runs` through `maistro.builders.interactive` (canonical Run/NodeRun/Attempt); legacy executor is parity-only | canonical Run/Graph stores via `maistro.runs.wiring`; session history retains run IDs | — |
 | Workspace / Project scope | `maistro.workspaces`, `maistro.projects` | Workspace, Project — the scope roots | n/a (scope, not execution) | `projects.store`, `projects.scope_store`, `workspaces.store` | `projects.authorization` |
 | Agents | `maistro.agents` | Node implementation / Provider | per-agent ad-hoc | `persistence.pg_agents` | `agents.intents` routing table only |
 | Capability / Provider / Binding / Invocation | `maistro.capabilities` | the canonical effect path | `capabilities.invocation` | `capabilities.invocation_store`, `approval_store`; durable Binding and Invocation stores on SQLite or PostgreSQL through `capabilities.effect_context` when a database is configured (#1321), in-memory otherwise | `capabilities.governed_invocation` |
@@ -80,7 +80,7 @@ Three further rules follow from the columns' meanings. A `KEEP` column whose eve
 | Relational persistence | `maistro.persistence` | Storage adapters | n/a | itself — `pg_*` is wired for PostgreSQL; SQLite remains for homelab/local use | — |
 | Local state writer | `maistro.state` | Single-writer SQLite | n/a | itself | — |
 | Ontology | `maistro.ontology` | Semantic object layer | n/a | `ontology.registry` (in-memory) | — |
-| Portability / backup | `maistro.portability` | Export/import of domain state | n/a | file exports | — |
+| Portability / backup | `maistro.portability` | Foreign-format agent/skill import/export (ADR-101 §3); deployment backup/restore (ADR-081) unbuilt | n/a | file exports | — |
 | Events and checkpoints | `maistro.events` | Event envelope, checkpoint, outbox | n/a | `events.pg_stores` with a pool, else durable SQLite or in-memory; `events.outbox` | — |
 | Observability | `maistro.observability` | Trace, metric, log | n/a | exporter-dependent | — |
 | Resilience | `maistro.resilience` | Retry, circuit, SLO | circuit state per dependency | in-memory | — |
@@ -88,12 +88,12 @@ Three further rules follow from the columns' meanings. A `KEEP` column whose eve
 | Reactor loop | `maistro.reactor` | Trigger evaluation loop | n/a | — | — |
 | Prompts and personas | `maistro.prompts`, `maistro.personas` | Node/agent configuration | n/a | `persistence.pg_prompts` still has no production importer | — |
 | Codebase analysis | `maistro.codebase` | Tool implementation | n/a | — | — |
-| Core CLI | `maistro.cli` | Client of the Conductor API | n/a (remote) | — | server-side |
+| Core CLI | `maistro.cli` | Client of the Conductor API; `maistro portability` converts agent/skill files locally | n/a (remote) | — | server-side |
 | Shared contracts and config | `maistro`, `maistro.types`, `maistro.protocols`, `maistro.constants`, `maistro.config`, `maistro.http` | Types and protocols | n/a | — | — |
 | Test scaffolding | `maistro.testing` | Test doubles | n/a | — | — |
 | maistro-server HTTP app | `maistro_server` | Product entry point | `maistro.tasks.queue` (delegated) receipt plus canonical Run spine | inherited | `maistro.auth` + rate limiter |
 | Agent Conductor HTTP surface | `main`, `routes`, `middleware`, `protocols`, `adapters`, `models`, `stores`, `config`, `logging_setup`, `settings_defaults` | Product entry point | mixed: `stores` in-memory dicts, `models` SQLAlchemy | `models` + `services.pg_store` | `middleware` auth + `middleware.privilege` (installed, empty policy table — #63) |
-| Agent Conductor services | `services` | Product services | `services.dag_run_store` — parallel run identity, event-derived, authoritative for current UI | `services.pg_store` | per-route |
+| Agent Conductor services | `services` | Product services | `services.dag_run_store` — projection receipt over canonical Run truth: lifecycle (status + finish time) reconciled against the canonical Run at every read (#35, #1036), non-terminal canonical states mirrored open with no invented finish, display-only | `services.pg_store` | per-route |
 | Canvas ability | `maistro_canvas`, `maistro-canvas-frontend-server` | Graph of canvas Nodes | `canvas.executor` pipeline + `canvas.runner` (unreachable) claim/lease/reap state machine | `canvas.store` (PostgreSQL; wired by maistro_server.main `_wire_canvas_ability`, #851) | `maistro_canvas.auth` |
 | Open Design integration | `maistro_design` | Renderer Providers | `design.engine` | `design.stores` | `design.trust` |
 | Evolve tournament optimizer | `maistro_evolve` | Graph of evaluation Nodes | `evolve.cycle` orchestrates; no universal work-state machine of its own | `evolve.serialize` (unreachable) | — |
@@ -126,10 +126,10 @@ A share rather than the `19/62` this column used to carry, because the denominat
 | Request front door and DI | `maistro.container.route_request` | `none` | MIGRATE — Conduit is constructed but no shipped product routes through it | ADR-019, ADR-096 | a real Conductor chat turn that traverses Conduit and yields a `run_id` | #41, #53 |
 | Task queue and runner | `maistro_server.main`, `adapters.task_backend` | `none` | MIGRATE — becomes an admission receipt over a canonical Run; with a database, admission already commits the Run first and restart recovers it (#91) | ADR-018, ADR-056, ADR-097 | task submission returns a `run_id`; `TaskRecord` no longer holds terminal truth | #41, #43 |
 | A2A delegation | `maistro.a2a` exported API; no shipped caller | `none` | MIGRATE — delegation must create child Runs | — | one local and one remote delegation with durable `parent_run_id` correlation | #47 |
-| Recurrence / schedules | `services.scheduler` background loop | `none` | KEEP — converging: the cursor is canonical and durable, execution is not | ADR-082126-f69c (supersedes ADR-046) | `services/scheduler.py` advances the canonical `ScheduleStore` only after a Run exists (#231). Recurring ticks and manual `fire_now` both admit through the canonical spine (#231, #1120): a manual fire claims `(schedule_id, "manual:" + fire_id)` as a first-class occurrence instead of executing through `run_registered_dag`, which survives only as the no-Container standalone fallback (#1113). Admitted Runs execute via the #251 consumer tick, which manual fire triggers promptly; multi-node Runs still wait on durable Graph traversal — #44/#34 | #46, #62, #231, #251, #1120 |
+| Recurrence / schedules | `services.scheduler` background loop | `none` | KEEP — converging: the cursor is canonical and durable, execution is not | ADR-082126-f69c (supersedes ADR-046) | `services/scheduler.py` advances the canonical `ScheduleStore` only after a Run exists (#231). Recurring ticks and manual `fire_now` both admit through the canonical spine (#231, #1120): a manual fire claims `(schedule_id, "manual:" + fire_id)` as a first-class occurrence instead of executing through `run_registered_dag`, which now also requires the canonical Run/continuation owners and refuses without a Container (#1113). Admitted Runs execute via the #251 consumer tick, which manual fire triggers promptly; multi-node Runs still wait on durable Graph traversal — #44/#34 | #46, #62, #231, #251, #1120 |
 | Repo tooling | the `.github/workflows/*.yml` step that executes the script | `few` | KEEP — the 43 rooted scripts are the gate set; the 19 unrooted are dispositioned, 10 of them behind a disabled workflow and 1 reached only through a shell installer | ADR-082526-aef8 | `scripts/check-reachability.py` roots tooling at the workflow steps that run it; `tests/test_check_reachability.py` | #33, #236, #249 |
 | Planning and wave orchestration | `maistro.orchestrator` exported API | `some` | MIGRATE — wave fan-out/fan-in belongs to Graph nodes | — | a wave plan that executes as a Graph with per-branch NodeRuns | #44, #34 |
-| Builders pipeline | none | `all` | MIGRATE — wholly unreachable and owns a duplicate executor | ADR-090 | Builders stages appear as NodeRuns; `builders.graph_executor` deleted | #49, #35 |
+| Builders pipeline | `maistro builders` -> Textual `CodingScreen` -> canonical interactive adapter | `some` | MIGRATE — shipped ReAct turns use canonical Run/NodeRun/Attempt; five-stage definitions remain domain composition and the legacy executor is parity/reference-only | ADR-090, SPEC-201 | a real TUI-backed turn retains a canonical `run_id` and records one physical NodeRun/Attempt; strict #459/#1036 inspection remains follow-up evidence | #49, #56, #459, #1036 |
 | Workspace / Project scope | `routes.projects`, `routes.workspaces` | `none` — the M7-A2 Project-scoped Rubric store (`projects.rubric_store`) is exported public API of `maistro.projects` (import-reachable; its scoring/fence consumers are later M7 work) | CONNECT — the shipped compose stack has one durable Workspace/Membership owner: Hive's embedded runtime and maistro-server share `canonical_workspaces` in maistro-engine's PostgreSQL, and Hive's `stores.workspaces` mirror is only imported once on that path. Hive's Workspace views still need a Hive presentation record, so a Workspace created only through maistro-server authorizes in Hive but is not listed there. All three Run stores validate Graph scope in `create_run`. Still open: the Turing backend's per-process `InMemoryWorkspaceStore`; `WorkspaceRoutingAdmitter` minting Root Projects for Workspace ids with no `canonical_workspaces` row; no `canonical_projects -> canonical_workspaces` FK | ADR-081226-9944, ADR-081426-b1d3, ADR-092326-97c4 | every Run carries a Project id enforced at the store boundary; every Root Project's Workspace exists in the one canonical store | #37, #38 |
 | Agents | `maistro.container` factory; `services.agent_materialization` | `some` | MIGRATE — agents become Node implementations behind Providers | ADR-004, ADR-035 | agent invocation creates an Invocation record; per-agent event emission retired | #55, #56, #34 |
 | Capability / Provider / Binding / Invocation | `services.capabilities_wiring`, `routes.capabilities` | `few` | KEEP — canonical effect path, incompletely adopted | ADR-081226-6b46 | every shipped model/tool effect has an Invocation row | #55, #56, #57 |
@@ -152,7 +152,7 @@ A share rather than the `19/62` this column used to carry, because the denominat
 | Relational persistence | `maistro.container` (both backends), Alembic | `none` | KEEP — PostgreSQL canonical stores and SQLite homelab adapters are wired | ADR-082226-5104, ADR-087, ADR-012 | container selects durable prompt/audit stores with backend conformance; zero relational modules unreachable | — |
 | Local state writer | `maistro.reactor`, CLI | `none` | KEEP | — | single-writer concurrency tests | — |
 | Ontology | `maistro.ontology` public API via `maistro.projects` exports | `none` | CONNECT — accepted design; the registry's first process consumer is still owed. The M7-A2 Rubric kind/store made the modules import-reachable (`maistro.projects` exports the store beside `InMemoryProjectStore`), so the CONNECT baseline rows were pruned per the disposition gate's own rule while the #34 wiring debt stays recorded here | ADR-036 | subsystem resolves semantic object through registry | #34, #791 |
-| Portability / backup | none | `all` | CONNECT | — | backup/restore preserves canonical correlated records | #62, #34 |
+| Portability / backup | `maistro portability` CLI subcommands | `none` | KEEP — the ADR-101 §3 (Proposed) import-wide/export-narrow adapters ship through the console script | — (proposed in ADR-101, ADR-081) | foreign JSON/markdown agent/skill imports and the MCP-manifest + SKILL.md export round-trip run through the shipped CLI (`tests/cli/test_portability.py`); deployment backup/restore (ADR-081, Proposed) remains unbuilt and owns no modules yet | #62, #34 |
 | Events and checkpoints | `maistro.container`, `events.durable_log` | `few` | KEEP — canonical envelope, incompletely adopted | ADR-081226-7248 | migrated event families share envelope + Workspace sequence | #61, #62 |
 | Observability | `maistro_server` middleware, `adapters` Langfuse | `none` | KEEP | ADR-037, ADR-082 | one trace spans request → Run → NodeRun → Attempt → Invocation | #63 |
 | Resilience | `maistro.container`, `resilience.slo` | `some` | KEEP | ADR-038 | circuit/SLO primitives wired to real producers | #63 |
@@ -160,12 +160,12 @@ A share rather than the `19/62` this column used to carry, because the denominat
 | Reactor loop | `maistro.reactor` (installer-launched) | `none` | KEEP | — | loop timing tests | — |
 | Prompts and personas | `maistro.container`, `routes.agents` | `few` | KEEP | ADR-081226-e626 | persona seed/eval protocol tests | — |
 | Codebase analysis | `maistro.tools` call sites | `none` | KEEP | ADR-065 | tool-level tests | — |
-| Core CLI | `maistro.cli` console script | `some` | KEEP — thin client, no local lifecycle | ADR-096 | CLI commands hit Conductor API only | — |
-| Shared contracts and config | imported by every package | `few` | LIBRARY | ADR-019, ADR-081226-034b | dependency-direction + compatibility-owner fitness checks | #36 |
+| Core CLI | `maistro.cli` console script | `few` | KEEP — thin client, no local lifecycle | ADR-096 | CLI commands hit the Conductor API; `maistro portability` is the stateless exception — local agent/skill file conversion, no store | — |
+| Shared contracts and config | imported by every package | `none` | LIBRARY | ADR-019, ADR-081226-034b | dependency-direction + compatibility-owner fitness checks | #36 |
 | Test scaffolding | test suites only | `all` | LIBRARY — unreachable by construction | ADR-065, ADR-032 | used by checked test suites | — |
 | maistro-server HTTP app | `maistro_server.main` | `none` | MIGRATE — task queue is receipt; chat front door now uses Container/Conduit | ADR-076, ADR-096, ADR-082426-2192 | `/v1/tasks` and `/v1/chat/completions` both yield canonical Run identity | #43, #234 |
 | Agent Conductor HTTP surface | `main` (uvicorn) | `few` | MIGRATE — product surface must read canonical stores | ADR-096, ADR-094 | Run views rendered from canonical stores and surviving restart | #65, #53 |
-| Agent Conductor services | route registration + background loops | `few` | MIGRATE — `dag_run_store`, scheduler and graph/product seams still duplicate canonical responsibilities | ADR-096 | DAG/scheduler/chat paths use canonical Runs and projections only | #53, #35, #231 |
+| Agent Conductor services | route registration + background loops | `few` | MIGRATE — `dag_run_store` is a reconciled display projection (#35); scheduler and graph/product seams still duplicate canonical responsibilities | ADR-096 | DAG/scheduler/chat paths use canonical Runs and projections only | #53, #35, #231 |
 | Canvas ability | `maistro_canvas.canvas.routes`, `routes.canvas`, `maistro-canvas-frontend-server` | `few` | MIGRATE — pipeline stages become NodeRuns | ADR-040, ADR-067 | canvas stages visible as NodeRuns with retries as Attempts | #52 |
 | Open Design integration | `routes.design`, `services.design_service` | `few` | MIGRATE — renderers become Providers | ADR-061, ADR-100 | render effect recorded as Invocation | #52, #55 |
 | Evolve tournament optimizer | `routes.evolution`, `services.evolution` | `few` | MIGRATE — cycle is canonical Run, battle is NodeRun; status/cycle admission is disabled or degraded without the engine Container | ADR-088 (tournament contracts Proposed in ADR-070126-6386, SPEC-070126-9d37) | tournament history reproducible from canonical Runs; `/status` distinguishes executable/degraded/unavailable and `/cycle` preserves terminal Run identity | #51, #465 |
@@ -179,9 +179,30 @@ A share rather than the `19/62` this column used to carry, because the denominat
 - Every unreachable production module is classified. Executing CONNECT/RETIRE dispositions is M1 work under #34/#35; M0 does not pretend that the migration is complete.
 - maistro-server chat is now a real Container/Conduit product path (#222), while Hive/Conductor remains the product migration target (#53/#66).
 - PostgreSQL strike state is wired through the Gate-compatible tracker (#217); security convergence still has product-path work rather than a persistence fiction.
-- Core scheduling owns occurrence identity and exact-one Run claims (#229). The **live Hive scheduler** now sends both its recurring ticks (#231) and its manual `fire_now` surface (#1120) through that seam — manual fires carry a first-class `schedule_fire_id` occurrence identity so a retried or concurrent double submit reconciles to one Run — leaving the in-process path only as the explicit no-Container standalone fallback (#1113).
+- Core scheduling owns occurrence identity and exact-one Run claims (#229). The **live Hive scheduler** now sends both its recurring ticks (#231) and its manual `fire_now` surface (#1120) through that seam — manual fires carry a first-class `schedule_fire_id` occurrence identity so a retried or concurrent double submit reconciles to one Run — with registered-DAG execution refusing when the canonical Container, RunStore or Graph continuation owner is absent (#1113).
 - Relational persistence is fully reached: PostgreSQL is the canonical durable backend, while SQLite remains the explicit single-instance/homelab backend; prompt and audit persistence now follow the selected backend rather than silently falling back to memory.
 - The matrix checker proves structure, reachability counts, reference integrity and — since #378 — that every module named as a current owner is one a product path reaches. What it still cannot prove is a cell that names no module: 31 of the 156 owner cells describe a non-module owner in prose, and that count is itself checked so the gap cannot widen quietly. #31's acceptance-state machinery governs machine-verifiable completion claims, and material ownership changes must update this human-reviewed planning surface.
+
+## One scoring loop: the M7 in-Run eval is the evidence; Evolve/RSI are consumers (#796)
+
+The design loop has exactly one scoring authority, and everything else reads its records. The map frozen by [#796](https://github.com/Agent-StrongHold/Project-mAIstro/issues/796), with ownership left where it is (#21 keeps promotion, #552 keeps RSI):
+
+```
+M7 in-Run Rubric eval (maistro.personas.rubric, scored on Run)  →  evidence object on Run
+        ↓
+M4 #21 independent evaluation (maistro_evolve; hive evolution services)  →  may read those records as historical/held-out evidence
+        ↓
+M5 #552 RSI (maistro_rsi)  →  not production-reachable until containment; if/when enabled, same evidence, same promotion contract
+```
+
+Forbidden shapes — each has a contract test in `packages/maistro-core/tests/fitness/test_m7_a7_eval_consumer_map.py`:
+
+- the Design Studio loop (`maistro_design`, `routes.design`, `services.design*`) importing RSI or Evolve as the in-Run critic — the critic is the Rubric eval scored in-Run, never a second loop;
+- Evolve/RSI fitness reaching into the design Goal/Rubric domain to invent a design-quality score for the same Goal;
+- a design-quality score for a Goal stored outside Run eval records + M4 candidate evaluation;
+- a `maistro_design` private promotion path.
+
+Allowed later, not landed here: an M4 candidate that proposes a better pack Graph or Rubric catalog, evaluated independently against held-out M7 Runs and promoted through #21/#116. RSI's activation invariant stays owned by `packages/maistro-rsi/tests/test_non_production_reachability.py` (#552); product identity, execution-lifecycle names and provider egress stay owned by the #990 fitness suite.
 
 ## Related
 
@@ -191,3 +212,29 @@ A share rather than the `19/62` this column used to carry, because the denominat
 - `quality/execution-lifecycles.json` — classified work-state Enum and status-shaped Literal vocabularies (#36/#1136).
 - `docs/quality-gates.md` — enforcement boundaries and known limitations.
 - `docs/adr/ADR-092926-7a01-closed-loop-design-process.md` + `docs/specs/SPEC-092926-7a01-closed-loop-design-process.md` — the M7 design-loop contract (#790): the closed loop is Graphs and Runs over the one execution identity above, with the M7 kind table (Goal, Rubric, CreativeBrief, Pack, FenceDecision, EvalRecord, Canvas-as-tool, Design Studio-as-host) fenced to the #458 ontology; gates M7 A2–A7.
+
+### Hive Graph admission after standalone fallback retirement (#1113)
+
+New work through `services.dag_agents.run_registered_dag` and
+`services.canonical_dag_runner.execute_dag` requires the Container's canonical
+RunStore and Graph continuation owner before admission, configuration hooks or
+node execution. Hive no longer selects a process-local document store for new
+Graph work. Stub/degraded engine health reports `graph_execution_available=false`;
+Graph calls raise `CanonicalGraphUnavailable`. Non-executing definition translation
+and resolver construction remain usable without the bridge.
+
+This patch changes no storage-backend or migration policy. Canonical in-memory
+stores and SQLite are explicit test fixtures here. Hermetic SQLite
+second-connection/reconnect tests in
+`packages/hive-conductor/backend/tests/test_graph_execution_authority.py` cover
+checkpoint-zero recovery for both execution surfaces; this is not a claim of
+new PostgreSQL or multi-process distributed verification. The blocking fitness
+test `packages/maistro-core/tests/fitness/test_hive_graph_authority.py` requires
+unconditional canonical admission and rejects the retired fallback.
+
+Historical pre-convergence data keeps the existing
+[ADR-082826-d9f5 AC-6](../adr/ADR-082826-d9f5-durable-graph-store-as-canonical-projection.md)
+archive contract: readable/reproducible, explicitly non-resumable as
+`LegacyRunNotResumable`, with no replacement identity minted. Current canonical
+Runs keep the existing recovery/wake owners. This retirement does not introduce
+a new migration or reopen archived work.
