@@ -705,6 +705,13 @@ class GovernedModelChatClient:
             tool_choice=tool_choice,
         )
         identity = self._execution_identity(merged)
+        # The actor crosses exactly like the identity: from the execution
+        # scope a caller that authenticated one has bound, never invented
+        # here. A caller that supplies none still records "" — the ledger's
+        # own "no actor" reading, not a fabricated principal (#1084: the
+        # compatibility path used to drop an actor the caller held, leaving
+        # every chat/voice Invocation unattributed while its Run carried the
+        # authenticated principal).
         return await self._egress.complete(
             binding=binding,
             request=request,
@@ -712,6 +719,7 @@ class GovernedModelChatClient:
             node_run_id=identity["node_run_id"],
             attempt_id=identity["attempt_id"],
             effect_key=identity["effect_key"],
+            actor_id=str(merged.get("actor_id") or ""),
             on_chunk=on_chunk,
         )
 

@@ -19,6 +19,7 @@ import httpx
 import pytest
 from services import chat_runs, default_workspace, workspace_agent, workspace_authority
 
+from maistro.capabilities.invocation import InvocationStatus
 from maistro.container import Container, create_container
 from maistro.graph import Graph, Node
 from maistro.http import override_transport
@@ -135,6 +136,21 @@ def _runs_in(container: Container, workspace_id: str) -> list[Any]:
     return _run(_read())
 
 
+def _invocations_for(container: Container, run_id: str) -> list[Any]:
+    """Every canonical Invocation persisted under one Run.
+
+    The compatibility client derives each call's effect identity from the
+    live correlation, so the Run id is the one stable handle a reader has —
+    the same handle the acceptance join (criterion 8) is defined over. This
+    reads the ledger; it seeds and mocks nothing.
+    """
+    store = container.capability_effects.invocation_store
+    return sorted(
+        (item for item in list(store._items.values()) if item.run_id == run_id),
+        key=lambda item: item.invocation_id,
+    )
+
+
 def _complete(client: Any, **extra: Any) -> Any:
     return client.post(
         "/v1/chat/complete",
@@ -181,6 +197,34 @@ def test_repeated_complete_turns_share_the_workspace_agent_under_distinct_runs(
         assert attempts[0].status is AttemptStatus.COMPLETED
         assert attempts[0].result["agent"] == agent_id
     assert first.json()["agent"] == agent_id
+
+
+@pytest.mark.contract("behavioral")
+def test_a_completed_turns_invocation_joins_the_runs_authenticated_actor(
+    authed_client: Any, container: Container, gateway: _Gateway
+) -> None:
+    """#1084 acceptance: the same request joins actor, Run and Invocation.
+
+    The turn's governed Invocation must be correlated to the Run it was
+    admitted under and carry the actor that admission authenticated — read
+    from the persisted Run, never from request text. Before the fix the
+    Invocation recorded an empty actor while its Run carried the principal.
+    """
+    ws = _workspace()
+
+    r = _complete(authed_client, workspace_id=ws)
+
+    assert r.status_code == 200
+    run, _node_runs, _attempts = _evidence(container, r.json()["run_id"])
+    assert run.actor_principal_id == USER
+    invocations = _invocations_for(container, run.run_id)
+    assert len(invocations) == 1
+    (invocation,) = invocations
+    assert invocation.run_id == run.run_id
+    assert invocation.node_run_id
+    assert invocation.attempt_id
+    assert invocation.actor_id == run.actor_principal_id
+    assert invocation.status is InvocationStatus.COMPLETED
 
 
 @pytest.mark.contract("behavioral")
@@ -369,6 +413,10 @@ def test_voice_intent_turn_runs_under_the_default_workspace_agent(
     assert len(node_runs) == 1 and len(attempts) == 1
     assert attempts[0].result["agent"] == f"workspace-agent:{default.id}"
     assert all("tools" not in sent for sent in gateway.requests)
+    # The voice turn's Invocation joins the same authenticated actor (#1084).
+    (invocation,) = _invocations_for(container, run.run_id)
+    assert invocation.actor_id == run.actor_principal_id == USER
+    assert invocation.status is InvocationStatus.COMPLETED
 
 
 @pytest.mark.contract("behavioral")

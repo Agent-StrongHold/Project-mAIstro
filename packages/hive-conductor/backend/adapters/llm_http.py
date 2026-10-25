@@ -137,7 +137,7 @@ class HttpOpenAIProtocolLLM:
                 max_tokens=req.max_tokens,
                 temperature=req.temperature,
                 response_format=getattr(req, "response_format", None),
-                metadata={"workspace_id": getattr(req, "workspace_id", "")},
+                metadata=self._turn_scope(req),
             )
         except EffectNotApplied as exc:
             raise self._compat_error(exc) from exc
@@ -153,8 +153,23 @@ class HttpOpenAIProtocolLLM:
                 max_tokens=req.max_tokens,
                 temperature=req.temperature,
                 response_format=getattr(req, "response_format", None),
-                metadata={"workspace_id": getattr(req, "workspace_id", "")},
+                metadata=self._turn_scope(req),
             ):
                 yield chunk
         except EffectNotApplied as exc:
             raise self._compat_error(exc) from exc
+
+    @staticmethod
+    def _turn_scope(req: ChatCompletionRequest) -> dict[str, Any] | None:
+        """The request's own scope, when it names one.
+
+        The governed client merges the caller's execution scope under this
+        explicit one, so a request that names no Workspace must pass no key
+        at all: a blank here would override whatever scope the caller's
+        execution context carries with the deployment default (the same
+        "a blank never erases" rule the correlation context follows).
+        The actor is deliberately absent: request text never names a
+        principal — the actor joins from the authenticated execution only.
+        """
+        workspace_id = getattr(req, "workspace_id", "")
+        return {"workspace_id": workspace_id} if workspace_id else None

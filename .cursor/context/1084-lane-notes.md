@@ -1,13 +1,69 @@
 ---
 lane: L1084
 issue: "#1084 [M1-D2][#56] Converge shipped Hive chat and Agent model egress onto canonical Provider/Binding/Invocation"
-round: "repair dea951bf, 2026-10-25 (supplied develop sync, CI replay, message-only history repair)"
-head: 93ef338be (post-message-repair checkpoint; see 1084-repair-dea951bf.md for final evidence)
+round: "repair fa273657, 2026-10-25 (Invocation actor join fixed; Pyright re-proven CI-exact; workspace join documented as #1824-coordinated residual)"
+head: this commit (child of 1e46a81a4; see the round section below for evidence)
 ---
 
 # 1084 lane notes (read before touching this branch)
 
-## Current repair checkpoint (job dea951bf)
+## Round fa273657 (this head): actor join fixed, workspace join bounded
+
+- **Develop sync current:** `git merge-base HEAD origin/develop` = `2014ab888c0b`
+  = origin/develop tip; the earlier "develop sync conflict preserved" block is
+  resolved (merge `df4538183`); worktree carried only this round's files.
+- **Named CI gate re-proven CI-exact at this head:** `uv sync --locked
+  --all-extras`, `uv pip install -e packages/maistro-evolve`, `uv pip install
+  pyright` (1.1.414), `uv run pyright --outputjson packages/maistro-core/src`,
+  `scripts/check-pyright-report.py --baseline 21` → 11 errors (54 warnings),
+  gate exit 0. The prior driver check-0 log only showed `uv sync --locked
+  --extra dev` uninstalling the manually-installed pyright; no production
+  regression exists.
+- **Actor join FIXED (the evidence-backed half of the probe failure):**
+  - `packages/maistro-core/src/maistro/capabilities/model_chat.py`
+    (`GovernedModelChatClient._call`) now forwards `actor_id` from the merged
+    execution scope to `ModelChatEgress.complete`; absent actor still records
+    `""` — no fabricated principal (#1841 guard preserved).
+  - `packages/hive-conductor/backend/routes/chat.py` (`_model_call`) and
+    `routes/voice.py` bind `model_execution_context(actor_id=run.actor_principal_id)`
+    around the governed call — read from the **persisted admitted Run**, never
+    from request text (`conversation_only` still drops caller extras at the
+    trust boundary).
+  - `packages/hive-conductor/backend/adapters/llm_http.py` no longer passes
+    `metadata={"workspace_id": ""}`: a blank must not override the caller's
+    execution scope with the deployment default ("a blank never erases").
+- **Probe delta reproduced:** the prior round's read-only probe now prints
+  `ACCEPTANCE_JOIN <run-ws> default user user` — the Invocation's actor equals
+  the Run's authenticated principal; its workspace assertion (`default` vs the
+  Run's Workspace) still fails, deliberately left unguessed (next item).
+- **Tests added (+3 node IDs, note `docs/testing/inventory-notes/1084-invocation-actor-join.md`):**
+  two core tests pin actor forwarding/no-fabrication in
+  `test_model_chat_egress.py`; one hive test pins the complete-route
+  Invocation→Run→actor join in `test_chat_run_admission.py`; the voice-intent
+  test pins the same actor join.
+- **Validation at this head:** ruff check + format clean; mypy --strict
+  maistro-core/src clean (0-baseline); Hive backend suite 4044 passed / 26
+  skipped; focused core egress/tool_choice/conductor + server suites green
+  (155 and 647+10); vulture exact command 1297 findings == 1297 identities
+  (no ledger edit); check-suite-inventory 21 suites match; check-model-egress
+  16 physical callers, no expansion; check_direct_effects 51 sites dispositioned.
+- **RESIDUAL (owner-coordinated, not guessed):** the Invocation's Binding scope
+  still records the deployment's configured model Binding, so
+  `Invocation.workspace_id` (`default`) ≠ the Run's per-user Workspace.
+  `Invocation.workspace_id` is set from `binding.workspace_id`
+  (`capabilities/invocation.py`, `invoke`), and the credential router acquires
+  under the Binding's exact Workspace/Project scope with **no cross-workspace
+  fallback** (`credentials/router.py` header). Re-scoping the chat Binding to
+  the Run's Workspace would therefore fail closed on credential acquire for
+  every per-user Workspace until the deployment's gateway credential is
+  provisioned into those scopes — the "minimal runtime credential repair" the
+  issue reserves for coordination with #1824. A route must not improvise that
+  policy (and must not add a permissive default Binding). Same reasoning left
+  `conductor.py::_governed_completion` (empty actor on the run_task path)
+  untouched: conductor.py is #1870's same-file coordination zone.
+- No GitHub mutation, no push, no ledger/grant edit.
+
+## Previous checkpoint (job dea951bf)
 
 - The older sections below describe historical heads, not current verification.
 - The supplied develop `2014ab888c0b` was merged without conflicts; it remains

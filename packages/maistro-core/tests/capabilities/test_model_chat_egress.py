@@ -41,6 +41,7 @@ from maistro.capabilities.model_chat import (
     _gateway_usage,
     _replay_result_chunks,
     build_model_chat_client,
+    model_execution_context,
     resolve_model_chat_provider,
 )
 from maistro.capabilities.providers.llm_gateway import (
@@ -302,6 +303,121 @@ async def test_compatibility_client_inherits_canonical_execution_context(
     assert len(history) == 1
     assert history[0].attempt_id == "attempt-context"
     assert history[0].binding.provider_name == "fast-model"
+
+
+async def test_compatibility_client_forwards_the_execution_actor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The Invocation carries the actor the executing caller authenticated.
+
+    #1084: the compatibility path used to drop an actor the caller held, so
+    every chat/voice Invocation recorded an empty principal while its Run
+    carried the authenticated one. The actor crosses the same seam as the
+    execution identity — bound by the caller that authenticated it, never
+    invented here.
+    """
+    effects = new_in_memory_effect_context(policy_evaluator=binding_scope_policy)
+    effects.credentials.add(
+        workspace_id="ws-actor",
+        project_id="project-actor",
+        record=CredentialRecord(
+            key_id=DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,
+            provider=MODEL_GATEWAY_CREDENTIAL_PROVIDER,
+            api_key="test-litellm-key",
+        ),
+    )
+    registry = _registry()
+    _patch_gateway(monkeypatch, _OK_BODY)
+    client = build_model_chat_client(
+        endpoint=GatewayEndpoint(base_url="http://gw"),
+        workspace_id="ws-actor",
+        project_id="project-actor",
+        effects=effects,
+        registry=registry,
+        router=CostAwareRouter(registry),
+        binding=Binding(
+            workspace_id="ws-actor",
+            project_id="project-actor",
+            capability=MODEL_CHAT_CAPABILITY,
+            credential_refs=(DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,),
+        ),
+    )
+
+    with model_execution_context(
+        run_id="run-actor",
+        node_run_id="node-actor",
+        attempt_id="attempt-actor",
+        actor_id="alice",
+    ):
+        await client.complete(
+            [{"role": "user", "content": "hello"}],
+            "fast-model",
+            metadata={"effect_key": "actor:model"},
+        )
+
+    (recorded,) = await effects.invocation_store.list_effect(
+        run_id="run-actor",
+        node_run_id="node-actor",
+        binding_id=client._binding.binding_id,
+        effect_key="actor:model",
+    )
+    assert recorded.actor_id == "alice"
+
+
+async def test_compatibility_client_without_an_actor_records_no_principal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A caller that supplies no actor still records "", never a guess.
+
+    The ledger reads an empty ``actor_id`` as "no actor" (budget matching
+    treats it as system). Fabricating a principal here would forge exactly
+    the attribution the actor-required guard (#1841) exists to prevent.
+    """
+    effects = new_in_memory_effect_context(policy_evaluator=binding_scope_policy)
+    effects.credentials.add(
+        workspace_id="ws-actor",
+        project_id="project-actor",
+        record=CredentialRecord(
+            key_id=DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,
+            provider=MODEL_GATEWAY_CREDENTIAL_PROVIDER,
+            api_key="test-litellm-key",
+        ),
+    )
+    registry = _registry()
+    _patch_gateway(monkeypatch, _OK_BODY)
+    client = build_model_chat_client(
+        endpoint=GatewayEndpoint(base_url="http://gw"),
+        workspace_id="ws-actor",
+        project_id="project-actor",
+        effects=effects,
+        registry=registry,
+        router=CostAwareRouter(registry),
+        binding=Binding(
+            workspace_id="ws-actor",
+            project_id="project-actor",
+            capability=MODEL_CHAT_CAPABILITY,
+            credential_refs=(DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,),
+        ),
+    )
+
+    await client.complete(
+        [{"role": "user", "content": "hello"}],
+        "fast-model",
+        metadata={
+            "run_id": "run-anon",
+            "node_run_id": "node-anon",
+            "attempt_id": "attempt-anon",
+            "effect_key": "anon:model",
+        },
+    )
+
+    (recorded,) = await effects.invocation_store.list_effect(
+        run_id="run-anon",
+        node_run_id="node-anon",
+        binding_id=client._binding.binding_id,
+        effect_key="anon:model",
+    )
+    assert recorded.actor_id == ""
 
 
 async def test_unpinned_unaliased_request_uses_router_selection(
