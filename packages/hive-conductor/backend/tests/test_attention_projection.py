@@ -612,3 +612,89 @@ async def test_defer_and_dismiss_routes_are_member_scoped(
     # Preference row gone from the JsonStore.
     leftover = f"{ws_admin}:hitl_node_run:att-dismiss-route/ask"
     assert leftover not in dismissal_store
+
+    # DELETE carries the same scope + membership gates as POST.
+    unscoped_del = authed_client.delete(
+        f"/v1/workspaces/{ws_admin}/attention/dismiss",
+        params={"sourceKind": "hitl_node_run", "sourceId": "x"},
+    )
+    assert unscoped_del.status_code == 403
+    foreign_del = admin_client.delete(
+        f"/v1/workspaces/{ws_user}/attention/dismiss",
+        params={"sourceKind": "hitl_node_run", "sourceId": "x"},
+    )
+    missing_del = admin_client.delete(
+        "/v1/workspaces/ws-no-such-thing/attention/dismiss",
+        params={"sourceKind": "hitl_node_run", "sourceId": "x"},
+    )
+    assert foreign_del.status_code == missing_del.status_code == 404
+
+
+async def test_dismiss_route_maps_value_error_to_400(
+    admin_client, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Pydantic usually blocks blank ids; a service ValueError still becomes 400."""
+    from routes import attention as attention_routes
+
+    ws = await _workspace("admin", "Attention dismiss value-error")
+
+    def _boom(*_a: Any, **_k: Any) -> dict[str, Any]:
+        raise ValueError("action must be dismiss or defer")
+
+    # Route binds the symbol at import time — patch the routes module.
+    monkeypatch.setattr(attention_routes, "record_dismissal", _boom)
+    refused = admin_client.post(
+        f"/v1/workspaces/{ws}/attention/dismiss",
+        json={
+            "sourceKind": "hitl_node_run",
+            "sourceId": "att-ve/ask",
+            "action": "dismiss",
+        },
+    )
+    assert refused.status_code == 400
+    assert "dismiss or defer" in refused.json()["detail"]
+
+
+def test_dismissal_helpers_reject_blank_ids_and_unknown_actions() -> None:
+    from services.attention import (
+        clear_dismissal,
+        dismissal_store,
+        dismissed_source_ids,
+        record_dismissal,
+    )
+
+    with pytest.raises(ValueError, match="source_kind and source_id"):
+        record_dismissal("ws-blank", "", "sid", actor="admin")
+    with pytest.raises(ValueError, match="source_kind and source_id"):
+        record_dismissal("ws-blank", "kind", "", actor="admin")
+    with pytest.raises(ValueError, match="dismiss or defer"):
+        record_dismissal("ws-blank", "kind", "sid", actor="admin", action="snooze")
+
+    assert clear_dismissal("ws-absent", "kind", "sid") is False
+
+    # Incomplete store rows are ignored — they never mint a filter key.
+    dismissal_store["ws-skip:hitl_node_run:broken"] = {
+        "source_kind": "",
+        "source_id": "broken",
+    }
+    dismissal_store["ws-skip:not-a-dict"] = "noise"
+    try:
+        assert dismissed_source_ids("ws-skip") == set()
+    finally:
+        dismissal_store.pop("ws-skip:hitl_node_run:broken", None)
+        dismissal_store.pop("ws-skip:not-a-dict", None)
+
+
+async def test_include_dismissed_keeps_items_and_counts(run_store) -> None:
+    """``include_dismissed=True`` leaves items visible but still counts them."""
+    from services.attention import list_attention, record_dismissal
+
+    ws = await _workspace("admin", "Attention include dismissed")
+    await run_store.create(_paused_record("att-keep-inc", workspace_id=ws))
+    await run_store.create(_paused_record("att-hide-inc", workspace_id=ws))
+    record_dismissal(ws, "hitl_node_run", "att-hide-inc/ask", actor="admin")
+
+    body = await list_attention("admin", ws, now=_NOW, include_dismissed=True)
+    assert body is not None
+    assert set(_ids(body)) == {"att-keep-inc/ask", "att-hide-inc/ask"}
+    assert body["summary"]["dismissed_count"] == 1

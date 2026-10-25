@@ -41,16 +41,23 @@ function record(pathname: string, sessionStartedAtMs: number, leftAtMs: number):
 
 export function LastSurfaceTracker() {
   const location = useLocation();
-  const sessionStartedRef = useRef<number>(Date.now());
+  // Seed clocks in the effect — Date.now during render trips react-hooks/purity.
+  const sessionStartedRef = useRef<number>(0);
   const pathRef = useRef<string>(location.pathname);
-  const arrivedHomeAtRef = useRef<number | null>(
-    barePath(location.pathname) === DEFAULT_LANDING_PATH ? Date.now() : null,
-  );
+  const arrivedHomeAtRef = useRef<number | null>(null);
+  const seededRef = useRef(false);
 
   useEffect(() => {
+    const now = Date.now();
+    if (!seededRef.current) {
+      seededRef.current = true;
+      sessionStartedRef.current = now;
+      if (barePath(location.pathname) === DEFAULT_LANDING_PATH) {
+        arrivedHomeAtRef.current = now;
+      }
+    }
     const prev = barePath(pathRef.current);
     pathRef.current = location.pathname;
-    const now = Date.now();
     // Navigating onto a restore-eligible surface starts/continues the session
     // clock; leaving one stamps leftAt for the path just left.
     record(location.pathname, sessionStartedRef.current, now);

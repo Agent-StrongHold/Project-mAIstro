@@ -50,11 +50,10 @@ test("Home loads layout projections and shows the Goals section honestly", async
   await Promise.all([layout, projections]);
   await expect(page.getByTestId("home-regions")).toBeVisible();
   // #65: Goals project through goal_inspection — empty or listed, not the
-  // retired "Goal service unavailable" placeholder.
-  const goalsEmpty = page.getByTestId("home-section-goals-empty");
-  const goalsUnavailable = page.getByTestId("home-section-goals-unavailable");
-  await expect(goalsEmpty.or(goalsUnavailable).or(page.getByRole("heading", { name: "Goals" }))).toBeVisible();
-  await expect(goalsUnavailable).toHaveCount(0);
+  // retired "Goal service unavailable" placeholder. Do not `.or()` the empty
+  // copy with the Goals heading (Playwright strict mode matches both).
+  await expect(page.getByTestId("home-section-goals-unavailable")).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "Goals" })).toBeVisible();
 });
 
 test("pinning a Home region posts to the layout pin authority", async () => {

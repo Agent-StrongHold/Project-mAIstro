@@ -42,7 +42,9 @@ export function LandingSuggestionBanner() {
   };
 
   useEffect(() => {
-    void refresh();
+    // Defer the first read so setState is not synchronous in the effect body
+    // (react-hooks/set-state-in-effect — #2326 CI warning budget).
+    const boot = window.setTimeout(() => void refresh(), 0);
     const onStorage = (e: StorageEvent) => {
       if (
         e.key === "hive_landing_nav_pattern" ||
@@ -55,6 +57,7 @@ export function LandingSuggestionBanner() {
     // Same-tab updates: LastSurfaceTracker writes without a StorageEvent.
     const tick = window.setInterval(() => void refresh(), 2000);
     return () => {
+      window.clearTimeout(boot);
       window.removeEventListener("storage", onStorage);
       window.clearInterval(tick);
     };

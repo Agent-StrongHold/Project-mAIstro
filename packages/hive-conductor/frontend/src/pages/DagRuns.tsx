@@ -77,13 +77,18 @@ export default function DagRuns() {
   const [searchParams] = useSearchParams();
   const [selectedRunId, setSelectedRunId] = useState<string | null>(() => searchParams.get("run"));
   const selectedRunIdRef = useRef(selectedRunId);
-  selectedRunIdRef.current = selectedRunId;
   const [detail, setDetail] = useState<RunDetail | null>(null);
   const [selectedNode, setSelectedNode] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [detailError, setDetailError] = useState<string | null>(null);
   const [cancelBusy, setCancelBusy] = useState(false);
   const navigate = useNavigate();
+
+  // Keep the cancel-in-flight guard in sync without writing a ref during render
+  // (react-hooks/refs — #2326 CI).
+  useEffect(() => {
+    selectedRunIdRef.current = selectedRunId;
+  }, [selectedRunId]);
 
   // List recent runs.
   const loadRuns = useCallback(async () => {

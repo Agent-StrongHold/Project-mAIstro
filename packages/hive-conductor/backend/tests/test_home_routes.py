@@ -303,6 +303,50 @@ def test_the_goals_section_reads_goal_inspection_not_the_retiring_missions_store
         stores.missions.pop("home-goal-seed", None)
 
 
+def test_goal_items_maps_inspection_views_and_skips_blank_ids(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`_goal_items` covers skip/title/runs branches the empty Home path never hits."""
+    from services import goal_inspection
+
+    async def _views(*_a: Any, **_k: Any) -> list[dict[str, Any]]:
+        return [
+            {"goal_id": "", "desired_state": "ignored"},
+            {
+                "goal_id": "g-desired",
+                "desired_state": "Ship cutover",
+                "runs": [
+                    {"started_at": 10.0},
+                    "not-a-dict",
+                    {"started_at": 40.0},
+                    {"started_at": None},
+                ],
+            },
+            {
+                "goal_id": "g-state",
+                "goal_state": "open",
+                "runs": "not-a-list",
+            },
+            {
+                "goal_id": "g-disposition",
+                "execution_disposition": "waiting_human",
+            },
+            {"goal_id": "g-fallback"},
+        ]
+
+    monkeypatch.setattr(goal_inspection, "list_goal_views", _views)
+    items = asyncio.run(home_projections._goal_items("user", "ws-goals-map"))
+    by_id = {item["resource_id"]: item for item in items}
+    assert set(by_id) == {"g-desired", "g-state", "g-disposition", "g-fallback"}
+    assert by_id["g-desired"]["title"] == "Ship cutover"
+    assert by_id["g-desired"]["href"] == "/goals?goal=g-desired"
+    assert by_id["g-desired"]["updated_at"] == 40.0
+    assert by_id["g-state"]["title"] == "open"
+    assert by_id["g-state"]["updated_at"] is None
+    assert by_id["g-disposition"]["title"] == "waiting_human"
+    assert by_id["g-fallback"]["title"] == "g-fallback"
+
+
 def body_text_of(section: dict[str, Any]) -> str:
     """Everything the section could leak a projected id through."""
     import json
