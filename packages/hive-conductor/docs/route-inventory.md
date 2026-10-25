@@ -27,28 +27,30 @@ recorded below as URL-only with their owning issues.
 
 ## Canonical surfaces (primary/grouped navigation entry)
 
-21 destinations, each reachable from both the desktop icon rail and the
+23 destinations, each reachable from both the desktop icon rail and the
 narrow-screen drawer (asserted by
 `tests/e2e/navigation-coverage.spec.ts`):
 
 | Route | Surface | Nav label | Disposition (cutover plan §5/§9) | Replacement owner |
 |---|---|---|---|---|
-| `/chat` | Chat | Chat | PROJECT → Workspace Agent chat | #1037 (M3-D) |
-| `/dashboard` | Dashboard | Dashboard | DELETE v1.0 → Workspace Home | #1048 |
+| `/home` | Home | Home | KEEP / default landing (Workspace Mission Control) | #1048 |
+| `/chat` | Chat | Chat | PROJECT → Workspace Agent chat | #1822 (M3-D; foundation #1037 closed) |
+| `/dashboard` | Dashboard | Dashboard | DELETE v1.0 → Workspace Home | #1048 / retirement #2274 |
+| `/goals` | Goals | Goals | PROJECT → Goal/Run inspection | #65/#1036 |
+| `/attention` | Attention | Attention | KEEP — Workspace orchestration projection (#1049; API requires `dags.write`) | #1049 |
+| `/approvals` | Approvals | Approvals | KEEP — Parity P-1 projection over capability + HITL APIs | #2278 |
 | `/design-studio` | Design Studio | Design Studio | KEEP / PROJECT v1.0 (blocker) | #95, #286, #773 |
 | `/dags` | DAG Builder | DAG Builder | PROJECT → Graph editing over canonical Graph | #65/#1036 |
 | `/dag-runs` | DAG Runs | DAG Runs | PROJECT → Goal/Run inspection | #65/#1036, #251 |
 | `/schedules` | Schedules | Schedules (shown only with `schedules.write`, below) | PROJECT → canonical `ScheduleStore` | #92 (M3-B) |
 | `/missions` | Missions | Missions | MERGE → Workspace backlog (DELETE v1.0) | #82 (M3-C) |
 | `/backlog` | Backlog | Backlog | Workspace backlog (canonical) | #82 |
-| `/agents` | Agents | Agents | DELETE v1.0 → Capabilities projection | #59, #848 |
-| `/topology` | Topology | Topology | DELETE v1.0 → Capabilities projection | #59, #848 |
+| `/capabilities` | Capabilities | Capabilities | KEEP — unified surface (#2273 / `conductor-407`) | #2273 |
 | `/optimizer` | Optimization Inbox | Optimizer | MERGE → Attention/Waiting | #1049 (M3-E) |
 | `/messages` | Message Board | Messages | MERGE → Attention/Waiting | #1049 (M3-E) |
 | `/quotas` | Quotas & Stats | Quotas | PROJECT → Invocation usage | #718 (M3) |
 | `/knowledge` | KnowledgeBase | Inner Temple | DELETE v1.0 → Workspace/user memory | #776, #1047 (M3-E) |
 | `/rsi` | RSI | RSI | PROJECT → Evolve/RSI Run inspection | #51/#50 (M4/M5) |
-| `/mcp` | MCP | Integrations | DELETE v1.0 → Capabilities projection | #59, #848 |
 | `/containers` | Containers | Containers (shown only with `containers.control`, below) | PROJECT v1.0 (retained contract) | #382 |
 | `/cli` | CLI | CLI | PROJECT v1.0 (retained contract) | #292 |
 | `/credentials` | Credentials | Credentials | PROJECT → credential router consumers | #58 |
@@ -56,17 +58,15 @@ narrow-screen drawer (asserted by
 | `/settings` | Settings | Settings | PROJECT → settings service | #1050 (M3-E) |
 
 `/schedules`, `/messages`, `/quotas`, `/containers`, `/cli` and `/audit` are
-the #1417 additions. The legacy rows already linked before #1417 (Chat,
-Missions, Agents, Topology, Optimizer, KnowledgeBase, MCP) keep their entries:
-removing them is the retirement work of the owning issues, not a
-discoverability change, and dropping their links now would orphan live routes.
+the #1417 additions. Agents / Topology / Integrations left primary nav for
+Capabilities (#2273); they remain URL-only until deleted.
 
 ## Canonical surfaces with a contextual or parent entry (no primary nav row)
 
 | Route | Surface | Entry point | Disposition | Owner |
 |---|---|---|---|---|
 | `/profile` | Profile | Drawer user chip (`NavLink` on the signed-in username) | PROJECT → settings service | #1050 |
-| `/docs` | Documentation | `helpHref="/docs#…"` contextual link rendered by `PageHeader` on most pages (Schedules, Skills, Topology, Messages, Quotas, Audit, Containers, Agents, Missions, Evolution, MCP, Optimizer, Settings, CLI) | RETIRE (M3) | cutover plan §5 |
+| `/docs` | Documentation | `helpHref="/docs#…"` contextual link rendered by `PageHeader` on most pages (Schedules, Skills, Topology, Messages, Quotas, Audit, Containers, Agents, Missions, MCP, Optimizer, Settings, CLI) | RETIRE (M3) | cutover plan §5 |
 | `/decks` | Deck Builder | Embedded editor inside Design Studio (deck mode → "Open Deck editor"); the standalone route is the deep link to the same editor | KEEP (own lane) | #286, #773, #95 |
 
 ## Intentionally URL-only surfaces (documented exception)
@@ -77,13 +77,25 @@ or hides them and this issue may not promote or retire them:
 | Route | Surface | Rationale for staying unlinked | Owner |
 |---|---|---|---|
 | `/work-items` | Jira drafts (WorkItems) | Legacy surface MERGEd into the Workspace backlog; permanent promotion would fight the M3-C cutover | #82 (M3-C) |
-| `/skills` | Skills | Legacy surface replaced by the Capabilities projection | #59, #848 (M3) |
+| `/skills` | Skills | Legacy surface replaced by Capabilities (#2273); page delete is a follow-up slice | #2273 |
+| `/agents` | Agents | Superseded by Capabilities primary nav (#2273); URL retained until delete | #2273 |
+| `/topology` | Topology | Superseded by Capabilities primary nav (#2273); URL retained until delete | #2273 |
+| `/mcp` | MCP / Integrations | Superseded by Capabilities primary nav (#2273); URL retained until delete | #2273 |
 | `/memory` | Memory | Legacy surface replaced by user model / Workspace memory | #776, #1047 (M3-E) |
-| `/evolution` | Evolution Engine | Hidden for v1.0 per §9 ("DELETE/HIDE v1.0, restore v1.2"); route retirement itself is out of #1417's scope | cutover plan §9 (v1.2) |
+| `/evolution` | Evolution Engine | Hidden for v1.0 per §9 ("DELETE/HIDE v1.0, restore v1.2"); route retirement itself is out of #1417's scope | #2275 (v1.2 restore; #51 Evolve impl) |
 
 `tests/e2e/navigation-coverage.spec.ts` asserts both halves of this contract:
 these routes still render (they are not deleted) and the shell renders no nav
 link for them.
+
+## Hidden for v1.0 (no shipped route; restore later)
+
+| Former route | Surface | Disposition | Restore |
+|---|---|---|---|
+| `/evolution` | Evolution Engine | **HIDE v1.0** (#2275 / `conductor-411`): unregistered from `App.tsx`; page module retained in-tree; no nav entry; no stub claiming availability | **v1.2** — Evolve product surface owner remains #51 |
+
+`navigation-coverage.spec.ts` asserts `/evolution` does not present the Evolution
+Engine heading and that no Evolution nav link exists.
 
 ## Aliases, redirects, default routes
 
@@ -91,7 +103,7 @@ One canonical entry per destination; no duplicate menu items.
 
 | Route | Resolves to | Kind |
 |---|---|---|
-| `/` | `/dashboard` (index `Navigate replace`) | default-route redirect |
+| `/` | `/home` (index `Navigate replace`; #1048) | default-route redirect |
 | `/optimization-inbox` | `/optimizer` (#1417: alias converted from a duplicate render to a redirect) | alias redirect |
 | `/cli/canvas` | `/design-studio` (#95 compatibility redirect; asserted by `tests/e2e/design-studio-truthfulness.spec.ts`) | compatibility redirect |
 

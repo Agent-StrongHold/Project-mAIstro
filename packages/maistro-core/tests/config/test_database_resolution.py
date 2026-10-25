@@ -116,7 +116,12 @@ class TestTheTwoConsumersCannotDisagree:
         }
 
         assert "DatabaseSettings" not in called | imported
-        assert "require_database_url" in imported
+        # The shared migration-target resolver: postgresql whenever the runtime
+        # is postgresql, else the DB_* composition when DATABASE_URL names a
+        # sqlite/memory runtime (whose stores self-schema at wiring). What is
+        # pinned is that env.py takes the shared answer rather than
+        # reconstructing DatabaseSettings -- the drift this issue closed.
+        assert "resolve_migration_target_url" in imported
 
     def test_the_servers_engine_factory_sees_what_alembic_sees(self, monkeypatch) -> None:
         """The last mile, and the one that made the rest academic.

@@ -73,7 +73,7 @@ _DURABLE_JOURNAL_MODES: Final = frozenset({"legacy_import", "canonical_create"})
 
 
 class LegacyWorkspaceQuarantined(ValueError):
-    """A legacy row is malformed and must not block other Workspace imports."""
+    """A legacy row is unsafe to import and must not block other Workspaces."""
 
 
 class EmbeddedRuntimeUnavailable(RuntimeError):
@@ -180,7 +180,7 @@ def presentation_store() -> ModelStore[WorkspacePresentation]:
 
 
 def quarantine_store() -> JsonStore:
-    """Inspection seam for malformed legacy rows held out of migration."""
+    """Inspection seam for unsafe legacy rows held out of migration."""
     _initialize_adapter_stores()
     return _quarantine
 
@@ -321,6 +321,16 @@ async def _migrate_one(
     canonical = await store.get(legacy.id) if legacy.id.strip() else None
     status = _journal_status(legacy.id) if legacy.id.strip() else ""
     managed_import = status == "importing"
+    if durable and managed_import:
+        # An interrupted import may already have committed canonical writes.
+        # The canonical Workspace or roster may then have been deleted/revoked
+        # by another client. This Hive-local marker cannot authorize replay,
+        # even when the canonical Workspace is now absent. Preserve the source
+        # and marker for the operational recovery owner; never mint authority.
+        raise LegacyWorkspaceQuarantined(
+            "interrupted durable import requires canonical recovery review; "
+            "legacy identity and membership were not replayed"
+        )
     created = False
 
     if canonical is None:
@@ -519,10 +529,21 @@ async def create_workspace(
     return view
 
 
-async def set_member(workspace_id: str, *, user_id: str, role: WorkspaceRole) -> Workspace:
+async def set_member(
+    workspace_id: str,
+    *,
+    user_id: str,
+    role: WorkspaceRole,
+    principal_id: str | None = None,
+) -> Workspace:
     async with hold_hitl_membership_mutation():
         store = await _ensure_ready()
-        await store.set_membership(workspace_id, user_id=user_id, role=_canonical_role(role))
+        await store.set_membership(
+            workspace_id,
+            user_id=user_id,
+            role=_canonical_role(role),
+            principal_id=principal_id,
+        )
         await _sync_fallback_recovery_evidence(store, workspace_id)
         view = await get_view(workspace_id)
         if view is None:
@@ -530,10 +551,12 @@ async def set_member(workspace_id: str, *, user_id: str, role: WorkspaceRole) ->
         return view
 
 
-async def remove_member(workspace_id: str, *, user_id: str) -> Workspace:
+async def remove_member(
+    workspace_id: str, *, user_id: str, principal_id: str | None = None
+) -> Workspace:
     async with hold_hitl_membership_mutation():
         store = await _ensure_ready()
-        await store.remove_membership(workspace_id, user_id=user_id)
+        await store.remove_membership(workspace_id, user_id=user_id, principal_id=principal_id)
         await _sync_fallback_recovery_evidence(store, workspace_id)
         view = await get_view(workspace_id)
         if view is None:
@@ -564,10 +587,10 @@ async def update_presentation(
     return view
 
 
-async def delete_workspace(workspace_id: str) -> None:
+async def delete_workspace(workspace_id: str, *, principal_id: str | None = None) -> None:
     async with hold_hitl_membership_mutation():
         store = await _ensure_ready()
-        await store.delete(workspace_id)
+        await store.delete(workspace_id, principal_id=principal_id)
         _presentations.pop(workspace_id, None)
         if _is_durable_store(store):
             # The journal entry is what keeps a legacy mirror row for this id from

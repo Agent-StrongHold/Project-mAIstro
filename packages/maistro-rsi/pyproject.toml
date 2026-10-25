@@ -22,6 +22,7 @@ dependencies = [
 [project.scripts]
 maistro-rsi = "maistro_rsi.cli:main"
 maistro-rsi-autorun = "maistro_rsi.autorun:main"
+maistro-rsi-campaign = "maistro_rsi.campaign_cli:main"
 
 [project.optional-dependencies]
 dev = [

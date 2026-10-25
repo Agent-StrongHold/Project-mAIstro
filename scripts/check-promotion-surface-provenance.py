@@ -14,6 +14,16 @@ PROVENANCE = ROOT / "scripts" / "ratchet_provenance.py"
 RATCHET = "promotion-surface"
 METRIC_DEFINITION_VERSION = "1"
 
+#: Bounded analyzer implementation manifest (#319): this adapter plus the
+#: delegated checker, which dynamically loads the sensitive-path classifier it
+#: matches against (checker.CLASSIFIER). The classifier is a fixed sibling
+#: file, deliberately part of the measurement implementation.
+ANALYZER_MANIFEST = (
+    "scripts/check-promotion-surface-provenance.py",
+    "scripts/check-promotion-surface.py",
+    "packages/maistro-rsi/src/maistro_rsi/sensitive_paths.py",
+)
+
 
 def _load(path: Path, name: str) -> ModuleType:
     spec = importlib.util.spec_from_file_location(name, path)
@@ -30,6 +40,14 @@ def _load(path: Path, name: str) -> ModuleType:
         del sys.modules[name]
         raise
     return module
+
+
+def _tool_version(prov: ModuleType) -> str:
+    """Implementation identity of the analyzers that reached this verdict (#319)."""
+    version: str = prov.bundled_implementation_fingerprint(
+        Path(__file__).resolve().parents[1], ANALYZER_MANIFEST
+    )
+    return version
 
 
 def _tolerated(payload: object) -> dict[str, str]:
@@ -58,6 +76,7 @@ def main() -> int:
     matcher = checker._matcher()
 
     try:
+        tool_version = _tool_version(prov)
         trusted_ref = prov.resolve_baseline(checker.BASELINE_PATH, root=ROOT)
         trusted = _tolerated(trusted_ref.loads(default={"tolerated": {}}))
         prov.require_measurement(modules, ratchet=RATCHET, what="first-party source modules")
@@ -77,6 +96,7 @@ def main() -> int:
             ratchet=RATCHET,
             baseline=trusted_ref,
             tool="promotion import-closure + sensitive-path classifier",
+            tool_version=tool_version,
             metric_definition_version=METRIC_DEFINITION_VERSION,
             old_value=f"{len(trusted)} tolerated promotion-path module(s)",
             new_value=f"{len(trusted_tolerated) + len(uncovered)} unprotected module(s) in closure",

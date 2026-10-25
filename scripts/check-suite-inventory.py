@@ -75,10 +75,16 @@ Usage
 -----
     python3 scripts/check-suite-inventory.py              # check every suite
     python3 scripts/check-suite-inventory.py --suite formal/
+    python3 scripts/check-suite-inventory.py --suite packages/hive-conductor/tests
     python3 scripts/check-suite-inventory.py --show       # render expected counts
     python3 scripts/check-suite-inventory.py --update     # record this change's delta
     python3 scripts/check-suite-inventory.py --update --note 208-delta-ledger
     python3 scripts/check-suite-inventory.py --compact    # fold deltas into baseline
+
+``--suite`` names a recipe exactly, or a parent directory — every recipe
+beneath it is checked (``packages/hive-conductor/tests`` reaches the nested
+``tests/e2e`` suite; its backend suite is a sibling, not a child). An
+argument matching no recipe at all is an error, never a silent no-op.
 """
 
 from __future__ import annotations
@@ -156,6 +162,17 @@ RECIPES: dict[str, Recipe] = {
     # (scripts/check-extension-imports.py) keeps it free of repo-relative
     # repair that could make collection checkout-dependent.
     "extensions/reference-greeter/tests": Recipe(args=[]),
+    # The reference gallery's four package suites (#980, M9-J2). Same story
+    # as the greeter's row: not in the root testpaths (the clean-environment
+    # proof is the isolation fixture's, run under the gallery's own policy),
+    # but part of the repository's test surface — the root dev env installs
+    # the gallery packages via workspace membership, so plain collection
+    # sees them. A vanishing or unimportable gallery suite is inventory
+    # drift like any other.
+    "extensions/reference-gallery/packages/gallery-weather-connector/tests": Recipe(args=[]),
+    "extensions/reference-gallery/packages/gallery-unit-skill/tests": Recipe(args=[]),
+    "extensions/reference-gallery/packages/gallery-model-adapter/tests": Recipe(args=[]),
+    "extensions/reference-gallery/packages/gallery-renderer-pack/tests": Recipe(args=[]),
     # The extension host harness's own suite (#974). A packages/ workspace
     # member installed by the root `dev` extra (like reference-greeter), so
     # plain collection sees it with no PYTHONPATH repair: its runtime is
@@ -548,7 +565,10 @@ def default_note_slug() -> str | None:
     if proc.returncode != 0 or not branch or branch == "HEAD":
         return None
     readable = re.sub(r"[^a-z0-9]+", "-", branch.lower()).strip("-")
-    digest = hashlib.sha1(branch.encode()).hexdigest()[:4]
+    # sha256, not the broken legacy digest DevSkim DS126858 flags: the suffix
+    # is a non-cryptographic discriminator, but this script sits in the
+    # DevSkim-scanned tree, so the derivation must stay off broken hashes.
+    digest = hashlib.sha256(branch.encode()).hexdigest()[:4]
     return f"{readable}-{digest}" if readable else digest
 
 
@@ -741,6 +761,42 @@ def record_delta(
     return 0
 
 
+def resolve_suites(requested: list[str]) -> tuple[set[str], list[str]]:
+    """Map ``--suite`` arguments onto collection recipes.
+
+    An argument naming a recipe selects exactly that suite. A parent directory
+    selects every recipe beneath it: ``packages/hive-conductor/tests`` names
+    the nested ``tests/e2e`` suite without repeating the leaf, which is how
+    the directory layout actually nests the hive-conductor suites (the backend
+    suite is a sibling at ``backend/tests``, not a child). Prefix matching is
+    component-wise, so ``tests`` reaches ``tests/`` but ``form`` never
+    reaches ``formal/``. An argument matching nothing — neither a recipe nor
+    a recipe's ancestor — comes back unresolved and stays an error, so a
+    typo can never silently narrow the check to zero suites.
+    """
+    resolved: set[str] = set()
+    missing: list[str] = []
+    for arg in requested:
+        prefix = arg.rstrip("/") + "/"
+        hits = {recipe for recipe in RECIPES if recipe == arg or recipe.startswith(prefix)}
+        if hits:
+            resolved |= hits
+        else:
+            missing.append(arg)
+    return resolved, missing
+
+
+def requested_suites(args: argparse.Namespace) -> tuple[set[str] | None, list[str]]:
+    """The recipes ``--suite`` selects, and any argument that selected none.
+
+    ``None`` means no narrowing: every recipe is checked, exactly as a run
+    without ``--suite`` would.
+    """
+    if not args.suite:
+        return None, []
+    return resolve_suites(args.suite)
+
+
 def ledger_only_mode(
     args: argparse.Namespace,
     expected: dict[str, int],
@@ -799,9 +855,9 @@ def main() -> int:
     if (code := ledger_only_mode(args, expected, deltas)) is not None:
         return code
 
-    wanted = set(args.suite) if args.suite else None
-    if wanted and (missing := sorted(wanted - set(RECIPES))):
-        print(f"error: no collection recipe for {missing}", file=sys.stderr)
+    wanted, missing = requested_suites(args)
+    if missing:
+        print(f"error: no collection recipe for {sorted(missing)}", file=sys.stderr)
         return 2
     suites = [s for s in RECIPES if s in expected and (wanted is None or s in wanted)]
 

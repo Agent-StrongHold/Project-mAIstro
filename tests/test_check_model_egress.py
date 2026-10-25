@@ -187,6 +187,7 @@ def _stub_provenance(
         require_metric_version=lambda *_args, **_kwargs: None,
         load_authorizations=lambda *_args, **_kwargs: dict(authorizations or {}),
         head_sha=lambda *_args, **_kwargs: "candidate",
+        bundled_implementation_fingerprint=lambda *_args, **_kwargs: "bundled-sha256:fake",
     )
 
 
@@ -430,7 +431,9 @@ def test_discover_sites_surfaces_reachability_classes_from_the_shipped_tree(
 
     gateway = findings["maistro.capabilities.providers.llm_gateway"]
     assert gate.classify(gateway, unreachable=unreachable) == gate.PROVIDER_BOUNDARY
-    assert any(site.qualname == "execute_model_chat" for site in gateway.sites)
+    # Public seam stays execute_model_chat; the physical POST is factored into
+    # _post_chat_completion so the direct-effect census can name one site.
+    assert any(site.qualname == "_post_chat_completion" for site in gateway.sites)
 
     corpus = findings["services.canonical_corpus"]
     assert gate.classify(corpus, unreachable=unreachable) == gate.UNREACHABLE_LIBRARY

@@ -19,6 +19,11 @@ def _frozenset_str(value: object | None) -> frozenset[str]:
     return frozenset()
 
 
+# Issue #1790 correction 2 refers to this helper as ``_string_set``; keep both
+# names so the suggested symbol exists without breaking the landed spelling.
+_string_set = _frozenset_str
+
+
 def _roles_from_user(user: Mapping[str, Any]) -> frozenset[str]:
     role = user.get("role")
     if role is not None:

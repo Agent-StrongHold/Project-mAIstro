@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { apiGet, apiPost, apiDelete } from "../lib/api";
+import { AuthorizationNotice } from "../components/Authorization";
+import { useAuthorization } from "../context/AuthorizationContext";
 import type { MCPServer as Server, MCPTool as Tool } from "../api/models";
 import { Hex, PageHeader, StatCard, ConfirmDialog, useToast } from "../components/shared";
 import { TabList, TabPanel } from "../components/TabList";
@@ -23,6 +25,9 @@ export default function MCP() {
   const [adding, setAdding] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<Server | null>(null);
   const [form, setForm] = useState({ name: "", description: "", url: "" });
+  const authorization = useAuthorization();
+  const mcpPermission = authorization.surfacePermission("integrations") ?? "mcp.write";
+  const deletePermission = "mcp.delete";
 
   const load = useCallback(async () => {
     try {
@@ -76,17 +81,19 @@ export default function MCP() {
     <div>
       <ConfirmDialog open={!!deleteTarget} onClose={() => setDeleteTarget(null)} onConfirm={() => { if (deleteTarget) void removeServer(deleteTarget.id); }} title="Remove Server" message={`Remove "${deleteTarget?.name ?? ""}" from MCP?`} />
 
+      <AuthorizationNotice permission={mcpPermission} label="Integration changes" />
+
       <PageHeader
         title="MCP"
         subtitle={`${servers.length} servers · ${tools.length} tools — multi-MCP orchestration in this sandbox`}
         helpHref="/docs#mcp"
         actions={
           <div style={{ display: "flex", gap: 6 }}>
-            <button className="btn" style={{ fontSize: 12, padding: "2px 8px" }} onClick={() => void testConnections()}>
+            <button className="btn" disabled={!authorization.can(mcpPermission)} style={{ fontSize: 12, padding: "2px 8px" }} onClick={() => void testConnections()}>
               Test connection
             </button>
             {/* POC mode *hid* this; retiring the flag restores it for everyone (#190). */}
-            <button className="btn btn-accent" style={{ fontSize: 12, padding: "2px 8px" }} onClick={() => setAdding(true)}>
+            <button className="btn btn-accent" disabled={!authorization.can(mcpPermission)} style={{ fontSize: 12, padding: "2px 8px" }} onClick={() => setAdding(true)}>
               + add server
             </button>
           </div>
@@ -129,9 +136,13 @@ export default function MCP() {
           <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
             <input className="input-field" placeholder="server name" value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} autoFocus />
             <input className="input-field" placeholder="description" value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} />
-            <input className="input-field" placeholder="URL (e.g. http://localhost:9999/mcp)" value={form.url} onChange={(e) => setForm((f) => ({ ...f, url: e.target.value }))} />
+            <input className="input-field" placeholder="URL (e.g. http://localhost:9999/mcp)" value={form.url} onChange={(e) => setForm((f) => ({ ...f, url: e.target.value }))} />  // DevSkim: ignore DS162092 until 2027-12-31
             <div style={{ display: "flex", gap: 4 }}>
-              <button className="btn btn-accent" style={{ fontSize: 12, padding: "2px 10px" }} onClick={() => void addServer()} disabled={!form.name.trim() || !form.url.trim()}>add</button>
+              {/* Gated by the same permission as the "+ add server" opener
+                  (#373): the opener is disabled without mcp.write, but the
+                  form it opens must not carry a live submit button either —
+                  a control guaranteed to 403 must never look actionable. */}
+              <button className="btn btn-accent" style={{ fontSize: 12, padding: "2px 10px" }} onClick={() => void addServer()} disabled={!authorization.can(mcpPermission) || !form.name.trim() || !form.url.trim()}>add</button>
               <button className="btn" style={{ fontSize: 12, padding: "2px 10px" }} onClick={() => setAdding(false)}>cancel</button>
             </div>
           </div>
@@ -156,7 +167,15 @@ export default function MCP() {
                     <span style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", textAlign: "center" }}>{s.tools_count} tools</span>
                     <Hex variant={s.status === "connected" ? "ok" : "danger"}>{s.status}</Hex>
                   </button>
-                  <button className="btn" aria-label={`Remove ${s.name}`} style={{ fontSize: 12, padding: "1px 6px", borderColor: "var(--danger)", color: "var(--danger)", opacity: 0.5 }} onClick={() => setDeleteTarget(s)}>remove</button>
+                  <button
+                    className="btn"
+                    aria-label={`Remove ${s.name}`}
+                    disabled={!authorization.can(deletePermission)}
+                    style={{ fontSize: 12, padding: "1px 6px", borderColor: "var(--danger)", color: "var(--danger)", opacity: authorization.can(deletePermission) ? 0.5 : 0.25 }}
+                    onClick={() => setDeleteTarget(s)}
+                  >
+                    remove
+                  </button>
                 </div>
 
                 <div id={detailsId} hidden={!open} style={{ marginTop: 10, paddingTop: 10, borderTop: "1px dotted var(--rule)" }}>
