@@ -245,6 +245,9 @@
       "rationale": "ADR-085 provider-side quota verification. #718 wired the recording half (maistro.quota.recorder, and the ambient/reconciliation modules it composes) into the canonical Invocation terminalization, so those left this disposition; #1204 wired the SQLite usage-log snapshot behind the sqlite backend of create_container. The explicit verifier half (verify.py + the per-provider verifiers) still has no production caller and remains owed.",
       "root": "the Invocation cost path (#56)",
       "modules": [
+        "maistro.quota.ambient",
+        "maistro.quota.reconciliation",
+        "maistro.quota.recorder",
         "maistro.quota.verifiers",
         "maistro.quota.verifiers.mistral",
         "maistro.quota.verifiers.openrouter",
@@ -294,6 +297,16 @@
       "root": "a Conductor session-search route over pgvector (ADR-082226-5104)",
       "modules": [
         "maistro.sessions.search"
+      ]
+    },
+    {
+      "id": "config-loader",
+      "subsystem": "Shared contracts and config",
+      "disposition": "CONNECT",
+      "rationale": "ADR-078's file-based config loader; shipped processes construct settings directly instead.",
+      "root": "maistro.config.settings construction",
+      "modules": [
+        "maistro.config.loader"
       ]
     },
     {

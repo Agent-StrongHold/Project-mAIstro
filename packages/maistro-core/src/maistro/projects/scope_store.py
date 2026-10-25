@@ -132,13 +132,27 @@ class ProjectScopeStore(Protocol):
 
         ...
 
-    async def merge_membership(
-        self,
-        membership: ProjectMembership,
-        *,
-        principal_id: str | None = None,
-    ) -> ProjectMembership:
+    async def merge_membership(self, membership: ProjectMembership) -> ProjectMembership:
         """Merge a delegated re-grant into the canonical row atomically.
+
+        The read that decides what to preserve and the write that stores it
+        are one critical section: when a row already exists for
+        `(project_id, principal_id)`, its `membership_id`, `created_at`,
+        `denies`, `role`, `grants` and `delegable_grants` are preserved and
+        the caller's `grants`/`delegable_grants` are unioned in; when none
+        exists, `membership` becomes the row. An owner's revocation that
+        commits first therefore leaves no row to preserve, so the merge
+        cannot resurrect a revoked principal carrying stale grants -- the
+        failure mode of reading `memberships_for` and then writing through
+        `set_membership` as two separate calls (#1148).
+        """
+
+        ...
+
+    async def memberships_for(
+        self, project_id: str, *, principal_id: str | None = None
+    ) -> list[ProjectMembership]:
+        """List memberships at one Project, optionally for one principal."""
 
         The read that decides what to preserve and the write that stores it
         are one critical section: when a row already exists for
@@ -600,12 +614,7 @@ class InMemoryProjectScopeStore:
         self._memberships[key] = updated
         return updated.model_copy(deep=True)
 
-    async def merge_membership(
-        self,
-        membership: ProjectMembership,
-        *,
-        principal_id: str | None = None,
-    ) -> ProjectMembership:
+    async def merge_membership(self, membership: ProjectMembership) -> ProjectMembership:
         """Merge-or-create the canonical membership in one atomic step.
 
         The in-memory store runs on one event loop and this method has no
@@ -613,9 +622,7 @@ class InMemoryProjectScopeStore:
         no other coroutine can interleave a `remove_membership` between the
         two the way it could against the API's read-then-write (#1148).
         """
-        project = await self._authorize_membership_write(
-            membership, principal_id, replacement=False
-        )
+        project = self._require(membership.project_id)
         if project.workspace_id != membership.workspace_id:
             raise ProjectIntegrityError("ProjectMembership Workspace does not match Project")
         key = (membership.project_id, membership.principal_id)

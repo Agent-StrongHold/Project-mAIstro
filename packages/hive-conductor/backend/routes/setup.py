@@ -156,14 +156,6 @@ def _is_setup_complete() -> bool:
     "setup happened" signal this process can see. This is deliberately
     fail-closed after partial initialization; a failed attempt with no account
     remains retryable.
-
-    Scope, versus the other two "first-run state" notions (#443): this answers
-    "may the one-shot provisioning endpoint / wizard still run at all" — the
-    authority the SPA AuthGuard, ``GET /v1/setup/status`` (install.sh probes
-    the same route), and the ``/complete`` guard all consume. The setup
-    checklist (``routes/setup_checklist.py``) answers a different question —
-    which *post*-provisioning onboarding steps remain for the now-authenticated
-    operator — and is unreachable until this has gone terminal.
     """
     import stores
 

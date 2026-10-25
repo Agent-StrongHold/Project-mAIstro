@@ -4,17 +4,11 @@ from datetime import UTC, datetime
 from typing import Literal
 from uuid import uuid4
 
-from fastapi import APIRouter, HTTPException, Query, Request
+import stores
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
-from models.schemas import (
-    ChatCompletionRequest,
-    ChatMessage,
-    ChatSession,
-    ChatSessionSummary,
-    CreateSessionBody,
-)
+from models.schemas import ChatCompletionRequest, ChatMessage, ChatSession, ChatSessionSummary
 from pydantic import BaseModel, ConfigDict
-from services import conversation_sessions
 from services.brief_chat import brief_turn
 from services.chat_completion import _execute_workflow_with_approval, build_llm_port
 from services.chat_completion import conversation_only as _conversation_only
@@ -26,8 +20,8 @@ from services.chat_gate import (
     openai_refusal,
 )
 from services.chat_runs import admit_turn, cancel_unstarted, execute_turn
+from services.owned_records import chat_sessions_for
 from services.program_hyperagent import user_id_from_request
-from services.request_principal import require_actor_id
 
 router = APIRouter(tags=["chat"])
 
@@ -139,6 +133,26 @@ class RunWorkflowBody(BaseModel):
 async def run_workflow(body: RunWorkflowBody, request: Request) -> dict:
     """Run a chat-selected workflow only after the shared approval inbox settles it."""
     user_id = require_actor_id(request)
+    args = {"dag_id": body.dag_id}
+    if body.goal:
+        args["goal"] = body.goal
+    return await _execute_workflow_with_approval(args, user_id)
+
+
+class RunWorkflowBody(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    dag_id: str
+    goal: str = ""
+
+
+@router.post("/workflows/run")
+async def run_workflow(body: RunWorkflowBody, request: Request) -> dict:
+    """Run a chat-selected workflow only after the shared approval inbox settles it."""
+    user = getattr(request.state, "user", None) or {}
+    user_id = str(user.get("id") or user.get("username") or "")
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Authentication required")
     args = {"dag_id": body.dag_id}
     if body.goal:
         args["goal"] = body.goal

@@ -21,16 +21,17 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any
 
-from routes.hitl import PendingHumanWork, _pending_items
-
-from maistro.graph.durable_runs import (
-    MAX_PENDING_SCAN_RECORDS,
-    HitlAuthorization,
-    HitlSettlementError,
-    pending_hitl_records,
+from routes.hitl import (
+    _MAX_PENDING_SCAN_RECORDS,
+    _PENDING_SCAN_PAGE_SIZE,
+    PendingHumanWork,
+    _pending_items,
 )
+
+from maistro.graph.durable_runs import HitlAuthorization, HitlSettlementError, cursor_time
 from maistro.graph.durable_runs.hitl import hitl_deadline, settlement_time
 from maistro.graph.nodes.base import PAUSE_AWAITING_HUMAN_APPROVAL, PAUSE_AWAITING_HUMAN_REVIEW
+from maistro.runs.model import RunStatus
 from services.dag_run_inspection import list_visible_runs
 from services.dag_run_store import MAX_RUNS
 from services.workspace_authority import hitl_membership_mutation_lock, is_member
@@ -82,51 +83,41 @@ class _Item:
 
 async def _paused_records(
     user_id: str, workspace_id: str
-) -> tuple[list[tuple[Any, PendingHumanWork]], bool, bool]:
+) -> tuple[list[tuple[Any, PendingHumanWork]], bool]:
     """Human pauses in one Workspace, walked the way `/v1/hitl/pending` walks them.
 
-    The same canonical walk (`pending_hitl_records`, #1109): the store's
-    pause-kind projection decides human eligibility before any page is cut,
-    and each item-carrying record is revalidated against live membership
-    before its payload is disclosed. Workspace-wide (no Project named), the
-    continuation index cannot carry Workspace scope, so the store filters it
-    from each assembled page and keeps paging — a page of another tenant's
-    rows advances the walk instead of ending it, and this Workspace's work
-    behind such pages is still reached within one request's inspection
-    ceiling. What the second value reports is the one honest remaining cap:
-    the record ceiling stopped the walk early, so a later read may find more.
-
-    The third value is ``True`` when the canonical graph spine is not wired
-    (standalone Conductor / e2e without a Container). HITL pauses cannot be
-    read then — that is an unavailable source, not an empty queue — but
-    failed-Run projections still answer, so Attention stays a 200 read
-    rather than a 500 for a missing HITL owner.
+    Same keyset cursor, page size, and record ceiling, and the same per-record
+    revalidation against live membership before a payload is disclosed. The
+    second value says whether the record ceiling stopped the walk early.
     """
-    from services.dag_agents import CanonicalGraphUnavailable, get_run_store
+    from services.dag_agents import get_run_store
 
-    try:
-        store = get_run_store()
-    except CanonicalGraphUnavailable:
-        return [], False, True
-
+    store = get_run_store()
     authorization = HitlAuthorization(
         effective_principal=user_id,
         workspace_ids=frozenset({workspace_id}),
         membership_check=is_member,
         membership_mutation_lock=hitl_membership_mutation_lock(),
     )
-    scan = await pending_hitl_records(
-        store,
-        authorization=authorization,
-        workspace_id=workspace_id,
-        project_id=None,
-        limit=MAX_PENDING_SCAN_RECORDS,
-    )
     found: list[tuple[Any, PendingHumanWork]] = []
-    for record in scan.records:
-        for item in _pending_items(record):
-            found.append((record, item))
-    return found, not scan.exhausted, False
+    cursor: tuple[str, str] | None = None
+    inspected = 0
+    while inspected < _MAX_PENDING_SCAN_RECORDS:
+        records = await store.list_by_status(
+            RunStatus.PAUSED,
+            limit=min(_PENDING_SCAN_PAGE_SIZE, _MAX_PENDING_SCAN_RECORDS - inspected),
+            workspace_id=workspace_id,
+            after=cursor,
+        )
+        if not records:
+            return found, False
+        inspected += len(records)
+        for record in records:
+            pending = _pending_items(record)
+            if pending and await authorization.permits(record.run.workspace_id):
+                found.extend((record, item) for item in pending)
+        cursor = (cursor_time(records[-1].run.created_at), records[-1].run_id)
+    return found, True
 
 
 def _deadline(record: Any, node_id: str) -> datetime | None:
@@ -205,7 +196,7 @@ async def _failed_runs(user_id: str, workspace_id: str) -> list[_Item]:
     ]
 
 
-def _summary(items: list[_Item], *, truncated: bool, hitl_unavailable: bool) -> dict[str, Any]:
+def _summary(items: list[_Item], *, truncated: bool) -> dict[str, Any]:
     counts = Counter(item.attention_class for item in items)
     return {
         "counts_by_class": {name: counts[name] for name in ATTENTION_CLASSES if counts[name]},
@@ -216,9 +207,6 @@ def _summary(items: list[_Item], *, truncated: bool, hitl_unavailable: bool) -> 
             if item.attention_class == "time_sensitive"
         ],
         "truncated": truncated,
-        # Honest source status: HITL pauses need the canonical graph spine.
-        # When it is down, failed-Run items may still populate the page.
-        "hitl_unavailable": hitl_unavailable,
     }
 
 
@@ -252,7 +240,7 @@ async def list_attention(
     now = settlement_time(now)
     if not await is_member(user_id, workspace_id):
         return None
-    paused, scan_capped, hitl_unavailable = await _paused_records(user_id, workspace_id)
+    paused, scan_capped = await _paused_records(user_id, workspace_id)
     items = [_human_item(record, pending, now=now, horizon=horizon) for record, pending in paused]
     items.extend(await _failed_runs(user_id, workspace_id))
     items.sort(key=_Item.sort_key)
@@ -260,5 +248,5 @@ async def list_attention(
     return {
         "workspace_id": workspace_id,
         "items": [_public(item, rank) for rank, item in enumerate(items[:_MAX_ITEMS], start=1)],
-        "summary": _summary(items, truncated=truncated, hitl_unavailable=hitl_unavailable),
+        "summary": _summary(items, truncated=truncated),
     }

@@ -35,9 +35,6 @@ class FakeConnection:
     def queue_fetch(self, rows: list[dict[str, Any]]) -> None:
         self._fetch_results.append([FakeRecord(r) for r in rows])
 
-    def queue_fetchval(self, value: str | None) -> None:
-        self._fetchval_results.append(value)
-
     def transaction(self) -> _Transaction:
         return _Transaction()
 
@@ -56,6 +53,14 @@ class FakeConnection:
     async def fetchval(self, query: str, *args: Any) -> str | None:
         self.calls.append(Call("fetchval", query, args))
         return self._fetchval_results.pop(0) if self._fetchval_results else None
+
+
+class _Transaction:
+    async def __aenter__(self) -> _Transaction:
+        return self
+
+    async def __aexit__(self, *exc: Any) -> None:
+        return None
 
 
 class _Transaction:
@@ -132,7 +137,7 @@ async def test_record_usage_upserts_and_returns_row(
             "request_count": 1,
         }
     )
-    result = await tracker.record_usage("openai", "monthly", 100, 50, event_id="event-1")
+    result = await tracker.record_usage("openai", "  Monthly  ", 100, 50, event_id="event-1")
     call = conn.calls[0]
     assert call.method == "fetchrow"
     assert "quota_usage_events" in call.query

@@ -98,6 +98,23 @@ def _container_limits_for(
     return read_effective_container_limits(CGROUP_ROOT).as_dict()
 
 
+def _admin_diagnostics_authorized(
+    credentials: HTTPAuthorizationCredentials | None, settings: Settings
+) -> bool:
+    """Detailed readiness diagnostics are operational configuration (#365).
+
+    They are served only when API auth is enabled and the caller presents a
+    valid admin-scoped token. Anonymous or lower-scoped probes — and any probe
+    against an auth-disabled deployment, where no authorization decision can
+    be made at all — get the minimal status-only contract.
+    """
+    if not settings.api_keys:
+        return False
+    token = credentials.credentials if credentials is not None else ""
+    principal = resolve_token_principal(token, settings)
+    return principal is not None and principal.is_admin
+
+
 def _strike_tracker_diagnostics(container: Any) -> dict[str, str | bool]:
     """Report the configured strike tracker without touching its state."""
     tracker = getattr(container, "strike_tracker", None)
@@ -229,10 +246,9 @@ async def readiness(
     """Minimal public readiness response after dependency checks.
 
     Reconciliation of #365 (public health exposes only liveness/readiness)
-    with #1567/#72 (operators can read what the process actually enforces,
-    including which stores are durable): the detailed diagnostic payload is
-    served only to admin-scoped callers; every other caller gets the
-    status-only contract.
+    with #1567 (operators can read what the process actually enforces): the
+    detailed diagnostic payload is served only to admin-scoped callers; every
+    other caller gets the status-only contract.
     """
     uptime = time.monotonic() - _start_time
     container = getattr(request.app.state, "container", None)
@@ -266,8 +282,8 @@ async def readiness(
 
     # The outbound pool is a process resource rather than an external
     # dependency, so observing it cannot make readiness fail through a network
-    # probe. Surface its live occupancy and configured ceilings so operators can
-    # distinguish provider latency from local connection-pool pressure.
+    # probe. Include it in the aggregate readiness decision without returning
+    # its occupancy or configured ceilings to anonymous callers.
     http_stats = shared_client_stats()
     http_pool_result = ProbeResult(
         status="ok",
@@ -287,7 +303,7 @@ async def readiness(
     }
     all_ok = all(c.status == "ok" for c in checks.values())
     detailed = _admin_diagnostics_authorized(credentials, settings)
-    container_limits = _container_limits_for(credentials, settings) if detailed else None
+    container_limits = read_effective_container_limits(CGROUP_ROOT).as_dict()
     result = (
         DetailedHealthResponse(
             status="ok" if all_ok else "degraded",
@@ -298,7 +314,6 @@ async def readiness(
             effective_resource_policy=settings.effective_resource_policy().as_dict(),
             container_limits=container_limits,
             strike_tracker=_strike_tracker_diagnostics(container),
-            persistence=_persistence_diagnostics(container),
         )
         if detailed
         else None
@@ -306,21 +321,10 @@ async def readiness(
 
     if not all_ok:
         if result is not None:
-            return JSONResponse(
-                content={
-                    **result.model_dump(),
-                    "run_concurrency_limits": _run_concurrency_ceilings(settings),
-                },
-                status_code=503,
-            )
+            return JSONResponse(content=result.model_dump(), status_code=503)
         # Do not disclose which dependency, policy, or backend failed to an
         # anonymous probe; operators use the secured metrics path instead.
         return JSONResponse(content={"status": "not_ready"}, status_code=503)
     if result is not None:
-        return JSONResponse(
-            content={
-                **result.model_dump(),
-                "run_concurrency_limits": _run_concurrency_ceilings(settings),
-            }
-        )
+        return result
     return {"status": "ok"}
