@@ -38,6 +38,9 @@ import pytest
 from fastapi import FastAPI, Request
 from httpx import ASGITransport, AsyncClient
 
+from maistro.identity import Principal
+from maistro.projects.scope_store import InMemoryProjectScopeStore
+from maistro.runs.store import InMemoryRunStore
 from maistro.testing.postgres import postgres_dsn
 
 _BACKEND = Path(__file__).resolve().parents[1]
@@ -45,12 +48,15 @@ if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
 
 from routes import design as design_routes  # noqa: E402
+from services import default_workspace  # noqa: E402
 from services import design_service  # noqa: E402
+from services import engine as engine_service  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[4]
 
 ORG_A = "design-e2e-org"
 ORG_B = "design-e2e-other-org"
+ACTOR = "design-e2e-actor"
 
 #: Discovery responses satisfying the `login-flow` skill's required fields —
 #: the same pairing `test_design_service_startup` proves generates offline.
@@ -64,6 +70,7 @@ DISCOVERY = {
 class _Settings:
     open_design_url = None
     open_design_api_key = None
+    hive_default_workspace_id = "ws-design-e2e"
 
 
 # ── PostgreSQL plumbing (same contract as the Canvas supported-path module) ──
@@ -133,6 +140,11 @@ def compose_database() -> Iterator[str]:
         _execute(dsn, f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)', autocommit=True)
 
 
+class _OwnWorkspace:
+    def __init__(self, user_id: str) -> None:
+        self.id = f"ws-of-{user_id}"
+
+
 @pytest.fixture()
 async def design_api(
     compose_database: str, monkeypatch: pytest.MonkeyPatch
@@ -143,6 +155,13 @@ async def design_api(
     the engine caches are cleared so nothing answers from another test's
     environment, and `start_design_service` runs for real. Restored after so
     the suite's other tests never see this database.
+
+    Create now admits through the canonical Run spine (#52): AuthMiddleware
+    stamps `request.state.principal`, and admission resolves the caller's
+    Workspace over the container's RunStore + ProjectScopeStore. This fixture
+    supplies that boundary the same way a started Conductor would — an
+    in-memory spine (the design *project* rows stay on the real PostgreSQL
+    store under test) and a principal stamp from the request headers.
     """
     monkeypatch.setenv("DATABASE_URL", compose_database)
     design_service._get_async_engine.cache_clear()
@@ -150,20 +169,41 @@ async def design_api(
     monkeypatch.setattr(design_service, "_engine_singleton", None)
     monkeypatch.setattr(design_service, "_store_singleton", None)
     monkeypatch.setattr(design_service, "_renderer_registry_singleton", None)
+    monkeypatch.setattr(design_service, "_canonical_execution_singleton", None)
+    monkeypatch.setattr(design_service, "_canonical_execution_adapters", {})
     monkeypatch.setattr(design_service, "_status", design_service.DesignServiceStatus())
+
+    scope_store = InMemoryProjectScopeStore()
+    run_store = InMemoryRunStore(project_store=scope_store)
+
+    class _CoreEngine:
+        def __init__(self) -> None:
+            self.run_store = run_store
+            self.project_scope_store = scope_store
+
+    monkeypatch.setattr(engine_service, "get_engine", lambda: _CoreEngine())
+
+    async def _own_workspace(user_id: str) -> _OwnWorkspace:
+        return _OwnWorkspace(user_id)
+
+    monkeypatch.setattr(default_workspace, "resolve_default_workspace", _own_workspace)
 
     await design_service.start_design_service(_Settings())
     status = design_service.get_design_status()
     assert status.ready, f"the real composition did not start: {status.cause}"
     assert status.store_cause is None, f"the store did not come up: {status.store_cause}"
+    assert status.canonical_execution_available, "canonical spine must be wired for create"
 
     app = FastAPI()
     app.include_router(design_routes.router)
 
     @app.middleware("http")
-    async def _org_header(request: Request, call_next: Any) -> Any:
-        # The deployment-facing way a scope reaches these routes; absent here,
-        # they fall back to the deployment default exactly as in production.
+    async def _boundary(request: Request, call_next: Any) -> Any:
+        # Mirrors AuthMiddleware: a principal is required for create, and the
+        # deployment-facing way a scope reaches these routes is still the org
+        # header — absent here, they fall back to the deployment default.
+        actor = request.headers.get("x-test-actor", ACTOR)
+        request.state.principal = Principal(user_id=actor)
         org = request.headers.get("x-test-org")
         if org is not None:
             request.state.org_id = org
@@ -243,6 +283,9 @@ class TestTheSupportedPath:
         await design_service.stop_design_service()
         if engine is not None:
             await engine.dispose()
+        # Restart must rebuild singletons against the same Compose URL and the
+        # same in-memory spine the fixture still supplies via monkeypatch.
+        design_service._canonical_execution_adapters.clear()
         await design_service.start_design_service(_Settings())
 
         # A different store instance than the one that wrote the row.

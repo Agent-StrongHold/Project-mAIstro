@@ -469,3 +469,93 @@ class TestCanonicalExecutionWiring:
         monkeypatch.setattr(design_service, "_engine_singleton", None)
         assert await design_service.get_design_canonical_execution_for_principal("") is None
         assert await design_service.get_design_canonical_execution_for_principal("  ") is None
+
+    async def test_admission_returns_none_when_the_core_engine_is_not_started(self, monkeypatch):
+        """A Design request before the Conductor engine is up must not raise."""
+        from services import engine as engine_service
+
+        monkeypatch.setattr(design_service, "_engine_singleton", None)
+        monkeypatch.setattr(design_service, "_canonical_execution_adapters", {})
+
+        def _not_started() -> object:
+            raise RuntimeError("Engine not initialized")
+
+        monkeypatch.setattr(engine_service, "get_engine", _not_started)
+        assert await design_service.get_design_canonical_execution_for_principal("user-1") is None
+
+    async def test_admission_returns_none_when_the_spine_stores_are_absent(self, monkeypatch):
+        from services import engine as engine_service
+
+        class _CoreEngine:
+            run_store = None
+            project_scope_store = None
+
+        monkeypatch.setattr(design_service, "_engine_singleton", None)
+        monkeypatch.setattr(design_service, "_canonical_execution_adapters", {})
+        monkeypatch.setattr(engine_service, "get_engine", lambda: _CoreEngine())
+        assert await design_service.get_design_canonical_execution_for_principal("user-1") is None
+
+    async def test_a_spine_probe_failure_leaves_execution_unavailable(self, monkeypatch):
+        """Startup must not take the app down when create_root refuses (#52)."""
+        from services import engine as engine_service
+
+        class _ScopeStore:
+            async def create_root(self, workspace_id: str):
+                raise RuntimeError(f"root unavailable for {workspace_id}")
+
+        class _CoreEngine:
+            run_store = object()
+            project_scope_store = _ScopeStore()
+
+        monkeypatch.setattr(design_service, "_get_async_session_factory", lambda: None)
+        monkeypatch.setattr(design_service, "_engine_singleton", None)
+        monkeypatch.setattr(design_service, "_store_singleton", None)
+        monkeypatch.setattr(design_service, "_renderer_registry_singleton", None)
+        monkeypatch.setattr(design_service, "_canonical_execution_singleton", None)
+        monkeypatch.setattr(engine_service, "get_engine", lambda: _CoreEngine())
+
+        class _Settings:
+            open_design_url = None
+            open_design_api_key = None
+            hive_default_workspace_id = "ws-design"
+
+        await design_service.start_design_service(_Settings())
+        assert design_service.get_design_canonical_execution() is None
+        status = design_service.get_design_status().to_dict()
+        assert status["ready"] is True
+        assert status["canonical_execution_available"] is False
+
+    async def test_a_missing_maistro_design_package_records_the_cause(self, monkeypatch):
+        """Conductor without maistro-design is supported: ready=False with a cause."""
+        import builtins
+
+        monkeypatch.setattr(design_service, "_engine_singleton", None)
+        monkeypatch.setattr(design_service, "_store_singleton", None)
+        monkeypatch.setattr(design_service, "_canonical_execution_singleton", object())
+
+        real_import = builtins.__import__
+
+        def _import(
+            name: str,
+            globals: object = None,
+            locals: object = None,
+            fromlist: tuple[str, ...] = (),
+            level: int = 0,
+        ) -> object:
+            if name == "maistro_design.engine" or (
+                name == "maistro_design" and fromlist and "engine" in fromlist
+            ):
+                raise ImportError("simulated missing maistro-design")
+            return real_import(name, globals, locals, fromlist, level)
+
+        monkeypatch.setattr(builtins, "__import__", _import)
+
+        class _Settings:
+            open_design_url = None
+            open_design_api_key = None
+
+        await design_service.start_design_service(_Settings())
+        assert design_service.get_design_canonical_execution() is None
+        status = design_service.get_design_status()
+        assert status.ready is False
+        assert "maistro-design is not installed" in (status.cause or "")
