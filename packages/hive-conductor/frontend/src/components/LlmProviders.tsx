@@ -1,6 +1,4 @@
 import { useEffect, useState } from "react";
-import { useAuthorization } from "../context/AuthorizationContext";
-import { AuthorizationNotice } from "./Authorization";
 import { fallbackMessage } from "../lib/api";
 import { SecretField } from "./shared";
 
@@ -90,9 +88,7 @@ export function LlmProviders() {
   }
 
   return (
-    <>
-      <AuthorizationNotice permission="config.write" label="LLM provider changes" />
-      <div className="card" style={{ marginBottom: 14, padding: 12, borderLeft: "3px solid var(--accent)" }}>
+    <div className="card" style={{ marginBottom: 14, padding: 12, borderLeft: "3px solid var(--accent)" }}>
       <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", marginBottom: 6 }}>
         LLM PROVIDERS
       </div>
@@ -138,7 +134,7 @@ export function LlmProviders() {
             <button
               className="btn"
               onClick={() => saveKey(p.name)}
-              disabled={!can("config.write") || !data.vault_available || !keys[p.name] || busy === p.name}
+              disabled={!data.vault_available || !keys[p.name] || busy === p.name}
               style={{ fontSize: 12, padding: "3px 10px" }}
             >
               Save key
@@ -146,7 +142,7 @@ export function LlmProviders() {
             <button
               className="btn-primary"
               onClick={() => activate(p.name)}
-              disabled={!can("config.write") || !p.has_key || busy === p.name}
+              disabled={!p.has_key || busy === p.name}
               style={{ fontSize: 12, padding: "3px 10px" }}
             >
               {busy === p.name ? "…" : p.activated ? "Re-test" : "Activate"}

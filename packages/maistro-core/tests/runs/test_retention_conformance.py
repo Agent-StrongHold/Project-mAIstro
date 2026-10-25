@@ -26,7 +26,6 @@ from maistro.graph import Graph, Node
 from maistro.runs.model import AttemptStatus, RunStatus
 from maistro.runs.retention_scope import WorkspaceRetentionScope
 from maistro.runs.store import DEFAULT_PURGE_BATCH, PurgeOutcome, is_purgeable
-from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 NOW = datetime(2026, 8, 22, 12, 0, tzinfo=UTC)
 EXPIRED = NOW - timedelta(seconds=1)
@@ -212,12 +211,14 @@ async def test_a_run_whose_node_run_a_child_descends_from_is_not_purged(spine: A
     await store.transition_run(parent.run_id, RunStatus.QUEUED)
     await store.transition_run(parent.run_id, RunStatus.RUNNING)
     node_run = await store.create_node_run(parent.run_id, node_id="node-1")
-    await store.create_run(
+    child = await store.create_run(
         _graph(workspace, project_id),
         parent_run_id=parent.run_id,
         parent_node_run_id=node_run.node_run_id,
         actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
+    for status in (RunStatus.QUEUED, RunStatus.RUNNING, RunStatus.COMPLETED):
+        await store.transition_run(child.run_id, status)
     await store.transition_run(parent.run_id, RunStatus.COMPLETED)
 
     purged = await store.purge_expired_runs(_scope(spine), now=NOW)

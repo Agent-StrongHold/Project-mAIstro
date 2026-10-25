@@ -58,10 +58,130 @@ _PUBLIC_EXACT = frozenset(
 
 _ADMIN_CHAT_BLOCKED = ("/v1/chat/",)
 
-# Compatibility export for tests and callers that inspect the policy table.
-# scripts/check_enumerations.py imports this alias; the single table lives in
-# services/authorization.py beside the UI contract it feeds.
-_PROTECTED_OPS = authorization.PROTECTED_OPS
+_PROTECTED_OPS: dict[str, dict[str, str]] = {
+    "GET": {
+        # Reading another principal's harness/RSI session stream exposes
+        # in-flight code, agent reasoning, and secrets in transit — the same
+        # sensitivity as starting the run, so it takes the same scope. Plain
+        # authentication is not enough for these read routes.
+        "/v1/harness": "harness.execute",
+        "/v1/rsi": "rsi.execute",
+        "/v1/evolution": "rsi.execute",
+        # The pending-work queue names which Runs are blocked and carries the
+        # payload each node is asking a human — in-flight graph execution
+        # content, the same sensitivity as the harness stream above. Scoped to
+        # match the answer route: seeing a question you have no scope to answer
+        # serves nobody and leaks what the Run is doing (#244).
+        "/v1/hitl": "dags.write",
+    },
+    "DELETE": {
+        "/v1/settings": "config.delete",
+        "/v1/agents": "agents.delete",
+        "/v1/skills": "skills.delete",
+        "/v1/mcp": "mcp.delete",
+        # Killing another principal's harness session is a denial of service on
+        # in-flight work, so it needs the same scope that starting one does.
+        "/v1/harness": "harness.execute",
+        "/v1/containers": "containers.control",
+        "/v1/credentials": "credentials.write",
+        "/v1/dags": "dags.write",
+        "/v1/schedules": "schedules.write",
+        # Removing a workspace member is the same write-scope decision as
+        # creating the workspace in the first place (Persona/Workspace Phase G).
+        "/v1/workspaces": "workspaces.write",
+    },
+    "POST": {
+        "/v1/settings": "config.write",
+        # The whole /v1/mcp mutating surface, not just /servers: discover and
+        # test connect to operator-supplied endpoints, which is the same
+        # trust decision as registering one.
+        "/v1/mcp": "mcp.write",
+        "/v1/agents": "agents.write",
+        "/v1/skills": "skills.write",
+        # Talks to the Docker socket directly — host infrastructure control.
+        "/v1/containers": "containers.control",
+        # DAGs execute graphs whose nodes include harness/synth-DAG kinds:
+        # creating or running one is agent execution, and an unscoped DAG run
+        # would be a bypass of harness.execute via composition.
+        "/v1/dags": "dags.write",
+        # Accepting an optimizer proposal rewrites a DAG — same surface.
+        "/v1/optimizer": "dags.write",
+        # Answering a human pause resumes the Run that was waiting on it, and
+        # the nodes that run next are the same graph nodes `/v1/dags` gates —
+        # so an unscoped answer would be DAG execution reached by replying to
+        # a prompt instead of by starting a run (#244). The answer is also
+        # untrusted input written into graph state that later nodes read,
+        # which is why the route Warden-scans it as well.
+        "/v1/hitl": "dags.write",
+        # A schedule is recurring autonomous execution.
+        "/v1/schedules": "schedules.write",
+        # Workspace sub-resource mutations (membership, persona authoring, etc.)
+        # remain privileged. Creating one's own workspace tab is handled as an
+        # ordinary authenticated operation in _required_permission() below.
+        "/v1/workspaces": "workspaces.write",
+        # The evolution tournament is the self-improvement loop's other door.
+        "/v1/evolution": "rsi.execute",
+        # Chat workflow execution creates durable Run history and can invoke
+        # mutating nodes. It uses the shared approval capability before the
+        # existing chat dispatch path, so authentication alone is not enough.
+        "/v1/chat/workflows": "dags.write",
+        # Executes GitHub/GitLab tools with stored credentials against real
+        # external trackers.
+        # Audit entries name an arbitrary `actor`: an unscoped writer is a
+        # log-forgery primitive, and the app writes its own entries in-process,
+        # not over HTTP — no product flow needs this route unelevated.
+        "/v1/audit": "audit.write",
+        # The inbound harness starts a coding agent against an operator-supplied
+        # `workdir`: POST /v1/harness/sessions is code execution on this host,
+        # and .../send steers it. Authentication alone was already required
+        # (dispatch 401s any unauthenticated /v1/ path), but *every*
+        # authenticated principal could reach it — including a role="user"
+        # account with permissions=[]. Deliberately its own scope rather than
+        # agents.write: being cleared to edit an agent's configuration is not
+        # the same as being cleared to execute code as it.
+        "/v1/harness": "harness.execute",
+        # RSI runs are the self-modification loop — they push branches and can
+        # open PRs. Separate scope again, because granting code execution on a
+        # scratch workdir is a smaller decision than granting the loop that
+        # rewrites this repository.
+        "/v1/rsi": "rsi.execute",
+        # Resolving an approval is an authority-bearing decision, not a
+        # generic configuration write. Require the dedicated approver scope;
+        # the route applies the action-specific policy on top of this.
+        "/v1/capabilities/approvals": "approvals.resolve",
+        # Capability discovery and provider configuration remain config writes.
+        "/v1/capabilities": "config.write",
+        # Provider activation uses the LiteLLM master key, mutates the global
+        # model registry, and can trigger billed calls (SPEC-072726-3439).
+        "/v1/providers": "config.write",
+    },
+    "PUT": {
+        "/v1/settings": "config.write",
+        # Storing a deployment-wide LLM key in the vault — same decision
+        # weight as activating it.
+        "/v1/providers": "config.write",
+        "/v1/mcp/servers": "mcp.write",
+        "/v1/agents": "agents.write",
+        "/v1/skills": "skills.write",
+        "/v1/credentials": "credentials.write",
+        "/v1/dags": "dags.write",
+        "/v1/schedules": "schedules.write",
+        # Setting a workspace's sticky per-agent tool bindings changes what
+        # tools that agent may call — same write-scope posture as every
+        # other workspace-settings mutation (Persona/Workspace system).
+        "/v1/workspaces": "workspaces.write",
+    },
+    "PATCH": {
+        "/v1/settings": "config.write",
+        "/v1/mcp/servers": "mcp.write",
+        "/v1/capabilities": "config.write",
+        # Toggling a skill changes what every future agent run may do.
+        "/v1/skills": "skills.write",
+        # Archiving a workspace is the same write-scope decision as creating
+        # or deleting one (Persona/Workspace system).
+        "/v1/workspaces": "workspaces.write",
+    },
+}
 
 
 def _matches_public_prefix(path: str, prefix: str) -> bool:

@@ -326,7 +326,7 @@ async def test_harness_refuses_override_reconstructed_across_untrusted_turns():
     assert inner.sends == []
 
 
-async def test_safe_wrapper_passthrough_and_default_deny():
+async def test_safe_wrapper_passthrough_and_default_allow_all():
     # Wrap a real provider; exercise the CapabilityProvider passthrough +
     # start_session/stop delegation + the fail-closed default gate.
     sandbox = _FakeSandbox((0, "hi"), destroyable=True)

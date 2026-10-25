@@ -46,10 +46,9 @@ history:
 
 ADR-086 proposes a durable event log (PostgreSQL table of immutable events) and trigger+handler
 model: operators define triggers ("on agent.delegated, run X"), the reactor processes events,
-and handlers are replayed durably (at-least-once; effect idempotency is handler-owned, with no
-lost events on crash). ADR-086 remains Proposed and is retained as design context only; it is not
-shipped authority for this SPEC — the operative authority is this SPEC under its Accepted
-substrate (ADR-037).
+and handlers are replayed durably (idempotent, no lost events on crash). ADR-086 remains Proposed
+and is retained as design context only; it is not shipped authority for this SPEC — the operative
+authority is this SPEC under its Accepted substrate (ADR-037).
 
 The 1kHz reactor loop (SPEC-013) currently emits events in-memory; this SPEC persists them.
 

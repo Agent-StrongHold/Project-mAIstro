@@ -308,7 +308,6 @@ class GenerationJobRecord:
             "lease_expires_at": (
                 self.lease_expires_at.isoformat() if self.lease_expires_at else None
             ),
-            "next_retry_at": self.next_retry_at.isoformat() if self.next_retry_at else None,
             "org_id": self.org_id,
         }
 

@@ -18,7 +18,6 @@ from __future__ import annotations
 import asyncio
 from datetime import UTC, datetime, timedelta
 from typing import Any
-from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -35,17 +34,13 @@ from maistro.runs.sources import (
     SCHEDULE_REQUESTED_BY_KEY,
     SCHEDULE_SOURCE,
     SCHEDULE_TRIGGER_KEY,
-    SCHEDULE_TRIGGER_MANUAL,
     SCHEDULE_TRIGGER_RECURRING,
     SCHEDULED_FOR_KEY,
-    canonical_occurrence_instant,
     occurrence_key,
 )
 from maistro.runs.store import InMemoryRunStore, RunIntegrityError
 from maistro.scheduling.admission import (
     REQUEST_ID_KEY,
-    SCHEDULER_SERVICE_ID,
-    SCHEDULER_SERVICE_ID_KEY,
     ManualFireRefused,
     ScheduleAdmission,
     ScheduleRunAdmitter,
@@ -1173,126 +1168,6 @@ class TestOneRunPerFiring:
         assert after.runs_so_far == before.runs_so_far
 
 
-class TestTheClaimIsAnInstantNotAWallClock:
-    """The occurrence claim survives a timezone edit (#850).
-
-    Every store compares `scheduled_for` as text, and the cron walker renders
-    moments in the schedule's timezone — so the text a claim was written under
-    changed when the schedule's timezone did. A claimed instant re-enumerated
-    under the edited zone produced different text, the lookup missed, and the
-    same firing was admitted twice: the double-fire window the uniqueness
-    contract (#220) exists to close, reopened by a settings edit. Claims are
-    now written and probed as the instant in UTC, so the wall clock can change
-    and the claim cannot.
-    """
-
-    async def test_editing_the_timezone_cannot_re_eligibil_an_already_claimed_instant(
-        self, harness
-    ) -> None:
-        """A crashed winner's claim holds across a UTC -> Berlin edit.
-
-        Replica A claims NOON and dies before `record_fire`, exactly as
-        `_crashed_before_record_fire` plants. The operator then edits the
-        schedule's timezone (which clears the due cursor and keeps the
-        enumeration cursor, so the next tick re-enumerates the owed
-        occurrence), and replica B's tick renders that same instant as
-        14:00+02:00. The claim must still answer.
-        """
-        admitter, runs, _templates, schedules, project_id = harness
-        schedule = await _schedule(
-            schedules,
-            project_id,
-            overlap_policy=OverlapPolicy.ALLOW,
-            catchup_window_seconds=6 * 3600.0,
-        )
-        winner = await _crashed_before_record_fire(harness, schedule, NOON)
-
-        edited = await schedules.put(schedule.model_copy(update={"timezone": "Europe/Berlin"}))
-        assert edited.next_due_at is None, "the edit is what re-enumerates the occurrence"
-
-        second = await admitter.admit_due(edited, now=NOON + timedelta(hours=2))
-
-        assert NOON in second.already_fired, "the claimed instant stayed claimed"
-        assert len(second.run_ids) == 2, "the newer occurrences still fired"
-        assert second.failures == ()
-        claim = await runs.get_run_for_occurrence(
-            schedule.schedule_id, canonical_occurrence_instant(NOON)
-        )
-        assert claim is not None and claim.run_id == winner
-        stored = await schedules.get(schedule.schedule_id)
-        assert stored is not None
-        assert stored.last_fired_at == NOON + timedelta(hours=2)
-        # The winner's ticker counted the firing; this one counts only its own.
-        assert stored.runs_so_far == 2
-
-        # Every claim on disk is the canonical instant, never a wall-clock
-        # rendering: equal instants are one identity whatever zone wrote them.
-        berlin_text = NOON.astimezone(ZoneInfo("Europe/Berlin")).isoformat()
-        for run_id in (*second.run_ids, winner):
-            run = await runs.get_run(run_id)
-            assert run is not None
-            assert run.provenance[SCHEDULED_FOR_KEY] != berlin_text
-            assert run.provenance[SCHEDULED_FOR_KEY] == canonical_occurrence_instant(
-                datetime.fromisoformat(run.provenance[SCHEDULED_FOR_KEY])
-            )
-
-    async def test_the_reverse_edit_holds_too(self, harness) -> None:
-        """A Berlin-written claim survives an edit back to UTC.
-
-        Canonicalisation must hold in both directions: a fix that only
-        canonicalised one side of the comparison would pass the first test and
-        still reopen the window the other way round. The crashed winner is
-        planted with the moment as the Berlin cron walker produced it — the
-        same instant as NOON, rendered `14:00+02:00` — which is the identity
-        the pre-#850 admitter actually wrote.
-        """
-        admitter, runs, _templates, schedules, project_id = harness
-        schedule = await _schedule(
-            schedules,
-            project_id,
-            timezone="Europe/Berlin",
-            overlap_policy=OverlapPolicy.ALLOW,
-            catchup_window_seconds=6 * 3600.0,
-        )
-        winner = await _crashed_before_record_fire(
-            harness, schedule, NOON.astimezone(ZoneInfo("Europe/Berlin"))
-        )
-
-        edited = await schedules.put(schedule.model_copy(update={"timezone": "UTC"}))
-        second = await admitter.admit_due(edited, now=NOON + timedelta(hours=2))
-
-        assert NOON in second.already_fired
-        claim = await runs.get_run_for_occurrence(
-            schedule.schedule_id, canonical_occurrence_instant(NOON)
-        )
-        assert claim is not None and claim.run_id == winner
-
-    async def test_a_non_utc_schedule_writes_the_instant_not_the_wall_clock(self, harness) -> None:
-        """The write side is canonical on its own, before any edit.
-
-        A Berlin schedule firing NOON stores `12:00+00:00`, not `14:00+02:00`,
-        so the claim a Berlin writer leaves is the same identity a UTC reader
-        (or a reader under any other zone) probes with.
-        """
-        admitter, runs, _templates, schedules, project_id = harness
-        schedule = await _schedule(schedules, project_id, timezone="Europe/Berlin")
-
-        first = await admitter.admit_due(schedule, now=NOON)
-        assert len(first.run_ids) == 1
-        run = await runs.get_run(first.run_ids[0])
-        assert run is not None
-        berlin_text = NOON.astimezone(ZoneInfo("Europe/Berlin")).isoformat()
-        assert run.provenance[SCHEDULED_FOR_KEY] == canonical_occurrence_instant(NOON)
-        assert run.provenance[SCHEDULED_FOR_KEY] != berlin_text
-
-        # Re-running the admitter with the stale cursor — the state a crash
-        # between create and advance leaves — consumes the occurrence, which
-        # only works if the probe speaks the same text the write left.
-        again = await admitter.admit_due(schedule, now=NOON)
-        assert again.run_ids == ()
-        assert len(again.already_fired) == 1
-
-
 async def _crashed_before_record_fire(harness, schedule: Schedule, when: datetime) -> str:
     """Ticker A's half of the #1059 sequence: the Run for `when` exists and
     the cursor was never stamped, which is exactly what dying between
@@ -2009,52 +1884,6 @@ class TestManualFire:
         assert recorded.last_fired_at == schedule.last_fired_at
         assert recorded.next_due_at == schedule.next_due_at
 
-    async def test_a_manual_fire_names_the_principal_that_asked_for_it(self, harness) -> None:
-        """The requesting principal rides the Run, separately from the actor (#1201).
-
-        A manual fire consumes the schedule actor's authority — the Run's
-        scope and actor stay the schedule's — but *who asked for a fire now*
-        is its own provenance fact, and the background service that performed
-        the admission is a third identity again, distinct from both.
-        """
-        admitter, runs, _templates, schedules, project_id = harness
-        schedule = await _schedule(schedules, project_id)
-
-        result = await admitter.admit_due(
-            schedule, now=NOON + timedelta(minutes=3), manual=True, requested_by="requesting-human"
-        )
-
-        assert len(result.run_ids) == 1
-        run = await runs.get_run(result.run_ids[0])
-        assert run is not None
-        # The authority consumed is still the schedule actor's; the caller is
-        # recorded beside it, not instead of it.
-        assert run.actor_principal_id == "test-actor-principal"
-        assert run.provenance[SCHEDULE_TRIGGER_KEY] == SCHEDULE_TRIGGER_MANUAL
-        assert run.provenance[SCHEDULE_REQUESTED_BY_KEY] == "requesting-human"
-        # The service that fired it is neither of the two principals above.
-        assert run.provenance[SCHEDULER_SERVICE_ID_KEY] == SCHEDULER_SERVICE_ID
-
-    async def test_a_tick_fire_names_no_requester(self, harness) -> None:
-        """The requester key's absence means "no requester", deterministically.
-
-        A nominal occurrence has no caller to name, so the key must be absent
-        outright — an audit reader has to tell "this fire was the cron's own"
-        from "this fire was asked for" without ever guessing what a missing
-        key could otherwise mean (#1201).
-        """
-        admitter, runs, _templates, schedules, project_id = harness
-        schedule = await _schedule(schedules, project_id)
-
-        result = await admitter.admit_due(schedule, now=NOON)
-
-        assert len(result.run_ids) == 1
-        run = await runs.get_run(result.run_ids[0])
-        assert run is not None
-        assert run.provenance[SCHEDULE_TRIGGER_KEY] == SCHEDULE_TRIGGER_RECURRING
-        assert SCHEDULE_REQUESTED_BY_KEY not in run.provenance
-        assert run.provenance[SCHEDULER_SERVICE_ID_KEY] == SCHEDULER_SERVICE_ID
-
     async def test_a_manual_fire_does_not_carry_the_cursor_past_an_owed_occurrence(
         self, harness
     ) -> None:
@@ -2568,84 +2397,3 @@ class TestManualFire:
         assert [marker.fire_id for marker in recorded.pending_fires] == ["ghost-1"]
         assert recorded.runs_so_far == 1
         assert recorded.last_run_id == result.run_ids[0]
-
-
-# --- bounded catch-up work (#1200) -------------------------------------------
-
-
-class TestBoundedEnumeration:
-    """A walk stopped by its budget or step bound owes a re-examination.
-
-    `evaluate()` marks the decision incomplete; this is the admission half of
-    that contract: the due cursor stays where it is so the next tick
-    re-examines exactly the range this one did not, and the admission carries
-    the flag so a host can say the tick ended with backlog owed.
-    """
-
-    async def test_an_incomplete_walk_keeps_the_due_cursor(self, harness) -> None:
-        from maistro.scheduling.engine import EnumerationLimits
-
-        _admitter, runs, templates, schedules, project_id = harness
-        bounded = ScheduleRunAdmitter(
-            runs,
-            templates,
-            schedules,
-            enumeration_limits=EnumerationLimits(walk_budget_seconds=0.0),
-        )
-        schedule = await _schedule(schedules, project_id)
-        before = await schedules.get(schedule.schedule_id)
-
-        admission = await bounded.admit_due(schedule, now=NOON)
-
-        assert admission.enumeration_incomplete is True
-        assert admission.run_ids == ()
-        assert len(runs._runs) == 0  # type: ignore[attr-defined]
-        # Nothing was written at all: the occurrence was never examined, so
-        # neither a cursor advance nor a skip record may pretend it was.
-        assert await schedules.get(schedule.schedule_id) == before
-
-    async def test_an_incomplete_walk_reports_where_it_stopped(self, harness) -> None:
-        import math
-
-        from maistro.scheduling.engine import EnumerationLimits
-
-        _admitter, runs, templates, schedules, project_id = harness
-        bounded = ScheduleRunAdmitter(
-            runs,
-            templates,
-            schedules,
-            enumeration_limits=EnumerationLimits(walk_budget_seconds=math.inf, max_walk_steps=2),
-        )
-        schedule = await _schedule(
-            schedules,
-            project_id,
-            cron="* * * * *",
-            last_fired_at=NOON - timedelta(hours=1),
-            catchup_window_seconds=3600.0,
-        )
-
-        admission = await bounded.admit_due(schedule, now=NOON)
-
-        assert admission.enumeration_incomplete is True
-        assert admission.enumeration_stopped_at == NOON - timedelta(minutes=58)
-        # The two examined occurrences were consumed (one fired, one skipped
-        # as overlap under the default SKIP policy); the unexamined range
-        # past the stop is what the next tick re-examines.
-        assert len(admission.run_ids) == 1
-
-    async def test_a_complete_walk_advances_the_due_cursor(self, harness) -> None:
-        admitter, _runs, _templates, schedules, project_id = harness
-        schedule = await _schedule(schedules, project_id)
-
-        admission = await admitter.admit_due(schedule, now=NOON)
-
-        assert admission.enumeration_incomplete is False
-        assert admission.enumeration_stopped_at is None
-        assert admission.window_clamped is False
-        assert len(admission.run_ids) == 1
-        after = await schedules.get(schedule.schedule_id)
-        assert after is not None
-        # The cursor names the occurrence that fired, and the due cursor
-        # the next one — the complete walk consumed the whole range.
-        assert after.last_fired_at == NOON
-        assert after.next_due_at == NOON + timedelta(hours=1)

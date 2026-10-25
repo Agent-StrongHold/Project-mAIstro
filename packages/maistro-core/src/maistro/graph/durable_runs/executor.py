@@ -297,7 +297,6 @@ async def resume_durable_graph(
     node_resolver: NodeResolver,
     run_store: RunStore | None = None,
     max_steps: int = 256,
-    now: datetime | None = None,
 ) -> DurableRunRecord:
     """Resume through canonical Attempt recovery, never a second physical walker."""
     from .attempt_executor import resume_durable_graph as resume
@@ -308,7 +307,6 @@ async def resume_durable_graph(
         node_resolver=node_resolver,
         run_store=run_store,
         max_steps=max_steps,
-        now=now,
     )
 
 
@@ -1267,7 +1265,14 @@ def _build_ctx(record: DurableRunRecord, node_id: str, spec: GraphNode) -> NodeC
         "hitl_answers": dict(record.hitl_answers),
         "synth_depth": synth_depth,
     }
-    _supervision_context(metadata, record, node_id, spec)
+    answered = record.hitl_answers.get(node_id)
+    if isinstance(answered, Mapping):
+        pause = answered.get("_pause")
+        if isinstance(pause, Mapping):
+            pause_metadata = pause.get("metadata")
+            carried = dict(pause_metadata) if isinstance(pause_metadata, Mapping) else {}
+            carried["resume_at"] = pause.get("resume_at")
+            metadata[RESUMED_PAUSE_KEY] = carried
     return NodeContext(
         run_id=record.run_id,
         dag_id=record.run.graph.graph_id,

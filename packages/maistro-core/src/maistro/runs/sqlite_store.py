@@ -46,7 +46,7 @@ from maistro.runs.retention_scope import (
     RetentionScope,
     WorkspaceRetentionScope,
 )
-from maistro.runs.sources import SCHEDULED_FOR_KEY, TASK_QUEUE_SOURCE, occurrence_key
+from maistro.runs.sources import SCHEDULED_FOR_KEY, occurrence_key
 from maistro.runs.store import (
     DEFAULT_PURGE_BATCH,
     DEFAULT_RECLAIM_BATCH,
@@ -55,7 +55,6 @@ from maistro.runs.store import (
     DuplicateOccurrence,
     NodeRunNotFound,
     PurgeOutcome,
-    RunEffectClaim,
     RunIntegrityError,
     RunNotFound,
     StaleExecutionFence,
@@ -63,6 +62,7 @@ from maistro.runs.store import (
     is_purgeable,
     matches_chat_admission_snapshot,
     outcome_embeds_attempt,
+    refuse_completion_while_children_open,
     repaired_accepted_outcome,
     require_repairable_attempt,
     validate_accepted_outcome_against_attempt,
@@ -70,7 +70,6 @@ from maistro.runs.store import (
     validate_effect_claim_parent,
     validate_eval_score_spine,
 )
-from maistro.runs.store_boundary import RunStoreBoundary, require_admitted_actor
 from maistro.sqlite_schema import execute_schema_script, serialized_schema_upgrade
 
 if TYPE_CHECKING:
@@ -119,11 +118,6 @@ _PURGE_CANDIDATES_WORKSPACE_SQL = """SELECT run_id, payload FROM canonical_runs 
     ORDER BY json_extract(r.payload, '$.retention_expires_at')
     LIMIT ?"""
 
-#: Opened by `create_run` before a root Run's insert, so an active-ceiling
-#: refusal undoes that row alone (#1182).
-_ROOT_ADMISSION_SAVEPOINT = "canonical_root_run_admission"
-
-
 _PURGE_CANDIDATES_GLOBAL_SQL = """SELECT run_id, payload FROM canonical_runs r
     WHERE r.status IN ({statuses})
       AND json_extract(r.payload, '$.retention_expires_at') IS NOT NULL
@@ -151,8 +145,8 @@ _PURGE_CANDIDATES_GLOBAL_SQL = """SELECT run_id, payload FROM canonical_runs r
 #: - *_RETAINED_TABLES is append-only provenance — the canonical Event log
 #:   (migration 030). Its `run_id` names what an event was about; deleting or
 #:   rewriting it would destroy the audit record of work whose deletion is
-#:   itself an auditable act. Kept and left uncounted: the residue stays
-#:   inspectable in the log itself. (Task receipts and session turns are
+#:   itself an auditable act. Kept, and counted into the outcome so retention
+#:   reports what it left behind. (Task receipts and session turns are
 #:   attribution history of the same class, owned by other modules' stores;
 #:   they are out of this transaction's boundary and the inventory in
 #:   `retention_scope` records their disposition.)
@@ -175,10 +169,6 @@ _DELETE_NODE_RUNS_SQL = (
 )
 
 _DELETE_RUNS_SQL = "DELETE FROM canonical_runs WHERE run_id IN (SELECT value FROM json_each(?))"
-
-_DELETE_EVAL_SCORES_SQL = (
-    "DELETE FROM canonical_run_eval_scores WHERE run_id IN (SELECT value FROM json_each(?))"
-)
 
 #: The purge's dependent-evidence statements, and the spine deletes reworked
 #: the same way (#1175). A variable-length `IN` list is the one thing `?`
@@ -206,8 +196,8 @@ _PURGE_COUNT_ATTEMPTS_SQL = (
 #: - canonical_event_log is append-only provenance (migration 030). Its
 #:   `run_id` names what an event was about; deleting or rewriting it would
 #:   destroy the audit record of work whose deletion is itself an auditable
-#:   act. Kept and left uncounted: the residue stays inspectable in the log
-#:   itself. (Task receipts and session turns are attribution history of
+#:   act. Kept, and counted into the outcome so retention reports what it
+#:   left behind. (Task receipts and session turns are attribution history of
 #:   the same class, owned by other modules' stores; they are outside this
 #:   transaction's boundary.)
 #:
@@ -816,24 +806,6 @@ class SqliteRunStore:
         )
         return model_of_json(Run, row[0]) if row is not None else None
 
-    async def find_run_by_task_id(
-        self,
-        task_id: str,
-        *,
-        admission_source: str | None = TASK_QUEUE_SOURCE,
-    ) -> Run | None:
-        # The SQLite expression twin of the PostgreSQL provenance query, the
-        # same way `find_run_by_effect` is spelled twice.
-        row = await self._fetchone(
-            """SELECT payload FROM canonical_runs
-               WHERE json_extract(payload, '$.provenance.task_id') = ?
-                 AND (? IS NULL
-                      OR json_extract(payload, '$.provenance.admission_source') = ?)
-               LIMIT 1""",
-            (task_id, admission_source, admission_source),
-        )
-        return model_of_json(Run, row[0]) if row is not None else None
-
     async def attach_delegation_receipt(
         self, run_id: str, task_id: str, *, target_agent: str | None = None
     ) -> Run:
@@ -1161,10 +1133,6 @@ class SqliteRunStore:
             # Dependent evidence beyond the spine, in the same transaction:
             # owned resumable state deleted, retained provenance counted.
             continuations = await self._purge_dependent_tables(run_id_param)
-            # Eval evidence is spine-attached (FK on run_id), so it dies with
-            # the Run tree, in the same transaction and before the rows it
-            # names (M7-A3).
-            await self._conn.execute(_DELETE_EVAL_SCORES_SQL, (run_id_param,))
             await self._conn.execute(_DELETE_ATTEMPTS_SQL, (run_id_param,))
             await self._conn.execute(_DELETE_NODE_RUNS_SQL, (run_id_param,))
             await self._conn.execute(_DELETE_RUNS_SQL, (run_id_param,))
@@ -1177,33 +1145,6 @@ class SqliteRunStore:
                 continuations=continuations,
                 backlog_remaining=len(doomed) > limit,
             )
-
-    async def cancel_unstarted_chat_run(self, expected: Run, *, error: str) -> bool:
-        async with self._write_lock:
-            current, snapshot = await self._require_run_snapshot(expected.run_id)
-            if not matches_chat_admission_snapshot(current, expected):
-                return False
-            updated = transition_run(current, RunStatus.CANCELLED, error=error)
-            # One SQL statement owns the decision: other stores share this
-            # connection, so a Python lock or BEGIN across awaits cannot
-            # establish exclusive transaction ownership. No new rollback
-            # may erase an unrelated sibling's pending write.
-            cursor = await self._conn.execute(
-                """UPDATE canonical_runs SET status = ?, payload = ?
-                   WHERE run_id = ? AND payload = ?
-                     AND NOT EXISTS (
-                         SELECT 1 FROM canonical_node_runs WHERE run_id = ?
-                     )""",
-                (
-                    updated.status.value,
-                    json_of(updated),
-                    expected.run_id,
-                    snapshot,
-                    expected.run_id,
-                ),
-            )
-            await self._conn.commit()
-            return cursor.rowcount == 1
 
     async def transition_run(
         self,
@@ -1221,6 +1162,7 @@ class SqliteRunStore:
             run, snapshot = await self._require_run_snapshot(run_id)
             check_completion_is_earned(target, await self._node_runs_of(run_id))
             updated = transition_run(run, target, at=at, result=result, error=error)
+            refuse_completion_while_children_open(target, await self._child_statuses(run_id))
             settled: list[NodeRun] = []
             if target in TERMINAL_RUN_STATUSES:
                 settled = [
@@ -1261,13 +1203,16 @@ class SqliteRunStore:
         rows = await cursor.fetchall()
         return [model_of_json(NodeRun, row[0]) for row in rows]
 
-    async def create_node_run(
-        self,
-        run_id: str,
-        *,
-        node_id: str,
-        provenance: dict[str, Any] | None = None,
-    ) -> NodeRun:
+    async def _child_statuses(self, run_id: str) -> list[RunStatus]:
+        """Statuses of child Runs, read under the caller's write lock."""
+        cursor = await self._conn.execute(
+            "SELECT status FROM canonical_runs WHERE parent_run_id = ?",
+            (run_id,),
+        )
+        rows = await cursor.fetchall()
+        return [RunStatus(row[0]) for row in rows]
+
+    async def create_node_run(self, run_id: str, *, node_id: str) -> NodeRun:
         async with self._write_lock:
             run, snapshot = await self._require_run_snapshot(run_id)
             if run.status in TERMINAL_RUN_STATUSES:

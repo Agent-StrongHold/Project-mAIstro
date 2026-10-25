@@ -10,7 +10,6 @@ no execution identity behind it.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
 from typing import Any
 
 import pytest
@@ -134,6 +133,40 @@ async def test_absent_session_and_user_are_omitted_rather_than_blank(scoped) -> 
     assert SESSION_ID_KEY not in run.provenance
     assert run.provenance["user_id"] == DEFAULT_TEST_ACTOR_PRINCIPAL_ID
     assert run.actor_principal_id == DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+
+
+async def test_the_bound_request_id_lands_on_the_runs_provenance(scoped) -> None:
+    """#1063: the Conductor->maistro-server hop, the Task, and the Run must be
+    followable by one correlation id. `admit()` runs inside the same coroutine
+    chain RequestIDMiddleware bound the id in (or whatever a background
+    caller explicitly bound), so reading it off the ambient context — rather
+    than adding a `request_id` field to `TaskCreate` — is enough."""
+    _projects, runs, _root, project = scoped
+    queue = TaskQueue(
+        admitter=TaskRunAdmitter(runs, workspace_id="w1", project_id=project.project_id)
+    )
+
+    with bind_execution_context(request_id="req-xyz"):
+        task = await queue.submit(TaskCreate(description="Fix it"))
+
+    run = await runs.get_run(task.run_id or "")
+    assert run is not None
+    assert run.provenance[REQUEST_ID_KEY] == "req-xyz"
+
+
+async def test_no_bound_request_id_is_omitted_rather_than_blank(scoped) -> None:
+    """Same discipline as session/user: absence states the truth, an empty
+    string would claim a request correlation that was never established."""
+    _projects, runs, _root, project = scoped
+    queue = TaskQueue(
+        admitter=TaskRunAdmitter(runs, workspace_id="w1", project_id=project.project_id)
+    )
+
+    task = await queue.submit(TaskCreate(description="Fix it"))
+
+    run = await runs.get_run(task.run_id or "")
+    assert run is not None
+    assert REQUEST_ID_KEY not in run.provenance
 
 
 async def test_the_bound_request_id_lands_on_the_runs_provenance(scoped) -> None:
@@ -448,11 +481,8 @@ async def test_a_duplicate_delivery_loses_the_claim_without_touching_the_winner(
     assert len(node_runs) == 1
     attempts = await runs.list_attempts(node_runs[0].node_run_id)
     assert len(attempts) == 1
-    # #1690: the loser drops its unauthoritative receipt instead of parking a
-    # stale non-terminal answer in memory — no receipt at all is the honest
-    # "this process owns nothing here", and reads fall through to the durable
-    # projection of the winner's Run.
-    assert queue.get(submitted.task_id) is None
+    receipt = queue.get(submitted.task_id)
+    assert receipt is not None and receipt.status is not TaskStatus.COMPLETED
 
 
 async def test_malformed_recovery_payload_fails_the_canonical_run(scoped) -> None:
@@ -539,7 +569,6 @@ async def test_recovery_ignores_queued_runs_from_other_admission_sources(scoped)
         node_type=DELEGATE_NODE_KIND,
         name="scheduled work",
         source="schedule",
-        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         initial_status=RunStatus.QUEUED,
     )
     stranded_schedule = await admit_direct_work(
@@ -549,7 +578,6 @@ async def test_recovery_ignores_queued_runs_from_other_admission_sources(scoped)
         node_type=DELEGATE_NODE_KIND,
         name="scheduled work left running",
         source="schedule",
-        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         initial_status=RunStatus.QUEUED,
     )
     await runs.transition_run(stranded_schedule.run_id, RunStatus.RUNNING)

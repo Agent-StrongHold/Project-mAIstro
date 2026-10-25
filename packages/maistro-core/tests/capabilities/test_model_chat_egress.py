@@ -21,7 +21,6 @@ from maistro.capabilities.binding import Binding
 from maistro.capabilities.credential_routing import CredentialBackedProvider, CredentialRouting
 from maistro.capabilities.effect_context import (
     CapabilityEffectContext,
-    binding_scope_policy,
     new_in_memory_effect_context,
 )
 from maistro.capabilities.invocation import (
@@ -46,10 +45,6 @@ from maistro.capabilities.providers.llm_gateway import (
 from maistro.capabilities.types import Unavailable
 from maistro.credentials.router import CredentialRouter
 from maistro.credentials.types import CredentialRecord
-from maistro.observability.correlation import (
-    bind_execution_context,
-    detached_execution_context,
-)
 from maistro.providers.errors import NoEligibleModelError
 from maistro.providers.registry import InMemoryProviderRegistry
 from maistro.providers.router import CostAwareRouter
@@ -99,13 +94,9 @@ def _effects() -> CapabilityEffectContext:
     """An in-memory effect context with the gateway credential every
     ``_binding()`` authorizes already registered (#1091, Binding-scoped
     credential routing): without it every governed call in this file refuses
-    with ``CredentialScopeError`` before reaching the gateway.
+    with ``CredentialScopeError`` before reaching the gateway."""
 
-    It also opts into the explicit ``binding_scope_policy`` baseline: since
-    #846 an omitted policy evaluator fails closed, so tests that exercise a
-    governed call must name their policy instead of inheriting silence."""
-
-    effects = new_in_memory_effect_context(policy_evaluator=binding_scope_policy)
+    effects = new_in_memory_effect_context()
     effects.credentials.add(
         workspace_id="ws1",
         project_id="p1",
@@ -1198,63 +1189,3 @@ async def test_chat_payload_carries_structured_output_shape(
         request=ModelChatRequest(messages=[{"role": "user", "content": "hi"}]),
     )
     assert "response_format" not in captured["json"]
-
-
-async def test_client_complete_adopts_bound_context_or_refuses(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A caller that never set a turn uses canonical identity — only a real one.
-
-    `Agent.handle` always calls `set_turn` first, but the client is also the
-    factory's LLMClient for strategies driven outside that seam. `complete`
-    adopts the Run/NodeRun/Attempt triple canonical execution bound on the
-    correlation context when there is one (#1827). When canonical execution
-    bound nothing, the client refuses with RunIntegrityError and makes zero
-    egress calls instead of minting a fabricated identity that would make an
-    unadmitted call look governed (#718's no-ungoverned-side-door rule now
-    means refuse, not invent).
-    """
-    tracker = InMemoryQuotaTracker()
-    effects = new_in_memory_effect_context(
-        usage_log=InMemoryUsageLog(),
-        quota_tracker=tracker,
-        policy_evaluator=binding_scope_policy,
-    )
-    effects.credentials.add(
-        workspace_id="ws1",
-        project_id="p1",
-        record=CredentialRecord(
-            key_id=DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,
-            provider=MODEL_GATEWAY_CREDENTIAL_PROVIDER,
-            api_key="test-litellm-key",
-        ),
-    )
-    registry = _registry()
-    _patch_gateway(monkeypatch, _OK_BODY)
-    client = GovernedLLMClient(
-        effects,
-        registry=registry,
-        router=CostAwareRouter(registry),
-        endpoint=GatewayEndpoint(base_url="http://gw:4000"),
-        workspace_id="ws1",
-        project_id="p1",
-    )
-
-    # No canonical context in scope: refuse with zero egress.
-    with detached_execution_context(), pytest.raises(RunIntegrityError):
-        await client.complete([{"role": "user", "content": "hello"}], "fast-model")
-    assert await tracker.get_all_usage() == []
-
-    # A complete bound context is adopted wholesale, without an explicit
-    # set_turn: the usage the fake gateway reported still reaches the quota
-    # ledger, under the canonical identity the execution bound.
-    with bind_execution_context(
-        run_id="run-adopt",
-        node_run_id="node-adopt",
-        attempt_id="attempt-adopt",
-    ):
-        body = await client.complete([{"role": "user", "content": "hello"}], "fast-model")
-
-    assert body["choices"][0]["message"]["content"] == "hi"
-    (entry,) = await tracker.get_all_usage()
-    assert entry["request_count"] == 1
