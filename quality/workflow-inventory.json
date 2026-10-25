@@ -60,6 +60,13 @@
       "rationale": "Manual-only M1-closeout invocation of the #459 cross-product parity suite (MAISTRO_PARITY_STRICT=1 turns every dependency blocker into a failure). Dispatch-only because it is an on-demand closeout measurement that fails today on the CONDUCTOR_INSPECTION blocker (#1036), so it is deliberately outside the PR check contract (#459, PR #1641)."
     },
     {
+      "id": "fleet-images",
+      "file": ".github/workflows/fleet-images.yml",
+      "disposition": "ACTIVE",
+      "triggers": ["push"],
+      "rationale": "On every push to develop, builds maistro-engine and hive-conductor and publishes them to GHCR tagged sha-<tip> plus rolling develop, labeled with org.opencontainers.image.revision so the box-side fleet deployer can pull trunk-matched images instead of aging local builds (Oct 7–10 2026 drift incidents)."
+    },
+    {
       "id": "formal-conformance-nightly",
       "file": ".github/workflows/formal-conformance-nightly.yml",
       "disposition": "ACTIVE",
