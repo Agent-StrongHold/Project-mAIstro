@@ -266,19 +266,10 @@ def build_cli_parser() -> Any:
 
 
 def main(argv: list[str] | None = None) -> dict[str, Any]:
-    """Parse argv and run the climber (tested entry; ``__main__`` stays on develop's shape)."""
+    """Parse argv and run the climber (``__main__`` delegates here)."""
     args = build_cli_parser().parse_args(argv)
     return asyncio.run(auto_climb(args.component, args.url, args.path, args.passes))
 
 
 if __name__ == "__main__":
-    import argparse
-
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--component", default="Chat.tsx")
-    parser.add_argument("--passes", type=int, default=5)
-    parser.add_argument("--url", default=DEFAULT_CLIMB_URL)
-    parser.add_argument("--path", default="/chat")
-    args = parser.parse_args()
-
-    asyncio.run(auto_climb(args.component, args.url, args.path, args.passes))
+    main()
