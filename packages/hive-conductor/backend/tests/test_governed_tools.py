@@ -443,3 +443,187 @@ def test_agent_exposures_project_canonical_contracts_without_mutable_aliases() -
         assert definition.parameters == governed._registry().require(name).schema
         definition.parameters.clear()
         assert exposures.get(name).parameters["type"] == "object"
+
+
+async def test_live_container_absence_fails_closed(monkeypatch) -> None:
+    """No wired maistro-core Container means refusal, never a raw fallback."""
+    import types
+
+    import services.engine as engine_module
+    import services.governed_tools as governed
+
+    engine = types.SimpleNamespace(
+        agent_port=types.SimpleNamespace(container=None),
+    )
+    monkeypatch.setattr(engine_module, "get_engine", lambda: engine)
+    with pytest.raises(RuntimeError, match="require the maistro-core Container"):
+        governed._live_container()
+
+
+async def test_missing_execution_records_refuse(runtime) -> None:
+    import services.governed_tools as governed
+
+    run_id, _node_run_id, attempt_id = runtime.identity
+    with (
+        bind_execution_context(
+            workspace_id=_WORKSPACE,
+            project_id=runtime.project_id,
+            run_id=run_id,
+            node_run_id="missing-node-run",
+            attempt_id=attempt_id,
+        ),
+        pytest.raises(RunIntegrityError, match="records do not exist"),
+    ):
+        await governed.live_tool_context(runtime.container)
+
+
+async def test_records_from_different_executions_refuse(runtime) -> None:
+    import services.governed_tools as governed
+
+    from maistro.graph.definitions import Graph as _Graph
+    from maistro.graph.definitions import Node as _Node
+
+    container = runtime.container
+    run_id, _node_run_id, _attempt_id = runtime.identity
+    graph = _Graph(
+        name="Second execution",
+        workspace_id=_WORKSPACE,
+        project_id=runtime.project_id,
+        nodes=[_Node(node_id="tool-node", node_type="tool", name="research")],
+    )
+    other_run = await container.run_store.create_run(
+        graph, actor_principal_id=_ACTOR, initial_status=RunStatus.QUEUED
+    )
+    await container.run_store.transition_run(other_run.run_id, RunStatus.RUNNING)
+    other_node = await container.run_store.create_node_run(other_run.run_id, node_id="tool-node")
+    for status in transition_path(other_node.status, RunStatus.RUNNING):
+        other_node = await container.run_store.transition_node_run(other_node.node_run_id, status)
+    other_attempt = await container.run_store.create_attempt(
+        other_node.node_run_id,
+        deadline_at=datetime.now(UTC) + timedelta(minutes=5),
+        lease_holder="governed-tools-worker",
+        lease_ttl=timedelta(minutes=5),
+    )
+    await container.run_store.transition_attempt(
+        other_attempt.attempt_id,
+        AttemptStatus.RUNNING,
+        fencing_token=other_attempt.execution_lease.fencing_token,
+    )
+
+    # Every record exists, but the NodeRun/Attempt belong to a different Run
+    # than the correlated one: the Invocation must refuse, not re-correlate.
+    with (
+        bind_execution_context(
+            workspace_id=_WORKSPACE,
+            project_id=runtime.project_id,
+            run_id=run_id,
+            node_run_id=other_node.node_run_id,
+            attempt_id=other_attempt.attempt_id,
+        ),
+        pytest.raises(RunIntegrityError, match="belong to different executions"),
+    ):
+        await governed.live_tool_context(runtime.container)
+
+
+async def test_run_without_canonical_scope_refuses(runtime, monkeypatch) -> None:
+    import services.governed_tools as governed
+
+    run_id, node_run_id, attempt_id = runtime.identity
+    real_get_run = runtime.container.run_store.get_run
+
+    async def scopeless_get_run(target_run_id: str) -> Any:
+        run = await real_get_run(target_run_id)
+        return run.model_copy(update={"workspace_id": " ", "project_id": " "})
+
+    monkeypatch.setattr(runtime.container.run_store, "get_run", scopeless_get_run)
+    with (
+        bind_execution_context(
+            workspace_id="",
+            project_id="",
+            run_id=run_id,
+            node_run_id=node_run_id,
+            attempt_id=attempt_id,
+        ),
+        pytest.raises(RunIntegrityError, match="require a Workspace/Project scope"),
+    ):
+        await governed.live_tool_context(runtime.container)
+
+
+async def test_boot_binding_redefinition_race_retries_through_the_canonical_helper(
+    runtime, monkeypatch
+) -> None:
+    """Two first users can race on put(); the loser re-reads once and wins."""
+    import services.governed_tools as governed
+
+    from maistro.capabilities.binding_store import register_boot_binding
+    from maistro.tools.contracts import ToolInvocationContext as _Context
+
+    calls = {"n": 0}
+    real = register_boot_binding
+
+    async def conflicting_once(bindings: Any, binding: Any) -> Any:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise ValueError("simultaneous first registration")
+        return await real(bindings, binding)
+
+    monkeypatch.setattr(governed, "register_boot_binding", conflicting_once)
+    run_id, node_run_id, attempt_id = runtime.identity
+    context = _Context(
+        workspace_id=_WORKSPACE,
+        project_id=runtime.project_id,
+        run_id=run_id,
+        node_run_id=node_run_id,
+        attempt_id=attempt_id,
+    )
+    binding = await governed._hive_tool_binding(runtime.container.capability_effects, context)
+    assert calls["n"] == 2
+    assert binding.binding_id == _tool_binding_id(runtime)
+
+
+async def test_governed_web_search_resolves_the_live_container(runtime, monkeypatch) -> None:
+    """Without an explicit container the engine's wired Container is used."""
+    import types
+
+    import services.engine as engine_module
+    import services.governed_tools as governed
+    import services.tool_executor as tools
+
+    seen: list[tuple[str, int]] = []
+
+    async def fake_search(query: str, max_results: int = 5, *, model_call=None) -> dict[str, Any]:
+        seen.append((query, max_results))
+        return {"query": query, "summary": "found", "citations": [], "source": "fixture"}
+
+    monkeypatch.setattr(tools, "web_search", fake_search)
+    engine = types.SimpleNamespace(
+        agent_port=types.SimpleNamespace(container=runtime.container),
+    )
+    monkeypatch.setattr(engine_module, "get_engine", lambda: engine)
+
+    with runtime.context():
+        result = await governed.governed_web_search("live-container", max_results=1)
+
+    assert result["summary"] == "found"
+    assert seen == [("live-container", 1)]
+
+
+async def test_governed_browse_url_routes_through_the_governed_seam(runtime, monkeypatch) -> None:
+    import services.governed_tools as governed
+    import services.tool_executor as tools
+
+    seen: list[tuple[str, str]] = []
+
+    async def fake_browse(url: str, task: str = "Extract key facts and quotes") -> dict[str, Any]:
+        seen.append((url, task))
+        return {"url": url, "facts": ["f1"], "citations": [], "source": "fixture"}
+
+    monkeypatch.setattr(tools, "browse_url", fake_browse)
+
+    with runtime.context():
+        result = await governed.governed_browse_url(
+            "https://example.test", container=runtime.container
+        )
+
+    assert result["facts"] == ["f1"]
+    assert seen == [("https://example.test", "Extract key facts and quotes")]

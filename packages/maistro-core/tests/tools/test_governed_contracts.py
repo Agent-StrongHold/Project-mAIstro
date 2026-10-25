@@ -579,3 +579,242 @@ async def test_effect_scope_distinguishes_logical_calls_without_widening() -> No
             authorized_tools=frozenset({"create_ticket"}),
             effect_scope="call-3",
         )
+
+
+class TestContractGuardBranches:
+    """Every refusal direction of the tool-contract guards is exercised (#57).
+
+    The diff-coverage gate scores changed lines per file; these tests close
+    the guard directions the first #57 suites did not drive, so the gate
+    measures real evidence rather than an accidental pass.
+    """
+
+    def test_contract_identity_gaps_are_typed_refusals(self) -> None:
+        schema: dict[str, Any] = {"type": "object", "properties": {}}
+        with pytest.raises(ValueError, match="capability, and provider_name are required"):
+            ToolContract(
+                name=" ", capability="ticketing", provider_name="ticket-provider", schema=schema
+            )
+        with pytest.raises(ValueError, match="capability, and provider_name are required"):
+            ToolContract(
+                name="create_ticket", capability="", provider_name="ticket-provider", schema=schema
+            )
+        with pytest.raises(ValueError, match="capability, and provider_name are required"):
+            ToolContract(
+                name="create_ticket", capability="ticketing", provider_name="  ", schema=schema
+            )
+
+    def test_contract_schema_must_be_an_object_schema(self) -> None:
+        with pytest.raises(ValueError, match="object JSON schema"):
+            ToolContract(name="t", schema=[], capability="c", provider_name="p")
+        with pytest.raises(ValueError, match="object JSON schema"):
+            ToolContract(name="t", schema={"type": "string"}, capability="c", provider_name="p")
+
+    def test_registry_registration_name_mismatch_is_refused(self) -> None:
+        from maistro.tools.contracts import ToolContract as _ToolContract
+
+        registry = ToolContractRegistry()
+        contract = _ToolContract(
+            name="a", schema={"type": "object", "properties": {}}, capability="c", provider_name="p"
+        )
+        with pytest.raises(ValueError, match="names must match"):
+            registry.register(
+                contract,
+                ToolRegistration(
+                    name="b", reversibility=ToolReversibility.REVERSIBLE, compensator="undo"
+                ),
+            )
+
+    def test_invocation_context_requires_canonical_ids(self) -> None:
+        with pytest.raises(ValueError, match="canonical Workspace/Project/Run/NodeRun/Attempt"):
+            ToolInvocationContext(
+                workspace_id=" ", project_id="p", run_id="r", node_run_id="n", attempt_id="a"
+            )
+
+    def test_arguments_must_be_an_object(self) -> None:
+        with pytest.raises(ToolArgumentError, match="must be an object"):
+            validate_tool_arguments({"type": "object", "properties": {}}, ["nope"])
+
+    def test_invalid_property_or_required_declarations_refuse(self) -> None:
+        with pytest.raises(ToolArgumentError, match="invalid properties/required"):
+            validate_tool_arguments({"type": "object", "properties": [], "required": []}, {})
+        with pytest.raises(ToolArgumentError, match="invalid properties/required"):
+            validate_tool_arguments({"type": "object", "properties": {}, "required": "title"}, {})
+
+    def test_enum_violation_refuses_and_the_permitted_direction_stays_open(self) -> None:
+        schema = {
+            "type": "object",
+            "properties": {"mode": {"type": "string", "enum": ["a", "b"]}},
+            "required": ["mode"],
+        }
+        with pytest.raises(ToolArgumentError, match="not one of the permitted values"):
+            validate_tool_arguments(schema, {"mode": "c"})
+        validate_tool_arguments(schema, {"mode": "a"})
+
+    def test_typeless_schema_is_accepted_without_a_type_check(self) -> None:
+        validate_tool_arguments({"properties": {}}, {"any": "shape"})
+
+    def test_non_mapping_property_schema_refuses(self) -> None:
+        schema = {
+            "type": "object",
+            "properties": {"title": "string"},
+            "required": ["title"],
+        }
+        with pytest.raises(ToolArgumentError, match="has no valid host-owned schema"):
+            validate_tool_arguments(schema, {"title": "x"})
+
+    @pytest.mark.asyncio
+    async def test_provider_resolution_refuses_capability_and_provider_drift(self) -> None:
+        from maistro.tools.contracts import ToolContractError, _resolve_provider
+
+        drifted = _binding().model_copy(update={"binding_id": "b2", "capability": "cap-b"})
+        capability_contract = ToolContract(
+            name="t",
+            schema={"type": "object", "properties": {}},
+            capability="cap-a",
+            provider_name="ticket-provider",
+        )
+        with pytest.raises(ToolContractError, match="capability does not match"):
+            await _resolve_provider(drifted, capability_contract)
+        provider_drift = _binding().model_copy(
+            update={"binding_id": "b3", "provider_name": "prov-b"}
+        )
+        provider_contract = ToolContract(
+            name="t",
+            schema={"type": "object", "properties": {}},
+            capability="ticketing",
+            provider_name="prov-a",
+        )
+        with pytest.raises(ToolContractError, match="provider does not match"):
+            await _resolve_provider(provider_drift, provider_contract)
+
+    @pytest.mark.asyncio
+    async def test_missing_binding_fails_closed_before_the_backend(self) -> None:
+        effects = new_effect_context(policy_evaluator=binding_scope_policy)
+        registry = _registry()
+
+        async def binding_for(_contract: ToolContract, _context: ToolInvocationContext) -> None:
+            return None
+
+        async def backend(_name: str, _arguments: dict[str, Any]) -> Any:
+            raise AssertionError("the backend must not run without an admitted Binding")
+
+        executor = GovernedToolExecutor(
+            effects=effects, contracts=registry, binding_for=binding_for, backend=backend
+        )
+        with pytest.raises(ToolNotAuthorized, match="no authorized Binding exists"):
+            await executor.execute(
+                "create_ticket",
+                {"title": "x"},
+                context=_CONTEXT,
+                authorized_tools=frozenset({"create_ticket"}),
+            )
+
+    @pytest.mark.asyncio
+    async def test_binding_scope_mismatch_fails_closed(self) -> None:
+        effects = new_effect_context(policy_evaluator=binding_scope_policy)
+        await effects.bindings.put(_binding())
+        registry = _registry()
+
+        async def binding_for(_contract: ToolContract, _context: ToolInvocationContext) -> Binding:
+            return _binding().model_copy(update={"workspace_id": "other-ws"})
+
+        async def backend(_name: str, _arguments: dict[str, Any]) -> Any:
+            raise AssertionError("the backend must not run for a scope-mismatched Binding")
+
+        executor = GovernedToolExecutor(
+            effects=effects, contracts=registry, binding_for=binding_for, backend=backend
+        )
+        with pytest.raises(ToolNotAuthorized, match="scope does not match"):
+            await executor.execute(
+                "create_ticket",
+                {"title": "x"},
+                context=_CONTEXT,
+                authorized_tools=frozenset({"create_ticket"}),
+            )
+
+    @pytest.mark.asyncio
+    async def test_low_impact_tool_skips_evidence_and_observation_guards_fail_loud(self) -> None:
+        """A non-high-impact contract records no expected-effect evidence; the
+        observation/mismatch-event guards then refuse rather than guess."""
+        effects = new_effect_context(policy_evaluator=binding_scope_policy)
+        await effects.bindings.put(_binding())
+        registry = ToolContractRegistry()
+        registry.register(
+            ToolContract(
+                name="lookup",
+                schema={"type": "object", "properties": {}},
+                capability="ticketing",
+                provider_name="ticket-provider",
+            ),
+            ToolRegistration(
+                name="lookup", reversibility=ToolReversibility.REVERSIBLE, compensator="undo_lookup"
+            ),
+        )
+
+        async def backend(_name: str, _arguments: dict[str, Any]) -> dict[str, Any]:
+            return {"ok": True}
+
+        async def binding_for(_contract: ToolContract, _context: ToolInvocationContext) -> Binding:
+            return _binding()
+
+        executor = GovernedToolExecutor(
+            effects=effects, contracts=registry, binding_for=binding_for, backend=backend
+        )
+        result = await executor.execute(
+            "lookup", {}, context=_CONTEXT, authorized_tools=frozenset({"lookup"})
+        )
+        assert result == {"ok": True}
+
+        rows = await effects.invocation_store.list_effect(
+            run_id="run-1",
+            node_run_id="node-run-1",
+            binding_id="tool-binding-1",
+            effect_key="tool:lookup:" + canonical_digest({}),
+        )
+        assert len(rows) == 1
+        assert rows[0].expected_effect is None
+
+        with pytest.raises(KeyError, match="does not exist"):
+            await effects.invocations.record_expected_effect_observation("no-such-invocation", {})
+        with pytest.raises(ValueError, match="no expected-effect evidence"):
+            await effects.invocations.record_expected_effect_observation(
+                rows[0].invocation_id, {"ok": True}
+            )
+        with pytest.raises(ValueError, match="mismatch event requires a mismatch"):
+            effects.invocations.expected_effect_mismatch_event(rows[0], tool_name="lookup")
+
+    def test_expected_evidence_identity_gaps_and_digest_drift_are_refused(self) -> None:
+        from maistro.tools.contracts import ExpectedEffectEvidence
+
+        def evidence(**overrides: Any) -> Any:
+            kwargs: dict[str, Any] = {
+                "capability": "c",
+                "provider": "p",
+                "materialized_arguments": {},
+                "expected_post_state": {"after": "effect"},
+                "pre_state_digest": "pre",
+                "policy_version": "v1",
+            }
+            kwargs.update(overrides)
+            return ExpectedEffectEvidence(**kwargs)
+
+        with pytest.raises(ValueError, match="capability and provider are required"):
+            evidence(capability=" ")
+        with pytest.raises(ValueError, match="capability and provider are required"):
+            evidence(provider="")
+        with pytest.raises(ValueError, match="pre-state digest and policy version are required"):
+            evidence(pre_state_digest="  ")
+        with pytest.raises(ValueError, match="pre-state digest and policy version are required"):
+            evidence(policy_version="")
+        with pytest.raises(ValueError, match="arguments_digest does not match"):
+            evidence(
+                materialized_arguments={"a": 1},
+                arguments_digest="deadbeef",
+            )
+        pinned_digest = canonical_digest({"a": 1})
+        pinned = evidence(
+            materialized_arguments={"a": 1},
+            arguments_digest=pinned_digest,
+        )
+        assert pinned.arguments_digest == pinned_digest
