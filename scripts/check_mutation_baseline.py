@@ -99,6 +99,12 @@ def scores(rows_path: Path) -> dict[str, tuple[int, int]]:
         source = mutations[0].get("module_path") if mutations else None
         if not isinstance(source, str):
             continue
+        # SKIPPED rows (annotation-filtered mutants) were never executed, so
+        # they are excluded from the denominator, matching the viability
+        # adjustment in scripts/mutation_viability.py.
+        outcome_name = str(outcome.get("test_outcome") or outcome.get("worker_outcome") or "")
+        if outcome_name.upper().endswith("SKIPPED"):
+            continue
         killed, total = result.setdefault(source, [0, 0])
         result[source] = [killed + (outcome.get("test_outcome") == "killed"), total + 1]
     return {source: (values[0], values[1]) for source, values in result.items()}
