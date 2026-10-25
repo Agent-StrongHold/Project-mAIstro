@@ -151,16 +151,6 @@
       ]
     },
     {
-      "id": "design-node",
-      "subsystem": "Open Design integration",
-      "disposition": "CONNECT",
-      "rationale": "DesignOrchestrateNode registers kind design.orchestrate but sits outside maistro.graph.nodes, so the catalog's eager-import sweep never loads it and the kind is never registered.",
-      "root": "the maistro.graph.nodes catalog sweep, or an explicit registration at design import",
-      "modules": [
-        "maistro_design.nodes"
-      ]
-    },
-    {
       "id": "prompts-diff",
       "subsystem": "Prompts and personas",
       "disposition": "CONNECT",
@@ -296,19 +286,6 @@
       "root": "main.py route registration",
       "modules": [
         "@flat/hive-conductor/routes.projects"
-      ]
-    },
-    {
-      "id": "builders-domain-logic",
-      "subsystem": "Builders pipeline",
-      "disposition": "CONNECT",
-      "rationale": "The Builders domain strategy that ADR-090 and ADR-099 keep. The shipped interactive path enters through the Textual TUI and admits each ReAct turn through the canonical Graph/Run/NodeRun/Attempt adapter; the five-stage definitions remain reusable domain composition. The legacy GraphPipelineExecutor is parity/reference-only and the public BuilderPipeline uses the canonical adapter. The remaining listed modules are library-only definitions or projections, not execution authorities.",
-      "root": "Graph nodes registered in maistro.graph.nodes (#49)",
-      "modules": [
-        "maistro.builders.logger",
-        "maistro.builders.spec_coverage",
-        "maistro.builders.spec_templates",
-        "maistro.builders.verifier"
       ]
     },
     {
