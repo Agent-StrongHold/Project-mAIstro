@@ -360,6 +360,7 @@ Single-tenant, multi-user self-hosted deployment — ships as `packages/hive-con
 
 **[conductor-408] Legacy Conductor page retirement — Accepted; `gap-impl` — v1.0**
 - [#2274](https://github.com/Agent-StrongHold/Project-mAIstro/issues/2274): Delete (not redirect) legacy routes per cutover plan §9 retirement ledger amendments
+- Delete map: [`docs/architecture/WORKSPACE-RETIREMENT-DELETE-MAP.md`](docs/architecture/WORKSPACE-RETIREMENT-DELETE-MAP.md); coordinated deletes only after replacement ACs
 
 **[conductor-409] Design Studio v1.0 scope — Proposed; `gap-impl` — v1.0**
 - Beyond discovery/prompt-only; persona template framework (book-maker skin v1.1)

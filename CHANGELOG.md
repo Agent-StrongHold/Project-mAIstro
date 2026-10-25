@@ -532,6 +532,13 @@ or placeholder-only section.
   duplicate [ADR-061526-f383](docs/adr/ADR-061526-f383-foreign-harness-adapters-and-portability.md)
   in favor of ADR-101; added AC Defined spec index to [`docs/specs/README.md`](docs/specs/README.md).
 
+- **Feature-parity decisions for v1.0 (#2279, #2280).** Run retry is a
+  deliberate v1.0 non-goal (post-v1.0 must be a new Attempt under the same
+  Run/NodeRun — never a `RetryRun`). CLI stays operator-lifecycle only; product
+  CRUD remains Workspace UI + public HTTP APIs. Recorded in
+  `FEATURE-PARITY-MATRIX.md`, `ROADMAP.md` explicit non-goals, and the
+  retirement delete map (#2274).
+
 - **Evolution is hidden from the v1.0 shipped product surface (#2275,
   `conductor-411`).** `/evolution` is unregistered from the Hive Conductor
   route table and stays out of nav; the page module remains in-tree for the

@@ -84,7 +84,7 @@ Evidence: BFF registrations [`backend/main.py:370,376,382`](../../packages/hive-
 |---|---|---|---|---|
 | Run list / detail by canonical ID | `maistro.runs` + canonical store (one Run truth, #1036) | partial — `DagRuns.tsx` is a read-only SSE viewer ([DagRuns.tsx:1-11](../../packages/hive-conductor/frontend/src/pages/DagRuns.tsx)); no cancel/control control (G5) | supported — BFF `GET /v1/dag-runs`, `/{run_id}`, `/{run_id}/events`; server `GET /v1/runs/{run_id}`, `/node-runs` | missing (G5) |
 | Run cancel / control | #1169 canonical cancellation; #1036 control seam | missing — no UI control calls any cancel route (G5) | supported — BFF `POST /v1/dag-runs/{run_id}/cancel` ([:82](../../packages/hive-conductor/backend/routes/dag_runs.py)); server `POST /v1/runs/{run_id}/cancel` ([runs.py:89](../../packages/maistro-server/src/maistro_server/api/runs.py)) | missing (G5) |
-| Run retry | #1169 / #1036 control plane — decision owner [#2279](https://github.com/Agent-StrongHold/Project-mAIstro/issues/2279) (P-2; not implemented) | missing | missing | missing (P-2) |
+| Run retry | #1169 / #1036 control plane — **v1.0 non-goal (#2279)**; post-v1.0 = new Attempt under same Run/NodeRun if revived | deliberate non-goal (v1.0) | deliberate non-goal (v1.0) | deliberate non-goal (v1.0) |
 | Node-level inspection / feedback | NodeRun/Attempt projections | supported — node click-through in `DagRuns.tsx` | supported — `/v1/dag-runs/{run_id}/events`, `/v1/dag-runs/{run_id}/feedback`, node feedback | missing |
 | Container / sandbox lifecycle | `maistro.sandbox` + Conductor container service | supported — `Containers.tsx` (`/containers`) | supported — `/v1/containers*` incl. build/start/stop/restart/logs; `unknown` on `/build` (unresolved surface-truth disposition) | supported — `maistro sandbox status` (host isolation report) |
 | HITL answers inside a live Run | `maistro.capabilities` approvals + HITL routes | missing — no UI caller (G6; owner [#2278](https://github.com/Agent-StrongHold/Project-mAIstro/issues/2278)) | supported — `/v1/hitl/pending`, `/{run}/{node}`, `/answer`, `/cancel`, `/expire` | supported — `maistro approvals list|approve|deny` |
@@ -122,7 +122,7 @@ Evidence: BFF registrations [`backend/main.py:370,376,382`](../../packages/hive-
 | Authorization / refusal | Warden/Sentinel + workspace membership; refusals are server-side on all three surfaces (CLI is a client) | AuthMiddleware gates `/v1/*`; optional routers degrade loudly instead of disappearing silently ([backend/main.py:88-116](../../packages/hive-conductor/backend/main.py)). |
 | Agent / tool selection | `agents.intents` routing table + `capabilities.governed_invocation` effect path; router/classifier are pure policy | Selection edits are UI/API-supported (section B); no CLI selection commands (gap rolled into P-3). |
 | Run / effect identity | Canonical IDs (`run_id`, NodeRun, Attempt; Invocation on the effect path) end-to-end | All run routes key on canonical IDs; #1036 AC-8 requires the same scoped authority per surface — the rows above are the current answer key. |
-| Inspect / control / retry / cancel | #1169 owns cancellation; #1036 owns the inspection/control seam | Cancel: API supported (both apps), UI/CLI missing. Retry: missing everywhere (P-2). Inspect: UI read-only, API supported, CLI missing. |
+| Inspect / control / retry / cancel | #1169 owns cancellation; #1036 owns the inspection/control seam | Cancel: API supported (both apps), UI/CLI missing. Retry: **v1.0 deliberate non-goal (#2279)**. Inspect: UI read-only, API supported, CLI missing. |
 | Durable state | Convergence-matrix persistence owners (pg canonical, sqlite local, in-memory fallback) | UI/API read durable state; CLI durable reads are deliberately scoped to `maistro archive` (pre-convergence) and `maistro repair` (correction, with `--apply`). |
 
 ## Gap ledger (temporary gaps with verified owners)
@@ -139,11 +139,11 @@ Evidence: BFF registrations [`backend/main.py:370,376,382`](../../packages/hive-
 
 | # | Missing counterpart | Owner issue | Decision / proposal |
 |---|---|---|---|
-| P-1 | HITL/capability approvals have API + CLI support but no Workspace UI caller | [#2278](https://github.com/Agent-StrongHold/Project-mAIstro/issues/2278) | Fold a minimal approvals projection into the #65 UX plane and/or Capabilities [#2273](https://github.com/Agent-StrongHold/Project-mAIstro/issues/2273); do not create a separate approvals backend. |
-| P-2 | Run retry exists on no surface | [#2279](https://github.com/Agent-StrongHold/Project-mAIstro/issues/2279) | Define retry inside the #1169/#1036 control plane (a new Attempt under the same NodeRun/Run identity), or record it as a deliberate non-goal. |
-| P-3 | No CLI commands for in-product CRUD (agents, providers, skills, MCP, schedules, backlog) | [#2280](https://github.com/Agent-StrongHold/Project-mAIstro/issues/2280) | Decide whether CLI functional parity targets operator lifecycle only (today's state) or gains scoped CRUD; any addition goes through the existing public API authority, not new endpoints. |
+| P-1 | HITL/capability approvals have API + CLI support but no Workspace UI caller | [#2278](https://github.com/Agent-StrongHold/Project-mAIstro/issues/2278) | Minimal `/approvals` projection over existing public APIs (no parallel store); slot management remains #2273. |
+| P-2 | Run retry exists on no surface | [#2279](https://github.com/Agent-StrongHold/Project-mAIstro/issues/2279) | **Decision B: deliberate v1.0 non-goal.** Cancel + HITL cover blocked work; a future retry must be a new Attempt under the same Run/NodeRun via #1169/#1036 — never a `RetryRun` or private restart queue. Recorded in ROADMAP explicit non-goals. |
+| P-3 | No CLI commands for in-product CRUD (agents, providers, skills, MCP, schedules, backlog) | [#2280](https://github.com/Agent-StrongHold/Project-mAIstro/issues/2280) | **Decision A: operator-lifecycle only for v1.0.** Product CRUD stays on Workspace UI + public HTTP APIs. CLI keeps install/upgrade/approvals/sandbox/archive — no partial CRUD that implies full parity. No CLI-only store. |
 
-These rows are owned for decision/implementation tracking; they are **not** claimed implemented. Ownership alone raises no runtime work.
+P-2 and P-3 are **closed as decisions** (not implementations). P-1 is implementation-owned by #2278.
 
 ## Deliberately preserved decisions
 

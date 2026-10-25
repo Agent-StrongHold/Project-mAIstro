@@ -75,7 +75,7 @@ Ship **maistro-engine v1.0.0** as a stable library **and** a **Workspaces** prod
 
 ### Explicit non-goals for v1.0
 
-Evolution UI hidden until v1.2 · Turing/autonoetic agent v1.1 · Stronghold v1.5 · team memory scope v1.1 · task-queue recovery on restart deferred ([#91](https://github.com/Agent-StrongHold/Project-mAIstro/issues/91)) · ADR-068 authz implementation post-v1.0.
+Evolution UI hidden until v1.2 · Turing/autonoetic agent v1.1 · Stronghold v1.5 · team memory scope v1.1 · task-queue recovery on restart deferred ([#91](https://github.com/Agent-StrongHold/Project-mAIstro/issues/91)) · ADR-068 authz implementation post-v1.0 · **Run retry** deferred ([#2279](https://github.com/Agent-StrongHold/Project-mAIstro/issues/2279) — cancel/HITL cover blocked work; post-v1.0 retry must be a new Attempt under the same Run/NodeRun) · **CLI in-product CRUD** deferred ([#2280](https://github.com/Agent-StrongHold/Project-mAIstro/issues/2280) — CLI stays operator-lifecycle only; Workspace UI owns product CRUD).
 
 ### Critical path when conflicts arise
 
