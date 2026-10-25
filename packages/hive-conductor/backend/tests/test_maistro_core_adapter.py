@@ -28,6 +28,7 @@ def _fake_container() -> SimpleNamespace:
         # hands to the agent factory (create_agents wires GovernedLLMClient
         # when all four effect/model authorities are present).
         capability_effects=object(),
+        run_store=object(),
         provider_registry=object(),
         llm_router=object(),
         a2a_delegator=object(),
@@ -69,6 +70,7 @@ async def test_start_passes_container_prompt_manager_to_agent_factory(monkeypatc
         session_store=object(),
         quota_tracker=object(),
         capability_effects=object(),
+        run_store=object(),
         provider_registry=object(),
         llm_router=object(),
         a2a_delegator=object(),
@@ -233,6 +235,7 @@ async def test_start_populates_the_dict_the_hierarchy_closed_over(monkeypatch):
         session_store=object(),
         quota_tracker=object(),
         capability_effects=object(),
+        run_store=object(),
         provider_registry=object(),
         llm_router=object(),
         a2a_delegator=object(),

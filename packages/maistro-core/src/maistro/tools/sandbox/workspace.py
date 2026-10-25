@@ -33,20 +33,6 @@ def validate_workspace_path(path: str) -> Path:
 
     Ensures the path is within allowed prefixes to prevent
     arbitrary filesystem access via container mounts.
-    """
-    allowed_roots = tuple(root.resolve() for root in ALLOWED_HOST_ROOTS)
-    # The normalized-string check is the containment a scanner can follow;
-    # the resolved check below is the one that closes the symlink escape.
-    normalized = os.path.normpath(path)
-    if not any(
-        normalized == str(root) or normalized.startswith(str(root) + os.sep)
-        for root in (*allowed_roots, *ALLOWED_HOST_ROOTS)
-    ):
-        allowed = tuple(str(root) for root in allowed_roots)
-        raise ValueError(
-            f"Workspace path {path} is not in an allowed location. Allowed roots: {allowed}"
-        )
-    resolved = Path(normalized).resolve()
 
     Containment uses ``os.path.realpath`` + ``startswith(root + sep)`` — the
     guard CodeQL's ``py/path-injection`` models — rather than

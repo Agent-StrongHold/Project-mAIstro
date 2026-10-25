@@ -26,6 +26,146 @@ logger = logging.getLogger(__name__)
 _service: _EvolutionService | None = None
 
 
+def _public_failure(exc: BaseException) -> str:
+    """What /status and the browser may learn: the kind, never the message.
+
+    Exception text here carries import paths, Container diagnostics, and
+    provider replies; those stay in the server log (CodeQL py/stack-trace-exposure).
+    """
+    return f"{type(exc).__name__}: evolution failed; see server logs"
+
+
+class _GovernedModelCall:
+    """Bind Evolve prompts to the execution and declared model authority it already has.
+
+    No Binding or credential is created here. Container bootstrap owns both;
+    each call resolves the operator declaration in this NodeContext's scope.
+    The Invocation service remains the only dispatch/replay/usage authority.
+    """
+
+    def __init__(
+        self,
+        *,
+        egress: ModelChatEgress,
+        bindings: BindingStore,
+        declarations: tuple[ModelBindingConfig, ...],
+        workspace_id: str,
+        default_model: str,
+    ) -> None:
+        self._egress = egress
+        self._bindings = bindings
+        self._declarations = declarations
+        self._workspace_id = workspace_id
+        self._default_model = default_model
+
+    def _binding_id(self, ctx: NodeContext) -> str:
+        candidates = [
+            declaration
+            for declaration in self._declarations
+            if (declaration.workspace_id.strip() or self._workspace_id) == ctx.workspace_id
+            and declaration.project_id == ctx.project_id
+            and declaration.node_id in ("", ctx.node_id)
+        ]
+        exact = [item for item in candidates if item.node_id == ctx.node_id]
+        selected = exact or candidates
+        if len(selected) != 1:
+            raise BindingNotFound(
+                "Evolve model work requires one unambiguous operator-declared model.chat "
+                f"Binding for Workspace {ctx.workspace_id!r}, Project {ctx.project_id!r} "
+                f"and Node {ctx.node_id!r}"
+            )
+        return selected[0].binding_id
+
+    @contextmanager
+    def for_context(self, ctx: NodeContext) -> Iterator[Callable[..., Any]]:
+        """One call sequence per physical Attempt, with a failure fence before publication.
+
+        Benchmarks may catch provider errors and return a score anyway. Retain
+        the first failure inside this node only, so no such score is published;
+        a later recovery Attempt receives a fresh fence and the same effect keys.
+        """
+        identity = (
+            ctx.run_id,
+            ctx.node_run_id,
+            ctx.attempt_id,
+            ctx.node_id,
+            ctx.workspace_id,
+            ctx.project_id,
+            ctx.user_id,
+        )
+        if any(not value or not value.strip() for value in identity):
+            raise RunIntegrityError("Evolve model work requires a complete canonical NodeContext")
+        call_number = 0
+        failure: BaseException | None = None
+        active = True
+
+        async def call(messages: list[dict[str, Any]] | str, **kwargs: Any) -> str:
+            nonlocal call_number, failure
+            if not active:
+                raise RunIntegrityError("Evolve model callable outlived its NodeContext")
+            if failure is not None:
+                raise RuntimeError("a prior Evolve model effect failed") from failure
+            sequence = call_number
+            call_number += 1
+            try:
+                return await self._complete(ctx, sequence, messages, kwargs)
+            except BaseException as exc:
+                # A benchmark timeout cancels the callable before swallowing
+                # TimeoutError. That also cannot become an accepted score.
+                failure = exc
+                raise
+
+        try:
+            yield call
+            if failure is not None:
+                raise RuntimeError("Evolve model effect failed") from failure
+        finally:
+            active = False
+
+    async def _complete(
+        self,
+        ctx: NodeContext,
+        sequence: int,
+        messages: list[dict[str, Any]] | str,
+        kwargs: dict[str, Any],
+    ) -> str:
+        binding = await self._bindings.resolve(
+            self._binding_id(ctx),
+            workspace_id=str(ctx.workspace_id),
+            project_id=str(ctx.project_id),
+            node_id=ctx.node_id,
+            capability=MODEL_CHAT_CAPABILITY,
+        )
+        request = ModelChatRequest(
+            model=kwargs.get("model") or self._default_model,
+            messages=(
+                [{"role": "user", "content": messages}]
+                if isinstance(messages, str)
+                else [dict(message) for message in messages]
+            ),
+            temperature=kwargs.get("temperature", 0.3),
+            max_tokens=kwargs.get("max_tokens", 4096),
+        )
+        digest = hashlib.sha256(request.model_dump_json().encode()).hexdigest()[:16]
+        result = await self._egress.complete(
+            binding=binding,
+            run_id=ctx.run_id,
+            node_run_id=ctx.node_run_id,
+            attempt_id=ctx.attempt_id,
+            effect_key=f"evolve.model:{ctx.node_id}:{sequence}:{digest}",
+            request=request,
+            actor_id=str(ctx.user_id),
+        )
+        choices = result.body.get("choices")
+        if not isinstance(choices, list) or not choices:
+            raise RuntimeError("evolve: governed gateway returned no choices")
+        message = choices[0].get("message") if isinstance(choices[0], dict) else None
+        content = message.get("content") if isinstance(message, dict) else None
+        if not isinstance(content, str):
+            raise RuntimeError("evolve: governed gateway returned no content")
+        return content
+
+
 def _default_chat_model() -> str:
     """The deployment's default chat model alias, or "" (router selects).
 
@@ -157,7 +297,8 @@ class _EvolutionService:
         except CanonicalExecutionUnavailable as exc:
             self._execution_available = False
             self._availability = exc.availability
-            self._availability_reason = str(exc)
+            logger.warning("Evolution execution unavailable: %s", exc, exc_info=True)
+            self._availability_reason = _public_failure(exc)
             return
         # A healthy engine is necessary, not sufficient: a cycle also needs the
         # domain state `initialize_domain_state` builds. Advertising
@@ -203,8 +344,8 @@ class _EvolutionService:
             # retention evaluation.
             self._archive = CandidateArchive()
         except Exception as exc:
-            self._last_cycle_error = str(exc)
-            logger.warning("Evolution population init failed: %s", exc)
+            logger.warning("Evolution population init failed: %s", exc, exc_info=True)
+            self._last_cycle_error = _public_failure(exc)
         self._refresh_execution_availability()
 
     def stop(self) -> None:
@@ -298,26 +439,11 @@ class _EvolutionService:
                 self._population.add(genome)
             return len(spawned), len(self._population.list_all())
 
-    async def seed_population(self, count: int) -> tuple[int, int]:
-        """Fence seeding against cycle planning, traversal, and finalization."""
-        from maistro_evolve.diversity import emergency_spawn
-
-        async with self._cycle_lock:
-            if self._population is None:
-                raise RuntimeError("Evolution population is not initialized")
-            existing = self._population.list_all()
-            spawned = emergency_spawn(existing, count)
-            for genome in spawned:
-                self._population.add(genome)
-            return len(spawned), len(self._population.list_all())
-
     async def _run_one_cycle(self, *, actor_principal_id: str | None = None) -> str:
         async with self._cycle_lock:
             return await self._run_one_cycle_locked(actor_principal_id=actor_principal_id)
 
     async def _run_one_cycle_locked(self, *, actor_principal_id: str | None = None) -> str:
-        from maistro_evolve.cycle import EvolutionConfig
-        from maistro_evolve.harness import EvalHarness
         from services.evolution_graph import (
             CanonicalExecutionUnavailable,
             canonical_execution_owner,
@@ -329,14 +455,17 @@ class _EvolutionService:
         except CanonicalExecutionUnavailable as exc:
             self._execution_available = False
             self._availability = exc.availability
-            self._availability_reason = str(exc)
+            logger.warning("Evolution cycle refused: %s", exc, exc_info=True)
+            self._availability_reason = _public_failure(exc)
             raise EvolutionUnavailableError(
                 self._availability_reason,
                 availability=self._availability,
             ) from exc
         if self._population is None or self._tournament is None:
             # Same answer `/status` gives: unavailable, with the reason, as a
-            # 503 rather than a bare 500 from a RuntimeError.
+            # 503 rather than a bare 500 from a RuntimeError. Checked before
+            # importing maistro_evolve so a failed domain init (broken package
+            # import) still becomes EvolutionUnavailableError, not ImportError.
             self._execution_available = False
             self._availability = "unavailable"
             self._availability_reason = self._domain_state_reason()
@@ -346,6 +475,9 @@ class _EvolutionService:
         self._execution_available = True
         self._availability = "executable"
         self._availability_reason = None
+
+        from maistro_evolve.cycle import EvolutionConfig
+        from maistro_evolve.harness import EvalHarness
 
         config = EvolutionConfig(
             self_improve=True,
@@ -385,104 +517,14 @@ class _EvolutionService:
         )
         return record.run_id
 
-    def build_llm_call(self):
+    def build_llm_call(self) -> _GovernedModelCall:
         """Public accessor so a restart-recovery resolver can reconstruct the
         same llm_call this service would have built for a live cycle (#1064).
         """
         return self._build_llm_call()
 
-    def _governed_llm_seam(self) -> tuple[Any, str] | None:
-        """The engine bridge's canonical model-chat authority + Workspace (#718).
-
-        Evolve's model calls were the last production egress still posting to
-        the gateway directly: no Binding, no Invocation, no quota evidence,
-        while per-provider ledger rows presented as complete. The seam mirrors
-        the demo task backend's rule: when the engine's bridge exposes
-        ``governed_egress`` over its Container, Evolve's llm_call crosses that
-        one authority — the authority itself, never a per-caller recording
-        callback. Only a process with no canonical authority at all (engine
-        absent, stub port, no Container) keeps the raw call, exactly like
-        ``LocalTaskBackend``'s executor fallback.
-        """
-        try:
-            from services.engine import get_engine
-
-            engine = get_engine()
-        except RuntimeError:
-            return None
-        port = getattr(engine, "agent_port", None) or getattr(engine, "_agent_port", None)
-        egress = getattr(port, "governed_egress", None)
-        container = getattr(port, "container", None)
-        workspace_id = getattr(getattr(container, "config", None), "workspace_id", None)
-        if egress is None or not workspace_id:
-            return None
-        return egress, str(workspace_id)
-
-    def _build_llm_call(self):
-        seam = self._governed_llm_seam()
-        if seam is not None:
-            return self._build_governed_llm_call(*seam)
-        return self._build_raw_llm_call()
-
-    def _build_governed_llm_call(self, egress: Any, workspace_id: str):
-        """One Evolve model call across Binding -> Invocation -> quota (#718).
-
-        The durable Evolve Run's identity lives in the canonical Run store
-        (``run_canonical_evolution_cycle`` admits it); the Invocation
-        correlation ids here name the cycle and each physical call, so every
-        completed effect records exactly once on the quota ledger through the
-        same terminalization hook the roster and the conductor use.
-        """
-        from uuid import uuid4
-
-        from maistro.capabilities.binding import Binding
-        from maistro.capabilities.model_chat import ModelChatRequest
-        from maistro.capabilities.providers.llm_gateway import (
-            DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,
-            MODEL_CHAT_CAPABILITY,
-        )
-
-        cycle_number = self._cycle_count + 1
-
-        async def _llm_call(messages: list[dict] | str, **kwargs: Any) -> str:
-            if isinstance(messages, str):
-                messages = [{"role": "user", "content": messages}]
-            result = await egress.complete(
-                binding=Binding(
-                    workspace_id=workspace_id,
-                    # The same Project the roster's clients and the conductor
-                    # executor authorize under: the deployment's bootstrapped
-                    # gateway credential is registered in that scope, and
-                    # acquire fails closed outside it.
-                    project_id="agent-runtime",
-                    capability=MODEL_CHAT_CAPABILITY,
-                    credential_refs=(DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,),
-                ),
-                run_id=f"evolve-cycle-{cycle_number}",
-                node_run_id=f"evolve-node-{cycle_number}",
-                attempt_id=f"evolve-attempt-{uuid4().hex}",
-                effect_key=f"evolve-llm-{uuid4().hex}",
-                request=ModelChatRequest(
-                    model=kwargs.get("model") or _default_chat_model(),
-                    messages=[dict(message) for message in messages],
-                    temperature=kwargs.get("temperature", 0.3),
-                    max_tokens=kwargs.get("max_tokens", 4096),
-                ),
-            )
-            body = result.body
-            choices = body.get("choices") if isinstance(body, dict) else None
-            if not isinstance(choices, list) or not choices:
-                raise RuntimeError("evolve: governed gateway returned no choices")
-            message = choices[0].get("message") if isinstance(choices[0], dict) else None
-            content = message.get("content") if isinstance(message, dict) else None
-            if not isinstance(content, str):
-                raise RuntimeError("evolve: governed gateway returned no content")
-            return content
-
-        return _llm_call
-
-    @staticmethod
-    def _build_raw_llm_call():
+    def _governed_llm_seam(self) -> tuple[Any, Any] | None:
+        """Use the existing engine model egress and its Container-owned Bindings."""
         try:
             from services.engine import get_engine
 
@@ -496,7 +538,23 @@ class _EvolutionService:
             return None
         return egress, container
 
-    def status(self) -> dict:
+    def _build_llm_call(self) -> _GovernedModelCall:
+        seam = self._governed_llm_seam()
+        if seam is None:
+            raise EvolutionUnavailableError(
+                "Evolve requires the canonical model egress; raw model fallback is disabled",
+                availability="unavailable",
+            )
+        egress, container = seam
+        return _GovernedModelCall(
+            egress=egress,
+            bindings=container.capability_effects.bindings,
+            declarations=tuple(container.config.model_bindings),
+            workspace_id=str(container.config.workspace_id),
+            default_model=_default_chat_model(),
+        )
+
+    def status(self) -> dict[str, Any]:
         self._refresh_execution_availability()
         get_stats = getattr(self._tournament, "get_stats", None)
         tournament_stats = get_stats() if callable(get_stats) else {}

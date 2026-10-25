@@ -55,6 +55,15 @@ ARCHIVE_MARKER="${MAISTRO_ARCHIVE_MARKER:-.maistro-archive-install}"
 # fixed CVE-2025-68121 (+21 HIGHs) in the previously embedded go1.22.11 CLI.
 MIN_DOCKER_API_VERSION="1.44"
 
+# Compose floor the stack's schema needs. The compose files use conditional
+# `depends_on` (service_healthy / service_completed_successfully), healthcheck
+# wiring and secrets — Compose v2 features the legacy python `docker-compose`
+# (v1, EOL) cannot parse, which is why install.sh no longer falls back to it
+# (#407). The floor is a preflight convenience, not the real contract: when a
+# front-end hides a parseable version, the schema-parse probe in
+# ensure_compose_supported decides instead.
+MIN_COMPOSE_VERSION="2.17.0"
+
 # Container tag the generated image_pull compose pins to (E5/#298). get.sh
 # exports this to match the release it just checked out; when install.sh is run
 # directly out of a tree, derive it from the tag that tree is sitting on so a
@@ -144,8 +153,19 @@ Environment:
   MAISTRO_OPEN_BROWSER (0 = do not open the Conductor UI when ready),
   MAISTRO_IMAGE_TAG (container tag the image_pull compose pins to; defaults to
     the release tag this checkout sits on, else 'latest'),
+  MAISTRO_COMPOSE_PROFILES (space/comma-separated Compose profiles to activate,
+    e.g. "llm,data" — an override that assigns services to profiles starts
+    nothing until its profiles are active),
+  MAISTRO_PRINT_COMPOSE_CONFIG (1 = also print the fully rendered Compose
+    config before startup; it includes credentials interpolated from .env),
   MAISTRO_SOURCE_URL (upstream repo URL recorded in the install manifest for
     archive checkouts; get.sh sets it, since archives carry no git metadata).
+
+  docker-compose.override.yml: when present at the repo root it is included
+  explicitly in this installer's compose invocation (which uses -f files, so
+  Compose's own automatic override loading never applies), after the base
+  file and the wizard's plan override — but only when the invoking user owns
+  it and it is not group/world-writable; anything else aborts the install.
 
   Ports and the bind address resolve like Compose interpolation: the process
   environment wins, then the .env file, then the built-in defaults (engine
@@ -425,7 +445,7 @@ validate_port_value() {
     fi
 }
 
-# Compose's host-address:port syntax brackets IPv6 literals ([::1]:8000:8000).
+# Compose's host-address:port syntax brackets IPv6 literals ([::1]:8000:8000).  # DevSkim: ignore DS162092 until 2027-12-31
 # Bracket a bare literal so the same value works for the compose mapping and
 # the printed URLs; anything else (IPv4, a bracketed literal, a hostname)
 # passes through unchanged.
@@ -491,7 +511,7 @@ compose_published_port() {
     "${COMPOSE_CMD[@]}" "${COMPOSE_FILES[@]}" port "$service" "$private_port" 2>/dev/null
 }
 
-# Compose's `port` front-end reports wildcard bindings (0.0.0.0, [::]) that a
+# Compose's `port` front-end reports wildcard bindings (0.0.0.0, [::]) that a  # DevSkim: ignore DS162092 until 2027-12-31
 # browser cannot open; loopback is the address that reaches them. A concrete
 # host is kept as-is, so a mapping like 127.0.0.2:9005 from an override file
 # probes and prints at 127.0.0.2, the address the stack actually bound.
@@ -969,6 +989,37 @@ docker_daemon_ready() {
     command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1
 }
 
+# True when Podman answers for the invoking account (#1820): `podman info`
+# proves the same thing for Podman's rootless store that `docker info` proves
+# for the Docker daemon — this account, unprivileged, can operate it.
+podman_runtime_ready() {
+    command -v podman >/dev/null 2>&1 && podman info >/dev/null 2>&1
+}
+
+# True when the SELECTED front-end's engine answers (#1820). Runtime
+# access validation uses the selected runtime — a Docker check must never
+# stand in for a Podman one, or vice versa.
+selected_runtime_ready() {
+    case "${COMPOSE_CMD[0]:-}" in
+        docker) docker_daemon_ready ;;
+        podman) podman_runtime_ready ;;
+        *) return 1 ;;
+    esac
+}
+
+# Platform-phrased remedy for a selected runtime with no working Compose v2
+# front-end (#1820).
+selected_runtime_install_hint() {
+    case "$1" in
+        podman)
+            echo "Install Podman and a Compose v2 provider — Fedora/RHEL: 'sudo dnf install podman podman-compose'; Debian/Ubuntu: 'sudo apt-get install -y podman podman-compose' (or provide Docker's compose plugin so 'podman compose' can use it); macOS: 'brew install podman && podman machine init && podman machine start'. Then re-run ./install.sh."
+            ;;
+        *)
+            echo "$(compose_upgrade_instructions) Then re-run ./install.sh."
+            ;;
+    esac
+}
+
 # Numeric dotted-version comparison: true when $1 >= $2. Pure bash on purpose —
 # macOS ships a sort too old for `sort -V`, and these are always short API
 # versions like "1.43".
@@ -1431,6 +1482,69 @@ delivery_mode() {
     grep -o '"mode"[[:space:]]*:[[:space:]]*"[a-z_]*"' "$f" | head -1 | grep -o '[a-z_]*"$' | tr -d '"'
 }
 
+# The container runtime selection this install must honor (#1820).
+# Precedence, first match wins:
+#   1. the persisted plan (delivery.json `container_runtime`) — the wizard
+#      resolved the answers once; every later re-run honors what was chosen
+#      rather than re-probing, so recovery/upgrade name the same front-end;
+#   2. an explicit MAISTRO_CONTAINER_RUNTIME pin (docker|podman) — the escape
+#      hatch for wizardless (MAISTRO_SKIP_WIZARD=1) runs, where no plan exists;
+#   3. auto — the documented, tested docker-then-podman probe order.
+# A plan never gets silently overruled by ambient state, and an unknown token
+# degrades to auto with a warning instead of inventing a selection.
+selected_container_runtime() {
+    local f="$PLAN_DIR/delivery.json" v override
+    if [[ -f "$f" ]]; then
+        v="$(grep -o '"container_runtime"[[:space:]]*:[[:space:]]*"[a-z]*"' "$f" | head -1 | grep -o '[a-z]*"$' | tr -d '"')"
+        case "$v" in
+            docker | podman)
+                echo "$v"
+                return 0
+                ;;
+        esac
+    fi
+    override="${MAISTRO_CONTAINER_RUNTIME:-}"
+    case "$override" in
+        docker | podman)
+            echo "$override"
+            return 0
+            ;;
+        auto | "") ;;
+        *)
+            # >&2: every caller consumes this function via command substitution
+            # (write_install_manifest among them), so stdout must stay only the
+            # runtime token — never the ANSI-colored diagnostic.
+            warn "Ignoring unknown MAISTRO_CONTAINER_RUNTIME='$override' (use 'docker', 'podman', or 'auto')." >&2
+            ;;
+    esac
+    echo "auto"
+}
+
+# True when the runtime was EXPLICITLY selected, as opposed to an auto that
+# merely resolved to a front-end: the raw wizard answer (delivery.json
+# `container_runtime_selection`, written by plan.py beside the resolved
+# `container_runtime`) names docker/podman, or the MAISTRO_CONTAINER_RUNTIME
+# pin does when no plan selection exists. The resolved field alone proves
+# nothing — the wizard materializes an unanswered "auto" as docker there, so
+# keying the fail-vs-bootstrap gate on it stranded fresh hosts before the
+# Docker bootstrap (#1820 review). A plan's raw selection outranks the
+# environment pin, same precedence selected_container_runtime documents.
+container_runtime_selection_is_explicit() {
+    local f="$PLAN_DIR/delivery.json" sel override
+    if [[ -f "$f" ]]; then
+        sel="$(grep -o '"container_runtime_selection"[[:space:]]*:[[:space:]]*"[a-z]*"' "$f" | head -1 | grep -o '[a-z]*"$' | tr -d '"')"
+        case "$sel" in
+            docker | podman) return 0 ;;
+            auto) return 1 ;;
+        esac
+    fi
+    override="${MAISTRO_CONTAINER_RUNTIME:-}"
+    case "$override" in
+        docker | podman) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 # Effective delivery mode the stack actually uses: image_pull only when the
 # wizard selected it AND the pinned images are published (standalone compose
 # file present); anything else — wizard skipped, images not ready — falls back
@@ -1444,6 +1558,74 @@ effective_delivery_mode() {
         echo "image_pull"
     else
         echo "source_build"
+    fi
+}
+
+# --- Operator override (docker-compose.override.yml), #405 -------------------
+#
+# This installer always invokes compose with explicit `-f` files, which
+# disables Compose's own automatic docker-compose.override.yml loading: an
+# override an operator copied into the checkout was silently ignored on
+# installer runs while the docs claimed it was "picked up automatically". The
+# decision recorded here (#405): the root override IS a supported automatic
+# input — compose_files() includes it explicitly, last, so operator intent
+# outranks both the base file and the wizard's plan override.
+
+# Pure decision over (octal mode, owner uid) so tests can cover the
+# foreign-owner case without root: returns 0 only when the file is safe to
+# execute as part of this install.
+override_file_is_safe() {
+    local mode="$1" owner="$2"
+    # Group/world-writable means any local user can rewrite what `up` will
+    # run; ownership by another uid means that user can chmod it back.
+    (( 8#$mode & 8#022 )) && return 1
+    [[ "$owner" == "$EUID" ]] || return 1
+    return 0
+}
+
+# Echo "<octal-mode> <owner-uid>" for a path; exits 1 when it cannot be
+# stat'ed (missing, dangling symlink). Python rather than stat(1): macOS
+# ships BSD stat and Linux GNU stat with different format flags, and python3
+# is already a documented installer dependency. PURE: prints only the data,
+# so it is safe to call inside a command substitution — run ensure_python
+# beforehand (require_safe_override_file does) and never inside the
+# substitution itself.
+override_file_state() {
+    "${PYTHON_CMD[@]}" - "$1" <<'PY'
+import os
+import stat
+import sys
+
+try:
+    st = os.stat(sys.argv[1])
+except OSError as exc:
+    print(f"cannot stat {sys.argv[1]}: {exc.strerror}", file=sys.stderr)
+    raise SystemExit(1)
+print(f"{stat.S_IMODE(st.st_mode):04o} {st.st_uid}")
+PY
+}
+
+# Refuse an override this user does not exclusively control. Failing (rather
+# than warning-and-skipping) is deliberate: an override can remap ports,
+# disable sandbox flags, or mount the host Docker socket, so running one
+# another local user could have written is a privilege-escalation path — and
+# silently ignoring the file would recreate exactly the divergence between
+# the docs and the invocation this installer reconciles (#405).
+require_safe_override_file() {
+    local path="$1" state mode owner
+    # Out here, not inside the substitution below: ensure_python announces
+    # itself through ok(), and anything it prints inside $(...) would be
+    # captured as if it were the stat data.
+    ensure_python
+    if ! state="$(override_file_state "$path")"; then
+        fail "Cannot inspect the Compose override file '$path' (missing, a dangling symlink, or unreadable). Remove it or replace it with a real file, then re-run."
+    fi
+    read -r mode owner <<< "$state"
+    if ! override_file_is_safe "$mode" "$owner"; then
+        if (( 8#$mode & 8#022 )); then
+            fail "Compose override '$path' is group/world-writable (mode $mode); a file any local user can rewrite must not run as part of this install. Fix with: chmod go-w '$path'"
+        fi
+        fail "Compose override '$path' is owned by uid $owner, not by the invoking user ($EUID); its owner could rewrite what this install executes. Fix with: sudo chown $EUID '$path'"
     fi
 }
 
@@ -1655,6 +1837,19 @@ run_with_timeout() {
     return "$rc"
 }
 
+# #1820: these are Docker-runtime validations (engine API floor, macOS
+# credential-helper deadlock, docker.sock discovery). Under a Podman selection
+# they must not run: validating the UNSELECTED docker engine would fail an
+# install on an unrelated old Docker daemon, and a docker.sock mapping is
+# meaningless for Podman's rootless store. Lifted verbatim by
+# tests/test_install_runtime_selection.py.
+docker_only_preflight_checks() {
+    [[ "${COMPOSE_CMD[0]:-}" == "docker" ]] || return 0
+    ensure_docker_engine_supported
+    check_docker_credential_helper
+    record_docker_sock
+}
+
 start_engine() {
     if [[ "$START_STACK" == "0" || "$START_STACK" == "false" ]]; then
         warn "Skipping compose start because --no-start or MAISTRO_START_STACK=0 was set."
@@ -1662,12 +1857,18 @@ start_engine() {
     fi
 
     ensure_compose_runtime
-    ensure_docker_engine_supported
-    check_docker_credential_helper
-    record_docker_sock
+    docker_only_preflight_checks
     # compose_files first: report_arch reads the image list from the same
-    # file set `up` will use, so an addon's images are checked too.
+    # file set `up` will use, so an addon's images are checked too — and
+    # ensure_compose_supported feature-probes that same set before anything
+    # is built or started.
     compose_files
+    # Floor gate first: reject a front-end below the schema floor before
+    # printing a plan for it (#407).
+    ensure_compose_supported
+    # Then show (and validate) exactly what will start — effective files,
+    # active profiles, merged render — before `up` runs (#405).
+    show_compose_plan
     report_arch
     info "Starting maistro-engine..."
     "${COMPOSE_CMD[@]}" "${COMPOSE_FILES[@]}" "${COMPOSE_UP_ARGS[@]}"
@@ -1892,6 +2093,37 @@ note_residual_risk() {
 # caller's current directory (#353). Written once install.sh has settled the
 # source tree and credentials; get.sh delegates here, so every supported curl
 # and direct-checkout install produces one.
+# The runtime the install manifest records (#1820). The manifest is written
+# before start_engine resolves COMPOSE_CMD, so a wizardless or legacy-plan
+# install would record the literal `auto` — and `maistro upgrade`
+# (_resolve_compose_runtime) honors only a docker/podman recording, re-running
+# its docker-first lookup on `auto`. A Podman-owned stack would then be handed
+# to a merely-present Docker CLI on the first upgrade. Prefer the front-end
+# start_engine resolved; under an unresolved auto, probe the documented
+# docker-then-podman order read-only (runtime_compose_cmd runs `compose
+# version`, never a bootstrap) and record whoever answers. Only when neither
+# answers right now does the manifest keep `auto`, so upgrade keeps probing
+# instead of inventing a selection.
+manifest_container_runtime() {
+    if [[ -n "${COMPOSE_CMD[0]:-}" ]]; then
+        echo "${COMPOSE_CMD[0]}"
+        return 0
+    fi
+    local selected
+    selected="$(selected_container_runtime)"
+    case "$selected" in
+        docker | podman)
+            echo "$selected"
+            return 0
+            ;;
+    esac
+    if runtime_compose_cmd docker || runtime_compose_cmd podman; then
+        echo "${COMPOSE_CMD[0]}"
+        return 0
+    fi
+    echo "auto"
+}
+
 write_install_manifest() {
     local manifest_dir="$PLAN_DIR"
     local manifest="$manifest_dir/install-manifest.json"
@@ -1938,6 +2170,7 @@ writing no install manifest. 'maistro upgrade' will fall back to detection."
   "revision": "$rev",
   "image_tag": "$MAISTRO_IMAGE_TAG",
   "delivery_mode": "$(effective_delivery_mode)",
+  "container_runtime": "$(manifest_container_runtime)",
   "source_url": "$source_url",
   "plan_dir": "$PLAN_DIR",
   "installed_at": "$ts"
@@ -1955,6 +2188,41 @@ MANIFEST_EOF
         cp "$manifest" "$PWD/.maistro-install/install-manifest.json" 2>/dev/null || true
         ok "Recorded plan_dir pointer at $PWD/.maistro-install/install-manifest.json"
     fi
+}
+
+# The front-end recovery/success text names (#1820). A --no-start run
+# (MAISTRO_START_STACK=0/--no-start) never enters start_engine, so COMPOSE_CMD
+# is unresolved; the old `:-docker compose` fallback then printed Docker
+# commands for an install whose plan selected Podman — recovery text naming
+# the OTHER runtime is exactly what #1820 forbids. Prefer the resolved
+# front-end; else probe the selection's own CLI (a read-only `compose
+# version`, never a bootstrap); else name the selection literally, so the
+# text is actionable even on a machine where the front-end answers later.
+compose_line_cmd() {
+    if [[ -n "${COMPOSE_CMD[*]:-}" ]]; then
+        echo "${COMPOSE_CMD[*]}"
+        return 0
+    fi
+    local selected
+    selected="$(selected_container_runtime)"
+    case "$selected" in
+        docker | podman)
+            if runtime_compose_cmd "$selected"; then
+                echo "${COMPOSE_CMD[*]}"
+            else
+                echo "$selected compose"
+            fi
+            return 0
+            ;;
+    esac
+    # auto: the same documented docker-then-podman order detect_compose_cmd
+    # probes with; a literal fallback keeps the text honest when neither
+    # CLI answers right now.
+    if runtime_compose_cmd docker || runtime_compose_cmd podman; then
+        echo "${COMPOSE_CMD[*]}"
+        return 0
+    fi
+    echo "docker compose"
 }
 
 # Write operator recovery commands next to the plan artifacts and echo the
@@ -2078,7 +2346,7 @@ print_success() {
     echo "maistro-engine is ready"
     echo "  Engine API:  ${ENGINE_BASE_URL}"
     echo "  Conductor:   ${CONDUCTOR_BASE_URL}  (chat, DAGs, deck builder)"
-    echo "  Token:       stored in $ENV_FILE as MAISTRO_ACCESS_TOKEN (not printed)"
+    echo "  Token:       stored in $ENV_FILE as MAISTRO_ROUTER_API_KEY (not printed)"
     echo "  Install dir: $PWD"
     echo "  Plan dir:    $PLAN_DIR"
     echo ""

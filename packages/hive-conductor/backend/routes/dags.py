@@ -23,12 +23,12 @@ from routes.audit import log_audit
 def _public_failure(exc: BaseException) -> str:
     """What a caller may learn about an unexpected failure: the kind, not the text.
 
-    Exception messages carry file paths, connection strings, and provider
-    replies; the full detail is in the server log with the traceback, and the
-    response names only the exception class so a client can still tell a
-    timeout from a type error.
+    Delegates to ``graph_runner.public_failure`` so HTTP and WebSocket share
+    one contract (kind-only, with the ALLOW_STUB_LLM remediation preserved).
     """
-    return f"{type(exc).__name__}: execution failed; see server logs"
+    from services.graph_runner import public_failure
+
+    return public_failure(exc)
 
 
 router = APIRouter(tags=["dags"])
@@ -394,7 +394,7 @@ def remove_edge(dag_id: str, edge_id: str) -> dict:
     return removed[0].model_dump(mode="json")
 
 
-@router.post("/{dag_id}/run")
+@router.post("/{dag_id}/run", responses=_ADMISSION_429_RESPONSES)
 async def run_dag(
     dag_id: str,
     request: Request,
@@ -466,7 +466,7 @@ async def run_dag(
     }
 
 
-@router.post("/run-champion")
+@router.post("/run-champion", responses=_ADMISSION_429_RESPONSES)
 async def run_champion(
     request: Request,
     body: DagRunRequest | None = None,

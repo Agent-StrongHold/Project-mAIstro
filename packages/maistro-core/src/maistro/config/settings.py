@@ -40,6 +40,36 @@ def validate_permission_preset(value: str) -> str:
     return value
 
 
+def _has_http_origin_authority(parsed: SplitResult) -> bool:
+    """Require a plain HTTP authority, without userinfo or URL components."""
+    port = parsed.port  # May raise for malformed/out-of-range ports.
+    return (
+        parsed.scheme == "http"
+        and parsed.username is None
+        and parsed.password is None
+        and not parsed.netloc.endswith(":")
+        and not any((parsed.path, parsed.query, parsed.fragment))
+        and (port is None or port > 0)
+    )
+
+
+def _is_http_loopback_origin(origin: str) -> bool:
+    """Classify the local HTTP warning exception without trusting URL prefixes."""
+    if any(char in origin for char in "\\?#") or any(
+        ord(char) <= 32 or ord(char) == 127 for char in origin
+    ):
+        return False
+    try:
+        parsed = urlsplit(origin)
+        return _has_http_origin_authority(parsed) and parsed.hostname in {
+            "localhost",  # DevSkim: ignore DS162092 until 2027-12-31
+            "127.0.0.1",  # DevSkim: ignore DS162092 until 2027-12-31
+            "::1",  # DevSkim: ignore DS162092 until 2027-12-31
+        }
+    except ValueError:
+        return False
+
+
 def validate_cors_origins(origins: list[str]) -> list[str]:
     """Reject CORS origins that would defeat the browser's same-origin policy.
 
@@ -330,6 +360,17 @@ class Settings(BaseSettings):
     # every RunStore at admission. Tighten freely; loosening needs the override.
     max_active_root_runs_per_principal: int = BASELINE_MAX_ACTIVE_ROOT_RUNS_PER_PRINCIPAL
     max_active_root_runs_per_workspace: int = BASELINE_MAX_ACTIVE_ROOT_RUNS_PER_WORKSPACE
+    # The opt-in system-wide ceiling (#1182 "an explicit system/global ceiling
+    # where needed"). The owner-decided baseline is that no global ceiling
+    # exists, so unset cannot weaken anything and any configured value only
+    # tightens admission at the same RunStore authority. Not a resource-policy
+    # floor: there is no numeric baseline to weaken against.
+    max_active_root_runs_system: int | None = Field(
+        default=None,
+        ge=1,
+        description="Optional system-wide ceiling on concurrently active root Runs across "
+        "every Workspace and principal. Unset means no explicit global ceiling.",
+    )
 
     # Shared outbound HTTP pool (see maistro.http). Ceilings against fd
     # exhaustion, NOT a load throttle — a small cap here was measured as the

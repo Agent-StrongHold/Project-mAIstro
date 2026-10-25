@@ -17,14 +17,14 @@ services:
       # One gateway, set once (#808). LITELLM_BASE_URL is the canonical input
       # -- the gateway's root, no /v1 -- and every alias below is *derived*
       # from it, so the four names the code reads cannot disagree. They used
-      # to be four hardcoded copies of http://litellm:4000: setting them in
+      # to be four hardcoded copies of http://litellm:4000: setting them in  # DevSkim: ignore DS137138 until 2027-12-31
       # .env changed nothing, and pointing the stack at a hosted or corporate
       # gateway needed a hand-written override. LITELLM_URL is still accepted
       # because the engine's own error message told people to set it.
       # LITELLM_API_BASE may be set explicitly for a gateway whose
       # OpenAI-compatible path is not <root>/v1.
       #
-      # The http:// defaults are the bundled proxy's service name on this
+      # The http:// defaults are the bundled proxy's service name on this  # DevSkim: ignore DS137138 until 2027-12-31
       # stack's private bridge network -- container to container, never off
       # the host, with no CA that could sign `litellm` -- the same footing as
       # the langfuse and maistro-engine URLs below. A hosted gateway set in
@@ -38,6 +38,14 @@ services:
       - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY:?Set LITELLM_MASTER_KEY in .env}
       - LITELLM_API_KEY=${LITELLM_API_KEY:-${LITELLM_MASTER_KEY:?Set LITELLM_MASTER_KEY in .env}}
       - LITELLM_PROXY_KEY=${LITELLM_API_KEY:-${LITELLM_MASTER_KEY:?Set LITELLM_MASTER_KEY in .env}}
+      # Documented YAML configuration (#1824): the uvicorn worker loads and
+      # validates this file before the Container is built, so operator-stated
+      # `model_bindings:` / `security:` declarations reach the runtime. The
+      # default path does not exist in the image -> empty, fail-closed model
+      # authorization. To state Bindings, bind-mount a maistro.yaml (e.g. a
+      # compose.override.yml volume `- ./maistro.yaml:/app/maistro.yaml:ro`)
+      # and set MAISTRO_CONFIG=/app/maistro.yaml in .env.
+      - MAISTRO_CONFIG=${MAISTRO_CONFIG:-config/maistro.yaml}
       # Langfuse coordinates for the Langfuse service's own UI/API. Trace
       # export from this stack is not driven by these: spans leave only over
       # OTLP, and nothing here sets OTEL_EXPORTER_OTLP_ENDPOINT (see the
@@ -57,7 +65,9 @@ services:
       - WORKSPACE_SCOPE_KEY=${WORKSPACE_SCOPE_KEY:-}
       # Separate HMAC capability for Conductor's authenticated user context.
       - TASK_DELEGATION_KEY=${TASK_DELEGATION_KEY:?Run ./install.sh to generate TASK_DELEGATION_KEY}
-      - MAISTRO_ACCESS_TOKEN=${MAISTRO_ACCESS_TOKEN:-}
+      # MAISTRO_ACCESS_TOKEN used to be passed here, but nothing in the engine
+      # ever read it (#402): auth is API_KEYS + REQUIRE_AUTH. A credential-
+      # looking variable with no reader only creates false confidence.
       - REQUIRE_AUTH=${REQUIRE_AUTH:-true}
       - GITHUB_WEBHOOK_SECRET=${GITHUB_WEBHOOK_SECRET:-}
       - CI_WEBHOOK_SECRET=${CI_WEBHOOK_SECRET:-}
@@ -254,6 +264,18 @@ services:
       - LITELLM_API_KEY=${LITELLM_API_KEY:-${LITELLM_MASTER_KEY:?Set LITELLM_MASTER_KEY in .env}}
       - LITELLM_PROXY_URL=${LITELLM_BASE_URL:-${LITELLM_URL:-http://litellm:4000}}  # DevSkim: ignore DS137138 until 2027-12-31
       - LITELLM_PROXY_KEY=${LITELLM_API_KEY:-${LITELLM_MASTER_KEY:?Set LITELLM_MASTER_KEY in .env}}
+      # The deployment's own model key (#1824). Unset/empty falls through to
+      # LITELLM_API_KEY above per the effective-key precedence contract, so
+      # Hive authenticates to the same gateway with the same credential the
+      # engine resolves -- not to a second, silently different one.
+      - MAISTRO_LLM_API_KEY=${MAISTRO_LLM_API_KEY:-}
+      # Operator-declared `model.chat` Binding authorizations (#1079, #1824),
+      # a JSON list of {binding_id, project_id, provider_name, ...} objects.
+      # Empty stays fail-closed: no declaration authorizes no Binding. Passed
+      # through so the installed path carries explicit Workspace/Project model
+      # authorization into Hive's embedded Container the same way .env states
+      # it.
+      - MAISTRO_MODEL_BINDINGS=${MAISTRO_MODEL_BINDINGS:-[]}
       - CHAT_DEFAULT_MODEL=${CHAT_DEFAULT_MODEL:-${DEFAULT_MODEL:-gemini/gemini-2.5-flash}}
       # Engine router for DAG execution. Settings.maistro_base_url /
       # maistro_router_api_key (config.py) read these MAISTRO_* names directly;
@@ -309,6 +331,12 @@ services:
       # serves, so healthy means migrated.
       maistro-engine:
         condition: service_healthy
+    # Chromium/worker subprocesses need headroom, but the whole Conductor tree
+    # remains bounded by this container ceiling.
+    mem_limit: 1g
+    memswap_limit: 1g
+    pids_limit: 256
+    cpus: 1.0
     restart: unless-stopped
     healthcheck:
       # Same podman-safe quoting as the engine healthcheck above (#1820).

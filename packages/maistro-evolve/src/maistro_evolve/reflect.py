@@ -27,6 +27,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from .attribution import CandidateOrigin, EvalContext, ProducerKind, producer_identity, stamp_origin
 from .fitness import hard_gate_threshold
 from .harness import EvalHarness, evidence_method
 from .retrodiction import PrefilterDecision, RetrodictionPrefilter
@@ -198,8 +199,23 @@ def spawn_challenger(genome: PipelineGenome, node_id: str, new_prompt: str) -> P
         if node.id == node_id:
             node.system_prompt = new_prompt
             break
-    return stamp_provenance(
-        child, parents=[genome.id], operator=OperatorKind.REFLECTION, base=genome
+    # M4-A6 candidate record (operator/objective/prompt version + legacy
+    # parent fields), then M4-A8 producer attribution: the structured twin of
+    # the harness_params marker above — this candidate was produced by the
+    # reflective prompt operator, and its credit baseline is the parent's
+    # stored scores.
+    stamp_provenance(child, parents=[genome.id], operator=OperatorKind.REFLECTION, base=genome)
+    producer = producer_identity("reflective_improve", ProducerKind.PROMPT_OPERATOR)
+    return stamp_origin(
+        child,
+        CandidateOrigin(
+            producer=producer,
+            parents=(genome.id,),
+            chain=(producer.key(),),
+            baseline_scores=dict(genome.eval_scores),
+            context=EvalContext(),
+            note="GEPA-style propose-then-verify prompt evolution",
+        ),
     )
 
 

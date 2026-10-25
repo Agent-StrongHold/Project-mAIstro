@@ -1,57 +1,23 @@
 import { useState, useRef, useEffect, useCallback, type ReactNode } from "react";
-import { fallbackMessage } from "../lib/api";
+import { useSearchParams } from "react-router-dom";
+import { ApiError, apiGet, apiPost, fallbackMessage } from "../lib/api";
 import { randomId } from "../lib/ids";
+import type { ChatApiMessage, ChatSessionDetail, ChatSessionSummary } from "../lib/chatSessions";
+import {
+  fetchModelsCatalog,
+  openChatStream,
+  sessionPath,
+  sessionsListPath,
+} from "../lib/chatSessions";
+import type {
+  BriefField,
+  BriefView,
+  Message,
+  Role,
+  Session,
+  ToolStep,
+} from "../lib/chatUi";
 import { useWorkspaces } from "../context/WorkspaceContext";
-
-const SOURCE_LABEL: Record<BriefField["source"], string> = {
-  user: "you",
-  verbatim: "as said",
-  record: "from record",
-  assumed: "assumed",
-  open: "open",
-};
-
-interface ToolStep {
-  id: string;
-  tool: string;
-  args?: Record<string, unknown>;
-  status: StepStatus;
-  summary?: string;
-}
-
-interface Message {
-  id: string;
-  role: Role;
-  content: string;
-  reasoning?: string; // assistant only — streamed thinking / reasoning tokens
-  steps?: ToolStep[]; // assistant only — the live tool/status timeline
-  status?: string; // assistant only — transient status line while streaming
-  timestamp: Date;
-}
-
-/** The brief so far, as the chat stream's `brief` event carries it
- * (SPEC-091726-7c2a): the interview's summary and next question while it is
- * open, or the draft once the person committed. */
-interface BriefField {
-  key: string;
-  label: string;
-  value: string | null;
-  source: "user" | "verbatim" | "record" | "assumed" | "open";
-}
-interface BriefView {
-  event: string;
-  summary: { known: number; needed: number; ready: boolean; fields: BriefField[]; notes: string[] } | null;
-  question: { key: string; label: string; question: string; can_assume: boolean } | null;
-  draft?: { fields: Record<string, string>; assumed: string[]; notes: string[] };
-}
-
-interface Session {
-  id: string;
-  title: string;
-  messages: Message[];
-  createdAt: Date;
-  brief?: BriefView | null;
-}
 
 const SOURCE_LABEL: Record<BriefField["source"], string> = {
   user: "you",
@@ -265,7 +231,13 @@ function detailToSession(detail: ChatSessionDetail): Session {
 }
 
 export default function ChatPage() {
-  const { activeWorkspaceId } = useWorkspaces();
+  // #1822: sessions and transcripts are Workspace-scoped durable rows. The
+  // drawer hydrates from `/v1/chat/sessions`; stream carries `session_id` so
+  // execute_turn can append into maistro.sessions. Stale stream callbacks are
+  // aborted on Workspace/session switch.
+  const { activeWorkspaceId, ready: workspacesReady } = useWorkspaces();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const pendingDeepLinkRef = useRef<string | null>(searchParams.get("session"));
   const suggestedPromptsHeading = SUGGESTED_PROMPTS_HEADING;
   const suggestedPrompts = SUGGESTED_PROMPTS;
   const [models, setModels] = useState<string[]>([]);
@@ -482,14 +454,15 @@ export default function ChatPage() {
       };
 
       try {
-        const res = await fetch("/v1/chat/stream", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          credentials: "same-origin",
-          // The active workspace lets the backend answer a work request with
-          // the brief interview instead of the model (SPEC-091726-7c2a).
-          body: JSON.stringify({ model, messages: outbound, workspace_id: activeWorkspaceId ?? undefined }),
-        });
+        const res = await openChatStream(
+          {
+            model,
+            messages: outbound,
+            workspace_id: activeWorkspaceId,
+            session_id: sessionId,
+          },
+          abort.signal,
+        );
         if (!res.ok || !res.body) throw new Error(fallbackMessage(res.status));
 
         const reader = res.body.getReader();

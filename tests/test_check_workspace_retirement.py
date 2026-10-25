@@ -11,6 +11,7 @@ import importlib.util
 import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -222,3 +223,43 @@ def test_a_new_importer_cannot_be_self_authorized_in_the_candidate_ledger(gate, 
     assert failures == [
         f"{PAGES}/Docs.tsx: NEW importer {app} -- a retiring surface may not gain consumers"
     ]
+
+
+def test_main_reaches_verdicts_through_the_bundled_identity(
+    gate, monkeypatch, tmp_path, capsys
+) -> None:
+    """#319: main() resolves the implementation identity before judging.
+
+    The tree is an empty synthetic root (no stores.py, no retiring assets), so
+    an empty ledger is genuinely consistent with it; the fake provenance
+    namespace carries bundled_implementation_fingerprint like the real one,
+    so the identity resolves inside the trusted-state try block and both a
+    clean pass and a missing-asset fail reach their verdict.
+    """
+    ledger_path = tmp_path / "workspace-retirement.json"
+    ledger_path.write_text(json.dumps({"entries": []}), encoding="utf-8")
+    monkeypatch.setattr(gate, "LEDGER", ledger_path)
+    tree_root = tmp_path / "tree"
+    tree_root.mkdir()
+    monkeypatch.setattr(gate, "ROOT", tree_root)
+    trusted = SimpleNamespace(base_sha="0" * 40, loads=lambda default=None: {"entries": []})
+    provenance = SimpleNamespace(
+        RatchetProvenanceError=RuntimeError,
+        resolve_baseline=lambda *_a, **_k: trusted,
+        require_measurement=lambda *_a, **_k: None,
+        require_metric_version=lambda *_a, **_k: None,
+        load_authorizations=lambda *_a, **_k: {},
+        head_sha=lambda *_a: "c" * 40,
+        Provenance=lambda **_k: SimpleNamespace(render=lambda: "fixture provenance"),
+        bundled_implementation_fingerprint=lambda *_a, **_k: "bundled-sha256:fake",
+    )
+    monkeypatch.setattr(gate, "_provenance", lambda: provenance)
+
+    assert gate.main() == 0
+    out = capsys.readouterr().out
+    assert "fixture provenance" in out
+    assert "OK: 0 retirement ledger entries match the tree" in out
+
+    ledger_path.write_text(json.dumps(_ledger(_entry(path=f"{PAGES}/Gone.tsx"))), encoding="utf-8")
+    assert gate.main() == 1
+    assert f"{PAGES}/Gone.tsx: not found" in capsys.readouterr().out

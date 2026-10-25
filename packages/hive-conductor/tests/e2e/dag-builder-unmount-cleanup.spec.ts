@@ -278,6 +278,34 @@ test.beforeAll(async ({ browser }) => {
     if (route.request().method() !== "GET") return route.fallback();
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ models: ["test-model"] }) });
   });
+  // #1048: post-login `/` lands on Workspace Home, which GETs layout +
+  // projections for the active Workspace. Without stubs those 404s surface as
+  // console errors and fail expectNoErrors() on the first unmount assertion.
+  await page.route(/\/v1\/workspaces\/[^/]+\/home\/layout$/, async (route) => {
+    if (route.request().method() !== "GET") return route.fallback();
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        revision: 1,
+        updatedAt: "2026-09-23T00:00:00Z",
+        regions: [],
+      }),
+    });
+  });
+  await page.route(/\/v1\/workspaces\/[^/]+\/home\/projections$/, async (route) => {
+    if (route.request().method() !== "GET") return route.fallback();
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        workspace_id: WORKSPACE_ID,
+        generated_at: "2026-09-23T00:00:00Z",
+        sections: [],
+        dismissed: {},
+      }),
+    });
+  });
 
   await setupIfNeeded(page);
   await loginAsPM(page);

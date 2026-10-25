@@ -108,8 +108,9 @@ async def test_outcome_store_failure_rolls_back_and_stays_unpublished(
     assert failed.state == "startup_failed"
     assert failed._agent_port is None
     assert failed._backend is None
-    # The sanitized cause is type-qualified and carries the message.
-    assert failed.health()["cause"] == "RuntimeError: synthetic outcome store failure"
+    # Public cause is kind-only (CodeQL py/stack-trace-exposure); the synthetic
+    # message stays in the server log / raised exception.
+    assert failed.health()["cause"] == "RuntimeError: startup failed; see server logs"
     assert engine_mod.engine_health()["state"] == "startup_failed"
 
 
@@ -134,10 +135,7 @@ async def test_agent_port_binding_failure_is_a_startup_failure(
     assert failed.state == "startup_failed"
     assert failed._agent_port is None
     assert failed._backend is None
-    assert (
-        failed.health()["cause"]
-        == "TypeError: _NotAPort does not satisfy AgentPort; the engine cannot route chat through it"
-    )
+    assert failed.health()["cause"] == "TypeError: startup failed; see server logs"
 
 
 async def test_metrics_reset_failure_rolls_back(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -199,7 +197,7 @@ async def test_canonical_recovery_failure_unwinds_started_dag_recovery(
 
     assert engine_mod._singleton is None
     assert dag_recovery._task is None, "started recovery cadence was unwound"
-    assert engine_mod.engine_health()["cause"] == "RuntimeError: canonical cadence refused"
+    assert engine_mod.engine_health()["cause"] == "RuntimeError: startup failed; see server logs"
 
 
 async def test_demo_backend_failure_unwinds_recovery_cadences(
@@ -223,8 +221,9 @@ async def test_demo_backend_failure_unwinds_recovery_cadences(
             stopped.append(True)
 
     class _Queue:
-        def __init__(self, *, admitter: Any = None) -> None:
+        def __init__(self, *, admitter: Any = None, idempotency_store: Any = None) -> None:
             self.admitter = admitter
+            self.idempotency_store = idempotency_store
 
     queue_mod = types.ModuleType("maistro.tasks.queue")
     queue_mod.TaskQueue = _Queue  # type: ignore[attr-defined]
@@ -581,7 +580,9 @@ def test_engine_health_prefers_the_published_engine(
     assert engine_mod.engine_health()["state"] == "startup_failed"
 
 
-def test_sanitize_cause_is_bounded() -> None:
+def test_sanitize_cause_names_the_kind_and_never_the_message() -> None:
+    """/health is unauthenticated: exception text (DSNs, tokens, paths) must
+    not flow into `cause`/`degradations` (CodeQL py/stack-trace-exposure)."""
     from services.engine import _sanitize_cause
 
     class _Long(RuntimeError):
@@ -589,44 +590,16 @@ def test_sanitize_cause_is_bounded() -> None:
             return "x" * 5000
 
     cause = _sanitize_cause(_Long())
-    assert cause.startswith("_Long: ")
-    assert len(cause) < 400
-
-
-def test_sanitize_cause_redacts_credentials_before_truncation() -> None:
-    """Startup dependency errors hit the unauthenticated /health as `cause`
-    or inside `degradations`, so the message body is passed through the
-    ADR-064 redactor — truncation alone would publish whatever credential
-    the dependency interpolated into its exception text (review on #1181)."""
-    from services.engine import _sanitize_cause
+    assert cause == "_Long: startup failed; see server logs"
+    assert "xxxx" not in cause
 
     dsn = RuntimeError("could not connect to postgresql://ops:s3cr3t-Pa1nt@db.internal:5432/hive")
-    cause = _sanitize_cause(dsn)
-    assert "s3cr3t-Pa1nt" not in cause
-    assert "REDACTED" in cause  # marker proves the redactor ran, not truncation
+    assert _sanitize_cause(dsn) == "RuntimeError: startup failed; see server logs"
+    assert "s3cr3t-Pa1nt" not in _sanitize_cause(dsn)
 
     token = RuntimeError("auth rejected: Bearer sk-abcdef0123456789abcdef")
     assert "sk-abcdef0123456789abcdef" not in _sanitize_cause(token)
-
-
-def test_sanitize_cause_fails_closed_without_the_redactor(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """If the redactor cannot be imported, only the exception type is
-    published — never an unvetted message body."""
-    import builtins
-
-    from services.engine import _sanitize_cause
-
-    real_import = builtins.__import__
-
-    def _no_redactor(name: str, *args: Any, **kwargs: Any) -> Any:
-        if name == "maistro.security.redact":
-            raise ImportError("simulated redactor unavailability")
-        return real_import(name, *args, **kwargs)
-
-    monkeypatch.setattr(builtins, "__import__", _no_redactor)
-    assert _sanitize_cause(RuntimeError("jdbc:postgres://u:p@h/x")) == "RuntimeError"
+    assert _sanitize_cause(token) == "RuntimeError: startup failed; see server logs"
 
 
 # --- /health and /health/ready surfaces ---------------------------------------
@@ -649,7 +622,7 @@ def test_health_ready_gates_on_failed_engine_start() -> None:
 
     failed = engine_mod.EngineService()
     failed._state = "startup_failed"
-    failed._startup_error = "RuntimeError: canonical cadence refused"
+    failed._startup_error = "RuntimeError: startup failed; see server logs"
     engine_mod._singleton = None
     engine_mod._failed_startup = failed
 
@@ -662,7 +635,7 @@ def test_health_ready_gates_on_failed_engine_start() -> None:
 
     live = client.get("/health").json()
     assert live["engine"]["state"] == "startup_failed"
-    assert live["engine"]["cause"] == "RuntimeError: canonical cadence refused"
+    assert live["engine"]["cause"] == "RuntimeError: startup failed; see server logs"
     assert live["degraded"] is True
     # Liveness stays liveness: a failed engine is not an outage signal.
     assert live["status"] == "ok"

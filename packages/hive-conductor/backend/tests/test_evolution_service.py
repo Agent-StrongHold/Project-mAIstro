@@ -10,15 +10,9 @@ Covers:
 - run_loop: _run_one_cycle exception captured into _last_cycle_error
 - _run_one_cycle: dispatches to canonical graph runner + increments counter
 - _run_one_cycle: failed canonical Run is surfaced and not counted as a cycle
-- _build_llm_call: no settings -> None; with settings -> callable
-- _build_llm_call inner call: posts to base_url + parses content
-- _build_llm_call: with a started bridge, crosses the engine's governed
-  egress (Binding -> Invocation -> quota) instead of raw HTTP (#718)
-- _build_llm_call: a stub agent port (no canonical authority) keeps the raw
-  fallback, mirroring the demo task backend's documented rule (#718)
-- _default_chat_model: reads the deployment default and fails closed to ""
-- _governed_llm_seam: an engine that cannot start yields no seam (raw fallback)
-- governed _llm_call: a malformed gateway body raises a named diagnostic
+- _build_llm_call: no canonical model authority fails closed, without raw fallback
+- _default_chat_model: deployment default and empty router-select fallback
+- context-bound model dispatch: see test_evolution_model_correlation.py
 - status: returns running, cycle_count, canonical run id, population, error, tournament
 """
 
@@ -511,13 +505,6 @@ def test_run_one_cycle_dispatches_canonical_graph(
         evolution_graph, "canonical_execution_owner", lambda *_args, **_kwargs: owner
     )
 
-    owner = SimpleNamespace(
-        run_store=object(), graph_run_store=object(), project_scope_store=object()
-    )
-    monkeypatch.setattr(
-        evolution_graph, "canonical_execution_owner", lambda *_args, **_kwargs: owner
-    )
-
     s = _EvolutionService()
     s._population = _StubPop()
     s._tournament = _StubTour()
@@ -568,6 +555,7 @@ async def test_racing_manual_and_background_cycles_are_serialized(
         )
 
     monkeypatch.setattr(evolution_graph, "run_canonical_evolution_cycle", _canonical)
+    monkeypatch.setattr(_EvolutionService, "_build_llm_call", lambda self: None)
     owner = SimpleNamespace(
         run_store=object(), graph_run_store=object(), project_scope_store=object()
     )
@@ -623,6 +611,7 @@ async def test_seed_waits_for_active_cycle_and_joins_the_next_admission(
         )
 
     monkeypatch.setattr(evolution_graph, "run_canonical_evolution_cycle", _canonical)
+    monkeypatch.setattr(_EvolutionService, "_build_llm_call", lambda self: None)
     monkeypatch.setattr(diversity, "emergency_spawn", lambda existing, count: [])
     owner = SimpleNamespace(
         run_store=object(), graph_run_store=object(), project_scope_store=object()
@@ -687,13 +676,6 @@ def test_run_one_cycle_does_not_count_failed_canonical_run(
         evolution_graph, "canonical_execution_owner", lambda *_args, **_kwargs: owner
     )
 
-    owner = SimpleNamespace(
-        run_store=object(), graph_run_store=object(), project_scope_store=object()
-    )
-    monkeypatch.setattr(
-        evolution_graph, "canonical_execution_owner", lambda *_args, **_kwargs: owner
-    )
-
     s = _EvolutionService()
     s._population = _StubPop()
     s._tournament = _StubTour()
@@ -726,34 +708,6 @@ def test_build_llm_call_refuses_without_canonical_authority(
 
 
 def test_build_llm_call_public_accessor_delegates_to_private_builder(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """#1064: ``build_llm_call`` is the public accessor a restart-recovery
-    resolver uses to reconstruct the same llm_call a live cycle would have
-    built (it has no other way to reach the private builder). Prove it
-    actually delegates, both when the builder succeeds and when it
-    declines (no base URL configured)."""
-    from services.evolution import _EvolutionService
-
-    class _NoBase:
-        maistro_llm_base_url = ""
-        litellm_api_base = ""
-        maistro_llm_api_key = ""
-        litellm_api_key = ""
-        chat_default_model = "stub"
-
-    import config
-
-    monkeypatch.setattr(config, "get_settings", lambda: _NoBase())
-    s = _EvolutionService()
-    assert s.build_llm_call() is None
-
-    sentinel = object()
-    monkeypatch.setattr(s, "_build_llm_call", lambda: sentinel)
-    assert s.build_llm_call() is sentinel
-
-
-async def test_build_llm_call_real_call_posts_and_extracts_content(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from services.evolution import _EvolutionService
@@ -800,213 +754,6 @@ def test_governed_llm_seam_yields_nothing_when_the_engine_cannot_start(
 
     monkeypatch.setattr(engine_mod, "get_engine", _no_engine)
     assert _EvolutionService()._governed_llm_seam() is None
-
-
-async def test_build_llm_call_crosses_the_engine_bridge_governed_egress(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """#718: with a started bridge, Evolve's llm_call crosses the canonical
-    model-chat authority (Binding -> Invocation -> quota), never raw HTTP.
-
-    The raw `_build_llm_call` egress left every production Evolve model call
-    off the Invocation/quota ledger. When the engine's bridge exposes
-    `governed_egress`, the llm_call this service hands to the canonical cycle
-    must be a governed closure over that one authority — the same rule the
-    demo task backend's executor follows, not a per-caller recording callback.
-    """
-    import services.engine as engine_mod
-    from services.evolution import _EvolutionService
-
-    class _Egress:
-        def __init__(self) -> None:
-            self.calls: list[dict[str, Any]] = []
-
-        async def complete(self, **kwargs: Any) -> Any:
-            self.calls.append(kwargs)
-            return SimpleNamespace(body={"choices": [{"message": {"content": "governed answer"}}]})
-
-    egress = _Egress()
-
-    class _Port:
-        governed_egress = egress
-        container = SimpleNamespace(config=SimpleNamespace(workspace_id="ws-hive"))
-
-    monkeypatch.setattr(engine_mod, "get_engine", lambda: SimpleNamespace(agent_port=_Port()))
-    monkeypatch.setattr("services.evolution._default_chat_model", lambda: "test-model")
-
-    def _bomb(*a: Any, **k: Any) -> Any:
-        raise AssertionError("raw gateway egress must not run when the bridge governs")
-
-    monkeypatch.setattr("services.evolution.shared_client", _bomb)
-
-    s = _EvolutionService()
-    llm = s._build_llm_call()
-    assert llm is not None
-
-    # Evolve callers pass either message lists or a bare prompt string.
-    out = await llm([{"role": "user", "content": "hi"}], max_tokens=99, temperature=0.5)
-    assert out == "governed answer"
-    out2 = await llm("bare prompt")
-    assert out2 == "governed answer"
-
-    assert len(egress.calls) == 2
-    first, second = egress.calls
-    binding = first["binding"]
-    assert binding.workspace_id == "ws-hive"
-    assert binding.project_id == "agent-runtime"
-    assert binding.capability == "model.chat"
-    assert binding.credential_refs == ("litellm-gateway",)
-    request = first["request"]
-    assert request.model == "test-model"
-    assert request.messages == [{"role": "user", "content": "hi"}]
-    assert request.max_tokens == 99
-    assert request.temperature == 0.5
-    # A bare prompt string is normalized into a message list.
-    assert second["request"].messages == [{"role": "user", "content": "bare prompt"}]
-    # Cycle-scoped run identity; per-call attempt/effect identity, so retries
-    # and repeated calls never double-charge the ledger.
-    assert first["run_id"] == "evolve-cycle-1"
-    assert second["run_id"] == "evolve-cycle-1"
-    assert first["attempt_id"] != second["attempt_id"]
-    assert first["effect_key"] != second["effect_key"]
-
-
-async def test_build_llm_call_stub_port_keeps_the_raw_fallback(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A stub agent port has no canonical authority to cross and no ledger to
-    write to; that process keeps the raw call, exactly like the demo task
-    backend's documented fallback (#718).
-    """
-    import httpx
-    import services.engine as engine_mod
-    from services.evolution import _EvolutionService
-
-    class _Port:
-        governed_egress = None
-        container = None
-
-    monkeypatch.setattr(engine_mod, "get_engine", lambda: SimpleNamespace(agent_port=_Port()))
-
-    class _Settings:
-        litellm_api_base = "http://test.example/api"
-        maistro_llm_api_key = "test-key"
-        litellm_api_key = ""
-        chat_default_model = "test-model"
-
-    import config
-
-    monkeypatch.setattr(config, "get_settings", lambda: _Settings())
-
-    posted: list[str] = []
-
-    class _Resp:
-        def raise_for_status(self) -> None: ...
-
-        def json(self) -> Any:
-            return {"choices": [{"message": {"content": "raw answer"}}]}
-
-    class _Client:
-        def __init__(self, *a: Any, **kw: Any) -> None: ...
-
-        async def __aenter__(self) -> _Client:
-            return self
-
-        async def __aexit__(self, *a: Any) -> None: ...
-
-        async def post(self, url: str, *, json: Any, headers: Any) -> _Resp:
-            posted.append(url)
-            return _Resp()
-
-    monkeypatch.setattr(httpx, "AsyncClient", _Client)
-    s = _EvolutionService()
-    llm = s._build_llm_call()
-    assert llm is not None
-    out = await llm([{"role": "user", "content": "hi"}])
-    assert out == "raw answer"
-    assert posted == ["http://test.example/api/v1/chat/completions"]
-
-
-def test_default_chat_model_reads_the_deployment_default(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The real `_default_chat_model` reads the deployment's chat alias (#718).
-
-    The governed tests monkeypatch this helper, so its body needs direct
-    coverage: it must keep the cutover promise of selecting the same model the
-    raw path selected, and degrade to "" (router selects) when settings are
-    broken rather than raising out of llm-call construction.
-    """
-    import config
-    from services.evolution import _default_chat_model
-
-    class _Settings:
-        chat_default_model = "deployment-alias"
-
-    monkeypatch.setattr(config, "get_settings", lambda: _Settings())
-    assert _default_chat_model() == "deployment-alias"
-
-    def _broken() -> Any:
-        raise RuntimeError("settings unavailable")
-
-    monkeypatch.setattr(config, "get_settings", _broken)
-    assert _default_chat_model() == ""
-
-
-def test_governed_llm_seam_yields_nothing_when_the_engine_cannot_start(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """`get_engine` raising means no canonical authority exists in this
-    process: the seam must return None so `_build_llm_call` keeps the raw
-    fallback instead of crashing cycle construction (#718).
-    """
-    import services.engine as engine_mod
-    from services.evolution import _EvolutionService
-
-    def _no_engine() -> Any:
-        raise RuntimeError("engine not started")
-
-    monkeypatch.setattr(engine_mod, "get_engine", _no_engine)
-    assert _EvolutionService()._governed_llm_seam() is None
-
-
-async def test_governed_llm_call_raises_a_named_diagnostic_on_malformed_gateway_bodies(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A governed gateway answer with no choices, or no string content, is a
-    failed model call: the closure must raise its named diagnostic instead of
-    returning None/structured junk that the canonical cycle would read as a
-    successful completion (#718).
-    """
-    import services.engine as engine_mod
-    from services.evolution import _EvolutionService
-
-    class _Egress:
-        def __init__(self, body: Any) -> None:
-            self._body = body
-
-        async def complete(self, **kwargs: Any) -> Any:
-            return SimpleNamespace(body=self._body)
-
-    def _mount(body: Any) -> None:
-        class _Port:
-            governed_egress = _Egress(body)
-            container = SimpleNamespace(config=SimpleNamespace(workspace_id="ws-hive"))
-
-        monkeypatch.setattr(engine_mod, "get_engine", lambda: SimpleNamespace(agent_port=_Port()))
-
-    monkeypatch.setattr("services.evolution._default_chat_model", lambda: "test-model")
-    s = _EvolutionService()
-
-    def _governed_call(body: Any) -> Any:
-        _mount(body)
-        return s._build_llm_call()
-
-    with pytest.raises(RuntimeError, match="returned no choices"):
-        await _governed_call({"choices": []})([{"role": "user", "content": "hi"}])
-
-    with pytest.raises(RuntimeError, match="returned no content"):
-        await _governed_call({"choices": [{"message": {"content": 42}}]})(
-            [{"role": "user", "content": "hi"}]
-        )
 
 
 # --- status -------------------------------------------------------------
@@ -1107,7 +854,10 @@ def test_a_failed_domain_init_keeps_execution_unavailable_and_says_why(
     assert service.execution_available is False
     out = service.status()
     assert out["running"] is False
-    assert "synthetic:" in str(out["availability_reason"])
+    # Init failure is public-kind text; the seeded "synthetic:" import path
+    # must not reach /status (CodeQL py/stack-trace-exposure).
+    assert "ImportError: evolution failed; see server logs" in str(out["availability_reason"])
+    assert "synthetic:" not in str(out["availability_reason"])
     with pytest.raises(EvolutionUnavailableError) as raised:
         asyncio.run(service._run_one_cycle())
     assert raised.value.availability == "unavailable"

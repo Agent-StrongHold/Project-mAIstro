@@ -124,6 +124,16 @@ $ErrorActionPreference = 'Stop'
 # machines that have no distro yet.
 $script:DistroWasExplicit = $PSBoundParameters.ContainsKey('Distro')
 
+# Set when -AnswersFile was passed explicitly (even as an empty string, which
+# the preflight rejects: an unattended run must fail loudly, not fall back to
+# interactive prompting mid-install).
+$script:AnswersFileWasBound = $PSBoundParameters.ContainsKey('AnswersFile')
+# Resolved by Assert-AnswersPreflight before any mutation: the validated
+# Windows-side path and its translation into the distro (see the function for
+# the exact rules). Empty means "no answers file in play".
+$script:AnswersFileResolved = ''
+$script:AnswersFileWsl = ''
+
 # Branch installed when the stable channel has no release to resolve — the same
 # choice get.sh makes, for the same reason (ADR-073126-c4e1 §2 makes `main` the
 # only branch a final release tag may point at).

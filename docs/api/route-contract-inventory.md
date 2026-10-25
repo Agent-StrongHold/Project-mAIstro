@@ -70,10 +70,22 @@ wired alternative where one exists.
 
 `scripts/check-api-route-contracts.py` (wired into `.github/workflows/ci.yml`)
 AST-scans every router handler in `packages/hive-conductor/backend/routes/` and
-refuses any handler whose every `return` is a pure-constant literal and whose
-body performs no call except `HTTPException` — the shape of a canned answer.
-It also refuses inventory rot: every entry in
-`quality/api-route-contracts.json` must resolve to a live handler. A canned
+refuses any handler whose every own-scope `return` is a pure-constant literal
+and whose executed scope performs no call except `HTTPException` and
+logging/metrics statements — the shape of a canned answer. The scan judges the
+handler's executed scope: a call inside a nested definition the route never
+invokes is that helper's, not the route's (#1858) — defining a helper is not
+route work, while a helper the route calls counts through its call site.
+Logging or metrics alone cannot justify a
+literal success acknowledgement (#1857): observability means a call rooted in
+`log`, `logger`, `logging`, `metrics`, or `print` (case-insensitive) — the
+same vocabulary the shipped-surface gate applies (#1144). That exemption is
+name-matching, not semantic verification: the gate cannot prove an arbitrary
+call is meaningful, it only refuses handlers whose *only* calls are
+observability-shaped; a real operation followed by a constant acknowledgement
+(`store.flush(); return {"status": "ok"}`) remains valid. It also refuses
+inventory rot: every entry in `quality/api-route-contracts.json` must resolve
+to a live handler. A canned
 handler can only ship by registering a `temporary` disposition with a tracking
 issue and an unexpired review date.
 

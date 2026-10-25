@@ -161,6 +161,7 @@ async def promote_evidence(
     workspace_id: str = "",
     artifact_id: str = "",
     contradiction_fn: ContradictionFn | None = None,
+    persona_hints: tuple[str, ...] = (),
 ) -> UserModelFact:
     """Promote the acting user's own memory into their user model.
 
@@ -169,6 +170,10 @@ async def promote_evidence(
     puts that fact under review with a new revision instead of overwriting
     it. Replaying a memory already on record is a no-op. Refusals are audited
     as denied and raised.
+
+    ``persona_hints`` records what the promoting Persona found relevant, so
+    later recall can rank by Persona purpose. Persona affects what is learned
+    and how a fact ranks; it never widens who may read it (ADR-092526-4391).
     """
     auditor = _Auditor(audit_log, acting_user_id, memory, workspace_id)
     key = fact_key(acting_user_id, memory.content)
@@ -215,6 +220,7 @@ async def promote_evidence(
         first_observed=now,
         last_observed=now,
         last_reinforced=now,
+        persona_hints=persona_hints,
     )
     return await auditor.write(store, "promote", [fact])
 
