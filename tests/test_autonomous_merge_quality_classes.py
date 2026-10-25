@@ -52,12 +52,26 @@ def test_base_derived_quality_evidence_is_yellow_not_red() -> None:
     result = _assess_wiring_reads()
 
     assert result.risk == "yellow"
-    assert not result.eligible
+    # 2026-10-25 migration: evidence-only yellow is autonomously eligible —
+    # machine-derived baselines are checker-validated, and gaming them
+    # requires editing the checker (TRUSTED, always RED).
+    assert result.eligible
     assert not result.red_reasons
     assert result.yellow_reasons == [
         "branch-independent quality evidence changed (base_derived): "
         "quality/wiring-reads-baseline.json"
     ]
+
+
+@pytest.mark.ac("ADR-083126-5e62/AC-1")
+@pytest.mark.ac("SPEC-083126-5e62/AC-1")
+def test_blast_radius_yellow_stays_ineligible() -> None:
+    # pyproject.toml is YELLOW_PATTERNS blast radius, not quality evidence:
+    # autonomous eligibility must NOT accept it.
+    result = mod.assess([cf("pyproject.toml")], "", head_ref="chatgpt/x")
+
+    assert result.risk == "yellow"
+    assert not result.eligible
 
 
 @pytest.mark.ac("ADR-083126-5e62/AC-1")
@@ -86,15 +100,17 @@ def test_quality_specification_stays_red() -> None:
 @pytest.mark.ac("ADR-083126-5e62/AC-1")
 @pytest.mark.ac("SPEC-083126-5e62/AC-2")
 def test_unmigrated_quality_aggregate_stays_red() -> None:
+    # 2026-10-25 migration: legacy aggregates completed their documented
+    # target_kind transitions; per_identity_policy surfaces remain RED.
     result = mod.assess(
-        [cf("quality/vulture-baseline.json")],
+        [cf("quality/reachability-dispositions.json")],
         "",
         head_ref="chatgpt/x",
     )
 
     assert result.risk == "red"
     assert not result.eligible
-    assert "(legacy_shared_aggregate)" in result.red_reasons[0]
+    assert "(per_identity_policy)" in result.red_reasons[0]
 
 
 @pytest.mark.ac("ADR-083126-5e62/AC-2")
