@@ -709,11 +709,15 @@ class _ScheduleRunner:
             definition.graph_template_id, version=definition.template_version
         )
         if existing is not None:
-            if existing.workspace_id != definition.workspace_id:
-                raise ValueError(
-                    f"GraphTemplate {definition.graph_template_id!r} belongs to Workspace "
-                    f"{existing.workspace_id!r}, not {definition.workspace_id!r}"
-                )
+            # A bundled seed's template is content-identical across Workspaces:
+            # the template store keys it by (template_id, version), and a
+            # differing content under the same version is already refused by
+            # the store itself. Reusing the existing template across Workspaces
+            # is therefore safe — the Run's Workspace comes from the schedule,
+            # not from the template's provenance — and refusing it here would
+            # leave the schedule unable to ever compute a cursor (and thus
+            # `next_run`) once the template had been primed under another
+            # Workspace, including stale state from a previous process.
             return
 
         from maistro.graph.template_adapter import descriptor_to_template
