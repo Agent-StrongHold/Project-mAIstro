@@ -31,6 +31,14 @@ or placeholder-only section.
   approve/deny/answer/cancel through those same doors — identical authority
   to `maistro approvals` and the HITL routes. No parallel approvals store.
 
+- **Workspace Agent persona swap on one API/UI/Agent path (#2277).**
+  `GET`/`PUT /v1/workspaces/{id}/agent` read and swap the stable Workspace
+  Agent's `persona_template_id` without changing its id or `created_at`.
+  Owners only for writes; the chat tool `set_workspace_agent_persona` calls
+  the same `services.workspace_agent.set_workspace_agent_persona` door. The
+  toolbar "Agent persona" control is distinct from WorkspaceTabs /
+  PersonaWizard template chrome.
+
 - **Workspace `tool_bindings` apply at agent dispatch (#2276).** Sticky
   presentation bindings now narrow (or zero) tools at `resolve_agent_task` /
   `pulse_roster` and when building the runtime Agent identity, including
