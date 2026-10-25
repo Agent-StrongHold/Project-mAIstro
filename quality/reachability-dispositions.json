@@ -239,19 +239,6 @@
       ]
     },
     {
-      "id": "quota-verification",
-      "subsystem": "Quota and billing",
-      "disposition": "CONNECT",
-      "rationale": "ADR-085 provider-side quota verification. #718 wired the recording half (maistro.quota.recorder, and the ambient/reconciliation modules it composes) into the canonical Invocation terminalization, so those left this disposition; #1204 wired the SQLite usage-log snapshot behind the sqlite backend of create_container. The explicit verifier half (verify.py + the per-provider verifiers) still has no production caller and remains owed.",
-      "root": "the Invocation cost path (#56)",
-      "modules": [
-        "maistro.quota.verifiers",
-        "maistro.quota.verifiers.mistral",
-        "maistro.quota.verifiers.openrouter",
-        "maistro.quota.verify"
-      ]
-    },
-    {
       "id": "rsi-unwired",
       "subsystem": "RSI autorun",
       "disposition": "CONNECT",
@@ -262,18 +249,6 @@
         "maistro_rsi.autorun",
         "maistro_rsi.harness_adapter",
         "maistro_rsi.rate_pacer"
-      ]
-    },
-    {
-      "id": "resilience-unwired",
-      "subsystem": "Resilience",
-      "disposition": "CONNECT",
-      "rationale": "ADR-038 primitives with no producer: context probing, cross-instance rate coordination and the retry policy. #63 wires reliability signals to real producers.",
-      "root": "the Invocation and circuit-breaker paths (#63)",
-      "modules": [
-        "maistro.resilience.context_probe",
-        "maistro.resilience.rate_coordination",
-        "maistro.resilience.retry_policy"
       ]
     },
     {
