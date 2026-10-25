@@ -36,5 +36,11 @@ dev = [
 requires = ["hatchling>=1.27"]
 build-backend = "hatchling.build"
 
+[project.scripts]
+# The shipped built-in Canvas worker service (#93): one supported process a
+# deployment runs as a compose service / systemd unit; env-configured, see
+# maistro_canvas.canvas.worker_service.
+maistro-canvas-worker = "maistro_canvas.canvas.worker_service:main"
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/maistro_canvas"]

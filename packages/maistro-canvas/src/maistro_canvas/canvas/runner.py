@@ -47,9 +47,13 @@ class CanvasJobRunner:
         poll_interval: float = 1.0,
         reap_interval: float = 30.0,
         max_execution_seconds: float = 1800.0,
+        retry_backoff: RetryBackoff = DEFAULT_RETRY_BACKOFF,
+        concurrency: int = 1,
     ) -> None:
         if max_execution_seconds <= 0:
             raise ValueError("max_execution_seconds must be positive")
+        if concurrency < 1:
+            raise ValueError("concurrency must be at least 1")
         self._store = store
         self._executor = executor
         self._worker_id = worker_id
@@ -57,26 +61,105 @@ class CanvasJobRunner:
         self._poll_interval = poll_interval
         self._reap_interval = reap_interval
         self._max_execution_seconds = max_execution_seconds
+        self._retry_backoff = retry_backoff
+        self._concurrency = concurrency
         self._running = False
 
     async def start(self) -> None:
-        """Run the poll loop until stop() is called."""
+        """Run the poll loop until stop() is called.
+
+        With ``concurrency > 1`` up to that many claimed jobs execute
+        concurrently, so independent ready jobs (unrelated artifact branches)
+        progress in parallel where the queue allows it (#93). Each concurrent
+        unit is the same fenced ``tick_once``: claims stay atomic (one
+        ``claim_next_pending`` per unit, each pinning its own attempt
+        generation), and every terminal write fences on the exact claim it
+        belongs to, so two units can never double-process one physical job.
+
+        ``stop()`` stops *claiming* and then drains in-flight jobs before this
+        coroutine returns; if the caller cannot wait (the composition layer's
+        bounded shutdown cancels this task at its grace deadline), the
+        ``CancelledError`` path cancels the in-flight ticks too — mirroring
+        the serial design, where cancellation lands inside the one in-flight
+        tick rather than leaving orphaned provider work running past shutdown.
+        """
         self._running = True
-        logger.info("canvas_runner_started worker=%s", self._worker_id)
+        logger.info(
+            "canvas_runner_started worker=%s concurrency=%d",
+            self._worker_id,
+            self._concurrency,
+        )
+        in_flight: set[asyncio.Task[bool]] = set()
         reap_counter = 0.0
-        while self._running:
-            try:
-                await self.tick_once()
-            except Exception:
-                logger.exception("canvas_runner_tick_error")
-            reap_counter += self._poll_interval
-            if reap_counter >= self._reap_interval:
-                reap_counter = 0.0
-                try:
-                    await self.reap_once()
-                except Exception:
-                    logger.exception("canvas_runner_reap_error")
-            await asyncio.sleep(self._poll_interval)
+        try:
+            while self._running or in_flight:
+                if not self._running:
+                    # Draining after stop(): wait for claimed jobs to finish.
+                    await self._drain_one_round(in_flight)
+                    continue
+                # Retire finished units first so their slots free up and no
+                # exception sits unretrieved.
+                self._retire_finished(in_flight)
+                self._fill_free_slots(in_flight)
+                reap_counter = await self._reap_periodically(reap_counter)
+                await asyncio.sleep(self._poll_interval)
+        except asyncio.CancelledError:
+            # Bounded shutdown (bind_canvas_runner_lifecycle) cancelled this
+            # loop at its grace deadline. Cancel the in-flight ticks as well:
+            # leaving them running would keep executing provider work after
+            # the service was told to stop, and the canonical adapter records
+            # the cancellation like it does for the serial design.
+            self._running = False
+            await self._cancel_in_flight(in_flight)
+            raise
+        finally:
+            self._running = False
+
+    async def _drain_one_round(self, in_flight: set[asyncio.Task[bool]]) -> None:
+        """Wait for one claimed job to finish while draining after stop()."""
+        done, _pending = await asyncio.wait(in_flight, return_when=asyncio.FIRST_COMPLETED)
+        in_flight.difference_update(done)
+        for task in done:
+            self._consume_tick(task)
+
+    def _retire_finished(self, in_flight: set[asyncio.Task[bool]]) -> None:
+        """Consume finished tick outcomes so their slots free up cleanly."""
+        finished = {task for task in in_flight if task.done()}
+        in_flight.difference_update(finished)
+        for task in finished:
+            self._consume_tick(task)
+
+    def _fill_free_slots(self, in_flight: set[asyncio.Task[bool]]) -> None:
+        """Top the in-flight set back up to the configured concurrency."""
+        while len(in_flight) < self._concurrency:
+            in_flight.add(asyncio.create_task(self.tick_once()))
+
+    async def _reap_periodically(self, reap_counter: float) -> float:
+        """Run the lease reaper once per reap interval; return the new counter."""
+        reap_counter += self._poll_interval
+        if reap_counter < self._reap_interval:
+            return reap_counter
+        try:
+            await self.reap_once()
+        except Exception:
+            logger.exception("canvas_runner_reap_error")
+        return 0.0
+
+    @staticmethod
+    async def _cancel_in_flight(in_flight: set[asyncio.Task[bool]]) -> None:
+        """Cancel every in-flight tick and wait for the cancellations to land."""
+        for task in in_flight:
+            task.cancel()
+        await asyncio.gather(*in_flight, return_exceptions=True)
+
+    @staticmethod
+    def _consume_tick(task: asyncio.Task[bool]) -> None:
+        """Retrieve one finished tick's outcome; log unexpected failures."""
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            logger.error("canvas_runner_tick_error", exc_info=exc)
 
     def stop(self) -> None:
         self._running = False
