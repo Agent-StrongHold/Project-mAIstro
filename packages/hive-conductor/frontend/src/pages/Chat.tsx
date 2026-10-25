@@ -489,6 +489,9 @@ export default function ChatPage() {
               continue;
             }
             if (evt.type === "brief") {
+              // Same epoch gate as patchAssistant (#1822): a late brief after
+              // Workspace/session switch must not paint onto the new selection.
+              if (streamEpochRef.current !== epoch) continue;
               // The interview's state after this turn: open (summary + question),
               // drafted (the draft, nothing written), or gone (dropped).
               const view: BriefView | null = evt.interview || evt.draft ? evt : null;
