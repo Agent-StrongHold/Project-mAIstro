@@ -828,6 +828,23 @@ PM_TOOLS: list[dict[str, Any]] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "set_workspace_agent_persona",
+            "description": "Swap the Workspace Agent's persona template id (#2277) without changing its stable agent id. Uses the same service as PUT /v1/workspaces/{id}/agent. persona_template_id must be a lowercase snake_case id (e.g. program_manager, delivery).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "persona_template_id": {
+                        "type": "string",
+                        "description": "Persona template id to run on the Workspace Agent",
+                    },
+                },
+                "required": ["persona_template_id"],
+            },
+        },
+    },
 ]
 
 
@@ -2102,6 +2119,41 @@ async def _tool_dismiss_home_adaptive(
     }
 
 
+async def _tool_set_workspace_agent_persona(
+    args: dict[str, Any], user_id: str, jira_pat: str | None
+) -> dict[str, Any]:
+    """Swap the Workspace Agent persona (#2277) through the same service the
+    `PUT /v1/workspaces/{id}/agent` route serves — one durable row, one id."""
+    from services import workspace_agent, workspace_authority
+
+    workspace_id = _chat_workspace_id.get()
+    if not workspace_id:
+        return {
+            "swapped": False,
+            "error": "no Workspace context for this turn; persona swap is Workspace-scoped",
+        }
+    if await workspace_authority.visible_view(user_id, workspace_id) is None:
+        return {"swapped": False, "error": "workspace not found"}
+    if await workspace_authority.member_role(user_id, workspace_id) != "owner":
+        return {"swapped": False, "error": "only an owner can swap the Workspace Agent persona"}
+    template_id = str(args.get("persona_template_id") or "")
+    try:
+        agent = await workspace_agent.set_workspace_agent_persona(workspace_id, template_id)
+    except ValueError as exc:
+        return {"swapped": False, "error": str(exc)}
+    except workspace_agent.WorkspaceNotFound:
+        return {"swapped": False, "error": "workspace not found"}
+    except workspace_agent.WorkspaceAgentConflict as exc:
+        return {"swapped": False, "error": str(exc)}
+    return {
+        "swapped": True,
+        "workspace_id": workspace_id,
+        "workspace_agent_id": agent.id,
+        "persona_template_id": workspace_agent.persona_template_id(agent),
+        "created_at": agent.created_at.isoformat(),
+    }
+
+
 _TOOL_HANDLERS: dict[str, Any] = {
     "poll_jira": _tool_poll_jira,
     "fetch_program_state": _tool_poll_jira,
@@ -2139,6 +2191,8 @@ _TOOL_HANDLERS: dict[str, Any] = {
     # through the same services the HTTP routes serve.
     "compose_home_adaptive": _tool_compose_home_adaptive,
     "dismiss_home_adaptive": _tool_dismiss_home_adaptive,
+    # Workspace Agent persona (#2277): same write door as PUT …/agent.
+    "set_workspace_agent_persona": _tool_set_workspace_agent_persona,
 }
 
 # Add hill-climbing and structural mutation from substrate tools
