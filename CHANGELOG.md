@@ -56,7 +56,13 @@ or placeholder-only section.
   `hive_last_surface`) when `workspace_restore_aggressiveness` still covers the
   absence (`off` / `brief` 15m / `balanced` 4h+½ session / `generous`
   24h+full session); otherwise it uses `workspace_default_landing` (Home
-  baseline). Learned suggestions remain a later #1050 slice.
+  baseline). Learned suggestions remain a later #1050 slice. Chat `brief`
+  stream frames now honor the same stream-epoch gate as content patches so a
+  late interview brief cannot paint onto a switched Workspace/session.
+
+- **Goals waiting-human links to Approvals (#65).** A Goal whose execution
+  disposition is `waiting_human` offers Open in Approvals with the blocked
+  run id — joining the #2278 Approvals surface without a second HITL store.
 
 - **Home Goals section reads Goal inspection (#65).** Workspace Home projections
   list Goals through `services.goal_inspection` (same door as `/goals`) instead
