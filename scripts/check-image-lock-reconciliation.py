@@ -535,7 +535,6 @@ def _applicable_forks(pins: list[LockedPin], env: Mapping[str, str]) -> list[Loc
     return applicable
 
 
-
 def reconcile_variance(
     required: set[str], conditional: set[str], actual: set[str]
 ) -> tuple[list[str], list[str], list[str]]:
@@ -564,6 +563,7 @@ def reconcile_variance(
         p for p in actual - everything_expected if p.partition("==")[0] not in skewed_names
     )
     return missing, extra, skewed
+
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)

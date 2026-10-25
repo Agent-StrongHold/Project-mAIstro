@@ -170,9 +170,13 @@ def test_parse_expected_keeps_every_marker_forked_variant_of_a_name(gate):
             "",
         ]
     )
-    required, conditional = gate.parse_expected(text)
-    assert required == {"fastapi==0.142.2"}
-    assert conditional == {"beartype==0.22.9", "beartype==0.23.1"}
+    pins = gate.parse_expected(text)
+    assert set(pins) == {"fastapi", "beartype"}
+    assert [p.pin for p in pins["fastapi"]] == ["fastapi==0.142.2"]
+    assert [p.pin for p in pins["beartype"]] == [
+        "beartype==0.22.9",
+        "beartype==0.23.1",
+    ]
 
 
 @pytest.mark.parametrize("text", ["", "# only comments\n", "\n\n"])
