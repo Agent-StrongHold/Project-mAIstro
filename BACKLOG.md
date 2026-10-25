@@ -368,8 +368,8 @@ Single-tenant, multi-user self-hosted deployment — ships as `packages/hive-con
 **[conductor-410] Canvas v2 operable in default compose — Proposed; `gap-impl` — v1.0 M3-B**
 - [#735](https://github.com/Agent-StrongHold/Project-mAIstro/issues/735): `/v2/canvas` not 503 on default `docker compose up`
 
-**[conductor-411] Hide Evolution UI until v1.2 — Proposed — v1.0**
-- [#2275](https://github.com/Agent-StrongHold/Project-mAIstro/issues/2275): Remove Evolution from nav and routes for v1.0; restore in v1.2 when durable population lands (#51 remains Evolve implementation)
+**[conductor-411] Hide Evolution UI until v1.2 — Proposed; `gap-impl` — v1.0**
+- [#2275](https://github.com/Agent-StrongHold/Project-mAIstro/issues/2275): Remove Evolution from nav and routes for v1.0; restore in v1.2 when durable population lands (#51 remains Evolve implementation owner)
 
 **[conductor-412] Tool binding dispatch wiring — Proposed; `gap-impl` — v1.0**
 - [#2276](https://github.com/Agent-StrongHold/Project-mAIstro/issues/2276): Persona/Workspace overrides applied at dispatch via `tool_binding.py`; sandbox enforces per Graph NodeRun scope

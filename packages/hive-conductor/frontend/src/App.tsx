@@ -30,7 +30,6 @@ const Dashboard = lazy(() => import("./pages/Dashboard"));
 const DesignStudio = lazy(() => import("./pages/DesignStudio"));
 const DeckBuilder = lazy(() => import("./pages/DeckBuilder"));
 const Docs = lazy(() => import("./pages/Docs"));
-const Evolution = lazy(() => import("./pages/Evolution"));
 const Goals = lazy(() => import("./pages/Goals"));
 const Home = lazy(() => import("./pages/Home"));
 const RSI = lazy(() => import("./pages/RSI"));
@@ -235,7 +234,11 @@ function AppRoutes() {
                   <Route path="cli/canvas" element={<Navigate to="/design-studio" replace />} />
                   <Route path="containers" element={<Containers />} />
                   <Route path="docs" element={<Docs />} />
-                  <Route path="evolution" element={<Evolution />} />
+                  {/* #2275 / conductor-411: Evolution is HIDE for v1.0 — no
+                      shipped route, no stub claiming availability. The page
+                      module stays in-tree for v1.2 restore (#51). Direct
+                      /evolution hits fall through the shell outlet empty
+                      rather than advertise a product surface. */}
                   <Route path="rsi" element={<RSI />} />
                   <Route path="memory" element={<Memory />} />
                   <Route path="settings" element={<Settings />} />
