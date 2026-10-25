@@ -470,7 +470,9 @@ class TestExecuteSingleFailureModes:
         node_module.compute_backoff = lambda *a, **k: 1.0  # type: ignore[assignment]
         node_module.get_delay = lambda *a, **k: 0.25  # type: ignore[assignment]
         try:
-            await node.execute(llm_call, backoff_config=BackoffConfig(base_delay=1.0, max_delay=2.0))
+            await node.execute(
+                llm_call, backoff_config=BackoffConfig(base_delay=1.0, max_delay=2.0)
+            )
         finally:
             node_module.compute_backoff = original_backoff
             node_module.get_delay = original_stage
