@@ -2769,7 +2769,7 @@ async def create_container(
 
         event_bus = EventBus()
 
-# ADR-086 builtin action handlers + recipe catalog (#2313 CONNECT).
+        # ADR-086 builtin action handlers + recipe catalog (#2313 CONNECT).
         # Recipes land disabled so localhost defaults cannot fire until ops arm them.
         from maistro.events.wiring import wire_legacy_trigger_surface
 
