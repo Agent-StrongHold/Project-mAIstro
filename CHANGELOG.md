@@ -51,14 +51,37 @@ or placeholder-only section.
   prompt-fragment append. UI/API-saved bindings share that path; persona
   templates are not mutated.
 
+- **Attention defer/dismiss preference evidence (#1049).** `POST`/`DELETE
+  /v1/workspaces/{id}/attention/dismiss` records Workspace-scoped defer/dismiss
+  preferences (JsonStore, same shape as Home adaptive dismissals). GET Attention
+  filters those source ids and reports `dismissed_count`. Defer/Dismiss CTAs on
+  the Attention page write that door; answering still stays on the HITL answer
+  route. Does not settle HITL or Run state.
+
+- **DAG Run projection writers honor #1036 nonterminal mirroring.** HTTP
+  `_record_run_projection` and live `LiveRunProjection.record_result` now
+  mirror CREATED/QUEUED/RUNNING/WAITING/PAUSED via `record_status` /
+  `record_outcome` (exact status, `finished_at` null) instead of leaving the
+  row at the store default or coercing missing status to `failed`.
+
+- **Bounded learned-landing suggestion (#1050).** Immediate Home→surface hops
+  (published streak band) can show a non-blocking proposal to make that surface
+  the default. Accept PATCHes `workspace_default_landing`; dismiss suppresses
+  further nags for that path. Explicit non-Home default outranks learning.
+
+- **Chat stream abort marks the optimistic turn interrupted (#1822).** Switching
+  Workspace/session mid-stream aborts the request, epoch-gates late
+  delta/brief/done frames, and marks the in-flight assistant bubble interrupted
+  until reopen replaces from GET truth.
+
 - **Recent-return restore consumes restore aggressiveness (#1050 / #1822).**
   Authenticated `/` now prefers the last Workspace surface (tracked in owned
   `hive_last_surface`) when `workspace_restore_aggressiveness` still covers the
   absence (`off` / `brief` 15m / `balanced` 4h+½ session / `generous`
   24h+full session); otherwise it uses `workspace_default_landing` (Home
-  baseline). Learned suggestions remain a later #1050 slice. Chat `brief`
-  stream frames now honor the same stream-epoch gate as content patches so a
-  late interview brief cannot paint onto a switched Workspace/session.
+  baseline). Chat `brief` stream frames honor the same stream-epoch gate as
+  content patches so a late interview brief cannot paint onto a switched
+  Workspace/session.
 
 - **Goals waiting-human links to Approvals (#65).** A Goal whose execution
   disposition is `waiting_human` offers Open in Approvals with the blocked

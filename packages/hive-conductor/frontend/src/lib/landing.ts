@@ -161,3 +161,81 @@ export function decideLanding(args: {
   }
   return { path, reason: "restore" };
 }
+
+// ── Bounded learned-landing suggestion (#1050) ─────────────────────────
+//
+// Observes immediate hops from the default/Home surface to another landing
+// option. After a configurable streak (policy knob, not product law) the SPA
+// may show a non-blocking proposal. Accept writes the durable profile default;
+// dismiss suppresses further nags for that path. Explicit default ≠ Home
+// outranks learning — no proposal while the user already pinned a surface.
+
+/** How soon after arriving on Home/default a leave counts as "immediate". */
+export const LEARNED_IMMEDIATE_MS = 45_000;
+
+/**
+ * Minimum consistent immediate hops before a proposal is worth showing.
+ * Configurable policy — deliberately not a fixed "magic" product count in the
+ * issue; this is the SPA's published band for tests and the UI.
+ */
+export const LEARNED_STREAK_MIN = 3;
+
+export type LandingNavPattern = {
+  path: string;
+  streak: number;
+  lastAtMs: number;
+};
+
+export type LandingSuggestion = {
+  path: string;
+  streak: number;
+};
+
+export type LandingSuggestionDecision =
+  | { show: false; reason: "explicit" | "suppressed" | "insufficient" | "ineligible" }
+  | { show: true; suggestion: LandingSuggestion };
+
+/** Record an immediate Home→surface hop; returns the updated streak pattern. */
+export function recordImmediateLandingHop(
+  prior: LandingNavPattern | null,
+  path: string,
+  nowMs: number,
+): LandingNavPattern | null {
+  const target = resolveLandingPath(path);
+  if (target === DEFAULT_LANDING_PATH) return prior;
+  if (!ALLOWED_LANDING.has(target)) return prior;
+  if (prior && prior.path === target) {
+    return { path: target, streak: prior.streak + 1, lastAtMs: nowMs };
+  }
+  return { path: target, streak: 1, lastAtMs: nowMs };
+}
+
+/**
+ * Decide whether to propose making `pattern.path` the default landing.
+ * Explicit non-Home default and prior dismissals suppress without nagging.
+ */
+export function decideLandingSuggestion(args: {
+  pattern: LandingNavPattern | null;
+  explicitDefault: string;
+  suppressedPaths: ReadonlySet<string>;
+  streakMin?: number;
+}): LandingSuggestionDecision {
+  const explicit = resolveLandingPath(args.explicitDefault);
+  if (explicit !== DEFAULT_LANDING_PATH) {
+    return { show: false, reason: "explicit" };
+  }
+  const pattern = args.pattern;
+  if (!pattern) return { show: false, reason: "insufficient" };
+  const path = resolveLandingPath(pattern.path);
+  if (path === DEFAULT_LANDING_PATH || !ALLOWED_LANDING.has(path)) {
+    return { show: false, reason: "ineligible" };
+  }
+  if (args.suppressedPaths.has(path)) {
+    return { show: false, reason: "suppressed" };
+  }
+  const min = args.streakMin ?? LEARNED_STREAK_MIN;
+  if (pattern.streak < min) {
+    return { show: false, reason: "insufficient" };
+  }
+  return { show: true, suggestion: { path, streak: pattern.streak } };
+}

@@ -1,5 +1,6 @@
 import { type ReactNode, useState } from "react";
 import { clearUiState } from "../lib/uiState";
+import { LandingSuggestionBanner } from "./LandingSuggestionBanner";
 import { LastSurfaceTracker } from "./LastSurfaceTracker";
 import { NavLink, Outlet } from "react-router-dom";
 import { useUser } from "../App";
@@ -253,6 +254,8 @@ export function AppShell({ children }: { children?: ReactNode }) {
             the banner names every degraded optional capability from
             /health and disappears on its own when they recover. */}
         <DegradedBanner />
+        {/* #1050: non-blocking learned-landing proposal (preference-aware). */}
+        <LandingSuggestionBanner />
         <div className="workspace-toolbar">
           <WorkspaceTabs />
           <WorkspaceShare />

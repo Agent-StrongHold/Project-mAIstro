@@ -20,6 +20,8 @@ export type AttentionSummary = {
   truncated: boolean;
   /** True when the canonical graph spine cannot supply HITL pauses. */
   hitl_unavailable?: boolean;
+  /** How many scanned items were hidden by defer/dismiss preferences. */
+  dismissed_count?: number;
 };
 
 export type AttentionPayload = {
@@ -56,6 +58,39 @@ export function parseHitlAnswerHref(
   const nodeId = decodeURIComponent(m[2] ?? "");
   if (!runId || !nodeId) return null;
   return { runId, nodeId, path: bare };
+}
+
+/** Defer or dismiss one Attention source for this Workspace (#1049). */
+export async function dismissAttentionItem(
+  workspaceId: string,
+  sourceKind: string,
+  sourceId: string,
+  action: "dismiss" | "defer" = "dismiss",
+): Promise<unknown> {
+  const response = await fetch(
+    `/v1/workspaces/${workspaceId}/attention/dismiss`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "same-origin",
+      body: JSON.stringify({ sourceKind, sourceId, action }),
+    },
+  );
+  if (!response.ok) {
+    let detail = response.statusText;
+    try {
+      const body = (await response.json()) as { detail?: unknown };
+      if (typeof body.detail === "string") detail = body.detail;
+    } catch {
+      // keep statusText
+    }
+    throw new ApiError(
+      detail || "Couldn't dismiss Attention item",
+      response.status,
+      `/v1/workspaces/${workspaceId}/attention/dismiss`,
+    );
+  }
+  return response.json();
 }
 
 /** Post an answer through the canonical HITL door (#1049 Attention CTA). */

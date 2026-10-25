@@ -542,6 +542,25 @@ export default function ChatPage() {
         }
       } catch (e: unknown) {
         if (abort.signal.aborted || (e instanceof DOMException && e.name === "AbortError")) {
+          // #1822: mark the optimistic bubble interrupted on the origin session
+          // even after the epoch bump (switch/unmount). Reopening the session
+          // replaces from GET truth; late frames stay epoch-gated out.
+          updateSession(sessionId, (s) => ({
+            ...s,
+            messages: s.messages.map((m) =>
+              m.id === assistantId
+                ? {
+                    ...m,
+                    status: undefined,
+                    steps: (m.steps ?? []).map((st) =>
+                      st.status === "running" ? { ...st, status: "error" } : st,
+                    ),
+                    content: m.content || "",
+                    interrupted: true,
+                  }
+                : m,
+            ),
+          }));
           return;
         }
         const message = e instanceof Error ? e.message : "stream failed";
@@ -750,6 +769,15 @@ export default function ChatPage() {
                     <span className="dot" />
                     <span className="dot" />
                     {msg.status}
+                  </div>
+                )}
+                {msg.interrupted && !msg.status && (
+                  <div
+                    className="chat-status"
+                    aria-label="Interrupted"
+                    data-testid="chat-interrupted"
+                  >
+                    Interrupted — reopen the session for persisted truth
                   </div>
                 )}
                 {msg.content && (

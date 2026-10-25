@@ -1,5 +1,6 @@
 /**
- * Records the active Workspace surface for recent-return restore (#1050/#1822).
+ * Records the active Workspace surface for recent-return restore (#1050/#1822)
+ * and observes immediate Home→surface hops for learned-landing proposals (#1050).
  *
  * Updates `hive_last_surface` when the route changes or the tab hides so
  * DefaultLandingRedirect can reopen the prior surface inside the user's
@@ -8,8 +9,26 @@
 
 import { useEffect, useRef } from "react";
 import { useLocation } from "react-router-dom";
-import { normalizeRestorePath } from "../lib/landing";
-import { writeLastSurface } from "../lib/uiState";
+import {
+  DEFAULT_LANDING_PATH,
+  LANDING_OPTIONS,
+  LEARNED_IMMEDIATE_MS,
+  normalizeRestorePath,
+  recordImmediateLandingHop,
+} from "../lib/landing";
+import {
+  readLandingNavPattern,
+  writeLandingNavPattern,
+  writeLastSurface,
+} from "../lib/uiState";
+
+const LEARNED_TARGETS = new Set(
+  LANDING_OPTIONS.map((o) => o.path).filter((p) => p !== DEFAULT_LANDING_PATH),
+);
+
+function barePath(pathname: string): string {
+  return pathname.trim().split(/[?#]/, 1)[0] || "";
+}
 
 function record(pathname: string, sessionStartedAtMs: number, leftAtMs: number): void {
   const path = normalizeRestorePath(pathname);
@@ -21,12 +40,31 @@ export function LastSurfaceTracker() {
   const location = useLocation();
   const sessionStartedRef = useRef<number>(Date.now());
   const pathRef = useRef<string>(location.pathname);
+  const arrivedHomeAtRef = useRef<number | null>(
+    barePath(location.pathname) === DEFAULT_LANDING_PATH ? Date.now() : null,
+  );
 
   useEffect(() => {
+    const prev = barePath(pathRef.current);
     pathRef.current = location.pathname;
+    const now = Date.now();
     // Navigating onto a restore-eligible surface starts/continues the session
     // clock; leaving one stamps leftAt for the path just left.
-    record(location.pathname, sessionStartedRef.current, Date.now());
+    record(location.pathname, sessionStartedRef.current, now);
+
+    const next = barePath(location.pathname);
+    if (prev === DEFAULT_LANDING_PATH && LEARNED_TARGETS.has(next)) {
+      const arrived = arrivedHomeAtRef.current;
+      if (arrived !== null && now - arrived <= LEARNED_IMMEDIATE_MS) {
+        const updated = recordImmediateLandingHop(readLandingNavPattern(), next, now);
+        if (updated) writeLandingNavPattern(updated);
+      }
+      arrivedHomeAtRef.current = null;
+    } else if (next === DEFAULT_LANDING_PATH) {
+      arrivedHomeAtRef.current = now;
+    } else {
+      arrivedHomeAtRef.current = null;
+    }
   }, [location.pathname]);
 
   useEffect(() => {

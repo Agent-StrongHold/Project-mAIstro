@@ -10,8 +10,8 @@
  * them on request. `hive_last_surface` feeds recent-return restore (#1050).
  */
 
-import type { RecentSurface } from "./landing";
-import { normalizeRestorePath } from "./landing";
+import type { LandingNavPattern, RecentSurface } from "./landing";
+import { DEFAULT_LANDING_PATH, normalizeRestorePath, resolveLandingPath } from "./landing";
 
 export const UI_STATE_KEYS = [
   { key: "hive_active_workspace_id", what: "The workspace tab you last had open" },
@@ -21,10 +21,24 @@ export const UI_STATE_KEYS = [
     key: "hive_last_surface",
     what: "The last Workspace surface for recent-return restore (#1050/#1822)",
   },
+  {
+    key: "hive_landing_nav_pattern",
+    what: "Immediate Home→surface hop streak for learned-landing proposals (#1050)",
+  },
+  {
+    key: "hive_landing_suggestion_suppressed",
+    what: "Landing surfaces whose learned proposal was dismissed (#1050)",
+  },
 ] as const;
 
 /** localStorage key for the recent-return surface blob (JSON RecentSurface). */
 export const LAST_SURFACE_KEY = "hive_last_surface";
+
+/** Immediate-hop streak for learned landing proposals (#1050). */
+export const LANDING_NAV_PATTERN_KEY = "hive_landing_nav_pattern";
+
+/** JSON string[] of paths whose landing suggestion was dismissed. */
+export const LANDING_SUGGESTION_SUPPRESSED_KEY = "hive_landing_suggestion_suppressed";
 
 const OWNER_KEY = "hive_ui_state_owner";
 
@@ -107,5 +121,64 @@ export function writeLastSurface(surface: RecentSurface): void {
     );
   } catch {
     // Storage unavailable — restore simply will not fire.
+  }
+}
+
+/** Read the immediate Home→surface hop streak, or null. */
+export function readLandingNavPattern(): LandingNavPattern | null {
+  const raw = read(LANDING_NAV_PATTERN_KEY);
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as Partial<LandingNavPattern>;
+    const path = resolveLandingPath(parsed.path);
+    if (path === DEFAULT_LANDING_PATH) return null;
+    const streak = Number(parsed.streak);
+    const lastAtMs = Number(parsed.lastAtMs);
+    if (!Number.isFinite(streak) || streak < 1 || !Number.isFinite(lastAtMs)) return null;
+    return { path, streak: Math.floor(streak), lastAtMs };
+  } catch {
+    return null;
+  }
+}
+
+export function writeLandingNavPattern(pattern: LandingNavPattern): void {
+  const path = resolveLandingPath(pattern.path);
+  if (path === DEFAULT_LANDING_PATH) return;
+  try {
+    localStorage.setItem(
+      LANDING_NAV_PATTERN_KEY,
+      JSON.stringify({ path, streak: pattern.streak, lastAtMs: pattern.lastAtMs }),
+    );
+  } catch {
+    // Storage unavailable — no learned proposal.
+  }
+}
+
+export function readSuppressedLandingSuggestions(): Set<string> {
+  const raw = read(LANDING_SUGGESTION_SUPPRESSED_KEY);
+  if (!raw) return new Set();
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return new Set();
+    return new Set(
+      parsed
+        .filter((p): p is string => typeof p === "string")
+        .map((p) => resolveLandingPath(p))
+        .filter((p) => p !== DEFAULT_LANDING_PATH),
+    );
+  } catch {
+    return new Set();
+  }
+}
+
+export function suppressLandingSuggestion(path: string): void {
+  const target = resolveLandingPath(path);
+  if (target === DEFAULT_LANDING_PATH) return;
+  const next = readSuppressedLandingSuggestions();
+  next.add(target);
+  try {
+    localStorage.setItem(LANDING_SUGGESTION_SUPPRESSED_KEY, JSON.stringify([...next]));
+  } catch {
+    // ignore
   }
 }

@@ -11,6 +11,7 @@ import type { AttentionItem, AttentionPayload } from "../lib/attention";
 import {
   attentionClassLabel,
   attentionPath,
+  dismissAttentionItem,
   inspectionHref,
   parseHitlAnswerHref,
   submitHitlAnswer,
@@ -27,10 +28,12 @@ function classVariant(name: string): "ok" | "danger" | "warn" | "muted" | "accen
 
 function AttentionRow({
   item,
+  workspaceId,
   onInspect,
   onAnswered,
 }: {
   item: AttentionItem;
+  workspaceId: string;
   onInspect: (href: string) => void;
   onAnswered: () => void;
 }) {
@@ -49,6 +52,20 @@ function AttentionRow({
       onAnswered();
     } catch (e) {
       setError(e instanceof ApiError ? e.message : "Couldn't submit answer.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const hide = async (action: "dismiss" | "defer") => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await dismissAttentionItem(workspaceId, item.source_kind, item.source_id, action);
+      onAnswered();
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : "Couldn't update Attention preference.");
     } finally {
       setBusy(false);
     }
@@ -76,6 +93,22 @@ function AttentionRow({
       <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
         <button type="button" onClick={() => onInspect(inspectionHref(item))}>
           Open run
+        </button>
+        <button
+          type="button"
+          disabled={busy}
+          data-testid="attention-defer"
+          onClick={() => void hide("defer")}
+        >
+          Defer
+        </button>
+        <button
+          type="button"
+          disabled={busy}
+          data-testid="attention-dismiss"
+          onClick={() => void hide("dismiss")}
+        >
+          Dismiss
         </button>
       </div>
       {door ? (
@@ -203,6 +236,11 @@ export default function Attention() {
                   HITL pauses unavailable
                 </Hex>
               ) : null}
+              {(summary?.dismissed_count ?? 0) > 0 ? (
+                <span style={{ fontSize: 12, color: "var(--pencil)" }} data-testid="attention-dismissed-count">
+                  Hidden by preference: {summary?.dismissed_count}
+                </span>
+              ) : null}
               {summary && summary.rising.length > 0 ? (
                 <span style={{ fontSize: 12, color: "var(--pencil)" }}>
                   Rising: {summary.rising.length}
@@ -222,6 +260,7 @@ export default function Attention() {
                 <AttentionRow
                   key={`${item.source_kind}:${item.source_id}`}
                   item={item}
+                  workspaceId={activeWorkspaceId}
                   onInspect={(href) => navigate(href)}
                   onAnswered={() => void load()}
                 />

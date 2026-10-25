@@ -524,3 +524,84 @@ async def test_route_scopes_attention_to_members(admin_client, authed_client, ru
     # which Workspaces exist.
     unscoped_missing = authed_client.get("/v1/workspaces/ws-no-such-thing/attention")
     assert unscoped_missing.status_code == 403
+
+
+async def test_dismiss_hides_item_and_counts_preference(run_store) -> None:
+    """#1049: defer/dismiss is preference evidence — GET filters the source id
+    and reports dismissed_count; another Workspace is unaffected."""
+    from services.attention import clear_dismissal, list_attention, record_dismissal
+
+    ws = await _workspace("admin", "Attention dismiss")
+    other = await _workspace("admin", "Attention dismiss other")
+    await run_store.create(_paused_record("att-keep", workspace_id=ws))
+    await run_store.create(_paused_record("att-hide", workspace_id=ws))
+    await run_store.create(_paused_record("att-other-ws", workspace_id=other))
+
+    record_dismissal(ws, "hitl_node_run", "att-hide/ask", actor="admin", action="dismiss")
+
+    body = await list_attention("admin", ws, now=_NOW)
+    assert body is not None
+    assert _ids(body) == ["att-keep/ask"]
+    assert body["summary"]["dismissed_count"] == 1
+
+    # Same source id in another Workspace is not filtered by this preference.
+    other_body = await list_attention("admin", other, now=_NOW)
+    assert other_body is not None
+    assert _ids(other_body) == ["att-other-ws/ask"]
+    assert other_body["summary"]["dismissed_count"] == 0
+
+    clear_dismissal(ws, "hitl_node_run", "att-hide/ask")
+    restored = await list_attention("admin", ws, now=_NOW)
+    assert restored is not None
+    assert set(_ids(restored)) == {"att-keep/ask", "att-hide/ask"}
+    assert restored["summary"]["dismissed_count"] == 0
+
+
+async def test_defer_and_dismiss_routes_are_member_scoped(
+    admin_client, authed_client, run_store
+) -> None:
+    """POST/DELETE dismiss require membership + dags.write like GET."""
+    from services.attention import dismissal_store
+
+    ws_admin = await _workspace("admin", "Attention dismiss route")
+    ws_user = await _workspace("user", "Attention dismiss route user")
+    await run_store.create(_paused_record("att-dismiss-route", workspace_id=ws_admin))
+
+    ok = admin_client.post(
+        f"/v1/workspaces/{ws_admin}/attention/dismiss",
+        json={"sourceKind": "hitl_node_run", "sourceId": "att-dismiss-route/ask", "action": "defer"},
+    )
+    assert ok.status_code == 200, ok.text
+    assert ok.json()["ok"] is True
+    assert ok.json()["action"] == "defer"
+
+    filtered = admin_client.get(f"/v1/workspaces/{ws_admin}/attention")
+    assert filtered.status_code == 200
+    assert "att-dismiss-route/ask" not in _ids(filtered.json())
+    assert filtered.json()["summary"]["dismissed_count"] == 1
+
+    foreign = admin_client.post(
+        f"/v1/workspaces/{ws_user}/attention/dismiss",
+        json={"sourceKind": "hitl", "sourceId": "x", "action": "dismiss"},
+    )
+    missing = admin_client.post(
+        "/v1/workspaces/ws-no-such-thing/attention/dismiss",
+        json={"sourceKind": "hitl", "sourceId": "x", "action": "dismiss"},
+    )
+    assert foreign.status_code == missing.status_code == 404
+
+    unscoped = authed_client.post(
+        f"/v1/workspaces/{ws_admin}/attention/dismiss",
+        json={"sourceKind": "hitl", "sourceId": "x", "action": "dismiss"},
+    )
+    assert unscoped.status_code == 403
+
+    cleared = admin_client.delete(
+        f"/v1/workspaces/{ws_admin}/attention/dismiss",
+        params={"sourceKind": "hitl_node_run", "sourceId": "att-dismiss-route/ask"},
+    )
+    assert cleared.status_code == 200
+    assert cleared.json()["cleared"] is True
+    # Preference row gone from the JsonStore.
+    leftover = f"{ws_admin}:hitl_node_run:att-dismiss-route/ask"
+    assert leftover not in dismissal_store

@@ -147,3 +147,69 @@ test("restore aggressiveness off always uses the default landing", async () => {
     timeout: 15000,
   });
 });
+
+test("learned-landing proposal accept writes the durable default; dismiss suppresses nag", async () => {
+  await page.request.put("/v1/profile", {
+    data: {
+      preferences: {
+        workspace_default_landing: "/home",
+        workspace_restore_aggressiveness: "off",
+      },
+    },
+  });
+  await page.goto("/home");
+  // Seed the published streak band (LEARNED_STREAK_MIN = 3) without waiting
+  // for real immediate hops — observation is already covered by policy tests.
+  await page.evaluate(() => {
+    window.localStorage.setItem(
+      "hive_landing_nav_pattern",
+      JSON.stringify({ path: "/goals", streak: 3, lastAtMs: Date.now() }),
+    );
+    window.localStorage.removeItem("hive_landing_suggestion_suppressed");
+  });
+  await page.goto("/home");
+  const banner = page.getByTestId("landing-suggestion-banner");
+  await expect(banner).toBeVisible({ timeout: 10000 });
+
+  await page.getByTestId("landing-suggestion-dismiss").click();
+  await expect(banner).toHaveCount(0);
+
+  // Dismiss suppresses — seeding the streak again must not re-nag.
+  await page.evaluate(() => {
+    window.localStorage.setItem(
+      "hive_landing_nav_pattern",
+      JSON.stringify({ path: "/goals", streak: 5, lastAtMs: Date.now() }),
+    );
+  });
+  await page.goto("/chat");
+  await page.goto("/home");
+  await expect(page.getByTestId("landing-suggestion-banner")).toHaveCount(0);
+
+  // Clear suppress and accept → durable preference.
+  await page.evaluate(() => {
+    window.localStorage.removeItem("hive_landing_suggestion_suppressed");
+    window.localStorage.setItem(
+      "hive_landing_nav_pattern",
+      JSON.stringify({ path: "/goals", streak: 3, lastAtMs: Date.now() }),
+    );
+  });
+  await page.goto("/home");
+  await expect(page.getByTestId("landing-suggestion-banner")).toBeVisible({ timeout: 10000 });
+  await page.getByTestId("landing-suggestion-accept").click();
+  await expect(page.getByTestId("landing-suggestion-banner")).toHaveCount(0);
+
+  const profile = await page.request.get("/v1/profile");
+  expect(profile.status()).toBe(200);
+  const body = (await profile.json()) as { preferences?: { workspace_default_landing?: string } };
+  expect(body.preferences?.workspace_default_landing).toBe("/goals");
+
+  // Explicit default outranks learning — no banner even with a hot streak.
+  await page.evaluate(() => {
+    window.localStorage.setItem(
+      "hive_landing_nav_pattern",
+      JSON.stringify({ path: "/chat", streak: 9, lastAtMs: Date.now() }),
+    );
+  });
+  await page.goto("/home");
+  await expect(page.getByTestId("landing-suggestion-banner")).toHaveCount(0);
+});
