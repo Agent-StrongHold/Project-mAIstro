@@ -730,15 +730,10 @@ export default function Missions() {
             </div>
           </div>
           <div>
-            <label htmlFor="mission-assign-agent" style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", display: "block", marginBottom: 3 }}>Assign Agent</label>
-            <select
-              id="mission-assign-agent"
-              disabled
-              value=""
-              aria-describedby="mission-assign-agent-note"
-              style={{ ...inputBase, cursor: "not-allowed" }}
-            >
-              <option value="">No agent — a Run has not recorded one</option>
+            <label style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", display: "block", marginBottom: 3 }}>Assign Agent</label>
+            <select value={newAgent} onChange={(e) => setNewAgent(e.target.value)} style={inputBase}>
+              <option value="">\u2014 none \u2014</option>
+              {agents.map((a) => <option key={a.id} value={a.name}>{a.name}</option>)}
             </select>
             <p id="mission-assign-agent-note" style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--pencil)", margin: "4px 0 0" }}>
               An agent is shown only when the Run records one. This form does not assign one.

@@ -154,6 +154,9 @@ class TestTheValidatedValuesAreTheOnesUsed:
             entry.main(
                 [
                     "run",
+                    # Operator-chosen local path; unstated isolation refuses (#80).
+                    "--isolation",
+                    "local",
                     "--repo",
                     str(repo),
                     "--test-cmd",
@@ -192,6 +195,10 @@ class TestTheRefusalReachesTheCaller:
         code = entry.main(
             [
                 "run",
+                # Operator-chosen local path so the roster refusal is the gate
+                # under test; an unstated isolation refuses earlier (#80).
+                "--isolation",
+                "local",
                 "--repo",
                 str(repo),
                 "--test-cmd",

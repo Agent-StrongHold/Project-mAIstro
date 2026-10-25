@@ -55,6 +55,7 @@ def test_resumed_patch_is_visible_in_a_new_variant_worktree(tmp_path: Path) -> N
     (export_dir / "0001-resume.patch").write_text(_ADD_FILE_PATCH, encoding="utf-8")
 
     config = LocalRsiConfig(
+        isolation="local",
         repo_path=str(repo),
         test_command="exit 0",
         work_root=str(tmp_path / "work"),
@@ -122,6 +123,7 @@ def test_hostile_resumed_patch_is_refused_before_apply(tmp_path: Path) -> None:
     (export_dir / "0001-hostile.patch").write_text(_HOSTILE_RESUME_PATCH, encoding="utf-8")
 
     config = LocalRsiConfig(
+        isolation="local",
         repo_path=str(repo),
         test_command="exit 0",
         work_root=str(tmp_path / "work"),
@@ -165,6 +167,7 @@ def test_unavailable_warden_refuses_resumed_patch(tmp_path: Path, monkeypatch) -
     (export_dir / "0001-resume.patch").write_text(_ADD_FILE_PATCH, encoding="utf-8")
 
     config = LocalRsiConfig(
+        isolation="local",
         repo_path=str(repo),
         test_command="exit 0",
         work_root=str(tmp_path / "work"),
@@ -191,6 +194,7 @@ def test_stale_patch_does_not_partially_poison_baseline(tmp_path: Path) -> None:
     (export_dir / "0001-stale.patch").write_text(_PARTIALLY_STALE_PATCH, encoding="utf-8")
 
     config = LocalRsiConfig(
+        isolation="local",
         repo_path=str(repo),
         test_command="exit 0",
         work_root=str(tmp_path / "work"),
@@ -212,6 +216,7 @@ def test_stale_patch_does_not_partially_poison_baseline(tmp_path: Path) -> None:
 def test_load_saved_patches_is_noop_when_export_dir_missing(tmp_path: Path) -> None:
     repo = _make_repo(tmp_path / "src")
     config = LocalRsiConfig(
+        isolation="local",
         repo_path=str(repo),
         test_command="exit 0",
         work_root=str(tmp_path / "work"),
@@ -236,6 +241,7 @@ def test_already_applied_patches_produce_no_spurious_commit(tmp_path: Path) -> N
     (export_dir / "0001-resume.patch").write_text(_ADD_FILE_PATCH, encoding="utf-8")
 
     config = LocalRsiConfig(
+        isolation="local",
         repo_path=str(repo),
         test_command="exit 0",
         work_root=str(tmp_path / "work"),
@@ -263,6 +269,7 @@ def test_a_dangling_export_entry_is_skipped_not_fatal(tmp_path: Path) -> None:
     (export_dir / "0002-dangling.patch").symlink_to(tmp_path / "gone.patch")
 
     config = LocalRsiConfig(
+        isolation="local",
         repo_path=str(repo),
         test_command="exit 0",
         work_root=str(tmp_path / "work"),

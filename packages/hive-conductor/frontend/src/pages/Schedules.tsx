@@ -3,8 +3,6 @@ import { apiGet, apiPost, apiPut, apiDelete } from "../lib/api";
 import type { Schedule } from "../api/models";
 import { Hex, PageHeader, StatCard, ConfirmDialog, useToast } from "../components/shared";
 import { useWorkspaces } from "../context/WorkspaceContext";
-import { Switch } from "../components/Switch";
-import { TabList, TabPanel } from "../components/TabList";
 
 
 const CRON_PRESETS = [
@@ -109,7 +107,11 @@ export default function Schedules() {
         helpHref="/docs#schedules"
         actions={<button className="btn btn-accent" style={{ fontSize: 12, padding: "2px 8px" }} onClick={() => setCreating(true)}>+ new</button>}
       />
-      <TabList label="Schedule views" idPrefix="schedules" tabs={TABS} selected={tab} onSelect={setTab} style={{ marginBottom: -8 }} />
+      <div style={{ display: "flex", gap: 0, borderBottom: "1px solid var(--rule)", marginBottom: -8 }}>
+        {(["schedules", "history"] as const).map((t) => (
+          <div key={t} onClick={() => setTab(t)} style={{ padding: "7px 16px", fontFamily: "var(--mono)", fontSize: 12, cursor: "pointer", borderBottom: tab === t ? "2px solid var(--accent)" : "2px solid transparent", color: tab === t ? "var(--ink)" : "var(--pencil)", textTransform: "capitalize" }}>{t}</div>
+        ))}
+      </div>
 
       <TabPanel idPrefix="schedules" id="schedules" selected={tab === "schedules"}>
         <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 14 }}>
@@ -120,7 +122,7 @@ export default function Schedules() {
                 <input className="input-field" placeholder="description" value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} />
                 <div>
                   <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", marginBottom: 3 }}>PRESETS</div>
-                  <div role="group" aria-label="Cron presets" style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+                  <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
                     {CRON_PRESETS.map((p) => (
                       <button key={p.cron} type="button" aria-pressed={form.cron_expression === p.cron} className={`hex-badge${form.cron_expression === p.cron ? " hex-badge-accent" : ""}`} style={PRESET_STYLE} onClick={() => setForm((f) => ({ ...f, cron_expression: p.cron }))}>{p.label}</button>
                     ))}
@@ -128,7 +130,7 @@ export default function Schedules() {
                 </div>
                 <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
                   <span style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)" }}>CRON</span>
-                  <input className="input-field" aria-label="Cron expression" style={{ flex: 1, fontFamily: "var(--mono)" }} value={form.cron_expression} onChange={(e) => setForm((f) => ({ ...f, cron_expression: e.target.value }))} />
+                  <input className="input-field" style={{ flex: 1, fontFamily: "var(--mono)" }} value={form.cron_expression} onChange={(e) => setForm((f) => ({ ...f, cron_expression: e.target.value }))} />
                 </div>
                 <input className="input-field" placeholder="mission template ID (optional)" value={form.mission_template_id} onChange={(e) => setForm((f) => ({ ...f, mission_template_id: e.target.value }))} />
                 <div style={{ display: "flex", gap: 4 }}>
@@ -147,7 +149,7 @@ export default function Schedules() {
                 <input className="input-field" value={editForm.description} onChange={(e) => setEditForm((f) => ({ ...f, description: e.target.value }))} />
                 <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
                   <span style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)" }}>CRON</span>
-                  <input className="input-field" aria-label="Cron expression" style={{ flex: 1, fontFamily: "var(--mono)" }} value={editForm.cron_expression} onChange={(e) => setEditForm((f) => ({ ...f, cron_expression: e.target.value }))} />
+                  <input className="input-field" style={{ flex: 1, fontFamily: "var(--mono)" }} value={editForm.cron_expression} onChange={(e) => setEditForm((f) => ({ ...f, cron_expression: e.target.value }))} />
                 </div>
                 <div style={{ display: "flex", gap: 4 }}>
                   <button className="btn btn-accent" style={{ fontSize: 12, padding: "2px 10px" }} onClick={() => void updateSchedule()}>save</button>

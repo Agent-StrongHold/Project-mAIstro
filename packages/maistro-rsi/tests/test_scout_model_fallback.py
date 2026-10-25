@@ -44,6 +44,9 @@ def _loop(tmp_path: Path, **overrides) -> LocalRsiLoop:
         "targets": ["target.py"],
         "report_dir": str(tmp_path / "reports"),
         "genome_models": ["model-a", "model-b", "model-c"],
+        # Explicit local: the operator-chosen path (ADR-082926-a6ab); the
+        # unstated default now refuses (#80).
+        "isolation": "local",
     }
     defaults.update(overrides)
     config = LocalRsiConfig(**defaults)

@@ -370,13 +370,9 @@ class TaskRunner:
                 # here, so there is nothing to fail: recording a failure would
                 # terminalize the winner's Run out from under it. Same
                 # disposition as a refused Run — put the receipt down and let
-                # the claim's owner finish the work. The claim-lost flag keeps
-                # this worker from writing any outcome of its own; once the
-                # local claim releases, the receipt itself is dropped so this
-                # process's reads project the winner's Run instead of a stale
-                # non-terminal copy (#1690).
-                claim_lost = True
+                # the claim's owner finish the work.
                 await logger.awarning("task_abandoned_claim_lost", task_id=task_id)
+                return
             except TaskExecutionFailed as exc:
                 # The Attempt already recorded the failure. The receipt's own
                 # failure branch below is unchanged, so a `/tasks` caller reads

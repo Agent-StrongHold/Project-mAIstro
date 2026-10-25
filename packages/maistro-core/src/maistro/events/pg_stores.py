@@ -40,7 +40,7 @@ from typing import TYPE_CHECKING, Any
 
 from maistro.events.consumer_cursor import DEFAULT_LEASE_SECONDS as CURSOR_DEFAULT_LEASE_SECONDS
 from maistro.events.consumer_cursor import CursorLease
-from maistro.events.durable_log import LoggedEvent, require_json_encodable_payload
+from maistro.events.durable_log import LoggedEvent
 from maistro.events.invocations import (
     DEFAULT_LEASE_SECONDS,
     MAX_ATTEMPTS,
@@ -192,7 +192,7 @@ _SCHEMA_UPGRADES = (
 
 
 async def ensure_event_schema(pool: asyncpg.Pool) -> None:
-    """Create all five tables. Idempotent, and safe to call concurrently.
+    """Create all four tables. Idempotent, and safe to call concurrently.
 
     `CREATE TABLE IF NOT EXISTS` is idempotent but **not** serialised: two
     workers that both observe the table as absent can both run the DDL, and one
@@ -796,6 +796,14 @@ def _row_to_invocation(row: Any) -> HandlerInvocation:
         last_outcome=_disposition_or_none(row["last_outcome"]),
         uncertain_prior_dispatch=bool(row["uncertain_prior_dispatch"]),
         last_error_code=_text(row["last_error_code"]),
+    )
+
+
+def _row_to_cursor_lease(row: Any) -> CursorLease:
+    return CursorLease(
+        position=int(row["position"]),
+        fencing_token=row["fencing_token"],
+        expires_at=float(row["lease_expires_at"] or 0),
     )
 
 

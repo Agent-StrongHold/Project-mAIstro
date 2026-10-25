@@ -24,7 +24,6 @@ from maistro.runs.recovery_events import (
     RecoveryDispositionEvent,
 )
 from maistro.runs.store import StaleExecutionFence
-from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 LEDGER = Path(__file__).resolve().parents[4] / "docs" / "testing" / "recovery-evidence-ledger.json"
 
@@ -53,9 +52,7 @@ async def _workspace() -> tuple[InMemoryRunStore, str]:
         name="evidence",
         nodes=[Node(node_id="step", node_type="agent")],
     )
-    run = await store.create_run(
-        graph, initial_status=RunStatus.QUEUED, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
-    )
+    run = await store.create_run(graph, initial_status=RunStatus.QUEUED)
     return store, run.run_id
 
 

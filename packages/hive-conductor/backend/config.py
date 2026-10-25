@@ -24,17 +24,6 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from maistro.config.settings import validate_cors_origins
 from maistro.types.config import ModelBindingConfig
 
-#: Hard bounds the schedule floor/cap settings cannot be configured outside of
-#: (#1200). See the field comments on the ``Settings`` fields for why these
-#: fail at startup instead of clamping. The maximum is the substrate's own
-#: definition-time ceiling (``maistro.scheduling.model.MAX_CATCHUP_WINDOW_SECONDS``):
-#: a product cap above it would let a create through the route and then always
-#: fail at the canonical write, an error the operator config caused and could
-#: not see.
-SCHEDULE_FLOOR_HARD_MINIMUM_S = 300
-SCHEDULE_WINDOW_HARD_MINIMUM_S = 3_600
-SCHEDULE_WINDOW_HARD_MAXIMUM_S = 604_800
-
 _BACKEND_DIR = Path(__file__).resolve().parent
 # Repo root `.env` (PM POC flags) — uvicorn cwd is usually `backend/`.
 _ENV_FILES: tuple[str, ...] = tuple(
@@ -233,9 +222,7 @@ class Settings(BaseSettings):
     # The embedded Container's Sentinel permission table (ADR-072726-0d6b,
     # #1165). Fail-closed: the shipped empty table denies every tool, so a
     # Conductor that wants its agents to hold tool authority states it here --
-    # `MAISTRO_PERMISSION_PRESET=hive_conductor_tools` (the preset matching
-    # services/tool_executor's executable registry; `dangerous_tools_admin`
-    # grants only engine-side names this runtime cannot dispatch) and/or
+    # `MAISTRO_PERMISSION_PRESET=dangerous_tools_admin` and/or
     # `MAISTRO_PERMISSIONS='{"tool_name": ["admin", "user"]}'` (JSON).
     maistro_permission_preset: str = "none"
     maistro_permissions: dict[str, list[str]] = Field(default_factory=dict)

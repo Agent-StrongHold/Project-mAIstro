@@ -136,11 +136,17 @@ class PreclassifiedJobFailure(RuntimeError):
     """
 
 
-def _failure_message(cls: JobFailureClass) -> str:
-    """The user-safe message for a failure class — the single keyword match in
-    ``classify_failure`` decides the class, so a message and a retry decision
-    can never disagree about what kind of failure a job suffered."""
-    if cls is JobFailureClass.RATE_LIMITED:
+def _sanitise_error(exc: Exception) -> str:
+    """Return a safe error message — strips stack traces and raw provider bodies."""
+    if isinstance(exc, PreclassifiedJobFailure):
+        return str(exc)
+    if isinstance(exc, TimeoutError):
+        # Includes the canonical Runtime's RuntimeDeadlineExceeded, whose text
+        # is an execution id rather than anything the keyword match can see.
+        return "Generation failed: provider request timed out."
+    raw = str(exc)
+    lower = raw.lower()
+    if "429" in raw or "rate_limit" in lower or "too many" in lower or "ratelimit" in lower:
         return "Generation failed: rate limit reached. Try again in a moment."
     if cls is JobFailureClass.UNAVAILABLE:
         return "Generation failed: provider service temporarily unavailable."

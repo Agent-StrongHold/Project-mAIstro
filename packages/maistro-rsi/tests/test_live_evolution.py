@@ -54,6 +54,9 @@ def _live_config(tmp_path: Path, **overrides) -> LocalRsiConfig:
         "model": "testmodel",
         "genome_db": str(tmp_path / "pop.db"),
         "roster_size": 3,
+        # Explicit local: the operator-chosen path (ADR-082926-a6ab); the
+        # unstated default now refuses (#80).
+        "isolation": "local",
     }
     defaults.update(overrides)
     return LocalRsiConfig(**defaults)

@@ -30,6 +30,7 @@ def _make_repo(path: Path) -> Path:
 def _loop(tmp_path: Path) -> LocalRsiLoop:
     repo = _make_repo(tmp_path / "src")
     config = LocalRsiConfig(
+        isolation="local",
         repo_path=str(repo),
         test_command="exit 0",
         work_root=str(tmp_path / "work"),

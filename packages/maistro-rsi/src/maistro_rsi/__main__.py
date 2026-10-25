@@ -89,9 +89,14 @@ def _build_parser() -> argparse.ArgumentParser:
     run.add_argument(
         "--isolation",
         choices=("local", "container"),
-        default="local",
+        default="",
         help="Where the agent runs: 'local' (host worktree) or 'container' "
-        "(ADR-093 Docker isolation). Default: local.",
+        "(ADR-093 Docker isolation). No default: an unstated isolation "
+        "refuses to start (ADR-093 decision 5 has no bare-subprocess tier). "
+        "'local' is the operator's explicit choice of their own machine "
+        "(ADR-082926-a6ab). 'container' is refused for this unattended loop: "
+        "ADR-093 decision 6 floors autonomous execution at a user-space-kernel "
+        "tier (gVisor or better), and the Docker backend is Tier 3.",
     )
     run.add_argument(
         "--image",
@@ -308,7 +313,16 @@ def _build_parser() -> argparse.ArgumentParser:
     evolve.add_argument("--coverage-source", default=".")
     evolve.add_argument("--coverage-pytest-args", default="")
     evolve.add_argument("--agent-turns", type=int, default=6)
-    evolve.add_argument("--isolation", choices=("local", "container"), default="local")
+    evolve.add_argument(
+        "--isolation",
+        choices=("local", "container"),
+        default="",
+        help="No default: an unstated isolation refuses to start (ADR-093 "
+        "decision 5 has no bare-subprocess tier). 'local' is the operator's "
+        "explicit host choice (ADR-082926-a6ab). Refused when 'container': "
+        "evolve runs unattended, and ADR-093 decision 6 floors autonomous "
+        "execution at gVisor-or-better while the Docker backend is Tier 3.",
+    )
     evolve.add_argument(
         "--db", default=None, help="PopulationStore path (persists lineage; default: in-memory)."
     )
@@ -415,64 +429,39 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _print_promotion_evidence(store: Any, champ: Any) -> None:
-    """Print the champion's verified-evidence trail and proxy-scorer calibration.
+def _refuse_unattendable_isolation(args: argparse.Namespace) -> int | None:
+    """Exit code for an isolation choice ADR-093 forbids unattended, or None.
 
-    The live loop's promotion evidence (#384/#853), for the operator reading
-    the run summary. ``PopulationStore.champion_provenance()`` names, for
-    every benchmark score the champion's fitness rests on, the verified
-    method that produced it — a score with no evidence record reads
-    "unverified" instead of passing silently. The offline adversarial
-    calibration (``calibrate_proxy_scorers``) then measures how much
-    narration-only output leaks through the proxy scorers that shaped this
-    run's fitness. Both surfaces report; neither gates (#853: promotion
-    semantics stay in fitness.py), so an evidence-collection failure is
-    printed and the run still exits 0.
+    `run` and `evolve` are the autonomous surfaces of this CLI: multi-cycle
+    loops with nobody watching. Decision 6 floors those at a user-space kernel
+    (Tier 2+); the Docker `ContainerBuilderSandbox` `--isolation container`
+    starts is Tier 3, so the run refuses to start rather than executing
+    unsupervised candidate code behind a shared kernel. The comparison itself
+    lives in `maistro_rsi.local_loop.autonomous_isolation_refusal`, driven by
+    the ADR-093 floors mirrored in `maistro_rsi.isolation_floor` (a mirror
+    because importing `maistro.sandbox.policy` would pull ~220 unprotected
+    maistro-core modules into the promotion closure; the mirror is pinned to
+    the canonical policy by test), so a future Tier-2+ backend under the same
+    flag passes without this dispatcher being edited. An unstated isolation
+    ("" — the argparse default) refuses the same way: a silent host default
+    would be the bare-subprocess tier decision 5 forbids (#80 repair).
     """
-    provenance = store.champion_provenance()
-    if provenance is not None:
-        print("champion evidence:")
-        _print_champion_provenance(store)
+    from maistro_rsi.local_loop import autonomous_isolation_refusal
 
-    import asyncio
-
-    from maistro_evolve.benchmarks.calibration import calibrate_proxy_scorers
-
-    try:
-        # The calibration fixtures play the candidate themselves (deterministic
-        # narration/verified responders), so no live model is contacted and
-        # ``llm_call`` is None exactly as in the calibration suite.
-        report = asyncio.run(calibrate_proxy_scorers(champ, None))
-    except Exception as exc:  # evidence, not gate: never fail the run over it
-        print(f"calibration evidence: unavailable ({exc})")
-        return
-    print(f"proxy-scorer calibration ({report['calibration']}):")
-    for scorer, rates in report["scorers"].items():
-        print(
-            f"  {scorer}: narration_fpr={rates['narration_false_positive_rate']} "
-            f"verified_rate={rates['verified_positive_rate']}"
-        )
-
-
-def _print_champion_provenance(store: PopulationStore) -> None:
-    """Print the verified-evidence trail behind champion selection (#384).
-
-    The champion's fitness is a weighted fold of benchmark scores; this names,
-    for every scored benchmark, the verified method that produced the score
-    (``exact_match``, ``llm_judge``, ... — or the explicit ``unverified``). A
-    champion that got there by narrating shows up here instead of being
-    silently trusted.
-    """
-    provenance = store.champion_provenance()
-    if provenance is None:
-        return
-    for bench, record in provenance["benchmarks"].items():
-        print(f"  {bench}: score={record['score']} evidence={record['evidence']}")
+    refusal = autonomous_isolation_refusal(getattr(args, "isolation", ""))
+    if refusal is None:
+        return None
+    print(f"refusing to start: {refusal}", file=sys.stderr)
+    return 2
 
 
 def _evolve(args: argparse.Namespace) -> int:
     import asyncio
     import tempfile
+
+    refused = _refuse_unattendable_isolation(args)
+    if refused is not None:
+        return refused
 
     from maistro.security.warden.detector import Warden
     from maistro_evolve.cycle import EvolutionConfig
@@ -595,55 +584,6 @@ def _evolve(args: argparse.Namespace) -> int:
     if champ is not None:
         print(f"champion: {champ.name} (fitness={champ.fitness_score})")
         _print_promotion_evidence(store, champ)
-    return 0
-
-
-def _calibrate(args: argparse.Namespace) -> int:
-    """`calibrate` — the offline promotion-evidence surface for #384.
-
-    Drives the real `calibrate_proxy_scorers` harness (held-out narration
-    fixtures that do no work, plus verified fixtures that do) with an
-    OpenAI-compatible provider as the candidate responder, and prints each
-    scorer's `narration_false_positive_rate`. Per benchmarks/calibration.py's
-    contract this REPORTS — it never rewrites scores or gates; the fitness
-    hard gates remain non-tradeable and the candidate cannot touch the
-    scorer (sensitive_paths).
-    """
-    import asyncio
-
-    from maistro_evolve.benchmarks.calibration import calibrate_proxy_scorers
-    from maistro_evolve.providers.openai_compatible import OpenAICompatibleProvider
-    from maistro_rsi.evolve_bridge import open_population
-
-    store = open_population(args.db)
-    genome = store.get(args.genome_id) if args.genome_id else store.get_champion()
-    if genome is None:
-        where = f"id {args.genome_id!r}" if args.genome_id else "no scored champion"
-        print(
-            f"error: no genome to calibrate ({where}); pass --db/--genome-id",
-            file=sys.stderr,
-        )
-        return 2
-    llm_call = OpenAICompatibleProvider(
-        model=args.model,
-        base_url=args.base_url,
-        api_key=args.api_key,
-        allow_unauthenticated=args.allow_unauthenticated_provider,
-    )
-    report = asyncio.run(calibrate_proxy_scorers(genome, llm_call))
-    if args.json:
-        print(json.dumps(report, indent=2, sort_keys=True))
-        return 0
-    print(f"calibration {report['calibration']} against genome {genome.id} ({genome.name})")
-    for scorer, result in report["scorers"].items():
-        fpr = result["narration_false_positive_rate"]
-        vpr = result["verified_positive_rate"]
-        verdict = "LEAK" if fpr > 0 else "clean"
-        print(
-            f"  {scorer}: narration_fpr={fpr} ({result['narration_false_positives_implied']}"
-            f"/{result['narration_fixtures']}) verified_positive={vpr} [{verdict}]"
-        )
-    print("report only — scoring authority stays with fitness.py's non-tradeable gates")
     return 0
 
 
@@ -1068,6 +1008,9 @@ def _test_argv(raw: str) -> tuple[str, ...]:
 
 
 def _run(args: argparse.Namespace) -> int:
+    refused = _refuse_unattendable_isolation(args)
+    if refused is not None:
+        return refused
     repo = Path(args.repo).expanduser()
     # `.git` is a dir in a normal checkout, a file in a linked worktree.
     if not (repo / ".git").exists():
