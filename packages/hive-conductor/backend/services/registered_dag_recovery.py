@@ -96,6 +96,7 @@ async def wake_due_registered_dag_runs(*, limit: int = 100) -> int:
             harness_adapters=harness_adapters,
             limit=limit,
             eligible=_owned,
+            scan=scan_continuation("registered_dag_external_results", container.graph_run_store),
         )
     recovered = 0
     if polled:

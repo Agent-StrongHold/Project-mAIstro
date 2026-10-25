@@ -15,6 +15,7 @@ import asyncio
 import logging
 from collections.abc import Callable, Iterable, Mapping
 from datetime import UTC, datetime, timedelta
+from functools import partial
 from typing import Any
 
 from maistro.runs.aggregation import terminal_run_payload
@@ -32,7 +33,7 @@ from maistro.runs.model import (
     Run,
     RunStatus,
 )
-from maistro.runs.recovery_events import RecoveryEventSink
+from maistro.runs.recovery_events import RecoveryDispositionEvent, RecoveryEventSink
 from maistro.runs.store import RunCursor, RunIntegrityError, RunStore, run_cursor_key
 
 from .continuation import GraphContinuation, GraphContinuationStore
@@ -52,7 +53,7 @@ from .hitl import (
     settlement_time,
 )
 from .spine import mirror_lifecycle
-from .stores import answer_record, external_result_record, settle_hitl_record
+from .stores import _replace_state, answer_record, external_result_record, settle_hitl_record
 from .time_travel import (
     GraphStateLoad,
     UnknownGraphRunError,
@@ -250,6 +251,9 @@ class CanonicalDurableRunStore:
         self._events = events
         self._lock = asyncio.Lock()
         self._running_scan: ScanContinuation[RunCursor] = ScanContinuation()
+        self._continuation_scans: dict[RunStatus, ScanContinuation[RunCursor]] = {
+            status: ScanContinuation() for status in RunStatus
+        }
         # run_id -> (continuation version, when this instance first saw it
         # terminal over a RUNNING Run). See `_reconcile_terminal_graph`.
         self._terminal_first_seen: dict[str, tuple[int, datetime]] = {}
@@ -416,12 +420,45 @@ class CanonicalDurableRunStore:
             remaining = limit - (len(seen) - swept)
             if remaining <= 0:
                 break
-            run_ids = await self._continuations.list_run_ids_by_status(
-                status,
+            # A repaired terminal Run leaves the RUNNING scan. A failed
+            # Event append must still be retried even behind a terminal
+            # prefix longer than one tick's budget.
+            continuations = await fair_page_scan(
+                fetch_page=partial(self._reconciliation_page, status),
+                cursor_of=self._continuation_cursor,
+                eligible=lambda row: row.run_id not in seen,
                 limit=remaining,
+                page_size=remaining,
+                max_inspected=remaining,
+                continuation=self._continuation_scans[status],
             )
-            changed += await self._reconcile_unseen(run_ids, seen, moment)
+            changed += await self._reconcile_unseen(
+                (row.run_id for row in continuations), seen, moment
+            )
         return changed
+
+    @staticmethod
+    def _continuation_cursor(continuation: GraphContinuation) -> RunCursor:
+        created_at = cursor_time(continuation.created_at) if continuation.created_at else ""
+        return created_at, continuation.run_id
+
+    async def _reconciliation_page(
+        self, status: RunStatus, cursor: RunCursor | None, size: int
+    ) -> ScanPage[GraphContinuation, RunCursor]:
+        # Legacy/orphan continuations can lack created_at. Such a row has no
+        # portable keyset position (PostgreSQL cannot parse the empty sentinel).
+        # It is reconciled/purged this tick; restart discovery rather than pass
+        # a fabricated timestamp to the store on the following tick.
+        after = cursor if cursor is not None and cursor[0] else None
+        ids = await self._continuations.list_run_ids_by_status(status, limit=size, after=after)
+        rows = [await self._continuations.get(run_id) for run_id in ids]
+        present = [row for row in rows if row is not None]
+        return ScanPage(
+            items=present,
+            resume_after=self._continuation_cursor(present[-1]) if present else cursor,
+            inspected=len(ids),
+            exhausted=len(ids) < size or any(row.created_at is None for row in present),
+        )
 
     async def _reconcile_unseen(
         self, run_ids: Iterable[str], seen: set[str], moment: datetime
@@ -494,6 +531,7 @@ class CanonicalDurableRunStore:
                 continuation.version,
             )
             return await self._continuations.delete(run_id)
+        await self._announce_terminal_recovery(continuation, canonical)
         if await self._reconcile_terminal_spine(continuation, canonical):
             return True
         if await self._reconcile_answered_hitl(continuation, canonical):
@@ -636,7 +674,9 @@ class CanonicalDurableRunStore:
 
         desired_run = transition_run(record.run, target, at=moment, error=reason)
         desired = record.model_copy(update={"run": desired_run, "node_runs": node_runs})
-        return await self._mirror_terminal_hitl(desired, continuation.run_id, target)
+        return await self._repair_terminal_checkpoint(
+            desired, continuation, canonical, "terminal_hitl"
+        )
 
     async def _reconcile_terminal_graph(
         self,
@@ -682,9 +722,102 @@ class CanonicalDurableRunStore:
             )
         desired_run = transition_run(record.run, target, result=result, error=error)
         desired = record.model_copy(update={"run": desired_run})
-        settled = await self._mirror_terminal_hitl(desired, run_id, target)
+        settled = await self._repair_terminal_checkpoint(
+            desired, continuation, canonical, "terminal_graph"
+        )
         self._terminal_first_seen.pop(run_id, None)
         return settled
+
+    async def _repair_terminal_checkpoint(
+        self,
+        desired: DurableRunRecord,
+        continuation: GraphContinuation,
+        canonical: Run,
+        disposition: str,
+    ) -> bool:
+        """Share the intent -> lifecycle commit -> publish protocol for both mirrors."""
+        if not await self._prepare_terminal_recovery(continuation, canonical, disposition):
+            return False
+        settled = await self._mirror_terminal_hitl(
+            desired, continuation.run_id, continuation.status
+        )
+        await self._announce_repaired_run(continuation.run_id)
+        return settled
+
+    async def _prepare_terminal_recovery(
+        self, continuation: GraphContinuation, canonical: Run, disposition: str
+    ) -> bool:
+        """Persist publication intent before repairing the spine (ADR-7248).
+
+        The continuation already owns the durable terminal evidence. Keep the
+        intent beside it, not in a competing lifecycle/event store. Replay
+        verifies canonical settlement before emitting; the canonical sink's
+        stable event identity deduplicates a crash after append. No sink keeps
+        the historical recovery behavior and writes no publication metadata.
+        """
+        if self._events is None:
+            return True
+        metadata = dict(continuation.graph_state.metadata)
+        if "terminal_recovery_event" in metadata:
+            return True
+        metadata["terminal_recovery_event"] = {
+            "status": continuation.status.value,
+            "disposition": f"graph_{disposition}:v{continuation.version}",
+        }
+        prepared = continuation.model_copy(
+            update={
+                "graph_state": _replace_state(continuation.graph_state, metadata=metadata),
+                "version": continuation.version + 1,
+            }
+        )
+        try:
+            await self._continuations.update(
+                state_epoch_appended(
+                    prepared,
+                    previous=continuation,
+                    graph_snapshot_hash=canonical.graph.content_hash,
+                )
+            )
+        except ValueError:
+            # A concurrent checkpoint owns the newer version; reread next tick.
+            return False
+        return True
+
+    async def _announce_repaired_run(self, run_id: str) -> None:
+        continuation = await self._continuations.get(run_id)
+        canonical = await self._run_store.get_run(run_id)
+        if continuation is not None and canonical is not None:
+            await self._announce_terminal_recovery(continuation, canonical)
+
+    async def _announce_terminal_recovery(
+        self, continuation: GraphContinuation, canonical: Run
+    ) -> None:
+        intent = continuation.graph_state.metadata.get("terminal_recovery_event")
+        if self._events is None or not isinstance(intent, Mapping):
+            return
+        if (
+            canonical.status not in TERMINAL_RUN_STATUSES
+            or intent.get("status") != canonical.status.value
+        ):
+            return
+        disposition = intent.get("disposition")
+        if not isinstance(disposition, str):
+            return
+        # This is a Run/checkpoint repair, not a physical Attempt disposition.
+        # Empty optional correlation fields are honest: no synthetic identities.
+        await self._events.emit(
+            RecoveryDispositionEvent(
+                run_id=canonical.run_id,
+                node_run_id="",
+                attempt_id="",
+                attempt_status="",
+                node_run_status="",
+                cancellation_cause="",
+                disposition=disposition,
+                error=None,
+                source="maistro.graph.durable_runs.canonical_store",
+            )
+        )
 
     @staticmethod
     def _continuation_ahead_of_spine(
@@ -877,6 +1010,30 @@ class CanonicalDurableRunStore:
             run_ids = [run.run_id for run in runs]
         records = await self._assemble_all(run_ids)
         return [record for record in records if record.run.status is status]
+
+    async def scan_status_page(
+        self,
+        status: RunStatus,
+        *,
+        limit: int = 100,
+        after: tuple[str, str] | None = None,
+    ) -> ScanPage[DurableRunRecord, tuple[str, str]]:
+        """Page status discovery from the authoritative spine, not its projection.
+
+        A continuation-status index may still hold an old row after a crash.
+        Reading canonical Run positions first keeps that stale row from hiding
+        later work when assembly yields nothing eligible.
+        """
+        if limit <= 0:
+            return ScanPage(items=[], resume_after=after, inspected=0)
+        runs = await self._run_store.list_by_status(status, limit=limit, after=after)
+        records = await self._assemble_all([run.run_id for run in runs])
+        return ScanPage(
+            items=[record for record in records if record.run.status is status],
+            resume_after=run_cursor_key(runs[-1]) if runs else after,
+            inspected=len(runs),
+            exhausted=not runs,
+        )
 
     async def list_hitl_paused(
         self,

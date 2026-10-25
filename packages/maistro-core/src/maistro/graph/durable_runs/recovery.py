@@ -686,6 +686,19 @@ __all__ = [
 ]
 
 
+@runtime_checkable
+class StatusPageScanner(Protocol):
+    """Status projection reads that distinguish stale rows from exhaustion."""
+
+    async def scan_status_page(
+        self,
+        status: RunStatus,
+        *,
+        limit: int = 100,
+        after: tuple[str, str] | None = None,
+    ) -> ScanPage[DurableRunRecord, tuple[str, str]]: ...
+
+
 async def poll_external_results(
     *,
     store: DurableRunStore,
@@ -694,6 +707,8 @@ async def poll_external_results(
     limit: int = 100,
     eligible: QueuedRunPredicate | None = None,
     now: datetime | None = None,
+    scan: ScanContinuation[tuple[str, str]] | None = None,
+    max_inspected: int = DEFAULT_MAX_INSPECTED,
 ) -> int:
     """Poll external pauses and write terminal results to the Graph store.
 
@@ -710,17 +725,31 @@ async def poll_external_results(
     fresh provider poll, so polling it here first would read the same
     provider twice in one tick. The external seam stays the ingress for a
     completion that lands before the timer does.
+
+    ``limit`` bounds eligible polls, not a fixed prefix of parked Runs.
+    Repeated consumers must retain ``scan`` across ticks, including both
+    status buckets, so a busy WAITING prefix cannot starve PAUSED work or
+    an eligible completion beyond ``max_inspected``. The position is only
+    a discovery cursor; it grants no execution or lifecycle authority.
     """
     if limit <= 0:
         return 0
 
     moment = now if now is not None else datetime.now(UTC)
     delivered = 0
-    for record in await _external_graph_candidates(store, limit):
-        if _is_timed_wait_due(record, moment):
-            continue
-        if eligible is not None and not eligible(record.run):
-            continue
+    candidates = await fair_page_scan(
+        fetch_page=lambda cursor, size: _external_graph_page(store, cursor, size),
+        cursor_of=_external_cursor,
+        eligible=lambda record: (
+            not _is_timed_wait_due(record, moment)
+            and (eligible is None or eligible(record.run))
+            and _has_external_pause(record)
+        ),
+        limit=limit,
+        continuation=scan,
+        max_inspected=max_inspected,
+    )
+    for record in candidates:
         try:
             polled = await _poll_external_record(record, guest_peers, harness_adapters)
         except Exception:
@@ -738,20 +767,57 @@ async def poll_external_results(
     return delivered
 
 
-async def _external_graph_candidates(store: DurableRunStore, limit: int) -> list[Any]:
-    """Read a bounded, deduplicated page of parked canonical Graph Runs."""
-    records: list[Any] = []
-    seen: set[str] = set()
-    for status in (RunStatus.WAITING, RunStatus.PAUSED):
-        for record in await store.list_by_status(status, limit=limit):
-            if record.run_id not in seen:
-                seen.add(record.run_id)
-                records.append(record)
-            if len(records) >= limit:
-                break
-        if len(records) >= limit:
-            break
-    return records
+def _external_cursor(record: DurableRunRecord) -> tuple[str, str]:
+    created_at, run_id = run_cursor_key(record.run)
+    return (f"{record.run.status.value}:{created_at}", run_id)
+
+
+def _has_external_pause(record: DurableRunRecord) -> bool:
+    pauses = record.graph_state.metadata.get("pauses", {})
+    if not isinstance(pauses, Mapping):
+        return False
+    for node_id in record.graph_state.active_node_ids:
+        pause = pauses.get(node_id)
+        metadata = pause.get("metadata") if isinstance(pause, Mapping) else None
+        if isinstance(metadata, Mapping) and metadata.get("paused_reason") in {
+            "awaiting_remote_delegation",
+            "awaiting_harness",
+        }:
+            return True
+    return False
+
+
+async def _external_graph_page(
+    store: DurableRunStore, cursor: tuple[str, str] | None, size: int
+) -> ScanPage[DurableRunRecord, tuple[str, str]]:
+    """Walk WAITING then PAUSED, carrying progress even across stale projections."""
+    status_key, _, created_at = (
+        cursor[0].partition(":") if cursor is not None else ("waiting", "", "")
+    )
+    status = RunStatus(status_key)
+    after = (created_at, cursor[1]) if cursor is not None and created_at else None
+    if isinstance(store, StatusPageScanner):
+        page = await store.scan_status_page(status, limit=size, after=after)
+    else:
+        rows = await store.list_by_status(status, limit=size, after=after)
+        page = ScanPage(
+            items=rows,
+            resume_after=run_cursor_key(rows[-1].run) if rows else after,
+            inspected=len(rows),
+            exhausted=len(rows) < size,
+        )
+    position = (
+        (f"{status.value}:{page.resume_after[0]}", page.resume_after[1])
+        if page.resume_after is not None
+        else cursor
+    )
+    exhausted = page.exhausted
+    if exhausted and status is RunStatus.WAITING:
+        position = (f"{RunStatus.PAUSED.value}:", "")
+        exhausted = False
+    return ScanPage(
+        items=page.items, resume_after=position, inspected=page.inspected, exhausted=exhausted
+    )
 
 
 async def _deliver_external_result(

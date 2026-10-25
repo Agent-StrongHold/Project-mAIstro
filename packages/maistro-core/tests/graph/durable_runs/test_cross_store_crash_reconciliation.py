@@ -217,6 +217,97 @@ async def _assert_settled(spine: _Spine, run_id: str, status: RunStatus) -> Dura
     return record
 
 
+@pytest.mark.parametrize("publication_fails", [False, True])
+async def test_checkpoint_repair_emits_a_replayable_canonical_event(
+    spine: _Spine, publication_fails: bool
+) -> None:
+    from maistro.events.envelope import InMemoryEventStore
+    from maistro.runs.recovery_events import CanonicalEventStoreSink, CanonicalRecoveryEventSink
+
+    # Older terminal history must not hide a pending append on a later Run.
+    for _ in range(3):
+        graph = _graph(spine, _Step())
+        admitted = await spine.run_store.create_run(
+            graph,
+            initial_status=RunStatus.QUEUED,
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+        )
+        await run_durable_graph(
+            graph,
+            store=spine.store,
+            run_store=spine.run_store,
+            run_id=admitted.run_id,
+            node_resolver=lambda *_: _Step(),
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+        )
+    run_id = await _crash_at_terminal_write(spine, _Step())
+    event_store = InMemoryEventStore()
+    canonical = CanonicalRecoveryEventSink(spine.run_store, CanonicalEventStoreSink(event_store))
+
+    class _Sink:
+        async def emit(self, event: Any) -> Any:
+            # Publication is never allowed to claim a repair before it committed.
+            assert (await spine.run_store.get_run(run_id)).status is RunStatus.COMPLETED
+            if publication_fails:
+                raise RuntimeError("event store offline")
+            return await canonical.emit(event)
+
+    recovering = CanonicalDurableRunStore(
+        spine.run_store,
+        spine.continuations,
+        terminal_settle_quiet_period=timedelta(0),
+        events=_Sink(),
+    )
+    if publication_fails:
+        with pytest.raises(RuntimeError, match="event store offline"):
+            await recovering.reconcile_run(run_id)
+        assert (await spine.run_store.get_run(run_id)).status is RunStatus.COMPLETED
+    else:
+        assert await recovering.reconcile_run(run_id)
+        events = await event_store.list_stream(f"workspace:{_WORKSPACE}")
+        assert len(events) == 1
+    # Fresh store: a failed emit cannot disappear with the repairing process.
+    restarted = CanonicalDurableRunStore(spine.run_store, spine.continuations, events=canonical)
+    for _ in range(10):
+        assert await restarted.reconcile_persistence(limit=1) == 0
+    events = await event_store.list_stream(f"workspace:{_WORKSPACE}")
+    assert len(events) == 1
+    assert events[0].sequence == 1
+    assert events[0].run_id == run_id
+    assert events[0].type == "run.recovery_disposition"
+    assert "terminal_graph" in events[0].payload["disposition"]
+
+
+async def test_checkpoint_repair_intent_cannot_publish_before_the_spine_commits(
+    spine: _Spine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from maistro.events.envelope import InMemoryEventStore
+    from maistro.runs.recovery_events import CanonicalEventStoreSink, CanonicalRecoveryEventSink
+
+    run_id = await _crash_at_terminal_write(spine, _Step())
+    events = InMemoryEventStore()
+    sink = CanonicalRecoveryEventSink(spine.run_store, CanonicalEventStoreSink(events))
+    recovering = CanonicalDurableRunStore(
+        spine.run_store,
+        spine.continuations,
+        terminal_settle_quiet_period=timedelta(0),
+        events=sink,
+    )
+    real_mirror = canonical_store_module.mirror_lifecycle
+
+    async def crash_before_spine(*args: Any, **kwargs: Any) -> None:
+        raise _InjectedCrash
+
+    monkeypatch.setattr(canonical_store_module, "mirror_lifecycle", crash_before_spine)
+    with pytest.raises(_InjectedCrash):
+        await recovering.reconcile_run(run_id)
+    assert (await spine.run_store.get_run(run_id)).status is RunStatus.RUNNING
+    assert await events.list_stream(f"workspace:{_WORKSPACE}") == []
+    monkeypatch.setattr(canonical_store_module, "mirror_lifecycle", real_mirror)
+    assert await recovering.reconcile_run(run_id)
+    assert len(await events.list_stream(f"workspace:{_WORKSPACE}")) == 1
+
+
 async def test_a_completed_continuation_settles_its_running_run_with_the_node_result(
     spine: _Spine,
 ) -> None:
@@ -651,7 +742,128 @@ class _ExternalWait(_Step):
             return _Out(text="answered")
         # Immediately due, so the resumed visit re-enters this body instead of
         # replaying the parked Attempt until its poll timer elapses.
-        pause_until(PAUSE_AWAITING_HARNESS, resume_at=now_utc())
+        pause_until(PAUSE_AWAITING_HARNESS, resume_at=now_utc(), metadata={"handle_id": "h-1"})
+
+
+class _RemoteWait(_Step):
+    kind: ClassVar[str] = "test.cross_store_crash.remote_wait"
+
+    async def _execute(self, inputs: _In, ctx: NodeContext) -> _Out:
+        pause_until(
+            "awaiting_remote_delegation",
+            resume_at=now_utc() + timedelta(minutes=1),
+            metadata={"task_id": "remote-1", "peer_name": "hub"},
+        )
+
+
+async def test_external_poll_pages_canonical_runs_without_continuations(spine: _Spine) -> None:
+    """An empty assembled page is progress, not the end of parked work."""
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from maistro.a2a.guest_peers import DelegationResult
+    from maistro.graph.durable_runs import ScanContinuation, poll_external_results
+
+    node = _RemoteWait()
+    graph = _graph(spine, node)
+    for _ in range(3):
+        unrelated = await spine.run_store.create_run(
+            graph,
+            initial_status=RunStatus.QUEUED,
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+        )
+        await spine.run_store.transition_run(unrelated.run_id, RunStatus.RUNNING)
+        await spine.run_store.transition_run(unrelated.run_id, RunStatus.WAITING)
+    admitted = await spine.run_store.create_run(
+        graph, initial_status=RunStatus.QUEUED, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+    )
+    await run_durable_graph(
+        graph,
+        store=spine.store,
+        run_store=spine.run_store,
+        run_id=admitted.run_id,
+        node_resolver=lambda *_: node,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
+    peers = SimpleNamespace(
+        poll_result=AsyncMock(
+            return_value=DelegationResult(
+                task_id="remote-1",
+                peer_name="hub",
+                status="completed",
+                result="done",
+            )
+        )
+    )
+    scan = ScanContinuation()
+    counts = [
+        await poll_external_results(
+            store=spine.store,
+            guest_peers=peers,
+            harness_adapters={},
+            limit=1,
+            max_inspected=2,
+            scan=scan,
+        )
+        for _ in range(5)
+    ]
+    assert sum(counts) == 1
+    assert (await spine.store.get(admitted.run_id)).run.status is RunStatus.QUEUED
+    peers.poll_result.assert_awaited_once_with("hub", "remote-1")
+    page = await spine.store.scan_status_page(RunStatus.WAITING, limit=0)
+    assert page.items == [] and page.inspected == 0
+
+
+@pytest.mark.parametrize("remote", [True, False])
+async def test_external_receipts_are_correlated_before_any_canonical_write(
+    spine: _Spine, remote: bool
+) -> None:
+    """Exercise the real completion bridge and store, not a mocked rejection."""
+    from types import SimpleNamespace
+
+    from maistro.container import Container
+
+    node = _RemoteWait() if remote else _ExternalWait()
+    graph = _graph(spine, node)
+    admitted = await spine.run_store.create_run(
+        graph, initial_status=RunStatus.QUEUED, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+    )
+    await run_durable_graph(
+        graph,
+        store=spine.store,
+        run_store=spine.run_store,
+        run_id=admitted.run_id,
+        node_resolver=lambda *_: node,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
+    before = await spine.store.get(admitted.run_id)
+    container = Container.__new__(Container)
+    container.graph_run_store = spine.store
+    if remote:
+        await container.wake_external_graph_result(
+            SimpleNamespace(
+                metadata={"parent_run_id": admitted.run_id, "parent_node_id": "step"},
+                status=SimpleNamespace(value="completed"),
+                id="foreign-old-task",
+                result="foreign",
+                error=None,
+            )
+        )
+    else:
+        with pytest.raises(ValueError, match="receipt"):
+            await spine.store.submit_external_result(
+                admitted.run_id, "step", {"status": "completed", "handle_id": "foreign-handle"}
+            )
+    assert await spine.store.get(admitted.run_id) == before
+    with pytest.raises(ValueError, match="receipt"):
+        await spine.store.submit_external_result(admitted.run_id, "step", {"status": "completed"})
+    assert await spine.store.get(admitted.run_id) == before
+    key, identity = ("task_id", "remote-1") if remote else ("handle_id", "h-1")
+    result = {"status": "completed", key: identity, "result": "done"}
+    delivered = await spine.store.submit_external_result(admitted.run_id, "step", result)
+    assert delivered.run.status is RunStatus.QUEUED
+    assert delivered.hitl_answers["step"][key] == identity
+    assert (await spine.store.submit_external_result(admitted.run_id, "step", result)) == delivered
 
 
 async def test_an_external_result_mirror_lost_to_a_crash_is_requeued_after_restart(
@@ -714,7 +926,7 @@ async def test_an_external_result_mirror_lost_to_a_crash_is_requeued_after_resta
             await store.submit_external_result(
                 admitted.run_id,
                 "work",
-                {"status": "completed", "task_id": "remote-1", "result": "done"},
+                {"status": "completed", "handle_id": "h-1", "result": "done"},
             )
         monkeypatch.undo()
 
@@ -805,7 +1017,7 @@ async def test_a_delivered_external_result_returns_the_persisted_run_and_replays
         )
         assert parked.status is RunStatus.WAITING
 
-        result = {"status": "completed", "task_id": "remote-1", "result": "done"}
+        result = {"status": "completed", "handle_id": "h-1", "result": "done"}
         delivered = await store.submit_external_result(admitted.run_id, "work", result)
         assert delivered.run.status is RunStatus.QUEUED
         persisted = await store.get(admitted.run_id)

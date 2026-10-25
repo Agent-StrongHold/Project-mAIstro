@@ -303,7 +303,10 @@ def _replay_external_result(
     existing = record.hitl_answers.get(node_id)
     if existing is None:
         return None
-    if all(existing.get(key) == value for key, value in result.items()):
+    accepted = {
+        key: value for key, value in existing.items() if key not in {"answered_at", "_pause"}
+    }
+    if accepted == result:
         return record
     raise ValueError(f"run {record.run_id!r} already has a different result for {node_id!r}")
 
@@ -332,6 +335,22 @@ def _external_wake_pause(
     if reason not in {PAUSE_AWAITING_REMOTE_DELEGATION, PAUSE_AWAITING_HARNESS}:
         raise ValueError(f"run {record.run_id!r} node {node_id!r} is not externally woken")
     return pause
+
+
+def _require_external_receipt(pause: Mapping[str, Any], result: Mapping[str, Any]) -> None:
+    """Only the receipt persisted by this parked dispatch may wake it.
+
+    Routing ids identify a destination, not proof that this completion belongs
+    to its current dispatch. Legacy pauses without a receipt fail closed and
+    remain available to their timer/cancellation path.
+    """
+    metadata = pause["metadata"]
+    key = (
+        "task_id" if metadata["paused_reason"] == PAUSE_AWAITING_REMOTE_DELEGATION else "handle_id"
+    )
+    expected = metadata.get(key)
+    if not isinstance(expected, str) or not expected or result.get(key) != expected:
+        raise ValueError(f"external result receipt does not match the persisted {key}")
 
 
 def _woken_node_run_index(record: DurableRunRecord, node_id: str) -> int:
@@ -371,6 +390,7 @@ def external_result_record(
     index = _woken_node_run_index(record, node_id)
     if index < 0:
         raise ValueError(f"run {record.run_id!r} has no parked NodeRun for node {node_id!r}")
+    _require_external_receipt(pause, result)
     moment = settlement_time(at)
     answered = {**result, "answered_at": moment.isoformat(), "_pause": dict(pause)}
     metadata = dict(record.graph_state.metadata)

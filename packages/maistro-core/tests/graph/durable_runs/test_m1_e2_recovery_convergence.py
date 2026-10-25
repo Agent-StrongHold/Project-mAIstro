@@ -234,6 +234,91 @@ def _parked_record(
     )
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("victim_status", [RunStatus.WAITING, RunStatus.PAUSED])
+async def test_external_poll_pages_past_unrelated_waits(victim_status: RunStatus) -> None:
+    """Neither ownership filters nor the WAITING bucket can hide a completion."""
+    store = InMemoryDurableRunStore()
+    for index in range(3):
+        await store.create(_parked_record(f"unrelated-{index}", pauses={}))
+    victim = _remote_delegation_record(resume_at=None)
+    victim = victim.model_copy(
+        update={
+            "run": victim.run.model_copy(update={"status": victim_status}),
+            "node_runs": tuple(
+                node.model_copy(update={"status": victim_status}) for node in victim.node_runs
+            ),
+        }
+    )
+    await store.create(victim)
+    peers = SimpleNamespace(
+        poll_result=AsyncMock(
+            return_value=DelegationResult(
+                task_id="remote-1", peer_name="hub", status="completed", result="done"
+            )
+        )
+    )
+    assert (
+        await poll_external_results(
+            store=store,
+            guest_peers=peers,
+            harness_adapters={},
+            limit=1,
+            eligible=lambda run: run.run_id == victim.run_id,
+        )
+        == 1
+    )
+    assert (await store.get(victim.run_id)).run.status is RunStatus.QUEUED
+    peers.poll_result.assert_awaited_once_with("hub", "remote-1")
+
+
+@pytest.mark.asyncio
+async def test_external_poll_scan_advances_across_ticks_and_provider_failures() -> None:
+    """A prefix longer than the inspection budget is a pace, not a horizon."""
+    from maistro.graph.durable_runs import ScanContinuation
+
+    store = InMemoryDurableRunStore()
+    for index in range(5):
+        await store.create(_parked_record(f"unrelated-{index}", pauses={}))
+    victim = _remote_delegation_record(resume_at=None)
+    await store.create(victim)
+    peers = SimpleNamespace(poll_result=AsyncMock(side_effect=RuntimeError("offline")))
+    scan = ScanContinuation()
+    positions = []
+    for _ in range(6):
+        assert (
+            await poll_external_results(
+                store=store,
+                guest_peers=peers,
+                harness_adapters={},
+                limit=1,
+                max_inspected=2,
+                scan=scan,
+            )
+            == 0
+        )
+        positions.append(scan.resume_after)
+    assert peers.poll_result.await_count >= 1
+    assert len(set(positions)) > 1
+    assert (await store.get(victim.run_id)).run.status is RunStatus.WAITING
+    peers.poll_result.side_effect = None
+    peers.poll_result.return_value = DelegationResult(
+        task_id="remote-1", peer_name="hub", status="completed", result="done"
+    )
+    delivered = 0
+    for _ in range(6):
+        delivered += await poll_external_results(
+            store=store,
+            guest_peers=peers,
+            harness_adapters={},
+            limit=1,
+            max_inspected=2,
+            scan=scan,
+        )
+    assert delivered == 1
+    assert (await store.get(victim.run_id)).run.status is RunStatus.QUEUED
+
+
 def _remote_delegation_record(resume_at: datetime | None) -> DurableRunRecord:
     """A system-owned WAITING remote-delegation pause with a chosen timer."""
     graph = _graph("ws-m1-e2-peer", "project-m1-e2-peer")
@@ -866,7 +951,10 @@ async def test_external_completion_wakes_a_system_owned_waiting_run() -> None:
                 "pauses": {
                     "work": {
                         "kind": "wait",
-                        "metadata": {"paused_reason": "awaiting_remote_delegation"},
+                        "metadata": {
+                            "paused_reason": "awaiting_remote_delegation",
+                            "task_id": "remote-task",
+                        },
                         "resume_at": deadline.isoformat(),
                     }
                 }
@@ -997,7 +1085,10 @@ def test_external_result_preserves_a_second_parked_frontier_deadline() -> None:
                 "pauses": {
                     node_id: {
                         "kind": "wait",
-                        "metadata": {"paused_reason": "awaiting_remote_delegation"},
+                        "metadata": {
+                            "paused_reason": "awaiting_remote_delegation",
+                            "task_id": f"remote-{node_id}",
+                        },
                         "resume_at": deadline.isoformat(),
                     }
                     for node_id, deadline in (
@@ -1015,7 +1106,9 @@ def test_external_result_preserves_a_second_parked_frontier_deadline() -> None:
         version=1,
     )
 
-    updated = external_result_record(record, "first", {"status": "completed"})
+    updated = external_result_record(
+        record, "first", {"status": "completed", "task_id": "remote-first"}
+    )
 
     assert updated.run.status is RunStatus.WAITING
     assert updated.resume_at == second_deadline
@@ -1052,7 +1145,7 @@ async def test_external_result_is_persisted_by_the_in_memory_checkpoint_store() 
                     "pauses": {
                         "work": {
                             "kind": "wait",
-                            "metadata": {"paused_reason": "awaiting_harness"},
+                            "metadata": {"paused_reason": "awaiting_harness", "handle_id": "h-1"},
                         }
                     }
                 },
@@ -1064,7 +1157,7 @@ async def test_external_result_is_persisted_by_the_in_memory_checkpoint_store() 
     updated = await store.submit_external_result(
         run.run_id,
         "work",
-        {"status": "completed", "output": "ok"},
+        {"status": "completed", "handle_id": "h-1", "output": "ok"},
     )
     assert updated.run.status is RunStatus.QUEUED
     persisted = await store.get(run.run_id)
@@ -1072,6 +1165,6 @@ async def test_external_result_is_persisted_by_the_in_memory_checkpoint_store() 
     replayed = await store.submit_external_result(
         run.run_id,
         "work",
-        {"status": "completed", "output": "ok"},
+        {"status": "completed", "handle_id": "h-1", "output": "ok"},
     )
     assert replayed.version == updated.version
