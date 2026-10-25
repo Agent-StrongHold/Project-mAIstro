@@ -52,6 +52,7 @@ const NAV_ENTRIES: Array<{ label: string; path: string; scope?: string; probe: (
   // the surface's own deep-link behavior so this row stays a chrome check.
   { label: "Goals", path: "/goals", probe: (p) => p.getByRole("heading", { name: "Goals", exact: true }) },
   { label: "Attention", path: "/attention", probe: (p) => p.getByRole("heading", { name: "Attention", exact: true }) },
+  { label: "Approvals", path: "/approvals", probe: (p) => p.getByRole("heading", { name: "Approvals", exact: true }) },
   { label: "Design Studio", path: "/design-studio", probe: (p) => p.getByRole("heading", { name: "Design Studio", exact: true }) },
   { label: "DAG Builder", path: "/dags", probe: (p) => p.getByRole("heading", { name: "DAG Builder", exact: true }) },
   { label: "DAG Runs", path: "/dag-runs", probe: (p) => p.getByRole("heading", { name: "Runs", exact: true }) },

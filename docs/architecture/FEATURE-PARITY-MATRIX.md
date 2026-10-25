@@ -61,7 +61,7 @@ Evidence: [`routes/auth.py`](../../packages/hive-conductor/backend/routes/auth.p
 | Credentials + master-key rotation | `maistro.credentials` (encrypted per-user store) | supported — `Credentials.tsx` (`/credentials`) | supported — `/v1/credentials/*` | supported — `maistro security rotate-credential-key` (operator path) |
 | Skills + Forge + scan + toggle | `maistro.skills`, `maistro.code_registry` (signing + trust tiers, #59 path) | supported — `Skills.tsx` (`/skills`) | supported — `/v1/skills`, `/forge`, `/scan`, `/{id}`, `/toggle` | missing |
 | MCP integrations (discovery / trust) | `maistro.integrations` + Warden/policy (#59 supply-chain path) | supported — `MCP.tsx` (`/mcp`, nav "Integrations") | supported — `/v1/mcp/servers*`, `/discover`, `/test`; `unknown` on `/discover` and `/{id}/scan` (unresolved surface-truth dispositions) | missing |
-| Capability slots + approvals inbox | `maistro.capabilities` (`governed_invocation`, `approval_store`) | missing — no UI calls `/v1/capabilities/*` or `/v1/hitl/*` (G6; owner [#2278](https://github.com/Agent-StrongHold/Project-mAIstro/issues/2278)) | supported — `/v1/capabilities*`, `/v1/hitl/{run}/{node}/answer|cancel`, `/v1/hitl/pending` | supported — `maistro approvals list|approve|deny` |
+| Capability slots + approvals inbox | `maistro.capabilities` (`governed_invocation`, `approval_store`) | partial — Approvals UI (#2278) calls `/v1/capabilities/approvals` + `/v1/hitl/*`; slot management UI is #2273 | supported — `/v1/capabilities*`, `/v1/hitl/{run}/{node}/answer|cancel`, `/v1/hitl/pending` | supported — `maistro approvals list|approve|deny` |
 
 Evidence: BFF registrations [`backend/main.py:370,376,382`](../../packages/hive-conductor/backend/main.py); approvals CLI registration [`cli/__init__.py:46`](../../packages/maistro-core/src/maistro/cli/__init__.py); absence of `/v1/capabilities` and `/v1/hitl` callers verified by repo-wide frontend grep at the evidence commit.
 
@@ -87,7 +87,7 @@ Evidence: BFF registrations [`backend/main.py:370,376,382`](../../packages/hive-
 | Run retry | #1169 / #1036 control plane — **v1.0 non-goal (#2279)**; post-v1.0 = new Attempt under same Run/NodeRun if revived | deliberate non-goal (v1.0) | deliberate non-goal (v1.0) | deliberate non-goal (v1.0) |
 | Node-level inspection / feedback | NodeRun/Attempt projections | supported — node click-through in `DagRuns.tsx` | supported — `/v1/dag-runs/{run_id}/events`, `/v1/dag-runs/{run_id}/feedback`, node feedback | missing |
 | Container / sandbox lifecycle | `maistro.sandbox` + Conductor container service | supported — `Containers.tsx` (`/containers`) | supported — `/v1/containers*` incl. build/start/stop/restart/logs; `unknown` on `/build` (unresolved surface-truth disposition) | supported — `maistro sandbox status` (host isolation report) |
-| HITL answers inside a live Run | `maistro.capabilities` approvals + HITL routes | missing — no UI caller (G6; owner [#2278](https://github.com/Agent-StrongHold/Project-mAIstro/issues/2278)) | supported — `/v1/hitl/pending`, `/{run}/{node}`, `/answer`, `/cancel`, `/expire` | supported — `maistro approvals list|approve|deny` |
+| HITL answers inside a live Run | `maistro.capabilities` approvals + HITL routes | partial — Approvals page (#2278) lists pending and posts answer/cancel | supported — `/v1/hitl/pending`, `/{run}/{node}`, `/answer`, `/cancel`, `/expire` | supported — `maistro approvals list|approve|deny` |
 
 ### E. Durable state
 
@@ -139,7 +139,7 @@ Evidence: BFF registrations [`backend/main.py:370,376,382`](../../packages/hive-
 
 | # | Missing counterpart | Owner issue | Decision / proposal |
 |---|---|---|---|
-| P-1 | HITL/capability approvals have API + CLI support but no Workspace UI caller | [#2278](https://github.com/Agent-StrongHold/Project-mAIstro/issues/2278) | Minimal `/approvals` projection over existing public APIs (no parallel store); slot management remains #2273. |
+| P-1 | HITL/capability approvals have API + CLI support but no Workspace UI caller | [#2278](https://github.com/Agent-StrongHold/Project-mAIstro/issues/2278) | **Implemented:** minimal `/approvals` projection over existing public APIs (no parallel store); slot management remains #2273. |
 | P-2 | Run retry exists on no surface | [#2279](https://github.com/Agent-StrongHold/Project-mAIstro/issues/2279) | **Decision B: deliberate v1.0 non-goal.** Cancel + HITL cover blocked work; a future retry must be a new Attempt under the same Run/NodeRun via #1169/#1036 — never a `RetryRun` or private restart queue. Recorded in ROADMAP explicit non-goals. |
 | P-3 | No CLI commands for in-product CRUD (agents, providers, skills, MCP, schedules, backlog) | [#2280](https://github.com/Agent-StrongHold/Project-mAIstro/issues/2280) | **Decision A: operator-lifecycle only for v1.0.** Product CRUD stays on Workspace UI + public HTTP APIs. CLI keeps install/upgrade/approvals/sandbox/archive — no partial CRUD that implies full parity. No CLI-only store. |
 

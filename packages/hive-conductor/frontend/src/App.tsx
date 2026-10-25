@@ -18,6 +18,7 @@ import Setup from "./pages/Setup";
 // first paint of every session, so splitting them would only add a round
 // trip with nothing to show meanwhile.
 const Agents = lazy(() => import("./pages/Agents"));
+const Approvals = lazy(() => import("./pages/Approvals"));
 const Attention = lazy(() => import("./pages/Attention"));
 const AuditLog = lazy(() => import("./pages/AuditLog"));
 const Backlog = lazy(() => import("./pages/Backlog"));
@@ -198,6 +199,9 @@ function AppRoutes() {
                   <Route path="attention" element={<Attention />} />
                   <Route path="missions" element={<Missions />} />
                   <Route path="backlog" element={<Backlog />} />
+                  {/* #2278 / Parity P-1: approvals projection over the same
+                      /v1/capabilities/approvals and /v1/hitl/* doors as CLI. */}
+                  <Route path="approvals" element={<Approvals />} />
                   <Route path="dags" element={<DagBuilder />} />
                   <Route path="dag-runs" element={<DagRuns />} />
                   <Route path="goals" element={<Goals />} />

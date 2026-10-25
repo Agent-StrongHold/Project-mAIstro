@@ -25,6 +25,12 @@ or placeholder-only section.
 
 ### Added
 
+- **Workspace Approvals projection over the existing capability + HITL APIs
+  (#2278, Parity P-1).** New `/approvals` page lists
+  `/v1/capabilities/approvals` and `/v1/hitl/pending`, and posts
+  approve/deny/answer/cancel through those same doors — identical authority
+  to `maistro approvals` and the HITL routes. No parallel approvals store.
+
 - **Capabilities becomes the primary Hive Conductor surface for slots and
   providers (#2273, `conductor-407`).** New `/capabilities` page lists
   `/v1/capabilities` slots with host-owned trust/provenance, re-discover, and
