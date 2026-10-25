@@ -128,7 +128,10 @@ def main() -> int:
     args = ap.parse_args()
 
     cfg = _cfg(args.env_file)
-    base = (cfg.get("LITELLM_BASE_URL") or "http://localhost:4000").rstrip("/")
+    base = (
+        cfg.get("LITELLM_BASE_URL")
+        or "http://localhost:4000"  # DevSkim: ignore DS162092 until 2027-12-31
+    ).rstrip("/")
     llm_key = cfg.get("LITELLM_MASTER_KEY")
     or_key = cfg.get("OPENROUTER_MANAGE_KEY")
     if not (llm_key and or_key):

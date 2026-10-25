@@ -80,7 +80,7 @@ Three further rules follow from the columns' meanings. A `KEEP` column whose eve
 | Relational persistence | `maistro.persistence` | Storage adapters | n/a | itself — `pg_*` is wired for PostgreSQL; SQLite remains for homelab/local use | — |
 | Local state writer | `maistro.state` | Single-writer SQLite | n/a | itself | — |
 | Ontology | `maistro.ontology` | Semantic object layer | n/a | `ontology.registry` (in-memory) | — |
-| Portability / backup | `maistro.portability` | Export/import of domain state | n/a | file exports | — |
+| Portability / backup | `maistro.portability` | Foreign-format agent/skill import/export (ADR-101 §3); deployment backup/restore (ADR-081) unbuilt | n/a | file exports | — |
 | Events and checkpoints | `maistro.events` | Event envelope, checkpoint, outbox | n/a | `events.pg_stores` with a pool, else durable SQLite or in-memory; `events.outbox` | — |
 | Observability | `maistro.observability` | Trace, metric, log | n/a | exporter-dependent | — |
 | Resilience | `maistro.resilience` | Retry, circuit, SLO | circuit state per dependency | in-memory | — |
@@ -88,12 +88,12 @@ Three further rules follow from the columns' meanings. A `KEEP` column whose eve
 | Reactor loop | `maistro.reactor` | Trigger evaluation loop | n/a | — | — |
 | Prompts and personas | `maistro.prompts`, `maistro.personas` | Node/agent configuration | n/a | `persistence.pg_prompts` still has no production importer | — |
 | Codebase analysis | `maistro.codebase` | Tool implementation | n/a | — | — |
-| Core CLI | `maistro.cli` | Client of the Conductor API | n/a (remote) | — | server-side |
+| Core CLI | `maistro.cli` | Client of the Conductor API; `maistro portability` converts agent/skill files locally | n/a (remote) | — | server-side |
 | Shared contracts and config | `maistro`, `maistro.types`, `maistro.protocols`, `maistro.constants`, `maistro.config`, `maistro.http` | Types and protocols | n/a | — | — |
 | Test scaffolding | `maistro.testing` | Test doubles | n/a | — | — |
 | maistro-server HTTP app | `maistro_server` | Product entry point | `maistro.tasks.queue` (delegated) receipt plus canonical Run spine | inherited | `maistro.auth` + rate limiter |
 | Agent Conductor HTTP surface | `main`, `routes`, `middleware`, `protocols`, `adapters`, `models`, `stores`, `config`, `logging_setup`, `settings_defaults` | Product entry point | mixed: `stores` in-memory dicts, `models` SQLAlchemy | `models` + `services.pg_store` | `middleware` auth + `middleware.privilege` (installed, empty policy table — #63) |
-| Agent Conductor services | `services` | Product services | `services.dag_run_store` — parallel run identity, event-derived, authoritative for current UI | `services.pg_store` | per-route |
+| Agent Conductor services | `services` | Product services | `services.dag_run_store` — projection receipt over canonical Run truth: lifecycle (status + finish time) reconciled against the canonical Run at every read (#35, #1036), non-terminal canonical states mirrored open with no invented finish, display-only | `services.pg_store` | per-route |
 | Canvas ability | `maistro_canvas`, `maistro-canvas-frontend-server` | Graph of canvas Nodes | `canvas.executor` pipeline + `canvas.runner` (unreachable) claim/lease/reap state machine | `canvas.store` (PostgreSQL; wired by maistro_server.main `_wire_canvas_ability`, #851) | `maistro_canvas.auth` |
 | Open Design integration | `maistro_design` | Renderer Providers | `design.engine` | `design.stores` | `design.trust` |
 | Evolve tournament optimizer | `maistro_evolve` | Graph of evaluation Nodes | `evolve.cycle` orchestrates; no universal work-state machine of its own | `evolve.serialize` (unreachable) | — |
@@ -152,7 +152,7 @@ A share rather than the `19/62` this column used to carry, because the denominat
 | Relational persistence | `maistro.container` (both backends), Alembic | `none` | KEEP — PostgreSQL canonical stores and SQLite homelab adapters are wired | ADR-082226-5104, ADR-087, ADR-012 | container selects durable prompt/audit stores with backend conformance; zero relational modules unreachable | — |
 | Local state writer | `maistro.reactor`, CLI | `none` | KEEP | — | single-writer concurrency tests | — |
 | Ontology | `maistro.ontology` public API via `maistro.projects` exports | `none` | CONNECT — accepted design; the registry's first process consumer is still owed. The M7-A2 Rubric kind/store made the modules import-reachable (`maistro.projects` exports the store beside `InMemoryProjectStore`), so the CONNECT baseline rows were pruned per the disposition gate's own rule while the #34 wiring debt stays recorded here | ADR-036 | subsystem resolves semantic object through registry | #34, #791 |
-| Portability / backup | none | `all` | CONNECT | — | backup/restore preserves canonical correlated records | #62, #34 |
+| Portability / backup | `maistro portability` CLI subcommands | `none` | KEEP — the ADR-101 §3 (Proposed) import-wide/export-narrow adapters ship through the console script | — (proposed in ADR-101, ADR-081) | foreign JSON/markdown agent/skill imports and the MCP-manifest + SKILL.md export round-trip run through the shipped CLI (`tests/cli/test_portability.py`); deployment backup/restore (ADR-081, Proposed) remains unbuilt and owns no modules yet | #62, #34 |
 | Events and checkpoints | `maistro.container`, `events.durable_log` | `few` | KEEP — canonical envelope, incompletely adopted | ADR-081226-7248 | migrated event families share envelope + Workspace sequence | #61, #62 |
 | Observability | `maistro_server` middleware, `adapters` Langfuse | `none` | KEEP | ADR-037, ADR-082 | one trace spans request → Run → NodeRun → Attempt → Invocation | #63 |
 | Resilience | `maistro.container`, `resilience.slo` | `some` | KEEP | ADR-038 | circuit/SLO primitives wired to real producers | #63 |
@@ -160,12 +160,12 @@ A share rather than the `19/62` this column used to carry, because the denominat
 | Reactor loop | `maistro.reactor` (installer-launched) | `none` | KEEP | — | loop timing tests | — |
 | Prompts and personas | `maistro.container`, `routes.agents` | `few` | KEEP | ADR-081226-e626 | persona seed/eval protocol tests | — |
 | Codebase analysis | `maistro.tools` call sites | `none` | KEEP | ADR-065 | tool-level tests | — |
-| Core CLI | `maistro.cli` console script | `some` | KEEP — thin client, no local lifecycle | ADR-096 | CLI commands hit Conductor API only | — |
+| Core CLI | `maistro.cli` console script | `few` | KEEP — thin client, no local lifecycle | ADR-096 | CLI commands hit the Conductor API; `maistro portability` is the stateless exception — local agent/skill file conversion, no store | — |
 | Shared contracts and config | imported by every package | `none` | LIBRARY | ADR-019, ADR-081226-034b | dependency-direction + compatibility-owner fitness checks | #36 |
 | Test scaffolding | test suites only | `all` | LIBRARY — unreachable by construction | ADR-065, ADR-032 | used by checked test suites | — |
 | maistro-server HTTP app | `maistro_server.main` | `none` | MIGRATE — task queue is receipt; chat front door now uses Container/Conduit | ADR-076, ADR-096, ADR-082426-2192 | `/v1/tasks` and `/v1/chat/completions` both yield canonical Run identity | #43, #234 |
 | Agent Conductor HTTP surface | `main` (uvicorn) | `few` | MIGRATE — product surface must read canonical stores | ADR-096, ADR-094 | Run views rendered from canonical stores and surviving restart | #65, #53 |
-| Agent Conductor services | route registration + background loops | `few` | MIGRATE — `dag_run_store`, scheduler and graph/product seams still duplicate canonical responsibilities | ADR-096 | DAG/scheduler/chat paths use canonical Runs and projections only | #53, #35, #231 |
+| Agent Conductor services | route registration + background loops | `few` | MIGRATE — `dag_run_store` is a reconciled display projection (#35); scheduler and graph/product seams still duplicate canonical responsibilities | ADR-096 | DAG/scheduler/chat paths use canonical Runs and projections only | #53, #35, #231 |
 | Canvas ability | `maistro_canvas.canvas.routes`, `routes.canvas`, `maistro-canvas-frontend-server` | `few` | MIGRATE — pipeline stages become NodeRuns | ADR-040, ADR-067 | canvas stages visible as NodeRuns with retries as Attempts | #52 |
 | Open Design integration | `routes.design`, `services.design_service` | `few` | MIGRATE — renderers become Providers | ADR-061, ADR-100 | render effect recorded as Invocation | #52, #55 |
 | Evolve tournament optimizer | `routes.evolution`, `services.evolution` | `few` | MIGRATE — cycle is canonical Run, battle is NodeRun; status/cycle admission is disabled or degraded without the engine Container | ADR-088 (tournament contracts Proposed in ADR-070126-6386, SPEC-070126-9d37) | tournament history reproducible from canonical Runs; `/status` distinguishes executable/degraded/unavailable and `/cycle` preserves terminal Run identity | #51, #465 |

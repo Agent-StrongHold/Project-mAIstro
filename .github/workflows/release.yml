@@ -45,9 +45,11 @@ env:
   # and syft: a pinned release tarball verified by hash, not `curl | sh` off a
   # mutable branch. syft's pin is the same one security.yml already uses.
   SYFT_VERSION: "1.49.0"
-  SYFT_SHA256: "7aa2f03ee92739cf643279ba3990548b9925d4e22cae13f46831ee62821147fe"
+  # Integrity pin for the release tarball (not a credential).
+  SYFT_SHA256: "7aa2f03ee92739cf643279ba3990548b9925d4e22cae13f46831ee62821147fe" # DevSkim: ignore DS173237 until 2027-12-31
   COSIGN_VERSION: "2.6.1"
-  COSIGN_SHA256: "064954c5d8c7e3b28188eee5b1727b31c411550bc5fefd41aa672d3c761d103a"
+  # Integrity pin for the release tarball (not a credential).
+  COSIGN_SHA256: "064954c5d8c7e3b28188eee5b1727b31c411550bc5fefd41aa672d3c761d103a" # DevSkim: ignore DS173237 until 2027-12-31
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -225,7 +227,7 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - uses: ./.github/actions/setup-uv
