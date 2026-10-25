@@ -1,4 +1,33 @@
-# CR1619 — closure-gate repair handoff at bb8e09e26
+# CR1619 — closure-gate repair handoff at 0c3951bcf
+
+## Round 3 update (2026-10-25, this round)
+
+- origin/develop advanced to `09d56b6a0b` (EPIC M5-B + M1 closeout). Merged
+  into the branch as `0c3951bcf` — clean merge, zero conflicts (the new
+  develop commits touch hive-conductor / maistro-core / maistro-rsi /
+  maistro-server/extensions only; disjoint from this branch's
+  `packages/maistro-design/**` surface).
+- Ledger hygiene after merge: `git diff --numstat origin/develop -- quality/`
+  is empty — no quality/ rows dropped or added by the merge.
+- Battery re-run green at `0c3951bcf`: ruff pair; mypy over the workflow's
+  exact 10-package list (Success, 1110 source files); pytest
+  `packages/maistro-design/tests` 669 passed + 1 skipped; full
+  `check-suite-inventory.py` (21 suites ok, 34688 node IDs);
+  `check-test-duplicates.py` ok; layout / merge-markers /
+  cross-package-imports ok.
+- `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'` (CI's exact args) → exit 0: 1263 reviewed identities,
+  all banked against base `09d56b6a0b`. No ledger amendment needed.
+- Closure gate re-confirmed mechanically: the gate's own
+  `acceptance_criteria()` + `problems_for()` run against the captured #1614
+  record (issue snapshot in the dispatch bundle) reproduces CI's exact error
+  string — "5 of 5 registered criteria unproven (unticked: AC-1..AC-5)".
+  #1614 AC-5 additionally requires branch `feat/m7-a15-pack-extension`, so
+  `Fixes #1614` in the PR body is factually wrong, not merely premature.
+  With the body's first line as `Part of #1614`, the gate exits 0 without
+  touching the API (`ok: PR body closes no issue by keyword`).
+
+## Round 2 summary (superseded head references below)
 
 Repair round for issue #1619 / PR #1619, branch `issue-1614-pack-extension`,
 head `bb8e09e261bf81463a05b1013e66bc2c2a372338`, base `e12e11288`. Lane
