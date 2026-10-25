@@ -23,6 +23,19 @@ or placeholder-only section.
 
 ## [Unreleased]
 
+### Security
+
+- **GHAS CodeQL + DevSkim backlog continuation (no linked issue: open
+  code-scanning alerts on develop).** Route mutation-baseline CI error
+  annotations through the allowlisted `_ci_error_annotation` scrubber
+  (CodeQL `py/clear-text-logging-sensitive-data`). Move DevSkim integrity-pin
+  suppressions onto the same line as each `scripts/vendor_bfcl.py` digest;
+  clear remaining script/product false positives (loopback CLI default,
+  ontology `TODO` enum, placeholder-gate prose, pip-audit curve triage) with
+  same-line dated ignores or rewording. Expand DevSkim `ignore-globs` for
+  immutable `packages/hive-conductor/eval/**` and `quality/**` ledgers so the
+  Security tab stays actionable without editing cage-guarded trees.
+
 ### Added
 
 - **Workspace Approvals projection over the existing capability + HITL APIs
