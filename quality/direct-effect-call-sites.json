@@ -15,7 +15,7 @@
     "packages/hive-conductor/backend/adapters/maistro_core.py::_HttpOpenAILLMClient.complete::MODEL_EFFECT:openai-compatible-http#1": {
       "path": "packages/hive-conductor/backend/adapters/maistro_core.py",
       "qualname": "_HttpOpenAILLMClient.complete",
-      "line": 83,
+      "line": 103,
       "category": "MODEL_EFFECT",
       "entry_point": "openai-compatible-http",
       "callee": "client.post",
@@ -114,7 +114,7 @@
     "packages/hive-conductor/backend/services/chat_completion.py::_tool_analyze_dashboard::MODEL_EFFECT:openai-compatible-http#1": {
       "path": "packages/hive-conductor/backend/services/chat_completion.py",
       "qualname": "_tool_analyze_dashboard",
-      "line": 1765,
+      "line": 1908,
       "category": "MODEL_EFFECT",
       "entry_point": "openai-compatible-http",
       "callee": "client.post",
@@ -125,7 +125,7 @@
     "packages/hive-conductor/backend/services/chat_completion.py::_tool_check_blockers::PM_POLLING_EFFECT:pm-polling-http#1": {
       "path": "packages/hive-conductor/backend/services/chat_completion.py",
       "qualname": "_tool_check_blockers",
-      "line": 933,
+      "line": 1014,
       "category": "PM_POLLING_EFFECT",
       "entry_point": "pm-polling-http",
       "callee": "client.get",
@@ -136,7 +136,7 @@
     "packages/hive-conductor/backend/services/chat_completion.py::_tool_get_issue::PM_POLLING_EFFECT:pm-polling-http#1": {
       "path": "packages/hive-conductor/backend/services/chat_completion.py",
       "qualname": "_tool_get_issue",
-      "line": 874,
+      "line": 955,
       "category": "PM_POLLING_EFFECT",
       "entry_point": "pm-polling-http",
       "callee": "client.get",
@@ -147,7 +147,7 @@
     "packages/hive-conductor/backend/services/chat_completion.py::_tool_poll_jira::PM_POLLING_EFFECT:pm-polling-http#1": {
       "path": "packages/hive-conductor/backend/services/chat_completion.py",
       "qualname": "_tool_poll_jira",
-      "line": 788,
+      "line": 869,
       "category": "PM_POLLING_EFFECT",
       "entry_point": "pm-polling-http",
       "callee": "client.get",
@@ -158,7 +158,7 @@
     "packages/hive-conductor/backend/services/chat_completion.py::_tool_search_jira::PM_POLLING_EFFECT:pm-polling-http#1": {
       "path": "packages/hive-conductor/backend/services/chat_completion.py",
       "qualname": "_tool_search_jira",
-      "line": 833,
+      "line": 914,
       "category": "PM_POLLING_EFFECT",
       "entry_point": "pm-polling-http",
       "callee": "client.get",
@@ -180,7 +180,7 @@
     "packages/hive-conductor/backend/services/legacy_dag_node.py::_build_llm_call._httpx_llm::MODEL_EFFECT:openai-compatible-http#1": {
       "path": "packages/hive-conductor/backend/services/legacy_dag_node.py",
       "qualname": "_build_llm_call._httpx_llm",
-      "line": 656,
+      "line": 689,
       "category": "MODEL_EFFECT",
       "entry_point": "openai-compatible-http",
       "callee": "client.post",
@@ -191,18 +191,18 @@
     "packages/hive-conductor/backend/services/legacy_dag_node.py::_tool_browse_url::TOOL_EFFECT:hive.browse_url#1": {
       "path": "packages/hive-conductor/backend/services/legacy_dag_node.py",
       "qualname": "_tool_browse_url",
-      "line": 248,
+      "line": 261,
       "category": "TOOL_EFFECT",
       "entry_point": "hive.browse_url",
       "callee": "browse_url",
-      "disposition": "INTENTIONAL_LIBRARY/INFRASTRUCTURE",
+      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
       "owner": "#57",
-      "rationale": "Provider backend of the canonical legacy-tool Invocation: _run_tool_node requires NodeContext and records the outer Binding -> Invocation before _call_tool_node runs (#57 retired the no-identity compatibility branch; test_legacy_dag_node pins the refusal). Migrated through the canonical seam rather than a second tool executor."
+      "rationale": "Shipped tool call can cause an external effect without an Invocation record; #57 owns governed tool execution."
     },
     "packages/hive-conductor/backend/services/legacy_dag_node.py::_tool_clarify::MODEL_EFFECT:hive.clarify#1": {
       "path": "packages/hive-conductor/backend/services/legacy_dag_node.py",
       "qualname": "_tool_clarify",
-      "line": 238,
+      "line": 246,
       "category": "MODEL_EFFECT",
       "entry_point": "hive.clarify",
       "callee": "clarify",
@@ -213,18 +213,18 @@
     "packages/hive-conductor/backend/services/legacy_dag_node.py::_tool_web_search::TOOL_EFFECT:hive.web_search#1": {
       "path": "packages/hive-conductor/backend/services/legacy_dag_node.py",
       "qualname": "_tool_web_search",
-      "line": 227,
+      "line": 232,
       "category": "TOOL_EFFECT",
       "entry_point": "hive.web_search",
       "callee": "web_search",
-      "disposition": "INTENTIONAL_LIBRARY/INFRASTRUCTURE",
+      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
       "owner": "#57",
-      "rationale": "Provider backend of the canonical legacy-tool Invocation: _run_tool_node requires NodeContext and records the outer Binding -> Invocation before _call_tool_node runs (#57 retired the no-identity compatibility branch; test_legacy_dag_node pins the refusal). Migrated through the canonical seam rather than a second tool executor."
+      "rationale": "Shipped tool call can cause an external effect without an Invocation record; #57 owns governed tool execution."
     },
     "packages/hive-conductor/backend/services/mcp_client.py::test_jira_rest::PM_POLLING_EFFECT:pm-polling-http#1": {
       "path": "packages/hive-conductor/backend/services/mcp_client.py",
       "qualname": "test_jira_rest",
-      "line": 90,
+      "line": 187,
       "category": "PM_POLLING_EFFECT",
       "entry_point": "pm-polling-http",
       "callee": "client.get",
@@ -261,9 +261,9 @@
       "category": "TOOL_EFFECT",
       "entry_point": "browser.browse",
       "callee": "client.browse",
-      "disposition": "INTENTIONAL_LIBRARY/INFRASTRUCTURE",
+      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
       "owner": "#57",
-      "rationale": "BrowserClient call inside the shipped browse_url implementation, which since #57 runs only as the provider backend beneath a canonical Invocation (services.governed_tools for the boot/chat seam, the legacy-tool Invocation for DAG nodes). Same arrangement as execute_model_chat for model egress (#56)."
+      "rationale": "Shipped tool call can cause an external effect without an Invocation record; #57 owns governed tool execution."
     },
     "packages/hive-conductor/backend/services/tool_executor.py::web_search::TOOL_EFFECT:browser.search_web#1": {
       "path": "packages/hive-conductor/backend/services/tool_executor.py",
@@ -272,14 +272,14 @@
       "category": "TOOL_EFFECT",
       "entry_point": "browser.search_web",
       "callee": "client.search_web",
-      "disposition": "INTENTIONAL_LIBRARY/INFRASTRUCTURE",
+      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
       "owner": "#57",
-      "rationale": "BrowserClient fallback inside the shipped web_search implementation, which since #57 runs only as the provider backend beneath a canonical Invocation (services.governed_tools for the boot/chat seam, the legacy-tool Invocation for DAG nodes). Same arrangement as execute_model_chat for model egress (#56)."
+      "rationale": "Shipped tool call can cause an external effect without an Invocation record; #57 owns governed tool execution."
     },
     "packages/hive-conductor/backend/services/ui_auto_climb.py::generate_edit::MODEL_EFFECT:openai-compatible-http#1": {
       "path": "packages/hive-conductor/backend/services/ui_auto_climb.py",
       "qualname": "generate_edit",
-      "line": 141,
+      "line": 142,
       "category": "MODEL_EFFECT",
       "entry_point": "openai-compatible-http",
       "callee": "client.post",
@@ -290,7 +290,7 @@
     "packages/hive-conductor/backend/services/ui_auto_climb.py::score_visual::MODEL_EFFECT:openai-compatible-http#1": {
       "path": "packages/hive-conductor/backend/services/ui_auto_climb.py",
       "qualname": "score_visual",
-      "line": 90,
+      "line": 91,
       "category": "MODEL_EFFECT",
       "entry_point": "openai-compatible-http",
       "callee": "client.post",
@@ -356,7 +356,7 @@
     "packages/maistro-bootstrap/src/maistro_bootstrap/builders/responses_callable.py::LiteLLMCallable._post_with_pacing::MODEL_EFFECT:openai-compatible-http#1": {
       "path": "packages/maistro-bootstrap/src/maistro_bootstrap/builders/responses_callable.py",
       "qualname": "LiteLLMCallable._post_with_pacing",
-      "line": 534,
+      "line": 543,
       "category": "MODEL_EFFECT",
       "entry_point": "openai-compatible-http",
       "callee": "_post",
@@ -485,21 +485,21 @@
       "owner": "#286",
       "rationale": "The approved image.generate Provider implementation itself. The call executes beneath a resolved image.generate Binding, Binding-scoped credential routing and a governed Invocation (ImageGenerationEgress), so this site IS the governed image egress, not a bypass."
     },
-    "packages/maistro-core/src/maistro/capabilities/providers/llm_gateway.py::execute_model_chat::MODEL_EFFECT:openai-compatible-http#1": {
+    "packages/maistro-core/src/maistro/capabilities/providers/llm_gateway.py::_post_chat_completion::MODEL_EFFECT:openai-compatible-http#1": {
       "path": "packages/maistro-core/src/maistro/capabilities/providers/llm_gateway.py",
-      "qualname": "execute_model_chat",
-      "line": 343,
+      "qualname": "_post_chat_completion",
+      "line": 444,
       "category": "MODEL_EFFECT",
       "entry_point": "openai-compatible-http",
       "callee": "client.post",
       "disposition": "INTENTIONAL_LIBRARY/INFRASTRUCTURE",
       "owner": "#56",
-      "rationale": "The approved Provider implementation itself: the one module #56 authorizes to hold an HTTP client for a model endpoint. The call executes beneath a resolved canonical Binding and a governed Invocation, so this site IS the governed egress, not a bypass."
+      "rationale": "The approved Provider implementation itself: the one module #56 authorizes to hold an HTTP client for a model endpoint. The POST lives in `_post_chat_completion` (factored out of `execute_model_chat` for radon/#2318) and still executes beneath a resolved canonical Binding and a governed Invocation, so this site IS the governed egress, not a bypass."
     },
     "packages/maistro-core/src/maistro/events/handlers.py::conductor_chat_action::MODEL_EFFECT:openai-compatible-http#1": {
       "path": "packages/maistro-core/src/maistro/events/handlers.py",
       "qualname": "conductor_chat_action",
-      "line": 118,
+      "line": 121,
       "category": "MODEL_EFFECT",
       "entry_point": "openai-compatible-http",
       "callee": "svc.post",
@@ -510,7 +510,7 @@
     "packages/maistro-core/src/maistro/events/handlers.py::conductor_chat_action::MODEL_EFFECT:openai-compatible-http#2": {
       "path": "packages/maistro-core/src/maistro/events/handlers.py",
       "qualname": "conductor_chat_action",
-      "line": 123,
+      "line": 126,
       "category": "MODEL_EFFECT",
       "entry_point": "openai-compatible-http",
       "callee": "client.post",

@@ -169,7 +169,13 @@ def new_effect_context(
     store = invocation_store or InMemoryInvocationStore()
     events = event_store or InMemoryEventStore()
     selected_usage_log = usage_log or get_default_usage_log()
-    usage_recorder = CanonicalInvocationUsageRecorder(selected_usage_log, quota_tracker)
+    from maistro.quota.recorder import default_invocation_quota_verifier
+
+    usage_recorder = CanonicalInvocationUsageRecorder(
+        selected_usage_log,
+        quota_tracker,
+        verifier=default_invocation_quota_verifier(),
+    )
     invocation_service = InvocationExecutionService(
         store=store,
         quota=quota,

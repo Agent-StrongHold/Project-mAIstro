@@ -22,7 +22,7 @@ ROOT = Path(__file__).resolve().parents[1]
 BRANCH_INDEPENDENCE_REGISTRY = ROOT / "quality" / "branch-independence.json"
 BRANCH_INDEPENDENCE_CHECKER = ROOT / "scripts" / "check-branch-independence.py"
 QUALITY_PREFIX = "quality/"
-BRANCH_INDEPENDENT_EVIDENCE_KINDS = frozenset({"base_derived", "generated"})
+BRANCH_INDEPENDENT_EVIDENCE_KINDS = frozenset({"base_derived", "generated", "folded_notes"})
 
 AUTO_PREFIXES = (
     "claude/",
