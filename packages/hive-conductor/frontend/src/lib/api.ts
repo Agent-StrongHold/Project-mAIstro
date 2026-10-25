@@ -47,7 +47,7 @@ async function request<T>(
   const started = performance.now();
   const method = init.method ?? "GET";
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS);
+  const timeout = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS); // DevSkim: ignore DS172411 until 2027-12-31 — fixed client abort budget, not attacker-controlled delay
   let r: Response;
   let text: string;
   try {
