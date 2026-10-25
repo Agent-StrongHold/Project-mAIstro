@@ -615,3 +615,77 @@ async def test_registered_harness_completion_uses_the_production_timer_and_fresh
         assert harness_row.result["output"] == "registered done"
     finally:
         registry.deregister("rdr-harness-timer")
+
+
+async def test_without_delegation_surfaces_the_timed_half_still_wakes_due_waits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Containers with nothing to poll skip the external seam entirely, and the
+    timed resume remains the sole waker for elapsed `resume_at` waits."""
+    from services import registered_dag_recovery as recovery
+
+    container = SimpleNamespace(
+        graph_run_store=object(),
+        run_store=object(),
+        event_bus=object(),
+    )
+
+    async def _no_seam(**kwargs):
+        del kwargs
+        raise AssertionError("a container without delegation surfaces must not poll")
+
+    async def _resume(**kwargs):
+        del kwargs
+        return 4
+
+    monkeypatch.setattr(recovery, "_container", lambda: container)
+    monkeypatch.setattr(recovery, "poll_external_results", _no_seam)
+    monkeypatch.setattr(recovery, "resume_due_graph_runs", _resume)
+
+    assert await recovery.wake_due_registered_dag_runs() == 4
+
+
+async def test_a_polled_completion_sends_its_queue_to_the_recovery_half(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A poll that delivers a completion queues the canonical parent, and only
+    then does the queued recovery half consume it — same tick, one lifecycle."""
+    from services import registered_dag_recovery as recovery
+
+    container = SimpleNamespace(
+        graph_run_store=object(),
+        run_store=object(),
+        event_bus=object(),
+        guest_peers=object(),
+        harness_adapters={},
+    )
+    poll_kwargs: dict = {}
+    recover_kwargs: dict = {}
+
+    async def _poll(**kwargs):
+        poll_kwargs.update(kwargs)
+        return 1
+
+    async def _recover(**kwargs):
+        recover_kwargs.update(kwargs)
+        return 2
+
+    async def _resume(**kwargs):
+        del kwargs
+        return 3
+
+    monkeypatch.setattr(recovery, "_container", lambda: container)
+    monkeypatch.setattr(recovery, "poll_external_results", _poll)
+    monkeypatch.setattr(recovery, "recover_queued_graph_runs", _recover)
+    monkeypatch.setattr(recovery, "resume_due_graph_runs", _resume)
+
+    # The tick reports recovered + resumed; the poll count only gates recovery.
+    assert await recovery.wake_due_registered_dag_runs(limit=6) == 5
+    assert poll_kwargs["limit"] == 6
+    assert poll_kwargs["eligible"](
+        SimpleNamespace(provenance={"admission_source": "schedule", "executor": None})
+    )
+    assert not poll_kwargs["eligible"](
+        SimpleNamespace(provenance={"admission_source": "evolution", "executor": None})
+    )
+    assert recover_kwargs["admission_source"] == "schedule"

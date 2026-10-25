@@ -324,3 +324,43 @@ def test_delegate_task_dedupes_on_the_legacy_effect_key() -> None:
         metadata={"effect_key": "agent.delegate_remote:effect-2"},
     )
     assert other != first
+
+
+def test_a_terminal_status_without_a_handler_is_still_recorded() -> None:
+    """Receipts stay durable when no canonical waker is (yet) installed."""
+    delegator = A2ADelegator()
+    delegator.register_agent_capability("planner", ["coder"])
+    task_id = delegator.delegate_task(
+        "planner", "do x", "coder", delegation_mode=DelegationMode.ALLOW_LIST
+    )
+    delegator.update_task_status(task_id, TaskStatus.RUNNING)
+    delegator.update_task_status(task_id, TaskStatus.COMPLETED, result="done")
+
+    task = delegator.get_task_status(task_id)
+    assert task is not None
+    assert task.status is TaskStatus.COMPLETED
+
+
+def test_a_failing_completion_handler_cannot_corrupt_the_receipt() -> None:
+    """The canonical wakeup is scheduled from the receipt update; a handler
+    that raises must not roll the terminal status back."""
+    delegator = A2ADelegator()
+    delegator.register_agent_capability("planner", ["coder"])
+    task_id = delegator.delegate_task(
+        "planner", "do x", "coder", delegation_mode=DelegationMode.ALLOW_LIST
+    )
+    seen: list[str] = []
+
+    def _broken_handler(task: object) -> None:
+        seen.append(getattr(task, "id", ""))
+        raise RuntimeError("canonical store unavailable")
+
+    delegator.set_completion_handler(_broken_handler)
+    delegator.update_task_status(task_id, TaskStatus.RUNNING)
+    delegator.update_task_status(task_id, TaskStatus.COMPLETED, result="done")
+
+    assert seen == [task_id]
+    task = delegator.get_task_status(task_id)
+    assert task is not None
+    assert task.status is TaskStatus.COMPLETED
+    assert task.result == "done"

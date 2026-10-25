@@ -760,3 +760,59 @@ async def test_an_external_result_mirror_lost_to_a_crash_is_requeued_after_resta
         assert settled.hitl_answers["work"]["result"] == "done"
     finally:
         await conn.close()
+
+
+async def test_a_delivered_external_result_returns_the_persisted_run_and_replays(
+    tmp_path: Path,
+) -> None:
+    """The canonical external-result seam returns the store's persisted state,
+    replays an identical receipt as a no-op, and refuses unknown runs."""
+    db = tmp_path / "external-return.db"
+    projects = InMemoryProjectScopeStore()
+    root = await projects.create_root(_WORKSPACE)
+    project = await projects.create(
+        workspace_id=_WORKSPACE, parent_project_id=root.project_id, name="External return"
+    )
+    conn = await aiosqlite.connect(db)
+    try:
+        run_store = SqliteRunStore(conn, project_store=projects, concurrency_limits=_BACKLOG_LIMITS)
+        await run_store.ensure_schema()
+        continuations = SqliteGraphContinuationStore(conn)
+        await continuations.ensure_schema()
+        store = CanonicalDurableRunStore(run_store, continuations)
+
+        with pytest.raises(KeyError, match="no such run"):
+            await store.submit_external_result("missing", "work", {"status": "completed"})
+
+        graph = Graph(
+            workspace_id=_WORKSPACE,
+            project_id=project.project_id,
+            name="external return",
+            nodes=[Node(node_id="work", node_type=_ExternalWait.kind)],
+        )
+        admitted = await run_store.create_run(
+            graph,
+            initial_status=RunStatus.QUEUED,
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+        )
+        parked = await run_durable_graph(
+            graph,
+            store=store,
+            node_resolver=lambda node_id, current: _ExternalWait(),
+            run_id=admitted.run_id,
+            run_store=run_store,
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+        )
+        assert parked.status is RunStatus.WAITING
+
+        result = {"status": "completed", "task_id": "remote-1", "result": "done"}
+        delivered = await store.submit_external_result(admitted.run_id, "work", result)
+        assert delivered.run.status is RunStatus.QUEUED
+        persisted = await store.get(admitted.run_id)
+        assert persisted is not None and persisted.version == delivered.version
+
+        # An at-least-once redelivery of the same receipt advances nothing.
+        replayed = await store.submit_external_result(admitted.run_id, "work", result)
+        assert replayed.version == delivered.version
+    finally:
+        await conn.close()

@@ -203,6 +203,37 @@ async def test_cross_instance_polling_writes_the_canonical_external_result() -> 
     )
 
 
+def _parked_record(
+    run_id: str,
+    *,
+    status: RunStatus = RunStatus.WAITING,
+    pauses: Any,
+    resume_at: datetime | None = None,
+) -> DurableRunRecord:
+    """A system-owned parked Run whose frontier carries raw pause entries."""
+    graph = _graph("ws-m1-e2-peer", "project-m1-e2-peer")
+    run = Run(
+        run_id=run_id,
+        workspace_id=graph.workspace_id,
+        project_id=graph.project_id,
+        actor_principal_id="test-actor",
+        graph=GraphSnapshot.from_graph(graph),
+        status=status,
+    )
+    node_status = RunStatus.WAITING if status is RunStatus.WAITING else RunStatus.PAUSED
+    return DurableRunRecord(
+        run=run,
+        graph_state=GraphExecutionState(
+            run_id=run_id,
+            active_node_ids=("work",),
+            metadata={"pauses": pauses},
+        ),
+        node_runs=(NodeRun(run_id=run_id, node_id="work", ordinal=1, status=node_status),),
+        resume_at=resume_at,
+        version=1,
+    )
+
+
 def _remote_delegation_record(resume_at: datetime | None) -> DurableRunRecord:
     """A system-owned WAITING remote-delegation pause with a chosen timer."""
     graph = _graph("ws-m1-e2-peer", "project-m1-e2-peer")
@@ -309,6 +340,503 @@ async def test_the_external_seam_drains_a_completion_that_lands_before_the_timer
     )
     peers.poll_result.assert_awaited_once_with("hub", "remote-1")
     _GraphStore.submit_external_result.assert_awaited_once()
+
+
+class _RecordingGraphStore:
+    """Store double answering ``list_by_status`` from a fixed record page."""
+
+    def __init__(self, *records: DurableRunRecord) -> None:
+        self._records = records
+        self.submit_external_result = AsyncMock()
+
+    async def list_by_status(self, status: RunStatus, *, limit: int = 100, **kwargs: object):
+        del kwargs
+        return [r for r in self._records if r.run.status is status][:limit]
+
+
+@pytest.mark.asyncio
+async def test_the_external_seam_refuses_a_non_positive_limit() -> None:
+    """A misconfigured tick must not read the store at all, like its siblings."""
+
+    class _MustNotRead:
+        async def list_by_status(self, *args: object, **kwargs: object):
+            raise AssertionError("a non-positive limit must not read the store")
+
+    assert (
+        await poll_external_results(
+            store=_MustNotRead(),
+            guest_peers=None,
+            harness_adapters={},
+            limit=0,
+        )
+        == 0
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_raising_provider_leaves_the_wait_parked_for_the_next_tick() -> None:
+    """A transport failure is not a delegation outcome: the wait stays parked."""
+    now = datetime.now(UTC)
+    record = _remote_delegation_record(resume_at=None)
+    store = _RecordingGraphStore(record)
+    peers = SimpleNamespace(poll_result=AsyncMock(side_effect=RuntimeError("peer unreachable")))
+
+    assert (
+        await poll_external_results(
+            store=store,
+            guest_peers=peers,
+            harness_adapters={},
+            limit=10,
+            now=now,
+        )
+        == 0
+    )
+    store.submit_external_result.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_pauses_without_an_external_waker_are_not_polled_here() -> None:
+    """HITL-style pauses have their own answer seam; the tick must skip them."""
+    now = datetime.now(UTC)
+    record = _parked_record(
+        "human-paused",
+        pauses={
+            "work": {
+                "kind": "wait",
+                "metadata": {"paused_reason": "awaiting_human_answer"},
+            }
+        },
+    )
+    store = _RecordingGraphStore(record)
+    peers = SimpleNamespace(poll_result=AsyncMock())
+
+    assert (
+        await poll_external_results(
+            store=store,
+            guest_peers=peers,
+            harness_adapters={},
+            limit=10,
+            now=now,
+        )
+        == 0
+    )
+    peers.poll_result.assert_not_awaited()
+    store.submit_external_result.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_malformed_pause_records_cannot_crash_the_tick() -> None:
+    """A corrupt pause entry parks that node, not the whole recovery sweep."""
+    now = datetime.now(UTC)
+    malformed_pauses = _parked_record("bad-pauses", pauses=["not-a-mapping"])
+    malformed_metadata = _parked_record(
+        "bad-metadata",
+        pauses={"work": {"kind": "wait", "metadata": "not-a-mapping"}},
+    )
+    store = _RecordingGraphStore(malformed_pauses, malformed_metadata)
+    peers = SimpleNamespace(poll_result=AsyncMock())
+
+    assert (
+        await poll_external_results(
+            store=store,
+            guest_peers=peers,
+            harness_adapters={},
+            limit=10,
+            now=now,
+        )
+        == 0
+    )
+    peers.poll_result.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_paused_run_is_polled_even_when_its_own_timer_elapsed() -> None:
+    """The due-timer deferral is scoped to WAITING: a PAUSED external pause has
+    no timed resume of its own, so the seam stays its ingress."""
+    now = datetime.now(UTC)
+    record = _parked_record(
+        "paused-delegation",
+        status=RunStatus.PAUSED,
+        pauses={
+            "work": {
+                "kind": "wait",
+                "metadata": {
+                    "paused_reason": "awaiting_remote_delegation",
+                    "peer_name": "hub",
+                    "task_id": "remote-1",
+                },
+            }
+        },
+        resume_at=now - timedelta(seconds=1),
+    )
+    store = _RecordingGraphStore(record)
+    peers = SimpleNamespace(
+        poll_result=AsyncMock(
+            return_value=DelegationResult(
+                task_id="remote-1",
+                peer_name="hub",
+                status="completed",
+                result="done",
+            )
+        )
+    )
+
+    assert (
+        await poll_external_results(
+            store=store,
+            guest_peers=peers,
+            harness_adapters={},
+            limit=10,
+            now=now,
+        )
+        == 1
+    )
+    store.submit_external_result.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_a_receipt_the_store_refuses_is_not_counted_as_delivered() -> None:
+    """At-least-once polling races a timeout or another replica: the canonical
+    store keeps the winner and the tick must not claim the delivery."""
+    now = datetime.now(UTC)
+    record = _remote_delegation_record(resume_at=None)
+    store = _RecordingGraphStore(record)
+    store.submit_external_result = AsyncMock(side_effect=ValueError("already settled"))
+    peers = SimpleNamespace(
+        poll_result=AsyncMock(
+            return_value=DelegationResult(
+                task_id="remote-1",
+                peer_name="hub",
+                status="completed",
+                result="done",
+            )
+        )
+    )
+
+    assert (
+        await poll_external_results(
+            store=store,
+            guest_peers=peers,
+            harness_adapters={},
+            limit=10,
+            now=now,
+        )
+        == 0
+    )
+
+
+@pytest.mark.asyncio
+async def test_an_injected_harness_completion_is_delivered_by_the_seam() -> None:
+    """Harness pauses are polled through their registered adapter, not peers."""
+    now = datetime.now(UTC)
+    record = _parked_record(
+        "harness-paused",
+        pauses={
+            "work": {
+                "kind": "wait",
+                "metadata": {
+                    "paused_reason": "awaiting_harness",
+                    "harness_type": "shell",
+                    "handle_id": "h-1",
+                },
+            }
+        },
+    )
+    store = _RecordingGraphStore(record)
+    adapter = SimpleNamespace(
+        poll=AsyncMock(
+            return_value=SimpleNamespace(
+                success=True,
+                handle_id="h-1",
+                output="ok",
+                error=None,
+                metadata={},
+            )
+        )
+    )
+
+    assert (
+        await poll_external_results(
+            store=store,
+            guest_peers=None,
+            harness_adapters={"shell": adapter},
+            limit=10,
+            now=now,
+        )
+        == 1
+    )
+    adapter.poll.assert_awaited_once()
+    store.submit_external_result.assert_awaited_once_with(
+        "harness-paused",
+        "work",
+        {
+            "status": "completed",
+            "handle_id": "h-1",
+            "output": "ok",
+            "error": None,
+            "metadata": {},
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_failed_harness_completion_writes_a_failed_result() -> None:
+    """A terminal harness failure is an outcome, not a poll error."""
+    now = datetime.now(UTC)
+    record = _parked_record(
+        "harness-failed",
+        pauses={
+            "work": {
+                "kind": "wait",
+                "metadata": {
+                    "paused_reason": "awaiting_harness",
+                    "harness_type": "shell",
+                    "handle_id": "h-2",
+                },
+            }
+        },
+    )
+    store = _RecordingGraphStore(record)
+    adapter = SimpleNamespace(
+        poll=AsyncMock(
+            return_value=SimpleNamespace(
+                success=False,
+                handle_id="h-2",
+                output=None,
+                error="boom",
+                metadata={},
+            )
+        )
+    )
+
+    assert (
+        await poll_external_results(
+            store=store,
+            guest_peers=None,
+            harness_adapters={"shell": adapter},
+            limit=10,
+            now=now,
+        )
+        == 1
+    )
+    store.submit_external_result.assert_awaited_once_with(
+        "harness-failed",
+        "work",
+        {
+            "status": "failed",
+            "handle_id": "h-2",
+            "output": None,
+            "error": "boom",
+            "metadata": {},
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_harness_pause_without_a_registered_adapter_stays_parked() -> None:
+    """An unknown harness type has no waker here; the pause must survive."""
+    now = datetime.now(UTC)
+    record = _parked_record(
+        "harness-unknown",
+        pauses={
+            "work": {
+                "kind": "wait",
+                "metadata": {
+                    "paused_reason": "awaiting_harness",
+                    "harness_type": "mystery",
+                    "handle_id": "h-3",
+                },
+            }
+        },
+    )
+    store = _RecordingGraphStore(record)
+
+    assert (
+        await poll_external_results(
+            store=store,
+            guest_peers=None,
+            harness_adapters={},
+            limit=10,
+            now=now,
+        )
+        == 0
+    )
+    store.submit_external_result.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_peer_metadata_without_a_destination_is_left_parked() -> None:
+    """A delegation pause that names no peer/task, or whose task still runs,
+    is not deliverable yet: the seam must leave it for a later tick."""
+    now = datetime.now(UTC)
+    no_peer = _parked_record(
+        "delegation-no-peer",
+        pauses={
+            "work": {
+                "kind": "wait",
+                "metadata": {"paused_reason": "awaiting_remote_delegation"},
+            }
+        },
+    )
+    still_running = _parked_record(
+        "delegation-running",
+        pauses={
+            "work": {
+                "kind": "wait",
+                "metadata": {
+                    "paused_reason": "awaiting_remote_delegation",
+                    "peer_name": "hub",
+                    "task_id": "remote-2",
+                },
+            }
+        },
+    )
+    store = _RecordingGraphStore(no_peer, still_running)
+    peers = SimpleNamespace(poll_result=AsyncMock(return_value=None))
+
+    assert (
+        await poll_external_results(
+            store=store,
+            guest_peers=peers,
+            harness_adapters={},
+            limit=10,
+            now=now,
+        )
+        == 0
+    )
+    peers.poll_result.assert_awaited_once_with("hub", "remote-2")
+    store.submit_external_result.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_the_a2a_receipt_waker_writes_the_canonical_external_result() -> None:
+    """The in-process completion bridge is the reachable waker for A2A receipts."""
+    container = Container.__new__(Container)
+    container.graph_run_store = _RecordingGraphStore()
+    task = SimpleNamespace(
+        metadata={"parent_run_id": "run-1", "parent_node_id": "work"},
+        status=SimpleNamespace(value="completed"),
+        id="t-1",
+        result="r",
+        error=None,
+    )
+
+    await container.wake_external_graph_result(task)
+
+    container.graph_run_store.submit_external_result.assert_awaited_once_with(
+        "run-1",
+        "work",
+        {"status": "completed", "task_id": "t-1", "result": "r", "error": None},
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_a2a_receipt_waker_ignores_receipts_it_cannot_route() -> None:
+    """Receipts without canonical routing metadata are transport noise."""
+    container = Container.__new__(Container)
+    container.graph_run_store = _RecordingGraphStore()
+
+    # No store at all: a standalone Conductor must not crash on a receipt.
+    naked = Container.__new__(Container)
+    naked.graph_run_store = None
+    await naked.wake_external_graph_result(SimpleNamespace(metadata={"parent_run_id": "r"}))
+
+    unroutable = [
+        SimpleNamespace(metadata="not-a-dict", status=SimpleNamespace(value="completed")),
+        SimpleNamespace(
+            metadata={"parent_node_id": "work"}, status=SimpleNamespace(value="completed")
+        ),
+        SimpleNamespace(
+            metadata={"parent_run_id": "run-1"}, status=SimpleNamespace(value="completed")
+        ),
+        SimpleNamespace(
+            metadata={"parent_run_id": "run-1", "parent_node_id": "work"},
+            status=SimpleNamespace(value="running"),
+        ),
+    ]
+    for task in unroutable:
+        await container.wake_external_graph_result(task)
+
+    container.graph_run_store.submit_external_result.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_stale_a2a_receipt_cannot_rewrite_its_parent() -> None:
+    """A parent answered, timed out, or purged before the receipt stays won."""
+    container = Container.__new__(Container)
+    store = _RecordingGraphStore()
+    store.submit_external_result = AsyncMock(side_effect=ValueError("already settled"))
+    container.graph_run_store = store
+    task = SimpleNamespace(
+        metadata={"parent_run_id": "run-1", "parent_node_id": "work"},
+        status=SimpleNamespace(value="failed"),
+        id="t-2",
+        result=None,
+        error="boom",
+    )
+
+    await container.wake_external_graph_result(task)
+
+    store.submit_external_result.assert_awaited_once()
+
+
+def test_the_receipt_scheduler_needs_a_running_loop() -> None:
+    """Outside asyncio the scheduler warns and drops the wake instead of raising
+    through A2A's synchronous receipt API."""
+    container = Container.__new__(Container)
+    task = SimpleNamespace(metadata={"parent_run_id": "run-1"}, id="t-3")
+
+    assert container._schedule_external_graph_result(task) is None
+
+
+@pytest.mark.asyncio
+async def test_the_stranded_sweep_skips_what_it_cannot_replay() -> None:
+    """No attempts, a still-running attempt, or a vanished row each leave the
+    parent untouched, and a non-positive limit reads nothing at all."""
+    projects = InMemoryProjectScopeStore()
+    workspace_id = "ws-m1-e2-stranded-gaps"
+    root = await projects.create_root(workspace_id)
+    project = await projects.create(
+        workspace_id=workspace_id,
+        parent_project_id=root.project_id,
+        name="M1-E2 stranded gaps",
+    )
+    store = InMemoryRunStore(project_store=projects)
+
+    assert await reconcile_stranded_runs(store, limit=0) == 0
+
+    graph = _graph(workspace_id, project.project_id)
+    stranded = await store.create_run(graph, actor_principal_id="test-actor")
+    await store.transition_run(stranded.run_id, RunStatus.QUEUED)
+    await store.transition_run(stranded.run_id, RunStatus.RUNNING)
+    node_run = await store.create_node_run(stranded.run_id, node_id="work")
+    await store.transition_node_run(node_run.node_run_id, RunStatus.QUEUED)
+    node_run = await store.transition_node_run(node_run.node_run_id, RunStatus.RUNNING)
+
+    # An attemptless frontier and a still-running attempt are both non-evidence.
+    attemptless = await store.create_node_run(stranded.run_id, node_id="work")
+    await store.transition_node_run(attemptless.node_run_id, RunStatus.QUEUED)
+    attemptless = await store.transition_node_run(attemptless.node_run_id, RunStatus.RUNNING)
+    attempt = await store.create_attempt(node_run.node_run_id)
+    await store.transition_attempt(attempt.attempt_id, AttemptStatus.RUNNING)
+
+    assert await reconcile_stranded_runs(store) == 0
+    assert (await store.get_run(stranded.run_id)).status is RunStatus.RUNNING  # type: ignore[union-attr]
+
+    class _VanishingStore:
+        async def list_by_status(self, status: RunStatus, *, limit: int = 100):
+            return [] if status is not RunStatus.RUNNING else [SimpleNamespace(run_id="evaporated")]
+
+        async def get_run(self, run_id: str):
+            return None
+
+        async def list_node_runs(self, run_id: str):
+            return []
+
+        async def list_attempts(self, node_run_id: str):
+            return []
+
+    assert await reconcile_stranded_runs(_VanishingStore()) == 0
 
 
 @pytest.mark.asyncio

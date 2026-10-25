@@ -418,3 +418,92 @@ async def test_canonical_recovery_events_returns_canonical_sink(
     assert isinstance(sink, CanonicalRecoveryEventSink)
     assert sink._runs is container.run_store
     assert sink._events is canonical_events
+
+
+async def test_wakeup_polls_cross_instance_completions_before_its_timed_half(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Delegation surfaces join the timed half: a polled completion queues the
+    canonical parent so the queued recovery consumes it without a second
+    lifecycle, and the timed resume still runs on its own."""
+    import services.canonical_dag_runner as runner
+
+    canonical_events = CanonicalEventPublisher(InMemoryEventStore(), legacy_bus=EventBus())
+    container = SimpleNamespace(
+        graph_run_store=object(),
+        run_store=object(),
+        canonical_event_publisher=canonical_events,
+        guest_peers=object(),
+        harness_adapters={},
+    )
+    poll_kwargs: dict = {}
+    recover_kwargs: dict = {}
+    resume_kwargs: dict = {}
+
+    async def _poll(**kwargs):
+        poll_kwargs.update(kwargs)
+        return 1
+
+    async def _recover(**kwargs):
+        recover_kwargs.update(kwargs)
+        return 2
+
+    async def _resume(**kwargs):
+        resume_kwargs.update(kwargs)
+        return 3
+
+    monkeypatch.setattr(runner, "_container", lambda: container)
+    monkeypatch.setattr(runner, "poll_external_results", _poll)
+    monkeypatch.setattr(runner, "recover_queued_graph_runs", _recover)
+    monkeypatch.setattr(runner, "resume_due_graph_runs", _resume)
+
+    # poll's count gates the queued recovery; the tick reports recovered+resumed.
+    assert await runner.wake_due_dag_runs(limit=7) == 5
+    assert poll_kwargs["limit"] == 7
+    owned, _ = _queued_run(source="hive_legacy_dag")
+    foreign, _ = _queued_run(source="someone_else")
+    assert poll_kwargs["eligible"](owned) is True
+    assert poll_kwargs["eligible"](foreign) is False
+    assert recover_kwargs["admission_source"] == "hive_legacy_dag"
+    assert resume_kwargs["limit"] == 7
+
+
+async def test_wakeup_with_surfaces_but_no_results_still_resumes_the_timed_half(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A poll that finds nothing must not skip the timed resume: surfaces do
+    not become a precondition for the timer."""
+    import services.canonical_dag_runner as runner
+
+    canonical_events = CanonicalEventPublisher(InMemoryEventStore(), legacy_bus=EventBus())
+    container = SimpleNamespace(
+        graph_run_store=object(),
+        run_store=object(),
+        canonical_event_publisher=canonical_events,
+        guest_peers=None,
+        harness_adapters={"shell": object()},
+    )
+    calls: list[str] = []
+
+    async def _poll(**kwargs):
+        del kwargs
+        calls.append("poll")
+        return 0
+
+    async def _recover(**kwargs):
+        del kwargs
+        calls.append("recover")
+        return 0
+
+    async def _resume(**kwargs):
+        del kwargs
+        calls.append("resume")
+        return 4
+
+    monkeypatch.setattr(runner, "_container", lambda: container)
+    monkeypatch.setattr(runner, "poll_external_results", _poll)
+    monkeypatch.setattr(runner, "recover_queued_graph_runs", _recover)
+    monkeypatch.setattr(runner, "resume_due_graph_runs", _resume)
+
+    assert await runner.wake_due_dag_runs() == 4
+    assert calls == ["poll", "resume"]
