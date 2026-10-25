@@ -146,15 +146,18 @@ async def list_for(
     summaries: list[SessionSummary] = []
     store = _session_store()
     for record in out:
-        history: list[dict[str, str]] = []
+        transcript: list[dict[str, str]] = []
         if query:
-            history = list(await store.get_history(record.session_id))
-        body_parts = [record.title, *(str(m.get("content", "")) for m in history)]
+            # Full retained transcript, not `get_history`'s model-context
+            # window: a query matching a message older than the last
+            # ``max_messages`` must still hit the session (ADR-048).
+            transcript = list(await store.transcript(record.session_id))
+        body_parts = [record.title, *(str(m.get("content", "")) for m in transcript)]
         summaries.append(
             SessionSummary(
                 session_id=record.session_id,
                 started_at=record.created_at,
-                message_count=len(history),
+                message_count=len(transcript),
                 title=record.title,
                 body="\n".join(body_parts),
             )

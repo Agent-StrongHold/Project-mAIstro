@@ -155,6 +155,21 @@ async def test_list_for_roots_adr048_session_search() -> None:
 
 
 @pytest.mark.asyncio
+async def test_list_for_search_sees_beyond_context_window() -> None:
+    """Search reads the full retained transcript, not the 20-message window."""
+    ws = await _workspace(name="Deep search")
+    hit = await conversation_sessions.create("user", ws, "deep thread")
+    messages = [{"role": "user", "content": "neon widget lives here"}]
+    messages += [{"role": "assistant", "content": f"filler {i}"} for i in range(20)]
+    await conversation_sessions.append_turn(hit.session_id, messages, turn_id="t-deep")
+
+    # get_history's default context window (20) would clip the matching first
+    # message out of the searchable body.
+    filtered = await conversation_sessions.list_for("user", ws, query="neon widget")
+    assert [r.session_id for r in filtered] == [hit.session_id]
+
+
+@pytest.mark.asyncio
 async def test_unscoped_legacy_chat_sessions_are_not_listed() -> None:
     """AC-6: legacy stores.chat_sessions rows stay inaccessible via new APIs."""
     from datetime import UTC, datetime
