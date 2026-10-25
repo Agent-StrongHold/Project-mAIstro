@@ -1693,6 +1693,11 @@ async def _tool_run_workflow(
     # Minted before the `try`, so the failure branch can always name the run
     # it is finishing rather than risking an unbound local.
     exec_id = str(uuid4())
+    # Raised by the facade when the canonical Run ended somewhere other than
+    # `completed`; catching it separately is what lets the failure branch
+    # record the canonical outcome instead of re-deciding it locally (#35).
+    from services.graph_runner import CanonicalDagExecutionError
+
     # The `try` below covers the event and history writes that follow the
     # execution as well as the execution itself, so a failing `append_event` --
     # a full or closed writer queue, say -- used to reach the failure branch
@@ -1743,8 +1748,20 @@ async def _tool_run_workflow(
         # too (Codex, #697). Suppressed for the same reason the run route
         # suppresses its own: the DAG already produced a result, and the
         # answer the caller gets must not depend on the history write.
+        # The status is copied from the canonical result and the row carries
+        # the canonical Run's id, so this projection row never owns terminal
+        # truth or an uncorrelated identity (#35): inspection reconciles it
+        # against the spine for as long as that Run resolves. The outcome is
+        # recorded under the shared #1036 terminality contract: the facade
+        # only returns `completed`, so this row finishes; had it not, no
+        # finish would be invented.
         with contextlib.suppress(Exception):
-            await store.finish_run(exec_id, status="completed", result=result)
+            await store.record_outcome(
+                exec_id,
+                status=str(result.get("status") or "completed"),
+                result=result,
+                canonical_run_id=str(result.get("run_id") or ""),
+            )
 
         return {
             "run_id": exec_id,
@@ -1762,19 +1779,64 @@ async def _tool_run_workflow(
         # answers only a cancellation the spine actually recorded -- never a
         # task teardown, which it re-raises unchanged.
         return await _cancellation_answer(cancelled, exec_id, dag_id)
+    except CanonicalDagExecutionError as exc:
+        # The canonical Run reached a non-success state. The projection row
+        # records THAT outcome and the Run that decided it -- not a locally
+        # re-derived "failed" -- so the row can never contradict the spine
+        # it is a receipt of (#35). The facade raises for every non-completed
+        # status, including a Run parked WAITING/PAUSED; the shared #1036
+        # terminality contract decides the rest: terminal outcomes finish the
+        # row, non-terminal ones mirror open with no invented `finished_at`,
+        # and a result with no canonical status records no outcome at all.
+        canonical = exc.result
+        with contextlib.suppress(Exception):
+            from services.dag_run_store import get_dag_run_store
+
+            await get_dag_run_store().record_outcome(
+                exec_id,
+                status=str(canonical.get("status") or ""),
+                result=canonical,
+                canonical_run_id=str(canonical.get("run_id") or ""),
+            )
+        return {"error": f"DAG execution failed: {exc}"}
     except Exception as e:
         # The failure branch has to finish the run too, or a chat-launched DAG
         # that failed is indistinguishable from one still running.
         #
-        # `executed` decides the status, not where the exception was caught:
-        # a graph that completed and then tripped over a bookkeeping write is
-        # a completed run whose history is incomplete, and calling it failed
-        # tells the reader the opposite of what happened.
-        status = "completed" if executed else "failed"
+        # `executed` decides what this branch may record, not where the
+        # exception was caught: a graph that completed and then tripped over
+        # a bookkeeping write is a completed run whose history is incomplete,
+        # and calling it failed tells the reader the opposite of what
+        # happened.
         with contextlib.suppress(Exception):
             from services.dag_run_store import get_dag_run_store
 
-            await get_dag_run_store().finish_run(exec_id, status=status)
+            if executed:
+                # The facade returned, so the canonical Run's outcome is
+                # decided and in hand -- record it under the same #1036
+                # contract as the success path, never a locally re-derived
+                # status (#35).
+                await get_dag_run_store().record_outcome(
+                    exec_id,
+                    status=str(result.get("status") or "completed"),
+                    result=result,
+                    canonical_run_id=str(result.get("run_id") or ""),
+                )
+            else:
+                # No canonical verdict exists to copy: the facade died before
+                # deciding one. The row MAY already carry the canonical
+                # correlation -- admission (#1332) writes it before any node
+                # work, and an unexpected crash after admission lands here --
+                # so this is not an uncorrelated row. `failed` is therefore
+                # the writer's witnessed attempt-local display fact ("this
+                # chat attempt ended without an outcome"), kept so a dead
+                # launch is not indistinguishable from a live one (#697); it
+                # is never a claim about the spine. dag_run_inspection
+                # overlays the canonical Run's lifecycle over this display
+                # stamp whenever the row's correlation resolves, and no
+                # execution-side code reads this store, so the stamp cannot
+                # contradict canonical truth or drive recovery (#35).
+                await get_dag_run_store().finish_run(exec_id, status="failed")
         if executed:
             logger.warning(
                 "dag_run_bookkeeping_failed run_id=%s dag_id=%s", exec_id, dag_id, exc_info=True
@@ -2930,6 +2992,12 @@ PROFILE_SCHEMA = {
         "model_preferences",
         "topics_to_avoid",
         "assumptions_to_avoid",
+        # #1050: explicit Workspace default landing surface (path). UI + API
+        # + profile_set share this field; missing → Workspace Home.
+        "workspace_default_landing",
+        # #1050: how eagerly to restore a prior surface after absence
+        # (off|brief|balanced|generous). Continuity consumer is #1822.
+        "workspace_restore_aggressiveness",
     ],
     "goals": ["current_focus", "okrs", "blockers", "definition_of_done"],
     "communication": ["challenge_style", "presentation_format", "terminology"],
@@ -2974,11 +3042,15 @@ async def _tool_profile_set(
     value = args.get("value", "")
     if not field or not value:
         return {"error": "field and value required"}
+    from services.workspace_preferences import PreferenceValueError
+
     try:
         # Off the loop: a profile write waits inside the acknowledged `put_raw`
         # (a `State.submit_sync`) for the writer thread to commit, and this
         # runs inside the chat request's own task.
         await asyncio.to_thread(profile_store.set_field, user_id, field, value)
+    except PreferenceValueError as exc:
+        return {"error": str(exc)}
     except profile_store.ProfilePersistenceError as exc:
         # Reported, not swallowed. The old path suppressed the write failure
         # and answered `updated: True`, so the model told the user their fact
@@ -3038,13 +3110,23 @@ PROFILE_TOOLS = [
         "type": "function",
         "function": {
             "name": "profile_set",
-            "description": "Set a profile field. Use when user shares info about themselves, their preferences, or corrections.",
+            "description": (
+                "Set a profile field. Use when user shares info about themselves, "
+                "their preferences, or corrections. Workspace product prefs: "
+                "workspace_default_landing (path: /home|/chat|/goals|/backlog|/work-items); "
+                "workspace_restore_aggressiveness (off|brief|balanced|generous — "
+                "how long to restore the prior surface after absence)."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "field": {
                         "type": "string",
-                        "description": "Field name (e.g. 'name', 'role', 'response_style', 'current_focus')",
+                        "description": (
+                            "Field name (e.g. 'name', 'role', 'response_style', "
+                            "'current_focus', 'workspace_default_landing', "
+                            "'workspace_restore_aggressiveness')"
+                        ),
                     },
                     "value": {"type": "string", "description": "The value to store"},
                 },

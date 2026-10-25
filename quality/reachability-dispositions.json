@@ -229,19 +229,6 @@
       ]
     },
     {
-      "id": "portability",
-      "subsystem": "Portability / backup",
-      "disposition": "CONNECT",
-      "rationale": "ADR-081/ADR-101 export and import of agents and skills, with no CLI or route calling them. #62 needs backup/restore to preserve canonical Run records, which is the consumer.",
-      "root": "a maistro.cli export/import subcommand (#62)",
-      "modules": [
-        "maistro.portability",
-        "maistro.portability.agents",
-        "maistro.portability.export",
-        "maistro.portability.skills"
-      ]
-    },
-    {
       "id": "prompts-diff",
       "subsystem": "Prompts and personas",
       "disposition": "CONNECT",
