@@ -14,7 +14,8 @@ human.ask_question, ...) live in sibling modules and self-register via
 from __future__ import annotations
 
 import contextlib
-import importlib
+import hashlib
+import json
 import time
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime, timedelta
@@ -415,84 +416,11 @@ PAUSE_RESUME_CONDITIONS: dict[str, str] = {
     PAUSE_AWAITING_DELEGATION_RECONCILIATION: RESUME_ON_ELAPSED,
 }
 
-#: The production actor that can satisfy each registered resume condition.
-#: Keeping this beside the condition table makes a newly registered pause fail
-#: review until it names a reachable answer, event, timer, or cancellation
-#: seam (#1192).
-PAUSE_REASON_WAKERS: dict[str, tuple[str, ...]] = {
-    PAUSE_AWAITING_HUMAN_ANSWER: ("CanonicalDurableRunStore.submit_hitl_answer",),
-    PAUSE_AWAITING_HUMAN_APPROVAL: ("CanonicalDurableRunStore.submit_hitl_answer",),
-    PAUSE_AWAITING_HUMAN_REVIEW: ("CanonicalDurableRunStore.submit_hitl_answer",),
-    PAUSE_AWAITING_ROLE_DELEGATE: ("CanonicalDurableRunStore.submit_hitl_answer",),
-    PAUSE_AWAITING_REMOTE_DELEGATION: (
-        "Container.wake_external_graph_result",
-        "Container.poll_external_graph_results",
-        "CanonicalDurableRunStore.submit_external_result",
-        "resume_due_graph_runs",
-    ),
-    PAUSE_AWAITING_HARNESS: (
-        "Container.poll_external_graph_results",
-        "CanonicalDurableRunStore.submit_external_result",
-        "resume_due_graph_runs",
-    ),
-    PAUSE_WAITING_ON_JIRA_SUBTASKS: ("Container.resume_parked_runs",),
-    PAUSE_AWAITING_DELEGATION_RECONCILIATION: ("resume_due_graph_runs",),
-}
-
-#: Import paths for the symbolic names above. Keeping the public names stable
-#: preserves the pause taxonomy, while this table makes the waker contract
-#: executable instead of accepting arbitrary non-empty strings (#1192).
-_PAUSE_WAKER_TARGETS: dict[str, str] = {
-    "CanonicalDurableRunStore.submit_hitl_answer": (
-        "maistro.graph.durable_runs.canonical_store:CanonicalDurableRunStore.submit_hitl_answer"
-    ),
-    "CanonicalDurableRunStore.submit_external_result": (
-        "maistro.graph.durable_runs.canonical_store:CanonicalDurableRunStore.submit_external_result"
-    ),
-    "Container.wake_external_graph_result": "maistro.container:Container.wake_external_graph_result",
-    "Container.poll_external_graph_results": "maistro.container:Container.poll_external_graph_results",
-    "Container.resume_parked_runs": "maistro.container:Container.resume_parked_runs",
-    "resume_due_graph_runs": "maistro.graph.durable_runs.recovery:resume_due_graph_runs",
-}
-
-
-def validate_pause_reason_wakers() -> None:
-    """Fail if a registered waker no longer names a reachable callable.
-
-    This is intentionally a small runtime validator rather than a test-only
-    convention: boot and CI can both prove that every pause reason points at a
-    production seam, including the cross-instance and harness polling bridge.
-    """
-    if set(PAUSE_REASON_WAKERS) != set(PAUSE_REASON_OWNERS):
-        raise RuntimeError("pause owners and wakers classify different reasons")
-    for reason, wakers in PAUSE_REASON_WAKERS.items():
-        if not wakers:
-            raise RuntimeError(f"pause reason {reason!r} has no production waker")
-        for name in wakers:
-            target_path = _PAUSE_WAKER_TARGETS.get(name)
-            if target_path is None:
-                raise RuntimeError(f"pause reason {reason!r} has unknown waker {name!r}")
-            module_name, object_path = target_path.split(":", 1)
-            target: Any = importlib.import_module(module_name)
-            for component in object_path.split("."):
-                target = getattr(target, component)
-            if not callable(target):
-                raise RuntimeError(f"pause waker {name!r} is not callable")
-
-
 #: The reasons a timer alone may re-enter, derived so the two cannot disagree.
 TIMER_RESUMABLE_PAUSE_REASONS = frozenset(
     reason
     for reason, condition in PAUSE_RESUME_CONDITIONS.items()
     if condition == RESUME_ON_ELAPSED
-)
-
-#: System-owned dispatches have a deadline waker too, but must not be
-#: redispatched on elapsed time: the waker first records a timeout result.
-DEADLINE_WOKEN_PAUSE_REASONS = frozenset(
-    reason
-    for reason, condition in PAUSE_RESUME_CONDITIONS.items()
-    if PAUSE_REASON_OWNERS.get(reason) == "system" and condition == RESUME_ON_ANSWER
 )
 
 #: Where a resumed execution finds what its own previous pause recorded.

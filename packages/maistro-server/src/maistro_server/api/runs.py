@@ -15,9 +15,18 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, status
 
+from maistro.runs.chat_execution import ATTEMPT_AGENT_KEY, CHAT_EXECUTOR_ID
+from maistro.runs.model import Attempt
+from maistro.runs.scoped_reads import RunNotVisible
 from maistro.runs.service import RunExecutionService
+from maistro.runs.sources import ADMISSION_SOURCE
 from maistro.runs.store import RunStore
+from maistro.runs.store_boundary import RunStoreBoundary
 from maistro.runtime import PythonExecutionRuntime
+from maistro.tasks.admission import TASK_ID_KEY, TASK_QUEUE_SOURCE
+from maistro.tasks.http_contract import DELEGATION_HEADER
+from maistro.tasks.models import TaskStatus
+from maistro.tasks.queue import get_task_queue
 from maistro_server.api.auth import RequireAuth
 from maistro_server.api.delegation import resolve_delegated_identity
 from maistro_server.api.schemas import AttemptSummary, NodeRunSummary, RunSummary
@@ -144,32 +153,6 @@ async def cancel_run(
             if receipt is not None and receipt.run_id == run.run_id:
                 await queue.update_status(task_id, TaskStatus.CANCELLED)
                 queue.settle_terminal_receipt(task_id, run=run)
-    return RunSummary(
-        run_id=run.run_id,
-        status=run.status.value,
-        workspace_id=run.workspace_id,
-        project_id=run.project_id,
-        graph_id=run.graph.graph_id,
-        provenance=dict(run.provenance),
-        created_at=run.created_at,
-        finished_at=run.finished_at,
-        result=run.result,
-        error=run.error,
-    )
-
-
-@router.post("/{run_id}/cancel")
-async def cancel_run(
-    run_id: str,
-    auth: RequireAuth,
-    store: Annotated[RunStore, Depends(get_run_store)],
-) -> RunSummary:
-    """Request cancellation through the canonical physical execution seam."""
-    await _require_visible_run(store, run_id, _owner_id(auth))
-    run = await RunExecutionService(
-        store=store,
-        runtime=PythonExecutionRuntime(),
-    ).cancel_run(run_id)
     return RunSummary(
         run_id=run.run_id,
         status=run.status.value,

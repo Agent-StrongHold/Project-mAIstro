@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from datetime import UTC, datetime
 from typing import Any, Literal, Protocol, cast, runtime_checkable
 
@@ -666,4 +666,159 @@ def _per_run_resolver(
     )
 
 
-__all__ = ["recover_queued_graph_runs", "resume_due_graph_runs"]
+__all__ = [
+    "poll_external_results",
+    "recover_queued_graph_runs",
+    "resume_due_graph_runs",
+]
+
+
+async def poll_external_results(
+    *,
+    store: DurableRunStore,
+    guest_peers: Any,
+    harness_adapters: Mapping[str, Any],
+    limit: int = 100,
+    eligible: QueuedRunPredicate | None = None,
+) -> int:
+    """Poll external pauses and write terminal results to the Graph store.
+
+    In-process A2A completions arrive through the delegator's completion
+    bridge (``Container.wake_external_graph_result``). Cross-instance peers
+    and harnesses have no shared receipt object, so this bounded recovery
+    tick is their production result ingress — the same operator-scheduled
+    shape as the module's other two halves. It only writes through
+    ``submit_external_result``; the canonical Graph resume path remains the
+    authority that consumes the queued result.
+    """
+    if limit <= 0:
+        return 0
+
+    delivered = 0
+    for record in await _external_graph_candidates(store, limit):
+        if eligible is not None and not eligible(record.run):
+            continue
+        try:
+            polled = await _poll_external_record(record, guest_peers, harness_adapters)
+        except Exception:
+            logger.warning(
+                "external result poll failed for Run %s",
+                record.run_id,
+                exc_info=True,
+            )
+            continue
+        if polled is None:
+            continue
+        node_id, result = polled
+        if await _deliver_external_result(store, record, node_id, result):
+            delivered += 1
+    return delivered
+
+
+async def _external_graph_candidates(store: DurableRunStore, limit: int) -> list[Any]:
+    """Read a bounded, deduplicated page of parked canonical Graph Runs."""
+    records: list[Any] = []
+    seen: set[str] = set()
+    for status in (RunStatus.WAITING, RunStatus.PAUSED):
+        for record in await store.list_by_status(status, limit=limit):
+            if record.run_id not in seen:
+                seen.add(record.run_id)
+                records.append(record)
+            if len(records) >= limit:
+                break
+        if len(records) >= limit:
+            break
+    return records
+
+
+async def _deliver_external_result(
+    store: DurableRunStore, record: Any, node_id: str, result: dict[str, Any]
+) -> bool:
+    """Apply one polled result through the canonical external-result seam."""
+    try:
+        await store.submit_external_result(record.run_id, node_id, result)
+    except (KeyError, ValueError):
+        # At-least-once polling races with timeout, cancellation, or
+        # another replica. The canonical store keeps the winner.
+        logger.info(
+            "external result did not wake Run %s node %s",
+            record.run_id,
+            node_id,
+        )
+        return False
+    return True
+
+
+async def _poll_external_record(
+    record: Any,
+    guest_peers: Any,
+    harness_adapters: Mapping[str, Any],
+) -> tuple[str, dict[str, Any]] | None:
+    """Poll the first externally parked frontier node with a known waker."""
+    from maistro.graph.nodes.base import (
+        PAUSE_AWAITING_HARNESS,
+        PAUSE_AWAITING_REMOTE_DELEGATION,
+    )
+
+    pauses = record.graph_state.metadata.get("pauses", {})
+    if not isinstance(pauses, Mapping):
+        return None
+    for node_id in record.graph_state.active_node_ids:
+        pause = pauses.get(node_id)
+        if not isinstance(pause, Mapping):
+            continue
+        metadata = pause.get("metadata")
+        if not isinstance(metadata, Mapping):
+            continue
+        reason = str(metadata.get("paused_reason") or "")
+        if reason == PAUSE_AWAITING_REMOTE_DELEGATION:
+            result = await _poll_guest_peer_result(guest_peers, dict(metadata))
+        elif reason == PAUSE_AWAITING_HARNESS:
+            result = await _poll_harness_result(harness_adapters, dict(metadata))
+        else:
+            continue
+        if result is not None:
+            return str(node_id), result
+    return None
+
+
+async def _poll_guest_peer_result(
+    guest_peers: Any, metadata: dict[str, Any]
+) -> dict[str, Any] | None:
+    """Translate a terminal peer receipt into the canonical result shape."""
+    peer_name = str(metadata.get("peer_name") or "")
+    task_id = str(metadata.get("task_id") or "")
+    if not peer_name or not task_id or guest_peers is None:
+        return None
+    result = await guest_peers.poll_result(peer_name, task_id)
+    if result is None:
+        return None
+    return {
+        "status": result.status,
+        "task_id": result.task_id,
+        "result": result.result,
+        "error": result.error,
+    }
+
+
+async def _poll_harness_result(
+    harness_adapters: Mapping[str, Any], metadata: dict[str, Any]
+) -> dict[str, Any] | None:
+    """Translate a completed injected harness poll into the result seam."""
+    harness_type = str(metadata.get("harness_type") or "")
+    handle_id = str(metadata.get("handle_id") or "")
+    adapter = harness_adapters.get(harness_type)
+    if not harness_type or not handle_id or adapter is None:
+        return None
+    from maistro.graph.harness import HarnessHandle
+
+    result = await adapter.poll(HarnessHandle(handle_id=handle_id, harness_type=harness_type))
+    if result is None:
+        return None
+    return {
+        "status": "completed" if result.success else "failed",
+        "handle_id": result.handle_id,
+        "output": result.output,
+        "error": result.error,
+        "metadata": result.metadata,
+    }

@@ -19,6 +19,7 @@ from maistro.graph.conditions import CONDITION_OPERATORS
 from maistro.graph.definitions import Edge, Graph, Node
 from maistro.graph.durable_runs import (
     RunStatus,
+    poll_external_results,
     recover_queued_graph_runs,
     resume_due_graph_runs,
     run_durable_graph,
@@ -548,7 +549,8 @@ async def recover_stranded_dag_runs(*, limit: int = 100) -> int:
         run_store=container.run_store,
         node_resolver_factory=_recovery_resolver,
         eligible=lambda run: run.provenance.get("admission_source") == "hive_legacy_dag",
-        events=getattr(container, "recovery_event_sink", None) or container.event_bus,
+        admission_source="hive_legacy_dag",
+        events=_canonical_recovery_events(container),
         limit=limit,
         # Held across ticks: the scan is bounded per call, and only a tick
         # that resumes where the last stopped crosses a foreign-owned QUEUED
@@ -575,15 +577,19 @@ async def wake_due_dag_runs(*, limit: int = 100) -> int:
     # Completion polling is the cross-process counterpart to the in-process
     # A2A receipt callback. A successful poll queues the canonical parent, so
     # the normal queued recovery path consumes it without a second lifecycle.
-    poller = getattr(container, "poll_external_graph_results", None)
-    polled = (
-        await poller(
+    # Containers without delegation surfaces (and partial test doubles) have
+    # nothing to poll, so the timed half proceeds on its own.
+    guest_peers = getattr(container, "guest_peers", None)
+    harness_adapters = getattr(container, "harness_adapters", None) or {}
+    polled = 0
+    if guest_peers is not None or harness_adapters:
+        polled = await poll_external_results(
+            store=container.graph_run_store,
+            guest_peers=guest_peers,
+            harness_adapters=harness_adapters,
             limit=limit,
             eligible=lambda run: run.provenance.get("admission_source") == "hive_legacy_dag",
         )
-        if callable(poller)
-        else 0
-    )
     recovered = 0
     if polled:
         recovered = await recover_queued_graph_runs(
@@ -591,7 +597,8 @@ async def wake_due_dag_runs(*, limit: int = 100) -> int:
             run_store=container.run_store,
             node_resolver_factory=_recovery_resolver,
             eligible=lambda run: run.provenance.get("admission_source") == "hive_legacy_dag",
-            events=getattr(container, "recovery_event_sink", None) or container.event_bus,
+            admission_source="hive_legacy_dag",
+            events=_canonical_recovery_events(container),
             limit=limit,
         )
     resumed = await resume_due_graph_runs(
@@ -599,7 +606,7 @@ async def wake_due_dag_runs(*, limit: int = 100) -> int:
         run_store=container.run_store,
         node_resolver_factory=_recovery_resolver,
         eligible=lambda run: run.provenance.get("admission_source") == "hive_legacy_dag",
-        events=getattr(container, "recovery_event_sink", None) or container.event_bus,
+        events=_canonical_recovery_events(container),
         limit=limit,
         scan=scan_continuation("resume_due_graph_runs", container.graph_run_store),
     )

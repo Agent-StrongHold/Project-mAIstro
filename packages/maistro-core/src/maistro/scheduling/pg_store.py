@@ -22,7 +22,12 @@ from typing import TYPE_CHECKING, Any
 
 from maistro.runs.evidence_json import json_of, model_of
 from maistro.scheduling.model import Schedule
-from maistro.scheduling.store import _advance, _merged
+from maistro.scheduling.store import (
+    _advance,
+    _merged,
+    _reserve,
+    _settle_pending,
+)
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     import asyncpg

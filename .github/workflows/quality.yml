@@ -768,13 +768,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
-      MAISTRO_TEST_PG_DSN: postgresql://maistro:maistro@127.0.0.1:5432/maistro_test
-      DATABASE_URL: postgresql://maistro:maistro@127.0.0.1:5432/maistro_test
-      # AC-state must read the same candidate base for a topic push and its
-      # pull-request run. `before` is the previous topic tip and may already
-      # contain the candidate's own note, so it is not an independent base.
-      # Protected-branch pushes are different: their parent is the immutable
-      # revision the merge-time guard replaces.
+      # Candidate grants must never authorize their own changes.
       RATCHET_BASE_REV: >-
         ${{ github.event_name == 'pull_request'
             && format('origin/{0}', github.base_ref)

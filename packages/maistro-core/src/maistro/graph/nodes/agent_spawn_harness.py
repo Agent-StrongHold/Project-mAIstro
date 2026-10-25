@@ -812,19 +812,5 @@ class AgentSpawnHarnessNode(BaseNode[SpawnHarnessIn, SpawnHarnessOut]):
             resolver=resolve_provider,
             executor=execute_provider,
         )
-        result = invocation.result
-        if not isinstance(result, dict):
-            raise RuntimeError("completed harness Invocation did not persist a dispatch result")
-
-        pause_until(
-            PAUSE_AWAITING_HARNESS,
-            resume_at=now_utc() + timedelta(seconds=inputs.timeout_seconds),
-            metadata={
-                "handle_id": str(result["handle_id"]),
-                "harness_type": str(result["harness_type"]),
-                "binding_id": binding.binding_id,
-                "invocation_id": invocation.invocation_id,
-                "timeout_seconds": inputs.timeout_seconds,
-            },
-        )
-        return SpawnHarnessOut()  # unreachable — pause_until raises _NodePaused
+        _park(self._wait_from_dispatch(invocation, inputs, ctx))
+        raise AssertionError("pause_until must raise")

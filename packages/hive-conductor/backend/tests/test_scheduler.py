@@ -10,6 +10,7 @@ fire into a Run.
 from __future__ import annotations
 
 import asyncio
+import logging
 import pathlib
 import sys
 from datetime import UTC, datetime, timedelta
@@ -496,9 +497,7 @@ def test_a_schedule_firing_mints_its_own_request_id() -> None:
                 _ScheduleRunner()._fire_schedule("s-reqid", stub, scheduled_for=scheduled_for)
             )
 
-        from services.dag_agents import _fallback_run_store
-
-        runs = [r.run for r in _fallback_run_store._rows.values()]  # type: ignore[attr-defined]
+        runs = _canonical_fixture_runs()
         scheduled = [r for r in runs if r.provenance.get("schedule_id") == "s-reqid"]
         assert len(scheduled) == 1
         request_id = scheduled[0].provenance.get("request_id")
@@ -539,9 +538,7 @@ def test_two_firings_of_the_same_schedule_get_different_request_ids() -> None:
             )
         )
 
-        from services.dag_agents import _fallback_run_store
-
-        runs = [r.run for r in _fallback_run_store._rows.values()]  # type: ignore[attr-defined]
+        runs = _canonical_fixture_runs()
         scheduled = [r for r in runs if r.provenance.get("schedule_id") == "s-reqid-2"]
         assert len(scheduled) == 2
         ids = {r.provenance.get("request_id") for r in scheduled}
@@ -1074,6 +1071,57 @@ def test_a_manual_run_creates_a_run_and_records_it(monkeypatch: pytest.MonkeyPat
         stores.schedules._data.pop("s-man", None)  # type: ignore[attr-defined]
 
 
+def test_a_manual_fire_rechecks_the_schedule_actor_still_belongs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#1201: the route authorizes the *requester*, but the Run spends the
+    schedule actor's authority -- so on the standalone path too, an actor
+    removed from the Workspace after creating the schedule must not fire.
+    The same revocation gate the standalone automatic path applies runs
+    before the definition or Run exists; a manual fire refuses (409) rather
+    than skipping silently like the tick can."""
+    import stores
+    from services import workspace_authority
+    from services.scheduler import ScheduleNotFireable, fire_now
+
+    from maistro.scheduling import InMemoryScheduleStore
+
+    _register("sched-manual-gate")
+    stub = _bounded_stub("s-man-gate", "sched-manual-gate")
+    store = InMemoryScheduleStore()
+    _with_store(monkeypatch, store)
+    before = len(stores.audit_log)
+    # The Workspace stays alive, but the schedule actor u1 was removed from
+    # it after creating the row -- the state when remaining editor B fires.
+    view = asyncio.run(
+        workspace_authority.create_workspace(
+            creator_user_id="requester-b",
+            name="Manual Gate WS",
+            persona_template_id="default",
+            checklist=[],
+            theme_id="default",
+            voice_tone_override=None,
+        )
+    )
+    stub.workspace_id = view.id
+    stub.project_id = "proj-man-gate"
+    stores.schedules._data["s-man-gate"] = stub  # type: ignore[attr-defined]
+    try:
+        try:
+            asyncio.run(fire_now("s-man-gate", requester_id="requester-b"))
+            raise AssertionError("a revoked actor's schedule must not manually fire")
+        except ScheduleNotFireable:
+            pass
+        assert _schedule_runs("s-man-gate", since=before) == [], "no Run was created"
+
+        # Re-adding the actor restores eligibility on the same row.
+        asyncio.run(workspace_authority.set_member(view.id, user_id="u1", role="editor"))
+        run_id = asyncio.run(fire_now("s-man-gate", requester_id="requester-b"))
+        assert run_id
+    finally:
+        stores.schedules._data.pop("s-man-gate", None)  # type: ignore[attr-defined]
+
+
 def test_a_manual_run_preserves_the_http_requests_id(monkeypatch: pytest.MonkeyPatch) -> None:
     """#1063: `POST /v1/schedules/{id}/run` is a real HTTP request that
     RequestIDMiddleware already bound an id for -- `fire_now` must forward
@@ -1094,12 +1142,37 @@ def test_a_manual_run_preserves_the_http_requests_id(monkeypatch: pytest.MonkeyP
         with bind_execution_context(request_id="http-req-42"):
             run_id = asyncio.run(fire_now("s-man-reqid"))
 
-        from services.dag_agents import _fallback_run_store
-
-        run = _fallback_run_store._rows[run_id].run  # type: ignore[attr-defined]
+        run = next(row for row in _canonical_fixture_runs() if row.run_id == run_id)
         assert run.provenance["request_id"] == "http-req-42"
     finally:
         stores.schedules._data.pop("s-man-reqid", None)  # type: ignore[attr-defined]
+
+
+def test_manual_fire_records_requester_separately_from_schedule_actor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import stores
+    from services.scheduler import fire_now
+
+    from maistro.scheduling import InMemoryScheduleStore
+
+    _register("sched-manual-provenance")
+    stub = _schedule_stub("s-man-provenance", "sched-manual-provenance")
+    stores.schedules._data["s-man-provenance"] = stub  # type: ignore[attr-defined]
+    _with_store(monkeypatch, InMemoryScheduleStore())
+    try:
+        run_id = asyncio.run(fire_now("s-man-provenance", requester_id="requesting-human"))
+        from services.dag_agents import _container
+
+        run = asyncio.run(_container().run_store.get_run(run_id))
+        assert run.actor_principal_id == "u1"
+        assert run.provenance["manual_requesting_principal_id"] == "requesting-human"
+        assert run.provenance["scheduler_service_id"] == "hive-scheduler"
+    finally:
+        stores.schedules._data.pop("s-man-provenance", None)  # type: ignore[attr-defined]
+        from services.dag_agents import get_registry
+
+        get_registry().deregister("sched-manual-provenance")
 
 
 def test_a_manual_run_with_no_ambient_request_mints_its_own(
@@ -1120,9 +1193,7 @@ def test_a_manual_run_with_no_ambient_request_mints_its_own(
     try:
         run_id = asyncio.run(fire_now("s-man-noreqid"))
 
-        from services.dag_agents import _fallback_run_store
-
-        run = _fallback_run_store._rows[run_id].run  # type: ignore[attr-defined]
+        run = next(row for row in _canonical_fixture_runs() if row.run_id == run_id)
         assert run.provenance.get("request_id")
     finally:
         stores.schedules._data.pop("s-man-noreqid", None)  # type: ignore[attr-defined]
@@ -1758,3 +1829,81 @@ def test_a_fire_recorded_after_the_row_was_read_survives_the_definition_refresh(
     recorded = asyncio.run(store.get("s-refresh"))
     assert recorded is not None and recorded.runs_so_far == 1
     assert recorded.next_due_at == noon + timedelta(hours=1)
+
+
+@pytest.mark.parametrize("winner", ["run-the-cursor-lost", None])
+def test_the_tick_reports_a_live_run_the_cursor_never_named(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, winner: str | None
+) -> None:
+    """#1059: the tick reports the winner `last_run_id` does not name.
+
+    A ticker that died before `record_fire` left its Run live and the pointer
+    empty, so the admitter resolves that Run itself and hands it back as
+    `active_run_id`. The tick's log is the only place an operator can see that
+    overlap was judged against a Run the cursor never named -- and, under
+    CANCEL_OTHER, which Run the admitter asked to cancel.
+
+    Both arms, because the ordinary tick reports nothing: an evaluation that
+    found no such Run must stay silent rather than logging an absent winner.
+    """
+    from services.scheduler import _ScheduleRunner
+
+    async def scenario() -> None:
+        runner = _ScheduleRunner()
+        schedule = _canonical_row()
+
+        async def _get(_sid: Any) -> None:
+            return None
+
+        container = SimpleNamespace(schedule_store=SimpleNamespace(get=_get))
+
+        async def scope(_schedule: Any, _container: Any) -> object:
+            return object()
+
+        async def definition(*_args: Any, **_kwargs: Any) -> Any:
+            return SimpleNamespace(exhausted=False, max_runs=3)
+
+        async def prime(_definition: Any, _container: Any) -> None:
+            return None
+
+        async def active(_definition: Any, _container: Any) -> bool:
+            return True
+
+        async def audit(*_args: Any, **_kwargs: Any) -> None:
+            return None
+
+        class _AdmitterReportingTheWinner:
+            async def admit_due(self, *_args: Any, **_kwargs: Any) -> Any:
+                return SimpleNamespace(
+                    skipped=[],
+                    already_fired=[],
+                    active_run_id=winner,
+                    cancel_active_run=True,
+                    failures=[],
+                    run_ids=[],
+                )
+
+        monkeypatch.setattr(runner, "_canonical_scope", scope)
+        monkeypatch.setattr(runner, "_definition_for", definition)
+        monkeypatch.setattr(runner, "_prime_template", prime)
+        monkeypatch.setattr(runner, "_canonical_active_run", active)
+        monkeypatch.setattr(runner, "_audit_canonical_admission", audit)
+
+        admitter: Any = _AdmitterReportingTheWinner()
+        with caplog.at_level(logging.INFO, logger="services.scheduler"):
+            await runner._evaluate_canonical(
+                "s-1059",
+                schedule,
+                now=datetime(2026, 8, 21, 12, tzinfo=UTC),
+                container=container,
+                admitter=admitter,
+            )
+
+        if winner is None:
+            assert "the cursor did not name" not in caplog.text
+        else:
+            assert winner in caplog.text
+            assert "the cursor did not name" in caplog.text
+            assert "cancel requested: True" in caplog.text
+
+    asyncio.run(scenario())

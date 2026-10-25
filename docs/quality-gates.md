@@ -33,7 +33,44 @@ A **floor** is a fixed minimum/maximum threshold. A **ratchet** records reviewed
 | benchmark provenance | floor | pinned digests | a vendored IFEval/BFCL grader or corpus changing unnoticed |
 | architecture fitness | floor | zero violations | a forbidden cross-layer dependency |
 | execution lifecycles | identity ratchet | `quality/execution-lifecycles.json` | a new work-state Enum or status-shaped Literal alias/field vocabulary nobody classified, or an entry left behind after its identity was deleted |
-| model egress | identity ratchet | `quality/model-egress.json` | a new module calling a model endpoint directly, or an entry left behind after one was migrated |
+| model egress | identity ratchet | `quality/model-egress.json` | a new module performing physical completions-family model HTTP at a call site, or an entry left behind after its egress was migrated |
+
+Ruff lint and formatting have one owner per workflow event (#1357, #1610).
+The `Quality / Ruff` job runs both root commands for ordinary PR activities
+(`opened`, `reopened`, `synchronize`), merge groups, shared protected pushes,
+and accepted topic-branch pushes. CI retains both commands for the two event
+profiles it alone receives: PR `edited` and pushes to
+`merge/main-into-integration`. Both owners use the shared pinned uv setup and
+locked root environment; the rule set, source scope and failure behavior are
+unchanged. `tests/test_ci_ruff_ownership.py` checks the event matrix and rejects
+narrowed, tolerated or duplicated owners. Local contribution checks still run
+both commands. The existing required Quality gate now verifies that this job
+and every other Quality leaf succeeded. This removes a duplicate lint/format pair on common events;
+it is not a measured whole-CI speedup.
+
+Quality's 37 validation jobs and SAST's three scanner jobs run independently,
+so a failing analyzer can be retried without repeating its successful peers.
+The existing required check names remain summaries with explicit dependencies:
+`Quality gate (Pillars 1–4, 7, 8)` and
+`SAST (bandit + semgrep + gitleaks)`. Their verdict script rejects missing,
+unexpected, skipped, cancelled or unsuccessful job results. The leaf names are
+listed as advisory only in the branch-protection manifest because the required
+summaries enforce their success; `gates-ran` also discovers their execution.
+No live required-check configuration change is needed.
+
+This split preserves the original scanner commands, triggers, permissions,
+trusted-base selection and proof profiles. Acceptance criteria and the full
+Quality formal suite each receive their own migrated PostgreSQL 18 service;
+acceptance criteria retain age and age-keygen. The three coverage producers and
+their combined verdict are unchanged. The baseline-derived preservation fixture in
+`tests/fixtures/ci_quality_obligations.json` and the CI contract tests reject
+dropped obligations and detached summary dependencies.
+
+One identical credential-authority invocation is removed. Existing Ruff and
+Pyright deduplication remains in place. Distinct mypy, formal and dependency-audit
+profiles still run; coverage collection and Vulture ownership changes remain
+separate work. More independent jobs add runner setup work, so this change makes
+no claim about total CI cost or elapsed time before measurements are available.
 
 The lifecycle-discovery contract, shared dispositions, metric version, prior-authorization
 boundary and explicit static-analysis limits are recorded in

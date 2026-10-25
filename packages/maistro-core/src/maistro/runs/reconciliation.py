@@ -559,6 +559,29 @@ class AttemptLifecycleReconciler:
         return node_run
 
 
+async def _replay_terminal_node_run_evidence(
+    store: StrandedRunStore,
+    reconciler: AttemptLifecycleReconciler,
+    run_id: str,
+) -> None:
+    """Replay each terminal Attempt behind one Run's NodeRuns.
+
+    Replaying a terminal NodeRun is intentional: it repairs the parent fold
+    and emits the same canonical recovery fact after a crash between those
+    writes.
+    """
+    node_runs = await store.list_node_runs(run_id)
+    for node_run in node_runs:
+        attempts = await store.list_attempts(node_run.node_run_id)
+        if not attempts:
+            continue
+        attempt = max(attempts, key=lambda item: item.ordinal)
+        if attempt.status not in TERMINAL_ATTEMPT_STATUSES:
+            continue
+        if node_run.status in {*TERMINAL_RUN_STATUSES, RunStatus.RUNNING}:
+            await reconciler.reconcile(attempt)
+
+
 async def reconcile_stranded_runs(
     store: StrandedRunStore,
     *,
@@ -582,19 +605,7 @@ async def reconcile_stranded_runs(
         before = await store.get_run(run.run_id)
         if before is None or before.status is not RunStatus.RUNNING:
             continue
-        node_runs = await store.list_node_runs(run.run_id)
-        for node_run in node_runs:
-            attempts = await store.list_attempts(node_run.node_run_id)
-            if not attempts:
-                continue
-            attempt = max(attempts, key=lambda item: item.ordinal)
-            if attempt.status not in TERMINAL_ATTEMPT_STATUSES:
-                continue
-            if node_run.status in {*TERMINAL_RUN_STATUSES, RunStatus.RUNNING}:
-                # Replaying a terminal NodeRun is intentional: it repairs the
-                # parent fold and emits the same canonical recovery fact after
-                # a crash between those writes.
-                await reconciler.reconcile(attempt)
+        await _replay_terminal_node_run_evidence(store, reconciler, run.run_id)
         await reconciler.reconcile_run(run.run_id)
         after = await store.get_run(run.run_id)
         if after is not None and after.status is not before.status:

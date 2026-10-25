@@ -32,6 +32,7 @@ jobs:
     # completed normally. The exact published status decides admission below.
     if: >-
       github.event_name == 'workflow_dispatch' ||
+      github.event_name == 'schedule' ||
       (github.event.workflow_run.conclusion == 'success' &&
        (github.event.workflow_run.event == 'pull_request' ||
         github.event.workflow_run.event == 'merge_group'))
@@ -41,10 +42,11 @@ jobs:
       should_enqueue: ${{ steps.status.outputs.should_enqueue }}
     steps:
       - id: status
-        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
-            if (context.eventName === 'workflow_dispatch') {
+            if (context.eventName === 'workflow_dispatch' ||
+                context.eventName === 'schedule') {
               core.setOutput('should_enqueue', 'true');
               return;
             }
@@ -77,7 +79,7 @@ jobs:
     # a scan that is already processing the certified candidate set.
     concurrency:
       group: enqueue-merge-queue
-      cancel-in-progress: true
+      cancel-in-progress: false  # admission scans queue instead of canceling; scans are idempotent fail-closed checks
     name: enqueue-merge-queue
     runs-on: ubuntu-latest
     timeout-minutes: 45  # full-backlog scans (70+ open PRs, risk assessment each) need well over 10 min; a timeout here starves older PRs indefinitely

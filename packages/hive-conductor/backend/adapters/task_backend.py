@@ -18,12 +18,15 @@ from typing import Any, Protocol
 
 import httpx
 
-from maistro.http import shared_client
+from maistro.http import shared_client, sync_client
 from maistro.observability.correlation import current_execution_context
 from maistro.observability.middleware import REQUEST_ID_HEADER
+from maistro.security.outbound import configure_outbound_policy
 from maistro.tasks.http_contract import (
+    DELEGATION_HEADER,
     WORKSPACE_ID_HEADER,
     WORKSPACE_SCOPE_SIGNATURE_HEADER,
+    sign_delegation_context,
     sign_workspace_scope,
 )
 from maistro.tasks.models import TaskCreate, TaskResponse, TaskStatus
@@ -284,6 +287,17 @@ class MaistroServerTaskBackend:
         headers = {"Content-Type": "application/json"}
         if self._key:
             headers["Authorization"] = f"Bearer {self._key}"
+        if user_id is not None:
+            if not self._delegation_key:
+                raise DelegationNotConfigured(
+                    "MAISTRO_DELEGATION_KEY is required for originating-principal propagation"
+                )
+            headers[DELEGATION_HEADER] = sign_delegation_context(
+                service_principal=self._service_principal,
+                originating_principal=user_id,
+                principal_kind="system" if user_id == SYSTEM_PRINCIPAL else "user",
+                key=self._delegation_key,
+            )
         # Correlation metadata, not authorization (#1063): forwards the
         # request id RequestIDMiddleware already validated/generated for
         # this request, so maistro-server's own RequestIDMiddleware adopts

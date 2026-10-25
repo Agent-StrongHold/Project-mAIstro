@@ -9,7 +9,15 @@ already run one.
 There is deliberately no execution table here. Fires are recorded as a
 cursor on the schedule (`last_fired_at`, `last_run_id`, `runs_so_far`) and
 the execution itself lives in Run history, so this store never becomes a
-second place that believes it knows what is running.
+second place that believes it knows what is running. `recovered_occurrences`
+is the one exception to "cursor, not ledger" (#1533): a small, bounded set of
+pre-horizon claims already credited toward `runs_so_far`, kept because the
+cursor's position alone stopped being proof of that once a writer's own claim
+lookup could miss one — see `_advance`. `pending_fires` is the other, smaller
+exception (#1120): manual-fire slots held between `reserve_fire` and
+`settle_pending_fire` — state a live firing owns for the moments its Run is
+being created, spent or returned by the settle that closes it, never a
+record of anything that ran.
 
 Two cursors live on a schedule and `record_fire` is the one writer of both
 (#1199). `last_fired_at` is the *enumeration* cursor — where the next
@@ -47,7 +55,7 @@ import asyncio
 import json
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from maistro.scheduling.model import PendingFire, Schedule
 from maistro.sqlite_schema import serialized_schema_upgrade
@@ -121,9 +129,14 @@ class ScheduleStore(Protocol):
         cursor stays where it is and only `next_due_at` (the due cursor) is
         recorded (#1199). `fires` follows it when omitted: one fire for a
         consumed occurrence, none when nothing was consumed, so a due-cursor
-        write can never spend a bounded schedule's run. Implementations
-        serialize the read-then-write so two callers advancing one schedule
-        cannot lose each other's update.
+        write can never spend a bounded schedule's run. `recovered` is
+        credited separately, and exactly once per occurrence ever — tracked
+        durably on `Schedule.recovered_occurrences`, not inferred from cursor
+        position, so a rival ticker's identical write for the same
+        pre-horizon claim neither doubles the count nor, if some other
+        writer's claim lookup missed it, loses it (#1059, #1533).
+        Implementations serialize the read-then-write so two callers
+        advancing one schedule cannot lose each other's update.
         """
         ...
 
@@ -255,19 +268,99 @@ def _advance(
     disable: bool,
     recovered: frozenset[datetime] = frozenset(),
 ) -> Schedule:
-    """The cursor advance, shared by every implementation so they cannot drift."""
+    """The cursor advance, shared by every implementation so they cannot drift.
+
+    `recovered` is the pre-horizon claims (#1059) this call wants credited —
+    kept separate from `fires` because two callers can independently walk the
+    *same* stale snapshot and both discover the *same* crashed winner as
+    "unrecorded": the row lock this runs under serializes their writes but
+    does not by itself deduplicate what they each believe they earned.
+
+    Crediting used to be decided by comparing `recovered` against
+    `last_fired_at`: an occurrence behind the cursor was "new", at or past it
+    "already covered". That assumed whichever writer moved the cursor past an
+    occurrence must have credited it — true when both writers see the same
+    claims, false the moment one writer's claim lookup fails transiently on
+    exactly the occurrence the other found. That writer still has its own,
+    unrelated due fires to admit, and `fired_at` follows *those*, not the
+    claim it missed — so it advances the cursor past a pre-horizon occurrence
+    it never credited, and a rival crediting that same occurrence afterwards
+    would find the cursor already past it and wrongly stand down (Codex
+    review, #1533). `Schedule.recovered_occurrences` is the durable, per-
+    occurrence fix: a claim is credited once, the moment any writer first
+    names it here, whatever the cursor says — so this writer's blind spot
+    does not cost the rival's correctly-earned credit. `fires` carries no
+    such risk and is always added as given: it is either this call's own
+    newly-admitted Runs (each protected by the RunStore's own occurrence
+    uniqueness) or a delta a caller computed with certainty.
+    """
     if fires is None:
         fires = 0 if fired_at is None else 1
-    return schedule.model_copy(
-        update={
-            "last_fired_at": fired_at if fired_at is not None else schedule.last_fired_at,
-            "last_run_id": run_id if run_id is not None else schedule.last_run_id,
-            "runs_so_far": schedule.runs_so_far + fires,
-            "next_due_at": None if disable else next_due_at,
-            "enabled": False if disable else schedule.enabled,
-            "updated_at": datetime.now(UTC),
-        }
+    newly_credited = recovered - schedule.recovered_occurrences
+    runs_so_far = schedule.runs_so_far + fires + len(newly_credited)
+    recovered_occurrences = schedule.recovered_occurrences | recovered
+    if len(recovered_occurrences) > _MAX_RECOVERED_OCCURRENCES:
+        recovered_occurrences = frozenset(
+            sorted(recovered_occurrences)[-_MAX_RECOVERED_OCCURRENCES:]
+        )
+    # `disable` is computed from an admitter's snapshot. A concurrent ticker
+    # may have admitted the remaining occurrences since that snapshot, so the
+    # store must enforce exhaustion from the serialized counter as well.
+    exhausted = schedule.max_runs is not None and runs_so_far >= schedule.max_runs
+    disabled = disable or exhausted
+    newest = fired_at is not None and (
+        schedule.last_fired_at is None or fired_at >= schedule.last_fired_at
     )
+    update = _advanced_cursors(
+        schedule,
+        fired_at=fired_at,
+        run_id=run_id,
+        next_due_at=next_due_at,
+        newest=newest,
+        disabled=disabled,
+    )
+    update["runs_so_far"] = runs_so_far
+    update["recovered_occurrences"] = recovered_occurrences
+    update["updated_at"] = datetime.now(UTC)
+    return schedule.model_copy(update=update)
+
+
+def _advanced_cursors(
+    schedule: Schedule,
+    *,
+    fired_at: datetime | None,
+    run_id: str | None,
+    next_due_at: datetime | None,
+    newest: bool,
+    disabled: bool,
+) -> dict[str, Any]:
+    """The cursor fields one `record_fire` may write, per occurrence order.
+
+    The linkage follows the *newest* consumed occurrence. Serialization
+    orders concurrent writers, but order alone lets a replica holding a
+    stale snapshot land its older occurrence after another replica already
+    recorded a newer one — regressing `last_fired_at` and, worse, pointing
+    `last_run_id` at the older Run, which is the one overlap checks consult
+    (`_canonical_active_run`). A write naming an occurrence older than the
+    stored cursor therefore leaves the cursors alone; an equal or newer
+    occurrence advances them exactly as before. The counters — handled by
+    the caller — still move: the stale occurrence really was admitted, the
+    claim refused only its duplicate.
+
+    `next_due_at` is part of the same cursor pair and follows the same
+    occurrence, so the pair stays atomic — an older write's earlier due
+    stamp must not survive under a newer occurrence's link. A cursor-only
+    evaluation (`fired_at is None`) never links, so its due stamp always
+    applies. `disable` stays unconditional: a snapshot that saw exhaustion
+    must be able to stop the schedule whatever order the writes land in.
+    """
+    due_moves = newest or fired_at is None
+    return {
+        "last_fired_at": fired_at if newest else schedule.last_fired_at,
+        "last_run_id": run_id if (newest and run_id is not None) else schedule.last_run_id,
+        "next_due_at": None if disabled else (next_due_at if due_moves else schedule.next_due_at),
+        "enabled": False if disabled else schedule.enabled,
+    }
 
 
 def _merged(stored: Schedule | None, definition: Schedule) -> Schedule:
@@ -287,6 +380,8 @@ def _merged(stored: Schedule | None, definition: Schedule) -> Schedule:
             "runs_so_far": stored.runs_so_far,
             "next_due_at": None if recurrence_changed else stored.next_due_at,
             "created_at": stored.created_at,
+            "recovered_occurrences": stored.recovered_occurrences,
+            "pending_fires": stored.pending_fires,
         }
     )
 
@@ -580,3 +675,27 @@ class SqliteScheduleStore:
             )
             await self._upsert(advanced)
             return advanced
+
+    async def reserve_fire(
+        self, schedule_id: str, *, fires: int = 1, fire_id: str
+    ) -> Schedule | None:
+        async with self._serialized_write():
+            schedule = await self.get(schedule_id)
+            if schedule is None:
+                return None
+            reserved = _reserve(schedule, fires=fires, fire_id=fire_id)
+            await self._upsert(reserved)
+            return reserved
+
+    async def settle_pending_fire(
+        self, schedule_id: str, fire_id: str, *, run_id: str | None
+    ) -> Schedule | None:
+        async with self._serialized_write():
+            schedule = await self.get(schedule_id)
+            if schedule is None:
+                return None
+            settled = _settle_pending(schedule, fire_id, run_id=run_id)
+            if settled is None:
+                return None
+            await self._upsert(settled)
+            return settled

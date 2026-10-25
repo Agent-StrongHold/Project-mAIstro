@@ -19,6 +19,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from maistro.capabilities.slots.approval import ApprovalRequest
 from maistro.security.secret_policy import is_secret_key_name
+from maistro.sqlite_schema import serialized_schema_upgrade
 
 _REDACTED = "[REDACTED]"
 
@@ -262,18 +263,25 @@ class SqliteApprovalStore:
         # Constant DDL literal, inlined at its single use: no identifier, no
         # interpolation, nothing user-controlled. Every data-bearing statement
         # in this file is parameterized (? placeholders with bound params).
-        await self._conn.execute("""
+        async with serialized_schema_upgrade(self._conn):
+            await self._conn.execute("""
 CREATE TABLE IF NOT EXISTS capability_approvals (
     request_id TEXT PRIMARY KEY,
     run_id TEXT NOT NULL,
     node_run_id TEXT NOT NULL,
     binding_id TEXT NOT NULL,
     effect_key TEXT NOT NULL,
+    effect_scope TEXT NOT NULL DEFAULT '',
     payload TEXT NOT NULL,
-    UNIQUE(run_id, node_run_id, binding_id, effect_key)
+    UNIQUE(run_id, effect_scope, binding_id, effect_key)
 )
 """)
-        await self._conn.commit()
+            cursor = await self._conn.execute("PRAGMA table_info(capability_approvals)")
+            columns = {str(row[1]) for row in await cursor.fetchall()}
+            if "effect_scope" not in columns:
+                await self._conn.execute(
+                    "ALTER TABLE capability_approvals ADD COLUMN effect_scope TEXT NOT NULL DEFAULT ''"
+                )
 
     async def create(self, approval: DurableApproval) -> DurableApproval:
         existing = await self.find_effect(

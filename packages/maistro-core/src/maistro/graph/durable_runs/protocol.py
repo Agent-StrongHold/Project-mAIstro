@@ -40,7 +40,15 @@ class DurableRunStore(Protocol):
         limit: int = 100,
         project_id: str | None = None,
         workspace_id: str | None = None,
-    ) -> list[DurableRunRecord]: ...
+        after: tuple[str, str] | None = None,
+    ) -> list[DurableRunRecord]:
+        """Records in ``status``, oldest-created-first.
+
+        ``after`` is a ``(created_at_iso, run_id)`` keyset cursor. Bounded
+        fair scans (#1056, #1109) page through it instead of re-reading the
+        same fixed prefix every tick.
+        """
+        ...
 
     async def list_due(
         self,
@@ -103,10 +111,6 @@ class DurableRunStore(Protocol):
         stays a bounded read however long an ineligible prefix is; reaching it
         ends the call with whatever was found and ``exhausted=False``.
         """
-        ...
-
-    async def list_hitl_due(self, *, now: datetime, limit: int = 100) -> list[DurableRunRecord]:
-        """Return paused Runs whose indexed HITL deadline is due."""
         ...
 
     async def list_for_project(

@@ -95,7 +95,9 @@ async def test_in_process_first_reach_pauses_with_task_id() -> None:
     # The completion bridge can route the receipt back to the canonical pause.
     task = delegator.get_task_status(result.metadata["task_id"])
     assert task is not None
-    assert task.metadata == {"parent_run_id": "r1", "parent_node_id": "delegate-1"}
+    assert task.metadata["parent_run_id"] == "r1"
+    assert task.metadata["parent_node_id"] == "delegate-1"
+    assert task.metadata["delegation_key"]
 
 
 async def test_in_process_no_delegator_configured_is_a_refusal_not_a_result() -> None:

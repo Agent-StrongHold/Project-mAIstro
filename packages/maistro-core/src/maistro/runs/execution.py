@@ -724,6 +724,19 @@ class AttemptExecutionService:
             raise RunIntegrityError(f"Attempt {attempt_id!r} disappeared during execution")
         if current.status in TERMINAL_ATTEMPT_STATUSES:
             return current, False
+        if current.status is AttemptStatus.CREATED and status is not AttemptStatus.CANCELLED:
+            # A CREATED Attempt never launched: the RUNNING claim never landed,
+            # so no physical work happened that could fail or time out. The
+            # lifecycle deliberately gives CREATED no edge to FAILED or
+            # TIMED_OUT -- recording one would claim a physical outcome the
+            # attempt never had and count a failure that never happened
+            # (ADR-082426-f170's distinction: cancelled means nothing ran,
+            # failed means work happened). CANCELLED is the honest, legal word
+            # for abandoned before launch -- the same record
+            # `_cancel_local_attempt` and `reclaim_attempt` write for an
+            # Attempt that never finished -- while the real reason survives in
+            # `error` and the caller still sees the original exception.
+            status = AttemptStatus.CANCELLED
         return (
             await self._terminalize(
                 attempt_id,
