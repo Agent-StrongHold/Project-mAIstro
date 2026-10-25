@@ -1,6 +1,49 @@
-# CR1619 — closure-gate repair handoff at 0c3951bcf
+# CR1619 — closure-gate repair handoff at cad7db7f0 (round 4)
 
-## Round 3 update (2026-10-25, this round)
+## Round 4 update (2026-10-25, this round)
+
+- origin/develop advanced two more commits past `09d56b6a0b` (`8edb51fb9`
+  builders-domain CONNECT, `4019249e8` design.orchestrate CONNECT + vulture
+  prune). Merged as `cad7db7f0` — clean, zero conflicts (develop touched
+  `maistro_design/__init__.py` + `tests/nodes/test_production_registration_universe.py`
+  + quality ledgers; this branch's surface is `maistro_design/packs/**`,
+  `tests/test_domain_packs.py`, and inventory notes — disjoint).
+- Ledger hygiene: `git diff --numstat origin/develop -- quality/` is empty
+  post-merge; the branch itself adds no quality/ rows.
+- Battery green at `cad7db7f0`: ruff pair; mypy workflow-exact 10-package
+  list (1110 files); pytest `packages/maistro-design/tests` 669 passed +
+  1 skipped (`test_domain_packs.py` 7/7); FULL `check-suite-inventory.py`
+  (CI invocation, 21 suites ok, 34698 node IDs — develop's +2/+8 notes
+  reconcile); `check-test-duplicates.py`; vulture CI-exact args (`packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'`) exit 0, 1256 identities;
+  radon 127=127; reachability, promotion-surface, direct-effects,
+  merge-markers, layout, cross-package/extension imports, typed-client,
+  public-routes, api-route-contracts, shell-execution, build-context,
+  retired-guidance, doc-links all exit 0. Every `lint-and-type-check` step
+  the CI run reached (plus its two downstream steps that the failure
+  skipped) is green locally; the ONLY failing step is check-closure-targets.
+- Closure gate reproduced offline with the gate's own functions against the
+  captured #1614 record: 5 registered criteria, all unticked;
+  `problems_for()` emits CI's exact error string; `closing_targets()` on the
+  body-as-is → `[1614]` (fail), with line 1 as `Part of #1614` → `[]`
+  (gate's `ok` path, exit 0). No tree change can alter this verdict.
+- The PR (#1619 — issue and PR share the number; the issues-API body IS the
+  PR body) still opens with `Fixes #1614`. The repair remains the one-line
+  GitHub-side body edit; it is the only remaining action and it is outside
+  this lane's authority. Merged head `cad7db7f0` is committed locally and
+  needs the driver's push to `issue-1614-pack-extension`.
+- Issue #1619 acceptance vs reachable behavior re-verified this round:
+  extension rule enforced by `_require_contract_fields`/`_rubric_dimensions`
+  (registry.py) with four rejection tests; `test_bundled_packs_load_through_one_registry`
+  asserts the exact 8-id set against the real `catalog/*.json`;
+  `test_same_goal_two_packs_share_identity_scheme` binds game/novel/
+  training_program/product(deck) to one goal id + canonical run identity;
+  the branch diff adds no package and no Design Studio route. AC-5 (full
+  Graph/Run execution) remains unticked by design (M1 spine + open #795).
+
+## Round 3 (superseded head references below)
+
+Round 3 note, kept for provenance:
 
 - origin/develop advanced to `09d56b6a0b` (EPIC M5-B + M1 closeout). Merged
   into the branch as `0c3951bcf` — clean merge, zero conflicts (the new
