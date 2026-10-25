@@ -8258,3 +8258,83 @@ number below is first-hand at these exact heads.
   integration is unavailable, report implementation/test readiness plus the
   explicit merge blocker and leave the stack unmerged"). BLOCKED remains the
   issue-conform terminal state; this round is sync + note-only commit.
+
+## Round 126 (2026-10-25): develop sync to 1ddfea4f6 + independent re-verification at merged head 4bec74f7c — blocker invariant under the branch-independence migration
+
+Dispatch head was the round-125 tip `b4ea73c76f1` (worktree clean, leaf md5
+`257a6e45c382349dd12f559099663fbc`). The job directory carried **no
+check-*.log verifier files** this round, so every number below is first-hand at
+these exact heads.
+
+- **Develop sync:** origin/develop advanced `bcd7acb7f` → `1ddfea4f6` (this
+  round's assigned base) with exactly one commit — #2334, the
+  branch-independence migration. It reclassifies `quality/reachability-baseline.json`
+  from `legacy_shared_aggregate` to `base_derived` (and 11 sibling machine-derived
+  surfaces), clears `frozen_legacy_paths`, and teaches
+  `scripts/check-autonomous-merge.py::finish()` to treat a YELLOW consisting
+  only of branch-independent machine-derived evidence as autonomous-eligible.
+  The branch touches none of the three files #2334 changed
+  (`quality/branch-independence.json`, `scripts/check-autonomous-merge.py`,
+  `tests/test_autonomous_merge_quality_classes.py`), so the merge
+  (`4bec74f7c9aa`, auto-resolved) is clean; merge-base is now `1ddfea4f6`.
+  `git diff --numstat origin/develop HEAD -- quality/` is empty — zero ledger
+  row edits, no silent row loss.
+- **Focused battery at `4bec74f7c`:** leaf suite 132 passed (all 10
+  issue-named test identities present); live-flow regression
+  (`test_root_admission_identity.py` + `test_idempotency.py`) 146 passed;
+  driver trio (`test_pack_contracts.py` +
+  `test_runs_admission_identity_publication.py` +
+  `test_admission_generation_assessment.py`) 269 passed; `ruff check .` rc=0 and
+  `ruff format --check .` 3502 files rc=0; `mypy` on the module Success;
+  `check-suite-inventory.py --suite packages/maistro-core/tests` rc=0 (18040
+  identities, 0 duplicates; leaf collects exactly 132 nodes — no inventory
+  delta, no test additions this round); `check-branch-independence.py` rc=0;
+  the migration's own `tests/test_autonomous_merge_quality_classes.py` 28 passed.
+- **exact-debt-ledger re-bound at CI's exact argv** (`vulture-ratchet.yml:52-85`):
+  `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'` rc=0 — base `1ddfea4f6454` → candidate `4bec74f7c9aa`,
+  1297 reviewed identities = 1297 findings, unclassified 0, never_allowlist 0;
+  `check-shipped-surface-truth.py` rc=0. The lane-authorized vulture
+  per-identity ledger repair remains empty: nothing to amend, no quality edit
+  made or needed.
+- **The composite ledger failure still binds solely to the reachability
+  sub-ratchet:** `check-ratchet-provenance.py` rc=1 with 8/9 sub-ratchets OK
+  (adr-status-language, citation-status, promotion-surface 278,
+  reachability-dispositions 148=148, shell-execution 3=3, contract-markers
+  358=358, enumerations 1=1, lifecycle 0=0) and the sole FAIL `reachability` —
+  148 → 149 unreachable of 1464, both findings naming exactly
+  `maistro.tasks.admission_generation`. `check-reachability.py` rc=1 naming
+  exactly that one NEWLY UNREACHABLE module (grep count 1);
+  `check-reachability-dispositions.py` (46 groups / 148 modules) and
+  `check-promotion-surface.py` rc=0. The CI trio reproduces 3 failed / 36
+  passed with the single set delta `maistro.tasks.admission_generation`.
+- **Why the migration does not unblock this leaf, shown first-hand:** the
+  reachability provenance adapter (`scripts/check-reachability-provenance.py:86-89`)
+  computes `unauthorized = added - trusted - authorized` and reads
+  `authorized` from the trusted base (`scripts/ratchet_provenance.py::load_authorizations`,
+  two-merge rule). Simulated directly: adding the module to the candidate
+  `quality/reachability-baseline.json` removes only the "current unreachable
+  missing from candidate baseline" finding and leaves
+  `NEW unreachable module absent from trusted base and not previously
+  authorized`. A candidate-side grant cannot take effect in the change that
+  introduces it, so the YELLOW branch-independent classification of the
+  baseline amendment does not reach the RED "unauthorized" verdict. The
+  blocker is invariant under the migration.
+- **Mutation spot-check re-killed first-hand:** TAKEOVER/REPLACE_EXPIRED
+  swapped in the decision-order table → 50 failed / 82 passed; module
+  restored from a /tmp cp backup (never git restore), md5
+  `257a6e45c382349dd12f559099663fbc` verified identical before/after, worktree
+  clean, post-restore suite 132 passed.
+- **Scope guards:** zero production-source references to `admission_generation`
+  outside the module (grep rc=1 over `packages/*/src`);
+  `tasks/idempotency.py`, `tasks/__init__.py`, `runs/*` zero-diff vs
+  origin/develop; branch diff vs origin/develop remains exactly the 10
+  manifest surfaces (9544 insertions, 15 deletions), zero `quality/` rows.
+- **Verdict re-derived, unchanged:** the tree is exactly the #1852-mandated
+  state — implementation/test readiness proven, the one residual red bound
+  solely to the issue-predicted NEW-unreachable leaf, whose every in-leaf
+  remedy (baseline entry, disposition, grant, dummy caller, keep-alive import,
+  suppression, gate edit) #1852 explicitly prohibits. The resolution path is
+  the #1845 integration head (runtime consumer PR #2178, still open, not
+  upstream) landing the reviewed consumer, at which head every gate goes green
+  with no gate/ledger edits. This round is sync + note-only commit.
