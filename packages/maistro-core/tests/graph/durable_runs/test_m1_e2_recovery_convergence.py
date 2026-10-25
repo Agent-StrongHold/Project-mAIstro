@@ -203,6 +203,114 @@ async def test_cross_instance_polling_writes_the_canonical_external_result() -> 
     )
 
 
+def _remote_delegation_record(resume_at: datetime | None) -> DurableRunRecord:
+    """A system-owned WAITING remote-delegation pause with a chosen timer."""
+    graph = _graph("ws-m1-e2-peer", "project-m1-e2-peer")
+    run = Run(
+        run_id="remote-poll-parent",
+        workspace_id=graph.workspace_id,
+        project_id=graph.project_id,
+        actor_principal_id="test-actor",
+        graph=GraphSnapshot.from_graph(graph),
+        status=RunStatus.WAITING,
+    )
+    return DurableRunRecord(
+        run=run,
+        graph_state=GraphExecutionState(
+            run_id=run.run_id,
+            active_node_ids=("work",),
+            metadata={
+                "pauses": {
+                    "work": {
+                        "kind": "wait",
+                        "metadata": {
+                            "paused_reason": "awaiting_remote_delegation",
+                            "peer_name": "hub",
+                            "task_id": "remote-1",
+                        },
+                    }
+                }
+            },
+        ),
+        node_runs=(
+            NodeRun(run_id=run.run_id, node_id="work", ordinal=1, status=RunStatus.WAITING),
+        ),
+        resume_at=resume_at,
+        version=1,
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_external_seam_defers_a_due_timer_wait_to_the_timed_resume() -> None:
+    """An elapsed wait belongs to the walker's fenced poll, not this seam.
+
+    Polling it here first would read the same provider twice in one tick and
+    then discard the result when the walker re-polls the settled receipt.
+    """
+    now = datetime.now(UTC)
+    record = _remote_delegation_record(resume_at=now - timedelta(seconds=1))
+
+    class _GraphStore:
+        async def list_by_status(self, status: RunStatus, *, limit: int = 100, **kwargs: object):
+            del kwargs
+            return [record] if status is RunStatus.WAITING else []
+
+        submit_external_result = AsyncMock()
+
+    peers = SimpleNamespace(poll_result=AsyncMock())
+
+    assert (
+        await poll_external_results(
+            store=_GraphStore(),
+            guest_peers=peers,
+            harness_adapters={},
+            limit=10,
+            now=now,
+        )
+        == 0
+    )
+    peers.poll_result.assert_not_awaited()
+    _GraphStore.submit_external_result.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_the_external_seam_drains_a_completion_that_lands_before_the_timer() -> None:
+    """A completion arriving ahead of the timer is still this seam's ingress."""
+    now = datetime.now(UTC)
+    record = _remote_delegation_record(resume_at=now + timedelta(minutes=1))
+
+    class _GraphStore:
+        async def list_by_status(self, status: RunStatus, *, limit: int = 100, **kwargs: object):
+            del kwargs
+            return [record] if status is RunStatus.WAITING else []
+
+        submit_external_result = AsyncMock()
+
+    peers = SimpleNamespace(
+        poll_result=AsyncMock(
+            return_value=DelegationResult(
+                task_id="remote-1",
+                peer_name="hub",
+                status="completed",
+                result="done",
+            )
+        )
+    )
+
+    assert (
+        await poll_external_results(
+            store=_GraphStore(),
+            guest_peers=peers,
+            harness_adapters={},
+            limit=10,
+            now=now,
+        )
+        == 1
+    )
+    peers.poll_result.assert_awaited_once_with("hub", "remote-1")
+    _GraphStore.submit_external_result.assert_awaited_once()
+
+
 @pytest.mark.asyncio
 async def test_external_completion_wakes_a_system_owned_waiting_run() -> None:
     graph = _graph("ws-m1-e2", "project-m1-e2")

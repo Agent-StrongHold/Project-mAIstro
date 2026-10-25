@@ -238,6 +238,19 @@ def _is_resume_due(record: DurableRunRecord, moment: datetime) -> bool:
     return record.resume_at is not None and record.resume_at <= moment
 
 
+def _is_timed_wait_due(record: DurableRunRecord, moment: datetime) -> bool:
+    """Report whether the timed resume, not the external seam, owns `record`.
+
+    A ``WAITING`` wait with an elapsed ``resume_at`` is settled by the walker's
+    fenced poll once ``resume_due_graph_runs`` resumes it. Polling it through
+    ``poll_external_results`` first would read the same provider twice in one
+    tick and discard the external result, so the seam defers to the timer.
+    """
+    if record.run.status is not RunStatus.WAITING:
+        return False
+    return record.resume_at is not None and record.resume_at <= moment
+
+
 async def _is_still_resume_due(
     store: DurableRunStore,
     run_id: str,
@@ -680,6 +693,7 @@ async def poll_external_results(
     harness_adapters: Mapping[str, Any],
     limit: int = 100,
     eligible: QueuedRunPredicate | None = None,
+    now: datetime | None = None,
 ) -> int:
     """Poll external pauses and write terminal results to the Graph store.
 
@@ -690,12 +704,21 @@ async def poll_external_results(
     shape as the module's other two halves. It only writes through
     ``submit_external_result``; the canonical Graph resume path remains the
     authority that consumes the queued result.
+
+    A ``WAITING`` wait whose own ``resume_at`` has already elapsed is left
+    to ``resume_due_graph_runs``: the walker settles that receipt with a
+    fresh provider poll, so polling it here first would read the same
+    provider twice in one tick. The external seam stays the ingress for a
+    completion that lands before the timer does.
     """
     if limit <= 0:
         return 0
 
+    moment = now if now is not None else datetime.now(UTC)
     delivered = 0
     for record in await _external_graph_candidates(store, limit):
+        if _is_timed_wait_due(record, moment):
+            continue
         if eligible is not None and not eligible(record.run):
             continue
         try:
