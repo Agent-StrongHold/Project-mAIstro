@@ -21,6 +21,7 @@ import stores
 from fastapi import HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
+from maistro.sessions.search import SessionSummary, search_sessions
 from maistro.sessions.store import InMemorySessionStore
 from services.model_store import JsonStore
 
@@ -118,7 +119,19 @@ async def create(user_id: str, workspace_id: str, title: str) -> ConversationSes
     return _write(record)
 
 
-async def list_for(user_id: str, workspace_id: str) -> list[ConversationSessionRecord]:
+async def list_for(
+    user_id: str,
+    workspace_id: str,
+    *,
+    query: str = "",
+) -> list[ConversationSessionRecord]:
+    """List this caller's Workspace sessions, optionally filtered by ADR-048 search.
+
+    Empty ``query`` keeps the product ``updated_at`` descending order. A
+    non-empty ``query`` filters title + transcript body through
+    ``maistro.sessions.search.search_sessions`` (snippet/cursor pagination
+    stay available to callers that map the page themselves).
+    """
     await _require_member(user_id, workspace_id)
     out: list[ConversationSessionRecord] = []
     for key in list(session_meta_store.keys()):
@@ -127,7 +140,35 @@ async def list_for(user_id: str, workspace_id: str) -> list[ConversationSessionR
             continue
         if record.user_id == user_id and record.workspace_id == workspace_id:
             out.append(record)
-    return sorted(out, key=lambda r: r.updated_at, reverse=True)
+
+    # Always route through search_sessions so ADR-048 stays on the product
+    # list path (disposition root: conversation_sessions / routes.chat).
+    summaries: list[SessionSummary] = []
+    store = _session_store()
+    for record in out:
+        history: list[dict[str, str]] = []
+        if query:
+            history = list(await store.get_history(record.session_id))
+        body_parts = [record.title, *(str(m.get("content", "")) for m in history)]
+        summaries.append(
+            SessionSummary(
+                session_id=record.session_id,
+                started_at=record.created_at,
+                message_count=len(history),
+                title=record.title,
+                body="\n".join(body_parts),
+            )
+        )
+    page = search_sessions(
+        summaries,
+        query=query,
+        limit=max(len(summaries), 1),
+    )
+    by_id = {record.session_id: record for record in out}
+    matched = [by_id[item.session_id] for item in page.items if item.session_id in by_id]
+    if query:
+        return matched
+    return sorted(matched, key=lambda record: record.updated_at, reverse=True)
 
 
 async def get(
