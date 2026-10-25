@@ -8,7 +8,8 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Protocol, cast, runtime_checkable
+from typing import Protocol, runtime_checkable
+from urllib.parse import quote
 
 from maistro.a2a.delegation_context import (
     DelegationContext,
@@ -135,155 +136,53 @@ class GuestPeerManager:
     def list_peers(self) -> list[PeerTrust]:
         return [p for p in self._peers.values() if p.active]
 
-    @staticmethod
-    def _peer_auth_headers(peer: PeerTrust) -> dict[str, str]:
-        """The authentication a request to this peer must carry.
+    async def poll_result(self, peer_name: str, task_id: str) -> DelegationResult | None:
+        """Read a terminal result from a peer, or ``None`` while it runs.
 
-        `delegate` and `reconcile` authenticate identically. A reconciliation
-        GET sent without the peer's configured credential gets 401 from a
-        protected peer, which reads as an uncertain transport rather than a
-        refused request -- so a receipt the peer is holding becomes
-        unrecoverable and the delegated work can never resume.
+        Cross-instance delegation has no in-process task receipt to callback
+        into. The recovery tick therefore uses the peer's task-status resource
+        as its timer waker. A transport error is deliberately not a failed
+        delegation: the task may still be running, so the next tick must be
+        allowed to try again.
         """
-        if peer.auth_method == "api_token" and peer.auth_credential:
-            return {"Authorization": f"Bearer {peer.auth_credential}"}
-        return {}
-
-    async def reconcile(self, peer_name: str, idempotency_key: str) -> DelegationResult:
-        """Recover a receipt without re-submitting uncertain remote work."""
-        cached = self._idempotent_receipts.get((peer_name, idempotency_key))
-        if cached is not None:
-            return cached
+        if not task_id:
+            return None
         peer = self.get_peer(peer_name)
         if peer is None or not peer.active:
-            return DelegationResult("", peer_name, "uncertain", error="peer cannot reconcile")
-        if not peer.supports_idempotency:
-            return DelegationResult(
-                "", peer_name, "uncertain", error="peer does not support idempotent reconciliation"
-            )
+            return None
+
+        headers: dict[str, str] = {"Accept": "application/json"}
+        if peer.auth_method == "api_token" and peer.auth_credential:
+            headers["Authorization"] = f"Bearer {peer.auth_credential}"
         try:
             async with shared_client(timeout=30.0) as client:
                 response = await client.get(
-                    f"{peer.peer_url.rstrip('/')}/a2a/tasks/by-idempotency-key/{idempotency_key}",
-                    headers=self._peer_auth_headers(peer),
+                    f"{peer.peer_url.rstrip('/')}/a2a/tasks/{quote(task_id, safe='')}",
+                    headers=headers,
                 )
-                if response.status_code == 404:
-                    return DelegationResult("", peer_name, "not_found")
                 response.raise_for_status()
-                task_id = response.json().get("task_id", "")
-            submitted = DelegationResult(task_id=task_id, peer_name=peer_name, status="submitted")
-            # Memoize the recovery, not just the dispatch: the reconciliation
-            # poll re-enters on every tick, and a receipt for a delegation key
-            # is immutable, so re-asking the peer per tick buys nothing.
-            self._idempotent_receipts[(peer_name, idempotency_key)] = submitted
-            return submitted
-        except Exception as exc:
-            return DelegationResult("", peer_name, "uncertain", error=str(exc))
-
-    def _admission_rejection(self, peer: PeerTrust | None, agent_id: str) -> tuple[str, str] | None:
-        """The (audit detail, result error) this peer/agent pair is refused for.
-
-        One guard for the three structural refusals -- unknown peer, inactive
-        peer, agent outside the allow list -- so `delegate` reads as cache
-        check, admission, transport, in that order.
-        """
-        if peer is None:
-            return "peer not found", "peer not found"
-        if not peer.active:
-            return "peer inactive", "peer inactive"
-        if peer.allowed_agents and agent_id not in peer.allowed_agents:
-            return (
-                f"agent '{agent_id}' not in allowed list",
-                f"agent '{agent_id}' not allowed on this peer",
-            )
-        return None
-
-    async def _refused_dispatch(
-        self, peer_name: str, agent_id: str, context: DelegationContext | None
-    ) -> DelegationResult | None:
-        """The admission refusal for a context-less or incoherent dispatch.
-
-        The transport is the last boundary an external Agent call crosses, so
-        it is where issue #959's gate lives: no request leaves without a
-        canonical :class:`DelegationContext` (caller principal, Workspace and
-        Project scope, the delegating Run/NodeRun, and the effect identity),
-        and the caller named on the envelope matches the context. A refusal
-        here happens before any bytes reach the peer, so it is a *rejected*
-        admission — never an uncertain remote effect.
-        """
-        if context is None:
-            await self._audit.log_delegation(
+                payload = response.json()
+        except Exception:
+            logger.warning(
+                "could not poll A2A task %s from peer %s",
+                task_id,
                 peer_name,
-                agent_id,
-                "refused: external delegation without canonical caller/workspace context",
+                exc_info=True,
             )
-            return DelegationResult(
-                task_id="",
-                peer_name=peer_name,
-                status="rejected",
-                error=(
-                    "external Agent delegation requires a canonical caller and "
-                    "Workspace scope (delegation context)"
-                ),
-            )
-        if context.delegating_agent != agent_id:
-            await self._audit.log_delegation(
-                peer_name,
-                agent_id,
-                "refused: envelope agent does not match the delegation context",
-            )
-            return DelegationResult(
-                task_id="",
-                peer_name=peer_name,
-                status="rejected",
-                error=(
-                    f"delegation names agent {agent_id!r} but its canonical context "
-                    f"binds {context.delegating_agent!r}"
-                ),
-            )
-        # The receiver files sender-authored Goal evidence verbatim, so the
-        # sending boundary is the last place an incoherent Goal/Subgoal
-        # binding (goal_id without goal_revision, subgoal_of without a Goal)
-        # can be refused instead of admitted as if it were evidence. The
-        # dispatching node validates too; this re-check closes the bypass.
-        try:
-            validate_goal_binding(context)
-        except DelegationContextError as exc:
-            await self._audit.log_delegation(
-                peer_name,
-                agent_id,
-                "refused: incoherent Goal/Subgoal binding on the delegation context",
-            )
-            return DelegationResult(
-                task_id="",
-                peer_name=peer_name,
-                status="rejected",
-                error=f"delegation context has an incoherent Goal binding: {exc}",
-            )
-        return None
+            return None
 
-    def _narrowed_for_peer(
-        self,
-        peer: PeerTrust,
-        peer_name: str,
-        agent_id: str,
-        context: DelegationContext,
-    ) -> tuple[DelegationContext | None, DelegationResult | None]:
-        """Narrow the scope envelope at the boundary, or refuse it.
-
-        The dispatching node attenuates before admission; re-checking here
-        means a caller that bypassed the node still cannot claim more
-        authority than the peer's declared ceiling.
-        """
-        try:
-            return context.narrowed(peer.allowed_scopes), None
-        except DelegationContextError as exc:
-            return None, DelegationResult(
-                task_id="",
-                peer_name=peer_name,
-                status="rejected",
-                error=str(exc),
-            )
+        data = payload.get("task", payload) if isinstance(payload, dict) else {}
+        status = str(data.get("status") or "").lower()
+        if status not in {"completed", "failed", "cancelled", "timed_out"}:
+            return None
+        result = data.get("result")
+        return DelegationResult(
+            task_id=task_id,
+            peer_name=peer_name,
+            status=status,
+            result=result if isinstance(result, str) or result is None else str(result),
+            error=data.get("error"),
+        )
 
     async def delegate(
         self,

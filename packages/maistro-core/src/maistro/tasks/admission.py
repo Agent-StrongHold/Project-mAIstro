@@ -33,7 +33,7 @@ import asyncio
 from typing import TYPE_CHECKING, Any, Protocol
 
 from maistro.observability.correlation import current_execution_context
-from maistro.runs.admission import admit_direct_work, direct_work_graph
+from maistro.runs.admission import admit_direct_work
 from maistro.runs.lifecycle import RUN_TRANSITIONS, InvalidLifecycleTransition
 from maistro.runs.model import TERMINAL_RUN_STATUSES, Run, RunStatus
 from maistro.runs.sources import ADMISSION_SOURCE
@@ -78,18 +78,6 @@ SESSION_ID_KEY = "session_id"
 REQUEST_ID_KEY = "request_id"
 
 
-def _must_resume_before_terminalizing(current: RunStatus, target: RunStatus) -> bool:
-    """Whether a parked WAITING Run must be resumed before its terminal write.
-
-    A failed or timed-out Attempt parks its NodeRun (#143) and WAITING has no
-    edge to COMPLETED or FAILED, so the receipt of finished work has to resume
-    the Run first or its terminal outcome is written nowhere.
-    """
-    if current is not RunStatus.WAITING:
-        return False
-    return target in TERMINAL_RUN_STATUSES and target not in RUN_TRANSITIONS[RunStatus.WAITING]
-
-
 class WorkspaceNotAdmissible(ValueError):
     """An admitter was asked to file work in a Workspace it is not bound to."""
 
@@ -119,95 +107,9 @@ class TaskAdmitter(Protocol):
         """Advance the Run to match a task transition. False if it refused."""
         ...
 
-    async def lookup_run(self, run_id: str) -> Run | None:
-        """The canonical Run behind a receipt, or None when it does not exist.
-
-        The projection half of the receipt contract (#849): when the Run
-        refuses a transition the queue reads the Run's actual state here and
-        reconciles the receipt to it, so a refusal can never leave a receipt
-        telling a story its execution identity has already superseded. Returns
-        None for a missing Run — which is itself a fact the queue must record
-        on the receipt rather than leave stranded.
-        """
-        ...
-
-    async def find_task_run(self, task_id: str) -> Run | None:
-        """The Run admitted for one task receipt id (#1690), or None.
-
-        The cross-replica half of the same projection contract: a replica that
-        never accepted the `POST /tasks` still owes `GET /tasks/{id}` an
-        answer, and the Run — committed before the accepting replica answered
-        202 — is the admission fact any replica can resolve it from. None
-        means no Run claims the id; callers decide what that is worth, exactly
-        as they do for a `lookup_run` miss.
-        """
-        ...
-
     async def cancel_run(self, run_id: str) -> bool:
-        """Cancel the canonical Run and signal its physical Attempt owner.
-
-        Returns True only when the Run itself reached CANCELLED through the
-        canonical Run/Attempt service — a local no-op is not a cancellation.
-
-        Compatibility (#1338): this member joined the protocol after ``admit``
-        and ``record_transition``, so a downstream adapter compiled against
-        the earlier two-method shape remains a valid *runtime* citizen. The
-        queue probes the capability with ``getattr`` and, for an adapter
-        without it, refuses to cancel that adapter's admitted work — the
-        receipt stays open, the Run keeps its owner, and the refusal is
-        logged — rather than raising ``AttributeError`` or terminalizing
-        work nothing signalled. Implement the member to make cancellation
-        physically reach admitted Runs; leaving it absent opts out of
-        physical cancellation, visibly (cancel refuses), never silently.
-        """
+        """Cancel the canonical Run and signal its physical Attempt owner."""
         ...
-
-
-def _admission_provenance(task: TaskResponse) -> dict[str, Any]:
-    """The provenance every admitted task Run carries.
-
-    Identity evidence (#1057) leads: the originating principal and the
-    service principal acting for it are recorded as separate claims, never
-    one collapsed into the other, so an auditor reading the Run sees
-    "service principal acting for user principal". Delegation id and actor
-    kind ride along so the assertion is reconstructible from the Run alone.
-    """
-    # This snapshot is committed with the QUEUED Run. Recovery must not
-    # depend on the best-effort TaskRecord or process-local receipt (#1114)
-    # — and it carries the #1057 identity claims with it, so the originating
-    # principal survives a restart that outlives every receipt projection.
-    provenance: dict[str, Any] = {
-        TASK_ID_KEY: task.task_id,
-        TASK_PAYLOAD_KEY: task.model_dump(mode="json"),
-    }
-    if task.session_id:
-        provenance[SESSION_ID_KEY] = task.session_id
-    if task.user_id:
-        provenance["user_id"] = task.user_id
-    if task.service_principal_id:
-        provenance["service_principal_id"] = task.service_principal_id
-    if task.delegation_id:
-        provenance["delegation_id"] = task.delegation_id
-    if task.actor_kind:
-        provenance["actor_kind"] = task.actor_kind
-    # The request that submitted this task, read off the ambient context
-    # rather than a TaskCreate/TaskResponse field (#1063): admit() runs
-    # inside the same coroutine chain RequestIDMiddleware bound it in
-    # (HTTP submission), or whatever a background caller explicitly
-    # bound (scheduled admission) -- either way, one vocabulary, not a
-    # second correlation path threaded through the task's own body.
-    request_id = current_execution_context().request_id
-    if request_id:
-        provenance[REQUEST_ID_KEY] = request_id
-    if task.idempotency_key:
-        # The caller's explicit key, on the Run (#1176): the claim store is
-        # the reconciliation mechanism, but an auditor correlating a retry
-        # storm reads the Run, so the key the caller chose is recorded
-        # where the admission it produced lives. Derived keys are absent —
-        # the derivation is admission machinery, not something the caller
-        # said.
-        provenance[IDEMPOTENCY_KEY_PROVENANCE] = task.idempotency_key
-    return provenance
 
 
 class TaskRunAdmitter:
@@ -325,7 +227,20 @@ class TaskRunAdmitter:
             agent_id=task.agent_id,
             registry=self._intents,
         )
-        provenance = _admission_provenance(task)
+        provenance: dict[str, Any] = {TASK_ID_KEY: task.task_id}
+        if task.session_id:
+            provenance[SESSION_ID_KEY] = task.session_id
+        if task.user_id:
+            provenance["user_id"] = task.user_id
+        # The request that submitted this task, read off the ambient context
+        # rather than a TaskCreate/TaskResponse field (#1063): admit() runs
+        # inside the same coroutine chain RequestIDMiddleware bound it in
+        # (HTTP submission), or whatever a background caller explicitly
+        # bound (scheduled admission) -- either way, one vocabulary, not a
+        # second correlation path threaded through the task's own body.
+        request_id = current_execution_context().request_id
+        if request_id:
+            provenance[REQUEST_ID_KEY] = request_id
         run = await admit_direct_work(
             self._runs,
             workspace_id=self._workspace_id,

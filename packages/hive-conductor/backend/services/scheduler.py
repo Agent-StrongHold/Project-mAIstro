@@ -19,7 +19,6 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
-from maistro.graph.templates import GraphTemplateNotFound
 from maistro.observability.correlation import (
     bind_execution_context,
     current_execution_context,
@@ -386,12 +385,38 @@ async def _backfill_one(runner: _ScheduleRunner, sid: str, container: Any) -> in
         return 0
     definition = await _scoped_definition(runner, sid, schedule, container)
     if definition is None:
-        return 0
-    existing = await container.schedule_store.get(sid)
-    if existing is not None and not _definition_drifted(existing, definition):
-        return 0
-    await container.schedule_store.put(definition)
-    return 1
+        raise ScheduleNotFireable(
+            f"schedule {sid} names no mission template, so there is nothing to run"
+        )
+    if definition.exhausted:
+        raise ScheduleNotFireable(f"schedule {sid} has used all {definition.max_runs} of its runs")
+
+    now = datetime.now(UTC)
+    # Captured here, at the one call site with a trustworthy ambient context
+    # (#1063): this coroutine runs inside the HTTP request RequestIDMiddleware
+    # already bound an id for, so forwarding it explicitly is what keeps the
+    # request/response and the resulting Run in the same trace.
+    # `_fire_schedule` never reads ambient context itself -- it is also
+    # reachable from the tick loop, which shares an event loop with whatever
+    # else is running and cannot make the same claim.
+    request_id = current_execution_context().request_id or None
+    run_id = await runner._fire_schedule(
+        sid, schedule, scheduled_for=now, catchup=False, request_id=request_id
+    )
+    if run_id is None:
+        raise ScheduleNotFireable(
+            f"schedule {sid} could not create a Run; its target may not be registered"
+        )
+
+    await runner._record_fire(
+        sid,
+        schedule,
+        definition,
+        store=store,
+        fire=FireDecision(scheduled_for=now, catchup=False),
+        run_id=run_id,
+    )
+    return run_id
 
 
 class _ScheduleRunner:
@@ -1244,7 +1269,6 @@ class _ScheduleRunner:
         scheduled_for: datetime | None = None,
         catchup: bool = False,
         request_id: str | None = None,
-        requester_id: str | None = None,
     ) -> str | None:
         """Compatibility immediate execution path, standalone/demo contexts only.
 
@@ -1293,18 +1317,8 @@ class _ScheduleRunner:
             )
             return None
 
-        # Real scope when the row carries one (#1201); the synthetic identity
-        # remains the fallback for scopeless legacy rows only.
-        scope_workspace_id = str(getattr(schedule, "workspace_id", "") or f"hive:schedule:{sid}")
-        scope_project_id = str(getattr(schedule, "project_id", "") or scope_workspace_id)
-        user_id = (
-            str(
-                getattr(schedule, "actor_principal_id", "")
-                or getattr(schedule, "user_id", "")
-                or ""
-            )
-            or None
-        )
+        scope_id = f"hive:schedule:{sid}"
+        user_id = str(getattr(schedule, "user_id", "") or "") or None
         try:
             # Always a clean slate (#1063): this path shares an event loop
             # with whatever else is running (the tick loop) and cannot tell a
@@ -1318,29 +1332,16 @@ class _ScheduleRunner:
                 with bind_execution_context(request_id=effective_request_id):
                     graph, record = await run_registered_dag(
                         str(template_id),
-                        workspace_id=scope_workspace_id,
-                        project_id=scope_project_id,
+                        workspace_id=scope_id,
+                        project_id=scope_id,
                         user_id=user_id,
                         provenance={
                             "admission_source": "schedule",
                             "schedule_id": sid,
                             "schedule_name": schedule.name,
-                            # The instant in UTC (#850): this provenance forms
-                            # the occurrence claim the run stores compare as
-                            # text, and a wall-clock rendering would change
-                            # identity with the schedule's timezone.
-                            "scheduled_for": canonical_occurrence_instant(scheduled_for or t),
+                            "scheduled_for": (scheduled_for or t).isoformat(),
                             "catchup": catchup,
                             "request_id": effective_request_id,
-                            # The background service that fired this is not
-                            # the principal whose authority it consumed
-                            # (#1201): both facts are on the Run, distinct.
-                            "scheduler_service_id": "hive-scheduler",
-                            **(
-                                {"manual_requesting_principal_id": requester_id}
-                                if requester_id
-                                else {}
-                            ),
                         },
                     )
         except Exception as exc:

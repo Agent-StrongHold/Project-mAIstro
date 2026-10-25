@@ -109,6 +109,27 @@ def test_get_task_status_unknown_task_returns_none() -> None:
     assert delegator.get_task_status("nonexistent") is None
 
 
+def test_terminal_task_completion_notifies_the_injected_canonical_waker() -> None:
+    delegator = A2ADelegator()
+    delegator.register_agent_capability("planner", ["coder"])
+    seen = []
+    delegator.set_completion_handler(seen.append)
+
+    task_id = delegator.delegate_task(
+        "planner",
+        "x",
+        "coder",
+        delegation_mode=DelegationMode.ALLOW_LIST,
+        metadata={"parent_run_id": "parent", "parent_node_id": "delegate"},
+    )
+    delegator.update_task_status(task_id, TaskStatus.RUNNING)
+    delegator.update_task_status(task_id, TaskStatus.COMPLETED, result="done")
+
+    assert len(seen) == 1
+    assert seen[0].id == task_id
+    assert seen[0].metadata == {"parent_run_id": "parent", "parent_node_id": "delegate"}
+
+
 def test_update_task_status_running_to_completed_sets_completed_at() -> None:
     delegator = A2ADelegator()
     delegator.register_agent_capability("planner", ["coder"])

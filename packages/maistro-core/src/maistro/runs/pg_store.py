@@ -1189,7 +1189,6 @@ class PgRunStore:
         offset: int = 0,
         project_id: str | None = None,
         workspace_id: str | None = None,
-        admission_source: str | None = None,
         after: tuple[str, str] | None = None,
     ) -> list[Run]:
         """Runs currently in ``status``, oldest first (#251).
@@ -1208,15 +1207,22 @@ class PgRunStore:
             raise ValueError("limit must be positive")
         if offset < 0:
             raise ValueError("offset must not be negative")
-        sql, params = _list_by_status_query(
-            status.value,
-            limit=limit,
-            offset=offset,
-            project_id=project_id,
-            workspace_id=workspace_id,
-            admission_source=admission_source,
-            after=after,
-        )
+        sql = "SELECT payload, archive_key FROM canonical_runs WHERE status = $1 AND payload IS NOT NULL"
+        params: list[object] = [status.value]
+        if project_id is not None:
+            sql += f" AND project_id = ${len(params) + 1}"
+            params.append(project_id)
+        if workspace_id is not None:
+            sql += f" AND workspace_id = ${len(params) + 1}"
+            params.append(workspace_id)
+        if after is not None:
+            cursor_param = len(params) + 1
+            sql += f" AND (payload->>'created_at', run_id) > (${cursor_param}, ${cursor_param + 1})"
+            params.extend(after)
+        sql += f" ORDER BY payload->>'created_at', run_id LIMIT ${len(params) + 1}"
+        params.append(limit)
+        sql += f" OFFSET ${len(params) + 1}"
+        params.append(offset)
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(sql, *params)
         # Route status enumeration through the same row hydrator as every

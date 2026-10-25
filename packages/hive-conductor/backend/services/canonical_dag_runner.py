@@ -548,8 +548,7 @@ async def recover_stranded_dag_runs(*, limit: int = 100) -> int:
         run_store=container.run_store,
         node_resolver_factory=_recovery_resolver,
         eligible=lambda run: run.provenance.get("admission_source") == "hive_legacy_dag",
-        admission_source="hive_legacy_dag",
-        events=_canonical_recovery_events(container),
+        events=getattr(container, "recovery_event_sink", None) or container.event_bus,
         limit=limit,
         # Held across ticks: the scan is bounded per call, and only a tick
         # that resumes where the last stopped crosses a foreign-owned QUEUED
@@ -572,15 +571,39 @@ async def wake_due_dag_runs(*, limit: int = 100) -> int:
     container = _container()
     if container is None or container.graph_run_store is None:
         return 0
-    return await resume_due_graph_runs(
+
+    # Completion polling is the cross-process counterpart to the in-process
+    # A2A receipt callback. A successful poll queues the canonical parent, so
+    # the normal queued recovery path consumes it without a second lifecycle.
+    poller = getattr(container, "poll_external_graph_results", None)
+    polled = (
+        await poller(
+            limit=limit,
+            eligible=lambda run: run.provenance.get("admission_source") == "hive_legacy_dag",
+        )
+        if callable(poller)
+        else 0
+    )
+    recovered = 0
+    if polled:
+        recovered = await recover_queued_graph_runs(
+            store=container.graph_run_store,
+            run_store=container.run_store,
+            node_resolver_factory=_recovery_resolver,
+            eligible=lambda run: run.provenance.get("admission_source") == "hive_legacy_dag",
+            events=getattr(container, "recovery_event_sink", None) or container.event_bus,
+            limit=limit,
+        )
+    resumed = await resume_due_graph_runs(
         store=container.graph_run_store,
         run_store=container.run_store,
         node_resolver_factory=_recovery_resolver,
         eligible=lambda run: run.provenance.get("admission_source") == "hive_legacy_dag",
-        events=_canonical_recovery_events(container),
+        events=getattr(container, "recovery_event_sink", None) or container.event_bus,
         limit=limit,
         scan=scan_continuation("resume_due_graph_runs", container.graph_run_store),
     )
+    return recovered + resumed
 
 
 def _canonical_recovery_events(container: Any) -> CanonicalRecoveryEventSink:

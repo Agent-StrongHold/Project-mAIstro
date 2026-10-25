@@ -60,10 +60,7 @@ from pydantic import BaseModel, Field
 
 from maistro.agents.types import LLMProviderError
 from maistro.constants import STREAM_CHUNK_SIZE
-from maistro.runs.chat_refusal import CHAT_TURN_RETRY_AFTER_S, ChatTurnRefused
-from maistro.runs.concurrency import RunConcurrencyExceeded
-from maistro.runs.model import TERMINAL_ATTEMPT_STATUSES, AttemptStatus, Run
-from maistro.runs.store import RunStore
+from maistro.runs.model import Run, RunStatus
 from maistro.security._types import AuthContext
 from maistro_server.api.auth import RequireAuth
 from maistro_server.api.principal import AuthenticatedPrincipal
@@ -375,23 +372,13 @@ async def _close_if_open(run: Run) -> None:
     if _container is None:
         return
     try:
-        if await _left_for_recovery(_container.run_store, run.run_id):
-            return
         from maistro.runs.service import RunExecutionService
         from maistro.runtime import PythonExecutionRuntime
 
-        # Released before the cancel rather than after: the mark shields a
-        # Run only until its dispatch settles, and an abandoned stream is
-        # past that — this close is the settlement, whichever write wins.
-        _container._release_chat_dispatch(run)
         await RunExecutionService(
             store=_container.run_store,
             runtime=PythonExecutionRuntime(),
         ).cancel_run(run.run_id, error=ABANDONED)
-        # The stream admits before dispatch, so a burst can make every Run live
-        # until cleanup. Sweep after terminalizing the last one as well as on
-        # the normal route so abandoned streams cannot bypass the chat bound.
-        await _container._sweep_chat_runs()
     except Exception:
         logger.exception("chat_completions_abandoned_run_close_failed", run_id=run.run_id)
 

@@ -140,6 +140,22 @@ def _graph_has_cycle(run: Run) -> bool:
     return visited != len(indegree)
 
 
+@runtime_checkable
+class StrandedRunStore(AttemptLifecycleStore, Protocol):
+    """Lifecycle store with the bounded Run listing used by recovery."""
+
+    async def list_by_status(
+        self,
+        status: RunStatus,
+        *,
+        limit: int = 100,
+        offset: int = 0,
+        project_id: str | None = None,
+        workspace_id: str | None = None,
+        after: tuple[str, str] | None = None,
+    ) -> list[Run]: ...
+
+
 class AttemptLifecycleReconciler:
     """Keep Run/NodeRun activity consistent with canonical physical Attempts."""
 
@@ -195,6 +211,7 @@ class AttemptLifecycleReconciler:
                     # A crash between them must be repairable by replaying the
                     # already-persisted Attempt rather than stranding the Run.
                     await self._settle_run_if_fully_observed(node_run.run_id)
+                    await self._announce(persisted, node_run, cancellation)
                     return node_run
                 raise RunIntegrityError("NodeRun already accepted a different AttemptResult")
             outcome = AcceptedNodeOutcome(
@@ -256,6 +273,27 @@ class AttemptLifecycleReconciler:
                 cancellation=cancellation,
                 source=self._source,
             )
+        )
+
+    async def reconcile_run(
+        self,
+        run_id: str,
+        *,
+        work_owed: bool = False,
+        require_all_graph_nodes: bool = True,
+    ) -> Run:
+        """Replay the parent fold after a crash between child and parent writes.
+
+        Recovery calls this even when the Attempt was already terminal. That is
+        the important distinction from ordinary Attempt reconciliation: a
+        process may have persisted the NodeRun (or the Graph frontier) and died
+        before it persisted the parent Run, so there is no new physical outcome
+        to trigger the fold.
+        """
+        return await self._settle_run_from_node_runs(
+            run_id,
+            work_owed=work_owed,
+            require_all_graph_nodes=require_all_graph_nodes,
         )
 
     async def accept_outcome(self, outcome: AcceptedNodeOutcome) -> NodeRun:
@@ -521,9 +559,54 @@ class AttemptLifecycleReconciler:
         return node_run
 
 
+async def reconcile_stranded_runs(
+    store: StrandedRunStore,
+    *,
+    limit: int = 100,
+    events: RecoveryEventSink | None = None,
+) -> int:
+    """Repair RUNNING parents left behind by a multi-write crash window.
+
+    This sweep is intentionally derived from canonical rows only. A terminal
+    Attempt or NodeRun is evidence to replay; the helper never creates an
+    Attempt and never invents Graph frontier truth that is not present in the
+    canonical store. Graph continuations with frontier knowledge use the same
+    reconciler through their own persistence sweep.
+    """
+    if limit <= 0:
+        return 0
+    runs = await store.list_by_status(RunStatus.RUNNING, limit=limit)
+    reconciler = AttemptLifecycleReconciler(store, events=events, source="maistro.runs.recovery")
+    settled = 0
+    for run in runs:
+        before = await store.get_run(run.run_id)
+        if before is None or before.status is not RunStatus.RUNNING:
+            continue
+        node_runs = await store.list_node_runs(run.run_id)
+        for node_run in node_runs:
+            attempts = await store.list_attempts(node_run.node_run_id)
+            if not attempts:
+                continue
+            attempt = max(attempts, key=lambda item: item.ordinal)
+            if attempt.status not in TERMINAL_ATTEMPT_STATUSES:
+                continue
+            if node_run.status in {*TERMINAL_RUN_STATUSES, RunStatus.RUNNING}:
+                # Replaying a terminal NodeRun is intentional: it repairs the
+                # parent fold and emits the same canonical recovery fact after
+                # a crash between those writes.
+                await reconciler.reconcile(attempt)
+        await reconciler.reconcile_run(run.run_id)
+        after = await store.get_run(run.run_id)
+        if after is not None and after.status is not before.status:
+            settled += 1
+    return settled
+
+
 __all__ = [
     "AttemptLifecycleReconciler",
     "AttemptLifecycleStore",
     "CancellationCause",
+    "StrandedRunStore",
     "SupersededAttempt",
+    "reconcile_stranded_runs",
 ]

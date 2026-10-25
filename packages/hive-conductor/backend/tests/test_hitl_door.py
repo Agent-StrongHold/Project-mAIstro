@@ -48,27 +48,13 @@ def _paused_node_run(run_id: str, node_id: str, ordinal: int) -> NodeRun:
     return transition_node_run(node_run, RunStatus.PAUSED)
 
 
-# One more than the route's page size, so the HITL pause genuinely lands on
-# a second page and the cursor -- not the first read -- decides whether it is
-# ever seen.
-_MACHINE_PREFIX = 101
-
-
-def _paused_record(
-    run_id: str,
-    *,
-    workspace_id: str = "ws-hitl",
-    project_id: str = "project-hitl",
-    kind: str = "hitl",
-    reviewer_id: str | None = None,
-    created_at: datetime | None = None,
-) -> Any:
+def _paused_record(run_id: str, *, workspace_id: str = "ws-hitl", kind: str = "hitl") -> Any:
     """A Run paused on one node, the way the durable executor leaves one."""
     from maistro.graph.durable_runs.types import DurableRunRecord
 
     graph = Graph(
         workspace_id=workspace_id,
-        project_id=project_id,
+        project_id="project-hitl",
         name="approval",
         nodes=[Node(node_id="ask", node_type="human.ask_question")],
     )
@@ -130,12 +116,7 @@ def seeded(admin_client):
             theme_id="default",
             voice_tone_override=None,
         )
-        from services.workspace_authority import canonical_store_for_tests
-
-        root = await canonical_store_for_tests().project_store.root_for_workspace(workspace.id)
-        await store.create(
-            _paused_record(run_id, workspace_id=workspace.id, project_id=root.project_id, **kwargs)
-        )
+        await store.create(_paused_record(run_id, workspace_id=workspace.id, **kwargs))
         created.append(run_id)
 
     yield admin_client, store, _seed
@@ -502,40 +483,6 @@ def _audit_entries(action: str, target: str) -> list[dict[str, Any]]:
 
 
 @pytest.fixture
-def reviewer_client():
-    """A real second principal with coarse route access but scoped HITL grants."""
-    import stores
-    from fastapi.testclient import TestClient
-    from main import app
-
-    stores.users["hitl-reviewer"] = stores.users["user"].model_copy(
-        update={
-            "id": "hitl-reviewer",
-            "username": "hitl-reviewer",
-            "permissions": ["dags.write"],
-        }
-    )
-    client = TestClient(app)
-    try:
-        login = client.post(
-            "/v1/auth/login", json={"username": "hitl-reviewer", "password": "testpass"}
-        )
-        assert login.status_code == 200
-        elevated = client.post(
-            "/v1/auth/elevate",
-            json={
-                "password": "testpass",
-                "permissions": ["dags.write"],
-                "task_id": "hitl-reviewer-scope-test",
-            },
-        )
-        assert elevated.status_code == 200
-        yield client
-    finally:
-        stores.users.pop("hitl-reviewer", None)
-
-
-@pytest.fixture
 def scoped_client():
     """A non-admin principal with the route's coarse write permission."""
     import stores
@@ -569,125 +516,6 @@ def scoped_client():
         stores.users.pop("scope-user", None)
 
 
-async def test_hitl_membership_predicate_guards_mutation(seeded, monkeypatch) -> None:
-    """Removing the canonical membership predicate must kill this test."""
-    client, store, seed = seeded
-    await seed("hitl-membership-predicate")
-
-    import routes.hitl as hitl_routes
-
-    calls: list[tuple[str, str]] = []
-
-    async def deny_membership(user_id: str, workspace_id: str) -> bool:
-        calls.append((user_id, workspace_id))
-        return False
-
-    monkeypatch.setattr(hitl_routes, "is_member", deny_membership)
-    response = client.post(
-        "/v1/hitl/hitl-membership-predicate/ask/cancel",
-    )
-
-    assert response.status_code == 404
-    assert len(calls) == 1 and calls[0][0] and calls[0][1]
-    record = await store.get("hitl-membership-predicate")
-    assert record is not None and record.run.status is RunStatus.PAUSED
-
-
-async def test_hitl_mutation_rechecks_membership_at_the_store_boundary(seeded, monkeypatch) -> None:
-    """A revocation between target lookup and settlement must win."""
-    client, store, seed = seeded
-    import routes.hitl as hitl_routes
-
-    for run_id, action in (("hitl-answer-revoked", "answer"), ("hitl-cancel-revoked", "cancel")):
-        await seed(run_id)
-        checks: list[bool] = []
-
-        def membership_revoked_factory(checks: list[bool]):
-            async def membership_revoked(_user_id: str, _workspace_id: str) -> bool:
-                checks.append(True)
-                return len(checks) == 1
-
-            return membership_revoked
-
-        monkeypatch.setattr(hitl_routes, "is_member", membership_revoked_factory(checks))
-        if action == "answer":
-            response = client.post(f"/v1/hitl/{run_id}/ask/answer", json={"answer": "yes"})
-        else:
-            response = client.post(f"/v1/hitl/{run_id}/ask/cancel")
-        assert response.status_code == 404
-        assert len(checks) == 2
-        record = await store.get(run_id)
-        assert record is not None and record.run.status is RunStatus.PAUSED
-
-
-async def test_pending_rechecks_membership_before_disclosing_payload(seeded, monkeypatch) -> None:
-    """The pending queue's Workspace-id snapshot is not the disclosure decision.
-
-    A membership revoked after the route resolved the caller's Workspaces but
-    before a paused record's payload is read must not receive that payload:
-    each item-carrying record is revalidated against live canonical membership
-    immediately before disclosure, the same discovery-mode predicate
-    `list_hitl_due` applies for the expiry path. Removing that recheck fails
-    this test — the revoked payload would be disclosed and no recheck would
-    ever run.
-    """
-    client, store, seed = seeded
-    await seed("hitl-revoked-mid-list")
-
-    import routes.hitl as hitl_routes
-
-    rechecks: list[str] = []
-
-    async def revoked(_user_id: str, workspace_id: str) -> bool:
-        rechecks.append(workspace_id)
-        return False
-
-    monkeypatch.setattr(hitl_routes, "is_member", revoked)
-
-    body = client.get("/v1/hitl/pending").json()
-
-    assert [item for item in body if item["run_id"] == "hitl-revoked-mid-list"] == []
-    assert rechecks, "the per-record live membership recheck never ran"
-    record = await store.get("hitl-revoked-mid-list")
-    assert record is not None and record.run.status is RunStatus.PAUSED
-
-
-@pytest.fixture
-def blocked_answer_clients():
-    """Two independently authenticated requesters for attribution coverage."""
-    import stores
-    from fastapi.testclient import TestClient
-    from main import app
-
-    clients = {}
-    for username in ("alice", "bob"):
-        stores.users[username] = stores.users["user"].model_copy(
-            update={
-                "id": username,
-                "username": username,
-                "permissions": ["dags.write"],
-            }
-        )
-        client = TestClient(app)
-        login = client.post("/v1/auth/login", json={"username": username, "password": "testpass"})
-        assert login.status_code == 200
-        elevated = client.post(
-            "/v1/auth/elevate",
-            json={
-                "password": "testpass",
-                "permissions": ["dags.write"],
-                "task_id": f"hitl-blocked-{username}",
-            },
-        )
-        assert elevated.status_code == 200
-        clients[username] = client
-    try:
-        yield clients
-    finally:
-        for username in ("alice", "bob"):
-            stores.users.pop(username, None)
-
-
 async def test_hitl_routes_are_scoped_to_the_callers_workspaces(scoped_client) -> None:
     """A scoped writer cannot list, answer, or cancel another workspace's pause."""
     from services.dag_agents import get_run_store
@@ -719,12 +547,6 @@ async def test_hitl_routes_are_scoped_to_the_callers_workspaces(scoped_client) -
         theme_id="default",
         voice_tone_override=None,
     )
-    from services.workspace_authority import canonical_store_for_tests
-
-    projects = canonical_store_for_tests().project_store
-    mine_root = await projects.root_for_workspace(mine.id)
-    mine_second_root = await projects.root_for_workspace(mine_second.id)
-    other_root = await projects.root_for_workspace(other.id)
     mine_id = "hitl-scope-mine"
     mine_second_id = "hitl-scope-mine-second"
     other_id = "hitl-scope-other"
@@ -733,33 +555,18 @@ async def test_hitl_routes_are_scoped_to_the_callers_workspaces(scoped_client) -
     foreign_ids = [f"hitl-scope-foreign-{index}" for index in range(50)]
     for index, foreign_id in enumerate(foreign_ids):
         await store.create(_paused_record(foreign_id, workspace_id=f"foreign-{index}"))
-    await store.create(
-        _paused_record(mine_id, workspace_id=mine.id, project_id=mine_root.project_id)
-    )
-    await store.create(
-        _paused_record(
-            mine_second_id,
-            workspace_id=mine_second.id,
-            project_id=mine_second_root.project_id,
-        )
-    )
-    await store.create(
-        _paused_record(other_id, workspace_id=other.id, project_id=other_root.project_id)
-    )
+    await store.create(_paused_record(mine_id, workspace_id=mine.id))
+    await store.create(_paused_record(mine_second_id, workspace_id=mine_second.id))
+    await store.create(_paused_record(other_id, workspace_id=other.id))
     try:
         pending = scoped_client.get("/v1/hitl/pending").json()
         assert {item["run_id"] for item in pending} == {mine_id, mine_second_id}
-        inspected = scoped_client.get(f"/v1/hitl/{mine_id}/ask")
-        assert inspected.status_code == 200
-        assert inspected.json()["project_id"] == mine_root.project_id
-        assert scoped_client.get(f"/v1/hitl/{other_id}/ask").status_code == 404
 
         # A foreign id is indistinguishable from a missing id as well as being
         # unable to mutate it; otherwise this door leaks Run existence.
         assert (
             scoped_client.post(
-                f"/v1/hitl/{other_id}/ask/answer",
-                json={"answer": "yes", "_pause": {"forged": True}},
+                f"/v1/hitl/{other_id}/ask/answer", json={"answer": "yes"}
             ).status_code
             == 404
         )
@@ -769,113 +576,6 @@ async def test_hitl_routes_are_scoped_to_the_callers_workspaces(scoped_client) -
         assert record.run.status is RunStatus.PAUSED
     finally:
         for run_id in [*foreign_ids, mine_id, mine_second_id, other_id]:
-            store._rows.pop(run_id, None)
-
-
-async def test_project_reviewer_isolated_from_sibling_hitl_work(reviewer_client) -> None:
-    """Project grants, not a guessed id or generic auth, decide HITL control."""
-    from services.dag_agents import get_run_store
-    from services.workspace_authority import canonical_store_for_tests, create_workspace, set_member
-
-    from maistro.projects.scope import ProjectMembership
-
-    store = get_run_store()
-    workspace = await create_workspace(
-        creator_user_id="admin",
-        name="HITL project isolation",
-        persona_template_id="default",
-        checklist=[],
-        theme_id="default",
-        voice_tone_override=None,
-    )
-    await set_member(workspace.id, user_id="hitl-reviewer", role="editor")
-    projects = canonical_store_for_tests().project_store
-    root = await projects.root_for_workspace(workspace.id)
-    approved_project = await projects.create(
-        workspace_id=workspace.id, parent_project_id=root.project_id, name="Approved"
-    )
-    denied_project = await projects.create(
-        workspace_id=workspace.id, parent_project_id=root.project_id, name="Denied"
-    )
-    await projects.set_membership(
-        ProjectMembership(
-            workspace_id=workspace.id,
-            project_id=approved_project.project_id,
-            principal_id="hitl-reviewer",
-            grants={"hitl.inspect", "hitl.answer", "hitl.cancel"},
-        )
-    )
-    await projects.set_membership(
-        ProjectMembership(
-            workspace_id=workspace.id,
-            project_id=denied_project.project_id,
-            principal_id="hitl-reviewer",
-            denies={"hitl.inspect", "hitl.answer", "hitl.cancel"},
-        )
-    )
-    approved_id = "hitl-reviewer-approved"
-    approved_cancel_id = "hitl-reviewer-cancel"
-    bound_id = "hitl-reviewer-bound"
-    denied_id = "hitl-reviewer-denied"
-    await store.create(
-        _paused_record(
-            approved_id, workspace_id=workspace.id, project_id=approved_project.project_id
-        )
-    )
-    await store.create(
-        _paused_record(
-            approved_cancel_id,
-            workspace_id=workspace.id,
-            project_id=approved_project.project_id,
-        )
-    )
-    await store.create(
-        _paused_record(
-            bound_id,
-            workspace_id=workspace.id,
-            project_id=approved_project.project_id,
-            reviewer_id="another-reviewer",
-        )
-    )
-    await store.create(
-        _paused_record(denied_id, workspace_id=workspace.id, project_id=denied_project.project_id)
-    )
-    try:
-        pending = reviewer_client.get("/v1/hitl/pending")
-        assert {item["run_id"] for item in pending.json()} == {
-            approved_id,
-            approved_cancel_id,
-            bound_id,
-        }
-        assert (
-            reviewer_client.get(f"/v1/hitl/pending?project_id={denied_project.project_id}").json()
-            == []
-        )
-
-        answered = reviewer_client.post(
-            f"/v1/hitl/{approved_id}/ask/answer", json={"answer": "yes"}
-        )
-        assert answered.status_code == 200
-        cancelled = reviewer_client.post(f"/v1/hitl/{approved_cancel_id}/ask/cancel")
-        assert cancelled.status_code == 200
-
-        for operation in ("answer", "cancel"):
-            response = reviewer_client.post(
-                f"/v1/hitl/{denied_id}/ask/{operation}", json={"answer": "no"}
-            )
-            assert response.status_code == 404
-        bound = reviewer_client.post(f"/v1/hitl/{bound_id}/ask/answer", json={"answer": "no"})
-        assert bound.status_code == 404
-        for run_id in (denied_id, bound_id):
-            refused_record = await store.get(run_id)
-            assert refused_record is not None
-            assert refused_record.run.status is RunStatus.PAUSED
-        denials = _audit_entries("hitl_authorization_denied", denied_project.project_id)
-        assert denials
-        assert all(entry["actor"] == "hitl-reviewer" for entry in denials)
-        assert all("question" not in str(entry["detail"]) for entry in denials)
-    finally:
-        for run_id in (approved_id, approved_cancel_id, bound_id, denied_id):
             store._rows.pop(run_id, None)
 
 

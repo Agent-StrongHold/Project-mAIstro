@@ -65,11 +65,6 @@ MERGE_GROUP_SPECIALIZED_CHECKS = frozenset(
 # second set of path globs.  Keeping the filtering generic means a future
 # non-specialized required check gets the same skip handling without changing
 # the evaluator's verdict rules.
-# This job validates pull-request base policy from pull_request-only payload
-# fields. It intentionally cannot run on merge_group and must not be requested
-# as evidence for a synthetic queue SHA.
-MERGE_GROUP_PR_ONLY_CHECKS = frozenset({"pr-base"})
-
 PATH_SCOPED_CHECKS = {
     "postgres (pg17)": "postgres",
     "postgres (pg18)": "postgres",
@@ -216,7 +211,7 @@ def _read_json(path: Path) -> Any:
 
 
 def _load(path: Path) -> list[dict[str, Any]]:
-    payload = _read_json(path)
+    payload = json.loads(path.read_text(encoding="utf-8"))
     runs: Any
     if isinstance(payload, list):
         runs = payload
@@ -241,24 +236,9 @@ def _load_scope_classifier() -> Any:
 
 
 def _pull_request_scope(path: Path) -> tuple[dict[str, bool] | None, bool]:
-    try:
-        payload = _read_json(path)
-    except ValueError:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict) or payload.get("measured") is not True:
         return None, False
-    if not isinstance(payload, dict):
-        return None, False
-    measured = payload.get("measured")
-    if type(measured) is not bool or not measured:
-        return None, False
-    if payload.get("truncated"):
-        # A truncated envelope is a *partial* measurement: the paths beyond
-        # the cap are unmeasured and may carry every specialized leg, so
-        # scope is ambiguous. Raising reaches the CLI as a pending reason via
-        # _scope_for_args' ValueError path, never as a scope that could
-        # excuse a skipped check.
-        raise ValueError(
-            f"changed-file set was truncated at GitHub's {LIST_FILES_CAP}-file listFiles cap"
-        )
     changed_files = payload.get("files")
     if not isinstance(changed_files, list) or not all(
         isinstance(item, str) for item in changed_files

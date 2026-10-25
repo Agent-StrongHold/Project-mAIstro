@@ -1672,8 +1672,10 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
                 inputs.from_agent,
                 inputs.task,
                 inputs.to_agent,
-                delegation_mode=self._mode_for(inputs),
-                metadata={"delegation_key": key},
+                delegation_mode=DelegationMode.ALLOW_ALL
+                if inputs.to_agent is None
+                else DelegationMode.ALLOW_LIST,
+                metadata={"parent_run_id": ctx.run_id, "parent_node_id": ctx.node_id},
             )
         except ValueError as exc:
             await self._release_unaccepted_child(child_id)

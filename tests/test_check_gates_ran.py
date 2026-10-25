@@ -56,7 +56,7 @@ def _payload(tmp_path: Path, runs: list[dict[str, Any]]) -> Path:
     return path
 
 
-def _envelope(tmp_path: Path, payload: dict[str, Any] | list[Any]) -> Path:
+def _envelope(tmp_path: Path, payload: dict | list) -> Path:
     path = tmp_path / "changed-files.json"
     path.write_text(json.dumps(payload), encoding="utf-8")
     return path
@@ -314,9 +314,7 @@ class TestTheWorkflowItself:
 
 class TestPathScopedRequiredChecks:
     @pytest.mark.ac("SPEC-091226-1341/AC-1")
-    def test_a_non_specialized_path_scoped_check_can_be_skipped(
-        self, check: ModuleType, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_a_non_specialized_path_scoped_check_can_be_skipped(self, check, monkeypatch):
         """The skip rule is generic: it is not a hard-coded specialized-job list."""
         monkeypatch.setitem(check.PATH_SCOPED_CHECKS, "coverage (path-gated)", "postgres")
         verdict = check.evaluate(
@@ -333,9 +331,7 @@ class TestPathScopedRequiredChecks:
         assert verdict.ok is False
 
     @pytest.mark.ac("SPEC-091226-1341/AC-2")
-    def test_an_out_of_scope_failure_is_still_a_finding(
-        self, check: ModuleType, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_an_out_of_scope_failure_is_still_a_finding(self, check, monkeypatch):
         monkeypatch.setitem(check.PATH_SCOPED_CHECKS, "coverage (path-gated)", "postgres")
         verdict = check.evaluate(
             ["coverage (path-gated)"],
@@ -348,9 +344,7 @@ class TestPathScopedRequiredChecks:
         assert verdict.ran == ["coverage (path-gated)"]
 
     @pytest.mark.ac("SPEC-091226-1341/AC-3")
-    def test_unmeasured_scope_keeps_path_scoped_skip_pending(
-        self, check: ModuleType, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_unmeasured_scope_keeps_path_scoped_skip_pending(self, check, monkeypatch):
         monkeypatch.setitem(check.PATH_SCOPED_CHECKS, "coverage (path-gated)", "postgres")
         verdict = check.evaluate(
             ["coverage (path-gated)"],
@@ -371,7 +365,7 @@ class TestTheCliScopeEnvelope:
     which a direct evaluate() call can reach."""
 
     @staticmethod
-    def _runs_for_scope(check: ModuleType, legs_off: set[str]) -> list[dict[str, Any]]:
+    def _runs_for_scope(check, legs_off: set[str]) -> list[dict]:
         """Every required check either ran, or is skipped because the measured
         scope says its leg was never reachable -- the shape a PR that cannot
         affect a leg produces when CI correctly skips it."""
@@ -383,8 +377,8 @@ class TestTheCliScopeEnvelope:
         return runs
 
     def test_a_measured_deps_only_envelope_excuses_out_of_scope_skips(
-        self, check: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]
-    ) -> None:
+        self, check, tmp_path, capsys
+    ):
         """A PR touching nothing any specialized leg reads (release notes) may
         legitimately skip all of them; with a measured envelope saying so, the
         skipped legs must not be findings."""
@@ -403,9 +397,7 @@ class TestTheCliScopeEnvelope:
         assert code == 0
         assert "ok: all" in capsys.readouterr().out
 
-    def test_an_in_scope_skip_still_fails_with_a_measured_envelope(
-        self, check: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]
-    ) -> None:
+    def test_an_in_scope_skip_still_fails_with_a_measured_envelope(self, check, tmp_path, capsys):
         """The envelope excuses skips the scope proves unreachable, never ones it
         proves reachable: uv.lock is a global file, every leg runs on it, so a
         skipped leg there really did not execute."""
@@ -426,9 +418,7 @@ class TestTheCliScopeEnvelope:
         assert "FAIL: the gate set did not reach this commit" in out
         assert "did not execute to a verdict" in out
 
-    def test_a_pull_request_without_a_measured_envelope_is_pending(
-        self, check: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]
-    ) -> None:
+    def test_a_pull_request_without_a_measured_envelope_is_pending(self, check, tmp_path, capsys):
         """pull_request with no --changed-files: the skip evidence cannot be
         judged, so the verdict must be pending rather than green or red."""
         every_leg = set(check.PATH_SCOPED_CHECKS.values())
@@ -445,9 +435,7 @@ class TestTheCliScopeEnvelope:
         assert code == check.PENDING_EXIT
         assert "changed files were not measured" in out
 
-    def test_an_envelope_that_was_never_measured_is_pending(
-        self, check: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]
-    ) -> None:
+    def test_an_envelope_that_was_never_measured_is_pending(self, check, tmp_path, capsys):
         """`measured` must be literally true; anything else is the same
         ambiguity as no envelope at all."""
         every_leg = set(check.PATH_SCOPED_CHECKS.values())
@@ -466,37 +454,7 @@ class TestTheCliScopeEnvelope:
         assert code == check.PENDING_EXIT
         assert "changed-file payload is invalid" in out
 
-    def test_a_truncated_envelope_keeps_skipped_specialized_checks_pending(
-        self, check: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        """#1350 acceptance: an envelope the listFiles cap truncated must
-        never yield measured scope. Otherwise a PR whose only affected paths
-        fell beyond the cap would classify its skipped specialized checks out
-        of scope -- a false green on partial evidence."""
-        every_leg = set(check.PATH_SCOPED_CHECKS.values())
-        code = check.main(
-            [
-                "--check-runs",
-                str(_payload(tmp_path, self._runs_for_scope(check, every_leg))),
-                "--require-complete",
-                "--event-name",
-                "pull_request",
-                "--changed-files",
-                str(
-                    _envelope(
-                        tmp_path,
-                        {"measured": True, "truncated": True, "files": ["notes/todo.txt"]},
-                    )
-                ),
-            ]
-        )
-        out = capsys.readouterr().out
-        assert code == check.PENDING_EXIT
-        assert "truncated" in out
-
-    def test_an_envelope_with_non_string_files_is_pending(
-        self, check: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]
-    ) -> None:
+    def test_an_envelope_with_non_string_files_is_pending(self, check, tmp_path, capsys):
         """A files array holding a non-string is not an envelope this gate can
         interpret; guessing either way would be fabrication."""
         every_leg = set(check.PATH_SCOPED_CHECKS.values())
@@ -515,9 +473,7 @@ class TestTheCliScopeEnvelope:
         assert code == check.PENDING_EXIT
         assert "changed-file payload is invalid" in out
 
-    def test_an_unreadable_envelope_is_pending(
-        self, check: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]
-    ) -> None:
+    def test_an_unreadable_envelope_is_pending(self, check, tmp_path, capsys):
         """A corrupt envelope file is unmeasured scope, not a pass."""
         bad = tmp_path / "changed-files.json"
         bad.write_text("{not json", encoding="utf-8")
@@ -537,23 +493,15 @@ class TestTheCliScopeEnvelope:
         assert code == check.PENDING_EXIT
         assert "execution scope is ambiguous" in out
 
-    def test_a_loadable_scope_classifier_is_used(self, check: ModuleType) -> None:
-        classifier = check._load_scope_classifier()
-        assert classifier.classify(["notes/todo.txt"])
-
     def test_an_unloadable_scope_classifier_degrades_to_pending(
-        self,
-        check: ModuleType,
-        tmp_path: Path,
-        capsys: pytest.CaptureFixture[str],
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
+        self, check, tmp_path, capsys, monkeypatch
+    ):
         """If the classifier module cannot even be loaded, the envelope cannot be
         judged -- that packaging accident must surface as pending scope, never
         as a crash or a green guess."""
         real_spec = importlib.util.spec_from_file_location
 
-        def _broken_scope_loader(name: str, *args: Any, **kwargs: Any) -> Any:
+        def _broken_scope_loader(name, *args, **kwargs):
             return None if "scope" in name else real_spec(name, *args, **kwargs)
 
         monkeypatch.setattr("importlib.util.spec_from_file_location", _broken_scope_loader)
@@ -572,136 +520,6 @@ class TestTheCliScopeEnvelope:
         out = capsys.readouterr().out
         assert code == check.PENDING_EXIT
         assert "execution scope is ambiguous" in out
-
-    def test_a_scope_classifier_without_a_loader_degrades_to_pending(
-        self,
-        check: ModuleType,
-        tmp_path: Path,
-        capsys: pytest.CaptureFixture[str],
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """A resolved spec without a loader cannot be imported as scope evidence."""
-        real_spec = importlib.util.spec_from_file_location
-
-        def _loaderless_scope_spec(name: str, *args: Any, **kwargs: Any) -> Any:
-            if "scope" in name:
-                return importlib.machinery.ModuleSpec(name, loader=None)
-            return real_spec(name, *args, **kwargs)
-
-        monkeypatch.setattr("importlib.util.spec_from_file_location", _loaderless_scope_spec)
-        every_leg = set(check.PATH_SCOPED_CHECKS.values())
-        code = check.main(
-            [
-                "--check-runs",
-                str(_payload(tmp_path, self._runs_for_scope(check, every_leg))),
-                "--require-complete",
-                "--event-name",
-                "pull_request",
-                "--changed-files",
-                str(_envelope(tmp_path, {"measured": True, "files": ["notes/todo.txt"]})),
-            ]
-        )
-        out = capsys.readouterr().out
-        assert code == check.PENDING_EXIT
-        assert "execution scope is ambiguous" in out
-
-    def test_renamed_file_entry_in_changed_files_includes_both_paths(
-        self, check: ModuleType, tmp_path: Path
-    ) -> None:
-        """For a renamed file, the changed-files envelope must include both
-        the old and new paths so that the classifier can see the move in
-        either direction."""
-        # Given a renamed file that moves from an in-scope path to an out-of-scope path
-        old_path = "packages/maistro-core/a.py"
-        new_path = "docs/a.md"
-        payload = {"measured": True, "files": [old_path, new_path]}
-        envelope_path = _envelope(tmp_path, payload)
-        scope, measured = check._pull_request_scope(envelope_path)
-        assert measured is True
-        assert scope is not None
-        # The hive_e2e leg should be in scope due to the old path
-        assert scope.get("hive_e2e") is True
-
-    def test_renamed_file_entry_in_changed_files_includes_both_paths_opposite_direction(
-        self, check: ModuleType, tmp_path: Path
-    ) -> None:
-        """The classifier should also see the move when the file moves
-        from out-of-scope to in-scope."""
-        old_path = "docs/a.md"
-        new_path = "packages/maistro-core/a.py"
-        payload = {"measured": True, "files": [old_path, new_path]}
-        envelope_path = _envelope(tmp_path, payload)
-        scope, measured = check._pull_request_scope(envelope_path)
-        assert measured is True
-        assert scope is not None
-        # The hive_e2e leg should be in scope due to the new path
-        assert scope.get("hive_e2e") is True
-
-    @pytest.mark.skipif(
-        shutil.which("node") is None,
-        reason="node executes the workflow's github-script collection step",
-    )
-    def test_the_collection_script_emits_both_paths_for_a_rename(self, tmp_path: Path) -> None:
-        """The envelope tests above hand-craft `changed-files.json`, so they
-        cannot catch a collector that drops `previous_filename`. This one
-        executes the actual collection `script:` from gates-ran.yml against a
-        mocked `listFiles` response and asserts what it writes."""
-        import yaml
-
-        doc = yaml.safe_load((ROOT / ".github" / "workflows" / "gates-ran.yml").read_text())
-        scripts = [
-            step["with"]["script"]
-            for job in doc["jobs"].values()
-            for step in job.get("steps") or []
-            if step.get("name") == "Collect changed files for pull-request scope"
-        ]
-        assert len(scripts) == 1, "collection step missing from or duplicated in gates-ran.yml"
-        harness = (
-            "'use strict';\n"
-            "const github = {\n"
-            "  rest: { pulls: { listFiles: {} } },\n"
-            "  paginate: async () => [\n"
-            "    { filename: 'docs/a.md', status: 'renamed',\n"
-            "      previous_filename: 'packages/maistro-core/a.py' },\n"
-            "    { filename: 'tools/b.txt', status: 'added' },\n"
-            "    { filename: 'c.md', status: 'renamed' },\n"
-            "  ],\n"
-            "};\n"
-            "const core = { info: () => {}, warning: () => {} };\n"
-            "const context = { repo: { owner: 'owner', repo: 'repo' } };\n"
-            "(async () => {\n" + scripts[0] + "\n})().then(\n"
-            "  () => process.exit(0),\n"
-            "  (err) => { console.error(err); process.exit(1); },\n"
-            ");\n"
-        )
-        harness_path = tmp_path / "collect-changed-files.js"
-        harness_path.write_text(harness, encoding="utf-8")
-        proc = subprocess.run(
-            [shutil.which("node") or "node", str(harness_path)],
-            cwd=tmp_path,
-            env={"PR_NUMBER": "4242"},
-            capture_output=True,
-            text=True,
-            timeout=60,
-        )
-        assert proc.returncode == 0, proc.stderr
-
-        envelope = json.loads((tmp_path / "changed-files.json").read_text(encoding="utf-8"))
-        # A rename contributes both paths in listFiles order; an unrenamed
-        # file contributes only itself; a rename lacking previous_filename
-        # must not leak an undefined entry into the envelope. The cap flag
-        # from #1350 is present even when false, so the evaluator can tell
-        # an explicit complete measurement from a pre-#1350 envelope.
-        assert envelope == {
-            "measured": True,
-            "truncated": False,
-            "files": [
-                "docs/a.md",
-                "packages/maistro-core/a.py",
-                "tools/b.txt",
-                "c.md",
-            ],
-        }
 
 
 class TestTheReport:
@@ -759,9 +577,7 @@ class TestTheReport:
         assert check.main(["--check-runs", str(_payload(tmp_path, [_run("x")]))]) == 1
         assert "contract is empty" in capsys.readouterr().out
 
-    def test_the_script_entry_point_judges_a_green_head(
-        self, check: ModuleType, tmp_path: Path
-    ) -> None:
+    def test_the_script_entry_point_judges_a_green_head(self, check, tmp_path):
         """The `python3 scripts/check-gates-ran.py` invocation the workflow
         actually runs -- argparse on real argv, exit code through the shell --
         rather than the imported main() every other test uses."""
@@ -780,122 +596,3 @@ class TestTheReport:
         )
         assert proc.returncode == 0, proc.stdout + proc.stderr
         assert "ok: all" in proc.stdout
-
-
-class TestAttemptOrdering:
-    @pytest.mark.parametrize("reverse", [False, True])
-    @pytest.mark.parametrize(
-        ("name", "leg", "old_id", "new_id"),
-        [
-            ("durable-events", "durable_events", 114113275971, 114113361906),
-            ("object storage (MinIO)", "object_storage", 114113275772, 114113362044),
-            ("strike-ladder", "strike_ladder", 114113275571, 114113362255),
-        ],
-    )
-    def test_newer_scoped_skip_replaces_superseded_cancellation(
-        self, check: ModuleType, reverse: bool, name: str, leg: str, old_id: int, new_id: int
-    ) -> None:
-        """#2110 job IDs/conclusions, reconstructed in both possible API orders."""
-        runs = [
-            {**_run(name, conclusion="cancelled"), "id": old_id},
-            {**_run(name, conclusion="skipped"), "id": new_id},
-        ]
-        if reverse:
-            runs.reverse()
-        verdict = check.evaluate([name], runs, require_complete=True, scope={leg: False})
-        assert verdict.ok and verdict.ran == []
-
-    @pytest.mark.parametrize("reverse", [False, True])
-    @pytest.mark.parametrize("conclusion", ["cancelled", "action_required", "stale"])
-    def test_newer_non_execution_is_not_excused_by_old_scoped_skip(
-        self, check: ModuleType, reverse: bool, conclusion: str
-    ) -> None:
-        runs = [
-            {**_run("durable-events", conclusion="skipped"), "id": 10},
-            {**_run("durable-events", conclusion=conclusion), "id": 20},
-        ]
-        if reverse:
-            runs.reverse()
-        verdict = check.evaluate(
-            ["durable-events"], runs, require_complete=True, scope={"durable_events": False}
-        )
-        assert verdict.not_executed == ["durable-events"] and not verdict.ok
-
-    @pytest.mark.parametrize("reverse", [False, True])
-    @pytest.mark.parametrize("conclusion", ["success", "failure", "timed_out"])
-    def test_execution_precedence_is_unchanged(
-        self, check: ModuleType, reverse: bool, conclusion: str
-    ) -> None:
-        executed = {**_run("durable-events", conclusion=conclusion), "id": 10}
-        skipped = {**_run("durable-events", conclusion="skipped"), "id": 20}
-        runs = [executed, skipped]
-        if reverse:
-            runs.reverse()
-        verdict = check.evaluate(
-            ["durable-events"], runs, require_complete=True, scope={"durable_events": False}
-        )
-        # This evaluator proves execution, not success. A failed producer remains
-        # selected and counted as run; its own required check enforces its failure.
-        assert verdict.ran == ["durable-events"]
-        assert check._supersedes(executed, skipped)
-        assert not check._supersedes(skipped, executed)
-
-    @pytest.mark.parametrize("reverse", [False, True])
-    def test_newer_pending_attempt_is_not_hidden_by_older_success(
-        self, check: ModuleType, reverse: bool
-    ) -> None:
-        runs = [
-            {**_run("a"), "id": 10, "started_at": "2026-10-10T02:00:00Z"},
-            {**_run("a", status="queued", conclusion=None), "id": 20, "started_at": None},
-        ]
-        if reverse:
-            runs.reverse()
-        verdict = check.evaluate(["a"], runs, require_complete=True)
-        assert verdict.unfinished == ["a"] and verdict.pending
-
-    @pytest.mark.parametrize("reverse", [False, True])
-    def test_latest_skip_still_needs_measured_out_of_scope_evidence(
-        self, check: ModuleType, reverse: bool
-    ) -> None:
-        runs = [
-            {**_run("durable-events", conclusion="cancelled"), "id": 10},
-            {**_run("durable-events", conclusion="skipped"), "id": 20},
-        ]
-        if reverse:
-            runs.reverse()
-        required = ["durable-events"]
-        assert check.evaluate(required, runs, require_complete=True).not_executed == required
-        assert (
-            check.evaluate(
-                required, runs, require_complete=True, scope={"durable_events": True}
-            ).not_executed
-            == required
-        )
-        assert (
-            check.evaluate(required, runs, require_complete=True, scope_measured=False).unfinished
-            == required
-        )
-
-    def test_ids_override_equal_missing_or_misleading_timestamps(self, check: ModuleType) -> None:
-        for timestamp in (None, "2026-10-10T01:00:00Z", "2026-10-10T03:00:00Z"):
-            older = {
-                **_run("a"),
-                "id": 10,
-                "started_at": timestamp,
-                "completed_at": "2026-10-10T04:00:00Z",
-            }
-            newer = {
-                **_run("a", conclusion="failure"),
-                "id": 20,
-                "started_at": "2026-10-10T01:00:00Z",
-                "completed_at": "2026-10-10T02:00:00Z",
-            }
-            assert check._supersedes(newer, older)
-            assert not check._supersedes(older, newer)
-            assert not check._supersedes(newer, newer)
-
-    def test_legacy_payloads_without_ids_keep_the_ordered_list_contract(
-        self, check: ModuleType
-    ) -> None:
-        assert check._supersedes(_run("a", conclusion="failure"), _run("a"))
-        assert check._supersedes(_run("a"), _run("a", conclusion="failure"))
