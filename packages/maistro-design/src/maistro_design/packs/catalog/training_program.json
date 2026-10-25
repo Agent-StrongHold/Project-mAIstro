@@ -1,0 +1,13 @@
+{
+  "pack_id": "training_program",
+  "graph_template": "loop.explore-execute-evaluate-refine",
+  "run_identity": "canonical",
+  "backends": ["builders"],
+  "artifact_kinds": ["curriculum", "module", "assessment"],
+  "fence_points": ["rubric-lock", "objective-accept"],
+  "rubric_dimensions": [
+    {"id": "objective-measurability", "label": "Objective measurability"},
+    {"id": "sequence", "label": "Sequence"},
+    {"id": "assessment-fit", "label": "Assessment fit"}
+  ]
+}

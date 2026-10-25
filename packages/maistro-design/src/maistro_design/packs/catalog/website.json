@@ -1,0 +1,13 @@
+{
+  "pack_id": "website",
+  "graph_template": "loop.explore-execute-evaluate-refine",
+  "run_identity": "canonical",
+  "backends": ["builders", "canvas"],
+  "artifact_kinds": ["ia", "page", "component"],
+  "fence_points": ["rubric-lock", "ia-accept"],
+  "rubric_dimensions": [
+    {"id": "ia-clarity", "label": "IA clarity"},
+    {"id": "accessibility", "label": "Accessibility"},
+    {"id": "claim-evidence", "label": "Conversion claim-evidence"}
+  ]
+}

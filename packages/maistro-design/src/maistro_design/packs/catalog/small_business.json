@@ -1,0 +1,13 @@
+{
+  "pack_id": "small_business",
+  "graph_template": "loop.explore-execute-evaluate-refine",
+  "run_identity": "canonical",
+  "backends": ["builders"],
+  "artifact_kinds": ["offer", "cadence", "script"],
+  "fence_points": ["rubric-lock", "next-action-accept"],
+  "rubric_dimensions": [
+    {"id": "offer-clarity", "label": "Offer clarity"},
+    {"id": "owner-time-budget", "label": "Owner time budget"},
+    {"id": "next-action", "label": "Next-action specificity"}
+  ]
+}
