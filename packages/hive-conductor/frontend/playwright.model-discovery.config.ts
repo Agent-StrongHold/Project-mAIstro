@@ -9,7 +9,7 @@ const PORT = 8107;
 // devskim: ignore DS162092 -- test-only loopback URL for the ephemeral Vite
 // server this config owns; PLAYWRIGHT_BASE_URL overrides it for CI/remote
 // runners, matching playwright.config.ts.
-const BASE_URL = process.env.PLAYWRIGHT_BASE_URL || `http://127.0.0.1:${PORT}`;
+const BASE_URL = process.env.PLAYWRIGHT_BASE_URL || `http://127.0.0.1:${PORT}`;  // DevSkim: ignore DS162092 until 2027-12-31
 
 export default defineConfig({
   testDir: "./e2e",
@@ -23,12 +23,10 @@ export default defineConfig({
     screenshot: "only-on-failure",
   },
   webServer: {
-    // devskim: ignore DS162092 -- the runner deliberately hosts its own
-    // throwaway dev server on loopback; --host 127.0.0.1 keeps it
-    // unreachable from outside the machine under test.
-    command: `npm run dev -- --port ${PORT} --strictPort --host 127.0.0.1`,
-    // devskim: ignore DS162092 -- readiness poll of the same loopback server.
-    url: `http://127.0.0.1:${PORT}`,
+    // The runner deliberately hosts its own throwaway dev server on loopback;
+    // --host on IPv4 loopback keeps it unreachable from outside the machine under test.
+    command: `npm run dev -- --port ${PORT} --strictPort --host 127.0.0.1`, // DevSkim: ignore DS162092 until 2027-12-31
+    url: `http://127.0.0.1:${PORT}`, // DevSkim: ignore DS162092 until 2027-12-31
     reuseExistingServer: false,
     timeout: 90_000,
   },

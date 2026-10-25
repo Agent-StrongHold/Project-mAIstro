@@ -15,8 +15,7 @@
         "@flat/hive-conductor/services.onboard_db",
         "@flat/hive-conductor/services.pipeline_orchestrator",
         "@flat/hive-conductor/services.preference_calibration",
-        "@flat/hive-conductor/services.repo_scanner",
-        "@flat/hive-conductor/services.tool_binding"
+        "@flat/hive-conductor/services.repo_scanner"
       ]
     },
     {
@@ -227,19 +226,6 @@
         "maistro.orchestrator.waves.fan_in",
         "maistro.orchestrator.waves.fan_out",
         "maistro.orchestrator.waves.types"
-      ]
-    },
-    {
-      "id": "portability",
-      "subsystem": "Portability / backup",
-      "disposition": "CONNECT",
-      "rationale": "ADR-081/ADR-101 export and import of agents and skills, with no CLI or route calling them. #62 needs backup/restore to preserve canonical Run records, which is the consumer.",
-      "root": "a maistro.cli export/import subcommand (#62)",
-      "modules": [
-        "maistro.portability",
-        "maistro.portability.agents",
-        "maistro.portability.export",
-        "maistro.portability.skills"
       ]
     },
     {
