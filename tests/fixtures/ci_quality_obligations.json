@@ -174,7 +174,7 @@
       "steps": [
         {
           "name": "vulture (dead-code; confidence \u2265 60 \u2014 per-identity ledger)",
-          "sha256": "c6bdf3569718a2577fa947caa279fd21c28ca9757e9ac25c861a12f89e19d9d2"
+          "sha256": "9886cf602b8a5662d0d442446aef3f6b069d6759213d54ce318414c93a67792c"
         }
       ]
     },
