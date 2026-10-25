@@ -30,9 +30,7 @@ def test_folded_notes_baseline_is_evidence_not_policy() -> None:
     # 2026-10-25 migration: ac-state notes (including the _baseline copy) are
     # worker-written verification evidence — yellow and eligible, not trusted
     # policy input. Policy inputs (public-routes, floors, egress) stay RED.
-    result = mod.assess(
-        [cf("quality/ac-state-notes/_baseline.json")], "", head_ref="chatgpt/x"
-    )
+    result = mod.assess([cf("quality/ac-state-notes/_baseline.json")], "", head_ref="chatgpt/x")
     assert result.risk == "yellow" and result.eligible
 
 
