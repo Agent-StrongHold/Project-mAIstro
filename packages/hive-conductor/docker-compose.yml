@@ -80,9 +80,14 @@ services:
         fi
     volumes:
       - conductor-data:/data:ro
-    mem_limit: 64m
-    memswap_limit: 64m
+    # Bounded like postgres-layout-check in the root stack; the #862 resource
+    # gate enforces a 128 MiB memory floor and an explicit positive cpus cap
+    # even for one-shot containers.
+    mem_limit: 256m
+    memswap_limit: 256m
     pids_limit: 64
+    cpus: 0.25
+    restart: "no"
 
 # One volume holds ALL Conductor durable state; there is deliberately no
 # second store to keep consistent. `docker compose down` preserves it;

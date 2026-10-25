@@ -211,6 +211,48 @@ files measured, exit 0. Suite inventory re-recorded:
 `check-suite-inventory.py --note auto-331-conductor-compose-durability
 --update` → +9 in this note's `inventory-delta` (13 → 22), exit 0.
 
+## Verification round (independent, head e5cc427d4, develop b1c89cdb merged in)
+
+Re-derived acceptance from the issue and re-executed the evidence at the
+merged head (diff vs merge base b1c89cdb = exactly PR #2301's 22 files; no
+production code changed in this round, inventory deltas unchanged):
+
+- `uv run pytest packages/maistro-core/tests/cli/test_security.py
+  packages/hive-conductor/backend/tests/test_data_dir_guard.py -q` → 45
+  passed; `uv run pytest tests/test_bump_version.py -q` → 18 passed;
+  `scripts/bump_version.py --check` → 42 sites agree.
+- Coverage-gate diff leg re-proven at the NEW merge base: the three
+  producers whose `--source` covers this diff's changed files
+  (maistro-core over test_security.py, hive-conductor/backend over
+  test_data_dir_guard.py, scripts over tests/test_bump_version.py) →
+  `scripts/check-diff-coverage.py coverage.xml --base b1c89cdbc` → ok,
+  every measured file ≥90% lines / ≥80% branch arcs (4 measured, 3 test
+  files exempt). Scoped runs are conservative: fuller CI producers can
+  only add coverage.
+- `uv run mypy` over the seven AGENTS.md packages → clean (939 files).
+- `check-branch-protection.py` (19 develop / 33 main, every PR check
+  required or advisory), `check-compose-secrets.py`,
+  `check-compose-resources.py`, `check-doc-links.py`,
+  `check-required-checks.py` (76 checks match), full
+  `check-suite-inventory.py` (21 suites) → all exit 0.
+- Full compose durability scenario re-executed independently against real
+  Docker 29.1.3 via the same
+  `packages/hive-conductor/scripts/verify-compose-durability.sh` the CI
+  job runs (isolated: `COMPOSE_PROJECT_NAME`, `CONDUCTOR_PORT=8131`;
+  8101 was occupied by an unrelated local listener): **33 checks passed,
+  0 failed, exit 0** — both guard refusals stop the process, create,
+  write, down/up recreate, image-rebuild recreate, reads (session cookie,
+  login, settings, credential) after each recreate, backup of all five
+  durable files, and restore onto a destroyed volume with everything
+  readable again.
+- Closure-keyword audit: no `fixes/closes/resolves #331` in the PR body or
+  any commit message on this branch ("Refs #331" only).
+- Residual (cosmetic, non-blocking): the `restore` docstring says a
+  re-run "completes the swap" after a kill between the two renames, but
+  `_refuse_stale_staging` actually refuses the re-run (exit 1) until the
+  stale staging tree is inspected and removed manually — fail-closed and
+  correct, just over-automated in prose.
+
 ## Repair round (review P1, 0600 archive, inventory), head 8721b66b1
 
 Three production commits landed after the verification round above, each
@@ -275,44 +317,38 @@ Re-validation at this head:
   mounted read-only; the restore container reads its own archive as its
   owner uid unchanged.
 
-## Verification round (independent, head e5cc427d4, develop b1c89cdb merged in)
+## Repair round (compose resource policy), head a1507679, fixed by this round's commit
 
-Re-derived acceptance from the issue and re-executed the evidence at the
-merged head (diff vs merge base b1c89cdb = exactly PR #2301's 22 files; no
-production code changed in this round, inventory deltas unchanged):
+The only green `check-compose-resources.py` claim above (head e5cc427d4)
+predates the `conductor-layout-check` services 8721b66b1 added, and the
+first post-8721b66b1 evaluation of the gate fails: at a1507679 it reports
+5 violations, exit 1 — `mem_limit=67108864`/`memswap_limit=67108864`
+(64m) below the 128 MiB `DEFAULT_POLICY` floor in both files (the service
+has no `SERVICE_POLICIES` row), plus a missing `cpus` in the standalone
+file ("must be a finite, positive service-level limit"). The gate runs
+unconditionally in required job `lint-and-type-check`
+(`.github/workflows/ci.yml:245`; required context in
+`.github/branch-protection.json`), so the branch cannot pass required CI
+as-is. Fixed by giving both one-shots the same bounds as the sibling
+`postgres-layout-check` (`mem_limit`/`memswap_limit` 256m, `cpus: 0.25`)
+and making the standalone file's one-shot contract explicit with
+`restart: "no"`. Re-validated at this head:
 
-- `uv run pytest packages/maistro-core/tests/cli/test_security.py
-  packages/hive-conductor/backend/tests/test_data_dir_guard.py -q` → 45
-  passed; `uv run pytest tests/test_bump_version.py -q` → 18 passed;
-  `scripts/bump_version.py --check` → 42 sites agree.
-- Coverage-gate diff leg re-proven at the NEW merge base: the three
-  producers whose `--source` covers this diff's changed files
-  (maistro-core over test_security.py, hive-conductor/backend over
-  test_data_dir_guard.py, scripts over tests/test_bump_version.py) →
-  `scripts/check-diff-coverage.py coverage.xml --base b1c89cdbc` → ok,
-  every measured file ≥90% lines / ≥80% branch arcs (4 measured, 3 test
-  files exempt). Scoped runs are conservative: fuller CI producers can
-  only add coverage.
-- `uv run mypy` over the seven AGENTS.md packages → clean (939 files).
-- `check-branch-protection.py` (19 develop / 33 main, every PR check
-  required or advisory), `check-compose-secrets.py`,
-  `check-compose-resources.py`, `check-doc-links.py`,
-  `check-required-checks.py` (76 checks match), full
-  `check-suite-inventory.py` (21 suites) → all exit 0.
-- Full compose durability scenario re-executed independently against real
-  Docker 29.1.3 via the same
-  `packages/hive-conductor/scripts/verify-compose-durability.sh` the CI
-  job runs (isolated: `COMPOSE_PROJECT_NAME`, `CONDUCTOR_PORT=8131`;
-  8101 was occupied by an unrelated local listener): **33 checks passed,
-  0 failed, exit 0** — both guard refusals stop the process, create,
-  write, down/up recreate, image-rebuild recreate, reads (session cookie,
-  login, settings, credential) after each recreate, backup of all five
-  durable files, and restore onto a destroyed volume with everything
-  readable again.
-- Closure-keyword audit: no `fixes/closes/resolves #331` in the PR body or
-  any commit message on this branch ("Refs #331" only).
-- Residual (cosmetic, non-blocking): the `restore` docstring says a
-  re-run "completes the swap" after a kill between the two renames, but
-  `_refuse_stale_staging` actually refuses the re-run (exit 1) until the
-  stale staging tree is inspected and removed manually — fail-closed and
-  correct, just over-automated in prose.
+- `uv run python scripts/check-compose-resources.py` → "OK: 8 supported
+  Compose profiles have bounded memory, PID, and CPU limits", exit 0.
+- `docker compose config` renders both files (root and
+  packages/hive-conductor) with the corrected limits, `conductor-data`
+  still mounted read-only into the one-shot, and `hive-conductor` still
+  gated by `depends_on: conductor-layout-check:
+  service_completed_successfully`.
+- Full compose durability scenario re-executed via the exact script the
+  CI job runs (`CONDUCTOR_PORT=18431`): **34 checks passed, 0 failed,
+  exit 0** — the layout-check one-shot starts and exits before every
+  Conductor start, and both guard refusals, create, write, down/up
+  recreate, image-rebuild recreate, reads after each, backup (owner-only
+  0600 archive), and restore onto a destroyed volume all still hold.
+- `uv run ruff check .` / `uv run ruff format --check .` → clean. No test
+  count changes this round: the `inventory-delta` block above is
+  unchanged, and the two sections it documents now appear in commit
+  order (the independent e5cc427d4 round first, then the 8721b66b1
+  repair round).

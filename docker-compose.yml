@@ -161,8 +161,10 @@ services:
         fi
     volumes:
       - conductor-data:/data:ro
-    mem_limit: 64m
-    memswap_limit: 64m
+    # Bounded like postgres-layout-check; the #862 resource gate enforces a
+    # 128 MiB memory floor even for one-shot containers.
+    mem_limit: 256m
+    memswap_limit: 256m
     pids_limit: 64
     cpus: 0.25
     restart: "no"
