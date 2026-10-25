@@ -310,6 +310,7 @@ jobs:
         run: >-
           scripts/buildx-build-retry.sh --
           -f Dockerfile.rsi-runner -t "maistro-rsi-runner:pr-${CANDIDATE_TAG}"
+          --no-cache-filter runtime-apt
           --build-arg SECURITY_PATCH_KEY=${{ github.run_id }}
           --load .
 
