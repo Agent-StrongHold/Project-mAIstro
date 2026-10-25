@@ -35,6 +35,7 @@ from maistro.graph.nodes.agent_delegate_remote import (
     DelegationContextError,
     DelegationNotConfiguredError,
 )
+from maistro.graph.nodes.base import replay_effect_key
 from maistro.http import set_test_transport
 from maistro.policy.types import Decision, PolicyVerdict
 from maistro.projects.scope_store import InMemoryProjectScopeStore
@@ -884,8 +885,9 @@ class TestRemoteEffectsFollowInvocationRules:
         assert second.metadata["task_id"] == "remote-7"
         assert posts["n"] == 1, "the completed Invocation is the replay"
 
+    @pytest.mark.parametrize("fresh_node_run", [False, True])
     async def test_a_crashed_running_dispatch_settles_from_the_peer_receipt(
-        self, monkeypatch: pytest.MonkeyPatch
+        self, monkeypatch: pytest.MonkeyPatch, fresh_node_run: bool
     ) -> None:
         """A worker death after the peer accepted leaves the durable row
         RUNNING with dispatch_active=True. Recovery settles that row from the
@@ -953,7 +955,13 @@ class TestRemoteEffectsFollowInvocationRules:
             run_store=store,
             effect_context=effects,
         )
-        recovered = await recovered_node.run(_inputs(), ctx)
+        recovery_ctx = ctx.model_copy(
+            update={
+                "node_run_id": "recovery-node-run" if fresh_node_run else ctx.node_run_id,
+                "attempt_id": "recovery-attempt",
+            }
+        )
+        recovered = await recovered_node.run(_inputs(), recovery_ctx)
         assert recovered.status == "paused"
         assert recovered.metadata["paused_reason"] == "awaiting_remote_delegation"
         assert recovered.metadata["task_id"] == "remote-13"
@@ -967,6 +975,9 @@ class TestRemoteEffectsFollowInvocationRules:
         )
         assert [row.status for row in history] == [InvocationStatus.COMPLETED]
         assert history[0].result["task_id"] == "remote-13"
+        assert history[0].node_run_id == ctx.node_run_id
+        assert history[0].attempt_id == ctx.attempt_id
+        assert history[0].effect_scope == child.provenance["delegation_key"]
 
     async def test_a_retry_under_a_fresh_node_run_keeps_one_effect_identity(
         self,
@@ -1049,7 +1060,9 @@ class TestRemoteIdsStayReceipts:
         assert child.provenance["a2a_task_id"] == "remote-1"
         # The canonical identity keys remain the ones the delegating side
         # minted; the receipt sits beside them.
-        assert child.provenance["delegation_key"] == result.metadata["replay_effect_key"]
+        assert child.provenance["delegation_key"] == replay_effect_key(
+            ctx, node.kind, node.input_schema.model_validate(_inputs()).model_dump(mode="json")
+        )
 
 
 class TestResultProvenanceSurvives:

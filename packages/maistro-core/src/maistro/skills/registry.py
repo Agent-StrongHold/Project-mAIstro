@@ -6,14 +6,57 @@ and trust tier enforcement. Mutation history tracked per skill.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import threading
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from maistro.types.skill import SkillDefinition
 
 logger = logging.getLogger("maistro.skills.registry")
+
+# Lower numeric tiers are more trusted. An incoming mutation can never retain
+# the old approval/tier: its content must earn trust again.
+_TIER_RANK = {"t0": 0, "t1": 1, "t2": 2, "t3": 3}
+_FLOOR_TIER = "t3"
+
+
+@dataclass(frozen=True)
+class SkillTrustMetadata:
+    trust_tier: str
+    approved: bool
+    provenance: str
+    content_hash: str
+
+
+def skill_content_hash(skill: SkillDefinition) -> str:
+    """Host-computed content hash over the complete executable definition.
+
+    The one hash the governed supply-chain paths agree on: the skill registry
+    records it, the catalog verifies it at admission, and a per-use boundary
+    can recompute it to detect a body that changed after import (#59). It
+    covers every behavior-bearing field — parameters, endpoint, and
+    auth_key_env included — so a change to any of them yields a new digest.
+    """
+    payload = "\x00".join(
+        (
+            skill.name,
+            skill.description,
+            "\n".join(skill.groups),
+            json.dumps(skill.parameters, sort_keys=True, separators=(",", ":")),
+            skill.endpoint,
+            skill.auth_key_env,
+            skill.system_prompt,
+        )
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+#: Internal alias retained for existing call sites in this module.
+_content_hash = skill_content_hash
 
 
 class InMemorySkillRegistry:
@@ -25,31 +68,105 @@ class InMemorySkillRegistry:
     def __init__(self) -> None:
         self._skills: dict[str, SkillDefinition] = {}
         self._versions: dict[str, list[SkillDefinition]] = {}
+        self._trust: dict[str, SkillTrustMetadata] = {}
         self._lock = threading.RLock()
 
-    def register(self, skill: SkillDefinition) -> None:
-        """Register a skill. Overwrites if name already exists at SAME OR LOWER tier.
+    def register(
+        self,
+        skill: SkillDefinition,
+        *,
+        content_hash: str = "",
+        provenance: str = "",
+        approved: bool | None = None,
+    ) -> bool:
+        """Register a skill without allowing trust or approval escalation.
 
-        T0 built-in skills cannot be overwritten by marketplace/forge installs.
+        ``trust_tier`` on an incoming definition is only an admission hint. The
+        registry owns the effective record and retains approval for identical
+        content, while every changed body returns to the untrusted floor.
         """
         key = skill.name
+        # A caller-supplied digest is trusted only when it matches a host
+        # recompute over THIS body. A stale hash of a previously approved body
+        # (e.g. dataclasses.replace(existing, system_prompt=...)) can no longer
+        # vouch for mutated content, so it can never preserve the prior
+        # approval or tier.
+        computed_hash = skill_content_hash(skill)
+        incoming_hash = content_hash or skill.content_hash or computed_hash
+        digest_vouches_for_body = incoming_hash == computed_hash
+        incoming_provenance = provenance or skill.provenance or skill.source or "unknown"
         with self._lock:
             existing = self._skills.get(key)
-            if (
-                existing
-                and existing.trust_tier in ("t0", "t1")
-                and skill.trust_tier not in ("t0", "t1")
-            ):
-                logger.warning(
-                    "Blocked: cannot overwrite %s skill '%s' with %s tier",
-                    existing.trust_tier,
-                    skill.name,
-                    skill.trust_tier,
-                )
-                return
-            self._skills[key] = skill
-            self._versions.setdefault(key, []).append(skill)
-        logger.debug("Registered skill: %s (tier=%s)", skill.name, skill.trust_tier)
+            prior = self._trust.get(key)
+            effective, blocked = self._compute_effective_trust(
+                skill,
+                existing,
+                prior,
+                incoming_hash,
+                digest_vouches_for_body,
+                incoming_provenance,
+                approved,
+            )
+            if blocked:
+                logger.warning("Blocked non-monotonic trust change for skill '%s'", key)
+                return False
+            stored = self._stored_skill(skill, effective)
+            self._skills[key] = stored
+            self._trust[key] = effective
+            self._versions.setdefault(key, []).append(stored)
+        logger.debug("Registered skill: %s (tier=%s)", key, effective.trust_tier)
+        return True
+
+    def _compute_effective_trust(
+        self,
+        skill: SkillDefinition,
+        existing: SkillDefinition | None,
+        prior: SkillTrustMetadata | None,
+        incoming_hash: str,
+        digest_vouches_for_body: bool,
+        incoming_provenance: str,
+        approved: bool | None,
+    ) -> tuple[SkillTrustMetadata, bool]:
+        if existing is not None and prior is not None:
+            incoming_rank = _TIER_RANK.get(skill.trust_tier, len(_TIER_RANK))
+            prior_rank = _TIER_RANK.get(prior.trust_tier, len(_TIER_RANK))
+            if incoming_rank < prior_rank or (prior_rank <= 1 and incoming_rank > prior_rank):
+                return prior, True
+            if digest_vouches_for_body and incoming_hash == prior.content_hash:
+                return prior, False
+            return SkillTrustMetadata(
+                trust_tier=_FLOOR_TIER,
+                approved=False,
+                provenance=incoming_provenance,
+                content_hash=incoming_hash,
+            ), False
+        return SkillTrustMetadata(
+            trust_tier=skill.trust_tier if skill.trust_tier in _TIER_RANK else _FLOOR_TIER,
+            approved=bool(approved) if approved is not None else False,
+            provenance=incoming_provenance,
+            content_hash=incoming_hash,
+        ), False
+
+    def _stored_skill(
+        self, skill: SkillDefinition, effective: SkillTrustMetadata
+    ) -> SkillDefinition:
+        if (
+            not skill.content_hash
+            and not skill.provenance
+            and effective.trust_tier == skill.trust_tier
+        ):
+            return skill
+        return replace(
+            skill,
+            trust_tier=effective.trust_tier,
+            content_hash=effective.content_hash,
+            provenance=effective.provenance,
+        )
+
+    def trust_metadata(self, name: str) -> SkillTrustMetadata | None:
+        """Return host-owned trust facts, never the source's claims."""
+        with self._lock:
+            return self._trust.get(name)
 
     def get(self, name: str) -> SkillDefinition | None:
         """Get a skill by name."""
@@ -68,12 +185,19 @@ class InMemorySkillRegistry:
         return [s for s in self.list_all() if s.trust_tier == tier]
 
     def update(self, skill: SkillDefinition) -> bool:
-        """Update an existing skill. Returns False if not found."""
+        """Update through the same monotonic admission path as registration."""
         with self._lock:
             if skill.name not in self._skills:
                 return False
-            self._skills[skill.name] = skill
-            return True
+        with self._lock:
+            prior_hash = self._trust[skill.name].content_hash
+        accepted = self.register(skill)
+        # Preserve the legacy object-identity contract for an unchanged body;
+        # changed CRUD content must expose the downgraded host record.
+        if accepted and _content_hash(skill) == prior_hash and not skill.content_hash:
+            with self._lock:
+                self._skills[skill.name] = skill
+        return accepted
 
     def delete(self, name: str) -> bool:
         """Delete a skill by name. Returns False if not found."""
@@ -109,14 +233,29 @@ class InMemorySkillRegistry:
 
         target = versions[version_idx]
         with self._lock:
-            self._skills[name] = target
-            versions.append(target)
+            current = self._trust.get(name)
+            if current is not None and current.content_hash != self._trust_for(target).content_hash:
+                # Rollback is a content change and therefore cannot restore an
+                # approval that belonged to a different body.
+                target = replace(target, trust_tier=_FLOOR_TIER, content_hash="")
+        self.register(target, provenance="rollback")
         logger.info(
             "Rolled back skill '%s' to version %d",
             name,
             version_idx,
         )
         return True
+
+    def _trust_for(self, skill: SkillDefinition) -> SkillTrustMetadata:
+        return self._trust.get(
+            skill.name,
+            SkillTrustMetadata(
+                trust_tier=skill.trust_tier,
+                approved=False,
+                provenance=skill.source or "unknown",
+                content_hash=skill.content_hash or _content_hash(skill),
+            ),
+        )
 
     def __len__(self) -> int:
         return len(self._skills)

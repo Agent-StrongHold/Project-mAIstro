@@ -1,3 +1,7 @@
+---
+inventory-delta:
+  tests/: 0
+---
 # feat-cutover-p0.2-route-registry
 
 Workspace cutover Wave 2 Lane B — P0.2 route-permission registry burn (#53 AC-P2).

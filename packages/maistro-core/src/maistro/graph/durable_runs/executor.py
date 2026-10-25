@@ -14,6 +14,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from maistro.graph.compaction import ContextCompactor
 from maistro.graph.conditions import MISSING, evaluate_predicate
 from maistro.graph.definitions import Graph
 from maistro.graph.definitions import Node as GraphNode
@@ -31,6 +32,13 @@ from maistro.graph.nodes.base import (
     NodeResult,
     ReplaySemantics,
 )
+from maistro.graph.scout import run_scout
+from maistro.graph.steering import SteeringQueue
+from maistro.graph.verification.escalation import (
+    ESCALATED_MODEL_CONTEXT_KEY,
+    LADDER_START_CONTEXT_KEY,
+    escalation_from_policy,
+)
 from maistro.runs.aggregation import derive_run_terminal_status, terminal_run_payload
 from maistro.runs.lifecycle import (
     settle_open_node_run,
@@ -47,9 +55,10 @@ from maistro.runs.model import (
 )
 from maistro.runs.store import RunIntegrityError, RunStore
 
+from .failure import sanitize_failure_message
 from .protocol import DurableRunStore
 from .spine import mirror_lifecycle
-from .types import DurableRunRecord
+from .types import RECOVERY_CLAIM_UNTIL_KEY, DurableRunRecord
 
 NodeResolver = Callable[[str, Graph], BaseNode[Any, Any]]
 
@@ -66,6 +75,12 @@ _PREDICATE_NAMESPACE_ALIASES = {
     "reviewer": "review",
 }
 
+#: Durable traversal owns these CONNECT helpers (#2314). Compaction/steering
+#: run in :func:`_prepare_traversal_blackboard`; scout stays import-reachable
+#: here so a later NodeContext-injected LLM can call the same ``run_scout``
+#: the pre-durable GraphRun path used, without a second scout module.
+_DURABLE_TRAVERSAL_HELPERS = (ContextCompactor, SteeringQueue, run_scout)
+
 
 @dataclass(frozen=True)
 class _FrontierItem:
@@ -77,6 +92,7 @@ class _FrontierItem:
     ctx: NodeContext
     result: NodeResult
     replay_semantics: ReplaySemantics = ReplaySemantics.NON_RETRYABLE
+    effect_key: str | None = None
 
 
 def _replace_state(
@@ -281,6 +297,7 @@ async def resume_durable_graph(
     node_resolver: NodeResolver,
     run_store: RunStore | None = None,
     max_steps: int = 256,
+    now: datetime | None = None,
 ) -> DurableRunRecord:
     """Resume through canonical Attempt recovery, never a second physical walker."""
     from .attempt_executor import resume_durable_graph as resume
@@ -291,6 +308,7 @@ async def resume_durable_graph(
         node_resolver=node_resolver,
         run_store=run_store,
         max_steps=max_steps,
+        now=now,
     )
 
 
@@ -494,6 +512,7 @@ async def _checkpoint_paused_frontier(
 ) -> DurableRunRecord:
     """Persist paused siblings together with successors deferred until resume."""
     metadata = dict(record.graph_state.metadata)
+    metadata.pop(RECOVERY_CLAIM_UNTIL_KEY, None)
     pause_entries = {item.node_id: _pause_entry(item.result) for item in paused}
     existing_pauses = metadata.get("pauses", {})
     if isinstance(existing_pauses, Mapping):
@@ -597,15 +616,11 @@ def _may_revisit_after(prior_state: GraphExecutionState, item: _FrontierItem) ->
     """
     if not item.replay_semantics.retryable:
         return False
-    # EFFECT_KEY is a contract, not a descriptive label: the node must have a
-    # logical Node/Run identity available for its effect key to be meaningful.
-    if item.replay_semantics is ReplaySemantics.EFFECT_KEY:
-        if not (item.ctx.run_id and item.ctx.node_id):
-            return False
-        # BaseNode records the key produced by its executable contract. A
-        # retryable effect without that boundary is not safe to revisit.
-        if not item.result.metadata.get("replay_effect_key"):
-            return False
+    # EFFECT_KEY is a contract, not a descriptive label: the node must have
+    # supplied a concrete logical key at execution time. Missing keys fail
+    # closed because the executor cannot prove replay safety on its own.
+    if item.replay_semantics is ReplaySemantics.EFFECT_KEY and not item.effect_key:
+        return False
     visits = prior_state.visit_counts.get(item.node_id, 0)
     return visits < _visit_budget(item.spec)
 
@@ -1150,18 +1165,98 @@ def _answered_pause_carry(answered: Mapping[str, Any]) -> dict[str, Any] | None:
     return carried
 
 
-def _build_ctx(record: DurableRunRecord, node_id: str) -> NodeContext:
-    """Build the runtime execution context for one canonical NodeRun."""
+def _supervision_context(
+    metadata: dict[str, Any],
+    record: DurableRunRecord,
+    node_id: str,
+    spec: GraphNode,
+) -> None:
+    """Surface verification-supervision decisions in the node's context.
+
+    Two channels (epic M4-I):
+
+    - *Escalation*: when supervision withheld a prior visit for missing its
+      quality floor, the re-visit must run the ladder rung the executor
+      chose — the node honors it or ignores it, but it must be able to see
+      the decision. The *first* visit under a declared ladder is seeded with
+      the cheapest rung, so cheap-first starts the ladder rather than the
+      node's ambient default model: with the start seeded, "no supervision
+      state yet" provably means the cheapest rung ran, which is exactly the
+      premise the escalation fold escalates from. The seed rides its own
+      key — it is the ladder's beginning, not a supervision decision — so a
+      node's stronger first-visit rules (the vision alias an image
+      observation demands) still outrank it, while a supervision
+      escalation stays final.
+    - *Pause carry*: a resumed visit re-enters the node with the metadata
+      its pause checkpointed, so the resume continues the same logical work.
+    """
+    escalation = record.graph_state.metadata.get("escalations", {}).get(node_id)
+    if isinstance(escalation, Mapping) and escalation.get("model"):
+        metadata[ESCALATED_MODEL_CONTEXT_KEY] = str(escalation["model"])
+    else:
+        declared = escalation_from_policy(spec.policies)
+        if declared is not None:
+            metadata[LADDER_START_CONTEXT_KEY] = declared[0].cheapest
+    carried = _current_pause_carry(record, node_id)
+    if carried is None:
+        answered = record.hitl_answers.get(node_id)
+        carried = _answered_pause_carry(answered) if isinstance(answered, Mapping) else None
+    if carried is not None:
+        metadata[RESUMED_PAUSE_KEY] = carried
+
+
+def _drain_steering_queue(metadata: dict[str, Any]) -> None:
+    """Move parked ``_steering_queue`` entries onto ``_steering`` for this visit."""
+    raw_queue = metadata.pop("_steering_queue", None)
+    if not isinstance(raw_queue, list) or not raw_queue:
+        return
+    queue = SteeringQueue()
+    for entry in raw_queue:
+        if isinstance(entry, str) and entry:
+            queue.steer(entry)
+    drained = queue.drain()
+    if drained:
+        metadata["_steering"] = drained
+
+
+def _prepare_traversal_blackboard(snapshot: Mapping[str, Any]) -> Any:
+    """Hydrate the durable blackboard and apply CONNECT traversal helpers (#2314).
+
+    Steering guidance parked under ``metadata['_steering_queue']`` is drained
+    into ``metadata['_steering']`` for the visit. :class:`ContextCompactor` and
+    :func:`run_scout` stay process-reachable on this path, but we do **not**
+    auto-compact every visit — ``_simple_compact`` stringifies large metadata
+    values and would erase creative-graph ``shared_context`` dicts (#775).
+    """
     from maistro.graph.types import GraphBlackboard
 
+    metadata = dict(snapshot.get("metadata") or {})
+    _drain_steering_queue(metadata)
+    blackboard = GraphBlackboard(
+        task_objective=str(snapshot.get("task_objective") or ""),
+        workspace=str(snapshot.get("workspace") or ""),
+        metadata=metadata,
+        node_annotations=dict(snapshot.get("node_annotations") or {}),
+    )
+    # Keep ContextCompactor on this import edge without compacting the live
+    # snapshot. ``should_compact`` → ``model_dump_json`` raises on
+    # ``mappingproxy`` metadata in durable snapshots; probing a fresh empty
+    # board avoids that while still marking ``should_compact`` used.
+    # Auto-compact would also stringify large dict metadata and erase
+    # creative-graph ``shared_context``.
+    _ = ContextCompactor().should_compact(
+        GraphBlackboard(task_objective="", workspace="", metadata={}, node_annotations={})
+    )
+    assert _DURABLE_TRAVERSAL_HELPERS[0] is ContextCompactor
+    assert _DURABLE_TRAVERSAL_HELPERS[-1] is run_scout
+    return blackboard
+
+
+def _build_ctx(record: DurableRunRecord, node_id: str, spec: GraphNode) -> NodeContext:
+    """Build the runtime execution context for one canonical NodeRun."""
     snapshot = record.graph_state.blackboard_snapshot
     try:
-        blackboard = GraphBlackboard(
-            task_objective=str(snapshot.get("task_objective") or ""),
-            workspace=str(snapshot.get("workspace") or ""),
-            metadata=dict(snapshot.get("metadata") or {}),
-            node_annotations=dict(snapshot.get("node_annotations") or {}),
-        )
+        blackboard = _prepare_traversal_blackboard(snapshot)
     except Exception:
         blackboard = None
     try:
@@ -1172,17 +1267,12 @@ def _build_ctx(record: DurableRunRecord, node_id: str) -> NodeContext:
         "hitl_answers": dict(record.hitl_answers),
         "synth_depth": synth_depth,
     }
-    carried = _current_pause_carry(record, node_id)
-    if carried is None:
-        answered = record.hitl_answers.get(node_id)
-        carried = _answered_pause_carry(answered) if isinstance(answered, Mapping) else None
-    if carried is not None:
-        metadata[RESUMED_PAUSE_KEY] = carried
+    _supervision_context(metadata, record, node_id, spec)
     return NodeContext(
         run_id=record.run_id,
         dag_id=record.run.graph.graph_id,
         node_id=node_id,
-        user_id=record.run.actor_principal_id,
+        user_id=record.run.accounting_principal_id,
         workspace_id=record.run.workspace_id,
         project_id=record.run.project_id,
         blackboard=blackboard,
@@ -1300,7 +1390,7 @@ async def _mark_failed(
     """
     record = _settle_open_node_runs(record, RunStatus.FAILED)
     run = _running_run(record.run)
-    error = f"{error_code}: {error_message}"[:512]
+    error = f"{error_code}: {sanitize_failure_message(error_message)}"[:512]
     if run.status is not RunStatus.RUNNING:
         raise ValueError(f"cannot fail run in status {run.status!r}")
     run = transition_run(run, RunStatus.FAILED, error=error)

@@ -26,6 +26,7 @@ from maistro.graph.harness import (
 )
 from maistro.graph.nodes import NodeContext, get_node, list_kinds
 from maistro.graph.nodes.agent_spawn_harness import AgentSpawnHarnessNode
+from maistro.graph.nodes.base import replay_effect_key
 from maistro.policy.types import Decision, PolicyVerdict
 
 
@@ -173,7 +174,7 @@ async def test_missing_provider_fails_closed_without_invocation_record() -> None
         run_id="r1",
         node_run_id="nr1",
         binding_id="b1",
-        effect_key=str(result.metadata["replay_effect_key"]),
+        effect_key="agent.spawn_harness.dispatch:claude_code",
     )
     assert history == []
 
@@ -199,17 +200,28 @@ async def test_dispatch_pauses_after_completed_correlated_invocation() -> None:
     assert result.metadata["binding_id"] == "b1"
     assert result.metadata["handle_id"] == "fake-h1"
     assert len(adapter.dispatched) == 1
-
+    effect_key = replay_effect_key(
+        _ctx(),
+        "agent.spawn_harness.dispatch",
+        {
+            "harness_type": "claude_code",
+            "task": "implement feature Y",
+            "context": {},
+            "timeout_seconds": 3600,
+        },
+    )
     history = await effects.invocation_store.list_effect(
         run_id="r1",
         node_run_id="nr1",
         binding_id="b1",
-        effect_key=str(result.metadata["replay_effect_key"]),
+        effect_key=effect_key,
+        effect_scope=effect_key,
     )
     assert len(history) == 1
     invocation = history[0]
     assert invocation.status is InvocationStatus.COMPLETED
     assert invocation.run_id == "r1"
+    assert invocation.effect_scope == effect_key
     assert invocation.node_run_id == "nr1"
     assert invocation.attempt_id == "a1"
     assert invocation.binding.binding_id == "b1"
@@ -226,45 +238,26 @@ async def test_completed_effect_replay_does_not_dispatch_twice() -> None:
     )
     inputs = {"harness_type": "claude_code", "task": "once", "binding_id": "b1"}
 
-    first = await node.run(inputs, _ctx(attempt_id="a1"))
-    second = await node.run(inputs, _ctx(attempt_id="a2"))
-
-    assert first.status == second.status == "paused"
-    assert first.metadata["invocation_id"] == second.metadata["invocation_id"]
-    assert len(adapter.dispatched) == 1
-    history = await effects.invocation_store.list_effect(
-        run_id="r1",
-        node_run_id="nr1",
-        binding_id="b1",
-        effect_key=str(first.metadata["replay_effect_key"]),
-    )
-    assert len(history) == 1
-    assert history[0].attempt_id == "a1"
-
-
-async def test_completed_effect_replay_survives_a_new_node_run() -> None:
-    """A graph retry visits a new NodeRun but keeps one logical effect."""
-    adapter = FakeHarnessAdapter()
-    effects = await _effects_with_binding()
-    node = AgentSpawnHarnessNode(
-        adapters={"claude_code": adapter},
-        effect_context=effects,
-    )
-    inputs = {"harness_type": "claude_code", "task": "once", "binding_id": "b1"}
-
     first = await node.run(inputs, _ctx(node_run_id="nr1", attempt_id="a1"))
     second = await node.run(inputs, _ctx(node_run_id="nr2", attempt_id="a2"))
 
     assert first.status == second.status == "paused"
     assert first.metadata["invocation_id"] == second.metadata["invocation_id"]
     assert len(adapter.dispatched) == 1
+    effect_key = replay_effect_key(
+        _ctx(),
+        "agent.spawn_harness.dispatch",
+        {"harness_type": "claude_code", "task": "once", "context": {}, "timeout_seconds": 3600},
+    )
     history = await effects.invocation_store.list_effect(
         run_id="r1",
-        node_run_id=None,
+        node_run_id="nr2",
         binding_id="b1",
-        effect_key=str(first.metadata["replay_effect_key"]),
+        effect_key=effect_key,
+        effect_scope=effect_key,
     )
     assert len(history) == 1
+    assert history[0].attempt_id == "a1"
     assert history[0].node_run_id == "nr1"
 
 
@@ -287,16 +280,20 @@ async def test_a_dispatch_recorded_under_the_pre_1319_key_is_not_repeated() -> N
     assert binding is not None
 
     # The pre-upgrade dispatch: recorded under the old key, on this Run.
+    # Its logical scope is the old key itself -- the pre-#1319 code bound
+    # ``effect_scope`` to the effect key it dispatched under, which is what
+    # makes the row readable Run-wide after the upgrade.
+    legacy_key = "agent.spawn_harness.dispatch:claude_code"
     legacy = await effects.invocations.invoke(
         binding=binding,
         run_id="r1",
         node_run_id="nr-old",
         attempt_id="a-old",
-        effect_key="agent.spawn_harness.dispatch:claude_code",
+        effect_key=legacy_key,
+        effect_scope=legacy_key,
         request=dict(inputs),
         resolver=_legacy_resolver(adapter),
         executor=_legacy_executor(adapter),
-        logical_effect=True,
     )
     assert len(adapter.dispatched) == 1
 
@@ -679,7 +676,7 @@ async def _record_poll(
         node_run_id="nr-old",
         attempt_id="a-old",
         effect_key=f"agent.spawn_harness.poll:{original.invocation_id}:0",
-        logical_effect=True,
+        effect_scope=f"agent.spawn_harness.poll:{original.invocation_id}:0",
         request=request,
         status=status,
         result=result,
@@ -1124,7 +1121,7 @@ async def test_ambiguous_legacy_dispatch_is_not_retried_under_new_key() -> None:
             request=dict(_INPUT),
             resolver=_legacy_resolver(adapter),
             executor=uncertain_dispatch,
-            logical_effect=True,
+            effect_scope="agent.spawn_harness.dispatch:claude_code",
         )
     node = AgentSpawnHarnessNode(adapters={"claude_code": adapter}, effect_context=effects)
     result = await node.run(_INPUT, _ctx())
@@ -1358,7 +1355,7 @@ async def test_legacy_wildcard_binding_requires_exact_node_run_provenance(
         request=dict(_INPUT),
         resolver=_legacy_resolver(adapter),
         executor=_legacy_executor(adapter),
-        logical_effect=True,
+        effect_scope="agent.spawn_harness.dispatch:claude_code",
     )
     node = AgentSpawnHarnessNode(adapters={"claude_code": adapter}, effect_context=effects)
     ctx = _ctx(node_run_id="nr-original" if same_node_run else "nr-sibling", attempt_id="a2")

@@ -26,6 +26,7 @@ from maistro.skills.import_pipeline import (
 from maistro.skills.marketplace import HTTPResponse
 from maistro.skills.parser import MAX_SKILL_BODY_LENGTH
 from maistro.skills.registry import InMemorySkillRegistry
+from maistro.types.skill import SkillDefinition
 
 IMPORTER = Principal(id="user1", kind="human")
 
@@ -475,3 +476,76 @@ def test_policy_attachment_store_roundtrip() -> None:
     store.attach(att)
     assert store.get("s") == att
     assert store.get("missing") is None
+
+
+# --------------------------------------------------- the governed import gate
+
+
+@pytest.mark.asyncio
+async def test_import_is_blocked_when_the_host_trust_policy_rejects_the_registration(
+    env: _Env,
+) -> None:
+    # The host already holds this name at a tier the import may not replace:
+    # the import is refused outright rather than quietly downgraded behind the
+    # operator's back.
+    env.registry.register(
+        SkillDefinition(
+            name="my_skill",
+            description="Operator vetted",
+            trust_tier="t0",
+            source="host",
+        )
+    )
+
+    verdict = await _run(
+        env,
+        SkillImportRequest(source=ImportSource.PASTE, importer=IMPORTER, raw=VALID_SKILL_MD),
+    )
+
+    assert verdict.outcome == "blocked"
+    assert verdict.skill is None
+    assert "host trust policy rejected registration" in verdict.report.unfixable_issues
+    # The record that was already there is untouched.
+    stored = env.registry.get("my_skill")
+    assert stored is not None
+    assert stored.trust_tier == "t0"
+
+
+@pytest.mark.asyncio
+async def test_verify_payload_consults_the_host_trust_record(env: _Env) -> None:
+    verdict = await _run(
+        env,
+        SkillImportRequest(source=ImportSource.PASTE, importer=IMPORTER, raw=VALID_SKILL_MD),
+    )
+    assert verdict.outcome == "registered"
+
+    trust = env.registry.trust_metadata("my_skill")
+    assert trust is not None
+    assert trust.trust_tier == IMPORT_TRUST_TIER
+    assert trust.approved is False
+
+    allowed, reasons = verify_skill_payload(
+        "my_skill",
+        VALID_SKILL_MD,
+        policy_store=env.policy_store,
+        registry=env.registry,
+    )
+    assert allowed and reasons == ()
+
+
+def test_policy_attachment_keeps_the_first_binding_for_the_same_body() -> None:
+    store = InMemoryPolicyAttachmentStore()
+    first = PolicyAttachment(skill_name="s", content_hash="h" * 64, provenance="first")
+    store.attach(first)
+
+    # The same body re-attached is a no-op: the binding that was scanned stays
+    # the binding that is on record.
+    store.attach(PolicyAttachment(skill_name="s", content_hash="h" * 64, provenance="second"))
+    assert store.get("s") == first
+
+    # A changed body gets its own binding; it never inherits the old one.
+    store.attach(PolicyAttachment(skill_name="s", content_hash="g" * 64, provenance="third"))
+    changed = store.get("s")
+    assert changed is not None
+    assert changed.content_hash == "g" * 64
+    assert changed.provenance == "third"

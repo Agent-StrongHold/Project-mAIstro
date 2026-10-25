@@ -1,0 +1,17 @@
+{
+  "manifest_version": 1,
+  "id": "gallery.model_adapter",
+  "name": "Gallery model adapter",
+  "version": "1.0.0",
+  "publisher": "gallery",
+  "api_version": "1.0.0",
+  "permissions": ["network.outbound"],
+  "entry_points": [
+    {
+      "name": "main",
+      "module": "gallery_model_adapter.plugin",
+      "attribute": "PLUGIN"
+    }
+  ],
+  "dependencies": []
+}

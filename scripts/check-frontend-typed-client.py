@@ -40,6 +40,11 @@ _PROVENANCE_SOURCE = ROOT / "scripts" / "ratchet_provenance.py"
 RATCHET = "frontend-typed-client"
 METRIC_DEFINITION_VERSION = "1"
 
+#: Bounded analyzer implementation manifest (#319): the measurement is this
+#: file's own regex/static scan, so its implementation identity is the actual
+#: bytes of exactly this file.
+ANALYZER_MANIFEST = ("scripts/check-frontend-typed-client.py",)
+
 _SKIP_PARTS = frozenset({"node_modules", "dist", "build", ".vite"})
 _FETCH_RE = re.compile(r"\bfetch\s*\(")
 _TYPE_RE = re.compile(r"^\s*(?:export\s+)?(?:interface|type)\s+(\w+)")
@@ -81,6 +86,14 @@ def _provenance() -> ModuleType:
         del sys.modules[spec.name]
         raise
     return module
+
+
+def _tool_version(prov: ModuleType) -> str:
+    """Implementation identity of the scanner that reached this verdict (#319)."""
+    version: str = prov.bundled_implementation_fingerprint(
+        Path(__file__).resolve().parents[1], ANALYZER_MANIFEST
+    )
+    return version
 
 
 def _rel(path: Path) -> str:
@@ -245,6 +258,7 @@ def main() -> int:
 
     prov = _provenance()
     try:
+        tool_version = _tool_version(prov)
         prov.require_measurement(scanned, ratchet=RATCHET, what="frontend source files")
         trusted_ref = prov.resolve_baseline(BASELINE, root=ROOT)
         trusted_payload = trusted_ref.loads(default={})
@@ -278,6 +292,7 @@ def main() -> int:
             ratchet=RATCHET,
             baseline=trusted_ref,
             tool="static frontend scan",
+            tool_version=tool_version,
             metric_definition_version=METRIC_DEFINITION_VERSION,
             old_value=old_value,
             new_value=f"{raw_count} raw fetch, {hand_count} hand-typed (current)",

@@ -93,12 +93,14 @@ PROMOTION_ROOTS: dict[str, str] = {
     "maistro_rsi.apply_agents": "applies agent definitions into the baseline",
     # The executable command surfaces. An entry module is never *imported* by
     # its own dependencies, so neither can be derived from the roots below it:
-    # the console script targets `maistro_rsi.cli:main`, and
-    # `.github/workflows/rsi-harvest.yml` runs `python -m maistro_rsi harvest`,
-    # whose `__main__` opens the harvest pull request. The broad `maistro_rsi/`
-    # pattern happens to cover them today, which is exactly why their absence
-    # here was invisible (Codex, #513).
+    # the console scripts target `maistro_rsi.cli:main` and
+    # `maistro_rsi.campaign_cli:main` (the M5-B bounded-campaign runner,
+    # #114), and `.github/workflows/rsi-harvest.yml` runs
+    # `python -m maistro_rsi harvest`, whose `__main__` opens the harvest pull
+    # request. The broad `maistro_rsi/` pattern happens to cover them today,
+    # which is exactly why their absence here was invisible (Codex, #513).
     "maistro_rsi.cli": "the installed command entry point",
+    "maistro_rsi.campaign_cli": "the installed `maistro-rsi-campaign` entry point (M5-B, #114)",
     "maistro_rsi.__main__": "the `python -m maistro_rsi` entry point",
     "services.rsi": "drives LocalRsiLoop from the Conductor",
     "routes.rsi": "approves candidate patches and applies them with `git am`",

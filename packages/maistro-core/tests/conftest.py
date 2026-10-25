@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 from collections.abc import Iterator
 from datetime import UTC, datetime
@@ -36,7 +37,15 @@ def _reset_singletons() -> Iterator[None]:
 
     get_settings.cache_clear()
 
+    # Gateway RateLimitCoordinator / ContextProbe are process singletons
+    # (#2318); a planted 429 or seeded window must not poison later suites.
+    from maistro.capabilities.providers.llm_gateway import reset_gateway_resilience_state
+
+    reset_gateway_resilience_state()
+
     yield
+
+    reset_gateway_resilience_state()
 
     # Task queue
     import maistro.tasks.queue as queue_module
@@ -146,6 +155,9 @@ _PG_SCRATCH_TABLES = (
     # test principals; a leftover valid grant from a previous run would sit at
     # the top of find_valid's id DESC ordering and answer for the wrong test.
     "elevation_grants",
+    # (#845) Host delegation grants carry deterministic test principals for the
+    # same reason: a leftover valid grant would answer for the wrong test.
+    "delegation_grants",
     "handler_invocations",
     "trigger_definitions",
     "event_log",
@@ -187,9 +199,23 @@ async def pg_pool():
     pool = await asyncpg.create_pool(dsn, min_size=1, max_size=8, init=_register_json_codecs)
     try:
         async with pool.acquire() as conn:
-            await conn.execute(
-                "TRUNCATE {} RESTART IDENTITY CASCADE".format(", ".join(_PG_SCRATCH_TABLES))
-            )
+            # Under coverage the previous test's async work can still hold row
+            # or table locks while this TRUNCATE ... CASCADE walks its table
+            # list in a different order; PostgreSQL resolves the lock-order
+            # inversion by aborting the TRUNCATE with DeadlockDetectedError
+            # (deadlock_timeout, 1s by default). The statement is idempotent
+            # scratch cleanup: back off and retry rather than poisoning every
+            # later test in this process with one failed fixture setup.
+            for attempt in range(3):
+                try:
+                    await conn.execute(
+                        "TRUNCATE {} RESTART IDENTITY CASCADE".format(", ".join(_PG_SCRATCH_TABLES))
+                    )
+                    break
+                except asyncpg.exceptions.DeadlockDetectedError:
+                    if attempt == 2:
+                        raise
+                    await asyncio.sleep(0.5 * (attempt + 1))
         yield pool
     finally:
         await pool.close()
