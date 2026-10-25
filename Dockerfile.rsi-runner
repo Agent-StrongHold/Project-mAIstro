@@ -15,7 +15,21 @@
 # forever — the same mechanism that shipped maistro-engine with libexpat1
 # 2.5.0-1+deb12u4 after deb12u5 (CVE-2025-59375/CVE-2026-77214) had published.
 # security.yml builds this stage with `--no-cache-filter runtime-apt`.
-FROM python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1 AS runtime-apt
+#
+# That flag is necessary but NOT sufficient (#93 CI repair, 2026-10-24):
+# buildx cache keys are computed pre-execution from the instruction string
+# and the parent key chain, never from a RUN's freshly produced bytes. A
+# re-executed apt stage therefore cannot propagate: the downstream stages'
+# keys still match pre-advisory cache entries, whose restored layer chains
+# (and, under mode=max, cached manifests) carry the old OS state into the
+# loaded image. Runs 40081082641/40088232144/40091186336 all executed apt
+# with libbrotli1 1.1.0-2+deb13u1 (DSA-6582-1, CVE-2026-111497) yet trivy
+# scanned the loaded tag at the pre-DSA 1.1.0-2+b7. The #1152 doctrine
+# applies: bump the digest-pinned base so the key chain changes from the
+# FROM down and the rebuilt image assembles the freshly executed layers.
+# Re-bump this pin whenever a DSA lands faster than this bump mechanism
+# can be exercised (recorded in quality/image-pins.json).
+FROM python:3.12-slim@sha256:a0f57064cbdcd6285fa45f51237ab0b35ea8ebaed06a1f5973e89e19dfb86704 AS runtime-apt
 
 # libbrotli1 ships here via git's libcurl; CVE-2026-111497 (Brotli decoder
 # OOB write, HIGH, fixed in trixie-security 1.1.0-2+deb13u1) is why it is
