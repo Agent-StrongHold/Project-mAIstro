@@ -302,13 +302,15 @@ jobs:
       # `(cached)` rsi-runner build still writes the scope, but nothing
       # gates on it anymore. SECURITY_PATCH_KEY (per-run, consumed by the
       # stamp the verify step below asserts) makes the stage's key unique
-      # per build even if a cache is ever re-attached here.
+      # per build even if a cache is ever re-attached here. This supersedes
+      # develop's one-shot `-r2` scope rotation (PR #2283): rotation severs
+      # the class once, detaching the scope plus the per-run stamp severs it
+      # permanently.
       - name: Build maistro-rsi-runner image
         run: >-
           scripts/buildx-build-retry.sh --
           -f Dockerfile.rsi-runner -t "maistro-rsi-runner:pr-${CANDIDATE_TAG}"
           --build-arg SECURITY_PATCH_KEY=${{ github.run_id }}
-          --no-cache-filter runtime-apt
           --load .
 
       # The stamp is written by the same RUN that applies the OS security
