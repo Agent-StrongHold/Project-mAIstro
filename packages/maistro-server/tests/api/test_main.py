@@ -610,6 +610,26 @@ class TestCanvasAbilityWiring:
         # AssetInstance CONNECT still lands when LayerRecord was pre-composed.
         assert isinstance(test_app.state.canvas_asset_tool, AssetTool)
 
+    def test_assetinstance_wire_is_idempotent_once_tool_is_bound(self) -> None:
+        from maistro_canvas.canvas.asset_tool import AssetTool
+
+        test_app = FastAPI()
+        assert main_module._wire_canvas_assetinstance(test_app) is True
+        tool = test_app.state.canvas_asset_tool
+        assert isinstance(tool, AssetTool)
+        assert main_module._wire_canvas_assetinstance(test_app) is True
+        assert test_app.state.canvas_asset_tool is tool
+
+    def test_assetinstance_skips_remount_when_router_flag_already_set(self) -> None:
+        """Branch at main.py:202 True — router already mounted, tool still absent."""
+        from maistro_canvas.canvas.asset_tool import AssetTool
+
+        test_app = FastAPI()
+        test_app.state.canvas_asset_router_mounted = True
+        assert main_module._wire_canvas_assetinstance(test_app) is True
+        assert isinstance(test_app.state.canvas_asset_tool, AssetTool)
+        assert test_app.state.canvas_asset_router_mounted is True
+
     async def test_the_lifespan_wires_the_store_when_an_engine_exists(self) -> None:
         """Through the real lifespan, not just the helper: the wiring lives in
         ``_runtime_lifespan``, and a store only tests prove is constructible is
