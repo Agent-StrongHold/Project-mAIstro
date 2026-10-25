@@ -10,10 +10,10 @@
 #
 # Usage (from any worktree):
 #   export DB_PASSWORD=... LITELLM_MASTER_KEY=...   # any throwaway values
-#   # optional: REPRO_API_KEY — engine API key defaults to the throwaway
-#   # "repro:repro-dev-key" (principal:secret format, see #843)
+#   # API_KEYS is required (no committed default — #367 / check-compose-secrets):
+#   #   export API_KEYS='["repro:throwaway"]'   # principal:secret format, see #843
 #   docker compose -f docker-compose.repro.yml -p repro-$$ up -d
-#   curl -f http://127.0.0.1:8800/health/live
+#   curl -f -H "Authorization: Bearer repro:throwaway" http://127.0.0.1:8800/health/live
 #   docker compose -f docker-compose.repro.yml -p repro-$$ down -v --remove-orphans
 #
 # NEVER point this stack at the production volumes, network, or names.
@@ -91,4 +91,7 @@ services:
       # reuses the master key; auth stays on to mirror the canonical install.
       - ROUTER_API_KEY=${LITELLM_MASTER_KEY:?Set LITELLM_MASTER_KEY (throwaway ok)}
       - REQUIRE_AUTH=true
-      - API_KEYS=["repro:${REPRO_API_KEY:-repro-dev-key}"]
+      # Required form only — never a literal or non-empty :- fallback (#367).
+      # Caller supplies a throwaway principal:secret JSON list, e.g.
+      #   API_KEYS='["repro:throwaway"]'
+      - API_KEYS=${API_KEYS:?Set API_KEYS for repro (e.g. ["repro:throwaway"])}

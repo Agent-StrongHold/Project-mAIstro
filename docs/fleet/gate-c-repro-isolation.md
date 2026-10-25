@@ -34,12 +34,13 @@ pgvector pg18, litellm config) for interactive debugging.
 ## The sanctioned method
 
 Use `docker-compose.repro.yml` (repo root) — standalone, isolated names
-(`repro-*`), offset ports (8800/5433/8400), its own compose project:
+(`repro-*`), offset ports (8800/5434/8400), its own compose project:
 
 ```bash
 export DB_PASSWORD=throwaway-1 LITELLM_MASTER_KEY=throwaway-2
+export API_KEYS='["repro:throwaway"]'   # principal:secret; required, no committed default
 docker compose -f docker-compose.repro.yml -p repro-$$ up -d --build
-curl -f http://127.0.0.1:8800/health/live
+curl -f -H "Authorization: Bearer repro:throwaway" http://127.0.0.1:8800/health/live
 # teardown (safe: touches only repro-*):
 docker compose -f docker-compose.repro.yml -p repro-$$ down -v --remove-orphans
 ```
@@ -47,8 +48,9 @@ docker compose -f docker-compose.repro.yml -p repro-$$ down -v --remove-orphans
 Notes:
 - Engine migrations run against `repro-postgres` (pgvector pg18, same major
   as production) with throwaway credentials.
-- The engine boots with auth enabled: throwaway API key `repro:repro-dev-key`
-  (`principal:secret` format per #843; override with `REPRO_API_KEY`), and
+- The engine boots with auth enabled: supply a throwaway `API_KEYS` JSON list
+  yourself (`principal:secret` format per #843). Compose refuses to start
+  without it — same `${VAR:?message}` contract as production (#367).
   `ROUTER_API_KEY` reuses `LITELLM_MASTER_KEY`.
 - Add `compose.override`-style extras only via additional `-f` files; keep
   names/ports inside the `repro-*` / offset ranges.
