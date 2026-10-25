@@ -57,3 +57,32 @@ added, removed, renamed, or re-parametrized.
   `check-adr-status-language.py`, `generate-spec-ac-defined-index.py`
   (index unchanged) all exit 0;
 - the suite's 140 attribution/adapter/CLI cases pass unchanged.
+
+## Addendum (2026-10-25): re-anchor after the develop sync to b1c89cdbc
+
+Merging develop `b1c89cdbc` into this branch moved the mandate base and with
+it the measured corpus: at the new head `aa0133cd8` the tree measures
+`design_coverage` **39.641** (166 taken decisions), not the 44.2377 the
+branch note had banked from the earlier stacked tree. The stale banked claim
+raised the exact-target half of the ratchet above what the tree measures, so
+`scripts/check-ac-state.py --run-tests --ratchet --mandate b1c89cdbc` failed
+with `design_coverage: 39.641 falls below the floor of 44.2377`.
+
+The repair is the gate's own remedy, nothing else: re-bank the branch note
+via `--bank` at the current head. `quality/ac-state-notes/auto-976.json` now
+records `design_coverage: 39.641` — the exact value develop's owner-authorized
+`design_coverage@39.641` grant (issue #166, read at the base) permits, which
+is what makes the fall land legally. Only that one JSON line changed; no test,
+marker, spec, or ADR moved, so the inventory delta stays zero.
+
+Verified at `aa0133cd8` + this note:
+
+- the CI-exact command exits **0**: ratchet OK (10 debt counters on their
+  ceilings, design coverage exactly on the granted floor, authorized floor
+  printed), acceptance mandate OK (6 criteria added/newly claimed, 0
+  unproven), chain mandate OK;
+- the 175 attribution/adapter/binding/CLI cases pass;
+- `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'` exits 0 (1297/1297 identities banked) and
+  `check-suite-inventory.py --suite packages/maistro-core/tests` reports no
+  delta.
