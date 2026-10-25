@@ -71,6 +71,43 @@ All commands ran in the assigned worktree with long timeouts.
 No tests were added, so no inventory-note delta is required. No `quality/*.json`
 ledger was edited.
 
+## Fresh soak run — round 160 shakedown
+
+A real soak was executed in this environment against HEAD `161836aa5b77`
+(the tree was clean at run start, so `hashes.git_clean=true`):
+
+```
+uv run python scripts/soak/run_soak.py --sustain-seconds 60 --settle-seconds 30 --out-dir /tmp/soak860
+```
+
+The harness booted pgvector/pg18 (`maistro-soak-pg`), two `uvicorn
+maistro_server.main:app` replicas behind the rendered nginx LB, drove the mixed
+request profile, SIGTERM-killed and restarted replica_2 mid-load, and wrote
+`m3a-round160-shakedown.json` plus the metrics/JSONL/logs under
+`docs/testing/soak/evidence/`.
+
+Observed functional results (all fresh, not inherited):
+
+| Check | Result |
+|---|---|
+| `exactly_once_task_admission` | pass |
+| `exactly_once_schedule_occurrence` | pass |
+| `rate_limit_enforced` | pass |
+| `lb_failover_bounded` | pass — 0 5xx/conn errors in the 5.62 s kill window (budget 4320) |
+| `graceful_drain` | pass — drained in 1.0 s, `rc=143`, no escalation, 0 errors |
+| `replica_2_rejoined` | pass |
+| `nonterminal_runs_after_settle` | pass — 0 |
+| `task_admission_availability` | pass |
+| `rss_growth` | replica_1 +3.6 %, replica_2 +2.8 % over the window |
+| `fd_growth` | replica_1 30→37, replica_2 29→37 |
+| `sustain_duration` | **fail** — 60.08 s observed vs 14 400 s required |
+| `exact_rc_artifact` | **fail** — host-uvicorn-preflight topology |
+
+This proves the harness is reachable and that every functional promotion gate
+passes on the current tree. It does **not** change the acceptance disposition:
+the two remaining failures are the deliberate exact-RC artifact gate and the
+4-hour minimum duration, neither of which a host-process preflight can satisfy.
+
 ## Acceptance disposition (unchanged from prior rounds)
 
 | Issue #860 criterion | Evidence / status |
@@ -109,3 +146,6 @@ active-work failure injection. Runtime/config changes require a new soak.
 
 Progress: `{checked: 1, done: 0, skipped: 0, errors: 0, next: exact-RC production soak}`.
 Local commit records the completed validation item, not integration approval.
+Fresh round-160 shakedown evidence is bound to HEAD `161836aa5b77` with
+`git_clean=true`; it is component/preflight evidence, not exact-RC promotion
+evidence.

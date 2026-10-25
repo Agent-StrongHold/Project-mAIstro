@@ -1,0 +1,28 @@
+/home/dev/Git/wt/auto-860/packages/maistro-server/src/maistro_server/main.py:48: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.
+  from maistro_server.api import (
+INFO:     Started server process [3362841]
+INFO:     Waiting for application startup.
+Projects are stored in PostgreSQL but the BacklogItem history store has no PostgreSQL backend yet, so BacklogItem history is in-process and lost on restart (#101).
+No SQLite database pool is available, so campaign records are in-process and operator controls (pin-next, pause, exclude, human-only) are lost on restart. Run with a sqlite database URL so campaigns persist (#103).
+No SQLite database pool is available, so the workspace observation log is in-process and working memory is lost on restart. Run with a sqlite database URL so log-as-context persists (#301).
+Goal reconciliation is in-memory despite a PostgreSQL backend: the Goal, claim/lease, wake and admission facts are lost on restart and cannot fence a second process. No PostgreSQL implementation of this control plane exists yet (#1572 owns the canonical Goal PG store, not this one).
+audit_log signing key is process-generated (MAISTRO_AUDIT_SIGNING_KEY is unset): decisions written to this durable store will not verify after this process exits
+audit_log signing key is process-generated (MAISTRO_AUDIT_SIGNING_KEY is unset): decisions written to this durable store will not verify after this process exits
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:18202 (Press CTRL+C to quit)
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [3362841]
+/home/dev/Git/wt/auto-860/packages/maistro-server/src/maistro_server/main.py:48: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.
+  from maistro_server.api import (
+INFO:     Started server process [3367050]
+INFO:     Waiting for application startup.
+Projects are stored in PostgreSQL but the BacklogItem history store has no PostgreSQL backend yet, so BacklogItem history is in-process and lost on restart (#101).
+No SQLite database pool is available, so campaign records are in-process and operator controls (pin-next, pause, exclude, human-only) are lost on restart. Run with a sqlite database URL so campaigns persist (#103).
+No SQLite database pool is available, so the workspace observation log is in-process and working memory is lost on restart. Run with a sqlite database URL so log-as-context persists (#301).
+Goal reconciliation is in-memory despite a PostgreSQL backend: the Goal, claim/lease, wake and admission facts are lost on restart and cannot fence a second process. No PostgreSQL implementation of this control plane exists yet (#1572 owns the canonical Goal PG store, not this one).
+audit_log signing key is process-generated (MAISTRO_AUDIT_SIGNING_KEY is unset): decisions written to this durable store will not verify after this process exits
+audit_log signing key is process-generated (MAISTRO_AUDIT_SIGNING_KEY is unset): decisions written to this durable store will not verify after this process exits
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:18202 (Press CTRL+C to quit)
