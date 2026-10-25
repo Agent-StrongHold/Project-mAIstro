@@ -96,12 +96,13 @@ RUN uv export --locked --package maistro-server \
 # ---- docker CLI build ----
 # Same policy as the root Dockerfile: the published docker:29-cli binary embeds
 # go1.26.8 stdlib (trivy HIGHs fixed in go1.26.9/1.27.2; CVE-2026-111943 HIGH
-# in go1.27.2, fixed in go1.26.10/1.27.3) and no released
+# in stdlib 1.27.2, fixed in go1.26.10/1.27.3) and no released
 # docker:xx-cli tag ships a newer toolchain, so build the exact immutable
 # release tag ourselves on the patched toolchain. Tag resolves to dfc520d; fail
-# if upstream ever disagrees. Builder moved to 1.27.3-alpine (#1152):
-# CVE-2026-111943 (crypto/x509 MITM via untrusted intermediates, HIGH, fixed in
-# go1.26.10/1.27.3) flags the 1.27.2 stdlib inside the built binary.
+# if upstream ever disagrees. Builder moved to 1.27.3-alpine (#1152, and
+# independently re-resolved by #1095's trunk-CI repair): CVE-2026-111943
+# (crypto/x509 MITM via untrusted intermediates, HIGH, fixed in go1.26.10/1.27.3)
+# flags the 1.27.2 stdlib inside the built binary.
 # Digest-pinned (#349); golang:1.27.3-alpine resolved to this index digest 2026-10-22.
 FROM golang:1.27.3-alpine@sha256:b8c9b82affbbb82a020bbcf998dad2ba9516944ac7e883524642a481a9505e9c AS dockerclibuild
 ARG DOCKER_CLI_VERSION=29.9.1
@@ -129,6 +130,14 @@ FROM python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0
 
 # System layer. Hardening vs the previous image:
 #   - apt-get upgrade applies Debian security patches the base tag froze.
+#   - libbrotli1 is installed explicitly, not left to dependency resolution:
+#     CVE-2026-111497 (Out-of-Bounds Write in the Brotli decoder, HIGH) is
+#     fixed by trixie-security's 1.1.0-2+deb13u1, and naming the package here
+#     keeps that fix an install requirement of the security-patch stage even
+#     when brotli only arrives transitively (git's libcurl, the Chromium X
+#     stack below). The `--no-cache-filter production-apt` CI flag re-runs
+#     this stage on every candidate, so the mirror's current candidate —
+#     deb13u1 or newer — is what ships.
 #   - docker.io (the whole engine) replaced by a static docker CLI (see COPY below).
 #   - curl + wget removed; the HEALTHCHECK now uses stdlib Python.
 #   - autoremove/clean drop orphaned deps and caches.
@@ -137,6 +146,7 @@ FROM python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0
 # Wolfi/browser-free.
 RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
     git \
+    libbrotli1 \
     libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 \
     libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 \
     libgbm1 libpango-1.0-0 libcairo2 libasound2 libatspi2.0-0 \

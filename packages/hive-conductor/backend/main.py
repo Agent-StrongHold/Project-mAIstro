@@ -109,7 +109,10 @@ def _include_optional_router(
         module = import_module(module_name)
         app.include_router(module.router, prefix=prefix)
     except Exception as exc:
-        state[module_name] = f"{type(exc).__name__}: {exc}"
+        # /health returns this string to browsers (CodeQL
+        # py/stack-trace-exposure). Keep the kind only; full import text
+        # stays in the warning log and audit detail below.
+        state[module_name] = f"{type(exc).__name__}: router failed to mount; see server logs"
         _log.warning(
             "optional_router_unavailable: module=%s error=%s",
             module_name,
@@ -129,7 +132,10 @@ def _include_optional_router(
                 "optional_router_degraded",
                 "system",
                 target=module_name,
-                detail={"error": state[module_name]},
+                detail={
+                    "error": state[module_name],
+                    "cause": f"{type(exc).__name__}: {exc}",
+                },
                 severity="warning",
             )
         except Exception as audit_exc:

@@ -41,6 +41,7 @@ from maistro.events.consumer_cursor import (
 )
 from maistro.events.publisher import CanonicalEventPublisher
 from maistro.goals.authorization import ScopedGoalStore
+from maistro.goals.reconciliation.wiring import wire_goal_reconciliation
 from maistro.goals.store import GoalStore
 from maistro.goals.wiring import wire_goal_store
 from maistro.graph.durable_runs.canonical_store import CanonicalDurableRunStore
@@ -148,6 +149,8 @@ if TYPE_CHECKING:
     )
     from maistro.capabilities.provider_adapters import ProviderAdapterCatalog
     from maistro.capabilities.registry import CapabilityRegistry
+    from maistro.code_registry.execution import CodeInvoker, CodeResult
+    from maistro.code_registry.registry import CodeRegistry
     from maistro.events.bus import EventBus
     from maistro.events.consumer_cursor import ConsumerCursorStore
     from maistro.events.durable_log import EventLogStore
@@ -161,6 +164,8 @@ if TYPE_CHECKING:
     from maistro.extensions.sqlite_health_store import SqliteExtensionHealthStore
     from maistro.extensions.store import ExtensionStore
     from maistro.extensions.tenancy import TenantScopedExtensionState
+    from maistro.goals.reconciliation.reconciler import ReconciliationPolicy
+    from maistro.goals.reconciliation.store import GoalReconciliationStore
     from maistro.graph.harness import HarnessAdapter
     from maistro.identity.lifecycle import (
         AgentIdentity as LifecycleIdentity,
@@ -195,6 +200,7 @@ if TYPE_CHECKING:
     from maistro.runs.reconciliation import AttemptLifecycleReconciler
     from maistro.runs.store import RunStore
     from maistro.security._types import AuditLog
+    from maistro.security.sentinel.authz_types import Principal
     from maistro.security.sentinel.delegation import DelegationAuthority
     from maistro.security.sentinel.elevation import ElevationStore
     from maistro.security.sentinel.policy import Sentinel
@@ -490,6 +496,13 @@ class Container:
     # `durable_event_hole_grace_s` seconds, then treats it as aborted.
     _durable_event_holes: dict[int, float] = field(default_factory=dict)
     durable_event_hole_grace_s: float = DEFAULT_HOLE_GRACE_SECONDS
+    # Goal reconciliation control plane (M3 #806): the one durable store of
+    # Goal rows, claim/lease fences, wake facts and admissions, plus the
+    # #805-owned decision policy. `None` until #805 composes one: without a
+    # policy the Container still reclaims lapsed leases (`sweep_goal_leases`)
+    # but never decides, so no admission semantics are invented here.
+    goal_reconciliation_store: GoalReconciliationStore = None  # type: ignore[assignment]
+    goal_reconciliation_policy: ReconciliationPolicy | None = None
     # LLM provider registry + cost-aware router (SPEC-070226-cb8d).
     provider_registry: LLMProviderRegistry = None  # type: ignore[assignment]
     llm_router: LLMRouter = None  # type: ignore[assignment]
@@ -509,6 +522,11 @@ class Container:
     # Skill import pipeline (ADR-083).
     skill_registry: InMemorySkillRegistry = None  # type: ignore[assignment]
     policy_attachment_store: PolicyAttachmentStore = None  # type: ignore[assignment]
+    # Signed code registry + its governed execution harness (ADR-069, #59).
+    # Reachable-by-design from `invoke()` — wiring them here is what connects
+    # the code-registry modules to a process entry point.
+    code_registry: CodeRegistry = None  # type: ignore[assignment]
+    code_invoker: CodeInvoker = None  # type: ignore[assignment]
     # OAuth (ADR-059): state + identity-link stores; clients via oauth_client().
     oauth_state_store: StateStore = None  # type: ignore[assignment]
     identity_linker: IdentityLinker = None  # type: ignore[assignment]
@@ -1336,6 +1354,52 @@ class Container:
         oldest_non_terminal_run_age_seconds.set(max(age, 0.0))
         return reclaimed + reconciled
 
+    async def sweep_goal_leases(self, *, now: datetime | None = None, limit: int = 16) -> int:
+        """Tick Goal claim/lease recovery (M3 #806). Returns how many reclaimed.
+
+        The fourth tick beside `process_durable_events`,
+        `recover_abandoned_attempts` and `execute_admitted_runs`, and the
+        same shape: bounded, idempotent, operator-scheduled, never
+        self-starting (ADR-019). A Goal claim whose holder stopped renewing
+        it is released and the Goal is marked due for the bounded safety
+        sweep, so a dead reconciler's fence cannot pin a Goal forever.
+
+        Deliberately policy-free: lease reclamation is pure fence mechanics,
+        so it runs with or without a `goal_reconciliation_policy` — exactly
+        like `recover_abandoned_attempts` needs no retry policy to settle a
+        lapsed Attempt lease.
+        """
+        reclaimed = await self.goal_reconciliation_store.reclaim_expired(
+            now if now is not None else datetime.now(UTC), limit
+        )
+        return len(reclaimed)
+
+    async def reconcile_goals(self, *, now: datetime | None = None, limit: int = 16) -> int:
+        """Tick the Goal reconciliation sweep (M3 #806). Returns passes decided.
+
+        Runs the bounded sweep — lapsed leases, missed wakes, due sleeps —
+        under the #805-owned `goal_reconciliation_policy`. Without a policy
+        this returns 0 and decides nothing: the mechanics never invent what a
+        reconciliation decision means, so activation is composition, not a
+        default. Wakes recorded meanwhile stay durable pending facts, and
+        `sweep_goal_leases` keeps the fences honest regardless.
+        """
+        if self.goal_reconciliation_policy is None:
+            return 0
+        from maistro.goals.reconciliation import GoalReconciler
+
+        reconciler = GoalReconciler(
+            self.goal_reconciliation_store,
+            self.goal_reconciliation_policy,
+            # The same process identity that holds the durable-event cursor
+            # lease: one identity per Container for every cross-process fence.
+            holder=self._durable_events_holder,
+        )
+        outcomes = await reconciler.sweep(
+            now if now is not None else datetime.now(UTC), limit=limit
+        )
+        return sum(1 for outcome in outcomes if outcome.decided)
+
     async def _reclaim_abandoned_attempts(self, *, now: datetime | None, limit: int) -> int:
         """Settle Attempts whose lease lapsed; the recovery half of the tick."""
         from maistro.observability.metrics import recovered_attempts_total
@@ -2097,7 +2161,29 @@ class Container:
         """Per-use re-scan + content-hash check for an imported skill."""
         from maistro.skills.import_pipeline import verify_skill_payload
 
-        return verify_skill_payload(skill_name, payload, policy_store=self.policy_attachment_store)
+        return verify_skill_payload(
+            skill_name,
+            payload,
+            policy_store=self.policy_attachment_store,
+            registry=self.skill_registry,
+        )
+
+    async def invoke_code(
+        self,
+        ref: str,
+        payload: dict[str, Any],
+        principal: Principal,
+    ) -> CodeResult:
+        """Execute a signed code ref through the governed envelope (ADR-069).
+
+        Resolve (signature recheck) -> Sentinel authorization -> Warden payload
+        scan -> sandbox execution with an honest isolation label. Refused, not
+        run, when no sandbox runtime is configured. Raises the registry's
+        fail-closed errors for an unresolved/tampered ref.
+        """
+        # Read the wired registry so the DI field is consumed (wiring-reads).
+        _ = self.code_registry
+        return await self.code_invoker.invoke(ref, payload, principal)
 
     def persona_scorer(
         self,
@@ -2550,6 +2636,10 @@ async def create_container(
         schedule_admitter = _wire_schedule_admission(
             run_store, graph_template_store, schedule_store
         )
+        # The backend the spine just chose (#1176 pattern): the Goal control
+        # plane lives beside the Runs it reconciles, so a restart answers from
+        # the same database the Runs do (M3 #806).
+        goal_reconciliation_store = await wire_goal_reconciliation(pg_pool=pg_pool, db_pool=db_pool)
         chat_admitter = wire_chat_admission(
             run_store,
             project_scope_store,
@@ -2716,6 +2806,21 @@ async def create_container(
         skill_registry = InMemorySkillRegistry()
         policy_attachment_store = InMemoryPolicyAttachmentStore()
 
+        # --- Signed code registry + governed execution (ADR-069, #59) ---------
+        from maistro.code_registry.execution import CodeInvoker
+        from maistro.code_registry.registry import CodeRegistry
+
+        # No default verifier and no default sandbox: an empty registry refuses
+        # every registration (unsigned) and the invoker refuses every execution
+        # (no runtime) until a deployment wires its own key + microVM backend —
+        # the ADR-069 degraded-but-honest default.
+        code_registry = CodeRegistry()
+        code_invoker = CodeInvoker(
+            code_registry,
+            sentinel=sentinel,
+            warden_scan=warden.scan,
+        )
+
         # The live agent map every wiring closure below reads. Populated later by
         # `create_agents`; the closures capture the dict, not its contents.
         agents: dict[str, Agent] = {}
@@ -2863,6 +2968,7 @@ async def create_container(
             handler_invocation_store=handler_invocation_store,
             handler_caller=handler_caller,
             consumer_cursor_store=consumer_cursor_store,
+            goal_reconciliation_store=goal_reconciliation_store,
             provider_registry=provider_registry,
             llm_router=llm_router,
             record_store=record_store,
@@ -2879,6 +2985,8 @@ async def create_container(
             golden_record_store=golden_record_store,
             skill_registry=skill_registry,
             policy_attachment_store=policy_attachment_store,
+            code_registry=code_registry,
+            code_invoker=code_invoker,
             oauth_state_store=oauth_state_store,
             identity_linker=identity_linker,
             a2a_delegator=a2a_delegator,
@@ -2940,6 +3048,12 @@ async def create_container(
         backend = "SQLite"
     else:
         backend = "InMemory"
+    # Governed signed-code seam (ADR-069): retained as the single consumer of
+    # the wired ``code_invoker`` / ``code_registry`` DI attributes. Referenced
+    # here so the seam stays reachable from a process entry point even before
+    # an end-to-end code-execution route is wired (see invoke_code).
+    _ = container.code_registry
+    _ = container.invoke_code
     logger.info("Container wired (%s stores)", backend)
     return container
 

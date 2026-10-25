@@ -130,8 +130,9 @@ RUN python /tmp/prune-dependency-namespaces.py \
 # tag resolves to dfc520d; fail if upstream ever disagrees. docker/cli has no
 # root go.mod (vendor.mod + vendor/ instead); renaming them is the module-mode
 # build the vendored tree is designed for. Builder moved to 1.27.3-alpine
-# (#1152): CVE-2026-111943 (crypto/x509 MITM via untrusted intermediates, HIGH,
-# fixed in go1.26.10/1.27.3) flags the 1.27.2 stdlib inside the built binary.
+# (#1152, and independently re-resolved by #1095's trunk-CI repair): CVE-2026-111943
+# (crypto/x509 MITM via untrusted intermediates, HIGH, fixed in go1.26.10/1.27.3)
+# flags the 1.27.2 stdlib inside the built binary.
 # Digest-pinned (#349); golang:1.27.3-alpine resolved to this index digest 2026-10-22.
 FROM golang:1.27.3-alpine@sha256:b8c9b82affbbb82a020bbcf998dad2ba9516944ac7e883524642a481a9505e9c AS dockerclibuild
 ARG DOCKER_CLI_VERSION=29.9.1

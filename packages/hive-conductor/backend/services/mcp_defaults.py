@@ -16,7 +16,10 @@ ATLASSIAN_ROVO_MCP_URL = os.getenv(
 
 ATLASSIAN_ROVO_SERVER_ID = "mcp-atlassian-rovo"
 FILESYSTEM_SERVER_ID = "mcp-filesystem-local"
-FILESYSTEM_MCP_URL = os.getenv("FILESYSTEM_MCP_URL", "http://127.0.0.1:9999/mcp").strip()
+FILESYSTEM_MCP_URL = os.getenv(
+    "FILESYSTEM_MCP_URL",
+    "http://127.0.0.1:9999/mcp",  # DevSkim: ignore DS162092 until 2027-12-31
+).strip()
 
 ATLASSIAN_ROVO_TOOLS: tuple[dict[str, str], ...] = (
     {
@@ -125,6 +128,10 @@ def atlassian_rovo_server(*, now: datetime | None = None) -> MCPServer:
         last_ping=t,
         version="rovo-mcp",
         capabilities=["jira", "confluence", "compass"],
+        approved=True,
+        approved_by="platform",
+        provenance="platform:mcp-atlassian-rovo",
+        allowed_tools=[spec["name"] for spec in ATLASSIAN_ROVO_TOOLS],
     )
 
 
@@ -140,6 +147,10 @@ def filesystem_local_server(*, now: datetime | None = None) -> MCPServer:
         last_ping=t,
         version="0.4.0",
         capabilities=["tools"],
+        approved=False,
+        approved_by="",
+        provenance="platform:mcp-filesystem-local",
+        allowed_tools=[],
     )
 
 
@@ -212,6 +223,14 @@ def merge_manifest_catalog(
                 last_ping=datetime.now(UTC),
                 version=str(raw.get("version")) if raw.get("version") else None,
                 capabilities=list(raw.get("capabilities") or []),
+                approved=False,
+                approved_by="",
+                provenance=str(raw.get("_manifest_path", "manifest")),
+                allowed_tools=[
+                    str(spec.get("name"))
+                    for spec in raw.get("tools") or []
+                    if isinstance(spec, dict) and spec.get("name")
+                ],
             )
         else:
             existing = by_id[sid]
@@ -222,6 +241,9 @@ def merge_manifest_catalog(
                     "url": raw.get("url", existing.url),
                     "version": raw.get("version", existing.version),
                     "capabilities": raw.get("capabilities", existing.capabilities),
+                    # Manifest refreshes may add descriptions, never approval
+                    # or the host-owned tool exposure ceiling.
+                    "allowed_tools": existing.allowed_tools,
                 }
             )
         for idx, spec in enumerate(raw.get("tools") or [], start=1):

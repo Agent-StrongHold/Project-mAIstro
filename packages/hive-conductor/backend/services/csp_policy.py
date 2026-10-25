@@ -42,10 +42,10 @@ from maistro.security.content_security_policy import NONE, SELF, ContentSecurity
 #: Vite's dev server, which the SPA's HMR client opens a WebSocket back to.
 #: Only ever added to a development policy.
 VITE_DEV_ORIGINS: tuple[str, ...] = (
-    "http://localhost:5173",
-    "ws://localhost:5173",
-    "http://127.0.0.1:5173",
-    "ws://127.0.0.1:5173",
+    "http://localhost:5173",  # DevSkim: ignore DS162092 until 2027-12-31
+    "ws://localhost:5173",  # DevSkim: ignore DS162092 until 2027-12-31
+    "http://127.0.0.1:5173",  # DevSkim: ignore DS162092 until 2027-12-31
+    "ws://127.0.0.1:5173",  # DevSkim: ignore DS162092 until 2027-12-31
 )
 
 
