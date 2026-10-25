@@ -6,7 +6,7 @@
  */
 
 import { expect, test, type BrowserContext, type Page, type Route } from "@playwright/test";
-import { loginAsAdmin, setupIfNeeded } from "./session";
+import { loginAsPM, setupIfNeeded } from "./session";
 
 test.describe.configure({ mode: "serial" });
 
@@ -43,7 +43,8 @@ test.beforeAll(async ({ browser }) => {
   });
   page = await context.newPage();
   await setupIfNeeded(page);
-  await loginAsAdmin(page);
+  // Chat sessions refuse the admin account — use the daily PM user (#1822).
+  await loginAsPM(page);
   workspaceId = await seedWorkspace(page);
   await context.addInitScript(
     ({ workspaceId: id }) => {

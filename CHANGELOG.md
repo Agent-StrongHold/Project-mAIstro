@@ -60,7 +60,7 @@ or placeholder-only section.
   `{ answer }`) so the durable store can resume. Does not settle HITL or Run
   state outside that door.
 
-- **DAG Run projection writers honor #1036 nonterminal mirroring.** HTTP
+- **DAG Run projection writers honor nonterminal mirroring (#1036).** HTTP
   `_record_run_projection` and live `LiveRunProjection.record_result` now
   mirror CREATED/QUEUED/RUNNING/WAITING/PAUSED via `record_status` /
   `record_outcome` (exact status, `finished_at` null) instead of leaving the
@@ -99,7 +99,7 @@ or placeholder-only section.
   as CLI — then refreshes the projection. Defer/dismiss persistence remains a
   later slice.
 
-- **DagRuns Cancel control through the #1036 inspection door.** Non-terminal
+- **DagRuns Cancel control through the inspection door (#1036).** Non-terminal
   Runs show Cancel on the detail pane; it posts `POST /v1/dag-runs/{id}/cancel`
   (canonical `RunExecutionService.cancel_run`) and re-reads the inspection
   seam — no product-private lifecycle writer.

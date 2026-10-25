@@ -572,7 +572,11 @@ async def test_defer_and_dismiss_routes_are_member_scoped(
 
     ok = admin_client.post(
         f"/v1/workspaces/{ws_admin}/attention/dismiss",
-        json={"sourceKind": "hitl_node_run", "sourceId": "att-dismiss-route/ask", "action": "defer"},
+        json={
+            "sourceKind": "hitl_node_run",
+            "sourceId": "att-dismiss-route/ask",
+            "action": "defer",
+        },
     )
     assert ok.status_code == 200, ok.text
     assert ok.json()["ok"] is True

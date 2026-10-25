@@ -6,7 +6,7 @@
  */
 
 import { expect, test, type BrowserContext, type Page } from "@playwright/test";
-import { loginAsAdmin, setupIfNeeded } from "./session";
+import { loginAsPM, setupIfNeeded } from "./session";
 
 test.describe.configure({ mode: "serial" });
 
@@ -19,10 +19,12 @@ test.beforeAll(async ({ browser }) => {
   });
   await context.addInitScript(() => {
     window.localStorage.setItem("hive_onboarded", "1");
+    window.localStorage.removeItem("hive_last_surface");
   });
   page = await context.newPage();
   await setupIfNeeded(page);
-  await loginAsAdmin(page);
+  // Chat landing / continuity needs the daily user — admin is refused chat.
+  await loginAsPM(page);
 });
 
 test.afterAll(async () => {
@@ -30,7 +32,10 @@ test.afterAll(async () => {
 });
 
 test("with no preference, the index lands on Workspace Home", async () => {
-  await page.request.put("/v1/profile", { data: { preferences: {} } });
+  await page.request.put("/v1/profile", {
+    data: { preferences: { workspace_restore_aggressiveness: "off" } },
+  });
+  await page.evaluate(() => window.localStorage.removeItem("hive_last_surface"));
   await page.goto("/");
   await page.waitForURL("**/home");
   await expect(page.getByRole("heading", { name: "Home", exact: true })).toBeVisible({
@@ -40,9 +45,17 @@ test("with no preference, the index lands on Workspace Home", async () => {
 });
 
 test("a saved preference steers the index to that surface", async () => {
+  // Restore off + clear last-surface so recent-return cannot outrank the
+  // explicit default (#1050 precedence).
   await page.request.put("/v1/profile", {
-    data: { preferences: { workspace_default_landing: "/chat" } },
+    data: {
+      preferences: {
+        workspace_default_landing: "/chat",
+        workspace_restore_aggressiveness: "off",
+      },
+    },
   });
+  await page.evaluate(() => window.localStorage.removeItem("hive_last_surface"));
   await page.goto("/");
   await page.waitForURL("**/chat");
   // Chat has no h1 — assert the session surface, not a page title.
