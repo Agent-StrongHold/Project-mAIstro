@@ -274,6 +274,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/auth/capabilities": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Capabilities
+         * @description Return the live effective policy used by the HTTP authorization gate.
+         *
+         *     This is intentionally a fresh, no-store projection. The frontend may use it
+         *     for convenience, but it cannot grant access: AuthMiddleware evaluates the
+         *     same policy again on every request.
+         */
+        get: operations["capabilities_v1_auth_capabilities_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/auth/elevate": {
         parameters: {
             query?: never;
@@ -8305,6 +8329,39 @@ export interface operations {
                 entry_id: string;
             };
             cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    capabilities_v1_auth_capabilities_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: {
+                hive_session?: string | null;
+            };
         };
         requestBody?: never;
         responses: {
