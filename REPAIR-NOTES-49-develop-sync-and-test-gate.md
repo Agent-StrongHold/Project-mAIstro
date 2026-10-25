@@ -130,3 +130,52 @@ Unverified locally (infrastructure-bound, tree content identical to green
 develop `4019249e`): the two frontend `npm ci`+lint+build steps and the
 OpenAPI types diff (both frontends and the hive backend are untouched by
 this branch, so the steps' inputs are byte-identical to develop's green run).
+
+## 5. Independent verification round at `c6d05e5cc` (job `de9521269e`)
+
+Re-verified every #49 acceptance criterion from scratch at this head; no code
+changes (tree was already clean, head unchanged). Executed evidence:
+
+- `uv sync --locked --extra dev --extra bootstrap` — ok (bootstrap extra
+  restored after the driver's dev-only sync uninstalled it).
+- `pytest packages/maistro-core/tests/builders -q` — **203 passed, 1 xfailed**.
+- `pytest tests/cross_product_parity -q` (dev mode) — **26 passed**.
+- `MAISTRO_PARITY_STRICT=1 pytest tests/cross_product_parity -v` — **20
+  passed, 6 failed**; the two Builders strict tests
+  (`test_builders_created_work_has_public_conductor_inspection_seams`,
+  `test_builders_required_scenario_emits_strict_closeout_evidence`) PASS; the 6
+  failures are `DependencyUnavailable`/`ScenarioAbstained` guards naming open
+  #231 (schedule x2), #51 (evolve x2), #463 (golden x2) — outside this lane.
+- Code census re-checked by grep: no `class GraphPipelineExecutor` anywhere in
+  `packages/*/src`; `CanonicalGraphPipelineExecutor(` constructed at
+  `builders/interactive.py:203`, `builders/dag.py:590`, `builders/pipeline.py:634`;
+  `cli/_builders_tui.py:233-235` executes via `BuildersExecutionSpine.open()` ->
+  `spine.executor().execute(...)` with `TurnRunner` only as the node's model
+  strategy; `StageStatus` is a projection derived from canonical records
+  (`graph_executor.py:742-744`); builders `RunStatus` is canonical
+  `maistro.runs.model.RunStatus`; `_load_spec_context` retains domain spec state
+  (`pipeline.py:548`). Attempt chronology pinned by
+  `test_gate_revision_is_new_node_run_and_attempt_evidence_with_feedback`
+  (4 NodeRuns / 4 distinct Attempts for one gate revision) and
+  `test_revision_dominates_a_concurrent_wave_after_it_settles` (documents #1067
+  defect 1). #1067 (closed 2026-09-23) and #1068 (closed 2026-10-25) confirmed
+  closed in the captured dispatch snapshot.
+- `scripts/check-suite-inventory.py` (CI env `REQUIRE_AUTH=false
+  MAISTRO_DRY_RUN=1`) — **ok: 21 suite(s) match** (the bc9bd8b
+  `DRIFT tests/: expected 5888, collected 5889` root cause is gone with the
+  develop sync).
+- `scripts/check-convergence-matrix.py` — OK, 52 subsystems / 1475 modules;
+  Builders row is MIGRATE with the legacy executor parity-only (census updated).
+- `scripts/check-reachability.py` — rc=0, 104 unreachable, **zero builders
+  modules** in `quality/reachability-baseline.json` (identical to the develop
+  base: reclassification is truthful, no fake roots).
+- `scripts/check-vulture-baseline.py packages/*/src --min-confidence 60
+  --exclude '*/third_party/*'` — 1256 reviewed identities == 1256 findings, rc=0
+  (CI's exact arguments; no ledger amendment needed).
+- `uv run mypy packages/maistro-core/src` — no issues in 830 files.
+- `uv run ruff check .` / `ruff format --check .` — clean (matches the driver's
+  check-1/check-2 logs).
+- pyproject.toml has **no `filterwarnings = error`** (grep rc=1), so the red
+  run's `RuntimeError('Event loop is closed')` aiosqlite thread lines are
+  warnings-summary noise and cannot fail a pytest step; the only real failure at
+  `bc9bd8b` was the suite-inventory drift step, resolved by the sync.
