@@ -80,3 +80,53 @@ REQUIRE_AUTH=false MAISTRO_DRY_RUN=1 uv run python scripts/check-suite-inventory
 No test was added or removed in this round, so no new inventory note is
 required; `docs/testing/inventory-notes/49-builders-canonical-cutover.md`
 already records the lane's count-neutral parity-suite change.
+
+## 4. Verification round at `cc2b7913b` (merge of develop `4019249e`)
+
+Re-validation after the sync merge, against the `test` job's own steps
+(ci.yml), because the last merge-queue evaluation (run 40184962631) red at
+`bc9bd8b` predates it and `bc9bd8b` is an ancestor of this head:
+
+- `uv sync --locked --extra dev --extra bootstrap` (CI's exact extras; the
+  `--extra bootstrap` member is not installed by `--extra dev` alone and two
+  `test`-job suites need it).
+- `scripts/check-suite-inventory.py` — **ok: 21 suite(s) match** (tests/
+collects 6032 == baseline; the bc9bd8b `DRIFT tests/: expected 5888,
+collected 5889` is gone with the synced ledger). Interpreting one local
+artifact: the two `bare_python=True` hive suites fail collection when the
+check is driven by an interpreter without the hive backend requirements —
+ci.yml installs those system-wide (`uv pip install --system -r ...requirements.txt`)
+before this step; driving the check via `uv run python` (populated
+interpreter, same recipes) is the faithful local reproduction.
+- Cross-suite leakage step, CI's exact argv and env — `REQUIRE_AUTH=false
+MAISTRO_DRY_RUN=1 uv run pytest tests/ packages/hive-conductor/backend/tests
+packages/maistro-design/tests -q --timeout=60` — **10617 passed, 169
+skipped** (this step's trees produced the `Event loop is closed` aiosqlite
+thread warnings in the red log; they are warnings, `filterwarnings=error` is
+not set, and the step is green).
+- Remaining per-tree pytest steps — server+turing+turing backend+ext-harness
++ext-sdk: **1416 passed, 10 skipped**.
+- `tests/cross_product_parity` development mode (the `cross-product-parity`
+job): **26 passed**. Strict mode (`MAISTRO_PARITY_STRICT=1`, a
+workflow_dispatch-only workflow): the two Builders strict tests pass here
+and failed on the develop base `4019249e` (verified in a throwaway worktree
+at that sha: 8 strict failures there, 6 here — the remaining 6 are
+scheduler/evolve/golden scenarios owned by #231/#51/#463, pre-existing and
+documented in the inventory note); no regression, net -2.
+- `scripts/check-test-duplicates.py` — ok. `scripts/check-convergence-matrix.py`
+— OK, 52 subsystems / 1475 modules. `uv run mypy packages/maistro-core/src`
+— no issues in 830 files. `npm audit --audit-level=high` (canvas frontend,
+lockfile-based like CI) — found 0 vulnerabilities.
+- Acceptance spot-checks at this head: `CanonicalGraphPipelineExecutor` is
+constructed in production modules (`builders/interactive.py:203`,
+`builders/dag.py:590`, `builders/pipeline.py:634`); legacy
+`GraphPipelineExecutor` has no class definition left in src (only a
+historical comment at `builders/graph_executor.py:209`); `StageStatus` is
+projection-only (canonical records -> receipts, `graph_executor.py:742`);
+the CLI TUI executes through `BuildersExecutionSpine.executor()` with
+`TurnRunner` demoted to the model-driving loop (`cli/_builders_tui.py:194-227`).
+
+Unverified locally (infrastructure-bound, tree content identical to green
+develop `4019249e`): the two frontend `npm ci`+lint+build steps and the
+OpenAPI types diff (both frontends and the hive backend are untouched by
+this branch, so the steps' inputs are byte-identical to develop's green run).
