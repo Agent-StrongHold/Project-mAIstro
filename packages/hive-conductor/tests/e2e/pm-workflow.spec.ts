@@ -137,7 +137,18 @@ test.describe("PM Workflow — Full UI Walkthrough", () => {
     // the request actually traversed the canonical graph executor.
     expect(run.status).toBe("failed");
     expect(String(run.execution_id)).toBeTruthy();
-    expect(String(run.error)).toContain("host policy");
+    // The transport surface stays sanitized (develop's CodeQL round, #2288;
+    // unit-pinned in test_dags_routes.py): `error` names the exception KIND
+    // only. That kind is raised exactly when a canonical Run reached a
+    // non-success terminal state — the spine-absent refusal surfaces a
+    // different kind and no execution id — so this line still proves the
+    // request traversed the canonical graph executor.
+    expect(String(run.error)).toContain("CanonicalDagExecutionError");
+    expect(String(run.error)).toContain("see server logs");
+    // The refusal itself is canonical-Run fact, projected back in `result`
+    // (the sanitized `error` field never carries it): the queen node's
+    // execution records the host-policy refusal verbatim.
+    expect(String(run.result?.error)).toContain("host policy");
   });
 
   test("07 — the spine-executed run persists as failed and a definition ID is not a Run ID", async ({ page }) => {

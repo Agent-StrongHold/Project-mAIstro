@@ -295,7 +295,16 @@ def test_berlin_schedule_keeps_wall_time_and_season_offset(
     assert r.status_code == 201, f"Berlin schedule create failed: {r.text}"
     sid = r.json()["id"]
 
-    fired = client.post(f"/v1/schedules/{sid}/run", json={})
+    # The fire drives a full canonical DAG execution synchronously (the route
+    # awaits `fire_now`, whose prompt consumption awaits the executor tick —
+    # scheduler.py `_consume_promptly`), so its latency is the executor's, not
+    # a transport constant: while the UTC schedule's natural fire was executing
+    # concurrently, this exact request observably outlived the client fixture's
+    # 30s default and ReadTimeout'd (driver validation battery at this head).
+    # One explicit generous bound for this one request absorbs machine speed
+    # the way `_NATURAL_FIRE_MARGIN_S` does, without asserting a latency
+    # contract the API never made; the GET polls keep the honest 30s.
+    fired = client.post(f"/v1/schedules/{sid}/run", json={}, timeout=300.0)
     assert fired.status_code == 200, f"Manual fire failed: {fired.status_code} {fired.text}"
 
     projected = _next_run(client, sid)

@@ -528,3 +528,64 @@ and re-verified first-hand (verify job `93e24fb96ebf4c2098cc60edab911a87`):
   override, deleted after use. The harness talks over the compose network
   (`http://hive:8101`), so CI behavior is unaffected. Stack torn down with
   `down -v`; tree carries only this note.
+
+## Repair round: the hosted UI failure + a manual-fire timeout that encoded
+## machine speed (2026-10-25, head `af7519a5ea68`)
+
+Hosted CI at this head failed `hive-conductor-e2e-ui` deterministically
+(1 failed / 240 passed, job 121252949160; same failure at `cc4b793e6`, job
+121236792754) — the `integration-scope` blocker. Root cause: pm-workflow
+spec 06 asserted `run.error` contains `host policy`, which became unpassable
+when the final develop sync (`af7519a5e`) merged #2288's
+`py/stack-trace-exposure` sanitization — the transport `error` is now the
+kind-only `CanonicalDagExecutionError: execution failed; see server logs`
+(`routes/dags.py` + `services/graph_runner.py`, unit-pinned in
+`test_dags_routes.py`). The refusal itself is canonical-Run fact carried in
+the result's `error` (projected by `canonical_dag_runner._project` from the
+node's `PermissionError("Execution blocked: host policy did not authorize
+this node")`). The spec now pins both surfaces where production carries
+them; full evidence and the f283f41a template-reuse unit pin live in
+`docs/testing/inventory-notes/290-spec06-sanitized-error.md`. No production
+code changed this round; test counts unchanged (delta: none).
+
+Second repair, also harness-truth: the Berlin schedule's manual fire in
+`tests/e2e/test_scheduler_timezone_container.py` rode the client fixture's
+30s default timeout, but the fire awaits `fire_now`, whose prompt
+consumption awaits the executor tick (`services/scheduler.py
+`_consume_promptly`) — the latency is one full canonical DAG execution, not
+a transport constant. Observed live: the validation battery's run of this
+file failed with `httpx.ReadTimeout` at 30.0s on the fire POST while the
+UTC schedule's natural fire was executing concurrently in the same harness
+container, against a stack that had been healthy for hours; the identical
+request completed in ~16s when re-run warm. The fire now carries one
+explicit 300s bound (the same order as the suite's natural-fire budget, and
+how `_NATURAL_FIRE_MARGIN_S` already absorbs machine speed); the GET polls
+keep the honest 30s. Test count unchanged.
+
+Re-verified first-hand at this tree, compose image
+`sha256:f9e9101549194e679be284d636f5505c7fed62d865e77f22037502d73762fb98`
+(`hive-conductor-hive:latest`, CI-exact compose build; in-image tz source
+re-read from the live post-restart container:
+`tzdata-wheel:/app/venv/lib/python3.13/site-packages/tzdata/zoneinfo`,
+`scheduler.running=true`, `degraded=true` is the harness's truthful F3
+no-gateway surface):
+
+- CI-exact api phase (`up --build --abort-on-container-exit
+  --exit-code-from api-tests api-tests`): **14 passed / 14 skipped in
+  212.45s, exit 0** — UTC `*/5` natural fire by the tick alone, Berlin 04:30
+  manual fire with wall time + CET/CEST offset + exact instant, invalid-zone
+  422s, `/health` tz/scheduler pins; restart-marked test skipped
+  pre-restart as designed. Restart phase (CI's `start hive` + health poll +
+  `SCHED_TZ_AFTER_RESTART=1 -k restart_recovery`): **1 passed in 0.46s** —
+  schedules and cursors persisted, `next_run` recomputed by the new process.
+- The validation battery's exact bare command against the same live stack
+  (`uv run pytest packages/hive-conductor/tests/e2e/
+  test_scheduler_timezone_container.py -q`): **4 passed, 1 skipped in
+  266.75s** — the previously ReadTimeout-ing fire passes under its explicit
+  bound.
+- CI-exact UI phase on a fresh stack: **241 passed (4.6m), exit 0** —
+  spec 06 green (see the sanitized-error note above).
+- Gates: `ruff check .` / `ruff format --check .` clean; suite inventory ok
+  for `packages/hive-conductor/backend/tests` (4105) and
+  `packages/hive-conductor/tests/e2e` (28); CI-exact vulture ledger
+  (1256 = 1256). Stack torn down with `down -v`.
