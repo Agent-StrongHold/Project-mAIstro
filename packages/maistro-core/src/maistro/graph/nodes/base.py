@@ -436,6 +436,7 @@ PAUSE_REASON_WAKERS: dict[str, tuple[str, ...]] = {
         "resume_due_graph_runs",
     ),
     PAUSE_WAITING_ON_JIRA_SUBTASKS: ("Container.resume_parked_runs",),
+    PAUSE_AWAITING_DELEGATION_RECONCILIATION: ("resume_due_graph_runs",),
 }
 
 #: Import paths for the symbolic names above. Keeping the public names stable

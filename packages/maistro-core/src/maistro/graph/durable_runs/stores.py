@@ -182,9 +182,6 @@ def _earliest_wakeup(
         pause_metadata = pause.get("metadata")
         if not isinstance(pause_metadata, Mapping):
             continue
-        reason = str(pause_metadata.get("paused_reason") or "")
-        if reason not in TIMER_RESUMABLE_PAUSE_REASONS | DEADLINE_WOKEN_PAUSE_REASONS:
-            continue
         raw_deadline = pause.get("resume_at")
         if not isinstance(raw_deadline, str):
             continue

@@ -13,6 +13,8 @@ from enum import StrEnum
 from typing import Any, Protocol, runtime_checkable
 
 from maistro.security.redact import redact
+from maistro.types.security import AuditEntry as AuditEntry
+from maistro.types.security import Violation as _Violation
 
 
 class IdentityKind(StrEnum):

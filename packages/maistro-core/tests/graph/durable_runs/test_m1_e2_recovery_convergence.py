@@ -65,6 +65,7 @@ async def test_cross_instance_polling_writes_the_canonical_external_result() -> 
         run_id="remote-poll-parent",
         workspace_id=graph.workspace_id,
         project_id=graph.project_id,
+        actor_principal_id="test-actor",
         graph=GraphSnapshot.from_graph(graph),
         status=RunStatus.WAITING,
     )
@@ -131,6 +132,7 @@ async def test_external_completion_wakes_a_system_owned_waiting_run() -> None:
         run_id="remote-parent",
         workspace_id=graph.workspace_id,
         project_id=graph.project_id,
+        actor_principal_id="test-actor",
         graph=GraphSnapshot.from_graph(graph),
         status=RunStatus.WAITING,
     )
@@ -184,7 +186,7 @@ async def test_recovery_rederives_parent_after_node_run_settlement_write() -> No
     )
     store = InMemoryRunStore(project_store=projects)
     graph = _graph(workspace_id, project.project_id)
-    run = await store.create_run(graph)
+    run = await store.create_run(graph, actor_principal_id="test-actor")
     await store.transition_run(run.run_id, RunStatus.QUEUED)
     await store.transition_run(run.run_id, RunStatus.RUNNING)
     node_run = await store.create_node_run(run.run_id, node_id="work")
@@ -269,6 +271,7 @@ def test_external_result_preserves_a_second_parked_frontier_deadline() -> None:
         run_id="frontier-parent",
         workspace_id=graph.workspace_id,
         project_id=graph.project_id,
+        actor_principal_id="test-actor",
         graph=GraphSnapshot.from_graph(graph),
         status=RunStatus.WAITING,
     )
@@ -318,6 +321,7 @@ async def test_external_result_is_persisted_by_the_in_memory_checkpoint_store() 
         run_id="external-store",
         workspace_id=graph.workspace_id,
         project_id=graph.project_id,
+        actor_principal_id="test-actor",
         graph=GraphSnapshot.from_graph(graph),
         status=RunStatus.WAITING,
     )

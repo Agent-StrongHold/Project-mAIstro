@@ -42,12 +42,6 @@ class DurableRunStore(Protocol):
         workspace_id: str | None = None,
     ) -> list[DurableRunRecord]: ...
 
-        ``after`` is a ``(created_at_iso, run_id)`` keyset cursor. Bounded
-        fair scans (#1056, #1109) page through it instead of re-reading the
-        same fixed prefix every tick.
-        """
-        ...
-
     async def list_due(
         self,
         *,
