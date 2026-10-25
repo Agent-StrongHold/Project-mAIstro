@@ -37,6 +37,7 @@ from services.workspace_agent import (
     WorkspaceNotFound,
     persona_template_id,
     resolve_workspace_agent,
+    set_workspace_agent_persona,
 )
 from services.workspace_authority import create_workspace as create_canonical_workspace
 from services.workspace_authority import delete_workspace as delete_canonical_workspace
@@ -416,6 +417,77 @@ async def update_tool_bindings(
     if await member_role(requester, workspace_id) != "owner":
         raise HTTPException(status_code=403, detail="only an owner can update tool bindings")
     return await update_presentation(workspace_id, tool_bindings=body.bindings)
+
+
+class WorkspaceAgentPersonaResponse(BaseModel):
+    """The one Workspace Agent's identity + current persona (#2277 / #1037)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    workspace_id: str
+    workspace_agent_id: str
+    persona_template_id: str
+    created_at: datetime
+
+
+class SetWorkspaceAgentPersonaBody(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    persona_template_id: str
+
+
+@router.get("/{workspace_id}/agent", response_model=WorkspaceAgentPersonaResponse)
+async def get_workspace_agent(workspace_id: str, request: Request) -> WorkspaceAgentPersonaResponse:
+    """Read the Workspace Agent's stable id and current persona (#2277)."""
+    requester = _user_id(request)
+    if await visible_view(requester, workspace_id) is None:
+        raise HTTPException(status_code=404, detail="workspace not found")
+    try:
+        agent = await resolve_workspace_agent(workspace_id)
+    except WorkspaceNotFound as exc:
+        raise HTTPException(status_code=404, detail="workspace not found") from exc
+    except WorkspaceAgentConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return WorkspaceAgentPersonaResponse(
+        workspace_id=workspace_id,
+        workspace_agent_id=agent.id,
+        persona_template_id=persona_template_id(agent),
+        created_at=agent.created_at,
+    )
+
+
+@router.put("/{workspace_id}/agent", response_model=WorkspaceAgentPersonaResponse)
+async def put_workspace_agent_persona(
+    workspace_id: str,
+    body: SetWorkspaceAgentPersonaBody,
+    request: Request,
+) -> WorkspaceAgentPersonaResponse:
+    """Swap the Workspace Agent's persona without changing its id (#2277).
+
+    Same durable write as the Agent tool `set_workspace_agent_persona` —
+    `services.workspace_agent.set_workspace_agent_persona` is the one door.
+    """
+    requester = _user_id(request)
+    if await visible_view(requester, workspace_id) is None:
+        raise HTTPException(status_code=404, detail="workspace not found")
+    if await member_role(requester, workspace_id) != "owner":
+        raise HTTPException(
+            status_code=403, detail="only an owner can swap the Workspace Agent persona"
+        )
+    try:
+        agent = await set_workspace_agent_persona(workspace_id, body.persona_template_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except WorkspaceNotFound as exc:
+        raise HTTPException(status_code=404, detail="workspace not found") from exc
+    except WorkspaceAgentConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return WorkspaceAgentPersonaResponse(
+        workspace_id=workspace_id,
+        workspace_agent_id=agent.id,
+        persona_template_id=persona_template_id(agent),
+        created_at=agent.created_at,
+    )
 
 
 @router.delete("/{workspace_id}", status_code=204)

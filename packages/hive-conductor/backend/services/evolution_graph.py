@@ -316,7 +316,8 @@ class _TournamentWork:
             if genome.eval_scores:
                 scored.append(genome)
         shuffled = list(scored)
-        random.shuffle(shuffled)
+        # Tournament pairing only — not a cryptographic use of randomness.
+        random.shuffle(shuffled)  # DevSkim: ignore DS148264 until 2027-12-31
         pairs = [
             (shuffled[index].id, shuffled[index + 1].id) for index in range(0, len(shuffled) - 1, 2)
         ]

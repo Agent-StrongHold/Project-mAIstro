@@ -104,6 +104,7 @@ from maistro.runs.sources import (
     SCHEDULE_FIRE_ID_KEY,
     SCHEDULE_ID_KEY,
     SCHEDULE_INPUTS_KEY,
+    SCHEDULE_REQUESTED_BY_KEY,
     SCHEDULE_SOURCE,
     SCHEDULE_TRIGGER_KEY,
     SCHEDULE_TRIGGER_MANUAL,
@@ -133,6 +134,11 @@ if TYPE_CHECKING:
     from maistro.scheduling.store import ScheduleStore
 
 logger = logging.getLogger("maistro.scheduling.admission")
+
+#: Provenance key recording the service that performed the background admission.
+SCHEDULER_SERVICE_ID_KEY = "scheduler_service_id"
+#: The fixed process identity is distinct from the schedule's acting principal.
+SCHEDULER_SERVICE_ID = "hive-scheduler"
 
 #: Provenance key recording a scheduled Run's own correlation root (#1063).
 #: `admit_due` runs on the background tick loop, never inside an incoming
@@ -528,6 +534,7 @@ class ScheduleRunAdmitter:
         active_run: bool = False,
         manual: bool = False,
         fire_id: str | None = None,
+        requested_by: str | None = None,
     ) -> ScheduleAdmission:
         """Admit due occurrences, or one explicit manual occurrence.
 
@@ -541,10 +548,16 @@ class ScheduleRunAdmitter:
         logical request reconcile to the Run the first call created (#1120),
         the same authority, template, Run, occurrence claim, and cursor as a
         nominal occurrence. A manual fire without a `fire_id` mints one, which
-        makes each call its own deliberate firing.
+        makes each call its own deliberate firing. `requested_by` is the
+        authenticated principal that asked for the manual fire, recorded on
+        the Run separately from the schedule's acting principal (#1201) —
+        the fire consumes the actor's authority, but provenance names the
+        caller that spent it.
         """
         if manual:
-            return await self._admit_manual(schedule, now=now, fire_id=fire_id)
+            return await self._admit_manual(
+                schedule, now=now, fire_id=fire_id, requested_by=requested_by
+            )
 
         if schedule.pending_fires:
             # A manual fire died mid-window and left its marker behind
@@ -1031,6 +1044,7 @@ class ScheduleRunAdmitter:
         *,
         now: datetime,
         fire_id: str | None = None,
+        requested_by: str | None = None,
     ) -> ScheduleAdmission:
         """Admit the one occurrence the caller asked for *now*, off the cron.
 
@@ -1118,7 +1132,9 @@ class ScheduleRunAdmitter:
 
         fire = FireDecision(scheduled_for=now, catchup=False)
         try:
-            run_id = await self._admit_one(reserved, template, fire, fire_id=token)
+            run_id = await self._admit_one(
+                reserved, template, fire, fire_id=token, requested_by=requested_by
+            )
         except DuplicateOccurrence:
             return await self._duplicate_manual_receipt(schedule, now, token)
         except BaseException:
@@ -1410,6 +1426,7 @@ class ScheduleRunAdmitter:
         fire: FireDecision,
         *,
         fire_id: str | None = None,
+        requested_by: str | None = None,
     ) -> str:
         graph = template.instantiate(project_id=schedule.project_id, name=schedule.name or None)
         provenance: dict[str, Any] = {
@@ -1421,6 +1438,7 @@ class ScheduleRunAdmitter:
             # different identity and fire it twice.
             SCHEDULED_FOR_KEY: canonical_occurrence_instant(fire.scheduled_for),
             SCHEDULE_CATCHUP_KEY: fire.catchup,
+            SCHEDULER_SERVICE_ID_KEY: SCHEDULER_SERVICE_ID,
         }
         if fire_id is not None:
             # A manual fire's identity is its caller-stable token, not the
@@ -1434,6 +1452,13 @@ class ScheduleRunAdmitter:
             # Run from before the distinction existed (#1120), which is a
             # different fact from "this was a nominal occurrence".
             provenance[SCHEDULE_TRIGGER_KEY] = SCHEDULE_TRIGGER_MANUAL
+            if requested_by:
+                # The fire spends the schedule actor's authority, but a
+                # specific authenticated principal asked for it (#1201).
+                # Named only when known: a tick fire has no requester, and
+                # the key's absence must keep meaning "no requester", not
+                # "nobody looked".
+                provenance[SCHEDULE_REQUESTED_BY_KEY] = requested_by
         else:
             provenance[SCHEDULE_TRIGGER_KEY] = SCHEDULE_TRIGGER_RECURRING
         if schedule.inputs:

@@ -55,6 +55,8 @@ async def test_container_exposes_all_new_subsystems() -> None:
         "spawn_harness_node",
         "capability_effects",
         "usage_log",
+        "code_registry",
+        "code_invoker",
     ):
         assert getattr(container, attr) is not None, f"container.{attr} is not wired"
 
@@ -91,6 +93,86 @@ async def test_flush_usage_log_is_a_noop_without_persistence() -> None:
     container.usage_log.record("provider:model", input_tokens=3, now=1000.0)
     await container.flush_usage_log()  # must not raise
     assert container.usage_log.events_for("provider:model") != ()
+
+
+async def test_fresh_container_provisions_the_configured_workspace_and_its_owner() -> None:
+    """#1152 review: the Run boundary must never outlive its membership rows.
+
+    A fresh standalone deployment admits Runs into `config.workspace_id`
+    through the default admitter path, and the Run read boundary answers on
+    Workspace membership. Startup therefore provisions the configured
+    Workspace and its owner (the unauthenticated `dev` principal) before the
+    boundary is installed — otherwise the very first admitted run_id would
+    404 for the only principal the server can name.
+    """
+    from maistro.workspaces.model import WorkspaceRole
+    from maistro.workspaces.wiring import DEFAULT_WORKSPACE_OWNER
+
+    container = await _container()
+    workspace = await container.workspace_store.get(container.task_admitter.default_workspace_id)
+    assert workspace is not None, "startup did not provision the configured Workspace"
+    membership = await container.workspace_store.get_membership(
+        workspace.workspace_id, user_id=DEFAULT_WORKSPACE_OWNER
+    )
+    assert membership is not None and membership.role is WorkspaceRole.OWNER
+
+
+async def test_provisioning_is_idempotent_across_a_restart() -> None:
+    """A restart (or a replica) finds the row and skips the write: one
+    Workspace, one OWNER membership, no duplicate-root failure."""
+    from maistro.container import _provision_configured_workspace
+    from maistro.workspaces.model import WorkspaceRole
+    from maistro.workspaces.store import InMemoryWorkspaceStore
+    from maistro.workspaces.wiring import DEFAULT_WORKSPACE_OWNER
+
+    store = InMemoryWorkspaceStore()
+    await _provision_configured_workspace(store, "default")
+    await _provision_configured_workspace(store, "default")
+
+    workspace = await store.get("default")
+    assert workspace is not None
+    membership = await store.get_membership("default", user_id=DEFAULT_WORKSPACE_OWNER)
+    assert membership is not None and membership.role is WorkspaceRole.OWNER
+
+
+async def test_a_lost_create_race_keeps_provisioning_idempotent() -> None:
+    """The replica that lost the concurrent first start must not fail boot:
+    its create() loses to the winner's unique constraint, but the row the
+    winner wrote is exactly the one the loser was trying to make, so the
+    re-check swallows the refusal."""
+    from maistro.container import _provision_configured_workspace
+    from maistro.workspaces.store import InMemoryWorkspaceStore
+
+    class LostCreateRaceStore(InMemoryWorkspaceStore):
+        def __init__(self) -> None:
+            super().__init__()
+            self.create_attempts = 0
+
+        async def create(self, **kwargs: Any) -> Any:
+            self.create_attempts += 1
+            await super().create(**kwargs)  # the concurrent winner's row lands
+            raise RuntimeError("duplicate key value violates unique constraint")
+
+    store = LostCreateRaceStore()
+    await _provision_configured_workspace(store, "default")
+    assert store.create_attempts == 1
+    assert (await store.get("default")) is not None
+
+
+async def test_provisioning_fails_loudly_when_the_row_never_lands() -> None:
+    """A create() that raises with no visible row afterwards is a real fault,
+    not a lost race — the helper must propagate it, not boot half-wired."""
+    from maistro.container import _provision_configured_workspace
+
+    class BrokenStore:
+        async def get(self, workspace_id: str, *, principal_id: str | None = None) -> None:
+            return None
+
+        async def create(self, **kwargs: object) -> None:
+            raise RuntimeError("write refused")
+
+    with pytest.raises(RuntimeError, match="write refused"):
+        await _provision_configured_workspace(BrokenStore(), "default")  # type: ignore[arg-type]
 
 
 async def test_context_assembly_uses_the_canonical_scope_store() -> None:
@@ -317,7 +399,7 @@ class TestReplayAcknowledgementOnTheLog:
     """#836: `process_durable_events` must also acknowledge the settled
     position on the durable log itself (`EventLogStore.acknowledge_replay`).
     The `event_replay_cursors` table ships beside `event_log` on every
-    backend and revision 064 manages it in PostgreSQL; a bridge tick that
+    backend and revision 065 manages it in PostgreSQL; a bridge tick that
     never wrote it left the log's replay acknowledgement dead in production
     and the table permanently empty.
     """
@@ -749,6 +831,106 @@ async def test_skill_payload_verification_via_container() -> None:
     )
     allowed, reasons = container.verify_skill_payload("bound-skill", payload)
     assert allowed is True and reasons == ()
+
+
+# --- Code registry execution (ADR-069, #59) -------------------------------------
+
+
+async def test_invoke_code_refuses_unresolved_ref() -> None:
+    from maistro.code_registry.types import CodeRefUnresolved
+    from maistro.security.sentinel.authz_types import Principal
+
+    container = await _container()
+    principal = Principal(id="test", kind="human")
+
+    with pytest.raises(CodeRefUnresolved):
+        await container.invoke_code("nonexistent@1.0.0", {"x": 1}, principal)
+
+
+async def test_invoke_code_refuses_without_sandbox() -> None:
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    from maistro.code_registry.types import CodeEntry, CodeKind
+    from maistro.code_registry.verify import Ed25519Verifier
+    from maistro.security.sentinel.authz_types import Principal
+    from maistro.types.config import SecurityConfig
+
+    container = await _container(
+        security=SecurityConfig(permissions={"code.invoke.compensator": ["admin"]})
+    )
+    principal = Principal(id="test", kind="human", roles=("admin",))
+
+    # Register a signed entry
+    private_key = Ed25519PrivateKey.generate()
+    verifier = Ed25519Verifier(private_key.public_key().public_bytes_raw())
+    entry = CodeEntry(
+        name="test_compensator",
+        version="1.0.0",
+        kind=CodeKind.COMPENSATOR,
+        code_sha256="abc123",
+        signature=private_key.sign(b"test_compensator@1.0.0:compensator:abc123"),
+    )
+    container.code_registry.register(entry, verifier=verifier)
+
+    # No sandbox configured -> refused
+    result = await container.invoke_code("test_compensator@1.0.0", {"x": 1}, principal)
+    assert result.ok is False
+    assert result.isolation == "refused"
+    assert "no sandbox runtime configured" in result.reason
+
+
+async def test_invoke_code_sandbox_failure_keeps_unknown_isolation() -> None:
+    """A sandbox that raises after starting must NOT be labelled ``refused``.
+
+    ``refused`` asserts nothing ran; a post-start failure (timeout kill,
+    result-collection error) may have partially executed, so the honest label
+    is ``unknown`` (ADR-069 failure table).
+    """
+    import hashlib
+
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    from maistro.code_registry.execution import CodeInvoker, CodeSandbox
+    from maistro.code_registry.types import CodeEntry, CodeKind
+    from maistro.code_registry.verify import Ed25519Verifier
+    from maistro.security.sentinel.authz_types import Principal
+    from maistro.types.config import SecurityConfig
+
+    class _ExplodingSandbox:
+        """Sandbox that accepts the invocation, then dies mid-run (timeout-like)."""
+
+        async def execute(self, entry: CodeEntry, payload: dict) -> CodeSandbox:
+            raise TimeoutError("microVM over budget: killed")
+
+    container = await _container(
+        security=SecurityConfig(permissions={"code.invoke.compensator": ["admin"]})
+    )
+    principal = Principal(id="test", kind="human", roles=("admin",))
+
+    private_key = Ed25519PrivateKey.generate()
+    verifier = Ed25519Verifier(private_key.public_key().public_bytes_raw())
+    entry = CodeEntry(
+        name="test_compensator",
+        version="1.0.0",
+        kind=CodeKind.COMPENSATOR,
+        code_sha256=hashlib.sha256(b"body").hexdigest(),
+        signature=private_key.sign(
+            b"test_compensator@1.0.0:compensator:" + hashlib.sha256(b"body").hexdigest().encode()
+        ),
+    )
+    container.code_registry.register(entry, verifier=verifier)
+
+    container.code_invoker = CodeInvoker(  # type: ignore[assignment]
+        container.code_registry,
+        sentinel=container.code_invoker._sentinel,
+        warden_scan=container.code_invoker._warden_scan,
+        sandbox=_ExplodingSandbox(),
+    )
+
+    result = await container.invoke_code("test_compensator@1.0.0", {"x": 1}, principal)
+    assert result.ok is False
+    assert result.isolation == "unknown"
+    assert "over budget" in result.reason
 
 
 # --- Agent-harness DAG node adapters (ADR-062 spawn_harness) ------------------------

@@ -45,6 +45,13 @@ WORKSPACE_PG_TABLES: Final = (
 )
 
 
+#: The principal that owns the configured Workspace on a fresh deployment.
+#: Matches the server's unauthenticated-principal fallback (`dev`, in
+#: `maistro_server.api.auth`), so the calls an operator makes with auth off
+#: resolve as the Workspace's owner without a bootstrap step.
+DEFAULT_WORKSPACE_OWNER: Final = "dev"
+
+
 async def _workspaces_are_migrated(pg_pool: Any) -> bool:
     missing = [
         table
@@ -139,4 +146,9 @@ async def wire_workspace_store(
     return InMemoryWorkspaceStore(project_store=project_store, persona_store=persona_store)
 
 
-__all__ = ["WORKSPACE_PG_TABLES", "backend_of", "wire_workspace_store"]
+__all__ = [
+    "DEFAULT_WORKSPACE_OWNER",
+    "WORKSPACE_PG_TABLES",
+    "backend_of",
+    "wire_workspace_store",
+]
