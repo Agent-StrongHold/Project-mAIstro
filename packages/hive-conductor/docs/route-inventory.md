@@ -70,7 +70,7 @@ discoverability change, and dropping their links now would orphan live routes.
 | Route | Surface | Entry point | Disposition | Owner |
 |---|---|---|---|---|
 | `/profile` | Profile | Drawer user chip (`NavLink` on the signed-in username) | PROJECT → settings service | #1050 |
-| `/docs` | Documentation | `helpHref="/docs#…"` contextual link rendered by `PageHeader` on most pages (Schedules, Skills, Topology, Messages, Quotas, Audit, Containers, Agents, Missions, Evolution, MCP, Optimizer, Settings, CLI) | RETIRE (M3) | cutover plan §5 |
+| `/docs` | Documentation | `helpHref="/docs#…"` contextual link rendered by `PageHeader` on most pages (Schedules, Skills, Topology, Messages, Quotas, Audit, Containers, Agents, Missions, MCP, Optimizer, Settings, CLI) | RETIRE (M3) | cutover plan §5 |
 | `/decks` | Deck Builder | Embedded editor inside Design Studio (deck mode → "Open Deck editor"); the standalone route is the deep link to the same editor | KEEP (own lane) | #286, #773, #95 |
 
 ## Intentionally URL-only surfaces (documented exception)
@@ -88,6 +88,15 @@ or hides them and this issue may not promote or retire them:
 `tests/e2e/navigation-coverage.spec.ts` asserts both halves of this contract:
 these routes still render (they are not deleted) and the shell renders no nav
 link for them.
+
+## Hidden for v1.0 (no shipped route; restore later)
+
+| Former route | Surface | Disposition | Restore |
+|---|---|---|---|
+| `/evolution` | Evolution Engine | **HIDE v1.0** (#2275 / `conductor-411`): unregistered from `App.tsx`; page module retained in-tree; no nav entry; no stub claiming availability | **v1.2** — Evolve product surface owner remains #51 |
+
+`navigation-coverage.spec.ts` asserts `/evolution` does not present the Evolution
+Engine heading and that no Evolution nav link exists.
 
 ## Aliases, redirects, default routes
 
