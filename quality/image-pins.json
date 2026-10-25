@@ -4,19 +4,22 @@
     {
       "image": "python",
       "tag": "3.13.16-slim-bookworm",
-      "digest": "sha256:a1165e272e578941b84abc79e4ab38a0305cd12803a5c4247979ac7655f4d641",
-      "recorded": "2026-10-19",
-      "recorded_in": "#363",
-      "note": "CPython 3.13.16 on Debian bookworm-slim; the interpreter pin that keeps coincurve building from source only on purpose. Refreshed from 3.13.15 (#363): the grype leg of the container gate flags CPython binary HIGH/CRITICAL CVEs (CVE-2026-19445/19553/82049) whose fixes landed in 3.13.16.",
-      "used_by": ["Dockerfile", "packages/hive-conductor/Dockerfile"]
+      "digest": "sha256:73aa5faee130c60da030e105ec971ccf57473fbd22ce73bd6fc9ba99a40b838d",
+      "recorded": "2026-10-22",
+      "recorded_in": "#1152",
+      "note": "CPython 3.13.16 on Debian bookworm-slim; the interpreter pin that keeps coincurve building from source only on purpose. Refreshed from 3.13.15 (#363): the grype leg of the container gate flags CPython binary HIGH/CRITICAL CVEs (CVE-2026-19445/19553/82049) whose fixes landed in 3.13.16. Digest refreshed 2026-10-22 (#1152): security.yml run 39823108438 flags libexpat1 2.5.0-1+deb12u4 (CVE-2025-59375 / CVE-2026-77214, HIGH, fixed 2.5.0-1+deb12u5) in maistro-engine because the buildx gha cache still serves the pre-upgrade `apt-get upgrade` layer; the base-digest bump invalidates that cached layer so the rebuilt image upgrades to deb12u5 (locally verified: fresh builds already resolved deb12u5, so only the cached-CI layer was stale).",
+      "used_by": [
+        "Dockerfile",
+        "packages/hive-conductor/Dockerfile"
+      ]
     },
     {
       "image": "python",
       "tag": "3.12-slim",
-      "digest": "sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1",
-      "recorded": "2026-10-19",
-      "recorded_in": "#363",
-      "note": "CPython 3.12.x line as of the recording date (resolves to 3.12.15); research, RSI runner, e2e and sbx-tests images. Refreshed (#363): the grype leg of the container gate flags CPython binary HIGH/CRITICAL CVEs fixed in 3.12.15.",
+      "digest": "sha256:a0f57064cbdcd6285fa45f51237ab0b35ea8ebaed06a1f5973e89e19dfb86704",
+      "recorded": "2026-10-24",
+      "recorded_in": "#93",
+      "note": "CPython 3.12.x line as of the recording date (resolves to 3.12.15); research, RSI runner, e2e and sbx-tests images. Refreshed (#363): the grype leg of the container gate flags CPython binary HIGH/CRITICAL CVEs fixed in 3.12.15. Digest refreshed 2026-10-24 (#93): security.yml runs 40081082641/40088232144/40091186336 flag libbrotli1 1.1.0-2+b7 (CVE-2026-111497, HIGH, fixed 1.1.0-2+deb13u1 / DSA-6582-1) in maistro-rsi-runner even though the same runs' build logs show the re-executed apt stage installing 1.1.0-2+deb13u1 — buildx cache keys are computed pre-execution from the instruction string and parent key chain, never from a RUN's fresh bytes, so `--no-cache-filter runtime-apt` re-executes the stage but cannot stop the downstream stages from reusing pre-advisory cache chains (and mode=max cached manifests) that carry the old OS layer into the loaded image. The base-digest bump changes the key chain from the FROM down, so the rebuilt image assembles the freshly executed layers (same doctrine as the 3.13.16-slim-bookworm #1152 refresh).",
       "used_by": [
         "Dockerfile.research",
         "Dockerfile.rsi-runner",
@@ -31,8 +34,20 @@
       "recorded": "2026-09-30",
       "recorded_in": "#349",
       "note": "Copier template base: rendered downstream images pin the identical digest.",
-      "used_by": ["templates/autonoetic/Dockerfile.jinja",
-                  "templates/single-tenant-multi-user/{% if host_target in ['docker', 'podman'] %}Dockerfile{% endif %}.jinja"]
+      "used_by": [
+        "templates/single-tenant-multi-user/{% if host_target in ['docker', 'podman'] %}Dockerfile{% endif %}.jinja"
+      ]
+    },
+    {
+      "image": "python",
+      "tag": "3.14.8-slim-bookworm",
+      "digest": "sha256:48b13b003dda20b16f9442b8475aa05fe21bf6579a8c881db92ffb4d8fd20f83",
+      "recorded": "2026-10-23",
+      "recorded_in": "#2117",
+      "note": "Autonoetic Copier template base. Dependabot index pin verified against Docker Hub on 2026-10-23; its linux/amd64 image config reports PYTHON_VERSION=3.14.8. The mutable tag has since advanced to a newer index; this row preserves the reviewed immutable Dependabot pin. The single-tenant template retains its separate 3.12.12 pin.",
+      "used_by": [
+        "templates/autonoetic/Dockerfile.jinja"
+      ]
     },
     {
       "image": "node",
@@ -41,15 +56,17 @@
       "recorded": "2026-09-30",
       "recorded_in": "#349",
       "note": "Node 22.x line as of the recording date; frontend build stage only.",
-      "used_by": ["packages/hive-conductor/Dockerfile"]
+      "used_by": [
+        "packages/hive-conductor/Dockerfile"
+      ]
     },
     {
       "image": "golang",
-      "tag": "1.27.2-alpine",
-      "digest": "sha256:f92b6ef800e499660581efdabdf25d9d817a9d124eaf900924f0504e7e27e12d",
-      "recorded": "2026-10-19",
-      "recorded_in": "#363",
-      "note": "Builds the age static binaries and the static docker CLI from their pinned upstream release tags (#363): the published docker:29-cli binary embeds go1.26.8 stdlib and the age prebuilt binary go1.25.x, both carrying 2026 stdlib HIGHs (CVE-2026-78667/78669/97031, fixed in go1.26.9/1.27.2) that no released tag of either project ships fixed.",
+      "tag": "1.27.3-alpine",
+      "digest": "sha256:b8c9b82affbbb82a020bbcf998dad2ba9516944ac7e883524642a481a9505e9c",
+      "recorded": "2026-10-22",
+      "recorded_in": "#1152",
+      "note": "Builds the age static binaries and the static docker CLI from their pinned upstream release tags (#363, then #1152): the published docker:29-cli binary embeds go1.26.8 stdlib and the age prebuilt binary go1.25.x, both carrying 2026 stdlib HIGHs (CVE-2026-78667/78669/97031, fixed in go1.26.9/1.27.2) that no released tag of either project ships fixed. The 1.27.2 rebuild then aged out itself: CVE-2026-111943 (crypto/x509 MITM via untrusted intermediate certificates, HIGH, fixed in go1.26.10/1.27.3) flagged both binaries' stdlib, so the builder moved to 1.27.3-alpine — #1095's trunk-CI repair independently hit the same advisory and re-resolved the same tag to this identical digest. Resolved 2026-10-22 hours after upstream re-serialized the tag's index with unchanged per-arch content (the earlier same-day index d530cf60723abf1ffae0cd16bb546b379ec0550d2f3815e5b16ed69dbc00fba4 carries the identical linux/amd64 child). The same 1.27.2 -> 1.27.3 bump was independently required by the #795 container-cache repair lane, whose Container scan gate flagged the identical CVE on the age/age-keygen and docker CLI binaries.",
       "used_by": [
         "packages/hive-conductor/Dockerfile",
         "Dockerfile",
@@ -62,22 +79,26 @@
       "digest": "sha256:a7aed3216253ee804de3e2d8afa5073baa1a177335345d43845cd4165e43b711",
       "recorded": "2026-09-30",
       "recorded_in": "#349",
-      "note": "uv 0.12.21, verified by running `uv --version` from the image the :latest tag resolved to on the recording date; the tag was rewritten from :latest to the release it actually was.",
+      "note": "uv 0.12.21, verified by running `uv --version` from the image the :latest tag resolved to on the recording date; the tag was rewritten from :latest to the release it actually was. The API image and the Conductor image join this list with #348: both now install their Python dependency set from the committed uv.lock through this pinned uv, so the installer that resolves the shipped set is itself immutable.",
       "used_by": [
+        "Dockerfile",
         "Dockerfile.research",
         "Dockerfile.rsi-runner",
         "deploy/sbx/template/Dockerfile",
-        "deploy/sbx/template/Dockerfile.tests"
+        "deploy/sbx/template/Dockerfile.tests",
+        "packages/hive-conductor/Dockerfile"
       ]
     },
     {
       "image": "mcr.microsoft.com/playwright",
-      "tag": "v1.52.0-noble",
-      "digest": "sha256:a021500a801bab0611049217ffad6b9697d827205c15babb86a53bc1a61c02d5",
-      "recorded": "2026-09-30",
-      "recorded_in": "#349",
+      "tag": "v1.64.1-noble",
+      "digest": "sha256:7852dc5a7d72f5fe458a597d690f6c42fbc8e9e26ddfa95f8e6ef552558d9bbf",
+      "recorded": "2026-10-23",
+      "recorded_in": "#2137",
       "note": "Playwright browsers + deps, e2e harness only.",
-      "used_by": ["packages/hive-conductor/tests/Dockerfile.playwright"]
+      "used_by": [
+        "packages/hive-conductor/tests/Dockerfile.playwright"
+      ]
     },
     {
       "image": "docker/sandbox-templates",
@@ -86,7 +107,9 @@
       "recorded": "2026-09-30",
       "recorded_in": "#349",
       "note": "Docker Sandboxes template; `shell-docker` is the template channel name, the digest is the version anchor.",
-      "used_by": ["deploy/sbx/template/Dockerfile"]
+      "used_by": [
+        "deploy/sbx/template/Dockerfile"
+      ]
     }
   ],
   "exemptions": []

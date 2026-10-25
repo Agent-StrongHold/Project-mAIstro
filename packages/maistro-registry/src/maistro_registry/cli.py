@@ -486,7 +486,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_search.add_argument(
         "--expand-endpoint",
-        help="OpenAI-compatible API root for LLM query expansion (e.g. http://localhost:4000)",
+        help="OpenAI-compatible API root for LLM query expansion (e.g. http://localhost:4000)",  # DevSkim: ignore DS162092 until 2027-12-31
     )
     p_search.add_argument(
         "--expand-model",

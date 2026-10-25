@@ -49,6 +49,7 @@ class TestTheHeaderReachesEveryResponse:
         assert ENFORCED in _client().get(path).headers
 
     def test_an_authenticated_response_carries_it(self, authed_client: Any) -> None:
+        # Missing workspace_id is a 422; CSP must still decorate the response.
         assert ENFORCED in authed_client.get("/v1/chat/sessions").headers
 
     def test_a_refusal_carries_it_too(self) -> None:

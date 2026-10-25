@@ -376,6 +376,14 @@ jobs:
       # different scenario from the one they were written for (#177).
       - name: The chain applies to an empty database, and reverses
         run: uv run pytest tests/migrations/test_migration_chain.py -v --tb=short
+      # #1095: the legacy-principal ownership merge claims losslessness and
+      # restart-reconcilability. Both are assertions about rows and
+      # transactions, so only a live server can answer them: the suite seeds
+      # installer-era `default` rows beside post-install `conductor` rows,
+      # SIGKILLs a migration blocked mid-transaction, and races two entrypoint
+      # replicas through the advisory lock.
+      - name: Legacy principal ownership migration is lossless and restart-safe
+        run: uv run pytest tests/migrations/test_legacy_principal_ownership_live.py -v --tb=short
       # The migration chain is itself under test here: it could not run to
       # completion against a clean database before this change.
       - name: Apply migrations
@@ -398,6 +406,10 @@ jobs:
         env:
           MAISTRO_REQUIRE_PG_LEGS: "1"
         run: uv run pytest packages/maistro-core/tests/workspaces -v --tb=short
+      - name: Hive Workspace import preserves canonical authority across restart
+        env:
+          MAISTRO_REQUIRE_PG_LEGS: "1"
+        run: uv run pytest packages/hive-conductor/backend/tests/test_workspace_authority_durable.py -v --tb=short
       # The durable Persona beside that Workspace (#12). Same contract: its
       # live-PostgreSQL leg (`test_durable_store_pg.py`) gates on
       # MAISTRO_TEST_PG_DSN, so without a step in the one job matrixed over
@@ -945,6 +957,41 @@ jobs:
         working-directory: packages/hive-conductor
         run: docker compose -f docker-compose.test.yml down -v
 
+  # #331: the standalone Compose file's persistence contract, exercised
+  # end-to-end: the guard refuses unwritable/ephemeral data dirs, and a full
+  # create -> write -> recreate -> read -> backup -> restore round trip
+  # preserves accounts, sessions, settings, and vault-backed credentials.
+  # Runs against the same docker-compose.yml users run, not a test double.
+  hive-conductor-compose-durability:
+    needs: workflow-lint
+    if: >-
+      github.event_name != 'merge_group' ||
+      github.event.merge_group.base_ref != 'refs/heads/develop' ||
+      needs.workflow-lint.outputs.hive_e2e == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      # The script's first `up --build` builds the hive image with zero
+      # registry retry of its own — same reason as the two e2e jobs above.
+      - name: Pre-pull base images (retry transient registry faults)
+        run: >-
+          scripts/prepull-base-images.sh
+          packages/hive-conductor/Dockerfile
+      - name: Create, write, recreate, read, backup, restore; guard refuses bad data dirs
+        working-directory: packages/hive-conductor
+        run: scripts/verify-compose-durability.sh
+      - name: Diagnose — container state and service logs
+        if: always()
+        working-directory: packages/hive-conductor
+        run: |
+          docker compose -f docker-compose.yml ps -a || true # a stack that never started has no state to print
+          docker compose -f docker-compose.yml logs --no-color --tail=200 || true # logs vanish when the stack was torn down mid-failure
+      - name: Tear down
+        if: always()
+        working-directory: packages/hive-conductor
+        run: docker compose -f docker-compose.yml down -v
+
   wheel-imports:
     needs: workflow-lint
     if: >-
@@ -1276,12 +1323,54 @@ jobs:
           -f Dockerfile.research -t maistro-engine-research:ci
           --load --cache-from type=gha,scope=engine-research
           --cache-to type=gha,scope=engine-research,mode=max .
+      # Scope rotated with security.yml's identical step (PR #2283, CI run
+      # 40091186336): the old scope's week of cached results predates the
+      # libbrotli1 deb13u1 security update, and a stale read out of it is the
+      # only state source that can put the pre-advisory 1.1.0-2+b7 layer into a
+      # freshly built image. A cache miss just rebuilds cold.
       - name: Build maistro-rsi-runner (cached)
         run: >-
           scripts/buildx-build-retry.sh --
           -f Dockerfile.rsi-runner -t maistro-rsi-runner:ci
-          --load --cache-from type=gha,scope=rsi-runner
-          --cache-to type=gha,scope=rsi-runner,mode=max .
+          --load --cache-from type=gha,scope=rsi-runner-r2
+          --cache-to type=gha,scope=rsi-runner-r2,mode=max .
+
+  # #348: "CI rebuilds twice and compares dependency manifests". The maistro
+  # engine image installs its entire Python set from `uv export --locked` +
+  # `--require-hashes` — no resolution anywhere — so two INDEPENDENT cold
+  # builds of the same commit must produce byte-identical dependency
+  # manifests. (docker-build above deliberately tag-aliases its second engine
+  # reference; that proves the release command's shape, not reproducibility.)
+  # This job builds twice with --no-cache, dumps every installed distribution
+  # from each image's own interpreter, and diffs. Any drift — a base image
+  # moved, a wheel replaced, a transitive re-resolved — is a red build.
+  docker-rebuild-compare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v4
+      - uses: crazy-max/ghaction-github-runtime@v4
+      - name: Rebuild maistro-engine (1st, no cache)
+        run: >-
+          scripts/buildx-build-retry.sh --
+          -f Dockerfile -t maistro-engine:rebuild-a --no-cache --load .
+      - name: Rebuild maistro-engine (2nd, no cache)
+        run: >-
+          scripts/buildx-build-retry.sh --
+          -f Dockerfile -t maistro-engine:rebuild-b --no-cache --load .
+      - name: Compare dependency manifests
+        run: |
+          set -euo pipefail
+          DUMP_CMD='import importlib.metadata as m; print(*sorted(d.metadata["Name"]+"=="+d.version for d in m.distributions()), sep="\n")'
+          docker run --rm --entrypoint /app/venv/bin/python maistro-engine:rebuild-a -c "$DUMP_CMD" > /tmp/manifest-a.txt
+          docker run --rm --entrypoint /app/venv/bin/python maistro-engine:rebuild-b -c "$DUMP_CMD" > /tmp/manifest-b.txt
+          if diff -u /tmp/manifest-a.txt /tmp/manifest-b.txt; then
+            echo "OK: two independent rebuilds produced identical dependency manifests ($(wc -l < /tmp/manifest-a.txt) distributions)"
+          else
+            echo "::error::the two rebuilds shipped different dependency sets" >&2
+            exit 1
+          fi
 
   workflow-lint:
     outputs:

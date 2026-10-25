@@ -45,6 +45,7 @@ from collections.abc import Container
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
+from maistro.runs.access import RunAuthorization
 from maistro.runs.admission import admit_direct_work
 from maistro.runs.archival import ArchivePolicy, RunArchiveSweeper
 from maistro.runs.lifecycle import lease_is_expired
@@ -278,6 +279,7 @@ class ChatRunAdmitter:
         intent_hint: str = "",
         known_task_types: Container[str] | None = None,
         actor_principal_id: str | None = None,
+        authorization: RunAuthorization | None = None,
     ) -> Run:
         """Admit one chat turn as a Run over the trivial one-node Graph.
 
@@ -325,6 +327,7 @@ class ChatRunAdmitter:
             parameters=parameters,
             description=description,
             actor_principal_id=actor_principal_id,
+            authorization=authorization,
             provenance=provenance,
             retention_expires_at=self._retention.deadline(),
         )
@@ -449,6 +452,14 @@ class ChatRunAdmitter:
         root = await self._projects.root_for_workspace(self._workspace_id)
         self._project_id = root.project_id
         return self._project_id
+
+    async def admission_scope(self) -> tuple[str, str]:
+        """Return the immutable Workspace/Project binding admissions land in.
+
+        The authenticated boundary reads this to scope a ``RunAuthorization``
+        without reaching into private resolution state.
+        """
+        return self._workspace_id, await self._resolve_project_id()
 
 
 __all__ = [

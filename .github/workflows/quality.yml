@@ -456,6 +456,7 @@ jobs:
             packages/maistro-core/tests/tasks/test_idempotency_purge_driven.py \
             packages/maistro-core/tests/tasks/test_pg_admission_atomicity_live.py \
             packages/maistro-core/tests/security/test_elevation_durable.py \
+            packages/maistro-core/tests/security/test_delegation_durable.py \
             packages/maistro-core/tests/memory/user_model \
             packages/maistro-core/tests/quota -v --tb=short
           # The backlog suite runs as its own invocation, not appended to the
@@ -1378,7 +1379,21 @@ jobs:
           # generations for the three callers). The xenon re-run at the merge
           # commit reports 128 block identities matching the ledger
           # one-for-one; module and average axes clean.
-          XENON_BASELINE: 128
+          
+          #
+          # 128 -> 127 (#59): the supply-chain hardening of the skill mutation
+          # path (SkillForge.mutate) put the block over the C ceiling while
+          # this branch's work was in flight, and the Boy Scout repair that
+          # followed (the mutation prologue extracted into
+          # SkillForge._prepare_mutation) brought it back under the ceiling.
+          # #59's marketplace work had already taken
+          # SkillMarketplace.install (C 11) below the ceiling by splitting it
+          # into _build_installed_skill/_repair_skill_content/
+          # _persist_installed_skill, and the radon ledger dropped that row.
+          # The xenon re-run reports the block identities matching the
+          # ledger one-for-one; module and average axes clean.
+          XENON_BASELINE: 127
+
           # Module rank was never gated at all. The old count matched only
           # '^ERROR:xenon:block', so a whole module drifting to C passed in
           # silence; widening the scope surfaced one.
@@ -2701,6 +2716,11 @@ jobs:
       # enforceable meanwhile is that the set of direct callers cannot grow.
       - name: model egress (the direct-caller set may only shrink)
         run: uv run python scripts/check-model-egress.py
+
+      # M7-A11: design explore/judge egress is Capability -> Provider ->
+      # Binding -> Invocation on the Run (ADR-081226-6b46).
+      - name: design model egress (governed Invocation path only)
+        run: uv run python scripts/check-design-model-egress.py
 
   quality-harness-egress:
     name: Quality / Foreign-harness egress
