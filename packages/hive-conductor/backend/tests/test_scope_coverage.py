@@ -27,7 +27,6 @@ CASES = [
     ("patch", "/v1/workspaces/ws1", "workspaces.write"),
     ("delete", "/v1/workspaces/ws1", "workspaces.write"),
     ("put", "/v1/workspaces/ws1/tool-bindings", "workspaces.write"),
-    ("put", "/v1/workspaces/ws1/agent", "workspaces.write"),
     ("put", "/v1/schedules/s1", "schedules.write"),
     ("delete", "/v1/schedules/s1", "schedules.write"),
     ("put", "/v1/credentials/jira", "credentials.write"),
@@ -60,13 +59,6 @@ def test_product_surface_is_not_gated(authed_client):
         ("post", "/v1/chat/sessions"),
         ("put", "/v1/dashboard/layout"),
         ("post", "/v1/workspaces"),
-        # Workspace Home (#1048): the member's presentation surface — saving
-        # the layout and dismissing adaptive content are ordinary daily-account
-        # flows. Membership and viewer-role refusals live in the routes.
-        ("put", "/v1/workspaces/ws1/home/layout"),
-        ("post", "/v1/workspaces/ws1/home/adaptive/dismiss"),
-        ("post", "/v1/workspaces/ws1/home/adaptive/compose"),
-        ("post", "/v1/workspaces/ws1/home/regions/r1/pin"),
     ]:
         response = getattr(authed_client, method)(path, json={})
         assert response.status_code != 403, (

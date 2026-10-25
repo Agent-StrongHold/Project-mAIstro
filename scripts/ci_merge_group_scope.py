@@ -1,12 +1,5 @@
 #!/usr/bin/env python3
-"""Classify which expensive CI legs a pull-request or merge-group candidate can affect.
-
-One scope policy governs both candidate events (#1351): a measured changed-path
-set is classified by ``classify()``, and every other event -- protected-branch
-pushes above all -- keeps every specialized leg enabled. ``check-gates-ran.py``
-judges PR candidates with this same classifier, so the legs the producers skip
-are exactly the legs the evaluator can excuse.
-"""
+"""Classify which expensive CI legs a merge-group candidate can affect."""
 
 from __future__ import annotations
 
@@ -33,21 +26,14 @@ LEGS = (
     "docker_build",
 )
 
-#: The candidate events whose specialized legs are path-scoped. Both are
-#: classified by the same ``classify()`` policy (#1351); every other event
-#: (protected-branch pushes) keeps every leg enabled.
-PATH_SCOPED_EVENTS = ("merge_group", "pull_request")
-
 _GLOBAL = {
     "pyproject.toml",
     "uv.lock",
     "conftest.py",
     ".github/workflows/ci.yml",
-    ".github/workflows/integration-scope.yml",
     ".github/actions/setup-uv/action.yml",
     "scripts/ci_base_revision.py",
     "scripts/ci_merge_group_scope.py",
-    "scripts/check-integration-scope.py",
 }
 
 
@@ -99,42 +85,10 @@ def _classify_path(path: str, out: dict[str, bool]) -> None:
         core and any(token in path for token in ("strike", "attempt", "execution", "run"))
     ):
         out["strike_ladder"] = True
-    # Inputs the Hive E2E jobs exercise beyond the conductor tree itself
-    # (#1351 review): both jobs execute scripts/prepull-base-images.sh
-    # directly, and the Hive Dockerfile installs maistro-bootstrap/-canvas/
-    # -design/-evolve (routes/design.py imports maistro_design unguarded, so
-    # the live stack cannot boot without them).
-    if (
-        hive
-        or server
-        or core
-        or path == "scripts/prepull-base-images.sh"
-        or _under(
-            path,
-            "docker-compose.yml",
-            "docker-compose",
-            "tests/e2e",
-            "packages/maistro-bootstrap",
-            "packages/maistro-canvas",
-            "packages/maistro-design",
-            "packages/maistro-evolve",
-        )
-    ):
+    if hive or server or core or _under(path, "docker-compose.yml", "docker-compose", "tests/e2e"):
         out["hive_e2e"] = True
-    # Both wheel gates live inside the wheel-imports job, so a change to
-    # either gate script must fire that leg — otherwise a candidate touching
-    # only the gate skips its own end-to-end validation at the merge-queue SHA.
-    if path in (
-        "scripts/verify-minimum-dependencies.py",
-        "scripts/verify-wheel-imports.py",
-    ) or (
-        _under(path, "packages")
-        and (
-            path.endswith("pyproject.toml")
-            or "/src/" in path
-            or path.endswith("/__init__.py")
-            or hive
-        )
+    if _under(path, "packages") and (
+        path.endswith("pyproject.toml") or "/src/" in path or path.endswith("/__init__.py") or hive
     ):
         out["wheel_imports"] = True
     if (
@@ -176,15 +130,8 @@ def all_enabled() -> dict[str, bool]:
 
 
 def scope_for_event(event_name: str, changed_paths: Iterable[str] | None = None) -> dict[str, bool]:
-    """Classify measured PR and merge-group candidates; enable everything otherwise.
-
-    Pull requests and merge-group candidates are path-scoped by the same
-    classifier (#1351), so a specialized job a producer skips is precisely one
-    the gates-ran evaluator may excuse. Any other event (protected-branch
-    pushes) runs every specialized leg, and a candidate without measured
-    changed paths fails closed to every leg.
-    """
-    if event_name not in PATH_SCOPED_EVENTS or changed_paths is None:
+    """Preserve PR evidence; classify only measured merge-group candidates."""
+    if event_name != "merge_group" or changed_paths is None:
         return all_enabled()
     return classify(changed_paths)
 
@@ -208,15 +155,15 @@ def render_outputs(scope: dict[str, bool]) -> str:
 
 
 def scope_from_environment(event_name: str) -> dict[str, bool]:
-    """Measure a path-scoped candidate, failing closed when evidence is unavailable."""
-    if event_name not in PATH_SCOPED_EVENTS:
+    """Measure a merge-group candidate, failing closed when evidence is unavailable."""
+    if event_name != "merge_group":
         return all_enabled()
     try:
         base_sha = resolve_base_revision_from_env()
         return scope_for_event(event_name, changed_paths_from_git(base_sha))
     except (BaseRevisionError, OSError, subprocess.SubprocessError) as exc:
         print(
-            f"WARN: {event_name} scope is unmeasured; enabling every specialized leg: {exc}",
+            f"WARN: merge-group scope is unmeasured; enabling every specialized leg: {exc}",
             file=sys.stderr,
         )
         return all_enabled()

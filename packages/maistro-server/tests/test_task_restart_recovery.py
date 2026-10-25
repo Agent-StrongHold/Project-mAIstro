@@ -90,11 +90,6 @@ def _server_env(extra: dict[str, str] | None = None) -> dict[str, str]:
     env.update(
         {
             "ROUTER_API_KEY": "restart-test-router-key",
-            # Settings reads .env as well as the child environment.  Override
-            # it with an explicit empty list so a developer's legacy key cannot
-            # turn this auth-disabled restart proof into a startup failure (or
-            # unexpectedly require credentials) before task admission (#843).
-            "API_KEYS": "[]",
             "REQUIRE_AUTH": "false",
             "DEBUG": "true",
         }
@@ -293,11 +288,7 @@ import asyncio, json
 
 MARKER = {marker!r}
 
-async def _execute(request, on_response=None, **_authority):
-    # `main.runner_executor` passes governed_egress/workspace_id/project_id
-    # alongside the request (#718, #1386); the seam's kwargs are not this
-    # test's business, so they are swallowed rather than named — naming them
-    # would couple the driver to the caller's evolving signature.
+async def _execute(request, on_response=None):
     from maistro.agents.types import ConductorOutput
 
     with open(MARKER, "a") as fh:
@@ -390,13 +381,10 @@ def test_queued_task_survives_sigkill_and_executes_exactly_once_after_restart(
     )
 
     # The recovered task genuinely executed — exactly once, on the restarted
-    # instance, recorded by the executor itself. The count is scoped to this
-    # test's own task: the shared spine holds other lanes' pending tasks too,
-    # and a restart legitimately recovers those as well, so a residue-free
-    # marker is not something one suite can promise another.
+    # instance, recorded by the executor itself.
     assert marker.exists(), "executor never ran the recovered task"
     executions = [json.loads(line) for line in marker.read_text().splitlines() if line.strip()]
-    assert executions.count({"description": description}) == 1, executions
+    assert executions == [{"description": description}], executions
 
     # ── Instance 3: recovery is idempotent; history is neither duplicated nor
     # rewritten; the admission claim still reconciles the resubmission.
@@ -428,5 +416,5 @@ def test_queued_task_survives_sigkill_and_executes_exactly_once_after_restart(
     assert (node_runs, attempts) == (1, 1), (node_runs, attempts)
 
     # No third-instance resurrection: still exactly one execution.
-    executions_after = [line for line in marker.read_text().splitlines() if line.strip()]
-    assert executions_after.count(json.dumps({"description": description})) == 1, executions_after
+    executions_after = marker.read_text().splitlines()
+    assert len(executions_after) == 1, executions_after

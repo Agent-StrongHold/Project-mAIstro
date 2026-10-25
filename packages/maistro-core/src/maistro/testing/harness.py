@@ -7,7 +7,6 @@ from maistro.agents.context_builder import ContextBuilder
 from maistro.agents.intents import IntentRegistry
 from maistro.classifier.engine import ClassifierEngine
 from maistro.container import Container
-from maistro.goals.reconciliation.store import InMemoryGoalStore
 from maistro.graph.events import GraphEvent
 from maistro.graph.run import GraphRun
 from maistro.graph.types import (
@@ -17,7 +16,6 @@ from maistro.graph.types import (
     GraphTask,
     HyperagentOutput,
 )
-from maistro.memory.exposure import MemoryExposureMode
 from maistro.memory.learnings.extractor import ToolCorrectionExtractor
 from maistro.memory.learnings.store import InMemoryLearningStore
 from maistro.memory.outcomes import InMemoryOutcomeStore
@@ -118,10 +116,8 @@ def create_test_environment(
     warden = Warden()
     learning_extractor = ToolCorrectionExtractor()
     quota_tracker = InMemoryQuotaTracker()
-    # The harness stands in for an agent-managed deployment (ADR-057): the
-    # declaration is explicit here for the same reason it is in the container.
-    learning_store = InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
-    outcome_store = InMemoryOutcomeStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
+    learning_store = InMemoryLearningStore()
+    outcome_store = InMemoryOutcomeStore()
     session_store = InMemorySessionStore()
 
     router = RouterEngine()
@@ -184,7 +180,6 @@ def create_test_environment(
         intent_registry=intent_registry,
         audit_log=audit_log,
         capabilities=capabilities,
-        goal_reconciliation_store=InMemoryGoalStore(),
     )
 
     if agents:

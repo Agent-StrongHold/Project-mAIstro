@@ -13,7 +13,7 @@ Flow:
 from __future__ import annotations
 
 # mypy: disable-error-code="misc,untyped-decorator,unused-ignore"
-import tempfile
+import subprocess
 from datetime import datetime
 from pathlib import Path
 
@@ -39,30 +39,12 @@ from maistro.cli._builders_sessions import (
     make_session_id,
     record_session,
 )
-from maistro.tools.git.server import ClonePolicyError, git_clone, validate_clone_source
 
 _GIT_URL_PREFIXES = ("http://", "https://", "git@", "ssh://")
-# Candidate source must pass through `git_clone`, whose workspace containment
-# and digest verification are the one #404 clone authority. Keep the UI cache
-# under that approved root instead of maintaining a second raw-git path.
-_BUILDERS_CACHE_DIR = Path(tempfile.gettempdir()) / "maistro-workspace" / "builders_repos"
+_BUILDERS_CACHE_DIR = Path.home() / ".maistro" / "builders_repos"
 
 
 def _is_git_url(repo: str) -> bool:
-    # `git://` is rejected before classification (#404): the protocol is
-    # unauthenticated and unencrypted, so a clone from it is candidate source
-    # an attacker could substitute on-path. The `.endswith(".git")` catch-all
-    # below would otherwise wave `git://host/repo.git` straight through, and
-    # git parses remote schemes case-insensitively (RFC 3986), so the check is
-    # case-insensitive too.
-    #
-    # Classification is not acceptance: a URL classified here still has to
-    # pass `validate_clone_source` in `_open_repo` before any subprocess —
-    # the same verdict as the MCP git tool, so `http://` (unauthenticated
-    # transport), off-allowlist hosts, scp-style spellings and `-`-prefixed
-    # flag strings are refused on every surface, not just this one.
-    if repo.lower().startswith("git://"):
-        return False
     return repo.startswith(_GIT_URL_PREFIXES) or repo.endswith(".git")
 
 
@@ -130,26 +112,17 @@ class CodingScreen(Vertical):
         Binding("ctrl+r", "reject_changes", "Reject"),
     ]
 
-    def __init__(
-        self,
-        session_id: str,
-        repo_url: str,
-        work_dir: Path,
-        canonical_run_ids: list[str] | None = None,
-    ) -> None:
+    def __init__(self, session_id: str, repo_url: str, work_dir: Path) -> None:
         super().__init__()
         self.session_id = session_id
         self.repo_url = repo_url
         self.work_dir = work_dir
-        self.canonical_run_ids = list(canonical_run_ids or [])
-        self._builder_session: object | None = None
-        self._turn_runner: object | None = None
 
     def compose(self) -> ComposeResult:
         yield Horizontal(
             Vertical(
                 Static(
-                    self._session_bar_text(),
+                    f"[bold]session:[/bold] {self.session_id}  [bold]repo:[/bold] {self.repo_url}",
                     id="session-bar",
                 ),
                 RichLog(id="chat-log", highlight=True, markup=True),
@@ -180,78 +153,26 @@ class CodingScreen(Vertical):
         chat.write("[dim]agent is thinking...[/dim]")
         self._run_agent_turn(text)
 
-    def _session_bar_text(self) -> str:
-        latest = self.canonical_run_ids[-1] if self.canonical_run_ids else "none"
-        return (
-            f"[bold]session:[/bold] {self.session_id}  [bold]repo:[/bold] {self.repo_url}  "
-            f"[bold]canonical run:[/bold] {latest}"
-        )
-
-    async def _get_execution(self) -> tuple[object, object]:
-        if self._builder_session is None or self._turn_runner is None:
-            from maistro_bootstrap.builders.agent_loop import (  # type: ignore[import-not-found]
-                AgentLoopConfig,
-                TurnRunner,
-            )
-            from maistro_bootstrap.builders.responses_callable import (  # type: ignore[import-not-found]
-                ResponsesAPICallable,
-            )
-            from maistro_bootstrap.builders.sandbox import (  # type: ignore[import-not-found]
-                LocalWorktreeSandbox,
-            )
-            from maistro_bootstrap.builders.session import (  # type: ignore[import-not-found]
-                BuilderSession,
-            )
-
-            session = BuilderSession(sandbox=LocalWorktreeSandbox(self.work_dir))
-            runner = TurnRunner(session=session, config=AgentLoopConfig())
-            runner.set_llm(ResponsesAPICallable())  # type: ignore[arg-type]
-            self._builder_session = session
-            self._turn_runner = runner
-
-        return self._builder_session, self._turn_runner
-
     @work(exclusive=True)
     async def _run_agent_turn(self, text: str) -> None:
         chat = self.query_one("#chat-log", RichLog)
         try:
-            from maistro.builders.interactive import (
-                BuildersExecutionSpine,
-                InteractiveTurnResult,
-            )
-            from maistro.runs.model import RunStatus
+            from maistro_bootstrap.builders.agent_loop import AgentLoopConfig, TurnRunner
+            from maistro_bootstrap.builders.responses_callable import ResponsesAPICallable
+            from maistro_bootstrap.builders.sandbox import LocalWorktreeSandbox
+            from maistro_bootstrap.builders.session import BuilderSession
 
-            session, runner = await self._get_execution()
-            session.add_user(text)  # type: ignore[attr-defined]
+            session = BuilderSession(sandbox=LocalWorktreeSandbox(self.work_dir))
+            runner = TurnRunner(session=session, config=AgentLoopConfig())
+            runner.set_llm(ResponsesAPICallable())  # type: ignore[arg-type]
+
             messages = [
                 {"role": "system", "content": "You are a coding assistant."},
-                *session.messages,  # type: ignore[attr-defined]
+                {"role": "user", "content": text},
             ]
-            # The spine owns an aiosqlite connection (or a PostgreSQL pool
-            # user). Open it for the turn and release it in `finally` so a
-            # finished or failed turn never keeps the process alive.
-            spine = await BuildersExecutionSpine.open()
-            try:
-                result = await spine.executor().execute(  # type: ignore[attr-defined]
-                    session_id=self.session_id,
-                    repo=str(self.work_dir),
-                    prompt=text,
-                    messages=messages,
-                    runner=runner,
-                )
-            finally:
-                await spine.close()  # type: ignore[attr-defined]
-            if not isinstance(result, InteractiveTurnResult):  # pragma: no cover - type guard
-                raise TypeError("canonical Builders executor returned an invalid result")
-            self.canonical_run_ids.append(result.run_id)
-            from maistro.cli._builders_sessions import record_session_run
+            result = await runner.execute_turn(messages=messages)
 
-            record_session_run(self.session_id, result.run_id)
-            self.query_one("#session-bar", Static).update(self._session_bar_text())
-            if result.status is not RunStatus.COMPLETED:
-                chat.write(f"[red]Canonical run {result.run_id} failed: {result.error}[/red]")
-                return
-            chat.write(f"\n[bold green]agent:[/bold green] {result.output or 'done'}")
+            chat.write(f"\n[bold green]agent:[/bold green] {result.get('content', 'done')}")
         except ImportError:
             chat.write("[yellow]Agent not available (maistro-bootstrap not installed).[/yellow]")
             chat.write(f"[dim]You said: {text}[/dim]")
@@ -355,12 +276,7 @@ class BuildersApp(App[None]):
                 f"\n  [red]Path no longer exists: {work_dir}[/red]"
             )
             return
-        self._open_coding_screen(
-            session_id,
-            entry.repo_url,
-            work_dir,
-            canonical_run_ids=entry.canonical_run_ids,
-        )
+        self._open_coding_screen(session_id, entry.repo_url, work_dir)
 
     @work
     async def _open_repo(self, repo: str) -> None:
@@ -368,41 +284,18 @@ class BuildersApp(App[None]):
         session_id = make_session_id(repo)
 
         try:
-            if repo.lower().startswith("git://"):
-                # Same verdict as the MCP git server (#404): name the policy,
-                # don't fall through to "Not a directory" and leave the
-                # operator guessing why a URL was treated as a path.
-                recent.update(
-                    "\n  [red]Blocked: git:// is unauthenticated transport — "
-                    "use https:// or ssh:// (#404)[/red]"
-                )
-                return
             if _is_git_url(repo):
-                # Same source policy as the MCP git tool (#404): one verdict,
-                # every surface. Classification above only says "this is a
-                # URL"; only https/ssh to an allowlisted host (or a verified
-                # local path) may become candidate source the coding agent
-                # will read and execute.
-                try:
-                    validate_clone_source(repo)
-                except ClonePolicyError as exc:
-                    recent.update(
-                        f"\n  [red]Blocked: {exc.message}[/red]"
-                        f"\n  [dim]{exc.suggested_action}[/dim]"
-                    )
-                    return
                 recent.update(f"\n  [dim]Cloning {repo}…[/dim]")
                 work_dir = _BUILDERS_CACHE_DIR / session_id
                 work_dir.parent.mkdir(parents=True, exist_ok=True)
-                # `git_clone` resolves an omitted digest to the vetted
-                # remote's HEAD then proves the checkout matches it. Reusing
-                # it here prevents this UI from becoming an unpinned raw-git
-                # source path beside the MCP and RSI surfaces.
-                result = await git_clone(repo, str(work_dir), timeout=120)
-                if not result["success"]:
-                    recent.update(
-                        f"\n  [red]Clone failed: {str(result.get('stdout', ''))[:300]}[/red]"
-                    )
+                result = subprocess.run(
+                    ["git", "clone", "--depth", "1", repo, str(work_dir)],
+                    capture_output=True,
+                    text=True,
+                    timeout=120,
+                )
+                if result.returncode != 0:
+                    recent.update(f"\n  [red]Clone failed: {result.stderr.strip()[:300]}[/red]")
                     return
             else:
                 work_dir = Path(repo).expanduser().resolve()
@@ -415,13 +308,7 @@ class BuildersApp(App[None]):
         except Exception as exc:
             recent.update(f"\n  [red]Failed to open: {exc}[/red]")
 
-    def _open_coding_screen(
-        self,
-        session_id: str,
-        repo: str,
-        work_dir: Path,
-        canonical_run_ids: list[str] | None = None,
-    ) -> None:
+    def _open_coding_screen(self, session_id: str, repo: str, work_dir: Path) -> None:
         welcome = self.query_one(WelcomeScreen)
         welcome.remove()
-        self.mount(CodingScreen(session_id, repo, work_dir, canonical_run_ids))
+        self.mount(CodingScreen(session_id, repo, work_dir))

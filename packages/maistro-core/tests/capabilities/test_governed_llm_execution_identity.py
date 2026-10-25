@@ -1,420 +1,173 @@
-"""The governed model client carries canonical execution identity (#1827).
-
-`GovernedLLMClient` sits between Agent strategies and `ModelChatEgress`. Its
-`set_turn` seam must consume the Run/NodeRun/Attempt triple that canonical
-execution already bound on the correlation context — `RunExecutionService`
-binds `run_id`, `AttemptExecutionService.execute_claimed` binds
-`node_run_id`/`attempt_id` — and must never fabricate an
-agent-turn/agent-node/agent-attempt id to make an unadmitted call look
-governed. These tests pin that adapter boundary with a recording egress
-double: exact identity forwarding, refusal on missing/blank/mismatched ids,
-failure-atomic `set_turn`, stale-turn refusal in `complete`, per-task identity
-isolation, and the per-turn effect-key counter.
-
-The ids provide correlation, not authorization; Binding/credential/policy
-checks stay at the governed effect boundary these tests stub out.
-"""
+"""The compatibility adapter consumes canonical IDs and never invents admission."""
 
 from __future__ import annotations
 
 import asyncio
 from typing import Any
-from unittest.mock import AsyncMock
 
 import pytest
 
-from maistro.capabilities.effect_context import new_in_memory_effect_context
-from maistro.capabilities.model_chat import (
-    GovernedLLMClient,
-    ModelCallResult,
-)
+from maistro.capabilities.model_chat import GovernedLLMClient, ModelCallResult, ModelChatEgress
 from maistro.capabilities.providers.llm_gateway import GatewayEndpoint
-from maistro.observability.correlation import (
-    bind_execution_context,
-    current_execution_context,
-    detached_execution_context,
-)
-from maistro.providers.registry import InMemoryProviderRegistry
-from maistro.providers.router import CostAwareRouter
-from maistro.providers.types import ModelMetadata
+from maistro.observability.correlation import bind_execution_context, detached_execution_context
 from maistro.runs.store import RunIntegrityError
-
-pytestmark = pytest.mark.contract("behavioral")
-
-RUN_A, NODE_A, ATTEMPT_A = "run-A", "node-A", "attempt-A"
-RUN_B, NODE_B, ATTEMPT_B = "run-B", "node-B", "attempt-B"
-
-
-def _egress_result() -> ModelCallResult:
-    return ModelCallResult(
-        invocation_id="inv-recorded",
-        model="fast-model",
-        body={"choices": [{"message": {"role": "assistant", "content": "ok"}}]},
-    )
 
 
 @pytest.fixture
-def governed_client() -> tuple[
-    GovernedLLMClient,
-    AsyncMock,
-]:
-    """One governed client whose ModelChatEgress is a recording test double.
+def client(monkeypatch: pytest.MonkeyPatch) -> tuple[GovernedLLMClient, list[dict[str, Any]]]:
+    calls: list[dict[str, Any]] = []
 
-    Only the adapter boundary is exercised: Binding, credential and policy
-    machinery live behind the stubbed `ModelChatEgress.complete`, so every
-    assertion below is about the identity the client forwards to it.
-    """
-    effects = new_in_memory_effect_context()
-    registry = InMemoryProviderRegistry(
-        models=[
-            ModelMetadata(
-                name="fast-model",
-                provider="test-gw",
-                cost_per_1k_input=0.5,
-                cost_per_1k_output=1.0,
-                latency_p50_ms=50,
-            )
-        ]
-    )
-    client = GovernedLLMClient(
-        effects,
-        registry=registry,
-        router=CostAwareRouter(registry),
-        endpoint=GatewayEndpoint(base_url="http://gw:4000"),
-        workspace_id="ws-identity",
-        project_id="p1",
-    )
-    recorded = AsyncMock(return_value=_egress_result())
-    client._egress.complete = recorded  # type: ignore[method-assign]
-    return client, recorded
+    async def record(self: ModelChatEgress, **kwargs: Any) -> ModelCallResult:
+        calls.append(kwargs)
+        return ModelCallResult(invocation_id="invocation", model="model", body={"ok": True})
+
+    monkeypatch.setattr(ModelChatEgress, "complete", record)
+    # Only the adapter boundary is exercised; egress dependencies are never used.
+    return GovernedLLMClient(
+        None,  # type: ignore[arg-type]
+        registry=None,  # type: ignore[arg-type]
+        router=None,  # type: ignore[arg-type]
+        endpoint=GatewayEndpoint(base_url="http://unused"),
+        workspace_id="workspace",
+    ), calls
 
 
-def _forwarded(recorded: AsyncMock, call: int = 0) -> tuple[str, str, str]:
-    kwargs = recorded.call_args_list[call].kwargs
-    return (kwargs["run_id"], kwargs["node_run_id"], kwargs["attempt_id"])
+def ids(suffix: str = "A") -> dict[str, str]:
+    return {
+        "run_id": f"run-{suffix}",
+        "node_run_id": f"node-{suffix}",
+        "attempt_id": f"attempt-{suffix}",
+    }
 
 
-async def _complete(client: GovernedLLMClient) -> dict[str, Any]:
-    return await client.complete([{"role": "user", "content": "hello"}], "fast-model")
+@pytest.mark.parametrize("explicit", [None, "", "run-A"])
+async def test_exact_bound_identity_and_counter(client: Any, explicit: str | None) -> None:
+    adapter, calls = client
+    with detached_execution_context(), bind_execution_context(**ids()):
+        adapter.set_turn(explicit, agent_name="must-not-manufacture-node")
+        assert await adapter.complete([], "model") == {"ok": True}
+        await adapter.complete([], "model")
+        adapter.clear_turn()
+        assert adapter._turn.get() is None
+        assert adapter._sequence.get() == 0
+        adapter.set_turn()
+        await adapter.complete([], "model")
+    assert [{key: call[key] for key in ids()} for call in calls] == [ids()] * 3
+    assert [call["effect_key"] for call in calls] == ["agent-llm-1", "agent-llm-2", "agent-llm-1"]
 
 
-# --- exact identity forwarding -------------------------------------------------
-
-
-async def test_matching_explicit_run_id_forwards_exact_bound_tuple(
-    governed_client: tuple[GovernedLLMClient, AsyncMock],
+@pytest.mark.parametrize("missing", ["run_id", "node_run_id", "attempt_id", "all"])
+@pytest.mark.parametrize("value", ["", " \t\n"])
+async def test_missing_identity_refuses_before_sequence_or_egress(
+    client: Any, missing: str, value: str
 ) -> None:
-    client, recorded = governed_client
-    with bind_execution_context(run_id=RUN_A, node_run_id=NODE_A, attempt_id=ATTEMPT_A):
-        client.set_turn(RUN_A)
-        await _complete(client)
-
-    recorded.assert_awaited_once()
-    assert _forwarded(recorded) == (RUN_A, NODE_A, ATTEMPT_A)
-
-
-async def test_omitted_run_id_reads_the_same_bound_tuple(
-    governed_client: tuple[GovernedLLMClient, AsyncMock],
-) -> None:
-    client, recorded = governed_client
-    with bind_execution_context(run_id=RUN_A, node_run_id=NODE_A, attempt_id=ATTEMPT_A):
-        client.set_turn()
-        await _complete(client)
-
-    recorded.assert_awaited_once()
-    assert _forwarded(recorded) == (RUN_A, NODE_A, ATTEMPT_A)
-
-
-async def test_agent_name_cannot_manufacture_a_node_id(
-    governed_client: tuple[GovernedLLMClient, AsyncMock],
-) -> None:
-    """`agent_name` is compatibility only: the bound node id wins."""
-    client, recorded = governed_client
-    with bind_execution_context(run_id=RUN_A, node_run_id=NODE_A, attempt_id=ATTEMPT_A):
-        client.set_turn(RUN_A, agent_name="writer")
-        await _complete(client)
-
-    recorded.assert_awaited_once()
-    assert _forwarded(recorded) == (RUN_A, NODE_A, ATTEMPT_A)
-
-
-async def test_stream_contract_yields_exactly_one_canonical_body(
-    governed_client: tuple[GovernedLLMClient, AsyncMock],
-) -> None:
-    """The canonical stream is the completion, once: no provider fan-out.
-
-    Pins the streaming half of the adapter-SDK acceptance (#961): a provider
-    — adapter-backed or gateway — never streams a raw upstream response
-    through the governed seam. `ModelChatRequest` carries no stream field and
-    `stream()` degenerates to exactly one governed completion, so whatever
-    resolved, the consumer sees one canonical body.
-    """
-
-    client, recorded = governed_client
-    with bind_execution_context(run_id=RUN_A, node_run_id=NODE_A, attempt_id=ATTEMPT_A):
-        client.set_turn()
-        chunks = [
-            chunk
-            async for chunk in client.stream([{"role": "user", "content": "hello"}], "fast-model")
-        ]
-
-    recorded.assert_awaited_once()  # one egress call, not a chunked fan-out
-    assert chunks == [_egress_result().body]
-
-
-async def test_complete_without_prior_set_turn_reads_complete_bound_context(
-    governed_client: tuple[GovernedLLMClient, AsyncMock],
-) -> None:
-    client, recorded = governed_client
-    with bind_execution_context(run_id=RUN_A, node_run_id=NODE_A, attempt_id=ATTEMPT_A):
-        await _complete(client)
-
-    recorded.assert_awaited_once()
-    assert _forwarded(recorded) == (RUN_A, NODE_A, ATTEMPT_A)
-
-
-# --- refusal on missing / blank / conflicting identity -------------------------
-
-
-@pytest.mark.parametrize(
-    ("missing", "bind"),
-    [
-        ("run_id", {"node_run_id": NODE_A, "attempt_id": ATTEMPT_A}),
-        ("node_run_id", {"run_id": RUN_A, "attempt_id": ATTEMPT_A}),
-        ("attempt_id", {"run_id": RUN_A, "node_run_id": NODE_A}),
-        ("all", {}),
-        ("node_run_id", {"run_id": RUN_A, "node_run_id": " \t ", "attempt_id": ATTEMPT_A}),
-    ],
-)
-async def test_incomplete_context_refuses_with_zero_egress(
-    governed_client: tuple[GovernedLLMClient, AsyncMock],
-    missing: str,
-    bind: dict[str, str],
-) -> None:
-    """Missing-id fixtures run detached: blank binds do not erase inherited
-    ids, so the only way to hold *no* run id is to hold no context at all."""
-    client, recorded = governed_client
-    with detached_execution_context(), bind_execution_context(**bind):
-        assert current_execution_context().run_id == (
-            RUN_A if missing not in {"run_id", "all"} else ""
-        )
+    adapter, calls = client
+    context = {
+        key: value if key == missing or missing == "all" else val for key, val in ids().items()
+    }
+    with detached_execution_context(), bind_execution_context(**context):
         with pytest.raises(RunIntegrityError):
-            client.set_turn()
+            adapter.set_turn()
         with pytest.raises(RunIntegrityError):
-            await _complete(client)
-
-    recorded.assert_not_awaited()
-    assert client._turn.get() is None
-    assert client._sequence.get() == 0
-
-
-async def test_conflicting_explicit_run_id_refuses_and_never_replaces_bound_id(
-    governed_client: tuple[GovernedLLMClient, AsyncMock],
-) -> None:
-    """A mismatched explicit run_id is refused, not substituted.
-
-    The rejected set_turn also cleared the stored state: a later complete
-    outside canonical context has nothing to fall back to and refuses with
-    zero egress (#1827 failure atomicity).
-    """
-    client, recorded = governed_client
-    with bind_execution_context(run_id=RUN_A, node_run_id=NODE_A, attempt_id=ATTEMPT_A):
-        with pytest.raises(RunIntegrityError):
-            client.set_turn("run-something-else")
-        assert client._turn.get() is None
-
-    with detached_execution_context(), pytest.raises(RunIntegrityError):
-        await _complete(client)
-
-    recorded.assert_not_awaited()
+            await adapter.complete([], "model")
+    assert adapter._turn.get() is None
+    assert adapter._sequence.get() == 0
+    assert calls == []
 
 
-# --- failure atomicity of set_turn ---------------------------------------------
+@pytest.mark.parametrize("explicit", ["other-run", " \t"])
+async def test_conflicting_explicit_run_refuses(client: Any, explicit: str) -> None:
+    adapter, calls = client
+    with (
+        detached_execution_context(),
+        bind_execution_context(**ids()),
+        pytest.raises(RunIntegrityError),
+    ):
+        adapter.set_turn(explicit)
+    assert adapter._turn.get() is None
+    assert adapter._sequence.get() == 0
+    assert calls == []
 
 
-async def test_valid_turn_then_invalid_set_turn_clears_the_old_state(
-    governed_client: tuple[GovernedLLMClient, AsyncMock],
-) -> None:
-    """An earlier valid tuple cannot remain usable after a rejected turn."""
-    client, recorded = governed_client
-    with bind_execution_context(run_id=RUN_A, node_run_id=NODE_A, attempt_id=ATTEMPT_A):
-        client.set_turn(RUN_A)
-        await _complete(client)
-    recorded.assert_awaited_once()
+async def test_complete_reads_context_without_prior_set_turn(client: Any) -> None:
+    adapter, calls = client
+    with detached_execution_context(), bind_execution_context(**ids()):
+        await adapter.complete([], "model")
+    assert {key: calls[0][key] for key in ids()} == ids()
+    assert calls[0]["effect_key"] == "agent-llm-1"
 
-    # The rejected set_turn happens outside any canonical context.
+
+@pytest.mark.parametrize("clear", [False, True])
+async def test_ended_context_cannot_reuse_turn(client: Any, clear: bool) -> None:
+    adapter, calls = client
     with detached_execution_context():
+        with bind_execution_context(**ids()):
+            adapter.set_turn()
+            await adapter.complete([], "model")
+            if clear:
+                adapter.clear_turn()
+        sequence = adapter._sequence.get()
         with pytest.raises(RunIntegrityError):
-            client.set_turn(RUN_A)
-        assert client._turn.get() is None
-        assert client._sequence.get() == 0
-        # A later complete cannot fall back to turn A: no stored turn and no
-        # bound context means refusal, with zero further egress.
-        with pytest.raises(RunIntegrityError):
-            await _complete(client)
-
-    recorded.assert_awaited_once()
+            await adapter.complete([], "model")
+        assert adapter._sequence.get() == sequence
+    assert len(calls) == 1
 
 
-# --- stale-turn refusal in complete --------------------------------------------
+@pytest.mark.parametrize("changed", ["run_id", "node_run_id", "attempt_id"])
+async def test_changed_context_requires_explicit_new_turn(client: Any, changed: str) -> None:
+    adapter, calls = client
+    with detached_execution_context(), bind_execution_context(**ids()):
+        adapter.set_turn()
+        await adapter.complete([], "model")
+        with bind_execution_context(**{changed: "changed"}):
+            with pytest.raises(RunIntegrityError):
+                await adapter.complete([], "model")
+            assert adapter._sequence.get() == 1
+            assert len(calls) == 1
+            adapter.set_turn()
+            await adapter.complete([], "model")
+    assert calls[-1][changed] == "changed"
+    assert calls[-1]["effect_key"] == "agent-llm-1"
 
 
-async def test_complete_after_clear_turn_and_leaving_context_refuses(
-    governed_client: tuple[GovernedLLMClient, AsyncMock],
-) -> None:
-    """After clear_turn and after leaving the bound context, a fresh complete
-    refuses and cannot reuse the previous tuple.
-
-    (While a complete canonical context is still live, complete adopts it —
-    the documented no-prior-set_turn path — so the refusal here is asserted
-    with the context gone, which is the stale-reuse case.)
-    """
-    client, recorded = governed_client
-    with bind_execution_context(run_id=RUN_A, node_run_id=NODE_A, attempt_id=ATTEMPT_A):
-        client.set_turn(RUN_A)
-        await _complete(client)
-        client.clear_turn()
-
-    with pytest.raises(RunIntegrityError):
-        await _complete(client)
-
-    recorded.assert_awaited_once()
-
-
-async def test_complete_after_leaving_the_context_refuses_and_cannot_reuse_tuple(
-    governed_client: tuple[GovernedLLMClient, AsyncMock],
-) -> None:
-    """The stored triple dies with its context; nothing resurrects it."""
-    client, recorded = governed_client
-    with bind_execution_context(run_id=RUN_A, node_run_id=NODE_A, attempt_id=ATTEMPT_A):
-        client.set_turn(RUN_A)
-        await _complete(client)
-    recorded.assert_awaited_once()
-
-    # Outside the context the stored tuple no longer matches the live one.
-    with pytest.raises(RunIntegrityError):
-        await _complete(client)
-    recorded.assert_awaited_once()
-    # The refusal also dropped the stale state: a further complete cannot
-    # adopt anything.
-    with detached_execution_context(), pytest.raises(RunIntegrityError):
-        await _complete(client)
-    recorded.assert_awaited_once()
-
-
-async def test_context_moved_to_another_attempt_refuses_until_explicit_set_turn(
-    governed_client: tuple[GovernedLLMClient, AsyncMock],
-) -> None:
-    client, recorded = governed_client
-    with bind_execution_context(run_id=RUN_A, node_run_id=NODE_A, attempt_id=ATTEMPT_A):
-        client.set_turn(RUN_A)
-        await _complete(client)
-
-    # The execution moved: same Run and NodeRun, a new Attempt.
-    with bind_execution_context(run_id=RUN_A, node_run_id=NODE_A, attempt_id=ATTEMPT_B):
-        with pytest.raises(RunIntegrityError):
-            await _complete(client)
-        recorded.assert_awaited_once()
-
-        # An explicit successful set_turn starts the new turn.
-        client.set_turn(RUN_A)
-        await _complete(client)
-        assert recorded.await_count == 2
-        assert _forwarded(recorded, 1) == (RUN_A, NODE_A, ATTEMPT_B)
-
-
-# --- per-turn effect-key counter ------------------------------------------------
-
-
-async def test_effect_key_starts_at_one_per_turn_and_resets_on_clear(
-    governed_client: tuple[GovernedLLMClient, AsyncMock],
-) -> None:
-    client, recorded = governed_client
-    with bind_execution_context(run_id=RUN_A, node_run_id=NODE_A, attempt_id=ATTEMPT_A):
-        client.set_turn(RUN_A)
-        await _complete(client)
-        await _complete(client)
-        assert [call.kwargs["effect_key"] for call in recorded.call_args_list] == [
-            "agent-llm-1",
-            "agent-llm-2",
-        ]
-
-        client.clear_turn()
-        client.set_turn(RUN_A)
-        await _complete(client)
-        assert recorded.call_args_list[2].kwargs["effect_key"] == "agent-llm-1"
-
-
-# --- per-task identity isolation ------------------------------------------------
-
-
-async def test_concurrent_tasks_sharing_one_client_keep_their_own_identity(
-    governed_client: tuple[GovernedLLMClient, AsyncMock],
-) -> None:
-    """Two tasks interleave set_turn and complete through one shared client.
-
-    The barrier parks both tasks *after* both set_turns; the event then orders
-    the completes A-then-B. Because turn state lives in per-client ContextVars
-    (per-task context copies), neither task can observe the other's identity —
-    a shared mutable instance field would make the second set_turn win and
-    this test would record B's triple twice.
-    """
-    client, recorded = governed_client
-    after_set_turn = asyncio.Barrier(2)
-    a_completed = asyncio.Event()
-
-    async def worker(
-        run: str,
-        node: str,
-        attempt: str,
-        gate: asyncio.Event | None,
-        release: asyncio.Event | None,
-    ) -> tuple[str, str, str]:
-        with bind_execution_context(run_id=run, node_run_id=node, attempt_id=attempt):
-            client.set_turn(run)
-            async with after_set_turn:
-                pass
-            if gate is not None:
-                await gate.wait()
-            await _complete(client)
-            if release is not None:
-                release.set()
-            return (run, node, attempt)
-
-    results = await asyncio.gather(
-        worker(RUN_A, NODE_A, ATTEMPT_A, None, a_completed),
-        worker(RUN_B, NODE_B, ATTEMPT_B, a_completed, None),
-    )
-
-    assert results == [(RUN_A, NODE_A, ATTEMPT_A), (RUN_B, NODE_B, ATTEMPT_B)]
-    assert recorded.await_count == 2
-    assert _forwarded(recorded, 0) == (RUN_A, NODE_A, ATTEMPT_A)
-    assert _forwarded(recorded, 1) == (RUN_B, NODE_B, ATTEMPT_B)
-
-
-# --- the regression this test file exists to catch ------------------------------
-
-
-async def test_identity_is_never_fabricated_when_context_is_absent(
-    governed_client: tuple[GovernedLLMClient, AsyncMock],
-) -> None:
-    """No `agent-turn-…`/`agent-node-…`/`agent-attempt-…` ids may appear.
-
-    This is the assertion the old generated-tuple behavior fails: it happily
-    forwarded (`agent-turn-<hex>`, `agent-node-model`, `agent-attempt-<hex>`)
-    with zero egress refusals. The refusal contract makes fabrication
-    unreachable.
-    """
-    client, recorded = governed_client
+@pytest.mark.parametrize("invalid", ["missing", "mismatched"])
+async def test_failed_set_turn_clears_prior_valid_state(client: Any, invalid: str) -> None:
+    adapter, calls = client
     with detached_execution_context():
+        with bind_execution_context(**ids()):
+            adapter.set_turn()
+            # Exercise clearing a nonzero prior sequence without issuing egress.
+            adapter._sequence.set(7)
+            if invalid == "mismatched":
+                with pytest.raises(RunIntegrityError):
+                    adapter.set_turn("other-run")
+        if invalid == "missing":
+            with pytest.raises(RunIntegrityError):
+                adapter.set_turn()
+        assert adapter._turn.get() is None
+        assert adapter._sequence.get() == 0
         with pytest.raises(RunIntegrityError):
-            client.set_turn(None, agent_name="model")
-        with pytest.raises(RunIntegrityError):
-            await _complete(client)
-    recorded.assert_not_awaited()
-    assert all(
-        "agent-turn-" not in str(call.kwargs.get("run_id", ""))
-        and "agent-node-" not in str(call.kwargs.get("node_run_id", ""))
-        and "agent-attempt-" not in str(call.kwargs.get("attempt_id", ""))
-        for call in recorded.call_args_list
-    )
+            await adapter.complete([], "model")
+    assert calls == []
+
+
+async def test_shared_client_keeps_task_local_identity_and_sequence(client: Any) -> None:
+    adapter, calls = client
+    barrier = asyncio.Barrier(2)
+
+    async def complete_turn(suffix: str) -> None:
+        with detached_execution_context(), bind_execution_context(**ids(suffix)):
+            adapter.set_turn()
+            await barrier.wait()
+            await adapter.complete([], "model")
+            await barrier.wait()
+            await adapter.complete([], "model")
+            adapter.clear_turn()
+
+    await asyncio.gather(complete_turn("A"), complete_turn("B"))
+    for suffix in ("A", "B"):
+        own = [call for call in calls if call["run_id"] == f"run-{suffix}"]
+        assert [{key: call[key] for key in ids()} for call in own] == [ids(suffix)] * 2
+        assert [call["effect_key"] for call in own] == ["agent-llm-1", "agent-llm-2"]
+    assert adapter._turn.get() is None
+    assert adapter._sequence.get() == 0

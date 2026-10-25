@@ -204,7 +204,7 @@ def evaluate(
 
 
 def main() -> None:
-    rng = random.Random(11)  # DevSkim: ignore DS148264 until 2027-12-31
+    rng = random.Random(11)
     train = [sample(rng) for _ in range(400)]
     ys = [label(x, rng) for x in train]
     test = [sample(rng) for _ in range(600)]

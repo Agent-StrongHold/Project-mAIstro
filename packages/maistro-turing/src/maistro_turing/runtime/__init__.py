@@ -22,14 +22,6 @@ from maistro_turing.bridge import (
 
 logger = logging.getLogger("maistro_turing.runtime")
 
-#: Bounded per-session history (#859). A session's state writes must be
-#: bounded: the turn window fed to the model is already sliced, and the
-#: stored history is trimmed to the same declared bound so a long-lived
-#: session cannot grow process memory without limit. Oldest turns fall off
-#: first; the durable trace of a conversation is the episodic chat capture,
-#: not this in-memory list.
-MAX_HISTORY_TURNS = 40
-
 
 # ---------------------------------------------------------------- config -----
 
@@ -44,7 +36,7 @@ class TuringConfig:
     litellm_virtual_key: str | None = None
     pools_config_path: str | None = None
     chat_port: int | None = None
-    chat_bind: str = "127.0.0.1"  # DevSkim: ignore DS162092 until 2027-12-31
+    chat_bind: str = "127.0.0.1"
     base_prompt: str | None = None
     voice_self_edit_enabled: bool = True
 
@@ -180,23 +172,12 @@ class TuringChatSession:
         classifier: TuringClassifierBridge,
         security: TuringSecurityBridge,
         self_id: str,
-        user_id: str = "",
-        workspace_id: str = "",
-        project_id: str = "",
     ) -> None:
         self._memory = memory
         self._provider = provider
         self._classifier = classifier
         self._security = security
         self._self_id = self_id
-        # Canonical scope of the authenticated caller that owns this session
-        # (#859): the episodic chat capture persists with this provenance so
-        # one principal's captures are never indistinguishable from another's
-        # in a shared episodic store. Blank (unscoped sessions in tests and
-        # tooling) keeps the previous unscoped-capture behavior.
-        self._user_id = user_id
-        self._workspace_id = workspace_id
-        self._project_id = project_id
         self._history: list[dict[str, str]] = []
 
     async def handle_message(self, message: str) -> str:
@@ -224,69 +205,33 @@ class TuringChatSession:
             raise TuringContentBlocked("user input refused by Warden")
 
         self._history.append({"role": "user", "content": message})
-        # The declared bound holds from this point on, not only after a
-        # successful turn (#859): a turn that fails between here and the
-        # assistant entry must not leave the session's stored state growing
-        # past MAX_HISTORY_TURNS.
-        self._trim_history()
 
-        try:
-            await self._classifier.classify_message(message)
+        await self._classifier.classify_message(message)
 
-            prompt_parts = [f"User: {message}"]
-            if self._history[:-1]:
-                prompt_parts.insert(0, "Previous context:")
-                for turn in self._history[-6:]:
-                    prompt_parts.insert(
-                        len(prompt_parts) - 1, f"  {turn['role']}: {turn['content'][:200]}"
-                    )
-            prompt_parts.append("Respond naturally as yourself.")
+        prompt_parts = [f"User: {message}"]
+        if self._history[:-1]:
+            prompt_parts.insert(0, "Previous context:")
+            for turn in self._history[-6:]:
+                prompt_parts.insert(
+                    len(prompt_parts) - 1, f"  {turn['role']}: {turn['content'][:200]}"
+                )
+        prompt_parts.append("Respond naturally as yourself.")
 
-            # Async seam (#397): the model call is awaited on the owning loop;
-            # the sync path is reserved for non-loop callers.
-            reply = await self._provider.acomplete(
-                "\n".join(prompt_parts),
-                max_tokens=1000,
-            )
-            result_scan = await self._security.scan_tool_result(reply, tool_name="turing-model")
-            if result_scan.get("verdict") != "allowed":
-                # Do not append or persist a model result until Warden has
-                # cleared it; provider choice must not change the trust
-                # boundary.
-                raise TuringContentBlocked("model result refused by Warden")
-        except Exception:
-            # A failed turn leaves no half-written history: the unpaired user
-            # entry is rolled back, so repeated failures cannot grow the
-            # session's stored state, and a failed turn never reaches the next
-            # turn's model context as if it had been answered.
+        # Async seam (#397): the model call is awaited on the owning loop;
+        # the sync path is reserved for non-loop callers.
+        reply = await self._provider.acomplete(
+            "\n".join(prompt_parts),
+            max_tokens=1000,
+        )
+        result_scan = await self._security.scan_tool_result(reply, tool_name="turing-model")
+        if result_scan.get("verdict") != "allowed":
+            # Do not append or persist a model result until Warden has cleared
+            # it; provider choice must not change the trust boundary.
             self._history.pop()
-            raise
+            raise TuringContentBlocked("model result refused by Warden")
 
         self._history.append({"role": "assistant", "content": reply})
-        self._trim_history()
 
-        await self._capture_chat_episode(message, reply)
-
-        return reply
-
-    def _trim_history(self) -> None:
-        """Hold the stored history to the declared bound.
-
-        Oldest turns fall off first. The durable trace of a conversation is
-        the episodic chat capture, not this in-memory list (#859).
-        """
-        if len(self._history) > MAX_HISTORY_TURNS:
-            del self._history[:-MAX_HISTORY_TURNS]
-
-    async def _capture_chat_episode(self, message: str, reply: str) -> None:
-        """Persist the turn as an episodic chat capture (best-effort).
-
-        The capture carries the owning caller's canonical provenance (#859):
-        user/project ride on the persisted row so one principal's captures are
-        never indistinguishable from another's in a shared episodic store. A
-        failed capture never fails the turn — the conversation itself is the
-        product here, the trace is auxiliary.
-        """
         try:
             await self._memory.store_episode(
                 content=f"User said: {message[:200]}; I replied: {reply[:200]}",
@@ -294,8 +239,8 @@ class TuringChatSession:
                 source="i_did",
                 weight=0.1,
                 intent="chat-capture",
-                user_id=self._user_id or None,
-                project_id=self._project_id or None,
             )
         except Exception:
             logger.debug("chat capture failed", exc_info=True)
+
+        return reply

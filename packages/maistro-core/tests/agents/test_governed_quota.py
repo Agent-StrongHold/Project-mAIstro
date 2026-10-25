@@ -18,7 +18,7 @@ from maistro.capabilities.providers.llm_gateway import (
     GatewayEndpoint,
 )
 from maistro.credentials.types import CredentialRecord
-from maistro.observability.correlation import bind_execution_context
+from maistro.observability.correlation import bind_execution_context, detached_execution_context
 from maistro.providers.registry import InMemoryProviderRegistry
 from maistro.providers.router import CostAwareRouter
 from maistro.providers.types import ModelMetadata
@@ -121,15 +121,12 @@ async def test_agent_completion_uses_canonical_invocation_quota_hook(
         warden=Warden(),
     )
 
-    # #1827: the governed client reads its Run/NodeRun/Attempt identity from
-    # the correlation context canonical execution binds (RunExecutionService
-    # for run_id, AttemptExecutionService.execute_claimed for the other two).
-    # Bind a complete context whose run matches the turn_id Agent.handle
-    # supplies, exactly as a node execution would.
-    with bind_execution_context(
-        run_id="run-agent-1",
-        node_run_id="node-agent-1",
-        attempt_id="attempt-agent-1",
+    # This adapter test supplies canonical context; production admission is #1084.
+    with (
+        detached_execution_context(),
+        bind_execution_context(
+            run_id="run-agent-1", node_run_id="node-agent-1", attempt_id="attempt-agent-1"
+        ),
     ):
         response = await agent.handle(
             [{"role": "user", "content": "say hello"}],
@@ -146,3 +143,11 @@ async def test_agent_completion_uses_canonical_invocation_quota_hook(
     assert events[0].billing_cycle == "monthly"
     rows = await tracker.get_all_usage()
     assert rows[0]["total_tokens"] == 10
+
+    stored = await effects.invocation_store.get(events[0].invocation_id)
+    assert stored is not None
+    assert (stored.run_id, stored.node_run_id, stored.attempt_id) == (
+        "run-agent-1",
+        "node-agent-1",
+        "attempt-agent-1",
+    )

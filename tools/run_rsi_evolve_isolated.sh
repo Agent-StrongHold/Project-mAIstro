@@ -60,7 +60,7 @@ if [[ -z "$NETWORK" ]]; then
         2>/dev/null | head -1)"
     NETWORK="${NETWORK:-maistro_default}"
 fi
-GATEWAY_URL="${MAISTRO_RSI_GATEWAY_URL:-http://maistro-litellm:4000}"  # DevSkim: ignore DS137138 until 2027-12-31
+GATEWAY_URL="${MAISTRO_RSI_GATEWAY_URL:-http://maistro-litellm:4000}"
 
 # Windows/git-bash mount hygiene (see the run wrapper for the war story).
 ENV_MOUNT="$ENV_FILE"
@@ -94,7 +94,7 @@ exec docker run --rm \
     bash -lc "set -o pipefail; sed 's/\r\$//' /run/gateway.env > /tmp/gw.env; set -a; . /tmp/gw.env; set +a; \
         export LITELLM_URL='$GATEWAY_URL' LITELLM_BASE_URL='$GATEWAY_URL' LITELLM_PROXY_URL='$GATEWAY_URL'; \
         unset DB_PASSWORD LANGFUSE_PUBLIC_KEY LANGFUSE_SECRET_KEY LANGFUSE_NEXTAUTH_SECRET LANGFUSE_SALT \
-              API_KEYS OPENAI_API_KEY ANTHROPIC_API_KEY GEMINI_API_KEY MISTRAL_API_KEY \
+              API_KEYS MAISTRO_ACCESS_TOKEN OPENAI_API_KEY ANTHROPIC_API_KEY GEMINI_API_KEY MISTRAL_API_KEY \
               GROQ_API_KEY CEREBRAS_API_KEY COHERE_API_KEY NVIDIA_API_KEY OPENROUTER_API_KEY SAMBANOVA_API_KEY \
               XAI_API_KEY DEEPSEEK_API_KEY TOGETHER_API_KEY FIREWORKS_API_KEY DEEPINFRA_API_KEY 2>/dev/null || true; \
         source /workspace/.venv/bin/activate && \

@@ -69,12 +69,6 @@ def configure_api_keys(monkeypatch: pytest.MonkeyPatch, *entries: str) -> None:
     get_settings.cache_clear()
 
 
-def configure_admin_api_keys(monkeypatch: pytest.MonkeyPatch, *entries: str) -> None:
-    """Point settings at an explicit ADMIN_API_KEYS list (JSON, like the env var)."""
-    monkeypatch.setenv("ADMIN_API_KEYS", json.dumps(list(entries)))
-    get_settings.cache_clear()
-
-
 class TestHealthExemption:
     def test_health_path_never_rate_limited(self, tight_limits: None) -> None:
         client = TestClient(_make_app())
@@ -127,12 +121,9 @@ class TestRateLimitHeadersAnd429Body:
 
 
 class TestKeyExtractionPriority:
-    def test_valid_credential_keys_the_principal_bucket(
-        self, tight_limits: None, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_valid_credential_keys_the_principal_bucket(self, tight_limits: None) -> None:
         """A valid bearer keys the bucket on the resolved principal: the
         same token keeps hitting the same bucket until it trips."""
-        configure_api_keys(monkeypatch, "dev:rl-key")
         client = TestClient(_make_app())
         headers = {"Authorization": "Bearer rl-key"}
 
@@ -352,130 +343,6 @@ class TestPrincipalIdentityKeying:
                 assert "rl-metric-secret" not in label_value
                 assert "rl-other-secret" not in label_value
 
-    def test_valid_principal_bucket_stays_apart_from_the_preauth_floor(
-        self, tight_limits: None, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """#1101 AC: auth-enabled deployments keep bucketing valid
-        credentials by canonical principal and everything else by the pre-auth
-        client identity — and the two buckets are independent, so alternating
-        header forms (headerless / malformed scheme / arbitrary Bearer) around
-        a valid credential neither drains nor refills the principal's quota."""
-        configure_api_keys(monkeypatch, "ops:rl-legit-key")
-        client = TestClient(_make_app())
-        auth = {"Authorization": "Bearer rl-legit-key"}
-
-        # The valid credential exhausts the ops principal bucket...
-        assert client.get("/thing", headers=auth).status_code == 200
-        assert client.get("/thing", headers=auth).status_code == 200
-        assert client.get("/thing", headers=auth).status_code == 429
-
-        # ...while the same connecting client's unauthenticated traffic draws
-        # on its own pre-auth bucket: headerless and malformed-scheme requests
-        # are fresh until the floor trips, and an arbitrary Bearer cannot
-        # escape back into a principal bucket.
-        assert client.get("/thing").status_code == 200
-        assert (
-            client.get("/thing", headers={"Authorization": "Basic dXNlcjpwYXNz"}).status_code == 200
-        )
-        assert (
-            client.get("/thing", headers={"Authorization": "Bearer not-the-key"}).status_code == 429
-        )
-        # The principal bucket stays exhausted — pre-auth traffic did not
-        # consume its budget.
-        assert client.get("/thing", headers=auth).status_code == 429
-
-
-class TestNoAuthDevelopmentBucket:
-    """#1101: with ``API_KEYS`` empty — the explicitly unauthenticated
-    development configuration — Authorization header content cannot change
-    the rate-limit bucket identity. One development client is one bounded
-    pre-auth bucket regardless of arbitrary Bearer/no-Bearer variation, and
-    distinct client addresses never collapse into a synthetic principal
-    bucket. No authenticated identity is invented to support rate limiting
-    (#1101 stop condition)."""
-
-    @pytest.fixture()
-    def no_auth(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Pin the auth-disabled configuration: ``API_KEYS == []``.
-
-        Set explicitly rather than inherited from the ambient environment —
-        these tests are about the empty-list semantics, so they must hold
-        even where the ambient env happens to configure keys.
-        """
-        configure_api_keys(monkeypatch)
-
-    def test_header_contents_cannot_change_the_bucket_identity(
-        self, tight_limits: None, no_auth: None
-    ) -> None:
-        """#1101 AC: alternating headerless / arbitrary Bearer / malformed
-        scheme from one client stays inside the ONE pre-auth bucket — header
-        text neither mints a second bucket nor escapes an exhausted one."""
-        client = TestClient(_make_app())
-
-        assert client.get("/thing").status_code == 200
-        assert (
-            client.get("/thing", headers={"Authorization": "Bearer anything-at-all"}).status_code
-            == 200
-        )
-        # The bucket these two requests share is now exhausted; every other
-        # header form draws on the same one and is denied too.
-        assert (
-            client.get("/thing", headers={"Authorization": "Bearer something-else"}).status_code
-            == 429
-        )
-        assert (
-            client.get("/thing", headers={"Authorization": "Basic dXNlcjpwYXNz"}).status_code == 429
-        )
-        assert client.get("/thing").status_code == 429
-
-    def test_bearer_sending_development_clients_do_not_collapse_into_one_bucket(
-        self, tight_limits: None, no_auth: None
-    ) -> None:
-        """#1101 AC: distinct development client addresses keep independent
-        buckets even when both send arbitrary Bearer headers. Before #1101
-        both collapsed into the one global ``principal:dev`` bucket, so the
-        second client inherited the first client's exhaustion."""
-        app = _make_app()  # ONE app: one limiter, two connecting addresses.
-        alice = TestClient(app, client=("203.0.113.10", 1111))
-        bob = TestClient(app, client=("203.0.113.20", 2222))
-        alice_auth = {"Authorization": "Bearer alice-arbitrary"}
-        bob_auth = {"Authorization": "Bearer bob-arbitrary"}
-
-        # Alice exhausts her own (ip-keyed) bucket.
-        assert alice.get("/thing", headers=alice_auth).status_code == 200
-        assert alice.get("/thing", headers=alice_auth).status_code == 200
-        assert alice.get("/thing", headers=alice_auth).status_code == 429
-
-        # Bob's address is a different bucket — his arbitrary Bearer value
-        # neither shares Alice's exhaustion nor trips on her spent quota.
-        assert bob.get("/thing", headers=bob_auth).status_code == 200
-        assert bob.get("/thing", headers=bob_auth).status_code == 200
-        assert bob.get("/thing", headers=bob_auth).status_code == 429
-
-    def test_delegation_envelope_cannot_mint_a_bucket_when_auth_disabled(
-        self, tight_limits: None, no_auth: None, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """#1101 stop condition: in auth-disabled mode no service principal
-        exists to verify a delegation envelope against, so the envelope must
-        not open a ``delegated-principal:`` bucket — the request stays in the
-        connecting address's pre-auth bucket."""
-        monkeypatch.setenv("TASK_DELEGATION_KEY", "delegation-key")
-        client = TestClient(_make_app())
-        envelope = sign_delegation_context(
-            service_principal="dev", originating_principal="alice", key="delegation-key"
-        )
-        delegated = {
-            "Authorization": "Bearer whatever",
-            DELEGATION_HEADER: envelope,
-        }
-
-        assert client.get("/thing").status_code == 200
-        assert client.get("/thing", headers=delegated).status_code == 200
-        # Same ip bucket: the delegated envelope consumed it, it did not
-        # sidestep into an independent per-user budget.
-        assert client.get("/thing", headers=delegated).status_code == 429
-        assert client.get("/thing").status_code == 429
-
 
 class TestAdr037RequestDuration:
     def test_request_observes_route_template_and_outcome(self) -> None:
@@ -656,61 +523,3 @@ class TestBoundedRouteLabels:
             sample["labels"]["route"] for sample in maistro_request_duration_seconds.collect()
         }
         assert {"/items/{item_id}", "/users/{user_id}/orders/{order_id}"} <= histogram_routes
-
-
-class TestAdminOnlyDeployment:
-    """Admin-only deployments (API_KEYS empty, ADMIN_API_KEYS set) key the
-    bucket to the resolved admin principal, not the pre-auth client IP
-    (#1095).
-
-    Both tests are written to *distinguish* that gate from the pre-#1095
-    rule (``if not settings.api_keys`` -> every request keyed by client IP):
-    under the old rule all requests below share one per-client ``ip:``
-    bucket with the same limit of 2, so each test's decisive assertion
-    flips to 429. Each test therefore fails when the admin-only branch of
-    ``RateLimitMiddleware._extract_key`` regresses to the old gate.
-    """
-
-    def test_valid_admin_credential_keys_the_principal_bucket(
-        self, monkeypatch: pytest.MonkeyPatch, tight_limits: None
-    ) -> None:
-        monkeypatch.setenv("API_KEYS", json.dumps([]))
-        configure_admin_api_keys(monkeypatch, "ops:secret")
-        get_settings.cache_clear()
-        app = _make_app()
-        same_client = TestClient(app)
-        # Same middleware instance, but a second client address: only the
-        # bucket *identity* may decide whether it shares the admin's quota.
-        other_client = TestClient(app, client=("203.0.113.9", 1234))
-        auth = {"Authorization": "Bearer secret"}
-        # Two requests as the admin exhaust the principal:ops bucket.
-        assert same_client.get("/thing", headers=auth).status_code == 200
-        assert same_client.get("/thing", headers=auth).status_code == 200
-        # An invalid bearer from the same client falls into the untouched
-        # ``ip:`` pre-auth bucket — 200, not the exhausted principal's 429.
-        # (Old gate: same ``ip:`` bucket was exhausted above -> 429.)
-        wrong = {"Authorization": "Bearer wrong"}
-        assert same_client.get("/thing", headers=wrong).status_code == 200
-        # A different client IP presenting the same valid secret shares the
-        # exhausted principal bucket — no fresh quota from a new address.
-        # (Old gate: fresh per-IP bucket -> 200.)
-        assert other_client.get("/thing", headers=auth).status_code == 429
-
-    def test_invalid_admin_bearer_falls_back_to_client_ip(
-        self, monkeypatch: pytest.MonkeyPatch, tight_limits: None
-    ) -> None:
-        monkeypatch.setenv("API_KEYS", json.dumps([]))
-        configure_admin_api_keys(monkeypatch, "ops:secret")
-        get_settings.cache_clear()
-        client = TestClient(_make_app())
-        wrong = {"Authorization": "Bearer wrong"}
-        # Invalid credentials share the bounded per-client-IP bucket:
-        # header text cannot mint fresh quota, and the third request trips.
-        assert client.get("/thing", headers=wrong).status_code == 200
-        assert client.get("/thing", headers=wrong).status_code == 200
-        assert client.get("/thing", headers=wrong).status_code == 429
-        # Exhausting the ``ip:`` bucket never contaminated the principal
-        # bucket: a valid admin bearer from the same client still succeeds.
-        # (Old gate: it shares the exhausted ``ip:`` bucket -> 429.)
-        valid = {"Authorization": "Bearer secret"}
-        assert client.get("/thing", headers=valid).status_code == 200

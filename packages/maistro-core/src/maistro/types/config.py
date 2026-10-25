@@ -9,8 +9,6 @@ from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, Field, field_validator
 
-from maistro.memory.exposure import MemoryExposureMode
-
 
 class RoutingConfig(BaseModel):
     """Model routing parameters."""
@@ -51,24 +49,6 @@ class LearningsConfig(BaseModel):
     rca_enabled: bool = True
     rca_model: str = ""
     promotion_threshold: int = 5
-
-
-class MemoryConfig(BaseModel):
-    """Deployment-level memory posture (ADR-057 / SPEC-062126-6a31).
-
-    ``exposure_mode`` is the declaration the write-authority gate requires: the
-    container passes it to every memory store it builds, and a store that
-    receives none refuses to mutate at all (the store-level default is ``None``
-    — fail-closed — so bypassing this config never silently inherits a mode).
-
-    The config-level default is ``AGENT_MANAGED``: that is the engine's existing
-    posture, declared here explicitly rather than inherited silently — the same
-    move SPEC-062126-6a31 made for maistro-turing's recipes. A curated-context
-    deployment sets ``system_managed`` and the agent loop loses all memory
-    write and promotion authority at the store boundary.
-    """
-
-    exposure_mode: MemoryExposureMode = MemoryExposureMode.AGENT_MANAGED
 
 
 class SecurityConfig(BaseModel):
@@ -117,11 +97,7 @@ class SecurityConfig(BaseModel):
 class CORSConfig(BaseModel):
     """CORS configuration for browser-based clients."""
 
-    allowed_origins: list[str] = Field(
-        default_factory=lambda: [
-            "http://localhost:3200",  # DevSkim: ignore DS162092 until 2027-12-31; ignore DS137138 until 2027-12-31
-        ]
-    )
+    allowed_origins: list[str] = Field(default_factory=lambda: ["http://localhost:3200"])
     allowed_methods: list[str] = Field(
         default_factory=lambda: ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
     )
@@ -195,54 +171,12 @@ class ModelBindingConfig(BaseModel):
         return value
 
 
-class AdapterInstanceConfig(BaseModel):
-    """Operator-declared wiring for one registered provider adapter (M9-E1).
-
-    This is deployment configuration, never adapter-package configuration: the
-    adapter package declares *that* it needs a credential and under which
-    logical reference; only the operator's own configuration supplies the
-    secret material (``adapter_key``), and it is provisioned into the scoped
-    credential router, not stored on the adapter or the Binding.
-    """
-
-    adapter_id: str
-    binding_id: str
-    project_id: str
-    workspace_id: str = ""
-    #: Node scoping mirrors ``ModelBindingConfig``: an adapter credential
-    #: intended for one graph node can be scoped to it instead of authorizing
-    #: every node in the project that can name the binding id.
-    node_id: str = ""
-    provider_name: str = ""
-    disabled: bool = False
-    adapter_key: str = ""
-    credential_refs: tuple[str, ...] = ()
-    policy_refs: tuple[str, ...] = ()
-    probe_health_at_boot: bool = False
-
-    @field_validator("adapter_id", "binding_id", "project_id")
-    @classmethod
-    def _require_adapter_scope_identity(cls, value: str) -> str:
-        if not value.strip():
-            raise ValueError("adapter wiring identity/scope fields must be non-empty")
-        return value
-
-    @field_validator("credential_refs", "policy_refs")
-    @classmethod
-    def _reject_empty_adapter_refs(cls, value: tuple[str, ...]) -> tuple[str, ...]:
-        if any(not ref.strip() for ref in value):
-            raise ValueError("adapter wiring refs cannot contain empty values")
-        return value
-
-
 if TYPE_CHECKING:
 
     def _vulture_pydantic_contract_usage() -> None:
         """Keep reflection-owned Pydantic surface visible to production-only Vulture scans."""
         _ = ModelBindingConfig._require_scope_identity
         _ = ModelBindingConfig._reject_empty_refs
-        _ = AdapterInstanceConfig._require_adapter_scope_identity
-        _ = AdapterInstanceConfig._reject_empty_adapter_refs
 
     _ = _vulture_pydantic_contract_usage
 
@@ -256,7 +190,6 @@ class AgentConfig(BaseModel):
     routing: RoutingConfig = Field(default_factory=RoutingConfig)
     sessions: SessionsConfig = Field(default_factory=SessionsConfig)
     learnings: LearningsConfig = Field(default_factory=LearningsConfig)
-    memory: MemoryConfig = Field(default_factory=MemoryConfig)
     security: SecurityConfig = Field(default_factory=SecurityConfig)
     cors: CORSConfig = Field(default_factory=CORSConfig)
     rate_limit: RateLimitConfig = Field(default_factory=RateLimitConfig)
@@ -266,10 +199,6 @@ class AgentConfig(BaseModel):
     # Empty by default: configuring a Provider/model does not itself grant any
     # Workspace/Project the right to invoke it.
     model_bindings: list[ModelBindingConfig] = Field(default_factory=list)
-    # Operator wiring for registered provider-adapter packages (M9-E1, #961).
-    # Empty by default: a deployment with no adapter configuration routes every
-    # model through the shipped gateway exactly as before the SDK existed.
-    provider_adapters: list[AdapterInstanceConfig] = Field(default_factory=list)
     database_url: str = ""
     # The Workspace this instance admits work into (#41). Core keeps the soft
     # scope axes only (ADR-019/ADR-068), and a single-instance deployment is one
@@ -284,7 +213,7 @@ class AgentConfig(BaseModel):
     redis_url: str = ""
     agents_dir: str = ""
     provider_config_path: str = ""
-    litellm_url: str = "http://litellm:4000"  # DevSkim: ignore DS137138 until 2027-12-31
+    litellm_url: str = "http://litellm:4000"
     litellm_key: str = ""
     router_api_key: str = ""
     jwt_secret: str = ""

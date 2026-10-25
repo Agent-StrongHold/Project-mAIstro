@@ -24,7 +24,6 @@ from maistro.capabilities.governed_invocation import (
     InvocationApprovalRequired,
     InvocationDenied,
 )
-from maistro.capabilities.invocation import CapabilityUnavailable
 from maistro.capabilities.model_chat import ModelCallResult, ModelChatEgress
 from maistro.capabilities.providers.llm_gateway import (
     DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,
@@ -37,7 +36,6 @@ from maistro.capabilities.providers.llm_gateway import (
 )
 from maistro.credentials.types import CredentialRecord
 from maistro.graph.definitions import Graph, Node
-from maistro.graph.nodes.base import NodeContext
 from maistro.providers.protocols import LLMProviderRegistry, LLMRouter
 from maistro.runs.lifecycle import transition_path
 from maistro.runs.model import (
@@ -91,8 +89,6 @@ def _runtime() -> GovernedModelRuntime:
 def _endpoint() -> GatewayEndpoint:
     from config import get_settings
 
-    from services.secrets import effective_llm_gateway_key
-
     settings = get_settings()
     base_url = (
         os.environ.get("MAISTRO_LLM_BASE_URL")
@@ -101,11 +97,18 @@ def _endpoint() -> GatewayEndpoint:
         or settings.litellm_api_base
         or ""
     ).strip()
-    # The one effective-key contract (#1824), not a private alias chain: the
-    # governed egress and the embedded runtime's roster clients must resolve
-    # the deployment's credential the same way, or the two doors drift onto
-    # different credentials.
-    api_key = effective_llm_gateway_key(settings) or ""
+    api_key = (
+        os.environ.get("MAISTRO_LLM_API_KEY")
+        or os.environ.get("LITELLM_API_KEY")
+        or os.environ.get("LITELLM_PROXY_KEY")
+        or os.environ.get("LITELLM_MASTER_KEY")
+        or (
+            settings.litellm_api_key.get_secret_value()
+            if settings.litellm_api_key is not None
+            else ""
+        )
+        or ""
+    )
     if not base_url:
         raise ProviderActivationError("LLM gateway is not configured")
     return GatewayEndpoint(base_url=base_url, api_key=api_key)
@@ -265,57 +268,6 @@ async def dag_node_completion(
     return content
 
 
-async def dag_tool_completion(
-    runtime: GovernedModelRuntime,
-    *,
-    ctx: NodeContext,
-    binding_id: str,
-    effect_key: str,
-    request: ModelChatRequest,
-    timeout_s: float,
-) -> str:
-    """Execute a tool's model sub-effect using its existing canonical Attempt.
-
-    The DAG only references an operator-declared model Binding. It cannot
-    register a credential or authorize its requested model by constructing a
-    new Binding. The outer tool Invocation retains tool policy/lifecycle;
-    this distinct model Invocation owns model selection, credentials and usage.
-    """
-    if not binding_id.strip():
-        raise BindingResolutionError("model-backed DAG tools require a model_binding_id")
-    binding = await runtime.effects.bindings.resolve(
-        binding_id,
-        workspace_id=str(ctx.workspace_id or ""),
-        project_id=str(ctx.project_id or ""),
-        node_id=ctx.node_id,
-        capability=MODEL_CHAT_CAPABILITY,
-    )
-    result = await ModelChatEgress(
-        runtime.effects,
-        registry=runtime.registry,
-        router=runtime.router,
-        endpoint=runtime.endpoint.model_copy(update={"timeout_s": timeout_s}),
-    ).complete(
-        binding=binding,
-        run_id=ctx.run_id,
-        node_run_id=ctx.node_run_id,
-        attempt_id=ctx.attempt_id,
-        actor_id=str(ctx.user_id or ""),
-        effect_key=effect_key,
-        request=request,
-    )
-    choices = result.body.get("choices")
-    message = (
-        choices[0].get("message")
-        if isinstance(choices, list) and choices and isinstance(choices[0], dict)
-        else None
-    )
-    content = message.get("content") if isinstance(message, dict) else None
-    if not isinstance(content, str):
-        raise LLMProviderError("DAG tool model returned no text content")
-    return content
-
-
 async def ensure_binding(runtime: GovernedModelRuntime, binding: Binding) -> Binding:
     """Register an immutable control-plane Binding once, then reuse it."""
 
@@ -396,10 +348,7 @@ async def register_and_health_check(
     instead of registering models before being told no. The billable/diagnostic
     completion crosses the canonical model egress so its outcome and usage are
     auditable, and the transient registration key never enters the Invocation
-    record. The health model is a Binding pin: its metadata must already be
-    registered by the configured ProviderRegistry (``provider_config_path``).
-    This hook registers gateway transport names, not trusted cost metadata.
-    An unknown pin refuses before setup and must remain an actionable error.
+    record.
     """
 
     async def register_then_probe() -> None:
@@ -426,10 +375,6 @@ async def register_and_health_check(
         )
     except ProviderActivationError:
         raise
-    except CapabilityUnavailable as exc:
-        raise ProviderHealthError(
-            f"provider health selection unavailable for {provider_name}: {exc}"
-        ) from exc
     except (BindingResolutionError, InvocationDenied, InvocationApprovalRequired) as exc:
         raise ProviderAuthorizationError(
             f"provider health authorization failed for {provider_name}"

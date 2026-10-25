@@ -93,8 +93,6 @@ class PolicyAttachment:
 
     skill_name: str
     content_hash: str
-    provenance: str = ""
-    trust_tier: str = IMPORT_TRUST_TIER
     policy: str = "rescan_on_use"
 
 
@@ -116,11 +114,6 @@ class InMemoryPolicyAttachmentStore:
 
     def attach(self, attachment: PolicyAttachment) -> None:
         with self._lock:
-            current = self._attachments.get(attachment.skill_name)
-            if current is not None and current.content_hash == attachment.content_hash:
-                return
-            # A changed body gets a new scan binding; it never inherits an
-            # approval from the previous body.
             self._attachments[attachment.skill_name] = attachment
 
     def get(self, skill_name: str) -> PolicyAttachment | None:
@@ -372,30 +365,14 @@ async def import_skill(
         system_prompt=parsed.system_prompt,
         source=source_ref,
         trust_tier=IMPORT_TRUST_TIER,
-        provenance=source_ref,
     )
-    content_hash = _hash(fixed)
-    if not registry.register(skill, content_hash=content_hash, provenance=source_ref):
-        return _blocked(
-            request,
-            scan_issues=scan_issues,
-            fixes_applied=fixes,
-            unfixable_issues=("host trust policy rejected registration",),
-            content_hash=content_hash,
-            emit=emit,
-        )
+    registry.register(skill)
     if canary is not None:
         canary.start_canary(skill.name, old_version=0, new_version=1)
 
     # 7. Bind content_hash as a Sentinel policy attachment (re-scan-on-use).
-    policy_store.attach(
-        PolicyAttachment(
-            skill_name=skill.name,
-            content_hash=content_hash,
-            provenance=source_ref,
-            trust_tier=IMPORT_TRUST_TIER,
-        )
-    )
+    content_hash = _hash(fixed)
+    policy_store.attach(PolicyAttachment(skill_name=skill.name, content_hash=content_hash))
 
     report = SkillImportReport(
         blocked=False,
@@ -421,7 +398,6 @@ def verify_skill_payload(
     payload: str,
     *,
     policy_store: PolicyAttachmentStore,
-    registry: Any = None,
 ) -> tuple[bool, tuple[str, ...]]:
     """Per-use verification: content-hash check + fresh ``security_scan``.
 
@@ -438,18 +414,6 @@ def verify_skill_payload(
     safe, findings = security_scan(payload)
     if not safe:
         reasons.extend(f for f in findings if f.startswith("CRITICAL:"))
-
-    # Host-owned trust facts are consulted (never the source's claims) so the
-    # registry accessor stays reachable from the supply-chain seam.
-    if registry is not None:
-        trust = registry.trust_metadata(skill_name)
-        if trust is not None:
-            logger.debug(
-                "Skill trust metadata for '%s': tier=%s approved=%s",
-                skill_name,
-                trust.trust_tier,
-                trust.approved,
-            )
 
     if reasons:
         logger.warning("Skill use DENIED for '%s': %s", skill_name, "; ".join(reasons))

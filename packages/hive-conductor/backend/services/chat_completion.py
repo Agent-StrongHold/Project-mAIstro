@@ -764,87 +764,6 @@ PM_TOOLS: list[dict[str, Any]] = [
             "parameters": {"type": "object", "properties": {}},
         },
     },
-    {
-        "type": "function",
-        "function": {
-            "name": "compose_home_adaptive",
-            "description": "Fill the Workspace Home's adaptive (unpinned) space (#1048). Pass the regions to show; the user's pinned regions are never touched, and a payload that tries to pin, unpin, move or drop one is refused. Each region: {id, kind, position, size?, resource_type?, resource_id?, reason?}. kind: goals, backlog, runs, chat, sessions, design, attention, note.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "regions": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "id": {"type": "string"},
-                                "kind": {
-                                    "type": "string",
-                                    "description": "goals, backlog, runs, chat, sessions, design, attention, note",
-                                },
-                                "position": {"type": "integer"},
-                                "size": {"type": "string"},
-                                "resource_type": {
-                                    "type": "string",
-                                    "description": "goal, backlog_item, run, chat_session, design_surface, attention_item, or none",
-                                },
-                                "resource_id": {"type": "string"},
-                                "reason": {
-                                    "type": "string",
-                                    "description": "Why this region earns its place, from the user's own evidence",
-                                },
-                            },
-                            "required": ["id", "kind"],
-                        },
-                        "description": "The adaptive regions to show in unpinned space",
-                    },
-                    "expected_revision": {
-                        "type": "integer",
-                        "description": "The layout revision this composition was built against",
-                    },
-                },
-                "required": ["regions"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "dismiss_home_adaptive",
-            "description": "Record that the user does not want one adaptive Home candidate surfaced (#1048). Backend-side and durable: the candidate stops being offered in this Workspace, and the count is visible to the user. item_type: goal, backlog_item, run, chat_session, design_surface, attention_item.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "item_type": {
-                        "type": "string",
-                        "description": "goal, backlog_item, run, chat_session, design_surface, attention_item",
-                    },
-                    "item_id": {
-                        "type": "string",
-                        "description": "The canonical id of the item not to surface",
-                    },
-                },
-                "required": ["item_type", "item_id"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "set_workspace_agent_persona",
-            "description": "Swap the Workspace Agent's persona template id (#2277) without changing its stable agent id. Uses the same service as PUT /v1/workspaces/{id}/agent. persona_template_id must be a lowercase snake_case id (e.g. program_manager, delivery).",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "persona_template_id": {
-                        "type": "string",
-                        "description": "Persona template id to run on the Workspace Agent",
-                    },
-                },
-                "required": ["persona_template_id"],
-            },
-        },
-    },
 ]
 
 
@@ -1479,6 +1398,10 @@ async def _tool_create_dashboard_widget(
             "violations": violations,
         }
 
+    # `effective`, not `load`: before a first save the route hands the user their
+    # preset without storing it, so editing the empty record and saving it
+    # replaced every preset widget with the one just added (#340).
+    layout = dict(dashboard_layouts.effective(user_id).layout)
     widget = {
         "id": widget_id,
         "type": widget_type,
@@ -1487,25 +1410,27 @@ async def _tool_create_dashboard_widget(
         "config": config,
     }
 
-    # `effective`, not `load`: before a first save the route hands the user their
-    # preset without storing it, so editing the empty record and saving it
-    # replaced every preset widget with the one just added (#340). The save is
-    # against the revision read, so a UI save in between is re-read, not erased.
-    def add_to(record: dashboard_layouts.LayoutRecord) -> None:
-        layout = dashboard_layouts.with_widget(record.layout, widget, tab_name)
-        dashboard_layouts.save(user_id, layout, expected_revision=record.revision)
+    if layout.get("tabs"):
+        tabs = [dict(tab) for tab in layout["tabs"]]
+        target_idx = layout.get("activeTab", 0)
+        if tab_name:
+            for i, tab in enumerate(tabs):
+                if tab.get("name", "").lower() == tab_name.lower():
+                    target_idx = i
+                    break
+            else:
+                tabs.append({"name": tab_name, "widgets": []})
+                target_idx = len(tabs) - 1
+        tabs[target_idx]["widgets"] = [*tabs[target_idx].get("widgets", []), widget]
+        layout["tabs"] = tabs
+    else:
+        existing = layout.get("widgets", [])
+        layout["tabs"] = [{"name": tab_name or "Overview", "widgets": [*existing, widget]}]
+        layout["activeTab"] = 0
+        layout.pop("widgets", None)
 
     try:
-        try:
-            add_to(dashboard_layouts.effective(user_id))
-        except dashboard_layouts.LayoutConflictError:
-            add_to(dashboard_layouts.effective(user_id))
-    except dashboard_layouts.LayoutConflictError as exc:
-        logger.warning("dashboard widget lost the revision race for %s: %s", user_id, exc)
-        return {
-            "created": False,
-            "error": f"the layout kept changing while the widget was added: {exc}",
-        }
+        dashboard_layouts.save(user_id, layout)
     except dashboard_layouts.LayoutError as exc:
         logger.error("dashboard widget was not persisted for %s: %s", user_id, exc)
         return {"created": False, "error": f"the widget was not saved: {exc}"}
@@ -1589,106 +1514,6 @@ async def _tool_list_workflows(
     }
 
 
-async def _canonical_run_was_cancelled(canonical_run_id: str) -> bool:
-    """Whether the canonical spine recorded this Run as CANCELLED.
-
-    The projection mirrors canonical truth or says nothing; when the spine is
-    unreachable there is nothing to mirror, so the answer is no (#1332).
-    """
-    try:
-        from maistro.runs.model import RunStatus
-        from services.engine import get_engine
-
-        run_store = get_engine().run_store
-        if run_store is None:
-            return False
-        run = await run_store.get_run(canonical_run_id)
-    except Exception:
-        return False
-    return run is not None and run.status is RunStatus.CANCELLED
-
-
-class _ChatDagRunScoreAdapter:
-    """The run shape the eval judge scores a chat-launched DAG through."""
-
-    def __init__(self, exec_id: str, dag_id: str, result: dict[str, Any]):
-        self.run_id = exec_id
-        self.dag_id = dag_id
-        self.project_id = ""
-        self.status = "completed"
-        self.node_records = []
-        for nid, nr in result.get("node_results", {}).items():
-
-            class _NR:
-                pass
-
-            n = _NR()
-            n.node_id = nid
-            n.kind = nr.get("role", "llm")
-            n.phase = "completed"
-            n.latency_ms = nr.get("latency_ms", 0)
-            n.tokens_in = nr.get("tokens_in", 0)
-            n.tokens_out = nr.get("tokens_out", 0)
-            n.error_code = None
-            n.error_message = None
-            n.response_preview = nr.get("response", "")[:500]
-            self.node_records.append(n)
-
-
-async def _eval_judge_score(exec_id: str, dag_id: str, result: dict[str, Any]) -> dict[str, Any]:
-    """Score a chat-launched DAG through the eval judge.
-
-    The scorer is commentary on a run, not part of it: its failure has the
-    same standing as a failed history write and must not change the outcome
-    the caller sees.
-    """
-    try:
-        from services.eval_judge import score_run
-
-        return await score_run(_ChatDagRunScoreAdapter(exec_id, dag_id, result))
-    except Exception as e:
-        return {"score": 0, "error": str(e)[:100]}
-
-
-def _chat_dag_output_preview(result: dict[str, Any]) -> dict[str, str]:
-    """The first few node responses, at the preview length the tool serves."""
-    return {
-        nid: nr.get("response", "")[:200]
-        for nid, nr in list(result.get("node_results", {}).items())[:3]
-    }
-
-
-async def _cancellation_answer(
-    cancelled: asyncio.CancelledError, exec_id: str, dag_id: str
-) -> dict[str, Any]:
-    """The turn's answer when the canonical spine cancelled this DAG run.
-
-    `RunExecutionService.cancel_run` fences the canonical Run CANCELLED, stops
-    its Attempts, and the durable walk persists that truth and re-raises the
-    cancellation into this awaiter (#1332). The same exception also arrives
-    when THIS task is torn down (a chat disconnect) with the canonical Run
-    untouched, so an answer -- and the cancelled row it stamps -- follows only
-    a cancellation the spine actually recorded; otherwise the original
-    cancellation is re-raised, as asyncio's contract requires.
-    """
-    if asyncio.current_task().cancelling():
-        raise cancelled
-    from services.dag_run_store import get_dag_run_store
-
-    record = get_dag_run_store().get_run(exec_id) or {}
-    canonical_run_id = str(record.get("canonical_run_id") or "")
-    if not canonical_run_id or not await _canonical_run_was_cancelled(canonical_run_id):
-        raise cancelled
-    with contextlib.suppress(Exception):
-        await get_dag_run_store().finish_run(exec_id, status="cancelled")
-    return {
-        "run_id": exec_id,
-        "dag_id": dag_id,
-        "status": "cancelled",
-        "cancelled": True,
-    }
-
-
 async def _tool_run_workflow(
     args: dict[str, Any], user_id: str, jira_pat: str | None
 ) -> dict[str, Any]:
@@ -1710,11 +1535,6 @@ async def _tool_run_workflow(
     # Minted before the `try`, so the failure branch can always name the run
     # it is finishing rather than risking an unbound local.
     exec_id = str(uuid4())
-    # Raised by the facade when the canonical Run ended somewhere other than
-    # `completed`; catching it separately is what lets the failure branch
-    # record the canonical outcome instead of re-deciding it locally (#35).
-    from services.graph_runner import CanonicalDagExecutionError
-
     # The `try` below covers the event and history writes that follow the
     # execution as well as the execution itself, so a failing `append_event` --
     # a full or closed writer queue, say -- used to reach the failure branch
@@ -1734,16 +1554,7 @@ async def _tool_run_workflow(
             workspace_id=workspace_id,
             project_id=project_id,
         )
-
-        async def _record_admission(canonical_run_id: str) -> None:
-            # Persist the projection -> canonical Run correlation at canonical
-            # admission, not after execution settles (#1332). The canonical
-            # executor awaits this before any physical node work, so a live
-            # Recent Runs entry cancels through the exact canonical Run while
-            # the DAG is still running instead of 404-ing the projection id.
-            await store.record_canonical_run(exec_id, canonical_run_id=canonical_run_id)
-
-        result = await execute_dag(dag_data, scope=scope, on_admitted=_record_admission)
+        result = await execute_dag(dag_data, scope=scope)
         executed = True
 
         # Store events
@@ -1757,7 +1568,37 @@ async def _tool_run_workflow(
             )
 
         # Trigger eval-judge
-        score_result = await _eval_judge_score(exec_id, dag_id, result)
+        score_result = {}
+        try:
+            from services.eval_judge import score_run
+
+            class _Adapter:
+                def __init__(self):
+                    self.run_id = exec_id
+                    self.dag_id = dag_id
+                    self.project_id = ""
+                    self.status = "completed"
+                    self.node_records = []
+                    for nid, nr in result.get("node_results", {}).items():
+
+                        class _NR:
+                            pass
+
+                        n = _NR()
+                        n.node_id = nid
+                        n.kind = nr.get("role", "llm")
+                        n.phase = "completed"
+                        n.latency_ms = nr.get("latency_ms", 0)
+                        n.tokens_in = nr.get("tokens_in", 0)
+                        n.tokens_out = nr.get("tokens_out", 0)
+                        n.error_code = None
+                        n.error_message = None
+                        n.response_preview = nr.get("response", "")[:500]
+                        self.node_records.append(n)
+
+            score_result = await score_run(_Adapter())
+        except Exception as e:
+            score_result = {"score": 0, "error": str(e)[:100]}
 
         # This producer called `start_run` and never finished it, so a run
         # launched from chat sat at `running` for the life of the process --
@@ -1765,20 +1606,8 @@ async def _tool_run_workflow(
         # too (Codex, #697). Suppressed for the same reason the run route
         # suppresses its own: the DAG already produced a result, and the
         # answer the caller gets must not depend on the history write.
-        # The status is copied from the canonical result and the row carries
-        # the canonical Run's id, so this projection row never owns terminal
-        # truth or an uncorrelated identity (#35): inspection reconciles it
-        # against the spine for as long as that Run resolves. The outcome is
-        # recorded under the shared #1036 terminality contract: the facade
-        # only returns `completed`, so this row finishes; had it not, no
-        # finish would be invented.
         with contextlib.suppress(Exception):
-            await store.record_outcome(
-                exec_id,
-                status=str(result.get("status") or "completed"),
-                result=result,
-                canonical_run_id=str(result.get("run_id") or ""),
-            )
+            await store.finish_run(exec_id, status="completed", result=result)
 
         return {
             "run_id": exec_id,
@@ -1788,72 +1617,24 @@ async def _tool_run_workflow(
             "score": score_result.get("score", 0),
             "rationale": score_result.get("rationale", ""),
             "topology_proposal": score_result.get("topology_proposal"),
-            "output_preview": _chat_dag_output_preview(result),
+            "output_preview": {
+                nid: nr.get("response", "")[:200]
+                for nid, nr in list(result.get("node_results", {}).items())[:3]
+            },
         }
-    except asyncio.CancelledError as cancelled:
-        # Cancellation that works (#1332): the durable walk re-raises the
-        # canonical cancel fence into this awaiter; `_cancellation_answer`
-        # answers only a cancellation the spine actually recorded -- never a
-        # task teardown, which it re-raises unchanged.
-        return await _cancellation_answer(cancelled, exec_id, dag_id)
-    except CanonicalDagExecutionError as exc:
-        # The canonical Run reached a non-success state. The projection row
-        # records THAT outcome and the Run that decided it -- not a locally
-        # re-derived "failed" -- so the row can never contradict the spine
-        # it is a receipt of (#35). The facade raises for every non-completed
-        # status, including a Run parked WAITING/PAUSED; the shared #1036
-        # terminality contract decides the rest: terminal outcomes finish the
-        # row, non-terminal ones mirror open with no invented `finished_at`,
-        # and a result with no canonical status records no outcome at all.
-        canonical = exc.result
-        with contextlib.suppress(Exception):
-            from services.dag_run_store import get_dag_run_store
-
-            await get_dag_run_store().record_outcome(
-                exec_id,
-                status=str(canonical.get("status") or ""),
-                result=canonical,
-                canonical_run_id=str(canonical.get("run_id") or ""),
-            )
-        return {"error": f"DAG execution failed: {exc}"}
     except Exception as e:
         # The failure branch has to finish the run too, or a chat-launched DAG
         # that failed is indistinguishable from one still running.
         #
-        # `executed` decides what this branch may record, not where the
-        # exception was caught: a graph that completed and then tripped over
-        # a bookkeeping write is a completed run whose history is incomplete,
-        # and calling it failed tells the reader the opposite of what
-        # happened.
+        # `executed` decides the status, not where the exception was caught:
+        # a graph that completed and then tripped over a bookkeeping write is
+        # a completed run whose history is incomplete, and calling it failed
+        # tells the reader the opposite of what happened.
+        status = "completed" if executed else "failed"
         with contextlib.suppress(Exception):
             from services.dag_run_store import get_dag_run_store
 
-            if executed:
-                # The facade returned, so the canonical Run's outcome is
-                # decided and in hand -- record it under the same #1036
-                # contract as the success path, never a locally re-derived
-                # status (#35).
-                await get_dag_run_store().record_outcome(
-                    exec_id,
-                    status=str(result.get("status") or "completed"),
-                    result=result,
-                    canonical_run_id=str(result.get("run_id") or ""),
-                )
-            else:
-                # No canonical verdict exists to copy: the facade died before
-                # deciding one. The row MAY already carry the canonical
-                # correlation -- admission (#1332) writes it before any node
-                # work, and an unexpected crash after admission lands here --
-                # so this is not an uncorrelated row. `failed` is therefore
-                # the writer's witnessed attempt-local display fact ("this
-                # chat attempt ended without an outcome"), kept so a dead
-                # launch is not indistinguishable from a live one (#697); it
-                # is never a claim about the spine. dag_run_inspection
-                # overlays the canonical Run's lifecycle over this display
-                # stamp whenever the row's correlation resolves, and no
-                # execution-side code reads this store, so the stamp cannot
-                # contradict canonical truth or drive recovery (#35).
-                await get_dag_run_store().finish_run(exec_id, status="failed")
+            await get_dag_run_store().finish_run(exec_id, status=status)
         if executed:
             logger.warning(
                 "dag_run_bookkeeping_failed run_id=%s dag_id=%s", exec_id, dag_id, exc_info=True
@@ -1876,7 +1657,7 @@ async def _tool_analyze_dashboard(
     try:
         async with shared_client(timeout=30) as client:
             r = await client.post(
-                "http://127.0.0.1:8101/v1/widgets/screenshot",  # DevSkim: ignore DS162092 until 2027-12-31
+                "http://127.0.0.1:8101/v1/widgets/screenshot",
                 cookies={"hive_session": "24f30b74-d535-4263-a2d4-8a773b07803d"},
             )
             data = r.json()
@@ -2030,130 +1811,6 @@ async def _tool_update_eval(
     return {"updated": True, "dag_id": dag_id, "rubric_length": len(rubric)}
 
 
-async def _tool_compose_home_adaptive(
-    args: dict[str, Any], user_id: str, jira_pat: str | None
-) -> dict[str, Any]:
-    """Compose the Workspace Home's unpinned space (#1048), without a browser.
-
-    Goes through the same `services.home_layouts.compose_adaptive` the
-    `POST /v1/workspaces/{id}/home/adaptive/compose` route serves, so a
-    composition made in chat and one made over the API land in the same
-    durable row under the same authority rule: pinned regions are refused to
-    both. The Workspace comes from the turn's workspace context — the same
-    `_chat_workspace_id` the agent-button tools read — never from a model
-    argument, so the model cannot aim the tool at a Workspace the turn is
-    not about.
-    """
-    from services import home_layouts
-
-    workspace_id = _chat_workspace_id.get()
-    if not workspace_id:
-        return {
-            "composed": False,
-            "error": "no Workspace context for this turn; Home is Workspace-scoped",
-        }
-    raw_regions = args.get("regions")
-    if not isinstance(raw_regions, list):
-        return {"composed": False, "error": "regions must be a list"}
-    regions: list[home_layouts.HomeRegion] = []
-    try:
-        for raw in raw_regions:
-            if not isinstance(raw, dict):
-                raise ValueError("each region must be an object")
-            # The model never gets a `pinned` field to send (see the tool
-            # schema), but a proxying client could attach one. Validate the
-            # payload as-is and let compose_adaptive refuse it: a pinned
-            # payload must fail loudly (PinnedRegionWriteError), not be
-            # silently rewritten into an unpinned compose.
-            regions.append(home_layouts.HomeRegion.model_validate(raw))
-    except Exception as exc:
-        return {"composed": False, "error": f"region payload rejected: {exc}"}
-    expected = args.get("expected_revision")
-    try:
-        record = home_layouts.compose_adaptive(
-            workspace_id,
-            regions,
-            expected_revision=int(expected) if isinstance(expected, int) else None,
-        )
-    except home_layouts.PinnedRegionWriteError as exc:
-        return {"composed": False, "error": str(exc)}
-    except home_layouts.LayoutConflictError as exc:
-        return {
-            "composed": False,
-            "error": f"the layout moved to revision {exc.stored.revision} while composing",
-            "revision": exc.stored.revision,
-        }
-    except home_layouts.LayoutError as exc:
-        return {"composed": False, "error": f"the composition was not saved: {exc}"}
-    return {
-        "composed": True,
-        "workspace_id": workspace_id,
-        "revision": record.revision,
-        "region_count": len(record.layout.regions),
-    }
-
-
-async def _tool_dismiss_home_adaptive(
-    args: dict[str, Any], user_id: str, jira_pat: str | None
-) -> dict[str, Any]:
-    """Record one adaptive-Home dismissal (#1048) through the same service the
-    API route serves — one store, one count, whichever door the user takes."""
-    from services import home_projections
-
-    workspace_id = _chat_workspace_id.get()
-    if not workspace_id:
-        return {
-            "dismissed": False,
-            "error": "no Workspace context for this turn; Home is Workspace-scoped",
-        }
-    item_type = str(args.get("item_type") or "")
-    item_id = str(args.get("item_id") or "")
-    try:
-        record = home_projections.record_dismissal(workspace_id, item_type, item_id, actor=user_id)
-    except ValueError as exc:
-        return {"dismissed": False, "error": str(exc)}
-    return {
-        "dismissed": True,
-        "count": record["count"],
-        "key": f"{item_type}:{item_id}",
-    }
-
-
-async def _tool_set_workspace_agent_persona(
-    args: dict[str, Any], user_id: str, jira_pat: str | None
-) -> dict[str, Any]:
-    """Swap the Workspace Agent persona (#2277) through the same service the
-    `PUT /v1/workspaces/{id}/agent` route serves — one durable row, one id."""
-    from services import workspace_agent, workspace_authority
-
-    workspace_id = _chat_workspace_id.get()
-    if not workspace_id:
-        return {
-            "swapped": False,
-            "error": "no Workspace context for this turn; persona swap is Workspace-scoped",
-        }
-    if await workspace_authority.visible_view(user_id, workspace_id) is None:
-        return {"swapped": False, "error": "workspace not found"}
-    if await workspace_authority.member_role(user_id, workspace_id) != "owner":
-        return {"swapped": False, "error": "only an owner can swap the Workspace Agent persona"}
-    template_id = str(args.get("persona_template_id") or "")
-    try:
-        agent = await workspace_agent.set_workspace_agent_persona(workspace_id, template_id)
-    except ValueError as exc:
-        return {"swapped": False, "error": str(exc)}
-    except workspace_agent.WorkspaceNotFound:
-        return {"swapped": False, "error": "workspace not found"}
-    except workspace_agent.WorkspaceAgentConflict as exc:
-        return {"swapped": False, "error": str(exc)}
-    return {
-        "swapped": True,
-        "workspace_id": workspace_id,
-        "workspace_agent_id": agent.id,
-        "persona_template_id": workspace_agent.persona_template_id(agent),
-        "created_at": agent.created_at.isoformat(),
-    }
-
-
 _TOOL_HANDLERS: dict[str, Any] = {
     "poll_jira": _tool_poll_jira,
     "fetch_program_state": _tool_poll_jira,
@@ -2187,12 +1844,6 @@ _TOOL_HANDLERS: dict[str, Any] = {
     "suggest_widgets": _tool_suggest_widgets,
     "suggest_workflows": _tool_suggest_workflows,
     "analyze_dashboard": _tool_analyze_dashboard,
-    # Workspace Home (#1048): the Agent's two doors into its own surface, both
-    # through the same services the HTTP routes serve.
-    "compose_home_adaptive": _tool_compose_home_adaptive,
-    "dismiss_home_adaptive": _tool_dismiss_home_adaptive,
-    # Workspace Agent persona (#2277): same write door as PUT …/agent.
-    "set_workspace_agent_persona": _tool_set_workspace_agent_persona,
 }
 
 # Add hill-climbing and structural mutation from substrate tools
@@ -3046,12 +2697,6 @@ PROFILE_SCHEMA = {
         "model_preferences",
         "topics_to_avoid",
         "assumptions_to_avoid",
-        # #1050: explicit Workspace default landing surface (path). UI + API
-        # + profile_set share this field; missing → Workspace Home.
-        "workspace_default_landing",
-        # #1050: how eagerly to restore a prior surface after absence
-        # (off|brief|balanced|generous). Continuity consumer is #1822.
-        "workspace_restore_aggressiveness",
     ],
     "goals": ["current_focus", "okrs", "blockers", "definition_of_done"],
     "communication": ["challenge_style", "presentation_format", "terminology"],
@@ -3096,15 +2741,11 @@ async def _tool_profile_set(
     value = args.get("value", "")
     if not field or not value:
         return {"error": "field and value required"}
-    from services.workspace_preferences import PreferenceValueError
-
     try:
         # Off the loop: a profile write waits inside the acknowledged `put_raw`
         # (a `State.submit_sync`) for the writer thread to commit, and this
         # runs inside the chat request's own task.
         await asyncio.to_thread(profile_store.set_field, user_id, field, value)
-    except PreferenceValueError as exc:
-        return {"error": str(exc)}
     except profile_store.ProfilePersistenceError as exc:
         # Reported, not swallowed. The old path suppressed the write failure
         # and answered `updated: True`, so the model told the user their fact
@@ -3164,23 +2805,13 @@ PROFILE_TOOLS = [
         "type": "function",
         "function": {
             "name": "profile_set",
-            "description": (
-                "Set a profile field. Use when user shares info about themselves, "
-                "their preferences, or corrections. Workspace product prefs: "
-                "workspace_default_landing (path: /home|/chat|/goals|/backlog|/work-items); "
-                "workspace_restore_aggressiveness (off|brief|balanced|generous — "
-                "how long to restore the prior surface after absence)."
-            ),
+            "description": "Set a profile field. Use when user shares info about themselves, their preferences, or corrections.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "field": {
                         "type": "string",
-                        "description": (
-                            "Field name (e.g. 'name', 'role', 'response_style', "
-                            "'current_focus', 'workspace_default_landing', "
-                            "'workspace_restore_aggressiveness')"
-                        ),
+                        "description": "Field name (e.g. 'name', 'role', 'response_style', 'current_focus')",
                     },
                     "value": {"type": "string", "description": "The value to store"},
                 },

@@ -26,7 +26,7 @@ from playwright.sync_api import sync_playwright
 COMPONENT = "$COMPONENT"
 PASSES = $PASSES
 PORT = "$PORT"
-URL = f"http://localhost:{PORT}"  # DevSkim: ignore DS162092 until 2027-12-31
+URL = f"http://localhost:{PORT}"
 ROOT = Path("$ROOT")
 FRONTEND = ROOT / "frontend"
 COMPONENT_PATH = FRONTEND / "src/pages" / COMPONENT
@@ -146,7 +146,7 @@ def restart_server():
     subprocess.run(["pkill", "-f", f"uvicorn.*--port {PORT}"], capture_output=True)
     time.sleep(1)
     subprocess.Popen(
-        [str(ROOT / "../../.venv/bin/uvicorn"), "main:app", "--host", "0.0.0.0", "--port", PORT],  # DevSkim: ignore DS162092 until 2027-12-31
+        [str(ROOT / "../../.venv/bin/uvicorn"), "main:app", "--host", "0.0.0.0", "--port", PORT],
         cwd=str(ROOT / "backend"), stdout=open("/tmp/hive-climb.log","a"), stderr=subprocess.STDOUT,
         env={**os.environ, "PYTHONPATH": f"{ROOT}/backend:{ROOT}/../maistro-core/src:{ROOT}"})
     time.sleep(3)

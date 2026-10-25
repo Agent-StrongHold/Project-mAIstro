@@ -185,7 +185,7 @@ const mock = {
 
     const jobId = jobUid();
 
-    setTimeout(() => { // DevSkim: ignore DS172411 until 2027-12-31 — mock async job completion
+    setTimeout(() => {
       const img = makeFakeImage(
         256 + Math.floor(Math.random() * 256),
         256 + Math.floor(Math.random() * 256)

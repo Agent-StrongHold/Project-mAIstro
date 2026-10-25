@@ -40,48 +40,6 @@ This is the engine's version of Stronghold's Gate → Warden → Identity → Sk
 five-layer model, with sandbox isolation (ADR-093) called out as its own layer because it is a
 harder guarantee (hypervisor boundary) than the container/RBAC layers above it.
 
-### Scan result states (#288)
-
-Every security scan surface (agent config scans, the skills content scan, the HITL answer
-gate) distinguishes four states, and a scan that did not run is never allowed to read as
-clean. The MCP server-record scan has no scanner wired and is the explicit-unsupported case
-(`501`, #389) rather than a fabricated verdict:
-
-- **clean** — the analysis *completed* and found nothing. Scan-route results say what ran and
-  on what: `scanner.name` / `scanner.policy_version` (Warden's `WARDEN_POLICY_VERSION` for the
-  agent and HITL scans; the skills content scanner's `SKILL_SECURITY_SCAN_VERSION` for
-  `POST /v1/skills/scan`), `target` (kind and id of the artifact walked), `scanned_at`
-  (completion timestamp), and `scanned_values` (how many strings the walk judged). Agent
-  definitions written through a scanned write path (CRUD, Forge, chat-tool) persist the same
-  stamp in `config["provenance"]["scan"]` — and Forge's artifact records it again in
-  `config["forge"]["scan"]` — so a stored `clean` row can always show the completed analysis
-  behind it. (Persona-spawn and canonical-roster materialization are not scanned write paths;
-  they project trusted internal content and carry no scan stamp rather than a fabricated one.)
-- **flagged (findings)** — the analysis completed and found patterns; each finding names the
-  path inside the target where it hit (`config.prompt: …`), so a human can act on it.
-- **unknown / failed** — the scanner could not run, raised, or timed out. The HTTP scan routes
-  answer `503` with *no findings list* (a client must not be able to mistake a failed scan for
-  an empty one); each route also bounds the whole walk at `SCAN_TIMEOUT_SECONDS` (the same wall
-  the chat gate uses) and runs the synchronous Warden walk on a worker thread, so a CPU-bound
-  detector cannot starve the deadline: a detector that hangs produces the same explicit unknown
-  instead of a hung request. Definition writes fail closed with nothing stored
-  (`AgentScannerUnavailable`, surfaced as `503` on the Forge route); the chat gate refuses the
-  turn with its scanner-error / scanner-timeout reasons. Warden's per-pattern regex timeout
-  fails closed too: it becomes a `regex_error:` finding, i.e. flagged — never silently clean.
-- **unsupported** — no scanner is wired for the target, so the surface refuses with `501`
-  (the MCP server-record scan) instead of reporting a verdict it did not compute.
-- **over-budget** — the target exceeds the bounded walk (nesting depth, value count, string
-  size) and is refused with `413` (`ScanBudgetExceeded`) rather than truncated into a
-  partial — and therefore unearned — clean.
-
-The surface set itself is checked, not trusted:
-`packages/hive-conductor/backend/tests/test_scan_contract.py` enumerates every `POST …/scan`
-route from the live app and must find each one backed by its registered handler. A surface
-with no scanner wired is pinned to an explicit `501` refusal, never a `clean` result, and the
-test parses `routes/` and `services/` to forbid the unconditional
-`{"findings": [], "status": "clean"}` literal anywhere in production code — the shape the
-agent scan used to answer before #418 and the MCP server-record scan answered until #389.
-
 ### Account credential storage
 
 Conductor accounts are hashed with **Argon2id** (`maistro/security/passwords.py`), OWASP
@@ -234,7 +192,7 @@ Stronghold's `SECURITY.md` carries several caps the engine does not (yet) have a
 
 | Stronghold had | Engine has | Status |
 | --- | --- | --- |
-| Tool-argument size/depth limit (100 KiB / 32 container levels, JSON-bomb protection) | **Present** — `security/sentinel/argument_limits.py::check_argument_limits` runs in `Sentinel.pre_call` before schema validation and execution; it measures compact UTF-8 JSON bytes, checks depth iteratively, and fails closed for non-JSON values | ✅ (SPEC-082126-7a31) |
+| Tool-argument size limit (100 KB, JSON-bomb protection) | No dedicated tool-arg size cap found in `security/sentinel/validator.py` or `tools/` | `gap-impl` |
 | SSRF blocklist (private networks, cloud metadata endpoints, loopback) for outbound tool/skill HTTP calls | **Present** — `security/ssrf.py::validate_outbound_url` refuses any URL that is not http(s) with a resolvable host on the public internet, checking every address the host resolves to (private, loopback, link-local, reserved, multicast, unspecified, and the RFC 6598 shared range `100.64.0.0/10`, which no stdlib predicate names) and refusing a name it cannot resolve at all. Applied at `maistro.http`'s pooled transport by `security/outbound.py` (ADR-082326-5386), and at the sync seam `maistro.http::sync_client` builds for the approvals CLI, so a module is covered by routing through the shared pool rather than by remembering to call the guard — redirect hops included, since httpx re-enters the transport for each one. Configured endpoints — the LiteLLM/Ollama gateway, ntfy, a Home Assistant URL — are allowed by exact origin, seeded from settings. The **filesystem** path blocklist (`security/patterns.py:BLOCKED_HOST_PATHS`) is separate and unrelated | `partial` — covered at both the async and sync seams, proxy mounts included; the measured reach is in Known Limitation 1, and the rebinding window between the guard's lookup and the client's remains open |
 | `hmac.compare_digest`-based constant-time comparison for API keys | Present: `security/secret_equal.py` | ✅ (engine has this) |
 | PostgreSQL persistence with org-scoped queries by default | InMemory stores are the default; PostgreSQL implementations exist (`persistence/`) but require explicit configuration | Matches engine's own known limitation below, not a regression |
@@ -269,7 +227,7 @@ Stronghold's `SECURITY.md` carries several caps the engine does not (yet) have a
 
    It used to be a function each call site had to remember to call. That is still visible in the
    code and is worth stating, because it is the thing this change makes *stop* mattering:
-   measured (`measured-outbound-http`), of the **33** modules in `maistro-core` that can open an
+   measured (`measured-outbound-http`), of the **34** modules in `maistro-core` that can open an
    outbound connection, **5** call the guard directly. Read as a coverage figure that number is
    wrong now, and it was the honest figure before — which is the whole argument for moving the
    control. The fifth call site is not a call site at all but a second enforcement seam:
@@ -279,15 +237,12 @@ Stronghold's `SECURITY.md` carries several caps the engine does not (yet) have a
 
    What replaced it: `security/outbound.py` applies the policy at the transport `maistro.http`
    hands to every pooled client (ADR-082326-5386), so a module is covered by routing through the
-   shared pool. Measured (`measured-outbound-seam`) — **33** of the census route through the pool
+   shared pool. Measured (`measured-outbound-seam`) — **34** of the census route through the pool
    and **0** build their own client. Redirect hops are validated per hop, because httpx re-enters
    the transport for each one; the browser seam re-validates per hop the same way, because
    Chromium consults the route handler for every navigation, redirect and subresource before the
    network stack connects. `tasks/progress_webhook` and `integrations/ntfy` built private
-   clients and were moved onto the pool so the seam actually reaches them. The connector/source
-   SDK joins the census the same way: `connectors/sync.py` imports `httpx` to normalize upstream
-   failures at the engine boundary, and every request it drives rides the pooled session the
-   host hands the connector, so the seam reaches it without its own client.
+   clients and were moved onto the pool so the seam actually reaches them.
 
    The last private client was `cli/_approvals.py`, a *synchronous* `httpx.Client` the async-only
    pool had nothing to lend. It now builds through `maistro.http::sync_client`, whose transports
@@ -313,7 +268,10 @@ Stronghold's `SECURITY.md` carries several caps the engine does not (yet) have a
    lookups is not caught; and a transport that fabricates responses (`httpx.MockTransport`, which
    is how the test suite avoids the network) is not wrapped, because it opens no socket.
 
-2. **Sentinel decision signing is unimplemented.** ADR-073 specifies every Sentinel decision as a
+2. **No dedicated tool-argument size cap.** Sentinel validates schema and permissions
+   (`security/sentinel/validator.py`) but a JSON-bomb-sized tool-call argument is not rejected by
+   a specific byte-size gate the way skill bodies (50 KB) and tool results (4,000 chars) are.
+3. **Sentinel decision signing is unimplemented.** ADR-073 specifies every Sentinel decision as a
    signed VC; the current `InMemoryAuditLog` (`security/sentinel/audit.py`) records decisions but
    does not sign them. A compromised process with write access to the audit store could forge
    history.

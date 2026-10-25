@@ -27,7 +27,7 @@ What is decided for each request class
   construction.
 * **Subresources** (scripts, stylesheets, XHR, images, fonts, media…) — the
   same policy, not a weaker one. A page loaded from a public origin has no
-  business reading the link-local metadata endpoint or an internal host through a
+  business reading `http://169.254.169.254/` or an internal host through a
   subrequest either; the data an XHR can carry out is the same data a
   navigation can. Service workers are blocked at context creation by the
   caller (`service_workers="block"`), because Playwright's route layer does
@@ -49,7 +49,7 @@ guard is built. `BROWSER_USE_ALLOWED_ORIGINS` (comma-separated origins, set by
 the operator) layers browser-specific origins on top for deployments that want
 the research browser reading an internal wiki. Both are host-owned: neither
 the model nor anything a page returns can widen them, and an allowance is an
-exact origin — scheme, host, port — so allowing one private HTTP origin does
+exact origin — scheme, host, port — so allowing `http://10.0.0.5:8080` does
 not allow port 8081, `https://`, or any other private address.
 
 Auditable evidence, without the query string

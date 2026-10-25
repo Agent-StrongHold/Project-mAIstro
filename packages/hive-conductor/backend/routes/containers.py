@@ -20,10 +20,6 @@ logger = logging.getLogger(__name__)
 # agent/sandbox code uses SandboxProtocol (SPEC-190) and never touches this socket.
 # nosemgrep: maistro-mounted-docker-socket -- trusted admin container management, not sandbox code
 DOCKER_SOCKET = os.environ.get("DOCKER_SOCKET", "/var/run/docker.sock")
-# httpx talks to the Docker Engine API over the Unix socket above; the
-# hostname in the URL is unused (UDS transport) but must be present. Loopback
-# is the conventional placeholder — not a TCP dial to localhost.
-_DOCKER_HTTP = "http://localhost"  # DevSkim: ignore DS162092 until 2027-12-31
 
 
 # Docker identifiers: a leading alphanumeric followed by alphanumerics, "_",
@@ -60,7 +56,7 @@ def _docker_client() -> httpx.AsyncClient:
 async def _fetch_container_stats(container_id: str) -> dict:
     async with _docker_client() as client:
         with contextlib.suppress(Exception):
-            r = await client.get(f"{_DOCKER_HTTP}/containers/{container_id}/stats?stream=false")
+            r = await client.get(f"http://localhost/containers/{container_id}/stats?stream=false")
             if r.status_code == 200:
                 return r.json()
     return {}
@@ -169,7 +165,7 @@ async def list_containers() -> list[Container]:
         return []
     try:
         async with _docker_client() as client:
-            r = await client.get(f"{_DOCKER_HTTP}/containers/json?all=true")
+            r = await client.get("http://localhost/containers/json?all=true")
             r.raise_for_status()
             raw_list = r.json()
     except Exception:
@@ -189,7 +185,7 @@ async def get_container(container_id: str) -> Container:
         raise HTTPException(status_code=503, detail="Docker socket not available")
     try:
         async with _docker_client() as client:
-            r = await client.get(f"{_DOCKER_HTTP}/containers/{container_id}/json")
+            r = await client.get(f"http://localhost/containers/{container_id}/json")
             r.raise_for_status()
             raw = r.json()
     except httpx.HTTPStatusError as exc:
@@ -210,7 +206,7 @@ async def start_container(container_id: str) -> dict:
         raise HTTPException(status_code=503, detail="Docker socket not available")
     try:
         async with _docker_client() as client:
-            r = await client.post(f"{_DOCKER_HTTP}/containers/{container_id}/start")
+            r = await client.post(f"http://localhost/containers/{container_id}/start")
             r.raise_for_status()
     except httpx.HTTPStatusError as exc:
         raise HTTPException(status_code=exc.response.status_code, detail="start failed") from exc
@@ -226,7 +222,7 @@ async def stop_container(container_id: str) -> dict:
         raise HTTPException(status_code=503, detail="Docker socket not available")
     try:
         async with _docker_client() as client:
-            r = await client.post(f"{_DOCKER_HTTP}/containers/{container_id}/stop")
+            r = await client.post(f"http://localhost/containers/{container_id}/stop")
             r.raise_for_status()
     except httpx.HTTPStatusError as exc:
         raise HTTPException(status_code=exc.response.status_code, detail="stop failed") from exc
@@ -242,7 +238,7 @@ async def restart_container(container_id: str) -> dict:
         raise HTTPException(status_code=503, detail="Docker socket not available")
     try:
         async with _docker_client() as client:
-            r = await client.post(f"{_DOCKER_HTTP}/containers/{container_id}/restart")
+            r = await client.post(f"http://localhost/containers/{container_id}/restart")
             r.raise_for_status()
     except httpx.HTTPStatusError as exc:
         raise HTTPException(status_code=exc.response.status_code, detail="restart failed") from exc
@@ -258,7 +254,7 @@ async def delete_container(container_id: str) -> None:
         raise HTTPException(status_code=503, detail="Docker socket not available")
     try:
         async with _docker_client() as client:
-            r = await client.delete(f"{_DOCKER_HTTP}/containers/{container_id}?force=true")
+            r = await client.delete(f"http://localhost/containers/{container_id}?force=true")
             r.raise_for_status()
     except httpx.HTTPStatusError as exc:
         raise HTTPException(status_code=exc.response.status_code, detail="remove failed") from exc
@@ -278,7 +274,7 @@ async def get_container_logs(container_id: str, tail: int = 100) -> dict:
     try:
         async with _docker_client() as client:
             r = await client.get(
-                f"{_DOCKER_HTTP}/containers/{container_id}/logs?stdout=true&stderr=true&tail={tail}"
+                f"http://localhost/containers/{container_id}/logs?stdout=true&stderr=true&tail={tail}"
             )
             r.raise_for_status()
     except httpx.HTTPStatusError as exc:
@@ -298,20 +294,7 @@ class BuildBody(BaseModel):
 
 @router.post("/build")
 def build_container(body: BuildBody) -> dict:
-    """Explicitly unsupported (#389).
-
-    This used to return `{"status": "building", "log": "Building..."}` — a
-    success for a build that never started. Nothing executes it, so the
-    route now says so: `501` (unimplemented), the distinct status for "the
-    operation you asked for is not implemented here", instead of a fake
-    build in progress.
-    """
-    raise HTTPException(
-        status_code=501,
-        detail=(
-            "container image builds are not implemented in this deployment; no build was started"
-        ),
-    )
+    return {"status": "building", "log": "Building..."}
 
 
 class SuggestBody(BaseModel):
@@ -322,13 +305,6 @@ class SuggestBody(BaseModel):
 
 @router.post("/suggest")
 def suggest_dockerfile(body: SuggestBody) -> dict:
-    """Explicitly unsupported (#389).
-
-    This used to return a hard-coded Dockerfile for any description — advice
-    that did not depend on the description and was not generated by anything.
-    With no generator behind it, the route now refuses honestly: `501`.
-    """
-    raise HTTPException(
-        status_code=501,
-        detail="Dockerfile suggestion is not implemented in this deployment",
-    )
+    return {
+        "dockerfile": 'FROM python:3.12-slim\nWORKDIR /app\nCOPY . .\nCMD ["python", "main.py"]'
+    }

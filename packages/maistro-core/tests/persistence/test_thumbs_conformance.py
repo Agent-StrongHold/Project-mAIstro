@@ -22,7 +22,6 @@ from typing import Any
 import pytest
 
 from maistro.constants import THUMB_WINDOW_DAYS
-from maistro.memory.exposure import MemoryExposureMode
 from maistro.memory.outcomes import InMemoryOutcomeStore
 from maistro.persistence.pg_outcomes import PgOutcomeStore
 from maistro.types.memory import Outcome
@@ -36,13 +35,13 @@ pytestmark = [pytest.mark.contract("behavioral")]
 @pytest.fixture(params=["memory", "sqlite", "postgres"])
 async def outcome_store(request: pytest.FixtureRequest, pg_pool: Any) -> AsyncIterator[Any]:
     if request.param == "memory":
-        yield InMemoryOutcomeStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
+        yield InMemoryOutcomeStore()
         return
     if request.param == "sqlite":
         from maistro.persistence.sqlite_outcomes import SqliteOutcomeStore
 
         conn = await aiosqlite.connect(":memory:")
-        store = SqliteOutcomeStore(conn, exposure_mode=MemoryExposureMode.AGENT_MANAGED)
+        store = SqliteOutcomeStore(conn)
         await store.ensure_schema()
         try:
             yield store
@@ -51,7 +50,7 @@ async def outcome_store(request: pytest.FixtureRequest, pg_pool: Any) -> AsyncIt
         return
     if pg_pool is None:
         pytest.skip("MAISTRO_TEST_PG_DSN is not set")
-    yield PgOutcomeStore(pg_pool, exposure_mode=MemoryExposureMode.AGENT_MANAGED)
+    yield PgOutcomeStore(pg_pool)
 
 
 def _thumb(
@@ -300,7 +299,7 @@ class TestASqliteFileMadeBeforeTheColumnsExisted:
             )
             await conn.commit()
 
-            store = SqliteOutcomeStore(conn, exposure_mode=MemoryExposureMode.AGENT_MANAGED)
+            store = SqliteOutcomeStore(conn)
             await store.ensure_schema()
             await store.record(_thumb("up"))
 

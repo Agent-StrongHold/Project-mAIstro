@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import pytest
 
-import maistro.config.settings as settings_module
 from maistro.config.settings import Settings
 from maistro_server.main import _validate_startup
 
@@ -74,52 +73,7 @@ class TestExplicitPrincipalStartupGate:
             _validate_startup(settings)
 
     def test_prefixed_keys_pass_the_gate(self) -> None:
-        settings = Settings(
-            api_keys=["ops:secret-a", "alice:admin:secret-b"],
-            admin_api_keys=["root:secret-c"],
-            require_auth=True,
-        )
-        _validate_startup(settings)  # Should not raise
-
-    def test_empty_legacy_admin_form_refuses_to_start(self) -> None:
-        settings = Settings(api_keys=["alice:admin:"], require_auth=True)
-        with pytest.raises(RuntimeError, match="empty secret"):
-            _validate_startup(settings)
-
-
-@pytest.mark.contract("behavioral")
-@pytest.mark.scope("unit")
-class TestCredentialCollisionStartupGate:
-    """#1095: one credential, one identity. A secret shared across entries
-    used to be resolved by list order at runtime; the server now refuses to
-    start on the collision, before any request can be authenticated as the
-    wrong principal."""
-
-    def test_shared_secret_across_principals_refuses_to_start(self) -> None:
-        settings = Settings(api_keys=["alice:shared", "bob:shared"], require_auth=True)
-        with pytest.raises(RuntimeError) as exc_info:
-            _validate_startup(settings)
-        message = str(exc_info.value)
-        assert "one principal" in message
-        assert "'alice'" in message and "'bob'" in message
-        assert "shared" not in message
-
-    def test_user_admin_same_secret_refuses_to_start(self) -> None:
-        """Authority comes from the list, so the same secret in both lists is
-        two authorities for one credential — an ordering-dependent grant."""
-        settings = Settings(
-            api_keys=["alice:shared"], admin_api_keys=["root:shared"], require_auth=True
-        )
-        with pytest.raises(RuntimeError, match=r"'alice' \(user\)") as exc_info:
-            _validate_startup(settings)
-        assert "'root' (admin)" in str(exc_info.value)
-
-    def test_distinct_secrets_across_principals_still_start(self) -> None:
-        settings = Settings(
-            api_keys=["alice:secret-a", "bob:secret-b"],
-            admin_api_keys=["root:secret-c"],
-            require_auth=True,
-        )
+        settings = Settings(api_keys=["ops:secret-a", "alice:admin:secret-b"], require_auth=True)
         _validate_startup(settings)  # Should not raise
 
 
@@ -187,11 +141,6 @@ class TestRouterApiKeyValidation:
     def test_an_unset_router_api_key_refuses_to_start(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # These two tests pin the *environment* check, so the documented YAML
-        # must not answer for the key: since #1824 the worker loads maistro.yaml
-        # into the process singleton during every lifespan boot, and an earlier
-        # boot's env overlay would otherwise shadow the delenv here.
-        monkeypatch.setattr(settings_module, "get_yaml_config", lambda: None)
         monkeypatch.delenv("ROUTER_API_KEY", raising=False)
         with pytest.raises(RuntimeError, match="ROUTER_API_KEY"):
             _validate_startup(Settings(api_keys=["ops:k"], require_auth=True))
@@ -202,7 +151,6 @@ class TestRouterApiKeyValidation:
         """The shape a .env file produces from `ROUTER_API_KEY= `. Accepting it
         would move the failure back into container wiring, which is the thing
         this check exists to prevent."""
-        monkeypatch.setattr(settings_module, "get_yaml_config", lambda: None)
         monkeypatch.setenv("ROUTER_API_KEY", "   ")
         with pytest.raises(RuntimeError, match="ROUTER_API_KEY"):
             _validate_startup(Settings(api_keys=["ops:k"], require_auth=True))

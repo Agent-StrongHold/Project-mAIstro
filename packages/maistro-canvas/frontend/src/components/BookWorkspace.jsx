@@ -14,7 +14,6 @@ import { saveState, loadState, clearState } from "../lib/persistence";
 import CanvasViewport from "./CanvasViewport";
 import { logGenerationAttempt, updateVerdict, saveLayoutVersion } from "../lib/generationTracker";
 import { exportBookPdf } from "../lib/exportPdf";
-import { isSafeObjectKey, safePathAssign } from "../lib/safePathAssign";
 
 const S = {
   loading: "loading",
@@ -394,39 +393,23 @@ export default function BookWorkspace({ bookSpec, onReset }) {
   };
 
   const updateBookPlan = (path, value) => {
-    setBookPlan((prev) => safePathAssign(prev, path, value));
+    setBookPlan((prev) => {
+      const n = { ...prev };
+      const keys = path.split(".");
+      // A dotted path is walked and assigned; a segment naming the prototype
+      // chain would rewrite Object.prototype for the whole page.
+      if (keys.some((k) => k === "__proto__" || k === "constructor" || k === "prototype")) return prev;
+      let obj = n;
+      for (let i = 0; i < keys.length - 1; i++) { obj[keys[i]] = { ...obj[keys[i]] }; obj = obj[keys[i]]; }
+      obj[keys[keys.length - 1]] = value;
+      return n;
+    });
   };
 
   const updateScene = (idx, field, value) => {
-    // Computed keys from UI must refuse prototype-chain names
-    // (CodeQL js/prototype-pollution-utility). Re-check inside each
-    // updater so the assignment sits in an isSafeObjectKey-dominated
-    // branch the query can see (not only a pre-callback guard).
-    setRawDecomp((prev) => {
-      if (!isSafeObjectKey(field)) {
-        return prev;
-      }
-      const n = { ...prev };
-      n.scenes = [...n.scenes];
-      const scene = { ...n.scenes[idx] };
-      scene[field] = value;
-      n.scenes[idx] = scene;
-      return n;
-    });
+    setRawDecomp((prev) => { const n = { ...prev }; n.scenes = [...n.scenes]; n.scenes[idx] = { ...n.scenes[idx], [field]: value }; return n; });
     if (bookPlan) {
-      setBookPlan((prev) => {
-        if (!isSafeObjectKey(field)) {
-          return prev;
-        }
-        const n = { ...prev };
-        n.scenes = [...n.scenes];
-        if (n.scenes[idx]) {
-          const scene = { ...n.scenes[idx] };
-          scene[field] = value;
-          n.scenes[idx] = scene;
-        }
-        return n;
-      });
+      setBookPlan((prev) => { const n = { ...prev }; n.scenes = [...n.scenes]; if (n.scenes[idx]) n.scenes[idx] = { ...n.scenes[idx], [field]: value }; return n; });
     }
   };
 

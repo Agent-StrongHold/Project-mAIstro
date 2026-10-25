@@ -24,8 +24,6 @@ from typing import Any
 
 import pytest
 
-from maistro.memory.exposure import MemoryExposureMode
-
 _BACKEND = pathlib.Path(__file__).resolve().parents[1]
 if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
@@ -46,7 +44,7 @@ def _isolated_metrics_and_outcomes():
 
     prev_fb = get_outcome_store()
     prev_m = get_store()
-    set_outcome_store(InMemoryOutcomeStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED))
+    set_outcome_store(InMemoryOutcomeStore())
     set_store(NodeMetricsStore())
     yield
     set_outcome_store(prev_fb)

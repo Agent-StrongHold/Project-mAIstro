@@ -73,15 +73,6 @@ _PROTECTED_OPS: dict[str, dict[str, str]] = {
         # match the answer route: seeing a question you have no scope to answer
         # serves nobody and leaks what the Run is doing (#244).
         "/v1/hitl": "dags.write",
-        # The RUM ring aggregates every principal's navigation telemetry
-        # (route templates, session ids, timings) into one instance-wide
-        # read-back — a cross-principal aggregate, so it takes the same
-        # operator-only posture as the persona-wide feedback check above.
-        # Ingest (POST) is deliberately NOT here: every session's reporter
-        # beacons its own bounded, schema-projected timings on the session
-        # it already holds, and gating the beacon would starve the ring of
-        # exactly the ordinary traffic it exists to measure (#1420).
-        "/v1/rum": "rum.read",
     },
     "DELETE": {
         "/v1/settings": "config.delete",
@@ -160,10 +151,6 @@ _PROTECTED_OPS: dict[str, dict[str, str]] = {
         "/v1/capabilities/approvals": "approvals.resolve",
         # Capability discovery and provider configuration remain config writes.
         "/v1/capabilities": "config.write",
-        # A credential test can send a draft API key to an operator-supplied
-        # endpoint, so it is the same trust decision as saving the credential;
-        # otherwise an ordinary session would gain an SSRF/probe primitive.
-        "/v1/credentials": "credentials.write",
         # Provider activation uses the LiteLLM master key, mutates the global
         # model registry, and can trigger billed calls (SPEC-072726-3439).
         "/v1/providers": "config.write",
@@ -267,12 +254,12 @@ def origin_allowed(origin: str | None, host: str | None = None) -> bool:
 
     1. **Same-origin.** The page that opened the socket is served by this very
        server (`Origin`'s authority == the request's own `Host`). CORS never
-       applies to same-origin requests, so a deployment reached at a
-       same-host URL — where the SPA and the API share an origin — has never
-       had any reason to list itself in `CORS_ORIGINS`, and most don't.
-       Checking the configured list alone would reject the app's own front
-       end on every non-loopback deployment, because the defaults in
-       `config.py` only cover loopback origins.
+       applies to same-origin requests, so a deployment reached at
+       `http://192.0.2.1:8101` — where the SPA and the API share an origin —
+       has never had any reason to list itself in `CORS_ORIGINS`, and most
+       don't. Checking the configured list alone would reject the app's own
+       front end on every non-localhost deployment, because the defaults in
+       `config.py` only cover localhost.
     2. **No Origin at all.** curl and other non-browser callers send none.
        Origin-based rules only bind browsers; such a caller still needs a valid
        session.
@@ -450,26 +437,6 @@ class AuthMiddleware(BaseHTTPMiddleware):
         # can leave it, same posture as dag-runs' pre-existing unrestricted
         # feedback route. The route itself still checks workspace membership.
         if path.endswith("/feedback"):
-            return None
-        # Workspace Home (#1048): /v1/workspaces/{id}/home/... is the member's
-        # presentation surface — saving the layout, pinning a region, composing
-        # adaptive space, dismissing an adaptive candidate. Same posture as
-        # PUT /v1/dashboard/layout (below): a per-member preference write, not
-        # a workspace-identity mutation. The routes check Workspace membership
-        # and refuse viewers themselves, and the Workspace Agent's chat tools
-        # reach the very same services with no HTTP elevation at all — so
-        # gating only the route would break Agent/API parity while protecting
-        # nothing. (Segment-matched, not substring: PUT
-        # /v1/workspaces/{id}/home/* only; /tool-bindings and /members keep
-        # their workspaces.write scope.)
-        _parts = path.split("/")
-        if (
-            request.method in {"PUT", "POST"}
-            and len(_parts) >= 5
-            and _parts[1] == "v1"
-            and _parts[2] == "workspaces"
-            and _parts[4] == "home"
-        ):
             return None
         # DAG-Run inspection — GET /v1/dag-runs (list), GET /v1/dag-runs/{id}
         # (detail), GET /v1/dag-runs/{id}/events (SSE) — and the eval-judge

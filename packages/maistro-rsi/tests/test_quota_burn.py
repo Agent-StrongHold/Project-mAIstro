@@ -7,9 +7,7 @@ import pytest
 from maistro.quota.tracker import InMemoryQuotaTracker
 from maistro_rsi.quota_burn import QuotaBurnScheduler, discover_models, rank_models_by_headroom
 
-# A validated billing-cycle name, not a precomputed bucket key: #1205 made
-# the tracker's cycle vocabulary explicit, so fixtures feed it names too.
-CYCLE = "monthly"
+CYCLE = "2026-06"
 FREE_TOKENS = {"openai": 1_000_000, "anthropic": 500_000}
 
 

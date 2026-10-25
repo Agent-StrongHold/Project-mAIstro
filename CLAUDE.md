@@ -75,7 +75,6 @@ Every subsystem is importable. Consumers add `maistro-core` to their requirement
 | **Conduit** | `maistro.conduit` | Request pipeline: classify → route → agent.handle |
 | **Auth** | `maistro.auth` | B2B service keys with scoped permissions |
 | **Events** | `maistro.events` | Bus, handlers, recipes, triggers |
-| **Extensions** | `maistro.extensions` | Governed extension registry persistence: publisher identity, package digest/signature metadata, manifest snapshots, immutable install records (#952); executes no extension code |
 | **Quota** | `maistro.quota` | Token usage tracking per provider per billing cycle |
 | **Sessions** | `maistro.sessions` | Conversation history with TTL pruning |
 | **Intents** | `maistro.agents.intents` | task_type → agent_name routing table |
@@ -89,7 +88,7 @@ Every subsystem is importable. Consumers add `maistro-core` to their requirement
 | **Credentials** | `maistro.credentials` | Per-user encrypted credentials for PM integrations |
 | **Projects** | `maistro.projects` | User workspaces: domains, meta-DAGs, PM Fleet, Canvas/Engineering |
 | **Testing** | `maistro.testing` | Shared test utilities/fixtures |
-| **CLI** | `maistro.cli` | Unified `maistro` command: install, upgrade, launch, builders, approvals, security, … |
+| **CLI** | `maistro.cli` | `maistro` command — thin client of the hive-conductor API |
 
 Root-level modules: `reactor.py` (1kHz reactor loop), `vault.py` (age-encrypted secrets), `privilege.py`, `state.py`.
 
@@ -98,21 +97,21 @@ Root-level modules: `reactor.py` (1kHz reactor loop), `vault.py` (age-encrypted 
 ```
 packages/maistro-canvas/
 ├── src/maistro_canvas/      # Python library
-│   ├── types.py             # Canvas types + domain errors
+│   ├── types.py             # Canvas types + 20 domain errors
 │   ├── protocols.py         # CanvasStore, ImageGenClient, CompositorService
 │   ├── auth.py              # Standalone API key auth
 │   └── canvas/              # Canvas engine (from Stronghold spec 1189)
-│       ├── tool.py          # In-process canvas tool
+│       ├── tool.py          # In-process canvas tool (903 lines)
 │       ├── executor.py      # Canvas action executor
 │       ├── compositor.py    # PIL-based RGBA layer assembly
 │       ├── store.py         # PostgreSQL canvas store
 │       └── routes.py        # REST API routes
 ├── frontend/                # React + Express POC
-│   ├── src/                 # React UI
+│   ├── src/                 # React UI (14 components)
 │   ├── server/              # Python backend
 │   │   ├── mcp/             # Canvas pipeline, illustration, refinement
 │   │   ├── lulu/            # Lulu print-on-demand integration
-│   │   ├── models/          # SQLAlchemy models
+│   │   ├── models/          # SQLAlchemy models (11 tables)
 │   │   └── templates/       # Story templates
 │   └── SPEC.md
 └── agents/davinci/          # Da Vinci agent definition
@@ -147,14 +146,9 @@ PYTHONPATH=packages/maistro-core/src:packages/maistro-canvas/src:packages/maistr
 # Formal property-based conformance tests (separate CI flow — formal-conformance.yml)
 PYTHONPATH=packages/maistro-core/src pytest formal/ -q
 
-# Lint + typecheck — the same commands ci.yml runs (`uv run mypy` covers every
-# packages/*/src; hive-conductor is an app, not part of the type-check surface)
-uv run ruff check .
-uv run ruff format --check .
-uv run mypy packages/maistro-core/src packages/maistro-server/src \
-  packages/maistro-turing/src packages/maistro-canvas/src \
-  packages/maistro-bootstrap/src packages/maistro-registry/src \
-  packages/maistro-evolve/src packages/maistro-rsi/src packages/maistro-design/src
+# Lint — ci.yml runs `ruff check .` + `ruff format --check` + mypy across all packages/*/src
+ruff check packages/
+mypy packages/ --strict
 # CI workflows: ci.yml (lint+type+core tests), quality.yml (full ruleset+coverage),
 # security.yml, mutation.yml, registry.yml, cage-guard.yml, formal-conformance{,-nightly}.yml
 
@@ -216,7 +210,7 @@ maistro-engine/
 │   │       ├── testing/         # shared test utilities
 │   │       ├── conduit.py       # Request pipeline
 │   │       ├── container.py     # DI wiring
-│   │       ├── cli/             # `maistro` CLI: install, upgrade, launch, builders, approvals, …
+│   │       ├── cli.py           # `maistro` CLI (thin client of hive-conductor API)
 │   │       ├── constants.py     # named constants
 │   │       ├── privilege.py     # admin/user1 privilege separation (SPEC-012)
 │   │       ├── vault.py         # age-encrypted secrets vault (SPEC-011)
@@ -264,10 +258,9 @@ maistro-engine/
 │   │   ├── pyproject.toml       # depends: maistro-core
 │   │   └── src/maistro_turing/
 │   │       ├── bridge.py        # Adapters to maistro-core
-│   │       ├── self_model/      # Autonoetic identity
-│   │       ├── cognition/       # Reactor loop
-│   │       ├── runtime/         # Actor, chat, config
-│   │       └── producers/       # Blog, reflection, curiosity, emotion
+│   │       ├── self_model.py    # Autonoetic identity
+│   │       ├── runtime.py       # Actor, chat, config
+│   │       └── producers.py     # Blog, reflection, curiosity, emotion
 │   │
 │   ├── maistro-evolve/
 │   │   ├── pyproject.toml
@@ -275,15 +268,7 @@ maistro-engine/
 │   │
 │   ├── maistro-registry/        # ADR/spec registry CLI (parser, validator, linker, dag, schema)
 │   │
-│   ├── maistro-rsi/             # Recursive self-improvement: autorun loop, quarantine gate, sandbox
-│   │
-│   ├── maistro-design/          # Open Design integration (renderer registry, SSE ingest)
-│   │
-│   ├── maistro-bootstrap/       # Bootstrap installer and planner
-│   │
-│   └── hive-conductor/          # Agent Conductor app. pyproject.toml is workspace/wheel build
-│       │                        #   metadata (not PyPI-published); backend/requirements.txt is
-│       │                        #   the Docker image's separate dependency resolution
+│   └── hive-conductor/          # Agent Conductor app (no pyproject.toml — requirements.txt)
 │       ├── backend/             # FastAPI app
 │       │   ├── main.py          # Entrypoint + route registration
 │       │   ├── routes/          # agents, audit, chat, cli, containers, dags, mcp, memory…

@@ -10,11 +10,9 @@ import logging
 from collections import deque
 from typing import TYPE_CHECKING, Any
 
-from maistro.agents.tool_dispatch import dispatch_tool_call
 from maistro.quota.usage_report import reported_usage
 from maistro.security.warden.detector import WardenContext
 from maistro.types.agent import ReasoningResult
-from maistro.types.tool import ToolCall
 
 _TOOL_CONTEXT_MAX_TURNS = 8
 
@@ -123,7 +121,6 @@ class ReactStrategy:
                     auth=kwargs.get("auth"),
                     context=list(tool_context),
                     security_pipeline=security_pipeline,
-                    tool_round=round_num,
                 )
                 tool_context.append(WardenContext(tool_result_str))
 
@@ -210,19 +207,15 @@ class ReactStrategy:
         tool_args: dict[str, Any],
         tool_executor: Any,
         trace: Trace | None,
-        *,
-        tool_call_id: str = "",
-        tool_round: int = 0,
     ) -> Any:
         """Invoke the tool executor, recording a trace span when tracing is on."""
         if not (tool_executor and callable(tool_executor)):
             return f"Tool '{tool_name}' not available"
-        call = ToolCall(id=tool_call_id, name=tool_name, arguments=tool_args)
         if not trace:
-            return await dispatch_tool_call(tool_executor, call, tool_round=tool_round)
+            return await tool_executor(tool_name, tool_args)
         with trace.span(f"tool.{tool_name}") as ts:
             ts.set_input(tool_args)
-            tool_result = await dispatch_tool_call(tool_executor, call, tool_round=tool_round)
+            tool_result = await tool_executor(tool_name, tool_args)
             preview = str(tool_result)[:300]
             tool_success = not preview.startswith("Error") and "error" not in preview[:50].lower()
             ts.set_output({"success": tool_success, "result_preview": preview})
@@ -281,7 +274,6 @@ class ReactStrategy:
         auth: Any,
         context: list[WardenContext] | None = None,
         security_pipeline: bool = False,
-        tool_round: int = 0,
     ) -> tuple[dict[str, Any], str]:
         """Process a single tool call end-to-end: parse args, sentinel pre-call,
         execute, truncate, sanitize. Returns ``(tool_args, tool_result_str)``."""
@@ -311,14 +303,7 @@ class ReactStrategy:
                 tool_args = sentinel_verdict.repaired_data
 
         if not tool_blocked:
-            tool_result = await self._run_tool(
-                tool_name,
-                tool_args,
-                tool_executor,
-                trace,
-                tool_call_id=tc.get("id", ""),
-                tool_round=tool_round,
-            )
+            tool_result = await self._run_tool(tool_name, tool_args, tool_executor, trace)
 
         tool_result_str = str(tool_result)
         if len(tool_result_str) > 16384:

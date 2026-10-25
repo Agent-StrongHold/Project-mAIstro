@@ -13,7 +13,7 @@ Runs end-to-end:
 10. Repeat until converged or max passes
 
 Usage:
-    python -m services.ui_auto_climb --component Chat --passes 10 --url <conductor-base-url>
+    python -m services.ui_auto_climb --component Chat --passes 10 --url http://localhost:8101
 """
 
 from __future__ import annotations
@@ -33,7 +33,6 @@ logger = logging.getLogger("hive.ui_auto")
 
 FRONTEND_DIR = Path(__file__).parent.parent.parent / "frontend"
 PAGES_DIR = FRONTEND_DIR / "src" / "pages"
-DEFAULT_CLIMB_URL = "http://localhost:8101"  # DevSkim: ignore DS162092 until 2027-12-31
 
 
 async def screenshot(url: str, path: str = "/chat") -> str:
@@ -183,10 +182,7 @@ def apply_edit(component_path: Path, edit: dict) -> bool:
 
 
 async def auto_climb(
-    component: str,
-    url: str = DEFAULT_CLIMB_URL,
-    path: str = "/chat",
-    max_passes: int = 10,
+    component: str, url: str = "http://localhost:8101", path: str = "/chat", max_passes: int = 10
 ) -> dict[str, Any]:
     """Autonomous hill-climb loop. No human needed.
 
@@ -251,24 +247,6 @@ async def auto_climb(
     print(f"\n{'=' * 40} DONE {'=' * 40}")
     print(f"Best score: {best_score}/100 over {max_passes} passes")
     return {"best_score": best_score, "passes": max_passes, "history": history}
-
-
-def build_cli_parser() -> Any:
-    """CLI parser for ``python -m services.ui_auto_climb`` (tested for coverage)."""
-    import argparse
-
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--component", default="Chat.tsx")
-    parser.add_argument("--passes", type=int, default=5)
-    parser.add_argument("--url", default=DEFAULT_CLIMB_URL)
-    parser.add_argument("--path", default="/chat")
-    return parser
-
-
-def main(argv: list[str] | None = None) -> dict[str, Any]:
-    """Parse argv and run the climber (tested entry; ``__main__`` stays on develop's shape)."""
-    args = build_cli_parser().parse_args(argv)
-    return asyncio.run(auto_climb(args.component, args.url, args.path, args.passes))
 
 
 if __name__ == "__main__":

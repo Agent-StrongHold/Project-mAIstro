@@ -17,7 +17,6 @@ from fastapi.testclient import TestClient
 from main import app
 
 from maistro.memory.episodic.store import InMemoryEpisodicStore
-from maistro.memory.exposure import MemoryExposureMode
 from maistro.memory.types import EpisodicMemory, MemoryScope, MemoryTier
 
 
@@ -46,7 +45,7 @@ def _mem(memory_id: str = "m1", weight: float = 0.8) -> EpisodicMemory:
 
 
 async def _seeded_store() -> InMemoryEpisodicStore:
-    store = InMemoryEpisodicStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
+    store = InMemoryEpisodicStore()
     await store.store(_mem())
     return store
 

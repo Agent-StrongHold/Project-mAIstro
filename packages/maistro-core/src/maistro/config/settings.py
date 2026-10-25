@@ -5,7 +5,6 @@ from __future__ import annotations
 import functools
 import logging
 from typing import Any, Self
-from urllib.parse import SplitResult, urlsplit
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -38,36 +37,6 @@ def validate_permission_preset(value: str) -> str:
         msg = f"Unknown permission preset '{value}'. Valid values: {valid}."
         raise ValueError(msg)
     return value
-
-
-def _has_http_origin_authority(parsed: SplitResult) -> bool:
-    """Require a plain HTTP authority, without userinfo or URL components."""
-    port = parsed.port  # May raise for malformed/out-of-range ports.
-    return (
-        parsed.scheme == "http"
-        and parsed.username is None
-        and parsed.password is None
-        and not parsed.netloc.endswith(":")
-        and not any((parsed.path, parsed.query, parsed.fragment))
-        and (port is None or port > 0)
-    )
-
-
-def _is_http_loopback_origin(origin: str) -> bool:
-    """Classify the local HTTP warning exception without trusting URL prefixes."""
-    if any(char in origin for char in "\\?#") or any(
-        ord(char) <= 32 or ord(char) == 127 for char in origin
-    ):
-        return False
-    try:
-        parsed = urlsplit(origin)
-        return _has_http_origin_authority(parsed) and parsed.hostname in {
-            "localhost",  # DevSkim: ignore DS162092 until 2027-12-31
-            "127.0.0.1",  # DevSkim: ignore DS162092 until 2027-12-31
-            "::1",  # DevSkim: ignore DS162092 until 2027-12-31
-        }
-    except ValueError:
-        return False
 
 
 def validate_cors_origins(origins: list[str]) -> list[str]:
@@ -111,7 +80,7 @@ def validate_cors_origins(origins: list[str]) -> list[str]:
         if origin.startswith("javascript:") or origin.startswith("data:"):
             msg = f"CORS origins contains unsafe origin: {origin!r}"
             raise ValueError(msg)
-        if not origin.startswith("https://") and not _is_http_loopback_origin(origin):
+        if not origin.startswith("https://") and not origin.startswith("http://localhost"):
             logger.warning("CORS origin %r is not HTTPS — use HTTPS in production", origin)
         cleaned.append(origin)
     return cleaned
@@ -157,7 +126,7 @@ class ModelRateProfileConfig(BaseModel):
 class DatabaseSettings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="DB_")
 
-    host: str = "localhost"  # DevSkim: ignore DS162092 until 2027-12-31
+    host: str = "localhost"
     port: int = 5432
     name: str = "maistro"
     user: str = "maistro"
@@ -197,7 +166,7 @@ class DatabaseSettings(BaseSettings):
 class LiteLLMSettings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="LITELLM_")
 
-    base_url: str = "http://localhost:4000"  # DevSkim: ignore DS162092 until 2027-12-31; ignore DS137138 until 2027-12-31
+    base_url: str = "http://localhost:4000"
     master_key: str = ""
 
 
@@ -208,16 +177,14 @@ class MistralSettings(BaseSettings):
     # used for chat requests -- required by MistralAdminApiVerifier
     # (quota/verifiers/mistral.py). Optional: unset means that verifier is
     # unavailable/skipped rather than an error, since not every deployment
-    # needs standalone balance verification. Nothing wires that verifier yet:
-    # it also requires a confirmed response-schema contract
-    # (MistralRateLimitSchema, #1205) before it may be connected.
+    # needs standalone balance verification.
     admin_api_key: str = ""
 
 
 class LangfuseSettings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="LANGFUSE_")
 
-    host: str = "http://localhost:3000"  # DevSkim: ignore DS162092 until 2027-12-31; ignore DS137138 until 2027-12-31
+    host: str = "http://localhost:3000"
     public_key: str = ""
     secret_key: str = ""
     enabled: bool = True
@@ -232,14 +199,6 @@ class SandboxSettings(BaseSettings):
     timeout: int = 300
     network_disabled: bool = True
     readiness_required: bool = False
-    # Host-selected bound (#1197) on command output a sandbox retains per
-    # exec. Numeric default on purpose: `maistro.config` sits *below*
-    # `maistro.sandbox` (fence -> runs -> config), so importing the protocol
-    # constant here would be a cycle. The equality with
-    # `DEFAULT_MAX_OUTPUT_BYTES` is pinned by a test; the backends clamp this
-    # to `MAX_OUTPUT_BYTES_CEILING`, so an env source can lower the bound per
-    # deployment but cannot raise it past the ceiling.
-    max_output_bytes: int = 1024 * 1024
     # microVM backend (SPEC-190): Firecracker / Cloud-Hypervisor boot a kernel +
     # ext4 rootfs, NOT an OCI image, so these are separate from `image` (the
     # Docker ref). Using `image` as a VM rootfs would fail to boot.
@@ -250,7 +209,7 @@ class SandboxSettings(BaseSettings):
 class OllamaSettings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="OLLAMA_")
 
-    base_url: str = "http://localhost:11434/v1"  # DevSkim: ignore DS162092 until 2027-12-31; ignore DS137138 until 2027-12-31
+    base_url: str = "http://localhost:11434/v1"
 
 
 class NtfySettings(BaseSettings):
@@ -280,21 +239,11 @@ class Settings(BaseSettings):
     allow_unsafe_resource_overrides: bool = False
     # Default to loopback so a careless dev-server start doesn't expose the
     # API on every interface. Container deployments override this via the
-    # HOST env var (e.g. HOST=0.0.0.0 in docker-compose for the server svc).  # DevSkim: ignore DS162092 until 2027-12-31
-    host: str = "127.0.0.1"  # DevSkim: ignore DS162092 until 2027-12-31
+    # HOST env var (e.g. HOST=0.0.0.0 in docker-compose for the server svc).
+    host: str = "127.0.0.1"
     port: int = 8000
 
-    api_keys: list[str] = Field(
-        default_factory=list,
-        description="Valid API bearer tokens (principal:secret entries)",
-    )
-    admin_api_keys: list[str] = Field(
-        default_factory=list,
-        description=(
-            "Explicit administrator bearer tokens (principal:secret entries); "
-            "authority is selected by this separate configuration list"
-        ),
-    )
+    api_keys: list[str] = Field(default_factory=list, description="Valid API bearer tokens")
     require_auth: bool = Field(
         default=True,
         description="Refuse to start without API keys. Set REQUIRE_AUTH=false for local dev only.",
@@ -309,9 +258,7 @@ class Settings(BaseSettings):
     )
 
     cors_origins: list[str] = Field(
-        default_factory=lambda: [
-            "http://localhost:3080",  # DevSkim: ignore DS162092 until 2027-12-31; ignore DS137138 until 2027-12-31
-        ],
+        default_factory=lambda: ["http://localhost:3080"],
         description="Allowed CORS origins. This is the field the FastAPI apps "
         "actually pass to CORSMiddleware — validated here, at the boundary "
         "that is read.",
@@ -327,7 +274,7 @@ class Settings(BaseSettings):
 
     max_tokens_per_task: int = Field(default=100_000, description="Max LLM tokens per task")
 
-    ollama_base_url: str = "http://localhost:11434/v1"  # DevSkim: ignore DS162092 until 2027-12-31; ignore DS137138 until 2027-12-31
+    ollama_base_url: str = "http://localhost:11434/v1"
     maistro_dry_run: bool = False
     poc_mode: str = Field(
         default="",
@@ -360,17 +307,6 @@ class Settings(BaseSettings):
     # every RunStore at admission. Tighten freely; loosening needs the override.
     max_active_root_runs_per_principal: int = BASELINE_MAX_ACTIVE_ROOT_RUNS_PER_PRINCIPAL
     max_active_root_runs_per_workspace: int = BASELINE_MAX_ACTIVE_ROOT_RUNS_PER_WORKSPACE
-    # The opt-in system-wide ceiling (#1182 "an explicit system/global ceiling
-    # where needed"). The owner-decided baseline is that no global ceiling
-    # exists, so unset cannot weaken anything and any configured value only
-    # tightens admission at the same RunStore authority. Not a resource-policy
-    # floor: there is no numeric baseline to weaken against.
-    max_active_root_runs_system: int | None = Field(
-        default=None,
-        ge=1,
-        description="Optional system-wide ceiling on concurrently active root Runs across "
-        "every Workspace and principal. Unset means no explicit global ceiling.",
-    )
 
     # Shared outbound HTTP pool (see maistro.http). Ceilings against fd
     # exhaustion, NOT a load throttle — a small cap here was measured as the
@@ -489,11 +425,7 @@ class SecurityConfig(BaseModel):
 
 
 class CORSConfig(BaseModel):
-    allowed_origins: list[str] = Field(
-        default_factory=lambda: [
-            "http://localhost:3200",  # DevSkim: ignore DS162092 until 2027-12-31; ignore DS137138 until 2027-12-31
-        ]
-    )
+    allowed_origins: list[str] = Field(default_factory=lambda: ["http://localhost:3200"])
     allowed_methods: list[str] = Field(
         default_factory=lambda: ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
     )
@@ -548,7 +480,7 @@ class MaistroYamlConfig(BaseModel):
     database_url: str = ""
     redis_url: str = ""
     agents_dir: str = ""
-    litellm_url: str = "http://litellm:4000"  # DevSkim: ignore DS137138 until 2027-12-31
+    litellm_url: str = "http://litellm:4000"
     litellm_key: str = ""
     router_api_key: str = ""
     jwt_secret: str = ""

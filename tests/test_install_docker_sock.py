@@ -31,9 +31,9 @@ ROOT = Path(__file__).resolve().parents[1]
 INSTALL_SH = ROOT / "install.sh"
 
 #: record_docker_sock plus the env-writing path it must reach, lifted verbatim
-#: from install.sh. ensure_python moved to scripts/bootstrap-runtime.sh
-#: (#1821); the harness sources that library below.
+#: from install.sh.
 _FUNCTIONS = (
+    "ensure_python",
     "secret_env_run",
     "set_env_value",
     "record_docker_sock",
@@ -57,7 +57,6 @@ SCRIPT_DIR={str(ROOT)!r}
 ENV_FILE=".env"
 PYTHON_CMD=()
 source <(sed -n {extract!r} {install})
-source "{ROOT / "scripts" / "bootstrap-runtime.sh"}"
 """
 
 

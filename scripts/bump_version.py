@@ -138,7 +138,7 @@ def _app_literal(rel_path: str, pattern: re.Pattern[str]) -> Site:
     return Site(ROOT / rel_path, pattern, f"app version literal:{rel_path}")
 
 
-# Every [project] `version = "..."` line — root workspace meta-package, all 10
+# Every [project] `version = "..."` line — root workspace meta-package, all 9
 # library packages, and hive-conductor. The app is not in the publish set, but
 # it has carried a pyproject.toml since it was enrolled in the workspace lock
 # and the wheel-imports loop, and the wheel it builds declares a version like
@@ -155,8 +155,6 @@ _PYPROJECT_SITES = [
     _pyproject("packages/maistro-rsi/pyproject.toml"),
     _pyproject("packages/maistro-design/pyproject.toml"),
     _pyproject("packages/maistro-bootstrap/pyproject.toml"),
-    _pyproject("packages/maistro-ext-harness/pyproject.toml"),
-    _pyproject("packages/maistro-ext-sdk/pyproject.toml"),
     _pyproject("packages/hive-conductor/pyproject.toml"),
 ]
 
@@ -177,9 +175,7 @@ _VERSION_FALLBACK_SITES = [
     _version_fallback("packages/maistro-rsi/src/maistro_rsi/__init__.py"),
     _version_fallback("packages/maistro-design/src/maistro_design/__init__.py"),
     _version_fallback("packages/maistro-bootstrap/src/maistro_bootstrap/__init__.py"),
-    _version_fallback("packages/maistro-ext-sdk/src/maistro_ext_sdk/__init__.py"),
     _version_fallback("packages/maistro-registry/src/maistro_registry/__init__.py"),
-    _version_fallback("packages/maistro-ext-harness/src/maistro_ext_harness/__init__.py"),
 ]
 
 # Inter-package dependency LOWER bounds only — adding the `<2` upper bound is
@@ -209,13 +205,8 @@ _INTERPKG_SITES = [
     # different extras, in two different tables (#514), and each expression
     # carries its own bound. A single row would check one and leave the other
     # to drift -- and the drift would be invisible, since a row that matches
-    # once is a pass. The first row names `[bcrypt,identity]`, not bare
-    # `[bcrypt]`: the conductor's auth wiring imports `maistro.identity`
-    # (ConductorSeed), whose bip-utils/coincurve/pynacl stack the `identity`
-    # extra declares. The row has to name the expression the file actually
-    # holds or the bound stops being checked -- silently, since "found 0" is
-    # only a failure because this list said one was expected (#348 repair).
-    _interpkg_dep("packages/hive-conductor/pyproject.toml", "maistro-core[bcrypt,identity]"),
+    # once is a pass.
+    _interpkg_dep("packages/hive-conductor/pyproject.toml", "maistro-core[bcrypt]"),
     _interpkg_dep("packages/hive-conductor/pyproject.toml", "maistro-core[observability]"),
 ]
 

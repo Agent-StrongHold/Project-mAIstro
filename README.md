@@ -192,9 +192,9 @@ tested modules with no call path, so "the code is there" is not the bar.
 | Feature | Status | Notes |
 |---|---|---|
 | `curl \| bash` installer (`get.sh`, `install.sh`, `get.ps1`) | **Complete** | Includes WSL2 setup on Windows. |
-| `maistro install` / `launch server` / `builders` / `approvals` / `portability` | **Complete** | |
+| `maistro install` / `launch server` / `builders` / `approvals` | **Complete** | |
 | `maistro-install`, `maistro-registry` | **Complete** | |
-| `maistro-rsi`, `maistro-rsi-autorun`, `maistro-rsi-campaign` | **Complete** | The real RSI product is the CLI, not the UI page. `maistro-rsi-campaign` runs a bounded frontier-vs-baseline objective-pool experiment through the gateway (#114). |
+| `maistro-rsi`, `maistro-rsi-autorun` | **Complete** | The real RSI product is the CLI, not the UI page. |
 | `maistro upgrade` | **Partial** | `git pull` + `uv sync`. Does nothing useful for a tarball install. |
 | `maistro launch tui` | **TODO** | Prints "coming soon". |
 | `maistro-core`, `-server`, `-evolve`, `-registry`, `-bootstrap`, `-design` | **Complete** | |
@@ -210,12 +210,9 @@ constructs them, so they do nothing in a running system. They are not v1 feature
 advertised as working.
 
 *Whole subsystems:* `maistro.builders`, `ontology`, `governance`, `delivery`,
-`repertoire`, `collaboration`, `code_registry`, `sandbox`, `integrations`.
+`portability`, `repertoire`, `collaboration`, `code_registry`, `sandbox`, `integrations`.
 (`maistro.scheduling` left this list: the Conductor's background runner constructs its
-admitter and evaluation from app lifespan — see the Schedules row above.
-`maistro.portability` left it too: the ADR-101 adapters now ship through the
-`maistro portability` CLI subcommand — see the Portability row of the convergence
-matrix.)
+admitter and evaluation from app lifespan — see the Schedules row above.)
 
 *Individual capabilities inside subsystems that otherwise do work* — these are the harder ones
 to spot, because the package around them is live:

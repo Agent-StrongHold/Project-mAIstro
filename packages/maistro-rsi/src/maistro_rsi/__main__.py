@@ -20,7 +20,7 @@ import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Literal
 
 from maistro_rsi.competitors import parse_competitors
 from maistro_rsi.export_policy import (
@@ -373,8 +373,8 @@ def _build_parser() -> argparse.ArgumentParser:
 
     review = sub.add_parser(
         "review",
-        help="List/approve/reject/revise/resume promotions in the checkpoint "
-        "review inbox (SPEC-248 RLPHD + #110 path split). Pure host-side file "
+        help="List/approve/deny promotions the checkpoint reviewer reverted "
+        "pending human judgment (SPEC-248 RLPHD). Pure host-side file "
         "operations — no running container needed.",
     )
     review.add_argument(
@@ -382,92 +382,16 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     review_sub = review.add_subparsers(dest="review_action", required=True)
     review_sub.add_parser("list", help="List promotions still pending a decision.")
-
-    def _decision_verb(name: str, help_text: str) -> argparse.ArgumentParser:
-        p = review_sub.add_parser(name, help=help_text)
-        p.add_argument("sha", help="Commit sha (or its 12-char prefix) of the flagged promotion.")
-        p.add_argument("--reason", default="", help="Why — persisted with the decision record.")
-        return p
-
-    _decision_verb(
-        "approve", "Approve a flagged promotion — re-queues its patch for the next harvest."
+    approve = review_sub.add_parser(
+        "approve", help="Approve a flagged promotion — re-queues its patch for the next harvest."
     )
-    _decision_verb(
-        "reject",
-        "Reject a flagged promotion — it stays reverted; the patch is kept for audit. "
-        "('deny' is kept as an alias.)",
+    approve.add_argument("sha", help="Commit sha (or its 12-char prefix) of the flagged promotion.")
+    deny = review_sub.add_parser(
+        "deny", help="Deny a flagged promotion — it stays reverted; the patch is kept for audit."
     )
-    _decision_verb(
-        "revise",
-        "Send a flagged promotion back for another attempt — the inbox slot stays "
-        "open for the revised candidate; nothing is exported or trained.",
-    )
-    _decision_verb(
-        "resume",
-        "Put a reverted promotion back on the forward path (patch re-queued for "
-        "harvest) WITHOUT a verdict — the review stays open for approve/reject.",
-    )
-    _decision_verb(
-        "deny",
-        "(deprecated alias of reject) Deny a flagged promotion — it stays reverted.",
-    )
+    deny.add_argument("sha", help="Commit sha (or its 12-char prefix) of the flagged promotion.")
 
     return parser
-
-
-def _print_promotion_evidence(store: Any, champ: Any) -> None:
-    """Print the champion's verified-evidence trail and proxy-scorer calibration.
-
-    The live loop's promotion evidence (#384/#853), for the operator reading
-    the run summary. ``PopulationStore.champion_provenance()`` names, for
-    every benchmark score the champion's fitness rests on, the verified
-    method that produced it — a score with no evidence record reads
-    "unverified" instead of passing silently. The offline adversarial
-    calibration (``calibrate_proxy_scorers``) then measures how much
-    narration-only output leaks through the proxy scorers that shaped this
-    run's fitness. Both surfaces report; neither gates (#853: promotion
-    semantics stay in fitness.py), so an evidence-collection failure is
-    printed and the run still exits 0.
-    """
-    provenance = store.champion_provenance()
-    if provenance is not None:
-        print("champion evidence:")
-        _print_champion_provenance(store)
-
-    import asyncio
-
-    from maistro_evolve.benchmarks.calibration import calibrate_proxy_scorers
-
-    try:
-        # The calibration fixtures play the candidate themselves (deterministic
-        # narration/verified responders), so no live model is contacted and
-        # ``llm_call`` is None exactly as in the calibration suite.
-        report = asyncio.run(calibrate_proxy_scorers(champ, None))
-    except Exception as exc:  # evidence, not gate: never fail the run over it
-        print(f"calibration evidence: unavailable ({exc})")
-        return
-    print(f"proxy-scorer calibration ({report['calibration']}):")
-    for scorer, rates in report["scorers"].items():
-        print(
-            f"  {scorer}: narration_fpr={rates['narration_false_positive_rate']} "
-            f"verified_rate={rates['verified_positive_rate']}"
-        )
-
-
-def _print_champion_provenance(store: PopulationStore) -> None:
-    """Print the verified-evidence trail behind champion selection (#384).
-
-    The champion's fitness is a weighted fold of benchmark scores; this names,
-    for every scored benchmark, the verified method that produced the score
-    (``exact_match``, ``llm_judge``, ... — or the explicit ``unverified``). A
-    champion that got there by narrating shows up here instead of being
-    silently trusted.
-    """
-    provenance = store.champion_provenance()
-    if provenance is None:
-        return
-    for bench, record in provenance["benchmarks"].items():
-        print(f"  {bench}: score={record['score']} evidence={record['evidence']}")
 
 
 def _evolve(args: argparse.Namespace) -> int:
@@ -594,8 +518,24 @@ def _evolve(args: argparse.Namespace) -> int:
     champ = store.get_champion()
     if champ is not None:
         print(f"champion: {champ.name} (fitness={champ.fitness_score})")
-        _print_promotion_evidence(store, champ)
+        _print_champion_provenance(store)
     return 0
+
+
+def _print_champion_provenance(store: PopulationStore) -> None:
+    """Print the verified-evidence trail behind champion selection (#384).
+
+    The champion's fitness is a weighted fold of benchmark scores; this names,
+    for every scored benchmark, the verified method that produced the score
+    (``exact_match``, ``llm_judge``, ... — or the explicit ``unverified``). A
+    champion that got there by narrating shows up here instead of being
+    silently trusted.
+    """
+    provenance = store.champion_provenance()
+    if provenance is None:
+        return
+    for bench, record in provenance["benchmarks"].items():
+        print(f"  {bench}: score={record['score']} evidence={record['evidence']}")
 
 
 def _calibrate(args: argparse.Namespace) -> int:
@@ -703,70 +643,6 @@ def _validated_export(
     return resolved
 
 
-def _validate_harvest_clone_url(clone_url: str) -> None:
-    """Gate the harvest `--clone-url` through the #404 source policy.
-
-    The exact `validate_clone_source` verdict the MCP git tool applies — what
-    this fetches becomes the content of the PRs the harvest opens. A refusal
-    exits 2 before any work tree exists: like `_test_argv`, a bad invocation
-    is a launcher error, not a harvest outcome.
-    """
-    from maistro.tools.git.server import ClonePolicyError, validate_clone_source
-
-    try:
-        validate_clone_source(clone_url)
-    except ClonePolicyError as exc:
-        print(f"error: --clone-url rejected by clone policy: {exc.message}", file=sys.stderr)
-        print(f"       {exc.suggested_action}", file=sys.stderr)
-        raise SystemExit(2) from exc
-
-
-def _run_harvest_clone(clone_url: str, clone_base: str, repo: str) -> None:
-    """Materialize the harvest base from a resolved digest, never a ref.
-
-    The cloud harvest turns this checkout into agent-authored PRs, so it must
-    not have a second unpinned source path. Resolve the approved base ref
-    first under the same transport pins as the shared git tool, then fetch
-    that immutable digest into a fresh repository and create the expected
-    local branch from the verified object. No checkout follows a mutable
-    remote ref.
-    """
-    import subprocess
-
-    pins = ["-c", "protocol.git.allow=never", "-c", "http.followRedirects=false"]
-    resolved = subprocess.run(
-        [
-            "git",
-            *pins,
-            "ls-remote",
-            "--exit-code",
-            "--",
-            clone_url,
-            f"refs/heads/{clone_base}",
-        ],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    digest = resolved.stdout.split()[0] if resolved.returncode == 0 and resolved.stdout else ""
-    from maistro.tools.git.server import _COMMIT_DIGEST_RE
-
-    if not _COMMIT_DIGEST_RE.match(digest):
-        raise RuntimeError(
-            f"could not resolve harvest base {clone_base!r} to a full commit digest; "
-            "refusing unpinned candidate source"
-        )
-    subprocess.run(["git", "init", "-q", repo], check=True)
-    # Preserve the old clone command's LF work-tree behavior before the first
-    # checkout; a host-global autocrlf setting must not rewrite harvested
-    # patch context.
-    subprocess.run(["git", "-C", repo, "config", "core.autocrlf", "false"], check=True)
-    subprocess.run(["git", "-C", repo, "remote", "add", "origin", clone_url], check=True)
-    subprocess.run(["git", *pins, "-C", repo, "fetch", "--depth=1", "origin", digest], check=True)
-    subprocess.run(["git", "-C", repo, "checkout", "--detach", "FETCH_HEAD"], check=True)
-    subprocess.run(["git", "-C", repo, "checkout", "-B", clone_base, digest], check=True)
-
-
 def _harvest(args: argparse.Namespace) -> int:  # noqa: C901  clone/repo setup + am/skip/PR loop
     import subprocess
     import tempfile
@@ -860,10 +736,6 @@ def _harvest(args: argparse.Namespace) -> int:  # noqa: C901  clone/repo setup +
         # Cloud path: wire GH_TOKEN into git FIRST (so a private clone + the push
         # both authenticate), then clone fresh with an LF working tree (no CRLF
         # host artifacts). The credential lives only in this trusted step.
-        # The URL is gated through the #404 source policy before git spawns,
-        # and the clone itself carries the executable transport pins — the
-        # same verdict and enforcement as the MCP git tool (#404).
-        _validate_harvest_clone_url(args.clone_url)
         if args.push:
             subprocess.run(["gh", "auth", "setup-git"], check=True)
         repo = tempfile.mkdtemp(prefix="rsi-harvest-")
@@ -871,7 +743,20 @@ def _harvest(args: argparse.Namespace) -> int:  # noqa: C901  clone/repo setup +
         # would put every commit between them into the PR. Same default as the
         # target, for the same reason.
         clone_base = base or pr_base
-        _run_harvest_clone(args.clone_url, clone_base, repo)
+        subprocess.run(
+            [
+                "git",
+                "-c",
+                "core.autocrlf=false",
+                "clone",
+                "--single-branch",
+                "--branch",
+                clone_base,
+                args.clone_url,
+                repo,
+            ],
+            check=True,
+        )
         base = clone_base
     else:
         repo = str(Path(args.repo_dir).resolve())
@@ -1158,7 +1043,6 @@ def _review(args: argparse.Namespace) -> int:
     from maistro_rsi.promotion_review import (
         load_kept_reviews,
         load_pending_reviews,
-        normalize_decision,
         resolve_review,
     )
 
@@ -1187,39 +1071,30 @@ def _review(args: argparse.Namespace) -> int:
                     f"    predicted_p={r.predicted_p:.3f} theta={r.theta:.3f}  {r.note}"
                 )
         print(
-            "\nTo decide: python -m maistro_rsi review approve|reject|revise|resume <sha> "
-            "--report-dir <dir>\n            ('deny' is kept as an alias of reject)"
+            "\nTo decide: python -m maistro_rsi review approve <sha> --report-dir <dir>\n"
+            "            python -m maistro_rsi review deny <sha> --report-dir <dir>"
         )
         return 0
 
     sha = args.sha
-    verb = args.review_action
+    decision: Literal["approve", "deny"] = "approve" if args.review_action == "approve" else "deny"
     # resolve from flagged OR kept dir — the review data has the same shape
     for d in (flagged_dir, kept_dir):
         if (d / f"{sha[:12]}.json").is_file():
             try:
                 review = resolve_review(
-                    d,
-                    report_dir / "export",
-                    report_dir / "rlphd_state.json",
-                    sha,
-                    verb,
-                    reason=getattr(args, "reason", ""),
-                    records_dir=report_dir / "promotions",
+                    d, report_dir / "export", report_dir / "rlphd_state.json", sha, decision
                 )
             except FileNotFoundError as exc:
                 print(f"error: {exc}", file=sys.stderr)
                 return 2
-            outcome = {
-                "approve": "approved — patch re-queued for the next harvest",
-                "reject": "rejected — stays reverted; patch kept for audit",
-                "revise": f"revision requested (#{review.revision}) — inbox slot stays open",
-                "resume": "resumed — patch re-queued for harvest; review still open",
-            }[normalize_decision(verb)]
-            trained = normalize_decision(verb) in ("approve", "reject")
+            verb = (
+                "approved — patch re-queued for the next harvest"
+                if decision == "approve"
+                else "denied"
+            )
             print(
-                f"{review.sha[:12]} ({review.target}) {outcome}."
-                + (" RLPHD model updated." if trained else "")
+                f"{review.sha[:12]} ({review.target}) {verb}. RLPHD model updated for {review.action_class}."
             )
             return 0
     print(

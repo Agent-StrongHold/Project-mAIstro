@@ -120,7 +120,7 @@ async def list_backlog(
         raise _http_error(exc) from exc
     return {
         "items": [item.model_dump(mode="json") for item in items],
-        "authority": backlog_svc.ui_authority_snapshot(),
+        "authority": dict(backlog_svc.UI_AUTHORITY),
     }
 
 

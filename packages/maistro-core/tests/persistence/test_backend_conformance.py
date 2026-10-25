@@ -23,7 +23,6 @@ from typing import Any
 
 import pytest
 
-from maistro.memory.exposure import MemoryExposureMode
 from maistro.memory.outcomes import InMemoryOutcomeStore
 from maistro.quota.tracker import InMemoryQuotaTracker
 from maistro.sessions.store import InMemorySessionStore
@@ -90,13 +89,13 @@ async def session_store(request: pytest.FixtureRequest, pg_pool: Any) -> Any:
 @pytest.fixture(params=["memory", "sqlite", "postgres"])
 async def outcome_store(request: pytest.FixtureRequest, pg_pool: Any) -> Any:
     if request.param == "memory":
-        yield InMemoryOutcomeStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
+        yield InMemoryOutcomeStore()
         return
     if request.param == "sqlite":
         from maistro.persistence.sqlite_outcomes import SqliteOutcomeStore
 
         conn = await _sqlite_conn()
-        store = SqliteOutcomeStore(conn, exposure_mode=MemoryExposureMode.AGENT_MANAGED)
+        store = SqliteOutcomeStore(conn)
         await store.ensure_schema()
         try:
             yield store
@@ -107,7 +106,7 @@ async def outcome_store(request: pytest.FixtureRequest, pg_pool: Any) -> Any:
         pytest.skip("MAISTRO_TEST_PG_DSN is not set")
     from maistro.persistence.pg_outcomes import PgOutcomeStore
 
-    yield PgOutcomeStore(pg_pool, exposure_mode=MemoryExposureMode.AGENT_MANAGED)
+    yield PgOutcomeStore(pg_pool)
 
 
 # ── quota ─────────────────────────────────────────────────────────
@@ -415,13 +414,13 @@ async def learning_store(request: pytest.FixtureRequest, pg_pool: Any) -> Any:
     if request.param == "memory":
         from maistro.memory.learnings.store import InMemoryLearningStore
 
-        yield InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
+        yield InMemoryLearningStore()
         return
     if request.param == "sqlite":
         from maistro.persistence.sqlite_learnings import SqliteLearningStore
 
         conn = await _sqlite_conn()
-        store = SqliteLearningStore(conn, exposure_mode=MemoryExposureMode.AGENT_MANAGED)
+        store = SqliteLearningStore(conn)
         await store.ensure_schema()
         try:
             yield store
@@ -432,7 +431,7 @@ async def learning_store(request: pytest.FixtureRequest, pg_pool: Any) -> Any:
         pytest.skip("MAISTRO_TEST_PG_DSN is not set")
     from maistro.persistence.pg_learnings import PgLearningStore
 
-    store = PgLearningStore(pg_pool, exposure_mode=MemoryExposureMode.AGENT_MANAGED)
+    store = PgLearningStore(pg_pool)
     await store.ensure_schema()
     yield store
 

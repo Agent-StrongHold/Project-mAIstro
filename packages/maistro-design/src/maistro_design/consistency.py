@@ -41,7 +41,6 @@ from __future__ import annotations
 
 import re
 import uuid
-from collections.abc import Sequence
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any, Literal
@@ -85,7 +84,7 @@ class EvidenceItem(_Frozen):
     """A piece of source truth the project was given — not generated."""
 
     evidence_id: str
-    statement: str  # literal marker, matched case-insensitively against content
+    statement: str  # regex, matched case-insensitively against content
 
 
 class ClaimRule(_Frozen):
@@ -97,7 +96,7 @@ class ClaimRule(_Frozen):
     """
 
     claim_id: str
-    pattern: str  # literal marker for the claim as it may appear in artifact content
+    pattern: str  # regex for the claim as it may appear in artifact content
     source: Literal["provided_evidence", "model_asserted"]
     evidence_id: str | None = None
 
@@ -133,14 +132,14 @@ class TermRule(_Frozen):
     """Preferred terminology: the word to use and the aliases it replaces."""
 
     preferred: str
-    banned_aliases: tuple[str, ...]  # literal markers, matched case-insensitively
+    banned_aliases: tuple[str, ...]  # regexes, matched case-insensitively
 
 
 class RequiredMessage(_Frozen):
     """A message/CTA that must appear in the artifacts the brief names."""
 
     message_id: str
-    pattern: str  # literal marker, matched case-insensitively
+    pattern: str  # regex, matched case-insensitively
     required_in: tuple[str, ...] = ("*",)  # artifact kinds; ("*",) = every artifact
 
 
@@ -148,8 +147,8 @@ class ChannelRequirement(_Frozen):
     """Channel-specific required/forbidden elements for one artifact kind."""
 
     artifact_kind: str
-    required_elements: tuple[str, ...] = ()  # literal markers that must be present
-    forbidden_elements: tuple[str, ...] = ()  # literal markers that must not be present
+    required_elements: tuple[str, ...] = ()  # regexes that must be present
+    forbidden_elements: tuple[str, ...] = ()  # regexes that must not be present
 
 
 AccessibilityCheck = Literal["image_alt_text", "html_lang_declared"]
@@ -206,8 +205,8 @@ class PersonaSnapshot(_Frozen):
 
     persona_id: str
     name: str
-    required_markers: tuple[str, ...] = ()  # literal markers that should appear
-    banned_markers: tuple[str, ...] = ()  # literal markers that must not appear
+    required_markers: tuple[str, ...] = ()  # regexes that should appear
+    banned_markers: tuple[str, ...] = ()  # regexes that must not appear
 
 
 class DesignSystemSnapshot(_Frozen):
@@ -230,7 +229,7 @@ class BriefSnapshot(_Frozen):
     goal_revision: str
     audience: str = ""
     objective: str = ""
-    objective_keywords: tuple[str, ...] = ()  # literal markers that should appear
+    objective_keywords: tuple[str, ...] = ()  # regexes that should appear
     allowed_claims: tuple[ClaimRule, ...] = ()
     contradiction_rules: tuple[ContradictionRule, ...] = ()
     terminology: tuple[TermRule, ...] = ()
@@ -443,19 +442,11 @@ def _local_impact_closure(
 # ─── Checks ──────────────────────────────────────────────────────────────────
 
 
-def _marker_re(pattern: str) -> re.Pattern[str]:
-    """Compile an untrusted snapshot marker for literal, case-insensitive search.
-
-    Markers arrive on :class:`CreativeProjectSnapshot` from the Design Studio
-    HTTP body and the ``design.consistency_eval`` graph node. They are always
-    escaped before compilation so a caller cannot inject a regular expression
-    (ReDoS or filter bypass). Metacharacters in *pattern* match literally.
-    """
-    return re.compile(re.escape(pattern), re.IGNORECASE)
-
-
 def _contains(pattern: str, text: str) -> bool:
-    return _marker_re(pattern).search(text) is not None
+    try:
+        return re.search(pattern, text, re.IGNORECASE) is not None
+    except re.error:
+        return pattern.lower() in text.lower()
 
 
 _NEGATION_CUES = re.compile(
@@ -477,7 +468,21 @@ def _mentions_affirmatively(pattern: str, text: str) -> bool:
     artifact content still uses plain :func:`_contains` — using a banned
     marker is the defect regardless of phrasing.
     """
-    starts = [match.start() for match in _marker_re(pattern).finditer(text)]
+    try:
+        compiled = re.compile(pattern, re.IGNORECASE)
+    except re.error:
+        compiled = None
+    starts: list[int] = []
+    if compiled is not None:
+        starts = [match.start() for match in compiled.finditer(text)]
+    else:
+        needle = pattern.lower()
+        lowered = text.lower()
+        index = lowered.find(needle)
+        while index != -1:
+            starts.append(index)
+            step = len(needle) or 1
+            index = lowered.find(needle, index + step)
     for start in starts:
         prefix = text[max(0, start - _NEGATION_WINDOW) : start]
         if not _NEGATION_CUES.search(prefix):
@@ -792,57 +797,6 @@ def _check_decision_evidence_contradictions(
                 )
 
 
-def _sibling_contradiction_sides(
-    rule: ContradictionRule,
-    left: FamilyArtifact,
-    right: FamilyArtifact,
-) -> tuple[tuple[FamilyArtifact, str], tuple[FamilyArtifact, str]] | None:
-    """Which side of *rule* each sibling actually carries, or ``None``.
-
-    The match predicate can fire in either orientation, so the returned
-    pairs bind each artifact to the pattern present on its side — the
-    origin probe must see exactly that pairing.
-    """
-    left_a = _contains(rule.pattern_a, left.content)
-    left_b = _contains(rule.pattern_b, left.content)
-    right_a = _contains(rule.pattern_a, right.content)
-    right_b = _contains(rule.pattern_b, right.content)
-    if left_a and right_b:
-        return (left, rule.pattern_a), (right, rule.pattern_b)
-    if left_b and right_a:
-        return (left, rule.pattern_b), (right, rule.pattern_a)
-    return None
-
-
-def _sibling_shared_origin(
-    sides: tuple[tuple[FamilyArtifact, str], tuple[FamilyArtifact, str]],
-    decisions_by_id: dict[str, SharedDecision],
-) -> tuple[FindingOrigin, str | None]:
-    """Shared origin when a consumed decision carries either side."""
-    for artifact, pattern in sides:
-        origin, decision_id = _origin_for(artifact, pattern, decisions_by_id)
-        if origin is FindingOrigin.SHARED and decision_id is not None:
-            return origin, decision_id
-    return FindingOrigin.LOCAL, None
-
-
-def _sibling_affected(
-    left: FamilyArtifact,
-    right: FamilyArtifact,
-    decision_id: str | None,
-    snapshot: CreativeProjectSnapshot,
-    dependents: dict[str, set[str]],
-) -> set[str]:
-    """A shared contradiction spreads through the decision's consumers; a
-    purely local one invalidates both siblings' own branches."""
-    if decision_id is None:
-        return _local_impact_closure(left.artifact_id, dependents) | _local_impact_closure(
-            right.artifact_id, dependents
-        )
-    consumers = _decision_consumers(snapshot)
-    return _shared_impact_closure({decision_id}, consumers, dependents)
-
-
 def _check_sibling_contradictions(
     snapshot: CreativeProjectSnapshot,
     decisions_by_id: dict[str, SharedDecision],
@@ -853,11 +807,34 @@ def _check_sibling_contradictions(
     for i, left in enumerate(artifacts):
         for right in artifacts[i + 1 :]:
             for rule in snapshot.brief.contradiction_rules:
-                sides = _sibling_contradiction_sides(rule, left, right)
-                if sides is None:
+                left_a = _contains(rule.pattern_a, left.content)
+                left_b = _contains(rule.pattern_b, left.content)
+                right_a = _contains(rule.pattern_a, right.content)
+                right_b = _contains(rule.pattern_b, right.content)
+                if not ((left_a and right_b) or (left_b and right_a)):
                     continue
-                origin, decision_id = _sibling_shared_origin(sides, decisions_by_id)
-                affected = _sibling_affected(left, right, decision_id, snapshot, dependents)
+                # Shared origin when a consumed decision carries either side.
+                # Pair each artifact with the side it actually carries: the
+                # predicate above can match in either orientation, and the
+                # origin check must probe the pattern present on that side.
+                if left_a and right_b:
+                    sides = ((left, rule.pattern_a), (right, rule.pattern_b))
+                else:
+                    sides = ((left, rule.pattern_b), (right, rule.pattern_a))
+                origin = FindingOrigin.LOCAL
+                decision_id = None
+                for artifact, pattern in sides:
+                    o, d = _origin_for(artifact, pattern, decisions_by_id)
+                    if o is FindingOrigin.SHARED and d is not None:
+                        origin, decision_id = o, d
+                        break
+                if origin is FindingOrigin.SHARED and decision_id is not None:
+                    consumers = _decision_consumers(snapshot)
+                    affected = _shared_impact_closure({decision_id}, consumers, dependents)
+                else:
+                    affected = _local_impact_closure(
+                        left.artifact_id, dependents
+                    ) | _local_impact_closure(right.artifact_id, dependents)
                 collector.error(
                     ConsistencyDimension.SIBLING_CONTRADICTION,
                     f"siblings '{left.artifact_id}' and '{right.artifact_id}' contradict "
@@ -1056,41 +1033,6 @@ def _check_locked_decisions(
             )
 
 
-def _dimension_results(
-    findings: Sequence[ConsistencyFinding],
-) -> tuple[DimensionResult, ...]:
-    """One verdict per dimension, evaluated or not.
-
-    Emitting every dimension lets consumers tell an explicitly passing check
-    from one that was never evaluated.
-    """
-    by_dimension: dict[ConsistencyDimension, list[ConsistencyFinding]] = {}
-    for finding in findings:
-        by_dimension.setdefault(finding.dimension, []).append(finding)
-    return tuple(
-        DimensionResult(
-            dimension=dimension,
-            passed=not any(f.severity is Severity.ERROR for f in by_dimension.get(dimension, ())),
-            finding_ids=tuple(f.finding_id for f in by_dimension.get(dimension, ())),
-        )
-        for dimension in ConsistencyDimension
-    )
-
-
-def _evaluation_provenance(snapshot: CreativeProjectSnapshot) -> EvaluationProvenance:
-    """Cite the exact brief/decision/artifact revisions the evaluation saw."""
-    return EvaluationProvenance(
-        brief_id=snapshot.brief.brief_id,
-        brief_version=snapshot.brief.version,
-        goal_revision=snapshot.brief.goal_revision,
-        persona_id=snapshot.persona.persona_id if snapshot.persona else None,
-        design_system_slug=snapshot.design_system.slug if snapshot.design_system else None,
-        decision_versions={d.decision_id: d.version for d in snapshot.decisions},
-        artifact_versions={a.artifact_id: a.version for a in snapshot.artifacts},
-        evidence_ids=tuple(e.evidence_id for e in snapshot.evidence),
-    )
-
-
 # ─── Entry point ─────────────────────────────────────────────────────────────
 
 
@@ -1117,9 +1059,32 @@ def evaluate_project_snapshot(snapshot: CreativeProjectSnapshot) -> ConsistencyE
     _check_audience_objective(snapshot, collector, dependents)
     _check_locked_decisions(snapshot, decisions_by_id, collector)
 
-    dimension_results = _dimension_results(collector.findings)
+    by_dimension: dict[ConsistencyDimension, list[ConsistencyFinding]] = {}
+    for finding in collector.findings:
+        by_dimension.setdefault(finding.dimension, []).append(finding)
+
+    dimension_results = tuple(
+        DimensionResult(
+            dimension=dimension,
+            passed=not any(f.severity is Severity.ERROR for f in by_dimension.get(dimension, ())),
+            finding_ids=tuple(f.finding_id for f in by_dimension.get(dimension, ())),
+        )
+        # Emit a verdict for every dimension so consumers can tell an
+        # explicitly passing check from one that was never evaluated.
+        for dimension in ConsistencyDimension
+    )
     passed = all(result.passed for result in dimension_results)
-    provenance = _evaluation_provenance(snapshot)
+
+    provenance = EvaluationProvenance(
+        brief_id=snapshot.brief.brief_id,
+        brief_version=snapshot.brief.version,
+        goal_revision=snapshot.brief.goal_revision,
+        persona_id=snapshot.persona.persona_id if snapshot.persona else None,
+        design_system_slug=snapshot.design_system.slug if snapshot.design_system else None,
+        decision_versions={d.decision_id: d.version for d in snapshot.decisions},
+        artifact_versions={a.artifact_id: a.version for a in snapshot.artifacts},
+        evidence_ids=tuple(e.evidence_id for e in snapshot.evidence),
+    )
 
     errors = [f for f in collector.findings if f.severity is Severity.ERROR]
     refinement = _build_refinement(snapshot, decisions_by_id, errors) if errors else None
@@ -1133,45 +1098,6 @@ def evaluate_project_snapshot(snapshot: CreativeProjectSnapshot) -> ConsistencyE
         dimension_results=dimension_results,
         findings=tuple(collector.findings),
         refinement=refinement,
-    )
-
-
-def _error_impact(
-    finding: ConsistencyFinding,
-    consumers: dict[str, set[str]],
-    dependents: dict[str, set[str]],
-) -> tuple[set[str], str | None]:
-    """The artifacts one error invalidates, plus the shared decision at its
-    root (``None`` for a local defect)."""
-    if finding.origin is FindingOrigin.SHARED and finding.decision_id:
-        return (
-            _shared_impact_closure({finding.decision_id}, consumers, dependents),
-            finding.decision_id,
-        )
-    if finding.affected_artifact_ids:
-        return set(finding.affected_artifact_ids), None
-    return _local_impact_closure(finding.artifact_id or "", dependents) - {""}, None
-
-
-def _refinement_target(
-    artifact: FamilyArtifact,
-    finding_ids: set[str],
-    errors: list[ConsistencyFinding],
-    decisions_by_id: dict[str, SharedDecision],
-) -> RefinementTarget:
-    """One target with its exact version, reasons and lock state — a
-    proposal, not an action: canonical Run logic still decides."""
-    locked = artifact.locked or any(
-        decisions_by_id[d].locked for d in artifact.consumes if d in decisions_by_id
-    )
-    reasons = [f.evidence for f in errors if f.finding_id in finding_ids]
-    return RefinementTarget(
-        artifact_id=artifact.artifact_id,
-        artifact_version=artifact.version,
-        reason="; ".join(reasons) or "upstream shared decision invalidated this artifact",
-        finding_ids=tuple(sorted(finding_ids)),
-        locked=artifact.locked,
-        requires_unlock=locked,
     )
 
 
@@ -1193,9 +1119,13 @@ def _build_refinement(
     targeted: dict[str, set[str]] = {}
 
     for finding in errors:
-        affected, shared_decision_id = _error_impact(finding, consumers, dependents)
-        if shared_decision_id is not None:
-            shared_decision_ids.add(shared_decision_id)
+        if finding.origin is FindingOrigin.SHARED and finding.decision_id:
+            shared_decision_ids.add(finding.decision_id)
+            affected = _shared_impact_closure({finding.decision_id}, consumers, dependents)
+        elif finding.affected_artifact_ids:
+            affected = set(finding.affected_artifact_ids)
+        else:
+            affected = _local_impact_closure(finding.artifact_id or "", dependents) - {""}
         for artifact_id in affected:
             targeted.setdefault(artifact_id, set()).add(finding.finding_id)
 
@@ -1205,7 +1135,21 @@ def _build_refinement(
         artifact = artifacts_by_id.get(artifact_id)
         if artifact is None:
             continue
-        targets.append(_refinement_target(artifact, targeted[artifact_id], errors, decisions_by_id))
+        locked = artifact.locked or any(
+            decisions_by_id[d].locked for d in artifact.consumes if d in decisions_by_id
+        )
+        finding_ids = tuple(sorted(targeted[artifact_id]))
+        reasons = [f.evidence for f in errors if f.finding_id in targeted[artifact_id]]
+        targets.append(
+            RefinementTarget(
+                artifact_id=artifact_id,
+                artifact_version=artifact.version,
+                reason="; ".join(reasons) or "upstream shared decision invalidated this artifact",
+                finding_ids=finding_ids,
+                locked=artifact.locked,
+                requires_unlock=locked,
+            )
+        )
 
     return RefinementProposal(
         proposal_id=f"refine-{uuid.uuid4().hex[:12]}",

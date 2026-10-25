@@ -233,9 +233,7 @@ class Settings(BaseSettings):
     # The embedded Container's Sentinel permission table (ADR-072726-0d6b,
     # #1165). Fail-closed: the shipped empty table denies every tool, so a
     # Conductor that wants its agents to hold tool authority states it here --
-    # `MAISTRO_PERMISSION_PRESET=hive_conductor_tools` (the preset matching
-    # services/tool_executor's executable registry; `dangerous_tools_admin`
-    # grants only engine-side names this runtime cannot dispatch) and/or
+    # `MAISTRO_PERMISSION_PRESET=dangerous_tools_admin` and/or
     # `MAISTRO_PERMISSIONS='{"tool_name": ["admin", "user"]}'` (JSON).
     maistro_permission_preset: str = "none"
     maistro_permissions: dict[str, list[str]] = Field(default_factory=dict)
@@ -273,7 +271,7 @@ class Settings(BaseSettings):
     # Open Design renderer plugin (SPEC-070426-6ea8). Off by default; when enabled the
     # design service registers the provider and /design/skills gains web/video skills.
     open_design_enabled: bool = False
-    open_design_url: str = "http://127.0.0.1:7456"  # DevSkim: ignore DS162092 until 2027-12-31
+    open_design_url: str = "http://127.0.0.1:7456"
     open_design_token: SecretStr | None = None
 
     # CORS allow-list. Defaults to local-dev origins; set CORS_ORIGINS (JSON list)
@@ -289,24 +287,13 @@ class Settings(BaseSettings):
     # `Access-Control-Allow-Credentials: true`, so the browser accepts it and
     # any site can make credentialed cross-origin requests.
     cors_origins: list[str] = [
-        "http://localhost:5173",  # DevSkim: ignore DS162092 until 2027-12-31
-        "http://localhost:8101",  # DevSkim: ignore DS162092 until 2027-12-31
-        "http://127.0.0.1:5173",  # DevSkim: ignore DS162092 until 2027-12-31
-        "http://127.0.0.1:8101",  # DevSkim: ignore DS162092 until 2027-12-31
+        "http://localhost:5173",
+        "http://localhost:8101",
+        "http://127.0.0.1:5173",
+        "http://127.0.0.1:8101",
     ]
 
     _check_cors_origins = field_validator("cors_origins")(validate_cors_origins)
-
-    # --- Perceived-load telemetry (RUM, #1420) ---------------------------------
-    # The SPA reporter (frontend/src/lib/rum.ts) is separately off unless its
-    # build set VITE_RUM_ENABLED=true; both sides must opt in before any
-    # observation exists. Contract: packages/hive-conductor/docs/RUM.md.
-    # Off by default: an operator who never hears about RUM gets no collector.
-    rum_ingest_enabled: bool = False
-    # Retention bound: the in-memory ring never holds more than this many
-    # observations, oldest evicted first. Clamped by RumStore to
-    # [50, 10_000]; the default keeps roughly a day of light browsing.
-    rum_max_events: int = 500
 
     # Mark the session cookie Secure so browsers refuse to send it over plain
     # HTTP. **On by default** (#369). It used to default off, with the reason
@@ -360,7 +347,7 @@ class Settings(BaseSettings):
 
     hardware_preset: Literal["potato", "laptop", "desktop", "beast"] = "laptop"
     poc_mode: str = ""
-    maistro_base_url: str = "http://localhost:8000"  # DevSkim: ignore DS162092 until 2027-12-31
+    maistro_base_url: str = "http://localhost:8000"
     # ADR-096: maistro-server is the canonical backend for production task
     # execution. "demo" is the only mode allowed to run an in-process
     # in-process LocalTaskBackend — see SPEC-226.

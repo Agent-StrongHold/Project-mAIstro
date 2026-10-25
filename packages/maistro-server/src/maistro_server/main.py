@@ -19,27 +19,15 @@ import maistro.config.settings as settings_module
 import maistro.memory.store as memory_store
 import maistro.persistence as persistence
 from maistro.agents.types import ConductorOutput
-from maistro.api_versioning import (
-    API_VERSIONS,
-    DEFAULT_API_VERSION,
-    VersionNegotiationMiddleware,
-)
 from maistro.config.database import resolve_database_url, to_asyncpg_dsn
-from maistro.config.loader import load_yaml_config
 from maistro.config.settings import Settings, get_settings
 from maistro.container import POSTGRES_SCHEMES, create_container
 from maistro.graph.concurrency import configure_graph_concurrency
 from maistro.http import aclose_shared_clients, configure_shared_http
 from maistro.observability.logging import configure_logging
 from maistro.observability.middleware import RequestIDMiddleware
-from maistro.runs.store_boundary import RunStoreBoundary
 from maistro.security.outbound import configure_outbound_policy, configured_endpoints
 from maistro.tasks.execution import TaskAttemptExecutor
-from maistro.tasks.http_contract import (
-    IDEMPOTENCY_KEY_HEADER,
-    WORKSPACE_ID_HEADER,
-    WORKSPACE_SCOPE_SIGNATURE_HEADER,
-)
 from maistro.tasks.models import TaskCreate
 from maistro.tasks.progress_webhook import ProgressWebhookNotifier
 from maistro.tasks.queue import configure_task_queue, get_task_queue, reset_task_queue
@@ -48,24 +36,17 @@ from maistro.types.config import AgentConfig, ModelBindingConfig, SecurityConfig
 from maistro_server.api import (
     a2a,
     canvas,
-    catalog,
     chat_completions,
-    extensions,
     health,
     metrics,
     models,
     runs,
     tasks,
-    user_model,
     webhooks,
     workspaces,
     ws,
 )
-from maistro_server.api.auth import (
-    API_KEY_ENTRY_DOC,
-    ambiguous_api_key_entries,
-    invalid_api_key_entries,
-)
+from maistro_server.api.auth import API_KEY_ENTRY_DOC, invalid_api_key_entries
 from maistro_server.api.chat_completions import RUN_ID_HEADER
 from maistro_server.api.middleware import PayloadSizeLimitMiddleware, SecurityHeadersMiddleware
 from maistro_server.api.rate_limit import RateLimitMiddleware
@@ -81,38 +62,6 @@ logger = structlog.get_logger()
 
 _runner: TaskRunner | None = None
 
-
-async def _configure_user_model(spine_pool: Any) -> None:
-    """Bind the durable user-model service (#1047), or take the routes offline.
-
-    PostgreSQL-only by design (ADR-092526-4391): an in-process fallback would
-    silently forget that a fact must survive restart, so without a database
-    the routes stay offline (503) rather than serving a lookalike store.
-    """
-    from maistro_server.api import user_model
-
-    if spine_pool is None or memory_store.get_async_session_factory() is None:
-        user_model.configure_user_model_service(None)
-        await structlog.get_logger().awarning(
-            "user_model_offline",
-            detail=(
-                "no PostgreSQL database is configured, so /v1/user-model routes "
-                "answer 503 instead of serving facts that could not survive restart"
-            ),
-        )
-        return
-    from maistro.memory.user_model.pg_store import PostgresUserModelStore
-    from maistro.memory.user_model.service import UserModelService
-    from maistro.persistence.pg_audit import PgAuditLog
-
-    user_model.configure_user_model_service(
-        UserModelService(
-            store=PostgresUserModelStore(memory_store.get_async_session_factory()),
-            audit_log=PgAuditLog(spine_pool),
-        )
-    )
-
-
 # Single source of truth for version — read from installed package metadata
 try:
     APP_VERSION = importlib.metadata.version("maistro-server")
@@ -125,11 +74,10 @@ SHUTDOWN_DRAIN_TIMEOUT = 30.0
 
 def _validate_startup(settings: Settings) -> None:
     """Fail-fast startup checks. Raises RuntimeError if critical config is missing."""
-    if settings.require_auth and not settings.api_keys and not settings.admin_api_keys:
+    if settings.require_auth and not settings.api_keys:
         raise RuntimeError(
             "CRITICAL: No API keys configured and REQUIRE_AUTH is true. "
-            "Set API_KEYS or ADMIN_API_KEYS env var, or set REQUIRE_AUTH=false "
-            "for local development."
+            "Set API_KEYS env var or set REQUIRE_AUTH=false for local development."
         )
     # #843: fail closed at boot rather than serving a config where keys
     # silently share an invented identity. Descriptions never echo key
@@ -137,26 +85,12 @@ def _validate_startup(settings: Settings) -> None:
     invalid_entries = invalid_api_key_entries(settings)
     if invalid_entries:
         raise RuntimeError(
-            "CRITICAL: API key entries without an explicit canonical "
+            "CRITICAL: API_KEYS entries without an explicit canonical "
             f"principal (#843): {'; '.join(invalid_entries)}. Rewrite every "
-            f"entry as {API_KEY_ENTRY_DOC}; put administrator entries in "
-            "ADMIN_API_KEYS. A legacy plain key keeps working "
+            f"entry as {API_KEY_ENTRY_DOC}. A legacy plain key keeps working "
             "once prefixed with its principal — the same secret keeps "
             "authenticating, now attributed to the named principal. See "
             "docs/install/api-key-identity.md for the migration path."
-        )
-    # #1095: one bearer credential must resolve to exactly one principal and
-    # authority. A secret shared across entries made configuration order the
-    # tiebreaker for who a request authenticates as, so the collision itself
-    # is a startup failure. Descriptions never echo key material
-    # (ambiguous_api_key_entries guarantees that).
-    ambiguous_entries = ambiguous_api_key_entries(settings)
-    if ambiguous_entries:
-        raise RuntimeError(
-            "CRITICAL: API key credentials that resolve to more than one "
-            f"principal (#1095): {'; '.join(ambiguous_entries)}. Give each "
-            "principal its own secret — which identity a credential carries "
-            "must never depend on configuration order."
         )
     if settings.require_webhook_secrets and not (
         settings.github_webhook_secret and settings.ci_webhook_secret
@@ -255,24 +189,6 @@ def _router_api_key() -> str:
     return os.getenv("ROUTER_API_KEY", "")
 
 
-def _gateway_credential(settings: Settings) -> str:
-    """The credential the deployment's gateway actually authenticates (#1824).
-
-    The bundled proxy authenticates with its master key; an external gateway
-    (LITELLM_BASE_URL pointed off-stack) authenticates with the key the
-    operator states for it, `LITELLM_API_KEY` — the same derivation the
-    shipped compose file applies when it fills the containers' environment:
-    `LITELLM_API_KEY=${LITELLM_API_KEY:-${LITELLM_MASTER_KEY}}`. Server
-    construction used to read only the bundled `LITELLM_MASTER_KEY` setting,
-    so a stack switched to an external gateway kept presenting the bundled
-    proxy's key to it and every governed call came back 401. The physical key
-    registered as the scoped `model.chat` gateway credential and the one the
-    roster-facing endpoint carries are resolved here, once, together — the
-    two doors cannot disagree (and neither value is ever logged).
-    """
-    return os.getenv("LITELLM_API_KEY") or settings.litellm.master_key
-
-
 def _agents_dir() -> str:
     """`agents_dir`, from the same place, for the same reason."""
     yaml_config = settings_module.get_yaml_config()
@@ -300,7 +216,7 @@ def _agent_config(settings: Settings) -> AgentConfig:
     return AgentConfig(
         router_api_key=_router_api_key(),
         litellm_url=settings.litellm.base_url,
-        litellm_key=_gateway_credential(settings),
+        litellm_key=settings.litellm.master_key,
         agents_dir=_agents_dir(),
         database_url=resolve_database_url(),
         workspace_id=settings.workspace_id,
@@ -351,45 +267,6 @@ def _model_bindings() -> list[ModelBindingConfig]:
     return list(yaml_config.model_bindings)
 
 
-def _load_operator_yaml() -> None:
-    """Load the operator YAML inside this worker process (#1880).
-
-    `maistro_server.entrypoint.main` runs the migrations and then `os.execvp`s
-    uvicorn, so the parent that may have read `maistro.yaml` no longer exists
-    when the worker starts: `load_yaml_config`'s process-wide singleton dies
-    with the exec'd-away interpreter, and every reader below —
-    `_validate_startup`'s `_router_api_key`, then `_agent_config`'s
-    `_security_config` and `_model_bindings` on the way into
-    `create_container` — would see `None` and silently ship the fail-closed
-    defaults no matter what the operator declared. Loading here, before those
-    consumers, is what makes the declarations reach the Container the worker
-    actually builds.
-
-    A file that parses but violates the schema — and a malformed one — must
-    stop startup rather than degrade into those defaults, so the loader's
-    exception is logged sanitized and re-raised without its cause: parser
-    errors embed raw file contents (`_load_raw_yaml`'s "Invalid YAML in ...")
-    and a type-invalid value echoes the operator's input, so the event carries
-    only the config path and the exception type, and `from None` cuts the
-    chained traceback that would otherwise publish them to stderr.
-    """
-    config_path = os.getenv("MAISTRO_CONFIG", "config/maistro.yaml")
-    try:
-        load_yaml_config()
-    except Exception as exc:
-        logger.error(
-            "operator_yaml_config_invalid",
-            config_path=config_path,
-            reason=type(exc).__name__,
-        )
-        msg = (
-            f"Operator YAML configuration is invalid; refusing to start "
-            f"({config_path}). See the operator_yaml_config_invalid startup "
-            f"log event."
-        )
-        raise RuntimeError(msg) from None
-
-
 async def _build_container(settings: Settings, pg_pool: Any) -> tuple[Any, ModelChatEgress]:
     """The process's one Container and the governed egress it comes with.
 
@@ -429,7 +306,7 @@ async def _build_container(settings: Settings, pg_pool: Any) -> tuple[Any, Model
         router=container.llm_router,
         endpoint=GatewayEndpoint(
             base_url=settings.litellm.base_url,
-            api_key=_gateway_credential(settings),
+            api_key=settings.litellm.master_key,
         ),
     )
     # `Container.agents` is typed `dict[str, Agent]`, and `Agent` is a concrete
@@ -477,17 +354,6 @@ async def _runtime_lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Configure structured logging (JSON in production, console in debug)
     settings = get_settings()
     configure_logging(debug=settings.debug, json_output=not settings.debug)
-
-    # The worker loads the operator YAML itself (#1880, carrying #1824): the
-    # entrypoint parent exec'd uvicorn away, taking any preload with it, and
-    # every consumer below — `_validate_startup` through `_router_api_key`,
-    # then `_agent_config` through `_security_config`/`_model_bindings` on the
-    # way into `create_container` — reads the singleton this sets. An invalid
-    # file stops startup here rather than bringing the server up as if the
-    # operator had declared nothing. Loading only in the entrypoint parent
-    # cannot work — `os.execvp` replaces that process — and tests injecting
-    # the singleton do not prove the shipped path.
-    _load_operator_yaml()
 
     # Fail-fast startup validation
     _validate_startup(settings)
@@ -564,19 +430,12 @@ async def _runtime_lifespan(app: FastAPI) -> AsyncIterator[None]:
     # The handles these APIs return must resolve against the exact stores the
     # Container selected, not lookalike stores reconstructed by the server.
     runs.configure_run_store(run_store)
-    # Route visibility answers through the same Workspace-membership boundary
-    # the Container's stores back (#1152): missing and foreign ids fail closed
-    # identically at the one seam.
-    runs.configure_run_boundary(
-        RunStoreBoundary(run_store, container.workspace_store, container.project_scope_store)
-    )
     a2a.configure_a2a_admission(
         run_store,
         container.project_scope_store,
         workspace_id=settings.workspace_id,
     )
     workspaces.configure_workspace_store(container.workspace_store)
-    await _configure_user_model(spine_pool)
     # The OpenAI-compatible door now routes through the same Container (#142),
     # which owns the Gate scan, the Run admission and the terminalization that
     # #150 had to build here for want of one.
@@ -649,7 +508,6 @@ async def _runtime_lifespan(app: FastAPI) -> AsyncIterator[None]:
         await _drain_queue_singleton()
         reset_task_queue()
         runs.configure_run_store(None)
-        runs.configure_run_boundary(None)
         a2a.configure_a2a_admission(None, None)
         workspaces.configure_workspace_store(None)
 
@@ -716,21 +574,7 @@ app.add_middleware(
     allow_origins=_settings.cors_origins,
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
-    allow_headers=[
-        "Authorization",
-        "Content-Type",
-        "X-Request-ID",
-        # The task submission contract (#1176): the standard Idempotency-Key
-        # header is how a browser client carries a retry's identity, and the
-        # workspace-scope headers are how the trusted Hive boundary carries the
-        # Workspace binding across to maestro-server. Without these in the CORS
-        # allow-list, a preflight that carries any of them is rejected with
-        # "400 Disallowed CORS headers" and the cross-origin client cannot
-        # submit a task with an idempotency key at all.
-        IDEMPOTENCY_KEY_HEADER,
-        WORKSPACE_ID_HEADER,
-        WORKSPACE_SCOPE_SIGNATURE_HEADER,
-    ],
+    allow_headers=["Authorization", "Content-Type", "X-Request-ID"],
     # Response headers a browser client may actually read. Without this the
     # header is sent and then hidden: `response.headers` in browser JS only
     # exposes the CORS-safelisted set, so `X-Maistro-Run-Id` would have been
@@ -751,27 +595,6 @@ app.add_middleware(RequestIDMiddleware)
 app.add_middleware(
     PayloadSizeLimitMiddleware,
     max_bytes=_settings.max_request_body_bytes,
-)
-
-# API version negotiation (ADR-076) — the negotiated version is selected by
-# Accept media type / api_version query / api_version JSON body field, the
-# default is advertised on every response, and an unsupported selector is a
-# 406 that never reaches a route handler. Infrastructure paths (health,
-# metrics, OpenAPI/docs) and A2A (whose versioning the ADR scopes out) pass
-# through untouched. Added before the security headers so it stays inside
-# them: even a 406 carries the security header set.
-app.add_middleware(
-    VersionNegotiationMiddleware,
-    versions=API_VERSIONS,
-    default_version=DEFAULT_API_VERSION,
-    skip_prefixes=(
-        "/health",
-        "/metrics",
-        "/docs",
-        "/redoc",
-        "/openapi.json",
-        "/a2a",
-    ),
 )
 
 # Security headers — the true outermost middleware (added last), so headers
@@ -831,15 +654,10 @@ API_V1_PREFIX = "/v1"
 app.include_router(tasks.router, prefix=API_V1_PREFIX)
 app.include_router(runs.router, prefix=API_V1_PREFIX)
 app.include_router(workspaces.router, prefix=API_V1_PREFIX)
-# Governed extension install lifecycle (#953): inspect → authorize → install.
-# Every route is authenticated; Workspace-scoped writes require ADMINISTER.
-app.include_router(extensions.router, prefix=API_V1_PREFIX)
-app.include_router(catalog.router, prefix=API_V1_PREFIX)
 app.include_router(chat_completions.router, prefix=API_V1_PREFIX)
 app.include_router(models.router, prefix=API_V1_PREFIX)
 app.include_router(webhooks.router, prefix=API_V1_PREFIX)
 app.include_router(ws.router, prefix=API_V1_PREFIX)
-app.include_router(user_model.router, prefix=API_V1_PREFIX)
 
 # API v2 — canvas ability boundary (ADR-045 / SPEC-070226-8239 Phase 1).
 # The router carries its own /v2/canvas prefix (ADR-042 mount). Deployments
@@ -855,6 +673,5 @@ app.include_router(chat_completions.router)
 app.include_router(models.router)
 app.include_router(webhooks.router)
 app.include_router(ws.router)
-app.include_router(user_model.router)
 
 # Legacy Knights dashboard removed — Hive Conductor (port 8101) is the product UI.

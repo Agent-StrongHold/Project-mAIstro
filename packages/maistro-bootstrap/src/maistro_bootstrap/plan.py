@@ -26,17 +26,6 @@ DEFAULT_CURL_INSTALL_URL = (
 
 
 def effective_runtime(answers: InstallAnswersV1) -> str:
-    """Resolve the one host runtime the whole install must honor (#1820).
-
-    This is the single authority for runtime selection. Explicit ``docker`` or
-    ``podman`` answers survive untouched; ``auto`` resolves by the documented,
-    tested policy: the Podman-oriented deployment tier selects podman, anything
-    else selects docker. Downstream consumers (install.sh's compose front-end,
-    daemon bootstrap, the generated Makefile, the materialized entrypoints)
-    must read the resolved value from the plan — never re-derive it with their
-    own probe order, which is how a selected working Podman could lose to an
-    inaccessible Docker when both CLIs are installed.
-    """
     if answers.container_runtime != "auto":
         return answers.container_runtime
     if answers.deployment_tier == "local_podman":
@@ -187,20 +176,11 @@ def _generated_artifacts(answers: InstallAnswersV1) -> dict[str, Any]:
         "bootstrap_users": users,
         "delivery": {
             "mode": answers.delivery_mode,
-            # The resolved host runtime (#1820): install.sh reads this single
-            # machine-written value instead of re-deriving a runtime with its
-            # own docker-first probe, and every generated artifact (Makefile,
-            # entrypoints, recovery commands) names the same binary.
-            "container_runtime": effective_runtime(answers),
-            "container_runtime_selection": answers.container_runtime,
             "behavior_contract": "image_pull and source_build consume the same answers and runtime parameters",
             "expected_difference": "source_build takes longer; image_pull is faster",
             "source": {
                 "enabled": answers.delivery_mode == "source_build",
-                "commands": [
-                    'git clone "https://github.com/${MAISTRO_REPO:-Agent-StrongHold/Project-mAIstro}.git"',
-                    "uv sync --extra bootstrap",
-                ],
+                "commands": ["git clone <maistro-engine-url>", "uv sync --extra bootstrap"],
             },
             "images": {
                 "enabled": answers.delivery_mode == "image_pull",

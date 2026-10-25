@@ -24,8 +24,7 @@ blocked-by: []
 contracts:
   - behavioral
 tests:
-  - packages/maistro-core/tests/memory/episodic/test_decay.py
-  - packages/maistro-core/tests/memory/episodic/test_consolidation.py
+  - packages/maistro-core/tests/memory/test_dynamics.py
 layer: Memory
 owners:
   - '@BlakeMatthews-dev'
@@ -150,14 +149,11 @@ of flagging, and increments `samples_seen`.
 
 ## Testing
 
-- The decay/consolidation dynamics this spec defines shipped under
-  `maistro.memory.episodic` (SPEC-240/241, ADR-080) and are covered by
-  `packages/maistro-core/tests/memory/episodic/test_decay.py` and
-  `test_consolidation.py`. The single `tests/memory/test_dynamics.py` file
-  cited at authoring time never landed under that name; front-matter `tests:`
-  points at the shipped coverage — dispositioned when cited test paths were
-  made to resolve (#812). Decay-strategy injection parity and the threshold
-  schedule invariants remain split across those two files.
+- `packages/maistro-core/tests/memory/test_dynamics.py` (new): decay-strategy injection
+  parity with the existing inline curve, threshold schedule convergence (property-based via
+  Hypothesis: theta is monotonically non-increasing in `samples_seen` and bounded below by
+  `median + admin_offset`), contradiction auto-apply vs. escalation branching with/without a
+  resolver.
 
 ## Open questions
 

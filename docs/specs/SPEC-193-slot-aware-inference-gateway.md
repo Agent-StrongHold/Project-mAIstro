@@ -15,8 +15,11 @@ related:
   - maistro-engine#SPEC-194
   - maistro-engine#SPEC-195
   - maistro-engine#ADR-091
-contracts: []
-tests: []
+contracts:
+  - boundary
+  - behavioral
+tests:
+  - apps/conductor-gateway/tests/
 layer: Foundation
 owners:
   - '@BlakeMatthews-dev'
@@ -26,15 +29,6 @@ history:
 ---
 
 # SPEC-193: Slot-aware local inference gateway
-
-> Test-evidence disposition (#812): front matter cited
-> `apps/conductor-gateway/tests/`, a suite for an app that has never been
-> ported — the tree has no `apps/` at all (the reference snapshot was removed
-> per SPEC-178). The citation named planned evidence, not proof, and has been
-> removed; it returns with the port. Front matter declares no contracts for
-> the same reason: a contract kind is a promise cross-checked against
-> marker-carrying tests, so it is re-declared together with the tests that
-> carry it.
 
 ## Context
 

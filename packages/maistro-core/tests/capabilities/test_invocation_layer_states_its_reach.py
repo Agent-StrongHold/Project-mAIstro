@@ -80,12 +80,21 @@ class TestTheStoreStatesItsReachAndItsTable:
 
     @pytest.mark.ac("SPEC-083026-6cef/AC-2")
     def test_the_capability_table_has_a_migration(self) -> None:
-        creating = [
+        touching = [
             path.name
             for path in sorted(_MIGRATIONS.glob("*.py"))
             if "capability_invocations" in path.read_text()
         ]
-        assert creating == ["035_capability_invocations.py"]
+        # 035 creates the table; 043 recreates its effect index in the
+        # SQLite shape; 045 adds the persisted logical-effect admission
+        # discriminator and its Run-scoped unique index. All three durable
+        # backends of the replay contract (#1194) stay aligned. Any further
+        # migration touching the table must be added here deliberately.
+        assert touching == [
+            "035_capability_invocations.py",
+            "043_capability_invocation_effect_index.py",
+            "045_capability_invocation_logical_effect.py",
+        ]
 
     def test_the_migration_scan_has_a_corpus(self) -> None:
         assert len(list(_MIGRATIONS.glob("*.py"))) > 10
@@ -94,15 +103,12 @@ class TestTheStoreStatesItsReachAndItsTable:
 class TestTheReachIsWhatTheStatementSays:
     @pytest.mark.ac("SPEC-083026-6cef/AC-1")
     def test_a_production_module_calls_the_governed_seam(self) -> None:
-        target = "packages/maistro-core/src/maistro/graph/nodes/agent_spawn_harness.py"
-        callers = []
-        for path in _REPO.glob("packages/*/src/**/*.py"):
-            if _calls_governed_seam(path.read_text()):
-                caller = str(path.relative_to(_REPO))
-                callers.append(caller)
-                if caller == target:
-                    break
-        assert target in callers
+        callers = sorted(
+            str(path.relative_to(_REPO))
+            for path in _REPO.glob("packages/*/src/**/*.py")
+            if _calls_governed_seam(path.read_text())
+        )
+        assert "packages/maistro-core/src/maistro/graph/nodes/agent_spawn_harness.py" in callers
 
     def test_the_caller_scan_finds_calls_not_definitions(self) -> None:
         assert _calls_governed_seam("    await self._effects.invocations.invoke(binding=binding)")

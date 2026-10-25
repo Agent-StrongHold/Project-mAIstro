@@ -24,7 +24,7 @@ _HIDDEN_CASES: dict[str, list[tuple[list[Any], Any]]] = {
     ],
     "swe_02": [
         (["person@example.com"], True),
-        (["person@localhost"], False),  # DevSkim: ignore DS162092 until 2027-12-31
+        (["person@localhost"], False),
     ],
     "swe_03": [
         (

@@ -21,14 +21,14 @@ logger = logging.getLogger("maistro.integrations.ha")
 class HomeAssistantIntegration:
     def __init__(
         self,
-        url: str = "http://localhost:8123",  # DevSkim: ignore DS162092 until 2027-12-31
+        url: str = "http://localhost:8123",
         token: str = "",  # nosec B107 — empty-string default; real tokens come from env / caller
         event_bus: EventBus | None = None,
     ) -> None:
         self._url = url.rstrip("/")
         # This URL exists nowhere else. The outbound policy (#155) is seeded
         # from settings, and a Home Assistant address is a constructor argument
-        # — default `http://localhost:8123`, which is precisely the shape the  # DevSkim: ignore DS162092 until 2027-12-31
+        # — default `http://localhost:8123`, which is precisely the shape the
         # guard refuses. Registering it here is what keeps a real deployment
         # working; without it every request below is blocked, and the suite
         # cannot see that because `MockTransport` never reaches the guard.

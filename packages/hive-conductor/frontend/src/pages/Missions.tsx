@@ -34,7 +34,7 @@ function isEngineBacked(m: Mission): boolean {
   return m.metadata?.engine_backed === true;
 }
 
-// Queue rows do not provide a canonical Run agent to choose.
+type AgentOption = { id: string; name: string };
 
 type ThreadMsg = { id: number; role: "user" | "agent"; text: string; ts: number };
 
@@ -136,6 +136,8 @@ export default function Missions() {
   const [newTitle, setNewTitle] = useState("");
   const [newDesc, setNewDesc] = useState("");
   const [newPriority, setNewPriority] = useState<MissionPriority>("medium");
+  const [newAgent, setNewAgent] = useState("");
+  const [agents, setAgents] = useState<AgentOption[]>([]);
   const [thread, setThread] = useState<ThreadMsg[]>([]);
   const [threadInput, setThreadInput] = useState("");
   const threadNextId = useRef(0);
@@ -145,8 +147,12 @@ export default function Missions() {
 
   const load = useCallback(async () => {
     try {
-      const taskData = await apiGet<Mission[]>("/v1/tasks");
+      const [taskData, agentData] = await Promise.all([
+        apiGet<Mission[]>("/v1/tasks"),
+        apiGet<AgentOption[]>("/v1/agents"),
+      ]);
       setRows(taskData);
+      setAgents(agentData);
     } catch {
       toast("Failed to load missions", "error");
     } finally {
@@ -171,8 +177,9 @@ export default function Missions() {
 
   useEffect(() => {
     let cancelled = false;
-    void apiGet<{ task_clear_supported?: boolean }>("/health")
-      .then((h) => {
+    void fetch("/health")
+      .then((r) => r.json())
+      .then((h: { task_clear_supported?: boolean }) => {
         if (!cancelled) setClearSupported(h.task_clear_supported === true);
       })
       .catch(() => {
@@ -211,8 +218,7 @@ export default function Missions() {
         description: newDesc.trim(),
         priority: newPriority,
       };
-      // No assigned_agents. A name chosen here is not a Run's agent, and the
-      // API does not record one.
+      if (newAgent) body.assigned_agents = [newAgent];
       // The workspace the user is actually looking at. Without it every
       // mission created from a selected workspace was filed in the
       // deployment default instead, silently.
@@ -224,6 +230,7 @@ export default function Missions() {
       setNewTitle("");
       setNewDesc("");
       setNewPriority("medium");
+      setNewAgent("");
       await load();
       setSel(created);
       toast("Mission created", "ok");
@@ -346,7 +353,7 @@ export default function Missions() {
     <div style={{ minHeight: "calc(100vh - 60px)" }}>
       <PageHeader
         title="Missions"
-        subtitle="Tasks for this deployment. An agent is shown only when a Run records one."
+        subtitle="Multi-step tasks assigned to AI agents"
         helpHref="/docs#missions"
         actions={
           <div style={{ display: "flex", gap: 6 }}>
@@ -730,19 +737,11 @@ export default function Missions() {
             </div>
           </div>
           <div>
-            <label htmlFor="mission-assign-agent" style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", display: "block", marginBottom: 3 }}>Assign Agent</label>
-            <select
-              id="mission-assign-agent"
-              disabled
-              value=""
-              aria-describedby="mission-assign-agent-note"
-              style={{ ...inputBase, cursor: "not-allowed" }}
-            >
-              <option value="">No agent — a Run has not recorded one</option>
+            <label style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", display: "block", marginBottom: 3 }}>Assign Agent</label>
+            <select value={newAgent} onChange={(e) => setNewAgent(e.target.value)} style={inputBase}>
+              <option value="">\u2014 none \u2014</option>
+              {agents.map((a) => <option key={a.id} value={a.name}>{a.name}</option>)}
             </select>
-            <p id="mission-assign-agent-note" style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--pencil)", margin: "4px 0 0" }}>
-              An agent is shown only when the Run records one. This form does not assign one.
-            </p>
           </div>
           <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 6 }}>
             <button
