@@ -18,11 +18,12 @@ SCAN = (
 )
 PROTECTED = {"develop", "integration", "main"}
 PR_ACTIONS = {"opened", "reopened", "synchronize"}
-OWNERS = {"quality.yml": "quality-gate", "vulture-ratchet.yml": "exact-debt-ledger"}
+OWNERS = {"quality.yml": "quality-vulture", "vulture-ratchet.yml": "exact-debt-ledger"}
 FALLBACK = (
     "github.event_name == 'push' && github.ref != 'refs/heads/develop' && "
     "github.ref != 'refs/heads/integration' && github.ref != 'refs/heads/main'"
 )
+QUALITY_SUMMARY = "quality-gate"
 BASE = """${{ github.event_name == 'pull_request'
     && format('origin/{0}', github.base_ref)
     || github.event_name == 'merge_group' && github.event.merge_group.base_sha
@@ -123,7 +124,14 @@ def _assert_contract(documents):
             contexts = documents["protection"]["branches"][branch]["required_status_checks"][
                 "contexts"
             ]
-            assert job.get("name", job_id) in contexts
+            if path == "quality.yml":
+                # Leaf Quality / Vulture feeds the unchanged required summary
+                # context; it is not itself a separately required status.
+                summary = workflows["quality.yml"]["jobs"][QUALITY_SUMMARY]
+                assert summary.get("name", QUALITY_SUMMARY) in contexts
+                assert job_id in summary.get("needs", [])
+            else:
+                assert job.get("name", job_id) in contexts
     # The independent dedicated job's provenance and shipped-surface verdicts
     # remain mandatory prerequisites, with their existing commands intact.
     steps = workflows["vulture-ratchet.yml"]["jobs"]["exact-debt-ledger"]["steps"]
@@ -260,6 +268,14 @@ def test_owner_mutations_fail_closed(documents, path, mutation):
     setup = next(step for step in steps if step.get("uses") == "./.github/actions/setup-uv")
     python = next(step for step in steps if step.get("run") == "uv python install 3.12")
     contexts = changed["protection"]["branches"]["develop"]["required_status_checks"]["contexts"]
+    summary = changed["workflows"]["quality.yml"]["jobs"][QUALITY_SUMMARY]
+
+    def _drop_required_status() -> None:
+        if path == "quality.yml":
+            contexts.remove(summary.get("name", QUALITY_SUMMARY))
+        else:
+            contexts.remove(job.get("name", OWNERS[path]))
+
     mutations = {
         "remove": lambda: steps.remove(owner),
         "duplicate": lambda: changed["workflows"].update(
@@ -292,7 +308,7 @@ def test_owner_mutations_fail_closed(documents, path, mutation):
         "sync-late": lambda: (steps.remove(sync), steps.append(sync)),
         "setup-conditional": lambda: setup.update({"if": "false"}),
         "python": lambda: python.update({"run": "uv python install 3.13"}),
-        "required-status": lambda: contexts.remove(job.get("name", OWNERS[path])),
+        "required-status": _drop_required_status,
         "pr-filter": lambda: events.update({"pull_request": {"branches": ["main"]}}),
         "edited": lambda: events.update(
             {"pull_request": {"types": [*sorted(PR_ACTIONS), "edited"]}}
@@ -312,7 +328,7 @@ def test_owner_mutations_fail_closed(documents, path, mutation):
 )
 def test_duplicate_or_queue_overlap_is_not_a_valid_fallback(documents, condition):
     changed = copy.deepcopy(documents)
-    steps = changed["workflows"]["quality.yml"]["jobs"]["quality-gate"]["steps"]
+    steps = changed["workflows"]["quality.yml"]["jobs"]["quality-vulture"]["steps"]
     next(step for step in steps if "check-vulture-baseline.py" in step.get("run", ""))["if"] = (
         condition
     )
