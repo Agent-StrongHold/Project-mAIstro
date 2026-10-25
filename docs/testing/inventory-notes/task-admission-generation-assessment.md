@@ -8372,3 +8372,61 @@ residual red is the #1852-predicted NEW-unreachable leaf whose in-leaf remedies
 the issue explicitly prohibits, reserving activation for the #1845 integration
 head. BLOCKED is the issue-conform terminal state for this leaf. No quality
 ledger edited.
+
+## Round 129 (2026-10-25): independent re-verification at dispatched head 00169f0c0378 (base e12e11288 unchanged) — blocker re-bound, no tree edit beyond this note
+
+Prior job f0aa96c09946 died on a provider 404 before executing any work; the
+worktree was clean at 00169f0c0378db7685a74ffe4d9e41f5e301f4b8 with the leaf
+module md5 257a6e45c382349dd12f559099663fbc (bytes unchanged since round 89).
+Every number below re-derived first-hand this round; no prior claim inherited.
+
+- origin/develop re-fetched: still exactly e12e11288e18893a531b687fe14c8babd83a5da8
+  (the assigned base; 0 commits ahead), already merged into this branch at
+  3fc6991cca — no develop sync due, no sync conflict.
+- Driver deterministic checks (job e1270e47 check-0..4 logs): uv sync rc=0;
+  ruff check rc=0; ruff format --check 3517 files rc=0; focused pytest 269
+  passed; check-suite-inventory ok (packages/maistro-core/tests, 18065
+  identities, 0 duplicates — no test additions this round, no inventory delta).
+- Focused battery re-run at HEAD: leaf suite 132 passed; live-flow regression
+  (tests/runs/test_root_admission_identity.py + tests/tasks/test_idempotency.py)
+  146 passed; mypy on the module Success; ruff check on the leaf pair clean.
+- exact-debt-ledger re-bound at CI's exact argv: check-vulture-baseline.py
+  packages/*/src --min-confidence 60 --exclude '*/third_party/*' rc=0, base
+  e12e11288 candidate 00169f0c0378, 1263 reviewed identities = 1263 findings,
+  unclassified 0, never_allowlist 0. The lane-authorized vulture per-identity
+  ledger repair is empty for the 127th consecutive round; no quality edit made.
+- The composite exact-debt-ledger / Quality / Coverage failures bind solely to
+  the reachability sub-ratchet: RATCHET_BASE_REV=origin/develop
+  check-ratchet-provenance.py rc=1 with 8/9 sub-ratchets OK (contradictions 0,
+  citations 0, promotion-surface 285, dispositions 109, shell-execution 3,
+  contract-markers 358, enumerations 1, lifecycle 0) and the sole FAIL
+  "reachability ratchet moved away from trusted state" (2 mentions of
+  maistro.tasks.admission_generation).
+- check-reachability.py rc=1: exactly ONE module NEWLY UNREACHABLE —
+  maistro.tasks.admission_generation (grep count 1);
+  check-reachability-dispositions.py rc=0; check-promotion-surface.py rc=0.
+  CI test trio reproduced first-hand (tests/test_check_reachability.py +
+  tests/test_reachability_baseline_identity.py): 3 failed / 36 passed with the
+  same three identities as the recorded CI logs at 00169f0c0378.
+- All 10 issue-named tests present (incl.
+  test_existing_live_claim_flow_does_not_import_v2_classifier); mutation
+  spot-check re-killed first-hand: TAKEOVER/REPLACE_EXPIRED swapped in the
+  decision-order table -> 50 failed / 82 passed; module restored from a /tmp
+  cp backup (never git restore), md5 257a6e45c382349dd12f559099663fbc identical
+  before/after, worktree clean after restore.
+- Scope guards: zero production-source references to admission_generation
+  outside the module (grep rc=1 over packages/*/src); tasks/idempotency.py,
+  tasks/queue.py, tasks/__init__.py, runs/* and quality/ all zero-diff vs
+  origin/develop.
+- Runtime-consumer status from the dispatch snapshot (2026-10-25T15:07Z):
+  PR #2178 ([DRAFT][#1845] Integrate immutable admission generations with
+  canonical PostgreSQL Runs) state=open, draft=false, merged=false, head
+  5261e12718ee — integration still absent upstream.
+- Verdict: implementation/test readiness proven at this head; the sole residual
+  red (test trio + exact-debt-ledger + downstream Quality/Coverage jobs) is the
+  #1852-mandated NEW-unreachable leaf whose every in-leaf remedy (baseline
+  entry, disposition, grant, dummy caller, keep-alive import, gate edit) the
+  issue explicitly prohibits, reserving activation for the #1845 integration
+  head landing the reviewed runtime consumer, which must pass the unchanged
+  gates at its final head. The stack stays unmerged per the issue contract.
+  Note-only commit; no code, gate, or quality-ledger file changed.
