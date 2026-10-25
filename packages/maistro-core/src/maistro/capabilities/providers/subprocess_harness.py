@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import shlex
 import uuid
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
@@ -38,7 +38,7 @@ class SandboxExec(Protocol):
     sandbox satisfies it directly; tests inject an in-memory fake.
     """
 
-    async def exec(self, command: str, timeout: int = 60) -> tuple[int, str]: ...
+    async def exec(self, command: str | Sequence[str], timeout: int = 60) -> tuple[int, str]: ...
 
 
 SandboxFactory = Callable[[str], Awaitable[SandboxExec]]
@@ -102,7 +102,7 @@ class SubprocessHarnessRunner:
         """Reflect both binary presence and sandbox reachability (SPEC-208 §2)."""
         try:
             sandbox = await self._sandbox_factory(self._healthcheck_workspace)
-            code, output = await sandbox.exec(f"command -v {shlex.quote(self._binary)}", 10)
+            code, output = await sandbox.exec(["which", self._binary], 10)
         except Exception as exc:
             return ProviderHealth(healthy=False, detail=f"sandbox unreachable: {exc}")
         if code != 0:
@@ -118,7 +118,9 @@ class SubprocessHarnessRunner:
         )
         return session_id
 
-    def build_command(self, session: _Session, messages: list[dict[str, Any]]) -> str:
+    def build_command(
+        self, session: _Session, messages: list[dict[str, Any]]
+    ) -> str | Sequence[str]:
         """Render the harness invocation for a turn. Override per harness."""
         prompt = "\n".join(_message_text(m) for m in messages if m.get("role") != "system")
         return self._command.replace("{prompt}", shlex.quote(prompt))

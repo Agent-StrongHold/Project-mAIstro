@@ -228,6 +228,58 @@ def _due_page_fetcher(
     return listing
 
 
+@runtime_checkable
+class DuePageScanner(Protocol):
+    """A store that can page its due index without conflating two answers."""
+
+    async def scan_due_page(
+        self,
+        *,
+        now: datetime,
+        limit: int = 100,
+        after: tuple[str, str] | None = None,
+        max_inspected: int = DEFAULT_MAX_INSPECTED,
+    ) -> ScanPage[DurableRunRecord, tuple[str, str]]: ...
+
+
+def _due_page_fetcher(
+    store: DurableRunStore, moment: datetime
+) -> Callable[
+    [tuple[str, str] | None, int],
+    Awaitable[list[DurableRunRecord] | ScanPage[DurableRunRecord, tuple[str, str]]],
+]:
+    """Fetch due candidates the most honest way this store supports.
+
+    A store that filters its own due page -- the canonical one drops ids whose
+    Run has since gone terminal -- returns an empty list both when nothing on
+    the page is due and when the index has ended. Where the store can tell the
+    two apart, take that answer, so a stale prefix is paged past rather than
+    re-read from the top on every tick.
+    """
+    if isinstance(store, DuePageScanner):
+        scanner = store
+
+        async def scan(
+            cursor: tuple[str, str] | None, page_size: int
+        ) -> ScanPage[DurableRunRecord, tuple[str, str]]:
+            # `page_size` is already the walker's *remaining* inspection
+            # budget (it passes `min(page_size, max_inspected - inspected)`),
+            # so handing it through as `max_inspected` is what keeps a
+            # filtering page from overshooting the advertised ceiling: without
+            # it the scanner would walk its own independent 2,000 rows on top
+            # of whatever the walker had already spent.
+            return await scanner.scan_due_page(
+                now=moment, limit=page_size, after=cursor, max_inspected=page_size
+            )
+
+        return scan
+
+    async def listing(cursor: tuple[str, str] | None, page_size: int) -> list[DurableRunRecord]:
+        return await store.list_due(now=moment, limit=page_size, after=cursor)
+
+    return listing
+
+
 _RESUME_ELIGIBLE_STATUSES = frozenset({RunStatus.WAITING, RunStatus.RUNNING})
 
 
@@ -313,9 +365,6 @@ async def resume_due_graph_runs(
     resolver_for = _per_run_resolver(node_resolver, node_resolver_factory)
 
     moment = now if now is not None else datetime.now(UTC)
-    # The same moment as the due scan below, so a claim the scan treats as
-    # elapsed is one reconciliation has already made visible to it.
-    await _reconcile_if_supported(store, limit=limit, now=moment)
 
     def _combined_eligible(candidate: DurableRunRecord) -> bool:
         if not _is_resume_due(candidate, moment):
@@ -369,7 +418,6 @@ async def _resume_due_candidate(
             runtime=runtime,
             run_store=candidate_run_store,
             events=events,
-            now=moment,
         )
     except RecoveryInfrastructureError:
         # A store/session failure invalidates the scan; claiming success for

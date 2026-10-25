@@ -597,11 +597,7 @@ async def _walk_frontier(
         # the record or terminalizing the Run would itself go through the
         # broken store. Let it reach the recovery boundary untouched.
         raise
-    except RuntimeDeadlineExceeded as exc:
-        # The canonical ExecutionRuntime deadline the node's declared policy
-        # asked for expired. The Attempt row already carries TIMED_OUT plus its
-        # deadline_at; the Run names the same fact so "why did this stop" is
-        # answerable from the Run alone.
+    except Exception as exc:
         latest = await _reload_record(record.run_id, store=store, cause=exc)
         return await traversal._mark_failed(
             latest,

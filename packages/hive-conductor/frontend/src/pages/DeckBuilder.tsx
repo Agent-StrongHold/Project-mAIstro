@@ -85,12 +85,29 @@ function DeckChat({ slides, onUpdateSlides, activeIdx }: { slides: Slide[]; onUp
     setLoading(false);
   };
 
-  return <section aria-labelledby="deck-chat-title" style={{ borderTop: `1px solid ${C.border}`, marginTop: "1rem", paddingTop: "0.75rem" }}>
-    <h2 id="deck-chat-title" style={{ fontSize: "var(--text-floor)", color: C.muted, margin: "0 0 6px", textTransform: "uppercase" }}>Slide assistant</h2>
-    {msgs.length > 0 && <div ref={ref} aria-label="Assistant messages" style={{ maxHeight: 150, overflowY: "auto", marginBottom: 8, display: "flex", flexDirection: "column", gap: 4 }}>{msgs.slice(-6).map((message, index) => <div key={index} style={{ fontSize: "var(--text-floor)", color: message.role === "user" ? C.gold : C.muted, lineHeight: 1.4 }}><span style={{ fontWeight: 600 }}>{message.role === "user" ? "You" : "Assistant"}: </span>{message.content.replace(/<slide[^>]*>[\s\S]*?<\/slide>/gi, "[slide generated]").slice(0, 200)}</div>)}</div>}
-    <div role="status" aria-live="polite" style={{ color: C.muted, fontSize: "var(--text-floor)", marginBottom: 6 }}>{status}</div>
-    <div style={{ display: "flex", gap: 6 }}><label htmlFor="deck-assistant-input" style={{ position: "absolute", width: 1, height: 1, overflow: "hidden" }}>Describe slide changes</label><input id="deck-assistant-input" value={value} onChange={(event) => setValue(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void submit(); }} placeholder="Describe slides to generate, or ask to edit..." style={{ flex: 1, background: C.card, border: `1px solid ${C.border}`, borderRadius: 8, padding: "8px 12px", color: C.ink, fontSize: "var(--text-floor)" }} /><button type="button" onClick={() => void submit()} disabled={loading}>{loading ? "Generating..." : "Generate"}</button></div>
-  </section>;
+  return (
+    <div style={{ borderTop: `1px solid ${C.border}`, marginTop: "1rem", paddingTop: "0.75rem" }}>
+      {msgs.length > 0 && (
+        <div ref={ref} style={{ maxHeight: 150, overflowY: "auto", marginBottom: 8, display: "flex", flexDirection: "column", gap: 4 }}>
+          {msgs.slice(-6).map((m, i) => (
+            <div key={i} style={{ fontSize: "var(--text-floor)", color: m.role === "user" ? C.gold : C.muted, lineHeight: 1.4 }}>
+              <span style={{ fontWeight: 600 }}>{m.role === "user" ? "You" : "✦"}: </span>
+              {m.content.replace(/<slide[^>]*>[\s\S]*?<\/slide>/gi, "[slide generated]").slice(0, 200)}
+            </div>
+          ))}
+        </div>
+      )}
+      <div style={{ display: "flex", gap: 6 }}>
+        <input value={value} onChange={e => setValue(e.target.value)}
+          onKeyDown={e => e.key === "Enter" && submit()}
+          placeholder="✦ Describe slides to generate, or ask to edit..."
+          style={{ flex: 1, background: C.card, border: `1px solid ${C.border}`, borderRadius: 8, padding: "8px 12px", color: C.ink, fontSize: "var(--text-floor)", outline: "none" }} />
+        <button onClick={submit} disabled={loading} style={{ padding: "8px 14px", borderRadius: 8, border: "none", background: C.acc, color: "#fff", fontSize: "var(--text-floor)", fontWeight: 600, cursor: "pointer", opacity: loading ? 0.5 : 1 }}>
+          {loading ? "..." : "Generate"}
+        </button>
+      </div>
+    </div>
+  );
 }
 
 export default function DeckBuilder({ initialPrompt = "", onExit, onSave }: DeckBuilderProps) {
@@ -207,4 +224,94 @@ export default function DeckBuilder({ initialPrompt = "", onExit, onSave }: Deck
       <section aria-labelledby="active-slide-title"><h2 id="active-slide-title" style={{ fontSize: "0.7rem", color: C.muted }}>Slide {active + 1} editor</h2><div style={{ display: "flex", gap: 4, marginBottom: 8, flexWrap: "wrap" }}><button type="button" onClick={() => moveSlide(active, -1)} disabled={active === 0}>Move earlier</button><button type="button" onClick={() => moveSlide(active, 1)} disabled={active === slides.length - 1}>Move later</button><button type="button" onClick={() => removeSlide(active)} disabled={slides.length <= 1}>Delete slide</button></div><SanitizedVisualArtifact ref={previewRef} role="textbox" aria-multiline="true" aria-label={`Edit slide ${active + 1} content`} aria-describedby="slide-edit-help" contentEditable suppressContentEditableWarning onPaste={handlePreviewPaste} onDragOver={(event) => event.preventDefault()} onDrop={handlePreviewDrop} onFocus={() => setEditorFocused(true)} onBlur={(event) => { setEditorFocused(false); handlePreviewBlur(event); }} markup={slides[active]?.html || ""} style={{ aspectRatio: "16/9", background: C.bg, border: `1px solid ${C.border}`, borderRadius: 12, padding: 24, overflow: "auto", outline: editorFocused ? `2px solid ${C.acc}` : "none", outlineOffset: 2, fontSize: "0.9rem" }} /><p id="slide-edit-help" style={{ color: C.muted, fontSize: "0.65rem" }}>Editable slide content. Paste and drop are sanitized before insertion. Use Tab to reach controls and do not rely on dragging.</p><label htmlFor="speaker-notes" style={{ fontSize: "0.7rem", color: C.muted }}>Speaker notes</label><textarea id="speaker-notes" value={slides[active]?.notes || ""} onChange={(event) => setSlides((current) => current.map((slide, index) => index === active ? { ...slide, notes: event.target.value } : slide))} placeholder="Speaker notes..." style={{ width: "100%", marginTop: 8, minHeight: 60, boxSizing: "border-box", background: C.card, border: `1px solid ${C.border}`, borderRadius: 8, padding: "8px 12px", color: C.muted, fontSize: "0.72rem", resize: "vertical" }} /><section aria-labelledby="deck-templates-title" style={{ marginTop: 12 }}><h2 id="deck-templates-title" style={{ fontSize: "0.6rem", color: C.muted, textTransform: "uppercase" }}>Templates</h2><div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>{DECK_TEMPLATES.map((template) => <button type="button" key={template.name} onClick={() => addSlide(template.html)}>{template.name}</button>)}</div></section><DeckChat slides={slides} onUpdateSlides={replaceSlides} activeIdx={active} /></section></div>
   </div>;
 
+  const exportHTML = () => {
+    const safeTitle = escapeDeckText(title);
+    const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${safeTitle}</title><style>
+*{margin:0;padding:0;box-sizing:border-box}html,body{height:100%;overflow:hidden;font-family:system-ui,sans-serif;background:#0a0914;color:#f3f0fb}
+.deck{height:100vh;overflow-y:scroll;scroll-snap-type:y mandatory}.slide{height:100vh;scroll-snap-align:start;display:flex;align-items:center;justify-content:center;padding:4rem;flex-direction:column}
+.slide h1{font-size:3rem;margin-bottom:1rem;font-family:Georgia,serif}.slide h2{font-size:2rem;margin-bottom:0.75rem}.slide p{font-size:1.25rem;opacity:0.8;max-width:60ch;line-height:1.6}
+.slide ul,.slide ol{font-size:1.1rem;text-align:left;line-height:2}</style></head><body><div class="deck">
+${slides.map(s => `<div class="slide">${sanitizeDeckMarkup(s.html)}</div>`).join("\n")}</div></body></html>`;
+    const blob = new Blob([html], { type: "text/html" });
+    const objectUrl = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = objectUrl;
+    a.download = `${title.replace(/[^a-z0-9._-]+/gi, "-").replace(/^-+|-+$/g, "") || "deck"}.html`;
+    a.click();
+    URL.revokeObjectURL(objectUrl);
+  };
+
+  const exportPDF = () => { window.print(); };
+
+  if (presenting) {
+    return (
+      <div style={{ position: "fixed", inset: 0, background: C.bg, zIndex: 9999, overflow: "hidden" }}>
+        <div style={{ height: "100vh", overflowY: "scroll", scrollSnapType: "y mandatory" }}>
+          {slides.map((s) => (
+            <div key={s.id} style={{ height: "100vh", scrollSnapAlign: "start", display: "flex", alignItems: "center", justifyContent: "center", padding: "4rem", flexDirection: "column" }}
+              dangerouslySetInnerHTML={{ __html: sanitizeDeckMarkup(s.html) }} />
+          ))}
+        </div>
+        <button onClick={() => setPresenting(false)} style={{ position: "fixed", top: 12, right: 12, background: "rgba(0,0,0,0.6)", border: "none", color: C.ink, padding: "6px 12px", borderRadius: 6, cursor: "pointer", fontSize: "var(--text-floor)" }}>Exit (Esc)</button>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ minHeight: "100vh", background: C.bg, color: C.ink, fontFamily: "'Inter Variable', 'Inter', -apple-system, system-ui, sans-serif", padding: "1.5rem 2rem" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1rem" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <input value={title} onChange={e => setTitle(e.target.value)} style={{ background: "transparent", border: "none", color: C.ink, fontSize: "1.2rem", fontWeight: 700, fontFamily: "Georgia, serif", outline: "none", width: 300 }} />
+          <span style={{ fontSize: "var(--text-floor)", color: C.muted }}>{slides.length} slides</span>
+        </div>
+        <div style={{ display: "flex", gap: 6 }}>
+          <button onClick={() => setPresenting(true)} style={{ padding: "5px 12px", borderRadius: 6, border: "none", background: C.acc, color: "#fff", fontSize: "var(--text-floor)", fontWeight: 600, cursor: "pointer" }}>Present</button>
+          <button onClick={exportHTML} style={{ padding: "5px 12px", borderRadius: 6, border: `1px solid ${C.border}`, background: "transparent", color: C.ink, fontSize: "var(--text-floor)", cursor: "pointer" }}>Export HTML</button>
+          <button onClick={exportPDF} style={{ padding: "5px 12px", borderRadius: 6, border: `1px solid ${C.border}`, background: "transparent", color: C.ink, fontSize: "var(--text-floor)", cursor: "pointer" }}>Print/PDF</button>
+        </div>
+      </div>
+
+      <div style={{ display: "flex", gap: "1rem" }}>
+        <div style={{ width: 140, flexShrink: 0 }}>
+          {slides.map((s, i) => (
+            <div key={s.id} onClick={() => setActive(i)} style={{ padding: "8px 10px", borderRadius: 8, marginBottom: 4, cursor: "pointer", border: `1px solid ${i === active ? C.acc : C.border}`, background: i === active ? "rgba(167,139,250,0.08)" : C.card, fontSize: "var(--text-floor)", color: i === active ? C.ink : C.muted }}>
+              Slide {i + 1}
+            </div>
+          ))}
+          <button onClick={addSlide} style={{ width: "100%", padding: "6px", borderRadius: 6, border: `1px dashed ${C.border}`, background: "transparent", color: C.muted, fontSize: "var(--text-floor)", cursor: "pointer", marginTop: 4 }}>+ Add Slide</button>
+        </div>
+
+        <div style={{ flex: 1 }}>
+          <div style={{ display: "flex", gap: 4, marginBottom: 8 }}>
+            <button onClick={() => moveSlide(active, -1)} disabled={active === 0} style={{ background: "none", border: "none", color: active === 0 ? C.dim : C.muted, cursor: "pointer", fontSize: "var(--text-floor)" }}>◀ Move</button>
+            <button onClick={() => moveSlide(active, 1)} disabled={active === slides.length - 1} style={{ background: "none", border: "none", color: active === slides.length - 1 ? C.dim : C.muted, cursor: "pointer", fontSize: "var(--text-floor)" }}>Move ▶</button>
+            <button onClick={() => removeSlide(active)} disabled={slides.length <= 1} style={{ background: "none", border: "none", color: slides.length <= 1 ? C.dim : C.danger, cursor: "pointer", fontSize: "var(--text-floor)", marginLeft: "auto" }}>Delete</button>
+          </div>
+          <div ref={previewRef} contentEditable suppressContentEditableWarning
+            onPaste={handlePreviewPaste}
+            onDrop={handlePreviewDrop}
+            onBlur={e => updateSlide(active, e.currentTarget.innerHTML)}
+            dangerouslySetInnerHTML={{ __html: sanitizeDeckMarkup(slides[active]?.html || "") }}
+            style={{ aspectRatio: "16/9", background: "#0a0914", border: `1px solid ${C.border}`, borderRadius: 12, padding: 0, overflow: "hidden", outline: "none", fontSize: "var(--text-floor)" }} />
+          <textarea value={slides[active]?.notes || ""} onChange={e => setSlides(s => s.map((sl, i) => i === active ? { ...sl, notes: e.target.value } : sl))}
+            placeholder="Speaker notes..."
+            style={{ width: "100%", marginTop: 8, minHeight: 60, background: C.card, border: `1px solid ${C.border}`, borderRadius: 8, padding: "8px 12px", color: C.muted, fontSize: "var(--text-floor)", resize: "vertical", outline: "none", fontFamily: "inherit" }} />
+
+          <div style={{ marginTop: 12 }}>
+            <div style={{ fontSize: "var(--text-floor)", color: C.muted, marginBottom: 6, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.06em" }}>Templates</div>
+            <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+              {DECK_TEMPLATES.map(t => (
+                <button key={t.name} onClick={() => { setSlides(s => [...s, safeSlide({ id: uid(), html: t.html, notes: "" })]); setActive(slides.length); }}
+                  style={{ padding: "4px 10px", borderRadius: 6, border: `1px solid ${C.border}`, background: "transparent", color: C.muted, fontSize: "var(--text-floor)", cursor: "pointer" }}>
+                  {t.name}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <DeckChat slides={slides} onUpdateSlides={replaceSlides} activeIdx={active} />
+        </div>
+      </div>
+    </div>
+  );
 }

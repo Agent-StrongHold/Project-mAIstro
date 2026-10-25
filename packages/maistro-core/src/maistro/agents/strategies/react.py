@@ -10,7 +10,7 @@ import logging
 from collections import deque
 from typing import TYPE_CHECKING, Any
 
-from maistro.agents.tool_dispatch import dispatch_tool_call
+from maistro.agents.tool_authority import ToolSchemaError
 from maistro.quota.usage_report import reported_usage
 from maistro.security.warden.detector import WardenContext
 from maistro.types.agent import ReasoningResult
@@ -29,14 +29,23 @@ def _find_tool_schema(
     tools: list[dict[str, Any]] | None,
     tool_name: str,
 ) -> dict[str, Any]:
+    """Return the declared schema, failing closed on a missing contract."""
     if not tools:
-        return {}
+        raise ToolSchemaError(f"no tool schema is configured for '{tool_name}'")
     for tool in tools:
         fn = tool.get("function", {})
-        if fn.get("name") == tool_name:
-            params: dict[str, Any] = fn.get("parameters", {})
-            return params
-    return {}
+        if fn.get("name") != tool_name:
+            continue
+        params = fn.get("parameters")
+        if not isinstance(params, dict):
+            raise ToolSchemaError(f"tool '{tool_name}' has no valid argument schema")
+        # _build_tool_schema's compatibility placeholder is deliberately not
+        # an execution contract. Empty schemas supplied by a real registry are
+        # valid; its reserved description distinguishes the placeholder.
+        if fn.get("description") == f"Unconfigured tool schema: {tool_name}":
+            raise ToolSchemaError(f"tool '{tool_name}' has no governed argument schema")
+        return params
+    raise ToolSchemaError(f"no tool schema is configured for '{tool_name}'")
 
 
 class ReactStrategy:
@@ -71,10 +80,6 @@ class ReactStrategy:
         # reported nothing is stored as one that cost nothing (#717).
         reported_calls = 0
         security_pipeline = bool(kwargs.get("security_pipeline", False))
-        # Keep the analysis context separate from the model message list. Tool
-        # output is untrusted; assistant/system messages must not become part of
-        # the detector's authority-labelled input.
-        tool_context: deque[WardenContext] = deque(maxlen=_TOOL_CONTEXT_MAX_TURNS)
 
         tool_choice = "required" if self.force_tool_first else "auto"
 
@@ -121,9 +126,7 @@ class ReactStrategy:
                     warden=warden,
                     sentinel=kwargs.get("sentinel"),
                     auth=kwargs.get("auth"),
-                    context=list(tool_context),
                     security_pipeline=security_pipeline,
-                    tool_round=round_num,
                 )
                 tool_context.append(WardenContext(tool_result_str))
 
@@ -202,7 +205,7 @@ class ReactStrategy:
             return json.loads(raw_args), None
         except json.JSONDecodeError:
             logger.warning("Malformed tool arguments for %s: %s", tool_name, raw_args[:200])
-            return {}, None
+            return {}, f"Error: malformed arguments for tool '{tool_name}'"
 
     async def _run_tool(
         self,
@@ -236,18 +239,11 @@ class ReactStrategy:
         sentinel: Any,
         auth: Any,
         warden: Any,
-        context: list[WardenContext] | None = None,
         security_pipeline: bool = False,
     ) -> str:
-        """Apply the shared output gate with bounded prior tool context.
-
-        Inside the Agent security pipeline the governed executor has already
-        scanned the result with its own bounded context and redacted it, so
-        this gate only serves standalone strategy callers.
-        """
+        """Keep standalone strategy calls safe; Agent owns production policy."""
         if security_pipeline:
             return tool_result_str
-        scan_kwargs: dict[str, Any] = {"context": context} if context else {}
         if sentinel is not None and auth is not None:
             sanitized: str = await sentinel.post_call(
                 tool_name, tool_result_str, auth, **scan_kwargs
@@ -279,9 +275,7 @@ class ReactStrategy:
         warden: Any,
         sentinel: Any,
         auth: Any,
-        context: list[WardenContext] | None = None,
         security_pipeline: bool = False,
-        tool_round: int = 0,
     ) -> tuple[dict[str, Any], str]:
         """Process a single tool call end-to-end: parse args, sentinel pre-call,
         execute, truncate, sanitize. Returns ``(tool_args, tool_result_str)``."""
@@ -289,20 +283,19 @@ class ReactStrategy:
         tool_name = fn.get("name", "")
         tool_args, error_result = self._parse_tool_args(tool_name, fn.get("arguments", "{}"))
 
-        # NOTE: a parse error sets a placeholder result but does NOT block — the
-        # original behavior falls through to execution with the (possibly empty)
-        # parsed args. Only an authorization denial blocks execution.
+        # Parsing and schema failures are denials; no executor call is allowed
+        # until the model arguments have a governed contract.
         tool_result: Any = error_result
-        tool_blocked = False
+        tool_blocked = error_result is not None
 
-        if not security_pipeline and (sentinel is None or auth is None):
-            logger.warning(
-                "Denied tool '%s': no Sentinel or caller auth to authorize it", tool_name
-            )
-            tool_result = f"Error: Permission denied for tool '{tool_name}'"
-            tool_blocked = True
-        elif not security_pipeline:
+        try:
             tool_schema = _find_tool_schema(tools, tool_name)
+        except ToolSchemaError as exc:
+            tool_result = f"Error: {exc}"
+            tool_blocked = True
+            tool_schema = None
+
+        if self._sentinel_should_run(tool_schema, tool_blocked, security_pipeline, sentinel, auth):
             sentinel_verdict = await sentinel.pre_call(tool_name, tool_args, auth, tool_schema)
             if not sentinel_verdict.allowed:
                 tool_result = f"Error: Permission denied for tool '{tool_name}'"
@@ -333,7 +326,23 @@ class ReactStrategy:
             sentinel=sentinel,
             auth=auth,
             warden=warden,
-            context=context,
             security_pipeline=security_pipeline,
         )
         return tool_args, tool_result_str
+
+    @staticmethod
+    def _sentinel_should_run(
+        tool_schema: dict[str, Any] | None,
+        tool_blocked: bool,
+        security_pipeline: bool,
+        sentinel: Any,
+        auth: Any,
+    ) -> bool:
+        """The sentinel pre-call only runs for an unblocked, governed call."""
+        return bool(
+            tool_schema is not None
+            and not tool_blocked
+            and not security_pipeline
+            and sentinel is not None
+            and auth is not None
+        )

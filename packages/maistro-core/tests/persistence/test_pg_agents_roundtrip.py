@@ -54,6 +54,7 @@ CREATE TABLE agents (
     model_fallbacks TEXT,
     model_constraints TEXT,
     tools TEXT,
+    write_scopes TEXT,
     skills TEXT,
     trust_tier TEXT NOT NULL DEFAULT 't4',
     priority_tier TEXT NOT NULL DEFAULT 'P2',
@@ -132,6 +133,7 @@ async def test_full_field_roundtrip(registry):
             "description": "the maker",
             "model": "claude-opus",
             "tools": ["bash", "edit", "read"],
+            "write_scopes": ["src/**"],
             "skills": ["code", "review"],
             "model_fallbacks": ["sonnet", "haiku"],
             "model_constraints": {"temperature": 0.2, "max_tokens": 8000},
@@ -153,6 +155,7 @@ async def test_full_field_roundtrip(registry):
     assert agent.description == "the maker"
     assert agent.model == "claude-opus"
     assert agent.tools == ("bash", "edit", "read")
+    assert agent.write_scopes == ("src/**",)
     assert agent.skills == ("code", "review")
     assert agent.model_fallbacks == ("sonnet", "haiku")
     assert agent.model_constraints == {"temperature": 0.2, "max_tokens": 8000}

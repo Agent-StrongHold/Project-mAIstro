@@ -22,14 +22,10 @@ from maistro.runs.chat_admission import (
     CHAT_SOURCE,
     EXECUTION_NEVER_STARTED,
     SESSION_ID_KEY,
-    ChatRunAdmitter,
 )
-from maistro.runs.chat_refusal import ChatTurnRefused
 from maistro.runs.lifecycle import InvalidLifecycleTransition
 from maistro.runs.model import TERMINAL_RUN_STATUSES, Run, RunStatus
-from maistro.runs.store import RunIntegrityError, RunNotFound
-from maistro.security._types import ANONYMOUS_AUTH
-from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+from maistro.runs.store import RunNotFound
 from maistro.types.config import AgentConfig
 
 
@@ -777,7 +773,6 @@ async def _stranded_running_chat_run(
         session_id=None,
         intent_hint="",
         known_task_types=container.config.task_types,
-        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
     assert admitted is not None
     at = datetime.now(UTC) - age
@@ -797,31 +792,6 @@ async def test_stranded_running_admission_with_no_noderun_is_cancelled() -> None
     assert current is not None
     assert current.status is RunStatus.CANCELLED
     assert current.error == EXECUTION_NEVER_STARTED
-
-
-@pytest.mark.parametrize("stage", [RunStatus.CREATED, RunStatus.QUEUED])
-async def test_an_admission_stranded_before_running_is_cancelled(stage: RunStatus) -> None:
-    """A crash between `create_run` and the RUNNING write strands the Run
-    earlier, and it holds an active-root slot all the same (#1182)."""
-    container = await _container()
-    admitted = await container.chat_admitter.admit(  # type: ignore[union-attr]
-        [{"role": "user", "content": "hi"}],
-        known_task_types=container.config.task_types,
-        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
-    )
-    if stage is RunStatus.QUEUED:
-        await container.run_store.transition_run(admitted.run_id, RunStatus.QUEUED)
-
-    assert await container.recover_stranded_chat_admissions() == 0
-    recovered = await container.recover_stranded_chat_admissions(
-        now=datetime.now(UTC) + timedelta(hours=1)
-    )
-
-    assert recovered == 1
-    current = await container.run_store.get_run(admitted.run_id)
-    assert current is not None
-    assert current.status is RunStatus.CANCELLED
-    assert current.error == ADMISSION_INCOMPLETE
 
 
 async def test_a_running_admission_still_within_its_grace_period_is_left_alone() -> None:
@@ -868,11 +838,7 @@ async def test_a_stranded_admission_from_a_non_chat_source_is_left_alone() -> No
         name="g",
         nodes=[Node(node_id="n1", node_type="agent")],
     )
-    run = await container.run_store.create_run(
-        graph,
-        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
-        provenance={ADMISSION_SOURCE: "schedule"},
-    )
+    run = await container.run_store.create_run(graph, provenance={ADMISSION_SOURCE: "schedule"})
     at = datetime.now(UTC) - timedelta(minutes=10)
     await container.run_store.transition_run(run.run_id, RunStatus.QUEUED, at=at)
     await container.run_store.transition_run(run.run_id, RunStatus.RUNNING, at=at)
@@ -920,30 +886,41 @@ async def test_stranded_admission_recovery_respects_the_limit() -> None:
     assert remaining == 1
 
 
-async def test_a_run_advanced_after_listing_is_not_cancelled() -> None:
-    """Recovery cannot apply its stale RUNNING snapshot to newer lifecycle state."""
+async def test_a_noderun_created_between_the_two_checks_is_not_cancelled() -> None:
+    """The re-check immediately before the write is the real guard: a turn
+    that starts in the narrow window between the two reads must not be
+    cancelled out from under it."""
     container = await _container()
     stranded = await _stranded_running_chat_run(container)
+    node_id = stranded.graph.materialize().nodes[0].node_id
 
-    class _AdvancesBeforeCancel:
-        def __init__(self, inner):
+    class _NodeRunAppearsOnSecondCheck:
+        def __init__(self, inner) -> None:
             self._inner = inner
+            self._calls = 0
 
         def __getattr__(self, name):
             return getattr(self._inner, name)
 
-        async def cancel_unstarted_chat_run(self, expected, *, error):
-            await self._inner.transition_run(expected.run_id, RunStatus.WAITING)
-            return await self._inner.cancel_unstarted_chat_run(expected, error=error)
+        async def list_node_runs(self, run_id):
+            if run_id == stranded.run_id:
+                self._calls += 1
+                if self._calls == 2:
+                    await self._inner.create_node_run(run_id, node_id=node_id)
+            return await self._inner.list_node_runs(run_id)
 
-    container.run_store = _AdvancesBeforeCancel(container.run_store)  # type: ignore[assignment]
-    assert await container.recover_stranded_chat_admissions() == 0
+    container.run_store = _NodeRunAppearsOnSecondCheck(container.run_store)  # type: ignore[assignment]
+
+    recovered = await container.recover_stranded_chat_admissions()
+
+    assert recovered == 0
     current = await container.run_store.get_run(stranded.run_id)
-    assert current is not None and current.status is RunStatus.WAITING
+    assert current is not None
+    assert current.status is RunStatus.RUNNING
 
 
 class _AlreadyTerminalStore:
-    """Refuses conditional cancellation as though another path won."""
+    """Refuses `transition_run(..., CANCELLED)` as though another path won."""
 
     def __init__(self, inner) -> None:
         self._inner = inner
@@ -951,8 +928,10 @@ class _AlreadyTerminalStore:
     def __getattr__(self, name):
         return getattr(self._inner, name)
 
-    async def cancel_unstarted_chat_run(self, expected, *, error):
-        raise InvalidLifecycleTransition("already terminal")
+    async def transition_run(self, run_id, target, **kwargs):
+        if target is RunStatus.CANCELLED:
+            raise InvalidLifecycleTransition("already terminal")
+        return await self._inner.transition_run(run_id, target, **kwargs)
 
 
 async def test_a_race_to_terminal_during_compensation_is_logged_and_skipped(
@@ -1047,11 +1026,7 @@ async def test_a_store_that_ignores_the_source_filter_still_spares_a_foreign_run
         name="g",
         nodes=[Node(node_id="n1", node_type="agent")],
     )
-    foreign = await container.run_store.create_run(
-        graph,
-        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
-        provenance={ADMISSION_SOURCE: "schedule"},
-    )
+    foreign = await container.run_store.create_run(graph, provenance={ADMISSION_SOURCE: "schedule"})
     at = datetime.now(UTC) - timedelta(minutes=10)
     await container.run_store.transition_run(foreign.run_id, RunStatus.QUEUED, at=at)
     await container.run_store.transition_run(foreign.run_id, RunStatus.RUNNING, at=at)
@@ -1099,10 +1074,10 @@ async def test_a_run_deleted_mid_tick_does_not_abort_the_rest_of_the_sweep(
         def __getattr__(self, name):
             return getattr(self._inner, name)
 
-        async def cancel_unstarted_chat_run(self, expected, *, error):
-            if expected.run_id == vanished.run_id:
-                raise RunNotFound(expected.run_id)
-            return await self._inner.cancel_unstarted_chat_run(expected, error=error)
+        async def list_node_runs(self, run_id):
+            if run_id == vanished.run_id:
+                raise RunNotFound(run_id)
+            return await self._inner.list_node_runs(run_id)
 
     container.run_store = _VanishesOnLookup(container.run_store)  # type: ignore[assignment]
 
@@ -1118,41 +1093,3 @@ async def test_a_run_deleted_mid_tick_does_not_abort_the_rest_of_the_sweep(
     still_there = await container.run_store.get_run(vanished.run_id)
     assert still_there is not None
     assert still_there.status is RunStatus.RUNNING
-
-
-async def test_sweep_without_an_admitter_is_a_no_op() -> None:
-    """Retention rides on the admitter. A Container wired without one (the
-    minimal deployment that still closes chat Runs) reaches this guard on
-    every closure, and must pass through it without touching a store that is
-    not there."""
-    container = await _container()
-    container.chat_admitter = None  # type: ignore[assignment]
-
-    await container._sweep_chat_runs()
-
-
-async def test_a_failing_sweep_does_not_replace_the_turns_answer(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    """Retention is housekeeping that runs after the Run is already terminal:
-    a sweep that raises must not fail a turn that was answered, and must be
-    logged so the missed trim is visible rather than silent."""
-    container = await _container()
-    container.conduit = _Conduit()
-
-    async def _explodes() -> int:
-        raise RuntimeError("retention exploded")
-
-    # The public `sweep()` hook is exactly what `_sweep_chat_runs` calls after
-    # terminalization; admission's internal `_sweep()` is a different method,
-    # so the turn itself is unaffected by this stub.
-    container.chat_admitter.sweep = _explodes  # type: ignore[method-assign]
-
-    with caplog.at_level(logging.WARNING, logger="maistro.container"):
-        result = await container.route_request([{"role": "user", "content": "hi"}])
-
-    assert result["choices"][0]["message"]["content"] == "hi"
-    run = await container.run_store.get_run(result["run_id"])
-    assert run is not None
-    assert run.status is RunStatus.COMPLETED
-    assert "chat Run retention sweep failed" in caplog.text

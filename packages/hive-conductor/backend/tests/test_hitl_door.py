@@ -58,9 +58,7 @@ def _paused_record(
     run_id: str,
     *,
     workspace_id: str = "ws-hitl",
-    project_id: str = "project-hitl",
     kind: str = "hitl",
-    reviewer_id: str | None = None,
     created_at: datetime | None = None,
 ) -> Any:
     """A Run paused on one node, the way the durable executor leaves one."""
@@ -68,7 +66,7 @@ def _paused_record(
 
     graph = Graph(
         workspace_id=workspace_id,
-        project_id=project_id,
+        project_id="project-hitl",
         name="approval",
         nodes=[Node(node_id="ask", node_type="human.ask_question")],
     )
@@ -130,12 +128,7 @@ def seeded(admin_client):
             theme_id="default",
             voice_tone_override=None,
         )
-        from services.workspace_authority import canonical_store_for_tests
-
-        root = await canonical_store_for_tests().project_store.root_for_workspace(workspace.id)
-        await store.create(
-            _paused_record(run_id, workspace_id=workspace.id, project_id=root.project_id, **kwargs)
-        )
+        await store.create(_paused_record(run_id, workspace_id=workspace.id, **kwargs))
         created.append(run_id)
 
     yield admin_client, store, _seed
@@ -473,6 +466,140 @@ async def test_pending_stops_once_the_item_limit_is_met(seeded) -> None:
     assert len(body) == 1
 
 
+async def test_pending_reaches_a_hitl_pause_behind_a_long_machine_prefix(seeded) -> None:
+    """#1109: more machine-only PAUSED Runs than `limit` ahead of the one real
+    HITL pause must not make `/v1/hitl/pending` return an empty answer. Before
+    the fix, `list_by_status(PAUSED, limit=N)` was queried once and filtered
+    afterward, so a small `limit` could never see past a long enough
+    ineligible prefix -- the route has to actually page past it."""
+    client, _store, seed = seeded
+    base = datetime(2026, 8, 30, 12, tzinfo=UTC)
+    for i in range(120):
+        await seed(f"hitl-machine-{i}", kind="timer", created_at=base + timedelta(seconds=i))
+    await seed(
+        "hitl-behind-the-prefix",
+        kind="hitl",
+        created_at=base + timedelta(seconds=1000),
+    )
+
+    body = client.get("/v1/hitl/pending", params={"limit": 5}).json()
+
+    mine = [item for item in body if item["run_id"] == "hitl-behind-the-prefix"]
+    assert len(mine) == 1
+
+
+async def test_pending_pages_by_instant_when_created_at_offsets_differ(seeded) -> None:
+    """The route's cursor must be spelled the way the store compares it.
+
+    `list_by_status` orders by the instant and pages past it with a
+    UTC-normalized key. A cursor built from a bare `.isoformat()` agrees only
+    while every row prints the same offset: `13:0x+01:00` is an earlier instant
+    than `12:30+00:00` yet its string sorts after, so the walk filters one way
+    and orders the other and stops advancing -- hiding the HITL pause it was
+    paging toward.
+
+    The records must share one Workspace: the route loops Workspaces on the
+    outside and pages on the inside, so one record per Workspace never reaches
+    the cursor at all.
+    """
+    client, store, _seed = seeded
+    workspace = await create_workspace(
+        creator_user_id="admin",
+        name="Test Workspace-offset-cursor",
+        persona_template_id="default",
+        checklist=[],
+        theme_id="default",
+        voice_tone_override=None,
+    )
+    machine_offset = timezone(timedelta(hours=1))
+    run_ids = [f"hitl-offset-machine-{index}" for index in range(_MACHINE_PREFIX)]
+    run_ids.append("hitl-offset-human")
+    try:
+        # Printed later than the human pause, but the earlier instant, so a
+        # raw-isoformat cursor taken here excludes everything after it.
+        for index in range(_MACHINE_PREFIX):
+            await store.create(
+                _paused_record(
+                    f"hitl-offset-machine-{index}",
+                    workspace_id=workspace.id,
+                    kind="timer",
+                    created_at=datetime(2026, 8, 30, 13, 0, tzinfo=machine_offset)
+                    + timedelta(seconds=index),
+                )
+            )
+        await store.create(
+            _paused_record(
+                "hitl-offset-human",
+                workspace_id=workspace.id,
+                created_at=datetime(2026, 8, 30, 12, 30, tzinfo=UTC),
+            )
+        )
+
+        body = client.get("/v1/hitl/pending", params={"limit": 2}).json()
+
+        assert [item["run_id"] for item in body if item["run_id"] == "hitl-offset-human"] == [
+            "hitl-offset-human"
+        ]
+    finally:
+        for run_id in run_ids:
+            store._rows.pop(run_id, None)
+
+
+async def test_pending_stops_at_the_inspection_ceiling(seeded, monkeypatch) -> None:
+    """The walk is bounded, not unbounded: a long prefix costs one tick, not a scan.
+
+    `_MAX_PENDING_SCAN_RECORDS` is the stop condition that keeps a pathological
+    machine-only prefix from turning one request into a full table read. The
+    constant is patched rather than seeding thousands of rows -- the bound is
+    the behaviour under test, not its particular value.
+    """
+    import routes.hitl as hitl_routes
+
+    client, store, _seed = seeded
+    monkeypatch.setattr(hitl_routes, "_MAX_PENDING_SCAN_RECORDS", 3)
+    workspace = await create_workspace(
+        creator_user_id="admin",
+        name="Test Workspace-ceiling",
+        persona_template_id="default",
+        checklist=[],
+        theme_id="default",
+        voice_tone_override=None,
+    )
+    run_ids = [f"hitl-ceiling-{index}" for index in range(5)]
+    try:
+        for index, run_id in enumerate(run_ids):
+            await store.create(
+                _paused_record(
+                    run_id,
+                    workspace_id=workspace.id,
+                    kind="timer",
+                    created_at=datetime(2026, 8, 30, 12, tzinfo=UTC) + timedelta(seconds=index),
+                )
+            )
+
+        body = client.get("/v1/hitl/pending", params={"limit": 5}).json()
+
+        assert [item for item in body if item["run_id"].startswith("hitl-ceiling-")] == []
+    finally:
+        for run_id in run_ids:
+            store._rows.pop(run_id, None)
+
+
+async def test_pending_stops_once_the_item_limit_is_met(seeded) -> None:
+    """`limit` bounds items across Workspaces, not per Workspace.
+
+    Without the outer break a caller asking for one item would keep walking
+    every Workspace it can see, paying for pages whose results are discarded.
+    """
+    client, _store, seed = seeded
+    await seed("hitl-limit-first")
+    await seed("hitl-limit-second")
+
+    body = client.get("/v1/hitl/pending", params={"limit": 1}).json()
+
+    assert len(body) == 1
+
+
 async def test_answering_resumes_the_run_and_the_answer_is_readable(seeded) -> None:
     """End to end against the real store: the Run leaves PAUSED and the node's
     answer is on the record the next execution reads."""
@@ -499,40 +626,6 @@ def _audit_entries(action: str, target: str) -> list[dict[str, Any]]:
         and entry.get("action") == action
         and entry.get("target") == target
     ]
-
-
-@pytest.fixture
-def reviewer_client():
-    """A real second principal with coarse route access but scoped HITL grants."""
-    import stores
-    from fastapi.testclient import TestClient
-    from main import app
-
-    stores.users["hitl-reviewer"] = stores.users["user"].model_copy(
-        update={
-            "id": "hitl-reviewer",
-            "username": "hitl-reviewer",
-            "permissions": ["dags.write"],
-        }
-    )
-    client = TestClient(app)
-    try:
-        login = client.post(
-            "/v1/auth/login", json={"username": "hitl-reviewer", "password": "testpass"}
-        )
-        assert login.status_code == 200
-        elevated = client.post(
-            "/v1/auth/elevate",
-            json={
-                "password": "testpass",
-                "permissions": ["dags.write"],
-                "task_id": "hitl-reviewer-scope-test",
-            },
-        )
-        assert elevated.status_code == 200
-        yield client
-    finally:
-        stores.users.pop("hitl-reviewer", None)
 
 
 @pytest.fixture
@@ -567,89 +660,6 @@ def scoped_client():
         yield client
     finally:
         stores.users.pop("scope-user", None)
-
-
-async def test_hitl_membership_predicate_guards_mutation(seeded, monkeypatch) -> None:
-    """Removing the canonical membership predicate must kill this test."""
-    client, store, seed = seeded
-    await seed("hitl-membership-predicate")
-
-    import routes.hitl as hitl_routes
-
-    calls: list[tuple[str, str]] = []
-
-    async def deny_membership(user_id: str, workspace_id: str) -> bool:
-        calls.append((user_id, workspace_id))
-        return False
-
-    monkeypatch.setattr(hitl_routes, "is_member", deny_membership)
-    response = client.post(
-        "/v1/hitl/hitl-membership-predicate/ask/cancel",
-    )
-
-    assert response.status_code == 404
-    assert len(calls) == 1 and calls[0][0] and calls[0][1]
-    record = await store.get("hitl-membership-predicate")
-    assert record is not None and record.run.status is RunStatus.PAUSED
-
-
-async def test_hitl_mutation_rechecks_membership_at_the_store_boundary(seeded, monkeypatch) -> None:
-    """A revocation between target lookup and settlement must win."""
-    client, store, seed = seeded
-    import routes.hitl as hitl_routes
-
-    for run_id, action in (("hitl-answer-revoked", "answer"), ("hitl-cancel-revoked", "cancel")):
-        await seed(run_id)
-        checks: list[bool] = []
-
-        def membership_revoked_factory(checks: list[bool]):
-            async def membership_revoked(_user_id: str, _workspace_id: str) -> bool:
-                checks.append(True)
-                return len(checks) == 1
-
-            return membership_revoked
-
-        monkeypatch.setattr(hitl_routes, "is_member", membership_revoked_factory(checks))
-        if action == "answer":
-            response = client.post(f"/v1/hitl/{run_id}/ask/answer", json={"answer": "yes"})
-        else:
-            response = client.post(f"/v1/hitl/{run_id}/ask/cancel")
-        assert response.status_code == 404
-        assert len(checks) == 2
-        record = await store.get(run_id)
-        assert record is not None and record.run.status is RunStatus.PAUSED
-
-
-async def test_pending_rechecks_membership_before_disclosing_payload(seeded, monkeypatch) -> None:
-    """The pending queue's Workspace-id snapshot is not the disclosure decision.
-
-    A membership revoked after the route resolved the caller's Workspaces but
-    before a paused record's payload is read must not receive that payload:
-    each item-carrying record is revalidated against live canonical membership
-    immediately before disclosure, the same discovery-mode predicate
-    `list_hitl_due` applies for the expiry path. Removing that recheck fails
-    this test — the revoked payload would be disclosed and no recheck would
-    ever run.
-    """
-    client, store, seed = seeded
-    await seed("hitl-revoked-mid-list")
-
-    import routes.hitl as hitl_routes
-
-    rechecks: list[str] = []
-
-    async def revoked(_user_id: str, workspace_id: str) -> bool:
-        rechecks.append(workspace_id)
-        return False
-
-    monkeypatch.setattr(hitl_routes, "is_member", revoked)
-
-    body = client.get("/v1/hitl/pending").json()
-
-    assert [item for item in body if item["run_id"] == "hitl-revoked-mid-list"] == []
-    assert rechecks, "the per-record live membership recheck never ran"
-    record = await store.get("hitl-revoked-mid-list")
-    assert record is not None and record.run.status is RunStatus.PAUSED
 
 
 @pytest.fixture
@@ -719,12 +729,6 @@ async def test_hitl_routes_are_scoped_to_the_callers_workspaces(scoped_client) -
         theme_id="default",
         voice_tone_override=None,
     )
-    from services.workspace_authority import canonical_store_for_tests
-
-    projects = canonical_store_for_tests().project_store
-    mine_root = await projects.root_for_workspace(mine.id)
-    mine_second_root = await projects.root_for_workspace(mine_second.id)
-    other_root = await projects.root_for_workspace(other.id)
     mine_id = "hitl-scope-mine"
     mine_second_id = "hitl-scope-mine-second"
     other_id = "hitl-scope-other"
@@ -733,33 +737,18 @@ async def test_hitl_routes_are_scoped_to_the_callers_workspaces(scoped_client) -
     foreign_ids = [f"hitl-scope-foreign-{index}" for index in range(50)]
     for index, foreign_id in enumerate(foreign_ids):
         await store.create(_paused_record(foreign_id, workspace_id=f"foreign-{index}"))
-    await store.create(
-        _paused_record(mine_id, workspace_id=mine.id, project_id=mine_root.project_id)
-    )
-    await store.create(
-        _paused_record(
-            mine_second_id,
-            workspace_id=mine_second.id,
-            project_id=mine_second_root.project_id,
-        )
-    )
-    await store.create(
-        _paused_record(other_id, workspace_id=other.id, project_id=other_root.project_id)
-    )
+    await store.create(_paused_record(mine_id, workspace_id=mine.id))
+    await store.create(_paused_record(mine_second_id, workspace_id=mine_second.id))
+    await store.create(_paused_record(other_id, workspace_id=other.id))
     try:
         pending = scoped_client.get("/v1/hitl/pending").json()
         assert {item["run_id"] for item in pending} == {mine_id, mine_second_id}
-        inspected = scoped_client.get(f"/v1/hitl/{mine_id}/ask")
-        assert inspected.status_code == 200
-        assert inspected.json()["project_id"] == mine_root.project_id
-        assert scoped_client.get(f"/v1/hitl/{other_id}/ask").status_code == 404
 
         # A foreign id is indistinguishable from a missing id as well as being
         # unable to mutate it; otherwise this door leaks Run existence.
         assert (
             scoped_client.post(
-                f"/v1/hitl/{other_id}/ask/answer",
-                json={"answer": "yes", "_pause": {"forged": True}},
+                f"/v1/hitl/{other_id}/ask/answer", json={"answer": "yes"}
             ).status_code
             == 404
         )
@@ -769,113 +758,6 @@ async def test_hitl_routes_are_scoped_to_the_callers_workspaces(scoped_client) -
         assert record.run.status is RunStatus.PAUSED
     finally:
         for run_id in [*foreign_ids, mine_id, mine_second_id, other_id]:
-            store._rows.pop(run_id, None)
-
-
-async def test_project_reviewer_isolated_from_sibling_hitl_work(reviewer_client) -> None:
-    """Project grants, not a guessed id or generic auth, decide HITL control."""
-    from services.dag_agents import get_run_store
-    from services.workspace_authority import canonical_store_for_tests, create_workspace, set_member
-
-    from maistro.projects.scope import ProjectMembership
-
-    store = get_run_store()
-    workspace = await create_workspace(
-        creator_user_id="admin",
-        name="HITL project isolation",
-        persona_template_id="default",
-        checklist=[],
-        theme_id="default",
-        voice_tone_override=None,
-    )
-    await set_member(workspace.id, user_id="hitl-reviewer", role="editor")
-    projects = canonical_store_for_tests().project_store
-    root = await projects.root_for_workspace(workspace.id)
-    approved_project = await projects.create(
-        workspace_id=workspace.id, parent_project_id=root.project_id, name="Approved"
-    )
-    denied_project = await projects.create(
-        workspace_id=workspace.id, parent_project_id=root.project_id, name="Denied"
-    )
-    await projects.set_membership(
-        ProjectMembership(
-            workspace_id=workspace.id,
-            project_id=approved_project.project_id,
-            principal_id="hitl-reviewer",
-            grants={"hitl.inspect", "hitl.answer", "hitl.cancel"},
-        )
-    )
-    await projects.set_membership(
-        ProjectMembership(
-            workspace_id=workspace.id,
-            project_id=denied_project.project_id,
-            principal_id="hitl-reviewer",
-            denies={"hitl.inspect", "hitl.answer", "hitl.cancel"},
-        )
-    )
-    approved_id = "hitl-reviewer-approved"
-    approved_cancel_id = "hitl-reviewer-cancel"
-    bound_id = "hitl-reviewer-bound"
-    denied_id = "hitl-reviewer-denied"
-    await store.create(
-        _paused_record(
-            approved_id, workspace_id=workspace.id, project_id=approved_project.project_id
-        )
-    )
-    await store.create(
-        _paused_record(
-            approved_cancel_id,
-            workspace_id=workspace.id,
-            project_id=approved_project.project_id,
-        )
-    )
-    await store.create(
-        _paused_record(
-            bound_id,
-            workspace_id=workspace.id,
-            project_id=approved_project.project_id,
-            reviewer_id="another-reviewer",
-        )
-    )
-    await store.create(
-        _paused_record(denied_id, workspace_id=workspace.id, project_id=denied_project.project_id)
-    )
-    try:
-        pending = reviewer_client.get("/v1/hitl/pending")
-        assert {item["run_id"] for item in pending.json()} == {
-            approved_id,
-            approved_cancel_id,
-            bound_id,
-        }
-        assert (
-            reviewer_client.get(f"/v1/hitl/pending?project_id={denied_project.project_id}").json()
-            == []
-        )
-
-        answered = reviewer_client.post(
-            f"/v1/hitl/{approved_id}/ask/answer", json={"answer": "yes"}
-        )
-        assert answered.status_code == 200
-        cancelled = reviewer_client.post(f"/v1/hitl/{approved_cancel_id}/ask/cancel")
-        assert cancelled.status_code == 200
-
-        for operation in ("answer", "cancel"):
-            response = reviewer_client.post(
-                f"/v1/hitl/{denied_id}/ask/{operation}", json={"answer": "no"}
-            )
-            assert response.status_code == 404
-        bound = reviewer_client.post(f"/v1/hitl/{bound_id}/ask/answer", json={"answer": "no"})
-        assert bound.status_code == 404
-        for run_id in (denied_id, bound_id):
-            refused_record = await store.get(run_id)
-            assert refused_record is not None
-            assert refused_record.run.status is RunStatus.PAUSED
-        denials = _audit_entries("hitl_authorization_denied", denied_project.project_id)
-        assert denials
-        assert all(entry["actor"] == "hitl-reviewer" for entry in denials)
-        assert all("question" not in str(entry["detail"]) for entry in denials)
-    finally:
-        for run_id in (approved_id, approved_cancel_id, bound_id, denied_id):
             store._rows.pop(run_id, None)
 
 
@@ -1016,7 +898,6 @@ async def test_blocked_answers_name_each_verified_requester_without_settling_app
 ) -> None:
     """A rejected attempt keeps Alice and Bob distinguishable without approval attribution."""
     from services.dag_agents import get_run_store
-    from services.workspace_authority import canonical_store_for_tests
 
     store = get_run_store()
     run_ids = {}
@@ -1030,15 +911,9 @@ async def test_blocked_answers_name_each_verified_requester_without_settling_app
             theme_id="default",
             voice_tone_override=None,
         )
-        # Each requester answers inside their own Workspace's canonical root
-        # Project (#1110): authorization must succeed so the security scan --
-        # the behaviour under test -- is what rejects the answer.
-        root = await canonical_store_for_tests().project_store.root_for_workspace(workspace.id)
         run_id = f"hitl-blocked-{username}"
         secret = f"sk-{username}-raw-credential-must-not-appear"
-        await store.create(
-            _paused_record(run_id, workspace_id=workspace.id, project_id=root.project_id)
-        )
+        await store.create(_paused_record(run_id, workspace_id=workspace.id))
         run_ids[username] = run_id
         secret_by_user[username] = secret
         response = client.post(

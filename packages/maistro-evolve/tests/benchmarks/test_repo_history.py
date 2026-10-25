@@ -125,6 +125,25 @@ class TestContaminationDiscipline:
 
 
 class TestCorpusIntegrity:
+    def test_malformed_row_with_empty_repo_state_is_refused(
+        self, corpus, tmp_path, monkeypatch
+    ) -> None:
+        """A row with valid bytes under the pin but an empty provenance field
+        must still refuse: the digest pins bytes, not schema shape."""
+        corpus([_task("a", "2026-07-20T00:00:00+00:00")])
+        path = tmp_path / "repo_history_tasks.json"
+        body = json.loads(path.read_text())
+        body["tasks"][0]["repo_state"] = ""
+        tampered = json.dumps(body, indent=2, sort_keys=True) + "\n"
+        path.write_text(tampered, encoding="utf-8")
+        monkeypatch.setattr(
+            repo_history,
+            "_CORPUS_SHA256",
+            hashlib.sha256(tampered.encode("utf-8")).hexdigest(),
+        )
+        with pytest.raises(RepoHistoryUnavailableError, match="empty task_id or repo_state"):
+            load_repo_tasks(cutoff=date(2026, 1, 1))
+
     def test_tampered_corpus_is_refused(self, corpus, tmp_path) -> None:
         corpus([_task("a", "2026-07-20T00:00:00+00:00")])
         path = tmp_path / "repo_history_tasks.json"

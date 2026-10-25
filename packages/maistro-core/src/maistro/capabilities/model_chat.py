@@ -21,8 +21,7 @@ registry metadata, then attached to the persisted canonical Invocation.
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Awaitable, Callable
-from contextvars import ContextVar
+from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ConfigDict
@@ -482,7 +481,6 @@ class ModelChatEgress:
         effect_key: str,
         request: ModelChatRequest,
         setup: Callable[[], Awaitable[None]] | None = None,
-        actor_id: str = "",
     ) -> ModelCallResult:
         """Run one governed model call, optionally performing provider setup.
 
@@ -493,13 +491,8 @@ class ModelChatEgress:
         performed by the caller beforehand: a denied policy then causes zero
         HTTP, not a credential-bearing side request ahead of authorization.
         """
-        resolver = resolve_model_chat_provider(
-            self._registry,
-            self._router,
-            alias=request.model,
-            adapters=self._adapters,
-        )
-        selected: list[LlmGatewayProvider | AdapterGatewayProvider] = []
+        resolver = resolve_model_chat_provider(self._registry, self._router, alias=request.model)
+        selected: list[LlmGatewayProvider] = []
 
         async def tracked_resolve(candidate: Binding) -> ResolvedCapabilityProvider | Unavailable:
             provider = await resolver(candidate)
@@ -511,21 +504,9 @@ class ModelChatEgress:
             return provider
 
         async def execute(provider: ResolvedCapabilityProvider, payload: Any) -> Any:
-            if not isinstance(provider, CredentialBackedProvider):
-                raise TypeError(
-                    "model-chat physical execution requires a Binding-scoped credential"
-                )
-            base = provider.base
-            if not isinstance(base, (LlmGatewayProvider, AdapterGatewayProvider)):
-                raise TypeError(f"credential routed a non-gateway provider: {base!r}")
             if setup is not None:
                 await setup()
-            endpoint = self._endpoint.model_copy(update={"api_key": provider.credential.api_key})
-            return await execute_model_chat(base, payload, endpoint=endpoint)
-
-        routing = self._effects.credential_routing()
-        routed_resolver = routing.resolver(tracked_resolve)
-        routed_executor = routing.executor(execute)
+            return await execute_model_chat(provider, payload, endpoint=self._endpoint)
 
         def usage_from(body: Any) -> InvocationUsage | None:
             if not selected:

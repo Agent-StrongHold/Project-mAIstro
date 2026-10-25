@@ -9,7 +9,6 @@ import stores
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from middleware.auth import origin_allowed, principal_has_permission, resolve_principal
 from services.dag_execution_scope import (
-    DagExecutionScope,
     DagWorkspaceSelectionError,
     authorize_hive_dag_scope,
 )
@@ -160,7 +159,12 @@ async def _stream_dag_run(
         return
 
     try:
-        await _stream_canonical_run(websocket, dag_id=dag_id, scope=scope)
+        from services.graph_runner import execute_dag_streaming
+
+        async for event in execute_dag_streaming(dag_data, scope=scope):
+            await websocket.send_json(event)
+            if event.get("status") in ("completed", "failed"):
+                break
     except WebSocketDisconnect:
         pass
     except Exception as exc:

@@ -19,7 +19,7 @@ from typing import Any
 import pytest
 import stores
 
-pytestmark = [pytest.mark.contract("behavioral"), pytest.mark.usefixtures("chat_run_spine")]
+pytestmark = [pytest.mark.contract("behavioral")]
 
 
 @pytest.fixture(autouse=True)

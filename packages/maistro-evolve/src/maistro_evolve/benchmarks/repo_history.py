@@ -169,6 +169,17 @@ def resolve_cutoff(model: str | None = None, cutoff: date | None = None) -> date
     return known
 
 
+def _validated(task: RepoTask, position: int) -> RepoTask:
+    """Refuse malformed rows: the digest pins the bytes, not the schema shape."""
+    if not task.task_id or not task.repo_state:
+        raise RepoHistoryUnavailableError(
+            f"corpus task #{position} has an empty task_id or repo_state; refusing "
+            "to score against a broken exam. Regenerate the corpus with "
+            "scripts/generate_repo_tasks.py."
+        )
+    return task
+
+
 def load_repo_tasks(
     model: str | None = None,
     *,
@@ -201,16 +212,19 @@ def load_repo_tasks(
     body: dict[str, Any] = json.loads(raw.decode("utf-8"))
     effective = resolve_cutoff(model, cutoff)
     tasks = [
-        RepoTask(
-            task_id=t["task_id"],
-            repo_state=t["repo_state"],
-            commit_date=t["commit_date"],
-            issue_text=t["issue_text"],
-            failing_tests=tuple(t["failing_tests"]),
-            test_patch=t["test_patch"],
-            gold_patch=t["gold_patch"],
+        _validated(
+            RepoTask(
+                task_id=t["task_id"],
+                repo_state=t["repo_state"],
+                commit_date=t["commit_date"],
+                issue_text=t["issue_text"],
+                failing_tests=tuple(t["failing_tests"]),
+                test_patch=t["test_patch"],
+                gold_patch=t["gold_patch"],
+            ),
+            position,
         )
-        for t in body.get("tasks", [])
+        for position, t in enumerate(body.get("tasks", []))
     ]
     fresh = [t for t in tasks if t.is_post_cutoff(effective)]
 

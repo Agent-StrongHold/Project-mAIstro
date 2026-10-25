@@ -14,7 +14,12 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from maistro.config.settings import SandboxSettings
-from maistro.tools.sandbox.docker import SandboxContainer, _shell_quote, create_sandbox
+from maistro.tools.sandbox.docker import (
+    CommandContractError,
+    SandboxContainer,
+    create_sandbox,
+    parse_command,
+)
 
 
 class _FakeProc:
@@ -45,8 +50,18 @@ def _reader_with(data: bytes) -> asyncio.StreamReader:
     return reader
 
 
-def test_shell_quote_escapes_dangerous_characters() -> None:
-    assert _shell_quote("a; rm -rf /") == "'a; rm -rf /'"
+def test_parse_command_string_input_is_tokenized_and_shell_syntax_rejected() -> None:
+    assert parse_command("pytest -q tests/") == ["pytest", "-q", "tests/"]
+    with pytest.raises(CommandContractError, match="shell operators"):
+        parse_command("cat file; rm -rf /")
+
+
+def test_parse_command_structured_argv_rejects_interpreters_and_empty_parts() -> None:
+    assert parse_command(["pytest", "-q"]) == ["pytest", "-q"]
+    with pytest.raises(CommandContractError, match="shell interpreters"):
+        parse_command(["/bin/bash", "-lc", "echo hi"])
+    with pytest.raises(CommandContractError, match="non-empty strings"):
+        parse_command(["pytest", ""])
 
 
 def test_expired_false_when_within_ttl() -> None:
@@ -96,7 +111,7 @@ async def test_exec_runs_command_and_returns_output() -> None:
         code, output = await container.exec("echo hello")
     assert (code, output) == (0, "hello\n")
     args = mock_exec.call_args.args
-    assert args == ("docker", "exec", "abc123", "bash", "-c", "echo hello")
+    assert args == ("docker", "exec", "abc123", "echo", "hello")
 
 
 async def test_exec_output_is_bounded_at_the_container_limit() -> None:
@@ -251,44 +266,42 @@ async def test_read_file_raises_when_exec_fails() -> None:
         await container.read_file("a.txt")
 
 
-async def test_write_file_creates_parent_dir_and_writes_content() -> None:
-    container = SandboxContainer("abc123", "/host")
-    calls: list[str] = []
+async def test_write_file_uses_the_validated_workspace_path(tmp_path) -> None:
+    container = SandboxContainer("abc123", str(tmp_path))
 
-    async def fake_exec(command: str, timeout: int = 60) -> tuple[int, str]:
-        calls.append(command)
-        return 0, ""
-
-    with patch.object(container, "exec", new=fake_exec):
+    with patch.object(
+        container,
+        "exec",
+        new=AsyncMock(side_effect=[(0, ""), (0, "hello world")]),
+    ) as mock_exec:
         await container.write_file("sub/dir/a.txt", "hello world")
 
-    assert any(cmd.startswith("mkdir -p") for cmd in calls)
-    assert any("base64 -d" in cmd for cmd in calls)
+    assert mock_exec.await_count == 2
+    assert mock_exec.await_args_list[1].kwargs["input_data"] == "hello world"
 
 
-async def test_write_file_no_mkdir_when_path_has_no_parent() -> None:
-    container = SandboxContainer("abc123", "/host", workspace_container="")
-    calls: list[str] = []
+async def test_write_file_without_parent_still_uses_container_io(tmp_path) -> None:
+    container = SandboxContainer("abc123", str(tmp_path))
 
-    async def fake_exec(command: str, timeout: int = 60) -> tuple[int, str]:
-        calls.append(command)
-        return 0, ""
-
-    with patch.object(container, "exec", new=fake_exec):
+    with patch.object(
+        container,
+        "exec",
+        new=AsyncMock(side_effect=[(0, ""), (0, "hello")]),
+    ) as mock_exec:
         await container.write_file("a.txt", "hello")
 
-    assert len(calls) == 1
-    assert "mkdir" not in calls[0]
+    assert mock_exec.await_count == 2
 
 
-async def test_write_file_raises_on_failure() -> None:
-    container = SandboxContainer("abc123", "/host")
-
-    async def fake_exec(command: str, timeout: int = 60) -> tuple[int, str]:
-        return 1, "disk full"
+async def test_write_file_raises_on_failure(tmp_path) -> None:
+    container = SandboxContainer("abc123", str(tmp_path))
 
     with (
-        patch.object(container, "exec", new=fake_exec),
+        patch.object(
+            container,
+            "exec",
+            new=AsyncMock(side_effect=[(0, ""), (1, "disk full")]),
+        ),
         pytest.raises(OSError, match=r"Cannot write a\.txt"),
     ):
         await container.write_file("a.txt", "hello")

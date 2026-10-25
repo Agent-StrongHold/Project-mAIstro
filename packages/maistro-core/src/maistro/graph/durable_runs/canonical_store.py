@@ -13,43 +13,22 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Callable, Iterable, Mapping
-from datetime import UTC, datetime, timedelta
+from collections.abc import Callable, Mapping
+from datetime import datetime
 from typing import Any
 
-from maistro.runs.aggregation import terminal_run_payload
 from maistro.runs.lifecycle import (
     InvalidLifecycleTransition,
-    has_live_execution_lease,
     settle_open_node_run,
     transition_node_run,
     transition_run,
 )
-from maistro.runs.model import (
-    TERMINAL_RUN_STATUSES,
-    Attempt,
-    NodeRun,
-    Run,
-    RunStatus,
-)
-from maistro.runs.store import RunCursor, RunIntegrityError, RunStore, run_cursor_key
+from maistro.runs.model import TERMINAL_RUN_STATUSES, Attempt, NodeRun, Run, RunStatus
+from maistro.runs.store import RunIntegrityError, RunStore
 
 from .continuation import GraphContinuation, GraphContinuationStore
-from .fair_scan import (
-    DEFAULT_MAX_INSPECTED,
-    DEFAULT_PAGE_SIZE,
-    ScanContinuation,
-    ScanPage,
-    cursor_time,
-    fair_page_scan,
-)
-from .hitl import (
-    HitlAuthorization,
-    earliest_hitl_deadline,
-    record_has_hitl_pause,
-    require_hitl_authorization,
-    settlement_time,
-)
+from .fair_scan import DEFAULT_MAX_INSPECTED, ScanPage, cursor_time
+from .hitl import earliest_hitl_deadline, settlement_time
 from .spine import mirror_lifecycle
 from .stores import answer_record, settle_hitl_record
 from .time_travel import (
@@ -63,11 +42,6 @@ from .time_travel import (
 from .types import RECOVERY_CLAIM_UNTIL_KEY, DurableRunRecord
 
 _RECOVERY_VISIBLE_STATUSES = frozenset({RunStatus.WAITING, RunStatus.PAUSED, RunStatus.RUNNING})
-_GRAPH_TERMINAL_STATUSES = frozenset({RunStatus.COMPLETED, RunStatus.FAILED, RunStatus.CANCELLED})
-#: How long a Run's spine must have been quiet before a terminal continuation
-#: over it is treated as crash residue rather than a walker mid-mirror. The
-#: same span as a Graph recovery claim: past it, no live walker is assumed.
-TERMINAL_SETTLE_QUIET_PERIOD = timedelta(seconds=60)
 #: How many times `list_hitl_due` widens its candidate page when the indexed
 #: prefix is occupied by projections the canonical Run disqualifies. Six
 #: doublings read at most 64x the requested work before giving up on a tick.
@@ -162,65 +136,6 @@ def _terminal_hitl_node_runs(
         else:
             repaired[index] = settle_open_node_run(node_run, target, at=moment)
     return tuple(repaired)
-
-
-def _answered_hitl_evidence(
-    continuation: GraphContinuation,
-) -> dict[str, datetime]:
-    """Read accepted answer timestamps for restart repair.
-
-    Answer records are written into the continuation before its lifecycle is
-    mirrored to the canonical spine. Only the store-authored timestamp counts;
-    malformed or caller-only metadata is ignored rather than used to revive a
-    contradictory Run.
-    """
-    answers_raw = continuation.graph_state.metadata.get("hitl_answers", {})
-    answers = answers_raw if isinstance(answers_raw, Mapping) else {}
-    evidence: dict[str, datetime] = {}
-    for node_id, answer in answers.items():
-        if not isinstance(answer, Mapping):
-            continue
-        answered_at = answer.get("answered_at")
-        if not isinstance(answered_at, str):
-            continue
-        try:
-            moment = datetime.fromisoformat(answered_at)
-        except ValueError:
-            continue
-        if moment.tzinfo is not None:
-            evidence[str(node_id)] = moment
-    return evidence
-
-
-def _requeue_answered_nodes(
-    record: DurableRunRecord,
-    evidence: Mapping[str, datetime],
-) -> DurableRunRecord | None:
-    """Draft the repair that requeues answered nodes still held paused.
-
-    Returns the repaired record, or None when no covered node can move:
-    either none of the evidenced nodes exists on the record, or every one of
-    them has already settled. The Run re-queues at the newest accepted answer
-    so no node is asked to resume before the moment its own answer was
-    accepted.
-    """
-    matching = [node for node in record.node_runs if node.node_id in evidence]
-    if not matching or all(node.status in TERMINAL_RUN_STATUSES for node in matching):
-        return None
-    node_runs = list(record.node_runs)
-    for index, node_run in enumerate(node_runs):
-        if node_run.status is RunStatus.PAUSED and node_run.node_id in evidence:
-            node_runs[index] = transition_node_run(
-                node_run,
-                RunStatus.QUEUED,
-                at=evidence[node_run.node_id],
-            )
-    return record.model_copy(
-        update={
-            "run": transition_run(record.run, RunStatus.QUEUED, at=max(evidence.values())),
-            "node_runs": tuple(node_runs),
-        }
-    )
 
 
 class CanonicalDurableRunStore:
@@ -389,8 +304,6 @@ class CanonicalDurableRunStore:
 
         moment = now if now is not None else datetime.now(UTC)
         seen: set[str] = set()
-        changed = await self._reconcile_running_page(limit, seen, moment)
-        swept = len(seen)
         # Terminal settlement residue first, and from the side that shrinks. A
         # crash between the continuation write and the spine mirror leaves the
         # canonical Run PAUSED while its continuation is already CANCELLED or
@@ -398,8 +311,12 @@ class CanonicalDurableRunStore:
         # COMPLETED bucket in front of those statuses only ever grows, so such
         # residue behind a full prefix would never be reached. PAUSED canonical
         # Runs are few and transient: a scan over them always reaches its end.
-        paused = await self._run_store.list_by_status(RunStatus.PAUSED, limit=limit)
-        changed += await self._reconcile_unseen((run.run_id for run in paused), seen, moment)
+        for run in await self._run_store.list_by_status(RunStatus.PAUSED, limit=limit):
+            if run.run_id in seen:
+                continue
+            seen.add(run.run_id)
+            if await self._reconcile_run(run.run_id):
+                changed += 1
         for status in RunStatus:
             remaining = limit - (len(seen) - swept)
             if remaining <= 0:
@@ -482,50 +399,9 @@ class CanonicalDurableRunStore:
                 continuation.version,
             )
             return await self._continuations.delete(run_id)
-        if await self._reconcile_terminal_spine(continuation, canonical):
-            return True
-        if await self._reconcile_answered_hitl(continuation, canonical):
-            return True
         if await self._reconcile_terminal_hitl(continuation, canonical):
             return True
-        if await self._reconcile_terminal_graph(continuation, canonical, moment):
-            return True
-        if await self._reconcile_stalled_active_frontier(continuation, canonical, moment):
-            return True
-        if await self._reconcile_unstarted_claim(continuation, canonical, moment):
-            return True
-        return await self._reconcile_parked_graph(continuation, canonical)
-
-    async def _reconcile_terminal_spine(
-        self,
-        continuation: GraphContinuation,
-        canonical: Run,
-    ) -> bool:
-        """Repair a stale continuation projection from settled canonical history.
-
-        A terminal Run is the lifecycle authority. Its continuation cannot
-        remain recovery-visible and thereby offer already-settled traversal to
-        a later resume or due scan. This changes only the continuation lookup
-        projection; its graph history remains intact. Optimistic concurrency
-        lets a concurrent writer win, after which the next tick rereads the
-        actual canonical terminal state.
-        """
-        if canonical.status not in TERMINAL_RUN_STATUSES or continuation.status is canonical.status:
-            return False
-        repaired = continuation.model_copy(
-            update={"status": canonical.status, "version": continuation.version + 1}
-        )
-        try:
-            await self._continuations.update(repaired)
-        except ValueError:
-            return False
-        return True
-
-    async def _reconcile_parked_graph(
-        self, continuation: GraphContinuation, canonical: Run
-    ) -> bool:
-        """Mirror a durable park, excluding a claim's pre-activation projection."""
-        if canonical.status is not RunStatus.RUNNING or continuation.status not in {
+        if canonical.status is RunStatus.RUNNING and continuation.status in {
             RunStatus.WAITING,
             RunStatus.PAUSED,
         }:
@@ -823,6 +699,85 @@ class CanonicalDurableRunStore:
             raise
         return True
 
+    async def _reconcile_terminal_hitl(
+        self,
+        continuation: GraphContinuation,
+        canonical: Run,
+    ) -> bool:
+        """Finish a HITL lifecycle mirror interrupted after graph persistence.
+
+        The continuation is written before the canonical spine so a crash
+        leaves durable settlement evidence rather than an answerable pause.
+        Rebuild the intended NodeRun projection from that evidence and let the
+        normal lifecycle mirror walk the remaining canonical transitions.
+        """
+        target = continuation.status
+        if target not in {RunStatus.CANCELLED, RunStatus.TIMED_OUT}:
+            return False
+        if canonical.status in TERMINAL_RUN_STATUSES:
+            return False
+        evidence = _terminal_hitl_evidence(continuation, target)
+        if evidence is None:
+            return False
+        node_id, node_run_id, moment, reason = evidence
+
+        record = await self.get(continuation.run_id)
+        if record is None:
+            return False
+        if not self._has_terminal_hitl_node(record, node_id, node_run_id):
+            logger.warning(
+                "cannot reconcile terminal HITL continuation %s: node run %s is missing",
+                continuation.run_id,
+                node_run_id,
+            )
+            return False
+        node_runs = _terminal_hitl_node_runs(
+            record.node_runs,
+            node_run_id=node_run_id,
+            target=target,
+            moment=moment,
+            reason=reason,
+        )
+        if node_runs is None:
+            logger.warning(
+                "cannot reconcile terminal HITL continuation %s: node run %s disagrees",
+                continuation.run_id,
+                node_run_id,
+            )
+            return False
+
+        desired_run = transition_run(record.run, target, at=moment, error=reason)
+        desired = record.model_copy(update={"run": desired_run, "node_runs": node_runs})
+        return await self._mirror_terminal_hitl(desired, continuation.run_id, target)
+
+    @staticmethod
+    def _has_terminal_hitl_node(
+        record: DurableRunRecord,
+        node_id: str,
+        node_run_id: str,
+    ) -> bool:
+        return any(
+            node.node_run_id == node_run_id and node.node_id == node_id for node in record.node_runs
+        )
+
+    async def _mirror_terminal_hitl(
+        self,
+        desired: DurableRunRecord,
+        run_id: str,
+        target: RunStatus,
+    ) -> bool:
+        try:
+            await mirror_lifecycle(desired, run_store=self._run_store)
+        except InvalidLifecycleTransition:
+            # Two ticks can both pass the non-terminal check above; the one
+            # that mirrors second finds the Run already at `target` and its
+            # terminal hop refused. That is the same repair, already done.
+            current = await self._run_store.get_run(run_id)
+            if current is not None and current.status is target:
+                return False
+            raise
+        return True
+
     async def list_by_status(
         self,
         status: RunStatus,
@@ -853,102 +808,6 @@ class CanonicalDurableRunStore:
             run_ids = [run.run_id for run in runs]
         records = await self._assemble_all(run_ids)
         return [record for record in records if record.run.status is status]
-
-    async def list_hitl_paused(
-        self,
-        *,
-        limit: int = 100,
-        project_id: str | None = None,
-        workspace_id: str | None = None,
-        after: tuple[str, str] | None = None,
-        max_inspected: int = DEFAULT_MAX_INSPECTED,
-    ) -> ScanPage[DurableRunRecord, tuple[str, str]]:
-        """Paused Runs holding a human pause, oldest-created-first (#1109).
-
-        Pages the pause-kind projection so human eligibility is decided before
-        the limit: a prefix of machine-only PAUSED Runs, however long, costs
-        this query nothing. The index is a projection, so each candidate is
-        still revalidated below against the assembled canonical record — a
-        stale row whose Run has moved on contributes no item and costs only
-        its place in the page.
-
-        ``workspace_id`` is canonical Run scope (#1240). The continuation
-        index cannot carry it, so — like staleness — it filters the read
-        after assembly, which is why this returns a :class:`ScanPage` and
-        keeps walking index pages past the rows it drops, up to
-        ``max_inspected``: a page that assembles to nothing eligible is
-        progress through the projection, not the end of it, and ``exhausted``
-        is set only when the projection itself ran out. A Workspace-wide walk
-        (no ``project_id``) over a large multi-tenant store can still spend
-        ``max_inspected`` on foreign rows before reaching its own — callers
-        should pass ``project_id`` (a Project belongs to exactly one
-        Workspace) so the keyset itself runs over eligible rows only.
-        """
-        if limit <= 0 or max_inspected <= 0:
-            return ScanPage(items=[], resume_after=after, inspected=0)
-        items: list[DurableRunRecord] = []
-        cursor = after
-        inspected = 0
-        while len(items) < limit and inspected < max_inspected:
-            # Minimum rows per projection read, so a small item target does
-            # not force one round trip per ineligible row.
-            requested = min(
-                max(limit, DEFAULT_PAGE_SIZE),
-                max_inspected - inspected,
-            )
-            run_ids = await self._continuations.list_hitl_paused_run_ids(
-                limit=requested,
-                project_id=project_id,
-                after=cursor,
-            )
-            if not run_ids:
-                return ScanPage(
-                    items=items,
-                    resume_after=cursor,
-                    inspected=inspected,
-                    exhausted=True,
-                )
-            for run_id in run_ids:
-                inspected += 1
-                candidate = await self._hitl_paused_candidate(run_id, workspace_id)
-                if candidate is None:
-                    # Deleted between the index read and this read: there is
-                    # no row left to page past, the same disposition
-                    # `scan_due_page` gives its own vanished candidates.
-                    continue
-                cursor, record = candidate
-                if record is None:
-                    continue
-                items.append(record)
-                if len(items) >= limit:
-                    break
-        return ScanPage(items=items, resume_after=cursor, inspected=inspected)
-
-    async def _hitl_paused_candidate(
-        self,
-        run_id: str,
-        workspace_id: str | None,
-    ) -> tuple[tuple[str, str], DurableRunRecord | None] | None:
-        """One projection row's keyset position, and its record if eligible.
-
-        The record is not ``None`` only when the assembled canonical Run
-        still agrees with the projection: PAUSED, carrying a human pause,
-        and inside the caller's Workspace when one is given (#1109, #1240).
-        ``None`` means the row contributes no position: its Run was deleted
-        between the index read and this read, the same disposition
-        ``scan_due_page`` gives its own vanished candidates.
-        """
-        record = await self.get(run_id)
-        if record is None:
-            return None
-        position = (cursor_time(record.run.created_at), record.run_id)
-        if (
-            record.run.status is RunStatus.PAUSED
-            and record_has_hitl_pause(record)
-            and (workspace_id is None or record.run.workspace_id == workspace_id)
-        ):
-            return position, record
-        return position, None
 
     async def list_due(
         self,
@@ -1038,7 +897,6 @@ class CanonicalDurableRunStore:
     async def list_hitl_due(
         self,
         *,
-        authorization: HitlAuthorization,
         now: datetime,
         limit: int = 100,
     ) -> list[DurableRunRecord]:
@@ -1052,23 +910,12 @@ class CanonicalDurableRunStore:
         runs, and the page is widened past any candidate that still does not
         qualify, rather than re-reading one permanent prefix forever.
         """
-        require_hitl_authorization(authorization)
-        if limit <= 0:
-            return []
         requested = limit
         due: list[DurableRunRecord] = []
         for _ in range(_CANDIDATE_PAGES):
             run_ids = await self._continuations.list_hitl_due_run_ids(now=now, limit=requested)
             due = []
             for record in await self._assemble_all(run_ids):
-                workspace_id = record.run.workspace_id
-                if workspace_id not in authorization.workspace_ids:
-                    continue
-                if not await authorization.permits(
-                    workspace_id,
-                    consume_evidence=False,
-                ):
-                    continue
                 candidate = await self._reconcile_hitl_due_candidate(record, now)
                 if candidate is not None:
                     due.append(candidate)
@@ -1083,7 +930,7 @@ class CanonicalDurableRunStore:
         now: datetime,
     ) -> DurableRunRecord | None:
         if record.run.status is not RunStatus.PAUSED:
-            repaired = await self._reconcile_run(record.run_id, now)
+            repaired = await self._reconcile_run(record.run_id)
             if repaired:
                 refreshed = await self.get(record.run_id)
                 if refreshed is not None:

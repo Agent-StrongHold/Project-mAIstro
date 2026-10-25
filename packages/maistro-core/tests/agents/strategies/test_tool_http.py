@@ -25,6 +25,20 @@ def _client_factory(handler: Any) -> type[httpx.AsyncClient]:
     return _PatchedClient
 
 
+async def test_call_rejects_shell_syntax_before_http_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        raise AssertionError("invalid command reached backend")
+
+    monkeypatch.setattr(httpx, "AsyncClient", _client_factory(handler))
+    executor = HTTPToolExecutor()
+
+    result = await executor.call("run_pytest", {"path": "tests/; rm -rf /"})
+
+    assert result.startswith("Error: invalid arguments for tool 'run_pytest'")
+
+
 async def test_call_returns_passed_summary_when_passed_true(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

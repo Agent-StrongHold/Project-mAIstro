@@ -19,7 +19,6 @@ import json
 import time
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime, timedelta
-from enum import StrEnum
 from typing import Any, ClassVar, Generic, Literal, NoReturn, Protocol, TypeVar, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, SerializeAsAny
@@ -273,12 +272,6 @@ class BaseNode(Generic[InputT, OutputT]):
     async def _execute(self, inputs: InputT, ctx: NodeContext) -> OutputT:
         """Subclasses implement this. Return the typed output (or raise)."""
         raise NotImplementedError(f"{type(self).__name__}._execute not implemented")
-
-
-def _failure_metadata(exc: Exception) -> dict[str, Any]:
-    """Metadata a raising node attaches to its failed NodeResult, if a mapping."""
-    carried = getattr(exc, "result_metadata", None)
-    return dict(carried) if isinstance(carried, Mapping) else {}
 
 
 class NodeCompositionError(RuntimeError):

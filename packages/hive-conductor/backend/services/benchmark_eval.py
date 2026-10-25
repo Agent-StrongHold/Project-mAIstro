@@ -128,7 +128,6 @@ async def evaluate_code_output(
     ]
     try:
         binding = control_plane_binding(
-            runtime,
             binding_id=f"benchmark-evaluation:{run_id}",
             workspace_id=workspace_id,
             project_id=project_id,

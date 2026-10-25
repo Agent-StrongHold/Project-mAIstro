@@ -37,8 +37,6 @@ from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, cast
 
 from maistro.observability.correlation import bind_execution_context
-from maistro.runs.consumer_claim import ConsumerClaimLost, ConsumerClaimStore
-from maistro.runs.execution import AttemptExecutionService
 from maistro.runs.model import (
     TERMINAL_ATTEMPT_STATUSES,
     AcceptedNodeOutcome,
@@ -208,40 +206,7 @@ class TaskAttemptExecutor:
             workspace_id=run.workspace_id,
             project_id=run.project_id,
         ):
-            deadline_at = (
-                datetime.now(UTC) + timedelta(seconds=self._timeout_s)
-                if self._timeout_s is not None
-                else None
-            )
-            if existing is None and self._claims is not None:
-                assert self._claimed_runs is not None
-                # First dispatch on a claiming store: the QUEUED->RUNNING
-                # transition, the NodeRun and the leased Attempt land in one
-                # transaction (#544). `TaskRunAdmitter.record_transition`
-                # deliberately leaves the Run QUEUED through the receipt's
-                # phase moves so this claim is the only dispatch write —
-                # see this module's sister note in tasks/admission.py (#1114).
-                # A losing dispatcher sees ConsumerClaimLost before any work
-                # runs, which is the duplicate-delivery fence the task
-                # transition fence used to approximate.
-                claim = await self._claims.claim_consumer_run(
-                    run_id,
-                    node_id=node_id,
-                    runtime_id=self._runtime_id,
-                    executor_id=TASK_EXECUTOR_ID,
-                    lease_ttl=DEFAULT_TASK_LEASE_TTL,
-                    deadline_at=deadline_at,
-                )
-                attempt = await self._claimed_runs.execute_claimed(
-                    claim.attempt,
-                    request,
-                    context,
-                    executor=_run,
-                    timeout_s=self._timeout_s,
-                    reconcile_logical=False,
-                )
-                node_run = claim.node_run
-            elif existing is None:
+            if existing is None:
                 node_run, attempt = await self._service.execute_node(
                     run_id,
                     node_id,
@@ -257,17 +222,6 @@ class TaskAttemptExecutor:
                 # the same logical NodeRun, not a second NodeRun. Creating
                 # another NodeRun would say the Run grew a node, which is
                 # false: the Graph has one, and it was tried twice.
-                attempts = await self._runs.list_attempts(existing.node_run_id)
-                if any(attempt.status not in TERMINAL_ATTEMPT_STATUSES for attempt in attempts):
-                    # Physical ownership is decided by the Attempt, not by who
-                    # holds a receipt (#1114): a NodeRun with a live Attempt is
-                    # owned by the worker that claimed it, and a duplicate
-                    # delivery racing the claim must not stack a second
-                    # concurrent Attempt on top of it.
-                    raise ConsumerClaimLost(
-                        f"NodeRun {existing.node_run_id!r} already has an active Attempt; "
-                        "another dispatcher owns this work"
-                    )
                 attempt = await self._service.retry_node(
                     existing.node_run_id,
                     request,

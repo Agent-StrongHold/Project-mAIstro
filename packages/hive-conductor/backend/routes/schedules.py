@@ -458,6 +458,10 @@ async def run_schedule(
 
     A fire that cannot happen is a 409 rather than a silent stamp: the caller
     asked for work to start, and it did not.
+    """
+    if schedule_id not in stores.schedules:
+        raise HTTPException(status_code=404, detail="schedule not found")
+    from services.scheduler import ScheduleAdmissionUnavailable, ScheduleNotFireable, fire_now
 
     The fire's occurrence identity is the caller's `fire_id` (this body) or
     `Idempotency-Key` header — the standard retry identity (#1120).  Two calls
@@ -491,7 +495,4 @@ async def run_schedule(
         # broken. 503 says the dependency is not there and the request may be
         # retried once it is.
         raise HTTPException(status_code=503, detail=str(exc)) from exc
-    fired = stores.schedules.get(schedule_id)
-    if fired is None:
-        raise HTTPException(status_code=404, detail="schedule not found")
-    return fired
+    return stores.schedules[schedule_id]

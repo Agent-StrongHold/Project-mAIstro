@@ -51,8 +51,8 @@ class TestBuildCommand:
         cmd = runner.build_command(
             _session(_FakeSandbox()), [{"role": "user", "content": "fix bug"}]
         )
-        assert cmd.startswith("opencode run --auto ")
-        assert cmd.endswith("'fix bug'") or cmd.endswith("fix bug")
+        assert cmd[:3] == ["opencode", "run", "--auto"]
+        assert cmd[-1] == "fix bug"
 
     def test_model_and_agent_flags(self) -> None:
         runner = OpencodeHarnessRunner(
@@ -61,8 +61,7 @@ class TestBuildCommand:
             agent="build",
         )
         cmd = runner.build_command(_session(_FakeSandbox()), [{"role": "user", "content": "go"}])
-        assert "--model anthropic/claude-opus-4-8" in cmd
-        assert "--agent build" in cmd
+        assert cmd[3:7] == ["--model", "anthropic/claude-opus-4-8", "--agent", "build"]
 
     def test_system_messages_excluded_and_prompt_quoted(self) -> None:
         runner = OpencodeHarnessRunner(sandbox_factory=_factory(_FakeSandbox()))
@@ -74,15 +73,15 @@ class TestBuildCommand:
             ],
         )
         assert "IGNORE ME" not in cmd
-        # the shell-metachar-bearing prompt is quoted as one argument
-        assert "'a b; rm'" in cmd
+        # Shell metacharacters remain data in one argv element.
+        assert cmd[-1] == "a b; rm"
 
     def test_extra_args_passed_through(self) -> None:
         runner = OpencodeHarnessRunner(
             sandbox_factory=_factory(_FakeSandbox()), extra_args=["--variant", "high"]
         )
         cmd = runner.build_command(_session(_FakeSandbox()), [{"role": "user", "content": "x"}])
-        assert "--variant high" in cmd
+        assert cmd[3:5] == ["--variant", "high"]
 
 
 # --- provider surface ---------------------------------------------------------
@@ -112,7 +111,7 @@ class TestProviderSurface:
         assert env["choices"][0]["message"]["content"] == "patched 2 files"
         assert env["exit_code"] == 0
         # the turn ran an opencode invocation inside the sandbox
-        assert sandbox.commands and sandbox.commands[0].startswith("opencode run --auto")
+        assert sandbox.commands and sandbox.commands[0][:3] == ["opencode", "run", "--auto"]
 
 
 # --- microVM wiring (point it at a repo) --------------------------------------
@@ -147,4 +146,7 @@ class TestMicroVMWiring:
         assert env["choices"][0]["message"]["content"] == "vm-ran"
         # opencode ran inside a microVM whose workspace is the pointed-at repo
         assert launcher.specs[-1].workspace == "/repos/app"
-        assert "--model anthropic/claude-opus-4-8" in launcher.specs[-1].command
+        assert launcher.specs[-1].command[3:5] == (
+            "--model",
+            "anthropic/claude-opus-4-8",
+        )

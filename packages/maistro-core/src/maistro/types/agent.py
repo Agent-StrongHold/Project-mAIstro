@@ -27,6 +27,9 @@ class AgentIdentity:
     model_fallbacks: tuple[str, ...] = ()
     model_constraints: dict[str, Any] = field(default_factory=dict)
     tools: tuple[str, ...] = ()
+    # A declaration only narrows path-capable tools; host policy remains the
+    # authoritative ceiling at invocation time.
+    write_scopes: tuple[str, ...] = ()
     skills: tuple[str, ...] = ()
     rules: tuple[str, ...] = ()
     trust_tier: str = "t4"

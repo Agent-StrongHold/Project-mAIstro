@@ -11,7 +11,6 @@ This FastMCP server provides tools for:
 from __future__ import annotations
 
 import asyncio
-import shlex
 from typing import Annotated, Any
 
 import structlog
@@ -21,7 +20,12 @@ from pydantic import Field
 from maistro.observability.metrics import sandbox_containers_active
 from maistro.security.dangerous_tools import is_blocked_path, is_dangerous_command
 from maistro.tools.result import fail, ok
-from maistro.tools.sandbox.docker import SandboxContainer, create_sandbox
+from maistro.tools.sandbox.docker import (
+    CommandContractError,
+    SandboxContainer,
+    create_sandbox,
+    parse_command,
+)
 
 logger = structlog.get_logger()
 
@@ -103,12 +107,20 @@ async def sandbox_exec(
     command: str,
     timeout: Annotated[int, Field(ge=1, le=300)] = 60,
 ) -> dict[str, Any]:
-    """Execute a shell command in the sandbox container.
+    """Execute a structured argv command in the sandbox container.
 
-    Use this for running builds, tests, or scripts. To just inspect a file's
+    Shell syntax is rejected. Use this for running builds, tests, or scripts. To just inspect a file's
     contents use sandbox_read instead — it's cheaper and doesn't risk
     matching a dangerous-command pattern.
     """
+    try:
+        argv = parse_command(command)
+    except CommandContractError as exc:
+        return fail(
+            stdout=f"Blocked: {exc}",
+            error_code="invalid_command_contract",
+            suggested_action="Provide an argv-like command without shell operators or shell interpreters.",
+        )
     violations = is_dangerous_command(command)
     if violations:
         logger.warning("dangerous_command_blocked", command=command, violations=violations)
@@ -119,7 +131,7 @@ async def sandbox_exec(
         )
 
     container = await _get_or_create(workspace)
-    exit_code, output = await container.exec(command, timeout=timeout)
+    exit_code, output = await container.exec(argv, timeout=timeout)
     if exit_code == 0:
         return ok(stdout=output, exit_code=exit_code)
     return fail(
@@ -181,11 +193,11 @@ async def sandbox_glob(workspace: str, pattern: str) -> dict[str, Any]:
     if err := _check_path(pattern):
         return err
     container = await _get_or_create(workspace)
-    safe_pattern = shlex.quote(SandboxContainer._safe_path("/workspace", pattern))
+    safe_pattern = SandboxContainer._safe_path("/workspace", pattern)
     _exit_code, output = await container.exec(
-        f"find /workspace -path {safe_pattern} -type f 2>/dev/null | head -100"
+        ["find", "/workspace", "-path", safe_pattern, "-type", "f"]
     )
-    files = [f for f in output.strip().splitlines() if f] if output else []
+    files = [f for f in output.strip().splitlines() if f][:100] if output else []
     return ok(stdout=output or "No files found", files=files, file_count=len(files))
 
 
@@ -200,12 +212,10 @@ async def sandbox_grep(workspace: str, pattern: str, path: str = ".") -> dict[st
     if err := _check_path(path):
         return err
     container = await _get_or_create(workspace)
-    safe_pattern = shlex.quote(pattern)
-    safe_path = shlex.quote(SandboxContainer._safe_path("/workspace", path))
-    _exit_code, output = await container.exec(
-        f"grep -rn -- {safe_pattern} {safe_path} 2>/dev/null | head -50"
-    )
+    safe_path = SandboxContainer._safe_path("/workspace", path)
+    _exit_code, output = await container.exec(["grep", "-rn", "--", pattern, safe_path])
     matches = _parse_grep_matches(output)
+    matches = matches[:50]
     return ok(stdout=output or "No matches found", matches=matches, match_count=len(matches))
 
 

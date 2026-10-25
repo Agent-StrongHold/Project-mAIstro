@@ -28,6 +28,7 @@ CREATE TABLE agents (
     model_fallbacks TEXT,
     model_constraints TEXT,
     tools TEXT,
+    write_scopes TEXT,
     skills TEXT,
     trust_tier TEXT NOT NULL DEFAULT 't4',
     priority_tier TEXT NOT NULL DEFAULT 'P2',
