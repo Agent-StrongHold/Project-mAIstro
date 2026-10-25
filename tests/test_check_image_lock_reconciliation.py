@@ -85,26 +85,23 @@ def test_parse_expected_names_are_canonicalized(gate):
     assert required == {"some-pkg==1.0"}
 
 
-def test_parse_expected_keeps_every_entry_of_a_forked_conditional_name(gate):
-    # fastmcp 4.1.3 forks beartype by interpreter: both entries are
-    # marker-conditional and BOTH must survive the parse. The original
-    # name-keyed dict kept only the last line, so the fork that ships on
-    # Python <= 3.14 was silently dropped and the reconcile gate branded a
-    # perfectly locked 3.12 image a version skew.
+def test_parse_expected_keeps_every_marker_forked_variant_of_a_name(gate):
+    """#330: a uv.lock forked across python_full_version markers exports one
+    pin per variant; the parse must keep BOTH (a name-keyed dict kept only
+    the last and disowned the image's correct variant)."""
     text = "\n".join(
         [
+            "beartype==0.22.9 ; python_full_version < '3.15' \\",
+            "    --hash=sha256:" + "aa" * 8,
+            "beartype==0.23.1 ; python_full_version >= '3.15' \\",
+            "    --hash=sha256:" + "bb" * 8,
             "fastapi==0.142.2",
-            "beartype==0.22.9 ; python_full_version < '3.15'",
-            "beartype==0.23.1 ; python_full_version >= '3.15'",
             "",
         ]
     )
     required, conditional = gate.parse_expected(text)
     assert required == {"fastapi==0.142.2"}
-    assert conditional == {
-        "beartype==0.22.9",
-        "beartype==0.23.1",
-    }
+    assert conditional == {"beartype==0.22.9", "beartype==0.23.1"}
 
 
 @pytest.mark.parametrize("text", ["", "# only comments\n", "\n\n"])
@@ -339,6 +336,73 @@ def test_conditional_pin_version_is_checked_when_it_ships(gate, tmp_path, monkey
     assert gate.main() == 1
     out = capsys.readouterr().out
     assert "version mismatch     : secretstorage==3.6.0 (image) != secretstorage==3.5.0" in out
+
+
+# The #330 regression, in the exact shape the lock produced it: beartype is
+# forked by python_full_version markers, the export lists BOTH pins, and a
+# py3.13 image correctly installs 0.22.9. The first cut of this gate keyed
+# expected pins by bare name, so the two variants collided in one dict slot
+# and the image was compared against whichever variant set iteration left
+# there — a green gate under one PYTHONHASHSEED and red under the next.
+_MARKER_FORKED_EXPORT = (
+    "beartype==0.22.9 ; python_full_version < '3.15' \\\n"
+    "    --hash=sha256:" + "aa" * 8 + "\n"
+    "beartype==0.23.1 ; python_full_version >= '3.15' \\\n"
+    "    --hash=sha256:" + "bb" * 8 + "\n"
+    "fastapi==0.142.2\n"
+)
+
+
+def test_marker_forked_variants_image_matching_one_variant_reconciles(
+    gate, tmp_path, monkeypatch, capsys
+):
+    expected = _write_expected(tmp_path, _MARKER_FORKED_EXPORT)
+    _install_docker(monkeypatch, gate, _Docker(_dump("beartype==0.22.9", "fastapi==0.142.2")))
+    monkeypatch.setattr(sys, "argv", _argv(expected))
+    assert gate.main() == 0
+    out = capsys.readouterr().out
+    assert "ships exactly the locked set" in out
+    assert "version mismatch" not in out
+
+
+def test_marker_forked_variants_other_variant_also_reconciles(gate, tmp_path, monkeypatch):
+    """The >= '3.15' image is equally correct — variant matching is symmetric."""
+    expected = _write_expected(tmp_path, _MARKER_FORKED_EXPORT)
+    _install_docker(monkeypatch, gate, _Docker(_dump("beartype==0.23.1", "fastapi==0.142.2")))
+    monkeypatch.setattr(sys, "argv", _argv(expected))
+    assert gate.main() == 0
+
+
+def test_marker_forked_variants_version_matching_neither_is_a_skew(
+    gate, tmp_path, monkeypatch, capsys
+):
+    expected = _write_expected(tmp_path, _MARKER_FORKED_EXPORT)
+    _install_docker(monkeypatch, gate, _Docker(_dump("beartype==0.22.8", "fastapi==0.142.2")))
+    monkeypatch.setattr(sys, "argv", _argv(expected))
+    assert gate.main() == 1
+    out = capsys.readouterr().out
+    assert (
+        "version mismatch     : beartype==0.22.8 (image) != one of beartype==0.22.9, beartype==0.23.1"
+    ) in out
+    # Named once, as a mismatch — not also as a missing/extra pair.
+    assert "locked, not in image" not in out
+    assert "in image, not locked" not in out
+
+
+def test_reconcile_variance_is_order_independent_over_forked_variants(gate):
+    """Pure-logic pin: the verdict cannot depend on which variant a set
+    iteration happens to hand the name-keyed comparison first."""
+    conditional = {"beartype==0.22.9", "beartype==0.23.1"}
+    actual = {"beartype==0.22.9"}
+    for _ in range(50):
+        missing, extra, skewed = gate.reconcile_variance(set(), set(conditional), set(actual))
+        assert (missing, extra, skewed) == ([], [], [])
+    missing, extra, skewed = gate.reconcile_variance(set(), conditional, {"beartype==0.22.8"})
+    assert missing == [] and extra == []
+    assert skewed == [
+        "beartype==0.22.8 (image) != one of beartype==0.22.9, beartype==0.23.1"
+        " (beartype==0.22.9 or beartype==0.23.1)"
+    ]
 
 
 def test_conditional_pin_with_multiple_marker_versions_accepts_either_branch(
