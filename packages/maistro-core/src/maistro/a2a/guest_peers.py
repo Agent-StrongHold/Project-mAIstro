@@ -15,7 +15,7 @@ from maistro.a2a.delegation_context import (
     DelegationContextError,
     validate_goal_binding,
 )
-from maistro.a2a.inbound import InboundWarden, default_warden, scan_inbound
+from maistro.a2a.inbound import InboundWarden
 from maistro.http import shared_client
 
 logger = logging.getLogger("maistro.a2a.guest_peers")
@@ -262,22 +262,3 @@ class GuestPeerManager:
                 error=str(exc),
                 peer_url=peer.peer_url,
             )
-
-        await self._audit.log_delegation(
-            peer.peer_name,
-            agent_id,
-            f"task_id={data.get('task_id', '')}",
-        )
-        submitted = DelegationResult(
-            task_id=data.get("task_id", ""),
-            peer_name=peer.peer_name,
-            status="submitted",
-            peer_url=peer.peer_url,
-            # Remote Agent provenance, when the peer reports it. Absent
-            # stays absent; the canonical identity is unaffected either way.
-            agent_version=str(data.get("agent_version") or ""),
-            protocol_version=str(data.get("protocol_version") or ""),
-        )
-        if idempotency_key and submitted.task_id:
-            self._idempotent_receipts[(peer.peer_name, idempotency_key)] = submitted
-        return submitted

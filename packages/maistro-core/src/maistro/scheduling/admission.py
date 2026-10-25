@@ -927,38 +927,6 @@ class ScheduleRunAdmitter:
             for scheduled_for, run in found.items()
             if scheduled_for in by_moment
         }
-
-        disable = self._exhausted_after(schedule, fires=len(admitted))
-        # `next_due_at` is recomputed only when the whole batch landed and
-        # nothing was held back. A partial batch leaves occurrences owed, and
-        # `evaluate()`'s answer assumed all of them fired; a buffered
-        # occurrence is owed the same way (#1199).
-        complete = len(consumed) == len(decision.fires) and not _owes(decision)
-        await self._schedules.record_fire(
-            schedule.schedule_id,
-            # The newest occurrence *admitted*, not `now`. This value becomes
-            # the lower bound of the next enumeration, so `now` would carry the
-            # cursor past occurrences this batch stopped short of and lose them
-            # permanently — the exact failure the ordering above prevents.
-            fired_at=consumed[-1].scheduled_for,
-            # The newest Run, matching the cursor being the newest fire.
-            # `Schedule.last_run_id` is a pointer to the latest occurrence, not
-            # a history of them; the history is on the Runs, each naming this
-            # schedule.
-            # The newest consumed occurrence may have been claimed by another
-            # admitter. Its resolved winner is the truthful linkage; leaving an
-            # older id in place makes `_canonical_active_run()` lie about live
-            # work after a crash between Run creation and this write.
-            run_id=consumed_run_ids[-1],
-            next_due_at=decision.next_due_at if complete else schedule.next_due_at,
-            fires=len(admitted),
-            disable=disable,
-        )
-        return ScheduleAdmission(
-            already_fired=(now,),
-            reconciled_run_id=winner.run_id,
-        )
-
     async def _resolve_duplicate_winner(
         self,
         exc: DuplicateOccurrence,
