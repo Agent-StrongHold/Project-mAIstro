@@ -181,7 +181,14 @@ def bundled_pack_dir() -> _Path:
     return _Path(__file__).resolve().parent / "catalog"
 
 
-def _as_pack(raw: dict[str, object]) -> _LegacyDomainPack:
+def _require_contract_fields(raw: dict[str, object]) -> str:
+    """Check the extension rule and return the pack id it declares.
+
+    A pack must declare every required field (notably a graph template and a
+    rubric catalog) and must never claim a backend name: `canvas`, `atelier`,
+    and `design_run` are backends, not pack ids. All packs share the one
+    canonical Run identity.
+    """
     missing = [name for name in LEGACY_REQUIRED_FIELDS if not raw.get(name)]
     if missing:
         raise PackContractError(f"pack missing required fields: {missing}")
@@ -190,20 +197,29 @@ def _as_pack(raw: dict[str, object]) -> _LegacyDomainPack:
         raise PackContractError(f"{pack_id} is a backend, not a pack_id")
     if raw.get("run_identity", "canonical") != "canonical":
         raise PackContractError("packs must share canonical Run identity")
+    return pack_id
+
+
+def _rubric_dimensions(raw: dict[str, object]) -> tuple[_LegacyRubricDimension, ...]:
+    """Parse the manifest's rubric catalog; an empty catalog is a contract error."""
     dims_raw = raw["rubric_dimensions"]
-    if not isinstance(dims_raw, list) or not dims_raw:
-        raise PackContractError("pack must declare a rubric catalog")
+    entries = dims_raw if isinstance(dims_raw, list) else []
     dims = tuple(
         _LegacyRubricDimension(id=str(d["id"]), label=str(d["label"]))
-        for d in dims_raw
+        for d in entries
         if isinstance(d, dict)
     )
     if not dims:
         raise PackContractError("pack must declare a rubric catalog")
+    return dims
+
+
+def _as_pack(raw: dict[str, object]) -> _LegacyDomainPack:
+    pack_id = _require_contract_fields(raw)
     return _LegacyDomainPack(
         pack_id=pack_id,
         graph_template=str(raw["graph_template"]),
-        rubric_dimensions=dims,
+        rubric_dimensions=_rubric_dimensions(raw),
         backends=tuple(str(x) for x in raw["backends"]),  # type: ignore
         artifact_kinds=tuple(str(x) for x in raw["artifact_kinds"]),  # type: ignore
         fence_points=tuple(str(x) for x in raw["fence_points"]),  # type: ignore
