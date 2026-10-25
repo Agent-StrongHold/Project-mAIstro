@@ -111,7 +111,10 @@ async def create_sandbox(
         env=dict(env or {}),
     )
     instance = await backend.spawn(config=config)
-    effective_ttl = settings.timeout if settings is not None else (ttl or 3600)
+    # The guest's init process only lives for config.timeout_s (post-clamp), so
+    # the cache TTL must never exceed that lifetime.
+    requested_ttl = settings.timeout if settings is not None else (ttl or 3600)
+    effective_ttl = min(requested_ttl, config.timeout_s)
     return CanonicalSandboxContainer(backend, instance, str(host_path), effective_ttl)
 
 
