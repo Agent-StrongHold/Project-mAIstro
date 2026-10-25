@@ -394,8 +394,8 @@ def _dispatch_tool(session: BuilderSession, name: str, inputs: dict[str, Any]) -
         if result is not None:
             return result
         if name == "run_command":
-            # TODO(#329 / ADR-090726-9a4e): `requires_human_approval` is
-            # model-authored — the same model that wants to run the command
+            # Tracked follow-up (#329 / ADR-090726-9a4e): `requires_human_approval`
+            # is model-authored — the same model that wants to run the command
             # decides whether to flag it — so the gate only binds when the
             # model cooperates. Phase 1 deliberately does not change these
             # semantics; the ADR routes the builders' approval gate toward
