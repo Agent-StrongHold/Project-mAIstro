@@ -123,10 +123,11 @@ SENSITIVE_PATH_PATTERNS: tuple[str, ...] = (
     # question: it makes a containment decision (Codex, #513).
     "maistro/config/settings.py",
     "maistro/tools/sandbox/",
-    # The canonical sandbox substrate (#76): selector, policy ladder, backends,
-    # fence, credential boundary. Containment-critical; a candidate editing it
-    # can weaken isolation without touching tools/sandbox/.
-    "maistro/sandbox/",
+    # `maistro/sandbox/` — the canonical sandbox substrate (#76): selector,
+    # policy ladder, backends, fence, credential boundary — is already listed
+    # in the convergence-closure enumeration below; listing it twice here
+    # broke the uniqueness invariant pinned by
+    # TestItStaysASurfaceAndNotAWildcard.test_the_patterns_are_unique.
     # Opening a pull request is a promotion path: it is how a candidate's diff
     # leaves the sandbox and reaches human reviewers, and a change here can
     # decide which branch or repository receives it.
