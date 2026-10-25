@@ -341,14 +341,6 @@
         "quality/license-policy.json"
       ],
       "reason": "Reviewed legal license policy (#363): dependency-class evidence requirements, surface classifications, and per-component reviewed resolutions are policy whose change is the substantive, reviewable legal decision; the inventory gate reads the candidate copy as the landing state, so a prior-tree oracle would predate the review it must not substitute for."
-    },
-    {
-      "id": "ac-state-ledger",
-      "kind": "folded_notes",
-      "paths": [
-        "quality/ac-state.json"
-      ],
-      "reason": "Aggregate acceptance-state ledger; appended by verify/repair workers each round (worker-written state, not policy)."
     }
   ]
 }
