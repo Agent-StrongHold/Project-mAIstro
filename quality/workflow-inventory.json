@@ -19,8 +19,8 @@
       "id": "codeql",
       "file": ".github/workflows/codeql.yml",
       "disposition": "ACTIVE",
-      "triggers": ["pull_request", "push", "schedule"],
-      "rationale": "GitHub CodeQL static analysis over the Python code, on PRs, pushes to main and a weekly schedule."
+      "triggers": ["pull_request", "push", "schedule", "workflow_dispatch"],
+      "rationale": "GitHub CodeQL static analysis over Actions, JavaScript/TypeScript and Python, on main-targeted PRs, pushes to main, a weekly schedule and opt-in manual verification of a selected branch."
     },
     {
       "id": "compliance-evidence",
@@ -104,9 +104,16 @@
     {
       "id": "mutation",
       "file": ".github/workflows/mutation.yml",
-      "disposition": "MANUAL_DIAGNOSTIC",
-      "triggers": ["workflow_dispatch"],
-      "rationale": "Full cosmic-ray mutation run on demand; the PR-blocking mutation subset lives in quality.yml, so this is the deep-measurement diagnostic."
+      "disposition": "ACTIVE",
+      "triggers": ["pull_request", "workflow_dispatch"],
+      "rationale": "Diff-scoped mutation gate on pull requests that touch Python: mutates the changed lines of changed mutation-critical files (quality/mutation-critical-files.json) with the tests coverage says execute each line, and fails fast on the first un-baselined survivor. On-demand dispatch reruns the gate."
+    },
+    {
+      "id": "mutation-nightly",
+      "file": ".github/workflows/mutation-nightly.yml",
+      "disposition": "ACTIVE",
+      "triggers": ["schedule", "workflow_dispatch"],
+      "rationale": "Nightly full-tree mutation measurement of the critical set: sharded by stable packet identity, publishes killed/survived/timeout/no-coverage/error counts plus candidate baseline/history artifacts; on-demand dispatch reruns either."
     },
     {
       "id": "quality",

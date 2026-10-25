@@ -123,6 +123,40 @@ def test_reviewed_resolution_closes_missing_metadata(gate, tmp_path):
     assert inventory["surfaces"][0]["components"][0]["license_status"] == "reviewed"
 
 
+def test_shipped_policy_resolves_the_research_image_markdown_pdf_dependency(gate):
+    """The hosted container gate fails on pkg:pypi/markdown-pdf@1.5 without this row.
+
+    markdown-pdf 1.5 (transitive via browser-use, shipped in
+    maistro-engine-research) carries ``License: UNKNOWN`` wheel metadata, so
+    syft reports no license and the fail-closed gate demands a reviewed
+    resolution. ``quality/*.json`` merges drop rows silently, so pin the row
+    and run the real policy through the real classification path using the
+    exact identity/bom-ref shape the CI SBOM carried.
+    """
+    policy = json.loads((ROOT / "quality/license-policy.json").read_text(encoding="utf-8"))
+    rows = [
+        r for r in policy["reviewed_resolutions"] if r.get("identity") == "pkg:pypi/markdown-pdf@*"
+    ]
+    assert len(rows) == 1
+    unknown: list[str] = []
+    record, _ = gate._component_record(
+        "maistro-engine-research",
+        {
+            "bom-ref": "pkg:pypi/markdown-pdf@1.5?package-id=ci-shape",
+            "purl": "pkg:pypi/markdown-pdf@1.5",
+            "name": "markdown-pdf",
+            "version": "1.5",
+            "type": "library",
+        },
+        policy["reviewed_resolutions"],
+        unknown,
+    )
+    assert unknown == []
+    assert record["license_status"] == "reviewed"
+    assert record["licenses"] == [rows[0]["license"]]
+    assert record["legal_class"] == "other"
+
+
 def test_more_specific_resolution_overrides_class_wildcard(gate, tmp_path):
     """A targeted copyleft record must beat a class-level resolution.
 

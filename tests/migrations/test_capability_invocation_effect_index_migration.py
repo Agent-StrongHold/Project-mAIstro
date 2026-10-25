@@ -208,14 +208,19 @@ def test_effect_claim_revision_follows_the_chain_tip() -> None:
     # develop's #358 audit cursor indexes follow that landed revision as
     # `062`. The Goal migration appends as `063`; installed-base upgrade
     # tests cover the preserved 056/057/061 identities and forward upgrade.
-    # #12's live-Workspace-Persona table appends past the Goal store as
-    # `064`, #836's durable legacy replay acknowledgement renumbers past it
-    # as `065`, and the durable delivery receipts (#1060) append past that as
-    # `066`, so the single head is `066`.
-    assert directory.get_heads() == ["066"]
+    # #1095's legacy-principal ownership migration appends after develop's
+    # landed tip: `064_canonical_personas`, `065_event_replay_cursors`,
+    # `066_durable_delivery_receipts` and `067_delegation_grants` keep the
+    # merged identities develop already shipped — a landed trunk migration
+    # never moves, and redrawing them would leave databases stamped at
+    # develop's `066` never executing the new revision — so it takes `068`,
+    # one linear head.
+    assert directory.get_heads() == ["068"]
     assert directory.get_revision("064").down_revision == "063"
     assert directory.get_revision("065").down_revision == "064"
     assert directory.get_revision("066").down_revision == "065"
+    assert directory.get_revision("067").down_revision == "066"
+    assert directory.get_revision("068").down_revision == "067"
     walked = {item.revision for item in directory.walk_revisions("base", "062")}
     assert {
         "034_canonical_run_effect_claim",

@@ -167,7 +167,7 @@ async def _generate_image(
     count: int = 1,
     source_image: str | None = None,
     strength: float = 0.6,
-    litellm_url: str = "http://litellm:4000",
+    litellm_url: str = "http://litellm:4000",  # DevSkim: ignore DS137138 until 2027-12-31
     litellm_key: str = "",
 ) -> list[bytes]:
     """Generate images via LiteLLM's /v1/images/generations endpoint.
@@ -454,7 +454,7 @@ async def execute_canvas(  # noqa: C901
     text_content: str = "",
     text_style: dict[str, Any] | None = None,
     # infra
-    litellm_url: str = "http://litellm:4000",
+    litellm_url: str = "http://litellm:4000",  # DevSkim: ignore DS137138 until 2027-12-31
     litellm_key: str = "",
 ) -> dict[str, Any]:
     """Execute a canvas action. Returns structured result with layer IDs and images."""

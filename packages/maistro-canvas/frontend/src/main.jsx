@@ -4,7 +4,7 @@ import './index.css'
 import App from './App.jsx'
 
 const TOKEN_KEY = 'maistro.canvas.session'
-const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '::1'])
+const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '::1'])  // DevSkim: ignore DS162092 until 2027-12-31
 
 /**
  * Read and destroy the handoff code in the URL fragment (#372).

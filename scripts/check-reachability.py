@@ -64,6 +64,13 @@ _EXCLUDED_PACKAGE_PYTHON = frozenset(
         # reachability authorization (two-merge rule); classifying it keeps the
         # source-universe honest without expanding the ratchet baseline.
         "packages/maistro-core/src/maistro/runs/admission_identity.py",
+        # `packages/maistro-core/src/maistro/tasks/admission_codec.py` is an
+        # intentionally unreachable contract leaf (#1893): nothing imports it
+        # yet and a later, separately reviewed integration (the C consumer
+        # leaf) lands the runtime consumer. Classified here rather than
+        # dispositioned unreachable for the same two-merge-rule reason as
+        # admission_identity.py above.
+        "packages/maistro-core/src/maistro/tasks/admission_codec.py",
         # Developer utilities.
         "packages/hive-conductor/run_hill_climb.py",
         "packages/maistro-evolve/examples/builders_swebench_live.py",
@@ -246,6 +253,13 @@ DYNAMIC_ROOTS = (
     # precedent for an external launcher naming the package. __main__ imports
     # cli.main, so this root also carries the console-script surface.
     "maistro_ext_harness.__main__",
+    # The built-in Canvas worker service (#93/SPEC-203): the `maistro-canvas-worker`
+    # console script (packages/maistro-canvas pyproject [project.scripts]) that a
+    # supported deployment runs as its own process — compose service, systemd
+    # unit, Kubernetes Deployment. No in-tree module imports it, by design: a
+    # second worker process sharing the app's import graph is exactly the
+    # double-scheduler this service exists to avoid.
+    "maistro_canvas.canvas.worker_service",
 )
 
 

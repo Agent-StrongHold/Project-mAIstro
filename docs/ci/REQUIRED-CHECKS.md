@@ -102,7 +102,9 @@ wait forever for an `Expected` result.
 | CI | `Compliance registry` | every PR |
 | CI | `cross-product-parity` | every PR |
 | CI | `docker-build` | every PR |
+| CI | `docker-rebuild-compare` | every PR |
 | CI | `durable-events` | every PR |
+| CI | `hive-conductor-compose-durability` | every PR |
 | CI | `hive-conductor-e2e` | every PR |
 | CI | `hive-conductor-e2e-ui` | every PR |
 | CI | `lint-and-type-check` | every PR |
@@ -125,6 +127,7 @@ wait forever for an `Expected` result.
 | Integration Scope | `integration-scope` | every PR |
 | Registry CI | `Validate ADR/spec front-matter` | every PR |
 | Vulture Ratchet | `exact-debt-ledger` | every PR |
+| mutation | `Mutation gate (changed critical lines)` | paths |
 | quality | `Coverage gate (publish-set floor + diff coverage)` | every PR |
 | quality | `Quality / Acceptance state` | every PR |
 | quality | `Quality / Agent store writes` | every PR |
