@@ -1,226 +1,355 @@
-# Workspace cutover — finish plan
+# Workspace cutover — finish plan (v2)
 
-**Status:** working plan for closing the open M3 cutover lane after [#2326](https://github.com/Agent-StrongHold/Project-mAIstro/pull/2326)  
-**Parents:** [#1046](https://github.com/Agent-StrongHold/Project-mAIstro/issues/1046), [#804](https://github.com/Agent-StrongHold/Project-mAIstro/issues/804), [#7](https://github.com/Agent-StrongHold/Project-mAIstro/issues/7)  
-**Contract:** [`WORKSPACE-CUTOVER-PLAN.md`](WORKSPACE-CUTOVER-PLAN.md) (Phase 1–2 + retirement ledger)  
-**Rule:** ship bounded PRs; do not close an epic until every child AC is checked with evidence; never invent a second lifecycle store.
+> **For agentic workers:** implement **one PR at a time** from the ordered task
+> lists below. Prefer `subagent-driven-development` / `executing-plans`. Do not
+> start a later track until its **Entry gate** is green. Close GitHub issues only
+> via the **Issue close protocol**.
+
+**Goal:** Finish every remaining open M3 Workspace cutover issue that this
+lane owns, without inventing second lifecycle stores, and without closing
+epics from partial slices.
+
+**Architecture:** Workspaces surfaces are **projections** over canonical
+Goal/Run/HITL/Approval/capability/session services. The retirement ledger
+(`quality/workspace-retirement.json`) only shrinks when a replacement AC is
+proven in the same PR that deletes the asset. Contract:
+[`WORKSPACE-CUTOVER-PLAN.md`](WORKSPACE-CUTOVER-PLAN.md).
+
+**Tech stack:** hive-conductor FastAPI + React (generated OpenAPI client),
+`maistro.goals` / Run inspection seams, Playwright surface-truth, pytest +
+`@pytest.mark.ac`, `scripts/check-workspace-retirement.py`.
+
+**Parents:** [#1046](https://github.com/Agent-StrongHold/Project-mAIstro/issues/1046),
+[#804](https://github.com/Agent-StrongHold/Project-mAIstro/issues/804),
+[#7](https://github.com/Agent-StrongHold/Project-mAIstro/issues/7),
+[#449](https://github.com/Agent-StrongHold/Project-mAIstro/issues/449).
 
 ---
 
-## Current position
+## Why v1 of this plan was wrong
 
-| Item | State |
+| Mistake | Correction |
 |---|---|
-| #1048 Home | Closed |
-| #776 / #1047 user-model prerequisites | Closed |
-| #2326 Fixem slices | Open + squash automerge; CI must finish |
-| #65 / #1036 / #1049 / #1050 / #1822 | Still **open** — #2326 only landed slices, not full issue close |
-| #2273 / #2274 / #2275 / #2278 / #1051 / #82 / #804 | Open |
-
-#2326 already covers: Attention answer + defer/dismiss; Home Goals via inspection; nonterminal Run writers + cancel; restore aggressiveness + learned-landing proposal; chat continuity e2e + abort→interrupted + `turn_id`.
+| Treated #2275 / #2273 / #2278 as greenfield | Shells already ship on `develop` (Evolution unregistered, Capabilities + Approvals routes, e2e present). Remaining work is **closeout + deletes**, not rebuilds. |
+| “Waves” without file-level PR bites | Each open issue → ordered **PRs** with exact files, tests, and exit checks. |
+| Implied #2326 closes #1049/#1050/#1822/#65/#1036 | #2326 is **slice evidence only**. Issues stay open until every AC has a linked PR and a checked box. |
+| Bundled #804 / #1051 / #82 into the same finish lane | Those are **separate tracks** with hard P0 / child-issue gates. Do not start them from this plan’s Track A–C queue. |
+| Calendar sequencing | Difficulty named by **subsystem + invasiveness + gate**, not days. |
 
 ---
 
-## Sequencing principles
+## Global constraints
 
-1. **Land #2326 before branching more Fixem work** — restack children onto the merged develop tip.
-2. **Contract before delete** — a retirement ledger DELETE only lands in the same PR that proves the replacement AC (cutover plan Phase 2).
-3. **One owner per lifecycle** — Attention/Home/Chat project canonical Goal/Run/HITL/Approval; they never terminalize those objects themselves.
-4. **PR shape** — one concern per PR; `@pytest.mark.ac` (or Playwright surface-truth) for every AC claimed; CHANGELOG `(#NNNN)`; inventory note when pytest count moves.
-5. **No calendar estimates** — difficulty is named by subsystems and invasiveness below.
-
----
-
-## Wave 0 — Clear the merge queue
-
-| PR / action | Why |
-|---|---|
-| [#2326](https://github.com/Agent-StrongHold/Project-mAIstro/pull/2326) CI → squash merge | Unblocks every branch below |
-| Sync local `develop`; close Fixem leftovers only after evidence is on `develop` | Avoid double-fixes on a moving tip |
-
-**Exit:** `develop` contains #2326; no open Fixem CI debt.
+- Branch: `cursor/<slice>-8aa9` from current `origin/develop` (after #2326 merges).
+- Base every PR on `develop`. Squash merge. Restack before claiming green.
+- Never terminalize Goal/Run/HITL from Home/Attention/Chat UI code — delegate to canonical owners.
+- Same PR that deletes a ledger page also: removes `App.tsx` route + nav, updates `route-inventory.md`, marks/removes ledger entry, adds e2e that old URL does not revive the module.
+- CHANGELOG `(#NNNN)`; inventory note if pytest count moves; OpenAPI regen if routes change (`dump-hive-openapi.py` → `gen:api`).
+- No day/week estimates in PRs or issue comments.
 
 ---
 
-## Wave 1 — Cheap v1.0 hide / ledger hygiene
+## Issue close protocol
 
-Low invasiveness; unblocks retirement framing.
+For each issue:
 
-| Order | Issue | PR slice | Touches | Done when |
-|---|---|---|---|---|
-| 1.1 | [#2275](https://github.com/Agent-StrongHold/Project-mAIstro/issues/2275) Hide Evolution | Remove nav/route; ledger HIDE + restore owner v1.2; no stub claiming available | `AppShell`, routes, `workspace-retirement` / route-inventory | AC-1…4 checked; e2e nav does not reach Evolution |
-| 1.2 | [#2274](https://github.com/Agent-StrongHold/Project-mAIstro/issues/2274) ledger pass (partial) | Owner + disposition for every v1.0 DELETE row that already has a shipped replacement (Home/Attention/settings slices) | `quality/workspace-retirement.json`, docs | AC-1 progressed; no premature file deletes |
-
-**Exit:** Evolution unreachable in default build; ledger owners named for ready rows.
+1. Comment a table: `AC | evidence PR | test path`.
+2. Check every AC box on the issue body.
+3. Close only when every AC has evidence on **merged** `develop`.
+4. Epics (#1046, #804, #82): close only after **all** required children are closed and epic ACs are checked.
 
 ---
 
-## Wave 2 — Finish the #2326 issue closures (remaining ACs)
+## Ground truth — already on `develop` (do not rebuild)
 
-Each row is one or more focused PRs; close the GitHub issue only when its AC list is fully checked.
-
-### 2.A — [#1822](https://github.com/Agent-StrongHold/Project-mAIstro/issues/1822) chat isolation
-
-| Slice | ACs | Work |
+| Surface | Evidence | Remaining for its owner issue |
 |---|---|---|
-| Stream isolation | AC-3 | Workspace switch mid-stream: abort/ignore foreign frames; UI shows only active Workspace transcript |
-| Authz matrix | AC-5 | Two users × two Workspaces: list/get/append/complete/stream refuse foreign session ids (same status for missing vs foreign) |
-| Migration | AC-6 | Explicit disposition for legacy unscoped sessions (migrate-or-refuse); no broad admin bypass |
-| Honest empty states | AC-7 | Loading / empty / unavailable UI; no mock transcripts |
-| Closeout | AC-1,2,4 | Confirm already-shipped evidence; mark ACs; close #1822 |
+| Home shell (#1048) | `pages/Home.tsx`, home projection routes | Closed |
+| Attention shell (#1049 partial) | `pages/Attention.tsx`, `services/attention.py`, `/attention` | MERGE MessageBoard/Optimizer; escalation; full AC evidence |
+| Settings/landing (#1050 partial) | Profile restore aggressiveness, `lib/landing.ts`, Agent tool keys in chat_completion | Agent-tool e2e parity; recency policy; proposal nag policy; audit/revert |
+| Chat foundation (#1037 closed; #1822 partial) | Workspace chat + continuity work in flight on #2326 | AC-3 stream isolation; AC-5 matrix; AC-6 migration; honest empty |
+| Goal inspection seam (#65/#1036 partial) | `services/goal_inspection.py`, `pages/Goals.tsx`, DagRuns | Home goals wire (#2326); purge `dag_runs` JsonStore truth; provenance UI; cross-product Runs |
+| Capabilities shell (#2273 partial) | `pages/Capabilities.tsx` primary nav; legacy pages still routed | Delete Agents/MCP/Skills/Topology; AC-5/6 e2e |
+| Approvals shell (#2278 partial) | `pages/Approvals.tsx`, `workspace-approvals-shell.spec.ts` | Prove list/approve == CLI; foreign fail-closed; resume e2e via #1036 |
+| Evolution hide (#2275 nearly done) | Route unregistered; nav absent; `navigation-coverage.spec.ts`; inventory HIDE | Confirm ledger restore owner; close issue |
+| #2326 Fixem (not yet on develop) | PR open + automerge | Must merge before Track A branches |
 
-**Subsystems:** `conversation_sessions`, chat routes, `Chat.tsx`, Playwright continuity suite.  
-**Risk:** stream race + authz oracle; keep fail-closed tests first.
-
-### 2.B — [#1050](https://github.com/Agent-StrongHold/Project-mAIstro/issues/1050) landing / settings completion
-
-| Slice | ACs | Work |
-|---|---|---|
-| Agent/API/UI parity for prefs | “hold onto sessions longer”, aggressiveness + default surface via UI **and** Agent tool | Wire Workspace Agent tools to same profile/settings service as Settings UI |
-| Silent apply (optional product call) | Learned default | Either ship silent redirect behind explicit accept-once policy **or** document deferral in issue + cutover plan |
-| Closeout | Remaining checkbox ACs | Evidence matrix; close #1050 |
-
-**Depends on:** #2326 learned-landing + restore already on develop.
-
-### 2.C — [#1049](https://github.com/Agent-StrongHold/Project-mAIstro/issues/1049) Attention completion (largest Wave-2 item)
-
-| Slice | ACs | Work |
-|---|---|---|
-| **MERGE** MessageBoard + OptimizationInbox | Cutover ledger MERGE | Route sources into Attention projection; delete pages/nav when parity proven; redirect old URLs without reviving modules |
-| Priority classes | severity → … → proactive | Extend projection summary + ordering; tests for lexicographic order |
-| Escalation | aging/context promote; no time-only escalate | Durable escalation reasons; inspectable evidence refs |
-| Waiting quality | ranking metadata | Backend fields for rising/valuable; shell indicator consumes them |
-| Agent parity | answer/defer via same contract | Already partial (HITL answer + dismiss); extend for all eligible classes |
-| Closeout | All 12 ACs | Multi-Workspace bleed tests; close #1049 |
-
-**Subsystems:** `services/attention.py`, routes, `Attention.tsx`, MessageBoard/OptimizationInbox delete, retirement ledger.  
-**Invasiveness:** medium–high (UI MERGE + projection model).
-
-### 2.D — [#1036](https://github.com/Agent-StrongHold/Project-mAIstro/issues/1036) + [#65](https://github.com/Agent-StrongHold/Project-mAIstro/issues/65) inspection authority
-
-| Slice | Issue | Work |
-|---|---|---|
-| Projection purity closeout | #1036 AC-1…6 | Audit remaining `dag_runs` JsonStore / finished_at coercion paths; delete product-private terminal overrides |
-| Cross-product inspection | #1036 AC-4 | Builders / schedule / Evolve / Workspace Runs on same seam |
-| Goal UI fidelity | #65 | Exact revision, multi-Run history, no silent Goal completion from Run terminal; retry/HITL provenance |
-| Live survival | both | Restart/reconnect e2e already partial — extend Goal deep-links |
-| Closeout | both | Close #1036 then #65 (UI consumes #1036) |
-
-**Depends on:** #2326 nonterminal writers.  
-**Invasiveness:** high on store retirement; keep projection tests fail-closed.
-
-### 2.E — [#2278](https://github.com/Agent-StrongHold/Project-mAIstro/issues/2278) Approvals UI parity
-
-| Work | Done when |
-|---|---|
-| List/approve/deny/cancel = API/CLI canonical set; foreign ids fail closed; e2e resume visible via #65/#1036 | AC-1…5; no parallel store |
-
-**Depends on:** Wave 2.D seam stable; can parallelize UI against existing HITL/approvals APIs.
+**#2326 (must land first) adds:** Attention HITL answer + defer/dismiss; Home `_goal_items` via `goal_inspection` (not `missions`); nonterminal Run projection writers + cancel; learned-landing proposal; chat continuity/abort/`turn_id`.
 
 ---
 
-## Wave 3 — Capabilities surface + burn-down
-
-| Order | Issue | PR slice | Notes |
-|---|---|---|---|
-| 3.1 | [#2273](https://github.com/Agent-StrongHold/Project-mAIstro/issues/2273) | New Capabilities page over public registry/MCP/skills APIs | One nav entry; trust from host-owned data |
-| 3.2 | #2273 | Delete Agents/MCP/Skills/Topology pages + nav; URL must not revive modules | Same PR or immediate follow-up once AC-5/6 green |
-| 3.3 | [#2274](https://github.com/Agent-StrongHold/Project-mAIstro/issues/2274) | Delete ledger rows whose replacements are proven (Dashboard, MessageBoard, …) | CI refuses new imports of retired modules; route-inventory matches |
-
-**Exit:** Capabilities is the only user-facing surface for those four; retirement ledger shrinks without growing.
-
----
-
-## Wave 4 — Persistent Workspace Agent (#804 lane)
-
-Do **not** start until P0.5 / P0.7–P0.10 prerequisites named in #804 are green (issue body).
-
-| Order | Issue | Focus |
-|---|---|---|
-| 4.1 | [#805](https://github.com/Agent-StrongHold/Project-mAIstro/issues/805) | Goal reconciliation through persistent Agent |
-| 4.2 | [#806](https://github.com/Agent-StrongHold/Project-mAIstro/issues/806) | Durable, event-driven, fenced, restart-safe reconciliation |
-| 4.3 | [#2276](https://github.com/Agent-StrongHold/Project-mAIstro/issues/2276) | `tool_bindings` applied at Agent/Graph dispatch |
-| 4.4 | [#2277](https://github.com/Agent-StrongHold/Project-mAIstro/issues/2277) | Persona swap on API/UI/Agent same path |
-| 4.5 | #804 closeout | Check epic ACs; close epic |
-
-**Invasiveness:** high — runtime, fencing, restart. Prefer engine-first PRs with Conductor thin adapters.
-
----
-
-## Wave 5 — Proactive curation + backlog epic
-
-| Order | Issue | Depends on | Work |
-|---|---|---|---|
-| 5.1 | [#1051](https://github.com/Agent-StrongHold/Project-mAIstro/issues/1051) | #1049 Waiting classes + #1047 user-model | Bounded discovery Runs; scout/curator tiers; budgets; Home/Waiting surfaces; no interrupt-by-default |
-| 5.2 | [#82](https://github.com/Agent-StrongHold/Project-mAIstro/issues/82) (+ children #98–#103 as still open) | Goal inspection (#65) | Backlog DB + UI authority cutover; MERGE Missions/WorkItems |
-| 5.3 | [#1046](https://github.com/Agent-StrongHold/Project-mAIstro/issues/1046) closeout | #1049–#1051 done | Epic AC checklist; close |
-
----
-
-## Wave 6 — Cutover exit (Phase 2)
-
-From the cutover plan exit criteria:
-
-- [ ] Retirement ledger empty of due DELETE rows (or ratified deferrals with owners)
-- [ ] `stores.py` holds no Workspace-relevant `JsonStore` still consumed by shipped surfaces
-- [ ] Raw-fetch / hand-typed frontend ledgers empty or only waived pre-v1.0 with owners
-- [ ] `KNOWN-GAPS.md` no longer lists Conductor in-memory Workspace state as accepted
-- [ ] Milestone [#7](https://github.com/Agent-StrongHold/Project-mAIstro/issues/7) / initiative [#449](https://github.com/Agent-StrongHold/Project-mAIstro/issues/449) can close or re-scope leftovers to v1.1 explicitly
-
----
-
-## Parallelism map
+## Track map (do these in order; parallel only where marked)
 
 ```
-Wave0 #2326 merge
-    │
-    ├─► Wave1 #2275 / ledger owners          (parallel)
-    │
-    ├─► Wave2.A #1822  ──┐
-    ├─► Wave2.B #1050  ──┼─► Wave2.C #1049 MERGE+escalation
-    ├─► Wave2.D #1036→#65 ┘        │
-    │         │                    │
-    │         └─► Wave2.E #2278    │
-    │                              ▼
-    └─► Wave3 #2273 → #2274 ◄──────┘
-              │
-              ▼
-         Wave4 #805/#806/#2276/#2277 → #804
-              │
-              ▼
-         Wave5 #1051 → #82 → #1046
-              │
-              ▼
-         Wave6 cutover exit
+Track 0  Land #2326
+   │
+   ├─ Track A  Close Fixem issues (#1822, #1050, #1049, #1036→#65, #2278)   ◄── active finish lane
+   │     A1∥A2∥A4 first; A3 (#1049 MERGE) after A1/A2 stable; A5 after A4
+   │
+   ├─ Track B  Delete / hide leftovers (#2275 close, #2273 delete, #2274 burn)  ◄── can ∥ Track A after A0
+   │
+   ├─ Track C  Honesty leftovers (#2309 CONNECT, #2323 park)                   ◄── can ∥ A/B
+   │
+   ├─ Track D  Persistent Agent (#2276, #2277, #805, #806 → #804)              ◄── HARD GATE: P0.5/7–10
+   │
+   ├─ Track E  Proactive + backlog (#1051, #100/#102 → #82)                    ◄── GATE: #1049 + #65
+   │
+   └─ Track F  Epic + cutover exit (#1046, ledger empty, KNOWN-GAPS)
 ```
 
-Safe parallel pairs after Wave 0: **(2.A ∥ 2.B ∥ 2.D)** and **(1.1 ∥ early 2.A)**.  
-Serialize: **#1049 MERGE before deleting MessageBoard**, **#2273 before four-page delete**, **#1036 before claiming #65 done**, **#805 before #806**.
+---
+
+# Track 0 — Land #2326
+
+**Entry:** none. **Exit:** squash-merged to `develop`; local `git fetch origin develop`.
+
+- [ ] Confirm CI green + automerge completes on [#2326](https://github.com/Agent-StrongHold/Project-mAIstro/pull/2326)
+- [ ] `git fetch origin develop && git checkout -B develop origin/develop`
+- [ ] Spot-check on develop: `goal_inspection` used from `home_projections._goal_items`; Attention dismiss route + OpenAPI types present
 
 ---
 
-## Per-PR checklist (every slice)
+# Track A — Finish Fixem-owned issues
 
-1. Branch `cursor/<slice>-8aa9` from current `develop`.
-2. Implement + tests (pytest and/or Playwright surface-truth).
-3. `uv run ruff` / scoped pytest; frontend eslint budget if UI.
-4. CHANGELOG `(#NNNN)`; inventory note if suite count changes; retirement ledger row if deleting.
-5. PR → `develop`; squash; only then check parent issue AC boxes with links to PR evidence.
-6. Do not close epics from a partial child.
+**Entry:** Track 0 done.  
+**Exit:** #1822, #1050, #1049, #1036, #65, #2278 **closed** with evidence comments.
+
+## PR A1 — #1822 remaining isolation ACs
+
+**Closes toward:** [#1822](https://github.com/Agent-StrongHold/Project-mAIstro/issues/1822) AC-3, AC-5, AC-6, AC-7 (confirm AC-1/2/4 from #2326).
+
+**Files:**
+- Modify: `packages/hive-conductor/frontend/src/pages/Chat.tsx` (abort/ignore foreign Workspace stream frames on switch)
+- Modify: `packages/hive-conductor/backend/routes/` conversation/session handlers (authz matrix; migration disposition)
+- Test: `packages/hive-conductor/tests/e2e/workspace-chat-continuity.spec.ts` (or sibling)
+- Test: backend pytest for foreign session id → same status as missing; migration path
+
+**Steps:**
+- [ ] Write failing e2e: Workspace A streaming → switch to B → only B transcript; A frames discarded
+- [ ] Write failing authz tests: user1 cannot list/get/stream user2 session (guessed UUID)
+- [ ] Implement stream cancellation + session-scoped checks
+- [ ] Document/migrate unscoped legacy sessions (refuse or attach; no admin widen)
+- [ ] Honest loading/empty/unavailable UI states (no mock rows)
+- [ ] Evidence comment on #1822; check ACs; close if complete
+
+**Invasiveness:** medium (stream race + authz).
 
 ---
 
-## Explicit non-goals (keep out of this finish plan)
+## PR A2 — #1050 Agent/UI/API preference parity + policy holes
 
-- Stronghold hard tenancy (downstream)
-- Evolution restore (v1.2 / #2275 restore owner)
-- RSI containment epic (#50 / M5) except where #1036 needs Evolve Runs on the inspection seam
-- Silent learned landing redirect unless product explicitly accepts it in Wave 2.B
+**Closes toward:** [#1050](https://github.com/Agent-StrongHold/Project-mAIstro/issues/1050).
+
+**Files:**
+- Modify: `packages/hive-conductor/backend/services/workspace_preferences.py`
+- Modify: `packages/hive-conductor/backend/services/chat_completion.py` (Agent tools already partially wired)
+- Modify: `packages/hive-conductor/frontend/src/lib/landing.ts`, `pages/Profile.tsx`
+- Test: `backend/tests/test_workspace_landing_preference.py`, landing e2e
+
+**Steps:**
+- [ ] Prove `"hold onto my sessions longer"` (Agent or UI) expands restore window via the same preference key
+- [ ] Recency policy: absolute absence **and** prior-session duration (failing unit tests first)
+- [ ] Learned-default proposal: reject/ignore → no nag every return (cooldown stored on profile)
+- [ ] Product call in PR: silent apply of learned default = ship behind explicit accept **or** defer to issue note (do not silently decide)
+- [ ] Agent settings changes: audit event + reversible; cannot grant new scopes
+- [ ] Evidence comment; close #1050 when all ACs checked
+
+**Invasiveness:** medium (policy + Agent tool).
 
 ---
 
-## Immediate next action
+## PR A3 — #1049 MERGE MessageBoard + OptimizationInbox + escalation
 
-1. Wait for [#2326](https://github.com/Agent-StrongHold/Project-mAIstro/pull/2326) automerge.  
-2. Open Wave 1.1 (`#2275` hide Evolution) and Wave 2.A (`#1822` AC-3/5) as two PRs in parallel.  
-3. Queue Wave 2.C `#1049` MERGE as the first large product PR after those land.
+**Closes toward:** [#1049](https://github.com/Agent-StrongHold/Project-mAIstro/issues/1049). **Largest Track A PR.**
+
+**Entry:** A1/A2 merged (or at least Attention dismiss from #2326 on develop).
+
+**Files:**
+- Modify: `packages/hive-conductor/backend/services/attention.py` (priority classes, escalation reasons, waiting quality metadata)
+- Modify: `packages/hive-conductor/frontend/src/pages/Attention.tsx`
+- Delete: `pages/MessageBoard.tsx`, `pages/OptimizationInbox.tsx`
+- Modify: `App.tsx`, `AppShell.tsx` (remove `/messages`, `/optimizer` product nav; redirect old URLs to `/attention` **without** claiming MessageBoard still exists)
+- Modify: `quality/workspace-retirement.json` (MERGE rows → deleted)
+- Modify: `packages/hive-conductor/docs/route-inventory.md`
+- Test: attention projection unit tests + e2e Attention surfaces former optimizer/message classes
+
+**Steps:**
+- [ ] Inventory MessageBoard + OptimizationInbox data sources; map each to Attention item class (`blocking`/`popup`/`queued`/`waiting`)
+- [ ] Failing tests: priority order `severity > time_sensitive > blocker > queued > follow-up > proactive`
+- [ ] Failing tests: escalation requires evidence ≠ elapsed time alone; reason recorded
+- [ ] Implement projection + UI indicators for rising/valuable Waiting
+- [ ] Multi-Workspace bleed test
+- [ ] Delete pages + ledger shrink + inventory + e2e old URLs
+- [ ] Evidence comment; close #1049
+
+**Invasiveness:** high (UI MERGE + projection model + ledger).
+
+---
+
+## PR A4 — #1036 projection purity + #65 Goal UI fidelity
+
+**Closes toward:** [#1036](https://github.com/Agent-StrongHold/Project-mAIstro/issues/1036) then [#65](https://github.com/Agent-StrongHold/Project-mAIstro/issues/65).
+
+**Files:**
+- Modify: `packages/hive-conductor/backend/services/dag_run_inspection.py` (and any remaining `stores.dag_runs` / `finished_at` coercion)
+- Modify: `packages/hive-conductor/backend/services/goal_inspection.py`
+- Modify: `packages/hive-conductor/frontend/src/pages/Goals.tsx`, `DagRuns.tsx`
+- Test: nonterminal projection tests; Goal multi-Run history; provenance visibility
+
+**Hard rule:** Home/Goals must never re-read `missions` (ledger freeze). Use `maistro.goals` / `goal_inspection` only.
+
+**Steps:**
+- [ ] Audit every writer of projection `finished_at` / status; failing tests for WAITING≠completed
+- [ ] AC-4: Builders / schedule / Evolve / Workspace Runs visible on same seam
+- [ ] Goal UI: revision, multi-Run history, Run terminal ≠ silent Goal terminal, HITL/retry provenance
+- [ ] Distinct waiting-human / blocked / cancel-requested / terminal rendering
+- [ ] Close #1036 first (seam), then #65 (UI consuming seam)
+
+**Invasiveness:** high (store retirement + UI semantics).
+
+---
+
+## PR A5 — #2278 Approvals parity closeout
+
+**Entry:** A4 seam stable enough for resume e2e.
+
+**Files:**
+- Modify: `packages/hive-conductor/frontend/src/pages/Approvals.tsx` (if gaps)
+- Test: extend `workspace-approvals-shell.spec.ts` + API/CLI parity pytest
+
+**Steps:**
+- [ ] Same pending set as API/CLI for actor
+- [ ] Approve/deny/cancel → identical canonical state
+- [ ] Foreign ids fail closed
+- [ ] E2E: pending → answer → Run resume/terminal via #1036 seam
+- [ ] Close #2278
+
+**Invasiveness:** low–medium (shell exists).
+
+---
+
+# Track B — Delete / hide leftovers
+
+**Entry:** Track 0 done. **May run in parallel with A1/A2.**
+
+## PR B1 — Close #2275 Evolution hide
+
+**Almost done on develop.** Do not rebuild.
+
+**Files (verify only):** `App.tsx` (no Evolution route), `AppShell.tsx`, `docs/route-inventory.md`, `quality/workspace-retirement.json` Evolution entry, `navigation-coverage.spec.ts`.
+
+- [ ] Confirm no nav link, no route, no stub claiming available
+- [ ] Ledger records HIDE + restore owner **#51 / v1.2**
+- [ ] Evidence comment + close [#2275](https://github.com/Agent-StrongHold/Project-mAIstro/issues/2275)
+
+**Invasiveness:** trivial.
+
+---
+
+## PR B2 — #2273 delete four legacy capability pages
+
+**Entry:** Capabilities e2e happy path + unauthorized refusal green (extend if missing).
+
+**Files:**
+- Delete: `pages/Agents.tsx`, `MCP.tsx`, `Skills.tsx`, `Topology.tsx`
+- Modify: `App.tsx` (remove routes; deep links → `/capabilities` or 404-without-module)
+- Modify: retirement ledger + route-inventory
+- Test: e2e Capabilities enable/discover; foreign Workspace refuse; old `/agents` etc. do not load legacy modules
+
+- [ ] AC-1…6 evidence; close [#2273](https://github.com/Agent-StrongHold/Project-mAIstro/issues/2273)
+
+**Invasiveness:** medium (large page deletes; watch importers).
+
+---
+
+## PR B3 — #2274 retirement burn-down pass
+
+**Entry:** after A3 (MessageBoard/Optimizer deleted) and B2.
+
+**Files:** `quality/workspace-retirement.json`, any proven DELETE rows (Docs.tsx RETIRE, Dashboard when Home fully owns, etc.), `scripts/check-workspace-retirement.py` green.
+
+- [ ] Every due v1.0 DELETE row: owner + disposition checked or ratified deferral
+- [ ] CI refuses new imports of retired modules
+- [ ] route-inventory matches shipped routes
+- [ ] Close [#2274](https://github.com/Agent-StrongHold/Project-mAIstro/issues/2274) when ACs met (may need follow-up PRs for stores still imported)
+
+**Invasiveness:** high if store importers remain — split store burns into follow-ups owned by #82/#1036/#1050 rather than force one mega-PR.
+
+---
+
+# Track C — Honesty leftovers under #1046
+
+**Entry:** Track 0. **Parallel with A/B.**
+
+| PR | Issue | Work |
+|---|---|---|
+| C1 | [#2309](https://github.com/Agent-StrongHold/Project-mAIstro/issues/2309) | Each CONNECT hive-unwired module: mount on product path **or** RETIRE; prune reachability ledger |
+| C2 | [#2323](https://github.com/Agent-StrongHold/Project-mAIstro/issues/2323) | Park collaboration CONNECT until A2UI; no nav/docs claim |
+
+---
+
+# Track D — Persistent Workspace Agent (#804)
+
+**HARD ENTRY GATE (from #804 / #1046 bodies):** P0.5, P0.7, P0.8, P0.9, P0.10 green through their named issues before trusting parked/RUNNING after restart or background work. Do **not** start D from Track A momentum alone.
+
+| Order | Issue | Focus | Invasiveness |
+|---|---|---|---|
+| D1 | [#2276](https://github.com/Agent-StrongHold/Project-mAIstro/issues/2276) | Apply `tool_bindings` at Agent/Graph dispatch | medium |
+| D2 | [#2277](https://github.com/Agent-StrongHold/Project-mAIstro/issues/2277) | Persona swap API/UI/Agent same path | medium |
+| D3 | [#805](https://github.com/Agent-StrongHold/Project-mAIstro/issues/805) | Goal reconciliation via persistent Agent | high |
+| D4 | [#806](https://github.com/Agent-StrongHold/Project-mAIstro/issues/806) | Durable/event-driven/fenced/restart-safe reconciliation | high |
+| D5 | Close [#804](https://github.com/Agent-StrongHold/Project-mAIstro/issues/804) | Epic AC checklist | — |
+
+Write a **separate** implementation plan before D3/D4 (too large for this doc’s bite size).
+
+---
+
+# Track E — Proactive + backlog epic
+
+**Entry:** #1049 closed (Waiting classes) + #65 closed (Goal inspection) + #1047 already closed.
+
+| Order | Issue | Notes |
+|---|---|---|
+| E1 | [#1051](https://github.com/Agent-StrongHold/Project-mAIstro/issues/1051) | Bounded discovery Runs; scout/curator; budgets; Home/Waiting only; no interrupt-by-default |
+| E2 | [#100](https://github.com/Agent-StrongHold/Project-mAIstro/issues/100), [#102](https://github.com/Agent-StrongHold/Project-mAIstro/issues/102) | Remaining #82 children (claim/lease; BACKLOG.md authority cutover) |
+| E3 | MERGE Missions/WorkItems under [#82](https://github.com/Agent-StrongHold/Project-mAIstro/issues/82) | Ledger MERGE; same delete rules as A3 |
+| E4 | Close #82 | After children + MERGE |
+
+Separate implementation plan required for E1 and E2.
+
+---
+
+# Track F — Epic + cutover exit
+
+**Entry:** Tracks A–C done; D/E either done or explicitly deferred with owners on milestone #7.
+
+- [ ] Close [#1046](https://github.com/Agent-StrongHold/Project-mAIstro/issues/1046) only when #1049–#1051 (+ honesty children you kept in-scope) are closed; update epic checkbox list (still lists #776/#1047/#1048 as open in body — sync with actual closed state)
+- [ ] Retirement ledger: no overdue DELETE without deferral owner
+- [ ] `KNOWN-GAPS.md` no longer accepts Conductor in-memory Workspace state
+- [ ] Milestone [#7](https://github.com/Agent-StrongHold/Project-mAIstro/issues/7) / initiative [#449](https://github.com/Agent-StrongHold/Project-mAIstro/issues/449): close or re-scope leftovers to v1.1/v1.2 with named owners (#2275 restore → #51)
+
+---
+
+## Immediate queue (after Track 0)
+
+| Priority | PR | Why first |
+|---|---|---|
+| 1 | **B1** close #2275 | Evidence-only; clears noise |
+| 2 | **A1** #1822 isolation | Unblocks chat trust; parallelizable |
+| 3 | **A2** #1050 parity | Parallel with A1 |
+| 4 | **B2** #2273 deletes | Parallel once Capabilities e2e solid |
+| 5 | **A3** #1049 MERGE | First large product PR |
+| 6 | **A4** then **A5** | Inspection authority → approvals resume e2e |
+| 7 | **B3** / **C\*** | Burn-down + CONNECT honesty |
+| — | **D/E** | Only after gates |
+
+---
+
+## Explicit non-goals
+
+- Stronghold hard tenancy
+- Evolution restore (v1.2 / #51)
+- Building A2UI (#2323)
+- Closing #1049/#1050/#1822/#65/#1036 from #2326 alone
+- Starting #805/#806/#1051 without their entry gates
+- Silent learned-landing redirect without an explicit product decision in A2
