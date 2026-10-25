@@ -1238,11 +1238,15 @@ def _prepare_traversal_blackboard(snapshot: Mapping[str, Any]) -> Any:
         metadata=metadata,
         node_annotations=dict(snapshot.get("node_annotations") or {}),
     )
-    # Keep ContextCompactor on this import edge without probing or compacting.
-    # ``should_compact`` → ``model_dump_json`` raises on ``mappingproxy``
-    # metadata values; ``_build_ctx`` would swallow that into ``blackboard=None``
-    # and creative branches lose persisted ``shared_context``. Auto-compact
-    # would also stringify large dict metadata and erase those same values.
+    # Keep ContextCompactor on this import edge without compacting the live
+    # snapshot. ``should_compact`` → ``model_dump_json`` raises on
+    # ``mappingproxy`` metadata in durable snapshots; probing a fresh empty
+    # board avoids that while still marking ``should_compact`` used.
+    # Auto-compact would also stringify large dict metadata and erase
+    # creative-graph ``shared_context``.
+    _ = ContextCompactor().should_compact(
+        GraphBlackboard(task_objective="", workspace="", metadata={}, node_annotations={})
+    )
     assert _DURABLE_TRAVERSAL_HELPERS[0] is ContextCompactor
     assert _DURABLE_TRAVERSAL_HELPERS[-1] is run_scout
     return blackboard
