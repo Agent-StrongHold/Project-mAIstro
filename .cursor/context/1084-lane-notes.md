@@ -1,11 +1,35 @@
 ---
 lane: L1084
 issue: "#1084 [M1-D2][#56] Converge shipped Hive chat and Agent model egress onto canonical Provider/Binding/Invocation"
-round: "independent verify, 2026-10-25 (post develop-sync merge; pyright re-proven CI-exact)"
-head: 67400d014 (tip of auto-1084; true merge of origin/develop 9cc09cd57 on top of the 61f22af23 reworded chain)
+round: "repair dea951bf, 2026-10-25 (supplied develop sync, CI replay, message-only history repair)"
+head: 93ef338be (post-message-repair checkpoint; see 1084-repair-dea951bf.md for final evidence)
 ---
 
 # 1084 lane notes (read before touching this branch)
+
+## Current repair checkpoint (job dea951bf)
+
+- The older sections below describe historical heads, not current verification.
+- The supplied develop `2014ab888c0b` was merged without conflicts; it remains
+  an ancestor after the bounded local history repair. No remote mutations.
+- CI-exact Pyright is green (11 errors <= existing 21-error baseline), and
+  exact-debt-ledger vulture is green (1297 findings == 1297 identities).
+  Neither a speculative type fix nor a ledger amendment was warranted.
+- The prior claim that no branch-only commit carried auto-close text was
+  false. Nine reproduced messages were repaired locally, including commit
+  bodies (quoting a keyword never protected it). Their trees, author/committer
+  identities and timestamps are unchanged; descendant parent hashes changed.
+  Original signed objects remain on local backup refs
+  `auto-1084-before-message-repair-dea951bf` and
+  `auto-1084-message-repair-input-dea951bf`. Rebuilt objects cannot preserve
+  signatures over old content; no develop ancestor was rewritten.
+- **Readiness remains NEEDS-REPAIR:** an additional read-only assertion over
+  the real complete-route test fails: its Invocation records Workspace
+  `default` and an empty actor, while the persisted Run records the selected
+  Workspace and authenticated actor. Green suites did not assert this join.
+  Full startup and production refusal-matrix proof remain unverified.
+- Detailed scope, commands, residual acceptance gaps, and reproducible handoff:
+  `.cursor/context/1084-repair-dea951bf.md`.
 
 ## 2026-10-25 CI-repair round (stub removal + Pyright root cause; this head)
 
@@ -46,7 +70,7 @@ head: 67400d014 (tip of auto-1084; true merge of origin/develop 9cc09cd57 on top
   127==127, model-egress, design-model-egress, promotion-surface,
   direct-effects 51 dispositioned, reachability OK, ratchet-provenance 54
   consumers, suite-inventory 21 suites, pyright 11<=21 gate exit 0.
-- RESIDUAL (owner decision; dedicated history round): closure keywords in
+- HISTORICAL RESIDUAL (repaired locally in job dea951bf): closure keywords in
   commit bodies reachable from HEAD but absent from origin/develop —
   `e9aad7356` body line 34 "Closes #1127, #1098, #1056, #1109, #1143"
   (#1098/#1109/#1143 re-confirmed OPEN 2026-10-25; #1127/#1056 closed),
@@ -192,9 +216,11 @@ head: 67400d014 (tip of auto-1084; true merge of origin/develop 9cc09cd57 on top
 - develop sync is current: `git merge-base HEAD origin/develop` = 9cc09cd57 =
   origin/develop tip; worktree clean; PR #2296 head == branch tip; the
   pre-round "develop sync conflict preserved" block is resolved.
-- No closure keywords in any origin/develop..HEAD commit subject or body; the
-  reworded merge 90bd607be carries "(no auto-close)"; PR body says "Refs" only.
-  Open sibling #1824 is not auto-closed by this branch.
+- CORRECTION (job dea951bf): the original blanket no-keywords claim at this
+  historical head was false. Nine branch-only commit messages still contained
+  closing text, including quoted text in commit bodies. The current repair
+  rewords all nine locally and scans the full supplied-develop..HEAD range;
+  PR/GitHub state was not mutated or re-enumerated.
 - The previously failing `Quality / Pyright` gate re-proven CI-exact at this
   head: `uv sync --locked --all-extras`, `uv pip install -e
   packages/maistro-evolve`, `uv pip install pyright` (1.1.414),
