@@ -513,6 +513,28 @@ def _default_budget(dag: BuildersDAG) -> IterationBudget:
     return IterationBudget(max_iterations=passes * len(dag.stages))
 
 
+async def _prepare_canonical_stores(
+    run_store: RunStore | None,
+    durable_store: CanonicalDurableRunStore | None,
+    project_id: str | None,
+    workspace_id: str,
+) -> tuple[RunStore, CanonicalDurableRunStore, str]:
+    """Resolve the canonical Run/durable stores and project id for a DAG run."""
+    project_store: InMemoryProjectScopeStore | None = None
+    if run_store is None:
+        project_store = InMemoryProjectScopeStore()
+        run_store = InMemoryRunStore(project_store=project_store)
+    if project_id is None:
+        if project_store is None:
+            raise ValueError("project_id is required when run_store is injected")
+        project_id = (await project_store.create_root(workspace_id)).project_id
+    durable_store = durable_store or CanonicalDurableRunStore(
+        run_store,
+        InMemoryGraphContinuationStore(),
+    )
+    return run_store, durable_store, project_id
+
+
 async def run_builders_dag(
     dag: BuildersDAG,
     dispatcher: PipelineDispatcher,
@@ -546,6 +568,9 @@ async def run_builders_dag(
         run.status = f"invalid graph: {'; '.join(errors)}"
         return BuildersDagResult(ok=False, run=run, failure=_classify_failure(run))
 
+    run_store, durable_store, project_id = await _prepare_canonical_stores(
+        run_store, durable_store, project_id, workspace_id
+    )
     graph = to_pipeline_graph(dag)
     executor = CanonicalGraphPipelineExecutor(
         dispatcher,

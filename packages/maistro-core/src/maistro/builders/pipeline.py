@@ -501,6 +501,42 @@ class BuilderPipeline:
             actor_principal_id=actor_principal_id,
         )
 
+    async def _load_spec_context(
+        self,
+        run: PipelineRun,
+        issue_number: int,
+        title: str,
+        skip_decompose: bool,
+    ) -> Any:
+        """Load or emit the Builders spec and populate run context."""
+        spec = None
+        if self._spec_store is not None:
+            spec = await self._spec_store.get(issue_number)
+            if spec is not None:
+                run.context["_spec"] = spec
+                run.context["spec"] = spec.to_dict()
+                run.context["verifications"] = []
+
+        if self._spec_store is not None and spec is None and skip_decompose:
+            spec = _emit_spec(issue_number, title, "")
+            await self._spec_store.save(spec)
+            run.context["_spec"] = spec
+            run.context["spec"] = spec.to_dict()
+            run.context["verifications"] = []
+
+        return spec
+
+    async def _resolve_project_id(self) -> str:
+        """Resolve (and cache) the canonical project id for this pipeline."""
+        project_id = self._project_id
+        if project_id is None:
+            if self._project_store is None:
+                raise ValueError("project_id is required when run_store is injected")
+            project = await self._project_store.create_root(self._workspace_id)
+            project_id = project.project_id
+            self._project_id = project_id
+        return project_id
+
     async def execute(
         self,
         *,
@@ -543,23 +579,7 @@ class BuilderPipeline:
             }
         )
 
-        # Load spec if store is available
-        spec = None
-        if self._spec_store is not None:
-            spec = await self._spec_store.get(issue_number)
-            if spec is not None:
-                run.context["_spec"] = spec
-                run.context["spec"] = spec.to_dict()
-                run.context["verifications"] = []
-
-        # Emit spec immediately when decompose will be skipped (atomic issue)
-        if self._spec_store is not None and spec is None and skip_decompose:
-            spec = _emit_spec(issue_number, title, "")
-            await self._spec_store.save(spec)
-            run.context["_spec"] = spec
-            run.context["spec"] = spec.to_dict()
-            run.context["verifications"] = []
-
+        spec = await self._load_spec_context(run, issue_number, title, skip_decompose)
         run.context["spec_summary"] = build_spec_summary(spec) if spec is not None else ""
 
         # Wrap each node's on_complete with spec verification if configured
@@ -571,7 +591,20 @@ class BuilderPipeline:
             # canonical Run for work that must never start.
             run.status = f"invalid graph: {'; '.join(errors)}"
             return run
-        await self._canonical_executor.execute(graph, run)
+        project_id = await self._resolve_project_id()
+        executor = CanonicalGraphPipelineExecutor(
+            self._dispatcher,
+            run_store=self._run_store,
+            durable_store=self._durable_store,
+            workspace_id=self._workspace_id,
+            project_id=project_id,
+            actor_principal_id=self._actor_principal_id,
+            budget=self._budget,
+        )
+
+        await executor.execute(graph, run)
+
+        self._reconcile_stages(run)
         return run
 
     def _wrap_nodes_with_verification(self, nodes: list[PipelineNode]) -> list[PipelineNode]:
