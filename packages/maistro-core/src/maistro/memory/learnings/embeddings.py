@@ -67,7 +67,8 @@ class NoopEmbeddingClient:
 class FakeEmbeddingClient:
     """Returns deterministic vectors based on text hash. For testing hybrid search.
 
-    Uses hashlib.md5 so the output is stable across processes.
+    Uses hashlib.sha256 so the output is stable across processes (not a
+    cryptographic use — only a reproducible stand-in for an embedding API).
     """
 
     def __init__(self, dimension: int = 8) -> None:
@@ -80,7 +81,7 @@ class FakeEmbeddingClient:
     async def embed(self, text: str) -> list[float]:
         import hashlib
 
-        digest = hashlib.md5(text.encode("utf-8"), usedforsecurity=False).digest()
+        digest = hashlib.sha256(text.encode("utf-8")).digest()
         return [
             float(((digest[i % len(digest)] >> (i % 8)) & 1) + 0.001)
             for i in range(self._dimension)

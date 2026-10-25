@@ -361,6 +361,23 @@ or placeholder-only section.
 
 ### Security
 
+- **CodeQL / DevSkim backlog cleanup (path injection, stack-trace exposure,
+  regex injection, and scan-scope noise)** (no linked issue: GitHub
+  code-scanning backlog on develop, not a numbered tracker issue). Remaining
+  open CodeQL findings are cleared with `realpath`+`startswith` containment
+  (Lulu preflight sinks, RSI promotion export under temp/`RSI_WORK_ROOT`/
+  `RSI_EXPORT_ROOTS`, workspace mounts, RSI repo roots), kind-only public
+  failure text (including `/health` optional-router outcomes), escaped
+  consistency markers, and prototype-safe book-plan / scene field assignment
+  (`isSafeObjectKey`). DevSkim drops non-shipped trees (`systems/catalog`,
+  `benchmarks/corpora`, `formal/`, `.github/`, `deploy/`, `alembic/`) and dated
+  suppressions for integrity-pin / non-crypto RNG / intentional loopback
+  defaults so the Security tab is actionable again. Docstring/comment examples
+  that only named loopback URLs are reworded so DevSkim does not treat prose as
+  a binding. Lockfile bumps `fastmcp`, `setuptools`, and `pypdf` for
+  pip-audit/Trivy; canvas frontend `npm audit fix` clears high advisories;
+  Trivyignore documents the bookworm-only libbrotli finding.
+
 - **Image lock reconciliation and canvas npm audit follow-up after #2305
   (no linked issue: supply-chain CI on develop).** Hive Conductor Dockerfile
   and `security.yml` expected-member pin move from `setuptools==84.0.0` to
