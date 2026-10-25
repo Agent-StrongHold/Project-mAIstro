@@ -1,16 +1,18 @@
 ---
 lane: L1084
 issue: "#1084 [M1-D2][#56] Converge shipped Hive chat and Agent model egress onto canonical Provider/Binding/Invocation"
-round: "verify+repair, 2026-10-25 (pyright ratchet + fb416cf38 auto-close reword)"
-head: 849f134d (tip of auto-1084; tree-identical to pre-reword efed9c308)
+round: "independent verify, 2026-10-25 (post develop-sync merge; pyright re-proven CI-exact)"
+head: 67400d014 (tip of auto-1084; true merge of origin/develop 9cc09cd57 on top of the 61f22af23 reworded chain)
 ---
 
 # 1084 lane notes (read before touching this branch)
 
 ## State
-- Branch = origin/develop + this issue's diff (23 files). The blocked develop
-  sync was resolved as a true merge commit (eacde211a); never re-resolve it by
-  hand-editing quality/*.json back toward old develop.
+- Branch = origin/develop (9cc09cd57, the current tip) + this issue's diff
+  (55 files). Every develop sync so far was resolved as a true merge
+  (eacde211a, then 90bd607be on 4de7e906d, d5117f56c on b1c89cdbc, and
+  67400d014 on 9cc09cd57); merge-base HEAD origin/develop == the develop tip.
+  Never re-resolve by hand-editing quality/*.json back toward old develop.
 - Two repair commits follow: b728bca8a (census rekey after the radon refactor
   of execute_model_chat/_post_model_chat + bridge fakes), ee063fde9 (server
   chat door's conductor consumes persisted execution identities).
@@ -126,9 +128,8 @@ head: 849f134d (tip of auto-1084; tree-identical to pre-reword efed9c308)
   efed9c308 (empty `git diff`), develop-side parents (4de7e906d, b1c89cdbc,
   ffc27cc43, db4d3eb09) untouched, `git merge-base HEAD origin/develop` =
   b1c89cdbc.
-- RESIDUAL: the reword rewrote commit hashes, so local auto-1084 (849f134d)
-  and the remote PR #2296 head (still efed9c308) have diverged. The driver
-  must force-push this branch before merge; the PR diff/tree is unchanged.
+- RESOLVED: the reword divergence was force-pushed; PR #2296 head is now
+  67400d014, identical to this branch tip.
 - All gates re-run green at the reworded head (same tree as efed9c308):
   ruff check + format, pyright ratchet (11<=21), vulture CI args
   (1297==1297), radon (127==127), reachability exit 0, wiring-reads,
@@ -136,3 +137,32 @@ head: 849f134d (tip of auto-1084; tree-identical to pre-reword efed9c308)
   (51 dispositioned); pytest: hive backend 4007 passed/26 skipped, server
   647 passed/10 skipped, focused core egress/conductor/wiring/quota/warden
   224 passed, root model-egress+bench 64 passed.
+
+## 2026-10-25 independent-verification round (head 67400d014)
+
+- develop sync is current: `git merge-base HEAD origin/develop` = 9cc09cd57 =
+  origin/develop tip; worktree clean; PR #2296 head == branch tip; the
+  pre-round "develop sync conflict preserved" block is resolved.
+- No closure keywords in any origin/develop..HEAD commit subject or body; the
+  reworded merge 90bd607be carries "(no auto-close)"; PR body says "Refs" only.
+  Open sibling #1824 is not auto-closed by this branch.
+- The previously failing `Quality / Pyright` gate re-proven CI-exact at this
+  head: `uv sync --locked --all-extras`, `uv pip install -e
+  packages/maistro-evolve`, `uv pip install pyright` (1.1.414),
+  `pyright --outputjson packages/maistro-core/src` -> 11 errors / 54 warnings,
+  `scripts/check-pyright-report.py --baseline 21 --exit-code 1` exits 0.
+  (CI failed this gate at 5769e4ac3; success run at efed9c308; the 67400d014
+  run was still QUEUED at verification time — pending CI stays UNVERIFIED.)
+- Re-executed green at 67400d014: ruff check + format (3498 files), mypy
+  --strict maistro-core (827 files, 0 issues), reachability exit 0 (1462
+  modules, 149 unreachable, ledgered), vulture CI args 1297==1297 (base
+  9cc09cd57), radon 127==127, check-model-egress (16 physical callers, no
+  expansion), check-design-model-egress, check_direct_effects (51
+  dispositioned), wiring-reads, check-ac-state --run-tests --ratchet,
+  suite inventories (hive 4047, core 17931, server 657 — all match).
+- Focused suites re-executed: core egress/conductor/wiring/quota/warden/
+  composition + server conductor_agent 290 passed/11 skipped; hive
+  admission/dag/gateway/adapters/vision 117 passed. Admission tests run a
+  real embedded Container with only the httpx transport mocked.
+- No inventory-note change needed: docs/testing/inventory-notes/
+  1084-model-egress-convergence.md deltas still match (all suite gates pass).
