@@ -8338,3 +8338,37 @@ these exact heads.
   the #1845 integration head (runtime consumer PR #2178, still open, not
   upstream) landing the reviewed consumer, at which head every gate goes green
   with no gate/ledger edits. This round is sync + note-only commit.
+
+## repair round 127 (2026-10-25): develop sync to 4f8811f92 + independent re-verification at merged head 3c4925e3e
+
+Dispatch head f6bf7e8a6 (worktree clean, leaf md5 257a6e45c382349dd12f559099663fbc).
+origin/develop advanced 1ddfea4f6 -> 4f8811f92 (9 commits: security triage, Go toolchain,
+template python bump, workspace interrupted-import quarantine, CI mutation gate, graph
+compaction/quota/resilience/delivery-gateway connects, folded_notes classification).
+Merge executed in place as 3c4925e3e (auto-resolved, no conflicts); merge-base now
+4f8811f92. Leaf module byte-identical (md5 unchanged). No admission_generation
+reference appeared upstream (git grep zero matches).
+
+First-hand validation at merged head 3c4925e3e:
+- uv sync --locked --extra dev (post-merge, uv.lock advanced) ok.
+- ruff check + ruff format --check on leaf pair: clean.
+- mypy on leaf module: Success.
+- leaf suite: 132 passed (all 10 issue-named tests present).
+- live-flow regression (test_root_admission_identity + test_idempotency): 146 passed.
+- check-suite-inventory.py: ok, 21 suites, 34636 identities, 0 duplicates.
+- vulture at CI argv: rc=0, 1263 reviewed = 1263 findings, unclassified 0.
+- check-reachability.py: rc=1, exactly one NEWLY UNREACHABLE module:
+  maistro.tasks.admission_generation.
+- check-reachability-dispositions.py: rc=0 (39 groups, 109 modules).
+- check-promotion-surface.py: rc=0.
+- RATCHET_BASE_REV=origin/develop check-ratchet-provenance.py: rc=1, 8/9 OK,
+  sole FAIL reachability (maistro.tasks.admission_generation).
+- CI test trio (test_check_reachability + test_reachability_baseline_identity):
+  3 failed / 36 passed, single set delta maistro.tasks.admission_generation.
+
+Verdict unchanged and issue-mandated: implementation/test readiness proven; the
+residual red is the #1852-predicted NEW-unreachable leaf whose in-leaf remedies
+(baseline entry, disposition, grant, dummy caller, keep-alive import, gate edit)
+the issue explicitly prohibits, reserving activation for the #1845 integration
+head. BLOCKED is the issue-conform terminal state for this leaf. No quality
+ledger edited.
