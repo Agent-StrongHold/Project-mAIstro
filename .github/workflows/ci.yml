@@ -1429,12 +1429,17 @@ jobs:
           -f Dockerfile.research -t maistro-engine-research:ci
           --load --cache-from type=gha,scope=engine-research
           --cache-to type=gha,scope=engine-research,mode=max .
+      # Scope rotated with security.yml's identical step (PR #2283, CI run
+      # 40091186336): the old scope's week of cached results predates the
+      # libbrotli1 deb13u1 security update, and a stale read out of it is the
+      # only state source that can put the pre-advisory 1.1.0-2+b7 layer into a
+      # freshly built image. A cache miss just rebuilds cold.
       - name: Build maistro-rsi-runner (cached)
         run: >-
           scripts/buildx-build-retry.sh --
           -f Dockerfile.rsi-runner -t maistro-rsi-runner:ci
-          --load --cache-from type=gha,scope=rsi-runner
-          --cache-to type=gha,scope=rsi-runner,mode=max .
+          --load --cache-from type=gha,scope=rsi-runner-r2
+          --cache-to type=gha,scope=rsi-runner-r2,mode=max .
 
   # #348: "CI rebuilds twice and compares dependency manifests". The maistro
   # engine image installs its entire Python set from `uv export --locked` +
