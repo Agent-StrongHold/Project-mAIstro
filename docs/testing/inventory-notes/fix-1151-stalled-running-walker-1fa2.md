@@ -56,3 +56,17 @@ period elapses; the elapsed-claim case fails if the repair does not advance
 the version exactly once.
 The PostgreSQL leg needs `MAISTRO_TEST_PG_DSN` and runs in quality.yml's
 `coverage-postgres` job.
+
+## Proof scope
+
+The cross-store file's PostgreSQL parametrization exercises the
+`PgGraphContinuationStore` against an in-memory Run spine: it pins the
+continuation-store SQL and the repair shape, not a process restart. Durable
+canonical-spine recovery (both authorities on PostgreSQL, independent pools,
+no shared objects) is proven separately in
+`tests/runs/test_pg_spine_crash_windows.py`, including the stalled-frontier,
+terminal-spine, continuation-before-mirror, elapsed-claim and bounded-sweep
+windows. The PR #1626 body's "10 cases" count is stale relative to this
+proof-only branch: the per-version-observation repair it described was
+superseded by develop's stalled-active-frontier repair (#1942, #1861) and
+removed during the merge, leaving six cases.
