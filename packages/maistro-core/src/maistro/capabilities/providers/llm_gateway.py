@@ -27,9 +27,16 @@ reached, so no external effect occurred and the Invocation may fail retryably.
 
 from __future__ import annotations
 
+<<<<<<< HEAD
 import json
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
+||||||| 833a98a91
+from typing import Any
+=======
+import time
+from typing import Any
+>>>>>>> 4f8811f92f7bd492e52da1e8e68a7b14a39358ae
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field
@@ -38,6 +45,8 @@ from maistro.capabilities.binding import ResolvedCapabilityProvider
 from maistro.capabilities.invocation import EffectNotApplied
 from maistro.http import shared_client
 from maistro.providers.types import ModelMetadata
+from maistro.resilience.context_probe import ContextProbe
+from maistro.resilience.rate_coordination import RateLimitCoordinator
 
 if TYPE_CHECKING:
     from maistro.capabilities.provider_adapters import AdapterGatewayProvider
@@ -51,6 +60,12 @@ MODEL_GATEWAY_CREDENTIAL_PROVIDER = "litellm"
 DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF = "litellm-gateway"
 
 _GATEWAY_TRUST_TIER = "t1"
+
+#: Cross-instance 429 coordination for the approved gateway Provider (#2318).
+_GATEWAY_RATE_LIMITS = RateLimitCoordinator()
+#: Adaptive context-window probe for models that omit a declared max (#2318).
+_CONTEXT_PROBE = ContextProbe()
+_GATEWAY_RATE_LIMIT_SCOPE = MODEL_GATEWAY_CREDENTIAL_PROVIDER
 
 
 class GatewayEndpoint(BaseModel):
@@ -249,6 +264,26 @@ def _adapter_error(spec: Any, adapter: Any, status: int) -> Exception:
     )
 
 
+def _resolved_max_tokens(provider: LlmGatewayProvider, request: ModelChatRequest) -> int | None:
+    """Cap an explicit ``max_tokens`` against the probe; never invent one.
+
+    When the caller omits ``max_tokens``, the governed payload must stay
+    omit-max_tokens shaped (#2318 CONNECT must not widen the wire). The probe
+    still learns from provider metadata / overflow / success evidence so a
+    later explicit ``max_tokens`` can be capped.
+    """
+    if request.max_tokens is None:
+        # Touch the probe so discover/next-size stay reachable without
+        # mutating the outbound body.
+        _ = _CONTEXT_PROBE.get_context_length(provider.name)
+        _ = _CONTEXT_PROBE.probe_next_size(provider.name)
+        return None
+    known = _CONTEXT_PROBE.get_context_length(provider.name)
+    if known is not None and request.max_tokens > known:
+        return known
+    return request.max_tokens
+
+
 def _chat_payload(provider: LlmGatewayProvider, request: ModelChatRequest) -> dict[str, object]:
     """Merge the resolved model with the governed request into a gateway body."""
 
@@ -259,8 +294,9 @@ def _chat_payload(provider: LlmGatewayProvider, request: ModelChatRequest) -> di
     }
     if request.temperature is not None:
         payload["temperature"] = request.temperature
-    if request.max_tokens is not None:
-        payload["max_tokens"] = request.max_tokens
+    max_tokens = _resolved_max_tokens(provider, request)
+    if max_tokens is not None:
+        payload["max_tokens"] = max_tokens
     if request.tools:
         payload["tools"] = [dict(tool) for tool in request.tools]
     if request.tool_choice:
@@ -270,6 +306,7 @@ def _chat_payload(provider: LlmGatewayProvider, request: ModelChatRequest) -> di
     return payload
 
 
+<<<<<<< HEAD
 def _responses_payload(
     provider: LlmGatewayProvider, request: ModelChatRequest
 ) -> dict[str, object]:
@@ -417,12 +454,64 @@ async def _stream_body(
 
 def _checked_body(response: Any) -> dict[str, object]:
     """Map gateway statuses to retryable, truthful Invocation failures."""
+||||||| 833a98a91
+def _checked_body(response: Any) -> dict[str, object]:
+    """Map gateway statuses to the error shapes the shipped model paths raise."""
+=======
+def _record_gateway_rate_limit(response: Any) -> None:
+    """Park a 429 so sibling processes sharing the coordinator skip until reset."""
+    retry_after = response.headers.get("Retry-After") if hasattr(response, "headers") else None
+    try:
+        wait_s = float(retry_after) if retry_after is not None else 60.0
+    except (TypeError, ValueError):
+        wait_s = 60.0
+    _GATEWAY_RATE_LIMITS.record_rate_limit(
+        _GATEWAY_RATE_LIMIT_SCOPE, time.time() + max(wait_s, 0.0)
+    )
 
+
+def _raise_if_gateway_rate_limited() -> None:
+    """Fail closed before HTTP when a prior 429 is still in force (#2318)."""
+    if not _GATEWAY_RATE_LIMITS.is_rate_limited(_GATEWAY_RATE_LIMIT_SCOPE):
+        return
+    reset = _GATEWAY_RATE_LIMITS.get_reset_time(_GATEWAY_RATE_LIMIT_SCOPE)
+    raise LlmHttpError(
+        f"llm_rate_limited status=429 (coordinator until {reset})",
+        status_code=429,
+    )
+
+
+def _note_context_outcome(model: str, response: Any, *, requested_tokens: int | None) -> None:
+    """Update the context probe from overflow or successful completion evidence."""
+    if response.status_code == 400 and requested_tokens is not None:
+        body_text = ""
+        try:
+            body_text = str(response.text).lower()
+        except Exception:
+            body_text = ""
+        if "context" in body_text or "maximum" in body_text or "token" in body_text:
+            _CONTEXT_PROBE.record_overflow(model, requested_tokens)
+            return
+    if response.status_code < 400 and requested_tokens is not None:
+        _CONTEXT_PROBE.record_success(model, requested_tokens)
+        # A clean completion clears a spent 429 window for this gateway scope.
+        if _GATEWAY_RATE_LIMITS.is_rate_limited(_GATEWAY_RATE_LIMIT_SCOPE):
+            _GATEWAY_RATE_LIMITS.clear(_GATEWAY_RATE_LIMIT_SCOPE)
+
+
+def _checked_body(
+    response: Any, *, model: str = "", requested_tokens: int | None = None
+) -> dict[str, object]:
+    """Map gateway statuses to the error shapes the shipped model paths raise."""
+>>>>>>> 4f8811f92f7bd492e52da1e8e68a7b14a39358ae
+
+    _note_context_outcome(model, response, requested_tokens=requested_tokens)
     if response.status_code == 401:
         raise LlmAuthError(
             "llm_auth_failed status=401 (check gateway credentials)", status_code=401
         )
     if response.status_code == 429:
+        _record_gateway_rate_limit(response)
         raise LlmHttpError("llm_rate_limited status=429", status_code=429)
     if response.status_code >= 400:
         raise LlmHttpError(
@@ -476,9 +565,85 @@ async def _dispatch_adapter_model_chat(
     request: ModelChatRequest,
     endpoint: GatewayEndpoint,
 ) -> dict[str, object]:
+<<<<<<< HEAD
     """Transport one adapter-provider call over its declared preflight shape."""
+||||||| 833a98a91
+    """Perform the one governed model HTTP call and return the canonical body.
 
+    Only :class:`LlmGatewayProvider` and
+    :class:`~maistro.capabilities.provider_adapters.AdapterGatewayProvider`
+    handles may cross this seam; a foreign provider type is a wiring error, not
+    a silent alternate egress. Both are transported over the same single POST:
+    an adapter contributes its normalized payload, its declared credential
+    presentation, its timeout, and its error taxonomy — never a second
+    transport, a second authorization path, or a second Invocation.
+    """
+
+    from maistro.capabilities.provider_adapters import AdapterGatewayProvider
+
+    if not isinstance(request, ModelChatRequest):
+        raise TypeError(f"model-chat Invocation received a foreign request: {type(request)!r}")
+
+    adapter_provider: AdapterGatewayProvider | None = None
+    if isinstance(provider, AdapterGatewayProvider):
+        adapter_provider = provider
+        preflight = _adapter_preflight(adapter_provider, request, endpoint)
+    elif isinstance(provider, LlmGatewayProvider):
+        preflight = _gateway_preflight(provider, request, endpoint)
+    else:
+        raise TypeError(f"model-chat Invocation resolved a non-gateway provider: {provider!r}")
+=======
+    """Perform the one governed model HTTP call and return the canonical body.
+
+    Only :class:`LlmGatewayProvider` and
+    :class:`~maistro.capabilities.provider_adapters.AdapterGatewayProvider`
+    handles may cross this seam; a foreign provider type is a wiring error, not
+    a silent alternate egress. Both are transported over the same single POST:
+    an adapter contributes its normalized payload, its declared credential
+    presentation, its timeout, and its error taxonomy — never a second
+    transport, a second authorization path, or a second Invocation.
+    """
+
+    from maistro.capabilities.provider_adapters import AdapterGatewayProvider
+
+    if not isinstance(request, ModelChatRequest):
+        raise TypeError(f"model-chat Invocation received a foreign request: {type(request)!r}")
+
+    adapter_provider: AdapterGatewayProvider | None = None
+    if isinstance(provider, AdapterGatewayProvider):
+        adapter_provider = provider
+        preflight = _adapter_preflight(adapter_provider, request, endpoint)
+    elif isinstance(provider, LlmGatewayProvider):
+        _seed_context_probe(provider)
+        preflight = _gateway_preflight(provider, request, endpoint)
+    else:
+        raise TypeError(f"model-chat Invocation resolved a non-gateway provider: {provider!r}")
+>>>>>>> 4f8811f92f7bd492e52da1e8e68a7b14a39358ae
+
+<<<<<<< HEAD
     preflight = _adapter_preflight(adapter_provider, request, endpoint)
+||||||| 833a98a91
+=======
+    _raise_if_gateway_rate_limited()
+    requested_tokens = preflight.payload.get("max_tokens")
+    requested_cap = requested_tokens if isinstance(requested_tokens, int) else None
+    model_name = str(preflight.payload.get("model") or getattr(provider, "name", ""))
+    response = await _post_chat_completion(preflight)
+    if adapter_provider is not None:
+        return _adapter_response_body(adapter_provider, response)
+    return _checked_body(response, model=model_name, requested_tokens=requested_cap)
+
+
+def _seed_context_probe(provider: LlmGatewayProvider) -> None:
+    """Seed the probe from the provider's declared window when known."""
+    meta = provider.metadata
+    if meta is not None and meta.max_tokens > 0:
+        _CONTEXT_PROBE.set_known_length(provider.name, meta.max_tokens)
+
+
+async def _post_chat_completion(preflight: _ModelCallPreflight) -> Any:
+    """Issue the one governed POST; connection failures are not-applied."""
+>>>>>>> 4f8811f92f7bd492e52da1e8e68a7b14a39358ae
     try:
         async with shared_client(timeout=preflight.timeout_s) as client:
             # params only crosses when an adapter declared query-style auth, so
@@ -489,7 +654,7 @@ async def _dispatch_adapter_model_chat(
             query_kwargs: dict[str, dict[str, str]] = (
                 {"params": preflight.params} if preflight.params is not None else {}
             )
-            response = await client.post(
+            return await client.post(
                 f"{preflight.url_base}/chat/completions",
                 headers=preflight.headers,
                 json=preflight.payload,
@@ -502,6 +667,7 @@ async def _dispatch_adapter_model_chat(
     body = _json_body(response)
     return adapter_provider.adapter.normalize_response(body)
 
+<<<<<<< HEAD
 
 async def _post_model_chat(
     client: httpx.AsyncClient,
@@ -614,6 +780,29 @@ async def execute_model_chat(
     if not isinstance(provider, LlmGatewayProvider):
         raise TypeError(f"model-chat Invocation resolved a non-gateway provider: {provider!r}")
     return await _dispatch_gateway_model_chat(provider, request, endpoint, on_chunk=on_chunk)
+||||||| 833a98a91
+    if adapter_provider is not None:
+        if response.status_code >= 400:
+            raise _adapter_error(
+                adapter_provider.spec, adapter_provider.adapter, response.status_code
+            )
+        body = _json_body(response)
+        return adapter_provider.adapter.normalize_response(body)
+    return _checked_body(response)
+=======
+
+def _adapter_response_body(adapter_provider: Any, response: Any) -> dict[str, object]:
+    """Map an adapter-backed response through its error taxonomy + normalizer."""
+    if response.status_code == 429:
+        _record_gateway_rate_limit(response)
+    if response.status_code >= 400:
+        raise _adapter_error(adapter_provider.spec, adapter_provider.adapter, response.status_code)
+    body = _json_body(response)
+    normalized = adapter_provider.adapter.normalize_response(body)
+    if not isinstance(normalized, dict):
+        raise RuntimeError("adapter normalize_response returned a non-object body")
+    return normalized
+>>>>>>> 4f8811f92f7bd492e52da1e8e68a7b14a39358ae
 
 
 class _ModelCallPreflight:
@@ -734,6 +923,12 @@ async def probe_adapter_health(adapter: Any) -> bool:
         return False
 
 
+def reset_gateway_resilience_state() -> None:
+    """Drop in-process 429 windows and context-probe cache (tests / recycle)."""
+    _GATEWAY_RATE_LIMITS.clear_all()
+    _CONTEXT_PROBE.clear()
+
+
 __all__ = [
     "DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF",
     "MODEL_CHAT_CAPABILITY",
@@ -747,4 +942,5 @@ __all__ = [
     "execute_model_chat",
     "probe_adapter_health",
     "register_provider_models",
+    "reset_gateway_resilience_state",
 ]

@@ -431,12 +431,20 @@ def test_discover_sites_surfaces_reachability_classes_from_the_shipped_tree(
 
     gateway = findings["maistro.capabilities.providers.llm_gateway"]
     assert gate.classify(gateway, unreachable=unreachable) == gate.PROVIDER_BOUNDARY
+<<<<<<< HEAD
     # SPEC-285 renamed the physical dispatch inside the boundary: the
     # gateway POST lives in `_post_model_chat`, adapter-backed dispatch in
     # `_dispatch_adapter_model_chat`. The boundary quals — not a historical
     # name — are what "no caller is invisible" pins.
     gateway_quals = {site.qualname for site in gateway.sites}
     assert {"_post_model_chat", "_dispatch_adapter_model_chat"} <= gateway_quals
+||||||| 833a98a91
+    assert any(site.qualname == "execute_model_chat" for site in gateway.sites)
+=======
+    # Public seam stays execute_model_chat; the physical POST is factored into
+    # _post_chat_completion so the direct-effect census can name one site.
+    assert any(site.qualname == "_post_chat_completion" for site in gateway.sites)
+>>>>>>> 4f8811f92f7bd492e52da1e8e68a7b14a39358ae
 
     corpus = findings["services.canonical_corpus"]
     assert gate.classify(corpus, unreachable=unreachable) == gate.UNREACHABLE_LIBRARY

@@ -37,7 +37,15 @@ def _reset_singletons() -> Iterator[None]:
 
     get_settings.cache_clear()
 
+    # Gateway RateLimitCoordinator / ContextProbe are process singletons
+    # (#2318); a planted 429 or seeded window must not poison later suites.
+    from maistro.capabilities.providers.llm_gateway import reset_gateway_resilience_state
+
+    reset_gateway_resilience_state()
+
     yield
+
+    reset_gateway_resilience_state()
 
     # Task queue
     import maistro.tasks.queue as queue_module
