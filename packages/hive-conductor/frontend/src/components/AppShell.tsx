@@ -6,6 +6,7 @@ import { AppearanceToggle } from "./AppearanceToggle";
 import { DegradedBanner } from "./DegradedBanner";
 import { WorkspaceTabs } from "./WorkspaceTabs";
 import { WorkspaceShare } from "./WorkspaceShare";
+import { WorkspaceAgentPersonaControl } from "./WorkspaceAgentPersona";
 import { WorkspaceToolBindings } from "./WorkspaceToolBindings";
 import { PersonaWizard } from "./PersonaWizard";
 import {
@@ -248,6 +249,7 @@ export function AppShell({ children }: { children?: ReactNode }) {
         <div className="workspace-toolbar">
           <WorkspaceTabs />
           <WorkspaceShare />
+          <WorkspaceAgentPersonaControl />
           <WorkspaceToolBindings />
           <PersonaWizard />
         </div>
