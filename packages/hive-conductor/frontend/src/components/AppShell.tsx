@@ -10,6 +10,7 @@ import { WorkspaceToolBindings } from "./WorkspaceToolBindings";
 import { PersonaWizard } from "./PersonaWizard";
 import {
   MessageCircle,
+  Home,
   LayoutDashboard,
   Target,
   Flag,
@@ -27,6 +28,7 @@ import {
   ListTodo,
   CalendarClock,
   Inbox,
+  Bell,
   Gauge,
   ScrollText,
   Terminal,
@@ -35,9 +37,16 @@ import {
 } from "lucide-react";
 
 const fullNav = [
+  // #1048: Home is the default Workspace landing; Dashboard remains until
+  // retirement (#2274) deletes the legacy page.
+  { to: "/home", icon: Home, label: "Home" },
   { to: "/chat", icon: MessageCircle, label: "Chat" },
   { to: "/dashboard", icon: LayoutDashboard, label: "Dashboard" },
   { to: "/goals", icon: Flag, label: "Goals" },
+  // #1049: Attention projection. The API requires dags.write (HITL sensitivity);
+  // the setup daily user holds that grant, so the entry is not scope-gated in
+  // the shell the way Schedules/Containers are.
+  { to: "/attention", icon: Bell, label: "Attention" },
   // #2278: minimal approvals projection (capability inbox + HITL) — same
   // authority as API/CLI; not a parallel store.
   { to: "/approvals", icon: ClipboardCheck, label: "Approvals" },
