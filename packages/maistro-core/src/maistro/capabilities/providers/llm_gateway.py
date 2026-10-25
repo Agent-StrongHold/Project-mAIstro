@@ -93,6 +93,7 @@ _GATEWAY_RATE_LIMITS = RateLimitCoordinator()
 _CONTEXT_PROBE = ContextProbe()
 _GATEWAY_RATE_LIMIT_SCOPE = MODEL_GATEWAY_CREDENTIAL_PROVIDER
 
+
 class GatewayEndpoint(BaseModel):
     """Where the one approved model Provider sends traffic; secrets stay here.
 
