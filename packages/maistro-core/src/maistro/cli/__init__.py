@@ -18,7 +18,7 @@ Subcommands:
     maistro backlog          Backlog authority cutover and agent work surface
     maistro portability      Import foreign agent/skill formats; export to MCP + SKILL.md
 
-Config via env: MAISTRO_API_URL (default http://127.0.0.1:8101),
+Config via env: MAISTRO_API_URL (default: HTTP on IPv4 loopback port 8101),
 MAISTRO_API_TOKEN (bearer session token).
 """
 

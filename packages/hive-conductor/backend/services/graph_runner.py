@@ -44,7 +44,18 @@ logger = logging.getLogger("hive.graph_runner")
 
 
 def public_failure(exc: BaseException) -> str:
-    """The failure text a transport may show: the exception kind, never its message."""
+    """The failure text a transport may show: the exception kind, never its message.
+
+    One structured remediation is preserved: when the failure is the no-gateway
+    stub refusal, name ``ALLOW_STUB_LLM`` so an operator can act without reading
+    server logs. That is an env-var name, not exception detail.
+    """
+    detail = str(exc)
+    if "ALLOW_STUB_LLM" in detail:
+        return (
+            f"{type(exc).__name__}: LLM gateway unset; "
+            "set ALLOW_STUB_LLM=true to opt into stubs; see server logs"
+        )
     return f"{type(exc).__name__}: execution failed; see server logs"
 
 
@@ -315,7 +326,8 @@ def _failed_terminal(result: dict[str, Any], exc: CanonicalDagExecutionError) ->
     return {
         "status": result.get("status", "failed"),
         "run_id": result.get("run_id"),
-        "error": str(exc),
+        # Kind-only (CodeQL py/stack-trace-exposure) — same contract as HTTP.
+        "error": public_failure(exc),
     }
 
 
