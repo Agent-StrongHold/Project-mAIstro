@@ -181,18 +181,6 @@
       ]
     },
     {
-      "id": "graph-unwired-helpers",
-      "subsystem": "Graph execution",
-      "disposition": "CONNECT",
-      "rationale": "Compaction, scout and steering: graph facilities with no executor calling them. They belong to the traversal half of #44 rather than to lifecycle.",
-      "root": "maistro.graph.durable_runs.executor (#44)",
-      "modules": [
-        "maistro.graph.compaction",
-        "maistro.graph.scout",
-        "maistro.graph.steering"
-      ]
-    },
-    {
       "id": "memory-advanced-retrieval",
       "subsystem": "Memory",
       "disposition": "CONNECT",
@@ -214,18 +202,6 @@
       "root": "the maistro.graph.nodes catalog sweep, or an explicit registration at design import",
       "modules": [
         "maistro_design.nodes"
-      ]
-    },
-    {
-      "id": "orchestrator-waves",
-      "subsystem": "Planning and wave orchestration",
-      "disposition": "CONNECT",
-      "rationale": "ADR-052's parallel agent waves. #44 makes fan-out/fan-in graph structure, which is the shape these become rather than a separate wave runtime.",
-      "root": "Graph fan-out/fan-in nodes (#44)",
-      "modules": [
-        "maistro.orchestrator.waves.fan_in",
-        "maistro.orchestrator.waves.fan_out",
-        "maistro.orchestrator.waves.types"
       ]
     },
     {
@@ -343,10 +319,9 @@
       "id": "tools-unwired",
       "subsystem": "Tool execution",
       "disposition": "CONNECT",
-      "rationale": "ADR-049's shadow-git rollback and the media tool package, neither reached from a tool registry.",
+      "rationale": "The media tool package is not reached from a tool registry. (ADR-049 shadow-git left this group with #2314: fan_in imports ShadowGitWorkspace, so the module is reachable from the waves package surface.)",
       "root": "the tool registry (#57)",
       "modules": [
-        "maistro.tools.git.shadow",
         "maistro.tools.media"
       ]
     },

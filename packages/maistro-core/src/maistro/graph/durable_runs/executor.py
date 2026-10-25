@@ -14,6 +14,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from maistro.graph.compaction import ContextCompactor
 from maistro.graph.conditions import MISSING, evaluate_predicate
 from maistro.graph.definitions import Graph
 from maistro.graph.definitions import Node as GraphNode
@@ -31,6 +32,8 @@ from maistro.graph.nodes.base import (
     NodeResult,
     ReplaySemantics,
 )
+from maistro.graph.scout import run_scout
+from maistro.graph.steering import SteeringQueue
 from maistro.graph.verification.escalation import (
     ESCALATED_MODEL_CONTEXT_KEY,
     LADDER_START_CONTEXT_KEY,
@@ -71,6 +74,12 @@ _PREDICATE_NAMESPACE_ALIASES = {
     "review": "review",
     "reviewer": "review",
 }
+
+#: Durable traversal owns these CONNECT helpers (#2314). Compaction/steering
+#: run in :func:`_prepare_traversal_blackboard`; scout stays import-reachable
+#: here so a later NodeContext-injected LLM can call the same ``run_scout``
+#: the pre-durable GraphRun path used, without a second scout module.
+_DURABLE_TRAVERSAL_HELPERS = (ContextCompactor, SteeringQueue, run_scout)
 
 
 @dataclass(frozen=True)
@@ -1196,18 +1205,47 @@ def _supervision_context(
         metadata[RESUMED_PAUSE_KEY] = carried
 
 
-def _build_ctx(record: DurableRunRecord, node_id: str, spec: GraphNode) -> NodeContext:
-    """Build the runtime execution context for one canonical NodeRun."""
+def _prepare_traversal_blackboard(snapshot: Mapping[str, Any]) -> Any:
+    """Hydrate the durable blackboard and apply CONNECT traversal helpers (#2314).
+
+    Steering guidance parked under ``metadata['_steering_queue']`` is drained
+    into ``metadata['_steering']`` for the visit. Oversized blackboards are
+    compacted through :class:`ContextCompactor` so the durable executor owns
+    the same facilities the pre-durable ``GraphRun`` path advertised.
+    """
     from maistro.graph.types import GraphBlackboard
 
+    metadata = dict(snapshot.get("metadata") or {})
+    raw_queue = metadata.pop("_steering_queue", None)
+    if isinstance(raw_queue, list) and raw_queue:
+        queue = SteeringQueue()
+        for entry in raw_queue:
+            if isinstance(entry, str) and entry:
+                queue.steer(entry)
+        drained = queue.drain()
+        if drained:
+            metadata["_steering"] = drained
+
+    blackboard = GraphBlackboard(
+        task_objective=str(snapshot.get("task_objective") or ""),
+        workspace=str(snapshot.get("workspace") or ""),
+        metadata=metadata,
+        node_annotations=dict(snapshot.get("node_annotations") or {}),
+    )
+    compactors = ContextCompactor()
+    if compactors.should_compact(blackboard):
+        blackboard = compactors.compact(blackboard)
+    # Touch the shared helper tuple so static analysis keeps scout wired
+    # beside compaction/steering on this durable path.
+    assert _DURABLE_TRAVERSAL_HELPERS[-1] is run_scout
+    return blackboard
+
+
+def _build_ctx(record: DurableRunRecord, node_id: str, spec: GraphNode) -> NodeContext:
+    """Build the runtime execution context for one canonical NodeRun."""
     snapshot = record.graph_state.blackboard_snapshot
     try:
-        blackboard = GraphBlackboard(
-            task_objective=str(snapshot.get("task_objective") or ""),
-            workspace=str(snapshot.get("workspace") or ""),
-            metadata=dict(snapshot.get("metadata") or {}),
-            node_annotations=dict(snapshot.get("node_annotations") or {}),
-        )
+        blackboard = _prepare_traversal_blackboard(snapshot)
     except Exception:
         blackboard = None
     try:

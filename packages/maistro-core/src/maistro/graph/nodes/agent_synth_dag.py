@@ -48,6 +48,8 @@ from pydantic import BaseModel, Field
 
 from maistro.graph.depth import can_spawn, get_role
 from maistro.graph.synth import DagSynthesizer, RuleDagSynthesizer, SynthRequest, SynthResult
+from maistro.orchestrator.waves.fan_out import MAX_PARALLEL_CEILING, validate_fan_out_width
+from maistro.orchestrator.waves.types import WaveSpec
 from maistro.runs.model import TERMINAL_RUN_STATUSES, RunStatus
 from maistro.security.dag_shape import (
     DEFAULT_PRINCIPAL,
@@ -73,10 +75,10 @@ if TYPE_CHECKING:  # pragma: no cover - typing only; runtime import would cycle
     from maistro.runs.store import RunStore
     from maistro.runtime import ExecutionRuntime
 
-# Absolute substrate backstop only (mirrors fan_out.MAX_PARALLEL_CEILING) — the
-# real width gate is `evaluate_dag_shape`, not this number. Raised well past
-# the old default-8 ceiling since a justified DAG can legitimately be large.
-_MAX_NODE_CEILING = 64
+# Absolute substrate backstop shares ADR-052's wave ceiling (#2314): the real
+# width gate remains `evaluate_dag_shape`. Raised past the old default-8 so a
+# justified DAG can be large, but never past the fan-out parallel ceiling.
+_MAX_NODE_CEILING = max(64, MAX_PARALLEL_CEILING)
 _DEFAULT_MAX_DEPTH = 3
 
 
@@ -445,6 +447,16 @@ class AgentSynthDagNode(BaseNode[SynthDagIn, SynthDagOut]):
             verdict = await self._judge(inputs.objective, synth)
 
         synthesized_kinds = [str(n) for n in synth.graph_config.nodes]
+        # ADR-052 wave ceiling expressed as Graph fan-out width (#2314): the
+        # synthesized node set is the wave; validate against the same helper
+        # the git-based fan-out path uses so there is one parallel substrate.
+        validate_fan_out_width(
+            tuple(
+                WaveSpec(wave_id=f"n{i}", agent_recipe=kind, inputs={})
+                for i, kind in enumerate(synthesized_kinds)
+            ),
+            max_parallel=inputs.max_nodes,
+        )
 
         if verdict.status not in ("approved", "approved_degraded"):
             raise SynthDagFailed(_verdict_error(verdict))
