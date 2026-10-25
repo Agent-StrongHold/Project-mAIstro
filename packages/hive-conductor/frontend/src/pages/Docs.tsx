@@ -214,17 +214,9 @@ You can start, stop, restart, and view logs for each container from here.
   {
     id: "evolution",
     title: "Evolution",
-    content: `Evolution is an advanced feature that automatically improves your agents over time using genetic algorithms.
+    content: `Evolution (automatic agent improvement via genetic algorithms) is **not shipped in v1.0**.
 
-It works like biological evolution:
-1. Create a "population" of agent configurations
-2. Test them against benchmarks (fitness evaluation)
-3. The best-performing ones "reproduce" to create new configurations
-4. Repeat over many generations
-
-Over time, the agents get better at their jobs without manual tuning.
-
-**This is experimental.** You don't need to use it for the platform to work. It's for power users who want to optimize agent performance.`,
+The product surface is hidden for this release (#2275). It is planned to return in **v1.2** when durable population and Run inspection over canonical Evolve Runs land (#51). There is no in-product Evolution page or nav entry in the default v1.0 build.`,
   },
   {
     id: "browser-tool",
