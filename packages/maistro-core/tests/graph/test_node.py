@@ -450,6 +450,33 @@ class TestExecuteSingleFailureModes:
         assert node.phase == NodePhase.SUCCEEDED
         assert attempts == 2
 
+    async def test_stage_delay_does_not_raise_when_backoff_already_larger(self) -> None:
+        """#2318 False arc at node.py:533 — suite tests use tiny backoff floors
+        that always lose to READ stage_delay; force the keep-backoff path."""
+        node = _planner_node(max_retries=3)
+        attempts = 0
+
+        async def llm_call(*args: object, **kwargs: object) -> str:
+            nonlocal attempts
+            attempts += 1
+            if attempts < 2:
+                raise TimeoutError("connection timed out, please retry")
+            return VALID_PLAN_JSON
+
+        import maistro.graph.node as node_module
+
+        original_backoff = node_module.compute_backoff
+        original_stage = node_module.get_delay
+        node_module.compute_backoff = lambda *a, **k: 1.0  # type: ignore[assignment]
+        node_module.get_delay = lambda *a, **k: 0.25  # type: ignore[assignment]
+        try:
+            await node.execute(llm_call, backoff_config=BackoffConfig(base_delay=1.0, max_delay=2.0))
+        finally:
+            node_module.compute_backoff = original_backoff
+            node_module.get_delay = original_stage
+        assert node.phase == NodePhase.SUCCEEDED
+        assert attempts == 2
+
     async def test_retrying_emits_node_retrying_event(self) -> None:
         events: list[GraphEvent] = []
 
