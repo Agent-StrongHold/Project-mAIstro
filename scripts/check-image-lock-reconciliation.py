@@ -535,6 +535,36 @@ def _applicable_forks(pins: list[LockedPin], env: Mapping[str, str]) -> list[Loc
     return applicable
 
 
+
+def reconcile_variance(
+    required: set[str], conditional: set[str], actual: set[str]
+) -> tuple[list[str], list[str], list[str]]:
+    """Compare an image's pins against the lock and return (missing, extra, skewed).
+
+    Compatibility shim for the develop-side test surface: groups pins by name
+    and treats any locked variant of a name as acceptable.
+    """
+    everything_expected = required | conditional
+    allowed_by_name: dict[str, set[str]] = {}
+    for pin in everything_expected:
+        allowed_by_name.setdefault(pin.partition("==")[0], set()).add(pin)
+
+    actual_by_name = {p.partition("==")[0]: p for p in actual}
+    skewed_names: set[str] = set()
+    skewed: list[str] = []
+    for name, pin in actual_by_name.items():
+        allowed = allowed_by_name.get(name)
+        if allowed is not None and pin not in allowed:
+            skewed_names.add(name)
+            skewed.append(f"{pin} (image) != {_expected_clause(allowed)}")
+    skewed.sort()
+
+    missing = sorted(p for p in required - actual if p.partition("==")[0] not in skewed_names)
+    extra = sorted(
+        p for p in actual - everything_expected if p.partition("==")[0] not in skewed_names
+    )
+    return missing, extra, skewed
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--image", required=True, help="image tag, e.g. maistro-engine:pr-123")
