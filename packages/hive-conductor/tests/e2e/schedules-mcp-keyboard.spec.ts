@@ -14,7 +14,7 @@
 
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test, type BrowserContext, type Locator, type Page } from "@playwright/test";
-import { loginAsPM, setupIfNeeded } from "./session";
+import { loginAsAdmin, loginAsPM, setupIfNeeded } from "./session";
 
 test.describe.configure({ mode: "serial" });
 
@@ -266,17 +266,64 @@ test("MCP tools are reachable and a server expands from the keyboard", async () 
   await expect(details.getByText(server.version)).toBeVisible();
 
   // The remove control is its own sibling tab stop, not nested in the toggle.
+  // #373: for the daily user (no `mcp.write`) the mutation controls are
+  // disabled — deliberately outside the tab order, per "a control guaranteed
+  // to fail must not look actionable". The structure contract (sibling of the
+  // disclosure, never nested inside it) is still asserted here on the
+  // disabled element; the focusability half of the contract is walked under
+  // the admin account in the test below, where the control is live.
   const remove = page.getByRole("button", { name: `Remove ${server.name}` });
-  await page.keyboard.press("Tab");
-  await expect(remove).toBeFocused();
+  await expect(remove).toBeDisabled();
   expect(await remove.evaluate((el) => el.closest("[aria-expanded]"))).toBeNull();
   await expect(disclosure).toHaveAttribute("aria-expanded", "true");
 
   await expectNoAxeViolations();
 
-  await page.keyboard.press("Shift+Tab");
-  await expect(disclosure).toBeFocused();
+  // Focus never left the disclosure — the disabled remove control is not a
+  // tab stop — so collapse it directly from where the walk stands.
   await page.keyboard.press("Space");
   await expect(disclosure).toHaveAttribute("aria-expanded", "false");
   await expect(details).toBeHidden();
+});
+
+test("MCP mutation controls are their own tab stops under an authorized principal", async ({ browser }) => {
+  // #373: the remove/edit controls only exist as reachable tab stops for a
+  // principal the capability policy lets act on MCP. The keyboard contract
+  // the original walk pinned (remove is focusable, its own sibling stop, and
+  // toggling the disclosure does not absorb it) is preserved under admin,
+  // with the same route mocks so no real server is needed.
+  const adminContext = await browser.newContext({ baseURL: test.info().project.use.baseURL });
+  await adminContext.addInitScript(() => {
+    window.localStorage.setItem("hive_onboarded", "1");
+  });
+  const adminPage = await adminContext.newPage();
+  await setupIfNeeded(adminPage);
+  await loginAsAdmin(adminPage);
+
+  await adminPage.route("**/v1/mcp/servers", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify([server]) });
+  });
+  await adminPage.route("**/v1/mcp/tools", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify([tool]) });
+  });
+
+  try {
+    await adminPage.goto("/mcp", { waitUntil: "domcontentloaded" });
+    const disclosure = adminPage.getByRole("button", { name: new RegExp(`^${server.name}`) });
+    for (let step = 0; step < 80 && !(await isFocused(disclosure)); step += 1) {
+      await adminPage.keyboard.press("Tab");
+    }
+    await expect(disclosure).toBeFocused();
+    await adminPage.keyboard.press("Enter");
+    await expect(disclosure).toHaveAttribute("aria-expanded", "true");
+    const remove = adminPage.getByRole("button", { name: `Remove ${server.name}` });
+    await expect(remove).toBeEnabled();
+    await adminPage.keyboard.press("Tab");
+    await expect(remove).toBeFocused();
+    expect(await remove.evaluate((el) => el.closest("[aria-expanded]"))).toBeNull();
+    await adminPage.keyboard.press("Shift+Tab");
+    await expect(disclosure).toBeFocused();
+  } finally {
+    await adminContext.close();
+  }
 });
