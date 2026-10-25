@@ -89,8 +89,12 @@ def list_missions(request: Request) -> list[Mission]:
     if engine.is_configured or engine._backend is not None:
         tasks = engine.list_tasks(user_id=uid)
         if tasks:
-            return [_task_to_mission(t) for t in tasks]
-    return [mission for mission in stores.missions.values() if _mission_owned_by(mission, uid)]
+            return [_public_mission(_task_to_mission(t)) for t in tasks]
+    return [
+        _public_mission(mission)
+        for mission in stores.missions.values()
+        if _mission_owned_by(mission, uid)
+    ]
 
 
 class ClearMissionsBody(BaseModel):
@@ -117,11 +121,11 @@ def get_mission(mission_id: str, request: Request) -> Mission:
     if engine.is_configured or engine._backend is not None:
         rec = engine.get_task(mission_id, user_id=uid)
         if rec is not None:
-            return _task_to_mission(rec)
+            return _public_mission(_task_to_mission(rec))
     mission = stores.missions.get(mission_id)
     if mission is None or not _mission_owned_by(mission, uid):
         raise HTTPException(status_code=404, detail="mission not found")
-    return mission
+    return _public_mission(mission)
 
 
 @router.get("/{mission_id}/steps", response_model=list[MissionStep])
@@ -143,11 +147,11 @@ def get_steps(mission_id: str, request: Request) -> list[MissionStep]:
                     status=step_status,
                     order=1,
                 )
-            return [step] if step else []
+            return _public_steps([step] if step else [])
     mission = stores.missions.get(mission_id)
     if mission is None or not _mission_owned_by(mission, uid):
         raise HTTPException(status_code=404, detail="mission not found")
-    return list(stores.mission_steps.get(mission_id, []))
+    return _public_steps(list(stores.mission_steps.get(mission_id, [])))
 
 
 class CreateMissionBody(BaseModel):
@@ -159,11 +163,7 @@ class CreateMissionBody(BaseModel):
 
 
 def _user_id(request: Request) -> str:
-    user = getattr(request.state, "user", None) or {}
-    uid = user.get("id") or user.get("username")
-    if not uid:
-        raise HTTPException(status_code=401, detail="Authentication required")
-    return str(uid)
+    return require_actor_id(request)
 
 
 @router.post("", response_model=Mission)
@@ -186,7 +186,7 @@ async def create_mission(
             logger.warning("workspace_not_routable %s", exc)
             raise HTTPException(status_code=501, detail=WORKSPACE_NOT_ROUTABLE_DETAIL) from exc
         log_audit("mission_create", _user_id(request), target=rec.id, detail={"name": body.name})
-        return _task_to_mission(rec)
+        return _public_mission(_task_to_mission(rec))
 
     uid = _user_id(request)
     mid = str(uuid4())[:12]
@@ -207,7 +207,7 @@ async def create_mission(
     stores.missions[mid] = m
     stores.mission_steps[mid] = []
     log_audit("mission_create", _user_id(request), target=mid, detail={"name": body.name})
-    return m
+    return _public_mission(m)
 
 
 class UpdateMissionStatusBody(BaseModel):
@@ -249,7 +249,7 @@ def update_mission_status(
         _revoke_task_elevation(request, mission_id)
     stores.missions[mission_id] = m
     log_audit("mission_status", uid, target=mission_id, detail={"status": body.status})
-    return m
+    return _public_mission(m)
 
 
 def _revoke_task_elevation(request: Request, task_id: str) -> None:

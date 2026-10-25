@@ -119,6 +119,51 @@ class TestExtractionShapes:
         assert gate.undefined_invocations(source) == []
 
 
+class TestSourcedDefinitions:
+    """Definitions may live in a literal file a target sources (#1821):
+    install.sh and get.sh both pull in scripts/bootstrap-runtime.sh through a
+    ``$SCRIPT_DIR`` variable. The gate counts such a file only when the stripped
+    path really resolves — an unresolvable source must never silently shrink
+    the definition set, or a helper defined nowhere would pass."""
+
+    def test_definitions_from_a_resolvable_sourced_file_count(self, gate, tmp_path) -> None:
+        (tmp_path / "lib.sh").write_text("shared_helper() { :; }\n", encoding="utf-8")
+        source = 'source "$SCRIPT_DIR/lib.sh"\nshared_helper\n'
+        assert gate.undefined_invocations(source, base=tmp_path) == []
+
+    def test_sourced_files_resolves_base_before_the_repo_root(self, gate, tmp_path) -> None:
+        (tmp_path / "lib.sh").write_text("# base copy\n", encoding="utf-8")
+        assert gate.sourced_files('source "$DIR/lib.sh"\n', tmp_path) == [tmp_path / "lib.sh"]
+
+    def test_without_base_the_repo_root_resolves_the_shared_library(self, gate) -> None:
+        """The single-argument form (the shape the tests and the DEFAULT_TARGETS
+        check use) falls back to the repo root — where install.sh and get.sh
+        actually live, sourcing scripts/bootstrap-runtime.sh."""
+        assert gate.sourced_files('source "$SCRIPT_DIR/scripts/bootstrap-runtime.sh"\n', None) == [
+            ROOT / "scripts" / "bootstrap-runtime.sh"
+        ]
+
+    def test_an_unresolvable_source_is_ignored_and_its_helpers_still_fail(
+        self, gate, tmp_path
+    ) -> None:
+        source = 'source "$BUNDLE_DIR/missing.sh"\nmystery_helper\n'
+        assert gate.sourced_files(source, tmp_path) == []
+        assert gate.undefined_invocations(source, base=tmp_path) == [("mystery_helper", 2)]
+
+    def test_a_clean_candidate_missing_everywhere_tries_both_roots(self, gate, tmp_path) -> None:
+        """A resolvable-shaped path that exists neither next to the target nor
+        at the repo root exhausts the search instead of matching anything."""
+        assert gate.sourced_files('source "missing.sh"\n', tmp_path) == []
+
+    def test_a_substitution_surviving_the_strip_is_ignored(self, gate, tmp_path) -> None:
+        source = 'source "$(resolver)/lib.sh"\n'
+        assert gate.sourced_files(source, tmp_path) == []
+
+    def test_an_empty_candidate_is_ignored(self, gate, tmp_path) -> None:
+        source = 'source "$SCRIPT_DIR"\n'
+        assert gate.sourced_files(source, tmp_path) == []
+
+
 class TestTheGateContract:
     def test_allowlist_entries_carry_justifications(self, gate) -> None:
         """Every externally-invoked command is a reviewed decision; an entry

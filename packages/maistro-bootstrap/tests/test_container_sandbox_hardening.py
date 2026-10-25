@@ -73,6 +73,7 @@ class _Recording:
 def recorder(monkeypatch: pytest.MonkeyPatch) -> _Recording:
     rec = _Recording()
     monkeypatch.setattr(csbx_mod.subprocess, "run", rec)
+    monkeypatch.setattr(csbx_mod, "run_bounded", rec.run_bounded)
     # These tests lock Docker argv shape only; the live suite proves the
     # host-side index allowlist against the real backend.
     monkeypatch.setattr(csbx_mod.ContainerBuilderSandbox, "_tracked_seed_files", lambda _: b"")

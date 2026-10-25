@@ -87,6 +87,11 @@ jobs:
       issues: read
     steps:
       - uses: actions/checkout@v7
+        with:
+          # Ratchet steps resolve origin/develop and the typed-client ratchet
+          # resolves the event's trusted base; shallow checkout leaves that ref
+          # unresolvable and fails with "Needed a single revision".
+          fetch-depth: 0
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
@@ -232,6 +237,12 @@ jobs:
       # profile to the `${VAR:?message}` shape the rest already use.
       - name: No deployment profile hands out a credential
         run: python3 scripts/check-compose-secrets.py
+      # Ordinary Docker/Podman Compose ignores Swarm-only deploy.resources.
+      # Require finite memory, swap, PID, and CPU ceilings in every shipped
+      # profile, supported overlay, and add-on so rendered deployment config cannot
+      # silently remove the containment boundary (#862).
+      - name: Compose profiles enforce resource containment
+        run: uv run python scripts/check-compose-resources.py
       # `security_violations` and `usage_events` were appended to forever
       # because no table had to say how long its rows live (#325). Every table
       # an Alembic revision, runtime `CREATE TABLE` or `__tablename__` creates
@@ -532,6 +543,8 @@ jobs:
             sleep 2
           done
           echo "minio did not become ready" >&2
+          # Best-effort dump: the explicit exit 1 below is the verdict; a
+          # failed log cat must not shadow it.
           cat "$RUNNER_TEMP/minio.log" >&2 || true
           exit 1
       - name: Archive conformance against MinIO
@@ -614,164 +627,22 @@ jobs:
             age-keygen --help > /dev/null && echo "✓ age-keygen ready" || exit 1
           fi
       - run: uv sync --locked --extra dev --extra bootstrap
-      # The Builder conformance module targets the production
-      # ContainerBuilderSandbox, not a fake. Build its minimal supported image
-      # from the test directory so the repository (and any ambient secrets) is
-      # never sent as a Docker build context (#80).
-      - name: Build the real Builder sandbox image
-        run: >-
-          docker build --tag maistro-builders:latest
-          --file packages/maistro-bootstrap/tests/Dockerfile.sandbox
-          packages/maistro-bootstrap/tests
-      # ADR-093 Decision 2 (#80 reopened): ContainerBuilderSandbox refuses a
-      # rootful, user-namespace-unmapped daemon -- container uid 0 there IS
-      # host uid 0, which is the D-04 regression this conformance suite exists
-      # to prevent. Prove the fail-closed branch first, against the runner's
-      # own rootful system daemon, before the lane switches to a rootless one.
-      - name: Rootful daemon is refused (ADR-093 Decision 2 fail-closed proof)
-        run: >-
-          uv run pytest
-          packages/maistro-bootstrap/tests/test_container_sandbox.py::test_sandbox_refuses_a_rootful_unmapped_daemon
-          -v --tb=short
-      # The escape suite itself runs where the sandbox actually starts: a
-      # daemon whose containers get non-host uids (rootless or userns-remapped).
-      # The bwrap step above already relaxed
-      # kernel.apparmor_restrict_unprivileged_userns for its own kernel probes;
-      # rootlesskit needs the same relaxation, so keep this step after it.
-      #
-      # Provisioning (#80 round 19): the rootless toolchain comes from Docker's
-      # pinned static bundle. The previous apt route died with exit 100 on the
-      # runner (`docker-ce-rootless-extras` has no installation candidate —
-      # the Docker apt repo is not in the runner image's sources), so the
-      # escape suite never ran remotely. `dockerd` itself is preinstalled on
-      # the runner; uidmap and slirp4netns are in Ubuntu's own universe repo,
-      # not Docker's. Same recipe as the locally-proven lane.
-      #
-      # Round 20: remote run 36336385671 (at 8f714f20d) still failed this
-      # step — the daemon never reported ready in 120s while the step spun
-      # silently and dockerd.log was never shown. Three fixes, all
-      # GitHub-runner rootless-docker requirements: (1) /run/user/<uid> is
-      # NOT guaranteed to exist for the runner user on hosted images —
-      # rootlesskit fails without it, so create it up front; (2) the AppArmor
-      # unprivileged-userns relaxation done for bwrap earlier must not be
-      # load-bearing here by step-ordering accident — re-assert it, hard;
-      # (3) when readiness times out, print the daemon log tail and exit 1 so
-      # the next failure carries its own evidence instead of a bare grep
-      # mismatch.
-      - name: Start a rootless Docker daemon for the conformance lane
-        env:
-          DOCKER_ROOTLESS_EXTRAS_VERSION: "29.8.1"
-        run: |
-          set -euxo pipefail
-          uid="$(id -u)"
-          export XDG_RUNTIME_DIR="/run/user/$uid"
-          # Hosted runners do not create a logind session for the runner
-          # user; XDG_RUNTIME_DIR must exist and belong to it before
-          # rootlesskit can build its runtime dir.
-          sudo mkdir -p "$XDG_RUNTIME_DIR"
-          sudo chown "$uid:$uid" "$XDG_RUNTIME_DIR"
-          sudo chmod 700 "$XDG_RUNTIME_DIR"
-          # Same kernel knob the bwrap provisioning relaxes; do not depend
-          # on that step having survived its own `|| true`s.
-          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-          # Rootless dockerd enforces --memory/--pids-limit only through a
-          # delegated cgroup v2 subtree, which systemd grants to a user
-          # manager. Hosted runners have no logind session for the runner
-          # user, so start one via linger; the enforcement probe in the
-          # image-load step below turns any residual non-delegation into a
-          # named failure instead of a red escape test two steps later.
-          sudo loginctl enable-linger "$uid" || true
-          timeout 180 sudo apt-get update || true
-          timeout 180 sudo apt-get install -y uidmap slirp4netns || true
-          # The installs above are best-effort because the runner image
-          # usually ships both already — but then the binaries must exist,
-          # or rootlesskit would die opaquely. Fail here, with the cause in
-          # the step name, not two minutes later in a readiness poll.
-          command -v newuidmap slirp4netns
-          curl -fsSL --retry 3 --retry-delay 2 --retry-all-errors \
-            "https://download.docker.com/linux/static/stable/x86_64/docker-rootless-extras-${DOCKER_ROOTLESS_EXTRAS_VERSION}.tgz" \
-            | tar xz -C "$RUNNER_TEMP"
-          export PATH="$RUNNER_TEMP/docker-rootless-extras:$PATH"
-          lane_dir="$RUNNER_TEMP/docker-l80"
-          mkdir -p "$lane_dir"
-          # Direct dockerd-rootless.sh rather than setuptool+systemd: fewer
-          # moving parts, and the daemon only has to outlive this job. vfs is
-          # deterministic without fuse-overlayfs; the lane is small.
-          #
-          # Round 25 root cause for the eight red runs before this one: the
-          # runner's dockerd (28.x) default-initializes the iptables firewall
-          # inside the rootlesskit netns and dies with "failed to create NAT
-          # chain DOCKER: iptables ... Permission denied (you must be root)"
-          # — reproduced locally against dockerd 28.5.2 with this exact
-          # recipe. The locally-proven lanes of rounds 19-24 masked it only
-          # because moby 29.x stopped firewall-initializing in rootless mode.
-          # So the firewall/bridge/port-publish plane is disabled explicitly:
-          # the sandbox contract's network default-deny is per-container
-          # (--network=none; no bridge, NAT or publish path is ever
-          # exercised), and removing the plane removes the exact privilege
-          # the rootless netns cannot grant. The escape suite was re-run
-          # green (16 passed, 1 daemon-posture skip) against a daemon started
-          # with these exact flags under dockerd 28.5.2 before this landed.
-          # Rootless Docker cannot read/manage the runner's AppArmor profiles.
-          # Keep securityfs discovery out of this daemon's PRIVATE mountns,
-          # not out of the host. Production sandbox flags remain unchanged.
-          MAISTRO_TEST_ROOTLESS_LANE=1 uv run pytest \
-            packages/maistro-bootstrap/tests/test_container_lane.py -v --tb=short
-          nohup bash scripts/ci-rootless-mountns.sh dockerd-rootless.sh \
-            --iptables=false \
-            --ip6tables=false \
-            --userland-proxy=false \
-            --bridge=none \
-            --storage-driver=vfs \
-            --data-root="$lane_dir/data" \
-            --exec-root="$lane_dir/exec" \
-            --pidfile="$lane_dir/docker.pid" \
-            --host="unix://$lane_dir/docker.sock" \
-            > "$lane_dir/dockerd.log" 2>&1 &
-          daemon_ready=0
-          for _ in $(seq 1 60); do
-            if docker --host "unix://$lane_dir/docker.sock" info > /dev/null 2>&1; then
-              daemon_ready=1
-              break
-            fi
-            sleep 2
-          done
-          if [ "$daemon_ready" -ne 1 ]; then
-            echo "::error::rootless dockerd did not become ready in 120s; dockerd.log tail follows"
-            tail -n 200 "$lane_dir/dockerd.log" || true
-            exit 1
-          fi
-          docker --host "unix://$lane_dir/docker.sock" info \
-            --format '{{json .SecurityOptions}}' | grep -q rootless
-          echo "DOCKER_HOST=unix://$lane_dir/docker.sock" >> "$GITHUB_ENV"
-      # Seed the rootless daemon from the image built above instead of
-      # rebuilding it: the lane's budget belongs to the conformance run. The
-      # first docker talks to the runner's rootful system daemon explicitly;
-      # the second inherits DOCKER_HOST from the previous step's GITHUB_ENV.
-      - name: Load the Builder sandbox image into the rootless daemon
-        run: |
-          docker --host unix:///var/run/docker.sock save maistro-builders:latest | docker load
-          # Round 25: prove the daemon can actually enforce the sandbox's
-          # resource budget before the suite runs on it. Rootless dockerd
-          # needs the delegated cgroup v2 subtree set up by the linger step;
-          # without it, --memory is silently dropped and the exhaustion test
-          # would fail opaquely. Reading memory.max back from inside a
-          # 64m-limited container is the enforcement proof; "max" means
-          # unbounded, i.e. not enforced.
-          enforced="$(docker run --rm --network=none --memory=64m --memory-swap=64m \
-            maistro-builders:latest cat /sys/fs/cgroup/memory.max)"
-          echo "memory.max under a 64m limit: $enforced"
-          if [ "$enforced" != "67108864" ]; then
-            echo "::error::rootless daemon cannot enforce container memory limits (memory.max='$enforced'); cgroup v2 delegation to the runner user is missing"
-            exit 1
-          fi
-      - name: Run the real Builder sandbox conformance lane
-        run: uv run pytest packages/maistro-bootstrap/tests/test_container_sandbox.py -v --tb=short
-      - run: uv run pytest packages/maistro-bootstrap/tests -v --tb=short
-      - run: uv run pytest packages/maistro-core/tests -v --tb=short
-        env:
-          REQUIRE_AUTH: "false"
-          MAISTRO_DRY_RUN: "1"
+      # The publish-set unit suites (maistro-core, -canvas, -evolve, -rsi,
+      # -bootstrap) are deliberately NOT run here (#654): quality.yml's
+      # `coverage (no services)` job is their canonical producer on the same
+      # SHA. Both `test` and `coverage (no services)` are independently
+      # required by the PR ruleset (.github/branch-protection.json), so a
+      # second execution of the same suites was duplicate computation, not
+      # independent evidence. The producer is at least as strong as the steps
+      # it replaces: same collected node IDs (the suite-inventory gate pins
+      # those), the same REQUIRE_AUTH=false / MAISTRO_DRY_RUN=1 environment,
+      # `uv sync --all-extras` (a superset of this job's extras), bubblewrap
+      # installed with the same sysctl relaxation, and every test additionally
+      # under a 30s pytest-timeout. The partition itself is enforced by
+      # tests/test_unit_suite_execution_partition.py. This job keeps what the
+      # producer cannot execute: server, Turing, design, the extension
+      # harness/SDK suites, the root integration tree, Hive, the frontends,
+      # the cross-suite leakage proof, and the suite-inventory check.
       - run: uv run pytest packages/maistro-server/tests -v --tb=short
         env:
           REQUIRE_AUTH: "false"
@@ -799,43 +670,6 @@ jobs:
         env:
           REQUIRE_AUTH: "false"
           MAISTRO_DRY_RUN: "1"
-      # The proxy-SWE-bench evaluator executes untrusted candidate code in the
-      # real core Docker sandbox, whose default image is python:3.12-slim
-      # (maistro.config.settings.SandboxSettings.image). That evaluator
-      # deliberately fails closed when the sandbox cannot start -- the correct
-      # security posture (#80) -- but it means a missing image is red tests,
-      # not an untested suite: merge-queue runs 36508346054 and 36440932829
-      # both lost two swebench cases to exactly that. Every step after the
-      # conformance lane inherits DOCKER_HOST of the lane's rootless daemon
-      # (via GITHUB_ENV), and that daemon sits inside a rootlesskit netns
-      # where the host DNS stub (127.0.0.53) is unreachable, so its first-time
-      # registry pull dies with "lookup registry-1.docker.io ... connection
-      # refused". Systematic, not a flake -- so the image must be seeded into
-      # the active daemon rather than pulled by it: pull on the runner's
-      # rootful system daemon (already cached there by the Dockerfile.sandbox
-      # build; retries only cover a cold runner) and transfer it exactly the
-      # way the Builder image was loaded into this same daemon earlier. The
-      # second docker of the pipe inherits DOCKER_HOST, i.e. the lane daemon
-      # the pytest step below will use.
-      - name: Seed python:3.12-slim into the lane daemon (swebench sandbox image)
-        run: |
-          set -euo pipefail
-          pulled=0
-          for attempt in 1 2 3; do
-            if timeout 240 docker --host unix:///var/run/docker.sock pull python:3.12-slim; then
-              pulled=1
-              break
-            fi
-            echo "::warning::python:3.12-slim pull attempt $attempt failed"
-            sleep 10
-          done
-          [ "$pulled" -eq 1 ] || { echo "::error::could not pull python:3.12-slim for the swebench sandbox"; exit 1; }
-          docker --host unix:///var/run/docker.sock save python:3.12-slim | docker load
-      - run: uv run pytest packages/maistro-rsi/tests packages/maistro-evolve/tests -v --tb=short
-        env:
-          REQUIRE_AUTH: "false"
-          MAISTRO_DRY_RUN: "1"
-          PYTHONPATH: packages/maistro-rsi/src:packages/maistro-evolve/src
       - uses: actions/setup-node@v7
         with:
           node-version: "22"
@@ -891,6 +725,137 @@ jobs:
   # acceptance criterion asks for -- one CI check whose pass/fail is legible as
   # "did cross-product spine parity hold" rather than buried in one line of a
   # much larger suite.
+  # #80 / M2-B5: the designated hardware-capable conformance lane for the real
+  # ContainerBuilderSandbox backend. The publish-set partition (#654) keeps
+  # quality.yml `coverage-unit` as the bootstrap suite's no-services producer;
+  # this job is the *service-backed* site — it provisions the rootless daemon
+  # whose user-namespace mapping ADR-093 Decision 2 requires, proves the
+  # fail-closed refusal on a rootful daemon first, proves cgroup v2 memory
+  # enforcement before the suite runs, and only then executes the escape and
+  # conformance suite against real containers. Declared as a service-backed
+  # whole-suite site in tests/test_unit_suite_execution_partition.py.
+  sandbox-conformance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - uses: ./.github/actions/setup-uv
+      # Rootlesskit needs the AppArmor unprivileged-userns relaxation the same
+      # way bubblewrap does (Ubuntu 24.04 ships it =1); set it explicitly so
+      # the lane does not depend on another job's step ordering.
+      - name: Relax AppArmor unprivileged user-namespace restriction
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      # The Builder conformance module targets the production
+      # ContainerBuilderSandbox, not a fake. Build its minimal supported image
+      # from the test directory so the repository (and any ambient secrets) is
+      # never sent as a Docker build context.
+      - name: Build the real Builder sandbox image
+        run: >-
+          docker build --tag maistro-builders:latest
+          --file packages/maistro-bootstrap/tests/Dockerfile.sandbox
+          packages/maistro-bootstrap/tests
+      # ADR-093 Decision 2: ContainerBuilderSandbox refuses a rootful,
+      # user-namespace-unmapped daemon — container uid 0 there IS host uid 0,
+      # the D-04 regression this conformance suite exists to prevent. Prove
+      # the fail-closed branch first, against the runner's own rootful system
+      # daemon, before the lane switches to a rootless one.
+      - name: Rootful daemon is refused (ADR-093 Decision 2 fail-closed proof)
+        run: >-
+          uv run pytest
+          packages/maistro-bootstrap/tests/test_container_sandbox.py::test_sandbox_refuses_a_rootful_unmapped_daemon
+          -v --tb=short
+      # The escape suite itself runs where the sandbox actually starts: a
+      # daemon whose containers get non-host uids (rootless or
+      # userns-remapped). Provisioning notes (rounds 19-32,
+      # docs/testing/inventory-notes/l80-*-repair.md): uidmap/slirp4netns come
+      # from Ubuntu's own repos; the rootless toolchain comes from Docker's
+      # pinned static bundle; the runner user needs XDG_RUNTIME_DIR and a
+      # logind session (linger) for delegated cgroup v2, which is what makes
+      # --memory enforceable; the firewall/bridge/port-publish plane is off
+      # because the rootless netns cannot authorize NAT chains (the network
+      # default-deny is per-container, --network=none) and securityfs is
+      # masked only inside the daemon's private mount namespace via
+      # scripts/ci-rootless-mountns.sh (host AppArmor policy untouched).
+      - name: Start a rootless Docker daemon for the conformance lane
+        env:
+          DOCKER_ROOTLESS_EXTRAS_VERSION: "29.8.1"
+        run: |
+          set -euxo pipefail
+          uid="$(id -u)"
+          export XDG_RUNTIME_DIR="/run/user/$uid"
+          sudo mkdir -p "$XDG_RUNTIME_DIR"
+          sudo chown "$uid:$uid" "$XDG_RUNTIME_DIR"
+          sudo chmod 700 "$XDG_RUNTIME_DIR"
+          sudo loginctl enable-linger "$uid" || true
+          timeout 180 sudo apt-get update || true
+          timeout 180 sudo apt-get install -y uidmap slirp4netns || true
+          command -v newuidmap slirp4netns
+          curl -fsSL --retry 3 --retry-delay 2 --retry-all-errors \
+            "https://download.docker.com/linux/static/stable/x86_64/docker-rootless-extras-${DOCKER_ROOTLESS_EXTRAS_VERSION}.tgz" \
+            | tar xz -C "$RUNNER_TEMP"
+          export PATH="$RUNNER_TEMP/docker-rootless-extras:$PATH"
+          lane_dir="$RUNNER_TEMP/docker-l80"
+          mkdir -p "$lane_dir"
+          MAISTRO_TEST_ROOTLESS_LANE=1 uv run pytest \
+            packages/maistro-bootstrap/tests/test_container_lane.py -v --tb=short
+          nohup bash scripts/ci-rootless-mountns.sh dockerd-rootless.sh \
+            --iptables=false \
+            --ip6tables=false \
+            --userland-proxy=false \
+            --bridge=none \
+            --storage-driver=vfs \
+            --data-root="$lane_dir/data" \
+            --exec-root="$lane_dir/exec" \
+            --pidfile="$lane_dir/docker.pid" \
+            --host="unix://$lane_dir/docker.sock" \
+            > "$lane_dir/dockerd.log" 2>&1 &
+          daemon_ready=0
+          for _ in $(seq 1 60); do
+            if docker --host "unix://$lane_dir/docker.sock" info > /dev/null 2>&1; then
+              daemon_ready=1
+              break
+            fi
+            sleep 2
+          done
+          if [ "$daemon_ready" -ne 1 ]; then
+            echo "::error::rootless dockerd did not become ready in 120s; dockerd.log tail follows"
+            tail -n 200 "$lane_dir/dockerd.log" || true
+            exit 1
+          fi
+          docker --host "unix://$lane_dir/docker.sock" info \
+            --format '{{json .SecurityOptions}}' | grep -q rootless
+          echo "MAISTRO_LANE_DOCKER_SOCK=unix://$lane_dir/docker.sock" >> "$GITHUB_ENV"
+      # Seed the rootless daemon from the image built above instead of
+      # rebuilding it: the lane's budget belongs to the conformance run. The
+      # first docker talks to the runner's rootful system daemon explicitly;
+      # the second targets the lane daemon socket.
+      - name: Load the Builder sandbox image into the rootless daemon
+        run: |
+          docker --host unix:///var/run/docker.sock save maistro-builders:latest \
+            | docker --host "$MAISTRO_LANE_DOCKER_SOCK" load
+          # Prove the daemon can actually enforce the sandbox's resource
+          # budget before the suite runs on it. Rootless dockerd needs the
+          # delegated cgroup v2 subtree set up by the linger step; without it,
+          # --memory is silently dropped and the exhaustion test would fail
+          # opaquely. Reading memory.max back from inside a 64m-limited
+          # container is the enforcement proof; "max" means unbounded, i.e.
+          # not enforced.
+          enforced="$(docker --host "$MAISTRO_LANE_DOCKER_SOCK" run --rm --network=none \
+            --memory=64m --memory-swap=64m \
+            maistro-builders:latest cat /sys/fs/cgroup/memory.max)"
+          echo "memory.max under a 64m limit: $enforced"
+          if [ "$enforced" != "67108864" ]; then
+            echo "::error::rootless daemon cannot enforce container memory limits (memory.max='$enforced'); cgroup v2 delegation to the runner user is missing"
+            exit 1
+          fi
+      - name: Run the real Builder sandbox conformance lane
+        run: DOCKER_HOST="$MAISTRO_LANE_DOCKER_SOCK" uv run pytest packages/maistro-bootstrap/tests -v --tb=short
+
   cross-product-parity:
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -1288,118 +1253,7 @@ jobs:
       # the tested image id / repo digests, so the evidence names its artifact.
       - name: Boot the shipped engine image and prove its Canvas surface (#1825)
         shell: bash
-        run: |
-          set -euo pipefail
-          network=maistro-engine-smoke
-          volume=maistro-engine-smoke-pgdata
-          postgres=maistro-engine-smoke-postgres
-          engine=maistro-engine-smoke-api
-
-          cleanup() {
-            status=$?
-            if [[ $status -ne 0 ]]; then
-              docker logs "$engine" 2>&1 || true
-              docker logs "$postgres" 2>&1 || true
-              docker ps -a || true
-            fi
-            docker rm -f "$engine" "$postgres" >/dev/null 2>&1 || true
-            docker network rm "$network" >/dev/null 2>&1 || true
-            docker volume rm "$volume" >/dev/null 2>&1 || true
-            exit "$status"
-          }
-          trap cleanup EXIT
-
-          docker network create "$network"
-          docker volume create "$volume"
-          docker run -d --name "$postgres" --network "$network" \
-            -e POSTGRES_USER=maistro \
-            -e POSTGRES_PASSWORD=maistro-smoke-password \
-            -e POSTGRES_DB=maistro \
-            -e PGDATA=/var/lib/postgresql/18/docker \
-            -v "$volume:/var/lib/postgresql" \
-            pgvector/pgvector:pg18
-          for _ in $(seq 1 40); do
-            if docker exec "$postgres" pg_isready -U maistro >/dev/null 2>&1; then
-              break
-            fi
-            sleep 2
-          done
-          docker exec "$postgres" pg_isready -U maistro
-
-          docker run -d --name "$engine" --network "$network" -p 8000:8000 \
-            -e DB_HOST="$postgres" \
-            -e DB_PORT=5432 \
-            -e DB_NAME=maistro \
-            -e DB_USER=maistro \
-            -e DB_PASSWORD=maistro-smoke-password \
-            -e ROUTER_API_KEY=0123456789abcdef0123456789abcdef \
-            -e 'API_KEYS=["smoke:smoke-access-token"]' \
-            -e REQUIRE_AUTH=true \
-            -e LITELLM_BASE_URL=http://unused-gateway:4000 \
-            -e LITELLM_MASTER_KEY=smoke-gateway-key \
-            maistro-engine:test
-
-          for _ in $(seq 1 60); do
-            if curl -fsS http://127.0.0.1:8000/health/live >/dev/null; then
-              break
-            fi
-            sleep 2
-          done
-          curl -fsS http://127.0.0.1:8000/health/live
-          # Readiness races boot-time migration: liveness answers while the
-          # engine is still applying the alembic chain on the empty volume, so
-          # a single immediate /health/ready call fails under runner load
-          # (observed 2026-09-14: the smoke died with the container in
-          # health:starting and the migration chain mid-run). Poll with the
-          # same bounded budget; the final assertion stays fail-closed.
-          for _ in $(seq 1 60); do
-            if curl -fsS http://127.0.0.1:8000/health/ready >/dev/null; then
-              break
-            fi
-            sleep 2
-          done
-          curl -fsS http://127.0.0.1:8000/health/ready
-          # Revision ids in this chain are lowercase alnum + underscore
-          # (004_task_run_id, 035_outcome_scope_thumb_index); a hex-only
-          # match held only while the head happened to be numeric. The app
-          # can also report ready before its boot-time migration commits
-          # the alembic_version row (observed: ready ok at uptime 1.1s),
-          # so poll until the row exists and matches, then fail closed.
-          for _ in $(seq 1 60); do
-            v="$(docker exec "$postgres" psql -U maistro -d maistro -Atc \
-              "SELECT version_num FROM alembic_version" 2>/dev/null || true)"
-            if [[ "$v" =~ ^[0-9a-z_]+$ ]]; then break; fi
-            sleep 2
-          done
-          docker exec "$postgres" psql -U maistro -d maistro -Atc \
-            "SELECT version_num FROM alembic_version" | grep -Eq '^[0-9a-z_]+$'
-
-          # Recreate PostgreSQL against the same 18-style parent volume and
-          # prove the migrated cluster, not an anonymous volume, comes back.
-          docker rm -f "$engine" "$postgres"
-          docker run -d --name "$postgres" --network "$network" \
-            -e POSTGRES_USER=maistro \
-            -e POSTGRES_PASSWORD=maistro-smoke-password \
-            -e POSTGRES_DB=maistro \
-            -e PGDATA=/var/lib/postgresql/18/docker \
-            -v "$volume:/var/lib/postgresql" \
-            pgvector/pgvector:pg18
-          for _ in $(seq 1 40); do
-            if docker exec "$postgres" pg_isready -U maistro >/dev/null 2>&1; then
-              break
-            fi
-            sleep 2
-          done
-          # Second boot (recreated cluster): same migration-commit race, same
-          # bounded poll before the fail-closed assertion.
-          for _ in $(seq 1 60); do
-            v="$(docker exec "$postgres" psql -U maistro -d maistro -Atc \
-              "SELECT version_num FROM alembic_version" 2>/dev/null || true)"
-            if [[ "$v" =~ ^[0-9a-z_]+$ ]]; then break; fi
-            sleep 2
-          done
-          docker exec "$postgres" psql -U maistro -d maistro -Atc \
-            "SELECT version_num FROM alembic_version" | grep -Eq '^[0-9a-z_]+$'
+        run: scripts/smoke-engine-canvas.sh maistro-engine:test
       - name: Build hive-conductor (cached)
         run: >-
           scripts/buildx-build-retry.sh --

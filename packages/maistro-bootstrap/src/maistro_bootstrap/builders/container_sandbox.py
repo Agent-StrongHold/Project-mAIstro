@@ -232,6 +232,11 @@ class ContainerBuilderSandbox:
         self._image = image
         self._cid: str | None = None
         self._harness_pid: str | None = None
+        # Host-selected bound (#1197) on retained command output, clamped to
+        # the protocol ceiling: candidate-influenced commands run here, so an
+        # unbounded emitter must not be able to grow host memory through the
+        # very path the isolation depends on.
+        self._output_limit = clamped_output_limit(DEFAULT_MAX_OUTPUT_BYTES)
 
     # -- lifecycle -----------------------------------------------------------
 
@@ -519,6 +524,44 @@ class ContainerBuilderSandbox:
                 )
             return listed.stdout
 
+    def _parsed_seed_entry(self, entry: bytes) -> tuple[bytes, bytes]:
+        """Split one `ls-files --stage -z` record into (mode, raw path)."""
+        try:
+            metadata, raw_path = entry.split(b"\t", 1)
+            mode = metadata.split(b" ", 1)[0]
+        except ValueError as exc:
+            raise RuntimeError("git returned a malformed staged seed entry") from exc
+        return mode, raw_path
+
+    def _require_safe_seed_path(self, raw_path: bytes) -> PurePosixPath:
+        """Reject absolute or parent-traversing index paths outright."""
+        path = PurePosixPath(os.fsdecode(raw_path))
+        if path.is_absolute() or ".." in path.parts:
+            raise RuntimeError(f"git returned an unsafe seed path: {path}")
+        return path
+
+    def _seed_entry_is_an_existing_leaf(self, path: PurePosixPath) -> bool:
+        """Authorize one indexed leaf against the live worktree.
+
+        Every ancestor the index names must be a real directory (a replacement
+        directory or symlinked ancestor would expose whatever lives there now,
+        not what the index authorizes), and the leaf itself must be a regular
+        file or a symlink (tar archives links without dereferencing them).
+        An unstaged deletion is intentionally absent from the seed.
+        """
+        candidate = self._repo_root
+        try:
+            for part in path.parts[:-1]:
+                candidate /= part
+                if not stat.S_ISDIR(candidate.lstat().st_mode):
+                    raise RuntimeError(f"git returned an unsafe seed path: {path}")
+            leaf_mode = (self._repo_root / path).lstat().st_mode
+        except FileNotFoundError:
+            return False
+        if not (stat.S_ISREG(leaf_mode) or stat.S_ISLNK(leaf_mode)):
+            raise RuntimeError(f"git returned an unsafe seed path: {path}")
+        return True
+
     def _tracked_seed_files(self) -> bytes:
         """Return indexed files without traversing symlink parents or directories.
 
@@ -532,32 +575,15 @@ class ContainerBuilderSandbox:
         for entry in listed.split(b"\0"):
             if not entry:
                 continue
-            try:
-                metadata, raw_path = entry.split(b"\t", 1)
-                mode = metadata.split(b" ", 1)[0]
-            except ValueError as exc:
-                raise RuntimeError("git returned a malformed staged seed entry") from exc
+            mode, raw_path = self._parsed_seed_entry(entry)
             # A gitlink names a checked-out directory but does not authorize its
             # contents. Never hand that directory to tar; only seed its parent
             # repository's ordinary indexed files.
             if mode == b"160000":
                 continue
-            path = PurePosixPath(os.fsdecode(raw_path))
-            if path.is_absolute() or ".." in path.parts:
-                raise RuntimeError(f"git returned an unsafe seed path: {path}")
-            candidate = self._repo_root
-            try:
-                for part in path.parts[:-1]:
-                    candidate /= part
-                    if not stat.S_ISDIR(candidate.lstat().st_mode):
-                        raise RuntimeError(f"git returned an unsafe seed path: {path}")
-                leaf_mode = (self._repo_root / path).lstat().st_mode
-            except FileNotFoundError:
-                # An unstaged deletion is intentionally absent from the seed.
-                continue
-            if not (stat.S_ISREG(leaf_mode) or stat.S_ISLNK(leaf_mode)):
-                raise RuntimeError(f"git returned an unsafe seed path: {path}")
-            existing.append(raw_path)
+            path = self._require_safe_seed_path(raw_path)
+            if self._seed_entry_is_an_existing_leaf(path):
+                existing.append(raw_path)
         return b"".join(path + b"\0" for path in existing)
 
     def _extract_seed(
@@ -716,14 +742,21 @@ class ContainerBuilderSandbox:
                 "-e",
                 f"GIT_WORK_TREE={_WORKDIR}",
             ]
+        # Bounded capture (#1197): run_bounded retains at most the output
+        # limit per stream and drains the rest, so a candidate command cannot
+        # wedge the loop against a full pipe nor exhaust host memory. The
+        # in-container `timeout` above reaps the candidate at the same budget,
+        # so the host-side kill is only a daemon-stall backstop (+5s).
         try:
-            proc = subprocess.run(
+            run = run_bounded(
                 ["docker", *prefix, self._require_cid(), *command],
-                capture_output=True,
-                text=True,
+                limit=self._output_limit,
                 timeout=timeout + 5,
             )
-            return proc.returncode, (proc.stdout or "") + (proc.stderr or "")
+            output = (run.stdout.data + run.stderr.data).decode(errors="replace")
+            if run.stdout.truncated or run.stderr.truncated:
+                output += truncation_notice(self._output_limit)
+            return run.exit_code, output
         finally:
             # Also reap when the host-side Docker CLI timeout fires; killing the
             # CLI does not stop processes already running in the container.

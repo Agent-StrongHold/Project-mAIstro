@@ -79,6 +79,12 @@ SERVICE_BACKED_JOBS = frozenset(
         (CONSUMER_WORKFLOW, "object-storage"),
         (CONSUMER_WORKFLOW, "durable-events"),
         (CONSUMER_WORKFLOW, "strike-ladder"),
+        # #80/M2-B5: the bootstrap suite's service-backed leg — the rootless
+        # Docker daemon lane provisions (userns mapping + delegated cgroup v2)
+        # is an environment the no-services producer cannot provide, and it is
+        # the only CI site where the daemon-gated escape/conformance tests
+        # execute instead of skip.
+        (CONSUMER_WORKFLOW, "sandbox-conformance"),
     }
 )
 

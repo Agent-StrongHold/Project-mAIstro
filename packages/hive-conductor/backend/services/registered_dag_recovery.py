@@ -1,8 +1,8 @@
 """Recovery and timed wakeup for schedule-admitted registered-DAG Runs (#837).
 
 A configured Hive admits schedule fires through ``ScheduleRunAdmitter``,
-which stamps ``admission_source=schedule`` and no executor; the standalone
-fallback ``run_registered_dag`` stamps ``executor=durable_graph``. The
+which stamps ``admission_source=schedule`` and no executor; the registered
+Graph entrypoint ``run_registered_dag`` stamps ``executor=durable_graph``. The
 schedule consumer executes only single-node QUEUED Runs and leaves multi-node
 ones to the durable Graph traversal; its resume tick matches only YIELDED
 Attempts, never Graph pauses. These two halves are that traversal's recovery

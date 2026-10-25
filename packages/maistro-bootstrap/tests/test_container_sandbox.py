@@ -155,6 +155,7 @@ def test_path_escape_blocked(tmp_path: Path) -> None:
             sb.write_file("/etc/passwd", "bad")
 
 
+@_needs_isolating_daemon
 def test_run_argv_streams_returns_separated_streams_and_the_status(
     tmp_path: Path,
 ) -> None:
@@ -164,6 +165,7 @@ def test_run_argv_streams_returns_separated_streams_and_the_status(
     with the exit status carried back intact."""
     (tmp_path / "f.py").write_text("x = 1\n", encoding="utf-8")
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "add", "f.py"], cwd=tmp_path, check=True)
 
     with ContainerBuilderSandbox(tmp_path) as sb:
         rc, out, err = sb.run_argv_streams(

@@ -234,7 +234,7 @@ Stronghold's `SECURITY.md` carries several caps the engine does not (yet) have a
 
 | Stronghold had | Engine has | Status |
 | --- | --- | --- |
-| Tool-argument size limit (100 KB, JSON-bomb protection) | No dedicated tool-arg size cap found in `security/sentinel/validator.py` or `tools/` | `gap-impl` |
+| Tool-argument size/depth limit (100 KiB / 32 container levels, JSON-bomb protection) | **Present** — `security/sentinel/argument_limits.py::check_argument_limits` runs in `Sentinel.pre_call` before schema validation and execution; it measures compact UTF-8 JSON bytes, checks depth iteratively, and fails closed for non-JSON values | ✅ (SPEC-082126-7a31) |
 | SSRF blocklist (private networks, cloud metadata endpoints, loopback) for outbound tool/skill HTTP calls | **Present** — `security/ssrf.py::validate_outbound_url` refuses any URL that is not http(s) with a resolvable host on the public internet, checking every address the host resolves to (private, loopback, link-local, reserved, multicast, unspecified, and the RFC 6598 shared range `100.64.0.0/10`, which no stdlib predicate names) and refusing a name it cannot resolve at all. Applied at `maistro.http`'s pooled transport by `security/outbound.py` (ADR-082326-5386), and at the sync seam `maistro.http::sync_client` builds for the approvals CLI, so a module is covered by routing through the shared pool rather than by remembering to call the guard — redirect hops included, since httpx re-enters the transport for each one. Configured endpoints — the LiteLLM/Ollama gateway, ntfy, a Home Assistant URL — are allowed by exact origin, seeded from settings. The **filesystem** path blocklist (`security/patterns.py:BLOCKED_HOST_PATHS`) is separate and unrelated | `partial` — covered at both the async and sync seams, proxy mounts included; the measured reach is in Known Limitation 1, and the rebinding window between the guard's lookup and the client's remains open |
 | `hmac.compare_digest`-based constant-time comparison for API keys | Present: `security/secret_equal.py` | ✅ (engine has this) |
 | PostgreSQL persistence with org-scoped queries by default | InMemory stores are the default; PostgreSQL implementations exist (`persistence/`) but require explicit configuration | Matches engine's own known limitation below, not a regression |
@@ -365,52 +365,24 @@ Stronghold's `SECURITY.md` carries several caps the engine does not (yet) have a
    weakest available rung; a host with nothing refuses everything. That refusal is the current
    state of the guarantee: it is fail-closed, not satisfied. See
    [`docs/security/SANDBOX-SUPPORT-MATRIX.md`](docs/security/SANDBOX-SUPPORT-MATRIX.md). The
-   SPEC-190 conformance and escape suites target real backends (#80):
-   `packages/maistro-bootstrap/tests/test_container_sandbox.py` exercises the production
-   `ContainerBuilderSandbox` Docker backend's filesystem, process, namespace, network, device,
-   host-socket, credential and privilege surfaces (including tracked-only seed inputs and blanked
-   Docker proxy variables (HTTP, HTTPS, FTP, and both case spellings), read-only rootfs with
-   the runtime's implicit `/dev/shm` and `/dev/mqueue` tmpfs pinned read-only at create time —
-   the suite enumerates the live `/proc/mounts` and proves only `/workspace` and `/tmp` accept
-   agent writes — plus resource budget, timeout kill (including detached
-   descendants) and cleanup behavior.
-   `packages/maistro-core/tests/sandbox/test_escape_conformance.py`
-   provides the corresponding live Bubblewrap Tier-3 lane. These are real-kernel/container
-   assertions, not selector or fake-backend tests. ADR-093 Decision 2's rootless requirement is
-   **enforced at launch, not assumed**: the Docker backend reads its own container's
-   `/proc/self/uid_map` and refuses whenever container uid 0 maps to host uid 0 (including a
-   partially remapped map), or whenever that mapping is unproven; the CI conformance lane is
-   configured for both branches — refusal against the runner's rootful system daemon, and the full escape
-   suite (including a live uid_map probe that container root does not map to host root) against a
-   rootless daemon the lane provisions itself. That provisioning deliberately keeps the
-   firewall/bridge/port-publish plane off (`--iptables=false --ip6tables=false
-   --userland-proxy=false --bridge=none`): the network default-deny in the contract is enforced
-   per-container (`--network=none`), and an older dockerd (28.x) otherwise fails daemon start
-   building NAT chains the rootless netns cannot authorize — the runner failure was reproduced
-   locally against dockerd 28.5.2, the fixed recipe re-ran the suite 16-passed against that
-   daemon, and the lane asserts cgroup memory-limit enforcement (via `loginctl enable-linger` +
-   a `memory.max` probe) before the suite executes. **Remote Builder escape execution is not
-   yet verified:** the last recorded CI run failed before the suite because rootless Docker
-   could not read the runner's AppArmor profiles. The repaired lane uses
-   `scripts/ci-rootless-mountns.sh` to mask securityfs only in the daemon's private mount
-   namespace, dropping host privilege before starting Docker; it neither changes host
-   AppArmor policy nor relaxes production sandbox flags. This lane does **not** prove
-   AppArmor confinement. Current executed evidence and remaining validation limits are in
-   [`docs/testing/inventory-notes/l80-securityfs-lane-repair.md`](docs/testing/inventory-notes/l80-securityfs-lane-repair.md).
-   The subsequent [seed-path repair and live validation](docs/testing/inventory-notes/l80-seed-path-replacement.md)
-   also prove refusal when an indexed file is replaced by a directory or has a
-   symlinked parent: neither authorizes copying unrelated host contents. Seed
-   preparation assumes a stable, trusted host worktree, not concurrent host-side
-   mutation. This additional local evidence does not verify hosted CI execution.
-   The Docker backend remains a shared-kernel
-   guardrail rather than a Tier-1/Tier-2 hostile-code boundary; ADR-093 requires those stronger
-   backends for untrusted autonomous execution. Unattended RSI (`maistro_rsi run`/`evolve`) is
-   held to that posture from both sides: a stated Tier-3 backend refuses (ADR-093 decision 6
-   floors autonomous execution at a user-space kernel), and an *unstated* isolation refuses as
-   well — no default quietly executes candidate work on the host (ADR-093 decision 5's
-   no-bare-subprocess tier), while an operator-stated `--isolation local` remains the documented
-   ADR-082926-a6ab carve-out; `packages/maistro-rsi/tests/test_autonomous_isolation_tier.py`
-   pins the guard at the CLI dispatcher, the config boundary and the sandbox factory.
+   SPEC-190 conformance and escape suite now ships and runs in CI (#80):
+   `packages/maistro-core/tests/sandbox/test_escape_conformance.py` exercises the filesystem,
+   process, namespace, device, host-socket, credential and privilege surfaces against the real
+   kernel, along with memory, CPU and file-size exhaustion and post-timeout cleanup. It
+   establishes that the Tier-3 guardrail is real; it does not turn Tier 3 into a boundary
+   against hostile code, which is what Tiers 1 and 2 are still for.
+   The Docker-backed Builder sandbox has the matching conformance lane (#80, M2-B5):
+   `packages/maistro-bootstrap/tests/test_container_sandbox.py` instantiates the production
+   `ContainerBuilderSandbox` and exercises filesystem, process, namespace, network, device,
+   host-socket, credential and privilege attacks against real containers, plus resource
+   budget, timeout kill and cleanup. Network and credential access are proven default-deny;
+   seeding is proven not to copy `.env`, `.git` or unrelated host files into the sandbox;
+   the suite refuses a daemon where container root maps to host root (ADR-093 Decision 2)
+   and the writable surface is pinned down to `/workspace` and `/tmp`. The CI lane that runs
+   it against a rootless daemon is described in
+   [`docs/testing/inventory-notes/l80-securityfs-lane-repair.md`](docs/testing/inventory-notes/l80-securityfs-lane-repair.md)
+   and [`docs/testing/inventory-notes/l80-seed-path-replacement.md`](docs/testing/inventory-notes/l80-seed-path-replacement.md);
+   the supported-backend matrix is [`docs/security/SANDBOX-SUPPORT-MATRIX.md`](docs/security/SANDBOX-SUPPORT-MATRIX.md).
 9. **The configurable floors cover six limits, not every cap in the inventory.** Request/webhook
    body size, rate limit and burst, and the LLM circuit breaker's threshold and recovery timeout
    are deployment policy with an enforced floor (see *Configurable limits and their enforced
