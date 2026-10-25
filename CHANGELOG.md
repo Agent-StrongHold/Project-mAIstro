@@ -25,6 +25,12 @@ or placeholder-only section.
 
 ### Added
 
+- **Workspace `tool_bindings` apply at agent dispatch (#2276).** Sticky
+  presentation bindings now narrow (or zero) tools at `resolve_agent_task` /
+  `pulse_roster` and when building the runtime Agent identity, including
+  prompt-fragment append. UI/API-saved bindings share that path; persona
+  templates are not mutated.
+
 - **Durable Workspace landing + restore preferences (#1050, partial).** Authenticated
   `/` reads `preferences.workspace_default_landing` from the canonical profile
   store and navigates there (Home / Chat / Goals / Backlog / Work items). Profile
