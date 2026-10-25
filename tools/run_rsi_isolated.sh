@@ -109,7 +109,7 @@ if [[ -z "$NETWORK" ]]; then
         2>/dev/null | head -1)"
     NETWORK="${NETWORK:-maistro_default}"
 fi
-GATEWAY_URL="${MAISTRO_RSI_GATEWAY_URL:-http://maistro-litellm:4000}"
+GATEWAY_URL="${MAISTRO_RSI_GATEWAY_URL:-http://maistro-litellm:4000}"  # DevSkim: ignore DS137138 until 2027-12-31
 
 # Default the reports dir to a timestamped host dir next to the repo, and make it
 # an absolute path docker can bind-mount.

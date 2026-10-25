@@ -71,27 +71,27 @@ ARTIFACTS: list[tuple[str, str, str]] = [
     (
         "instructions.py",
         "instructions.py",
-        "60e086f5342a03ce8e18b64bbcccf86308f523c08aa826707a562150a52f3edf",
+        "60e086f5342a03ce8e18b64bbcccf86308f523c08aa826707a562150a52f3edf",  # DevSkim: ignore DS173237 until 2027-12-31
     ),
     (
         "instructions_registry.py",
         "instructions_registry.py",
-        "ec92d72c264f6d906978613085db262356174300370a3fffe6fefd5969ce9cfc",
+        "ec92d72c264f6d906978613085db262356174300370a3fffe6fefd5969ce9cfc",  # DevSkim: ignore DS173237 until 2027-12-31
     ),
     (
         "instructions_util.py",
         "instructions_util.py",
-        "a73797261eee5bf447e279d82a2b700b1bdd3cb1193412dbab1270a85832bc6b",
+        "a73797261eee5bf447e279d82a2b700b1bdd3cb1193412dbab1270a85832bc6b",  # DevSkim: ignore DS173237 until 2027-12-31
     ),
     (
         "evaluation_lib.py",
         "evaluation_lib.py",
-        "35decc06000718487f44d7deafa6d3f48a8ec0886281edf40162c0265b7d248c",
+        "35decc06000718487f44d7deafa6d3f48a8ec0886281edf40162c0265b7d248c",  # DevSkim: ignore DS173237 until 2027-12-31
     ),
     (
         "data/input_data.jsonl",
         "data/input_data.jsonl",
-        "67ffeee0fcb87c317c5b08a2de85557b4a7e96ada6178aa645b4954fe4b53d49",
+        "67ffeee0fcb87c317c5b08a2de85557b4a7e96ada6178aa645b4954fe4b53d49",  # DevSkim: ignore DS173237 until 2027-12-31
     ),
 ]
 
@@ -109,11 +109,11 @@ ARTIFACTS: list[tuple[str, str, str]] = [
 #
 # Regenerate with `--update-hashes` after a deliberate upstream bump.
 RENDERED_SHA256: dict[str, str] = {
-    "instructions.py": "038b0d9b7b2c74341d477113de63513d1f2090abe6e437e444a88df7b8af11e1",
-    "instructions_registry.py": "f1d7a33a7f5aceae06a693b022ab81a8c9a320c0b41ec5bf0375e6970214bb9a",
-    "instructions_util.py": "975f7de82f9002374a2a592e057ea8e29bdc7e995211abe3196095237521acca",
-    "evaluation_lib.py": "7a1c3806f42a702e936381d8056b6515f80b2ab4a6d330d25f4d1a55d5182361",
-    "data/input_data.jsonl": "67ffeee0fcb87c317c5b08a2de85557b4a7e96ada6178aa645b4954fe4b53d49",
+    "instructions.py": "038b0d9b7b2c74341d477113de63513d1f2090abe6e437e444a88df7b8af11e1",  # DevSkim: ignore DS173237 until 2027-12-31
+    "instructions_registry.py": "f1d7a33a7f5aceae06a693b022ab81a8c9a320c0b41ec5bf0375e6970214bb9a",  # DevSkim: ignore DS173237 until 2027-12-31
+    "instructions_util.py": "975f7de82f9002374a2a592e057ea8e29bdc7e995211abe3196095237521acca",  # DevSkim: ignore DS173237 until 2027-12-31
+    "evaluation_lib.py": "7a1c3806f42a702e936381d8056b6515f80b2ab4a6d330d25f4d1a55d5182361",  # DevSkim: ignore DS173237 until 2027-12-31
+    "data/input_data.jsonl": "67ffeee0fcb87c317c5b08a2de85557b4a7e96ada6178aa645b4954fe4b53d49",  # DevSkim: ignore DS173237 until 2027-12-31
 }
 
 # The complete set of modifications applied to upstream source. Keep this list
