@@ -709,6 +709,8 @@ async def poll_external_results(
     now: datetime | None = None,
     scan: ScanContinuation[tuple[str, str]] | None = None,
     max_inspected: int = DEFAULT_MAX_INSPECTED,
+    invocation_store: Any = None,
+    binding_store: Any = None,
 ) -> int:
     """Poll external pauses and write terminal results to the Graph store.
 
@@ -725,6 +727,14 @@ async def poll_external_results(
     fresh provider poll, so polling it here first would read the same
     provider twice in one tick. The external seam stays the ingress for a
     completion that lands before the timer does.
+
+    A harness pause is polled only on behalf of its governed dispatch: the
+    pause must carry the dispatch Invocation id and Binding reference the
+    node persisted, the receipt must correlate with this Run, and the
+    Binding must still resolve against ``binding_store``. A revoked,
+    rescope-disabled, or evidence-less pause is left for the timed resume,
+    which settles it under the node's own governance. ``invocation_store``
+    and ``binding_store`` are the container's canonical effect authorities.
 
     ``limit`` bounds eligible polls, not a fixed prefix of parked Runs.
     Repeated consumers must retain ``scan`` across ticks, including both
@@ -751,7 +761,13 @@ async def poll_external_results(
     )
     for record in candidates:
         try:
-            polled = await _poll_external_record(record, guest_peers, harness_adapters)
+            polled = await _poll_external_record(
+                record,
+                guest_peers,
+                harness_adapters,
+                invocation_store=invocation_store,
+                binding_store=binding_store,
+            )
         except Exception:
             logger.warning(
                 "external result poll failed for Run %s",
@@ -842,6 +858,9 @@ async def _poll_external_record(
     record: Any,
     guest_peers: Any,
     harness_adapters: Mapping[str, Any],
+    *,
+    invocation_store: Any = None,
+    binding_store: Any = None,
 ) -> tuple[str, dict[str, Any]] | None:
     """Poll the first externally parked frontier node with a known waker."""
     from maistro.graph.nodes.base import (
@@ -863,7 +882,13 @@ async def _poll_external_record(
         if reason == PAUSE_AWAITING_REMOTE_DELEGATION:
             result = await _poll_guest_peer_result(guest_peers, dict(metadata))
         elif reason == PAUSE_AWAITING_HARNESS:
-            result = await _poll_harness_result(harness_adapters, dict(metadata))
+            result = await _poll_harness_result(
+                harness_adapters,
+                dict(metadata),
+                run_id=record.run_id,
+                invocation_store=invocation_store,
+                binding_store=binding_store,
+            )
         else:
             continue
         if result is not None:
@@ -890,17 +915,75 @@ async def _poll_guest_peer_result(
     }
 
 
-async def _poll_harness_result(
-    harness_adapters: Mapping[str, Any], metadata: dict[str, Any]
-) -> dict[str, Any] | None:
-    """Translate a completed injected harness poll into the result seam."""
+def _dispatch_receipt_matches(dispatch: Any, *, run_id: str, binding_id: str) -> bool:
+    """Whether a stored dispatch Invocation is this Run's COMPLETED dispatch."""
+    from maistro.capabilities.invocation import Invocation, InvocationStatus
+
+    return (
+        isinstance(dispatch, Invocation)
+        and dispatch.status is InvocationStatus.COMPLETED
+        and (not run_id or dispatch.run_id == run_id)
+        and dispatch.binding.binding_id == binding_id
+    )
+
+
+async def _binding_still_authorizes(binding_store: Any, binding: Any) -> bool:
+    """Re-resolve the dispatch's Binding; revocation or rescope fails here."""
+    from maistro.capabilities.binding_store import BindingResolutionError
+
+    try:
+        await binding_store.resolve(
+            binding.binding_id,
+            workspace_id=binding.workspace_id,
+            project_id=binding.project_id,
+            node_id=binding.node_id,
+            capability=binding.capability,
+        )
+    except BindingResolutionError:
+        return False
+    return True
+
+
+async def _harness_poll_authorized(
+    metadata: dict[str, Any],
+    *,
+    run_id: str,
+    invocation_store: Any,
+    binding_store: Any,
+) -> bool:
+    """Report whether the pause still holds governed dispatch authority.
+
+    The canonical checks are the node's own poll-time ones: a COMPLETED
+    dispatch Invocation correlated with this Run and its Binding reference,
+    and a Binding that still resolves in the canonical authority. Revoked,
+    disabled, or rescoped Bindings fail here exactly as they would inside
+    the node.
+    """
+    dispatch_id = str(metadata.get("dispatch_invocation_id") or "")
+    binding_id = str(metadata.get("binding_id") or "")
+    if not dispatch_id or not binding_id:
+        return False
+    dispatch = await invocation_store.get(dispatch_id)
+    if not _dispatch_receipt_matches(dispatch, run_id=run_id, binding_id=binding_id):
+        return False
+    return await _binding_still_authorizes(binding_store, dispatch.binding)
+
+
+def _harness_adapter_for(harness_adapters: Mapping[str, Any], metadata: dict[str, Any]) -> Any:
+    """Resolve the registered adapter for a pause's harness type and handle."""
     harness_type = str(metadata.get("harness_type") or "")
     handle_id = str(metadata.get("handle_id") or "")
-    adapter = harness_adapters.get(harness_type)
-    if not harness_type or not handle_id or adapter is None:
+    if not harness_type or not handle_id:
         return None
+    return harness_adapters.get(harness_type)
+
+
+async def _read_harness_result(adapter: Any, metadata: dict[str, Any]) -> dict[str, Any] | None:
+    """Poll the adapter once and translate the terminal result shape."""
     from maistro.graph.harness import HarnessHandle
 
+    handle_id = str(metadata.get("handle_id") or "")
+    harness_type = str(metadata.get("harness_type") or "")
     result = await adapter.poll(HarnessHandle(handle_id=handle_id, harness_type=harness_type))
     if result is None:
         return None
@@ -911,3 +994,34 @@ async def _poll_harness_result(
         "error": result.error,
         "metadata": result.metadata,
     }
+
+
+async def _poll_harness_result(
+    harness_adapters: Mapping[str, Any],
+    metadata: dict[str, Any],
+    *,
+    run_id: str = "",
+    invocation_store: Any = None,
+    binding_store: Any = None,
+) -> dict[str, Any] | None:
+    """Translate a completed harness poll into the result seam.
+
+    The provider is read only for a pause that still holds governed dispatch
+    evidence: the node-persisted dispatch Invocation, correlated with this
+    Run and its Binding reference, with the Binding still resolvable in the
+    canonical authority. Anything else -- revoked or disabled Binding,
+    missing receipt, foreign Run -- stays parked: the timed resume settles
+    it through the node's own governed poll, which fails truthfully instead
+    of persisting output the capability no longer authorizes.
+    """
+    adapter = _harness_adapter_for(harness_adapters, metadata)
+    if adapter is None or invocation_store is None or binding_store is None:
+        return None
+    if not await _harness_poll_authorized(
+        metadata,
+        run_id=run_id,
+        invocation_store=invocation_store,
+        binding_store=binding_store,
+    ):
+        return None
+    return await _read_harness_result(adapter, metadata)

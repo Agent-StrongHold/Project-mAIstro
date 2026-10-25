@@ -88,6 +88,9 @@ async def wake_due_registered_dag_runs(*, limit: int = 100) -> int:
 
     guest_peers = getattr(container, "guest_peers", None)
     harness_adapters = getattr(container, "harness_adapters", None) or {}
+    # The governed Binding/Invocation authorities the harness poll must cross;
+    # a container without them never polls a harness provider from here.
+    effects = getattr(container, "capability_effects", None)
     polled = 0
     if guest_peers is not None or harness_adapters:
         polled = await poll_external_results(
@@ -97,6 +100,8 @@ async def wake_due_registered_dag_runs(*, limit: int = 100) -> int:
             limit=limit,
             eligible=_owned,
             scan=scan_continuation("registered_dag_external_results", container.graph_run_store),
+            invocation_store=getattr(effects, "invocation_store", None),
+            binding_store=getattr(effects, "bindings", None),
         )
     recovered = 0
     if polled:

@@ -439,6 +439,128 @@ class _RecordingGraphStore:
         return [r for r in self._records if r.run.status is status][:limit]
 
 
+class _EvidenceInvocationStore:
+    """Read-only stand-in for the canonical Invocation ledger."""
+
+    def __init__(self, *invocations: Any) -> None:
+        self._rows = {row.invocation_id: row for row in invocations}
+
+    async def get(self, invocation_id: str) -> Any:
+        return self._rows.get(invocation_id)
+
+
+class _RevocableBindings:
+    """Stand-in for the canonical Binding authority with operator revocation."""
+
+    def __init__(self, binding: Any = None) -> None:
+        self._binding = binding
+        self._revoked: set[str] = set()
+
+    async def put(self, binding: Any) -> Any:
+        self._binding = binding
+        return binding
+
+    async def revoke(self, binding_id: str) -> None:
+        self._revoked.add(binding_id)
+
+    async def resolve(
+        self,
+        binding_id: str,
+        *,
+        workspace_id: str,
+        project_id: str,
+        node_id: str,
+        capability: str,
+    ) -> Any:
+        from maistro.capabilities.binding_store import (
+            BindingNotFound,
+            BindingScopeDenied,
+        )
+
+        if self._binding is None or self._binding.binding_id != binding_id:
+            raise BindingNotFound(binding_id)
+        if binding_id in self._revoked:
+            # A tombstone, like the durable stores: the identity is gone.
+            raise BindingNotFound(binding_id)
+        if (
+            self._binding.workspace_id != workspace_id
+            or self._binding.project_id != project_id
+            or self._binding.capability != capability
+            or (self._binding.node_id not in {"", node_id})
+        ):
+            raise BindingScopeDenied(binding_id)
+        return self._binding
+
+
+def _harness_dispatch_invocation(run_id: str) -> Any:
+    """The COMPLETED dispatch receipt a governed SpawnHarnessNode persisted."""
+    from maistro.capabilities.binding import ResolvedBinding
+    from maistro.capabilities.invocation import Invocation, InvocationStatus
+
+    moment = datetime.now(UTC)
+    return Invocation(
+        invocation_id=f"inv-dispatch-{run_id}",
+        run_id=run_id,
+        node_run_id=f"{run_id}:work:1",
+        attempt_id=f"{run_id}:att-1",
+        workspace_id="ws-m1-e2-peer",
+        project_id="project-m1-e2-peer",
+        binding=ResolvedBinding(
+            binding_id="harness-binding",
+            workspace_id="ws-m1-e2-peer",
+            project_id="project-m1-e2-peer",
+            node_id="",
+            capability="harness_runner",
+            provider_name="shell",
+            provider_trust_tier="unverified",
+        ),
+        effect_key=f"agent.spawn_harness.dispatch:{run_id}",
+        status=InvocationStatus.COMPLETED,
+        request={"operation": "dispatch", "task": "work"},
+        started_at=moment,
+        finished_at=moment,
+    )
+
+
+def _harness_parked_record(run_id: str) -> DurableRunRecord:
+    """A WAITING Run parked on a production-shaped harness pause: full wait."""
+    return _parked_record(
+        run_id,
+        pauses={
+            "work": {
+                "kind": "wait",
+                "metadata": {
+                    "paused_reason": PAUSE_AWAITING_HARNESS,
+                    "harness_wait_version": 1,
+                    "dispatch_invocation_id": f"inv-dispatch-{run_id}",
+                    "binding_id": "harness-binding",
+                    "provider_name": "shell",
+                    "handle_id": "h-1",
+                    "harness_type": "shell",
+                    "deadline_at": (datetime.now(UTC) + timedelta(minutes=5)).isoformat(),
+                    "observation_index": 0,
+                },
+            }
+        },
+    )
+
+
+def _harness_governance(run_id: str) -> tuple[_EvidenceInvocationStore, _RevocableBindings]:
+    """The effect authorities a configured container would hand the seam."""
+    from maistro.capabilities.binding import Binding
+
+    return _EvidenceInvocationStore(_harness_dispatch_invocation(run_id)), _RevocableBindings(
+        Binding(
+            binding_id="harness-binding",
+            workspace_id="ws-m1-e2-peer",
+            project_id="project-m1-e2-peer",
+            node_id="",
+            capability="harness_runner",
+            provider_name="shell",
+        )
+    )
+
+
 @pytest.mark.asyncio
 async def test_the_external_seam_refuses_a_non_positive_limit() -> None:
     """A misconfigured tick must not read the store at all, like its siblings."""
@@ -614,19 +736,7 @@ async def test_a_receipt_the_store_refuses_is_not_counted_as_delivered() -> None
 async def test_an_injected_harness_completion_is_delivered_by_the_seam() -> None:
     """Harness pauses are polled through their registered adapter, not peers."""
     now = datetime.now(UTC)
-    record = _parked_record(
-        "harness-paused",
-        pauses={
-            "work": {
-                "kind": "wait",
-                "metadata": {
-                    "paused_reason": "awaiting_harness",
-                    "harness_type": "shell",
-                    "handle_id": "h-1",
-                },
-            }
-        },
-    )
+    record = _harness_parked_record("harness-paused")
     store = _RecordingGraphStore(record)
     adapter = SimpleNamespace(
         poll=AsyncMock(
@@ -639,6 +749,7 @@ async def test_an_injected_harness_completion_is_delivered_by_the_seam() -> None
             )
         )
     )
+    invocation_store, bindings = _harness_governance(record.run_id)
 
     assert (
         await poll_external_results(
@@ -647,6 +758,8 @@ async def test_an_injected_harness_completion_is_delivered_by_the_seam() -> None
             harness_adapters={"shell": adapter},
             limit=10,
             now=now,
+            invocation_store=invocation_store,
+            binding_store=bindings,
         )
         == 1
     )
@@ -668,31 +781,20 @@ async def test_an_injected_harness_completion_is_delivered_by_the_seam() -> None
 async def test_a_failed_harness_completion_writes_a_failed_result() -> None:
     """A terminal harness failure is an outcome, not a poll error."""
     now = datetime.now(UTC)
-    record = _parked_record(
-        "harness-failed",
-        pauses={
-            "work": {
-                "kind": "wait",
-                "metadata": {
-                    "paused_reason": "awaiting_harness",
-                    "harness_type": "shell",
-                    "handle_id": "h-2",
-                },
-            }
-        },
-    )
+    record = _harness_parked_record("harness-failed")
     store = _RecordingGraphStore(record)
     adapter = SimpleNamespace(
         poll=AsyncMock(
             return_value=SimpleNamespace(
                 success=False,
-                handle_id="h-2",
+                handle_id="h-1",
                 output=None,
                 error="boom",
                 metadata={},
             )
         )
     )
+    invocation_store, bindings = _harness_governance(record.run_id)
 
     assert (
         await poll_external_results(
@@ -701,6 +803,8 @@ async def test_a_failed_harness_completion_writes_a_failed_result() -> None:
             harness_adapters={"shell": adapter},
             limit=10,
             now=now,
+            invocation_store=invocation_store,
+            binding_store=bindings,
         )
         == 1
     )
@@ -709,12 +813,125 @@ async def test_a_failed_harness_completion_writes_a_failed_result() -> None:
         "work",
         {
             "status": "failed",
-            "handle_id": "h-2",
+            "handle_id": "h-1",
             "output": None,
             "error": "boom",
             "metadata": {},
         },
     )
+
+
+@pytest.mark.asyncio
+async def test_a_revoked_binding_is_never_polled_by_the_seam() -> None:
+    """A capability revoked after dispatch must not yield its output here.
+
+    The governed node poll refuses a revoked Binding; this seam reads the
+    same provider, so it must refuse the same way and leave the pause for
+    the timed resume, which fails the node truthfully.
+    """
+    record = _harness_parked_record("harness-revoked")
+    store = _RecordingGraphStore(record)
+    adapter = SimpleNamespace(
+        poll=AsyncMock(
+            return_value=SimpleNamespace(
+                success=True,
+                handle_id="h-1",
+                output="protected output",
+                error=None,
+                metadata={},
+            )
+        )
+    )
+    invocation_store, bindings = _harness_governance(record.run_id)
+    await bindings.revoke("harness-binding")
+
+    assert (
+        await poll_external_results(
+            store=store,
+            guest_peers=None,
+            harness_adapters={"shell": adapter},
+            limit=10,
+            now=datetime.now(UTC),
+            invocation_store=invocation_store,
+            binding_store=bindings,
+        )
+        == 0
+    )
+    adapter.poll.assert_not_awaited()
+    store.submit_external_result.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_harness_pause_without_governed_dispatch_evidence_stays_parked() -> None:
+    """No canonical dispatch receipt named: no provider read from here."""
+    record = _parked_record(
+        "harness-unevidenced",
+        pauses={
+            "work": {
+                "kind": "wait",
+                "metadata": {
+                    "paused_reason": "awaiting_harness",
+                    "harness_type": "shell",
+                    "handle_id": "h-1",
+                },
+            }
+        },
+    )
+    store = _RecordingGraphStore(record)
+    adapter = SimpleNamespace(poll=AsyncMock(return_value=None))
+
+    assert (
+        await poll_external_results(
+            store=store,
+            guest_peers=None,
+            harness_adapters={"shell": adapter},
+            limit=10,
+            now=datetime.now(UTC),
+            invocation_store=_EvidenceInvocationStore(),
+            binding_store=_RevocableBindings(),
+        )
+        == 0
+    )
+    adapter.poll.assert_not_awaited()
+    store.submit_external_result.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_missing_or_foreign_dispatch_receipt_is_left_parked() -> None:
+    """A receipt that is absent, or names another Run, authorizes no poll."""
+    record = _harness_parked_record("harness-uncorrelated")
+    store = _RecordingGraphStore(record)
+    adapter = SimpleNamespace(poll=AsyncMock(return_value=None))
+    _, bindings = _harness_governance(record.run_id)
+
+    assert (
+        await poll_external_results(
+            store=store,
+            guest_peers=None,
+            harness_adapters={"shell": adapter},
+            limit=10,
+            now=datetime.now(UTC),
+            invocation_store=_EvidenceInvocationStore(),
+            binding_store=bindings,
+        )
+        == 0
+    )
+    foreign_store, _ = _harness_governance("another-run")
+
+    assert (
+        await poll_external_results(
+            store=store,
+            guest_peers=None,
+            harness_adapters={"shell": adapter},
+            limit=10,
+            now=datetime.now(UTC),
+            invocation_store=foreign_store,
+            binding_store=bindings,
+        )
+        == 0
+    )
+    adapter.poll.assert_not_awaited()
+    store.submit_external_result.assert_not_awaited()
 
 
 @pytest.mark.asyncio

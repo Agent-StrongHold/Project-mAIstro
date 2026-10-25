@@ -251,6 +251,9 @@ class CanonicalDurableRunStore:
         self._events = events
         self._lock = asyncio.Lock()
         self._running_scan: ScanContinuation[RunCursor] = ScanContinuation()
+        # Canonical PAUSED Runs are transient by construction, but a Run may
+        # stay parked for a long time; the sweep pages past it like RUNNING.
+        self._paused_scan: ScanContinuation[RunCursor] = ScanContinuation()
         self._continuation_scans: dict[RunStatus, ScanContinuation[RunCursor]] = {
             status: ScanContinuation() for status in RunStatus
         }
@@ -412,10 +415,8 @@ class CanonicalDurableRunStore:
         # canonical Run PAUSED while its continuation is already CANCELLED or
         # TIMED_OUT. The per-status scan below reads a bounded prefix, and the
         # COMPLETED bucket in front of those statuses only ever grows, so such
-        # residue behind a full prefix would never be reached. PAUSED canonical
-        # Runs are few and transient: a scan over them always reaches its end.
-        paused = await self._run_store.list_by_status(RunStatus.PAUSED, limit=limit)
-        changed += await self._reconcile_unseen((run.run_id for run in paused), seen, moment)
+        # residue behind a full prefix would never be reached.
+        changed += await self._reconcile_paused_page(limit - (len(seen) - swept), seen, moment)
         for status in RunStatus:
             remaining = limit - (len(seen) - swept)
             if remaining <= 0:
@@ -498,6 +499,31 @@ class CanonicalDurableRunStore:
             continuation=self._running_scan,
         )
         return await self._reconcile_unseen((run.run_id for run in runs), seen, moment)
+
+    async def _reconcile_paused_page(self, limit: int, seen: set[str], moment: datetime) -> int:
+        """Reconcile one cursor-advancing page of canonical PAUSED Runs.
+
+        A parked Run can outstay any single tick's budget, so a from-the-top
+        scan would re-offer the same prefix every tick and starve the
+        continuation-status buckets behind it -- the failed-Event retry
+        discovery the loop after this one exists for. The cursor outlives the
+        call, so persistent parked Runs rotate their turn with everything
+        else, exactly like the RUNNING page above.
+        """
+
+        async def page(cursor: RunCursor | None, size: int) -> list[Run]:
+            return await self._run_store.list_by_status(RunStatus.PAUSED, limit=size, after=cursor)
+
+        paused = await fair_page_scan(
+            fetch_page=page,
+            cursor_of=run_cursor_key,
+            eligible=lambda _run: True,
+            limit=limit,
+            page_size=limit,
+            max_inspected=limit,
+            continuation=self._paused_scan,
+        )
+        return await self._reconcile_unseen((run.run_id for run in paused), seen, moment)
 
     async def _reconcile_isolated(self, run_id: str, moment: datetime) -> bool:
         """Reconcile one Run without letting its lifecycle refusal stop the sweep.

@@ -278,6 +278,75 @@ async def test_checkpoint_repair_emits_a_replayable_canonical_event(
     assert "terminal_graph" in events[0].payload["disposition"]
 
 
+async def _parked_on_a_person(spine: _Spine) -> str:
+    """A canonical PAUSED Run with no waker: the sweep's permanent prefix."""
+    graph = _graph(spine, _Step(), name="parked on a person")
+    admitted = await spine.run_store.create_run(
+        graph, initial_status=RunStatus.QUEUED, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+    )
+    await spine.store.create(
+        DurableRunRecord(
+            run=admitted,
+            graph_state=GraphExecutionState(
+                run_id=admitted.run_id,
+                active_node_ids=("step",),
+                metadata={"initial_inputs": {}, "hitl_answers": {}},
+            ),
+        )
+    )
+    await spine.run_store.transition_run(admitted.run_id, RunStatus.RUNNING)
+    await spine.run_store.transition_run(admitted.run_id, RunStatus.PAUSED)
+    return admitted.run_id
+
+
+@pytest.mark.asyncio
+async def test_a_persistent_paused_run_cannot_starve_terminal_event_discovery(
+    spine: _Spine,
+) -> None:
+    """A Run parked forever must not consume every tick's budget.
+
+    The failed publication leaves re-publishable residue behind a settled
+    spine. A canonical PAUSED Run never leaves the store, so a from-the-top
+    paused scan re-offers it on every tick and -- at limit=1 -- the
+    continuation-status buckets that carry the retry discovery never run.
+    The paused page must rotate its turn like the RUNNING page does.
+    """
+    from maistro.events.envelope import InMemoryEventStore
+    from maistro.runs.recovery_events import CanonicalEventStoreSink, CanonicalRecoveryEventSink
+
+    run_id = await _crash_at_terminal_write(spine, _Step())
+    person = await _parked_on_a_person(spine)
+    events = InMemoryEventStore()
+    canonical = CanonicalRecoveryEventSink(spine.run_store, CanonicalEventStoreSink(events))
+
+    class _Sink:
+        async def emit(self, event: Any) -> Any:
+            raise RuntimeError("event store offline")
+
+    recovering = CanonicalDurableRunStore(
+        spine.run_store,
+        spine.continuations,
+        terminal_settle_quiet_period=timedelta(0),
+        events=_Sink(),
+    )
+    with pytest.raises(RuntimeError, match="event store offline"):
+        await recovering.reconcile_run(run_id)
+    assert (await spine.run_store.get_run(run_id)).status is RunStatus.COMPLETED
+
+    # Fresh store: the residue must stay discoverable behind parked work.
+    restarted = CanonicalDurableRunStore(spine.run_store, spine.continuations, events=canonical)
+    for _ in range(10):
+        await restarted.reconcile_persistence(limit=1)
+    record = await restarted.get(run_id)
+    assert record is not None and record.run.status is RunStatus.COMPLETED
+    parked = await spine.run_store.get_run(person)
+    assert parked is not None and parked.status is RunStatus.PAUSED
+    published = await events.list_stream(f"workspace:{_WORKSPACE}")
+    assert len(published) == 1
+    assert published[0].run_id == run_id
+    assert published[0].type == "run.recovery_disposition"
+
+
 async def test_checkpoint_repair_intent_cannot_publish_before_the_spine_commits(
     spine: _Spine, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -617,6 +617,114 @@ async def test_registered_harness_completion_uses_the_production_timer_and_fresh
         registry.deregister("rdr-harness-timer")
 
 
+@pytest.mark.asyncio
+async def test_a_revoked_binding_is_never_polled_by_the_external_seam(
+    container: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A capability revoked mid-wait yields no output through the wake tick.
+
+    The governed node poll re-resolves the Binding before every provider
+    read; the cross-instance seam reads the same provider, so it must cross
+    the same authority. Otherwise revoking a harness mid-wait would let the
+    next recovery tick fetch and persist the protected output before the
+    timer even elapses.
+    """
+    from services.registered_dag_recovery import wake_due_registered_dag_runs
+
+    import maistro.capabilities.invocation as invocation
+    import maistro.graph.durable_runs.attempt_executor as attempts
+    import maistro.graph.durable_runs.recovery as recovery
+    import maistro.graph.nodes.agent_spawn_harness as harness_node
+    from maistro.capabilities.binding import Binding
+    from maistro.capabilities.effect_context import binding_scope_policy
+    from maistro.graph.harness import HarnessHandle, HarnessResult
+
+    moment = [datetime.now(UTC)]
+
+    class FixedDateTime(datetime):
+        @classmethod
+        def now(cls, tz: Any = None) -> datetime:
+            return moment[0].astimezone(tz) if tz is not None else moment[0].replace(tzinfo=None)
+
+    for module in (invocation, attempts, recovery):
+        monkeypatch.setattr(module, "datetime", FixedDateTime)
+    monkeypatch.setattr(harness_node, "now_utc", lambda: moment[0])
+    calls = {"dispatch": 0, "poll": 0}
+
+    class Adapter:
+        async def dispatch(self, request):
+            calls["dispatch"] += 1
+            return HarnessHandle(handle_id="revoked-handle", harness_type="proof")
+
+        async def poll(self, handle):
+            calls["poll"] += 1
+            return HarnessResult(handle_id=handle.handle_id, success=True, output="protected done")
+
+        async def cancel(self, handle) -> None:
+            return None
+
+    container.harness_adapters = {"proof": Adapter()}
+    container.capability_effects = container.capability_effects.with_policy_evaluator(
+        binding_scope_policy
+    )
+    await container.capability_effects.bindings.put(
+        Binding(
+            binding_id="registered-harness-binding",
+            workspace_id="ws-rdr",
+            project_id=container.project_id,
+            node_id="",
+            capability="harness_runner",
+            provider_name="proof",
+        )
+    )
+    descriptor = _descriptor("rdr-harness-revoke", "agent.spawn_harness")
+    descriptor["nodes"][0]["inputs"] = {
+        "harness_type": "proof",
+        "task": "registered work",
+        "timeout_seconds": 60,
+        "binding_id": "registered-harness-binding",
+    }
+    registry = get_registry()
+    registry.register(descriptor)
+    try:
+        _graph, parked = await run_registered_dag(
+            "rdr-harness-revoke",
+            workspace_id="ws-rdr",
+            project_id=container.project_id,
+            provenance=_SCHEDULE,
+            user_id="test-user",
+        )
+        assert parked.status is RunStatus.WAITING
+        assert calls == {"dispatch": 1, "poll": 0}
+
+        # Operator revokes the capability while the harness wait is parked.
+        await container.capability_effects.bindings.revoke("registered-harness-binding")
+
+        # Before the timer elapses the external seam must not read the
+        # provider or persist its output.
+        assert await wake_due_registered_dag_runs(limit=1) == 0
+        assert calls == {"dispatch": 1, "poll": 0}
+        untouched = await container.graph_run_store.get(parked.run_id)
+        assert untouched is not None and untouched.status is RunStatus.WAITING
+        assert untouched.hitl_answers == {}
+
+        # After the timer the governed walker owns the wait; it fails the
+        # node truthfully instead of producing the revoked capability's
+        # output, and the provider is still never read.
+        moment[0] += timedelta(seconds=61)
+        await wake_due_registered_dag_runs(limit=1)
+        assert calls == {"dispatch": 1, "poll": 0}
+        settled = await container.graph_run_store.get(parked.run_id)
+        assert settled is not None
+        assert settled.status is not RunStatus.COMPLETED
+        assert all(
+            row.result is None or "protected done" not in str(row.result)
+            for row in settled.node_runs
+        )
+    finally:
+        registry.deregister("rdr-harness-revoke")
+
+
 async def test_without_delegation_surfaces_the_timed_half_still_wakes_due_waits(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
