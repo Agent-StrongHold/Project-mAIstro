@@ -238,16 +238,23 @@ def _adapter_error(spec: Any, adapter: Any, status: int) -> Exception:
 
 
 def _resolved_max_tokens(provider: LlmGatewayProvider, request: ModelChatRequest) -> int | None:
-    """Apply the context probe to the caller's max_tokens (or discover a bound)."""
-    if request.max_tokens is not None:
-        known = _CONTEXT_PROBE.get_context_length(provider.name)
-        if known is not None and request.max_tokens > known:
-            return known
-        return request.max_tokens
+    """Cap an explicit ``max_tokens`` against the probe; never invent one.
+
+    When the caller omits ``max_tokens``, the governed payload must stay
+    omit-max_tokens shaped (#2318 CONNECT must not widen the wire). The probe
+    still learns from provider metadata / overflow / success evidence so a
+    later explicit ``max_tokens`` can be capped.
+    """
+    if request.max_tokens is None:
+        # Touch the probe so discover/next-size stay reachable without
+        # mutating the outbound body.
+        _ = _CONTEXT_PROBE.get_context_length(provider.name)
+        _ = _CONTEXT_PROBE.probe_next_size(provider.name)
+        return None
     known = _CONTEXT_PROBE.get_context_length(provider.name)
-    if known is not None:
+    if known is not None and request.max_tokens > known:
         return known
-    return _CONTEXT_PROBE.probe_next_size(provider.name)
+    return request.max_tokens
 
 
 def _chat_payload(provider: LlmGatewayProvider, request: ModelChatRequest) -> dict[str, object]:
@@ -576,8 +583,9 @@ async def probe_adapter_health(adapter: Any) -> bool:
 
 
 def reset_gateway_resilience_state() -> None:
-    """Drop in-process 429 windows (tests / process recycle). Uses ``clear_all``."""
+    """Drop in-process 429 windows and context-probe cache (tests / recycle)."""
     _GATEWAY_RATE_LIMITS.clear_all()
+    _CONTEXT_PROBE.clear()
 
 
 __all__ = [
