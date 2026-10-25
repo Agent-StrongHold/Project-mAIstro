@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import gzip
 import io
 import json
 import os
 import stat
 import tarfile
+import zlib
 from pathlib import Path
 
 import pytest
@@ -430,6 +432,45 @@ class TestRestore:
 
         with pytest.raises(typer.Exit) as exc:
             restore(data_dir=str(data_dir), from_archive=str(archive), yes=True)
+
+        assert exc.value.exit_code == 1
+        assert {p.name: p.read_bytes() for p in data_dir.iterdir()} == before
+
+    def test_payload_bit_flip_that_tar_accepts_is_refused(self, tmp_path: Path) -> None:
+        """A payload bit flipped inside the deflate stream can leave the tar
+        layer intact (index and extraction stop at the end marker) while the
+        gzip trailer CRC no longer matches. The restore must refuse it
+        instead of swapping in silently wrong bytes."""
+        data_dir, archive = self._roundtrip(tmp_path)
+        before = {p.name: p.read_bytes() for p in data_dir.iterdir()}
+        raw = archive.read_bytes()
+
+        slipped = None
+        for pos in range(20, len(raw) - 8):
+            for bit in (0x01, 0x80):
+                corrupted = bytearray(raw)
+                corrupted[pos] ^= bit
+                corrupt = tmp_path / "corrupt.tar.gz"
+                corrupt.write_bytes(bytes(corrupted))
+                try:  # what a plain tar index pass would have seen
+                    with tarfile.open(corrupt, "r:gz") as tar:
+                        tar.getmembers()
+                except Exception:
+                    continue
+                try:  # ... while the gzip trailer disagrees
+                    with gzip.open(corrupt, "rb") as gz:
+                        while gz.read(1 << 20):
+                            pass
+                except (OSError, EOFError, zlib.error):
+                    slipped = corrupt
+                if slipped:
+                    break
+            if slipped:
+                break
+        assert slipped is not None, "no CRC-silent payload bit flip found"
+
+        with pytest.raises(typer.Exit) as exc:
+            restore(data_dir=str(data_dir), from_archive=str(slipped), yes=True)
 
         assert exc.value.exit_code == 1
         assert {p.name: p.read_bytes() for p in data_dir.iterdir()} == before

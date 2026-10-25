@@ -1,7 +1,7 @@
 ---
 inventory-delta:
   packages/hive-conductor/backend/tests: +19
-  packages/maistro-core/tests: +23
+  packages/maistro-core/tests: +24
 ---
 
 # #331 Conductor Compose data-directory durability
@@ -88,7 +88,9 @@ real and testable.
   `_swap_after_extract` empty-extraction guard); plus the mid-swap re-run
   recovery test from the repair round at the bottom
   (`test_rerun_after_a_kill_between_the_renames_recovers_the_original`,
-  which also covers the stale-staging-directory refusal).
+  which also covers the stale-staging-directory refusal); plus the
+  gzip-trailer integrity test from the salvage round at the bottom
+  (`test_payload_bit_flip_that_tar_accepts_is_refused`).
 - `packages/hive-conductor/backend/tests/test_data_dir_guard.py` (new, 10
   tests): creation+probe cleanup, unwritable refusal, uncreatable-parent
   refusal, in-container ephemeral refusal (deterministic via `_st_dev`
@@ -352,3 +354,36 @@ and making the standalone file's one-shot contract explicit with
   unchanged, and the two sections it documents now appear in commit
   order (the independent e5cc427d4 round first, then the 8721b66b1
   repair round).
+
+## Salvage round (restore integrity pass), head 7061cf259, fixed by this round's commit
+
+A prior lane run left an uncommitted hardening of `maistro security
+restore`, salvaged (byte-identical, verified against the saved patch) and
+validated here. The defect it closes: `tarfile.getmembers()` stops at the
+tar end marker, which can sit **before** the gzip trailer, so a payload
+bit flip inside the deflate stream can pass indexing *and* extraction
+with silently wrong file bytes — the trailer CRC32 is never reached, and
+`restore` would swap corrupted durable state (vault, credential store,
+state.db) into place while reporting success. The fix drains the
+decompressed stream through EOF in `_read_archive_index` (the only
+whole-archive pass; extraction re-opens the file and also stops at the
+end marker) so gzip verifies the trailer, refusing the archive before
+anything on disk is touched; `zlib.error` joins the refusal tuple.
+
+- New test
+  `packages/maistro-core/tests/cli/test_security.py::
+  test_payload_bit_flip_that_tar_accepts_is_refused`: searches for a bit
+  flip that a plain tar index pass accepts while a full gzip read fails
+  the trailer CRC, then asserts `restore` exits 1 with the target
+  directory byte-identical. Shown to fail against the regression it
+  names: with the drain reverted, restore proceeds ("Restored 5
+  file(s)") and the target is corrupted; with the fix, 1 failed → exit
+  refused, target untouched.
+- `uv run pytest packages/maistro-core/tests/cli/test_security.py -q` →
+  **37 passed** (was 36; +1 recorded in the `inventory-delta` block —
+  `check-suite-inventory.py` reported `DRIFT ... expected 17930,
+  collected 17931` before the amendment, matching after).
+- `uv run ruff check .` / `uv run ruff format --check .` → clean;
+  mypy over `packages/maistro-core/src` → clean; no vulture-observable
+  dead code introduced (`_GZIP_DRAIN_CHUNK` and the `zlib` import are
+  both used by the drained path).

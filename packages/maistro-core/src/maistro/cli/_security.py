@@ -29,6 +29,7 @@ from __future__ import annotations
 import os
 import shutil
 import tarfile
+import zlib
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -72,6 +73,10 @@ _COUPLED_PAIRS = (
 )
 _RESTORE_STAGING_SUFFIX = ".restore-staging"
 _RESTORE_OLD_SUFFIX = ".restore-old"
+
+#: Drain chunk for the restore integrity pass: gzip is read to EOF in
+#: pieces of this size to force trailer verification.
+_GZIP_DRAIN_CHUNK = 1 << 20
 
 
 def _resolve_data_dir(data_dir: str) -> Path:
@@ -396,15 +401,25 @@ def _print_restore_plan(archive: Path, target: Path, names: list[str]) -> None:
 
 
 def _read_archive_index(archive_path: Path) -> list[tarfile.TarInfo]:
-    """Decompress the whole stream up front: the integrity pass.
+    """Index the archive and verify its whole gzip stream up front.
 
-    A truncated or corrupt archive is refused here, before anything on disk
-    is touched. Exits non-zero on an unreadable archive.
+    ``getmembers()`` stops at the tar end marker, which can sit before the
+    gzip trailer, so a payload corrupted inside the deflate stream can pass
+    indexing (and extraction) with silently wrong file bytes — the trailer
+    CRC is never reached. Draining the decompressed stream through EOF
+    forces gzip to verify that CRC, so a corrupt archive is refused here,
+    before anything on disk is touched. Exits non-zero on an unreadable
+    archive.
     """
     try:
         with tarfile.open(archive_path, "r:gz") as tar:
-            return tar.getmembers()
-    except (tarfile.TarError, OSError, EOFError) as exc:
+            members = tar.getmembers()
+            # Past the tar end marker the gzip trailer (CRC32 + ISIZE) is
+            # still pending; read the rest of the stream so gzip checks it.
+            while tar.fileobj.read(_GZIP_DRAIN_CHUNK):
+                pass
+            return members
+    except (tarfile.TarError, OSError, EOFError, zlib.error) as exc:
         console.print(
             f"[red]Not a readable backup archive:[/red] {archive_path} ({exc}). "
             "Refusing to touch the target directory."
