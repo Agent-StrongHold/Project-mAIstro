@@ -25,6 +25,12 @@ def _as_utc(value: datetime) -> datetime:
     return value.astimezone(UTC)
 
 
+# The members and fields carrying inline vulture ``V107``/``V105`` markers are
+# the declarative surface: stores persist whole items via ``model_dump_json``
+# and pydantic dispatches the validators at runtime, so static name-level
+# scanning cannot see a read. The declarations carry inline vulture markers
+# instead of ledger debt — the same disposition the Goal revision contract
+# uses (maistro.goals.model, #805/#806).
 class BacklogItemStatus(StrEnum):
     """The BACKLOG.md work status legend, value for value.
 
@@ -36,11 +42,11 @@ class BacklogItemStatus(StrEnum):
     PROPOSED = "proposed"
     ACCEPTED = "accepted"
     IMPLEMENTED = "implemented"
-    ACCEPTED_SPEC = "accepted_spec"
+    ACCEPTED_SPEC = "accepted_spec"  # noqa: V107
     SUPERSEDED = "superseded"
     BLOCKED = "blocked"
     ABANDONED = "abandoned"
-    OBSOLETE = "obsolete"
+    OBSOLETE = "obsolete"  # noqa: V107
 
 
 class GoalReference(BaseModel):
@@ -75,22 +81,22 @@ class BacklogItem(BaseModel):
     priority: str | None = None
     risk: str | None = None
     source: str | None = None
-    owner_principal_id: str | None = None
+    owner_principal_id: str | None = None  # noqa: V107
     milestone: str | None = None
-    acceptance_refs: list[str] = Field(default_factory=list)
+    acceptance_refs: list[str] = Field(default_factory=list)  # noqa: V107
     evidence_refs: list[str] = Field(default_factory=list)
-    spec_refs: list[str] = Field(default_factory=list)
-    scenario_refs: list[str] = Field(default_factory=list)
-    allowed_scope: list[str] = Field(default_factory=list)
-    protected_scope: list[str] = Field(default_factory=list)
+    spec_refs: list[str] = Field(default_factory=list)  # noqa: V107
+    scenario_refs: list[str] = Field(default_factory=list)  # noqa: V107
+    allowed_scope: list[str] = Field(default_factory=list)  # noqa: V107
+    protected_scope: list[str] = Field(default_factory=list)  # noqa: V107
     #: A free token; what each mode permits is #100/#103's to define.
-    autonomy_mode: str | None = None
+    autonomy_mode: str | None = None  # noqa: V107
     parent_item_id: str | None = None
     rank: float = Field(default=0.0, allow_inf_nan=False)
     paused: bool = False
     pinned: bool = False
     archived_at: datetime | None = None
-    goal_ref: GoalReference | None = None
+    goal_ref: GoalReference | None = None  # noqa: V107
     version: int = Field(default=1, ge=1)
     # Reserved for #100's claim/lease protocol; nothing here writes them.
     claimant_principal_id: str | None = None
@@ -101,7 +107,7 @@ class BacklogItem(BaseModel):
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
-    @model_validator(mode="after")
+    @model_validator(mode="after")  # noqa: V105
     def _shape(self) -> BacklogItem:
         for name in ("item_id", "workspace_id", "project_id", "title"):
             if not getattr(self, name).strip():

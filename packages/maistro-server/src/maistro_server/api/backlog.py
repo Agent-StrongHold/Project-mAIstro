@@ -38,6 +38,15 @@ from maistro_server.api.workspace_access import (
 
 router = APIRouter(prefix="/{workspace_id}/backlog", tags=["backlog"])
 
+# The request-body fields carrying inline vulture ``V107`` markers are
+# pydantic's serialization surface: the routes forward them through
+# ``model_dump()`` and the store persists that payload, so static name-level
+# scanning cannot see an attribute read. The route handlers carry ``V103``
+# because FastAPI's decorator registers them for dispatch, which import
+# scanning cannot see. The declarations carry inline vulture markers instead
+# of ledger debt — the same disposition as the Goal revision contract
+# (maistro.goals.model, #805/#806).
+
 
 class _Conflict(Exception):
     def __init__(self, current: BacklogItem) -> None:
@@ -67,19 +76,19 @@ class _ItemFields(BaseModel):
     priority: str | None = None
     risk: str | None = None
     source: str | None = None
-    owner_principal_id: str | None = None
+    owner_principal_id: str | None = None  # noqa: V107
     milestone: str | None = None
-    acceptance_refs: list[str] = Field(default_factory=list)
+    acceptance_refs: list[str] = Field(default_factory=list)  # noqa: V107
     evidence_refs: list[str] = Field(default_factory=list)
-    spec_refs: list[str] = Field(default_factory=list)
-    scenario_refs: list[str] = Field(default_factory=list)
-    allowed_scope: list[str] = Field(default_factory=list)
-    protected_scope: list[str] = Field(default_factory=list)
-    autonomy_mode: str | None = None
+    spec_refs: list[str] = Field(default_factory=list)  # noqa: V107
+    scenario_refs: list[str] = Field(default_factory=list)  # noqa: V107
+    allowed_scope: list[str] = Field(default_factory=list)  # noqa: V107
+    protected_scope: list[str] = Field(default_factory=list)  # noqa: V107
+    autonomy_mode: str | None = None  # noqa: V107
     rank: float = 0.0
     paused: bool = False
     pinned: bool = False
-    goal_ref: GoalReference | None = None
+    goal_ref: GoalReference | None = None  # noqa: V107
 
 
 class CreateBacklogItemBody(_ItemFields):
@@ -118,22 +127,22 @@ class UpdateBacklogItemBody(BaseModel):
     priority: str | None = None
     risk: str | None = None
     source: str | None = None
-    owner_principal_id: str | None = None
+    owner_principal_id: str | None = None  # noqa: V107
     milestone: str | None = None
-    acceptance_refs: list[str] | None = None
+    acceptance_refs: list[str] | None = None  # noqa: V107
     evidence_refs: list[str] | None = None
-    spec_refs: list[str] | None = None
-    scenario_refs: list[str] | None = None
-    allowed_scope: list[str] | None = None
-    protected_scope: list[str] | None = None
-    autonomy_mode: str | None = None
+    spec_refs: list[str] | None = None  # noqa: V107
+    scenario_refs: list[str] | None = None  # noqa: V107
+    allowed_scope: list[str] | None = None  # noqa: V107
+    protected_scope: list[str] | None = None  # noqa: V107
+    autonomy_mode: str | None = None  # noqa: V107
     rank: float | None = None
     paused: bool | None = None
     pinned: bool | None = None
     archived_at: datetime | None = None
-    goal_ref: GoalReference | None = None
+    goal_ref: GoalReference | None = None  # noqa: V107
 
-    @model_validator(mode="after")
+    @model_validator(mode="after")  # noqa: V105
     def _no_null_for_required_fields(self) -> Self:
         nulled = sorted(
             name
@@ -218,7 +227,7 @@ WorkspaceStoreDep = Annotated[WorkspaceStore, Depends(get_workspace_store)]
 BacklogStoreDep = Annotated[BacklogItemStore, Depends(get_backlog_store)]
 
 
-@router.get("", response_model=list[BacklogItem])
+@router.get("", response_model=list[BacklogItem])  # noqa: V103
 async def list_backlog_items(
     workspace_id: str,
     auth: RequireAuth,
@@ -231,7 +240,7 @@ async def list_backlog_items(
     return await store.list(workspace_id, project_id=project_id, status=item_status)
 
 
-@router.post("", response_model=BacklogItem, status_code=status.HTTP_201_CREATED)
+@router.post("", response_model=BacklogItem, status_code=status.HTTP_201_CREATED)  # noqa: V103
 async def create_backlog_item(
     workspace_id: str,
     body: CreateBacklogItemBody,
@@ -245,7 +254,7 @@ async def create_backlog_item(
         return await store.create(item)
 
 
-@router.get("/{item_id}", response_model=BacklogItem)
+@router.get("/{item_id}", response_model=BacklogItem)  # noqa: V103
 async def get_backlog_item(
     workspace_id: str,
     item_id: str,
@@ -257,7 +266,7 @@ async def get_backlog_item(
     return await _require_item(store, workspace_id, item_id)
 
 
-@router.patch(
+@router.patch(  # noqa: V103
     "/{item_id}",
     response_model=BacklogItem,
     responses={status.HTTP_409_CONFLICT: {"description": "Stale expected_version"}},
@@ -282,7 +291,7 @@ async def update_backlog_item(
         return _conflict_response(conflict)
 
 
-@router.put(
+@router.put(  # noqa: V103
     "/{item_id}/parent",
     response_model=BacklogItem,
     responses={status.HTTP_409_CONFLICT: {"description": "Stale version or cycle"}},
@@ -310,7 +319,7 @@ async def set_backlog_item_parent(
         return _conflict_response(conflict)
 
 
-@router.get("/{item_id}/children", response_model=list[BacklogItem])
+@router.get("/{item_id}/children", response_model=list[BacklogItem])  # noqa: V103
 async def list_backlog_item_children(
     workspace_id: str,
     item_id: str,
@@ -323,7 +332,7 @@ async def list_backlog_item_children(
     return await store.children_of(item_id)
 
 
-@router.get("/{item_id}/dependencies", response_model=list[BacklogItem])
+@router.get("/{item_id}/dependencies", response_model=list[BacklogItem])  # noqa: V103
 async def list_backlog_item_dependencies(
     workspace_id: str,
     item_id: str,
@@ -336,7 +345,7 @@ async def list_backlog_item_dependencies(
     return await store.dependencies_of(item_id)
 
 
-@router.get("/{item_id}/dependents", response_model=list[BacklogItem])
+@router.get("/{item_id}/dependents", response_model=list[BacklogItem])  # noqa: V103
 async def list_backlog_item_dependents(
     workspace_id: str,
     item_id: str,
@@ -349,7 +358,7 @@ async def list_backlog_item_dependents(
     return await store.dependents_of(item_id)
 
 
-@router.put("/{item_id}/dependencies/{depends_on_item_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.put("/{item_id}/dependencies/{depends_on_item_id}", status_code=status.HTTP_204_NO_CONTENT)  # noqa: V103
 async def add_backlog_item_dependency(
     workspace_id: str,
     item_id: str,
@@ -365,7 +374,7 @@ async def add_backlog_item_dependency(
         await store.add_dependency(item_id, depends_on_item_id)
 
 
-@router.delete(
+@router.delete(  # noqa: V103
     "/{item_id}/dependencies/{depends_on_item_id}", status_code=status.HTTP_204_NO_CONTENT
 )
 async def remove_backlog_item_dependency(
