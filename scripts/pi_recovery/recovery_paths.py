@@ -57,5 +57,17 @@ def session_manager_path():
     override = os.environ.get("PI_RECOVERY_SESSION_MANAGER")
     if override:
         return Path(override).expanduser()
-    # An npm-installed Pi executable resolves to <package>/dist/cli.js.
-    return Path(PI).resolve().parent / "core/session-manager.js"
+    # An npm-installed Pi executable resolves to <package>/dist/cli.js (older
+    # layouts) or <package>/dist/bundle/cli.js (current). The SDK module lives
+    # under <package>/dist/core in both, so search the package root's ancestors
+    # for core/session-manager.js rather than hard-coding one nesting depth.
+    resolved = Path(PI).resolve()
+    candidates = (
+        resolved.parent / "core/session-manager.js",
+        resolved.parent.parent / "core/session-manager.js",
+        resolved.parent / "bundle/core/session-manager.js",
+    )
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    return candidates[0]

@@ -75,6 +75,24 @@ class PortabilityTests(unittest.TestCase):
                 configure.main([*self.args, "--cwd", cwd])
         self.assertFalse(self.root.exists())
 
+    def test_configure_rejects_unsafe_operator_session_identity(self):
+        for bad in ("not a safe id!", "trailing-", ""):
+            with (
+                self.subTest(bad=bad),
+                self.assertRaisesRegex(ValueError, "Invalid operator session ID"),
+            ):
+                configure.main([*self.args, "--operator-session-id", bad])
+        self.assertFalse(self.root.exists())
+
+    def test_configure_requires_unblanked_provider_and_model(self):
+        for field in ("--provider", "--model"):
+            with self.subTest(field=field):
+                blanked = [*self.args]
+                blanked[self.args.index(field) + 1] = "   "
+                with self.assertRaisesRegex(ValueError, "Explicit provider and model required"):
+                    configure.main(blanked)
+        self.assertFalse(self.root.exists())
+
     def test_invalid_workspace_blocks_an_armed_cycle_before_tools(self):
         cfg = self.configure()
         cfg.update(enabled=True, cwd="relative")
@@ -164,6 +182,45 @@ class PortabilityTests(unittest.TestCase):
         )
         self.assertEqual(help_result.returncode, 0, help_result.stderr)
         self.assertIn("--recover-backup", help_result.stdout)
+
+    def test_session_manager_override_selects_the_explicit_sdk(self):
+        target = self.base / "custom sdk" / "session-manager.js"
+        target.parent.mkdir()
+        target.write_text("module.exports = {};\n")
+        with patch.dict(os.environ, {"PI_RECOVERY_SESSION_MANAGER": str(target)}):
+            self.assertEqual(recovery_paths.session_manager_path(), target)
+
+    def test_session_manager_found_beside_a_flat_dist_layout(self):
+        package = self.base / "pkg-flat"
+        (package / "dist" / "core").mkdir(parents=True)
+        (package / "dist" / "cli.js").write_text("// entry\n")
+        sdk = package / "dist" / "core" / "session-manager.js"
+        sdk.write_text("module.exports = {};\n")
+        with patch.object(recovery_paths, "PI", str(package / "dist" / "cli.js")):
+            self.assertEqual(recovery_paths.session_manager_path(), sdk)
+
+    def test_session_manager_found_above_a_bundle_dist_layout(self):
+        # The shipped npm layout: the executable sits in dist/bundle/, while the
+        # SDK module it belongs to stays at dist/core/. Resolving one nesting
+        # depth wrong made every native SDK case skip on such installs.
+        package = self.base / "pkg-bundle"
+        (package / "dist" / "bundle").mkdir(parents=True)
+        (package / "dist" / "core").mkdir(parents=True)
+        (package / "dist" / "bundle" / "cli.js").write_text("// entry\n")
+        sdk = package / "dist" / "core" / "session-manager.js"
+        sdk.write_text("module.exports = {};\n")
+        with patch.object(recovery_paths, "PI", str(package / "dist" / "bundle" / "cli.js")):
+            self.assertEqual(recovery_paths.session_manager_path(), sdk)
+
+    def test_session_manager_fallback_names_the_expected_path_when_none_exists(self):
+        package = self.base / "pkg-empty"
+        (package / "dist").mkdir(parents=True)
+        (package / "dist" / "cli.js").write_text("// entry\n")
+        with patch.object(recovery_paths, "PI", str(package / "dist" / "cli.js")):
+            self.assertEqual(
+                recovery_paths.session_manager_path(),
+                package / "dist" / "core" / "session-manager.js",
+            )
 
     def test_runtime_sources_do_not_embed_a_user_home(self):
         for path in SOURCE.glob("*.py"):

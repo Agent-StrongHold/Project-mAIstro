@@ -1,8 +1,10 @@
 import contextlib
 import io
 import json
+import runpy
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 import uuid
@@ -153,6 +155,47 @@ class ForemanChecks(unittest.TestCase):
         finally:
             # Only this test's unique server and its dummy shells.
             tmux("kill-server")
+
+
+class ObserverEdgeTests(unittest.TestCase):
+    def test_vanished_process_is_skipped_not_treated_as_health(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            live = root / "100"
+            live.mkdir()
+            fields = " ".join(f"f{i}" for i in range(20))
+            (live / "stat").write_text(f"100 (bash) S 1 {fields}\n")
+            (root / "101").mkdir()  # exits between enumeration and read: no stat
+            result = f.processes(root=root)
+        self.assertEqual(sorted(result), [100])
+        self.assertEqual(result[100]["comm"], "bash")
+
+    def test_descendant_cycle_terminates_without_matches(self):
+        table = {5: proc("bash", parent=6), 6: proc("bash", parent=5)}
+        self.assertEqual(f.pi_descendants(5, table), [])
+
+    def test_cli_entrypoint_stays_read_only_when_the_inventory_fails(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory)
+            report = {"ok": True}
+            (state / "config.json").write_text("{}\n")
+            sys_path = [str(Path(__file__).resolve().parents[2] / "scripts"), *sys.path]
+            with (
+                patch.object(sys, "path", sys_path),
+                patch.object(sys, "argv", ["check_foremen", "--check"]),
+                patch(
+                    "subprocess.run",
+                    return_value=subprocess.CompletedProcess([], 1, "", "no server running"),
+                ),
+                contextlib.redirect_stdout(io.StringIO()) as shown,
+                self.assertRaises(SystemExit) as exited,
+            ):
+                runpy.run_module("pi_recovery.check_foremen", run_name="__main__", alter_sys=True)
+            self.assertEqual(exited.exception.code, 2)
+            report = json.loads(shown.getvalue())
+        self.assertEqual(report["mode"], "read_only")
+        self.assertIs(report["wake_armed"], False)
+        self.assertIn("unavailable", report["error"])
 
 
 if __name__ == "__main__":
