@@ -99,7 +99,7 @@ COPY extensions/ extensions/
 RUN uv export --locked --package maistro-server --extra image \
       --no-dev --no-emit-workspace \
       --format requirements-txt --output-file /tmp/lock-requirements.txt \
- && uv venv --python 3.13 /app/venv \
+ && uv venv --python 3.15 /app/venv \
  && uv pip install --python /app/venv/bin/python \
       --no-config --require-hashes --no-cache -r /tmp/lock-requirements.txt \
  && uv pip install --python /app/venv/bin/python --no-deps --no-cache \

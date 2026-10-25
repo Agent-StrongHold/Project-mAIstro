@@ -115,6 +115,77 @@ class TestLockedInstalls:
         assert not offenders, f"{dockerfile.name} reads the project at install time: {offenders}"
 
 
+#: Every Dockerfile that explicitly selects the interpreter uv uses
+#: (`uv venv --python` / `uv sync --python`). A digest bump that moves the
+#: pinned base across a Python minor without moving these spec lines leaves
+#: the file asking uv for an interpreter the base no longer ships — uv then
+#: downloads an unmanaged interpreter outside the pinned base digest, whose
+#: venv symlinks point outside the paths the runtime stage copies (or fails
+#: closed on a restricted network). That is the live defect #2136 shipped:
+#: both FROM lines bumped 3.13.16 -> 3.15.0 while line 102 still said
+#: `uv venv --python 3.13`, and no gate noticed.
+UV_PYTHON_DOCKERFILES = [
+    ROOT / "Dockerfile",
+    ROOT / "Dockerfile.research",
+    ROOT / "Dockerfile.rsi-runner",
+    ROOT / "packages/hive-conductor/Dockerfile",
+]
+
+
+class TestVenvInterpreterMatchesThePinnedBase:
+    """The interpreter uv selects inside a build must be the base's own.
+
+    The digest pin fixes *which interpreter* ships only if every
+    interpreter selection inside the Dockerfile asks for the pinned base's
+    version. A spec like `--python 3.13` in a 3.15.0 base has two failure
+    modes, both silent at review time: uv fetches a python-build-standalone
+    3.13 from the network (the venv's python symlink then points outside
+    every path the runtime stage COPYs, so the shipped image has no
+    interpreter), or a network-restricted builder fails closed. Either way
+    the runtime interpreter is no longer the one the pinned digest froze.
+    """
+
+    @staticmethod
+    def _python_from_major_minors(text: str) -> list[str]:
+        """major.minor of every digest-pinned `FROM python:<tag>` base."""
+        return [
+            f"{m.group(1)}.{m.group(2)}"
+            for m in re.finditer(
+                r"^FROM\s+python:(\d+)\.(\d+)\S*@sha256:[0-9a-f]{64}\b",
+                text,
+                re.MULTILINE | re.IGNORECASE,
+            )
+        ]
+
+    @staticmethod
+    def _uv_python_specs(text: str) -> list[str]:
+        """major.minor of every interpreter a uv command explicitly selects."""
+        return [
+            f"{m.group(1)}.{m.group(2)}"
+            for m in re.finditer(
+                r"\buv\s+(?:venv|sync)\b[^\n]*?--python\s+(\d+)\.(\d+)\b",
+                text,
+            )
+        ]
+
+    @pytest.mark.parametrize("dockerfile", UV_PYTHON_DOCKERFILES, ids=lambda p: p.name)
+    def test_the_interpreter_spec_matches_the_base(self, dockerfile):
+        text = _read(dockerfile)
+        bases = self._python_from_major_minors(text)
+        assert bases, f"{dockerfile.name} pins no python base digest"
+        # A partial bump (builder moved, runtime left behind, or vice versa)
+        # is the same defect one stage later; both stages must agree.
+        assert len(set(bases)) == 1, f"{dockerfile.name} pins mixed python bases: {bases}"
+        specs = self._uv_python_specs(text)
+        # The degenerate path must fail loudly too: dropping the selection
+        # entirely would make uv fall back to whatever it discovers.
+        assert specs, f"{dockerfile.name} selects no interpreter with uv --python"
+        assert set(specs) == {bases[0]}, (
+            f"{dockerfile.name}: uv selects {sorted(set(specs))} but the pinned "
+            f"base is python {bases[0]} — uv would leave the pinned digest"
+        )
+
+
 class TestEngineImage:
     """The root Dockerfile — the image the API server ships in."""
 

@@ -7,10 +7,20 @@
       "digest": "sha256:73aa5faee130c60da030e105ec971ccf57473fbd22ce73bd6fc9ba99a40b838d",
       "recorded": "2026-10-22",
       "recorded_in": "#1152",
-      "note": "CPython 3.13.16 on Debian bookworm-slim; the interpreter pin that keeps coincurve building from source only on purpose. Refreshed from 3.13.15 (#363): the grype leg of the container gate flags CPython binary HIGH/CRITICAL CVEs (CVE-2026-19445/19553/82049) whose fixes landed in 3.13.16. Digest refreshed 2026-10-22 (#1152): security.yml run 39823108438 flags libexpat1 2.5.0-1+deb12u4 (CVE-2025-59375 / CVE-2026-77214, HIGH, fixed 2.5.0-1+deb12u5) in maistro-engine because the buildx gha cache still serves the pre-upgrade `apt-get upgrade` layer; the base-digest bump invalidates that cached layer so the rebuilt image upgrades to deb12u5 (locally verified: fresh builds already resolved deb12u5, so only the cached-CI layer was stale).",
+      "note": "CPython 3.13.16 on Debian bookworm-slim; the interpreter pin that keeps coincurve building from source only on purpose. Refreshed from 3.13.15 (#363): the grype leg of the container gate flags CPython binary HIGH/CRITICAL CVEs (CVE-2026-19445/19553/82049) whose fixes landed in 3.13.16. Digest refreshed 2026-10-22 (#1152): security.yml run 39823108438 flags libexpat1 2.5.0-1+deb12u4 (CVE-2025-59375 / CVE-2026-77214, HIGH, fixed 2.5.0-1+deb12u5) in maistro-engine because the buildx gha cache still serves the pre-upgrade `apt-get upgrade` layer; the base-digest bump invalidates that cached layer so the rebuilt image upgrades to deb12u5 (locally verified: fresh builds already resolved deb12u5, so only the cached-CI layer was stale). The root engine Dockerfile moved on to this line's successor in #2136; the Conductor image still builds on this pin.",
       "used_by": [
-        "Dockerfile",
         "packages/hive-conductor/Dockerfile"
+      ]
+    },
+    {
+      "image": "python",
+      "tag": "3.15.0-slim-bookworm",
+      "digest": "sha256:0e019bbdfb5d9874cb2389f1c2884b64aa2ac97c99960b5bc521cef978c0617d",
+      "recorded": "2026-10-25",
+      "recorded_in": "#2136",
+      "note": "Dependabot index pin for the engine image (#2136), registry-verified 2026-10-25: python:3.15.0-slim-bookworm resolves to this index digest on Docker Hub. The bump crosses TWO Python minors (3.13.16 -> 3.15.0), and the locked, hash-pinned image set cannot install under CPython 3.15: psycopg-binary 3.3.4 ships no cp315 wheel and no sdist (lock carries cp310-cp314 only, so --require-hashes fails closed), and coincurve 21.0.0 — still the latest upstream release — ships no cp314/cp315 wheel at all, so the interpreter pin that kept it on wheels is lost. The uv venv selection was aligned to 3.15 (#2136); docker-build stays red on the wheel ceiling until the locked set gains cp315 artifacts. The Conductor image remains deliberately on the 3.13.16 line above.",
+      "used_by": [
+        "Dockerfile"
       ]
     },
     {
