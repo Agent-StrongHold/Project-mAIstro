@@ -23,13 +23,6 @@
         "rationale": "Never imported by backend/; declared so the locked closure the image installs (uv export --package hive-conductor) carries aiosqlite for maistro.persistence: a sqlite: DATABASE_URL (the compose harness pins one) puts the canonical stores on the sqlite extra, whose stores import aiosqlite. Without the declaration the roster bridge fails closed and /health/ready serves 503 forever."
       }
     },
-    "packages/maistro-canvas/pyproject.toml": {
-      "asyncpg": {
-        "category": "PLATFORM_RUNTIME",
-        "owner": "#352",
-        "rationale": "frontend/server/models/db.py selects the postgresql+asyncpg SQLAlchemy dialect, which loads asyncpg by driver name rather than a source import."
-      }
-    },
     "packages/maistro-server/pyproject.toml": {
       "uvicorn": {
         "category": "ENTRYPOINT_RUNTIME",
