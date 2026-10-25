@@ -492,14 +492,14 @@ class BuilderPipeline:
         self._code_index = code_index
         self._nodes = list(nodes) if nodes is not None else list(BUILDER_PIPELINE)
         self._runs: dict[str, PipelineRun] = {}
-        self._canonical_executor = CanonicalGraphPipelineExecutor(
-            dispatcher,
-            run_store=run_store,
-            durable_store=durable_store,
-            workspace_id=workspace_id,
-            project_id=project_id,
-            actor_principal_id=actor_principal_id,
-        )
+        # Canonical wiring is held, not pre-built: the executor is constructed
+        # per execute() from these fields, so an injected store set is never
+        # paired with a stale default-store executor.
+        self._run_store = run_store
+        self._durable_store = durable_store
+        self._workspace_id = workspace_id
+        self._project_id = project_id
+        self._actor_principal_id = actor_principal_id
 
     async def _load_spec_context(
         self,
@@ -525,17 +525,6 @@ class BuilderPipeline:
             run.context["verifications"] = []
 
         return spec
-
-    async def _resolve_project_id(self) -> str:
-        """Resolve (and cache) the canonical project id for this pipeline."""
-        project_id = self._project_id
-        if project_id is None:
-            if self._project_store is None:
-                raise ValueError("project_id is required when run_store is injected")
-            project = await self._project_store.create_root(self._workspace_id)
-            project_id = project.project_id
-            self._project_id = project_id
-        return project_id
 
     async def execute(
         self,
@@ -591,20 +580,16 @@ class BuilderPipeline:
             # canonical Run for work that must never start.
             run.status = f"invalid graph: {'; '.join(errors)}"
             return run
-        project_id = await self._resolve_project_id()
         executor = CanonicalGraphPipelineExecutor(
             self._dispatcher,
             run_store=self._run_store,
             durable_store=self._durable_store,
             workspace_id=self._workspace_id,
-            project_id=project_id,
+            project_id=self._project_id,
             actor_principal_id=self._actor_principal_id,
-            budget=self._budget,
         )
 
         await executor.execute(graph, run)
-
-        self._reconcile_stages(run)
         return run
 
     def _wrap_nodes_with_verification(self, nodes: list[PipelineNode]) -> list[PipelineNode]:

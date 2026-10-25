@@ -515,24 +515,39 @@ def _default_budget(dag: BuildersDAG) -> IterationBudget:
 
 async def _prepare_canonical_stores(
     run_store: RunStore | None,
-    durable_store: CanonicalDurableRunStore | None,
+    durable_store: DurableRunStore | None,
     project_id: str | None,
-    workspace_id: str,
-) -> tuple[RunStore, CanonicalDurableRunStore, str]:
-    """Resolve the canonical Run/durable stores and project id for a DAG run."""
+    workspace_id: str | None,
+) -> tuple[RunStore, DurableRunStore, str, str | None]:
+    """Resolve the canonical Run/durable stores and project id for a DAG run.
+
+    Compatibility callers that inject no stores get an isolated canonical
+    owner whose Workspace default matches ``CanonicalGraphPipelineExecutor``'s
+    own fallback, so the executor's explicit-store validation still holds.
+    """
+    # Local imports keep the module cycle that pipeline <-> graph_executor
+    # already navigates from reaching the run/project store backends.
+    from maistro.graph.durable_runs import (
+        CanonicalDurableRunStore,
+        InMemoryGraphContinuationStore,
+    )
+    from maistro.projects.scope_store import InMemoryProjectScopeStore
+    from maistro.runs.store import InMemoryRunStore
+
     project_store: InMemoryProjectScopeStore | None = None
     if run_store is None:
         project_store = InMemoryProjectScopeStore()
         run_store = InMemoryRunStore(project_store=project_store)
+        workspace_id = workspace_id or "builders"
     if project_id is None:
         if project_store is None:
             raise ValueError("project_id is required when run_store is injected")
-        project_id = (await project_store.create_root(workspace_id)).project_id
+        project_id = (await project_store.create_root(workspace_id or "builders")).project_id
     durable_store = durable_store or CanonicalDurableRunStore(
         run_store,
         InMemoryGraphContinuationStore(),
     )
-    return run_store, durable_store, project_id
+    return run_store, durable_store, project_id, workspace_id
 
 
 async def run_builders_dag(
@@ -568,7 +583,7 @@ async def run_builders_dag(
         run.status = f"invalid graph: {'; '.join(errors)}"
         return BuildersDagResult(ok=False, run=run, failure=_classify_failure(run))
 
-    run_store, durable_store, project_id = await _prepare_canonical_stores(
+    run_store, durable_store, project_id, workspace_id = await _prepare_canonical_stores(
         run_store, durable_store, project_id, workspace_id
     )
     graph = to_pipeline_graph(dag)
