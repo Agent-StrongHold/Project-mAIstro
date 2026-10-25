@@ -1205,6 +1205,20 @@ def _supervision_context(
         metadata[RESUMED_PAUSE_KEY] = carried
 
 
+def _drain_steering_queue(metadata: dict[str, Any]) -> None:
+    """Move parked ``_steering_queue`` entries onto ``_steering`` for this visit."""
+    raw_queue = metadata.pop("_steering_queue", None)
+    if not isinstance(raw_queue, list) or not raw_queue:
+        return
+    queue = SteeringQueue()
+    for entry in raw_queue:
+        if isinstance(entry, str) and entry:
+            queue.steer(entry)
+    drained = queue.drain()
+    if drained:
+        metadata["_steering"] = drained
+
+
 def _prepare_traversal_blackboard(snapshot: Mapping[str, Any]) -> Any:
     """Hydrate the durable blackboard and apply CONNECT traversal helpers (#2314).
 
@@ -1216,16 +1230,7 @@ def _prepare_traversal_blackboard(snapshot: Mapping[str, Any]) -> Any:
     from maistro.graph.types import GraphBlackboard
 
     metadata = dict(snapshot.get("metadata") or {})
-    raw_queue = metadata.pop("_steering_queue", None)
-    if isinstance(raw_queue, list) and raw_queue:
-        queue = SteeringQueue()
-        for entry in raw_queue:
-            if isinstance(entry, str) and entry:
-                queue.steer(entry)
-        drained = queue.drain()
-        if drained:
-            metadata["_steering"] = drained
-
+    _drain_steering_queue(metadata)
     blackboard = GraphBlackboard(
         task_objective=str(snapshot.get("task_objective") or ""),
         workspace=str(snapshot.get("workspace") or ""),
