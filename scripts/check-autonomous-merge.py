@@ -154,10 +154,7 @@ class Assessment:
                 self.risk == "yellow"
                 and not self.integrity_reasons
                 and bool(self.yellow_reasons)
-                and all(
-                    reason.startswith(_evidence_prefix)
-                    for reason in self.yellow_reasons
-                )
+                and all(reason.startswith(_evidence_prefix) for reason in self.yellow_reasons)
             )
         else:
             self.eligible = True
