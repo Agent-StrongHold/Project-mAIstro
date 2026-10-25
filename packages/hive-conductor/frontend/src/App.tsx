@@ -18,9 +18,11 @@ import Setup from "./pages/Setup";
 // first paint of every session, so splitting them would only add a round
 // trip with nothing to show meanwhile.
 const Agents = lazy(() => import("./pages/Agents"));
+const Approvals = lazy(() => import("./pages/Approvals"));
 const Attention = lazy(() => import("./pages/Attention"));
 const AuditLog = lazy(() => import("./pages/AuditLog"));
 const Backlog = lazy(() => import("./pages/Backlog"));
+const Capabilities = lazy(() => import("./pages/Capabilities"));
 const Chat = lazy(() => import("./pages/Chat"));
 const CLI = lazy(() => import("./pages/CLI"));
 const Containers = lazy(() => import("./pages/Containers"));
@@ -30,7 +32,6 @@ const Dashboard = lazy(() => import("./pages/Dashboard"));
 const DesignStudio = lazy(() => import("./pages/DesignStudio"));
 const DeckBuilder = lazy(() => import("./pages/DeckBuilder"));
 const Docs = lazy(() => import("./pages/Docs"));
-const Evolution = lazy(() => import("./pages/Evolution"));
 const Goals = lazy(() => import("./pages/Goals"));
 const Home = lazy(() => import("./pages/Home"));
 const RSI = lazy(() => import("./pages/RSI"));
@@ -198,10 +199,17 @@ function AppRoutes() {
                   <Route path="attention" element={<Attention />} />
                   <Route path="missions" element={<Missions />} />
                   <Route path="backlog" element={<Backlog />} />
+                  {/* #2278 / Parity P-1: approvals projection over the same
+                      /v1/capabilities/approvals and /v1/hitl/* doors as CLI. */}
+                  <Route path="approvals" element={<Approvals />} />
                   <Route path="dags" element={<DagBuilder />} />
                   <Route path="dag-runs" element={<DagRuns />} />
                   <Route path="goals" element={<Goals />} />
                   <Route path="schedules" element={<Schedules />} />
+                  {/* #2273: Capabilities is the primary product surface; Agents /
+                      MCP / Skills / Topology stay registered for deep links
+                      until the retirement slice deletes them. */}
+                  <Route path="capabilities" element={<Capabilities />} />
                   <Route path="agents" element={<Agents />} />
                   <Route path="work-items" element={<WorkItems />} />
                   <Route path="knowledge" element={<KnowledgeBase />} />
@@ -235,7 +243,11 @@ function AppRoutes() {
                   <Route path="cli/canvas" element={<Navigate to="/design-studio" replace />} />
                   <Route path="containers" element={<Containers />} />
                   <Route path="docs" element={<Docs />} />
-                  <Route path="evolution" element={<Evolution />} />
+                  {/* #2275 / conductor-411: Evolution is HIDE for v1.0 — no
+                      shipped route, no stub claiming availability. The page
+                      module stays in-tree for v1.2 restore (#51). Direct
+                      /evolution hits fall through the shell outlet empty
+                      rather than advertise a product surface. */}
                   <Route path="rsi" element={<RSI />} />
                   <Route path="memory" element={<Memory />} />
                   <Route path="settings" element={<Settings />} />

@@ -20,7 +20,7 @@ from unittest.mock import patch
 
 import pytest
 from fastapi import HTTPException
-from server.lulu import service
+from server.lulu import preflight, service
 
 
 def test_a_path_inside_the_root_is_accepted(tmp_path: Path) -> None:
@@ -97,3 +97,52 @@ def test_a_root_that_is_itself_a_symlink_accepts_its_own_files(tmp_path: Path) -
     with patch.object(service, "PREFLIGHT_ROOT", os.path.realpath(str(configured))):
         resolved = service._preflight_path(str(configured / "interior.pdf"))
     assert resolved == str((real / "interior.pdf").resolve())
+
+
+@pytest.mark.parametrize(
+    "payload",
+    ["../../../etc/passwd", "/etc/passwd", "secret.pdf"],
+)
+def test_preflight_interior_refuses_paths_outside_the_root(tmp_path: Path, payload: str) -> None:
+    """Library entry points must contain the path themselves — the HTTP edge
+    is not the only caller, and CodeQL traces sinks inside preflight.py."""
+    root = tmp_path / "root"
+    root.mkdir()
+    outside = tmp_path / "outside.pdf"
+    outside.write_bytes(b"%PDF-1.4\n")
+    raw = str(root / ".." / "outside.pdf") if payload == "secret.pdf" else payload
+
+    with patch.object(preflight, "PREFLIGHT_ROOT", str(root.resolve())):
+        result = preflight.preflight_interior(raw, "0750X0750.FC.PRE.PB.080CW444.MXX")
+
+    assert result.passed is False
+    assert any(i.code == "PATH_OUTSIDE_ROOT" for i in result.issues)
+
+
+def test_preflight_cover_refuses_symlink_escape(tmp_path: Path) -> None:
+    root = tmp_path / "root"
+    root.mkdir()
+    secret = tmp_path / "secret.pdf"
+    secret.write_bytes(b"%PDF-1.4\n")
+    link = root / "cover.pdf"
+    link.symlink_to(secret)
+
+    with patch.object(preflight, "PREFLIGHT_ROOT", str(root.resolve())):
+        result = preflight.preflight_cover(str(link), "0750X0750.FC.PRE.PB.080CW444.MXX", 32)
+
+    assert result.passed is False
+    assert any(i.code == "PATH_OUTSIDE_ROOT" for i in result.issues)
+
+
+def test_preflight_interior_still_reads_a_file_inside_the_root(tmp_path: Path) -> None:
+    """Containment must refuse escapes without also refusing legitimate PDFs."""
+    root = tmp_path / "root"
+    root.mkdir()
+    pdf = root / "interior.pdf"
+    pdf.write_bytes(b"not-a-pdf")
+
+    with patch.object(preflight, "PREFLIGHT_ROOT", str(root.resolve())):
+        result = preflight.preflight_interior(str(pdf), "0750X0750.FC.PRE.PB.080CW444.MXX")
+
+    assert any(i.code == "INVALID_PDF" for i in result.issues)
+    assert not any(i.code == "PATH_OUTSIDE_ROOT" for i in result.issues)

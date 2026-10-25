@@ -50,6 +50,27 @@ jobs:
       # same category as `**/third_party/**`, a location that is vendored
       # by definition.
       #
+      # `**/maistro_design/systems/catalog/**` is the bundled Open Design
+      # fixture tree (json/md/css only — no Python). DevSkim DS173237 treats
+      # every git commit sha in catalog.json as a "hard-coded token"; hundreds
+      # of alerts, none actionable. Same class of noise as corpora below.
+      #
+      # `**/benchmarks/corpora/**` holds generated benchmark admission JSON
+      # (commit shas + patch metadata). Not executable product code.
+      #
+      # `formal/**` is the Hypothesis conformance suite — already excluded
+      # from CodeQL for the same reason (`**/tests/**` shape): it is not a
+      # shipped surface, and its fixtures deliberately exercise eval/http
+      # shapes the product must refuse.
+      #
+      # `.github/**` — Actions workflows and Dependabot config. Loopback
+      # healthchecks and DEBUG= env toggles are the normal shape of CI
+      # glue; scanning them produced dozens of DS162092 notes that no
+      # product change can clear. Not in SHIPPED_TREES.
+      #
+      # `deploy/**` / `alembic/**` — ops scripts and migration env, not
+      # installed library/app code. Same location contract.
+      #
       # Setting this input REPLACES the action's default, so `**/.git/**` and
       # `**/bin/**` are repeated rather than inherited.
       #
@@ -61,7 +82,7 @@ jobs:
       - name: Run DevSkim scanner
         uses: microsoft/DevSkim-Action@v1
         with:
-          ignore-globs: "**/.git/**,**/bin/**,**/node_modules/**,**/dist/**,**/build/**,**/third_party/**,**/static/swagger-ui/**,**/tests/**,**/__tests__/**,**/*.test.js,**/*.test.jsx,**/*.test.ts,**/*.test.tsx,**/*.test.yml"
+          ignore-globs: "**/.git/**,**/bin/**,**/node_modules/**,**/dist/**,**/build/**,**/third_party/**,**/static/swagger-ui/**,**/maistro_design/systems/catalog/**,**/benchmarks/corpora/**,formal/**,.github/**,deploy/**,alembic/**,**/tests/**,**/__tests__/**,**/*.test.js,**/*.test.jsx,**/*.test.ts,**/*.test.tsx,**/*.test.yml"
 
       - name: Upload DevSkim scan results to GitHub Security tab
         uses: github/codeql-action/upload-sarif@v4

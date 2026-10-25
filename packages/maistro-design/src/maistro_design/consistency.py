@@ -85,7 +85,7 @@ class EvidenceItem(_Frozen):
     """A piece of source truth the project was given — not generated."""
 
     evidence_id: str
-    statement: str  # regex, matched case-insensitively against content
+    statement: str  # literal marker, matched case-insensitively against content
 
 
 class ClaimRule(_Frozen):
@@ -97,7 +97,7 @@ class ClaimRule(_Frozen):
     """
 
     claim_id: str
-    pattern: str  # regex for the claim as it may appear in artifact content
+    pattern: str  # literal marker for the claim as it may appear in artifact content
     source: Literal["provided_evidence", "model_asserted"]
     evidence_id: str | None = None
 
@@ -133,14 +133,14 @@ class TermRule(_Frozen):
     """Preferred terminology: the word to use and the aliases it replaces."""
 
     preferred: str
-    banned_aliases: tuple[str, ...]  # regexes, matched case-insensitively
+    banned_aliases: tuple[str, ...]  # literal markers, matched case-insensitively
 
 
 class RequiredMessage(_Frozen):
     """A message/CTA that must appear in the artifacts the brief names."""
 
     message_id: str
-    pattern: str  # regex, matched case-insensitively
+    pattern: str  # literal marker, matched case-insensitively
     required_in: tuple[str, ...] = ("*",)  # artifact kinds; ("*",) = every artifact
 
 
@@ -148,8 +148,8 @@ class ChannelRequirement(_Frozen):
     """Channel-specific required/forbidden elements for one artifact kind."""
 
     artifact_kind: str
-    required_elements: tuple[str, ...] = ()  # regexes that must be present
-    forbidden_elements: tuple[str, ...] = ()  # regexes that must not be present
+    required_elements: tuple[str, ...] = ()  # literal markers that must be present
+    forbidden_elements: tuple[str, ...] = ()  # literal markers that must not be present
 
 
 AccessibilityCheck = Literal["image_alt_text", "html_lang_declared"]
@@ -206,8 +206,8 @@ class PersonaSnapshot(_Frozen):
 
     persona_id: str
     name: str
-    required_markers: tuple[str, ...] = ()  # regexes that should appear
-    banned_markers: tuple[str, ...] = ()  # regexes that must not appear
+    required_markers: tuple[str, ...] = ()  # literal markers that should appear
+    banned_markers: tuple[str, ...] = ()  # literal markers that must not appear
 
 
 class DesignSystemSnapshot(_Frozen):
@@ -230,7 +230,7 @@ class BriefSnapshot(_Frozen):
     goal_revision: str
     audience: str = ""
     objective: str = ""
-    objective_keywords: tuple[str, ...] = ()  # regexes that should appear
+    objective_keywords: tuple[str, ...] = ()  # literal markers that should appear
     allowed_claims: tuple[ClaimRule, ...] = ()
     contradiction_rules: tuple[ContradictionRule, ...] = ()
     terminology: tuple[TermRule, ...] = ()
@@ -443,11 +443,19 @@ def _local_impact_closure(
 # ─── Checks ──────────────────────────────────────────────────────────────────
 
 
+def _marker_re(pattern: str) -> re.Pattern[str]:
+    """Compile an untrusted snapshot marker for literal, case-insensitive search.
+
+    Markers arrive on :class:`CreativeProjectSnapshot` from the Design Studio
+    HTTP body and the ``design.consistency_eval`` graph node. They are always
+    escaped before compilation so a caller cannot inject a regular expression
+    (ReDoS or filter bypass). Metacharacters in *pattern* match literally.
+    """
+    return re.compile(re.escape(pattern), re.IGNORECASE)
+
+
 def _contains(pattern: str, text: str) -> bool:
-    try:
-        return re.search(pattern, text, re.IGNORECASE) is not None
-    except re.error:
-        return pattern.lower() in text.lower()
+    return _marker_re(pattern).search(text) is not None
 
 
 _NEGATION_CUES = re.compile(
@@ -469,21 +477,7 @@ def _mentions_affirmatively(pattern: str, text: str) -> bool:
     artifact content still uses plain :func:`_contains` — using a banned
     marker is the defect regardless of phrasing.
     """
-    try:
-        compiled = re.compile(pattern, re.IGNORECASE)
-    except re.error:
-        compiled = None
-    starts: list[int] = []
-    if compiled is not None:
-        starts = [match.start() for match in compiled.finditer(text)]
-    else:
-        needle = pattern.lower()
-        lowered = text.lower()
-        index = lowered.find(needle)
-        while index != -1:
-            starts.append(index)
-            step = len(needle) or 1
-            index = lowered.find(needle, index + step)
+    starts = [match.start() for match in _marker_re(pattern).finditer(text)]
     for start in starts:
         prefix = text[max(0, start - _NEGATION_WINDOW) : start]
         if not _NEGATION_CUES.search(prefix):
