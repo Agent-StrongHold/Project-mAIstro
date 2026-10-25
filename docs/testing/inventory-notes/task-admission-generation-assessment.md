@@ -8504,3 +8504,68 @@ First-hand battery at merged head 69efdb04e553:
   the unchanged gates at its final head. The stack stays unmerged per the
   issue contract. This round's tree change: the develop sync merge plus this
   note; no code, gate, or quality-ledger file changed.
+
+## Round 131 (2026-10-25, job 8611ba8bd0f64847a32524b48af68c2d): deep-review re-verification at dispatched head 1d974d7477fa (base 4019249e8) — blocker confirmed truthful, upstream consumer PR #2178 closed superseded
+
+Adversarial second-round re-examination of the seven prior findings, all
+re-measured first-hand at the exact dispatched head `1d974d7477fa7183`
+(develop base `4019249e8b07`, fresh `git fetch origin develop` confirms
+`origin/develop` still resolves to `4019249e8b07` — upstream has not moved):
+
+1. **Gate signal is truthful, not a scanner artifact.** Zero references to
+   `admission_generation` exist anywhere under `packages/*/src` or `scripts/`
+   outside the leaf itself and the gate comment (grep across `*.py`), and no
+   `importlib`/`import_module` path names it. The NEWLY UNREACHABLE verdict is
+   the real state: nothing imports the leaf.
+2. **`scripts/check-reachability.py` diff is comment-only** (9 added lines,
+   all `#`, inside the `_EXCLUDED_PACKAGE_PYTHON` literal — the set contents
+   are unchanged; the leaf is deliberately NOT classified, per the note).
+3. `RATCHET_BASE_REV=origin/develop uv run python scripts/check-reachability.py`
+   → rc=1, exactly ONE newly unreachable module: `maistro.tasks.
+   admission_generation` (grep count 1).
+4. `RATCHET_BASE_REV=origin/develop uv run python scripts/check-ratchet-provenance.py`
+   → rc=1, 8/9 sub-ratchets OK (contradictions 0, citations 0,
+   promotion-surface 430 modules, dispositions 104, shell 3, contract-markers
+   358, enumerations 1, lifecycle 0); sole FAIL = reachability naming the leaf.
+   `check-shipped-surface-truth.py` rc=0;
+   `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+   '*/third_party/*'` (CI argv, vulture-ratchet.yml:77-83) rc=0, 1256=1256.
+   The `exact-debt-ledger` CI failure decomposes to exactly the reachability
+   sub-ratchet.
+5. `uv run pytest tests/test_reachability_baseline_identity.py -q` → rc=1,
+   2 failed / 12 passed at this head
+   (`test_the_committed_baseline_passes_the_gate_it_now_carries`,
+   `test_the_baseline_is_exactly_the_unreachable_set`); pytest's own set diff
+   names the sole delta: `'maistro.tasks.admission_generation'`. (The prior
+   round's "3F/36P" counted a since-synced variant of this file; substance
+   unchanged.)
+6. `git diff --numstat origin/develop HEAD -- quality/` → EMPTY; `quality/`
+   stays byte-identical to develop, zero rows for the leaf in
+   reachability-baseline / ratchet-authorizations / vulture-baseline.
+7. **UPSTREAM STATE CHANGE:** the previously documented resolution PR #2178
+   ("[DRAFT][#1845] Integrate immutable admission generations…", head
+   `5261e12718ee`) is **closed, not merged** (merged=False, merged_at=None),
+   closed 2026-10-25T18:29:51Z as superseded: parent #1845 closed 2026-10-20
+   and `maistro.runs.admission_identity` shipped on develop as the #1851
+   unwired leaf. No open PR carries an `admission_generation` consumer (open-PR
+   scan, 63 PRs), and develop is unmoved, so **no integration consumer exists
+   upstream today**. The leaf's blocker statement stands; its #2178 pointer is
+   historical. Activation remains with a future separately reviewed #1845-scope
+   integration head.
+
+Leaf-level acceptance re-proven at this head: focused battery
+`test_admission_generation_assessment.py` + `test_root_admission_identity.py`
++ `test_idempotency.py` + `test_pack_contracts.py` → 412 passed; ruff
+check/format on the leaf files clean; `mypy
+packages/maistro-core/src/maistro/tasks/admission_generation.py` Success;
+`check-suite-inventory.py` rc=0 (21 suites match, no inventory delta this
+round — note-only commit); `check-reachability-dispositions.py` rc=0;
+`check-promotion-surface.py` rc=0. Leaf md5
+`257a6e45c382349dd12f559099663fbc` is byte-identical to the module the prior
+rounds mutation-tested (all four issue-named mutations killed first-hand at
+rounds 128/130), so those kills carry over unchanged. The `packs.py` delta is
+a docstring alignment plus a boundary test for develop's pre-existing
+active-extension collision raise (present at the base, packs.py:1284) — no
+behavior change. CHANGELOG additions describe dependency/image states verified
+true of the tree (gitpython 3.2.1, graphql-core 3.3.0, golang 1.27.3 pins).
+No tree file outside these two notes was touched this round.
