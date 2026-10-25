@@ -3,8 +3,9 @@ id: ADR-013
 title: "Memory types — Learning, EpisodicMemory, Outcome, scopes, tiers"
 repo: maistro-engine
 kind: adr
-status: Accepted
+status: Implemented
 created: 2026-04-26
+implemented: 2026-09-28
 substrate:
   - maistro-engine#ADR-002
 implements: []
@@ -23,11 +24,14 @@ history:
     date: 2026-04-26
   - status: Accepted
     date: 2026-04-26
+  - status: Implemented
+    date: 2026-09-28
+    reason: Audited against canonical memory types, scope filtering, and focused scope/type tests.
 ---
 
 # ADR-013: Memory types — Learning, EpisodicMemory, Outcome, scopes, tiers
 
-**Status:** Accepted  
+**Status:** Implemented  
 **Date:** 2026-04-26  
 **Tranche:** T2  
 **Depends on:** ADR-002
@@ -73,13 +77,13 @@ def matches_scope(mem: EpisodicMemory, filters) -> bool: ...  # cross-tenant lea
 
 ## Acceptance criteria
 
-- [ ] `WEIGHT_BOUNDS[MemoryTier.REGRET] == (0.6, 1.0)` — structurally unforgettable
-- [ ] `WEIGHT_BOUNDS[MemoryTier.WISDOM] == (0.9, 1.0)` — survives across versions
-- [ ] `WEIGHT_BOUNDS[MemoryTier.OBSERVATION] == (0.1, 0.5)`
-- [ ] `build_scope_filter()` always includes `(GLOBAL, None)` entry
-- [ ] `matches_scope()` — TEAM scope requires BOTH team_id AND org_id match
-- [ ] `matches_scope()` — GLOBAL memory with org_id skips different-org callers
-- [ ] `Learning` dataclass round-trips through field access
+- [x] `WEIGHT_BOUNDS[MemoryTier.REGRET] == (0.6, 1.0)` — structurally unforgettable
+- [x] `WEIGHT_BOUNDS[MemoryTier.WISDOM] == (0.9, 1.0)` — survives across versions
+- [x] `WEIGHT_BOUNDS[MemoryTier.OBSERVATION] == (0.1, 0.5)`
+- [x] `build_scope_filter()` always includes `(GLOBAL, None)` entry
+- [x] `matches_scope()` — TEAM scope requires BOTH team_id AND org_id match
+- [x] `matches_scope()` — GLOBAL memory with org_id skips different-org callers
+- [x] `Learning` dataclass round-trips through field access
 
 ## Test plan
 
@@ -97,3 +101,8 @@ def matches_scope(mem: EpisodicMemory, filters) -> bool: ...  # cross-tenant lea
 - `stronghold/src/stronghold/types/memory.py`
 - `stronghold/src/stronghold/memory/scopes.py`
 - `stronghold/src/stronghold/memory/episodic/store.py` (`_matches_scope`)
+
+
+## 2026-09-28 implementation audit
+
+Verified against `packages/maistro-core/src/maistro/types/memory.py`, `packages/maistro-core/src/maistro/memory/scopes.py`, `packages/maistro-core/tests/memory/test_types_and_scopes.py`, and the shared Python/SQL scope-conformance tests. The original invariants remain implemented while later memory work has extended the types and strengthened scope enforcement.

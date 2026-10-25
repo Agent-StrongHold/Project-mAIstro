@@ -3,8 +3,9 @@ id: ADR-016
 title: EpisodicMemory + 7-tier weights + InMemoryEpisodicStore
 repo: maistro-engine
 kind: adr
-status: Accepted
+status: Implemented
 created: 2026-04-26
+implemented: 2026-09-28
 substrate:
   - maistro-engine#ADR-013
   - maistro-engine#ADR-014
@@ -24,11 +25,14 @@ history:
     date: 2026-04-26
   - status: Accepted
     date: 2026-04-26
+  - status: Implemented
+    date: 2026-09-28
+    reason: Audited against episodic tier/store implementation and focused retrieval/ranking tests.
 ---
 
 # ADR-016: EpisodicMemory + 7-tier weights + InMemoryEpisodicStore
 
-**Status:** Accepted  
+**Status:** Implemented  
 **Date:** 2026-04-26  
 **Tranche:** T2  
 **Depends on:** ADR-013, ADR-014
@@ -45,16 +49,16 @@ Port `InMemoryEpisodicStore` + `tiers.py` (clamp_weight, reinforce, decay) into 
 
 ## Acceptance criteria
 
-- [ ] `clamp_weight(REGRET, 0.0)` returns 0.6 (floor enforced)
-- [ ] `clamp_weight(WISDOM, 0.5)` returns 0.9 (floor enforced)
-- [ ] `clamp_weight(OBSERVATION, 0.8)` returns 0.5 (ceiling enforced)
-- [ ] `reinforce()` returns new `EpisodicMemory` with weight increased, clamped
-- [ ] `decay()` returns new `EpisodicMemory` with weight decreased, clamped to floor
-- [ ] `store()` + `retrieve()` returns matching memories by keyword
-- [ ] `retrieve()` blocks cross-org memory leakage (team scope requires org match)
-- [ ] `retrieve()` scores by weight × word-overlap
-- [ ] `reinforce()` (store method) updates the stored memory weight
-- [ ] Deleted memories are excluded from retrieval
+- [x] `clamp_weight(REGRET, 0.0)` returns 0.6 (floor enforced)
+- [x] `clamp_weight(WISDOM, 0.5)` returns 0.9 (floor enforced)
+- [x] `clamp_weight(OBSERVATION, 0.8)` returns 0.5 (ceiling enforced)
+- [x] `reinforce()` returns new `EpisodicMemory` with weight increased, clamped
+- [x] `decay()` returns new `EpisodicMemory` with weight decreased, clamped to floor
+- [x] `store()` + `retrieve()` returns matching memories by keyword
+- [x] `retrieve()` blocks cross-org memory leakage (team scope requires org match)
+- [x] `retrieve()` scores by weight × word-overlap
+- [x] `reinforce()` (store method) updates the stored memory weight
+- [x] Deleted memories are excluded from retrieval
 
 ## Test plan
 
@@ -74,3 +78,8 @@ Port `InMemoryEpisodicStore` + `tiers.py` (clamp_weight, reinforce, decay) into 
 
 - `stronghold/src/stronghold/memory/episodic/store.py`
 - `stronghold/src/stronghold/memory/episodic/tiers.py`
+
+
+## 2026-09-28 implementation audit
+
+Verified against the episodic tier/store implementation and focused episodic retrieval/ranking tests. The original seven-tier bounds, reinforcement/decay, scope isolation, soft-delete exclusion, and weighted relevance requirements are implemented. Ranking has since evolved to a shared hybrid lexical/vector scorer whose combined relevance remains multiplied by memory weight.
