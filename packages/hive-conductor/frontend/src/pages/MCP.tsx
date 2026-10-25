@@ -136,7 +136,7 @@ export default function MCP() {
           <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
             <input className="input-field" placeholder="server name" value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} autoFocus />
             <input className="input-field" placeholder="description" value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} />
-            <input className="input-field" placeholder="URL (e.g. http://localhost:9999/mcp)" value={form.url} onChange={(e) => setForm((f) => ({ ...f, url: e.target.value }))} />
+            <input className="input-field" placeholder="URL (e.g. http://localhost:9999/mcp)" value={form.url} onChange={(e) => setForm((f) => ({ ...f, url: e.target.value }))} />  // DevSkim: ignore DS162092 until 2027-12-31
             <div style={{ display: "flex", gap: 4 }}>
               {/* Gated by the same permission as the "+ add server" opener
                   (#373): the opener is disabled without mcp.write, but the

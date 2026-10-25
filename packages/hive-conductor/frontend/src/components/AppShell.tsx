@@ -7,6 +7,7 @@ import { AppearanceToggle } from "./AppearanceToggle";
 import { DegradedBanner } from "./DegradedBanner";
 import { WorkspaceTabs } from "./WorkspaceTabs";
 import { WorkspaceShare } from "./WorkspaceShare";
+import { WorkspaceAgentPersonaControl } from "./WorkspaceAgentPersona";
 import { WorkspaceToolBindings } from "./WorkspaceToolBindings";
 import { PersonaWizard } from "./PersonaWizard";
 import {
@@ -16,23 +17,23 @@ import {
   Target,
   Flag,
   Brain,
-  Plug,
   KeyRound,
   Palette,
   Settings,
   Workflow,
   PlayCircle,
-  Bot,
-  Network,
+  Boxes,
   Zap,
   Repeat,
   ListTodo,
   CalendarClock,
   Inbox,
+  Bell,
   Gauge,
   ScrollText,
   Terminal,
   Container,
+  ClipboardCheck,
 } from "lucide-react";
 
 const fullNav = [
@@ -42,6 +43,13 @@ const fullNav = [
   { to: "/chat", icon: MessageCircle, label: "Chat" },
   { to: "/dashboard", icon: LayoutDashboard, label: "Dashboard" },
   { to: "/goals", icon: Flag, label: "Goals" },
+  // #1049: Attention projection. The API requires dags.write (HITL sensitivity);
+  // the setup daily user holds that grant, so the entry is not scope-gated in
+  // the shell the way Schedules/Containers are.
+  { to: "/attention", icon: Bell, label: "Attention" },
+  // #2278: minimal approvals projection (capability inbox + HITL) — same
+  // authority as API/CLI; not a parallel store.
+  { to: "/approvals", icon: ClipboardCheck, label: "Approvals" },
   // #95: Design Studio is the parent creative-production surface, so it is a
   // first-class nav destination at its canonical route. Canvas is a tool it
   // consumes, not a sibling studio; the implementation-era /cli/canvas path is
@@ -63,23 +71,24 @@ const fullNav = [
   { to: "/missions", icon: Target, label: "Missions" },
   // #99: editable backlog (board/list/detail) over the canonical service.
   { to: "/backlog", icon: ListTodo, label: "Backlog" },
-  { to: "/agents", icon: Bot, label: "Agents" },
-  { to: "/topology", icon: Network, label: "Topology" },
+  // #2273: one Capabilities surface replaces Agents / MCP / Skills / Topology
+  // as the primary nav entry; those four stay URL-reachable until deleted.
+  { to: "/capabilities", icon: Boxes, label: "Capabilities" },
   { to: "/optimizer", icon: Zap, label: "Optimizer" },
   // #1417: Messages, Quotas, Containers, CLI and Audit were all registered,
   // implemented routes with no navigation entry (audit GLO-01). Each is a
   // retained surface per the cutover plan (PROJECT rows, and CLI/Containers
   // under contracts #292/#382), so they get discoverable entries here; the
-  // legacy pages scheduled for replacement (Skills, Work Items, Memory,
-  // Evolution) deliberately stay off this list — docs/route-inventory.md
-  // records their URL-only dispositions and owning issues.
+  // legacy pages scheduled for replacement (Agents, Topology, Integrations,
+  // Skills, Work Items, Memory) deliberately stay off this list —
+  // docs/route-inventory.md records their URL-only dispositions. Evolution
+  // is not URL-only either: #2275 removed its route for v1.0 (restore v1.2 / #51).
   { to: "/messages", icon: Inbox, label: "Messages" },
   { to: "/quotas", icon: Gauge, label: "Quotas" },
   { to: "/knowledge", icon: Brain, label: "Inner Temple" },
   // M0 containment for #311: Deck Builder is intentionally absent until
   // model-authored HTML/SVG has a canonical sanitizer/structured renderer.
   { to: "/rsi", icon: Repeat, label: "RSI", surface: "rsi" },
-  { to: "/mcp", icon: Plug, label: "Integrations" },
   // #1417: CLI and Containers keep their v1.0 contract lanes (#292, #382),
   // so they stay shipped and must stay reachable while those run.
   // `scope` as above: every Containers mutation requires containers.control
@@ -258,6 +267,7 @@ export function AppShell({ children }: { children?: ReactNode }) {
         <div className="workspace-toolbar">
           <WorkspaceTabs />
           <WorkspaceShare />
+          <WorkspaceAgentPersonaControl />
           <WorkspaceToolBindings />
           <PersonaWizard />
         </div>

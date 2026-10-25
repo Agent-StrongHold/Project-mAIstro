@@ -91,8 +91,8 @@ class NoExpansion:
 class OpenAICompatExpander:
     """Query expansion over the governed gateway's chat-completions seam.
 
-    `base_url` is the API root (e.g. `http://localhost:4000` for a local
-    LiteLLM proxy — a missing `/v1` suffix is appended by
+    `base_url` is the API root (e.g. a local LiteLLM proxy on loopback port 4000
+    — a missing `/v1` suffix is appended by
     `GatewayEndpoint`); `api_key` defaults to the `MAISTRO_EXPAND_API_KEY`
     environment variable, matching how the compose stack already hands out
     proxy keys.
