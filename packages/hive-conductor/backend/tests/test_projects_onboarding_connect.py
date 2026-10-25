@@ -31,6 +31,25 @@ def test_projects_router_is_mounted_on_main_app() -> None:
     assert "/v1/projects/{project_id}/scan" in paths
 
 
+class TestProjectsAuthorizationScope:
+    """PROTECTED_OPS + webhook carve-out for /v1/projects (#34 CONNECT)."""
+
+    def test_mutating_project_paths_require_projects_write(self) -> None:
+        from services.authorization import required_permission
+
+        assert required_permission("POST", "/v1/projects") == "projects.write"
+        assert required_permission("POST", "/v1/projects/proj-1/scan") == "projects.write"
+        assert required_permission("POST", "/v1/projects/proj-1/deploy") == "projects.write"
+        assert required_permission("DELETE", "/v1/projects/proj-1") == "projects.write"
+
+    def test_external_build_webhook_is_not_session_scoped(self) -> None:
+        from services.authorization import required_permission
+
+        # Bearer EXTERNAL_BUILD_CALLBACK_TOKEN is checked in the route body.
+        assert required_permission("POST", "/v1/projects/webhooks/external-build") is None
+        assert required_permission("POST", "/v1/projects/webhooks/external-build/") is None
+
+
 class TestTheProjectsScanActuallyScans:
     """Behavioral coverage for POST /v1/projects/{project_id}/scan (scan contract)."""
 
