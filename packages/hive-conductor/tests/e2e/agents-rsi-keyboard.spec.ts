@@ -15,12 +15,20 @@
 
 import AxeBuilder from "@axe-core/playwright";
 import { test, expect, type BrowserContext, type Page } from "@playwright/test";
-import { loginAsPM, setupIfNeeded } from "./session";
+import { loginAsAdmin, loginAsPM, setupIfNeeded } from "./session";
 
 test.describe.configure({ mode: "serial" });
 
 let context: BrowserContext;
 let page: Page;
+// #373: /rsi sits behind PermissionBoundary("rsi.execute"), so the Stop-keyboard
+// contract is walked under the admin account — the principal that holds
+// effective rsi.execute without an elevation whose grant the test hive caps at
+// 8 seconds (HIVE_ELEVATION_TTL_SECONDS in docker-compose.test.yml). The
+// daily-user navigation contract for the gated entry is pinned by
+// authorization.spec.ts and navigation-coverage.spec.ts.
+let rsiContext: BrowserContext;
+let rsiPage: Page;
 
 const AGENTS = [
   { name: "Researcher", model: "gemini-3.5-pro" },
@@ -58,10 +66,11 @@ test.beforeAll(async ({ browser }) => {
 
 test.afterAll(async () => {
   await context.close();
+  await rsiContext?.close();
 });
 
-async function scanMain() {
-  const results = await new AxeBuilder({ page })
+async function scanMain(p: Page) {
+  const results = await new AxeBuilder({ page: p })
     .include("main")
     .disableRules(["color-contrast"])
     .analyze();
@@ -101,7 +110,7 @@ test("the builder's strategy is a radio group operated with arrow keys", async (
   await expect(plan).toBeFocused();
   await expect(react).not.toBeChecked();
 
-  await scanMain();
+  await scanMain(page);
 
   await page.keyboard.press("Tab");
   await expect(page.getByRole("button", { name: /Back/ })).toBeFocused();
@@ -137,7 +146,7 @@ test("intent routing is edited through a disclosure button and Escape returns fo
   await page.keyboard.press("ArrowDown");
   await expect(select).toHaveValue("Coder");
 
-  await scanMain();
+  await scanMain(page);
 
   await page.keyboard.press("Escape");
   await expect(select).toHaveCount(0);
@@ -148,7 +157,15 @@ test("intent routing is edited through a disclosure button and Escape returns fo
   await expect(row).toContainText("claude-3.5-sonnet");
 });
 
-test("a running RSI run's Stop is its own button and Enter sends the stop", async () => {
+test("a running RSI run's Stop is its own button and Enter sends the stop", async ({ browser }) => {
+  // #373: RSI is an authority-gated surface, so this walk runs in its own
+  // admin session (see the rsiPage note above); the mocked RSI endpoints
+  // travel with that page, not with the PM session the roster test uses.
+  rsiContext = await browser.newContext({ baseURL: test.info().project.use.baseURL });
+  await rsiContext.addInitScript(() => window.localStorage.setItem("hive_onboarded", "1"));
+  rsiPage = await rsiContext.newPage();
+  await setupIfNeeded(rsiPage);
+  await loginAsAdmin(rsiPage);
   const run = {
     run_id: RUN_ID,
     mode: "autorun",
@@ -162,41 +179,41 @@ test("a running RSI run's Stop is its own button and Enter sends the stop", asyn
     config: {},
     report_dir: null,
   };
-  await page.route("**/v1/rsi/status", (r) => r.fulfill({ json: { available: true, active_runs: 1, total_runs: 1 } }));
-  await page.route("**/v1/rsi/runs", (r) => r.fulfill({ json: [run] }));
-  await page.route("**/v1/rsi/models", (r) => r.fulfill({ json: { models: [] } }));
-  await page.route("**/v1/rsi/test-profiles", (r) => r.fulfill({ json: { profiles: [] } }));
-  await page.route(`**/v1/rsi/runs/${RUN_ID}/reviews`, (r) => r.fulfill({ json: { kept: [], flagged: [] } }));
-  await page.route(`**/v1/rsi/runs/${RUN_ID}/rlphd`, (r) => r.fulfill({ json: {} }));
+  await rsiPage.route("**/v1/rsi/status", (r) => r.fulfill({ json: { available: true, active_runs: 1, total_runs: 1 } }));
+  await rsiPage.route("**/v1/rsi/runs", (r) => r.fulfill({ json: [run] }));
+  await rsiPage.route("**/v1/rsi/models", (r) => r.fulfill({ json: { models: [] } }));
+  await rsiPage.route("**/v1/rsi/test-profiles", (r) => r.fulfill({ json: { profiles: [] } }));
+  await rsiPage.route(`**/v1/rsi/runs/${RUN_ID}/reviews`, (r) => r.fulfill({ json: { kept: [], flagged: [] } }));
+  await rsiPage.route(`**/v1/rsi/runs/${RUN_ID}/rlphd`, (r) => r.fulfill({ json: {} }));
   const stops: string[] = [];
-  await page.route(`**/v1/rsi/runs/${RUN_ID}/stop`, async (r) => {
+  await rsiPage.route(`**/v1/rsi/runs/${RUN_ID}/stop`, async (r) => {
     stops.push(r.request().method());
     await r.fulfill({ json: { ok: true } });
   });
 
-  await page.goto("/rsi", { waitUntil: "domcontentloaded" });
-  const row = page.getByRole("button", { name: `running ${RUN_ID} 1/3 promoted`, exact: true });
+  await rsiPage.goto("/rsi", { waitUntil: "domcontentloaded" });
+  const row = rsiPage.getByRole("button", { name: `running ${RUN_ID} 1/3 promoted`, exact: true });
   await expect(row).toBeVisible({ timeout: 15000 });
   await expect(row).toHaveAttribute("aria-pressed", "false");
 
   // Stop first, with the row unselected: if the stop bubbled into the row it
   // would select it.
   await row.focus();
-  await page.keyboard.press("Tab");
-  const stop = page.getByRole("button", { name: `Stop run ${RUN_ID}`, exact: true });
+  await rsiPage.keyboard.press("Tab");
+  const stop = rsiPage.getByRole("button", { name: `Stop run ${RUN_ID}`, exact: true });
   await expect(stop).toBeFocused();
-  await page.keyboard.press("Enter");
+  await rsiPage.keyboard.press("Enter");
   await expect.poll(() => stops).toEqual(["POST"]);
   await expect(row).toHaveAttribute("aria-pressed", "false");
 
-  await page.keyboard.press("Shift+Tab");
+  await rsiPage.keyboard.press("Shift+Tab");
   await expect(row).toBeFocused();
-  await page.keyboard.press("Enter");
+  await rsiPage.keyboard.press("Enter");
   await expect(row).toHaveAttribute("aria-pressed", "true");
 
-  expect(await page.locator("button button, button a[href], button input, button select, button [role=button]").count()).toBe(0);
-  const nested = await new AxeBuilder({ page }).withRules(["nested-interactive"]).analyze();
+  expect(await rsiPage.locator("button button, button a[href], button input, button select, button [role=button]").count()).toBe(0);
+  const nested = await new AxeBuilder({ page: rsiPage }).withRules(["nested-interactive"]).analyze();
   expect(nested.violations).toEqual([]);
-  await scanMain();
+  await scanMain(rsiPage);
   expect(stops).toEqual(["POST"]);
 });
