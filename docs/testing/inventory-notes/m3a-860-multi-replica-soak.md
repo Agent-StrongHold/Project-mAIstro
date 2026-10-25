@@ -1,3 +1,7 @@
+---
+inventory-delta:
+  tests/: +59
+---
 # M3-A #860 multi-replica load & concurrency soak harness
 
 Adds `scripts/soak/run_soak.py` and `scripts/soak/nginx-soak.conf` — the
@@ -378,3 +382,20 @@ changed script and tree; `tests/test_soak_promotion_gates.py` 4 passed; the
 promotion verdict for #89 remains **NEEDS-REPAIR and re-soak** — this round
 upgrades the harness and proves all functional gates, it does not sign a
 promotion (no ≥4 h exact-Compose soak exists).
+
+## 2026-10-25 coverage repair (devskim + diff-coverage gate)
+
+`tests/test_soak_promotion_gates.py` grew from 84 to 143 tests so the driver's
+boot, teardown, evidence and orchestration paths meet the diff-coverage gate
+(per file ≥90% line / ≥80% branch on changed lines — the CI red at head
+49a22c6f was `scripts/soak/run_soak.py` at 46.2%). New tests pin the
+operational doctrines at their seams with fakes only: docker/CLI wrappers,
+replica env contract, session-group kill semantics, readiness windows,
+nginx render/mount, LB log capture at teardown, seeded load-mix workers,
+transport-failure accounting, the claim-probe race and its forensic cleanup,
+SIGTERM drain escalation, the config-identity hash contract, and two
+full `main_async` orchestration runs (SIGTERM and SIGKILL) asserting the
+fail-closed promotion verdict (`["sustain_duration", "exact_rc_artifact"]`).
+No production code changed shape; `run_soak.py` only gained DevSkim
+inline-suppression comments for its by-design loopback topology and its
+deterministically seeded request-mix RNG.

@@ -55,7 +55,12 @@ PG_CONTAINER = "maistro-soak-pg"
 PG_IMAGE = "pgvector/pgvector:pg18"
 PG_HOST_PORT = 18433
 LB_PORT = 18080
-REPLICA_ORIGINS = ("http://127.0.0.1:18201", "http://127.0.0.1:18202")
+# The soak topology is host-loopback by design: replicas and the LB are only
+# ever reachable on the driver's own host, never an external interface.
+REPLICA_ORIGINS = (  # devskim: ignore DS162092 until 2027-12-31 -- host-loopback soak topology
+    "http://127.0.0.1:18201",  # devskim: ignore DS162092 until 2027-12-31 -- host-loopback soak topology
+    "http://127.0.0.1:18202",  # devskim: ignore DS162092 until 2027-12-31 -- host-loopback soak topology
+)
 NGINX_IMAGE = "nginx:1.27-alpine"
 SOAK_API_KEY = "soak:soak-key-1"  # principal:secret form required by #843
 # Synthetic soak fixtures, not credentials. TASK_DELEGATION_KEY is opaque to
@@ -77,7 +82,7 @@ PROMOTION_MIN_SUSTAIN_SECONDS = 14_400
 def allow_soak_origins() -> None:
     """Allow the soak stack's loopback origins for this process."""
     configure_outbound_policy(
-        f"http://127.0.0.1:{LB_PORT}",
+        f"http://127.0.0.1:{LB_PORT}",  # devskim: ignore DS162092 until 2027-12-31 -- host-loopback soak topology
         *REPLICA_ORIGINS,
     )
 
@@ -133,7 +138,7 @@ def ensure_postgres() -> None:
             "-e",
             "POSTGRES_DB=maistro",
             "-p",
-            f"127.0.0.1:{PG_HOST_PORT}:5432",
+            f"127.0.0.1:{PG_HOST_PORT}:5432",  # devskim: ignore DS162092 until 2027-12-31 -- host-loopback soak topology
             PG_IMAGE,
         ]
     )
@@ -199,7 +204,7 @@ def replica_env(
     env = dict(os.environ)
     env.update(
         {
-            "DATABASE_URL": f"postgresql+asyncpg://maistro:soak@127.0.0.1:{PG_HOST_PORT}/maistro",
+            "DATABASE_URL": f"postgresql+asyncpg://maistro:soak@127.0.0.1:{PG_HOST_PORT}/maistro",  # devskim: ignore DS162092 until 2027-12-31 -- host-loopback soak topology
             "API_KEYS": json.dumps([SOAK_API_KEY]),
             "REQUIRE_AUTH": "true",
             "TASK_DELEGATION_KEY": SOAK_DELEGATION_KEY,
@@ -221,7 +226,9 @@ def replica_env(
 def run_migrations() -> None:
     """Same migration path the RC entrypoint runs (maistro_server.entrypoint)."""
     env = dict(os.environ)
-    env["DATABASE_URL"] = f"postgresql+asyncpg://maistro:soak@127.0.0.1:{PG_HOST_PORT}/maistro"
+    env["DATABASE_URL"] = (
+        f"postgresql+asyncpg://maistro:soak@127.0.0.1:{PG_HOST_PORT}/maistro"  # devskim: ignore DS162092 until 2027-12-31 -- host-loopback soak topology
+    )
     # `--package maistro-server` is load-bearing: the root workspace project
     # does not depend on maistro-server, so the documented `uv sync` does not
     # install it into the root environment (verified: `uv sync --locked
@@ -261,12 +268,14 @@ def kill_replica(proc: subprocess.Popen[Any]) -> None:
 
 
 def port_closed(port: int, timeout: float = 1.0) -> bool:
-    """True when nothing accepts TCP connections on 127.0.0.1:<port>."""
+    """True when nothing accepts TCP connections on the loopback <port>."""
     import socket
 
+    # The probe target is the driver's own loopback, by design.
+    loopback = "127.0.0.1"  # devskim: ignore DS162092
     with socket.socket() as s:
         s.settimeout(timeout)
-        return s.connect_ex(("127.0.0.1", port)) != 0
+        return s.connect_ex((loopback, port)) != 0
 
 
 def resolve_out_dir(raw: str) -> str:
@@ -425,7 +434,7 @@ def start_nginx(out_dir: Path) -> subprocess.Popen[Any] | None:
             "-v",
             f"{rendered}:/etc/nginx/nginx.conf:ro",
             "-p",
-            f"127.0.0.1:{LB_PORT}:8080",
+            f"127.0.0.1:{LB_PORT}:8080",  # devskim: ignore DS162092 until 2027-12-31 -- host-loopback soak topology
             NGINX_IMAGE,
         ]
     )
@@ -820,7 +829,8 @@ async def _worker_with_client(
 ) -> None:
     import random
 
-    rng = random.Random(worker_id)
+    # Seeded PRNG: a reproducible per-worker request mix, not a security function.
+    rng = random.Random(worker_id)  # devskim: ignore DS148264 until 2027-12-31
     kinds, weights = zip(*mix, strict=True)
     interval = 1.0 / rps
     seq = worker_id * 100_000
@@ -1257,8 +1267,18 @@ async def boot_stack(
     # its duration is recorded as evidence.
     boot_t0 = time.monotonic()
     ok1, ok2 = await asyncio.gather(
-        wait_ready("replica_1", "http://127.0.0.1:18201/health/live", procs["replica_1"], 420),
-        wait_ready("replica_2", "http://127.0.0.1:18202/health/live", procs["replica_2"], 420),
+        wait_ready(
+            "replica_1",
+            "http://127.0.0.1:18201/health/live",  # devskim: ignore DS162092 until 2027-12-31 -- host-loopback soak topology
+            procs["replica_1"],
+            420,
+        ),
+        wait_ready(
+            "replica_2",
+            "http://127.0.0.1:18202/health/live",  # devskim: ignore DS162092 until 2027-12-31 -- host-loopback soak topology
+            procs["replica_2"],
+            420,
+        ),
     )
     boot_seconds = round(time.monotonic() - boot_t0, 1)
     log(f"replica boot completed in {boot_seconds}s (r1={ok1}, r2={ok2})")
@@ -1277,7 +1297,12 @@ async def boot_stack(
     log("both replicas ready")
 
     start_nginx(Path(args.out_dir))
-    oklb = await wait_ready("lb", f"http://127.0.0.1:{LB_PORT}/health/live", None, 60)
+    oklb = await wait_ready(
+        "lb",
+        f"http://127.0.0.1:{LB_PORT}/health/live",  # devskim: ignore DS162092 until 2027-12-31 -- host-loopback soak topology
+        None,
+        60,
+    )
     if not oklb:
         # The same doctrine as the replica path: an LB boot failure must not
         # leak the replicas. Observed 2026-10-06: a rejected nginx bind mount
@@ -1389,9 +1414,9 @@ async def main_async(args: argparse.Namespace) -> dict[str, Any]:
     env2 = envs["env2"]
     boot_seconds = envs["boot_seconds"]
 
-    lb = f"http://127.0.0.1:{LB_PORT}"
+    lb = f"http://127.0.0.1:{LB_PORT}"  # devskim: ignore DS162092 until 2027-12-31 -- host-loopback soak topology
     headers = {"Authorization": f"Bearer {SOAK_API_KEY}"}
-    dsn = f"postgresql://maistro:soak@127.0.0.1:{PG_HOST_PORT}/maistro"
+    dsn = f"postgresql://maistro:soak@127.0.0.1:{PG_HOST_PORT}/maistro"  # devskim: ignore DS162092 until 2027-12-31 -- host-loopback soak topology
 
     import asyncpg
 
@@ -1466,7 +1491,10 @@ async def main_async(args: argparse.Namespace) -> dict[str, Any]:
             await asyncio.sleep(restart_delay)
         procs["replica_2"] = start_replica(18202, Path(args.out_dir), env2)
         rejoined = await wait_ready(
-            "replica_2", "http://127.0.0.1:18202/health/live", procs["replica_2"], 300
+            "replica_2",
+            "http://127.0.0.1:18202/health/live",  # devskim: ignore DS162092 until 2027-12-31 -- host-loopback soak topology
+            procs["replica_2"],
+            300,
         )
         counters_after = await stats.snapshot()
         kill_window_seconds = round(time.monotonic() - t_send, 2)
