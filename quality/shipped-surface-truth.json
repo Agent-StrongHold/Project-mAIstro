@@ -2716,13 +2716,13 @@
       "effect_owner": "routes/auth.py register"
     },
     {
-      "source": "packages/hive-conductor/frontend/src/pages/Profile.tsx",
+      "source": "packages/hive-conductor/frontend/src/lib/profile.ts",
       "signal": "mutating-api-call",
       "method": "POST",
       "route": "/v1/chat/stream",
       "disposition": "canonical",
       "production_enabled": true,
-      "reason": "streams a completion through the real backend route",
+      "reason": "streams a completion through the real backend route (summarizeMemoriesFromContext helper used by Profile.tsx)",
       "effect_owner": "routes/chat.py stream_complete (LLM port)"
     },
     {
