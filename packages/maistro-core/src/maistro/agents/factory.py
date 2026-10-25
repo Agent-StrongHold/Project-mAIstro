@@ -294,16 +294,6 @@ def _register_custom_strategies() -> None:
     except ImportError:
         pass
 
-    # HTTP tool executor is not a strategy class; import keeps the module on
-    # the factory edge. create_agents installs it as the default tool_executor
-    # when the caller does not supply one (#2312).
-    try:
-        from maistro.agents.strategies.tool_http import HTTPToolExecutor as _HTTPToolExecutor
-
-        assert _HTTPToolExecutor is not None
-    except ImportError:
-        pass
-
 
 def _instantiate(identity: AgentIdentity, *, agent_resolver: Any = None, **deps: Any) -> Agent:
     strategy = _build_strategy(identity)
