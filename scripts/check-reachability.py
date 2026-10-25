@@ -253,6 +253,13 @@ DYNAMIC_ROOTS = (
     # precedent for an external launcher naming the package. __main__ imports
     # cli.main, so this root also carries the console-script surface.
     "maistro_ext_harness.__main__",
+    # The built-in Canvas worker service (#93/SPEC-203): the `maistro-canvas-worker`
+    # console script (packages/maistro-canvas pyproject [project.scripts]) that a
+    # supported deployment runs as its own process — compose service, systemd
+    # unit, Kubernetes Deployment. No in-tree module imports it, by design: a
+    # second worker process sharing the app's import graph is exactly the
+    # double-scheduler this service exists to avoid.
+    "maistro_canvas.canvas.worker_service",
 )
 
 
