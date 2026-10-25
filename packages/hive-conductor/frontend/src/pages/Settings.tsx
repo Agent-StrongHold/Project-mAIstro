@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { apiGet, apiPatch } from "../lib/api";
+import type { ElevateBody } from "../api/entities";
+import { apiGet, apiPatch, apiPost } from "../lib/api";
 import { AuthorizationNotice } from "../components/Authorization";
 import { useAuthorization } from "../context/AuthorizationContext";
 import { PageHeader, SecretField } from "../components/shared";
@@ -44,14 +45,12 @@ export default function Settings() {
 
   async function elevateAndSave(key: string) {
     try {
-      // frontend-typed-client: allow pre-existing banked raw fetch (was :33); line shifted by the #2283 authorization import/guard lines above.
-      const response = await fetch("/v1/auth/elevate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "same-origin",
-        body: JSON.stringify({ password: elevPassword, permissions: [configPermission], task_id: `settings-edit-${key}` }),
-      });
-      if (!response.ok) throw new Error("Elevation failed");
+      const body: ElevateBody = {
+        password: elevPassword,
+        permissions: [configPermission],
+        task_id: `settings-edit-${key}`,
+      };
+      await apiPost("/v1/auth/elevate", body);
       await authorization.refresh();
       setElevating(false);
       setElevPassword("");

@@ -1,6 +1,7 @@
 import { type CSSProperties } from "react";
 import { useNavigate } from "react-router-dom";
 import { useUser } from "../App";
+import { apiPost } from "../lib/api";
 
 const ADMIN_GATED: string[] = [
   "Change server-wide Settings (PUT /v1/settings)",
@@ -48,7 +49,7 @@ const btnStyle: CSSProperties = {
 
 async function logout() {
   try {
-    await fetch("/v1/auth/logout", { method: "POST", credentials: "same-origin" });
+    await apiPost("/v1/auth/logout");
   } catch {
     // ignore — even if the call fails, redirecting still gives the user
     // a fresh login.
