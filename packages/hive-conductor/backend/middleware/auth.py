@@ -267,12 +267,12 @@ def origin_allowed(origin: str | None, host: str | None = None) -> bool:
 
     1. **Same-origin.** The page that opened the socket is served by this very
        server (`Origin`'s authority == the request's own `Host`). CORS never
-       applies to same-origin requests, so a deployment reached at
-       `http://192.0.2.1:8101` — where the SPA and the API share an origin —
-       has never had any reason to list itself in `CORS_ORIGINS`, and most
-       don't. Checking the configured list alone would reject the app's own
-       front end on every non-localhost deployment, because the defaults in
-       `config.py` only cover localhost.
+       applies to same-origin requests, so a deployment reached at a
+       same-host URL — where the SPA and the API share an origin — has never
+       had any reason to list itself in `CORS_ORIGINS`, and most don't.
+       Checking the configured list alone would reject the app's own front
+       end on every non-loopback deployment, because the defaults in
+       `config.py` only cover loopback origins.
     2. **No Origin at all.** curl and other non-browser callers send none.
        Origin-based rules only bind browsers; such a caller still needs a valid
        session.
