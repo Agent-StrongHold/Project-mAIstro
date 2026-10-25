@@ -1223,9 +1223,10 @@ def _prepare_traversal_blackboard(snapshot: Mapping[str, Any]) -> Any:
     """Hydrate the durable blackboard and apply CONNECT traversal helpers (#2314).
 
     Steering guidance parked under ``metadata['_steering_queue']`` is drained
-    into ``metadata['_steering']`` for the visit. Oversized blackboards are
-    compacted through :class:`ContextCompactor` so the durable executor owns
-    the same facilities the pre-durable ``GraphRun`` path advertised.
+    into ``metadata['_steering']`` for the visit. :class:`ContextCompactor` and
+    :func:`run_scout` stay process-reachable on this path, but we do **not**
+    auto-compact every visit — ``_simple_compact`` stringifies large metadata
+    values and would erase creative-graph ``shared_context`` dicts (#775).
     """
     from maistro.graph.types import GraphBlackboard
 
@@ -1237,11 +1238,12 @@ def _prepare_traversal_blackboard(snapshot: Mapping[str, Any]) -> Any:
         metadata=metadata,
         node_annotations=dict(snapshot.get("node_annotations") or {}),
     )
-    compactors = ContextCompactor()
-    if compactors.should_compact(blackboard):
-        blackboard = compactors.compact(blackboard)
-    # Touch the shared helper tuple so static analysis keeps scout wired
-    # beside compaction/steering on this durable path.
+    # Keep ContextCompactor on this import edge without probing or compacting.
+    # ``should_compact`` → ``model_dump_json`` raises on ``mappingproxy``
+    # metadata values; ``_build_ctx`` would swallow that into ``blackboard=None``
+    # and creative branches lose persisted ``shared_context``. Auto-compact
+    # would also stringify large dict metadata and erase those same values.
+    assert _DURABLE_TRAVERSAL_HELPERS[0] is ContextCompactor
     assert _DURABLE_TRAVERSAL_HELPERS[-1] is run_scout
     return blackboard
 
