@@ -394,3 +394,23 @@ def test_surface_kind_or_paths_wrong_type_fails_closed(
     _use_registry(monkeypatch, tmp_path, {"version": 1, "surfaces": [surface]})
 
     assert mod._quality_surfaces() is None
+
+
+@pytest.mark.ac("ADR-083126-5e62/AC-1")
+@pytest.mark.ac("SPEC-083126-5e62/AC-3")
+def test_folded_notes_evidence_is_yellow_eligible() -> None:
+    # 2026-10-25 migration: ac-state-notes are worker-written acceptance
+    # evidence (append-only self-description of verification rounds), not
+    # policy. Carrying its own notes must not park a candidate.
+    result = mod.assess(
+        [cf("quality/ac-state-notes/auto-1836.json")],
+        "",
+        head_ref="chatgpt/x",
+    )
+
+    assert result.risk == "yellow"
+    assert result.eligible
+    assert result.yellow_reasons == [
+        "branch-independent quality evidence changed (folded_notes): "
+        "quality/ac-state-notes/auto-1836.json"
+    ]
