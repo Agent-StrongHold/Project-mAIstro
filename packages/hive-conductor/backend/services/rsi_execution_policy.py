@@ -129,18 +129,20 @@ def _beneath_an_authorized_root(resolved: Path, roots: tuple[Path, ...]) -> bool
 def resolve_repo(raw: str) -> Path:
     """The repository an RSI run may target, or `RsiPolicyError`.
 
-    Containment is decided *after* `resolve()`, which follows symlinks. `..` is
-    the escape everyone blocks; a symlink planted inside an authorized root
-    points outward while every component of the requested path reads as legal,
-    and a check on the literal string would pass it.
+    Containment is decided *after* ``os.path.realpath``, which follows
+    symlinks. ``..`` is the escape everyone blocks; a symlink planted inside
+    an authorized root points outward while every component of the requested
+    path reads as legal, and a check on the literal string would pass it.
 
-    Resolution therefore comes first, and *both* checks below run against the
-    resolved path. Comparing the requested string to an already-resolved root
-    is not a cheap extra guard, it is a wrong one: where the configured root is
-    itself a symlink (`RSI_REPO_ROOTS=/srv/rsi` with `/srv/rsi -> /data/rsi`),
-    every legitimate request under the spelling the operator configured fails
-    the string check, and the deployment's way out of that is to widen the
-    root — a refusal that teaches the wrong lesson is worse than no refusal.
+    Resolution therefore comes first, and the CodeQL-recognized guard
+    (``realpath`` + ``startswith(root + sep)``) runs against that canonical
+    string *before* any further filesystem probe. Comparing the requested
+    string to an already-resolved root is not a cheap extra guard, it is a
+    wrong one: where the configured root is itself a symlink
+    (``RSI_REPO_ROOTS=/srv/rsi`` with ``/srv/rsi -> /data/rsi``), every
+    legitimate request under the spelling the operator configured fails the
+    string check, and the deployment's way out of that is to widen the root —
+    a refusal that teaches the wrong lesson is worse than no refusal.
     """
     if not raw or not raw.strip():
         raise RsiPolicyError("repo_path is required")
@@ -153,19 +155,28 @@ def resolve_repo(raw: str) -> Path:
         )
 
     try:
-        resolved = Path(os.path.expanduser(raw)).resolve()
+        # ``realpath`` (not ``Path.resolve``): CodeQL models the former as a
+        # path normalizer and pairs it with ``startswith`` as a sanitizer.
+        resolved_str = os.path.realpath(os.path.expanduser(raw))
     except (OSError, RuntimeError) as exc:  # RuntimeError: symlink loop
         raise RsiPolicyError(f"repo_path could not be resolved: {exc}") from exc
 
-    if not _beneath_an_authorized_root(resolved, roots):
-        raise RsiPolicyError(
-            f"repo_path is not beneath an authorized root ({', '.join(str(r) for r in roots)})"
-        )
-    if not resolved.is_dir():
-        raise RsiPolicyError("repo_path is not a directory")
-    if not (resolved / ".git").exists():
-        raise RsiPolicyError("repo_path is not a git repository")
-    return resolved
+    # Guard inside the matching branch so the scanner sees the sink uses as
+    # dominated by the startswith check (py/path-injection).
+    for root in roots:
+        root_str = str(root)
+        if resolved_str == root_str or resolved_str.startswith(root_str + os.sep):
+            if not _beneath_an_authorized_root(Path(resolved_str), roots):
+                break
+            if not os.path.isdir(resolved_str):
+                raise RsiPolicyError("repo_path is not a directory")
+            if not os.path.exists(os.path.join(resolved_str, ".git")):
+                raise RsiPolicyError("repo_path is not a git repository")
+            return Path(resolved_str)
+
+    raise RsiPolicyError(
+        f"repo_path is not beneath an authorized root ({', '.join(str(r) for r in roots)})"
+    )
 
 
 def _overlay_profiles() -> dict[str, tuple[str, ...]]:
