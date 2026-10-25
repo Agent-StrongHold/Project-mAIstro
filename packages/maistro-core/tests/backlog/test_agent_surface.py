@@ -188,6 +188,53 @@ async def test_release_without_a_claim_is_a_no_op_and_a_foreign_claim_is_refused
     assert await store.active_claim("eng-001") is None
 
 
+async def test_close_is_authorized_and_claim_checked(store) -> None:
+    """Closure cannot ride a stale snapshot past a new claimant or a revocation."""
+    surface = AgentBacklogSurface(store, _roles({"agent:a": "editor", "agent:b": "editor"}))
+    await _seed(store, "eng-001", "Work item")
+    stale = await surface.claim("eng-001", actor="agent:a")
+
+    # The lease lapses, agent:b claims the item: claims do not move the
+    # version, so only the claim check stops agent:a's stale closure.
+    await surface.release("eng-001", actor="agent:a", claim_id=stale.claim_id)
+    fresh = await surface.claim("eng-001", actor="agent:b")
+    with pytest.raises(AgentSurfaceError, match="claimed by 'agent:b'"):
+        await surface.close(
+            "eng-001",
+            actor="agent:a",
+            expected_version=1,
+            outcome=BacklogItemStatus.DONE,
+            closure_summary="stale",
+            evidence_refs=("run:run-1",),
+            claim_id=stale.claim_id,
+        )
+
+    # A revoked workspace access is refused before any state change too.
+    surface_revoked = AgentBacklogSurface(store, _roles({"agent:b": "editor"}))
+    with pytest.raises(AgentSurfaceError, match="may not close"):
+        await surface_revoked.close(
+            "eng-001",
+            actor="agent:a",
+            expected_version=1,
+            outcome=BacklogItemStatus.DONE,
+            closure_summary="revoked",
+            evidence_refs=("run:run-1",),
+            claim_id=stale.claim_id,
+        )
+
+    # The current claimant, with the matching claim, closes successfully.
+    item = await surface.close(
+        "eng-001",
+        actor="agent:b",
+        expected_version=1,
+        outcome=BacklogItemStatus.DONE,
+        closure_summary="evidenced",
+        evidence_refs=("run:run-1",),
+        claim_id=fresh.claim_id,
+    )
+    assert item.status == BacklogItemStatus.DONE
+
+
 async def test_viewer_reads_but_cannot_claim_or_write(store) -> None:
     surface = AgentBacklogSurface(store, _roles({"agent:v": "viewer"}))
     await _seed(store, "eng-001", "Work item")
