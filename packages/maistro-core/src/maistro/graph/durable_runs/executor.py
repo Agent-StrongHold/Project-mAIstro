@@ -31,11 +31,6 @@ from maistro.graph.nodes.base import (
     NodeResult,
     ReplaySemantics,
 )
-from maistro.graph.verification.escalation import (
-    ESCALATED_MODEL_CONTEXT_KEY,
-    LADDER_START_CONTEXT_KEY,
-    escalation_from_policy,
-)
 from maistro.runs.aggregation import derive_run_terminal_status, terminal_run_payload
 from maistro.runs.lifecycle import (
     settle_open_node_run,
@@ -1218,7 +1213,14 @@ def _build_ctx(record: DurableRunRecord, node_id: str, spec: GraphNode) -> NodeC
         "hitl_answers": dict(record.hitl_answers),
         "synth_depth": synth_depth,
     }
-    _supervision_context(metadata, record, node_id, spec)
+    answered = record.hitl_answers.get(node_id)
+    if isinstance(answered, Mapping):
+        pause = answered.get("_pause")
+        if isinstance(pause, Mapping):
+            pause_metadata = pause.get("metadata")
+            carried = dict(pause_metadata) if isinstance(pause_metadata, Mapping) else {}
+            carried["resume_at"] = pause.get("resume_at")
+            metadata[RESUMED_PAUSE_KEY] = carried
     return NodeContext(
         run_id=record.run_id,
         dag_id=record.run.graph.graph_id,

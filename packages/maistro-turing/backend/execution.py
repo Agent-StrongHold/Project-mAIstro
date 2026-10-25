@@ -169,11 +169,6 @@ class TuringExecutionPlane:
             root = await self.project_store.root_for_workspace(workspace_id)
             return workspace_id, root.project_id
 
-    # Retained private alias: the canonical scope resolution was reachable
-    # only privately before #859 made state routes scope-aware.
-    async def _scope_for(self, user_id: str) -> tuple[str, str]:
-        return await self.scope_for(user_id)
-
     async def _track_admission(self, run_id: str, *, workspace_id: str) -> None:
         self._retained_runs[run_id] = None
         async with self._retention_lock:
@@ -354,19 +349,6 @@ class TuringExecutionPlane:
             )
             admitted_run_id = admitted.run_id
             await self._track_admission(admitted.run_id, workspace_id=workspace_id)
-            await self.inbound_security.audit_verdict(
-                admission_verdict,
-                message,
-                boundary="user_input",
-                context=TuringSecurityContext(
-                    principal=user_id,
-                    route="turing.execution",
-                    action="chat",
-                    workspace_id=workspace_id,
-                    project_id=project_id,
-                    run_id=admitted.run_id,
-                ),
-            )
         except asyncio.CancelledError:
             await asyncio.shield(self._cancel_incomplete_admission(admitted_run_id))
             raise

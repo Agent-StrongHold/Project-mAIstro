@@ -282,6 +282,7 @@ CREATE TABLE IF NOT EXISTS capability_approvals (
                 await self._conn.execute(
                     "ALTER TABLE capability_approvals ADD COLUMN effect_scope TEXT NOT NULL DEFAULT ''"
                 )
+            await self._conn.commit()
 
     async def create(self, approval: DurableApproval) -> DurableApproval:
         existing = await self.find_effect(

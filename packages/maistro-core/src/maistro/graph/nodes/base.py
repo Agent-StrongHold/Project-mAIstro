@@ -275,12 +275,6 @@ class BaseNode(Generic[InputT, OutputT]):
         raise NotImplementedError(f"{type(self).__name__}._execute not implemented")
 
 
-def _failure_metadata(exc: Exception) -> dict[str, Any]:
-    """Metadata a raising node attaches to its failed NodeResult, if a mapping."""
-    carried = getattr(exc, "result_metadata", None)
-    return dict(carried) if isinstance(carried, Mapping) else {}
-
-
 class NodeCompositionError(RuntimeError):
     """A node was asked for without an authority it declares as required.
 

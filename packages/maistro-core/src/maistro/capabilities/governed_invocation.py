@@ -78,10 +78,7 @@ class GovernedInvocationExecutionService:
     REQUIRE_APPROVAL is keyed to the logical effect so a later Attempt reuses
     the same durable human decision rather than manufacturing another request.
 
-    The composition root installs this service for governed model effects and
-    for the rest of the canonical effect consumers, the retained PM polling
-    graph nodes among them, so policy decisions and terminal Invocation events
-    cover live provider calls rather than only direct test consumers. Policy
+    The container composes this wrapper for canonical effect consumers. Policy
     events and approvals remain governed side effects; neither path may bypass
     the Invocation service or its effect identity.
     """
@@ -398,7 +395,25 @@ class GovernedInvocationExecutionService:
                 effect_scope=effect_scope,
             )
         if existing is not None:
-            return await self._handle_existing_approval(
+            if existing.request_digest != request_digest:
+                raise InvocationDenied(
+                    f"approval {existing.request.request_id!r} does not match the current request"
+                )
+            if existing.status is ApprovalStatus.APPROVED:
+                return await self._resume_approved_effect(
+                    binding=binding,
+                    run_id=run_id,
+                    node_run_id=node_run_id,
+                    attempt_id=attempt_id,
+                    effect_key=effect_key,
+                    effect_scope=effect_scope,
+                    request=request,
+                    policy_event=policy_event,
+                    approval=existing,
+                )
+            if existing.status is ApprovalStatus.DENIED:
+                raise InvocationDenied(f"approval {existing.request.request_id!r} was denied")
+            await self._emit_approval_required(
                 approval=existing,
                 request_digest=request_digest,
                 binding=binding,

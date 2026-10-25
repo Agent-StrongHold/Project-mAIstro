@@ -5,11 +5,7 @@ from __future__ import annotations
 import pytest
 
 from maistro.observability import metrics as metrics_module
-from maistro.observability.metrics import (
-    DEFAULT_MAX_METRICS_PER_REGISTRY,
-    DEFAULT_MAX_SERIES_PER_METRIC,
-    MetricsRegistry,
-)
+from maistro.observability.metrics import DEFAULT_MAX_SERIES_PER_METRIC, MetricsRegistry
 
 
 def test_counter_increment():

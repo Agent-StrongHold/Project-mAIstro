@@ -10,8 +10,6 @@ canonical Run until the harness result is supplied on resume.
 
 from __future__ import annotations
 
-import asyncio
-import json
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -42,10 +40,8 @@ from .base import (
     BaseNode,
     NodeContext,
     ReplaySemantics,
-    now_utc,
     pause_until,
     replay_effect_key,
-    resumed_pause,
 )
 from .capability_effect import invoke_capability_effect
 
@@ -314,7 +310,7 @@ class AgentSpawnHarnessNode(BaseNode[SpawnHarnessIn, SpawnHarnessOut]):
         }
         self._effects = effect_context or default_effect_context()
 
-    def replay_effect_key(self, inputs: SpawnHarnessIn, ctx: NodeContext) -> str:
+    def logical_effect_key(self, inputs: SpawnHarnessIn, ctx: NodeContext) -> str:
         return replay_effect_key(
             ctx,
             "agent.spawn_harness.dispatch",
@@ -804,13 +800,22 @@ class AgentSpawnHarnessNode(BaseNode[SpawnHarnessIn, SpawnHarnessOut]):
                 **_detail_payload(handle),
             }
 
-        invocation = await self._dispatch(
-            binding,
-            inputs,
-            ctx,
-            request_payload=request_payload,
-            resolver=resolve_provider,
-            executor=execute_provider,
+        # The graph may retry this logical node with a new NodeRun. Scope the
+        # effect by the stable Run/node/input identity, not that physical visit.
+        effect_key = self.logical_effect_key(inputs, ctx)
+        invocation = await invoke_capability_effect(
+            lambda: self._effects.invocations.invoke(
+                binding=binding,
+                run_id=ctx.run_id,
+                node_run_id=ctx.node_run_id,
+                attempt_id=ctx.attempt_id,
+                effect_key=effect_key,
+                effect_scope=effect_key,
+                request=request_payload,
+                resolver=resolve_provider,
+                executor=execute_provider,
+            ),
+            effect_key=effect_key,
         )
         _park(self._wait_from_dispatch(invocation, inputs, ctx))
         raise AssertionError("pause_until must raise")

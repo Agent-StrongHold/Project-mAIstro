@@ -597,11 +597,7 @@ async def _walk_frontier(
         # the record or terminalizing the Run would itself go through the
         # broken store. Let it reach the recovery boundary untouched.
         raise
-    except RuntimeDeadlineExceeded as exc:
-        # The canonical ExecutionRuntime deadline the node's declared policy
-        # asked for expired. The Attempt row already carries TIMED_OUT plus its
-        # deadline_at; the Run names the same fact so "why did this stop" is
-        # answerable from the Run alone.
+    except Exception as exc:
         latest = await _reload_record(record.run_id, store=store, cause=exc)
         return await traversal._mark_failed(
             latest,
@@ -742,7 +738,12 @@ async def _execute_frontier(
         inputs: dict[str, Any],
     ) -> Any:
         prior_completion_accepted = False
-        logical_effect_key = _node_logical_effect_key(node, inputs, ctx)
+        logical_effect_key: str | None = None
+        key_builder = getattr(node, "logical_effect_key", None)
+        input_schema = getattr(node, "input_schema", None)
+        if callable(key_builder):
+            key_inputs = input_schema.model_validate(inputs) if input_schema is not None else inputs
+            logical_effect_key = key_builder(key_inputs, ctx)
         attempts = await execution_store.list_attempts(node_run.node_run_id)
         semantics = _node_replay_semantics(node)
         if attempts and attempts[-1].status is AttemptStatus.COMPLETED:
@@ -839,8 +840,8 @@ async def _execute_frontier(
             spec,
             node_run,
             ctx,
-            _require_node_result(raw_result, node_id),
-            semantics,
+            raw_result,
+            ReplaySemantics(getattr(node, "replay_semantics", ReplaySemantics.NON_RETRYABLE)),
             logical_effect_key,
         )
 

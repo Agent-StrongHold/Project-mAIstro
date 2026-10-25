@@ -46,7 +46,7 @@ from maistro.runs.retention_scope import (
     RetentionScope,
     WorkspaceRetentionScope,
 )
-from maistro.runs.sources import SCHEDULED_FOR_KEY, TASK_QUEUE_SOURCE, occurrence_key
+from maistro.runs.sources import occurrence_key
 from maistro.runs.store import (
     DEFAULT_PURGE_BATCH,
     DEFAULT_RECLAIM_BATCH,
@@ -70,7 +70,6 @@ from maistro.runs.store import (
     validate_effect_claim_parent,
     validate_eval_score_spine,
 )
-from maistro.runs.store_boundary import RunStoreBoundary, require_admitted_actor
 from maistro.sqlite_schema import execute_schema_script, serialized_schema_upgrade
 
 if TYPE_CHECKING:
@@ -119,11 +118,6 @@ _PURGE_CANDIDATES_WORKSPACE_SQL = """SELECT run_id, payload FROM canonical_runs 
     ORDER BY json_extract(r.payload, '$.retention_expires_at')
     LIMIT ?"""
 
-#: Opened by `create_run` before a root Run's insert, so an active-ceiling
-#: refusal undoes that row alone (#1182).
-_ROOT_ADMISSION_SAVEPOINT = "canonical_root_run_admission"
-
-
 _PURGE_CANDIDATES_GLOBAL_SQL = """SELECT run_id, payload FROM canonical_runs r
     WHERE r.status IN ({statuses})
       AND json_extract(r.payload, '$.retention_expires_at') IS NOT NULL
@@ -151,8 +145,8 @@ _PURGE_CANDIDATES_GLOBAL_SQL = """SELECT run_id, payload FROM canonical_runs r
 #: - *_RETAINED_TABLES is append-only provenance — the canonical Event log
 #:   (migration 030). Its `run_id` names what an event was about; deleting or
 #:   rewriting it would destroy the audit record of work whose deletion is
-#:   itself an auditable act. Kept and left uncounted: the residue stays
-#:   inspectable in the log itself. (Task receipts and session turns are
+#:   itself an auditable act. Kept, and counted into the outcome so retention
+#:   reports what it left behind. (Task receipts and session turns are
 #:   attribution history of the same class, owned by other modules' stores;
 #:   they are out of this transaction's boundary and the inventory in
 #:   `retention_scope` records their disposition.)
@@ -175,10 +169,6 @@ _DELETE_NODE_RUNS_SQL = (
 )
 
 _DELETE_RUNS_SQL = "DELETE FROM canonical_runs WHERE run_id IN (SELECT value FROM json_each(?))"
-
-_DELETE_EVAL_SCORES_SQL = (
-    "DELETE FROM canonical_run_eval_scores WHERE run_id IN (SELECT value FROM json_each(?))"
-)
 
 #: The purge's dependent-evidence statements, and the spine deletes reworked
 #: the same way (#1175). A variable-length `IN` list is the one thing `?`
@@ -206,8 +196,8 @@ _PURGE_COUNT_ATTEMPTS_SQL = (
 #: - canonical_event_log is append-only provenance (migration 030). Its
 #:   `run_id` names what an event was about; deleting or rewriting it would
 #:   destroy the audit record of work whose deletion is itself an auditable
-#:   act. Kept and left uncounted: the residue stays inspectable in the log
-#:   itself. (Task receipts and session turns are attribution history of
+#:   act. Kept, and counted into the outcome so retention reports what it
+#:   left behind. (Task receipts and session turns are attribution history of
 #:   the same class, owned by other modules' stores; they are outside this
 #:   transaction's boundary.)
 #:
@@ -302,6 +292,10 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_canonical_runs_canvas_job
     ON canonical_runs(json_extract(payload, '$.provenance.canvas_job_id'))
     WHERE json_extract(payload, '$.provenance.canvas_job_id') IS NOT NULL
       AND json_extract(payload, '$.provenance.admission_source') = 'canvas_generation';
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_canonical_runs_delegation_key
+    ON canonical_runs(json_extract(payload, '$.provenance.delegation_key'))
+    WHERE json_extract(payload, '$.provenance.delegation_key') IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS canonical_node_runs (
     node_run_id TEXT PRIMARY KEY,
@@ -750,27 +744,6 @@ class SqliteRunStore:
         )
         return model_of_json(Run, row[0]) if row is not None else None
 
-    async def find_occurrence_run(
-        self,
-        provenance: Mapping[str, Any] | None,
-    ) -> Run | None:
-        occurrence = occurrence_key(dict(provenance or {}))
-        if occurrence is None:
-            return None
-        schedule_id, token = occurrence
-        # The same expression the unique claim index is built on, so a Run the
-        # index refuses is a Run this read finds (#1120).
-        row = await self._fetchone(
-            """SELECT payload FROM canonical_runs
-                WHERE json_extract(payload, '$.provenance.schedule_id') = ?
-                  AND COALESCE(
-                        'manual:' || json_extract(payload, '$.provenance.schedule_fire_id'),
-                        json_extract(payload, '$.provenance.scheduled_for')
-                      ) = ?""",
-            (schedule_id, token),
-        )
-        return model_of_json(Run, row[0]) if row is not None else None
-
     async def get_run_for_occurrence(self, schedule_id: str, scheduled_for: str) -> Run | None:
         """Resolve the unique occurrence claim without scanning Run payloads."""
         row = await self._fetchone(
@@ -782,55 +755,11 @@ class SqliteRunStore:
         )
         return model_of_json(Run, row[0]) if row is not None else None
 
-    async def get_runs_for_occurrences(
-        self, schedule_id: str, scheduled_fors: Sequence[str]
-    ) -> dict[str, Run]:
-        """The batched twin of `get_run_for_occurrence`, one query for many.
-
-        `scheduled_fors` travels as a single JSON-array parameter, matched
-        through `json_each` — the pattern the bulk deletes above already use
-        — rather than one placeholder per occurrence, which would need
-        chunking once the list grows past SQLite's parameter limit.
-        """
-        if not scheduled_fors:
-            return {}
-        cursor = await self._conn.execute(
-            """SELECT payload FROM canonical_runs
-               WHERE json_extract(payload, '$.provenance.schedule_id') = ?
-                 AND json_extract(payload, '$.provenance.scheduled_for')
-                     IN (SELECT value FROM json_each(?))""",
-            (schedule_id, json.dumps(list(scheduled_fors))),
-        )
-        rows = await cursor.fetchall()
-        found: dict[str, Run] = {}
-        for row in rows:
-            run = model_of_json(Run, row[0])
-            found[run.provenance[SCHEDULED_FOR_KEY]] = run
-        return found
-
     async def find_delegation_run(self, delegation_key: str) -> Run | None:
         row = await self._fetchone(
             """SELECT payload FROM canonical_runs
                WHERE json_extract(payload, '$.provenance.delegation_key') = ?""",
             (delegation_key,),
-        )
-        return model_of_json(Run, row[0]) if row is not None else None
-
-    async def find_run_by_task_id(
-        self,
-        task_id: str,
-        *,
-        admission_source: str | None = TASK_QUEUE_SOURCE,
-    ) -> Run | None:
-        # The SQLite expression twin of the PostgreSQL provenance query, the
-        # same way `find_run_by_effect` is spelled twice.
-        row = await self._fetchone(
-            """SELECT payload FROM canonical_runs
-               WHERE json_extract(payload, '$.provenance.task_id') = ?
-                 AND (? IS NULL
-                      OR json_extract(payload, '$.provenance.admission_source') = ?)
-               LIMIT 1""",
-            (task_id, admission_source, admission_source),
         )
         return model_of_json(Run, row[0]) if row is not None else None
 
@@ -876,6 +805,134 @@ class SqliteRunStore:
             )
             await self._conn.commit()
             return cursor.rowcount == 1
+
+    async def find_child_run_by_effect(
+        self,
+        parent_run_id: str,
+        effect_key: str,
+    ) -> Run | None:
+        row = await self._fetchone(
+            """SELECT payload FROM canonical_runs
+               WHERE parent_run_id = ?
+                 AND json_extract(payload, '$.provenance.effect_key') = ?
+               ORDER BY rowid LIMIT 1""",
+            (parent_run_id, effect_key),
+        )
+        return model_of_json(Run, row[0]) if row is not None else None
+
+    async def claim_run_by_effect(  # noqa: C901
+        self,
+        graph: Graph,
+        *,
+        effect_key: str,
+        parent_run_id: str | None = None,
+        parent_node_run_id: str | None = None,
+        allow_cross_project: bool = False,
+        persona_id: str | None = None,
+        actor_principal_id: str | None = None,
+        provenance: dict[str, Any] | None = None,
+        retention_expires_at: datetime | None = None,
+        initial_status: RunStatus = RunStatus.CREATED,
+    ) -> RunEffectClaim:
+        """Atomically insert or recover one logical effect."""
+        if not effect_key:
+            raise ValueError("effect_key must be non-empty")
+        async with self._write_lock:
+            await self._validate_graph_scope(graph)
+            await self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                row = await self._fetchone(
+                    """SELECT payload FROM canonical_runs
+                       WHERE json_extract(payload, '$.provenance.effect_key') = ?
+                       LIMIT 1""",
+                    (effect_key,),
+                )
+                if row is not None:
+                    await self._conn.commit()
+                    return RunEffectClaim(model_of_json(Run, row[0]), False)
+                if parent_node_run_id is not None and parent_run_id is None:
+                    raise RunIntegrityError("parent_node_run_id requires parent_run_id")
+                parent = await self._require_run(parent_run_id) if parent_run_id else None
+                if parent is not None:
+                    validate_child_scope(
+                        parent,
+                        workspace_id=graph.workspace_id,
+                        project_id=graph.project_id,
+                        allow_cross_project=allow_cross_project,
+                    )
+                    if parent_node_run_id is not None:
+                        parent_node_run = await self._require_node_run(parent_node_run_id)
+                        if parent_node_run.run_id != parent_run_id:
+                            raise RunIntegrityError(
+                                "parent_node_run_id does not belong to parent_run_id"
+                            )
+                run = admit_in_state(
+                    Run(
+                        workspace_id=graph.workspace_id,
+                        project_id=graph.project_id,
+                        graph=GraphSnapshot.from_graph(graph.model_copy(deep=True)),
+                        parent_run_id=parent_run_id,
+                        parent_node_run_id=parent_node_run_id,
+                        persona_id=persona_id,
+                        actor_principal_id=actor_principal_id,
+                        provenance={**dict(provenance or {}), "effect_key": effect_key},
+                        retention_expires_at=retention_expires_at,
+                    ),
+                    initial_status,
+                )
+                await self._conn.execute(
+                    """INSERT INTO canonical_runs
+                       (run_id, workspace_id, project_id, parent_run_id,
+                        parent_node_run_id, status, payload)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        run.run_id,
+                        run.workspace_id,
+                        run.project_id,
+                        run.parent_run_id,
+                        run.parent_node_run_id,
+                        run.status.value,
+                        json_of(run),
+                    ),
+                )
+                await self._conn.commit()
+                return RunEffectClaim(run, True)
+            except sqlite3.IntegrityError as exc:
+                await self._conn.rollback()
+                if "idx_canonical_runs_effect" not in str(exc):
+                    raise
+                existing = await self.find_run_by_effect(effect_key)
+                if existing is None:
+                    raise
+                return RunEffectClaim(existing, False)
+            except BaseException:
+                await self._conn.rollback()
+                raise
+
+    async def find_run_by_effect(self, effect_key: str) -> Run | None:
+        row = await self._fetchone(
+            """SELECT payload FROM canonical_runs
+               WHERE json_extract(payload, '$.provenance.effect_key') = ?
+               LIMIT 1""",
+            (effect_key,),
+        )
+        return model_of_json(Run, row[0]) if row is not None else None
+
+    async def update_run_provenance(self, run_id: str, updates: dict[str, Any]) -> Run:
+        async with self._write_lock:
+            row = await self._fetchone(
+                "SELECT payload FROM canonical_runs WHERE run_id = ?", (run_id,)
+            )
+            if row is None:
+                raise RunNotFound(run_id)
+            run = model_of_json(Run, row[0])
+            updated = run.model_copy(update={"provenance": {**run.provenance, **updates}})
+            await self._conn.execute(
+                "UPDATE canonical_runs SET payload = ? WHERE run_id = ?",
+                (json_of(updated), run_id),
+            )
+            await self._conn.commit()
+            return updated
 
     async def list_by_status(
         self,
@@ -1161,10 +1218,6 @@ class SqliteRunStore:
             # Dependent evidence beyond the spine, in the same transaction:
             # owned resumable state deleted, retained provenance counted.
             continuations = await self._purge_dependent_tables(run_id_param)
-            # Eval evidence is spine-attached (FK on run_id), so it dies with
-            # the Run tree, in the same transaction and before the rows it
-            # names (M7-A3).
-            await self._conn.execute(_DELETE_EVAL_SCORES_SQL, (run_id_param,))
             await self._conn.execute(_DELETE_ATTEMPTS_SQL, (run_id_param,))
             await self._conn.execute(_DELETE_NODE_RUNS_SQL, (run_id_param,))
             await self._conn.execute(_DELETE_RUNS_SQL, (run_id_param,))
@@ -1177,33 +1230,6 @@ class SqliteRunStore:
                 continuations=continuations,
                 backlog_remaining=len(doomed) > limit,
             )
-
-    async def cancel_unstarted_chat_run(self, expected: Run, *, error: str) -> bool:
-        async with self._write_lock:
-            current, snapshot = await self._require_run_snapshot(expected.run_id)
-            if not matches_chat_admission_snapshot(current, expected):
-                return False
-            updated = transition_run(current, RunStatus.CANCELLED, error=error)
-            # One SQL statement owns the decision: other stores share this
-            # connection, so a Python lock or BEGIN across awaits cannot
-            # establish exclusive transaction ownership. No new rollback
-            # may erase an unrelated sibling's pending write.
-            cursor = await self._conn.execute(
-                """UPDATE canonical_runs SET status = ?, payload = ?
-                   WHERE run_id = ? AND payload = ?
-                     AND NOT EXISTS (
-                         SELECT 1 FROM canonical_node_runs WHERE run_id = ?
-                     )""",
-                (
-                    updated.status.value,
-                    json_of(updated),
-                    expected.run_id,
-                    snapshot,
-                    expected.run_id,
-                ),
-            )
-            await self._conn.commit()
-            return cursor.rowcount == 1
 
     async def transition_run(
         self,

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from itertools import count
 from types import SimpleNamespace
@@ -11,7 +10,6 @@ from typing import Any
 from uuid import UUID
 
 import pytest
-from canvas_testing.job_store_contract import InMemoryJobStore
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -170,15 +168,6 @@ class _ImageClient:
 
     async def refine(self, **_kwargs: object) -> ImageData:
         return ImageData(width=64, height=64, url="image://refined")
-
-
-class _CountingImageClient(_ImageClient):
-    def __init__(self) -> None:
-        self.generate_calls = 0
-
-    async def generate(self, **kwargs: object) -> list[ImageData]:
-        self.generate_calls += 1
-        return await super().generate(**kwargs)
 
 
 class _FailThenSucceedImageClient(_ImageClient):
@@ -381,7 +370,6 @@ async def test_provider_retry_keeps_both_sanitised_attempts_inspectable() -> Non
         canvas_id="canvas-1",
         layer_id="layer-1",
         action=JobAction.GENERATE,
-        actor_principal_id=_TEST_ACTOR,
     )
     job.max_attempts = 2
 
@@ -406,7 +394,7 @@ async def test_provider_retry_keeps_both_sanitised_attempts_inspectable() -> Non
     assert "credential=secret" not in (attempts[0].error or "")
 
 
-async def test_receipt_persistence_failure_leaves_run_for_durable_reconciliation() -> None:
+async def test_receipt_persistence_failure_compensates_admitted_run() -> None:
     store = _CanvasStore()
     store.fail_create = True
     canonical = _CanonicalStub()

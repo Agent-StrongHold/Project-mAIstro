@@ -80,12 +80,7 @@ async def test_start_evolution_schedules_cadence_when_owner_is_available(
     import services.evolution as evo
 
     owner = SimpleNamespace(
-        run_store=object(),
-        graph_run_store=object(),
-        project_scope_store=object(),
-        # `start_evolution` now also starts the recovery cadence (#1064),
-        # which reaches `owner.event_bus` on its first tick.
-        event_bus=object(),
+        run_store=object(), graph_run_store=object(), project_scope_store=object()
     )
     monkeypatch.setattr(
         engine_module,
@@ -108,103 +103,6 @@ async def test_start_evolution_schedules_cadence_when_owner_is_available(
         assert evo._service.status()["running"] is True
     finally:
         await evo.stop_evolution()
-
-
-# --- #1064 finding 6: recovery cadence brackets the service's own lifecycle,
-# not the engine's --------------------------------------------------------
-
-
-async def test_start_evolution_starts_the_recovery_cadence(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The cadence must start once ``_service`` exists, closing the window
-    where `EngineService.start()` started it before `start_evolution()` ever
-    ran -- a due RUNNING Run inspected in that window previously terminalized
-    FAILED only because of startup ordering."""
-    import services.evolution as evo
-    import services.evolution_recovery as recovery_driver
-
-    await recovery_driver.stop_evolution_recovery()
-    assert recovery_driver._task is None
-
-    def _swallow(coro: Any) -> Any:
-        coro.close()
-        return None
-
-    monkeypatch.setattr(evo.asyncio, "ensure_future", _swallow)
-    await evo.start_evolution()
-    try:
-        assert recovery_driver._task is not None
-        assert not recovery_driver._task.done()
-    finally:
-        await evo.stop_evolution()
-    assert recovery_driver._task is None
-
-
-async def test_stop_evolution_stops_the_recovery_cadence_before_clearing_the_singleton(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The mirror image of start: shutdown previously cleared the singleton
-    in `_shutdown_background_services` before `EngineService.stop()` got
-    around to cancelling the cadence task, leaving the same
-    ``EvolutionServiceNotStarted`` window open at the other end of the
-    process's life. ``stop_evolution`` must stop and join the cadence before
-    (not after) `_service` becomes `None`."""
-    import services.evolution as evo
-    import services.evolution_recovery as recovery_driver
-
-    order: list[str] = []
-    real_stop = recovery_driver.stop_evolution_recovery
-
-    async def _tracking_stop() -> None:
-        order.append("recovery_stopped")
-        await real_stop()
-
-    def _swallow(coro: Any) -> Any:
-        coro.close()
-        return None
-
-    monkeypatch.setattr(evo.asyncio, "ensure_future", _swallow)
-    monkeypatch.setattr(recovery_driver, "stop_evolution_recovery", _tracking_stop)
-    await evo.start_evolution()
-    assert evo._service is not None
-
-    await evo.stop_evolution()
-    # The cadence was stopped while `_service` was still set -- proven by
-    # recording the observation before `stop_evolution` clears it, not merely
-    # that both eventually happened.
-    assert order == ["recovery_stopped"]
-    assert evo._service is None
-
-
-async def test_starting_the_engine_alone_does_not_start_the_evolve_recovery_cadence(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """`EngineService.start()` must no longer start the Evolve recovery
-    cadence itself (#1064) -- only `services.evolution.start_evolution` does,
-    once the singleton it depends on actually exists. Application startup
-    calls `start_engine()` well before `start_evolution()`, so a cadence
-    started by the engine would tick against a service that does not exist
-    yet."""
-    import services.evolution_recovery as recovery_driver
-    from services.engine import EngineService
-
-    await recovery_driver.stop_evolution_recovery()
-    assert recovery_driver._task is None
-
-    class _Settings:
-        maistro_router_api_key = ""
-        maistro_base_url = "http://localhost:8000"
-        hive_mode = "production"
-        hive_default_workspace_id = "default"
-
-    svc = EngineService()
-    try:
-        await svc.start(_Settings())  # type: ignore[arg-type]
-        assert recovery_driver._task is None
-    finally:
-        await svc.stop()
-        await recovery_driver.stop_evolution_recovery()
 
 
 def test_initialize_domain_state_is_idempotent() -> None:
@@ -505,6 +403,13 @@ def test_run_one_cycle_dispatches_canonical_graph(
         evolution_graph, "canonical_execution_owner", lambda *_args, **_kwargs: owner
     )
 
+    owner = SimpleNamespace(
+        run_store=object(), graph_run_store=object(), project_scope_store=object()
+    )
+    monkeypatch.setattr(
+        evolution_graph, "canonical_execution_owner", lambda *_args, **_kwargs: owner
+    )
+
     s = _EvolutionService()
     s._population = _StubPop()
     s._tournament = _StubTour()
@@ -555,7 +460,6 @@ async def test_racing_manual_and_background_cycles_are_serialized(
         )
 
     monkeypatch.setattr(evolution_graph, "run_canonical_evolution_cycle", _canonical)
-    monkeypatch.setattr(_EvolutionService, "_build_llm_call", lambda self: None)
     owner = SimpleNamespace(
         run_store=object(), graph_run_store=object(), project_scope_store=object()
     )
@@ -611,7 +515,6 @@ async def test_seed_waits_for_active_cycle_and_joins_the_next_admission(
         )
 
     monkeypatch.setattr(evolution_graph, "run_canonical_evolution_cycle", _canonical)
-    monkeypatch.setattr(_EvolutionService, "_build_llm_call", lambda self: None)
     monkeypatch.setattr(diversity, "emergency_spawn", lambda existing, count: [])
     owner = SimpleNamespace(
         run_store=object(), graph_run_store=object(), project_scope_store=object()
@@ -668,6 +571,13 @@ def test_run_one_cycle_does_not_count_failed_canonical_run(
 
     monkeypatch.setattr(evolution_graph, "run_canonical_evolution_cycle", _canonical)
     monkeypatch.setattr(_EvolutionService, "_build_llm_call", lambda self: None)
+
+    owner = SimpleNamespace(
+        run_store=object(), graph_run_store=object(), project_scope_store=object()
+    )
+    monkeypatch.setattr(
+        evolution_graph, "canonical_execution_owner", lambda *_args, **_kwargs: owner
+    )
 
     owner = SimpleNamespace(
         run_store=object(), graph_run_store=object(), project_scope_store=object()
@@ -809,10 +719,7 @@ def _available_owner(monkeypatch: pytest.MonkeyPatch) -> None:
     import services.evolution_graph as evolution_graph
 
     owner = SimpleNamespace(
-        run_store=object(),
-        graph_run_store=object(),
-        project_scope_store=object(),
-        event_bus=object(),
+        run_store=object(), graph_run_store=object(), project_scope_store=object()
     )
     monkeypatch.setattr(engine_module, "get_engine", lambda: SimpleNamespace())
     monkeypatch.setattr(evolution_graph, "canonical_execution_owner", lambda *_a, **_k: owner)
@@ -854,10 +761,7 @@ def test_a_failed_domain_init_keeps_execution_unavailable_and_says_why(
     assert service.execution_available is False
     out = service.status()
     assert out["running"] is False
-    # Init failure is public-kind text; the seeded "synthetic:" import path
-    # must not reach /status (CodeQL py/stack-trace-exposure).
-    assert "ImportError: evolution failed; see server logs" in str(out["availability_reason"])
-    assert "synthetic:" not in str(out["availability_reason"])
+    assert "synthetic:" in str(out["availability_reason"])
     with pytest.raises(EvolutionUnavailableError) as raised:
         asyncio.run(service._run_one_cycle())
     assert raised.value.availability == "unavailable"

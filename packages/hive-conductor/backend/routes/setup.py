@@ -156,14 +156,6 @@ def _is_setup_complete() -> bool:
     "setup happened" signal this process can see. This is deliberately
     fail-closed after partial initialization; a failed attempt with no account
     remains retryable.
-
-    Scope, versus the other two "first-run state" notions (#443): this answers
-    "may the one-shot provisioning endpoint / wizard still run at all" — the
-    authority the SPA AuthGuard, ``GET /v1/setup/status`` (install.sh probes
-    the same route), and the ``/complete`` guard all consume. The setup
-    checklist (``routes/setup_checklist.py``) answers a different question —
-    which *post*-provisioning onboarding steps remain for the now-authenticated
-    operator — and is unreachable until this has gone terminal.
     """
     import stores
 
@@ -511,26 +503,10 @@ def _provision_first_run(
 
     kv = _get_kv()
     if kv is not None:
-        try:
-            kv[_SETUP_KEY] = config
-            # The marker is the durable one-shot boundary for persisted setup. Do
-            # not return success while this write is still only queued.
-            _flush_setup_marker(config)
-        except BaseException:
-            # Deliberately no account rollback on this failure. The marker is
-            # the LAST durable write: if it is lost, the accounts and their
-            # username claims are already complete, and releasing them would
-            # re-open this public, unauthenticated endpoint to a retry that
-            # could install a new first owner over the restart. Retaining them
-            # keeps the instance closed (the setup guard sees the accounts) as
-            # one operator-reconcilable reservation — never an ambiguous
-            # duplicate identity. Pre-marker failures (settings, policy) above
-            # DO roll back, so a failed attempt cannot consume a username.
-            logger.error(
-                "setup marker was not acknowledged; retaining durable accounts "
-                "and the setup claim for operator reconciliation"
-            )
-            raise
+        kv[_SETUP_KEY] = config
+        # The marker is the durable one-shot boundary for persisted setup. Do
+        # not return success while this write is still only queued.
+        _flush_setup_marker(config)
     else:
         # Unpersisted run: the claim was only ever an in-flight lock —
         # "setup happened" in this mode is signalled by the accounts it
@@ -606,30 +582,22 @@ def complete_setup(body: SetupCompleteBody) -> dict[str, Any]:
             user_username=user_username,
             user_password=user_password,
         )
-    except BaseException as exc:
-        # Release the claim only when the failure left nothing durable behind.
-        # Two signals are checked together so the handler can only fail closed:
-        # the provisioner's canonical rollback reports a failed account release
-        # as SetupRollbackError, and the durable store is inspected directly so
-        # an unexpected path that left accounts behind is still classified the
-        # same way. Retaining the claim keeps the durable accounts and
-        # reservation a closed, operator-reconcilable state rather than letting
-        # a second setup attempt compete with them; a retry after a lost setup
-        # marker must never be able to overwrite the first owner's credentials.
-        # The delete is enqueued, so a crash in the instant between failure and
-        # flush can resurrect the claim — fail-closed (setup stays locked,
-        # registration stays closed) rather than fail-open, which is the only
-        # direction this endpoint is allowed to fail in. The handler re-raises
-        # everything it catches — this is rollback, not a swallow.
+    except BaseException:
+        # A failure before any account exists remains retryable. In an
+        # unpersisted run, account state disappears with the process, so the
+        # claim can also be released; the in-memory account check still blocks
+        # a same-process overwrite. Once account writes have landed in a
+        # persisted store, retain the claim: releasing it would let a restart
+        # retry the public endpoint after a lost setup marker and overwrite the
+        # first owner's credentials. The handler re-raises everything it
+        # catches — this is rollback only where it cannot expose a takeover.
         with _SETUP_LOCK:
-            if isinstance(exc, SetupRollbackError) or (
-                len(stores.users) > 0 and _get_kv() is not None
-            ):
+            if len(stores.users) == 0 or _get_kv() is None:
+                stores.sessions.pop(_SETUP_CLAIM_KEY, None)
+            else:
                 logger.error(
                     "setup failed after account creation; retaining the durable setup claim"
                 )
-            else:
-                stores.sessions.pop(_SETUP_CLAIM_KEY, None)
         raise
 
     result = {"setup_complete": True, "config": config}

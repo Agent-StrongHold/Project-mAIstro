@@ -92,39 +92,9 @@ class SqliteUsageLog:
         self._operation_lock = asyncio.Lock()
 
     async def ensure_schema(self) -> None:
-        """Create the usage_events table and its indexes.
-
-        The event-id column is added and backfilled for databases created by
-        the timestamp-only schema. Existing rows receive identities derived
-        from their stable SQLite rowids; new rows always come from
-        `UsageEvent.event_id`. The upgrade runs through the shared
-        `serialized_schema_upgrade` discipline (per-connection asyncio lock +
-        ``BEGIN IMMEDIATE``) so concurrent store initializations sharing one
-        database cannot interleave; this instance's operation lock keeps the
-        migration exclusive of `snapshot`/`restore` on the same connection.
-        """
-        async with self._operation_lock, serialized_schema_upgrade(self._conn):
+        """Create the usage_events table + its (scope_key, timestamp) index."""
+        async with serialized_schema_upgrade(self._conn):
             await self._conn.execute(_SCHEMA)
-            cursor = await self._conn.execute("PRAGMA table_info(usage_events)")
-            columns = await cursor.fetchall()
-            if not any(row[1] == "event_id" for row in columns):
-                await self._conn.execute("ALTER TABLE usage_events ADD COLUMN event_id TEXT")
-            # Additive, nullable, no backfill: rows written before these
-            # columns existed genuinely have no provenance, and a default
-            # would be an invented one.
-            present = {row[1] for row in columns}
-            for column, sql_type in _PROVENANCE_COLUMNS:
-                if column not in present:
-                    await self._conn.execute(
-                        f"ALTER TABLE usage_events ADD COLUMN {column} {sql_type}"
-                    )
-            await self._conn.execute(
-                "UPDATE usage_events SET event_id = 'legacy:' || rowid WHERE event_id IS NULL"
-            )
-            await self._conn.execute(
-                "CREATE UNIQUE INDEX IF NOT EXISTS idx_usage_events_event_id "
-                "ON usage_events (event_id)"
-            )
             await self._conn.execute(_INDEX)
 
     async def snapshot(self, log: InMemoryUsageLog) -> None:

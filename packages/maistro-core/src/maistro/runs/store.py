@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import OrderedDict
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from itertools import islice
@@ -298,31 +298,6 @@ def validate_child_scope(
         )
 
 
-def validate_effect_claim_parent(
-    parent: Run | None,
-    parent_node_run: NodeRun | None,
-    *,
-    parent_run_id: str | None,
-    parent_node_run_id: str | None,
-    workspace_id: str,
-    project_id: str,
-    allow_cross_project: bool,
-) -> None:
-    """Validate optional parent evidence before admitting an effect-keyed child Run."""
-    if parent_node_run_id is not None and parent_run_id is None:
-        raise RunIntegrityError("parent_node_run_id requires parent_run_id")
-    if parent is None:
-        return
-    validate_child_scope(
-        parent,
-        workspace_id=workspace_id,
-        project_id=project_id,
-        allow_cross_project=allow_cross_project,
-    )
-    if parent_node_run is not None and parent_node_run.run_id != parent_run_id:
-        raise RunIntegrityError("parent_node_run_id does not belong to parent_run_id")
-
-
 @runtime_checkable
 class ContinuationPurge(Protocol):
     """The slice of a Graph continuation store that a purge needs (#1175).
@@ -362,15 +337,13 @@ class PurgeOutcome:
     Dispositions, and why each is what it is:
 
     - ``runs`` / ``node_runs`` / ``attempts`` — owned spine rows, deleted.
-    - ``continuations`` — owned resumable state in ``graph_continuations``,
-      deleted. The reference is logical — no foreign key — so nothing would
-      notice it dangling, and a recovery scan would pick the orphan up and try
-      to resume a Run whose identity no longer exists.
-
-    Attribution history — the Event log, task and effect receipts, session
-    turns, producer provenance — is preserved and uncounted. The per-table
-    policy, including what the purge does not reach, is the inventory in
-    `maistro.runs.retention_scope` (``RUN_REFERENCING_TABLES``).
+    - ``continuations`` — owned resumable state (the graph-continuation and
+      durable-graph-run tables), deleted. The reference is logical — no foreign
+      key — so nothing would notice it dangling, and a recovery scan would pick
+      the orphan up and try to resume a Run whose identity no longer exists.
+      The append-only Event log and the producer-provenance tables are kept
+      uncounted: nothing in retention reads those counts, so they stayed
+      write-only and were removed.
 
     ``backlog_remaining`` is the difference between "the scope is drained"
     and "the batch ran out" — the one bit a bare count could never carry, and
@@ -668,6 +641,45 @@ class RunStore(Protocol):
         """Cancel only an unchanged chat admission with no NodeRuns, atomically."""
         ...
 
+    async def get_run_for_occurrence(self, schedule_id: str, scheduled_for: str) -> Run | None:
+        """Resolve the canonical Run claiming one scheduled occurrence."""
+        ...
+
+    async def find_delegation_run(self, delegation_key: str) -> Run | None: ...
+
+    async def attach_delegation_receipt(
+        self, run_id: str, task_id: str, *, target_agent: str | None = None
+    ) -> Run: ...
+
+    async def claim_delegation_transport_attempt(self, run_id: str) -> bool: ...
+
+    async def find_child_run_by_effect(
+        self,
+        parent_run_id: str,
+        effect_key: str,
+    ) -> Run | None: ...
+
+    async def claim_run_by_effect(
+        self,
+        graph: Graph,
+        *,
+        effect_key: str,
+        parent_run_id: str | None = None,
+        parent_node_run_id: str | None = None,
+        allow_cross_project: bool = False,
+        persona_id: str | None = None,
+        actor_principal_id: str | None = None,
+        provenance: dict[str, Any] | None = None,
+        retention_expires_at: datetime | None = None,
+        initial_status: RunStatus = RunStatus.CREATED,
+    ) -> RunEffectClaim: ...
+
+    async def update_run_provenance(
+        self,
+        run_id: str,
+        updates: dict[str, Any],
+    ) -> Run: ...
+
     async def transition_run(
         self,
         run_id: str,
@@ -766,12 +778,6 @@ class RunStore(Protocol):
 
     async def delete_run(self, run_id: str, *, force: bool = False) -> bool: ...
 
-    async def record_eval_score(self, eval_score: RunEvalScore) -> RunEvalScore: ...
-
-    async def list_eval_scores(self, run_id: str) -> list[RunEvalScore]: ...
-
-    async def get_eval_score(self, eval_id: str) -> RunEvalScore | None: ...
-
 
 #: Retention bound for the in-memory store. Not a tuning knob so much as an
 #: admission that this store is used by long-lived processes: maistro-server
@@ -804,13 +810,10 @@ class InMemoryRunStore:
         prune_target: int = RUN_PRUNE_TARGET,
         archive_store: ArchiveStore | None = None,
         continuation_store: ContinuationPurge | None = None,
-        concurrency_limits: RunConcurrencyLimits | None = None,
     ) -> None:
         if prune_target > max_runs:
             raise ValueError("prune_target cannot exceed max_runs")
         self._project_store = project_store
-        self._workspace_store = workspace_store
-        self._concurrency_limits = concurrency_limits or RunConcurrencyLimits.configured()
         # The same seam `archive_store` is: a capability the reference store
         # may be wired with, so a retention sweep reclaims Graph continuation
         # state along with the Run it belongs to (#1175). None — the default —
@@ -1509,6 +1512,120 @@ class InMemoryRunStore:
             return False
         self._runs[expected.run_id] = transition_run(current, RunStatus.CANCELLED, error=error)
         return True
+
+    async def get_run_for_occurrence(self, schedule_id: str, scheduled_for: str) -> Run | None:
+        """Resolve an occurrence through its claim index, never by scanning Runs."""
+        run_id = self._occurrences.get((schedule_id, scheduled_for))
+        return await self.get_run(run_id) if run_id is not None else None
+
+    async def find_delegation_run(self, delegation_key: str) -> Run | None:
+        for run in self._runs.values():
+            if run.provenance.get("delegation_key") == delegation_key:
+                return run.model_copy(deep=True)
+        return None
+
+    async def attach_delegation_receipt(
+        self, run_id: str, task_id: str, *, target_agent: str | None = None
+    ) -> Run:
+        run = self._require_run(run_id)
+        existing = str(run.provenance.get("a2a_task_id") or "")
+        if existing and existing != task_id:
+            raise RunIntegrityError("delegation receipt conflicts with canonical receipt")
+        provenance = dict(run.provenance)
+        provenance["a2a_task_id"] = task_id
+        if target_agent:
+            provenance["target_agent"] = target_agent
+        updated = run.model_copy(update={"provenance": provenance})
+        self._runs[run_id] = updated
+        return updated.model_copy(deep=True)
+
+    async def claim_delegation_transport_attempt(self, run_id: str) -> bool:
+        """Claim the only allowed attempt to cross the transport boundary."""
+        run = self._require_run(run_id)
+        if run.provenance.get("transport_attempted"):
+            return False
+        provenance = dict(run.provenance)
+        provenance["transport_attempted"] = True
+        self._runs[run_id] = run.model_copy(update={"provenance": provenance})
+        return True
+
+    async def find_child_run_by_effect(
+        self,
+        parent_run_id: str,
+        effect_key: str,
+    ) -> Run | None:
+        for run in self._runs.values():
+            if (
+                run.parent_run_id == parent_run_id
+                and run.provenance.get("effect_key") == effect_key
+            ):
+                return run.model_copy(deep=True)
+        return None
+
+    async def claim_run_by_effect(
+        self,
+        graph: Graph,
+        *,
+        effect_key: str,
+        parent_run_id: str | None = None,
+        parent_node_run_id: str | None = None,
+        allow_cross_project: bool = False,
+        persona_id: str | None = None,
+        actor_principal_id: str | None = None,
+        provenance: dict[str, Any] | None = None,
+        retention_expires_at: datetime | None = None,
+        initial_status: RunStatus = RunStatus.CREATED,
+    ) -> RunEffectClaim:
+        """Atomically claim a logical effect in the reference store.
+
+        Validation is the only await before the check and insert. The store is
+        event-loop confined, so another caller cannot interleave the claim.
+        Durable stores provide the same contract with a database uniqueness
+        constraint.
+        """
+        if not effect_key:
+            raise ValueError("effect_key must be non-empty")
+        await self._validate_graph_scope(graph)
+        for existing in self._runs.values():
+            if existing.provenance.get("effect_key") == effect_key:
+                return RunEffectClaim(existing.model_copy(deep=True), False)
+        if parent_node_run_id is not None and parent_run_id is None:
+            raise RunIntegrityError("parent_node_run_id requires parent_run_id")
+        parent = self._require_run(parent_run_id) if parent_run_id is not None else None
+        if parent is not None:
+            validate_child_scope(
+                parent,
+                workspace_id=graph.workspace_id,
+                project_id=graph.project_id,
+                allow_cross_project=allow_cross_project,
+            )
+            if parent_node_run_id is not None:
+                parent_node_run = self._require_node_run(parent_node_run_id)
+                if parent_node_run.run_id != parent_run_id:
+                    raise RunIntegrityError("parent_node_run_id does not belong to parent_run_id")
+        run = admit_in_state(
+            Run(
+                workspace_id=graph.workspace_id,
+                project_id=graph.project_id,
+                graph=GraphSnapshot.from_graph(graph.model_copy(deep=True)),
+                parent_run_id=parent_run_id,
+                parent_node_run_id=parent_node_run_id,
+                persona_id=persona_id,
+                actor_principal_id=actor_principal_id,
+                provenance={**dict(provenance or {}), "effect_key": effect_key},
+                retention_expires_at=retention_expires_at,
+            ),
+            initial_status,
+        )
+        self._runs[run.run_id] = run
+        self._prune_terminal_runs()
+        return RunEffectClaim(run.model_copy(deep=True), True)
+
+    async def update_run_provenance(self, run_id: str, updates: dict[str, Any]) -> Run:
+        run = self._require_run(run_id)
+        updated = run.model_copy(update={"provenance": {**run.provenance, **updates}})
+        self._runs[run_id] = updated
+        return updated.model_copy(deep=True)
 
     async def transition_run(
         self,

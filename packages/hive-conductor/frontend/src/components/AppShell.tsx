@@ -157,7 +157,7 @@ export function AppShell({ children }: { children?: ReactNode }) {
           </div>
         )}
         <div className="drawer-nav">
-          {visibleNav(user).map((item) => (
+          {fullNav.map((item) => (
             <NavLink
               key={item.to}
               to={item.to}
@@ -178,7 +178,7 @@ export function AppShell({ children }: { children?: ReactNode }) {
       </nav>
 
       <nav className="icon-sidebar">
-        {visibleNav(user).map((item) => (
+        {fullNav.map((item) => (
           <NavLink
             key={item.to}
             to={item.to}

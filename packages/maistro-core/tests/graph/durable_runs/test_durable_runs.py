@@ -770,11 +770,16 @@ async def test_a_blocked_shape_fails_the_synth_node_run(mem_store: DurableRunSto
 
     def _local_resolver(node_id: str, dag: dict[str, Any]) -> BaseNode:
         if node_id == "n1":
-            # The bare node's fail-closed Sentinel (#1165) refuses the shape.
+            from maistro.security.sentinel.policy import Sentinel
+            from maistro.security.warden.detector import Warden
+
             return AgentSynthDagNode(
-                synthesizer=_SynthDepthChildSynthesizer(),
-                proportionality_judge=_AlwaysJustifySynthDepthChild(),
-                run_store=mem_store,
+                # COMPATIBILITY (#1165): the walk targets failed-subgraph depth
+                # accounting, not permission-table misses.
+                sentinel=Sentinel(warden=Warden(), permission_table={}, allow_on_miss=True),
+                synthesizer=_FailingChildSynthesizer(),
+                proportionality_judge=_AlwaysJustified(),
+                run_store=InMemoryDurableRunStore(),
             )
         return _MustNotRunNode()
 

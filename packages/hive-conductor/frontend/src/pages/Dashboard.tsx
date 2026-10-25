@@ -474,11 +474,10 @@ function KpiWidget({ config, metrics, status }: { config?: Record<string, any>; 
     subLine = env.reason || "metrics source failed";
   }
   return (
-    <div style={{ display: "flex", flexDirection: "column", justifyContent: "center", height: "100%", position: "relative", paddingLeft: 10 }} title={provenanceText(env)}>
-      <div style={{ position: "absolute", left: 0, top: 8, bottom: 8, width: 3, borderRadius: 2, background: env.state === "ok" ? "var(--accent-gradient)" : "var(--rule)" }} />
-      {valueLine}
-      <div style={{ fontSize: "var(--text-floor)", color: "var(--pencil)", marginTop: 6, letterSpacing: "0.02em", fontWeight: 500 }}>{subLine}</div>
-      {env.state === "ok" && <div style={{ fontSize: "calc(var(--text-floor) * 0.9)", color: "var(--pencil)", marginTop: 3, opacity: 0.8, fontFamily: "var(--mono)" }}>{footer}</div>}
+    <div style={{ display: "flex", flexDirection: "column", justifyContent: "center", height: "100%", position: "relative", paddingLeft: 10 }}>
+      <div style={{ position: "absolute", left: 0, top: 8, bottom: 8, width: 3, borderRadius: 2, background: "var(--accent-gradient)" }} />
+      <div style={{ fontSize: "2.2rem", fontWeight: 800, color: "var(--ink)", fontVariantNumeric: "tabular-nums", lineHeight: 1, letterSpacing: "-0.02em" }}>{typeof value === "number" ? value.toLocaleString() : value}</div>
+      <div style={{ fontSize: "var(--text-floor)", color: "var(--pencil)", marginTop: 6, letterSpacing: "0.02em", fontWeight: 500 }}>{config?.sub || field}</div>
     </div>
   );
 }
@@ -501,42 +500,33 @@ function AgentOrbsWidget({ agents }: { agents: any[] }) {
   );
 }
 
-function InvocationsWidget({ metrics, status }: { metrics: any; status: string }) {
-  if (status !== "ready") return <FetchStateLine status={status} />;
-  const env = metrics?.invocations;
-  if (!env || env.state === "error") return <div style={{ color: "var(--danger)", fontSize: "var(--text-floor)" }}>⚠ {env?.reason || "metrics source failed"}</div>;
-  if (env.state === "no_data") return <div style={{ color: C.muted, fontSize: "var(--text-floor)" }}>No invocations yet. Start a conversation to generate data.</div>;
-  if (env.state === "unavailable") return <div style={{ color: C.muted, fontSize: "var(--text-floor)" }}>N/A — {env.reason || "not measured"}</div>;
-  const count = Number(env.value);
+function InvocationsWidget({ metrics }: { metrics: any }) {
+  const count = metrics?.count || 0;
+  if (count === 0) return <div style={{ color: C.muted, fontSize: "var(--text-floor)" }}>No invocations yet. Start a conversation to generate data.</div>;
   return (
     <div title={provenanceText(env)}>
       {env.state === "stale" && <div style={{ fontSize: "var(--text-floor)", fontWeight: 700, color: "#b8860b", marginBottom: 4 }}>STALE — {env.reason}</div>}
       <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginBottom: 8 }}>
-        <span style={{ fontSize: "1.2rem", fontWeight: 800, color: C.ink }}>{count.toLocaleString()}</span>
+        <span style={{ fontSize: "1.2rem", fontWeight: 800, color: C.ink }}>{count}</span>
         <span style={{ fontSize: "var(--text-floor)", color: C.muted }}>total invocations</span>
       </div>
       <div style={{ fontSize: "var(--text-floor)", color: C.muted }}>
-        <div>p50: {Math.round(env.latency_ms_p50 || 0)}ms · p95: {Math.round(env.latency_ms_p95 || 0)}ms</div>
-        <div>Tokens in: {env.tokens_in_total ?? 0} · out: {env.tokens_out_total ?? 0}</div>
+        <div>p50: {Math.round(metrics.latency_ms_p50 || 0)}ms · p95: {Math.round(metrics.latency_ms_p95 || 0)}ms</div>
+        <div>Tokens in: {metrics.tokens_in_total || 0} · out: {metrics.tokens_out_total || 0}</div>
       </div>
     </div>
   );
 }
 
-function CostDonutWidget({ metrics, status }: { metrics: any; status: string }) {
-  if (status !== "ready") return <FetchStateLine status={status} />;
-  const env = metrics?.total_cost;
-  if (!env || env.state === "error") return <div style={{ color: "var(--danger)", fontSize: "var(--text-floor)" }}>⚠ {env?.reason || "metrics source failed"}</div>;
-  if (env.state === "no_data") return <div style={{ color: C.muted, fontSize: "var(--text-floor)" }}>No cost data yet.</div>;
-  if (env.state === "unavailable") return <div style={{ color: C.muted, fontSize: "var(--text-floor)" }}>N/A — {env.reason || "not measured"}</div>;
-  const total = Number(env.value);
-  const invocations = metrics?.invocations;
+function CostDonutWidget({ metrics }: { metrics: any }) {
+  const total = metrics?.cost_usd_total || 0;
+  if (total === 0) return <div style={{ color: C.muted, fontSize: "var(--text-floor)" }}>No cost data yet.</div>;
   return (
     <div style={{ textAlign: "center" }} title={provenanceText(env)}>
       {env.state === "stale" && <div style={{ fontSize: "var(--text-floor)", fontWeight: 700, color: "#b8860b" }}>STALE</div>}
       <div style={{ fontSize: "1.3rem", fontWeight: 800, color: C.ink }}>${total.toFixed(2)}</div>
-      <div style={{ fontSize: "var(--text-floor)", color: C.muted }}>Estimated cost{env.state === "stale" ? " (partial window)" : ""}</div>
-      <div style={{ fontSize: "var(--text-floor)", color: C.dim, marginTop: 4 }}>{invocations?.state === "ok" || invocations?.state === "stale" ? `${Number(invocations.value).toLocaleString()} invocations` : "invocation count unavailable"}</div>
+      <div style={{ fontSize: "var(--text-floor)", color: C.muted }}>Total estimated cost</div>
+      <div style={{ fontSize: "var(--text-floor)", color: C.dim, marginTop: 4 }}>{metrics?.count || 0} invocations</div>
     </div>
   );
 }
@@ -571,22 +561,6 @@ function JiraWidget({ widget }: { widget: Widget }) {
   if (!cfg.project) return <div style={{ color: C.muted, fontSize: "var(--text-floor)" }}>Configure: set a Jira project key.</div>;
   if (loading) return <div style={{ color: C.muted, fontSize: "var(--text-floor)" }}>Querying Jira...</div>;
   if (!data || data.error) return <div style={{ color: C.danger, fontSize: "var(--text-floor)" }}>{data?.error || "No data"}</div>;
-  // Metric envelopes (#380): the named-metric endpoint answers with a state,
-  // not a plausible zero. Every non-ok state says why, distinctly.
-  if (typeof data.state === "string") {
-    if (data.state === "ok") {
-      return (
-        <div style={{ display: "flex", flexDirection: "column", justifyContent: "center", height: "100%" }} title={`query: ${data.query} · scope: ${data.scope} · window: ${data.window} · computed: ${data.computed_at}`}>
-          <div style={{ fontSize: "2.2rem", fontWeight: 800, color: "var(--ink)", fontVariantNumeric: "tabular-nums" }}>{data.unit === "USD" ? `$${Number(data.value).toFixed(2)}` : Number(data.value).toLocaleString()}</div>
-          <div style={{ fontSize: "var(--text-floor)", color: "var(--pencil)", marginTop: 4 }}>{cfg.sub || `${data.metric} (${data.unit})`}</div>
-        </div>
-      );
-    }
-    if (data.state === "no_data") return <div style={{ color: C.muted, fontSize: "var(--text-floor)" }}>— No data yet{data.reason ? ` — ${data.reason}` : ""}</div>;
-    if (data.state === "stale") return <div style={{ color: "var(--ink)", fontSize: "var(--text-floor)" }}><b style={{ color: "#b8860b" }}>STALE</b> — last known: {data.value} {data.unit}{data.reason ? ` — ${data.reason}` : ""}</div>;
-    if (data.state === "unavailable") return <div style={{ color: C.muted, fontSize: "var(--text-floor)" }}>N/A — {data.reason || "not measured"}</div>;
-    return <div style={{ color: C.danger, fontSize: "var(--text-floor)" }}>⚠ {data.reason || "metrics source failed"}</div>;
-  }
 
   // Status breakdown → horizontal bars
   if (display === "status-breakdown" && data.statuses) {

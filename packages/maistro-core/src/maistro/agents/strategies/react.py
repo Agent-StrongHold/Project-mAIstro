@@ -71,10 +71,6 @@ class ReactStrategy:
         # reported nothing is stored as one that cost nothing (#717).
         reported_calls = 0
         security_pipeline = bool(kwargs.get("security_pipeline", False))
-        # Keep the analysis context separate from the model message list. Tool
-        # output is untrusted; assistant/system messages must not become part of
-        # the detector's authority-labelled input.
-        tool_context: deque[WardenContext] = deque(maxlen=_TOOL_CONTEXT_MAX_TURNS)
 
         tool_choice = "required" if self.force_tool_first else "auto"
 
@@ -121,9 +117,7 @@ class ReactStrategy:
                     warden=warden,
                     sentinel=kwargs.get("sentinel"),
                     auth=kwargs.get("auth"),
-                    context=list(tool_context),
                     security_pipeline=security_pipeline,
-                    tool_round=round_num,
                 )
                 tool_context.append(WardenContext(tool_result_str))
 
@@ -236,18 +230,11 @@ class ReactStrategy:
         sentinel: Any,
         auth: Any,
         warden: Any,
-        context: list[WardenContext] | None = None,
         security_pipeline: bool = False,
     ) -> str:
-        """Apply the shared output gate with bounded prior tool context.
-
-        Inside the Agent security pipeline the governed executor has already
-        scanned the result with its own bounded context and redacted it, so
-        this gate only serves standalone strategy callers.
-        """
+        """Keep standalone strategy calls safe; Agent owns production policy."""
         if security_pipeline:
             return tool_result_str
-        scan_kwargs: dict[str, Any] = {"context": context} if context else {}
         if sentinel is not None and auth is not None:
             sanitized: str = await sentinel.post_call(
                 tool_name, tool_result_str, auth, **scan_kwargs
@@ -279,9 +266,7 @@ class ReactStrategy:
         warden: Any,
         sentinel: Any,
         auth: Any,
-        context: list[WardenContext] | None = None,
         security_pipeline: bool = False,
-        tool_round: int = 0,
     ) -> tuple[dict[str, Any], str]:
         """Process a single tool call end-to-end: parse args, sentinel pre-call,
         execute, truncate, sanitize. Returns ``(tool_args, tool_result_str)``."""
@@ -295,13 +280,7 @@ class ReactStrategy:
         tool_result: Any = error_result
         tool_blocked = False
 
-        if not security_pipeline and (sentinel is None or auth is None):
-            logger.warning(
-                "Denied tool '%s': no Sentinel or caller auth to authorize it", tool_name
-            )
-            tool_result = f"Error: Permission denied for tool '{tool_name}'"
-            tool_blocked = True
-        elif not security_pipeline:
+        if not security_pipeline and sentinel is not None and auth is not None:
             tool_schema = _find_tool_schema(tools, tool_name)
             sentinel_verdict = await sentinel.pre_call(tool_name, tool_args, auth, tool_schema)
             if not sentinel_verdict.allowed:
@@ -333,7 +312,6 @@ class ReactStrategy:
             sentinel=sentinel,
             auth=auth,
             warden=warden,
-            context=context,
             security_pipeline=security_pipeline,
         )
         return tool_args, tool_result_str

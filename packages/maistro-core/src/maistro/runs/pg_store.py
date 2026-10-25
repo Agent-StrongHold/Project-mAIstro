@@ -74,7 +74,7 @@ from maistro.runs.retention_scope import (
     RetentionScope,
     WorkspaceRetentionScope,
 )
-from maistro.runs.sources import SCHEDULED_FOR_KEY, TASK_QUEUE_SOURCE, occurrence_key
+from maistro.runs.sources import occurrence_key
 from maistro.runs.store import (
     DEFAULT_ARCHIVE_AFTER,
     DEFAULT_PURGE_BATCH,
@@ -136,47 +136,17 @@ _PAYLOAD_TABLES = {
 _TERMINAL_STATUS_VALUES = tuple(sorted(status.value for status in TERMINAL_RUN_STATUSES))
 
 
-#: The terminal statuses as SQL literals, not a `$n::text[]` parameter. The
-#: partial `ix_canonical_runs_retention` and `ix_canonical_runs_archive_candidates`
-#: indexes predicate on exactly these values, and PostgreSQL can only prove such
-#: a predicate from a clause that names the same constants: parameterized, a
-#: generic prepared plan — the steady state after five executions — cannot
-#: prove it, and the sweep degenerates to a sequential scan precisely once the
-#: table is big enough for the index to matter (#863). These are store-owned
-#: constants derived from the model, interpolated the way
-#: `_ACTIVE_ROOT_COUNTS_SQL` below already interpolates the live set; no caller
-#: input ever reaches the string.
-_TERMINAL_STATUS_LITERALS = ", ".join(f"'{status}'" for status in _TERMINAL_RUN_STATUS_VALUES)
-
 #: Retention candidate selection — the two scope variants' whole difference is
 #: one Workspace predicate line (#1175).
 #: One more row than the batch is requested (the LIMIT parameter is sent as
 #: ``limit + 1``) so the outcome can say whether the scope drained or the
 #: batch ran out; the surplus row's lock lives only as long as the
 #: transaction.
-_PURGE_CANDIDATES_SQL_GLOBAL = f"""SELECT run_id
+_PURGE_CANDIDATES_SQL_GLOBAL = """SELECT run_id
     FROM canonical_runs r
     WHERE r.retention_expires_at IS NOT NULL
       AND r.retention_expires_at <= $1
-      AND r.status IN ({_TERMINAL_STATUS_LITERALS})
-      AND NOT EXISTS (
-          SELECT 1 FROM canonical_runs c WHERE c.parent_run_id = r.run_id
-      )
-      AND NOT EXISTS (
-          SELECT 1 FROM canonical_node_runs n
-          JOIN canonical_runs c2 ON c2.parent_node_run_id = n.node_run_id
-          WHERE n.run_id = r.run_id
-      )
-    ORDER BY r.retention_expires_at
-    LIMIT $2
-    FOR UPDATE SKIP LOCKED"""  # nosec B608
-
-_PURGE_CANDIDATES_SQL_SCOPED = f"""SELECT run_id
-    FROM canonical_runs r
-    WHERE r.retention_expires_at IS NOT NULL
-      AND r.retention_expires_at <= $1
-      AND r.status IN ({_TERMINAL_STATUS_LITERALS})
-      AND r.workspace_id = $2
+      AND r.status = ANY($2::text[])
       AND NOT EXISTS (
           SELECT 1 FROM canonical_runs c WHERE c.parent_run_id = r.run_id
       )
@@ -187,68 +157,25 @@ _PURGE_CANDIDATES_SQL_SCOPED = f"""SELECT run_id
       )
     ORDER BY r.retention_expires_at
     LIMIT $3
-    FOR UPDATE SKIP LOCKED"""  # nosec B608
+    FOR UPDATE SKIP LOCKED"""
 
-#: Archive candidate selection (migration 017): the mirror population of the
-#: retention sweep, kept off the same partial-index proof problem — literal
-#: statuses, parameterized deadline and batch (#863).
-_ARCHIVE_CANDIDATES_SQL = f"""SELECT run_id, project_id, payload FROM canonical_runs
-    WHERE archive_key IS NULL
-      AND retention_expires_at IS NULL
-      AND finished_at IS NOT NULL
-      AND finished_at <= $1
-      AND status IN ({_TERMINAL_STATUS_LITERALS})
-      AND (payload -> 'provenance' ->> 'schedule_id') IS NULL
-    ORDER BY finished_at
-    LIMIT $2
-    FOR UPDATE SKIP LOCKED"""  # nosec B608
-
-
-def _list_by_status_query(
-    status_value: str,
-    *,
-    limit: int,
-    offset: int,
-    project_id: str | None = None,
-    workspace_id: str | None = None,
-    admission_source: str | None = None,
-    after: tuple[str, str] | None = None,
-) -> tuple[str, list[object]]:
-    """The exact SQL `list_by_status` runs, as a module function so a test can
-    `EXPLAIN` the query that actually ships — the same reason `pg_episodic`
-    exposes its query shape.
-
-    `status = $1` stays a parameter on purpose: it is caller input. That is
-    precisely why the index serving it (`ix_canonical_runs_status_created`,
-    migration 057) is unconditional — a partial status index could not be
-    proven under a generic prepared plan, and the queue cursor would pay a
-    scan-plus-sort per tick. The `ORDER BY` names the same payload expression
-    the index carries, so the plan needs no Sort node at any cardinality, and
-    the `(payload->>'created_at', run_id)` keyset rides the index's trailing
-    columns.
-    """
-    sql = (
-        "SELECT payload, archive_key FROM canonical_runs WHERE status = $1 AND payload IS NOT NULL"
-    )
-    params: list[object] = [status_value]
-    if project_id is not None:
-        sql += f" AND project_id = ${len(params) + 1}"
-        params.append(project_id)
-    if workspace_id is not None:
-        sql += f" AND workspace_id = ${len(params) + 1}"
-        params.append(workspace_id)
-    if admission_source is not None:
-        sql += f" AND payload->'provenance'->>'admission_source' = ${len(params) + 1}"
-        params.append(admission_source)
-    if after is not None:
-        cursor_param = len(params) + 1
-        sql += f" AND (payload->>'created_at', run_id) > (${cursor_param}, ${cursor_param + 1})"
-        params.extend(after)
-    sql += f" ORDER BY payload->>'created_at', run_id LIMIT ${len(params) + 1}"
-    params.append(limit)
-    sql += f" OFFSET ${len(params) + 1}"
-    params.append(offset)
-    return sql, params
+_PURGE_CANDIDATES_SQL_SCOPED = """SELECT run_id
+    FROM canonical_runs r
+    WHERE r.retention_expires_at IS NOT NULL
+      AND r.retention_expires_at <= $1
+      AND r.status = ANY($2::text[])
+      AND r.workspace_id = $3
+      AND NOT EXISTS (
+          SELECT 1 FROM canonical_runs c WHERE c.parent_run_id = r.run_id
+      )
+      AND NOT EXISTS (
+          SELECT 1 FROM canonical_node_runs n
+          JOIN canonical_runs c2 ON c2.parent_node_run_id = n.node_run_id
+          WHERE n.run_id = r.run_id
+      )
+    ORDER BY r.retention_expires_at
+    LIMIT $4
+    FOR UPDATE SKIP LOCKED"""
 
 
 class PgRunStore:
@@ -613,6 +540,7 @@ class PgRunStore:
                 rows = await conn.fetch(
                     _PURGE_CANDIDATES_SQL_SCOPED,
                     cutoff,
+                    _TERMINAL_RUN_STATUS_VALUES,
                     scope.workspace_id,
                     limit + 1,
                 )
@@ -620,6 +548,7 @@ class PgRunStore:
                 rows = await conn.fetch(
                     _PURGE_CANDIDATES_SQL_GLOBAL,
                     cutoff,
+                    _TERMINAL_RUN_STATUS_VALUES,
                     limit + 1,
                 )
             backlog_remaining = len(rows) > limit
@@ -627,13 +556,6 @@ class PgRunStore:
             run_ids = [row["run_id"] for row in selected]
             if not run_ids:
                 return PurgeOutcome(scope=scope)
-            # Eval evidence is spine-attached (FK on run_id), so it dies with
-            # the Run tree, in the same transaction and before the rows it
-            # names (M7-A3).
-            await conn.execute(
-                "DELETE FROM canonical_run_eval_scores WHERE run_id = ANY($1::text[])",
-                run_ids,
-            )
             deleted_attempts = await conn.fetch(
                 """DELETE FROM canonical_attempts a
                    USING canonical_node_runs n
@@ -702,7 +624,16 @@ class PgRunStore:
         cutoff = (now if now is not None else datetime.now(UTC)) - archive_after
         async with self._pool.acquire() as conn, conn.transaction():
             rows = await conn.fetch(
-                _ARCHIVE_CANDIDATES_SQL,
+                """SELECT run_id, project_id, payload FROM canonical_runs
+                    WHERE archive_key IS NULL
+                      AND retention_expires_at IS NULL
+                      AND finished_at IS NOT NULL
+                      AND finished_at <= $1
+                      AND status = ANY($2::text[])
+                      AND (payload -> 'provenance' ->> 'schedule_id') IS NULL
+                    ORDER BY finished_at
+                    LIMIT $3
+                    FOR UPDATE SKIP LOCKED""",
                 cutoff,
                 limit,
             )
@@ -957,6 +888,70 @@ class PgRunStore:
         )
         return Run.model_validate(payload) if payload is not None else None
 
+    async def get_run_for_occurrence(self, schedule_id: str, scheduled_for: str) -> Run | None:
+        """Resolve the unique occurrence claim through its expression index."""
+        payload = await self._payload(
+            """SELECT run_id, payload, archive_key FROM canonical_runs
+               WHERE (payload -> 'provenance' ->> 'schedule_id') = $1
+                 AND (payload -> 'provenance' ->> 'scheduled_for') = $2
+               LIMIT 1""",
+            schedule_id,
+            scheduled_for,
+        )
+        return Run.model_validate(payload) if payload is not None else None
+
+    async def find_delegation_run(self, delegation_key: str) -> Run | None:
+        async with self._pool.acquire() as conn:
+            payload = await conn.fetchval(
+                """SELECT payload FROM canonical_runs
+                   WHERE payload->'provenance'->>'delegation_key' = $1""",
+                delegation_key,
+            )
+        return Run.model_validate(payload) if payload is not None else None
+
+    async def attach_delegation_receipt(
+        self, run_id: str, task_id: str, *, target_agent: str | None = None
+    ) -> Run:
+        async with self._pool.acquire() as conn, conn.transaction():
+            run = Run.model_validate(await self._locked(conn, "canonical_runs", "run_id", run_id))
+            existing = str(run.provenance.get("a2a_task_id") or "")
+            if existing and existing != task_id:
+                raise RunIntegrityError("delegation receipt conflicts with canonical receipt")
+            provenance = dict(run.provenance)
+            provenance["a2a_task_id"] = task_id
+            if target_agent:
+                provenance["target_agent"] = target_agent
+            updated = run.model_copy(update={"provenance": provenance})
+            await self._write(conn, "canonical_runs", "run_id", run_id, updated)
+        return updated
+
+    async def claim_delegation_transport_attempt(self, run_id: str) -> bool:
+        """Lock the child and record an irreversible transport boundary claim."""
+        async with self._pool.acquire() as conn, conn.transaction():
+            run = Run.model_validate(await self._locked(conn, "canonical_runs", "run_id", run_id))
+            if run.provenance.get("transport_attempted"):
+                return False
+            provenance = dict(run.provenance)
+            provenance["transport_attempted"] = True
+            updated = run.model_copy(update={"provenance": provenance})
+            await self._write(conn, "canonical_runs", "run_id", run_id, updated)
+        return True
+
+    async def find_child_run_by_effect(
+        self,
+        parent_run_id: str,
+        effect_key: str,
+    ) -> Run | None:
+        payload = await self._payload(
+            """SELECT run_id, payload, archive_key FROM canonical_runs
+               WHERE parent_run_id = $1
+                 AND payload -> 'provenance' ->> 'effect_key' = $2
+               ORDER BY payload ->> 'created_at', run_id LIMIT 1""",
+            parent_run_id,
+            effect_key,
+        )
+        return Run.model_validate(payload) if payload is not None else None
+
     async def claim_run_by_effect(
         self,
         graph: Graph,
@@ -975,6 +970,8 @@ class PgRunStore:
         if not effect_key:
             raise ValueError("effect_key must be non-empty")
         await self._validate_graph_scope(graph)
+        if parent_node_run_id is not None and parent_run_id is None:
+            raise RunIntegrityError("parent_node_run_id requires parent_run_id")
         run = Run(
             workspace_id=graph.workspace_id,
             project_id=graph.project_id,
@@ -982,7 +979,7 @@ class PgRunStore:
             parent_run_id=parent_run_id,
             parent_node_run_id=parent_node_run_id,
             persona_id=persona_id,
-            actor_principal_id=require_admitted_actor(actor_principal_id),
+            actor_principal_id=actor_principal_id,
             provenance={**dict(provenance or {}), "effect_key": effect_key},
             retention_expires_at=retention_expires_at,
         )
@@ -998,31 +995,25 @@ class PgRunStore:
                 return RunEffectClaim(
                     Run.model_validate(decode_evidence(decode_payload(existing_payload))), False
                 )
-            parent = (
-                Run.model_validate(
-                    await self._locked(conn, "canonical_runs", "run_id", parent_run_id)
+            if parent_run_id is not None:
+                parent_payload = await self._locked(conn, "canonical_runs", "run_id", parent_run_id)
+                parent = Run.model_validate(parent_payload)
+                validate_child_scope(
+                    parent,
+                    workspace_id=graph.workspace_id,
+                    project_id=graph.project_id,
+                    allow_cross_project=allow_cross_project,
                 )
-                if parent_run_id is not None
-                else None
-            )
-            parent_node_run = (
-                NodeRun.model_validate(
-                    await self._locked(
-                        conn, "canonical_node_runs", "node_run_id", parent_node_run_id
+                if parent_node_run_id is not None:
+                    parent_node_run = NodeRun.model_validate(
+                        await self._locked(
+                            conn, "canonical_node_runs", "node_run_id", parent_node_run_id
+                        )
                     )
-                )
-                if parent is not None and parent_node_run_id is not None
-                else None
-            )
-            validate_effect_claim_parent(
-                parent,
-                parent_node_run,
-                parent_run_id=parent_run_id,
-                parent_node_run_id=parent_node_run_id,
-                workspace_id=graph.workspace_id,
-                project_id=graph.project_id,
-                allow_cross_project=allow_cross_project,
-            )
+                    if parent_node_run.run_id != parent_run_id:
+                        raise RunIntegrityError(
+                            "parent_node_run_id does not belong to parent_run_id"
+                        )
             inserted = await conn.fetchrow(
                 """INSERT INTO canonical_runs
                    (run_id, workspace_id, project_id, parent_run_id,
@@ -1061,125 +1052,12 @@ class PgRunStore:
         )
         return Run.model_validate(payload) if payload is not None else None
 
-    async def find_occurrence_run(
-        self,
-        provenance: Mapping[str, Any] | None,
-    ) -> Run | None:
-        occurrence = occurrence_key(dict(provenance or {}))
-        if occurrence is None:
-            return None
-        schedule_id, token = occurrence
-        # The same expression the unique claim index (migrations 015 and 039)
-        # is built on, so a Run the index refuses is a Run this read finds
-        # (#1120). Through `_payload`, so an archived Run resolves through the
-        # archive tier exactly as `get_run` resolves it.
-        payload = await self._payload(
-            """SELECT run_id, payload, archive_key FROM canonical_runs
-                WHERE payload -> 'provenance' ->> 'schedule_id' = $1
-                  AND COALESCE(
-                        'manual:' || (payload -> 'provenance' ->> 'schedule_fire_id'),
-                        payload -> 'provenance' ->> 'scheduled_for'
-                      ) = $2""",
-            schedule_id,
-            token,
-        )
-        return Run.model_validate(payload) if payload is not None else None
-
-    async def get_run_for_occurrence(self, schedule_id: str, scheduled_for: str) -> Run | None:
-        """Resolve the unique occurrence claim through its expression index."""
-        payload = await self._payload(
-            """SELECT run_id, payload, archive_key FROM canonical_runs
-               WHERE (payload -> 'provenance' ->> 'schedule_id') = $1
-                 AND (payload -> 'provenance' ->> 'scheduled_for') = $2
-               LIMIT 1""",
-            schedule_id,
-            scheduled_for,
-        )
-        return Run.model_validate(payload) if payload is not None else None
-
-    async def get_runs_for_occurrences(
-        self, schedule_id: str, scheduled_fors: Sequence[str]
-    ) -> dict[str, Run]:
-        """The batched twin of `get_run_for_occurrence`, one query for many.
-
-        `= ANY($2::text[])`, the store's list-parameter shape for
-        caller-supplied value sets, in place of one round trip per
-        occurrence — the difference between a single query and tens of
-        thousands of serial ones on a schedule whose enumeration cap dropped
-        a large truncated tail (#1533).
-        """
-        if not scheduled_fors:
-            return {}
-        async with self._pool.acquire() as conn:
-            rows = await conn.fetch(
-                """SELECT run_id, payload, archive_key FROM canonical_runs
-                   WHERE (payload -> 'provenance' ->> 'schedule_id') = $1
-                     AND (payload -> 'provenance' ->> 'scheduled_for') = ANY($2::text[])""",
-                schedule_id,
-                list(scheduled_fors),
-            )
-        found: dict[str, Run] = {}
-        for row in rows:
-            run = Run.model_validate(await self._hydrate(row))
-            found[run.provenance[SCHEDULED_FOR_KEY]] = run
-        return found
-
-    async def find_delegation_run(self, delegation_key: str) -> Run | None:
-        async with self._pool.acquire() as conn:
-            payload = await conn.fetchval(
-                """SELECT payload FROM canonical_runs
-                   WHERE payload->'provenance'->>'delegation_key' = $1""",
-                delegation_key,
-            )
-        return Run.model_validate(payload) if payload is not None else None
-
-    async def find_run_by_task_id(
-        self,
-        task_id: str,
-        *,
-        admission_source: str | None = TASK_QUEUE_SOURCE,
-    ) -> Run | None:
-        # Through `_payload`, like `find_run_by_effect`: an archived Run must
-        # resolve for a receipt read exactly as `get_run` resolves it, not 404
-        # once the retention sweep touches it.
-        payload = await self._payload(
-            """SELECT run_id, payload, archive_key FROM canonical_runs
-               WHERE payload -> 'provenance' ->> 'task_id' = $1
-                 AND ($2::text IS NULL
-                      OR payload -> 'provenance' ->> 'admission_source' = $2)
-               LIMIT 1""",
-            task_id,
-            admission_source,
-        )
-        return Run.model_validate(payload) if payload is not None else None
-
-    async def attach_delegation_receipt(
-        self, run_id: str, task_id: str, *, target_agent: str | None = None
-    ) -> Run:
+    async def update_run_provenance(self, run_id: str, updates: dict[str, Any]) -> Run:
         async with self._pool.acquire() as conn, conn.transaction():
             run = Run.model_validate(await self._locked(conn, "canonical_runs", "run_id", run_id))
-            existing = str(run.provenance.get("a2a_task_id") or "")
-            if existing and existing != task_id:
-                raise RunIntegrityError("delegation receipt conflicts with canonical receipt")
-            provenance = dict(run.provenance)
-            provenance["a2a_task_id"] = task_id
-            if target_agent:
-                provenance["target_agent"] = target_agent
-            updated = run.model_copy(update={"provenance": provenance})
+            updated = run.model_copy(update={"provenance": {**run.provenance, **updates}})
             await self._write(conn, "canonical_runs", "run_id", run_id, updated)
-        return updated
-
-    async def claim_delegation_transport_attempt(self, run_id: str) -> bool:
-        """Lock the child and record an irreversible transport boundary claim."""
-        async with self._pool.acquire() as conn, conn.transaction():
-            run = Run.model_validate(await self._locked(conn, "canonical_runs", "run_id", run_id))
-            if run.provenance.get("transport_attempted"):
-                return False
-            provenance = dict(run.provenance)
-            provenance["transport_attempted"] = True
-            updated = run.model_copy(update={"provenance": provenance})
-            await self._write(conn, "canonical_runs", "run_id", run_id, updated)
-        return True
+            return updated
 
     async def list_by_status(
         self,
@@ -1208,15 +1086,25 @@ class PgRunStore:
             raise ValueError("limit must be positive")
         if offset < 0:
             raise ValueError("offset must not be negative")
-        sql, params = _list_by_status_query(
-            status.value,
-            limit=limit,
-            offset=offset,
-            project_id=project_id,
-            workspace_id=workspace_id,
-            admission_source=admission_source,
-            after=after,
-        )
+        sql = "SELECT payload, archive_key FROM canonical_runs WHERE status = $1 AND payload IS NOT NULL"
+        params: list[object] = [status.value]
+        if project_id is not None:
+            sql += f" AND project_id = ${len(params) + 1}"
+            params.append(project_id)
+        if workspace_id is not None:
+            sql += f" AND workspace_id = ${len(params) + 1}"
+            params.append(workspace_id)
+        if admission_source is not None:
+            sql += f" AND payload->'provenance'->>'admission_source' = ${len(params) + 1}"
+            params.append(admission_source)
+        if after is not None:
+            cursor_param = len(params) + 1
+            sql += f" AND (payload->>'created_at', run_id) > (${cursor_param}, ${cursor_param + 1})"
+            params.extend(after)
+        sql += f" ORDER BY payload->>'created_at', run_id LIMIT ${len(params) + 1}"
+        params.append(limit)
+        sql += f" OFFSET ${len(params) + 1}"
+        params.append(offset)
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(sql, *params)
         # Route status enumeration through the same row hydrator as every

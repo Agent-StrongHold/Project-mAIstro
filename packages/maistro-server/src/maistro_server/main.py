@@ -44,7 +44,8 @@ from maistro.tasks.models import TaskCreate
 from maistro.tasks.progress_webhook import ProgressWebhookNotifier
 from maistro.tasks.queue import configure_task_queue, get_task_queue, reset_task_queue
 from maistro.tasks.runner import TaskRunner
-from maistro.types.config import AgentConfig, ModelBindingConfig, SecurityConfig
+from maistro.tools.sandbox.server import cleanup_all_containers
+from maistro.types.config import AgentConfig, SecurityConfig
 from maistro_server.api import (
     a2a,
     canvas,
@@ -310,12 +311,23 @@ def _agent_config(settings: Settings) -> AgentConfig:
         # config the Container is built from, or no deployment can ever
         # authorize one.
         security=_security_config(),
-        # Same reasoning, for the canonical `model.chat` Binding authority
-        # (#1079): `bootstrap_model_bindings()` reads `AgentConfig.model_bindings`
-        # and authorizes nothing when it is empty, so an operator's
-        # `model_bindings:` YAML declarations must reach this config or every
-        # `llm.summarize` node refuses every Binding in production.
-        model_bindings=_model_bindings(),
+    )
+
+
+def _security_config() -> SecurityConfig:
+    """The Sentinel grants, from `maistro.yaml`'s `security` section.
+
+    Read through the loaded YAML config like `_router_api_key` and
+    `_agents_dir`, because that is where an operator states them; a server
+    started without a YAML file gets the shipped defaults, which is the empty
+    fail-closed table (#1165).
+    """
+    yaml_config = settings_module.get_yaml_config()
+    if yaml_config is None:
+        return SecurityConfig()
+    return SecurityConfig(
+        permission_preset=yaml_config.security.permission_preset,
+        permissions=yaml_config.security.permissions,
     )
 
 
@@ -555,21 +567,9 @@ async def _runtime_lifespan(app: FastAPI) -> AsyncIterator[None]:
         # are durable.
         idempotency_store=container.task_idempotency,
     )
-    # Rebuild receipts from canonical QUEUED task Runs before starting workers.
-    # This is the restart-safe handoff for both admission/receipt gaps; the Run
-    # already contains the immutable payload needed to execute the original id —
-    # including the originating-principal evidence (#1057), which survives the
-    # restart in the same committed payload the admission wrote.
-    await queue.recover(run_store)
     # The handles these APIs return must resolve against the exact stores the
     # Container selected, not lookalike stores reconstructed by the server.
     runs.configure_run_store(run_store)
-    # Route visibility answers through the same Workspace-membership boundary
-    # the Container's stores back (#1152): missing and foreign ids fail closed
-    # identically at the one seam.
-    runs.configure_run_boundary(
-        RunStoreBoundary(run_store, container.workspace_store, container.project_scope_store)
-    )
     a2a.configure_a2a_admission(
         run_store,
         container.project_scope_store,
@@ -649,7 +649,6 @@ async def _runtime_lifespan(app: FastAPI) -> AsyncIterator[None]:
         await _drain_queue_singleton()
         reset_task_queue()
         runs.configure_run_store(None)
-        runs.configure_run_boundary(None)
         a2a.configure_a2a_admission(None, None)
         workspaces.configure_workspace_store(None)
 

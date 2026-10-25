@@ -16,14 +16,7 @@ from maistro.graph.durable_runs import (
     resume_durable_graph,
     run_durable_graph,
 )
-from maistro.graph.nodes import (
-    BaseNode,
-    NodeContext,
-    NodeResult,
-    ReplaySemantics,
-    compose_node,
-    get_node,
-)
+from maistro.graph.nodes import BaseNode, NodeContext, NodeResult, ReplaySemantics
 from maistro.runs import Attempt, AttemptStatus, GraphSnapshot, NodeRun, Run
 from maistro.runtime import PythonExecutionRuntime
 from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
@@ -107,43 +100,6 @@ class _Blocking(BaseNode[_Empty, _Seed]):
         return _Seed(seed="unreachable")
 
 
-class _UnboundEffect(BaseNode[_Empty, _Seed]):
-    """An EFFECT_KEY node whose key builder explicitly reports no key.
-
-    Distinct from a node with no ``logical_effect_key`` at all: the callable
-    exists and runs, but the effect contract it returns is unusable, so the
-    fold must still refuse a second visit.
-    """
-
-    kind: ClassVar[str] = "test.attempt.unbound_effect"
-    kind_category: ClassVar[str] = "sync.transform"
-    input_schema: ClassVar[type[BaseModel]] = _Empty
-    output_schema: ClassVar[type[BaseModel]] = _Seed
-    replay_semantics: ClassVar[ReplaySemantics] = ReplaySemantics.EFFECT_KEY
-    calls: ClassVar[int] = 0
-
-    def logical_effect_key(self, inputs: _Empty, ctx: NodeContext) -> str | None:
-        del inputs, ctx
-        return None
-
-    async def _execute(self, inputs: _Empty, ctx: NodeContext) -> _Seed:
-        type(self).calls += 1
-        raise RuntimeError("effect key unavailable")
-
-
-class _HardNonRetryable(BaseNode[_Empty, _Seed]):
-    kind: ClassVar[str] = "test.attempt.hard_non_retryable"
-    kind_category: ClassVar[str] = "sync.transform"
-    input_schema: ClassVar[type[BaseModel]] = _Empty
-    output_schema: ClassVar[type[BaseModel]] = _Seed
-    replay_semantics: ClassVar[ReplaySemantics] = ReplaySemantics.NON_RETRYABLE
-    calls: ClassVar[int] = 0
-
-    async def _execute(self, inputs: _Empty, ctx: NodeContext) -> _Seed:
-        type(self).calls += 1
-        raise RuntimeError("ambiguous effect")
-
-
 class _NeverRetry(BaseNode[_Empty, _Seed]):
     kind: ClassVar[str] = "test.attempt.never_retry"
     kind_category: ClassVar[str] = "sync.transform"
@@ -159,38 +115,6 @@ class _NeverRetry(BaseNode[_Empty, _Seed]):
         raise RuntimeError("ambiguous effect")
 
 
-def _unbound_effect_graph() -> Graph:
-    return Graph(
-        workspace_id="ws-1",
-        project_id="project-1",
-        name="Unbound effect",
-        nodes=[
-            Node(
-                node_id="unbound",
-                node_type=_UnboundEffect.kind,
-                policies={"max_attempts": 3},
-            )
-        ],
-        metadata={"entry_node": "unbound"},
-    )
-
-
-def _hard_non_retryable_graph() -> Graph:
-    return Graph(
-        workspace_id="ws-1",
-        project_id="project-1",
-        name="Hard non-retryable",
-        nodes=[
-            Node(
-                node_id="hard",
-                node_type=_HardNonRetryable.kind,
-                policies={"max_attempts": 3},
-            )
-        ],
-        metadata={"entry_node": "hard"},
-    )
-
-
 def _never_retry_graph() -> Graph:
     return Graph(
         workspace_id="ws-1",
@@ -204,23 +128,6 @@ def _never_retry_graph() -> Graph:
             )
         ],
         metadata={"entry_node": "never"},
-    )
-
-
-def _remote_work_graph() -> Graph:
-    """A graph whose only node is the production `agent.remote_work` kind."""
-    return Graph(
-        workspace_id="ws-1",
-        project_id="project-1",
-        name="Delegated external work",
-        nodes=[
-            Node(
-                node_id="remote",
-                node_type="agent.remote_work",
-                policies={"max_attempts": 3},
-            )
-        ],
-        metadata={"entry_node": "remote"},
     )
 
 
@@ -286,29 +193,10 @@ def _blocking_graph() -> Graph:
     )
 
 
-def _unbound_effect_resolver(node_id: str, graph: Graph) -> BaseNode[Any, Any]:
-    del graph
-    assert node_id == "unbound"
-    return _UnboundEffect()
-
-
-def _hard_non_retryable_resolver(node_id: str, graph: Graph) -> BaseNode[Any, Any]:
-    del graph
-    assert node_id == "hard"
-    return _HardNonRetryable()
-
-
 def _never_retry_resolver(node_id: str, graph: Graph) -> BaseNode[Any, Any]:
     del graph
     assert node_id == "never"
     return _NeverRetry()
-
-
-def _remote_work_resolver(node_id: str, graph: Graph) -> BaseNode[Any, Any]:
-    """Resolve through the production registry, not a test double."""
-    del graph
-    assert node_id == "remote"
-    return compose_node("agent.remote_work", {})
 
 
 def _blocking_resolver(node_id: str, graph: Graph) -> BaseNode[Any, Any]:
@@ -410,7 +298,6 @@ async def test_public_durable_executor_routes_each_node_run_through_attempt_runt
 
 @pytest.mark.asyncio
 async def test_unkeyed_effect_contract_overrides_a_graph_retry_budget() -> None:
-    """A node labeled EFFECT_KEY but exposing no key gets exactly one visit."""
     _NeverRetry.calls = 0
     store = InMemoryDurableRunStore()
 
@@ -418,73 +305,11 @@ async def test_unkeyed_effect_contract_overrides_a_graph_retry_budget() -> None:
         _never_retry_graph(),
         store=store,
         node_resolver=_never_retry_resolver,
-        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
 
     assert record.status is RunStatus.FAILED
     assert _NeverRetry.calls == 1
     assert len(record.attempts) == 1
-
-
-@pytest.mark.asyncio
-async def test_effect_key_contract_requires_a_recorded_key_before_retry() -> None:
-    """An explicit ``logical_effect_key -> None`` is as unusable as no method."""
-    _UnboundEffect.calls = 0
-    store = InMemoryDurableRunStore()
-
-    record = await run_durable_graph(
-        _unbound_effect_graph(),
-        store=store,
-        node_resolver=_unbound_effect_resolver,
-        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
-    )
-
-    assert record.status is RunStatus.FAILED
-    assert _UnboundEffect.calls == 1
-    assert len(record.attempts) == 1
-
-
-@pytest.mark.asyncio
-async def test_non_retryable_contract_overrides_a_graph_retry_budget() -> None:
-    _HardNonRetryable.calls = 0
-    store = InMemoryDurableRunStore()
-
-    record = await run_durable_graph(
-        _hard_non_retryable_graph(),
-        store=store,
-        node_resolver=_hard_non_retryable_resolver,
-        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
-    )
-
-    assert record.status is RunStatus.FAILED
-    assert _HardNonRetryable.calls == 1
-    assert len(record.attempts) == 1
-
-
-@pytest.mark.asyncio
-async def test_production_remote_work_kind_is_not_retried_under_a_retry_budget() -> None:
-    """The shipped `agent.remote_work` kind declares NON_RETRYABLE (#1194).
-
-    The work executes at an A2A peer, so a failed visit must never be
-    re-dispatched locally: whether the remote effect already happened is not
-    observable here, and the delegation recovery path owns reconciliation.
-    This pins the *catalog* declaration to the executor's behaviour — the
-    graph's `max_attempts` budget must not override it.
-    """
-    assert get_node("agent.remote_work").replay_semantics is ReplaySemantics.NON_RETRYABLE
-
-    store = InMemoryDurableRunStore()
-
-    record = await run_durable_graph(
-        _remote_work_graph(),
-        store=store,
-        node_resolver=_remote_work_resolver,
-        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
-    )
-
-    assert record.status is RunStatus.FAILED
-    assert len(record.attempts) == 1
-    assert record.graph_state.visit_counts.get("remote") == 1
 
 
 @pytest.mark.asyncio

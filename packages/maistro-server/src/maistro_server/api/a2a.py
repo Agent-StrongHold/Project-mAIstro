@@ -10,7 +10,6 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, Field
 
-from maistro.a2a.delegation_context import DelegationContext
 from maistro.graph.definitions import Graph, Node
 from maistro.projects.scope_store import ProjectScopeStore
 from maistro.runs.store import RunStore
@@ -30,12 +29,6 @@ class A2ATaskCreate(BaseModel):
     agent_id: str = Field(min_length=1)
     messages: list[dict[str, str]] = Field(default_factory=list)
     idempotency_key: str = Field(min_length=1)
-    # The sending side's canonical caller/scope/Goal/Run binding (issue #959).
-    # Optional for peers predating the field; when present it is validated and
-    # recorded as provenance evidence. It is *not* authorization: this
-    # Workspace's own configured scope and the authenticated peer principal
-    # decide admission, exactly as before.
-    delegation_context: DelegationContext | None = None
 
 
 class A2ATaskCreated(BaseModel):
@@ -93,62 +86,15 @@ async def create_a2a_task(
         ],
     )
     principal = auth if isinstance(auth, AuthenticatedPrincipal) else None
-    provenance: dict[str, object] = {
-        "admission_source": "a2a_delegation",
-        "a2a_task_id": request.idempotency_key,
-        "a2a_agent_id": request.agent_id,
-        "a2a_messages": request.messages,
-    }
-    if request.delegation_context is not None:
-        # The delegating side's caller/scope/Goal/Run binding, recorded as
-        # evidence so the remote execution is traceable from the delegating
-        # Goal/Run. The receiving scope stays this service's own.
-        provenance["a2a_delegation_context"] = request.delegation_context.as_payload()
     claim = await store.claim_run_by_effect(
         graph,
         effect_key=request.idempotency_key,
         actor_principal_id=principal.user_id if principal is not None else None,
-        provenance=provenance,
+        provenance={
+            "admission_source": "a2a_delegation",
+            "a2a_task_id": request.idempotency_key,
+            "a2a_agent_id": request.agent_id,
+            "a2a_messages": request.messages,
+        },
     )
     return A2ATaskCreated(task_id=claim.run.run_id, run_id=claim.run.run_id)
-
-
-@router.get("/tasks/by-idempotency-key/{idempotency_key}")
-async def get_a2a_task_by_idempotency_key(
-    idempotency_key: str,
-    auth: RequireAuth,
-) -> dict[str, str]:
-    """Reconcile one admitted delegation without re-submitting it (#1194).
-
-    The other half of transport idempotency: a dispatching worker that lost its
-    lease after an ambiguous POST polls this endpoint with the same key and
-    receives the original receipt. A key nobody claimed is a 404, so the
-    caller can distinguish "never accepted" from "accepted, receipt lost".
-    """
-    store, _projects, _workspace_id = _stores()
-    run = await store.find_run_by_effect(idempotency_key)
-    if run is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="unknown idempotency key")
-    # The receipt is the canonical Run id -- the same value the admitting POST
-    # returned as `task_id`, so a reconciling caller resumes the original work.
-    return {"task_id": run.run_id}
-
-
-#: Vulture reference: FastAPI dispatches the handler through the
-#: ``@router.post``/``@router.get`` decorators, which the static call graph
-#: cannot see (the same framework-dispatch blindness ``maistro-core``'s
-#: ``_vulture_whitelist`` documents for pydantic hooks). The tuple keeps the
-#: live routes visible to the dead-code scanner without any runtime effect.
-_A2A_ROUTE_HANDLERS = (create_a2a_task, get_a2a_task_by_idempotency_key)
-
-# The handlers are this module's public surface: FastAPI registers them from
-# the decorators, which static import scanning cannot see (the same statement
-# every api module's __all__ makes -- see projects.py / workspace_access.py).
-__all__ = [
-    "A2ATaskCreate",
-    "A2ATaskCreated",
-    "configure_a2a_admission",
-    "create_a2a_task",
-    "get_a2a_task_by_idempotency_key",
-    "router",
-]

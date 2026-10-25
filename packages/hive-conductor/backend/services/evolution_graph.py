@@ -13,11 +13,10 @@ second execution lifecycle alongside Run/NodeRun/Attempt.
 
 from __future__ import annotations
 
-import contextlib
 import hashlib
 import logging
 import random
-from collections.abc import AsyncIterator, Iterator, Sequence
+from collections.abc import Sequence
 from copy import deepcopy
 from itertools import pairwise
 from typing import Any, ClassVar
@@ -51,40 +50,6 @@ class CanonicalExecutionUnavailable(RuntimeError):
     def __init__(self, message: str, *, availability: str = "unavailable") -> None:
         super().__init__(message)
         self.availability = availability
-
-
-class EvolveRecoveryBlocked(RuntimeError):
-    """A stranded/due Evolve Run cannot be safely resumed by this process (#1064).
-
-    Evolve's population/tournament/cycle domain state is process-local (an
-    in-memory ``PopulationStore``/``EloTournament`` unless a deployment opts a
-    SQLite ``db_path`` into ``PopulationStore``, which this app does not).
-    There is therefore no durable cross-process domain state a genuinely
-    different process could reconstruct. Raising this — rather than silently
-    resuming against a fabricated fresh population/tournament (silent domain
-    corruption) — is the honest disposition. See ``_recovery_resolver``'s
-    docstring for exactly how each recovery seam disposes of this: a Run
-    already RUNNING/WAITING reaches a terminal FAILED Run with this
-    diagnostic; a Run still QUEUED is isolated and retried on a later tick,
-    never resumed against the wrong population and never faked as success.
-    """
-
-
-class FinalizeReconciliationRequired(RuntimeError):
-    """A prior finalize Attempt mutated domain state but never committed (#1064).
-
-    ``_finalize_cycle`` cannot stage its many mutations (cull, breed,
-    self-improve, migrate, lineage) on a private copy the way evaluation
-    stages a single genome, so a fault partway through leaves population/
-    tournament state partially advanced with no committed NodeRun evidence.
-    Blindly retrying would redo mutations already applied (double cull,
-    double breed, a second paid self-improve pass); silently succeeding on
-    retry would hide that the first attempt's effects are unaccounted for.
-    Neither is safe, so a retry of a NodeRun found in this state fails
-    closed with this diagnostic instead, requiring explicit operator
-    reconciliation of the affected population before the cycle can be
-    retried as a new logical Run.
-    """
 
 
 class _EvaluateInput(BaseModel):
@@ -429,7 +394,7 @@ class _BattleNode(BaseNode[_BattleInput, _BattleOutput]):
             )
         # Validate graph capacity before recording tournament evidence so a
         # malformed immutable graph cannot leave a domain battle half-applied.
-        return self._tournament_work.run_pair(inputs, ctx)
+        return self._tournament_work.run_pair(inputs)
 
 
 def _source_evaluation_refs(population: Any, genome: Any) -> list[dict[str, str]]:
@@ -771,7 +736,7 @@ def _resolver(
     llm_call: Any,
     membership_ids: Sequence[str] | None = None,
     battle_slots: int | None = None,
-) -> NodeResolver:
+):
     tournament_work = _TournamentWork(
         cycle=cycle,
         population=population,

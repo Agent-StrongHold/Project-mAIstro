@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from "react";
-import { apiGet, fallbackMessage, ApiError } from "../lib/api";
+import { useEffect, useState } from "react";
+import { apiGet, fallbackMessage } from "../lib/api";
 import { SecretField, TextField } from "../components/shared";
 
 type Preset = { name: string; label: string; description: string; max_vcpu: number; max_memory_gb: number; db_backend: string; networking: string; gpu_available: boolean; reactor_enabled: boolean; max_agents: number };
@@ -472,7 +472,21 @@ export default function Setup() {
                     field keeps its name when the models list arrives and the
                     <input> becomes a <select> (#375). */}
                 <label htmlFor="setup-router-model" style={{ display: "block", fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", marginBottom: 3 }}>Router model</label>
-                {manualModel || availableModels.length === 0 ? (
+                {availableModels.length > 0 ? (
+                  <select
+                    id="setup-router-model"
+                    className="input-field"
+                    value={routerModel}
+                    onChange={(e) => setRouterModel(e.target.value)}
+                    style={{ width: "100%" }}
+                  >
+                    {availableModels.map((m) => (
+                      <option key={m} value={m}>
+                        {m}
+                      </option>
+                    ))}
+                  </select>
+                ) : (
                   <input
                     id="setup-router-model"
                     className="input-field"
@@ -498,42 +512,6 @@ export default function Setup() {
                       </option>
                     ))}
                   </select>
-                )}
-                {availableModels.length > 0 && (
-                  <div style={{ marginTop: 6 }}>
-                    {manualModel ? (
-                      <button type="button" className="btn" data-testid="model-list-toggle" onClick={() => { setManualModel(false); setFallbackAcknowledged(false); }}>Pick from the model list instead</button>
-                    ) : (
-                      <button type="button" className="btn" data-testid="model-manual-toggle" onClick={() => { setManualModel(true); setFallbackAcknowledged(false); }}>Enter a model ID manually</button>
-                    )}
-                  </div>
-                )}
-                {/* Discovery provenance (#287): the wizard must never blur a
-                    real gateway catalog into curated suggestions or manual
-                    entry — each renders with its own status line, and only
-                    the discovered state counts as verified. */}
-                <div data-testid="model-discovery-status" style={{ fontFamily: "var(--mono)", fontSize: 12, marginTop: 6, color: modelCheck === "ok" && !manualModel ? "var(--ok)" : "var(--pencil)" }}>
-                  {modelCheck === "pending" && !manualModel && "Checking the gateway model catalog…"}
-                  {modelCheck === "ok" && !manualModel && `✓ ${availableModels.length} models discovered from the gateway`}
-                  {modelCheck === "failed" && !manualModel && "Curated suggestions — the gateway was not queried successfully, availability is UNVERIFIED"}
-                  {manualModel && "Manual entry — the gateway has not confirmed this ID; availability is UNVERIFIED"}
-                </div>
-                {modelCheck === "failed" && cachedDefault !== null && !manualModel && (
-                  <div data-testid="model-cached-default" style={{ fontFamily: "var(--mono)", fontSize: 12, marginTop: 4, color: "var(--pencil)" }}>
-                    Cached default — <code>{cachedDefault}</code> is the Conductor's stored default, not a model discovered from the gateway.
-                  </div>
-                )}
-                {modelError && (
-                  <div role="alert" data-testid={`model-error-${modelErrorKind ?? "unknown"}`} style={{ padding: "6px 10px", background: "rgba(196,69,42,0.12)", border: "1px solid var(--danger)", borderRadius: 4, fontFamily: "var(--mono)", fontSize: 12, color: "var(--danger)" }}>
-                    <div>{modelError}</div>
-                    <button type="button" className="btn" data-testid="model-retry" style={{ marginTop: 6 }} disabled={modelsLoading} onClick={() => setFetchKey((k) => k + 1)}>Retry gateway discovery</button>
-                  </div>
-                )}
-                {(modelCheck === "failed" || manualModel) && (
-                  <div data-testid="unverified-ack" style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 4 }}>
-                    <input type="checkbox" id="unverified-model-ack" checked={fallbackAcknowledged} onChange={(e) => setFallbackAcknowledged(e.target.checked)} />
-                    <label htmlFor="unverified-model-ack" style={{ fontFamily: "var(--hand)", fontSize: 13, cursor: "pointer" }}>I understand the gateway has not confirmed this model and availability is unverified.</label>
-                  </div>
                 )}
                 <div style={{ fontFamily: "var(--hand)", fontSize: 12, color: "var(--pencil)", marginTop: 4 }}>
                   The queen bee's brain — classifies intent, complexity, and cost to route each request to the best worker model. Needs to be fast and cheap, not the strongest. <code>gemini-3.1-flash-lite</code> is a good default.{" "}
@@ -620,7 +598,6 @@ export default function Setup() {
                       <div style={{ fontFamily: "var(--hand)", fontSize: 15, fontWeight: 600 }}>{m.name}</div>
                       <div style={{ fontFamily: "var(--hand)", fontSize: 12, color: "var(--pencil)" }}>{m.desc}</div>
                       {m.requires.length > 0 && <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", marginTop: 2 }}>requires: {m.requires.join(", ")}</div>}
-                      {identityUnavailable && <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--danger)", marginTop: 2 }}>{identityStatus === "checking" ? "checking deployment support; action unavailable" : "unavailable in this deployment; no action offered"}</div>}
                     </div>
                     <button
                       type="button"
@@ -644,16 +621,11 @@ export default function Setup() {
               <div className="card">
                 <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", marginBottom: 4 }}>HIVE</div>
                 <div style={{ fontFamily: "var(--hand)", fontSize: 16 }}>{conductorName}</div>
-                <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", marginTop: 2 }}>
-                  router: {routerModel || "server default"}
-                  {(manualModel || modelCheck === "failed") && (
-                    <span data-testid="router-model-unverified" style={{ color: "var(--danger)" }}> · unverified</span>
-                  )}
-                </div>
+                <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", marginTop: 2 }}>router: {routerModel}</div>
               </div>
               <div className="card">
                 <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", marginBottom: 4 }}>HARDWARE</div>
-                <div style={{ fontFamily: "var(--hand)", fontSize: 16 }}>{resolvedHardware ?? "server default (auto)"}</div>
+                <div style={{ fontFamily: "var(--hand)", fontSize: 16 }}>{preset ?? "none selected"}</div>
               </div>
               <div className="card">
                 <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", marginBottom: 4 }}>ACCOUNTS</div>

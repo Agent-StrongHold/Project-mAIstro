@@ -288,92 +288,141 @@ export default function DesignStudio() {
         <div role="group" aria-label="Design artifact types" aria-describedby="design-artifact-types-help" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 8 }}>
           {ARTIFACT_MODES.map((artifact) => {
             const selected = artifact.id === selectedMode;
-            return <button key={artifact.id} type="button" aria-pressed={selected} onClick={() => selectMode(artifact.id)} className="card" style={{ cursor: "pointer", textAlign: "left", border: selected ? "2px solid var(--accent)" : "1.3px solid var(--rule)", background: selected ? "var(--paper)" : undefined, padding: 12 }}>
-              <span style={{ fontFamily: "var(--hand)", fontSize: 14, fontWeight: 600 }}>{artifact.name}</span>
-              <span style={{ display: "block", fontFamily: "var(--hand)", fontSize: 11, color: "var(--pencil)", marginTop: 4 }}>{artifact.description}</span>
-            </button>;
-
+            return (
+              <button
+                key={artifact.id}
+                type="button"
+                aria-pressed={selected}
+                onClick={() => setSelectedMode(artifact.id)}
+                className="card"
+                style={{
+                  cursor: "pointer",
+                  textAlign: "left",
+                  border: selected ? "2px solid var(--accent)" : "1.3px solid var(--rule)",
+                  background: selected ? "var(--paper)" : undefined,
+                  padding: 12,
+                }}
+              >
+                <div style={{ fontFamily: "var(--hand)", fontSize: 14, fontWeight: 600 }}>{artifact.name}</div>
+                <div style={{ fontFamily: "var(--hand)", fontSize: 12, color: "var(--pencil)", marginTop: 4 }}>
+                  {artifact.description}
+                </div>
+              </button>
+            );
           })}
         </div>
         <p id="design-artifact-types-help" style={{ fontFamily: "var(--hand)", fontSize: 11, color: "var(--pencil)", margin: "10px 0 0" }}>Keyboard: Tab moves between artifact types; Enter or Space selects one. The selected type is announced as pressed.</p>
       </section>
 
-      <section className="card" style={{ marginBottom: 16, borderColor: catalog.status === "ready" ? "var(--ok, #5a9a4a)" : "var(--rule)" }} aria-live="polite" aria-labelledby="design-resources-title">
-        <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "baseline", flexWrap: "wrap" }}><h2 id="design-resources-title" style={{ fontFamily: "var(--hand)", fontSize: 15, margin: 0 }}>Design resources</h2><span style={{ fontFamily: "var(--mono)", fontSize: 9, textTransform: "uppercase" }}>{catalog.status}</span></div>
-        <p style={{ fontFamily: "var(--hand)", fontSize: 12, color: "var(--pencil)", margin: "6px 0 0" }}>{catalog.message}</p>
-        {catalog.skills.length > 0 && <label style={{ display: "block", marginTop: 10, fontSize: 12 }}>Design skill
-          <select value={selectedSkillSlug} onChange={(event) => selectSkill(event.target.value)} aria-describedby="design-skill-help">
-            {catalog.skills.map((candidate) => <option key={candidate.slug} value={candidate.slug}>{candidate.name}</option>)}
-          </select>
-        </label>}
-        {catalog.skills.length > 0 && <div aria-label="Available design skills" style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 10 }}>{catalog.skills.map((candidate) => <span key={candidate.slug} style={{ fontSize: 11, color: "var(--pencil)" }}>{candidate.name}</span>)}</div>}
-        {catalog.systems.length > 0 && <label style={{ display: "block", marginTop: 8, fontSize: 12 }}>Design system
-          <select value={systemSlug} onChange={(event) => setSelectedSystemSlug(event.target.value)}><option value="">Choose a design system</option>{catalog.systems.map((system) => <option key={system.slug} value={system.slug}>{system.name}</option>)}</select>
-        </label>}
-        {skill && <p id="design-skill-help" style={{ color: "var(--pencil)", fontSize: 11, marginBottom: 0 }}>{skill.description}</p>}
-      </section>
-
-      <section className="card" style={{ marginBottom: 16 }} aria-labelledby="persisted-projects-title">
-        <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "baseline", flexWrap: "wrap" }}><h2 id="persisted-projects-title" style={{ fontFamily: "var(--hand)", fontSize: 15, margin: 0 }}>Persisted Design projects</h2><span style={{ fontFamily: "var(--mono)", fontSize: 9, textTransform: "uppercase" }}>{projectState.status}</span></div>
+      <div className="card" style={{ marginBottom: 16, borderColor: catalogBorder }} aria-live="polite">
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "baseline", flexWrap: "wrap" }}>
+          <div style={{ fontFamily: "var(--hand)", fontSize: 15, fontWeight: 600 }}>Design resources</div>
+          <div style={{ fontFamily: "var(--mono)", fontSize: 12, textTransform: "uppercase" }}>
+            {catalog.status}
+          </div>
+        </div>
         <div style={{ fontFamily: "var(--hand)", fontSize: 12, color: "var(--pencil)", marginTop: 6 }}>
           {projectState.message} These are read-only facts from the Design service; they do not claim that visual generation occurred.
         </div>
-        {projectState.projects.length > 0 && (
-          <div role="list" style={{ display: "grid", gap: 8, marginTop: 10 }} aria-label="Persisted Design projects">
-            {projectState.projects.map((project) => (
-              <div key={project.id} role="listitem" style={{ border: "1px solid var(--rule)", borderRadius: 6, padding: "9px 10px" }}>
-                <div style={{ display: "flex", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
-                  <span style={{ fontFamily: "var(--hand)", fontSize: 13, fontWeight: 600 }}>{project.name}</span>
-                  <span style={{ fontFamily: "var(--mono)", fontSize: 8, textTransform: "uppercase", color: "var(--accent)" }}>
-                    {project.output_count} stored output{project.output_count === 1 ? "" : "s"}
-                  </span>
-                </div>
-                <div style={{ fontFamily: "var(--mono)", fontSize: 9, color: "var(--pencil)", marginTop: 3 }}>
-                  {project.skill_slug} · {project.design_system_slug}
-                </div>
-              </div>
+        {catalog.skills.length > 0 && (
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 10 }} aria-label="Available design skills">
+            {catalog.skills.map((skill) => (
+              <span key={skill.slug} className="btn" style={{ fontSize: 12, padding: "2px 7px", cursor: "default" }}>
+                {skill.name}
+              </span>
             ))}
           </div>
         )}
       </section>
 
-      <section className="card" style={{ marginBottom: 16 }} aria-labelledby="artifact-brief-title">
-        <h2 id="artifact-brief-title" style={{ fontFamily: "var(--hand)", fontSize: 16, margin: "0 0 4px" }}>{mode.name}</h2>
-        <p style={{ fontFamily: "var(--hand)", fontSize: 12, color: "var(--pencil)", margin: "0 0 12px" }}>{mode.description}</p>
-        {skill?.discovery_form?.map((field) => <label key={field.key} style={{ display: "block", marginBottom: 10, fontSize: 12 }}>{field.label}{field.required === false ? " (optional)" : ""}
-          {field.field_type === "select" ? <select value={responses[field.key] ?? ""} onChange={(event) => setResponses((current) => ({ ...current, [field.key]: event.target.value }))}>{field.options?.map((option) => <option key={option} value={option}>{option}</option>)}</select> : field.field_type === "color" ? <input type="color" value={responses[field.key] || "#6366f1"} onChange={(event) => setResponses((current) => ({ ...current, [field.key]: event.target.value }))} /> : <input value={responses[field.key] ?? ""} onChange={(event) => setResponses((current) => ({ ...current, [field.key]: event.target.value }))} />}
-          <span style={{ display: "block", color: "var(--pencil)", fontSize: 11 }}>{field.description}</span>
-        </label>)}
-        <label htmlFor="design-prompt" style={{ fontFamily: "var(--hand)", fontSize: 13, display: "block", marginBottom: 6 }}>Describe the artifact</label>
-        <p id="design-prompt-help" style={{ fontFamily: "var(--hand)", fontSize: 11, color: "var(--pencil)", margin: "0 0 6px" }}>Enter a brief, then open the keyboard-complete editor. The draft stays local until a durable project save is connected.</p>
-        <textarea id="design-prompt" aria-describedby="design-prompt-help" value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder={`Describe the ${mode.name.toLowerCase()} you want to create…`} rows={4} style={{ width: "100%", boxSizing: "border-box", padding: "10px 12px", borderRadius: 8, border: "1px solid var(--rule)", fontFamily: "var(--hand)", fontSize: 14, resize: "vertical" }} />
+      <div className="card" style={{ marginBottom: 16 }}>
+        <div style={{ fontFamily: "var(--hand)", fontSize: 16, fontWeight: 600, marginBottom: 4 }}>
+          {mode.name}
+        </div>
+        <div style={{ fontFamily: "var(--hand)", fontSize: 12, color: "var(--pencil)", marginBottom: 12 }}>
+          {mode.description}
+        </div>
+        {mode.note && (
+          <div role="status" style={{ fontFamily: "var(--mono)", fontSize: 12, marginBottom: 10 }}>
+            {mode.note}
+          </div>
+        )}
+        <label htmlFor="design-prompt" style={{ fontFamily: "var(--hand)", fontSize: 13, display: "block", marginBottom: 6 }}>
+          Describe the artifact
+        </label>
+        <textarea
+          id="design-prompt"
+          value={prompt}
+          onChange={(event) => setPrompt(event.target.value)}
+          placeholder={`Describe the ${mode.name.toLowerCase()} you want to create…`}
+          rows={4}
+          style={{
+            width: "100%",
+            boxSizing: "border-box",
+            padding: "10px 12px",
+            borderRadius: 8,
+            border: "1px solid var(--rule)",
+            fontFamily: "var(--hand)",
+            fontSize: 14,
+            resize: "vertical",
+          }}
+        />
         <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginTop: 10 }}>
-          <button type="button" className="btn-primary" disabled={!canOpenEditor} onClick={openEditor} aria-describedby="design-execution-state" style={{ padding: "9px 16px", borderRadius: 8 }}>{selectedMode === "deck" ? "Open Deck editor" : "Open editor"}</button>
-          <span id="design-execution-state" role="status" aria-live="polite" style={{ fontFamily: "var(--hand)", fontSize: 11, color: "var(--pencil)" }}>{status}</span>
+          <button
+            type="button"
+            className="btn-primary"
+            disabled
+            aria-describedby="design-execution-state"
+            style={{ padding: "9px 16px", borderRadius: 8, cursor: "not-allowed", opacity: 0.55 }}
+          >
+            {selectedMode === "deck" ? "Open Deck editor" : "Generate visual"}
+          </button>
+          <span id="design-execution-state" style={{ fontFamily: "var(--hand)", fontSize: 12, color: "var(--pencil)" }}>
+            Visual generation is not available yet. Nothing is submitted or simulated while this control is disabled.
+          </span>
+        </div>
+      </div>
 
         </div>
-      </section>
-
-      {/* #768: the selected fixed-page artifact is previewed and edited only
-          through the shared visual boundary. Markup loaded from storage or
-          pasted/dropped by the user is sanitized here, and the pre-scan
-          verdict travels with the artifact so blocked content is never
-          recommended for a trust upgrade. */}
-      {selectedMode !== "deck" && (
-        <section className="card" style={{ marginBottom: 16 }} aria-label={`${mode.name} visual artifact`}>
-          <FixedPageArtifactEditor
-            key={selectedMode}
-            mode={selectedMode}
-            initialMarkup={artifactMarkup[selectedMode]?.markup}
-            initialTrustRecommendation={artifactMarkup[selectedMode]?.trustRecommendation}
-            onMarkupChange={(markup, trustRecommendation) => persistArtifactMarkup(selectedMode, markup, trustRecommendation)}
-          />
-        </section>
-      )}
-
-      <section className="card" aria-labelledby="availability-title"><h2 id="availability-title" style={{ fontFamily: "var(--hand)", fontSize: 15, margin: "0 0 10px" }}>Availability</h2><div role="list" aria-label="Design Studio availability" style={{ display: "grid", gap: 8 }}>
-        {[{ label: "Design resource discovery", state: catalog.status === "ready" ? "available" : catalog.status, detail: "Skills and design systems are discovered from the connected Design service." }, { label: "Editing + preview", state: "available", detail: "Fixed-page and Deck editors expose selection, property controls, keyboard movement, and visible status." }, { label: "Presentation + export", state: "available", detail: "Deck presentation, ordered-page navigation, and HTML/print export are keyboard-operable." }].map((step) => <div key={step.label} role="listitem" style={{ border: "1px solid var(--rule)", borderRadius: 6, padding: "9px 10px" }}><div style={{ display: "flex", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}><span style={{ fontFamily: "var(--hand)", fontSize: 13, fontWeight: 600 }}>{step.label}</span><span style={{ fontFamily: "var(--mono)", fontSize: 8, textTransform: "uppercase", color: "var(--accent)" }}>{step.state}</span></div><div style={{ fontFamily: "var(--hand)", fontSize: 11, color: "var(--pencil)", marginTop: 3 }}>{step.detail}</div></div>)}
-      </div></section>
+        <div style={{ display: "grid", gap: 8 }} role="list" aria-label="Design Studio availability">
+          {[
+            {
+              label: "Design resource discovery",
+              state: catalog.status === "ready" ? "available" : catalog.status,
+              detail: "Available design skills and design systems are discovered from the connected Design service. Brief creation is not connected yet.",
+            },
+            {
+              label: "Visual generation",
+              state: "not yet available",
+              detail: "Generation stays disabled until durable execution is connected. The Studio never substitutes a local animation or placeholder result.",
+            },
+            {
+              label: "Edit + preview",
+              state: selectedMode === "deck" ? "temporarily unavailable" : "not yet available",
+              detail: selectedMode === "deck"
+                ? "Deck editing stays closed until its secure rendering path is enabled."
+                : "The fixed-page editor will use the same Design Studio project and artifact state.",
+            },
+            {
+              label: "Publish + export",
+              state: "not yet available",
+              detail: "Export will become available with the durable editor and artifact pipeline.",
+            },
+          ].map((step) => (
+            <div key={step.label} role="listitem" style={{ border: "1px solid var(--rule)", borderRadius: 6, padding: "9px 10px" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
+                <span style={{ fontFamily: "var(--hand)", fontSize: 13, fontWeight: 600 }}>{step.label}</span>
+                <span style={{ fontFamily: "var(--mono)", fontSize: 12, textTransform: "uppercase", color: "var(--accent)" }}>
+                  {step.state}
+                </span>
+              </div>
+              <div style={{ fontFamily: "var(--hand)", fontSize: 12, color: "var(--pencil)", marginTop: 3 }}>
+                {step.detail}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
     </div>
 
   );

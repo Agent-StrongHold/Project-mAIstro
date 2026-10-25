@@ -28,7 +28,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import Any, ClassVar
 
 from pydantic import BaseModel, Field
 
@@ -59,32 +59,7 @@ from maistro.providers.registry import InMemoryProviderRegistry
 from maistro.providers.router import CostAwareRouter
 
 from . import register_node
-from .base import BaseNode, NodeContext, ReplaySemantics, replay_effect_key
-
-if TYPE_CHECKING:
-    from maistro.providers.protocols import LLMProviderRegistry, LLMRouter
-
-
-def _scoped_effect_key(ctx: NodeContext, inputs: LlmSummarizeIn, supervised_rung: str) -> str:
-    """The Run/node-scoped logical key for one governed completion.
-
-    Two ``llm.summarize`` nodes sharing a Binding and model must not file the
-    same keyed effect: the durable executor binds this key as the Invocation
-    ``effect_scope``, so a model-only key let the second node adopt the
-    first's completed summary. Run + graph node identity, an input digest
-    (so re-work with new source is new work), and the escalation rung keep
-    every distinct completion distinct while retries of one visit reconcile.
-    A blank rung (unsupervised visit) and ``inputs.model`` agree by
-    construction, so the scope bound at frontier preparation and the key
-    passed inside ``_execute`` can never diverge.
-    """
-
-    rung = supervised_rung.strip() or inputs.model
-    return replay_effect_key(
-        ctx,
-        "llm.summarize.complete",
-        {"rung": rung, "inputs": inputs.model_dump(mode="json")},
-    )
+from .base import BaseNode, NodeContext, ReplaySemantics
 
 
 class LlmSummarizeIn(BaseModel):
@@ -157,28 +132,14 @@ class LlmSummarizeNode(BaseNode[LlmSummarizeIn, LlmSummarizeOut]):
     # The shipped model path crosses the governed model egress (#56): the
     # Container's effect context is what makes Bindings resolve; the bare
     # default authorizes nothing, which is a refusal rather than a no-op.
-    # `registry`/`router` are likewise the Container's own Provider registry
-    # and cost-aware router (#1079), so a resolver-built node reads real
-    # Provider metadata and routes through the same authorities the rest of
-    # production does, rather than each node's bare `InMemoryProviderRegistry`
-    # default silently substituting empty state.
-    optional_authorities: ClassVar[Mapping[str, str]] = {
-        "effect_context": "effect_context",
-        "registry": "provider_registry",
-        "router": "llm_router",
-    }
+    optional_authorities: ClassVar[Mapping[str, str]] = {"effect_context": "effect_context"}
     kind_category: ClassVar = "sync.llm"
     input_schema: ClassVar[type[BaseModel]] = LlmSummarizeIn
     output_schema: ClassVar[type[BaseModel]] = LlmSummarizeOut
     cost_hint: ClassVar[float] = 3.0  # billable LLM call
-    # Retryable under an effect key (epic M4-I): the governed completion
-    # already files its Invocation under the stable key
-    # ``llm.summarize.complete:{rung}``, so a re-visit is a *new* keyed effect,
-    # never a blind replay of an unbilled one. The default visit budget is
-    # still one attempt, so nothing changes for graphs that declare neither
-    # ``max_attempts`` nor an ``escalation_ladder`` — the semantics only open
-    # the door the executor's quality supervision walks through.
-    replay_semantics: ClassVar[ReplaySemantics] = ReplaySemantics.EFFECT_KEY
+    replay_semantics: ClassVar[ReplaySemantics] = (
+        ReplaySemantics.NON_RETRYABLE
+    )  # LLM output varies; not safe to retry blindly
     external_io: ClassVar[bool] = True
     display_name: ClassVar[str] = "LLM: summarize"
     description: ClassVar[str] = (

@@ -195,11 +195,7 @@ async def test_execute_dag_streaming_fails_when_llm_unconfigured(
                 ],
                 "edges": [],
             },
-            scope=DagExecutionScope(
-                workspace_id="test-workspace",
-                project_id=canonical_graph_spine.project_id,
-                user_id="test-user",
-            ),
+            scope=_execution_scope(),
         )
     ]
 
@@ -487,11 +483,7 @@ async def test_execute_dag_builds_config_and_returns_shape(
             "edges": [{"from_node": "n1", "to_node": "n2"}],
             "entry_node": "n1",
         },
-        scope=DagExecutionScope(
-            workspace_id="test-workspace",
-            project_id=canonical_graph_spine.project_id,
-            user_id="test-user",
-        ),
+        scope=_execution_scope(),
     )
     assert out["status"] == "completed"
     assert out["cycles"] == 2  # wave 1: n1, wave 2: n2
@@ -530,11 +522,7 @@ async def test_execute_dag_entry_node_fallback_to_first_node(
             # entry_node missing — wave executor needs no explicit entry; any
             # node with no inbound edges is a start node
         },
-        scope=DagExecutionScope(
-            workspace_id="test-workspace",
-            project_id=canonical_graph_spine.project_id,
-            user_id="test-user",
-        ),
+        scope=_execution_scope(),
     )
     assert out["status"] == "completed"
     assert out["cycles"] == 1

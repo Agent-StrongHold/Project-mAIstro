@@ -240,33 +240,29 @@ jobs:
       - name: Start MinIO
         run: |
           set -euo pipefail
-          # Build the pinned RELEASE from source rather than pulling an image.
-          # MinIO archived the community server: quay.io now answers 401 for
-          # `minio/minio` and dl.min.io answers 410 for every release binary,
-          # so no anonymous prebuilt artifact remains. The source still does,
-          # through the Go module proxy, and `go install` checks every module
-          # it fetches against sum.golang.org, so the pin is content-verified
-          # without a secret. This pseudo-version is RELEASE.2025-04-22T22-12-26Z
-          # (commit 0d7408fc9969), the same server build the image pin named.
-          version=v0.0.0-20250422221226-0d7408fc9969
-          # Retry the fetch-and-build alone: a proxy hiccup is not a storage
-          # bug, and the automation that watches these PRs cannot re-run a
-          # job (403). A MinIO that starts and never answers still fails once.
-          for attempt in 1 2 3; do
-            if go install "github.com/minio/minio@${version}"; then
+          image=quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z
+          # Pull before `docker run`, retrying the fetch alone. quay.io answered
+          # `502 Bad Gateway` on one PR run and `unauthorized: Unknown service
+          # key` on one merge-group run in a single night (2026-09-15), each
+          # before a test had run, and each cost a queue round: the automation
+          # that watches these PRs cannot re-run a job (403). Only the network
+          # step is retried, the same shape as scripts/prepull-base-images.sh;
+          # a MinIO that starts and never answers still fails once, below.
+          for attempt in 1 2 3 4; do
+            if docker pull "$image"; then
               break
             fi
-            if [ "$attempt" -eq 3 ]; then
-              echo "::error::could not build minio@${version} after 3 attempts" >&2
+            if [ "$attempt" -eq 4 ]; then
+              echo "::error::could not pull $image after 4 attempts" >&2
               exit 1
             fi
-            echo "::warning::go install of minio@${version} failed (attempt $attempt/3); retrying" >&2
+            echo "::warning::pull of $image failed (attempt $attempt/4); retrying" >&2
             sleep $((attempt * 5))
           done
-          mkdir -p "$RUNNER_TEMP/minio-data"
-          MINIO_ROOT_USER=minioadmin MINIO_ROOT_PASSWORD=minioadmin \
-            nohup "$(go env GOPATH)/bin/minio" server "$RUNNER_TEMP/minio-data" \
-            --address 127.0.0.1:9000 >"$RUNNER_TEMP/minio.log" 2>&1 &
+          docker run -d --name minio -p 9000:9000 \
+            -e MINIO_ROOT_USER=minioadmin \
+            -e MINIO_ROOT_PASSWORD=minioadmin \
+            "$image" server /data
           # Poll the health endpoint rather than sleeping a fixed amount: a
           # fixed sleep is either slower than it needs to be or racy, and the
           # race surfaces as a connection error that reads exactly like the
@@ -768,7 +764,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
-      # Candidate grants must never authorize their own changes.
+      MAISTRO_TEST_PG_DSN: postgresql://maistro:maistro@127.0.0.1:5432/maistro_test
+      DATABASE_URL: postgresql://maistro:maistro@127.0.0.1:5432/maistro_test
+      # AC-state must read the same candidate base for a topic push and its
+      # pull-request run. `before` is the previous topic tip and may already
+      # contain the candidate's own note, so it is not an independent base.
+      # Protected-branch pushes are different: their parent is the immutable
+      # revision the merge-time guard replaces.
       RATCHET_BASE_REV: >-
         ${{ github.event_name == 'pull_request'
             && format('origin/{0}', github.base_ref)

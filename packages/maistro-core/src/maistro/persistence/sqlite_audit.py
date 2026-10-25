@@ -6,8 +6,6 @@ import logging
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
-from maistro.persistence.audit_pages import AUDIT_PAGE_INDEXES, AuditPage, make_page, page_query
-from maistro.security.sentinel.signing import SIGNING_KEY_ENV, AuditSigner
 from maistro.sqlite_schema import serialized_schema_upgrade
 from maistro.types.security import AuditEntry
 
@@ -88,59 +86,9 @@ class SqliteAuditLog:
             )
 
     async def ensure_schema(self) -> None:
-        """Create or upgrade the audit_log table, its scope and page indexes.
-
-        SQLite has no ``ADD COLUMN IF NOT EXISTS``. Inspecting the table keeps
-        existing homelab databases readable while making the empty string an
-        explicit representation for legacy system/unscoped entries, and adds
-        the ADR-073 proof columns to databases created before signed records.
-        The whole read-then-DDL sequence runs under the shared schema-upgrade
-        lock so concurrent processes cannot both decide a column is absent.
-        """
+        """Create the audit_log table if it doesn't exist."""
         async with serialized_schema_upgrade(self._conn):
             await self._conn.execute(_SCHEMA)
-            cursor = await self._conn.execute("PRAGMA table_info(audit_log)")
-            columns = {row[1] for row in await cursor.fetchall()}
-            if "org_id" not in columns:
-                await self._conn.execute(
-                    "ALTER TABLE audit_log ADD COLUMN org_id TEXT NOT NULL DEFAULT ''"
-                )
-            for name in ("signature", "signing_key_id", "proof_type"):
-                if name not in columns:
-                    await self._conn.execute(
-                        f"ALTER TABLE audit_log ADD COLUMN {name} TEXT NOT NULL DEFAULT ''"  # nosec B608
-                    )
-            await self._conn.execute(
-                "CREATE INDEX IF NOT EXISTS ix_audit_log_scope ON audit_log (org_id, timestamp)"
-            )
-
-            for name, fields in AUDIT_PAGE_INDEXES.items():
-                await self._conn.execute(
-                    f"CREATE INDEX IF NOT EXISTS {name} ON audit_log ({', '.join(fields)})"
-                )
-
-    async def get_page(
-        self,
-        *,
-        org_id: str = "",
-        user_id: str | None = None,
-        boundary: str | None = None,
-        denied: bool | None = None,
-        limit: int = 50,
-        cursor: str | None = None,
-    ) -> AuditPage:
-        query, params = page_query(
-            org_id=org_id,
-            user_id=user_id,
-            boundary=boundary,
-            denied=denied,
-            limit=limit,
-            cursor=cursor,
-        )
-        async with self._conn.execute(query, params) as result:
-            names = [column[0] for column in result.description]
-            rows = [dict(zip(names, row, strict=True)) for row in await result.fetchall()]
-        return make_page(rows, limit)
 
     async def log(self, entry: AuditEntry) -> None:
         """Sign and record an audit entry."""
