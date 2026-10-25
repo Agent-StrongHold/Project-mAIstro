@@ -72,6 +72,7 @@ WHEEL_URL = (
     "ed458527c770c50225b60bae3b0c3444b26804ee455fa2d8f187018d2cb2/"
     "bfcl_eval-2026.3.23-py3-none-any.whl"
 )
+# DevSkim: ignore DS173237 until 2027-12-31
 WHEEL_SHA256 = "3bb6dfa5f0c68ad403c9ec50b00db2bb3b4cc9b38ab1ff33f48fe30d853d3a0a"
 UPSTREAM_VERSION = "2026.3.23"
 
@@ -80,66 +81,79 @@ ARTIFACTS: list[tuple[str, str, str]] = [
     (
         "bfcl_eval/eval_checker/ast_eval/ast_checker.py",
         "ast_checker.py",
+        # DevSkim: ignore DS173237 until 2027-12-31
         "2aae7a68461a8f76c0be3894c8901b66b56967a1989d3ab066051e3fb97f1538",
     ),
     (
         "bfcl_eval/eval_checker/ast_eval/type_convertor/java_type_converter.py",
         "type_convertor/java_type_converter.py",
+        # DevSkim: ignore DS173237 until 2027-12-31
         "2fd4f4b0443b3dd974a1723bb4e45c086d7b352631062da7807ad1ad40706604",
     ),
     (
         "bfcl_eval/eval_checker/ast_eval/type_convertor/js_type_converter.py",
         "type_convertor/js_type_converter.py",
+        # DevSkim: ignore DS173237 until 2027-12-31
         "a114e9ff75c025cb52787ac33d6c2fbaa390905c6125a2b3c6afebab232bb5e4",
     ),
     (
         "bfcl_eval/constants/enums.py",
         "enums.py",
+        # DevSkim: ignore DS173237 until 2027-12-31
         "2182becfa2a1d071ee1db30db593b4758c6bf866aa12d2d4b8daf09175ea518a",
     ),
     (
         "bfcl_eval/constants/type_mappings.py",
         "type_mappings.py",
+        # DevSkim: ignore DS173237 until 2027-12-31
         "1702fb67afbe2c492608e58e2b7d02e46381f50166b47f3c952f76e34c7cd3bd",
     ),
     (
         "bfcl_eval/data/BFCL_v4_simple_python.json",
         "data/BFCL_v4_simple_python.json",
+        # DevSkim: ignore DS173237 until 2027-12-31
         "82dd63ba502eb2520c6b5d1d9a5c4b590e03ff261565175561f6228a367d1991",
     ),
     (
         "bfcl_eval/data/BFCL_v4_multiple.json",
         "data/BFCL_v4_multiple.json",
+        # DevSkim: ignore DS173237 until 2027-12-31
         "aef168155ebd74b7ac2401198b201343bc7d16d7a3d7e0d4e6d8ee82c6969b2a",
     ),
     (
         "bfcl_eval/data/BFCL_v4_parallel.json",
         "data/BFCL_v4_parallel.json",
+        # DevSkim: ignore DS173237 until 2027-12-31
         "19f51a82eff42e5d62541aa500115a056eb78f437c2ba1f10415fd7c8e5dda84",
     ),
     (
         "bfcl_eval/data/BFCL_v4_parallel_multiple.json",
         "data/BFCL_v4_parallel_multiple.json",
+        # DevSkim: ignore DS173237 until 2027-12-31
         "8863ea8433239f55c5f016154cf0830853c89f693c6ea270396a2fa121960579",
     ),
     (
         "bfcl_eval/data/possible_answer/BFCL_v4_simple_python.json",
         "data/possible_answer/BFCL_v4_simple_python.json",
+        # DevSkim: ignore DS173237 until 2027-12-31
         "90cd5bc653690ee8e459b5b3f3fc9458606f7f3fcbf795bb51b7dc581f8c86dc",
     ),
     (
         "bfcl_eval/data/possible_answer/BFCL_v4_multiple.json",
         "data/possible_answer/BFCL_v4_multiple.json",
+        # DevSkim: ignore DS173237 until 2027-12-31
         "244e00ce9395df948bcafc7bee64e8f9c87ef70887587d83cae45b13699f3047",
     ),
     (
         "bfcl_eval/data/possible_answer/BFCL_v4_parallel.json",
         "data/possible_answer/BFCL_v4_parallel.json",
+        # DevSkim: ignore DS173237 until 2027-12-31
         "8a6aa19c1adddc6a5a2f7e40f9dbf30cc7e95815e7b830c90589ab318229e0f0",
     ),
     (
         "bfcl_eval/data/possible_answer/BFCL_v4_parallel_multiple.json",
         "data/possible_answer/BFCL_v4_parallel_multiple.json",
+        # DevSkim: ignore DS173237 until 2027-12-31
         "5ebf24f458c1f16300c05505d83d6f0a1b68b79be273a033febd0d4f840507e3",
     ),
 ]
@@ -154,33 +168,46 @@ ARTIFACTS: list[tuple[str, str, str]] = [
 #
 # Regenerate by running the script and copying the "Rendered pins" block.
 RENDERED_SHA256: dict[str, str] = {
+    # DevSkim: ignore DS173237 until 2027-12-31
     "ast_checker.py": "7a227778b8b201b464105d342935af6d77216d074e1f76977d8e2040801e4c17",
+    # DevSkim: ignore DS173237 until 2027-12-31
     "type_convertor/java_type_converter.py": "7077f32e80358b5fa91364a2ec49ddd65d53bb05e164aeaa517af6a3c7e99ef4",
+    # DevSkim: ignore DS173237 until 2027-12-31
     "type_convertor/js_type_converter.py": "385450eb8e3942bdab65c23323dba65af172c15448808d65c9e3497c0b34a643",
+    # DevSkim: ignore DS173237 until 2027-12-31
     "enums.py": "6381ebe7bb116e7c0c0e442854c43a9b25851190c28a0655442bb3dc250e5019",
+    # DevSkim: ignore DS173237 until 2027-12-31
     "type_mappings.py": "0aabe8465de6d7d3ff487a4b5223ba78330626fcc1ce48e62e63d6cdace174ae",
     "data/BFCL_v4_simple_python.json": (
+        # DevSkim: ignore DS173237 until 2027-12-31
         "82dd63ba502eb2520c6b5d1d9a5c4b590e03ff261565175561f6228a367d1991"
     ),
     "data/BFCL_v4_multiple.json": (
+        # DevSkim: ignore DS173237 until 2027-12-31
         "aef168155ebd74b7ac2401198b201343bc7d16d7a3d7e0d4e6d8ee82c6969b2a"
     ),
     "data/BFCL_v4_parallel.json": (
+        # DevSkim: ignore DS173237 until 2027-12-31
         "19f51a82eff42e5d62541aa500115a056eb78f437c2ba1f10415fd7c8e5dda84"
     ),
     "data/BFCL_v4_parallel_multiple.json": (
+        # DevSkim: ignore DS173237 until 2027-12-31
         "8863ea8433239f55c5f016154cf0830853c89f693c6ea270396a2fa121960579"
     ),
     "data/possible_answer/BFCL_v4_simple_python.json": (
+        # DevSkim: ignore DS173237 until 2027-12-31
         "90cd5bc653690ee8e459b5b3f3fc9458606f7f3fcbf795bb51b7dc581f8c86dc"
     ),
     "data/possible_answer/BFCL_v4_multiple.json": (
+        # DevSkim: ignore DS173237 until 2027-12-31
         "244e00ce9395df948bcafc7bee64e8f9c87ef70887587d83cae45b13699f3047"
     ),
     "data/possible_answer/BFCL_v4_parallel.json": (
+        # DevSkim: ignore DS173237 until 2027-12-31
         "8a6aa19c1adddc6a5a2f7e40f9dbf30cc7e95815e7b830c90589ab318229e0f0"
     ),
     "data/possible_answer/BFCL_v4_parallel_multiple.json": (
+        # DevSkim: ignore DS173237 until 2027-12-31
         "5ebf24f458c1f16300c05505d83d6f0a1b68b79be273a033febd0d4f840507e3"
     ),
 }

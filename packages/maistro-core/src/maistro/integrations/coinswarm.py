@@ -18,7 +18,7 @@ logger = logging.getLogger("maistro.integrations.coinswarm")
 class CoinSwarmIntegration:
     def __init__(
         self,
-        url: str = "http://localhost:8080",
+        url: str = "http://localhost:8080",  # DevSkim: ignore DS162092 until 2027-12-31
         event_bus: EventBus | None = None,
     ) -> None:
         self._url = url.rstrip("/")

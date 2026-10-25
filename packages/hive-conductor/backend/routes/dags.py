@@ -23,12 +23,12 @@ from routes.audit import log_audit
 def _public_failure(exc: BaseException) -> str:
     """What a caller may learn about an unexpected failure: the kind, not the text.
 
-    Exception messages carry file paths, connection strings, and provider
-    replies; the full detail is in the server log with the traceback, and the
-    response names only the exception class so a client can still tell a
-    timeout from a type error.
+    Delegates to ``graph_runner.public_failure`` so HTTP and WebSocket share
+    one contract (kind-only, with the ALLOW_STUB_LLM remediation preserved).
     """
-    return f"{type(exc).__name__}: execution failed; see server logs"
+    from services.graph_runner import public_failure
+
+    return public_failure(exc)
 
 
 router = APIRouter(tags=["dags"])
@@ -442,11 +442,14 @@ async def run_dag(
         result = exc.result
         await _record_run_projection(dag_id=dag_id, user_id=actor, result=result)
         run_id = result.get("run_id")
+        # Exception text mirrors result["error"] and can carry node/provider
+        # detail; the browser gets the kind only (CodeQL py/stack-trace-exposure).
+        logger.warning("Canonical DAG execution failed: %s", exc, exc_info=exc)
         return {
             "status": result.get("status", "failed"),
             "execution_id": run_id,
             "run_id": run_id,
-            "error": str(exc),
+            "error": _public_failure(exc),
             "result": result,
         }
     except Exception as exc:

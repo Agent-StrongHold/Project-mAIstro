@@ -34,7 +34,10 @@ TURING_SERVICE_NAME = "turing-internal"
 
 
 def cors_origins() -> list[str]:
-    raw = os.environ.get("TURING_CORS_ORIGINS", "http://localhost:4321,http://127.0.0.1:4321")
+    raw = os.environ.get(
+        "TURING_CORS_ORIGINS",
+        "http://localhost:4321,http://127.0.0.1:4321",  # DevSkim: ignore DS162092 until 2027-12-31
+    )
     return [o.strip() for o in raw.split(",") if o.strip()]
 
 
