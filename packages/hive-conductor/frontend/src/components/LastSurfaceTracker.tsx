@@ -17,6 +17,7 @@ import {
   recordImmediateLandingHop,
 } from "../lib/landing";
 import {
+  hasUiStateOwner,
   readLandingNavPattern,
   writeLandingNavPattern,
   writeLastSurface,
@@ -31,6 +32,8 @@ function barePath(pathname: string): string {
 }
 
 function record(pathname: string, sessionStartedAtMs: number, leftAtMs: number): void {
+  // Refuse writes once logout cleared the owner stamp (pagehide race).
+  if (!hasUiStateOwner()) return;
   const path = normalizeRestorePath(pathname);
   if (!path) return;
   writeLastSurface({ path, leftAtMs, sessionStartedAtMs });

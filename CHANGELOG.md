@@ -56,7 +56,9 @@ or placeholder-only section.
   preferences (JsonStore, same shape as Home adaptive dismissals). GET Attention
   filters those source ids and reports `dismissed_count`. Defer/Dismiss CTAs on
   the Attention page write that door; answering still stays on the HITL answer
-  route. Does not settle HITL or Run state.
+  route. Approve/reject pauses submit `{ verdict }` (not a text-only
+  `{ answer }`) so the durable store can resume. Does not settle HITL or Run
+  state outside that door.
 
 - **DAG Run projection writers honor #1036 nonterminal mirroring.** HTTP
   `_record_run_projection` and live `LiveRunProjection.record_result` now

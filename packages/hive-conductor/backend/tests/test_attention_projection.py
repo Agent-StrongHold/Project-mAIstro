@@ -190,6 +190,7 @@ async def test_a_near_deadline_outranks_an_older_undated_question(run_store) -> 
         "rising": ["att-due/ask"],
         "truncated": False,
         "hitl_unavailable": False,
+        "dismissed_count": 0,
     }
 
     # The horizon is configurable, and widening it is the only thing that
@@ -251,6 +252,7 @@ async def test_a_long_old_backlog_cannot_push_out_a_near_deadline(run_store) -> 
         "rising": ["att-urgent/ask"],
         "truncated": True,
         "hitl_unavailable": False,
+        "dismissed_count": 0,
     }
 
 
@@ -327,6 +329,7 @@ async def test_a_machine_wait_is_not_attention(run_store) -> None:
         "rising": [],
         "truncated": False,
         "hitl_unavailable": False,
+        "dismissed_count": 0,
     }
 
 

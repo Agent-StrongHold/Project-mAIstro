@@ -106,10 +106,18 @@ export function readLastSurface(): RecentSurface | null {
   }
 }
 
+/** True when a signed-in owner stamp is present (false after clearUiState). */
+export function hasUiStateOwner(): boolean {
+  return read(OWNER_KEY) !== null;
+}
+
 /** Persist the surface the user is about to leave (or just left). */
 export function writeLastSurface(surface: RecentSurface): void {
   const path = normalizeRestorePath(surface.path);
   if (!path) return;
+  // After sign-out clears UI state, pagehide must not recreate last-surface
+  // without an owner stamp — the next account's claimUiState would inherit it.
+  if (!hasUiStateOwner()) return;
   try {
     localStorage.setItem(
       LAST_SURFACE_KEY,

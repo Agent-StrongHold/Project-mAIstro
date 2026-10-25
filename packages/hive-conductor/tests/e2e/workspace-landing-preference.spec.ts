@@ -90,6 +90,8 @@ test("API refuses an out-of-allow-list landing path", async () => {
 test("recent-return restores the prior surface inside the aggressiveness window", async () => {
   // Default landing is Home; a fresh last-surface for Chat within the
   // generous window must win (#1050 recent-return precedence).
+  // Seed via addInitScript so LastSurfaceTracker pagehide on an outgoing
+  // /home document cannot overwrite the fixture before `/` mounts.
   await page.request.put("/v1/profile", {
     data: {
       preferences: {
@@ -99,8 +101,7 @@ test("recent-return restores the prior surface inside the aggressiveness window"
     },
   });
   const now = Date.now();
-  await page.goto("/home"); // ensure document so localStorage is writable
-  await page.evaluate(
+  await page.addInitScript(
     ([leftAt, started]) => {
       window.localStorage.setItem(
         "hive_last_surface",
@@ -128,7 +129,7 @@ test("restore aggressiveness off always uses the default landing", async () => {
     },
   });
   const now = Date.now();
-  await page.evaluate(
+  await page.addInitScript(
     ([leftAt, started]) => {
       window.localStorage.setItem(
         "hive_last_surface",

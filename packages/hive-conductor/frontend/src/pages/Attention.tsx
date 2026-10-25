@@ -12,6 +12,7 @@ import {
   attentionClassLabel,
   attentionPath,
   dismissAttentionItem,
+  hitlAnswerBody,
   inspectionHref,
   parseHitlAnswerHref,
   submitHitlAnswer,
@@ -42,12 +43,18 @@ function AttentionRow({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const submit = async () => {
-    if (!door || !answer.trim() || busy) return;
+  const pausedReason = item.evidence?.paused_reason;
+  const needsVerdict =
+    pausedReason === "awaiting_human_approval" ||
+    pausedReason === "awaiting_human_review" ||
+    pausedReason === "awaiting_role_delegate";
+
+  const submit = async (text: string) => {
+    if (!door || !text.trim() || busy) return;
     setBusy(true);
     setError(null);
     try {
-      await submitHitlAnswer(door.runId, door.nodeId, answer.trim());
+      await submitHitlAnswer(door.runId, door.nodeId, hitlAnswerBody(pausedReason, text));
       setAnswer("");
       onAnswered();
     } catch (e) {
@@ -116,25 +123,55 @@ function AttentionRow({
           style={{ display: "grid", gap: 6, marginTop: 4 }}
           data-testid={`attention-answer-${item.rank}`}
         >
-          <label style={{ fontSize: 12, color: "var(--pencil)" }}>
-            Answer (same door as CLI / API)
-            <input
-              type="text"
-              value={answer}
-              onChange={(e) => setAnswer(e.target.value)}
-              disabled={busy}
-              aria-label={`Answer for ${item.source_id}`}
-              style={{ display: "block", width: "100%", marginTop: 4 }}
-            />
-          </label>
-          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-            <button type="button" disabled={busy || !answer.trim()} onClick={() => void submit()}>
-              {busy ? "Submitting…" : "Submit answer"}
-            </button>
-            <span style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--pencil)" }}>
-              {door.path}
-            </span>
-          </div>
+          {needsVerdict ? (
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+              <button
+                type="button"
+                disabled={busy}
+                data-testid="attention-approve"
+                onClick={() => void submit("approved")}
+              >
+                {busy ? "Submitting…" : "Approve"}
+              </button>
+              <button
+                type="button"
+                disabled={busy}
+                data-testid="attention-reject"
+                onClick={() => void submit("rejected")}
+              >
+                Reject
+              </button>
+              <span style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--pencil)" }}>
+                {door.path}
+              </span>
+            </div>
+          ) : (
+            <>
+              <label style={{ fontSize: 12, color: "var(--pencil)" }}>
+                Answer (same door as CLI / API)
+                <input
+                  type="text"
+                  value={answer}
+                  onChange={(e) => setAnswer(e.target.value)}
+                  disabled={busy}
+                  aria-label={`Answer for ${item.source_id}`}
+                  style={{ display: "block", width: "100%", marginTop: 4 }}
+                />
+              </label>
+              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                <button
+                  type="button"
+                  disabled={busy || !answer.trim()}
+                  onClick={() => void submit(answer)}
+                >
+                  {busy ? "Submitting…" : "Submit answer"}
+                </button>
+                <span style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--pencil)" }}>
+                  {door.path}
+                </span>
+              </div>
+            </>
+          )}
           {error ? (
             <p style={{ margin: 0, color: "#c4452a", fontSize: 12 }} role="alert">
               {error}

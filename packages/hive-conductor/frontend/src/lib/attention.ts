@@ -93,11 +93,42 @@ export async function dismissAttentionItem(
   return response.json();
 }
 
+/** Pause reasons whose durable store requires a nonempty ``verdict`` field. */
+const VERDICT_PAUSE_REASONS = new Set([
+  "awaiting_human_approval",
+  "awaiting_human_review",
+  "awaiting_role_delegate",
+]);
+
+/**
+ * Build the HITL answer body from Attention evidence (#1049).
+ * Question pauses take `{ answer }`; approve/review/delegate take `{ verdict }`
+ * so a text-only "approved" cannot leave the Run paused on a malformed shape.
+ */
+export function hitlAnswerBody(
+  pausedReason: unknown,
+  text: string,
+): Record<string, string> {
+  const trimmed = text.trim();
+  const reason = typeof pausedReason === "string" ? pausedReason : "";
+  if (VERDICT_PAUSE_REASONS.has(reason)) {
+    const lower = trimmed.toLowerCase();
+    const verdict =
+      lower === "approve" || lower === "approved" || lower === "yes"
+        ? "approved"
+        : lower === "reject" || lower === "rejected" || lower === "no" || lower === "deny"
+          ? "rejected"
+          : trimmed;
+    return { verdict };
+  }
+  return { answer: trimmed };
+}
+
 /** Post an answer through the canonical HITL door (#1049 Attention CTA). */
 export async function submitHitlAnswer(
   runId: string,
   nodeId: string,
-  answer: string,
+  body: Record<string, string>,
 ): Promise<unknown> {
   // Bare `fetch` + literal path: shipped-surface-truth discovers mutating
   // browser calls by scanning fetch sites, not apiPost helpers.
@@ -105,7 +136,7 @@ export async function submitHitlAnswer(
     method: "POST",
     headers: { "Content-Type": "application/json" },
     credentials: "same-origin",
-    body: JSON.stringify({ answer }),
+    body: JSON.stringify(body),
   });
   if (!response.ok) {
     let detail = response.statusText;

@@ -255,6 +255,8 @@ export default function ChatPage() {
   const listEndRef = useRef<HTMLDivElement>(null);
   const streamAbortRef = useRef<AbortController | null>(null);
   const streamEpochRef = useRef(0);
+  // #1822 AC-4: blocks double-click before React re-renders `streaming`.
+  const sendInFlightRef = useRef(false);
   // Monotonic generation for session open/create requests, bumped on every
   // Workspace switch and before each drawer-triggered open/create, so a late
   // response can never commit another Workspace's transcript or selection.
@@ -412,8 +414,18 @@ export default function ChatPage() {
 
   const sendMessage = useCallback(
     async (text: string) => {
-      if (!text.trim() || streaming || !activeWorkspaceId || !activeId) return;
+      if (
+        !text.trim() ||
+        streaming ||
+        sendInFlightRef.current ||
+        !activeWorkspaceId ||
+        !activeId
+      ) {
+        return;
+      }
+      sendInFlightRef.current = true;
       const sessionId = activeId;
+      const turnId = generateId();
       const epoch = streamEpochRef.current;
       streamAbortRef.current?.abort();
       const abort = new AbortController();
@@ -460,6 +472,9 @@ export default function ChatPage() {
             messages: outbound,
             workspace_id: activeWorkspaceId,
             session_id: sessionId,
+            // Client turn key for #1822 AC-4; backend may use it as SessionStore
+            // idempotence when present (extra=allow on ChatCompletionRequest).
+            turn_id: turnId,
           },
           abort.signal,
         );
@@ -571,6 +586,7 @@ export default function ChatPage() {
           content: `Error: ${message}`,
         }));
       } finally {
+        sendInFlightRef.current = false;
         if (streamEpochRef.current === epoch) {
           setStreaming(false);
           setTimeout(() => textareaRef.current?.focus(), 0);

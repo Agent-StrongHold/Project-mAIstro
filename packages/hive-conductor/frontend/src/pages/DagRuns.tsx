@@ -11,7 +11,7 @@
 // Click a node → expand panel showing the event payload (LLM summary,
 // duration_ms, tool result preview). Day 9 ships this read-only view;
 // Day 13 will overlay eval-judge scores on each node.
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { apiGet } from "../lib/api";
 import { cancelDagRun, runIsCancellable } from "../lib/dagRuns";
@@ -76,6 +76,8 @@ export default function DagRuns() {
   const [runs, setRuns] = useState<RunSummary[]>([]);
   const [searchParams] = useSearchParams();
   const [selectedRunId, setSelectedRunId] = useState<string | null>(() => searchParams.get("run"));
+  const selectedRunIdRef = useRef(selectedRunId);
+  selectedRunIdRef.current = selectedRunId;
   const [detail, setDetail] = useState<RunDetail | null>(null);
   const [selectedNode, setSelectedNode] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -243,17 +245,22 @@ export default function DagRuns() {
                   data-testid="dag-run-cancel"
                   disabled={cancelBusy}
                   onClick={() => {
+                    const runId = detail.id;
                     void (async () => {
                       setCancelBusy(true);
                       setDetailError(null);
                       try {
-                        await cancelDagRun(detail.id);
-                        const d = await apiGet<RunDetail>(`/v1/dag-runs/${detail.id}`);
-                        setDetail(d);
+                        await cancelDagRun(runId);
+                        const d = await apiGet<RunDetail>(`/v1/dag-runs/${runId}`);
+                        // Selection may have moved while cancel/GET was in flight
+                        // (#2326 review): only install evidence for the still-selected Run.
+                        if (selectedRunIdRef.current === runId) setDetail(d);
                       } catch (e) {
-                        setDetailError(
-                          e instanceof Error ? e.message : "Couldn't cancel this run.",
-                        );
+                        if (selectedRunIdRef.current === runId) {
+                          setDetailError(
+                            e instanceof Error ? e.message : "Couldn't cancel this run.",
+                          );
+                        }
                       } finally {
                         setCancelBusy(false);
                       }
