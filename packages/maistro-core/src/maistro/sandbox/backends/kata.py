@@ -13,12 +13,18 @@ import logging
 import os
 import shutil
 import time
+from collections.abc import Iterable
 from pathlib import Path
 from uuid import uuid4
 
 from maistro.sandbox.capture import capture_process
 from maistro.sandbox.network import EgressMode, resolve_grant
-from maistro.sandbox.paths import make_beneath_guest_readable, read_beneath, write_beneath
+from maistro.sandbox.paths import (
+    authorized_host_mounts,
+    make_beneath_guest_readable,
+    read_beneath,
+    write_beneath,
+)
 from maistro.sandbox.protocol import (
     OUTPUT_LIMIT_EXIT_CODE,
     ExecResult,
@@ -51,6 +57,7 @@ class KataSandboxBackend:
         docker: str | None = None,
         kata_runtime: str | None = None,
         image: str | None = None,
+        allowed_writable_roots: Iterable[str | Path] = (),
     ) -> None:
         self._docker = docker or shutil.which("docker")
         self._kata_runtime = kata_runtime or shutil.which("kata-runtime")
@@ -59,6 +66,10 @@ class KataSandboxBackend:
                 "Kata requires both docker and kata-runtime on PATH; refusing to claim a VM tier"
             )
         self._image = image or os.environ.get("SANDBOX_IMAGE", "python:3.12-slim")
+        # Host-owned capabilities supplied by deployment code, mirroring the
+        # Bubblewrap backend: a writable grant is only honored when its source
+        # canonicalizes beneath one of these roots (fail closed otherwise).
+        self._allowed_writable_roots = tuple(allowed_writable_roots)
         self._instances: dict[str, tuple[SandboxConfig, Path, bool, int]] = {}
         self._locks: dict[str, asyncio.Lock] = {}
 
@@ -163,6 +174,21 @@ class KataSandboxBackend:
             "--workdir",
             "/workspace",
         ]
+        for index, extra in enumerate(
+            authorized_host_mounts(
+                config.writable_paths, allowed_roots=self._allowed_writable_roots
+            )
+        ):
+            # Same contract as the Bubblewrap backend: expose a stable guest
+            # name, not the host pathname; the source was canonicalized under
+            # an explicit host-owned root first (#1198).
+            argv += ["--volume", f"{extra}:/work-extra-{index}:rw"]
+        for ro in config.read_paths:
+            # Read-only host exposure from a host-owned profile (#2014); never
+            # a writable bind, so it cannot widen the sandbox's write surface.
+            # A bind source must already exist, so a bogus grant fails closed
+            # instead of letting the daemon materialize host directories.
+            argv += ["--mount", f"type=bind,src={ro},dst={ro},readonly"]
         if network is EgressMode.DENY:
             argv.append("--network=none")
         elif network is EgressMode.HOST:

@@ -64,6 +64,31 @@ def test_kata_rejects_scoped_egress_instead_of_granting_host_network() -> None:
         _backend().build_run_argv(config, "kata-test", Path("/tmp/work"))
 
 
+def test_kata_mounts_authorized_filesystem_grants(tmp_path: Path) -> None:
+    granted = tmp_path / "granted"
+    granted.mkdir()
+    readable = tmp_path / "readonly-input"
+    readable.mkdir()
+    argv = KataSandboxBackend(
+        docker="/usr/bin/docker",
+        kata_runtime="/usr/bin/kata-runtime",
+        allowed_writable_roots=(tmp_path,),
+    ).build_run_argv(
+        SandboxConfig(writable_paths=[str(granted)], read_paths=[str(readable)]),
+        "kata-test",
+        tmp_path,
+    )
+
+    assert f"{granted}:/work-extra-0:rw" in argv
+    assert f"type=bind,src={readable},dst={readable},readonly" in argv
+
+
+def test_kata_writable_grant_outside_host_roots_fails_closed(tmp_path: Path) -> None:
+    config = SandboxConfig(writable_paths=[str(tmp_path)])
+    with pytest.raises(ValueError, match="not authorized"):
+        _backend().build_run_argv(config, "kata-test", tmp_path)
+
+
 def test_vm_capability_selects_every_standard_policy(monkeypatch: pytest.MonkeyPatch) -> None:
     import maistro.sandbox.backends.kata as kata_module
 

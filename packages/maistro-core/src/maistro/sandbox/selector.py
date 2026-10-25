@@ -117,6 +117,10 @@ class SandboxSelector:
         """
         memory_mb = min(int(overrides.get("memory_mb", policy.max_memory_mb)), policy.max_memory_mb)
         timeout_s = min(int(overrides.get("timeout_s", policy.max_timeout_s)), policy.max_timeout_s)
+        # max_processes is not governed by a policy ceiling today (WorkloadPolicy
+        # carries no such field); a supplied request is preserved rather than
+        # silently dropped to the SandboxConfig default (#76 clarification).
+        max_processes = int(overrides.get("max_processes", SandboxConfig().max_processes))
         # ``network`` is accepted only for source compatibility. It is never
         # copied into the config; egress is the sole authority and comes from
         # the policy decided before the sandbox exists.
@@ -127,6 +131,7 @@ class SandboxSelector:
         return SandboxConfig(
             memory_mb=memory_mb,
             timeout_s=timeout_s,
+            max_processes=max_processes,
             min_isolation=policy.effective_min_tier,
             egress=policy.egress,
         )
