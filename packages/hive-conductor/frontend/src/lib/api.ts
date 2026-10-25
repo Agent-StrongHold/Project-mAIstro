@@ -47,8 +47,7 @@ async function request<T>(
   const started = performance.now();
   const method = init.method ?? "GET";
   const controller = new AbortController();
-  // A fixed function callback aborts the request; no string is interpreted as code.
-  const timeout = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS); // DevSkim: ignore DS172411 until 2027-12-31
+  const timeout = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS); // DevSkim: ignore DS172411 until 2027-12-31 — fixed client abort budget, not attacker-controlled delay
   let r: Response;
   let text: string;
   try {

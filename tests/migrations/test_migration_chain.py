@@ -144,7 +144,8 @@ EXPECTED_TABLES = frozenset(
         "elevation_grants",
         # Host-authorized delegation grants (#845): the durable backing of the
         # delegation authority a Sentinel consults before honoring any
-        # agent-to-agent handoff. Lives at the end of the chain (067).
+        # agent-to-agent handoff. Lives at the end of the chain (067; the
+        # merged identity develop shipped, kept verbatim).
         "delegation_grants",
         "episodic_memories",
         "event_log",
@@ -172,6 +173,11 @@ EXPECTED_TABLES = frozenset(
         # restart (#556).
         "node_templates",
         "outcomes",
+        # The durable record that the installer-era `default` principal became
+        # `conductor` (068, #1095). The chain asserts on the live catalog, so a
+        # migration that leaves a table behind must see it named here — the
+        # suite failed until it did, which is the check working.
+        "principal_identity_mappings",
         # A version and the label pointing at it were one row until 022; a
         # version may carry several labels, which that shape had no room for
         # (#328).

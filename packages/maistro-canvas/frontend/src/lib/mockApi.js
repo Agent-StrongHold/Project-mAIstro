@@ -185,8 +185,7 @@ const mock = {
 
     const jobId = jobUid();
 
-    // This callback builds a mock image; no string is interpreted as JavaScript.
-    setTimeout(() => { // DevSkim: ignore DS172411 until 2027-12-31
+    setTimeout(() => { // DevSkim: ignore DS172411 until 2027-12-31 — mock async job completion
       const img = makeFakeImage(
         256 + Math.floor(Math.random() * 256),
         256 + Math.floor(Math.random() * 256)

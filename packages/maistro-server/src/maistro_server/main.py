@@ -61,7 +61,11 @@ from maistro_server.api import (
     workspaces,
     ws,
 )
-from maistro_server.api.auth import API_KEY_ENTRY_DOC, invalid_api_key_entries
+from maistro_server.api.auth import (
+    API_KEY_ENTRY_DOC,
+    ambiguous_api_key_entries,
+    invalid_api_key_entries,
+)
 from maistro_server.api.chat_completions import RUN_ID_HEADER
 from maistro_server.api.middleware import PayloadSizeLimitMiddleware, SecurityHeadersMiddleware
 from maistro_server.api.rate_limit import RateLimitMiddleware
@@ -121,10 +125,11 @@ SHUTDOWN_DRAIN_TIMEOUT = 30.0
 
 def _validate_startup(settings: Settings) -> None:
     """Fail-fast startup checks. Raises RuntimeError if critical config is missing."""
-    if settings.require_auth and not settings.api_keys:
+    if settings.require_auth and not settings.api_keys and not settings.admin_api_keys:
         raise RuntimeError(
             "CRITICAL: No API keys configured and REQUIRE_AUTH is true. "
-            "Set API_KEYS env var or set REQUIRE_AUTH=false for local development."
+            "Set API_KEYS or ADMIN_API_KEYS env var, or set REQUIRE_AUTH=false "
+            "for local development."
         )
     # #843: fail closed at boot rather than serving a config where keys
     # silently share an invented identity. Descriptions never echo key
@@ -132,12 +137,26 @@ def _validate_startup(settings: Settings) -> None:
     invalid_entries = invalid_api_key_entries(settings)
     if invalid_entries:
         raise RuntimeError(
-            "CRITICAL: API_KEYS entries without an explicit canonical "
+            "CRITICAL: API key entries without an explicit canonical "
             f"principal (#843): {'; '.join(invalid_entries)}. Rewrite every "
-            f"entry as {API_KEY_ENTRY_DOC}. A legacy plain key keeps working "
+            f"entry as {API_KEY_ENTRY_DOC}; put administrator entries in "
+            "ADMIN_API_KEYS. A legacy plain key keeps working "
             "once prefixed with its principal — the same secret keeps "
             "authenticating, now attributed to the named principal. See "
             "docs/install/api-key-identity.md for the migration path."
+        )
+    # #1095: one bearer credential must resolve to exactly one principal and
+    # authority. A secret shared across entries made configuration order the
+    # tiebreaker for who a request authenticates as, so the collision itself
+    # is a startup failure. Descriptions never echo key material
+    # (ambiguous_api_key_entries guarantees that).
+    ambiguous_entries = ambiguous_api_key_entries(settings)
+    if ambiguous_entries:
+        raise RuntimeError(
+            "CRITICAL: API key credentials that resolve to more than one "
+            f"principal (#1095): {'; '.join(ambiguous_entries)}. Give each "
+            "principal its own secret — which identity a credential carries "
+            "must never depend on configuration order."
         )
     if settings.require_webhook_secrets and not (
         settings.github_webhook_secret and settings.ci_webhook_secret

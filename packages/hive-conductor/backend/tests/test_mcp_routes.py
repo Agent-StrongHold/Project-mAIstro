@@ -37,9 +37,18 @@ def _clear_mcp_stores():
     _clear(stores.mcp_tools)
 
 
-def _make_server(sid: str = "s1", url: str = "http://example.invalid") -> MCPServer:
+def _make_server(
+    sid: str = "s1", url: str = "http://example.invalid", approved: bool = True
+) -> MCPServer:
     return MCPServer(
-        id=sid, name="Server", description="d", url=url, status="connecting", tools_count=0
+        id=sid,
+        name="Server",
+        description="d",
+        url=url,
+        status="connecting",
+        tools_count=0,
+        approved=approved,
+        approved_by="test-admin",
     )
 
 
@@ -123,7 +132,76 @@ def test_add_server(admin_client: Any) -> None:
     body = r.json()
     assert body["name"] == "New"
     assert body["status"] == "connecting"
+    assert body["approved"] is False
     assert body["id"] in stores.mcp_servers
+
+
+def test_unapproved_server_cannot_be_tested(admin_client: Any) -> None:
+    created = admin_client.post(
+        "/v1/mcp/servers", json={"name": "New", "description": "d", "url": "http://x"}
+    ).json()
+    response = admin_client.post("/v1/mcp/test", json={"server_id": created["id"]})
+    assert response.status_code == 403
+
+
+def test_unapproved_server_tools_are_not_exposed(admin_client: Any) -> None:
+    stores.mcp_servers["s1"] = _make_server()
+    stores.mcp_tools["allowed"] = MCPTool(
+        id="allowed", server_id="s1", name="safe_tool", description="d"
+    )
+    stores.mcp_tools["other"] = MCPTool(
+        id="other", server_id="s1", name="other_tool", description="d"
+    )
+    assert admin_client.get("/v1/mcp/tools").json() == []
+
+
+def test_approval_binds_a_finite_tool_allowlist(admin_client: Any) -> None:
+    stores.mcp_servers["s1"] = _make_server()
+    stores.mcp_tools["allowed"] = MCPTool(
+        id="allowed", server_id="s1", name="safe_tool", description="d"
+    )
+    stores.mcp_tools["other"] = MCPTool(
+        id="other", server_id="s1", name="other_tool", description="d"
+    )
+    response = admin_client.post(
+        "/v1/mcp/servers/s1/approve", json={"allowed_tools": ["safe_tool"]}
+    )
+    assert response.status_code == 200
+    assert response.json()["approved"] is True
+    assert [tool["name"] for tool in admin_client.get("/v1/mcp/tools").json()] == ["safe_tool"]
+
+
+def test_approval_records_the_authenticated_approver(admin_client: Any) -> None:
+    # The approval is host-owned provenance: it must name the authenticated
+    # principal, not a constant, or delegated deployments cannot audit who
+    # authorized a remote server (#59).
+    stores.mcp_servers["s1"] = _make_server()
+    stores.mcp_tools["allowed"] = MCPTool(
+        id="allowed", server_id="s1", name="safe_tool", description="d"
+    )
+    response = admin_client.post(
+        "/v1/mcp/servers/s1/approve", json={"allowed_tools": ["safe_tool"]}
+    )
+    assert response.status_code == 200
+    assert response.json()["approved_by"] == "testadmin"
+
+
+def test_approve_unknown_server_returns_404(admin_client: Any) -> None:
+    r = admin_client.post("/v1/mcp/servers/missing/approve", json={"allowed_tools": ["t"]})
+    assert r.status_code == 404
+
+
+@pytest.mark.parametrize("allowed_tools", [[], ["not_a_discovered_tool"]])
+def test_approval_requires_a_non_empty_allowlist_of_discovered_tools(
+    admin_client: Any, allowed_tools: list[str]
+) -> None:
+    stores.mcp_servers["s1"] = _make_server()
+    stores.mcp_tools["allowed"] = MCPTool(
+        id="allowed", server_id="s1", name="safe_tool", description="d"
+    )
+
+    r = admin_client.post("/v1/mcp/servers/s1/approve", json={"allowed_tools": allowed_tools})
+    assert r.status_code == 400
 
 
 # --------------------------------------------------------------------------- #
@@ -136,6 +214,14 @@ def test_delete_server(admin_client: Any) -> None:
     r = admin_client.delete("/v1/mcp/servers/s1")
     assert r.status_code == 204
     assert "s1" not in stores.mcp_servers
+
+
+def test_delete_server_cascades_tools(admin_client: Any) -> None:
+    stores.mcp_servers["s1"] = _make_server()
+    stores.mcp_tools["t1"] = MCPTool(id="t1", server_id="s1", name="tool", description="d")
+    assert admin_client.delete("/v1/mcp/servers/s1").status_code == 204
+    assert "t1" not in stores.mcp_tools
+    assert admin_client.get("/v1/mcp/tools").json() == []
 
 
 def test_delete_server_missing_404(admin_client: Any) -> None:
@@ -210,6 +296,25 @@ def test_test_connection_no_server_id_tests_all(admin_client: Any, monkeypatch) 
 def test_test_connection_no_servers_returns_empty_results(admin_client: Any) -> None:
     r = admin_client.post("/v1/mcp/test", json={})
     assert r.json() == {"results": []}
+
+
+def test_test_connection_skips_servers_that_are_not_approved(
+    admin_client: Any, monkeypatch
+) -> None:
+    stores.mcp_servers["s1"] = _make_server(sid="s1")
+    stores.mcp_servers["s2"] = _make_server(sid="s2", approved=False)
+
+    async def fake_test(server_id, *, user_id=None, url=""):
+        return {"ok": True, "server_id": server_id}
+
+    monkeypatch.setattr("services.mcp_client.test_mcp_server", fake_test)
+
+    r = admin_client.post("/v1/mcp/test", json={})
+    assert r.status_code == 200
+    results = r.json()["results"]
+    # An unapproved server is never contacted: approval is the ceiling on
+    # what the platform will talk to.
+    assert {res["server_id"] for res in results} == {"s1"}
 
 
 # --------------------------------------------------------------------------- #

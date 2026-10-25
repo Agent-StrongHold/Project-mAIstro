@@ -1,10 +1,10 @@
-"""Downgrading 064 must leave every receipt readable by the 063 runtime.
+"""Downgrading 066 must leave every receipt readable by the 063 runtime.
 
 Revision-063's ``InvocationStatus`` has no ``UNKNOWN`` member: its row
 decoder calls ``InvocationStatus(row['status'])`` and raises ``ValueError``
 on any leftover ``'unknown'`` receipt, so a rolled-back deployment could
 neither read nor claim those rows — the store would crash on first touch
-rather than degrade. The 064 downgrade therefore reclassifies ``unknown``
+rather than degrade. The 066 downgrade therefore reclassifies ``unknown``
 receipts to 063-era terminal ``failed`` (the previous release's own outcome
 for ambiguous transports: never re-dispatched by a runtime that cannot
 represent uncertainty) and tags ``last_error`` for operators via the
@@ -20,7 +20,7 @@ against a real server:
   rather than imported: the live enum gained ``unknown`` on this branch, so
   the regression this test names (an ``'unknown'`` surviving the downgrade)
   would decode fine against today's model and pass vacuously.
-* **Round trip** — re-applying 064 re-derives the downgraded rows
+* **Round trip** — re-applying 066 re-derives the downgraded rows
   fail-closed: back to ``unknown`` through the ``legacy_failed_unproven``
   upgrade path (whose ``last_error_code = ''`` guard matches the column
   default the downgrade reinstates), with ``uncertain_prior_dispatch``
@@ -46,7 +46,7 @@ ROOT = Path(__file__).resolve().parents[2]
 DATABASE_URL = os.environ.get("MAISTRO_TEST_DATABASE_URL", "")
 
 #: The 063-era ``InvocationStatus`` values (the chain one revision back).
-#: ``unknown`` joined the model with 064 itself, so a receipt still sitting
+#: ``unknown`` joined the model with 066 itself, so a receipt still sitting
 #: on ``'unknown'`` after the downgrade is exactly the crash this file
 #: exists to prevent. Importing the live enum would invert the assertion.
 LEGACY_063_STATUSES = frozenset({"pending", "success", "failed", "retrying"})
@@ -118,11 +118,11 @@ def _receipt_extensions() -> dict[int, tuple[object, ...]]:
 
 @pytest.fixture
 def chain_database():
-    """064 applied, seeded with the boundary rows, restored after each test.
+    """066 applied, seeded with the boundary rows, restored after each test.
 
     Mirrors ``test_goal_installed_base_upgrade.empty_database``: one failing
     test cannot cascade, and the shared CI service is left where the next
-    module expects it. Seeding is raw SQL at 064 exactly as the receipts the
+    module expects it. Seeding is raw SQL at 066 exactly as the receipts the
     protocol writes would look — including one row whose ``unknown`` came
     from the legacy upgrade (no error text yet) to exercise the tag.
     """
@@ -158,7 +158,7 @@ def _drop_public_tables() -> None:
 
 
 @PG_MARK
-class TestDowngrade064LeavesReadableReceipts:
+class TestDowngrade066LeavesReadableReceipts:
     def test_unknown_receipts_reclassify_to_legacy_terminal_failed(
         self, chain_database: None
     ) -> None:
