@@ -10,6 +10,10 @@ Covers services/data_dir_guard.py:
 - outside a container: plain directories pass without any mount requirement
 - missing data dir beside .restore-old-*/.restore-staging* debris → refused
   (DATA_DIR_RESTORE_RECOVERY); an existing dir beside such debris still passes
+- in a container: missing data dir whose parent holds pre-#331 flat-layout
+  files (state.db/secrets.age/admin.key at the volume root) → refused
+  (DATA_DIR_LEGACY_LAYOUT) with the migration; outside a container the same
+  layout passes (a host's ~/state.db is not a mount-root layout)
 - Foundation.start refuses before initializing any subsystem
 """
 
@@ -26,7 +30,11 @@ _BACKEND = pathlib.Path(__file__).resolve().parents[1]
 if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
 
-from services.data_dir_guard import DataDirRefused, verify_durable_data_dir  # noqa: E402
+from services.data_dir_guard import (  # noqa: E402
+    DataDirRefused,
+    _fs_type,
+    verify_durable_data_dir,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -110,6 +118,62 @@ def test_uncreatable_parent_is_refused(tmp_path: Path) -> None:
         os.chmod(blocker, 0o700)
 
 
+# --- pre-#331 flat layout (volume-root data files) -----------------------
+
+
+def test_in_container_missing_dir_beside_flat_layout_files_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The upgrade trap: volume root still holds state.db + vault + key.
+
+    CONDUCTOR_DATA_DIR moved from the volume root to /data/conductor; a
+    volume created before that change must not get a fresh, empty data
+    directory created beside its live files — refuse with the migration.
+    """
+    _in_container(monkeypatch)
+    volume = tmp_path / "data"  # the mount root, pre-nesting layout
+    volume.mkdir()
+    (volume / "state.db").write_bytes(b"accounts")
+    (volume / "secrets.age").write_bytes(b"vault")
+    (volume / "admin.key").write_bytes(b"identity")
+    nested = volume / "conductor"  # CONDUCTOR_DATA_DIR, does not exist yet
+
+    with pytest.raises(DataDirRefused, match="DATA_DIR_LEGACY_LAYOUT"):
+        verify_durable_data_dir(nested)
+
+    assert not nested.exists()  # nothing was fresh-initialized
+    assert (volume / "state.db").read_bytes() == b"accounts"  # data untouched
+
+
+def test_outside_container_flat_layout_files_in_parent_pass(
+    tmp_path: Path,
+) -> None:
+    """Host deployments are exempt: ~/state.db is not a volume-root layout."""
+    (tmp_path / "state.db").write_bytes(b"unrelated")
+    target = tmp_path / "conductor"
+    assert verify_durable_data_dir(target) == target
+    assert target.is_dir()
+
+
+def test_in_container_existing_dir_beside_flat_layout_files_passes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An existing data dir is live state; never second-guess it here."""
+    _in_container(monkeypatch)
+    volume = tmp_path / "data"
+    volume.mkdir()
+    (volume / "state.db").write_bytes(b"old")
+    nested = volume / "conductor"
+    nested.mkdir()
+    (nested / "state.db").write_bytes(b"new")
+    # Deterministic mounted-volume simulation: a runner's tmp_path can be
+    # tmpfs, which the durability guard would rightly refuse for its own
+    # reasons — this test is about the flat-layout check only.
+    monkeypatch.setattr("services.data_dir_guard._st_dev", lambda p: 1 if p == Path("/") else 2)
+    monkeypatch.setattr("services.data_dir_guard._fs_type", lambda p, mounts_path=None: "ext4")
+    assert verify_durable_data_dir(nested) == nested
+
+
 # --- in-container ephemerality ------------------------------------------
 
 
@@ -135,8 +199,12 @@ def test_in_container_mounted_dir_passes(tmp_path: Path, monkeypatch: pytest.Mon
     _in_container(monkeypatch)
     mounted = tmp_path / "data"
     mounted.mkdir()
-    # The data dir itself is the mount root: a different device from /.
+    # The data dir itself is the mount root: a different device from /,
+    # backed by a durable (non-memory) filesystem. _fs_type is pinned because
+    # a runner's tmp_path can legitimately be tmpfs — a device difference
+    # alone must not wave a tmpfs mount through (see the tmpfs tests below).
     monkeypatch.setattr("services.data_dir_guard._st_dev", lambda p: 1 if p == Path("/") else 2)
+    monkeypatch.setattr("services.data_dir_guard._fs_type", lambda p, mounts_path=None: "ext4")
     assert verify_durable_data_dir(mounted) == mounted
 
 
@@ -154,6 +222,7 @@ def test_in_container_dir_nested_inside_mounted_volume_passes(
     nested = volume / "conductor"  # CONDUCTOR_DATA_DIR
     volume.mkdir()
     monkeypatch.setattr("services.data_dir_guard._st_dev", lambda p: 1 if p == Path("/") else 2)
+    monkeypatch.setattr("services.data_dir_guard._fs_type", lambda p, mounts_path=None: "ext4")
     assert verify_durable_data_dir(nested) == nested
     assert nested.is_dir()
 
@@ -170,6 +239,54 @@ def test_in_container_unstattable_dir_is_refused(
     monkeypatch.setattr("services.data_dir_guard._st_dev", boom)
     with pytest.raises(DataDirRefused, match="DATA_DIR_UNWRITABLE"):
         verify_durable_data_dir(missing)
+
+
+def test_in_container_tmpfs_dir_is_refused_despite_different_device(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A tmpfs mount has a different st_dev from / but is never persisted.
+
+    Docker drops tmpfs files when the container stops, so a device
+    difference alone must not pass the durability guard: the backing
+    filesystem type is checked and /dev/shm-style directories are refused
+    like the container's own layer.
+    """
+    _in_container(monkeypatch)
+    shm_dir = tmp_path / "shm-data"
+    shm_dir.mkdir()
+    monkeypatch.setattr("services.data_dir_guard._st_dev", lambda p: 1 if p == Path("/") else 2)
+    monkeypatch.setattr("services.data_dir_guard._fs_type", lambda p, mounts_path=None: "tmpfs")
+    with pytest.raises(DataDirRefused, match="DATA_DIR_EPHEMERAL"):
+        verify_durable_data_dir(shm_dir)
+
+
+def test_in_container_tmpfs_dir_passes_only_with_escape_hatch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _in_container(monkeypatch)
+    monkeypatch.setenv("CONDUCTOR_ALLOW_EPHEMERAL_DATA_DIR", "1")
+    shm_dir = tmp_path / "shm-data"
+    shm_dir.mkdir()
+    monkeypatch.setattr("services.data_dir_guard._st_dev", lambda p: 1 if p == Path("/") else 2)
+    monkeypatch.setattr("services.data_dir_guard._fs_type", lambda p, mounts_path=None: "tmpfs")
+    assert verify_durable_data_dir(shm_dir) == shm_dir
+
+
+def test_fs_type_returns_deepest_containing_mount(tmp_path: Path) -> None:
+    table = tmp_path / "mounts"
+    table.write_text(
+        "sysfs /sys sysfs rw 0 0\n"
+        "tmpfs /dev/shm tmpfs rw 0 0\n"
+        "overlay / overlay rw 0 0\n"
+        "tmpfs /dev/shm/work tmpfs rw 0 0\n",
+        encoding="utf-8",
+    )
+    fs_type = _fs_type
+    assert fs_type(Path("/dev/shm/conductor"), table) == "tmpfs"
+    assert fs_type(Path("/dev/shm/work/conductor"), table) == "tmpfs"
+    assert fs_type(Path("/data/conductor"), table) == "overlay"
+    assert fs_type(Path("/sys/class/block"), table) == "sysfs"
+    assert fs_type(Path("/nonexistent"), tmp_path / "absent") is None
 
 
 def test_escape_hatch_allows_ephemeral_but_still_probes_writability(

@@ -37,7 +37,9 @@
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
-COMPOSE="docker compose -f docker-compose.yml"
+# Isolated compose project: teardown must never reach a pre-existing
+# deployment that happens to share the compose file / default project name.
+COMPOSE="docker compose -p hive-durability-331 -f docker-compose.yml"
 PORT="${CONDUCTOR_PORT:-8101}"
 BASE_URL="http://localhost:${PORT}"   # DevSkim: ignore DS162092 until 2027-12-31 (local-only durability harness)
 DATA_DIR_IN_VOLUME="conductor"   # CONDUCTOR_DATA_DIR, relative to the volume root
@@ -52,6 +54,7 @@ PROBE_SECRET="durability""-probe-secret-331"
 
 PASS=0
 FAIL=0
+OWNED=0   # set to 1 only once the harness's own stack is up; gates teardown
 
 note() { printf '\n===== %s =====\n' "$1"; }
 ok()   { PASS=$((PASS + 1)); printf '✔ %s\n' "$1"; }
@@ -82,7 +85,11 @@ wait_ready() { # wait_ready <minutes>
 
 cleanup() {
   if (( FAIL == 0 )) || [[ -z "${KEEP_UP:-}" ]]; then
-    $COMPOSE down -v --remove-orphans >/dev/null 2>&1 || true
+    # Tear down only resources this harness created (OWNED); a precondition
+    # exit before `up` must not touch anything in Docker.
+    if (( OWNED )); then
+      $COMPOSE down -v --remove-orphans >/dev/null 2>&1 || true
+    fi
     rm -rf "$BACKUP_DIR" "$(dirname "$JAR")"
   else
     echo "KEEP_UP=1 and failures present — stack left running at ${BASE_URL}" >&2
@@ -104,6 +111,7 @@ note "start: fresh deployment (this builds the image)"
 $COMPOSE down -v --remove-orphans >/dev/null 2>&1 || true
 require "compose up --build" $COMPOSE up -d --build
 require "service healthy on first boot" wait_ready 20
+OWNED=1  # stack is up and is unambiguously ours (isolated project name)
 
 note "guard: startup must refuse an unwritable data directory"
 IMAGE="$($COMPOSE config --images | head -1)"

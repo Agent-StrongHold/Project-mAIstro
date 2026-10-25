@@ -122,6 +122,30 @@ entry in `docker-compose.yml` with `- /srv/conductor-data:/data` and make
 that directory owned by uid `65532` (the image's nonroot runtime user):
 `sudo install -d -o 65532 -g 65532 -m 700 /srv/conductor-data`.
 
+#### One-time: migrating a pre-#331 volume (data at the volume root)
+
+Volumes created before #331 hold the files directly at the volume root; the
+current layout puts them in `conductor/` inside the volume, because atomic
+restore must be able to rename the data directory (a mount point cannot be
+renamed). Both Compose files refuse to start over a legacy layout rather
+than silently open an empty database beside your real data. Migrate once,
+with the stack stopped — the move is a rename within one filesystem, so
+ownership (uid 65532) and file contents are preserved:
+
+```bash
+docker compose stop hive-conductor
+docker compose run --rm --no-deps --user root --entrypoint sh \
+  hive-conductor -c 'cd /data && mv state.db state.db-wal state.db-shm secrets.age admin.key credential_master.key user_credentials.enc conductor/ 2>/dev/null; test -e conductor/state.db'
+docker compose start hive-conductor
+```
+
+Until the files are moved, the `conductor-layout-check` service exits 78
+with these instructions on every `docker compose up` — and if the image is
+started outside Compose (e.g. a bare `docker run -v <vol>:/data`), the
+in-process startup guard refuses with `DATA_DIR_LEGACY_LAYOUT` and the same
+instructions, so no launch path can fresh-initialize an empty `/data/conductor`
+beside the real data.
+
 ### Deletion is destructive
 
 `docker compose down` keeps the volume; **`docker compose down -v` deletes

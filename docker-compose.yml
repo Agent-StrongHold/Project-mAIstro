@@ -136,6 +136,37 @@ services:
     cpus: 0.25
     restart: "no"
 
+  conductor-layout-check:
+    # Same fail-closed contract as postgres-layout-check, for the Conductor
+    # volume: #331 moved CONDUCTOR_DATA_DIR from /data (the volume's mount
+    # root) to /data/conductor so `maistro security restore` can swap the
+    # data directory by rename. A volume created before that change still
+    # has state.db, secrets.age, and admin.key at the root; letting the
+    # Conductor boot now would create /data/conductor, open an EMPTY state
+    # database, and re-arm first-run setup while every existing account sits
+    # orphaned one level up. Refuse instead, with the migration spelled out.
+    # Read-only mount: this check can never touch the data.
+    image: alpine:3.20
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        if [ -e /data/state.db ] || [ -e /data/secrets.age ] || [ -e /data/admin.key ]; then
+          if [ ! -e /data/conductor/state.db ]; then
+            echo >&2 "ERROR: legacy Conductor data layout detected: state.db/secrets.age/admin.key sit at the volume root, but CONDUCTOR_DATA_DIR is /data/conductor (#331). Starting now would open an EMPTY database and re-arm first-run setup. Stop the Conductor, move the coupled files down as one unit, then start:"
+            echo >&2 "  docker compose stop hive-conductor"
+            echo >&2 "  docker compose run --rm --no-deps --user root --entrypoint sh hive-conductor -c 'cd /data && mv state.db state.db-wal state.db-shm secrets.age admin.key credential_master.key user_credentials.enc conductor/ 2>/dev/null; test -e conductor/state.db'"
+            echo >&2 "  docker compose start hive-conductor"
+            exit 78
+          fi
+        fi
+    volumes:
+      - conductor-data:/data:ro
+    mem_limit: 64m
+    memswap_limit: 64m
+    pids_limit: 64
+    cpus: 0.25
+    restart: "no"
+
   postgres:
     # Supported majors are 17-19; 18 is the default here and what CI matrixes
     # against (alongside 17). A legacy root-layout volume is rejected by
@@ -327,6 +358,8 @@ services:
     volumes:
       - conductor-data:/data
     depends_on:
+      conductor-layout-check:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       litellm:
