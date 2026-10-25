@@ -74,8 +74,9 @@ const fullNav = [
   // retained surface per the cutover plan (PROJECT rows, and CLI/Containers
   // under contracts #292/#382), so they get discoverable entries here; the
   // legacy pages scheduled for replacement (Agents, Topology, Integrations,
-  // Skills, Work Items, Memory, Evolution) deliberately stay off this list —
-  // docs/route-inventory.md records their URL-only dispositions.
+  // Skills, Work Items, Memory) deliberately stay off this list —
+  // docs/route-inventory.md records their URL-only dispositions. Evolution
+  // is not URL-only either: #2275 removed its route for v1.0 (restore v1.2 / #51).
   { to: "/messages", icon: Inbox, label: "Messages" },
   { to: "/quotas", icon: Gauge, label: "Quotas" },
   { to: "/knowledge", icon: Brain, label: "Inner Temple" },
