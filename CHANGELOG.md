@@ -716,12 +716,6 @@ or placeholder-only section.
 
 ### Fixed
 
-- **Workspace Attention no longer 500s without a graph spine (#1049).** Standalone
-  / e2e Conductor (no wired Container graph store) still returns Attention as a
-  200 with `summary.hitl_unavailable: true` and any failed-Run projections; HITL
-  pauses require the canonical spine and are omitted rather than crashing the
-  page.
-
 - **Conductor batch inspection respects existing projection scope (#1036).**
   Canonical fallback applies only when no projection exists, keeping verdict-list
   visibility consistent with detail and stream admission for colliding run IDs.
@@ -837,6 +831,12 @@ or placeholder-only section.
   validates the merged render before startup (`MAISTRO_PRINT_COMPOSE_CONFIG=1`
   additionally prints the rendered config, credentials included), and
   `MAISTRO_COMPOSE_PROFILES` activates profiles an override assigns.
+
+- **Workspace Attention no longer 500s without a graph spine (#1049).** Standalone
+  / e2e Conductor (no wired Container graph store) still returns Attention as a
+  200 with `summary.hitl_unavailable: true` and any failed-Run projections; HITL
+  pauses require the canonical spine and are omitted rather than crashing the
+  page.
 
 - **The live scheduler selects durable canonical due state (#46, #1199).**
   Configured Hive ticks now enumerate `ScheduleStore.due()` and re-read each
@@ -1938,6 +1938,23 @@ or placeholder-only section.
   directly instead of passing `parallel_generations`.
 
 ### Security
+
+- **CodeQL / DevSkim backlog cleanup (path injection, stack-trace exposure,
+  regex injection, and scan-scope noise)** (no linked issue: GitHub
+  code-scanning backlog on develop, not a numbered tracker issue). Remaining
+  open CodeQL findings are cleared with `realpath`+`startswith` containment
+  (Lulu preflight sinks, RSI promotion export under temp/`RSI_WORK_ROOT`/
+  `RSI_EXPORT_ROOTS`, workspace mounts, RSI repo roots), kind-only public
+  failure text (including `/health` optional-router outcomes), escaped
+  consistency markers, and prototype-safe book-plan / scene field assignment
+  (`isSafeObjectKey`). DevSkim drops non-shipped trees (`systems/catalog`,
+  `benchmarks/corpora`, `formal/`, `.github/`, `deploy/`, `alembic/`) and dated
+  suppressions for integrity-pin / non-crypto RNG / intentional loopback
+  defaults so the Security tab is actionable again. Docstring/comment examples
+  that only named loopback URLs are reworded so DevSkim does not treat prose as
+  a binding. Lockfile bumps `fastmcp`, `setuptools`, and `pypdf` for
+  pip-audit/Trivy; canvas frontend `npm audit fix` clears high advisories;
+  Trivyignore documents the bookworm-only libbrotli finding.
 
 - **Image lock reconciliation and canvas npm audit follow-up after #2305
   (no linked issue: supply-chain CI on develop).** Hive Conductor Dockerfile
