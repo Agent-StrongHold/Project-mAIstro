@@ -8,7 +8,7 @@
 # A fat builder makes a self-contained venv; the runtime copies only the venv and
 # app sources.
 # ---- frontend build ----
-# Digest-pinned (#349); node:22-alpine resolved to this index digest 2026-09-30.
+# Digest-pinned (#349); node:26-alpine resolved to this index digest 2026-10-25.
 FROM node:26-alpine@sha256:40cd011b55415bc894e45b02fdd5a5dfde056921b7d23a64c74f80497af48797 AS frontend
 WORKDIR /build
 COPY packages/hive-conductor/frontend/package.json packages/hive-conductor/frontend/package-lock.json ./
