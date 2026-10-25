@@ -31,6 +31,12 @@ or placeholder-only section.
   approve/deny/answer/cancel through those same doors — identical authority
   to `maistro approvals` and the HITL routes. No parallel approvals store.
 
+- **Capabilities becomes the primary Hive Conductor surface for slots and
+  providers (#2273, `conductor-407`).** New `/capabilities` page lists
+  `/v1/capabilities` slots with host-owned trust/provenance, re-discover, and
+  enable/disable over the same public APIs. Agents, Topology, and Integrations
+  leave primary nav (URL-only until deleted); Skills was already URL-only.
+
 - **Workspace Agent persona swap on one API/UI/Agent path (#2277).**
   `GET`/`PUT /v1/workspaces/{id}/agent` read and swap the stable Workspace
   Agent's `persona_template_id` without changing its id or `created_at`.

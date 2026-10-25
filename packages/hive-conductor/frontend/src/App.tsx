@@ -22,6 +22,7 @@ const Approvals = lazy(() => import("./pages/Approvals"));
 const Attention = lazy(() => import("./pages/Attention"));
 const AuditLog = lazy(() => import("./pages/AuditLog"));
 const Backlog = lazy(() => import("./pages/Backlog"));
+const Capabilities = lazy(() => import("./pages/Capabilities"));
 const Chat = lazy(() => import("./pages/Chat"));
 const CLI = lazy(() => import("./pages/CLI"));
 const Containers = lazy(() => import("./pages/Containers"));
@@ -205,6 +206,10 @@ function AppRoutes() {
                   <Route path="dag-runs" element={<DagRuns />} />
                   <Route path="goals" element={<Goals />} />
                   <Route path="schedules" element={<Schedules />} />
+                  {/* #2273: Capabilities is the primary product surface; Agents /
+                      MCP / Skills / Topology stay registered for deep links
+                      until the retirement slice deletes them. */}
+                  <Route path="capabilities" element={<Capabilities />} />
                   <Route path="agents" element={<Agents />} />
                   <Route path="work-items" element={<WorkItems />} />
                   <Route path="knowledge" element={<KnowledgeBase />} />
