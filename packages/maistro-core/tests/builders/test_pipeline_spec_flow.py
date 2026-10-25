@@ -12,9 +12,16 @@ import pytest
 
 from maistro.builders.graph import PipelineNode
 from maistro.builders.graph_executor import DispatchResult
-from maistro.builders.pipeline import BuilderPipeline, StageStatus, build_spec_summary
+from maistro.builders.pipeline import (
+    BuilderPipeline,
+    PipelineRun,
+    StageStatus,
+    _decompose_on_complete,
+    build_spec_summary,
+)
+from maistro.builders.spec_templates import SpecTemplateStore
 from maistro.builders.verifier import InvariantVerifier
-from maistro.types.spec import Invariant, InvariantKind, Spec
+from maistro.types.spec import Invariant, InvariantKind, Spec, SpecStatus
 
 
 class _InMemorySpecStore:
@@ -168,6 +175,63 @@ async def test_decompose_on_complete_noop_when_spec_already_in_context() -> None
     # still carry issue 21, not a fresh emission for a different spec.
     assert store.saved[0].issue_number == 21
     assert all(s.issue_number == 21 for s in store.saved)
+
+
+@pytest.mark.asyncio
+async def test_decompose_adapts_spec_template_when_issue_class_matches() -> None:
+    """Line 263: prefer SpecTemplateStore.adapt over fresh _emit_spec (#2317)."""
+    store = _InMemorySpecStore()
+    templates = SpecTemplateStore()
+    template = Spec(
+        issue_number=0,
+        title="template",
+        protocols_touched=("CacheStore",),
+        status=SpecStatus.VERIFIED,
+    )
+    assert templates.save_template(template, "caching")
+    run = PipelineRun(
+        id="r-adapt",
+        issue_number=99,
+        title="Add caching layer",
+        repo="acme/widget",
+    )
+    run.context["_spec_store"] = store
+    run.context["_spec_templates"] = templates
+    run.context["issue_class"] = "caching"
+
+    await _decompose_on_complete(run, "ignored decompose output")
+
+    assert run.context["_spec"].issue_number == 99
+    assert run.context["_spec"].title == "Add caching layer"
+    assert run.context["_spec"].protocols_touched == ("CacheStore",)
+    assert store.saved[-1] is run.context["_spec"]
+
+
+@pytest.mark.asyncio
+async def test_review_records_spec_coverage_verification_without_spec_verifier() -> None:
+    """Lines 329–330: one-shot InvariantVerifier when no wrap is configured."""
+    store = _InMemorySpecStore()
+    await store.save(_spec(issue_number=31))
+    # implement must NOT look clean — `_review_skip_if` skips review when
+    # implement already matches CLEAN_SIGNALS ("approved" / "lgtm" / …).
+    dispatcher = ScriptedDispatcher(
+        {
+            "scaffold": "ok",
+            "implement": "PR created with changes",
+            "review": "APPROVED, all checks pass",
+        }
+    )
+    pipeline = BuilderPipeline(dispatcher, spec_store=store)
+
+    run = await pipeline.execute(
+        issue_number=31, title="Add caching", repo="acme/widget", skip_decompose=True
+    )
+
+    verification = run.context.get("spec_coverage_verification")
+    assert verification is not None
+    assert verification["stage"] == "review"
+    assert verification["spec_issue_number"] == 31
+    assert verification["passed"] is True
 
 
 @pytest.mark.asyncio
