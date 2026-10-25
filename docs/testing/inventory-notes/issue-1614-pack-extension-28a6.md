@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-design/tests: +4
+  packages/maistro-design/tests: +7
 ---
 # issue-1614-pack-extension-28a6
 
@@ -10,7 +10,7 @@ pack cohort, fixes #1614) at head `ad55a205d13717c724787fbb096bd44207ea618f`
 
 ## What moved and why
 
-`packages/maistro-design/tests: +4` — the four tests added with the open-cohort
+`packages/maistro-design/tests: +7` — the four tests added with the open-cohort
 pack registry in `packages/maistro-design/tests/test_domain_packs.py`:
 
 - `test_bundled_packs_load_through_one_registry` — all eight `catalog/*.json`
@@ -36,3 +36,9 @@ Addendum (repair round at this lane): `PackRegistry` sibling
 `_rubric_dimensions` (identical observable behavior) because the inline version
 was a new C-grade block (CC 14) the radon ratchet rightly refused; no test
 counts moved in that repair.
+
+Addendum (CI-repair round, develop sync): three degenerate-path tests were
+added to `test_domain_packs.py` to cover the remaining partial branch arcs in
+`_require_contract_fields`, `_rubric_dimensions`, and `DomainPackRegistry.load_file`
+(non-canonical `run_identity`, a rubric catalog with no mapping entries, and a
+non-object manifest). No tests were removed or renamed.

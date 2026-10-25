@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from maistro_design.packs import load_bundled_packs
-from maistro_design.packs.registry import PackContractError, _as_pack
+from maistro_design.packs.registry import DomainPackRegistry, PackContractError, _as_pack
 
 REQUIRED = {
     "book",
@@ -70,3 +70,39 @@ def test_canvas_cannot_be_a_pack_id() -> None:
                 "fence_points": ["rubric-lock"],
             }
         )
+
+
+def test_noncanonical_run_identity_is_rejected() -> None:
+    with pytest.raises(PackContractError, match="canonical"):
+        _as_pack(
+            {
+                "pack_id": "orphan",
+                "graph_template": "loop.explore-execute-evaluate-refine",
+                "rubric_dimensions": [{"id": "x", "label": "X"}],
+                "backends": ["builders"],
+                "artifact_kinds": ["note"],
+                "fence_points": ["rubric-lock"],
+                "run_identity": "bespoke",
+            }
+        )
+
+
+def test_rubric_catalog_must_contain_mappings() -> None:
+    with pytest.raises(PackContractError, match="rubric"):
+        _as_pack(
+            {
+                "pack_id": "orphan",
+                "graph_template": "loop.explore-execute-evaluate-refine",
+                "rubric_dimensions": [None],
+                "backends": ["builders"],
+                "artifact_kinds": ["note"],
+                "fence_points": ["rubric-lock"],
+            }
+        )
+
+
+def test_non_object_manifest_is_rejected(tmp_path) -> None:
+    path = tmp_path / "not-a-pack.json"
+    path.write_text("[]", encoding="utf-8")
+    with pytest.raises(PackContractError, match="not a pack object"):
+        DomainPackRegistry().load_file(path)
