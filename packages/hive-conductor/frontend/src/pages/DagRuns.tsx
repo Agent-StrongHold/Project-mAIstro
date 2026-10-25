@@ -14,45 +14,8 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { apiGet } from "../lib/api";
-
-type EventType = "pm_node_started" | "pm_node_completed" | "pm_node_failed";
-
-interface DagEvent {
-  event_type: EventType;
-  role: string;
-  capability: string;
-  payload: Record<string, unknown>;
-  timestamp: number;
-}
-
-interface RunSummary {
-  id: string;
-  user_id: string;
-  started_at: number;
-  finished_at: number | null;
-  event_count: number;
-  node_states: Record<string, string>;
-}
-
-interface RunDetail extends RunSummary {
-  status?: string;
-  canonical_run_id?: string;
-  events: DagEvent[];
-  // Physical execution records are optional: projection-only historical rows
-  // have legacy events but no readable canonical NodeRun/Attempt tree.
-  node_runs?: import("../lib/goalInspection").NodeRunEvidence[];
-  artifacts?: import("../lib/goalInspection").ArtifactEvidence[];
-  // The Workspace this run executes in, from the same seam response — the
-  // Goal round trip names it (?ws=) so the Goals page opens in the scope the
-  // goal's history lives in (#65).
-  workspace_id?: string | null;
-  // The #458 Goal context a goal-driven Run records, relayed verbatim by the
-  // /v1/dag-runs seam; absent when the Run records none (#65). An inline
-  // member on purpose: the typed-client ratchet banks this page's hand-typed
-  // declarations by line, so the round-trip link adds no new one and moves
-  // no banked row.
-  goal_context?: { goal_id: string; goal_revision: string };
-}
+import { cancelDagRun, runIsCancellable } from "../lib/dagRuns";
+import type { DagEvent, RunDetail, RunSummary } from "../lib/dagRuns";
 
 // Hard-laid topology — matches graph/pm_domain.PM_GRAPH_CONFIG.
 const NODES: { role: string; label: string; col: number; row: number }[] = [
@@ -117,6 +80,7 @@ export default function DagRuns() {
   const [selectedNode, setSelectedNode] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [detailError, setDetailError] = useState<string | null>(null);
+  const [cancelBusy, setCancelBusy] = useState(false);
   const navigate = useNavigate();
 
   // List recent runs.
@@ -270,6 +234,34 @@ export default function DagRuns() {
               <span aria-label="Run status">{detail.status ?? "Status not recorded"}</span>
               {detail.canonical_run_id && detail.canonical_run_id !== detail.id && (
                 <span>Canonical Run: {detail.canonical_run_id}</span>
+              )}
+              {/* #1036: cancel control uses the same inspection door's cancel
+                  route — never a product-private lifecycle writer. */}
+              {runIsCancellable(detail.status) && (
+                <button
+                  type="button"
+                  data-testid="dag-run-cancel"
+                  disabled={cancelBusy}
+                  onClick={() => {
+                    void (async () => {
+                      setCancelBusy(true);
+                      setDetailError(null);
+                      try {
+                        await cancelDagRun(detail.id);
+                        const d = await apiGet<RunDetail>(`/v1/dag-runs/${detail.id}`);
+                        setDetail(d);
+                      } catch (e) {
+                        setDetailError(
+                          e instanceof Error ? e.message : "Couldn't cancel this run.",
+                        );
+                      } finally {
+                        setCancelBusy(false);
+                      }
+                    })();
+                  }}
+                >
+                  {cancelBusy ? "Cancelling…" : "Cancel run"}
+                </button>
               )}
               {/* Round trip (#65): this run arrived from the Goal view's
                   history; the recorded Goal context links straight back, and

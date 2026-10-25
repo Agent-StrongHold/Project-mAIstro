@@ -1,10 +1,8 @@
-// Workspace Attention (#1049) — read-only projection over HITL pauses + failed Runs.
+// Workspace Attention (#1049) — projection over HITL pauses + failed Runs.
 //
-// Settling an item stays on the canonical HITL answer route named by
-// `answer_href` (API). This page lists ranked items, shows the backend
-// summary (not client-invented importance), and opens Run inspection for
-// the underlying resource. Defer/dismiss persistence and Messages/Optimizer
-// MERGE are later slices.
+// Settling a HITL pause posts to the canonical answer door named by
+// `answer_href` (same authority as CLI). Failed Runs only offer inspection.
+// Defer/dismiss persistence and Messages/Optimizer MERGE remain later slices.
 
 import { useCallback, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
@@ -14,6 +12,8 @@ import {
   attentionClassLabel,
   attentionPath,
   inspectionHref,
+  parseHitlAnswerHref,
+  submitHitlAnswer,
 } from "../lib/attention";
 import { useWorkspaces } from "../context/WorkspaceContext";
 import { Card, EmptyState, Hex, LoadingSpinner, PageHeader } from "../components/shared";
@@ -28,10 +28,32 @@ function classVariant(name: string): "ok" | "danger" | "warn" | "muted" | "accen
 function AttentionRow({
   item,
   onInspect,
+  onAnswered,
 }: {
   item: AttentionItem;
   onInspect: (href: string) => void;
+  onAnswered: () => void;
 }) {
+  const door = parseHitlAnswerHref(item.answer_href);
+  const [answer, setAnswer] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const submit = async () => {
+    if (!door || !answer.trim() || busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await submitHitlAnswer(door.runId, door.nodeId, answer.trim());
+      setAnswer("");
+      onAnswered();
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : "Couldn't submit answer.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <li
       style={{
@@ -55,14 +77,42 @@ function AttentionRow({
         <button type="button" onClick={() => onInspect(inspectionHref(item))}>
           Open run
         </button>
-        {item.answer_href ? (
-          <span style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--pencil)" }}>
-            Answer via API: {item.answer_href}
-          </span>
-        ) : (
-          <span style={{ fontSize: 12, color: "var(--pencil)" }}>No answer door (deadline passed or non-HITL)</span>
-        )}
       </div>
+      {door ? (
+        <div
+          style={{ display: "grid", gap: 6, marginTop: 4 }}
+          data-testid={`attention-answer-${item.rank}`}
+        >
+          <label style={{ fontSize: 12, color: "var(--pencil)" }}>
+            Answer (same door as CLI / API)
+            <input
+              type="text"
+              value={answer}
+              onChange={(e) => setAnswer(e.target.value)}
+              disabled={busy}
+              aria-label={`Answer for ${item.source_id}`}
+              style={{ display: "block", width: "100%", marginTop: 4 }}
+            />
+          </label>
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <button type="button" disabled={busy || !answer.trim()} onClick={() => void submit()}>
+              {busy ? "Submitting…" : "Submit answer"}
+            </button>
+            <span style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--pencil)" }}>
+              {door.path}
+            </span>
+          </div>
+          {error ? (
+            <p style={{ margin: 0, color: "#c4452a", fontSize: 12 }} role="alert">
+              {error}
+            </p>
+          ) : null}
+        </div>
+      ) : (
+        <span style={{ fontSize: 12, color: "var(--pencil)" }}>
+          No answer door (deadline passed or non-HITL)
+        </span>
+      )}
     </li>
   );
 }
@@ -107,7 +157,7 @@ export default function Attention() {
     <div style={{ padding: 16 }} data-testid="workspace-attention">
       <PageHeader
         title="Attention"
-        subtitle="What needs you in this Workspace — ranked from canonical HITL pauses and failed Runs. Answering stays on the HITL API; this page does not settle work."
+        subtitle="What needs you in this Workspace — ranked from canonical HITL pauses and failed Runs. Answers post to the same HITL door as CLI."
         helpHref="/docs#workspaces"
       />
 
@@ -173,6 +223,7 @@ export default function Attention() {
                   key={`${item.source_kind}:${item.source_id}`}
                   item={item}
                   onInspect={(href) => navigate(href)}
+                  onAnswered={() => void load()}
                 />
               ))}
             </ul>

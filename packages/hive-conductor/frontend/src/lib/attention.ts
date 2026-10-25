@@ -1,5 +1,7 @@
 /** Workspace Attention wire shapes (#1049). Under `lib/` for typed-client ratchet. */
 
+import { ApiError } from "./api";
+
 export type AttentionItem = {
   source_kind: string;
   source_id: string;
@@ -40,6 +42,48 @@ export function inspectionHref(item: AttentionItem): string {
     return `/dag-runs?run=${encodeURIComponent(runId)}`;
   }
   return "/dag-runs";
+}
+
+/** Parse a canonical HITL answer door (`/v1/hitl/{run}/{node}/answer`). */
+export function parseHitlAnswerHref(
+  href: string | null,
+): { runId: string; nodeId: string; path: string } | null {
+  if (!href || typeof href !== "string") return null;
+  const bare = href.trim().split(/[?#]/, 1)[0] ?? "";
+  const m = /^\/v1\/hitl\/([^/]+)\/([^/]+)\/answer$/.exec(bare);
+  if (!m) return null;
+  const runId = decodeURIComponent(m[1] ?? "");
+  const nodeId = decodeURIComponent(m[2] ?? "");
+  if (!runId || !nodeId) return null;
+  return { runId, nodeId, path: bare };
+}
+
+/** Post an answer through the canonical HITL door (#1049 Attention CTA). */
+export async function submitHitlAnswer(
+  runId: string,
+  nodeId: string,
+  answer: string,
+): Promise<unknown> {
+  // Bare `fetch` + literal path: shipped-surface-truth discovers mutating
+  // browser calls by scanning fetch sites, not apiPost helpers.
+  const response = await fetch(`/v1/hitl/${runId}/${nodeId}/answer`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "same-origin",
+    body: JSON.stringify({ answer }),
+  });
+  if (!response.ok) {
+    let detail = response.statusText;
+    try {
+      const body = (await response.json()) as { detail?: unknown };
+      if (typeof body.detail === "string") detail = body.detail;
+    } catch {
+      // keep statusText
+    }
+    throw new ApiError(detail || "HITL answer failed", response.status, "/v1/hitl/.../answer");
+  }
+  if (response.status === 204) return undefined;
+  return response.json();
 }
 
 const CLASS_LABELS: Record<string, string> = {

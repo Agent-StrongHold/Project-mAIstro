@@ -69,3 +69,95 @@ export function landingLabel(path: string): string {
 export function restoreLabel(value: string): string {
   return RESTORE_OPTIONS.find((o) => o.value === value)?.label ?? "Balanced";
 }
+
+/**
+ * Absolute absence windows (ms) per aggressiveness band (#1050 / #1822).
+ * Bands are policy knobs, not product law — proportional session length can
+ * extend the balanced/generous windows further.
+ */
+export const RESTORE_ABSOLUTE_MS: Record<string, number> = {
+  off: 0,
+  brief: 15 * 60 * 1000,
+  balanced: 4 * 60 * 60 * 1000,
+  generous: 24 * 60 * 60 * 1000,
+};
+
+/** Surfaces recent-return may reopen (subset of product routes). */
+export const RESTORE_SURFACES: ReadonlySet<string> = new Set([
+  ...LANDING_OPTIONS.map((o) => o.path),
+  "/attention",
+  "/approvals",
+  "/capabilities",
+  "/dag-runs",
+  "/dags",
+]);
+
+export type RecentSurface = {
+  path: string;
+  /** Epoch ms when the user last left this surface (visibility hidden / navigate away). */
+  leftAtMs: number;
+  /** Epoch ms when the browsing session that produced `leftAtMs` began. */
+  sessionStartedAtMs: number;
+};
+
+export type RestoreDecision = {
+  path: string;
+  reason: "restore" | "default" | "off" | "stale" | "invalid";
+};
+
+/** Normalize a recorded path into a restore-eligible surface, or null. */
+export function normalizeRestorePath(raw: unknown): string | null {
+  if (typeof raw !== "string") return null;
+  const bare = raw.trim().split(/[?#]/, 1)[0] ?? "";
+  if (!bare.startsWith("/") || bare.includes("//") || bare.includes("..")) return null;
+  if (!RESTORE_SURFACES.has(bare)) return null;
+  return bare;
+}
+
+/**
+ * Decide whether recent-return restores `recent.path` or falls back to the
+ * explicit default landing. Precedence matches #1050: recent when still inside
+ * the aggressiveness window, else preferred default, else Home baseline.
+ */
+export function decideLanding(args: {
+  aggressiveness: string;
+  defaultLanding: string;
+  recent: RecentSurface | null;
+  nowMs: number;
+}): RestoreDecision {
+  const aggressiveness = resolveRestoreAggressiveness(args.aggressiveness);
+  const defaultLanding = resolveLandingPath(args.defaultLanding);
+
+  if (aggressiveness === "off") {
+    return { path: defaultLanding, reason: "off" };
+  }
+  if (!args.recent) {
+    return { path: defaultLanding, reason: "default" };
+  }
+  const path = normalizeRestorePath(args.recent.path);
+  if (!path) {
+    return { path: defaultLanding, reason: "invalid" };
+  }
+  const leftAt = args.recent.leftAtMs;
+  const sessionStarted = args.recent.sessionStartedAtMs;
+  if (!Number.isFinite(leftAt) || leftAt > args.nowMs) {
+    return { path: defaultLanding, reason: "invalid" };
+  }
+  const awayMs = Math.max(0, args.nowMs - leftAt);
+  const absoluteMs = RESTORE_ABSOLUTE_MS[aggressiveness] ?? RESTORE_ABSOLUTE_MS.balanced;
+  let windowMs = absoluteMs;
+  if (
+    (aggressiveness === "balanced" || aggressiveness === "generous") &&
+    Number.isFinite(sessionStarted) &&
+    sessionStarted > 0 &&
+    sessionStarted <= leftAt
+  ) {
+    const sessionLen = leftAt - sessionStarted;
+    const proportion = aggressiveness === "generous" ? 1.0 : 0.5;
+    windowMs = Math.max(absoluteMs, sessionLen * proportion);
+  }
+  if (awayMs > windowMs) {
+    return { path: defaultLanding, reason: "stale" };
+  }
+  return { path, reason: "restore" };
+}

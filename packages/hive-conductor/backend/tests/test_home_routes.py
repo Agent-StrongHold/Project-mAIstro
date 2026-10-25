@@ -262,24 +262,19 @@ def test_projections_are_membership_scoped(admin_client, authed_client) -> None:
     assert r.status_code == 404
 
 
-def test_the_goals_section_names_its_unavailable_rather_than_reading_the_retiring_store(
+def test_the_goals_section_reads_goal_inspection_not_the_retiring_missions_store(
     admin_client, authed_client
 ) -> None:
-    """The only Goal rows in this backend live in `stores.missions`, a surface
-    the cutover retirement ledger (#1046) froze to new consumers — and Home's
-    projection reader is exactly the consumer the freeze exists to stop. The
-    section must therefore say why it cannot answer even when Goal rows sit
-    right there, and the adaptive half must offer no Goal candidate sourced
-    from them: an honest `unavailable` is the contract, a plausible projection
-    off a retiring store is the bug.
+    """Home Goals (#65) projects through `goal_inspection` — never
+    `stores.missions`, which the cutover retirement ledger froze. A Mission
+    row planted under the caller's id must not appear; empty inspection is
+    `empty`, not `unavailable` from a missing service.
     """
     from models.schemas import Mission
 
     ws = _create_workspace(admin_client)
     _add_member(admin_client, ws, "user", "editor")
 
-    # The temptation this test pins the refusal against: rows that would
-    # project perfectly well if the reader reached for the retiring store.
     t = datetime.now(UTC)
     stores.missions["home-goal-seed"] = Mission(
         id="home-goal-seed",
@@ -298,13 +293,12 @@ def test_the_goals_section_names_its_unavailable_rather_than_reading_the_retirin
         body = authed_client.get(f"/v1/workspaces/{ws}/home/projections").json()
         sections = {s["kind"]: s for s in body["sections"]}
         goals = sections["goals"]
-        assert goals["status"] == "unavailable"
-        assert goals["items"] == []
-        assert "canonical Goal service" in goals["reason"]
+        assert goals["status"] in {"ok", "empty"}
         assert "home-goal-seed" not in body_text_of(goals)
+        assert all(item.get("resource_id") != "home-goal-seed" for item in goals["items"])
 
         adaptive = authed_client.get(f"/v1/workspaces/{ws}/home/adaptive").json()
-        assert all(c["item_type"] != "goal" for c in adaptive["candidates"])
+        assert all(c.get("resource_id") != "home-goal-seed" for c in adaptive["candidates"])
     finally:
         stores.missions.pop("home-goal-seed", None)
 

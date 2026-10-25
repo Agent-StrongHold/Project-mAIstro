@@ -2,7 +2,7 @@
   "_comment": "Raw fetch and hand-typed frontend entity debt for Workspace cutover P0.3 (#1048). Judged against the trusted merge base; a fixed entry must be deleted here.",
   "metric_definition_version": "1",
   "summary": {
-    "hand_typed": 129,
+    "hand_typed": 125,
     "raw_fetch": 46
   },
   "tolerated": {
@@ -57,10 +57,6 @@
     "hand_typed::packages/hive-conductor/frontend/src/pages/DagBuilder.tsx:30:DAGEdge": "local interface/type in pages/ or components/",
     "hand_typed::packages/hive-conductor/frontend/src/pages/DagBuilder.tsx:37:DAGFile": "local interface/type in pages/ or components/",
     "hand_typed::packages/hive-conductor/frontend/src/pages/DagBuilder.tsx:51:Agent": "local interface/type in pages/ or components/",
-    "hand_typed::packages/hive-conductor/frontend/src/pages/DagRuns.tsx:18:EventType": "local interface/type in pages/ or components/",
-    "hand_typed::packages/hive-conductor/frontend/src/pages/DagRuns.tsx:20:DagEvent": "local interface/type in pages/ or components/",
-    "hand_typed::packages/hive-conductor/frontend/src/pages/DagRuns.tsx:28:RunSummary": "local interface/type in pages/ or components/",
-    "hand_typed::packages/hive-conductor/frontend/src/pages/DagRuns.tsx:37:RunDetail": "local interface/type in pages/ or components/",
     "hand_typed::packages/hive-conductor/frontend/src/pages/Dashboard.tsx:107:MetricsStatus": "local interface/type in pages/ or components/",
     "hand_typed::packages/hive-conductor/frontend/src/pages/Dashboard.tsx:10:Widget": "local interface/type in pages/ or components/",
     "hand_typed::packages/hive-conductor/frontend/src/pages/Dashboard.tsx:358:KpiEnvelope": "local interface/type in pages/ or components/",

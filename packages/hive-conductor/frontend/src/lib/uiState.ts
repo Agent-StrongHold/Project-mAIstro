@@ -1,20 +1,30 @@
 /** Per-account UI state kept in this browser (#1418, #1433).
  *
- * Four localStorage keys remember conveniences between sessions. None is
- * secret and none is the record; all four used to outlive a sign-out and
+ * Owned localStorage keys remember conveniences between sessions. None is
+ * secret and none is the record; they used to outlive a sign-out and
  * carry over to whoever signed in next on the same browser profile, so a
  * second account opened on the first account's last workspace tab. The
  * keys are now owned: the signed-in user id is stamped beside them, a
  * different user signing in clears them first, and signing out clears them
  * outright. The Profile page lists them, with their values, and can clear
- * them on request.
+ * them on request. `hive_last_surface` feeds recent-return restore (#1050).
  */
+
+import type { RecentSurface } from "./landing";
+import { normalizeRestorePath } from "./landing";
 
 export const UI_STATE_KEYS = [
   { key: "hive_active_workspace_id", what: "The workspace tab you last had open" },
   { key: "hive_appearance", what: "Light or dark, when you chose one over the system setting" },
   { key: "hive_onboarded", what: "That the welcome tour has been dismissed" },
+  {
+    key: "hive_last_surface",
+    what: "The last Workspace surface for recent-return restore (#1050/#1822)",
+  },
 ] as const;
+
+/** localStorage key for the recent-return surface blob (JSON RecentSurface). */
+export const LAST_SURFACE_KEY = "hive_last_surface";
 
 const OWNER_KEY = "hive_ui_state_owner";
 
@@ -63,4 +73,39 @@ export function claimUiState(userId: string): boolean {
     // Same as above.
   }
   return cleared;
+}
+
+/** Read the recent-return surface, or null when missing/corrupt/ineligible. */
+export function readLastSurface(): RecentSurface | null {
+  const raw = read(LAST_SURFACE_KEY);
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as Partial<RecentSurface>;
+    const path = normalizeRestorePath(parsed.path);
+    if (!path) return null;
+    const leftAtMs = Number(parsed.leftAtMs);
+    const sessionStartedAtMs = Number(parsed.sessionStartedAtMs);
+    if (!Number.isFinite(leftAtMs) || !Number.isFinite(sessionStartedAtMs)) return null;
+    return { path, leftAtMs, sessionStartedAtMs };
+  } catch {
+    return null;
+  }
+}
+
+/** Persist the surface the user is about to leave (or just left). */
+export function writeLastSurface(surface: RecentSurface): void {
+  const path = normalizeRestorePath(surface.path);
+  if (!path) return;
+  try {
+    localStorage.setItem(
+      LAST_SURFACE_KEY,
+      JSON.stringify({
+        path,
+        leftAtMs: surface.leftAtMs,
+        sessionStartedAtMs: surface.sessionStartedAtMs,
+      }),
+    );
+  } catch {
+    // Storage unavailable — restore simply will not fire.
+  }
 }

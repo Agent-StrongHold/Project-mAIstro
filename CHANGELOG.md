@@ -51,16 +51,36 @@ or placeholder-only section.
   prompt-fragment append. UI/API-saved bindings share that path; persona
   templates are not mutated.
 
+- **Recent-return restore consumes restore aggressiveness (#1050 / #1822).**
+  Authenticated `/` now prefers the last Workspace surface (tracked in owned
+  `hive_last_surface`) when `workspace_restore_aggressiveness` still covers the
+  absence (`off` / `brief` 15m / `balanced` 4h+½ session / `generous`
+  24h+full session); otherwise it uses `workspace_default_landing` (Home
+  baseline). Learned suggestions remain a later #1050 slice.
+
+- **Home Goals section reads Goal inspection (#65).** Workspace Home projections
+  list Goals through `services.goal_inspection` (same door as `/goals`) instead
+  of reporting the Goal service unavailable or reading the retiring missions
+  store.
+
+- **Attention Answer CTA posts to the HITL door (#1049).** The Attention page
+  submits answers through `/v1/hitl/{run}/{node}/answer` — the same authority
+  as CLI — then refreshes the projection. Defer/dismiss persistence remains a
+  later slice.
+
+- **DagRuns Cancel control through the #1036 inspection door.** Non-terminal
+  Runs show Cancel on the detail pane; it posts `POST /v1/dag-runs/{id}/cancel`
+  (canonical `RunExecutionService.cancel_run`) and re-reads the inspection
+  seam — no product-private lifecycle writer.
+
 - **Durable Workspace landing + restore preferences (#1050, partial).** Authenticated
   `/` reads `preferences.workspace_default_landing` from the canonical profile
   store and navigates there (Home / Chat / Goals / Backlog / Work items). Profile
   also exposes `workspace_restore_aggressiveness`
   (`off`/`brief`/`balanced`/`generous`) for how eagerly a prior surface is
-  restored after absence — the durable band; exact windows are applied by
-  session continuity (#1822). Both fields PATCH/profile_set the same profile
+  restored after absence. Both fields PATCH/profile_set the same profile
   document; out-of-allow-list writes are refused (400). Missing or invalid
-  reads still mean Workspace Home / balanced. Learned suggestions and Agent-
-  driven restoration behavior remain later #1050 slices.
+  reads still mean Workspace Home / balanced.
 
 - **Workspace Attention page and nav (#1049, partial).** `/attention` lists the
   existing Workspace Attention projection (HITL pauses + failed Runs) with the

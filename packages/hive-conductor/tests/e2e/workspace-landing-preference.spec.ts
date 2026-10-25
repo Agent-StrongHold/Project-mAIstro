@@ -86,3 +86,64 @@ test("API refuses an out-of-allow-list landing path", async () => {
   });
   expect(res.status()).toBe(400);
 });
+
+test("recent-return restores the prior surface inside the aggressiveness window", async () => {
+  // Default landing is Home; a fresh last-surface for Chat within the
+  // generous window must win (#1050 recent-return precedence).
+  await page.request.put("/v1/profile", {
+    data: {
+      preferences: {
+        workspace_default_landing: "/home",
+        workspace_restore_aggressiveness: "generous",
+      },
+    },
+  });
+  const now = Date.now();
+  await page.goto("/home"); // ensure document so localStorage is writable
+  await page.evaluate(
+    ([leftAt, started]) => {
+      window.localStorage.setItem(
+        "hive_last_surface",
+        JSON.stringify({
+          path: "/chat",
+          leftAtMs: leftAt,
+          sessionStartedAtMs: started,
+        }),
+      );
+    },
+    [now - 60_000, now - 10 * 60_000],
+  );
+  await page.goto("/");
+  await page.waitForURL("**/chat");
+  await expect(page.getByLabel("Chat messages")).toBeVisible({ timeout: 15000 });
+});
+
+test("restore aggressiveness off always uses the default landing", async () => {
+  await page.request.put("/v1/profile", {
+    data: {
+      preferences: {
+        workspace_default_landing: "/goals",
+        workspace_restore_aggressiveness: "off",
+      },
+    },
+  });
+  const now = Date.now();
+  await page.evaluate(
+    ([leftAt, started]) => {
+      window.localStorage.setItem(
+        "hive_last_surface",
+        JSON.stringify({
+          path: "/chat",
+          leftAtMs: leftAt,
+          sessionStartedAtMs: started,
+        }),
+      );
+    },
+    [now - 30_000, now - 5 * 60_000],
+  );
+  await page.goto("/");
+  await page.waitForURL("**/goals");
+  await expect(page.getByRole("heading", { name: "Goals", exact: true })).toBeVisible({
+    timeout: 15000,
+  });
+});

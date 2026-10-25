@@ -1,5 +1,6 @@
 import { type ReactNode, useState } from "react";
 import { clearUiState } from "../lib/uiState";
+import { LastSurfaceTracker } from "./LastSurfaceTracker";
 import { NavLink, Outlet } from "react-router-dom";
 import { useUser } from "../App";
 import { AppearanceToggle } from "./AppearanceToggle";
@@ -130,6 +131,8 @@ export function AppShell({ children }: { children?: ReactNode }) {
 
   return (
     <div className="app-shell">
+      {/* #1050/#1822: stamp last surface for recent-return landing. */}
+      <LastSurfaceTracker />
       <button
         className="hamburger"
         onClick={() => setDrawerOpen(true)}
