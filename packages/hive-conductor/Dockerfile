@@ -264,6 +264,22 @@ RUN rm -rf /app/venv/lib/python3.13/site-packages/pip* \
 # here instead of shipping a scheduler that silently never fires. Runs as
 # root only because it precedes the USER directive below.
 RUN python -c "import os, zoneinfo; assert os.path.isdir(os.environ['PYTHONTZPATH']), os.environ['PYTHONTZPATH']; utc = zoneinfo.ZoneInfo('UTC'); ny = zoneinfo.ZoneInfo('America/New_York'); berlin = zoneinfo.ZoneInfo('Europe/Berlin'); from datetime import datetime, timezone as tz; winter = datetime(2026, 1, 15, 12, 0, tzinfo=tz.utc).astimezone(berlin).utcoffset(); summer = datetime(2026, 7, 15, 12, 0, tzinfo=tz.utc).astimezone(berlin).utcoffset(); assert (winter.total_seconds(), summer.total_seconds()) == (3600.0, 7200.0), (winter, summer); print('tz smoke ok: UTC/America/New_York/Europe/Berlin via', os.environ['PYTHONTZPATH'])"
+# Exercise the production cron dialect against the image's actual database,
+# not the test runner's wheel or today's season. ADR-082126-f69c requires a
+# spring gap to be skipped and a repeated fall wall time to fire only once.
+RUN python - <<'PY'
+from datetime import UTC, datetime
+from maistro.scheduling.cron import parse_cron
+
+cron = parse_cron('30 2 * * *')
+spring = cron.next_fire(datetime(2026, 3, 28, 23, tzinfo=UTC), timezone='Europe/Berlin')
+assert spring.astimezone(UTC) == datetime(2026, 3, 30, 0, 30, tzinfo=UTC), spring
+fall = cron.next_fire(datetime(2026, 10, 24, 23, tzinfo=UTC), timezone='Europe/Berlin')
+assert fall.astimezone(UTC) == datetime(2026, 10, 25, 0, 30, tzinfo=UTC), fall
+following = cron.next_fire(fall, timezone='Europe/Berlin')
+assert following.astimezone(UTC) == datetime(2026, 10, 26, 1, 30, tzinfo=UTC), following
+print('tz cron smoke ok: spring gap skipped; fall fold fires once')
+PY
 EXPOSE 8101
 WORKDIR /app/backend
 # Keep the app nonroot even though the pinned runtime is a slim Python image.

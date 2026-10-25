@@ -967,19 +967,24 @@ jobs:
           docker compose -f docker-compose.test.yml --profile test up --build \
             --abort-on-container-exit --exit-code-from api-tests api-tests
       # Scheduler timezone recovery across a real container restart (#290).
-      # `up --abort-on-container-exit` stops (not removes) hive when the
-      # api-tests container exits, so the durable state dir is intact and
-      # `start hive` is a process restart against persisted schedules. The
-      # restart-marked selection verifies persistence, cursor recomputation,
-      # and scheduler health on the other side of that restart.
+      # Explicitly restart hive: Compose can leave dependencies running after
+      # `up --abort-on-container-exit ... api-tests`, making `start hive` a
+      # no-op. Restart preserves the writable layer and its schedule stores;
+      # the recovery selection must observe a natural fire in the new process.
       - name: Restart hive and verify scheduler timezone recovery (#290)
         if: success()
         working-directory: packages/hive-conductor
-        timeout-minutes: 5
+        # Recovery observes a natural fire, not just a persisted cursor:
+        # 300s harness recurrence + 150s tick/jitter budget + 120s boot poll.
+        timeout-minutes: 10
         run: |
           set -euo pipefail
-          docker compose -f docker-compose.test.yml start hive
-          cid=$(docker compose -f docker-compose.test.yml ps -q hive)
+          cid=$(docker compose -f docker-compose.test.yml ps -aq hive)
+          before=$(docker inspect -f '{{.State.StartedAt}}' "$cid")
+          docker compose -f docker-compose.test.yml restart hive
+          after=$(docker inspect -f '{{.State.StartedAt}}' "$cid")
+          [ "$before" != "$after" ] \
+            || { echo "hive did not restart: StartedAt is unchanged"; exit 1; }
           # The poll tolerates `docker inspect` failing: a container that is
           # still starting has no health state to read yet, and "starting" is
           # the truthful status for it. The post-loop assertion below still

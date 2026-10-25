@@ -260,6 +260,7 @@ def test_utc_schedule_persists_and_computes_next_run(
     """
     floor_s = _discover_floor_s(client, workspace)
 
+    requested_at = datetime.now(UTC)
     r = _create_schedule(client, UTC_NAME, _fastest_cron(floor_s), "UTC", workspace)
     assert r.status_code == 201, f"UTC schedule create failed: {r.text}"
     body = r.json()
@@ -272,7 +273,15 @@ def test_utc_schedule_persists_and_computes_next_run(
     next_run = datetime.fromisoformat(projected["next_run"])
     assert next_run.tzinfo is not None
     now = datetime.now(UTC)
-    assert now <= next_run <= now + timedelta(seconds=floor_s), (now, next_run)
+    # The occurrence may become due between the projection read and this
+    # assertion (observed at a minute boundary). It must follow creation,
+    # not the later assertion time; the natural-fire poll below proves that
+    # the tick actually consumes it rather than accepting a stale cursor.
+    assert requested_at <= next_run <= now + timedelta(seconds=floor_s), (
+        requested_at,
+        now,
+        next_run,
+    )
 
     # And the shipped scheduler executes what it computed: the cursor moves
     # past this occurrence without any manual fire.
@@ -364,8 +373,8 @@ def test_restart_recovery_preserves_schedules_and_recomputes_next_run(
 
     In CI the hive container is stopped and started again before this
     selection runs (same durable state dir, fresh process): persistence is
-    the state dir's, the UTC schedule's recomputed cursor proves the boot
-    reconciliation and the tick are live again, and the Berlin cursor —
+    the state dir's, a naturally consumed UTC occurrence proves that the
+    restarted tick admits work again, and the Berlin cursor —
     persisted before the restart — still names a future 04:30 Berlin.
     """
     r = client.get("/v1/schedules")
@@ -381,15 +390,19 @@ def test_restart_recovery_preserves_schedules_and_recomputes_next_run(
 
     now = datetime.now(UTC)
 
-    # The UTC schedule's cursor is recomputed from the persisted zone by the
-    # new process — a stale pre-restart value would sit in the past, so the
-    # recent-past bound proves recomputation without pinning a recurrence.
+    # A persisted future cursor alone proves no recovery: a live loop that
+    # never admits work would still pass a recent-past bound. Observe this
+    # new process consume an occurrence naturally, without manual fire.
     utc_row = by_name[UTC_NAME]
     if not utc_row.get("next_run"):
         utc_row = _next_run(client, utc_row["id"])
     utc_next = datetime.fromisoformat(utc_row["next_run"])
     assert utc_next.tzinfo is not None
     assert utc_next > now - timedelta(minutes=5), utc_row["next_run"]
+    floor_s = _discover_floor_s(client, utc_row["workspace_id"])
+    _wait_for_natural_fire(
+        client, utc_row["id"], utc_row["next_run"], _natural_fire_budget(floor_s)
+    )
 
     # The Berlin cursor persisted across the restart and still names the
     # zone-correct next occurrence: 04:30 wall time, season offset, future.
