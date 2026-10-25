@@ -166,9 +166,7 @@ class TestIssueMetadataIntegrity(unittest.TestCase):
             "repository": "owner/repo",
             "links": manifest(child, parent)["links"] + manifest(new_child, new_parent)["links"],
         }
-        snap = snapshot(
-            child, parent, new_child, new_parent, edges=[{"child": 1, "parent": 2}]
-        )
+        snap = snapshot(child, parent, new_child, new_parent, edges=[{"child": 1, "parent": 2}])
         with tempfile.TemporaryDirectory() as directory, patch.object(gate.time, "sleep"):
             journal = Path(directory) / "journal.jsonl"
             self.assertEqual(gate.apply_links(api, snap, applied, journal, limit=1), 1)

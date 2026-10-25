@@ -143,6 +143,14 @@
       "reason": "Reviewed per-workflow disposition specification (#400); changing a workflow's disposition, declared triggers or reference-liveness claim is the substantive change."
     },
     {
+      "id": "issue-hierarchy-links",
+      "kind": "specification",
+      "paths": [
+        "quality/issue-hierarchy-links.json"
+      ],
+      "reason": "Reviewed one-time hierarchy repair manifest: source-supported missing native links with body/ownership fingerprints; changing or extending the manifest is the substantive, reviewable repair decision rather than a repository-wide measurement that unrelated branches must rewrite."
+    },
+    {
       "id": "mutation-critical-files",
       "kind": "specification",
       "paths": [

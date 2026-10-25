@@ -82,6 +82,54 @@ def check_cycles(edges: list[dict[str, int]]) -> None:
             current = parents[current]
 
 
+def _status_for(
+    number: int,
+    declared: list[int],
+    actual: int | None,
+    issues: dict[int, dict[str, Any]],
+) -> str:
+    """Map declarations and native edges onto one classification status."""
+    if number in REVIEW_HOLDS:
+        return "review_hold"
+    if len(declared) > 1:
+        return "ambiguous"
+    if not declared:
+        if actual:
+            return "native_only"
+        return "exempt_root" if number == 453 else "unclassified"
+    if declared[0] not in issues:
+        return "invalid_reference"
+    if actual is not None:
+        return "linked" if actual == declared[0] else "conflicting_parent"
+    return "missing_parent"
+
+
+def _classification_gaps(
+    labels: list[str],
+    milestone: dict[str, Any] | None,
+    tags: list[str],
+    declared: list[int],
+    actual: int | None,
+    issues: dict[int, dict[str, Any]],
+) -> list[str]:
+    """Report label/milestone readiness gaps for one issue."""
+    gaps: list[str] = []
+    if not labels:
+        gaps.append("labels")
+    if len(declared) == 1:
+        parent = issues.get(declared[0])
+    else:
+        # No prose declaration (e.g. native_only children): inherit the
+        # milestone check from the native parent discovered via sub-issue
+        # edges so milestone-owned families are still covered.
+        parent = issues.get(actual) if actual is not None else None
+    if not milestone and (tags or (parent and parent.get("milestone"))):
+        gaps.append("milestone")
+    if milestone and not tags:
+        gaps.append("milestone_label")
+    return gaps
+
+
 def analyze(snapshot: dict[str, Any]) -> dict[str, Any]:
     """Classify every issue, retaining malformed declarations as exceptions."""
     issues = {x["number"]: x for x in snapshot["issues"] if not x.get("pull_request")}
@@ -93,20 +141,8 @@ def analyze(snapshot: dict[str, Any]) -> dict[str, Any]:
     for number, issue in sorted(issues.items()):
         declared = declared_parents(issue.get("body"))
         actual = parent_of.get(number)
-        if number in REVIEW_HOLDS:
-            status = "review_hold"
-        elif len(declared) > 1:
-            status = "ambiguous"
-        elif not declared:
-            status = (
-                "native_only" if actual else ("exempt_root" if number == 453 else "unclassified")
-            )
-        elif declared[0] not in issues:
-            status = "invalid_reference"
-        elif actual is not None:
-            status = "linked" if actual == declared[0] else "conflicting_parent"
-        else:
-            status = "missing_parent"
+        status = _status_for(number, declared, actual, issues)
+        if status == "missing_parent":
             parent = issues[declared[0]]
             proposals.append(
                 {
@@ -124,20 +160,7 @@ def analyze(snapshot: dict[str, Any]) -> dict[str, Any]:
         mismatch = bool(
             len(tags) > 1 or (tags and milestone_tag and tags[0] != "milestone:" + milestone_tag[0])
         )
-        gaps = []
-        if not labels:
-            gaps.append("labels")
-        if len(declared) == 1:
-            parent = issues.get(declared[0])
-        else:
-            # No prose declaration (e.g. native_only children): inherit the
-            # milestone check from the native parent discovered via sub-issue
-            # edges so milestone-owned families are still covered.
-            parent = issues.get(actual) if actual is not None else None
-        if not milestone and (tags or (parent and parent.get("milestone"))):
-            gaps.append("milestone")
-        if milestone and not tags:
-            gaps.append("milestone_label")
+        gaps = _classification_gaps(labels, milestone, tags, declared, actual, issues)
         rows.append(
             {
                 "number": number,
