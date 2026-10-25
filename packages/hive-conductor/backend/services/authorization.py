@@ -36,6 +36,8 @@ PROTECTED_OPS: dict[str, dict[str, str]] = {
         "/v1/dags": "dags.write",
         "/v1/schedules": "schedules.write",
         "/v1/workspaces": "workspaces.write",
+        # Project onboarding wizard (#34 CONNECT); in-route ownership still applies.
+        "/v1/projects": "projects.write",
     },
     "POST": {
         "/v1/settings": "config.write",
@@ -68,6 +70,10 @@ PROTECTED_OPS: dict[str, dict[str, str]] = {
         # Provider activation uses the LiteLLM master key, mutates the global
         # model registry, and can trigger billed calls (SPEC-072726-3439).
         "/v1/providers": "config.write",
+        # Project onboarding wizard (intake/scan/deploy). The external-build
+        # webhook is carved out in required_permission — it authenticates via
+        # EXTERNAL_BUILD_CALLBACK_TOKEN, not projects.write.
+        "/v1/projects": "projects.write",
     },
     "PUT": {
         "/v1/settings": "config.write",
@@ -124,6 +130,10 @@ def required_permission(method: str, path: str) -> str | None:
     if method == "GET" and (path == "/v1/dag-runs" or path.startswith("/v1/dag-runs/")):
         return None
     if method == "GET" and (path == "/v1/eval-judge" or path.startswith("/v1/eval-judge/")):
+        return None
+    # External build callback: shared-secret Bearer checked in the route body
+    # (EXTERNAL_BUILD_CALLBACK_TOKEN), not a session projects.write grant.
+    if method == "POST" and path.rstrip("/") == "/v1/projects/webhooks/external-build":
         return None
     for prefix, permission in PROTECTED_OPS.get(method, {}).items():
         if path.startswith(prefix):
