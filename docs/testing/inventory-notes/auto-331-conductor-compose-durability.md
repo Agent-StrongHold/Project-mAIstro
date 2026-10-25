@@ -1,7 +1,7 @@
 ---
 inventory-delta:
-  packages/hive-conductor/backend/tests: +10
-  packages/maistro-core/tests: +22
+  packages/hive-conductor/backend/tests: +19
+  packages/maistro-core/tests: +23
 ---
 
 # #331 Conductor Compose data-directory durability
@@ -74,7 +74,7 @@ real and testable.
 
 ## Test deltas
 
-- `packages/maistro-core/tests/cli/test_security.py`: +22 tests across
+- `packages/maistro-core/tests/cli/test_security.py`: +23 tests across
   backup and restore — atomic single-pass capture, staged rename, default
   output location, empty/missing-dir refusals, no-overwrite, dry-run
   inertness, coupled-file round trip with the master key still decrypting,
@@ -85,9 +85,10 @@ real and testable.
   notes, empty-inventory print, backup rename failure, empty-archive and
   dirs-only refusals, restore-plan coupled-set warnings, device-node
   extraction failure, second-rename failure recovery, and the
-  `_swap_after_extract` empty-extraction guard). (The
-  stale-staging-directory refusal in the restore command has no dedicated
-  test — code path present, untested.)
+  `_swap_after_extract` empty-extraction guard); plus the mid-swap re-run
+  recovery test from the repair round at the bottom
+  (`test_rerun_after_a_kill_between_the_renames_recovers_the_original`,
+  which also covers the stale-staging-directory refusal).
 - `packages/hive-conductor/backend/tests/test_data_dir_guard.py` (new, 10
   tests): creation+probe cleanup, unwritable refusal, uncreatable-parent
   refusal, in-container ephemeral refusal (deterministic via `_st_dev`
@@ -209,6 +210,70 @@ change touches is at or above 90% lines / 80% branch arcs", 4 changed
 files measured, exit 0. Suite inventory re-recorded:
 `check-suite-inventory.py --note auto-331-conductor-compose-durability
 --update` → +9 in this note's `inventory-delta` (13 → 22), exit 0.
+
+## Repair round (review P1, 0600 archive, inventory), head 8721b66b1
+
+Three production commits landed after the verification round above, each
+with its tests, and both suites drifted until they were recorded here:
+
+- 5f597d59d — backup staging archives are created at 0600 so the archive
+  holding the master key is never world-readable. No new test yet at that
+  commit; the mode is now asserted end-to-end by the durability harness
+  (below).
+- 308b3d421 — a `restore` killed between its two renames left the original
+  in `.restore-old-*` and the extracted tree in `.restore-staging-*` with
+  no way to finish by re-running: `_refuse_stale_staging` now distinguishes
+  debris from an in-flight swap and a re-run completes the recovery.
+  +1 test in `test_security.py` (maistro-core/tests +1 recorded here).
+- 8721b66b1 — `verify_durable_data_dir` refuses a missing data directory
+  whose parent holds the pre-#331 flat layout (`DATA_DIR_LEGACY_LAYOUT`) or
+  restore debris (`DATA_DIR_RESTORE_RECOVERY`), and refuses tmpfs/ramfs
+  data dirs like container-layer ones (backing fs read from
+  `/proc/self/mounts`); both Compose files gain a read-only
+  `conductor-layout-check` one-shot gated by `depends_on`.
+  +9 tests in `test_data_dir_guard.py` (hive-conductor/backend/tests +9
+  recorded here: three restore-debris refusals, three legacy-layout cases,
+  two tmpfs cases, one `_fs_type` deepest-mount unit).
+
+Re-validation at this head:
+
+- `uv run pytest packages/maistro-core/tests/cli/test_security.py` → 36
+  passed; `.venv/bin/python -m pytest
+  packages/hive-conductor/backend/tests/test_data_dir_guard.py` → 19
+  passed.
+- Coverage-gate diff leg re-proven after these commits with the three
+  scoped producers exactly as before (maistro-core over test_security.py,
+  hive-conductor/backend over test_data_dir_guard.py, scripts over
+  tests/test_bump_version.py) → `scripts/check-diff-coverage.py
+  coverage.xml --base b1c89cdbc` → ok, 4 changed files measured, 3 test
+  files exempt, exit 0. The 4 measured are the 3 src files plus
+  `scripts/bump_version.py`; every changed line of the mid-swap and
+  legacy-layout code is covered by the new tests above.
+- Residual (attribution, not lane-caused): against the *stale* base
+  17746da75 (the one the 42527541b red job used, before develop moved) the
+  same gate fails on 8 files — profile.py, attention.py,
+  chat_completion.py, dag_run_store.py, profile_store.py,
+  workspace_preferences.py, _portability.py, skills.py — every one a
+  develop-side change contained in merge base b1c89cdb, none in this
+  PR's diff. CI's next evaluation uses the current merge base (the merge
+  queue computes it from develop head 9cc09cd5), for which the gate is
+  green as above.
+- Full compose durability scenario re-executed at this head via the same
+  script the CI job runs (`CONDUCTOR_PORT=8131`; the script now isolates
+  itself with `-p hive-durability-331`): **34 checks passed, 0 failed,
+  exit 0** — both guard refusals, create, write, down/up recreate,
+  image-rebuild recreate, reads after each, backup of all five durable
+  files, and full restore onto a destroyed volume. First run at this head
+  failed at the harness's own `tar -tzf` of the copied-out archive: the
+  0600 archive is owned by uid 65532, so the runner user cannot read it —
+  the script still said "the archive itself lands world-readable for the
+  host", an assumption 5f597d59d invalidated. Fixed in the harness (a
+  repair of the lane's own test infrastructure, not of the product): the
+  mode is now asserted from the host via `stat` (owner-only 0600 — this
+  also pins the 5f597d59d property end-to-end) and the listing is read
+  through the pinned alpine:3.20 the compose layout-check already uses,
+  mounted read-only; the restore container reads its own archive as its
+  owner uid unchanged.
 
 ## Verification round (independent, head e5cc427d4, develop b1c89cdb merged in)
 

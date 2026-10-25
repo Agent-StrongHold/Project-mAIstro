@@ -209,13 +209,18 @@ note "backup: one atomic archive of the whole data directory"
 $COMPOSE stop >/dev/null
 # The archive is written by the container's uid 65532; make the host-side
 # staging dir writable for it (it is a fresh mktemp dir under the runner's
-# private tmp, and the archive itself lands world-readable for the host).
+# private tmp). The archive itself lands owner-only (0600 — the staging
+# archive must never be looser than the credential files it snapshots), so
+# the host inspects it via stat and a root-side container listing below.
 chmod 777 "$BACKUP_DIR"
 docker run --rm -v "${VOLUME_NAME}:/data:ro" -v "${BACKUP_DIR}:/backup" \
   --entrypoint maistro "$IMAGE" \
   security backup --data-dir "/data/${DATA_DIR_IN_VOLUME}" --out /backup/conductor-data.tar.gz
 require "archive exists and is non-empty" test -s "$ARCHIVE"
-tar -tzf "$ARCHIVE" | head -20
+require "published archive is owner-only (0600)" test "$(stat -c '%a' "$ARCHIVE")" = "600"
+# stat above needs no read permission; the listing does. Read it as root in
+# the pinned alpine the compose layout-check already uses, read-only mount.
+docker run --rm -v "${BACKUP_DIR}:/backup:ro" alpine:3.20 tar -tzf /backup/conductor-data.tar.gz | head -20
 ok "archive is a readable gzip tarball"
 
 note "restore: destroy the volume, boot fresh, restore, verify everything"
