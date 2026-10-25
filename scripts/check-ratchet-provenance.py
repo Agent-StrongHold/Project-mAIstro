@@ -51,6 +51,11 @@ CANDIDATE_AUTHORED: dict[tuple[str, str], str] = {
         "each workflow's disposition, declared triggers and reference liveness rather than "
         "comparing against a tolerated prior-state oracle"
     ),
+    ("mutation_critical.py", "quality/mutation-critical-files.json"): (
+        "the mutation-critical file list is the reviewed current-tree scope specification: the "
+        "loader validates its schema, uniqueness and source existence and intersects it with the "
+        "PR's changed paths rather than comparing against a tolerated prior-state oracle"
+    ),
     ("check-image-pins.py", "quality/image-pins.json"): (
         "the pin registry is the reviewed approval authority being changed (#349): every pin "
         "and exemption row is explicit policy, and a base update lands as the reviewable "
