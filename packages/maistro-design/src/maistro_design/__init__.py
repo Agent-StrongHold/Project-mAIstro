@@ -48,6 +48,18 @@ from maistro_design.model_judge import (
     HumanJudgeNotResolvedError,
 )
 
+# design.orchestrate / design.consistency_eval: same pattern as explore/judge —
+# import the registration module from the package surface so process entry
+# points that load maistro_design get the kinds without a side catalog sweep
+# (#2311 design-node CONNECT).
+from maistro_design.nodes import (
+    ConsistencyEvalNode,
+    ConsistencyEvalOut,
+    DesignOrchestrateIn,
+    DesignOrchestrateNode,
+    DesignOrchestrateOut,
+)
+
 # M7-A6 (#795): the closed design-loop proof driver is a published surface of
 # this package — the issue asks for one *public* proof Run, and the driver is
 # how a reviewer reproduces it (`docs/product/M7-A6-DESIGN-LOOP-PROOF.md`).
@@ -176,6 +188,8 @@ __all__ = [
     "ChangeKind",
     "ChangeOrigin",
     "ColorToken",
+    "ConsistencyEvalNode",
+    "ConsistencyEvalOut",
     "ControlMode",
     "CreativeArtifactService",
     "CreativeBrief",
@@ -194,6 +208,9 @@ __all__ = [
     "DesignJudgeOut",
     "DesignJudgeThesis",
     "DesignLoopProof",
+    "DesignOrchestrateIn",
+    "DesignOrchestrateNode",
+    "DesignOrchestrateOut",
     "DesignOutput",
     "DesignOutputShapeError",
     "DesignProject",
