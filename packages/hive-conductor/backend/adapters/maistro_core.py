@@ -180,7 +180,8 @@ async def _construct_runtime(settings: Settings) -> EmbeddedRuntime:
 
     config = AgentConfig(
         router_api_key=settings.maistro_router_api_key or "",
-        litellm_url=llm_base or "http://localhost:4000",
+        litellm_url=llm_base
+        or "http://localhost:4000",  # DevSkim: ignore DS162092 until 2027-12-31
         litellm_key=llm_key,
         agents_dir=settings.maistro_agents_dir,
         # Stated, not inherited (#158). Core defaults this to "default" too,

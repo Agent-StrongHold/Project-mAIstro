@@ -1684,6 +1684,16 @@
       "effect_owner": "stores.workspaces"
     },
     {
+      "source": "packages/hive-conductor/backend/routes/workspaces.py",
+      "method": "PUT",
+      "route": "/{workspace_id}/agent",
+      "handler": "put_workspace_agent_persona",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "swaps the Workspace Agent persona template while keeping the stable agent id (owner-only; same write as chat tool set_workspace_agent_persona)",
+      "effect_owner": "services.workspace_agent.set_workspace_agent_persona"
+    },
+    {
       "source": "packages/hive-conductor/backend/routes/ws.py",
       "method": "WEBSOCKET",
       "route": "/tasks/{task_id}",
