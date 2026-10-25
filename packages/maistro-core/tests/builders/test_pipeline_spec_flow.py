@@ -209,7 +209,7 @@ async def test_decompose_adapts_spec_template_when_issue_class_matches() -> None
 
 @pytest.mark.asyncio
 async def test_review_records_spec_coverage_verification_without_spec_verifier() -> None:
-    """Lines 329–330: one-shot InvariantVerifier when no wrap is configured."""
+    """Lines 329-330: one-shot InvariantVerifier when no wrap is configured."""
     store = _InMemorySpecStore()
     await store.save(_spec(issue_number=31))
     # implement must NOT look clean — `_review_skip_if` skips review when
