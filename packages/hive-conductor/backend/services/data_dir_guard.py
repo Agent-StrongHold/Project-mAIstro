@@ -1,0 +1,337 @@
+"""Refuse to boot on a data directory that cannot keep its persistence promise.
+
+``CONDUCTOR_DATA_DIR`` holds everything the Conductor must survive a restart
+with: the SQLite state database (accounts, sessions, settings, registration
+policy), the age vault and its identity key, and the encrypted user
+credential store. Issue #331's contract is that a deployment asking for
+persistence gets it or gets a refusal — never a Conductor that starts,
+accepts logins and provisions accounts, and throws all of it away on the
+next ``docker compose down/up`` or image replacement.
+
+Four refusals, all fail-closed before any subsystem touches the directory:
+
+- **DATA_DIR_UNWRITABLE** — the directory cannot be created or written by
+  this process (wrong volume ownership, read-only mount, missing host
+  directory). The alternative is failing later, mid-flight, in whatever
+  subsystem touches the filesystem first — or worse, an ephemeral in-memory
+  fallback serving an empty registry as a fresh public first-run window
+  (ADR-072: state unavailability must stop the API, not rebind it).
+
+- **DATA_DIR_EPHEMERAL** — the process is running inside a container and the
+  configured data directory cannot outlive it: either it sits on the
+  container's *own root filesystem* (same device as ``/``) or it sits on a
+  memory-backed filesystem (``tmpfs``/``ramfs``). Container filesystem state
+  is discarded on recreate, and tmpfs is never written to the container's
+  storage layer at all — Docker drops its files when the container stops —
+  so any account, session, setting, or vault entry written there is already
+  lost. This is exactly the shape issue #331 closed: a deployment that
+  looked configured but was silently ephemeral. The check runs only inside
+  a container because a bare ``uvicorn`` on a host keeps state fine in a
+  plain directory like ``~/.conductor``.
+
+  A different device from ``/`` therefore proves only that the path is on a
+  *mount*, not that the mount is durable: the backing filesystem is read
+  from ``/proc/self/mounts`` and memory-backed types require the same
+  explicit acknowledgement as the container's own layer.
+
+  The test is a device comparison (``os.stat().st_dev`` against ``/``), not
+  ``os.path.ismount(data_dir)``: the standalone Compose layout deliberately
+  puts the data directory *inside* a mounted volume (``conductor-data:/data``
+  with ``CONDUCTOR_DATA_DIR=/data/conductor``) so backup/restore can swap the
+  directory itself by rename — a mount point cannot be renamed (rename(2)
+  returns ``EBUSY``), so a data directory that *is* the mount root makes an
+  atomic restore impossible. A nested path on the volume is a different
+  device from ``/`` and correctly passes; only container-layer paths fail.
+
+``CONDUCTOR_ALLOW_EPHEMERAL_DATA_DIR=1`` is the single documented escape
+hatch for harnesses that *deliberately* want throwaway state (e2e runners
+exercising the one-shot setup wizard). It is an acknowledgement, not a
+default: the guard still verifies writability with it set.
+
+- **DATA_DIR_LEGACY_LAYOUT** — the configured directory does not exist, but
+  the files of the pre-nesting layout (#331 review) sit directly in its
+  parent: before ``CONDUCTOR_DATA_DIR`` moved one level inside the volume
+  (``/data`` → ``/data/conductor``, so restore can rename the data
+  directory), ``state.db``, ``secrets.age``, and ``admin.key`` lived at the
+  volume root. Creating the configured directory now would open a fresh,
+  empty state database beside the real one and re-arm first-run setup while
+  every existing account sits orphaned one level up. Refuse with the
+  migration instead. Checked only inside a container: the flat layout only
+  ever existed at a Docker mount root, and a host deployment must not be
+  refused because of an unrelated ``state.db`` in ``$HOME``.
+
+- **DATA_DIR_RESTORE_RECOVERY** — the configured directory does not exist,
+  but a ``.restore-old-*`` or ``.restore-staging*`` sibling (the debris
+  ``maistro security restore`` leaves when it is killed mid-swap) does.
+  Creating the directory here would look like a fresh install: an empty
+  state database, first-run provisioning, live accounts stranded in the
+  ``.restore-old-*`` sibling. Refuse instead and point at the recovery.
+"""
+
+from __future__ import annotations
+
+import contextlib
+import logging
+import os
+from pathlib import Path
+
+logger = logging.getLogger("hive.data_dir")
+
+_PROBE_FILENAME = ".conductor-data-dir-probe"
+_ESCAPE_HATCH_ENV = "CONDUCTOR_ALLOW_EPHEMERAL_DATA_DIR"
+
+#: Debris of an interrupted `maistro security restore` swap, named by the
+#: same convention in maistro.cli._security (staging may carry a pid too).
+_RESTORE_ARTIFACT_SUFFIXES = (".restore-old", ".restore-staging")
+
+#: Markers a container runtime drops into the container's own filesystem.
+#: Docker creates ``/.dockerenv``; Podman creates ``/run/.containerenv``.
+_CONTAINER_MARKERS = ("/.dockerenv", "/run/.containerenv")
+
+#: The filesystem whose lifetime is the container's lifetime. Anything on
+#: this device is discarded on recreate; anything on another device is on a
+#: mount (named volume, bind mount, tmpfs) — but only volume and bind mounts
+#: outlive the container, so the backing filesystem is checked separately.
+_CONTAINER_ROOT = Path("/")
+
+#: Durable files of the pre-nesting layout (#331 review): before
+#: CONDUCTOR_DATA_DIR moved from the volume root (/data) to /data/conductor,
+#: these sat directly at the mount root. Any of them beside a missing data
+#: directory means the directory is a fresh, empty location beside live data.
+_LEGACY_LAYOUT_MARKERS = ("state.db", "secrets.age", "admin.key")
+
+#: Kernel table mapping mount points to filesystem types.
+_PROC_MOUNTS = Path("/proc/self/mounts")
+
+#: Filesystems that back their files with memory only. They arrive on a
+#: different device from ``/`` — indistinguishable from a named volume by
+#: ``st_dev`` alone — but are never persisted: Docker documentation states
+#: tmpfs files "won't be persisted" when the container stops.
+_EPHEMERAL_FS_TYPES = frozenset({"tmpfs", "ramfs"})
+
+
+def _fs_type(path: Path, mounts_path: Path = _PROC_MOUNTS) -> str | None:
+    """Filesystem type of the mount holding *path*, or None if undeterminable.
+
+    Reads the kernel mount table and returns the type of the mount point
+    that most specifically contains *path* (longest matching prefix).
+    Separate function (and injectable table) for tests.
+    """
+    try:
+        table = mounts_path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    resolved = str(path)
+    best: tuple[int, str] | None = None
+    for line in table.splitlines():
+        fields = line.split()
+        if len(fields) < 3:
+            continue
+        mount_point = fields[1]
+        for escaped, literal in (("\\040", " "), ("\\011", "\t"), ("\\134", "\\")):
+            mount_point = mount_point.replace(escaped, literal)
+        prefix = mount_point.rstrip("/") or "/"
+        under = resolved == prefix or resolved.startswith("/" if prefix == "/" else prefix + "/")
+        if under and (best is None or len(prefix) > best[0]):
+            best = (len(prefix), fields[2])
+    return best[1] if best else None
+
+
+class DataDirRefused(RuntimeError):
+    """The configured data directory cannot durably hold Conductor state.
+
+    Raised before the vault, state database, or credential store are
+    initialized, so a refused startup has written nothing anywhere and the
+    process must stop.
+    """
+
+
+def running_in_container() -> bool:
+    return any(os.path.exists(marker) for marker in _CONTAINER_MARKERS)
+
+
+def _ephemerality_acknowledged() -> bool:
+    return os.environ.get(_ESCAPE_HATCH_ENV, "").strip().lower() in {"1", "true", "yes"}
+
+
+def _probe_writable(data_dir: Path) -> None:
+    """Prove the directory accepts a create/fsync/delete cycle.
+
+    A real write, not ``os.access``: access(2) reports permission bits, not
+    whether this uid can actually write (read-only mounts and some ACL
+    layouts pass the bit check and fail the write).
+    """
+    probe = data_dir / _PROBE_FILENAME
+    try:
+        with open(probe, "a", encoding="utf-8") as handle:
+            handle.write("probe")
+            handle.flush()
+            os.fsync(handle.fileno())
+    except OSError as exc:
+        raise DataDirRefused(
+            f"DATA_DIR_UNWRITABLE: {data_dir} is not writable by uid "
+            f"{os.getuid()} ({exc}). Refusing to start: state.db, the vault, "
+            "and the credential store would fail mid-flight. Fix the volume "
+            "mount and its ownership/permissions (see the Conductor README, "
+            "'Persistent state')."
+        ) from exc
+    finally:
+        with contextlib.suppress(OSError):
+            probe.unlink()
+
+
+def _st_dev(path: Path) -> int:
+    """Device id of the filesystem holding *path* (separate fn for tests)."""
+    return os.stat(path).st_dev
+
+
+def _probe_mounted(data_dir: Path) -> None:
+    """Refuse an in-container data directory that cannot outlive the container.
+
+    Only called inside a container. Two shapes of silent state loss, both
+    refused unless ``CONDUCTOR_ALLOW_EPHEMERAL_DATA_DIR`` acknowledges them:
+
+    - a path on the container's root filesystem (same device as ``/``) lives
+      in the container's writable layer, discarded on recreate — so
+      "configured" would be a lie the first time ``docker compose down/up``
+      ran;
+    - a path on a memory-backed filesystem (tmpfs/ramfs) sits on a mount —
+      a different device from ``/`` — but its files are never persisted;
+      Docker drops tmpfs files when the container stops.
+
+    A device difference proves only that the path is mounted, not that the
+    mount is durable, so the backing filesystem type is read from
+    ``/proc/self/mounts``. Named volumes and bind mounts have neither
+    property and pass.
+    """
+    try:
+        on_root_fs = _st_dev(data_dir) == _st_dev(_CONTAINER_ROOT)
+    except OSError as exc:
+        raise DataDirRefused(
+            f"DATA_DIR_UNWRITABLE: cannot stat data directory {data_dir} "
+            f"({exc}). Refusing to start rather than guess where state "
+            "would land."
+        ) from exc
+    fs_type = _fs_type(data_dir)
+    if on_root_fs:
+        where = "this container's own root filesystem"
+    elif fs_type in _EPHEMERAL_FS_TYPES:
+        where = f"the memory-backed {fs_type} filesystem holding it"
+    else:
+        return
+    if _ephemerality_acknowledged():
+        logger.warning(
+            "DATA_DIR_EPHEMERAL_ACKNOWLEDGED: %s sits on %s and WILL BE LOST "
+            "on container stop or recreate; %s=1 accepted this deliberately. "
+            "Never set it where accounts or vault entries must survive a "
+            "recreate.",
+            data_dir,
+            where,
+            _ESCAPE_HATCH_ENV,
+        )
+        return
+    raise DataDirRefused(
+        f"DATA_DIR_EPHEMERAL: {data_dir} sits on {where}, so everything "
+        "written there (accounts, sessions, settings, vault, credentials) "
+        "is discarded when this container stops or is recreated. Mount a "
+        "volume at CONDUCTOR_DATA_DIR or at any of its parent directories "
+        "— see the standalone docker-compose.yml and the README 'Persistent "
+        "state' section — or, only for throwaway test harnesses, set "
+        f"{_ESCAPE_HATCH_ENV}=1."
+    )
+
+
+def _refuse_legacy_flat_layout(data_dir: Path) -> None:
+    """Refuse to fresh-initialize beside a pre-#331 flat data layout.
+
+    Upgrading an existing deployment from CONDUCTOR_DATA_DIR=/data (the
+    volume's mount root) to /data/conductor without moving the files leaves
+    every account, session, and vault entry orphaned one level up: mkdir()
+    would create the new directory, the state layer would open an empty
+    database in it, and first-run setup would re-arm beside live data. Only
+    checked when the data directory itself is missing (an existing directory
+    is already someone's live state, not something to second-guess) and only
+    inside a container, where the flat layout actually existed.
+    """
+    if not running_in_container():
+        return
+    parent = data_dir.parent
+    if not parent.is_dir():
+        return
+    found = sorted(name for name in _LEGACY_LAYOUT_MARKERS if (parent / name).exists())
+    if not found:
+        return
+    names = ", ".join(found)
+    raise DataDirRefused(
+        f"DATA_DIR_LEGACY_LAYOUT: {data_dir} does not exist, but pre-nesting "
+        f"layout files sit directly in {parent} ({names}). This image moved "
+        "CONDUCTOR_DATA_DIR one level inside the volume so `maistro security "
+        "restore` can swap the data directory by rename; creating it now "
+        "would open an EMPTY state database and re-arm first-run setup beside "
+        "your real accounts. Stop the container and move the coupled files "
+        f"down as one unit — mkdir -p {data_dir} && mv "
+        "state.db state.db-wal state.db-shm secrets.age admin.key "
+        "credential_master.key user_credentials.enc "
+        f"{data_dir}/ (ignoring files not present) — then start again. See "
+        "the README 'Persistent state' section."
+    )
+
+
+def _refuse_restore_recovery_artifacts(data_dir: Path) -> None:
+    """Refuse to fresh-initialize beside an interrupted backup restore.
+
+    ``maistro security restore`` swaps the directory in with two renames;
+    a kill between them leaves the configured directory absent while the
+    original survives in a ``.restore-old-*`` sibling. mkdir() would
+    happily recreate an empty directory here and the state layer would
+    open a fresh database — first-run provisioning over live accounts.
+    Only checked when the data directory itself is missing: leftover
+    artifacts beside an existing directory are harmless leftovers.
+    """
+    parent = data_dir.parent
+    if not parent.is_dir():
+        return
+    artifacts = sorted(
+        artifact
+        for suffix in _RESTORE_ARTIFACT_SUFFIXES
+        for artifact in parent.glob(f".{data_dir.name}{suffix}*")
+    )
+    if not artifacts:
+        return
+    names = ", ".join(artifact.name for artifact in artifacts)
+    raise DataDirRefused(
+        f"DATA_DIR_RESTORE_RECOVERY: {data_dir} does not exist, but "
+        f"interrupted-restore artifacts sit beside it ({names}). Creating "
+        "the directory now would open a fresh, empty state database and "
+        "provision new accounts while the original data sits in the "
+        ".restore-old-* sibling. Recover first: re-run `maistro security "
+        f"restore --data-dir {data_dir} --from <archive>` (it moves the "
+        f"original back before swapping), or `mv <the .restore-old-* "
+        f"directory> {data_dir}` to keep the pre-restore state, then "
+        "remove the inspected `.restore-staging*` sibling."
+    )
+
+
+def verify_durable_data_dir(data_dir: Path) -> Path:
+    """Create, prove writable, and (in containers) prove mounted.
+
+    Returns the resolved directory on success; raises :class:`DataDirRefused`
+    otherwise. Call this before any subsystem opens a file under the
+    directory, so a refused startup has written nothing.
+    """
+    resolved = data_dir.expanduser()
+    if not resolved.exists():
+        _refuse_legacy_flat_layout(resolved)
+        _refuse_restore_recovery_artifacts(resolved)
+    try:
+        resolved.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise DataDirRefused(
+            f"DATA_DIR_UNWRITABLE: cannot create data directory {resolved} "
+            f"({exc}). Refusing to start rather than serving state that "
+            "cannot be persisted."
+        ) from exc
+    _probe_writable(resolved)
+    if running_in_container():
+        _probe_mounted(resolved)
+    return resolved
