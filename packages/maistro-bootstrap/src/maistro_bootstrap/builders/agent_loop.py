@@ -326,7 +326,8 @@ def _make_sandbox_tools(session: BuilderSession) -> list[dict[str, Any]]:
             "description": (
                 "Run one constrained command as argv in the sandbox. The command and "
                 "arguments are passed without a shell; shell text, pipes, redirects, "
-                "and command strings are not accepted."
+                "and command strings are not accepted. The executable must be a bare "
+                "command name or a path inside the sandbox workspace."
             ),
             "input_schema": {
                 "type": "object",

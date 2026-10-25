@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
 from typing import cast
 
+import pytest
+
 from maistro_bootstrap.builders.agent_loop import _dispatch_tool, _make_sandbox_tools
+from maistro_bootstrap.builders.sandbox import SandboxedShell
 from maistro_bootstrap.builders.session import BuilderSession
 
 
@@ -68,3 +73,38 @@ def test_run_command_rejects_shell_metacharacter_tokens() -> None:
     )
     assert "metacharacters" in result
     assert sandbox.argv == []
+
+
+# ---------------------------------------------------------------------------
+# Real-sandbox executable boundary (#57)
+# ---------------------------------------------------------------------------
+#
+# The recording stubs above pin the schema/argv plumbing, but a stub's
+# run_argv accepts everything — exactly the assumption that let the escape
+# through. These tests dispatch through the REAL SandboxedShell so the
+# model-facing run_command path is pinned to the executor's boundary.
+
+
+@pytest.mark.skipif(os.name != "posix", reason="/bin/touch path is POSIX-specific")
+def test_run_command_model_argv_cannot_execute_outside_root(tmp_path: Path) -> None:
+    """Model-authored argv[0] naming an outside-root executable is refused.
+
+    run_command forwards model-authored argv to sandbox.run_argv; when the
+    sandbox validated argv[1:] only, argv[0]="/bin/touch" executed the real
+    binary. The argument here is deliberately a safe relative path, so the
+    ONLY escape is the executable token itself. It must come back as a tool
+    error and no subprocess may run — proven by the file /bin/touch would
+    create inside the root never appearing.
+    """
+    session = BuilderSession(sandbox=SandboxedShell(tmp_path))
+    result = _dispatch_tool(session, "run_command", {"argv": ["/bin/touch", "escaped.txt"]})
+    assert "Path escape detected" in result
+    assert not (tmp_path / "escaped.txt").exists()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="bare echo is POSIX-specific")
+def test_run_command_still_dispatches_bare_executable_names(tmp_path: Path) -> None:
+    """The executable boundary must not over-block the legitimate shape."""
+    session = BuilderSession(sandbox=SandboxedShell(tmp_path))
+    result = _dispatch_tool(session, "run_command", {"argv": ["echo", "dispatch-ok"]})
+    assert "dispatch-ok" in result
