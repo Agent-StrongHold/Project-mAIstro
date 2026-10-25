@@ -39,3 +39,8 @@ class ContextProbe:
                 self._cache[model] = PROBE_SIZES[-1]
             else:
                 self._probe_index[model] = next_idx
+
+    def clear(self) -> None:
+        """Drop cached windows and probe indices (tests / process recycle)."""
+        self._cache.clear()
+        self._probe_index.clear()
