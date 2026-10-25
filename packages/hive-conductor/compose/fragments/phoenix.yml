@@ -8,3 +8,8 @@ services:
     image: arizephoenix/phoenix:latest
     ports:
       - "6006:6006"
+    mem_limit: 512m
+    memswap_limit: 512m
+    pids_limit: 128
+    cpus: 0.5
+    restart: unless-stopped

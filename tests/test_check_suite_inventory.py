@@ -20,6 +20,7 @@ count.
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 import sys
@@ -312,7 +313,10 @@ def fake_collect(counts: dict[str, int], broken: set[str] = frozenset()):
     def _collect(suite, recipe):
         if suite in broken:
             raise RuntimeError(f"collection failed for `{suite}`")
-        return counts[suite], f"pytest {suite}"
+        count = counts[suite]
+        # Node IDs match the count, as a real collection's would (#396 report).
+        ids = [f"{suite}::test_{i}" for i in range(count)]
+        return count, f"pytest {suite}", ids
 
     return _collect
 
@@ -335,7 +339,7 @@ class TestCollectParsing:
                 },
             )(),
         )
-        count, cmd = gate.collect("tests/", gate.Recipe(args=[]))
+        count, cmd, _ids = gate.collect("tests/", gate.Recipe(args=[]))
         assert count == 41
         assert "tests/" in cmd
 
@@ -386,13 +390,97 @@ class TestCollectParsing:
         assert seen["argv"][0] != "uv"
         assert seen["argv"][1:3] == ["-m", "pytest"]
 
+    def test_node_ids_survive_decorated_summary_and_warning_prose(self, gate, monkeypatch):
+        """#396 report input: formal/ prints ``=== N tests collected ===`` and a
+        warnings box whose prose *contains* a node-ID-shaped string. Neither
+        may break the node-ID parse, and the prose line must not count."""
+        stdout = (
+            "formal/models/test_a.py::test_one\n"
+            "formal/models/test_a.py::TestM::runTest\n"
+            "  formal/models/test_run_lease_fence.py:1: PytestWarning: usefixtures() in "
+            "models/test_run_lease_fence.py::TestRunLeaseFenceMachine::runTest has no effect\n"
+            "-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\n"
+            "========================= 2 tests collected in 0.1s =========================\n"
+        )
+        monkeypatch.setattr(
+            gate.subprocess,
+            "run",
+            lambda *a, **k: type("P", (), {"stdout": stdout, "stderr": "", "returncode": 0})(),
+        )
+        count, _cmd, ids = gate.collect("formal/", gate.Recipe(args=["-o", "addopts="]))
+        assert count == 2
+        assert ids == [
+            "formal/models/test_a.py::test_one",
+            "formal/models/test_a.py::TestM::runTest",
+        ]
+
+    def test_node_ids_degrade_to_empty_when_the_parse_cannot_be_trusted(self, gate, monkeypatch):
+        """A parse that disagrees with the summary count yields no IDs — the
+        report omits the suite and warns; the count itself still gates."""
+        stdout = "tests/test_a.py::test_one\n2 tests collected\n"
+        monkeypatch.setattr(
+            gate.subprocess,
+            "run",
+            lambda *a, **k: type("P", (), {"stdout": stdout, "stderr": "", "returncode": 0})(),
+        )
+        count, _cmd, ids = gate.collect("tests/", gate.Recipe(args=[]))
+        # The count stays authoritative (2, from pytest's own summary); only
+        # the report input degrades.
+        assert count == 2
+        assert ids == []
+
+    def test_formal_recipe_clears_ini_addopts_so_q_produces_node_ids(self, gate):
+        """formal/'s own config sets ``addopts = -v --tb=short``, which cancels
+        the CLI ``-q`` and yields the tree format instead of node-ID lines."""
+        assert gate.RECIPES["formal/"].args == ["-o", "addopts="]
+
+
+class TestUniqueEvidenceReport:
+    """#396: the number the ledger guards represents evidence; say how much
+    of it is unique versus byte-identical copies collected under two roots."""
+
+    def test_the_same_test_under_two_roots_counts_once(self, gate):
+        collected = {
+            "tests/": ["tests/api/x.py::test_a", "tests/unique.py::test_b"],
+            "packages/maistro-server/tests": ["packages/maistro-server/tests/api/x.py::test_a"],
+        }
+        report = gate.unique_evidence_report(collected)
+        assert "collected node IDs: 3" in report
+        assert "unique test identities (cross-suite): 2" in report
+        assert "duplicate evidence from copied test files: 1" in report
+
+    def test_disjoint_suites_report_zero_duplicate_evidence(self, gate):
+        collected = {
+            "tests/": ["tests/a.py::test_a"],
+            "formal/": ["formal/models/a.py::test_a"],
+        }
+        report = gate.unique_evidence_report(collected)
+        assert "duplicate evidence from copied test files: 0" in report
+
+    def test_prefix_strip_is_per_suite_so_no_false_dedup(self, gate):
+        """Only a node's OWN suite root is stripped. A ``tests/`` node that
+        merely lives under a ``formal/``-prefixed directory keeps its full
+        path and cannot collide with formal/'s stripped identity."""
+        collected = {
+            "tests/": ["tests/formal_lookup/a.py::test_a", "formal/models/a.py::test_x"],
+            "formal/": ["formal/models/a.py::test_a"],
+        }
+        report = gate.unique_evidence_report(collected)
+        # "formal/models/a.py::test_x" in tests/ keeps its full path; formal/'s
+        # "formal/models/a.py::test_a" strips to "models/a.py::test_a" — no
+        # accidental collision between the two, and the tests/ copy under
+        # formal_lookup/ does not strip against formal/'s root either.
+        assert "collected node IDs: 3" in report
+        assert "unique test identities (cross-suite): 3" in report
+        assert "duplicate evidence from copied test files: 0" in report
+
 
 class TestRunChecks:
     """Drift and collection failure are different things and must stay apart."""
 
     def test_matching_counts_produce_no_drift(self, two_suites, monkeypatch):
         monkeypatch.setattr(two_suites, "collect", fake_collect({"tests/": 100, "formal/": 50}))
-        drift, failures = two_suites.run_checks(
+        drift, failures, _ids = two_suites.run_checks(
             ["tests/", "formal/"], {"tests/": 100, "formal/": 50}
         )
         assert drift == [] and failures == []
@@ -400,7 +488,7 @@ class TestRunChecks:
     @pytest.mark.ac("ADR-082526-547c/AC-3")
     def test_a_moved_count_is_drift(self, two_suites, monkeypatch):
         monkeypatch.setattr(two_suites, "collect", fake_collect({"tests/": 107, "formal/": 50}))
-        drift, failures = two_suites.run_checks(
+        drift, failures, _ids = two_suites.run_checks(
             ["tests/", "formal/"], {"tests/": 100, "formal/": 50}
         )
         assert drift == [("tests/", 100, 107)]
@@ -411,7 +499,7 @@ class TestRunChecks:
         """The distinction that matters: you must not record a delta for a suite
         that did not run. That would bank the breakage as the new truth."""
         monkeypatch.setattr(two_suites, "collect", fake_collect({"formal/": 50}, broken={"tests/"}))
-        drift, failures = two_suites.run_checks(
+        drift, failures, _ids = two_suites.run_checks(
             ["tests/", "formal/"], {"tests/": 100, "formal/": 50}
         )
         assert drift == []
@@ -498,6 +586,29 @@ class TestDefaultNoteSlug:
             lambda *a, **k: type("P", (), {"stdout": "claude/x\n", "returncode": 0})(),
         )
         assert gate.default_note_slug() == gate.default_note_slug()
+
+    def test_the_slug_digest_is_derived_from_sha256_not_a_broken_hash(self, gate, monkeypatch):
+        """The digest must stay on sha256; sha1 reintroduces a DevSkim finding.
+
+        (No @pytest.mark.ac claim: this pins a scanner constraint, not a
+        declared acceptance criterion. A free-form marker here names no
+        **AC-N** id and the acceptance-state ratchet counts that as debt
+        (markers_without_criterion); the docstring below carries the provenance.)
+
+        The four-hex suffix is a non-cryptographic discriminator, but this
+        script sits in the DevSkim-scanned tree and DS126858 flags sha1
+        wherever it appears — as the code-scanning check-run proved when it
+        attributed exactly that finding to a PR whose diff merely grew around
+        the line. Pinning the derivation here means a revert to sha1 fails a
+        named test instead of a red gate on the next large PR.
+        """
+        monkeypatch.setattr(
+            gate.subprocess,
+            "run",
+            lambda *a, **k: type("P", (), {"stdout": "claude/x\n", "returncode": 0})(),
+        )
+        expected = hashlib.sha256(b"claude/x").hexdigest()[:4]
+        assert gate.default_note_slug() == f"claude-x-{expected}"
 
     def test_detached_head_yields_nothing(self, gate, monkeypatch):
         monkeypatch.setattr(
@@ -631,6 +742,78 @@ class TestDriver:
             two_suites, "collect", lambda *a: pytest.fail("must not collect on a bad ledger")
         )
         assert two_suites.main() == 2
+
+
+class TestSuitePathResolution:
+    """`--suite` must reach a gated suite nested below a named directory (#358).
+
+    The hive-conductor layout nests a gated suite inside another suite's
+    parent: `packages/hive-conductor/tests/e2e` lives under
+    `packages/hive-conductor/tests`, which names no recipe of its own (the
+    backend suite is a sibling at `backend/tests`). A caller that resolves a
+    changed test path to its nearest `tests/` directory — the way scope
+    evidence does — must get the nested suite checked, not a `no collection
+    recipe` error; and the resolution must still check the suite it names,
+    never silently narrow to zero.
+    """
+
+    @pytest.fixture
+    def nested(self, ledger, monkeypatch):
+        """Re-arm the miniature repo with the nested-suite shape."""
+        monkeypatch.setattr(
+            ledger,
+            "RECIPES",
+            {"tests/": ledger.Recipe(args=[]), "tests/e2e": ledger.Recipe(args=[])},
+        )
+        ledger.BASELINE.write_text(
+            json.dumps({"counts": {"tests/": 100, "tests/e2e": 23}, "folded": []}),
+            encoding="utf-8",
+        )
+        ledger.INVENTORY.write_text(
+            "see [notes](inventory-notes/)\n\n"
+            "| `tests/` | `ci.yml` |\n| `tests/e2e` | `ci.yml` |\n",
+            encoding="utf-8",
+        )
+        return ledger
+
+    def test_the_hive_conductor_parent_resolves_to_the_nested_e2e_suite(self, gate):
+        """The exact argument the integration-scope evidence passes."""
+        resolved, missing = gate.resolve_suites(["packages/hive-conductor/tests"])
+        assert resolved == {"packages/hive-conductor/tests/e2e"}
+        assert missing == []
+
+    def test_a_parent_argument_selects_every_recipe_beneath_it(self, gate):
+        resolved, missing = gate.resolve_suites(["tests"])
+        assert "tests/" in resolved
+        assert missing == []
+
+    def test_an_exact_recipe_still_selects_only_itself(self, gate):
+        resolved, missing = gate.resolve_suites(["formal/"])
+        assert resolved == {"formal/"}
+        assert missing == []
+
+    def test_prefix_matching_is_component_wise(self, gate):
+        """`form` is not `formal/`; a partial name must stay an error."""
+        resolved, missing = gate.resolve_suites(["form"])
+        assert resolved == set()
+        assert missing == ["form"]
+
+    def test_a_resolved_nested_suite_is_actually_checked(self, nested, monkeypatch):
+        """Resolution is a lookup, not a bypass: drift in the nested suite
+        must still fail the narrowed check."""
+        monkeypatch.setattr(nested.sys, "argv", ["x", "--suite", "tests"])
+        monkeypatch.setattr(nested, "collect", fake_collect({"tests/": 100, "tests/e2e": 24}))
+        assert nested.main() == 1
+
+    def test_a_parent_argument_passes_when_the_nested_suite_matches(self, nested, monkeypatch):
+        monkeypatch.setattr(nested.sys, "argv", ["x", "--suite", "tests"])
+        monkeypatch.setattr(nested, "collect", fake_collect({"tests/": 100, "tests/e2e": 23}))
+        assert nested.main() == 0
+
+    def test_an_unresolvable_argument_still_exits_two(self, nested, monkeypatch):
+        monkeypatch.setattr(nested.sys, "argv", ["x", "--suite", "packages/ghost"])
+        monkeypatch.setattr(nested, "collect", lambda *a: pytest.fail("must not collect on a typo"))
+        assert nested.main() == 2
 
 
 class TestNotesDirectoryGuard:
@@ -791,6 +974,6 @@ class TestReviewFindings:
         assert expected["tests/"] == 3
 
         monkeypatch.setattr(ledger, "collect", fake_collect({"tests/": 4}))
-        drift, failures = ledger.run_checks(["tests/"], expected)
+        drift, failures, _ids = ledger.run_checks(["tests/"], expected)
         assert failures == []
         assert drift == [("tests/", 3, 4)], "the interaction must surface as drift"

@@ -837,6 +837,13 @@ class TestNestedPatternSafety:
         assert "[REDACTED_AUTH_HEADER]" in result
 
 
+#: Samples per timing in `TestRedactScaling`. The minimum of N runs only ever
+#: tightens as N grows, so raising this never weakens what the assertions
+#: prove; it widens the gap between "a noisy sample" and "the least noisy
+#: sample" that a flake must clear on every run of one side.
+_REDACT_TIMING_REPEATS = 9
+
+
 class TestRedactScaling:
     """ADR-064/AC-36 — redaction must not rescan quadratically.
 
@@ -852,16 +859,49 @@ class TestRedactScaling:
     minimum of several runs — the sample least contaminated by scheduling
     noise. Linear is ~4x for 4x input; quadratic is ~16x; 8.0 sits midway on a
     log scale.
+
+    The small and large timings are interleaved rather than batched (quality-gate
+    repair, #910 CI: one AC-36 sample batch on a contended runner landed its
+    scheduling noise wholly on the 16 KB side, and a min-of-5 with ~2x numeric
+    headroom read as a regression that never existed). Interleaved, both sides
+    sample the same machine state, so contention lands on numerator and
+    denominator together and cancels in the ratio; nine samples per side then
+    need a *sustained*, one-sided stall to move the minimum at all.
     """
 
+    #: Samples per timing — see `_REDACT_TIMING_REPEATS` above.
+    _REPEATS = _REDACT_TIMING_REPEATS
+
     @staticmethod
-    def _best(text: str, repeats: int = 5) -> float:
+    def _best(text: str, repeats: int = _REDACT_TIMING_REPEATS) -> float:
         best = float("inf")
         for _ in range(repeats):
             start = time.perf_counter()
             redact(text)
             best = min(best, time.perf_counter() - start)
         return best
+
+    @staticmethod
+    def _best_pair(
+        small: str, large: str, repeats: int = _REDACT_TIMING_REPEATS
+    ) -> tuple[float, float]:
+        """Best timing of each input, taken in an interleaved s/l/s/l… order.
+
+        The ratio test wants *comparable* minima: sampled back-to-back batches,
+        a scheduler burst that covers exactly the large-input batch inflates the
+        numerator alone and the ratio reads quadratic on a linear engine.
+        Alternating the inputs makes that burst hit both sides or neither, which
+        is the cancellation the ratio is for.
+        """
+        best_s = best_l = float("inf")
+        for _ in range(repeats):
+            start = time.perf_counter()
+            redact(small)
+            best_s = min(best_s, time.perf_counter() - start)
+            start = time.perf_counter()
+            redact(large)
+            best_l = min(best_l, time.perf_counter() - start)
+        return best_s, best_l
 
     @pytest.mark.ac("ADR-064/AC-36")
     @pytest.mark.parametrize(
@@ -884,7 +924,8 @@ class TestRedactScaling:
         ],
     )
     def test_cost_grows_linearly_with_input(self, label, build):
-        ratio = self._best(build(16_000)) / self._best(build(4_000))
+        small, large = self._best_pair(build(4_000), build(16_000))
+        ratio = large / small
         assert ratio < 8.0, f"{label}: 4x input cost {ratio:.1f}x time (linear=4, quadratic=16)"
 
     @pytest.mark.ac("ADR-064/AC-35")
@@ -903,7 +944,9 @@ class TestRedactScaling:
 
         Deliberately loose: the tight bound is machine-specific and would flake,
         while an order-of-magnitude alarm still catches the 2.3 ms regression a
-        1 KB unbroken word run caused before the anchors went in.
+        1 KB unbroken word run caused before the anchors went in. The best of
+        nine runs is the sample least contaminated by runner noise (see
+        `TestRedactScaling` — the quality-gate repair for #910's CI run).
         """
         assert self._best(text[:1024]) < 0.010
 

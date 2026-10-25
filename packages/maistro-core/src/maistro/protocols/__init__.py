@@ -12,6 +12,7 @@ from maistro.protocols.agents import AgentStore
 from maistro.protocols.auth import AuthError, AuthProvider, CredentialNotApplicable
 from maistro.protocols.classifier import IntentClassifier
 from maistro.protocols.codebase import CodeStructureIndex
+from maistro.protocols.coins import CoinLedger
 from maistro.protocols.embeddings import EmbeddingClient
 from maistro.protocols.feedback import FeedbackExtractor, ViolationStore
 from maistro.protocols.llm import LLMClient
@@ -20,6 +21,7 @@ from maistro.protocols.memory import (
     DecayableEpisodicStore,
     EpisodicStore,
     LearningExtractor,
+    LearningLifecycleStore,
     LearningStore,
     OutcomeStore,
     RCAExtractor,
@@ -45,6 +47,7 @@ __all__ = [
     "AuthError",
     "AuthProvider",
     "CodeStructureIndex",
+    "CoinLedger",
     "CredentialNotApplicable",
     "DecayableEpisodicStore",
     "EmbeddingClient",
@@ -53,6 +56,7 @@ __all__ = [
     "IntentClassifier",
     "LLMClient",
     "LearningExtractor",
+    "LearningLifecycleStore",
     "LearningStore",
     "ModelRouter",
     "Notification",

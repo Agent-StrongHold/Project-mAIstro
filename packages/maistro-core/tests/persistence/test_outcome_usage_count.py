@@ -19,6 +19,7 @@ from typing import Any
 
 import pytest
 
+from maistro.memory.exposure import MemoryExposureMode
 from maistro.types.memory import Outcome
 
 from .conftest import postgres_dsn
@@ -68,7 +69,7 @@ async def leg(request: Any, pg_pool: Any) -> AsyncIterator[Any]:
         from maistro.persistence.sqlite_outcomes import SqliteOutcomeStore
 
         conn = await aiosqlite.connect(":memory:")
-        store = SqliteOutcomeStore(conn)
+        store = SqliteOutcomeStore(conn, exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         await store.ensure_schema()
         try:
             yield _SqliteLeg(store)
@@ -80,7 +81,9 @@ async def leg(request: Any, pg_pool: Any) -> AsyncIterator[Any]:
         pytest.skip("set MAISTRO_TEST_PG_DSN to a migrated PostgreSQL database")
     from maistro.persistence.pg_outcomes import PgOutcomeStore
 
-    yield _PostgresLeg(PgOutcomeStore(pg_pool), pg_pool)
+    yield _PostgresLeg(
+        PgOutcomeStore(pg_pool, exposure_mode=MemoryExposureMode.AGENT_MANAGED), pg_pool
+    )
 
 
 def _outcome(**kwargs: Any) -> Outcome:

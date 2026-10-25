@@ -55,21 +55,39 @@ from maistro.capabilities.invocation import (
 from maistro.capabilities.invocation_store import SqliteInvocationStore
 from maistro.capabilities.pg_invocation_store import PgInvocationStore
 from maistro.capabilities.protocols import CapabilityProvider
+from maistro.capabilities.providers.codex_app_server import (
+    CODEX_APP_SERVER_BINARY,
+    PREFERRED_CODEX_PROVIDER,
+    CodexAppServerHarnessRunner,
+    CodexTurnError,
+    codex_app_server_microvm_factory,
+    codex_app_server_microvm_runner,
+)
 from maistro.capabilities.providers.harness_safety import (
     ActionGate,
     DenyAllGate,
     SafeHarnessRunner,
+)
+from maistro.capabilities.providers.openclaw import (
+    OpenClawHarnessRunner,
+    openclaw_microvm_factory,
+    openclaw_microvm_runner,
 )
 from maistro.capabilities.providers.opencode import (
     OpencodeHarnessRunner,
     opencode_microvm_factory,
     opencode_microvm_runner,
 )
+from maistro.capabilities.providers.pi import (
+    PiHarnessRunner,
+    pi_microvm_factory,
+    pi_microvm_runner,
+)
 from maistro.capabilities.providers.subprocess_harness import (
     SandboxExec,
     SubprocessHarnessRunner,
 )
-from maistro.capabilities.registry import CapabilityRegistry
+from maistro.capabilities.registry import CapabilityRegistry, ProviderReplacementDecision
 from maistro.capabilities.slots.harness import (
     HARNESS_RUNNER_SLOT,
     GuardedHarnessRunner,
@@ -87,8 +105,10 @@ from maistro.capabilities.types import (
 )
 
 __all__ = [
+    "CODEX_APP_SERVER_BINARY",
     "HARNESS_RUNNER_SLOT",
     "IMAGE_GENERATE_CAPABILITY",
+    "PREFERRED_CODEX_PROVIDER",
     "ActionGate",
     "ApprovalAuthority",
     "ApprovalStatus",
@@ -98,6 +118,8 @@ __all__ = [
     "CapabilityProvider",
     "CapabilityRegistry",
     "CapabilityUnavailable",
+    "CodexAppServerHarnessRunner",
+    "CodexTurnError",
     "DenyAllGate",
     "DurableApproval",
     "EffectNotApplied",
@@ -126,11 +148,14 @@ __all__ = [
     "InvocationReconciliation",
     "InvocationReconciliationEvidence",
     "InvocationStatus",
+    "OpenClawHarnessRunner",
     "OpencodeHarnessRunner",
     "PgBindingStore",
     "PgInvocationStore",
+    "PiHarnessRunner",
     "ProviderHealth",
     "ProviderReconciliationAdapter",
+    "ProviderReplacementDecision",
     "ReconciliationDisposition",
     "ResolvedBinding",
     "SafeHarnessRunner",
@@ -144,10 +169,16 @@ __all__ = [
     "Unavailable",
     "UnsafeEffectRetry",
     "approval_signing_secret",
+    "codex_app_server_microvm_factory",
+    "codex_app_server_microvm_runner",
     "default_capability_registry",
     "discover_into",
+    "openclaw_microvm_factory",
+    "openclaw_microvm_runner",
     "opencode_microvm_factory",
     "opencode_microvm_runner",
+    "pi_microvm_factory",
+    "pi_microvm_runner",
     "resolve_harness_runner",
     "sign_approval_authority",
     "verify_approval_authority",

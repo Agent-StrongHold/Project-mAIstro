@@ -4,8 +4,12 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+import pytest
+
 from maistro.quota.billing import cycle_key, daily_budget
 from maistro.quota.tracker import InMemoryQuotaTracker
+from maistro.router.scarcity import _daily_budget as scarcity_daily_budget
+from maistro.types.model import ProviderConfig, UnknownBillingCycleError
 
 
 class TestCycleKey:
@@ -17,9 +21,16 @@ class TestCycleKey:
         expected = datetime.now(UTC).strftime("%Y-%m")
         assert cycle_key("monthly") == expected
 
-    def test_unknown_cycle_falls_back_to_monthly(self) -> None:
-        expected = datetime.now(UTC).strftime("%Y-%m")
-        assert cycle_key("weekly") == expected
+    @pytest.mark.parametrize("unknown", ["weekly", "fortnightly", "", "DAILY"])
+    def test_unknown_cycle_fails_explicitly_not_silently_monthly(self, unknown: str) -> None:
+        """#1205: the old fallback bucketed any unrecognized cycle as monthly,
+        so a typo'd config read as a valid monthly plan. It must fail loudly."""
+        with pytest.raises(UnknownBillingCycleError) as excinfo:
+            cycle_key(unknown)
+        # The message names the offending value (repr keeps '' visible) and
+        # the supported vocabulary.
+        assert repr(unknown) in str(excinfo.value)
+        assert "monthly" in str(excinfo.value)
 
 
 class TestDailyBudget:
@@ -29,8 +40,19 @@ class TestDailyBudget:
     def test_monthly_divides_by_thirty(self) -> None:
         assert daily_budget(3000, "monthly") == 100.0
 
-    def test_other_cycle_divides_by_thirty(self) -> None:
-        assert daily_budget(300, "weekly") == 10.0
+    @pytest.mark.parametrize("unknown", ["weekly", "hourly"])
+    def test_unknown_cycle_fails_explicitly(self, unknown: str) -> None:
+        with pytest.raises(UnknownBillingCycleError, match=unknown):
+            daily_budget(300, unknown)
+
+    @pytest.mark.parametrize("cycle", ["daily", "monthly"])
+    @pytest.mark.parametrize("free_tokens", [0, 300, 3_000_000])
+    def test_alias_and_scarcity_share_one_formula(self, cycle: str, free_tokens: int) -> None:
+        """#1205: the billing alias and the router's scarcity scorer must agree
+        everywhere — two modules that happen to agree today is the drift the
+        canonical-formula rule exists to prevent."""
+        provider = ProviderConfig(free_tokens=free_tokens, billing_cycle=cycle)
+        assert daily_budget(free_tokens, cycle) == scarcity_daily_budget(provider)
 
 
 class TestInMemoryQuotaTracker:
@@ -93,6 +115,14 @@ class TestInMemoryQuotaTracker:
     async def test_get_all_usage_empty_when_no_records(self) -> None:
         tracker = InMemoryQuotaTracker()
         assert await tracker.get_all_usage() == []
+
+    async def test_record_usage_unknown_cycle_fails_explicitly(self) -> None:
+        """#1205: the accounting seam must not silently bucket an unknown cycle
+        as monthly — the enforced vocabulary fails at the tracker boundary."""
+        tracker = InMemoryQuotaTracker()
+
+        with pytest.raises(UnknownBillingCycleError, match="weekly"):
+            await tracker.record_usage("openai", "weekly", 100, 50)
 
     async def test_record_invocation_counts_once_per_invocation_id(self) -> None:
         """The tracker's own at-most-once guard (#718): terminalization retries

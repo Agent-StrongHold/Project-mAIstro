@@ -8,8 +8,7 @@ created: 2026-04-26
 substrate:
   - maistro-engine#ADR-095
 implements: []
-related:
-  - maistro-engine#ADR-000
+related: []
 supersedes: []
 blocks: []
 blocked-by: []

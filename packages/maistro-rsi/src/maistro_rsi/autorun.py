@@ -43,6 +43,7 @@ from maistro.security.warden.detector import Warden
 from maistro_evolve.tournament import EloTournament
 from maistro_evolve.types import DAGTopology, EvalWeights, NodeGenome, PipelineGenome
 from maistro_rsi.apply_agents import OPENCODE_TEMPLATE, ApplyPatchError, command_apply_patch
+from maistro_rsi.canonical_provenance import CanonicalCycleRecord, RsiCycleProvenance
 from maistro_rsi.coordinator import (
     CoordinatorResult,
     ExecutionReport,
@@ -59,6 +60,16 @@ from maistro_rsi.htr import (
     HypothesisNode,
     HypothesisTree,
 )
+from maistro_rsi.intervention import (
+    Intervention,
+    InterventionConfig,
+    InterventionPolicy,
+    LineageReviewContext,
+    LineageReviewer,
+    ObjectiveParked,
+    ReseedDirection,
+    template_lineage_reviewer,
+)
 from maistro_rsi.protocols import ApplyPatchFn
 from maistro_rsi.quarantine import QuarantineVerdict, quarantine_scan
 from maistro_rsi.quota_burn import QuotaBurnScheduler, discover_models
@@ -69,6 +80,7 @@ from maistro_rsi.runner import (
     RsiCycleResult,
     build_harness,
 )
+from maistro_rsi.work_source import RsiWorkSource, RsiWorkSourceError, SourcedObjective
 
 logger = structlog.get_logger()
 
@@ -131,6 +143,10 @@ class AutorunConfig:
     open_prs: bool = False
     workspace_root: str = DEFAULT_WORKSPACE_ROOT
     base_branch: str = "main"
+    # Source pin (#404 AC3) threaded into every cycle's clone: a full
+    # 40/64-hex digest. None resolves the remote's HEAD digest first and pins
+    # to that — candidate source is always digest-verified.
+    source_commit: str | None = None
     # Stop growing the tree once this much wall-clock has elapsed (checked
     # between cycles; a running cycle is never interrupted).
     max_wall_clock_s: float | None = None
@@ -149,6 +165,13 @@ class AutorunConfig:
     learnings_path: str | None = None
     # How many prior insights to inject into proposer/prompt context.
     recall_top_k: int = 8
+    # -- stall intervention policy (M5-B) --------------------------------------
+    # N consecutive non-improving cycles that trigger a lineage review + reseed.
+    stall_threshold: int = 3
+    # K materially distinct directions requested from the lineage reviewer.
+    direction_count: int = 3
+    # Park the objective after this many interventions with no subsequent gain.
+    park_after: int = 2
 
 
 def build_prompt(context: HtrContext, prior_learnings: Sequence[str] = ()) -> str:
@@ -177,6 +200,167 @@ def template_proposer(context: HtrContext) -> str:
     """Deterministic fallback proposer: refine the seed hypothesis textually."""
     attempt = len(context.tree.nodes)
     return f"Refinement #{attempt} of: {context.node.hypothesis}"
+
+
+def _lineage_review_prompt(
+    context: LineageReviewContext,
+) -> tuple[str, list[str], list[str]]:
+    """Render the reviewer's prompt from the review context, returning the
+    prompt plus the lineage/archive renderings reused for the boundary scan."""
+    lineage_lines = [
+        f"- [{step.status}] {step.hypothesis} "
+        f"(tests_passed={step.tests_passed}, benchmarks "
+        f"{step.benchmarks_won}/{step.battles}, improved={step.improved})"
+        for step in context.lineage
+    ]
+    lesson_lines = [f"  lesson: {step.insight}" for step in context.lineage if step.insight]
+    archive_lines = [
+        f"- SEED={candidate.node_id} (score {candidate.score:.2f}, "
+        f"depth {candidate.depth}) {candidate.hypothesis}"
+        for candidate in context.archive
+    ]
+    prompt = (
+        f"An autonomous improvement loop stalled after "
+        f"{context.stalled_cycles} consecutive non-improving cycles.\n"
+        "Failed branch lineage, oldest first, with recorded evidence:\n"
+        + "\n".join(lineage_lines)
+        + "\n"
+        + "\n".join(lesson_lines)
+        + "\n\nArchived promising candidates available as reseed branch points:\n"
+        + ("\n".join(archive_lines) or "- (none)")
+        + "\n\nPropose materially distinct NEXT directions to reseed the loop "
+        "with — do not reword anything already tried above. One per line, "
+        "optionally prefixed with `SEED=<node_id> ` to branch from a named "
+        "archived candidate. Reply with the directions only."
+    )
+    return prompt, lineage_lines, archive_lines
+
+
+def make_llm_lineage_reviewer(
+    model: str | None = None,
+    audit_sink: Callable[[dict[str, object]], object] | None = None,
+    correlation: HarvestCorrelation | None = None,
+) -> LineageReviewer:
+    """An LLM-backed lineage reviewer for the stall-intervention policy.
+
+    Like `make_llm_proposer`, but grounded in the *whole* stalled lineage and
+    the archived promising candidates: the review context (every ancestor's
+    hypothesis, recorded evidence, and distilled lesson, plus the archive) is
+    scanned through the Warden harvest boundary before it is sent, and the
+    returned directions are scanned again before they can become node
+    hypotheses steering later prompts. Any failure or refusal degrades to the
+    deterministic template reviewer — a stalled loop must never be left with
+    nothing to reseed from, and must never accept unaudited model output as
+    its new directions.
+    """
+    boundary = WardenHarvestBoundary(Warden(), correlation=correlation, audit_sink=audit_sink)
+
+    async def _review(context: LineageReviewContext) -> Sequence[ReseedDirection]:
+        settings = get_settings()
+        configure_outbound_policy(settings.litellm.base_url)
+        valid_seed_ids = {candidate.node_id for candidate in context.archive}
+        prompt, lineage_lines, archive_lines = _lineage_review_prompt(context)
+        admission = await boundary.scan(
+            {
+                "failed_node_id": context.failed_node_id,
+                "lineage": lineage_lines,
+                "archive": archive_lines,
+                "prompt": prompt,
+            }
+        )
+        if not admission.admitted:
+            await logger.awarning("rsi_lineage_review_context_refused", outcome=admission.outcome)
+            return template_lineage_reviewer(context)
+        try:
+            response = _post(
+                settings.litellm.base_url.rstrip("/") + "/v1/chat/completions",
+                headers={"Authorization": f"Bearer {settings.litellm.master_key}"},
+                json={
+                    "model": model or "default",
+                    "messages": [{"role": "user", "content": prompt}],
+                    "max_tokens": 600,
+                },
+                timeout=60.0,
+            )
+            response.raise_for_status()
+            text = str(response.json()["choices"][0]["message"]["content"]).strip()
+            directions = parse_review_directions(text, valid_seed_ids)
+            if directions:
+                # The directions become node hypotheses that steer later
+                # prompts — exactly the indirect-injection channel the
+                # boundary exists for. Scan them before returning.
+                egress = await boundary.scan("\n".join(d.text for d in directions))
+                if egress.admitted:
+                    return directions
+                await logger.awarning(
+                    "rsi_lineage_review_directions_refused", outcome=egress.outcome
+                )
+        except Exception as exc:
+            logger.warning("rsi_lineage_reviewer_failed", error=str(exc))
+        return template_lineage_reviewer(context)
+
+    return _review
+
+
+def parse_review_directions(text: str, valid_seed_ids: set[str]) -> list[ReseedDirection]:
+    """Parse a reviewer completion into directions — a `SEED=<node_id>` prefix
+    is always stripped from the hypothesis text but only *honored* (as the
+    reseed branch point) when it names a known archived candidate. Blank or
+    bullet-only lines, and a bare `SEED=<id>` with no direction text, carry no
+    reseedable idea and are dropped rather than turned into junk hypotheses."""
+    directions: list[ReseedDirection] = []
+    for line in text.splitlines():
+        line = line.strip().lstrip("-•* ")
+        if not line:
+            continue
+        seed_id: str | None = None
+        marker = re.match(r"^SEED=([\w-]+)(?:[:\s]+(.+))?$", line)
+        if marker:
+            line = (marker.group(2) or "").strip()
+            if marker.group(1) in valid_seed_ids:
+                seed_id = marker.group(1)
+        if line:
+            directions.append(ReseedDirection(text=line[:500], seed_node_id=seed_id))
+    return directions
+
+
+def _extend_interventions_unique(
+    target: list[Intervention], incoming: Sequence[Intervention]
+) -> None:
+    """Append interventions not already present, comparing by identity.
+
+    The policy owns the authoritative record of its interventions and hands
+    the same objects back more than once: each per-cycle partial carries the
+    interventions created during that cycle, and ObjectiveParked carries all
+    of them. Extending blindly would double-count shared records in the
+    result's intervention provenance; extending by identity cannot."""
+    known = {id(i) for i in target}
+    target.extend(i for i in incoming if id(i) not in known)
+
+
+async def _recall_prior_learnings(
+    ledger: LearningsLedger,
+    boundary: WardenHarvestBoundary,
+    *,
+    top_k: int,
+    repo_url: str,
+) -> list[str]:
+    """Recall prior insights and re-scan each at use time, not just at append
+    time: the ledger file sits on disk between runs, and an entry tampered
+    with after append (or written by an older version that never scanned)
+    would otherwise ride straight into this run's prompts."""
+    recalled: list[str] = []
+    for insight in ledger.recall(top_k, repo_url=repo_url):
+        admission = await boundary.scan(insight)
+        if admission.admitted:
+            recalled.append(insight)
+        else:
+            await logger.awarning(
+                "rsi_learnings_recall_refused",
+                outcome=admission.outcome,
+                flags=list(admission.verdict.flags) if admission.verdict else [],
+            )
+    return recalled
 
 
 class ProposerCircuitOpen(RuntimeError):
@@ -374,6 +558,22 @@ class AuditLog:
             }
         )
 
+    def record_parked(self, exc: ObjectiveParked) -> None:
+        """Record a parked objective with its full intervention provenance.
+
+        This is the hand-off artifact to the backlog policy: the objective is
+        not retried by this loop, and the trail preserves every intervention's
+        lineage review, returned directions, cost, and measured gain so a
+        later retry decision is evidence-grounded rather than guessed."""
+        self._append(
+            {
+                "ts": datetime.now(UTC).isoformat(),
+                "event_type": "objective.parked",
+                "objective": exc.objective,
+                "interventions": [i.to_dict() for i in exc.interventions],
+            }
+        )
+
     def record(self, context: HtrContext, result: RsiCycleResult) -> None:
         branch = result.branch_result
         entry = {
@@ -566,6 +766,7 @@ def build_executor(
         workspace_root=config.workspace_root,
         open_prs=config.open_prs,
         base_branch=config.base_branch,
+        source_commit=config.source_commit,
         benchmark_commands=dict(config.benchmark_commands),
     )
 
@@ -666,13 +867,40 @@ def build_executor(
     return _execute
 
 
-def _load_or_create_tree(config: AutorunConfig, tree_path: Path) -> HypothesisTree:
+def _tree_envelope(raw: Any) -> Any:
+    """Normalize a persisted snapshot into the envelope shape.
+
+    Snapshots written before the envelope existed are the bare tree dict
+    (``{"root_id", "nodes"}``). The ``repo_url`` check in the caller already
+    tolerates a missing ``repo_url`` — i.e. it already declares those snapshots
+    readable — so raising ``KeyError`` on the missing "tree" key was an
+    inconsistency rather than a policy, and it made every pre-envelope resume
+    crash instead of continuing. Accept the legacy shape; the root-hypothesis
+    check still catches a mismatched tree, which is the only check available
+    for a snapshot that never recorded its repo.
+    """
+    if isinstance(raw, dict) and "nodes" in raw and "tree" not in raw:
+        return {"repo_url": None, "tree": raw}
+    return raw
+
+
+def _load_or_create_tree(
+    config: AutorunConfig, tree_path: Path
+) -> tuple[HypothesisTree, dict[str, Any] | None]:
     """Resume the persisted tree when one exists (and ``fresh`` is unset), else
     start a new one. Seeds are expanded only on a NEW tree — on resume they are
     already nodes and re-expanding would duplicate them (autorun-8).
 
-    The snapshot is a small envelope (``{"repo_url", "tree"}``), not the bare
-    tree dict: a persisted tree whose ``repo_url`` OR root hypothesis differs
+    Returns the tree plus the persisted intervention-policy state (``None`` for
+    a new tree): the stall streak, intervention records, and next intervention
+    index ride in the snapshot envelope beside the tree so a resumed campaign
+    keeps its ``park_after`` accounting and never reissues an
+    ``intervention_id`` (autorun-15). Missing ``policy`` — snapshots written
+    before the field existed — restores as None, i.e. the pre-policy resume
+    behavior.
+
+    The snapshot is a small envelope (``{"repo_url", "tree", "policy"}``), not
+    the bare tree dict: a persisted tree whose ``repo_url`` OR root hypothesis differs
     from the configured one is refused with a clear error. Namespacing the
     default path by repo (see ``run_autonomous``) already keeps different
     repos from colliding; this envelope check is defense-in-depth for the
@@ -685,21 +913,10 @@ def _load_or_create_tree(config: AutorunConfig, tree_path: Path) -> HypothesisTr
         tree = HypothesisTree(config.root_hypothesis)
         for hypothesis in config.seed_hypotheses:
             tree.expand(tree.root_id, hypothesis)
-        return tree
+        return tree, None
 
     raw = json.loads(tree_path.read_text(encoding="utf-8"))
-    # Snapshots written before the envelope existed are the bare tree dict
-    # (`{"root_id", "nodes"}`). The repo_url check below already tolerates a
-    # missing repo_url, i.e. it already declares those snapshots readable — so
-    # raising KeyError on the missing "tree" key was an inconsistency rather
-    # than a policy, and it made every pre-envelope resume crash instead of
-    # continuing. Accept the legacy shape; the root-hypothesis check still
-    # catches a mismatched tree, which is the only check available for a
-    # snapshot that never recorded its repo.
-    if isinstance(raw, dict) and "nodes" in raw and "tree" not in raw:
-        envelope: dict[str, Any] = {"repo_url": None, "tree": raw}
-    else:
-        envelope = raw
+    envelope = _tree_envelope(raw)
     restored_repo = envelope.get("repo_url")
     if restored_repo is not None and restored_repo != config.repo_url:
         raise ValueError(
@@ -720,7 +937,337 @@ def _load_or_create_tree(config: AutorunConfig, tree_path: Path) -> HypothesisTr
         tree_path=str(tree_path),
         **tree.summary(),
     )
-    return tree
+    raw_policy = envelope.get("policy")
+    policy_state = raw_policy if isinstance(raw_policy, dict) else None
+    return tree, policy_state
+
+
+async def _claim_seed_objective(
+    work_source: RsiWorkSource,
+    provenance: RsiCycleProvenance,
+    tree: HypothesisTree,
+    *,
+    actor: str,
+) -> SourcedObjective | None:
+    """Claim the campaign's seed objective from the generic work source.
+
+    The claim and its #101 receipt go through the authorized surface; the
+    claimed item's instruction is always bound into the tree as a queued
+    hypothesis (the coordinator drains queued hypotheses first). A tree that
+    already carries a node with the same instruction — a crash-resume of this
+    very item — is reused rather than duplicated (the same dedupe rule as the
+    config seeds), so a *newly* claimed item is never settled on a resumed
+    tree's unrelated evidence (see :func:`_settle_sourced_objective`).
+    """
+    sourced = await work_source.next_objective(actor=actor, workspace_id=provenance.workspace_id)
+    if sourced is None:
+        return None
+    await work_source.record_claim(sourced, actor_principal_id=actor)
+    _bind_objective_node(tree, sourced.instruction)
+    return sourced
+
+
+def _bind_objective_node(tree: HypothesisTree, instruction: str) -> HypothesisNode:
+    """Bind a claimed work item to the tree and return its node.
+
+    The binding is structural: the item's instruction becomes (or already is)
+    a node, so closure can later be restricted to executed work inside that
+    node's lineage instead of the tree's cumulative best.
+    """
+    existing = next((n for n in tree.nodes.values() if n.hypothesis == instruction), None)
+    if existing is not None:
+        return existing
+    return tree.expand(tree.root_id, instruction)
+
+
+def _in_claimed_lineage(
+    tree: HypothesisTree, node_id: str | None, claimed_node_id: str | None
+) -> bool:
+    """Whether a node's lineage runs through the claimed item's node.
+
+    A node descending from the claimed item's node is attributable to that
+    item's executed work: only an executed (non-abandoned) node can have been
+    expanded further, so a descendant best candidate implies the item itself
+    was worked.
+    """
+    if node_id is None or claimed_node_id is None:
+        return False
+    current: str | None = node_id
+    while current is not None:
+        if current == claimed_node_id:
+            return True
+        current = tree.nodes[current].parent_id
+    return False
+
+
+async def _maybe_claim_seed(
+    work_source: RsiWorkSource | None,
+    provenance: RsiCycleProvenance | None,
+    tree: HypothesisTree,
+    *,
+    actor: str,
+) -> SourcedObjective | None:
+    """Claim a seed objective when both adapters are wired, else None."""
+    if work_source is None or provenance is None:
+        return None
+    return await _claim_seed_objective(work_source, provenance, tree, actor=actor)
+
+
+def _wrap_canonical_executor(
+    active_executor: ExecutorFn,
+    provenance: RsiCycleProvenance | None,
+    work_source: RsiWorkSource | None,
+    *,
+    work_actor: str,
+    config: AutorunConfig,
+    run_id: str,
+    cycle_records: list[CanonicalCycleRecord],
+) -> ExecutorFn:
+    """Wrap the campaign executor so each cycle is one canonical Run (#50).
+
+    A claimed backlog item must be worked under canonical Run identity, never
+    an RSI-private one — the half-state is refused here, before any cycle
+    runs, rather than discovered mid-campaign.
+    """
+    if work_source is not None and provenance is None:
+        raise ValueError(
+            "work_source requires provenance: a claimed backlog item must be worked "
+            "under canonical Run identity, not an RSI-private one"
+        )
+    if provenance is None:
+        return active_executor
+    return provenance.wrap_executor(
+        active_executor,
+        campaign_id=run_id,
+        actor_principal_id=work_actor,
+        budget={
+            "max_wall_clock_s": config.max_wall_clock_s,
+            "max_cycles": config.num_cycles,
+        },
+        records=cycle_records,
+    )
+
+
+def _citing_cycle(
+    result: CoordinatorResult, cycle_records: Sequence[CanonicalCycleRecord]
+) -> CanonicalCycleRecord | None:
+    """The canonical Run to cite for a campaign's settlement receipts.
+
+    Prefers the Run behind the campaign's best candidate; falls back to the
+    first executed cycle's Run so an unimproved campaign still cites real
+    evidence rather than none.
+    """
+    best = result.best
+    if best is not None:
+        cite = next((r for r in cycle_records if r.cycle_id == best.id), None)
+        if cite is not None:
+            return cite
+    return cycle_records[0] if cycle_records else None
+
+
+def _proven_improved(result: CoordinatorResult) -> bool:
+    """Whether the campaign's best candidate is a proven improvement."""
+    best = result.best
+    return best is not None and best.evidence is not None and best.evidence.improved
+
+
+async def _propose_discovered_work(
+    work_source: RsiWorkSource,
+    sourced: SourcedObjective,
+    result: CoordinatorResult,
+    *,
+    cite: CanonicalCycleRecord | None,
+    actor: str,
+) -> None:
+    """File stall-review directions as new PROPOSED backlog work (#50).
+
+    A stall intervention's reviewer directions are discovered prerequisites:
+    the campaign found the current item needs new directions. They are filed
+    as new items in the generic backlog — proposed work with visible RSI
+    provenance, never a silent widening of the claimed item's scope — and
+    journaled against the Run that discovered them.
+
+    They are filed *standalone*, not as children of the claimed item: the
+    backlog forbids both decomposing a terminal parent and closing a parent
+    with open children, so any parent link to the claimed item would either
+    crash settlement after closure (the uncaught ``BacklogClosureError``)
+    or block closure outright. The claimed item is named in each child's
+    details, and :meth:`record_discovered_work` journals the children
+    against the item with the discovering Run's identity — the provenance
+    link lives in the audit trail, not in parentage.
+    """
+    child_ids: list[str] = []
+    for intervention in result.interventions:
+        for direction in intervention.directions:
+            try:
+                child_id = await work_source.propose_discovered_work(
+                    actor=actor,
+                    workspace_id=sourced.workspace_id,
+                    title=direction.text,
+                    details=(
+                        f"Discovered by RSI stall review (intervention {intervention.index}) "
+                        f"under {sourced.item_id}; proposed as new work, not a widening "
+                        f"of {sourced.item_id}."
+                    ),
+                )
+            except RsiWorkSourceError as exc:
+                logger.warning("rsi_discovered_work_unfiled", error=str(exc))
+                continue
+            child_ids.append(child_id)
+    if child_ids:
+        await work_source.record_discovered_work(
+            sourced,
+            child_item_ids=child_ids,
+            discovered_by_run_id=cite.run_id if cite is not None else None,
+            summary="stall review directions filed as discovered work",
+        )
+
+
+def _release_reason(improved: bool, attributable: bool, cite: CanonicalCycleRecord | None) -> str:
+    """Why the claim is being released instead of the item being closed.
+
+    Ordered so the reason names the FIRST failed requirement: evidence,
+    attribution, then citability. The close branch above requires all three.
+    """
+    if not improved:
+        return "no proven improvement"
+    if not attributable:
+        return "improvement not attributable to this item's executed work"
+    return "no canonical run to cite"
+
+
+async def _settle_sourced_objective(
+    work_source: RsiWorkSource,
+    sourced: SourcedObjective,
+    result: CoordinatorResult,
+    cycle_records: Sequence[CanonicalCycleRecord],
+    *,
+    actor: str,
+) -> None:
+    """File the claimed item's evidence/closure receipts after a campaign.
+
+    Every receipt cites canonical Run identity (#101). Closure happens only
+    on a proven improvement *attributable to the claimed item* — the best
+    candidate must descend from the node bound to the item's instruction —
+    with the citing Run as one evidence ref beside the campaign's own
+    account; a completed Run alone is never closure evidence
+    (ADR-082426-19ed), and neither is a resumed tree's cumulative best from
+    a predecessor item. Anything less releases the claim: the item stays
+    open for the next claimant instead of being quietly closed on evidence
+    it never produced. Discovered work from any stall review is proposed
+    back into the generic backlog either way.
+    """
+    cite = _citing_cycle(result, cycle_records)
+    claimed_node = next(
+        (n for n in result.tree.nodes.values() if n.hypothesis == sourced.instruction), None
+    )
+    attributable = _in_claimed_lineage(
+        result.tree,
+        result.best.id if result.best else None,
+        claimed_node.id if claimed_node else None,
+    )
+    if cite is not None:
+        await work_source.record_cycle_evidence(
+            sourced,
+            run_id=cite.run_id,
+            node_run_id=cite.node_run_id,
+            attempt_id=cite.attempt_id,
+            summary=f"RSI campaign finished: {len(result.steps)} cycle(s) executed",
+        )
+    improved = _proven_improved(result)
+    if improved and attributable and cite is not None:
+        await work_source.close(
+            sourced,
+            actor=actor,
+            evidence_refs=(
+                f"run:{cite.run_id}",
+                f"autorun-cycles:{len(result.steps)}",
+            ),
+            run_id=cite.run_id,
+            node_run_id=cite.node_run_id,
+            attempt_id=cite.attempt_id,
+            closure_summary="RSI campaign produced an improved candidate for this item",
+        )
+    else:
+        await work_source.release(
+            sourced,
+            actor=actor,
+            reason=_release_reason(improved, attributable, cite),
+        )
+    await _propose_discovered_work(work_source, sourced, result, cite=cite, actor=actor)
+
+
+async def _settle_if_sourced(
+    work_source: RsiWorkSource | None,
+    sourced: SourcedObjective | None,
+    result: CoordinatorResult,
+    cycle_records: Sequence[CanonicalCycleRecord],
+    *,
+    actor: str,
+) -> None:
+    """Settle the claimed item after a campaign, when one was claimed."""
+    if work_source is None or sourced is None:
+        return
+    await _settle_sourced_objective(work_source, sourced, result, cycle_records, actor=actor)
+
+
+async def _record_objective_parked(audit: AuditLog, exc: ObjectiveParked) -> None:
+    """Log the park and append its provenance record to the audit trail."""
+    await logger.awarning(
+        "rsi_objective_parked",
+        objective=exc.objective,
+        interventions=len(exc.interventions),
+    )
+    audit.record_parked(exc)
+
+
+async def _checkpoint_steps(
+    completed: Sequence[str],
+    *,
+    tree: HypothesisTree,
+    tree_path: Path,
+    repo_url: str,
+    run_id: str,
+    ledger: LearningsLedger,
+    ledger_boundary: WardenHarvestBoundary,
+    policy: InterventionPolicy,
+) -> None:
+    """Ledger the executed steps' insights, then checkpoint the tree snapshot.
+
+    Ledger first, then tree: if the process dies between these two writes, at
+    worst a node's insight is appended twice on a later resume (recall()
+    dedupes by insight text) rather than lost forever — the tree still marks
+    the node EXPLORED either way, so losing the insight instead of the write
+    ordering is the one true crash window to close (autorun-10/11's
+    retained-learnings guarantee depends on every executed insight reaching
+    the ledger).
+    """
+    for node_id in completed:
+        node = tree.nodes[node_id]
+        flags: tuple[str, ...] = ()
+        admitted = False
+        if node.insight:
+            admission = await ledger_boundary.scan(node.insight)
+            flags = admission.verdict.flags if admission.verdict else ()
+            admitted = admission.admitted
+        ledger.append(
+            repo_url=repo_url,
+            run_id=run_id,
+            node=node,
+            warden_flags=flags,
+            warden_admitted=admitted,
+        )
+    _atomic_write_json(
+        tree_path,
+        {
+            "repo_url": repo_url,
+            "tree": tree.to_dict(),
+            # The intervention policy's mutable state rides beside the tree so
+            # a resumed run keeps its streak, ``park_after`` accounting, and
+            # intervention_id sequence (autorun-15).
+            "policy": policy.state_dict(),
+        },
+    )
 
 
 async def run_autonomous(
@@ -730,6 +1277,9 @@ async def run_autonomous(
     proposer: HypothesisProposer | None = None,
     audit: AuditLog | None = None,
     ledger: LearningsLedger | None = None,
+    provenance: RsiCycleProvenance | None = None,
+    work_source: RsiWorkSource | None = None,
+    work_actor: str = "rsi-campaign",
 ) -> CoordinatorResult:
     """Run the full autonomous experimentation loop and return the grown tree.
 
@@ -741,6 +1291,15 @@ async def run_autonomous(
 
     `executor`/`proposer`/`audit`/`ledger` are injectable for tests; production
     wiring is the default. The wall-clock budget is enforced between cycles.
+
+    Canonical convergence (#50): with ``provenance``, every cycle executes as
+    one canonical Run/NodeRun/Attempt in the authorized Workspace/Project —
+    the campaign keeps its own hypothesis-tree logic and gains canonical
+    execution identity, never a second one. With ``work_source`` (requires
+    ``provenance``), the campaign's seed objective is claimed from the generic
+    Workspace backlog through the authorized surface (#98/#100), and the
+    claimed item's evidence/closure receipts cite the canonical Runs (#101)
+    — RSI consumes the generic work-source contracts instead of owning one.
     """
     run_id = uuid.uuid4().hex[:10]
     # Every Warden admission decision this run records is attributable to it:
@@ -765,7 +1324,7 @@ async def run_autonomous(
     # Scan recalled insights AGAIN at use time, not just at append time: the
     # ledger file sits on disk between runs, and an entry tampered with after
     # append (or written by an older version that never scanned) would
-    # otherwise ride straight into this run's prompts.
+    # otherwise ride straight into this run's prompts (_recall_prior_learnings).
     active_audit = audit or AuditLog(Path(config.workspace_root) / f"autorun-{run_id}.jsonl")
     audit_sink = (
         getattr(active_audit, "record_security_event", None)
@@ -775,23 +1334,29 @@ async def run_autonomous(
     ledger_boundary = WardenHarvestBoundary(
         Warden(), correlation=run_correlation, audit_sink=audit_sink
     )
-    prior_learnings: list[str] = []
-    for insight in active_ledger.recall(config.recall_top_k, repo_url=config.repo_url):
-        admission = await ledger_boundary.scan(insight)
-        if admission.admitted:
-            prior_learnings.append(insight)
-        else:
-            await logger.awarning(
-                "rsi_learnings_recall_refused",
-                outcome=admission.outcome,
-                flags=list(admission.verdict.flags) if admission.verdict else [],
-            )
+    prior_learnings = await _recall_prior_learnings(
+        active_ledger,
+        ledger_boundary,
+        top_k=config.recall_top_k,
+        repo_url=config.repo_url,
+    )
 
     active_executor = executor or build_executor(
         config,
         audit=active_audit,
         prior_learnings=prior_learnings,
         correlation=run_correlation,
+    )
+    # Canonical convergence (#50): one Run/NodeRun/Attempt per executed cycle.
+    cycle_records: list[CanonicalCycleRecord] = []
+    active_executor = _wrap_canonical_executor(
+        active_executor,
+        provenance,
+        work_source,
+        work_actor=work_actor,
+        config=config,
+        run_id=run_id,
+        cycle_records=cycle_records,
     )
     active_proposer = proposer or make_llm_proposer(
         config.model,
@@ -800,11 +1365,51 @@ async def run_autonomous(
         correlation=run_correlation,
     )
 
-    tree = _load_or_create_tree(config, tree_path)
+    tree, policy_state = _load_or_create_tree(config, tree_path)
 
-    coordinator = HtrCoordinator(tree, active_executor)
+    # Generic work-source consumption (#50/#98/#100): the campaign's first
+    # objective is *claimed* from the authorized Workspace backlog rather
+    # than invented — the coordinator still drains queued hypotheses first,
+    # so the claimed item is worked before anything else is proposed. The
+    # instruction is always bound into the tree (a resumed tree reuses the
+    # node if this item is a crash-resume, otherwise it gains a new queued
+    # node), so settlement can restrict closure to the item's own lineage
+    # instead of the tree's cumulative best.
+    sourced = await _maybe_claim_seed(work_source, provenance, tree, actor=work_actor)
+
+    # M5-B stall policy: N non-improving cycles trigger a lineage review over
+    # the stalled branch's full evidence + the archived promising candidates,
+    # reseeding the frontier from the returned distinct directions; repeated
+    # gainless interventions park the objective (ObjectiveParked) so the
+    # backlog policy — not this loop — decides on a retry.
+    intervention_policy = InterventionPolicy(
+        config=InterventionConfig(
+            stall_threshold=config.stall_threshold,
+            direction_count=config.direction_count,
+            park_after=config.park_after,
+        ),
+        reviewer=make_llm_lineage_reviewer(
+            config.model,
+            audit_sink=audit_sink,
+            correlation=run_correlation,
+        ),
+    )
+    if policy_state is not None:
+        # Configuration comes from this run; only the accumulated state (streak,
+        # intervention records, next index) crosses the resume boundary.
+        intervention_policy.restore_state(policy_state)
+        await logger.ainfo(
+            "rsi_autorun_policy_state_restored",
+            interventions=len(intervention_policy.interventions),
+            next_index=intervention_policy.next_index,
+            consecutive_non_improving=(intervention_policy.tracker.consecutive_non_improving),
+        )
+
+    coordinator = HtrCoordinator(tree, active_executor, policy=intervention_policy)
     started = time.monotonic()
     steps: list[str] = []
+    interventions: list[Intervention] = []
+
     for _ in range(config.num_cycles):
         budget = config.max_wall_clock_s
         if budget is not None and time.monotonic() - started >= budget:
@@ -830,32 +1435,51 @@ async def run_autonomous(
             # here and being logged as a clean stop.
             await logger.awarning("rsi_autorun_frontier_exhausted", steps=len(steps))
             break
-        steps.extend(partial.steps)
-        # Ledger first, then tree: if the process dies between these two
-        # writes, at worst a node's insight is appended twice on a later
-        # resume (recall() dedupes by insight text) rather than lost forever
-        # — the tree still marks the node EXPLORED either way, so losing the
-        # insight instead of the write ordering is the one true crash window
-        # to close (autorun-10/11's retained-learnings guarantee depends on
-        # every executed insight reaching the ledger).
-        for node_id in partial.steps:
-            node = tree.nodes[node_id]
-            flags: tuple[str, ...] = ()
-            admitted = False
-            if node.insight:
-                admission = await ledger_boundary.scan(node.insight)
-                flags = admission.verdict.flags if admission.verdict else ()
-                admitted = admission.admitted
-            active_ledger.append(
+        except ObjectiveParked as exc:
+            # park_after interventions produced no gain: stop spending on this
+            # objective and hand it back to the backlog policy with full
+            # intervention provenance — the append-only audit trail carries the
+            # parked record (objective, every intervention's lineage review,
+            # directions, cost, and measured gain), so a later operator or
+            # backlog policy can decide whether and when to retry.
+            # The policy's records include interventions already collected
+            # from earlier per-cycle partial results — extend by identity, not
+            # blindly, or a park double-counts them.
+            _extend_interventions_unique(interventions, exc.interventions)
+            # The park fires after the triggering cycle already executed and
+            # recorded its node in the shared tree; the coordinator's partial
+            # result never returns, so recover those steps from the exception
+            # and checkpoint them — otherwise the result omits an executed
+            # experiment and the snapshot leaves the node OPEN for a later
+            # resume to execute again.
+            steps.extend(exc.steps)
+            await _checkpoint_steps(
+                exc.steps,
+                tree=tree,
+                tree_path=tree_path,
                 repo_url=config.repo_url,
                 run_id=run_id,
-                node=node,
-                warden_flags=flags,
-                warden_admitted=admitted,
+                ledger=active_ledger,
+                ledger_boundary=ledger_boundary,
+                policy=intervention_policy,
             )
-        _atomic_write_json(tree_path, {"repo_url": config.repo_url, "tree": tree.to_dict()})
+            await _record_objective_parked(active_audit, exc)
+            break
+        steps.extend(partial.steps)
+        _extend_interventions_unique(interventions, partial.interventions)
+        await _checkpoint_steps(
+            partial.steps,
+            tree=tree,
+            tree_path=tree_path,
+            repo_url=config.repo_url,
+            run_id=run_id,
+            ledger=active_ledger,
+            ledger_boundary=ledger_boundary,
+            policy=intervention_policy,
+        )
 
-    result = CoordinatorResult(tree=tree, steps=steps)
+    result = CoordinatorResult(tree=tree, steps=steps, interventions=interventions)
+    await _settle_if_sourced(work_source, sourced, result, cycle_records, actor=work_actor)
     best = result.best
     await logger.ainfo(
         "rsi_autorun_complete",
@@ -920,6 +1544,24 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         default=None,
         help="learnings ledger path (default: <workspace>/learnings.jsonl)",
     )
+    parser.add_argument(
+        "--stall-threshold",
+        type=int,
+        default=3,
+        help="N consecutive non-improving cycles that trigger a lineage review + reseed",
+    )
+    parser.add_argument(
+        "--direction-count",
+        type=int,
+        default=3,
+        help="K materially distinct directions requested from the lineage reviewer",
+    )
+    parser.add_argument(
+        "--park-after",
+        type=int,
+        default=2,
+        help="park the objective after this many interventions with no subsequent gain",
+    )
     return parser
 
 
@@ -941,6 +1583,9 @@ def main(argv: list[str] | None = None) -> int:
         fresh=args.fresh,
         tree_path=args.tree_path,
         learnings_path=args.learnings_path,
+        stall_threshold=args.stall_threshold,
+        direction_count=args.direction_count,
+        park_after=args.park_after,
     )
     result = asyncio.run(run_autonomous(config))
     best = result.best
@@ -958,6 +1603,7 @@ __all__ = [
     "build_prompt",
     "default_genome",
     "main",
+    "make_llm_lineage_reviewer",
     "make_llm_proposer",
     "run_autonomous",
     "template_proposer",

@@ -100,6 +100,7 @@ def _bare_service(population: Any, tournament: Any) -> Any:
     service = evolution_module._EvolutionService.__new__(evolution_module._EvolutionService)
     service._population = population
     service._tournament = tournament
+    service._archive = None
     service._cycle_lock = _asyncio.Lock()
     service._cycle_count = 0
     service._last_run_id = None

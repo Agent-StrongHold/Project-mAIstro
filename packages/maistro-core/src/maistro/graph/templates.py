@@ -16,9 +16,9 @@ resolving without a version means "whatever is current".
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
 from typing import Protocol, TypeVar, runtime_checkable
 
+from maistro.governance.promotion import PromotionApproval
 from maistro.graph.definitions import GraphTemplate, NodeTemplate, TemplateLifecycle
 
 TemplateT = TypeVar("TemplateT", GraphTemplate, NodeTemplate)
@@ -49,31 +49,12 @@ def revalidated(template: TemplateT) -> TemplateT:
     return type(template).model_validate(template.model_dump())
 
 
-@dataclass(frozen=True)
-class PromotionApproval:
-    """The policy decision that permits one promotion (SPEC-081226-bb3a R14).
-
-    AC-11's third clause is "promotion creates a new explicit version only
-    after the policy gate". The first version of `promote_audited` had no gate
-    at all -- it recorded audit entries and activated, so any caller could
-    promote and a successful audit write was being treated as policy approval
-    (Codex, #589). Recording that a thing happened is not deciding that it may.
-
-    The genome side refuses `approved_for_promotion=False`; the same posture
-    here, as a required argument rather than a mutable field, so there is no
-    state to overwrite and no default that could be `True`. `approver` and
-    `reason` must both be non-empty: an approval with nobody behind it and no
-    stated grounds is the shrug this exists to prevent.
-    """
-
-    approver: str
-    reason: str
-
-    def __post_init__(self) -> None:
-        if not self.approver.strip():
-            raise ValueError("a promotion approval must name its approver")
-        if not self.reason.strip():
-            raise ValueError("a promotion approval must state its reason")
+# The canonical approval type (SPEC-100126-a9c4), re-exported rather than
+# defined a second time: there is one promotion contract and one approval
+# type in the codebase, and this family's gate is an instance of it. The
+# history this module's local class used to carry — AC-11's policy gate and
+# the ordering fix in Codex #589 — lives on the canonical type and in
+# ADR-082926-65bf.
 
 
 @runtime_checkable
@@ -499,6 +480,7 @@ __all__ = [
     "NodeTemplateConflict",
     "NodeTemplateNotFound",
     "NodeTemplateStore",
+    "PromotionApproval",
     "TemplateLifecycleStore",
     "TemplatePromotionAudit",
     "promote_audited",

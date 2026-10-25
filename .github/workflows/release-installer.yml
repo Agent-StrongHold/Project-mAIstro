@@ -116,3 +116,12 @@ jobs:
       - name: Parser fixtures + install/reboot scenarios (PowerShell 7)
         shell: pwsh
         run: ./tests/installer/run-wsl-detection-e2e.ps1 -PowerShell pwsh
+      # #409: get.ps1 must forward a v1 answers file to get.sh exactly like the
+      # Unix one-liner (`bash -s -- --answers-file <wsl-path>`), validate it
+      # before any mutation, and keep it alive across elevation/reboot resume.
+      - name: Unattended answers parity (Windows PowerShell 5.1)
+        shell: powershell
+        run: ./tests/installer/run-answers-parity-e2e.ps1 -PowerShell powershell.exe
+      - name: Unattended answers parity (PowerShell 7)
+        shell: pwsh
+        run: ./tests/installer/run-answers-parity-e2e.ps1 -PowerShell pwsh

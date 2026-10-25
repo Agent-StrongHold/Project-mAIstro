@@ -17,7 +17,7 @@ import contextlib
 import hashlib
 import logging
 import random
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Iterator, Sequence
 from copy import deepcopy
 from itertools import pairwise
 from typing import Any, ClassVar
@@ -171,6 +171,19 @@ def _published_evaluation_ref(genome: Any, node_run_id: str) -> dict[str, str] |
     return None
 
 
+@contextlib.contextmanager
+def _model_call_context(llm_call: Any, ctx: NodeContext | None) -> Iterator[Any]:
+    """Bind the production adapter without changing injected library callables."""
+    builder = getattr(llm_call, "for_context", None)
+    if builder is None:
+        yield llm_call
+    else:
+        if ctx is None:
+            raise ValueError("governed Evolve model work requires a canonical NodeContext")
+        with builder(ctx) as bound:
+            yield bound
+
+
 async def _evaluate_one(
     cycle: Any,
     population: Any,
@@ -207,11 +220,12 @@ async def _evaluate_one(
     # NodeRun/Attempt and re-evaluates the last committed genome rather than
     # folding over a partial failed score.
     working = deepcopy(genome)
-    results = await cycle.harness.evaluate_genome(
-        working,
-        config.target_benchmarks,
-        llm_call,
-    )
+    with _model_call_context(llm_call, ctx) as bound_llm:
+        results = await cycle.harness.evaluate_genome(
+            working,
+            config.target_benchmarks,
+            bound_llm,
+        )
     for result in results:
         cycle._fold_score(
             working,
@@ -302,7 +316,8 @@ class _TournamentWork:
             if genome.eval_scores:
                 scored.append(genome)
         shuffled = list(scored)
-        random.shuffle(shuffled)
+        # Tournament pairing only — not a cryptographic use of randomness.
+        random.shuffle(shuffled)  # DevSkim: ignore DS148264 until 2027-12-31
         pairs = [
             (shuffled[index].id, shuffled[index + 1].id) for index in range(0, len(shuffled) - 1, 2)
         ]
@@ -487,6 +502,7 @@ async def _finalize_cycle(
     """
     marker_id = _finalize_marker_id(ctx.node_run_id) if ctx is not None else None
     if marker_id is not None:
+        assert ctx is not None
         marker = population.get_cycle_marker(marker_id)
         if marker is not None:
             status = marker.get("status")
@@ -499,7 +515,8 @@ async def _finalize_cycle(
         population.record_cycle_marker(marker_id, {"status": "in_progress"})
 
     try:
-        new_ids = await _apply_finalize_mutations(cycle, population, config, llm_call)
+        with _model_call_context(llm_call, ctx) as bound_llm:
+            new_ids = await _apply_finalize_mutations(cycle, population, config, bound_llm)
     except Exception:
         if marker_id is not None:
             population.record_cycle_marker(marker_id, {"status": "faulted"})
@@ -530,7 +547,10 @@ async def _apply_finalize_mutations(
     before = {genome.id for genome in population.list_all()}
     _publish_tournament_elos(cycle, population)
     cycle._compute_all_fitness(population)
-    population.cull_bottom(config.cull_pct)
+    # Archive (M4-A6): cull becomes archival — every removed genome keeps an
+    # immutable, inspectable snapshot; None (no archive on this cycle) is the
+    # exact pre-archive behavior.
+    population.cull_bottom(config.cull_pct, archive=getattr(cycle, "archive", None))
 
     if cycle._island_pop is None or cycle._island_pop.island_count != config.island_count:
         cycle._island_pop = IslandPopulation(config.island_count)
@@ -751,7 +771,7 @@ def _resolver(
     llm_call: Any,
     membership_ids: Sequence[str] | None = None,
     battle_slots: int | None = None,
-):
+) -> NodeResolver:
     tournament_work = _TournamentWork(
         cycle=cycle,
         population=population,
@@ -855,8 +875,15 @@ async def run_canonical_evolution_cycle(
     actor_principal_id: str | None = None,
     cycle_number: int | None = None,
     container: Any | None = None,
+    archive: Any | None = None,
 ) -> DurableRunRecord:
-    """Execute one Evolve cycle as canonical Graph -> Run -> NodeRun -> Attempt work."""
+    """Execute one Evolve cycle as canonical Graph -> Run -> NodeRun -> Attempt work.
+
+    ``archive`` (a ``maistro_evolve.archive.CandidateArchive``) is Evolve
+    domain state like the population/tournament: when supplied, the cycle's
+    finalize step archives culled genomes and snapshots created children, so
+    candidate lineage and retirement survive population turnover (M4-A6).
+    """
     from maistro_evolve.cycle import EvolutionCycle
 
     owner = canonical_execution_owner(container)
@@ -866,7 +893,7 @@ async def run_canonical_evolution_cycle(
 
     workspace_id = str(owner.config.workspace_id)
     project = await owner.project_scope_store.root_for_workspace(workspace_id)
-    cycle = EvolutionCycle(harness=harness, tournament=tournament)
+    cycle = EvolutionCycle(harness=harness, tournament=tournament, archive=archive)
     if cycle.harness.fidelity != "real":
         logger.warning(
             "evolve_cycle_fidelity: this run's fitness signal is '%s' — "
@@ -1028,7 +1055,11 @@ def _recovery_resolver(run: Run) -> NodeResolver:
 
     config = EvolutionConfig(self_improve=True, self_improve_top_n=3)
     harness = EvalHarness(benchmark_fidelity="proxy")
-    cycle = EvolutionCycle(harness=harness, tournament=tournament)
+    # getattr, not the property: an archive-less service (double or a service
+    # initialized before M4-A6) recovers exactly as pre-archive runs did —
+    # archiving is optional domain state, never a recovery prerequisite.
+    archive = getattr(service, "archive", None)
+    cycle = EvolutionCycle(harness=harness, tournament=tournament, archive=archive)
     llm_call = service.build_llm_call()
 
     return _resolver(

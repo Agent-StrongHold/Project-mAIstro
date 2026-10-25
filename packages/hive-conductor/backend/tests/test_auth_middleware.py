@@ -330,6 +330,46 @@ class TestProtectedOpsPermissionMatrix:
         assert r.status_code == 403
 
 
+class TestRumReadBackScope:
+    """#1420: the RUM ring's read-back GETs follow the persona-wide-feedback
+    posture — an instance-wide aggregate of every principal's navigation
+    telemetry is an operator read, gated on the `rum.read` capability —
+    while the beacon (POST ingest) stays authenticated-only, because a
+    reporter that needed task-scoped elevation would starve the ring of
+    exactly the ordinary traffic it exists to measure."""
+
+    def test_read_back_without_the_scope_is_403(self) -> None:
+        c = _user_client("rum-scope-1", perms=[])
+        for path in ("/v1/rum/events", "/v1/rum/events/summary"):
+            r = c.get(path)
+            assert r.status_code == 403, path
+            assert "rum.read" in r.json()["detail"], path
+
+    def test_read_back_with_scope_but_no_elevation_is_403(self) -> None:
+        """Assignment alone is not authority — the same two-step rule every
+        other protected op follows (see TestProtectedOpsPermissionMatrix)."""
+        c = _user_client("rum-scope-2", perms=["rum.read"])
+        assert c.get("/v1/rum/events").status_code == 403
+
+    def test_read_back_with_scope_and_elevation_passes_the_gate(self) -> None:
+        c = _user_client("rum-scope-3", perms=["rum.read"])
+        e = c.post(
+            "/v1/auth/elevate",
+            json={"password": "pw", "permissions": ["rum.read"], "task_id": "t-rum"},
+        )
+        assert e.status_code == 200, e.text
+        r = c.get("/v1/rum/events")
+        assert r.status_code != 403
+
+    def test_ingest_needs_no_scope_for_an_authenticated_session(self) -> None:
+        """The beacon side of the prefix: a capability-less session's POST
+        passes the middleware (the route's own 202/422/413 answers are the
+        collector contract, pinned in test_rum_routes.py)."""
+        c = _user_client("rum-scope-4", perms=[])
+        r = c.post("/v1/rum/events", json={})
+        assert r.status_code != 403
+
+
 class TestAdminBlockedFromChat:
     def test_admin_cannot_use_chat(self) -> None:
         c = TestClient(app)

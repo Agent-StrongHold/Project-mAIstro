@@ -37,6 +37,8 @@ jobs:
           set -euo pipefail
           rm -f .env
           rm -rf .maistro-install
+          # A fresh runner may have no stack yet; absent is the clean state
+          # this step is proving, so the teardown tolerates nothing-to-do.
           docker compose down -v --remove-orphans >/dev/null 2>&1 || true
           test ! -e .env
           test ! -e .maistro-install
@@ -138,4 +140,6 @@ jobs:
       - name: Tear down
         if: always()
         shell: bash
+        # Best-effort teardown: the verdict came from the install/upgrade steps
+        # above, and a stack that never started has nothing to remove.
         run: docker compose down -v --remove-orphans >/dev/null 2>&1 || true

@@ -23,7 +23,7 @@ from __future__ import annotations
 import logging
 import re
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import yaml
 from sqlalchemy.exc import SQLAlchemyError
@@ -33,6 +33,9 @@ from maistro.agents.strategies.direct import DirectStrategy
 from maistro.runs.task_kinds import DIRECT_SUBMISSION_AGENT
 from maistro.types.agent import AgentIdentity
 from maistro.types.errors import ConfigError
+
+if TYPE_CHECKING:
+    from maistro.protocols.coins import CoinLedger
 
 logger = logging.getLogger("maistro.agents.factory")
 
@@ -561,7 +564,7 @@ async def create_agents(
     session_store: Any,
     quota_tracker: Any,
     tracer: Any,
-    coin_ledger: Any = None,
+    coin_ledger: CoinLedger | None = None,
     tool_executor: Any = None,
     sa_engine: Any = None,
     rca_extractor: Any = None,
@@ -613,6 +616,7 @@ async def create_agents(
         db_agents = await _load_agents_from_db(sa_engine, prompt_manager, deps)
         if db_agents is not None:
             _register_delegation_capabilities(db_agents, a2a_delegator)
+            _wire_agent_runtime_extensions(db_agents, llm=llm, prompt_manager=prompt_manager)
             return db_agents
 
     agents_path = Path(agents_dir)
@@ -646,4 +650,17 @@ async def create_agents(
         logger.warning("No agents loaded from %s", agents_dir)
 
     _register_delegation_capabilities(agents, a2a_delegator)
+    _wire_agent_runtime_extensions(agents, llm=llm, prompt_manager=prompt_manager)
     return agents
+
+
+def _wire_agent_runtime_extensions(
+    agents: dict[str, Agent],
+    *,
+    llm: Any,
+    prompt_manager: Any,
+) -> None:
+    """Attach auditor/feedback/spawner/store/tournament onto the live roster (#2312)."""
+    from maistro.agents.wiring import wire_agent_implementations
+
+    wire_agent_implementations(agents, llm=llm, prompt_manager=prompt_manager)

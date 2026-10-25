@@ -30,6 +30,51 @@ from maistro_design.brief import (
     RequiredFact,
 )
 from maistro_design.engine import DesignEngine
+from maistro_design.explore import (
+    EXPLORE_NODE_KIND,
+    THESIS_NODE_KIND,
+    DesignExploreNode,
+    DesignExploreOut,
+    DesignThesisNode,
+    DesignThesisOut,
+)
+from maistro_design.governance import DESIGN_MODEL_CAPABILITY
+from maistro_design.model_judge import (
+    DesignEvalRecord,
+    DesignJudgeDimension,
+    DesignJudgeNode,
+    DesignJudgeOut,
+    DesignJudgeThesis,
+    HumanJudgeNotResolvedError,
+)
+
+# design.orchestrate / design.consistency_eval: same pattern as explore/judge —
+# import the registration module from the package surface so process entry
+# points that load maistro_design get the kinds without a side catalog sweep
+# (#2311 design-node CONNECT).
+from maistro_design.nodes import (
+    ConsistencyEvalNode,
+    ConsistencyEvalOut,
+    DesignOrchestrateIn,
+    DesignOrchestrateNode,
+    DesignOrchestrateOut,
+)
+
+# M7-A6 (#795): the closed design-loop proof driver is a published surface of
+# this package — the issue asks for one *public* proof Run, and the driver is
+# how a reviewer reproduces it (`docs/product/M7-A6-DESIGN-LOOP-PROOF.md`).
+# Exposed here rather than left unreachable so the reachability ratchet sees a
+# real call path instead of unreviewed built-but-never-wired code.
+from maistro_design.proof import (
+    PLANTED_DIMENSION_ID,
+    PRODUCT_GOAL_STATEMENT,
+    PROOF_GOAL_ID,
+    DesignLoopProof,
+    InMemoryGoalRevisionCatalog,
+    pack_rubric_catalog,
+    run_design_loop_proof,
+    score_artifact_against_rubric,
+)
 from maistro_design.protocols import (
     DesignEngineProtocol,
     DesignProjectStore,
@@ -93,19 +138,60 @@ from maistro_design.types import (
     TrustUpgradeRequiredError,
     TypographyToken,
 )
+from maistro_design.versions import (
+    AgentWorkInputs,
+    ArtifactLock,
+    ArtifactLockConflict,
+    ArtifactVersion,
+    ArtifactVersionError,
+    ArtifactVersionExistsError,
+    ArtifactVersionNotFoundError,
+    BranchControl,
+    BranchStateView,
+    ChangeKind,
+    ChangeOrigin,
+    ControlMode,
+    CreativeArtifactService,
+    GuidanceRecord,
+    LockScope,
+    LockStateError,
+    VersionState,
+    VersionStateError,
+)
 
 __all__ = [
+    "DESIGN_MODEL_CAPABILITY",
+    "EXPLORE_NODE_KIND",
     "NATIVE_SLOTS",
+    "PLANTED_DIMENSION_ID",
+    "PRODUCT_GOAL_STATEMENT",
+    "PROOF_GOAL_ID",
+    "THESIS_NODE_KIND",
+    "AgentWorkInputs",
     "ArtifactKind",
+    "ArtifactLock",
+    "ArtifactLockConflict",
     "ArtifactNode",
     "ArtifactProjection",
     "ArtifactRequest",
     "ArtifactRequestNotFoundError",
+    "ArtifactVersion",
+    "ArtifactVersionError",
+    "ArtifactVersionExistsError",
+    "ArtifactVersionNotFoundError",
+    "BranchControl",
+    "BranchStateView",
     "BriefContractError",
     "BriefReference",
     "BriefVersionConflictError",
     "CatalogImportPolicyError",
+    "ChangeKind",
+    "ChangeOrigin",
     "ColorToken",
+    "ConsistencyEvalNode",
+    "ConsistencyEvalOut",
+    "ControlMode",
+    "CreativeArtifactService",
     "CreativeBrief",
     "CreativeBriefError",
     "CreativeBriefStore",
@@ -114,6 +200,17 @@ __all__ = [
     "DesignEngine",
     "DesignEngineProtocol",
     "DesignError",
+    "DesignEvalRecord",
+    "DesignExploreNode",
+    "DesignExploreOut",
+    "DesignJudgeDimension",
+    "DesignJudgeNode",
+    "DesignJudgeOut",
+    "DesignJudgeThesis",
+    "DesignLoopProof",
+    "DesignOrchestrateIn",
+    "DesignOrchestrateNode",
+    "DesignOrchestrateOut",
     "DesignOutput",
     "DesignOutputShapeError",
     "DesignProject",
@@ -124,16 +221,23 @@ __all__ = [
     "DesignSystemLoader",
     "DesignSystemNotFoundError",
     "DesignSystemRegistry",
+    "DesignThesisNode",
+    "DesignThesisOut",
     "DiscoveryField",
     "DiscoveryIncompleteError",
     "DiscoveryResult",
     "EvidenceReference",
+    "GuidanceRecord",
     "HTMLRenderer",
+    "HumanJudgeNotResolvedError",
     "InMemoryDesignSkillRegistry",
     "InMemoryDesignSystemRegistry",
+    "InMemoryGoalRevisionCatalog",
     "InMemoryTrustBanishList",
     "InMemoryTrustReviewQueue",
     "IncompatibleDesignSystemError",
+    "LockScope",
+    "LockStateError",
     "OpenDesignConfig",
     "OpenDesignProvider",
     "OutputFormat",
@@ -160,6 +264,8 @@ __all__ = [
     "TrustUpgradeRequiredError",
     "TypographyRenderer",
     "TypographyToken",
+    "VersionState",
+    "VersionStateError",
     "__version__",
     "available_skills",
     "import_from_catalog",
@@ -167,18 +273,25 @@ __all__ = [
     "load_builtins",
     "load_bundled",
     "load_catalog",
+    "pack_rubric_catalog",
+    "run_design_loop_proof",
     "scan_design_output",
     "scan_design_system_content",
     "scan_design_text",
+    "score_artifact_against_rubric",
 ]
 
 
 def __getattr__(name: str) -> Any:
-    """Lazy-load PG stores to avoid requiring sqlalchemy at import time."""
+    """Lazy-load the SQLAlchemy-backed PG stores to avoid importing sqlalchemy eagerly."""
     if name == "PgDesignProjectStore":
         from maistro_design.stores import PgDesignProjectStore
 
         return PgDesignProjectStore
+    if name == "PgArtifactVersionStore":
+        from maistro_design.version_store import PgArtifactVersionStore
+
+        return PgArtifactVersionStore
     if name == "PgCreativeBriefStore":
         from maistro_design.brief_store import PgCreativeBriefStore
 

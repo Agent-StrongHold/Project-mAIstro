@@ -79,7 +79,7 @@ class _Population:
     def list_all(self) -> list[_Genome]:
         return list(self._items.values())
 
-    def cull_bottom(self, pct: float) -> int:
+    def cull_bottom(self, pct: float, archive: Any = None) -> int:
         return 0
 
     def record_cycle_marker(self, marker_id: str, payload: dict[str, Any]) -> None:
@@ -144,9 +144,15 @@ class _Tournament:
 class _Cycle:
     """Small domain double; the test is about the execution mapping, not Evolve math."""
 
-    def __init__(self, harness: Any = None, tournament: Any = None) -> None:
+    def __init__(self, harness: Any = None, tournament: Any = None, archive: Any = None) -> None:
         self.harness = harness
         self.tournament = tournament
+        # M4-A6: the production cycle now carries the candidate archive; the
+        # double mirrors the attribute so finalize's archival cull path is
+        # exercised against a real CandidateArchive, not stubbed out.
+        from maistro_evolve.archive import CandidateArchive
+
+        self.archive = archive if archive is not None else CandidateArchive()
         self._island_pop: Any = None
         self._cycle_count = 0
         self._child_added = False
@@ -390,6 +396,9 @@ async def test_cycle_route_projects_real_canonical_failures(
     population = _Population([_Genome("g1"), _Genome("g2")])
     tournament = _BattleFailureTournament() if failure_stage == "battle" else _Tournament()
     service = _EvolutionService()
+    # This domain/execution fixture performs no model work; the governed path
+    # is covered separately by test_evolution_model_correlation.
+    monkeypatch.setattr(service, "_build_llm_call", lambda: None)
     service._population = population
     service._tournament = tournament
     monkeypatch.setattr(evolution_module, "get_evolution_service", lambda: service)
@@ -454,6 +463,9 @@ async def test_successful_cycle_route_projects_completed_canonical_run(
     monkeypatch.setattr(cycle_module, "EvolutionCycle", _Cycle)
 
     service = _EvolutionService()
+    # This domain/execution fixture performs no model work; the governed path
+    # is covered separately by test_evolution_model_correlation.
+    monkeypatch.setattr(service, "_build_llm_call", lambda: None)
     service._population = _Population([_Genome("g1"), _Genome("g2")])
     service._tournament = _Tournament()
     monkeypatch.setattr(evolution_module, "get_evolution_service", lambda: service)
@@ -573,6 +585,8 @@ async def test_post_seed_during_real_cycle_is_admitted_after_pair_plan(
 
     population = _Population([_Genome("g1"), _Genome("g2")])
     service = evolution_service._EvolutionService()
+    # The pausing domain double does not call a model.
+    monkeypatch.setattr(service, "_build_llm_call", lambda: None)
     service._population = population
     service._tournament = _Tournament()
     previous = evolution_service._service
@@ -658,6 +672,8 @@ async def test_post_seed_during_battle_traversal_cannot_change_persisted_pairs(
 
     population = _Population([_Genome(f"g{index}") for index in range(1, 5)])
     service = evolution_service._EvolutionService()
+    # The pausing domain double does not call a model.
+    monkeypatch.setattr(service, "_build_llm_call", lambda: None)
     service._population = population
     service._tournament = _Tournament()
     previous = evolution_service._service
@@ -751,6 +767,8 @@ async def test_racing_post_cycle_requests_persist_separate_canonical_plans(
 
     population = _Population([_Genome(f"g{index}") for index in range(1, 5)])
     service = evolution_service._EvolutionService()
+    # The pausing domain double does not call a model.
+    monkeypatch.setattr(service, "_build_llm_call", lambda: None)
     service._population = population
     service._tournament = _Tournament()
     previous = evolution_service._service

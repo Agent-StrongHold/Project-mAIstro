@@ -1,18 +1,20 @@
 import { useCallback, useEffect, useState } from "react";
 import { apiGet, apiPost, apiDelete } from "../lib/api";
+import { AuthorizationNotice } from "../components/Authorization";
+import { useAuthorization } from "../context/AuthorizationContext";
+import type { MCPServer as Server, MCPTool as Tool } from "../api/models";
 import { Hex, PageHeader, StatCard, ConfirmDialog, useToast } from "../components/shared";
+import { TabList, TabPanel } from "../components/TabList";
 const ROVO_MCP_URL = "https://mcp.atlassian.com/v1/mcp/authv2";
 
-type Server = {
-  id: string; name: string; description: string; url: string;
-  status: string; tools_count: number; last_ping: string | null;
-  version: string | null; capabilities: string[];
-};
+const TABS = [{ id: "servers", label: "Servers" }, { id: "tools", label: "Tools" }] as const;
 
-type Tool = {
-  id: string; server_id: string; name: string; description: string;
-  input_schema: Record<string, unknown>; category: string | null;
-};
+const DISCLOSURE_STYLE = {
+  display: "grid", gridTemplateColumns: "12px 1fr auto auto", gap: 10, alignItems: "center", width: "100%",
+  padding: 0, margin: 0, background: "none", border: "none", borderRadius: 0, boxShadow: "none", transform: "none",
+  font: "inherit", color: "inherit", textAlign: "left", cursor: "pointer",
+} as const;
+
 
 export default function MCP() {
   const toast = useToast();
@@ -23,6 +25,9 @@ export default function MCP() {
   const [adding, setAdding] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<Server | null>(null);
   const [form, setForm] = useState({ name: "", description: "", url: "" });
+  const authorization = useAuthorization();
+  const mcpPermission = authorization.surfacePermission("integrations") ?? "mcp.write";
+  const deletePermission = "mcp.delete";
 
   const load = useCallback(async () => {
     try {
@@ -76,17 +81,19 @@ export default function MCP() {
     <div>
       <ConfirmDialog open={!!deleteTarget} onClose={() => setDeleteTarget(null)} onConfirm={() => { if (deleteTarget) void removeServer(deleteTarget.id); }} title="Remove Server" message={`Remove "${deleteTarget?.name ?? ""}" from MCP?`} />
 
+      <AuthorizationNotice permission={mcpPermission} label="Integration changes" />
+
       <PageHeader
         title="MCP"
         subtitle={`${servers.length} servers · ${tools.length} tools — multi-MCP orchestration in this sandbox`}
         helpHref="/docs#mcp"
         actions={
           <div style={{ display: "flex", gap: 6 }}>
-            <button className="btn" style={{ fontSize: 12, padding: "2px 8px" }} onClick={() => void testConnections()}>
+            <button className="btn" disabled={!authorization.can(mcpPermission)} style={{ fontSize: 12, padding: "2px 8px" }} onClick={() => void testConnections()}>
               Test connection
             </button>
             {/* POC mode *hid* this; retiring the flag restores it for everyone (#190). */}
-            <button className="btn btn-accent" style={{ fontSize: 12, padding: "2px 8px" }} onClick={() => setAdding(true)}>
+            <button className="btn btn-accent" disabled={!authorization.can(mcpPermission)} style={{ fontSize: 12, padding: "2px 8px" }} onClick={() => setAdding(true)}>
               + add server
             </button>
           </div>
@@ -122,83 +129,93 @@ export default function MCP() {
           </a>
         </div>
       </div>
-      <div style={{ display: "flex", gap: 0, borderBottom: "1px solid var(--rule)", marginBottom: 12 }}>
-        {(["servers", "tools"] as const).map((t) => (
-          <div key={t} onClick={() => setTab(t)} style={{ padding: "7px 16px", fontFamily: "var(--mono)", fontSize: 12, cursor: "pointer", borderBottom: tab === t ? "2px solid var(--accent)" : "2px solid transparent", color: tab === t ? "var(--ink)" : "var(--pencil)", textTransform: "capitalize" }}>{t}</div>
-        ))}
-      </div>
+      <TabList label="MCP views" idPrefix="mcp" tabs={TABS} selected={tab} onSelect={setTab} style={{ marginBottom: 12 }} />
 
       {adding && (
         <div className="card" style={{ borderLeft: "3px solid var(--accent)", marginBottom: 10 }}>
           <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
             <input className="input-field" placeholder="server name" value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} autoFocus />
             <input className="input-field" placeholder="description" value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} />
-            <input className="input-field" placeholder="URL (e.g. http://localhost:9999/mcp)" value={form.url} onChange={(e) => setForm((f) => ({ ...f, url: e.target.value }))} />
+            <input className="input-field" placeholder="URL (e.g. http://localhost:9999/mcp)" value={form.url} onChange={(e) => setForm((f) => ({ ...f, url: e.target.value }))} />  // DevSkim: ignore DS162092 until 2027-12-31
             <div style={{ display: "flex", gap: 4 }}>
-              <button className="btn btn-accent" style={{ fontSize: 12, padding: "2px 10px" }} onClick={() => void addServer()} disabled={!form.name.trim() || !form.url.trim()}>add</button>
+              {/* Gated by the same permission as the "+ add server" opener
+                  (#373): the opener is disabled without mcp.write, but the
+                  form it opens must not carry a live submit button either —
+                  a control guaranteed to 403 must never look actionable. */}
+              <button className="btn btn-accent" style={{ fontSize: 12, padding: "2px 10px" }} onClick={() => void addServer()} disabled={!authorization.can(mcpPermission) || !form.name.trim() || !form.url.trim()}>add</button>
               <button className="btn" style={{ fontSize: 12, padding: "2px 10px" }} onClick={() => setAdding(false)}>cancel</button>
             </div>
           </div>
         </div>
       )}
 
-      {tab === "servers" && (
+      <TabPanel idPrefix="mcp" id="servers" selected={tab === "servers"}>
         <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
           {servers.map((s) => {
             const serverTools = tools.filter((t) => t.server_id === s.id);
+            const open = sel?.id === s.id;
+            const detailsId = `mcp-server-${s.id}-details`;
             return (
-              <div key={s.id} className="card" onClick={() => setSel(sel?.id === s.id ? null : s)} style={{ cursor: "pointer" }}>
-                <div style={{ display: "grid", gridTemplateColumns: "12px 1fr auto auto auto", gap: 10, alignItems: "center" }}>
-                  <div style={{ width: 10, height: 10, borderRadius: "50%", background: s.status === "connected" ? "var(--ok)" : "var(--danger)" }} />
-                  <div>
-                    <div style={{ fontFamily: "var(--hand)", fontSize: 15, fontWeight: 600 }}>{s.name}</div>
-                    <div style={{ fontFamily: "var(--hand)", fontSize: 12, color: "var(--pencil)" }}>{s.description}</div>
-                  </div>
-                  <span style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", textAlign: "center" }}>{s.tools_count} tools</span>
-                  <Hex variant={s.status === "connected" ? "ok" : "danger"}>{s.status}</Hex>
-                  <button className="btn" style={{ fontSize: 12, padding: "1px 6px", borderColor: "var(--danger)", color: "var(--danger)", opacity: 0.5 }} onClick={(e) => { e.stopPropagation(); setDeleteTarget(s); }}>remove</button>
+              <div key={s.id} className="card">
+                <div style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: 10, alignItems: "center" }}>
+                  <button type="button" aria-expanded={open} aria-controls={detailsId} onClick={() => setSel(open ? null : s)} style={DISCLOSURE_STYLE}>
+                    <span style={{ width: 10, height: 10, borderRadius: "50%", background: s.status === "connected" ? "var(--ok)" : "var(--danger)" }} />
+                    <span>
+                      <span style={{ display: "block", fontFamily: "var(--hand)", fontSize: 15, fontWeight: 600 }}>{s.name}</span>
+                      <span style={{ display: "block", fontFamily: "var(--hand)", fontSize: 12, color: "var(--pencil)" }}>{s.description}</span>
+                    </span>
+                    <span style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", textAlign: "center" }}>{s.tools_count} tools</span>
+                    <Hex variant={s.status === "connected" ? "ok" : "danger"}>{s.status}</Hex>
+                  </button>
+                  <button
+                    className="btn"
+                    aria-label={`Remove ${s.name}`}
+                    disabled={!authorization.can(deletePermission)}
+                    style={{ fontSize: 12, padding: "1px 6px", borderColor: "var(--danger)", color: "var(--danger)", opacity: authorization.can(deletePermission) ? 0.5 : 0.25 }}
+                    onClick={() => setDeleteTarget(s)}
+                  >
+                    remove
+                  </button>
                 </div>
 
-                {sel?.id === s.id && (
-                  <div style={{ marginTop: 10, paddingTop: 10, borderTop: "1px dotted var(--rule)" }}>
-                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))", gap: 6, marginBottom: 10 }}>
-                      <StatCard label="URL" value={s.url.replace("http://", "").replace("/mcp", "")} />
-                      <StatCard label="Version" value={s.version ?? "—"} />
-                      <StatCard label="Last Ping" value={s.last_ping ? new Date(s.last_ping).toLocaleTimeString() : "never"} />
-                      <StatCard label="Tools" value={`${s.tools_count}`} />
-                    </div>
-                    {s.capabilities.length > 0 && (
-                      <div style={{ marginBottom: 8 }}>
-                        <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", marginBottom: 3 }}>CAPABILITIES</div>
-                        <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
-                          {s.capabilities.map((c) => <Hex key={c}>{c}</Hex>)}
-                        </div>
-                      </div>
-                    )}
-                    {serverTools.length > 0 && (
-                      <div>
-                        <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", marginBottom: 3 }}>TOOLS</div>
-                        {serverTools.map((t) => (
-                          <div key={t.id} style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: 6, padding: "4px 6px", borderBottom: "1px dotted var(--rule)" }}>
-                            <div>
-                              <span style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--accent)" }}>{t.name}</span>
-                              <span style={{ fontFamily: "var(--hand)", fontSize: 12, color: "var(--pencil)", marginLeft: 8 }}>{t.description}</span>
-                            </div>
-                            {t.category && <Hex variant="muted">{t.category}</Hex>}
-                          </div>
-                        ))}
-                      </div>
-                    )}
+                <div id={detailsId} hidden={!open} style={{ marginTop: 10, paddingTop: 10, borderTop: "1px dotted var(--rule)" }}>
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))", gap: 6, marginBottom: 10 }}>
+                    <StatCard label="URL" value={s.url.replace("http://", "").replace("/mcp", "")} />
+                    <StatCard label="Version" value={s.version ?? "—"} />
+                    <StatCard label="Last Ping" value={s.last_ping ? new Date(s.last_ping).toLocaleTimeString() : "never"} />
+                    <StatCard label="Tools" value={`${s.tools_count}`} />
                   </div>
-                )}
+                  {(s.capabilities?.length ?? 0) > 0 && (
+                    <div style={{ marginBottom: 8 }}>
+                      <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", marginBottom: 3 }}>CAPABILITIES</div>
+                      <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+                        {s.capabilities?.map((c) => <Hex key={c}>{c}</Hex>)}
+                      </div>
+                    </div>
+                  )}
+                  {serverTools.length > 0 && (
+                    <div>
+                      <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", marginBottom: 3 }}>TOOLS</div>
+                      {serverTools.map((t) => (
+                        <div key={t.id} style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: 6, padding: "4px 6px", borderBottom: "1px dotted var(--rule)" }}>
+                          <div>
+                            <span style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--accent)" }}>{t.name}</span>
+                            <span style={{ fontFamily: "var(--hand)", fontSize: 12, color: "var(--pencil)", marginLeft: 8 }}>{t.description}</span>
+                          </div>
+                          {t.category && <Hex variant="muted">{t.category}</Hex>}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
               </div>
             );
           })}
           {servers.length === 0 && !adding && <div style={{ fontFamily: "var(--hand)", fontSize: 16, color: "var(--pencil)", padding: 20 }}>no MCP servers configured</div>}
         </div>
-      )}
+      </TabPanel>
 
-      {tab === "tools" && (
+      <TabPanel idPrefix="mcp" id="tools" selected={tab === "tools"}>
         <div className="card" style={{ padding: 0 }}>
           <table className="table">
             <thead><tr><th>Tool</th><th>Server</th><th>Category</th><th>Description</th></tr></thead>
@@ -214,7 +231,7 @@ export default function MCP() {
             </tbody>
           </table>
         </div>
-      )}
+      </TabPanel>
     </div>
   );
 }

@@ -23,10 +23,10 @@ PostgreSQL server -- `DatabaseSettings.url` hardcodes the scheme -- so making it
 the authoritative source would make `sqlite:` and `memory://` inexpressible.
 `DATABASE_URL` can say all three.
 
-**Configuring nothing is no longer the same as configuring localhost.**
+**Configuring nothing is no longer the same as configuring a loopback database.**
 `DatabaseSettings` defaults every field, so before this `alembic upgrade head`
 with an empty environment silently targeted
-`postgresql://maistro:maistro@localhost:5432/maistro`. A tool that cannot run
+`postgresql://maistro:maistro@<loopback-host>:5432/maistro`. A tool that cannot run
 without a database should say so rather than guess one, which is why
 `require_database_url` exists alongside `resolve_database_url`: the container may
 legitimately run with nothing configured (in-memory, and it warns), and alembic
@@ -129,11 +129,38 @@ def resolve_database_url(env: Mapping[str, str] | None = None) -> str:
     return ""
 
 
+def resolve_migration_target_url(env: Mapping[str, str] | None = None) -> str:
+    """The PostgreSQL URL the alembic chain must run against.
+
+    Migration target and runtime backend are deliberately independent. The
+    alembic chain is postgres-only (JSONB + the `vector` extension), while
+    `DATABASE_URL` may name a sqlite runtime for the container -- the sqlite
+    stores self-schema at wiring time and carry no migration chain. When the
+    runtime URL is not migratable, the migration target falls back to the
+    `DB_*` composition so postgres schema ownership survives a sqlite
+    deployment (#101/#103/#301: campaigns, working memory and backlog history
+    persist across restarts only under the sqlite runtime).
+
+    Behavior is identical to `require_database_url` whenever DATABASE_URL is
+    postgresql -- which is every deployment that has not opted into a sqlite
+    runtime -- so existing callers and tests see no difference.
+    """
+    environ = os.environ if env is None else env
+    runtime = resolve_database_url(environ)
+    if runtime.startswith(_MIGRATABLE_SCHEMES):
+        return runtime
+    if _db_env_is_set(environ):
+        composed = _compose_from_db_env(environ)
+        if composed.startswith(_MIGRATABLE_SCHEMES):
+            return composed
+    return require_database_url(environ)
+
+
 def require_database_url(env: Mapping[str, str] | None = None) -> str:
     """`resolve_database_url`, but a missing or unmigratable database is an error.
 
     For callers that cannot proceed without one -- alembic above all. Guessing
-    `localhost` on their behalf turns "you did not configure a database" into
+    a loopback host on their behalf turns "you did not configure a database" into
     "connection refused to a host you never named", which is the same class of
     misdirection this module exists to remove.
     """

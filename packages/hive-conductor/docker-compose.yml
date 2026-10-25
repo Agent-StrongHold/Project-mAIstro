@@ -4,11 +4,95 @@ services:
       context: ../..
       dockerfile: packages/hive-conductor/Dockerfile
     ports:
-      - "8101:8101"
+      # Host side is CONDUCTOR_PORT (default 8101) so the durability check
+      # (#331) and parallel local deployments can pick another host port
+      # without touching the container's listener.
+      - "${CONDUCTOR_PORT:-8101}:8101"
+    # Keep the UI/API and its legitimate subprocesses bounded in local and
+    # supported container runs; security ceilings are not tuning guidance.
+    mem_limit: 1g
+    memswap_limit: 1g
+    pids_limit: 256
+    cpus: 1.0
     environment:
       - PYTHONUNBUFFERED=1
+      # Durable foundation state — SQLite state.db (accounts, sessions,
+      # settings, registration policy), the age vault (secrets.age) and its
+      # identity key (admin.key), and the encrypted user-credential store
+      # (credential_master.key, user_credentials.enc) — lives on the named
+      # volume `conductor-data` so `docker compose down/up` and image
+      # replacement keep every account and vault entry (#331). CONDUCTOR_DATA_DIR
+      # is a directory INSIDE the volume, not the volume's mount root
+      # (/data) on purpose: `maistro security restore` swaps the data
+      # directory itself by rename for atomicity, and a mount point cannot
+      # be renamed (rename(2) fails with EBUSY). The image pre-creates both
+      # levels owned by the nonroot runtime uid 65532, so an empty named
+      # volume inherits that least-privilege ownership on first use; no
+      # root-owned volume, no chmod choreography. Without this mount the
+      # startup guard refuses to serve (DATA_DIR_EPHEMERAL) rather than
+      # silently discarding state on the next recreate. Inventory,
+      # backup/restore, migration, and deletion instructions: README.md,
+      # section "Persistent state".
+      - CONDUCTOR_DATA_DIR=/data/conductor
       # maistro-core integration — set these to enable real agents:
       # - MAISTRO_ROUTER_API_KEY=your-key
       # - MAISTRO_LLM_BASE_URL=http://litellm:4000/v1
       # - MAISTRO_LLM_API_KEY=sk-your-key
-      # - MAISTRO_MODEL=gpt-4o
+      # Sentinel tool authority for the standalone Conductor image (#66): the
+      # preset matching dispatch_tool's executable registry, not the engine's.
+      - MAISTRO_PERMISSION_PRESET=hive_conductor_tools
+      # Graph-node execution is a host capability, not a dispatchable tool:
+      # the node adapter's Sentinel gate authorizes "graph.node.execute"
+      # against the acting user's host role. The preset above names only
+      # dispatch_tool's executables, so without this grant the fail-closed
+      # table denies every node and no DAG can run (#60, #845).
+      - 'MAISTRO_PERMISSIONS={"graph.node.execute": ["admin", "user"]}'
+    volumes:
+      - conductor-data:/data
+    depends_on:
+      # Refuse a legacy pre-#331 volume (data files at the volume root)
+      # before the Conductor can fresh-initialize /data/conductor beside
+      # them — same fail-closed pattern as the root stack's
+      # conductor-layout-check.
+      conductor-layout-check:
+        condition: service_completed_successfully
+
+  conductor-layout-check:
+    # #331 moved CONDUCTOR_DATA_DIR from /data (the volume's mount root) to
+    # /data/conductor so `maistro security restore` can swap the data
+    # directory by rename. A volume created before that change still has
+    # state.db, secrets.age, and admin.key at the root; booting now would
+    # open an EMPTY state database and re-arm first-run setup beside the
+    # real data. Refuse instead, with the migration spelled out. Read-only
+    # mount: this check can never touch the data.
+    image: alpine:3.20
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        if [ -e /data/state.db ] || [ -e /data/secrets.age ] || [ -e /data/admin.key ]; then
+          if [ ! -e /data/conductor/state.db ]; then
+            echo >&2 "ERROR: legacy Conductor data layout detected: state.db/secrets.age/admin.key sit at the volume root, but CONDUCTOR_DATA_DIR is /data/conductor (#331). Starting now would open an EMPTY database and re-arm first-run setup. Stop the Conductor, move the coupled files down as one unit, then start:"
+            echo >&2 "  docker compose stop hive-conductor"
+            echo >&2 "  docker compose run --rm --no-deps --user root --entrypoint sh hive-conductor -c 'cd /data && mv state.db state.db-wal state.db-shm secrets.age admin.key credential_master.key user_credentials.enc conductor/ 2>/dev/null; test -e conductor/state.db'"
+            echo >&2 "  docker compose start hive-conductor"
+            exit 78
+          fi
+        fi
+    volumes:
+      - conductor-data:/data:ro
+    # Bounded like postgres-layout-check in the root stack; the #862 resource
+    # gate enforces a 128 MiB memory floor and an explicit positive cpus cap
+    # even for one-shot containers.
+    mem_limit: 256m
+    memswap_limit: 256m
+    pids_limit: 64
+    cpus: 0.25
+    restart: "no"
+
+# One volume holds ALL Conductor durable state; there is deliberately no
+# second store to keep consistent. `docker compose down` preserves it;
+# `docker compose down -v` deletes it — and with it every account, session,
+# setting, and vault entry. See README.md ("Persistent state") for
+# backup/restore and volume-migration instructions.
+volumes:
+  conductor-data:

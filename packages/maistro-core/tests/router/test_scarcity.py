@@ -10,8 +10,10 @@ from __future__ import annotations
 
 import math
 
+import pytest
+
 from maistro.router.scarcity import compute_effective_cost
-from maistro.types.model import ProviderConfig
+from maistro.types.model import ProviderConfig, UnknownBillingCycleError
 
 
 def _free_provider() -> ProviderConfig:
@@ -72,3 +74,23 @@ class TestOverQuotaScale:
         fresh = compute_effective_cost(0.0, _free_provider())
         assert fresh < 1.0 / math.log(2.0)
         assert fresh > 0.0
+
+
+class TestBillingCycleVocabulary:
+    """#1205: scarcity consumes the shared billing-cycle vocabulary, so an
+    unknown cycle fails explicitly here too instead of being priced as a
+    monthly plan by the old string-compare fallback."""
+
+    @pytest.mark.parametrize("unknown", ["weekly", "fortnightly", "DAILY"])
+    def test_unknown_cycle_raises_at_the_cost_seam(self, unknown: str) -> None:
+        with pytest.raises(UnknownBillingCycleError, match=unknown):
+            compute_effective_cost(0.0, ProviderConfig(billing_cycle=unknown, free_tokens=300))
+
+    def test_monthly_and_daily_still_normalize_identically(self) -> None:
+        # The delegation must preserve the pre-existing magnitudes exactly:
+        # monthly = free/30 per day, daily = the amount itself.
+        monthly = compute_effective_cost(
+            0.0, ProviderConfig(billing_cycle="monthly", free_tokens=300)
+        )
+        daily = compute_effective_cost(0.0, ProviderConfig(billing_cycle="daily", free_tokens=300))
+        assert daily < monthly  # 300/day leaves more headroom than 10/day

@@ -38,6 +38,11 @@ from types import ModuleType
 ROOT = Path(__file__).resolve().parents[1]
 BASELINE = ROOT / "quality" / "wiring-reads-baseline.json"
 
+#: Bounded analyzer implementation manifest (#319): the unread-field census is
+#: this file's own AST scan, so its implementation identity is the actual bytes
+#: of exactly this file.
+ANALYZER_MANIFEST = ("scripts/check-wiring-reads.py",)
+
 #: Resolved from this file rather than from `ROOT`, which the tests redirect at
 #: a synthetic tree. Loaded by path rather than imported by name because
 #: `tests/test_check_wiring_reads.py` loads *this* script with
@@ -302,6 +307,14 @@ def _integration_target_base(prov: ModuleType) -> str | None:
     return f"origin/{base_ref}"
 
 
+def _tool_version(prov: ModuleType) -> str:
+    """Implementation identity of the scanner that reached this verdict (#319)."""
+    version: str = prov.bundled_implementation_fingerprint(
+        Path(__file__).resolve().parents[1], ANALYZER_MANIFEST
+    )
+    return version
+
+
 def _trusted_baseline() -> tuple[dict[str, dict[str, str]], object, object]:
     """The ledger as of the base revision, where that was, and its metric version.
 
@@ -331,6 +344,7 @@ def main(argv: list[str]) -> int:
 
     prov = _provenance()
     try:
+        tool_version = _tool_version(prov)
         trusted, baseline, recorded_version = _trusted_baseline()
         prov.require_measurement(current, ratchet=RATCHET, what="DI roots")
         prov.require_metric_version(
@@ -372,6 +386,7 @@ def main(argv: list[str]) -> int:
             ratchet=RATCHET,
             baseline=baseline,
             tool="ast",
+            tool_version=tool_version,
             metric_definition_version=METRIC_DEFINITION_VERSION,
             old_value=f"{sum(len(e) for e in trusted.values())} unread",
             new_value=f"{total} unread",

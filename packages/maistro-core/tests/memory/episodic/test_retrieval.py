@@ -7,6 +7,7 @@ import pytest
 from maistro.memory.episodic.ranking import keyword_overlap
 from maistro.memory.episodic.retrieval import ScoredEpisodicRetrieval
 from maistro.memory.episodic.store import InMemoryEpisodicStore
+from maistro.memory.exposure import MemoryExposureMode
 from maistro.types.memory import EpisodicMemory, MemoryScope, MemoryTier
 
 
@@ -43,7 +44,7 @@ class _StubEmbeddingClient:
 
 @pytest.fixture
 def store() -> InMemoryEpisodicStore:
-    return InMemoryEpisodicStore()
+    return InMemoryEpisodicStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
 
 
 class TestScopeFilteringAndEmptyResults:

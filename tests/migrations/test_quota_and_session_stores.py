@@ -58,8 +58,14 @@ def _require_postgres() -> str:
 
 
 def _alembic_env(url: str) -> dict[str, str]:
-    """`DB_*` for alembic's `DatabaseSettings`, pointed at the scratch database."""
+    """Point every database spelling at this suite's scratch database.
+
+    The shared resolver gives `DATABASE_URL` precedence over `DB_*`; retaining
+    the service URL would apply the chain outside the scratch database this
+    fixture returns.
+    """
     parts = urlsplit(url)
+    scratch = urlsplit(url)._replace(path=f"/{SCRATCH_DB}").geturl()
     return {
         **os.environ,
         "DB_HOST": parts.hostname or "127.0.0.1",
@@ -67,6 +73,8 @@ def _alembic_env(url: str) -> dict[str, str]:
         "DB_NAME": SCRATCH_DB,
         "DB_USER": parts.username or "postgres",
         "DB_PASSWORD": parts.password or "",
+        "DATABASE_URL": scratch,
+        "MAISTRO_DATABASE_URL": scratch,
     }
 
 
@@ -202,8 +210,10 @@ class TestQuotaTrackerRunsAgainstTheMigration:
         from maistro.persistence.pg_quota import PgQuotaTracker
 
         tracker = PgQuotaTracker(pool)
-        await tracker.record_usage("anthropic", "2026-08", 100, 20)
-        second = await tracker.record_usage("anthropic", "2026-08", 5, 1)
+        # `record_usage` takes a billing cycle from the validated vocabulary
+        # (#1205) and derives the cycle key itself.
+        await tracker.record_usage("anthropic", "monthly", 100, 20)
+        second = await tracker.record_usage("anthropic", "monthly", 5, 1)
 
         assert second["input_tokens"] == 105
         assert second["output_tokens"] == 21

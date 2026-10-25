@@ -12,6 +12,7 @@ from maistro.skills.marketplace import (
     _block_ssrf,
 )
 from maistro.skills.registry import InMemorySkillRegistry
+from maistro.types.skill import SkillDefinition
 
 VALID_SKILL_MD = """---
 name: my_skill
@@ -34,6 +35,21 @@ exec(user_input)
 """
 
 UNPARSEABLE_SKILL_MD = "no frontmatter here"
+
+# A community document that names its own trust tier. The tier belongs to the
+# host: a document cannot promote itself.
+SELF_DECLARING_SKILL_MD = """---
+name: my_skill
+description: Does a thing
+trust_tier: t0
+parameters:
+  type: object
+  properties: {}
+---
+Body text here.
+
+A second line, so the salvaged document still has a meaningful body.
+"""
 
 
 class _FakeHttpClient:
@@ -235,3 +251,84 @@ async def test_uninstall_removes_file_and_deletes_from_registry(
 
     assert not filepath.exists()
     assert registry.get("my_skill") is None
+
+
+# ------------------------------------------------- the governed install gate
+
+
+async def test_install_honors_the_host_supplied_tier(
+    tmp_path: Path, registry: InMemorySkillRegistry
+) -> None:
+    # The tier is the host's decision about the installed skill; the fetched
+    # document never names its own.
+    client = _FakeHttpClient(response=HTTPResponse(200, VALID_SKILL_MD))
+    mp = SkillMarketplace(http_client=client, skills_dir=tmp_path, registry=registry)
+
+    skill = await mp.install("https://example.com/skill.md", trust_tier="t1")
+
+    assert skill.trust_tier == "t1"
+    stored = registry.get("my_skill")
+    assert stored is not None
+    assert stored.trust_tier == "t1"
+
+
+async def test_install_of_a_tier_the_host_does_not_know_lands_on_the_unvetted_floor(
+    tmp_path: Path, registry: InMemorySkillRegistry
+) -> None:
+    client = _FakeHttpClient(response=HTTPResponse(200, VALID_SKILL_MD))
+    mp = SkillMarketplace(http_client=client, skills_dir=tmp_path, registry=registry)
+
+    skill = await mp.install("https://example.com/skill.md", trust_tier="t9")
+
+    assert skill.trust_tier == "t3"
+
+
+async def test_install_ignores_a_tier_the_document_claims_for_itself(
+    tmp_path: Path, registry: InMemorySkillRegistry
+) -> None:
+    client = _FakeHttpClient(response=HTTPResponse(200, SELF_DECLARING_SKILL_MD))
+    mp = SkillMarketplace(http_client=client, skills_dir=tmp_path, registry=registry)
+
+    skill = await mp.install("https://example.com/skill.md", trust_tier="t3")
+
+    # The document asks for t0; only the host's tier counts.
+    assert skill.trust_tier == "t3"
+    stored = registry.get("my_skill")
+    assert stored is not None
+    assert stored.trust_tier == "t3"
+
+
+async def test_install_refuses_to_overwrite_a_symlinked_skill_file(
+    tmp_path: Path, registry: InMemorySkillRegistry
+) -> None:
+    client = _FakeHttpClient(response=HTTPResponse(200, VALID_SKILL_MD))
+    mp = SkillMarketplace(http_client=client, skills_dir=tmp_path, registry=registry)
+    community = tmp_path / "community"
+    community.mkdir(parents=True, exist_ok=True)
+    (community / "my_skill.md").symlink_to(tmp_path / "elsewhere.md")
+
+    with pytest.raises(ValueError, match="Refusing to overwrite symlink"):
+        await mp.install("https://example.com/skill.md")
+    assert registry.get("my_skill") is None
+
+
+async def test_install_is_refused_when_the_registry_rejects_the_trust_change(
+    tmp_path: Path, registry: InMemorySkillRegistry
+) -> None:
+    # The host already holds this skill at the unvetted floor. A community
+    # install that claims a more trusted tier is a promotion nobody granted:
+    # the registry refuses it and nothing reaches the disk.
+    registry.register(
+        SkillDefinition(
+            name="my_skill",
+            description="Already here",
+            trust_tier="t3",
+            source="host",
+        )
+    )
+    client = _FakeHttpClient(response=HTTPResponse(200, VALID_SKILL_MD))
+    mp = SkillMarketplace(http_client=client, skills_dir=tmp_path, registry=registry)
+
+    with pytest.raises(ValueError, match="Skill trust policy rejected registration"):
+        await mp.install("https://example.com/skill.md", trust_tier="t2")
+    assert not (tmp_path / "community" / "my_skill.md").exists()

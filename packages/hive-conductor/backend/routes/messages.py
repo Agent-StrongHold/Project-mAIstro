@@ -22,6 +22,12 @@ class Message(BaseModel):
     priority: Literal["info", "warning", "critical"] = "info"
     read: bool = False
     category: str = "general"
+    #: Machine-readable synthetic provenance (#399). True only on demo-mode
+    #: seed fixtures (`stores._seed_messages`); a row created through the API
+    #: is never synthetic and `CreateMessageBody` offers no way to forge the
+    #: stamp, so any consumer can filter demo chatter off alerts, exports,
+    #: compliance evidence, and metrics by this field alone.
+    synthetic: bool = False
     created_at: datetime
 
 

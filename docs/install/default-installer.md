@@ -15,6 +15,43 @@ the same command a week apart get the same code.
 | A release candidate | `MAISTRO_VERSION=v1.0.0-rc1 ./get.sh` | `.\get.ps1 -Version v1.0.0-rc1` |
 | Contributor / unreleased | `./get.sh --channel dev` | `.\get.ps1 -Channel dev` |
 | A specific branch | `./get.sh --branch my/topic` | `.\get.ps1 -Branch my/topic` |
+| Fully unattended install | `./get.sh -- --answers-file answers.yaml` | `.\get.ps1 -AutoInstallDeps -AnswersFile answers.yaml` |
+
+## Unattended installs (answers file, #409)
+
+One versioned answers schema — `InstallAnswersV1` (`schema_version: "1"`,
+templates in [`examples/`](examples/)) — is consumed equivalently by both
+entrypoints. On Unix it rides get.sh's passthrough into install.sh; on Windows
+`get.ps1 -AnswersFile` validates it, translates the path to the distro's
+`/mnt` view of the Windows filesystem (`C:\Users\me\answers.yaml` becomes
+`/mnt/c/Users/me/answers.yaml`), and forwards it as the same `--answers-file`
+argument to get.sh inside WSL:
+
+- **Validated before mutation.** Both entrypoints check the answers contract
+  before anything is installed: missing file, answers path that is a
+  directory, and the `--answers-file` + skip-wizard conflict (a skipped
+  questionnaire never reads the answers file) are reported as one complete,
+  actionable error list — on Windows before any WSL setup, elevation prompt,
+  or reboot; in install.sh before dependency installation. Schema-level
+  unknown-key and type errors surface from `maistro-install` itself
+  (`extra="forbid"`, #810).
+- **No secrets in the answers file.** The schema carries names and flags only
+  (SPEC-180); a `*_password`/`*_key` field is a named validation error, and
+  the file is never placed on a command line where shell history could
+  capture it. First-run credentials use the staged 0600 credentials file
+  referenced by `MAISTRO_BOOTSTRAP_CREDENTIALS_FILE` (get.ps1 translates a
+  Windows-side path and forwards it by environment variable), or the UI
+  Setup wizard.
+- **Never prompts in noninteractive mode.** Combine `-AnswersFile` with
+  `-AutoInstallDeps` on Windows (or `--answers-file` with
+  `MAISTRO_AUTO_INSTALL_DEPS=1` on Unix); with no answers file and no
+  terminal, the installer fails with the actionable message above instead of
+  prompting. `-AnswersFile` survives the elevation relaunch and the
+  post-reboot resume, so an unattended install cannot turn interactive
+  mid-flight.
+- **Same fixture, same install.** The contract is pinned by
+  `tests/test_answers_parity_contract.py`, which runs one fixture through
+  both entrypoints and compares the rendered effective config.
 
 The latest release is resolved from the GitHub API's `/releases/latest`, which
 **excludes prereleases**: an rc has to be asked for by name and is never handed
@@ -44,6 +81,70 @@ The plan includes a best-effort `environment` report with:
 - Docker and Podman command/daemon probes.
 - KVM device and Hyper-V/WSL hints for sandbox and VM choices.
 
+## Host Python and uv bootstrap (#1821)
+
+The installer's host bootstrap never uses pip. One shared contract —
+`scripts/bootstrap-runtime.sh`, sourced by `install.sh` and by `get.sh`'s
+legacy-`.env` migration — resolves the toolchain in a fixed order:
+
+1. **uv first.** A compatible existing installation is reused (on `PATH`, or
+   in `$UV_INSTALL_DIR`, `~/.local/bin`, `~/.cargo/bin`, or
+   `/opt/homebrew/bin` when this shell predates the rc files). Otherwise uv
+   is installed with its official standalone installer from `astral.sh` — a
+   shell script, so a host with neither Python nor pip can still bootstrap —
+   into a user-owned directory. Nothing is elevated, and PEP 668
+   externally-managed interpreters can never block or break this path because
+   pip is never invoked.
+2. **Helper interpreter second.** The installer's own helpers (the
+   `scripts/secret_env.py` paths and inline validation snippets) run on the
+   first host interpreter meeting the 3.11 helper floor (`python3`, `python`,
+   then `py -3`). If none qualifies, the interpreter uv provisions is used.
+3. **Package interpreter, separately.** The wizard runs
+   `packages/maistro-bootstrap`, whose `requires-python` is `>= 3.12`. That
+   requirement is validated by `ensure_package_python` immediately before the
+   wizard starts, against the interpreter uv actually resolves — which is
+   then executed and re-checked against the floor rather than trusted. A
+   3.11 helper interpreter is therefore never reported as satisfying package
+   execution: the helper floor and the package floor are two distinct
+   constants (`MAISTRO_HELPER_PYTHON_FLOOR` / `MAISTRO_PACKAGE_PYTHON_FLOOR`),
+   and the tests pin the package floor to the package's own `pyproject.toml`.
+
+Everything resolved this way is owned by the initiating account, is on the
+running process's `PATH` immediately (the install itself never needs a fresh
+shell), and is preserved on re-runs — an existing compatible uv is adopted,
+not duplicated. Downloads land in a scratch directory that is removed on
+failure, and every failure (network, unwritable destination, failed
+provisioning) stops with an actionable message before any existing data is
+altered.
+
+### Version and provenance policy
+
+uv is installed only from the official `astral.sh` channel:
+
+- default: latest release (`https://astral.sh/uv/install.sh`),
+- `MAISTRO_UV_VERSION=0.9.5` pins one release
+  (`https://astral.sh/uv/0.9.5/install.sh`),
+- `MAISTRO_UV_INSTALLER_URL` replaces the URL entirely (mirrors, air-gapped
+  hosts),
+- `MAISTRO_UV_NO_MODIFY_PATH=1` forwards the official installer's
+  no-rc-file mode for hosts where shell start-up files must not change. The
+  installer itself never edits rc files either way; for new shells, PATH
+  handling is the official installer's documented, idempotent, clearly
+  marked block.
+
+### What each supported platform promises
+
+| Platform | Outcome with no Python and no uv |
+|---|---|
+| Linux x86_64/aarch64 (glibc; Debian/Ubuntu and Fedora-class) with `curl` and the standard userland the official installer drives (`cat`, `awk`, `tar`, `gzip`, `mv`, `sha256sum`) | Reaches the wizard: uv and a Python >= 3.12 interpreter are provisioned user-owned — no pip, no elevation in this stage. **Proven**: on a real restricted-PATH Linux account — astral.sh install, uv 0.13.1 into `~/.local/bin` (uid-owned), uv-provisioned interpreter floor-probed and immediately usable, fresh login shell resolves uv via the installer's `.profile` → `~/.local/bin/env` block (idempotent). This is the only platform with a clean-account proof so far. |
+| macOS x86_64/arm64 | The standalone installer channel is the same, so the same outcome is expected — but this is an **expectation, not a proven promise**: no clean-account run on macOS hardware has been executed. Until the release checklist's macOS smoke test records one, treat this row as untested and fall back to the explicit prerequisite boundary below on any deviation. |
+| Windows via `get.ps1` → WSL2 | The handoff lands inside the WSL2 distro, where the Linux contract applies; any distro Python meeting the floors is reused, otherwise uv provisions one. **Expectation, not a proven promise**: the Linux proof above did not run on WSL2 — no clean-account WSL2 run has been executed; the release checklist's platform smoke tests own that evidence. |
+| Everything else (musl without usable uv binaries, no `curl`, blocked egress, unwritable `$HOME`) | Explicit prerequisite boundary: the installer fails before mutating anything, naming the missing prerequisite (`curl`, network access, or a manual Python >= 3.12). |
+
+The legacy-`.env` migration in `get.sh` runs `scripts/secret_env.py` before
+`install.sh` initializes; it resolves its interpreter through this same
+contract, or fails before either `.env` file is touched.
+
 ## Safe defaults
 
 Defaults are intentionally conservative:
@@ -57,6 +158,82 @@ Defaults are intentionally conservative:
 - Secrets stay out of answers YAML; provider selections are intent flags only.
 
 Operators may select the `developer` sandbox profile for local iteration, but `unsafe_host` is intentionally not in the schema or wizard; users who want unsupported options can build from source instead of using the default installer. Crypto choices are explicit: `distributed_identity_root` is default, `no_crypto` removes the identity root for constrained demos, and `full_all_crypto` is reserved for downstream installers that enable the complete DID/VC and wallet-capable surface behind policy gates.
+
+## Container runtime selection and host privilege (#1820)
+
+The installer resolves **one** effective host runtime and honors it everywhere:
+the compose front-end it starts the stack with, the readiness and access
+probes, the install manifest, and every generated recovery/upgrade command
+(Makefile, `RECOVERY.md`, entrypoint hints). A selected runtime is never
+silently switched when it is unavailable — the install fails naming the
+selection and its remedy.
+
+### Selection and precedence
+
+1. **Explicit answer.** `container_runtime: docker | podman` in the answers
+   (or the wizard) is authoritative. `plan.py::effective_runtime` resolves it
+   untouched and writes it into the materialized `delivery.json`.
+2. **Persisted plan wins on re-runs.** install.sh reads
+   `delivery.json`'s `container_runtime` — the wizard's resolution — so a
+   later `./install.sh` re-run honors what was installed instead of re-probing.
+3. **`MAISTRO_CONTAINER_RUNTIME=docker|podman`** pins the runtime only when
+   no plan selects one (e.g. `MAISTRO_SKIP_WIZARD=1` runs). An unknown value
+   is ignored with a warning and falls through to `auto`.
+4. **`auto` policy (documented, tested).** The Podman-oriented deployment tier
+   (`deployment_tier: local_podman`) resolves to podman; every other tier
+   resolves to docker. The shell probe order for `auto` is docker first, then
+   podman — the same order in every generated artifact.
+
+An explicit selection with no working Compose v2 front-end fails the install
+with a runtime-specific remedy; it never installs or probes the *other*
+runtime to proceed. Docker-only validations (engine API floor, the macOS
+credential-helper deadlock probe, docker.sock discovery) run only when the
+effective front-end is docker — a Podman install is never failed by an
+unrelated old Docker daemon on the same host, and access readiness is
+validated with the selected runtime's own `info` command (`docker info` /
+`podman info`) as the invoking account.
+
+### Supported OS / runtime / privilege matrix
+
+Host privilege, container-runtime privilege, and application identity are
+three different boundaries; none proves the others. The installer's tested
+promise per platform:
+
+| Platform | Runtime | Zero-administrator install? | Boundary |
+|---|---|---|---|
+| Linux (apt/dnf) | Podman (rootless) | Yes, **if podman is already installed** | Rootless podman runs entirely as the invoking account; the installer verifies `podman info` as that account. Installing the podman *package* needs one-time admin. |
+| Linux (apt/dnf) | Docker Engine | No — one-time admin prerequisite | `sudo apt-get install` is confirmed before mutation. A missing or denied elevation is a *recoverable prerequisite report*: the installer names the one-time administrator command (`apt-get update && apt-get install -y docker.io docker-compose-plugin`) and says to re-run `./install.sh`, instead of surfacing sudo's own error. The installer never silently adds the invoking user to the docker group (root-equivalent); if the daemon socket is inaccessible to the account afterwards, it reports the prerequisite and stops. |
+| macOS | Colima + docker CLI | Yes | Homebrew and the Colima VM run user-scoped; no admin prompt. |
+| macOS | Docker Desktop | No — one-time admin prerequisite | Its privileged helper and first-run setup require administrator approval. |
+| Windows (WSL2, via get.ps1) | Docker or Podman inside the distro | No — one-time admin prerequisite | Enabling the WSL2/Virtual Machine Platform Windows features needs elevation, requested once, before any Linux-side mutation. |
+
+**Unsupported combinations:** running the Linux install fully as root
+(`sudo ./install.sh`) is not a supported profile — installer state and
+credentials must stay owned by the ordinary account that operates the stack.
+Mounting a privileged host docker.sock into containers and privileged
+containers remain out of the installer's schema (see *Safe defaults*);
+rootless host containers are not an agent sandbox backend (#81 owns that
+contract).
+
+**Evidence:** the Linux/WSL2 rows are exercised end to end from ordinary
+host accounts — rootless Podman (zero-admin after the one-time package
+install) through install, health, restart-from-a-new-login, ownership
+checks, and teardown, plus the Docker-Engine boundary (selected runtime
+inaccessible to the account → actionable failure, never a silent switch
+even with a working Podman on the same host). Sanitized transcripts,
+including the three actionable mid-install failures the runs surfaced:
+[`runtime-selection-evidence-1820.md`](runtime-selection-evidence-1820.md).
+The elevation-denial report, the retry-after-interruption contract, and the
+ownership of the persisted installer state are additionally pinned by
+automated tests (`tests/test_install_runtime_selection.py`).
+The macOS rows and the Windows-side elevation choreography of `get.ps1`
+remain design claims (no such host in the lane); see *Not exercised* there.
+
+**Interruption/retry and ownership:** installer state (`.maistro-install/`,
+`.env`, plan artifacts, named volumes) is created by and owned by the invoking
+account; re-running `./install.sh` after an interrupted install resumes
+idempotently under the same account, and runtime selections persist through
+the retry because the plan is re-read, not re-probed.
 
 ## Generated outputs
 

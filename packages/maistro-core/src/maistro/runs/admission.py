@@ -35,6 +35,7 @@ from maistro.runs.model import RunStatus
 from maistro.runs.sources import ADMISSION_SOURCE
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
+    from maistro.runs.access import RunAuthorization
     from maistro.runs.model import Run
     from maistro.runs.store import RunStore
 
@@ -92,10 +93,13 @@ async def admit_direct_work(
     parameters: dict[str, Any] | None = None,
     description: str = "",
     actor_principal_id: str | None = None,
+    authorization: RunAuthorization | None = None,
     persona_id: str | None = None,
     provenance: dict[str, Any] | None = None,
     retention_expires_at: datetime | None = None,
     initial_status: RunStatus = RunStatus.CREATED,
+    goal_id: str | None = None,
+    goal_revision: int | None = None,
 ) -> Run:
     """Admit directly-submitted work and return its canonical Run.
 
@@ -103,6 +107,13 @@ async def admit_direct_work(
     Run can be traced back to its entry point without the entry point having to
     own any lifecycle state of its own. That is the whole trade #41 asks for:
     the admission record stays a receipt, the Run becomes the truth.
+
+    ``goal_id``/``goal_revision`` bind the Run to the canonical Goal
+    (`maistro.goals`, #1572) and the exact desired-state revision it was
+    admitted against. The caller resolves the Goal through the authorized
+    Goal seam first; admission records the binding as immutable Run
+    provenance and validates only its shape — it is not a second Goal
+    authorization path.
     """
     graph = direct_work_graph(
         workspace_id=workspace_id,
@@ -115,6 +126,7 @@ async def admit_direct_work(
     return await store.create_run(
         graph,
         actor_principal_id=actor_principal_id,
+        authorization=authorization,
         persona_id=persona_id,
         # `source` last, deliberately. With the spread last, a caller passing
         # `admission_source` in its own provenance silently overrode the
@@ -124,6 +136,8 @@ async def admit_direct_work(
         provenance={**(provenance or {}), ADMISSION_SOURCE: source},
         retention_expires_at=retention_expires_at,
         initial_status=initial_status,
+        goal_id=goal_id,
+        goal_revision=goal_revision,
     )
 
 

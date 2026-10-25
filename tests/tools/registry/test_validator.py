@@ -77,3 +77,48 @@ def test_render_produces_path_and_messages(tmp_path: Path) -> None:
     rendered = result.render()
     assert str(p) in rendered
     assert "ERROR:" in rendered
+
+
+def _contracts_without_tests(content: str, status: str) -> str:
+    return content.replace("contracts: []", "contracts: [behavioral]").replace(
+        "status: Accepted", f"status: {status}"
+    )
+
+
+def test_contracts_without_tests_on_a_proof_claim_warns(tmp_path: Path) -> None:
+    p = _write(tmp_path, "ADR-030.md", _contracts_without_tests(_VALID, "Implemented"))
+    result = validate_file(p)
+    assert result.ok
+    assert result.debts == []
+    assert any("while claiming status 'Implemented'" in w for w in result.warnings)
+    # Rendered too: an implementation claim never scrolls past silently.
+    assert "WARN:" in result.render()
+
+
+def test_contracts_without_tests_elsewhere_is_explicit_debt(tmp_path: Path) -> None:
+    p = _write(tmp_path, "ADR-030.md", _contracts_without_tests(_VALID, "Accepted"))
+    result = validate_file(p)
+    assert result.ok  # debt is surfaced, not fatal
+    assert result.warnings == []
+    assert result.debts == ["declares contracts but cites no tests (test-evidence debt)"]
+    assert "DEBT:" in result.render()
+
+
+def test_empty_tests_without_contracts_stays_clean(tmp_path: Path) -> None:
+    # No contracts declared, nothing claimed: neither a warning nor a debt.
+    p = _write(tmp_path, "ADR-030.md", _VALID)
+    result = validate_file(p)
+    assert result.ok
+    assert result.warnings == []
+    assert result.debts == []
+
+
+def test_cited_tests_satisfy_the_contracts_evidence_state(tmp_path: Path) -> None:
+    evidenced = _contracts_without_tests(_VALID, "Implemented").replace(
+        "tests: []", "tests: [packages/x/test_real.py]"
+    )
+    p = _write(tmp_path, "ADR-030.md", evidenced)
+    result = validate_file(p)
+    assert result.ok
+    assert result.warnings == []
+    assert result.debts == []
