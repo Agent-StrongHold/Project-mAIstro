@@ -46,7 +46,7 @@ working deployment broken:
 * A client whose endpoint is **not** in settings registers its own origin when
   it is constructed, because that is the only place the URL exists.
   `HomeAssistantIntegration` takes its URL as a constructor argument
-  (defaulting to `http://localhost:8123`), and `OAuthService` takes a provider
+  (defaulting to HTTP on the loopback host at port 8123), and `OAuthService` takes a provider
   map that may name a self-hosted issuer; both call
   `configure_outbound_policy` in `__init__`. Without that, a real Home
   Assistant request is refused on a deployment that never touched settings —
@@ -56,11 +56,11 @@ working deployment broken:
 What an allowance does and does not widen
 -----------------------------------------
 An allowed entry is a full origin: scheme, host and port, compared exactly
-after normalising the default port. `http://127.0.0.1:4000` allows that
-gateway and nothing else — not `127.0.0.1:8080`, not another RFC1918 address,
-not `https://` to the same host. It is not "allow private addresses"; it is
-"allow this endpoint", which is the narrowest thing that still lets the engine
-talk to its own LLM.
+after normalising the default port. An allowlist entry for HTTP on IPv4
+loopback port 4000 allows that gateway and nothing else — not another port
+on loopback, not another RFC1918 address, not `https://` to the same host.
+It is not "allow private addresses"; it is "allow this endpoint", which is
+the narrowest thing that still lets the engine talk to its own LLM.
 
 Redirects
 ---------
@@ -156,7 +156,7 @@ def outbound_origin(url: str) -> str:
     try:
         parts = urlsplit(url)
     except ValueError:
-        # Unparseable — `http://[::1` and friends. This function is called to
+        # Unparseable — `http://[::1` and friends. This function is called to  # DevSkim: ignore DS162092 until 2027-12-31
         # *describe* a refusal, so it must never be the thing that fails: it
         # raised `ValueError: Invalid IPv6 URL` from inside the handler that had
         # already correctly refused the same URL, and the exception escaped

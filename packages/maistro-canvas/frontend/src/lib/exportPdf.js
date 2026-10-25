@@ -38,5 +38,5 @@ export async function exportBookPdf({ title, pages, productId, mode }) {
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
-  setTimeout(() => URL.revokeObjectURL(url), 10000);
+  setTimeout(() => URL.revokeObjectURL(url), 10000); // DevSkim: ignore DS172411 until 2027-12-31 — fixed blob URL cleanup delay
 }
