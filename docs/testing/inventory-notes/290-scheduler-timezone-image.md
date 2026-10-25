@@ -480,3 +480,51 @@ re-verified first-hand:
   the run published `127.0.0.1:18101` via an untracked /tmp compose override,
   deleted after use. The harness talks over the compose network
   (`http://hive:8101`), so CI behavior is unaffected. Tree left clean.
+
+## Round: verify-lane re-verification after the 2014ab88 develop merge (2026-10-25, head `8936d80`)
+
+The branch merged develop `2014ab888` (Approvals/Capabilities M1 drop) at
+`8936d80`. The timezone surfaces are untouched by the merge except
+`backend/routes/health.py`, where develop's CodeQL round hardened
+`_optional_routers_state` (raw exception text reduced to a fixed public
+phrase) — the tz/scheduler sections are unchanged — plus a comment-only
+`schemas.py` line and develop's own additions to
+`test_degraded_mode_surface.py`. The shipped image was rebuilt from this head
+and re-verified first-hand (verify job `93e24fb96ebf4c2098cc60edab911a87`):
+
+- Image `sha256:6079a5557ba68e8e567a752a3cf16ae5021e62559510eb3886565bf46797800e`
+  (`hive-conductor-hive:latest`, compose build at this head). In-image
+  timezone source, recorded per the issue's definition of done:
+  `PYTHONTZPATH=/app/venv/lib/python3.13/site-packages/tzdata/zoneinfo`,
+  `tzdata` wheel **2026.3**; `zoneinfo.TZPATH` contains the wheel path only;
+  `ZoneInfo("UTC")`, `ZoneInfo("America/New_York")`, `ZoneInfo("Europe/Berlin")`
+  resolve through it.
+- CI-exact api phase (`compose --profile test up --build
+  --abort-on-container-exit --exit-code-from api-tests api-tests`): **14 passed
+  / 14 skipped in 327.75s** — UTC `*/5` natural fire, Berlin 04:30 wall time +
+  season offset + exact instant, invalid-zone 422s, `/health` tz/scheduler
+  pins; restart-marked test skipped pre-restart as designed. Restart phase
+  (`start hive`, wait healthy, `SCHED_TZ_AFTER_RESTART=1 -k restart_recovery`):
+  **1 passed**.
+- Negative mechanism proof, redone with the failure actually attributed: as
+  the image user the wheel cannot be moved, so the first attempt's exit 1 was
+  `mv`'s, not the smoke's. As root, with
+  `/app/venv/lib/python3.13/site-packages/tzdata` moved away, the Dockerfile's
+  literal build-time smoke command exits **1** with
+  `AssertionError: /app/venv/lib/python3.13/site-packages/tzdata/zoneinfo` —
+  the tz dependency cannot be removed without failing that smoke test. (Note
+  for future rounds: pointing `PYTHONTZPATH` at an empty directory does *not*
+  fail the smoke — `zoneinfo` falls back to the importable `tzdata` package —
+  so a removal proof must remove the wheel itself, as above.)
+- Backend suite at the merged head: **4047 passed, 25 skipped** (4072 node
+  IDs = the recorded inventory; develop's Approvals/Capabilities tests
+  included). `uv run ruff check .` and `ruff format --check .` clean;
+  suite inventory ok for `packages/hive-conductor/backend/tests` (4072) and
+  `packages/hive-conductor/tests/e2e` (28).
+- Hosted CI at this head was still queued/in-progress at capture time — not
+  inferred green; hosted required checks remain a separate gate.
+- Local-only deviation, as in prior rounds: a foreign stack held host 8101,
+  so the run published `127.0.0.1:18101` via an untracked /tmp compose
+  override, deleted after use. The harness talks over the compose network
+  (`http://hive:8101`), so CI behavior is unaffected. Stack torn down with
+  `down -v`; tree carries only this note.
