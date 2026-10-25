@@ -62,7 +62,8 @@ from maistro.agents.types import LLMProviderError
 from maistro.constants import STREAM_CHUNK_SIZE
 from maistro.runs.chat_refusal import CHAT_TURN_RETRY_AFTER_S, ChatTurnRefused
 from maistro.runs.concurrency import RunConcurrencyExceeded
-from maistro.runs.model import Run
+from maistro.runs.model import TERMINAL_ATTEMPT_STATUSES, AttemptStatus, Run
+from maistro.runs.store import RunStore
 from maistro.security._types import AuthContext
 from maistro_server.api.auth import RequireAuth
 from maistro_server.api.principal import AuthenticatedPrincipal
@@ -374,6 +375,8 @@ async def _close_if_open(run: Run) -> None:
     if _container is None:
         return
     try:
+        if await _left_for_recovery(_container.run_store, run.run_id):
+            return
         from maistro.runs.service import RunExecutionService
         from maistro.runtime import PythonExecutionRuntime
 

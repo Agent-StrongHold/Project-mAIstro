@@ -206,6 +206,29 @@ class EngineService:
         return getattr(container, "run_reader", None)
 
     @property
+    def goal_reader(self) -> Any:
+        """The core Container's Workspace-scoped Goal reader, or None (#1572).
+
+        Goal inspection uses this principal-carrying seam rather than reading
+        the raw Goal store, just as Run inspection uses ``run_reader``.  It is
+        absent only when this process has no embedded core Container.
+        """
+        container = getattr(self._agent_port, "container", None)
+        return getattr(container, "goal_reader", None)
+
+    @property
+    def graph_run_store(self) -> Any:
+        """The core Container's durable graph-continuation store, or None.
+
+        The DurableRunStore the canonical graph executor checkpoints into —
+        Run + GraphExecutionState + NodeRuns + Attempts. None without the
+        bridge, like `run_store`: inspection then answers from the projection
+        alone rather than inventing graph state it cannot read (#775).
+        """
+        container = getattr(self._agent_port, "container", None)
+        return getattr(container, "graph_run_store", None)
+
+    @property
     def schedule_store(self) -> Any:
         """The core Container's canonical Schedule store, or None.
 
@@ -300,56 +323,12 @@ class EngineService:
         """
         from adapters.maistro_core import MaistroCoreBridge, StubAgentPort
 
-        if settings.maistro_router_api_key:
-            bridge = MaistroCoreBridge()
-            try:
-                await bridge.start(settings)
-                self._bind_agent_port(bridge)
-                self._configured = True
-            except Exception as exc:
-                # The module logger, not a function-local `import logging`:
-                # that import bound `logging` as a local for the whole
-                # function, so the later handler's `logging.getLogger(...)`
-                # raised UnboundLocalError whenever this branch was not taken —
-                # turning any failure below into a different, wrong error.
-                logger.warning("maistro-core bridge failed (%s) — falling back to stub", exc)
-                self._bind_agent_port(StubAgentPort())
-        else:
-            self._bind_agent_port(StubAgentPort())
-
-        self._wire_capabilities(settings)
-        self._wire_outcome_store()
-
-        # A fresh metrics buffer per engine start. `set_store` had no
-        # production caller -- the wired-but-unread shape #236 gates -- and a
-        # buffer carried across a restart would mix the previous process's
-        # observations into this one's window (#698).
-        from services.node_metrics_store import reset_store
-
-        reset_store()
-
-        # Recovery is a system reconciliation cadence, not a user schedule.
-        # Start it only after the core bridge has established the canonical Run
-        # and Graph-continuation stores so another replica can recover a process
-        # that died between Run admission and checkpoint 1 (#835/#837).
-        from services.canonical_recovery import start_canonical_recovery
-        from services.dag_recovery import start_dag_recovery
-
-        start_dag_recovery()
-        # The Container's own recovery ticks (lease reclaim, stranded chat
-        # admissions, elapsed-pause resume) are operator-scheduled (ADR-019);
-        # this process is their operator (#62).
-        start_canonical_recovery()
-
-        # Canonical Evolve Run recovery (#1064) is bracketed by the Evolve
-        # service's own lifecycle (`services.evolution.start_evolution`/
-        # `stop_evolution`), not the engine's: `services.evolution_graph`'s
-        # recovery resolver requires the Evolve singleton to exist, and this
-        # engine start runs before `start_evolution()` does in application
-        # startup. Starting the cadence here raced that ordering -- a due
-        # RUNNING Run inspected in the gap terminalized FAILED for no reason
-        # but startup sequencing. See `services.evolution.start_evolution`.
-
+        self._state = "starting"
+        self._startup_error = None
+        self._degradations = []
+        #: Steps that started successfully, in order. The failure path stops
+        #: them in reverse — one cleanup contract for the whole sequence.
+        unwind: list[tuple[str, Callable[[], Awaitable[None]]]] = []
         try:
             # Required: the agent seam. A configured bridge that fails takes
             # the documented stub path — an optional degradation, not a boot
@@ -615,11 +594,12 @@ class EngineService:
         await stop_canonical_recovery()
         # Evolve recovery cadence stop moved to `services.evolution.stop_evolution`
         # (#1064) -- see the matching note in `start()`.
-        if self._backend is not None:
-            import contextlib
-
-            with contextlib.suppress(Exception):
-                await self._backend.stop()
+        await self._stop_backend()
+        if self._state in ("ready", "degraded", "startup_failed", "starting"):
+            # Truthful terminal state (#1181): a stopped engine reads as
+            # stopped, never as whatever it was while (or before) serving.
+            # A never-attempted engine stays `not_started`.
+            self._state = "stopped"
 
     async def route_request(
         self,

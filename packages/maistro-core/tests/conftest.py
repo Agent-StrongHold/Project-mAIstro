@@ -125,6 +125,7 @@ def _reset_shared_http() -> Iterator[None]:
 #: discovered: truncating everything would take out the alembic version table
 #: and make a migrated database look unmigrated.
 _PG_SCRATCH_TABLES = (
+    "quota_invocation_evidence",
     "quota_usage_events",
     "quota_usage",
     "sessions",

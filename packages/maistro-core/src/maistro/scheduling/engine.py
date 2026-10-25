@@ -342,18 +342,27 @@ def _apply_max_runs(
     ]
 
 
-def enumeration_start(schedule: Schedule, *, now: datetime) -> datetime:
+def enumeration_start(
+    schedule: Schedule,
+    *,
+    now: datetime,
+    limits: EnumerationLimits = DEFAULT_ENUMERATION_LIMITS,
+) -> datetime:
     """The exclusive lower bound of what `evaluate` enumerates at `now`.
 
     Three lower bounds, all of them real: the catchup window (which bounds
-    both the semantics and the size of the walk), the last fire, and the
-    moment the schedule came into existence — creating a schedule must not
-    retroactively schedule work from before it existed. Public so the admitter
-    can tell which occurrences an evaluation will *not* look at (#1059): a
-    winner whose ticker died before the horizon passed is never enumerated,
-    and the admitter's recovery walk has to stop exactly where this starts.
+    both the semantics and the size of the walk), the last fire, and the moment
+    the schedule came into existence — creating a schedule must not
+    retroactively schedule work from before it existed. The window considered
+    is the tighter of the schedule's own and the host's bound (#1200), the
+    same clamp `evaluate` applies, so a caller walking recovery against this
+    start examines exactly the range an evaluation would. Public so the
+    admitter can tell which occurrences an evaluation will *not* look at
+    (#1059): a winner whose ticker died before the horizon passed is never
+    enumerated, and the admitter's recovery walk has to stop exactly where
+    this starts.
     """
-    horizon = _catchup_horizon(schedule, now=now)
+    horizon = _catchup_horizon(schedule, now=now, limits=limits)
     return max(schedule.last_fired_at or horizon, horizon, schedule.created_at)
 
 
@@ -381,9 +390,12 @@ def evaluate(
     if schedule.exhausted:
         return ScheduleEvaluation(next_due_at=None, exhausted=True)
 
-    horizon = _catchup_horizon(schedule, now=now)
-    since = enumeration_start(schedule, now=now)
-    occurrences, truncated = _enumerate_due(schedule, since=since, now=now)
+    horizon = _catchup_horizon(schedule, now=now, limits=limits)
+    window_clamped = schedule.catchup_window_seconds > limits.max_window_seconds
+    since = enumeration_start(schedule, now=now, limits=limits)
+    occurrences, truncated, incomplete, stopped_at = _enumerate_due(
+        schedule, since=since, now=now, limits=limits
+    )
     eligible, stale = _partition_by_catchup(occurrences, horizon=horizon)
 
     to_fire, overlapped, cancel_active = _apply_overlap(

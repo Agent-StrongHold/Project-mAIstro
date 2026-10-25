@@ -29,6 +29,17 @@ from maistro.types.config import ModelBindingConfig
 logger = logging.getLogger(__name__)
 
 
+def validate_permission_preset(value: str) -> str:
+    """Reject a preset name that the permission policy does not define."""
+    from maistro.security.permission_policy import VALID_PRESETS
+
+    if value not in VALID_PRESETS:
+        valid = ", ".join(sorted(VALID_PRESETS))
+        msg = f"Unknown permission preset '{value}'. Valid values: {valid}."
+        raise ValueError(msg)
+    return value
+
+
 def _has_http_origin_authority(parsed: SplitResult) -> bool:
     """Require a plain HTTP authority, without userinfo or URL components."""
     port = parsed.port  # May raise for malformed/out-of-range ports.
@@ -57,17 +68,6 @@ def _is_http_loopback_origin(origin: str) -> bool:
         }
     except ValueError:
         return False
-
-
-def validate_permission_preset(value: str) -> str:
-    """Reject a preset name that the permission policy does not define."""
-    from maistro.security.permission_policy import VALID_PRESETS
-
-    if value not in VALID_PRESETS:
-        valid = ", ".join(sorted(VALID_PRESETS))
-        msg = f"Unknown permission preset '{value}'. Valid values: {valid}."
-        raise ValueError(msg)
-    return value
 
 
 def validate_cors_origins(origins: list[str]) -> list[str]:
@@ -350,12 +350,27 @@ class Settings(BaseSettings):
     rate_limit_per_minute: int = BASELINE_RATE_LIMIT_PER_MINUTE
     rate_limit_burst: int = BASELINE_RATE_LIMIT_BURST
     circuit_breaker_failure_threshold: int = BASELINE_CIRCUIT_FAILURE_THRESHOLD
-    circuit_breaker_max_domains: int = 64
     circuit_breaker_recovery_timeout_s: float = BASELINE_CIRCUIT_RECOVERY_TIMEOUT_S
+    # Upper bound on distinct LLM failure domains tracked by the per-provider
+    # circuit bank (#1203): memory stays bounded for dynamically discovered
+    # providers. Not a resource-security floor — it bounds breaker bookkeeping,
+    # not exposure — so it needs no unsafe override to tune.
+    circuit_breaker_max_domains: int = 64
     # Governed ceilings on concurrently active root Runs (#1182), enforced by
     # every RunStore at admission. Tighten freely; loosening needs the override.
     max_active_root_runs_per_principal: int = BASELINE_MAX_ACTIVE_ROOT_RUNS_PER_PRINCIPAL
     max_active_root_runs_per_workspace: int = BASELINE_MAX_ACTIVE_ROOT_RUNS_PER_WORKSPACE
+    # The opt-in system-wide ceiling (#1182 "an explicit system/global ceiling
+    # where needed"). The owner-decided baseline is that no global ceiling
+    # exists, so unset cannot weaken anything and any configured value only
+    # tightens admission at the same RunStore authority. Not a resource-policy
+    # floor: there is no numeric baseline to weaken against.
+    max_active_root_runs_system: int | None = Field(
+        default=None,
+        ge=1,
+        description="Optional system-wide ceiling on concurrently active root Runs across "
+        "every Workspace and principal. Unset means no explicit global ceiling.",
+    )
 
     # Shared outbound HTTP pool (see maistro.http). Ceilings against fd
     # exhaustion, NOT a load throttle — a small cap here was measured as the

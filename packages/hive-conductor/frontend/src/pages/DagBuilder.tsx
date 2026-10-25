@@ -379,25 +379,46 @@ export default function DagBuilder() {
     }
     const wsProto = location.protocol === "https:" ? "wss:" : "ws:";
     const wsUrl = `${wsProto}//${location.host}/v1/ws/dags/${dag.id}/run?workspace_id=${encodeURIComponent(activeWorkspaceId)}`;
+    // One Run at a time: retire a socket a previous run could have left
+    // behind before opening a fresh one, so subscriptions never stack (#355).
+    const previous = liveRunRef.current;
+    if (previous) detachLiveRun(previous);
     const ws = new WebSocket(wsUrl);
+    const run: LiveRun = { ws, started: false, settled: false, detach: false };
+    liveRunRef.current = run;
     // Set once the socket reports a terminal or parked Run (or an error), so
-    // the close that follows is expected rather than a dropped connection.
-    let settled = false;
+    // an unmount after this point closes the socket instead of deferring to
+    // the handlers. Returns whether the Run was orphaned by an unmount.
+    const settle = (): boolean => {
+      const orphaned = run.detach;
+      run.settled = true;
+      if (orphaned) detachLiveRun(run);
+      return orphaned;
+    };
     setExecState({ running: true, nodeId: null, runId: null, log: ["Connecting..."] });
     ws.onmessage = (ev) => {
       try {
         const data = JSON.parse(ev.data);
         if (data.error && !data.status) {
-          settled = true;
+          if (settle()) return;
           setExecState((prev) => ({ ...prev, running: false, log: [...prev.log, `Error: ${data.error}`] }));
           return;
         }
         if (typeof data.run_id === "string" && data.run_id) {
           const runId: string = data.run_id;
-          setExecState((prev) => (prev.runId === runId ? prev : { ...prev, runId, log: [...prev.log, `Run ${runId}`] }));
+          if (!run.detach) {
+            setExecState((prev) => (prev.runId === runId ? prev : { ...prev, runId, log: [...prev.log, `Run ${runId}`] }));
+          }
         }
         const status: string = data.status;
         if (status === "started") {
+          // The backend's ack: `execute_dag` now runs (and the projection is
+          // recorded) server-side even if this socket goes away.
+          run.started = true;
+          if (run.detach) {
+            detachLiveRun(run);
+            return;
+          }
           setExecState((prev) => ({ ...prev, log: [...prev.log, `Started (${data.node_count} nodes)`] }));
         } else if (status === "node_complete") {
           setExecState((prev) => ({
@@ -406,16 +427,21 @@ export default function DagBuilder() {
             log: [...prev.log, `${data.role} (${data.node_id.slice(0, 8)}): ${data.success ? "OK" : "FAIL"}`],
           }));
         } else if (status === "completed") {
-          settled = true;
+          if (settle()) return;
           setExecState((prev) => ({ ...prev, running: false, nodeId: null, log: [...prev.log, `Completed in ${data.cycles} cycles`] }));
           toast("DAG execution completed");
+        } else if (status === "heartbeat") {
+          // Alive-idle marker (#1183): the Run is still executing with nothing
+          // new to report. No state change — the point of the frame is that
+          // silence with a live socket is distinguishable from a dead one.
+          return;
         } else if (status in RUN_FAILURE_LABELS) {
-          settled = true;
+          if (settle()) return;
           const label = RUN_FAILURE_LABELS[status];
           setExecState((prev) => ({ ...prev, running: false, nodeId: null, log: [...prev.log, data.error ? `${label}: ${data.error}` : label] }));
           toast(`DAG run ${label.toLowerCase()}`, "error");
         } else if (status === "waiting" || status === "paused") {
-          settled = true;
+          if (settle()) return;
           // A parked Run projects its unfinished nodes as success:false; they
           // have not failed, so relabel them rather than report FAIL.
           setExecState((prev) => ({
@@ -426,20 +452,22 @@ export default function DagBuilder() {
           }));
           toast(`DAG run ${status}`, "warn");
         } else if (status) {
-          settled = true;
+          if (settle()) return;
           setExecState((prev) => ({ ...prev, running: false, nodeId: null, log: [...prev.log, `Run ${status}: not finished`] }));
         }
       } catch { /* ignore parse errors */ }
     };
     ws.onerror = () => {
-      if (settled) return;
-      settled = true;
+      if (run.settled) return;
+      if (settle()) return;
       setExecState((prev) => ({ ...prev, running: false, log: [...prev.log, "Connection error"] }));
       toast("WebSocket error", "error");
     };
     ws.onclose = () => {
-      if (settled) return;
-      settled = true;
+      if (liveRunRef.current === run) liveRunRef.current = null;
+      if (run.settled) return;
+      run.settled = true;
+      if (run.detach) return;
       setExecState((prev) => ({ ...prev, running: false, log: [...prev.log, "Connection closed before the Run reported a final state"] }));
     };
   }, [activeWorkspaceId, dag, toast, workspacesReady]);

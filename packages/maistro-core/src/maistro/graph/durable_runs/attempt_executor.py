@@ -216,8 +216,15 @@ async def resume_durable_graph(
     run_store: RunStore | None = None,
     events: RecoveryEventSink | None = None,
     max_steps: int = DEFAULT_MAX_STEPS,
+    now: datetime | None = None,
 ) -> DurableRunRecord:
-    """Claim and resume persisted Graph work through canonical physical evidence."""
+    """Claim and resume persisted Graph work through canonical physical evidence.
+
+    ``now`` is the calling tick's moment: a recovery claim is live or expired
+    by the same clock the due scan used, not by this process's wall clock
+    (a fixed/simulated tick clock must keep judging claims it lists). Direct
+    resumes omit it and judge by the wall clock.
+    """
     # A direct resume can be the first process to observe a crash between the
     # continuation write and its canonical lifecycle mirror. Repair that
     # narrow split before interpreting the spine's status.
@@ -590,7 +597,11 @@ async def _walk_frontier(
         # the record or terminalizing the Run would itself go through the
         # broken store. Let it reach the recovery boundary untouched.
         raise
-    except Exception as exc:
+    except RuntimeDeadlineExceeded as exc:
+        # The canonical ExecutionRuntime deadline the node's declared policy
+        # asked for expired. The Attempt row already carries TIMED_OUT plus its
+        # deadline_at; the Run names the same fact so "why did this stop" is
+        # answerable from the Run alone.
         latest = await _reload_record(record.run_id, store=store, cause=exc)
         return await traversal._mark_failed(
             latest,
