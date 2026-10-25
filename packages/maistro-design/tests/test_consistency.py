@@ -39,6 +39,8 @@ from maistro_design.consistency import (
     Severity,
     SharedDecision,
     TermRule,
+    _contains,
+    _mentions_affirmatively,
     evaluate_project_snapshot,
 )
 
@@ -62,17 +64,17 @@ def _snapshot(**overrides: Any) -> CreativeProjectSnapshot:
         goal_revision="goal-rev-7",
         audience="indie studio founders",
         objective="drive launch-week signups",
-        objective_keywords=(r"sign ?ups?", r"launch"),
+        objective_keywords=("signups", "launch"),
         allowed_claims=(
             ClaimRule(
                 claim_id="turnaround",
-                pattern=r"48-hour turnaround",
+                pattern="48-hour turnaround",
                 source="provided_evidence",
                 evidence_id="ev-turnaround",
             ),
             ClaimRule(
                 claim_id="express-promise",
-                pattern=r"24-hour delivery",
+                pattern="24-hour delivery",
                 source="model_asserted",
             ),
         ),
@@ -80,23 +82,23 @@ def _snapshot(**overrides: Any) -> CreativeProjectSnapshot:
             ContradictionRule(
                 rule_id="rule-turnaround",
                 description="delivery promise conflict",
-                pattern_a=r"24-hour delivery",
-                pattern_b=r"48-hour turnaround",
+                pattern_a="24-hour delivery",
+                pattern_b="48-hour turnaround",
             ),
         ),
-        terminology=(TermRule(preferred="workspace", banned_aliases=(r"\bapp\b",)),),
+        terminology=(TermRule(preferred="workspace", banned_aliases=("app",)),),
         required_messages=(
             RequiredMessage(
                 message_id="cta-signup",
-                pattern=r"start your (free )?trial",
+                pattern="start your free trial",
                 required_in=("*",),
             ),
         ),
         channel_requirements=(
             ChannelRequirement(
                 artifact_kind="poster",
-                required_elements=(r"<title>",),
-                forbidden_elements=(r"lorem ipsum",),
+                required_elements=("<title>",),
+                forbidden_elements=("lorem ipsum",),
             ),
         ),
         accessibility_constraints=(
@@ -106,7 +108,7 @@ def _snapshot(**overrides: Any) -> CreativeProjectSnapshot:
     persona = PersonaSnapshot(
         persona_id="persona-meridian",
         name="Meridian",
-        banned_markers=(r"guaranteed results",),
+        banned_markers=("guaranteed results",),
         required_markers=(),
     )
     d1 = SharedDecision(
@@ -546,11 +548,11 @@ def test_claim_rule_shape_is_enforced() -> None:
     # A provided_evidence claim must name its evidence; an asserted claim must
     # not cite one.
     with pytest.raises(Exception, match="provided_evidence"):
-        ClaimRule(claim_id="no-evidence", pattern=r"anything", source="provided_evidence")
+        ClaimRule(claim_id="no-evidence", pattern="anything", source="provided_evidence")
     with pytest.raises(Exception, match="model_asserted"):
         ClaimRule(
             claim_id="with-evidence",
-            pattern=r"anything",
+            pattern="anything",
             source="model_asserted",
             evidence_id="ev-turnaround",
         )
@@ -563,7 +565,7 @@ def test_claim_rule_shape_is_enforced() -> None:
             "allowed_claims": (
                 ClaimRule(
                     claim_id="orphan",
-                    pattern=r"free trial",
+                    pattern="free trial",
                     source="provided_evidence",
                     evidence_id="does-not-exist",
                 ),
@@ -855,7 +857,7 @@ def test_clean_project_passes_every_dimension() -> None:
     persona = PersonaSnapshot(
         persona_id="persona-meridian",
         name="Meridian",
-        banned_markers=(r"guaranteed results",),
+        banned_markers=("guaranteed results",),
     )
     fixed_poster = base.artifacts[0].model_copy(
         update={
@@ -1076,3 +1078,60 @@ async def test_retry_after_refinement_preserves_failed_evaluation_record() -> No
     assert preserved_result is not None
     assert preserved_result["passed"] is False
     assert preserved_result["evaluation"]["provenance"]["decision_versions"]["D1"] == 2
+
+
+def test_untrusted_markers_are_matched_as_literals() -> None:
+    """Snapshot markers must not be compiled as caller-controlled regexes.
+
+    A pattern like ``a+`` must match the two characters ``a+`` in content, not
+    one-or-more ``a``. Metacharacters arriving from the Design Studio HTTP body
+    (or the graph node) are escaped before search.
+    """
+    assert _contains("a+", "xaa+yy") is True
+    assert _contains("a+", "xaaayy") is False
+    assert _contains(".*", "literal.*here") is True
+    assert _contains(".*", "anything else") is False
+    # Affirmative mention uses the same literal compile path.
+    assert _mentions_affirmatively("app?", "ship the app? today") is True
+    assert _mentions_affirmatively("app?", "ship the app today") is False
+
+
+def test_ci_safe_marker_with_regex_metacharacters_does_not_widen_findings() -> None:
+    """A planted ``.*`` banned marker must not match every artifact."""
+    base = _snapshot(d1_statement="All plans include 48-hour turnaround.")
+    persona = base.persona.model_copy(update={"banned_markers": (".*",)})
+    # Strip the planted local persona ban and required-message noise so the
+    # only possible finding would be a regex-wildcard match on ``.*``.
+    brief = base.brief.model_copy(
+        update={
+            "required_messages": (),
+            "channel_requirements": (),
+            "contradiction_rules": (),
+            "terminology": (),
+            "objective_keywords": (),
+            "allowed_claims": (),
+            "accessibility_constraints": (),
+        }
+    )
+    clean_artifacts = tuple(
+        a.model_copy(
+            update={
+                "content": (
+                    '<html lang="en"><title>Ok</title><body>'
+                    '<img src="x.png" alt="x"><p>Start your free trial.</p>'
+                    "</body></html>"
+                )
+            }
+        )
+        if a.kind == "poster"
+        else a.model_copy(update={"content": "Start your free trial. workspace."})
+        for a in base.artifacts
+    )
+    snap = base.model_copy(
+        update={"persona": persona, "brief": brief, "artifacts": clean_artifacts, "evidence": ()}
+    )
+    evaluation = evaluate_project_snapshot(snap)
+    persona_hits = [
+        f for f in evaluation.findings if f.dimension is ConsistencyDimension.PERSONA_VOICE
+    ]
+    assert persona_hits == [], persona_hits

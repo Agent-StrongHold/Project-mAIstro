@@ -93,6 +93,13 @@ from maistro.extensions.ui import (
     SandboxPolicy,
     UiProjectionService,
 )
+from maistro.goals.reconciliation.model import WakeReason
+from maistro.goals.reconciliation.reconciler import ReconciliationOutcome
+from maistro.goals.reconciliation.store import (
+    GoalReconciliationStore,
+    InMemoryGoalStore,
+    SqliteGoalStore,
+)
 from maistro.governance.promotion import PromotionContract, PromotionLedger
 from maistro.graph.harness_targets import HarnessEvolutionProposal, HarnessTargetKind
 from maistro.identity import __getattr__ as identity_getattr
@@ -114,12 +121,14 @@ from maistro.persistence.pg_audit import PgAuditLog
 from maistro.persistence.sqlite_audit import SqliteAuditLog
 from maistro.projects.rubric_store import RubricStore
 from maistro.protocols.memory import AuditLog
+from maistro.runs import AdmissionAssessment  # published surface, not the submodule
 from maistro.runs.model import EvalJudge, EvalMethod, RunEvalScore
 from maistro.runs.pg_store import PgRunStore
 from maistro.runs.scoped_reads import ScopedRunReader
 from maistro.runs.sqlite_store import SqliteRunStore
 from maistro.runs.store import InMemoryRunStore, RunStore
 from maistro.security.sentinel.audit import InMemoryAuditLog
+from maistro.security.sentinel.delegation import InMemoryDelegationAuthority
 from maistro.security.strikes import InMemoryStrikeTracker
 from maistro.skills.parser import SKILL_SECURITY_SCAN_VERSION
 from maistro.state import PersistedStore
@@ -152,6 +161,14 @@ _VULTURE_REFERENCES = (record_exception, set_status_on_exception)
 # through this module variable instead. The name is distinctive enough to be
 # safe at name level.
 latest_by_dimension = "latest_by_dimension"
+
+# Root-admission envelope snapshot fields (#1851, parent #1845). Frozen-dataclass
+# instance attributes like latest_by_dimension above: a class-object reference
+# would not typecheck, so they are named through these module variables instead.
+# The names are distinctive enough to be safe at name level.
+receipt_snapshot = "receipt_snapshot"
+provenance_snapshot = "provenance_snapshot"
+format_version = "format_version"
 
 _VULTURE_WHITELIST = (
     # P0.1 identity split (#53): Principal is always importable; crypto and lifecycle
@@ -389,6 +406,29 @@ _VULTURE_WHITELIST = (
     RubricStore.instantiate_from_catalog,
     RubricStore.record_run_binding,
     RubricStore.binding_for_run,
+    # Root-admission identity contracts (#1851, parent #1845): the inactive
+    # contract leaf ships the types first, and production activation is a
+    # separately scoped #1845 integration step — no scanned call site reads
+    # these names yet, the exact "contract ships first by design" posture of
+    # CampaignSelector and the learning lifecycle above. The snapshot fields
+    # are validated by name in __post_init__ (a getattr loop the scanner
+    # cannot see through) and consumed by the future admission backend; they
+    # are named through the module variables above. format_version is the
+    # decoder discriminator every record stamps via field(init=False). The
+    # StrEnum members are the prospective C2 assessment vocabulary — serialized
+    # values that need not appear as static reads, the same posture as the
+    # HarnessTargetKind and EvalMethod members above. This is scanner input
+    # only (this module never executes and ships in no wheel); it is not a
+    # caller of the contract and wires nothing.
+    receipt_snapshot,
+    provenance_snapshot,
+    format_version,
+    AdmissionAssessment.MISMATCH,
+    AdmissionAssessment.REPLAYED,
+    AdmissionAssessment.PENDING,
+    AdmissionAssessment.TAKEOVER,
+    AdmissionAssessment.REPLACE_EXPIRED,
+    AdmissionAssessment.LEGACY_UNRESOLVED,
     # The one governed promotion contract (M4-A9, #116; ADR/SPEC-100126-a9c4).
     # The contract ships first by design, the same posture as
     # CampaignSelector and the learning lifecycle above: its in-tree consumers
@@ -648,6 +688,56 @@ _VULTURE_WHITELIST = (
     # admin API, so it is named here as retained surface rather than banked as
     # unclassified debt.
     InMemoryStrikeTracker.enable,
+    # Goal reconciliation control-plane mechanics (M3-D2, #806). These are
+    # control metadata, not an execution authority: the canonical work they
+    # name is still admitted as Goal -> Graph -> Run -> NodeRun -> Attempt.
+    # The two Container ticks are operator-scheduled by ADR-019's
+    # bounded/idempotent/never-self-starting pattern (the same shape as
+    # recover_stranded_chat_admissions above), so no scanned in-package call
+    # site drives them; the issue's activation composition is #805/#804's
+    # wiring round. The store methods are the control-plane port and its two
+    # durable twins, exercised by the three-backend reconciliation suite
+    # (packages/maistro-core/tests/goals/) rather than by package-local code.
+    # WakeReason.SAFETY_SWEEP is the serialized reason the bounded sweep
+    # records; ReconciliationOutcome's two fields are the inspectable
+    # "skipped a sleeping Goal" / "slept into this status" evidence callers
+    # assert on. Named here as reviewed retained surface, not banked as new
+    # vulture debt (a ledger floor-raise needs a separately landed grant).
+    Container.sweep_goal_leases,
+    Container.reconcile_goals,
+    GoalReconciliationStore.cancel_goal,
+    InMemoryGoalStore.cancel_goal,
+    SqliteGoalStore.cancel_goal,
+    GoalReconciliationStore.reconciliation_view,
+    InMemoryGoalStore.reconciliation_view,
+    SqliteGoalStore.reconciliation_view,
+    WakeReason.SAFETY_SWEEP,
+    ReconciliationOutcome.skipped_asleep,
+    ReconciliationOutcome.slept_as,
+    # Host-authorized delegation seam (#845): the grant mutation entry point
+    # is consumed by the host and operator tooling outside this
+    # packages/*/src scan (the shipped composition wires the durable authority
+    # in maistro.security.sentinel.delegation_durable, whose async
+    # ``add_host_grant`` provisions the same store); it is reviewed public
+    # surface, not dead code. The execution-mode resolver this row used to
+    # name moved to the hive-conductor adapter (services/execution_mode.py),
+    # which the scan does not walk.
+    InMemoryDelegationAuthority.add_host_grant,
+    # Installable domain-pack contracts (M9-F1, #966). The pack contract
+    # ships first by design, the same posture as the M9-B1 store seams and
+    # the M9-D1 registry above: its in-tree consumers are the conformance
+    # suite (packages/maistro-core/tests/extensions/test_pack_contracts.py),
+    # and the Workspace-scoped activation/configuration lifecycle that drives
+    # these verbs in production is M9-F3 (#968). `activate` is the disable
+    # gate's reversal (new use only — nothing was deleted; named activate,
+    # not enable, so the scanner's name-level matching cannot un-bank the
+    # unrelated security-store `enable` rows); the three `instantiate_*`
+    # methods are the gated instantiation entrypoints that compose the
+    # module-level pure functions behind the registry's active check.
+    InstallablePackRegistry.activate,
+    InstallablePackRegistry.instantiate_graph,
+    InstallablePackRegistry.instantiate_persona,
+    InstallablePackRegistry.instantiate_rubric,
     # #288 scan-surface provenance: `security_scan` (maistro.skills.parser) is a
     # public content scanner, but its policy-version identity is surfaced only
     # by the HTTP scan route (packages/hive-conductor/backend/routes/skills.py),
