@@ -79,7 +79,7 @@ jobs:
     # a scan that is already processing the certified candidate set.
     concurrency:
       group: enqueue-merge-queue
-      cancel-in-progress: false  # admission scans queue instead of canceling; scans are idempotent fail-closed checks
+      cancel-in-progress: true
     name: enqueue-merge-queue
     runs-on: ubuntu-latest
     timeout-minutes: 45  # full-backlog scans (70+ open PRs, risk assessment each) need well over 10 min; a timeout here starves older PRs indefinitely

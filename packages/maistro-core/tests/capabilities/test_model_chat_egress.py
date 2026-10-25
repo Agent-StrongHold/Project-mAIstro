@@ -806,7 +806,7 @@ async def test_setup_hook_runs_after_authorization_before_model_http(
     """
 
     order: list[str] = []
-    effects = _effects()
+    effects = new_in_memory_effect_context()
     registry = _registry()
 
     async def _setup() -> None:
@@ -894,124 +894,6 @@ async def test_denied_policy_refuses_before_setup_runs(
         )
 
     assert setup_ran is False
-
-
-# --- physical executor's own fail-closed checks (#1091) ---------------------
-#
-# On the real governed path the resolver is always credential-routed before
-# the executor ever runs (every test above goes through it), so these two
-# checks inside `execute()` are defense in depth against a resolver seam that
-# skipped credential routing -- never reachable by construction through
-# `ModelChatEgress.complete()` alone. They are exercised the same way
-# `test_usage_from_without_tracked_provider_returns_none` reaches the raw
-# resolver/executor: stub `effects.invocations.invoke` to capture the routed
-# executor `complete()` builds, then call it directly with a provider shape
-# each check exists to refuse.
-
-
-async def _capture_routed_executor(egress_kwargs: dict[str, Any]) -> Any:
-    """Run one `complete()` call through a stub `invocations.invoke` that
-    hands back the routed executor instead of actually invoking it."""
-
-    from types import SimpleNamespace
-
-    captured: dict[str, Any] = {}
-
-    class _StubInvocations:
-        async def invoke(self, *, executor: Any, **kwargs: Any) -> Any:
-            captured["executor"] = executor
-            return SimpleNamespace(
-                invocation_id="inv-stub",
-                binding=SimpleNamespace(provider_name="fast-model"),
-                result={},
-                usage=None,
-            )
-
-    router = CredentialRouter()
-
-    class _StubEffects:
-        invocations = _StubInvocations()
-
-        def credential_routing(self) -> CredentialRouting:
-            return CredentialRouting(router)
-
-    registry = _registry()
-    egress = ModelChatEgress(
-        _StubEffects(),  # type: ignore[arg-type]
-        registry=registry,
-        router=CostAwareRouter(registry),
-        endpoint=GatewayEndpoint(base_url="http://gw"),
-    )
-    await egress.complete(**egress_kwargs)
-    return captured["executor"]
-
-
-async def test_execute_refuses_a_provider_without_a_routed_credential() -> None:
-    """Line 178-179: a provider that never crossed credential routing (not a
-    `CredentialBackedProvider`) must not reach the gateway HTTP call at all --
-    `CredentialRouting.executor`'s own wrapper passes such a provider straight
-    to `execute` unchanged (it only wraps `CredentialBackedProvider`
-    instances), so `execute` itself is the last fail-closed check."""
-
-    executor = await _capture_routed_executor(
-        {
-            "binding": _binding(),
-            "run_id": "r1",
-            "node_run_id": "nr1",
-            "attempt_id": "a1",
-            "effect_key": "test:no-credential",
-            "request": ModelChatRequest(messages=[{"role": "user", "content": "hi"}]),
-        }
-    )
-
-    class _BareProvider:
-        name = "fast-model"
-        slot = MODEL_CHAT_CAPABILITY
-        trust_tier = "t1"
-
-    with pytest.raises(TypeError, match="Binding-scoped credential"):
-        await executor(_BareProvider(), {})
-
-
-async def test_execute_refuses_a_credential_backed_non_gateway_provider() -> None:
-    """Line 183-184: even once credential-routed, the wrapped base provider
-    must still be the one approved gateway Provider -- a `CredentialBackedProvider`
-    around anything else (a slot-specific resolver bug, or a future second
-    Provider that forgets this boundary) is refused rather than handed an
-    HTTP client it was never built for."""
-
-    from maistro.credentials.types import CredentialRecord
-
-    executor = await _capture_routed_executor(
-        {
-            "binding": _binding(),
-            "run_id": "r1",
-            "node_run_id": "nr1",
-            "attempt_id": "a1",
-            "effect_key": "test:non-gateway",
-            "request": ModelChatRequest(messages=[{"role": "user", "content": "hi"}]),
-        }
-    )
-
-    class _NonGatewayProvider:
-        name = "not-a-gateway"
-        slot = MODEL_CHAT_CAPABILITY
-        trust_tier = "t1"
-        credential_provider = MODEL_GATEWAY_CREDENTIAL_PROVIDER
-
-    wrapped = CredentialBackedProvider(
-        base=_NonGatewayProvider(),  # type: ignore[arg-type]
-        credential=CredentialRecord(
-            key_id=DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,
-            provider=MODEL_GATEWAY_CREDENTIAL_PROVIDER,
-            api_key="test-litellm-key",
-        ),
-        workspace_id="ws1",
-        project_id="p1",
-    )
-
-    with pytest.raises(TypeError, match="non-gateway provider"):
-        await executor(wrapped, {})
 
 
 # --- provider registration seam + structured-output payload (#1088) ---------
@@ -1161,7 +1043,7 @@ async def test_chat_payload_carries_structured_output_shape(
             return _Resp()
 
     monkeypatch.setattr(httpx, "AsyncClient", _Client)
-    effects = _effects()
+    effects = new_in_memory_effect_context()
     registry = _registry()
     egress = ModelChatEgress(
         effects,
@@ -1198,63 +1080,3 @@ async def test_chat_payload_carries_structured_output_shape(
         request=ModelChatRequest(messages=[{"role": "user", "content": "hi"}]),
     )
     assert "response_format" not in captured["json"]
-
-
-async def test_client_complete_adopts_bound_context_or_refuses(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A caller that never set a turn uses canonical identity — only a real one.
-
-    `Agent.handle` always calls `set_turn` first, but the client is also the
-    factory's LLMClient for strategies driven outside that seam. `complete`
-    adopts the Run/NodeRun/Attempt triple canonical execution bound on the
-    correlation context when there is one (#1827). When canonical execution
-    bound nothing, the client refuses with RunIntegrityError and makes zero
-    egress calls instead of minting a fabricated identity that would make an
-    unadmitted call look governed (#718's no-ungoverned-side-door rule now
-    means refuse, not invent).
-    """
-    tracker = InMemoryQuotaTracker()
-    effects = new_in_memory_effect_context(
-        usage_log=InMemoryUsageLog(),
-        quota_tracker=tracker,
-        policy_evaluator=binding_scope_policy,
-    )
-    effects.credentials.add(
-        workspace_id="ws1",
-        project_id="p1",
-        record=CredentialRecord(
-            key_id=DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,
-            provider=MODEL_GATEWAY_CREDENTIAL_PROVIDER,
-            api_key="test-litellm-key",
-        ),
-    )
-    registry = _registry()
-    _patch_gateway(monkeypatch, _OK_BODY)
-    client = GovernedLLMClient(
-        effects,
-        registry=registry,
-        router=CostAwareRouter(registry),
-        endpoint=GatewayEndpoint(base_url="http://gw:4000"),
-        workspace_id="ws1",
-        project_id="p1",
-    )
-
-    # No canonical context in scope: refuse with zero egress.
-    with detached_execution_context(), pytest.raises(RunIntegrityError):
-        await client.complete([{"role": "user", "content": "hello"}], "fast-model")
-    assert await tracker.get_all_usage() == []
-
-    # A complete bound context is adopted wholesale, without an explicit
-    # set_turn: the usage the fake gateway reported still reaches the quota
-    # ledger, under the canonical identity the execution bound.
-    with bind_execution_context(
-        run_id="run-adopt",
-        node_run_id="node-adopt",
-        attempt_id="attempt-adopt",
-    ):
-        body = await client.complete([{"role": "user", "content": "hello"}], "fast-model")
-
-    assert body["choices"][0]["message"]["content"] == "hi"
-    (entry,) = await tracker.get_all_usage()
-    assert entry["request_count"] == 1

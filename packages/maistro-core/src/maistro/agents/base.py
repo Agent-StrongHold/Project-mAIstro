@@ -13,9 +13,7 @@ from typing import TYPE_CHECKING, Any
 
 from maistro.agents.tool_dispatch import ToolCallExecutor, dispatch_tool_call
 from maistro.observability.correlation import current_execution_context
-from maistro.security.normalize import to_scan_string
 from maistro.security.sentinel.pii_filter import scan_and_redact
-from maistro.security.warden.detector import WardenContext, prior_message_context
 from maistro.types.agent import AgentResponse
 from maistro.types.tool import ToolCall
 
@@ -371,21 +369,13 @@ class Agent:
         _delegation_depth: int,
     ) -> AgentResponse:
         """The body of `handle()`. Never ends `trace` — the caller owns that."""
-        # Session history is injected before the trust gate so prior untrusted
-        # turns are part of the bounded analysis context: an override split
-        # across individually-benign turns of one session is refused here,
-        # before it reaches the strategy or any provider call.
-        messages, session_history_count = await self._inject_session_history(messages, session_id)
         messages, blocked_response = await self._prepare_user_input(messages, trace)
         if blocked_response is not None:
             return blocked_response
         user_text = _extract_user_text(messages)
 
-        # `user_id` (learning-scope provenance) is resolved after the trust
-        # gate; session history was already injected above it, before
-        # `_prepare_user_input`, so prior untrusted turns are part of the
-        # bounded Warden analysis context.
-        user_id = getattr(auth, "user_id", "")
+        messages, session_history_count = await self._inject_session_history(messages, session_id)
+
         org_id = getattr(auth, "org_id", "")
         team_id = getattr(auth, "team_id", "")
 
@@ -479,14 +469,6 @@ class Agent:
             injected_learning_ids=injected_learning_ids,
             turn_id=turn_id,
         )
-
-        # Promote only after the current Run's outcome is recorded:
-        # `_persist_run` -> `mark_outcome` updates the confidence counters this
-        # turn just paid for, and checking first would promote on the previous
-        # turn's evidence (e.g. promoting 3/4=0.75 at a 0.7 floor even though
-        # this turn's failure should have dropped it to 3/5).
-        if self._learning_promoter and injected_learning_ids:
-            await self._learning_promoter.check_and_promote(org_id=org_id)
 
         self._finalize_trace_if_present(
             trace, result, model, session_history_count, injected_learning_ids
@@ -605,30 +587,18 @@ class Agent:
         messages: list[dict[str, Any]],
         trace: Any,
     ) -> tuple[list[dict[str, Any]], AgentResponse | None]:
-        """Scan and redact every user message before context assembly.
-
-        Each user turn is scanned together with the bounded ordered prefix of
-        the messages before it (session history included, since it is injected
-        before this gate), so an instruction distributed across
-        individually-benign turns is refused before it becomes trusted model
-        context. Trusted system/developer turns carry an authority label and
-        are never concatenated into attacker-controlled analysis text.
-        """
+        """Scan and redact every user message before context assembly."""
         prepared = [dict(message) for message in messages]
         context_manager = trace.span("warden.user_input") if trace else _NullSpan()
         with context_manager as ws:
             ws.set_input({"message_count": len(messages)})
-            for index, message in enumerate(prepared):
+            for message in prepared:
                 if message.get("role") != "user":
                     continue
                 content = message.get("content", "")
                 text = _extract_message_text(content)
                 if text and self._warden is not None:
-                    scan_kwargs: dict[str, Any] = {}
-                    prior = prior_message_context(prepared[: index + 1])
-                    if prior:
-                        scan_kwargs["context"] = prior
-                    verdict = await self._warden.scan(text, "user_input", **scan_kwargs)
+                    verdict = await self._warden.scan(text, "user_input")
                     if not verdict.clean:
                         ws.set_output({"clean": False, "flags": verdict.flags})
                         if trace:
@@ -708,7 +678,6 @@ class Agent:
             "learning_store": self._learning_store,
             "context_assembly_policy": self._context_assembly_policy,
             "agent_id": self.identity.name,
-            "user_id": user_id,
             "org_id": org_id,
             "team_id": team_id,
             "project_id": project_id,
@@ -770,9 +739,7 @@ class Agent:
     ) -> Any:
         """Run the reasoning strategy. Returns the result, or ``None`` on a
         handled error (caller returns a generic error response)."""
-        governed_executor = self._governed_tool_executor(
-            tool_defs, strategy_kwargs, delegation_depth=delegation_depth
-        )
+        governed_executor = self._governed_tool_executor(tool_defs, strategy_kwargs)
         try:
             if not trace:
                 return await self._strategy.reason(
@@ -829,37 +796,15 @@ class Agent:
         self,
         tool_defs: list[dict[str, Any]] | None,
         strategy_kwargs: dict[str, Any],
-        *,
-        delegation_depth: int = 0,
-    ) -> ToolCallExecutor:
+    ) -> Any:
         """Return the only executor a strategy can use at the effect boundary."""
         auth = strategy_kwargs.get("auth")
-        # Analysis context of prior tool results, bounded by turns regardless
-        # of how many tool calls the strategy makes. The sanitized string is
-        # what flows back into model context, so that is what aggregates.
-        tool_context: deque[WardenContext] = deque(maxlen=_TOOL_CONTEXT_MAX_TURNS)
 
-        async def execute(
-            call: ToolCall, _agent_name: str, _delegation_depth: int, tool_round: int
-        ) -> str:
-            # Only the Agent owns its name and delegation depth. Hook callers
-            # cannot replace them with model arguments or strategy metadata.
-            raw_result = await self._authorize_and_invoke(
-                call.name,
-                call.arguments,
-                auth,
-                tool_defs,
-                tool_call_id=call.id,
-                delegation_depth=delegation_depth,
-                tool_round=tool_round,
-            )
-            sanitized = await self._sanitize_tool_result(
-                call.name, to_scan_string(raw_result), auth, context=list(tool_context)
-            )
-            tool_context.append(WardenContext(sanitized))
-            return sanitized
+        async def execute(tool_name: str, tool_args: dict[str, Any]) -> str:
+            raw_result = await self._authorize_and_invoke(tool_name, tool_args, auth, tool_defs)
+            return await self._sanitize_tool_result(tool_name, str(raw_result), auth)
 
-        return ToolCallExecutor(execute)
+        return execute
 
     async def _authorize_and_invoke(
         self,
@@ -867,25 +812,9 @@ class Agent:
         tool_args: dict[str, Any],
         auth: Any,
         tool_defs: list[dict[str, Any]] | None,
-        *,
-        tool_call_id: str = "",
-        delegation_depth: int = 0,
-        tool_round: int = 0,
     ) -> Any:
-        # Declarations only narrow authority: a host Sentinel grant cannot
-        # expose an undeclared tool. Check the Agent-owned identity here,
-        # not the mutable tool schemas handed to strategy implementations.
-        # Model-selected and strategy-authored calls share this boundary.
-        if tool_name not in self.identity.tools:
-            return f"Error: Permission denied for undeclared tool '{tool_name}'"
         if self._sentinel is None or auth is None:
-            _logging.getLogger("maistro.agent").warning(
-                "Denied tool '%s' for agent '%s': no %s to authorize it",
-                tool_name,
-                self.identity.name,
-                "Sentinel" if self._sentinel is None else "caller auth",
-            )
-            return f"Error: Permission denied for tool '{tool_name}'"
+            return await self._invoke_raw_tool(tool_name, tool_args)
         verdict = await self._sentinel.pre_call(
             tool_name, tool_args, auth, self._tool_schema(tool_name, tool_defs)
         )
@@ -894,13 +823,7 @@ class Agent:
         if verdict.repaired_data:
             tool_args.clear()
             tool_args.update(verdict.repaired_data)
-        return await self._invoke_raw_tool(
-            tool_name,
-            tool_args,
-            tool_call_id=tool_call_id,
-            delegation_depth=delegation_depth,
-            tool_round=tool_round,
-        )
+        return await self._invoke_raw_tool(tool_name, tool_args)
 
     @staticmethod
     def _tool_schema(tool_name: str, tool_defs: list[dict[str, Any]] | None) -> dict[str, Any]:
@@ -911,44 +834,17 @@ class Agent:
                 return parameters if isinstance(parameters, dict) else {}
         return {}
 
-    async def _invoke_raw_tool(
-        self,
-        tool_name: str,
-        tool_args: dict[str, Any],
-        *,
-        tool_call_id: str = "",
-        delegation_depth: int = 0,
-        tool_round: int = 0,
-    ) -> Any:
+    async def _invoke_raw_tool(self, tool_name: str, tool_args: dict[str, Any]) -> Any:
         if not (self._tool_executor and callable(self._tool_executor)):
             return f"Tool '{tool_name}' not available"
-        return await dispatch_tool_call(
-            self._tool_executor,
-            ToolCall(id=tool_call_id, name=tool_name, arguments=tool_args),
-            agent_name=self.identity.name,
-            delegation_depth=delegation_depth,
-            tool_round=tool_round,
-        )
+        return await self._tool_executor(tool_name, tool_args)
 
-    async def _sanitize_tool_result(
-        self,
-        tool_name: str,
-        result: str,
-        auth: Any,
-        *,
-        context: list[WardenContext] | None = None,
-    ) -> str:
-        """Sanitize tool output before it can re-enter any strategy context.
-
-        The bounded prior tool-result ``context`` makes a payload split across
-        individually-benign results detectable at the fragment that completes
-        it, instead of only ever seeing one string at a time.
-        """
-        scan_kwargs: dict[str, Any] = {"context": context} if context else {}
+    async def _sanitize_tool_result(self, tool_name: str, result: str, auth: Any) -> str:
+        """Sanitize tool output before it can re-enter any strategy context."""
         if self._sentinel is not None and auth is not None:
-            return str(await self._sentinel.post_call(tool_name, result, auth, **scan_kwargs))
+            return str(await self._sentinel.post_call(tool_name, result, auth))
         if self._warden is not None:
-            verdict = await self._warden.scan(result, "tool_result", **scan_kwargs)
+            verdict = await self._warden.scan(result, "tool_result")
             if not verdict.clean:
                 return (
                     "[BLOCKED: tool result contained suspicious content: "

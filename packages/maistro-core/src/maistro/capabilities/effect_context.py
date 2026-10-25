@@ -130,9 +130,6 @@ class CapabilityEffectContext:
 def new_effect_context(
     *,
     invocation_store: InvocationStore | None = None,
-    binding_store: RevocableBindingStore | None = None,
-    event_store: EventStore | None = None,
-    approval_store: ApprovalStore | None = None,
     policy_evaluator: PolicyEvaluator | None = None,
     credentials: CredentialRouter | None = None,
     quota: InvocationQuota | None = None,
@@ -157,16 +154,10 @@ def new_effect_context(
     usage ledger; both attach to this same Invocation service.
     """
 
-    selected_bindings = binding_store or InMemoryBindingStore()
+    binding_store = InMemoryBindingStore()
     store = invocation_store or InMemoryInvocationStore()
-    events = event_store or InMemoryEventStore()
-    selected_usage_log = usage_log or get_default_usage_log()
-    usage_recorder = CanonicalInvocationUsageRecorder(selected_usage_log, quota_tracker)
-    invocation_service = InvocationExecutionService(
-        store=store,
-        quota=quota,
-        on_completed=usage_recorder.record,
-    )
+    event_store = InMemoryEventStore()
+    invocation_service = InvocationExecutionService(store=store)
     governed = GovernedInvocationExecutionService(
         invocation_service=invocation_service,
         event_store=events,
@@ -179,10 +170,7 @@ def new_effect_context(
         bindings=selected_bindings,
         invocations=governed,
         invocation_store=store,
-        event_store=events,
-        approval_store=approval_store,
-        quota=quota,
-        usage_log=selected_usage_log,
+        event_store=event_store,
         credentials=credentials or CredentialRouter(),
     )
 
@@ -243,187 +231,10 @@ def default_effect_context() -> CapabilityEffectContext:
     Binding is created; absence remains a hard refusal.
     """
 
-    if _published_contexts:
-        return _published_contexts[-1]
-    global _ephemeral_context
-    if _ephemeral_context is None:
-        # This named composition root deliberately selects the narrow scope
-        # policy; unnamed contexts stay read-only until an application
-        # supplies one.
-        _ephemeral_context = new_effect_context(policy_evaluator=binding_scope_policy)
-    return _ephemeral_context
-
-
-def _clear_default_effect_context() -> None:
-    global _ephemeral_context
-    _published_contexts.clear()
-    _ephemeral_context = None
-
-
-# Tests and fixtures still call the lru_cache-style clearer.
-default_effect_context.cache_clear = _clear_default_effect_context  # type: ignore[attr-defined]
+    return new_effect_context()
 
 
 new_in_memory_effect_context = new_effect_context
-
-
-async def new_sqlite_effect_context(
-    conn: Any,
-    *,
-    credentials: CredentialRouter | None = None,
-    policy_evaluator: PolicyEvaluator | None = None,
-    usage_log: InMemoryUsageLog | None = None,
-    quota_tracker: Any | None = None,
-    quota: InvocationQuota | None = None,
-    invocation_store: InvocationStore | None = None,
-    event_store: EventStore | None = None,
-    approvals: ApprovalStore | None = None,
-) -> CapabilityEffectContext:
-    """Build the canonical effect authority on the container's SQLite database."""
-
-    from maistro.capabilities.approval_store import SqliteApprovalStore
-
-    bindings = SqliteBindingStore(conn)
-    await bindings.ensure_schema()
-    # Injected rather than opened when the Container already selected them:
-    # the canonical EventStore and Invocation ledger are the Container's to
-    # choose, and a builder that quietly opened its own pair would hand a
-    # durable deployment an effect context recording into stores nothing else
-    # reads (#1133 AC-8).
-    if invocation_store is None:
-        invocation_store = SqliteInvocationStore(conn)
-        await invocation_store.ensure_schema()
-    if event_store is None:
-        event_store = SqliteEventStore(conn)
-        await event_store.ensure_schema()
-    if approvals is None:
-        approvals = SqliteApprovalStore(conn)
-        await approvals.ensure_schema()
-    return _durable_context(
-        bindings=bindings,
-        invocation_store=invocation_store,
-        event_store=event_store,
-        approvals=approvals,
-        credentials=credentials,
-        policy_evaluator=policy_evaluator,
-        usage_log=usage_log,
-        quota_tracker=quota_tracker,
-        quota=quota,
-    )
-
-
-async def new_postgres_effect_context(
-    pool: Any,
-    *,
-    credentials: CredentialRouter | None = None,
-    policy_evaluator: PolicyEvaluator | None = None,
-    usage_log: InMemoryUsageLog | None = None,
-    quota_tracker: Any | None = None,
-    quota: InvocationQuota | None = None,
-    invocation_store: InvocationStore | None = None,
-    event_store: EventStore | None = None,
-    approvals: ApprovalStore | None = None,
-) -> CapabilityEffectContext:
-    """Build the canonical effect authority on a shared PostgreSQL pool."""
-
-    from maistro.capabilities.approval_store import PgApprovalStore
-
-    bindings = PgBindingStore(pool)
-    await bindings.ensure_schema()
-    # Injected rather than opened when the Container already selected them:
-    # the canonical EventStore and Invocation ledger are the Container's to
-    # choose, and a builder that quietly opened its own pair would hand a
-    # durable deployment an effect context recording into stores nothing else
-    # reads (#1133 AC-8).
-    if invocation_store is None:
-        invocation_store = PgInvocationStore(pool)
-        await invocation_store.ensure_schema()
-    if event_store is None:
-        event_store = PgEventStore(pool)
-        await event_store.ensure_schema()
-    if approvals is None:
-        approvals = PgApprovalStore(pool)
-        await approvals.ensure_schema()
-    return _durable_context(
-        bindings=bindings,
-        invocation_store=invocation_store,
-        event_store=event_store,
-        approvals=approvals,
-        credentials=credentials,
-        policy_evaluator=policy_evaluator,
-        usage_log=usage_log,
-        quota_tracker=quota_tracker,
-        quota=quota,
-    )
-
-
-def _durable_context(
-    *,
-    bindings: RevocableBindingStore,
-    invocation_store: InvocationStore,
-    event_store: EventStore,
-    approvals: ApprovalStore,
-    credentials: CredentialRouter | None,
-    policy_evaluator: PolicyEvaluator | None,
-    usage_log: InMemoryUsageLog | None,
-    quota_tracker: Any,
-    quota: InvocationQuota | None,
-) -> CapabilityEffectContext:
-    """The shared tail of the two durable builders.
-
-    Both go through `new_effect_context` rather than composing a second
-    service: the usage recorder (#718), the quota door and the approval store
-    are attached there once, so a durable deployment cannot take a branch that
-    quietly omits one. The two builders above differ only in which concrete
-    stores they open, which is the only thing a backend should decide.
-    """
-    return new_effect_context(
-        binding_store=bindings,
-        invocation_store=invocation_store,
-        event_store=event_store,
-        approval_store=approvals,
-        credentials=credentials,
-        policy_evaluator=policy_evaluator or binding_scope_policy,
-        usage_log=usage_log,
-        quota_tracker=quota_tracker,
-        quota=quota,
-    )
-
-
-async def new_backend_effect_context(
-    *,
-    pg_pool: Any = None,
-    db_pool: Any = None,
-    policy_evaluator: PolicyEvaluator | None = None,
-    credentials: CredentialRouter | None = None,
-) -> CapabilityEffectContext:
-    """Select one canonical effect context for the configured persistence backend (#1133).
-
-    A selection seam, not a second authority: each durable backend is composed
-    by the surviving builder above -- ``new_postgres_effect_context`` or
-    ``new_sqlite_effect_context`` opens (or accepts injected) that backend's
-    Binding, Invocation, approval, and canonical Event stores exactly once --
-    so governed effects never hold a private in-memory event authority when
-    the deployment selected a durable database. With no pool supplied, the
-    explicit in-memory composition remains for ephemeral use.
-    """
-
-    if pg_pool is not None:
-        return await new_postgres_effect_context(
-            pg_pool,
-            credentials=credentials,
-            policy_evaluator=policy_evaluator,
-        )
-    if db_pool is not None:
-        return await new_sqlite_effect_context(
-            db_pool,
-            credentials=credentials,
-            policy_evaluator=policy_evaluator,
-        )
-    return new_in_memory_effect_context(
-        policy_evaluator=policy_evaluator,
-        credentials=credentials,
-    )
 
 
 __all__ = [
@@ -431,7 +242,6 @@ __all__ = [
     "binding_scope_policy",
     "configure_default_effect_context",
     "default_effect_context",
-    "new_backend_effect_context",
     "new_effect_context",
     "new_in_memory_effect_context",
     "new_postgres_effect_context",

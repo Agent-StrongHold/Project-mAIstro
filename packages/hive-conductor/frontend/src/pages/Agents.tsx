@@ -463,21 +463,9 @@ export default function Agents() {
                     border: bStrat === s.key ? `2px solid ${STRATEGY_COLORS[s.key]}` : "1.3px solid var(--rule)",
                     background: bStrat === s.key ? `${STRATEGY_COLORS[s.key]}11` : "var(--paper)",
                   }}>
-                    <span style={{ display: "flex", alignItems: "center", gap: 6, fontFamily: "var(--hand)", fontSize: 15, fontWeight: 700, color: STRATEGY_COLORS[s.key] }}>
-                      <input
-                        type="radio"
-                        name={`${formId}-strategy`}
-                        value={s.key}
-                        checked={bStrat === s.key}
-                        onChange={() => setBStrat(s.key)}
-                        aria-labelledby={`${formId}-strategy-${s.key}-name`}
-                        aria-describedby={`${formId}-strategy-${s.key}`}
-                        style={{ accentColor: STRATEGY_COLORS[s.key], margin: 0 }}
-                      />
-                      <span id={`${formId}-strategy-${s.key}-name`}>{s.label}</span>
-                    </span>
-                    <span id={`${formId}-strategy-${s.key}`} style={{ display: "block", fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", marginTop: 4 }}>{s.desc}</span>
-                  </label>
+                    <div style={{ fontFamily: "var(--hand)", fontSize: 15, fontWeight: 700, color: STRATEGY_COLORS[s.key] }}>{s.label}</div>
+                    <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", marginTop: 4 }}>{s.desc}</div>
+                  </div>
                 ))}
               </div>
               <div style={{ marginTop: 12, display: "flex", justifyContent: "space-between" }}>

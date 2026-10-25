@@ -1,0 +1,28 @@
+[project]
+name = "maistro-automaton"
+version = "0.9.0"
+description = "Deterministic autonomous-actor machinery — reactor ticks, drives, producers, motivation arbitration, episodic-sink and cage-verdict contracts"
+readme = "README.md"
+requires-python = ">=3.12"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+dependencies = []
+# Deliberately empty: maistro-automaton sits at the bottom of the dependency
+# graph (SPEC-282). Hosts inject every capability — persistence, providers,
+# security — through the protocols defined here. A dependency here would be a
+# seam for platform ownership to leak into a package whose entire value is
+# being owned by nobody.
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=9.0.3,<10",
+    "ruff>=0.9,<1",
+    "mypy>=1.14,<3",
+]
+
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/maistro_automaton"]

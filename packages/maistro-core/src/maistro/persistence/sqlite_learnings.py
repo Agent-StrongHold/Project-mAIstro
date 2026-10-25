@@ -9,32 +9,9 @@ from dataclasses import replace
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
-from maistro.memory.exposure import Actor, MemoryExposureMode, require_write_authority
-from maistro.memory.learnings.evidence import (
-    DEFAULT_MIN_PROMOTION_CONFIDENCE,
-    merge_applicability,
-    promotion_blockers,
-)
-from maistro.memory.learnings.lifecycle import (
-    InvalidStageTransition,
-    StageTransition,
-    plan_advance,
-)
-from maistro.observability.correlation import ExecutionProvenance, observed_provenance
-from maistro.persistence.learning_contract import (
-    LEARNING_GENERATED_FIELDS,
-    LEARNING_PERSISTED_FIELDS,
-)
-from maistro.persistence.learning_scope import learning_scope_predicate
+from maistro.observability.correlation import observed_provenance
 from maistro.sqlite_schema import serialized_schema_upgrade
-from maistro.types.memory import (
-    DEFAULT_LEARNING_CONFIDENCE,
-    EPISTEMIC_BONUS,
-    EpistemicType,
-    Learning,
-    LearningStage,
-    MemoryScope,
-)
+from maistro.types.memory import Learning, MemoryScope
 
 if TYPE_CHECKING:
     import aiosqlite
@@ -249,17 +226,17 @@ class SqliteLearningStore:
                 await self._conn.execute(
                     "ALTER TABLE learnings ADD COLUMN org_id TEXT NOT NULL DEFAULT ''"
                 )
-            await _add_missing_columns(self._conn, columns)
-            await self._conn.execute(_STAGE_HISTORY_SCHEMA)
+            # The same in-place upgrade for the producer columns. A file created
+            # before #709 holds real learnings; recreating the table would be the
+            # only alternative, and it would lose them (#709).
+            for column in _PROVENANCE_COLUMNS:
+                if column not in columns:
+                    await self._conn.execute(f"ALTER TABLE learnings ADD COLUMN {column} TEXT")
             await self._conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_learnings_run_id ON learnings (run_id)"
             )
             await self._conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_learnings_scope ON learnings (org_id, agent_id, status)"
-            )
-            await self._conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_learnings_scope_axes "
-                "ON learnings (org_id, team_id, user_id, agent_id, status)"
             )
 
     async def store(self, learning: Learning, *, actor: Actor = Actor.AGENT) -> int:

@@ -15,11 +15,6 @@ from maistro_server.api import projects as projects_api
 from maistro_server.api import workspaces as workspace_api
 from maistro_server.api.auth import verify_api_key
 from maistro_server.api.principal import AuthenticatedPrincipal
-from maistro_server.api.projects import (
-    AddProjectMembershipBody,
-    add_project_membership,
-    remove_project_membership,
-)
 from maistro_server.api.route_table import iter_effective_routes
 from maistro_server.main import app as server_app
 

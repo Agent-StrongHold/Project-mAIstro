@@ -989,13 +989,11 @@ async def test_status_listing_can_filter_by_durable_admission_source(spine: Any)
         _graph(workspace, project_id),
         provenance={ADMISSION_SOURCE: "foreign-consumer"},
         initial_status=RunStatus.QUEUED,
-        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
     owned = await store.create_run(
         _graph(workspace, project_id),
         provenance={ADMISSION_SOURCE: "owned-consumer"},
         initial_status=RunStatus.QUEUED,
-        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
 
     listed = await store.list_by_status(
@@ -1479,11 +1477,7 @@ def _occurrence(schedule_id: str = "sched-1", when: str = "2026-08-24T12:00:00+0
 
 async def test_a_second_run_for_one_occurrence_is_refused(spine: Any) -> None:
     store, workspace, project_id = spine
-    first = await store.create_run(
-        _graph(workspace, project_id),
-        provenance=_occurrence(),
-        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
-    )
+    first = await store.create_run(_graph(workspace, project_id), provenance=_occurrence())
 
     with pytest.raises(DuplicateOccurrence) as caught:
         await store.create_run(
@@ -1501,67 +1495,12 @@ async def test_a_second_run_for_one_occurrence_is_refused(spine: Any) -> None:
     assert resolved.run_id == first.run_id
 
 
-async def test_get_runs_for_occurrences_is_the_batched_twin_of_the_single_lookup(
-    spine: Any,
-) -> None:
-    """One query resolves many occurrences, keyed by `scheduled_for` (#1533).
-
-    Schedule recovery used to resolve each occurrence with its own round trip;
-    this is the batched replacement, checked against the same claims
-    `get_run_for_occurrence` would resolve one at a time — plus a
-    `scheduled_for` that was never claimed, to prove a miss is simply absent
-    from the result rather than raising, and an empty request, which must
-    short-circuit to `{}` rather than query at all.
-    """
-    store, workspace, project_id = spine
-    first = await store.create_run(
-        _graph(workspace, project_id),
-        provenance=_occurrence(when="2026-08-24T12:00:00+00:00"),
-        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
-    )
-    second = await store.create_run(
-        _graph(workspace, project_id),
-        provenance=_occurrence(when="2026-08-24T13:00:00+00:00"),
-        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
-    )
-    third = await store.create_run(
-        _graph(workspace, project_id),
-        provenance=_occurrence(when="2026-08-24T14:00:00+00:00"),
-        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
-    )
-
-    resolved = await store.get_runs_for_occurrences(
-        "sched-1",
-        [
-            "2026-08-24T12:00:00+00:00",
-            "2026-08-24T13:00:00+00:00",
-            "2026-08-24T14:00:00+00:00",
-            "2026-08-24T15:00:00+00:00",  # never claimed
-        ],
-    )
-
-    assert set(resolved) == {
-        "2026-08-24T12:00:00+00:00",
-        "2026-08-24T13:00:00+00:00",
-        "2026-08-24T14:00:00+00:00",
-    }
-    assert resolved["2026-08-24T12:00:00+00:00"].run_id == first.run_id
-    assert resolved["2026-08-24T13:00:00+00:00"].run_id == second.run_id
-    assert resolved["2026-08-24T14:00:00+00:00"].run_id == third.run_id
-
-    assert await store.get_runs_for_occurrences("sched-1", []) == {}
-
-
 async def test_concurrent_occurrence_claims_converge_on_one_run(spine: Any) -> None:
     """A replica race has one winner, and every loser can resolve that winner."""
     store, workspace, project_id = spine
     results = await asyncio.gather(
         *(
-            store.create_run(
-                _graph(workspace, project_id),
-                provenance=_occurrence(),
-                actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
-            )
+            store.create_run(_graph(workspace, project_id), provenance=_occurrence())
             for _ in range(8)
         ),
         return_exceptions=True,
@@ -2767,9 +2706,7 @@ async def test_status_listing_honors_the_workspace_boundary(spine: Any) -> None:
     the two that are systems of record.
     """
     store, workspace, project_id = spine
-    run = await store.create_run(
-        _graph(workspace, project_id), actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
-    )
+    run = await store.create_run(_graph(workspace, project_id))
     await store.transition_run(run.run_id, RunStatus.QUEUED)
     await store.transition_run(run.run_id, RunStatus.RUNNING)
     await store.transition_run(run.run_id, RunStatus.FAILED)
@@ -2797,7 +2734,6 @@ async def test_a_delegation_reservation_and_receipt_round_trip(spine: Any) -> No
     run = await store.create_run(
         _graph(workspace, project_id),
         provenance={"delegation_key": "key-round-trip"},
-        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
 
     found = await store.find_delegation_run("key-round-trip")
@@ -2835,7 +2771,6 @@ async def test_the_transport_boundary_claim_is_one_winner(spine: Any) -> None:
     run = await store.create_run(
         _graph(workspace, project_id),
         provenance={"delegation_key": "key-claim"},
-        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
 
     assert await store.claim_delegation_transport_attempt(run.run_id) is True

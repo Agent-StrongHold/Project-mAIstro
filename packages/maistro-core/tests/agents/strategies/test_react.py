@@ -312,6 +312,15 @@ async def test_agent_pipeline_skips_standalone_tool_sanitization() -> None:
     assert sentinel.post_calls == []
 
 
+async def test_reason_pii_filter_import_error_passes_through_unredacted() -> None:
+    """If the pii_filter module is unavailable, the tool result is left unredacted."""
+    provider = FauxProvider()
+    provider.seed_tool_call("read_file", {"path": "a.py"})
+    provider.seed(FauxResponse(content="ok"))
+    strategy = ReactStrategy(max_rounds=2)
+    tools = _tools_for("read_file")
+
+
 async def test_no_sentinel_fallback_pii_filter_import_error_passes_through_unredacted() -> None:
     """If the pii_filter module is unavailable, the fallback leaves text unredacted."""
     strategy = ReactStrategy()

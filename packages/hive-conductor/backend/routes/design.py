@@ -387,30 +387,36 @@ async def get_skill_discovery_form(skill_slug: str) -> list[dict[str, Any]]:
 async def create_render_job(
     project_id: str, request: Request, format: str = "pdf"
 ) -> dict[str, Any]:
-    """Report that project rendering is unavailable until its canonical seam exists.
+    """Reject rendering until its canonical worker and artifact path exist.
 
-    The former facade created an in-memory pending job, but no worker advanced
-    it or persisted an output. Returning that job made an execution-looking
-    state out of a capability that is not connected to Canvas or a canonical
-    Run. Keep the scoped existence check, then fail explicitly instead.
-
-    Query params:
-      format: reserved output format (pdf, pptx, docx, png)
+    The ownership lookup is intentionally retained below so this unavailable
+    capability cannot become a project-id probing endpoint.
     """
     _require_ready()
     org_id = _get_org_id(request)
     try:
-        store = _require_store()
+        store = get_design_store()
+        if store is None:
+            raise HTTPException(
+                status_code=503,
+                detail="Design persistence not configured (DATABASE_URL not set)",
+            )
 
-        # Check the project within the caller's scope before reporting the
-        # unavailable capability; another scope must remain indistinguishable.
+        # Keep the ownership check even while rendering is unavailable. A
+        # disabled capability must not become a way to probe project ids.
         project = await store.get(project_id, org_id=org_id)
         if not project:
             raise HTTPException(status_code=404, detail=f"Project {project_id} not found")
 
+        # There is no worker or durable artifact-serving path yet. In
+        # particular, do not create an in-memory pending job that can never
+        # advance or claim a URL whose bytes were discarded.
         raise HTTPException(
             status_code=501,
-            detail="Design rendering is unavailable until the canonical Canvas rendering seam is enabled",
+            detail=(
+                "Design rendering is unavailable: no canonical renderer, durable "
+                "artifact store, or output-serving route is configured"
+            ),
         )
     except HTTPException:
         raise
@@ -418,70 +424,14 @@ async def create_render_job(
         raise HTTPException(status_code=500, detail=f"Render job creation failed: {e!s}") from None
 
 
-@router.post("/projects/{project_id}/consistency")
-async def evaluate_project_consistency(
-    project_id: str, snapshot: CreativeProjectSnapshot
-) -> dict[str, Any]:
-    """Inspect one creative family for cross-artifact consistency (#779).
-
-    The Design Studio submits the project's frozen snapshot — brief, persona,
-    design system, shared decisions, artifacts and provided evidence as the
-    creative session holds them — and receives the evaluator's full result
-    contract back: per-dimension verdicts, evidence-backed findings, exact
-    brief/decision/artifact versions that were evaluated, and a refinement
-    proposal for the affected branches only. The evaluation is deliberately
-    read-only: it proposes work, it never rewrites the project — canonical
-    DAG/Run logic decides what actually runs, under the user's locks and
-    control mode. The same evaluation is available as the canonical graph node
-    ``design.consistency_eval`` (kind registered in ``maistro_design.nodes``)
-    when it must run inside a Run with NodeRun/Attempt provenance; this route
-    is the Design Studio's synchronous inspection surface over the identical
-    pure evaluator, so both surfaces cannot disagree.
-
-    Body: a ``CreativeProjectSnapshot``. A snapshot naming a different
-    project than the path is refused (400) instead of silently mis-filing the
-    result — the same canonical-provenance guard the graph node applies.
-
-    Returns:
-      The ``ConsistencyEvaluation`` result contract (passed, provenance,
-      dimension_results, findings, refinement).
-    """
-    _require_ready()
-    if snapshot.project_id != project_id:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"snapshot project_id {snapshot.project_id!r} does not match "
-                f"the requested project {project_id!r}"
-            ),
-        )
-    return evaluate_project_snapshot(snapshot).model_dump(mode="json")
-
-
 @router.get("/projects/{project_id}/render/{job_id}")
-async def get_render_job_status(project_id: str, job_id: str, request: Request) -> dict[str, Any]:
-    """Report that render-job polling is unavailable until Canvas is connected.
-
-    The old implementation polled a process-local ``DesignPreviewService``.
-    That state was neither durable nor backed by a worker, so it could not
-    truthfully describe execution after a restart. Keep the compatibility
-    endpoint scoped, but never expose its fabricated pending/completed state.
-    """
-    _require_ready()
-    org_id = _get_org_id(request)
-    try:
-        store = _require_store()
-        project = await store.get(project_id, org_id=org_id)
-        if not project:
-            raise HTTPException(status_code=404, detail=f"Project {project_id} not found")
-
-        raise HTTPException(
-            status_code=501,
-            detail="Design render-job polling is unavailable until the canonical Canvas rendering seam is enabled",
-        )
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(
-            status_code=500, detail=f"Render job status unavailable: {e!s}"
-        ) from None
+async def get_render_job_status(project_id: str, job_id: str) -> dict[str, Any]:
+    """Report that render status is unavailable until a durable job exists."""
+    del project_id, job_id
+    raise HTTPException(
+        status_code=501,
+        detail=(
+            "Design rendering is unavailable: no canonical renderer, durable "
+            "job store, or output-serving route is configured"
+        ),
+    )

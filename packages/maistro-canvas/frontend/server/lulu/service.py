@@ -1,5 +1,6 @@
 import os
 import sys
+import tempfile
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -224,16 +225,30 @@ class CoverPreflightRequest(BaseModel):
     interior_page_count: int = 32
 
 
+#: Where a caller may point preflight at. The export pipeline writes PDFs
+#: under the platform temp directory; anything outside it is not a print job.
+#:
+#: ``realpath`` rather than ``normpath``: the default root is the platform temp
+#: directory, which is itself a symlink on some platforms (macOS ``/tmp`` ->
+#: ``/private/tmp``), and a root that is spelled differently from the paths
+#: underneath it refuses every legitimate request.
+PREFLIGHT_ROOT = os.path.realpath(os.environ.get("LULU_PREFLIGHT_ROOT") or tempfile.gettempdir())
+
+
 def _preflight_path(raw: str) -> str:
     """Contain a caller-supplied PDF path to ``PREFLIGHT_ROOT`` or refuse.
 
-    Delegates to ``lulu.preflight.contained_pdf_path`` so the HTTP edge and the
-    library share one realpath+startswith guard (CodeQL ``py/path-injection``).
+    Symlinks are followed *before* containment is decided. ``normpath`` alone
+    collapses ``..`` but knows nothing about links, and the default root is the
+    world-writable temp directory — so anyone on the host can plant a link
+    there whose every path component reads as legal and whose target is not.
+    The resolved path is what is returned, so the reader opens the file the
+    check actually approved rather than the spelling it was handed.
     """
-    try:
-        return contained_pdf_path(raw, root=PREFLIGHT_ROOT)
-    except ValueError as exc:
-        raise HTTPException(400, detail=str(exc)) from exc
+    candidate = os.path.realpath(raw)
+    if candidate != PREFLIGHT_ROOT and not candidate.startswith(PREFLIGHT_ROOT + os.sep):
+        raise HTTPException(400, detail="pdf_path must be inside the preflight directory")
+    return candidate
 
 
 @app.post("/preflight/interior")

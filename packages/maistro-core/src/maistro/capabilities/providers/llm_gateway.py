@@ -89,32 +89,6 @@ class ProviderRegistrationError(RuntimeError):
     """The gateway rejected or could not receive provider registration."""
 
 
-class LlmAuthError(PermissionError):
-    """The gateway rejected the request as unauthenticated/unauthorized.
-
-    Carries ``status_code`` so :func:`maistro.credentials.router._status_from_error`
-    and :func:`maistro.resilience.classifier.classify_error` can read the real
-    HTTP status directly from the exception (both check ``status_code`` first)
-    instead of falling through to an unclassified error that never cools or
-    blocks the offending credential (#1079 finding 5).
-    """
-
-    def __init__(self, message: str, *, status_code: int) -> None:
-        super().__init__(message)
-        self.status_code = status_code
-
-
-class LlmHttpError(RuntimeError):
-    """The gateway rejected the request with a non-auth HTTP error status.
-
-    Carries ``status_code`` for the same reason as :class:`LlmAuthError`.
-    """
-
-    def __init__(self, message: str, *, status_code: int) -> None:
-        super().__init__(message)
-        self.status_code = status_code
-
-
 class LlmGatewayProvider:
     """Slot-specific resolved Provider handle for one model-chat call.
 
@@ -161,71 +135,7 @@ class ModelChatRequest(BaseModel):
     temperature: float | None = 0.7
     max_tokens: int | None = None
     tools: list[dict[str, object]] | None = None
-    tool_choice: str | None = None
     response_format: dict[str, object] | None = None
-
-
-def _adapter_request_headers(spec: Any, *, api_key: str) -> dict[str, str]:
-    """Present a resolved credential per the adapter's declared auth style.
-
-    ``spec`` is a :class:`~maistro.capabilities.provider_adapters.ProviderAdapterSpec`;
-    it is typed loosely because importing the SDK at module level would close
-    an import cycle (the SDK imports this module's capability constant). The
-    secret only ever arrives from credential resolution; an adapter declaring
-    a style without a resolved credential sends unauthenticated and fails at
-    the provider, exactly like the gateway path with an empty key.
-    """
-
-    from maistro.capabilities.provider_adapters import AdapterAuthStyle
-
-    headers = {"Content-Type": "application/json"}
-    if not api_key:
-        return headers
-    if spec.auth_style == AdapterAuthStyle.BEARER:
-        headers["Authorization"] = f"{spec.auth_scheme} {api_key}".strip()
-    elif spec.auth_style == AdapterAuthStyle.HEADER:
-        headers[str(spec.auth_header_name)] = f"{spec.auth_scheme} {api_key}".strip()
-    return headers
-
-
-def _adapter_query_params(spec: Any, *, api_key: str) -> dict[str, str] | None:
-    """Query-string credential presentation for the ``query`` auth style."""
-
-    from maistro.capabilities.provider_adapters import AdapterAuthStyle
-
-    if spec.auth_style == AdapterAuthStyle.QUERY and api_key:
-        return {str(spec.auth_query_param): api_key}
-    return None
-
-
-def _adapter_error(spec: Any, adapter: Any, status: int) -> Exception:
-    """Raise the canonical exception the adapter's taxonomy kind selects.
-
-    The adapter maps a status to an :class:`~maistro.capabilities.provider_adapters.
-    AdapterErrorKind` constant; this module owns which canonical exception that
-    kind becomes, so an adapter can classify but never invent an error type the
-    canonical resilience classifier does not know (it reads ``status_code`` off
-    :class:`LlmAuthError`/:class:`LlmHttpError` for cooldown/block decisions).
-    """
-
-    from maistro.capabilities.provider_adapters import AdapterErrorKind
-
-    kind = adapter.error_kind_for(status)
-    if kind == AdapterErrorKind.AUTH:
-        return LlmAuthError(
-            f"llm_auth_failed status={status} (adapter {spec.adapter_id!r} "
-            "rejected the resolved credential)",
-            status_code=status,
-        )
-    if kind == AdapterErrorKind.RATE_LIMITED:
-        return LlmHttpError(
-            f"llm_rate_limited status={status} (adapter {spec.adapter_id!r})",
-            status_code=status,
-        )
-    return LlmHttpError(
-        f"llm_http_error status={status} (adapter {spec.adapter_id!r}, kind={kind!r})",
-        status_code=status,
-    )
 
 
 def _chat_payload(provider: LlmGatewayProvider, request: ModelChatRequest) -> dict[str, object]:
@@ -242,8 +152,6 @@ def _chat_payload(provider: LlmGatewayProvider, request: ModelChatRequest) -> di
         payload["max_tokens"] = request.max_tokens
     if request.tools:
         payload["tools"] = [dict(tool) for tool in request.tools]
-    if request.tool_choice:
-        payload["tool_choice"] = request.tool_choice
     if request.response_format is not None:
         payload["response_format"] = dict(request.response_format)
     return payload
@@ -494,6 +402,5 @@ __all__ = [
     "ModelChatRequest",
     "ProviderRegistrationError",
     "execute_model_chat",
-    "probe_adapter_health",
     "register_provider_models",
 ]

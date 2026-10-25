@@ -141,9 +141,7 @@ RECIPES: dict[str, Recipe] = {
     "packages/maistro-server/tests": Recipe(args=[]),
     "packages/maistro-turing/tests": Recipe(args=[]),
     "packages/maistro-design/tests": Recipe(args=[]),
-    # The public extension SDK (#949): no maistro imports, no services, no DB —
-    # the plain uv workspace env collects it.
-    "packages/maistro-ext-sdk/tests": Recipe(args=[]),
+    "packages/maistro-automaton/tests": Recipe(args=[]),
     "packages/maistro-bootstrap/tests": Recipe(args=[]),
     "packages/maistro-canvas/tests": Recipe(args=[]),
     "packages/maistro-turing/backend/tests": Recipe(args=[]),
@@ -224,7 +222,10 @@ def load_baseline() -> tuple[dict[str, int], list[str]]:
     if not BASELINE.is_file():
         raise LedgerError(f"{BASELINE.relative_to(REPO_ROOT)} is missing")
     try:
-        doc = json.loads(BASELINE.read_text(encoding="utf-8"))
+        try:
+            doc = json.loads(BASELINE.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            raise RuntimeError(f"cannot read baseline {BASELINE}: {exc}") from exc
     except json.JSONDecodeError as exc:
         raise LedgerError(f"{BASELINE.relative_to(REPO_ROOT)} is not valid JSON: {exc}") from exc
 
@@ -317,7 +318,10 @@ def parse_delta(text: str, where: str) -> dict[str, int]:
         suite, raw = m.group(2).strip(), m.group(3)
         if suite in delta:
             raise LedgerError(f"{where}: `{suite}` appears twice under `{DELTA_KEY}:`")
-        delta[suite] = int(raw)
+        try:
+            delta[suite] = int(raw)
+        except ValueError as exc:
+            raise LedgerError(f"{where}: `{suite}`: `{raw.strip()}` is not an integer") from exc
     if seen_key and not delta:
         raise LedgerError(
             f"{where}: `{DELTA_KEY}:` is present but records nothing. Remove the "
@@ -456,80 +460,12 @@ def collect(suite: str, recipe: Recipe) -> tuple[int, str, list[str]]:
         detail = f"{errs.group(0)} during collection" if errs else f"exit {proc.returncode}"
         tail = "\n".join(out.strip().splitlines()[-15:])
         raise RuntimeError(f"collection failed ({detail}) for `{suite}`\n  {cmd}\n{tail}")
-    count = int(matches[-1])
-    node_ids = _parse_node_ids(proc.stdout, count)
-    return count, cmd, node_ids
-
-
-def _parse_node_ids(stdout: str, count: int) -> list[str]:
-    """The node-ID lines ``pytest --collect-only -q`` prints before its summary.
-
-    Robust to the two shapes real suites produce: a summary line decorated
-    with ``=`` bars (``formal/``) and a warnings summary printed ahead of it
-    on stdout. Every collected node ID contains ``::`` with a ``.py`` path
-    ahead of it, which warning prose does not; the count cross-check decides
-    whether the parse can be trusted. Empty when it cannot — the caller
-    treats that as "report unavailable", not as "suite empty".
-    """
-    lines = stdout.splitlines()
-    summary = [i for i, line in enumerate(lines) if COLLECTED_LINE_RE.search(line)]
-    if not summary:
-        return []
-    node_ids = [line for line in lines[: summary[-1]] if NODE_ID_LINE_RE.match(line)]
-    return node_ids if len(node_ids) == count else []
-
-
-def _duplicate_file_metrics(suites: list[str]) -> tuple[int, int, int]:
-    """Byte-identical test-file metrics over the scanned suite roots.
-
-    Returns ``(groups, redundant_files, redundant_bytes)``. This is the
-    static half of #396's duplicate-content metric; the node-ID half is the
-    unique-evidence report that uses the collection above. The gate that
-    *fails* on duplicate files is ``check-test-duplicates.py`` — this only
-    reports, so the inventory's summary stays readable even when a
-    contract-approved duplicate exists.
-    """
-    by_hash: dict[str, list[Path]] = {}
-    for suite in suites:
-        base = REPO_ROOT / suite
-        if not base.is_dir():
-            continue
-        for pattern in ("test_*.py", "*_test.py"):
-            for path in base.rglob(pattern):
-                if path.is_file():
-                    by_hash.setdefault(hashlib.sha256(path.read_bytes()).hexdigest(), []).append(
-                        path
-                    )
-    groups = [paths for paths in by_hash.values() if len(paths) > 1]
-    redundant = sum(len(paths) - 1 for paths in groups)
-    redundant_bytes = sum(paths[0].stat().st_size * (len(paths) - 1) for paths in groups)
-    return len(groups), redundant, redundant_bytes
-
-
-def unique_evidence_report(collected: dict[str, list[str]]) -> str:
-    """How much of the collected evidence is unique, per #396.
-
-    A node ID is suite-rooted (``tests/api/x.py::t`` and
-    ``packages/maistro-server/tests/api/x.py::t`` are different strings for
-    the same test), so identity is compared with the suite root stripped:
-    the same test file under two gated roots must count its evidence once.
-    """
-    total = 0
-    unique: set[str] = set()
-    for suite, node_ids in collected.items():
-        prefix = suite if suite.endswith("/") else f"{suite}/"
-        for node_id in node_ids:
-            total += 1
-            unique.add(node_id.removeprefix(prefix))
-    duplicates = total - len(unique)
-    groups, redundant_files, redundant_bytes = _duplicate_file_metrics(list(collected))
-    return (
-        f"  collected node IDs: {total}\n"
-        f"  unique test identities (cross-suite): {len(unique)}\n"
-        f"  duplicate evidence from copied test files: {duplicates}\n"
-        f"  byte-identical test files: {groups} group(s), "
-        f"{redundant_files} redundant file(s), {redundant_bytes} redundant bytes"
-    )
+    try:
+        return int(matches[-1]), cmd
+    except ValueError as exc:
+        raise RuntimeError(
+            f"collection produced a non-integer count for `{suite}`\n  {cmd}\n  {exc}"
+        ) from exc
 
 
 # --------------------------------------------------------------------------

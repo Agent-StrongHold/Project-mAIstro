@@ -379,10 +379,6 @@ export default function DagBuilder() {
     }
     const wsProto = location.protocol === "https:" ? "wss:" : "ws:";
     const wsUrl = `${wsProto}//${location.host}/v1/ws/dags/${dag.id}/run?workspace_id=${encodeURIComponent(activeWorkspaceId)}`;
-    // One Run at a time: retire a socket a previous run could have left
-    // behind before opening a fresh one, so subscriptions never stack (#355).
-    const previous = liveRunRef.current;
-    if (previous) detachLiveRun(previous);
     const ws = new WebSocket(wsUrl);
     const run: LiveRun = { ws, started: false, settled: false, detach: false };
     liveRunRef.current = run;
@@ -739,7 +735,7 @@ export default function DagBuilder() {
                     {execState.running ? "\u23F3 Running..." : "\u25B6 Run DAG"}
                   </button>
                   {execState.log.length > 0 && (
-                    <div role="log" aria-label="DAG execution log" style={{ position: "absolute", top: 38, right: 0, width: 320, maxHeight: 200, overflow: "auto", background: "var(--paper)", border: "1px solid var(--rule)", borderRadius: 4, padding: 6, zIndex: 10, fontFamily: "var(--mono)", fontSize: 12 }}>
+                    <div style={{ position: "absolute", top: 38, right: 0, width: 320, maxHeight: 200, overflow: "auto", background: "var(--paper)", border: "1px solid var(--rule)", borderRadius: 4, padding: 6, zIndex: 10, fontFamily: "var(--mono)", fontSize: 12 }}>
                       {execState.log.map((line, i) => (
                         <div key={i} style={{ color: /^(Error|Failed|Cancelled|Timed out|Connection)/.test(line) ? "var(--danger, #c4452a)" : "var(--ink)" }}>{line}</div>
                       ))}

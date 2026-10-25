@@ -2,11 +2,8 @@
 
 from __future__ import annotations
 
-import aiosqlite
-
 from maistro.capabilities.bootstrap import default_capability_registry
 from maistro.capabilities.types import FallbackPolicy, SlotSpec
-from maistro.persistence.sqlite_audit import SqliteAuditLog
 from maistro.security._types import (
     AuditEntry,
     AuthContext,
