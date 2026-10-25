@@ -599,9 +599,10 @@ async def test_defer_and_dismiss_routes_are_member_scoped(
 
     unscoped = authed_client.post(
         f"/v1/workspaces/{ws_admin}/attention/dismiss",
-        json={"sourceKind": "hitl", "sourceId": "x", "action": "dismiss"},
+        json={"sourceKind": "hitl_node_run", "sourceId": "x", "action": "dismiss"},
     )
     assert unscoped.status_code == 403
+    assert "dags.write" in unscoped.json()["detail"]
 
     cleared = admin_client.delete(
         f"/v1/workspaces/{ws_admin}/attention/dismiss",
@@ -613,12 +614,15 @@ async def test_defer_and_dismiss_routes_are_member_scoped(
     leftover = f"{ws_admin}:hitl_node_run:att-dismiss-route/ask"
     assert leftover not in dismissal_store
 
-    # DELETE carries the same scope + membership gates as POST.
+    # DELETE carries the same dags.write + membership gates as POST (not the
+    # middleware workspaces.write gate — Attention dismiss is preference
+    # evidence, exempted like Home adaptive dismiss).
     unscoped_del = authed_client.delete(
         f"/v1/workspaces/{ws_admin}/attention/dismiss",
         params={"sourceKind": "hitl_node_run", "sourceId": "x"},
     )
     assert unscoped_del.status_code == 403
+    assert "dags.write" in unscoped_del.json()["detail"]
     foreign_del = admin_client.delete(
         f"/v1/workspaces/{ws_user}/attention/dismiss",
         params={"sourceKind": "hitl_node_run", "sourceId": "x"},

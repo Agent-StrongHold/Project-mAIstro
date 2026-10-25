@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/hive-conductor/backend/tests: +31
+  packages/hive-conductor/backend/tests: +32
   packages/hive-conductor/tests/e2e: +0
 ---
 
@@ -16,6 +16,8 @@ inventory-delta:
   with parametrize)
 - `test_chat_run_admission.py` — `_client_turn_id` + admit_turn records it (+2)
 - `test_home_routes.py` — `_goal_items` skip/title/runs map (+1)
+- `test_scope_coverage.py` — Attention dismiss gated by `dags.write` not
+  `workspaces.write` (+1)
 - Playwright: `workspace-conversation-continuity.spec.ts` (new), Attention
   dismiss round-trip, learned-landing accept/dismiss e2e. Suite inventory
   collects pytest only — e2e stays +0 here.

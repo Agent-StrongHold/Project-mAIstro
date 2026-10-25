@@ -471,6 +471,21 @@ class AuthMiddleware(BaseHTTPMiddleware):
             and _parts[4] == "home"
         ):
             return None
+        # Workspace Attention (#1049): defer/dismiss is preference evidence on
+        # the read projection — same posture as Home adaptive dismiss. Routes
+        # require dags.write (matching GET /attention and /v1/hitl) and
+        # membership themselves; a workspaces.write gate here would refuse
+        # sessions that can already read Attention and answer HITL, and would
+        # leave the route-level scope check unreachable.
+        if (
+            request.method in {"POST", "DELETE"}
+            and len(_parts) >= 6
+            and _parts[1] == "v1"
+            and _parts[2] == "workspaces"
+            and _parts[4] == "attention"
+            and _parts[5] == "dismiss"
+        ):
+            return None
         # DAG-Run inspection — GET /v1/dag-runs (list), GET /v1/dag-runs/{id}
         # (detail), GET /v1/dag-runs/{id}/events (SSE) — and the eval-judge
         # read side over the same runs (GET /v1/eval-judge verdict list,
