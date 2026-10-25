@@ -10,9 +10,12 @@ from maistro.agents.feedback.extractor import ReviewFeedbackExtractor
 from maistro.agents.feedback.loop import FeedbackLoop
 from maistro.agents.feedback.tracker import InMemoryViolationTracker
 from maistro.agents.spawner import Spawner, VariantSelector
+from maistro.agents.spawner.spawner import LLMCaller
 from maistro.agents.store import InMemoryAgentStore
 from maistro.agents.strategies.tool_http import HTTPToolExecutor
 from maistro.agents.tournament import Tournament
+from maistro.memory.exposure import MemoryExposureMode
+from maistro.memory.learnings.store import InMemoryLearningStore
 
 
 @dataclass(frozen=True)
@@ -24,7 +27,7 @@ class AgentRuntimeExtensions:
     violation_tracker: InMemoryViolationTracker
     feedback_extractor: ReviewFeedbackExtractor
     variant_selector: VariantSelector
-    spawner: Spawner | None
+    spawner: Spawner
     tournament: Tournament
     http_tool_executor: HTTPToolExecutor
     auditor_check_names: tuple[str, ...]
@@ -37,7 +40,7 @@ class AgentRuntimeExtensions:
             "violation_tracker": type(self.violation_tracker).__name__,
             "feedback_extractor": type(self.feedback_extractor).__name__,
             "variant_selector": type(self.variant_selector).__name__,
-            "spawner": type(self.spawner).__name__ if self.spawner is not None else None,
+            "spawner": type(self.spawner).__name__,
             "tournament": type(self.tournament).__name__,
             "http_tool_executor": type(self.http_tool_executor).__name__,
             "auditor_check_names": list(self.auditor_check_names),
@@ -52,6 +55,41 @@ def get_agent_runtime_extensions() -> AgentRuntimeExtensions | None:
     return _PROCESS_EXTENSIONS
 
 
+class _NullLLMCaller:
+    """LLMCaller stand-in when the roster LLM is not Spawner-shaped (#2312).
+
+    Live roster clients use ``complete`` / OpenAI-shaped APIs, not
+    :meth:`LLMCaller.call`. Constructing ``Spawner(roster_llm)`` would TypeError
+    at ``create_agents`` boot — so CONNECT always builds Spawner with this
+    adapter (or a real LLMCaller when one is passed).
+    """
+
+    async def call(
+        self,
+        system: str,
+        user: str,
+        *,
+        model: str,
+        temperature: float,
+        max_tokens: int,
+        tier: int,
+        lane: str,
+    ) -> dict[str, Any]:
+        return {"content": "", "system": system, "user": user, "model": model}
+
+
+def _as_llm_caller(llm: Any | None) -> LLMCaller:
+    """Accept a real LLMCaller; otherwise use the null adapter."""
+    if llm is None:
+        return _NullLLMCaller()
+    # Structural: only treat as LLMCaller when ``call`` is present. Roster
+    # GovernedLLMClient uses ``complete``, not ``call``.
+    call = getattr(llm, "call", None)
+    if callable(call):
+        return llm  # type: ignore[no-any-return]
+    return _NullLLMCaller()
+
+
 def wire_agent_implementations(
     agents: dict[str, Any],
     *,
@@ -62,20 +100,20 @@ def wire_agent_implementations(
 
     Called from :func:`maistro.agents.factory.create_agents` after the roster
     is built so namespace shims and implementation modules are process-reachable
-    behind Capability binding (#2312). Spawner is only constructed when an LLM
-    caller is available — otherwise the selector + store still land.
+    behind Capability binding (#2312). Spawner always constructs — with a null
+    :class:`LLMCaller` when the roster LLM is not Spawner-shaped — so boot
+    cannot TypeError on ``GovernedLLMClient``.
     """
     global _PROCESS_EXTENSIONS
     tracker = InMemoryViolationTracker()
     extractor = ReviewFeedbackExtractor()
-    # Learning store is optional at this seam; FeedbackLoop still needs the
-    # protocol object for construction. Tests/local use an in-memory stand-in
-    # that records nothing until a real LearningStore is injected later.
-    loop = FeedbackLoop(extractor, _NullLearningStore(), tracker)
+    loop = FeedbackLoop(
+        extractor,
+        InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED),
+        tracker,
+    )
     selector = VariantSelector()
-    spawner: Spawner | None = None
-    if llm is not None:
-        spawner = Spawner(llm, variant_selector=selector)
+    spawner = Spawner(_as_llm_caller(llm), variant_selector=selector)
     store = InMemoryAgentStore(agents, prompt_manager=prompt_manager)
     http_tools = HTTPToolExecutor()
     # Touch the auditor pure-function catalog so checks stay imported.
@@ -99,13 +137,6 @@ def wire_agent_implementations(
     assert extensions.inventory()["store"] == "InMemoryAgentStore"
     _PROCESS_EXTENSIONS = extensions
     return extensions
-
-
-class _NullLearningStore:
-    """Minimal LearningStore stand-in for FeedbackLoop construction."""
-
-    async def store(self, learning: Any) -> int:
-        return 0
 
 
 __all__ = [
