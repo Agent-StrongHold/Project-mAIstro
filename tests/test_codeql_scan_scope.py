@@ -86,6 +86,35 @@ def _shipped_sources() -> list[str]:
 def test_the_config_is_wired_into_the_workflow() -> None:
     workflow = (REPO_ROOT / ".github" / "workflows" / "codeql.yml").read_text(encoding="utf-8")
     assert "./.github/codeql/codeql-config.yml" in workflow
+    # Manual verification must not widen the automatic event surface, add an
+    # arbitrary checkout input, or weaken the existing analysis permissions.
+    parsed = yaml.safe_load(workflow)
+    triggers = parsed.get("on", parsed.get(True))  # PyYAML's YAML 1.1 treats on as True.
+    assert triggers == {
+        "workflow_dispatch": None,
+        "push": {"branches": ["main"]},
+        "pull_request": {"branches": ["main"]},
+        "schedule": [{"cron": "34 19 * * 4"}],
+    }
+    job = parsed["jobs"]["analyze"]
+    assert job["permissions"] == {
+        "security-events": "write",
+        "packages": "read",
+        "actions": "read",
+        "contents": "read",
+    }
+    assert job["steps"][0] == {
+        "name": "Checkout repository",
+        "uses": "actions/checkout@v7",
+    }
+    assert job["strategy"]["matrix"]["include"] == [
+        {"language": language, "build-mode": "none"}
+        for language in ("actions", "javascript-typescript", "python")
+    ]
+    assert parsed["concurrency"] == {
+        "group": "codeql-${{ github.event.pull_request.number || github.run_id }}",
+        "cancel-in-progress": "${{ github.event_name == 'pull_request' }}",
+    }
 
 
 def test_no_shipped_source_file_is_excluded_from_analysis() -> None:

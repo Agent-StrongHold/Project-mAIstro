@@ -32,6 +32,7 @@ EloTournament, PipelineGenome) is the real production class.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
 
 import pytest
@@ -60,6 +61,7 @@ class _FakeOSBoundaryBackend:
     def __init__(self, exit_code: int, stdout: bytes) -> None:
         self._exit_code = exit_code
         self._stdout = stdout
+        self.returncode = exit_code
 
     async def spawn(self, *, config: SandboxConfig) -> SandboxInstance:
         return SandboxInstance(
@@ -87,6 +89,17 @@ class _FakeOSBoundaryBackend:
 
     async def destroy(self, instance: SandboxInstance) -> None:
         return None
+
+    async def wait(self) -> int | None:
+        return self.returncode
+
+
+def _reader_with(data: bytes) -> asyncio.StreamReader:
+    reader = asyncio.StreamReader()
+    if data:
+        reader.feed_data(data)
+    reader.feed_eof()
+    return reader
 
 
 def _make_genome(

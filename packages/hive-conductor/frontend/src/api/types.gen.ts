@@ -114,6 +114,13 @@ export interface paths {
         /**
          * Scan Proposed Config
          * @description Scan a proposed configuration before it is saved.
+         *
+         *     The result names the scanner (`scanner.name` / `policy_version`), the
+         *     target, and the completion timestamp, so `clean` is always a completed
+         *     analysis and never an assumption (#288). A scan that cannot run -- the
+         *     detector raising or outliving its time budget, including
+         *     `AgentScannerUnavailable` -- answers 503 with no findings list: unknown,
+         *     never clean.
          */
         post: operations["scan_proposed_config_v1_agents_scan_post"];
         delete?: never;
@@ -153,6 +160,11 @@ export interface paths {
         /**
          * Scan Agent
          * @description Scan a saved agent's configuration.
+         *
+         *     Same contract as the proposed-config scan (#288): the result names the
+         *     scanner, the saved agent it walked, and when the walk completed; a scanner
+         *     that cannot run -- raises or outlives its time budget -- answers 503
+         *     (unknown), never clean.
          */
         post: operations["scan_agent_v1_agents__agent_id__scan_post"];
         delete?: never;
@@ -2591,6 +2603,33 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/mcp/servers/{server_id}/approve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Approve Server
+         * @description Explicitly approve a server and bind its finite tool exposure.
+         *
+         *     The approval is stamped with the authenticated principal's audit label,
+         *     never a constant: a delegated deployment that approves a remote server
+         *     must leave an auditable, host-owned record of *who* authorized it (#59).
+         *     ``"admin"`` remains only for a request that arrives with no principal at
+         *     all — the middleware already gates this route on ``mcp.write``
+         *     (middleware/auth.py), so in production that branch is unreachable.
+         */
+        post: operations["approve_server_v1_mcp_servers__server_id__approve_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/mcp/servers/{server_id}/scan": {
         parameters: {
             query?: never;
@@ -2643,7 +2682,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List Tools */
+        /**
+         * List Tools
+         * @description Expose only tools inside an approved server's host-owned ceiling.
+         */
         get: operations["list_tools_v1_mcp_tools_get"];
         put?: never;
         post?: never;
@@ -4705,6 +4747,33 @@ export interface paths {
         patch: operations["update_workspace_v1_workspaces__workspace_id__patch"];
         trace?: never;
     };
+    "/v1/workspaces/{workspace_id}/agent": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Workspace Agent
+         * @description Read the Workspace Agent's stable id and current persona (#2277).
+         */
+        get: operations["get_workspace_agent_v1_workspaces__workspace_id__agent_get"];
+        /**
+         * Put Workspace Agent Persona
+         * @description Swap the Workspace Agent's persona without changing its id (#2277).
+         *
+         *     Same durable write as the Agent tool `set_workspace_agent_persona` —
+         *     `services.workspace_agent.set_workspace_agent_persona` is the one door.
+         */
+        put: operations["put_workspace_agent_persona_v1_workspaces__workspace_id__agent_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/workspaces/{workspace_id}/attention": {
         parameters: {
             query?: never;
@@ -4733,6 +4802,40 @@ export interface paths {
         put?: never;
         /** Submit Workspace Feedback */
         post: operations["submit_workspace_feedback_v1_workspaces__workspace_id__feedback_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/workspaces/{workspace_id}/goals": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Goals */
+        get: operations["list_goals_v1_workspaces__workspace_id__goals_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/workspaces/{workspace_id}/goals/{goal_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Goal */
+        get: operations["get_goal_v1_workspaces__workspace_id__goals__goal_id__get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -5130,6 +5233,14 @@ export interface components {
              */
             role: "user" | "assistant" | "system" | "tool";
         };
+        /** ApproveServerBody */
+        ApproveServerBody: {
+            /**
+             * Allowed Tools
+             * @default []
+             */
+            allowed_tools: string[];
+        };
         /**
          * AuditEntry
          * @description One audit row exactly as ``/v1/audit`` serves it.
@@ -5522,6 +5633,8 @@ export interface components {
              * @default
              */
             user_id: string;
+            /** Workspace Id */
+            workspace_id?: string | null;
         };
         /** ChatSessionSummary */
         ChatSessionSummary: {
@@ -5541,6 +5654,8 @@ export interface components {
              * @default
              */
             user_id: string;
+            /** Workspace Id */
+            workspace_id?: string | null;
         };
         /**
          * ClaimRule
@@ -5856,6 +5971,8 @@ export interface components {
              * @default New chat
              */
             title: string;
+            /** Workspace Id */
+            workspace_id: string;
         };
         /** CreateSkillBody */
         CreateSkillBody: {
@@ -6170,6 +6287,118 @@ export interface components {
             /** Description */
             description: string;
         };
+        /** GoalEvidenceScope */
+        GoalEvidenceScope: {
+            /** Project Id */
+            project_id: string | null;
+            /** Workspace Id */
+            workspace_id: string | null;
+        };
+        /** GoalExecutionBlocker */
+        GoalExecutionBlocker: {
+            /** Canonical Run Id */
+            canonical_run_id: string;
+            /** Error */
+            error: string | null;
+            /** Run Id */
+            run_id: string;
+            /** Status */
+            status: string;
+        };
+        /**
+         * GoalInspectionView
+         * @description The generated client's Goal inspection contract; all facts are read-only.
+         */
+        GoalInspectionView: {
+            /** Accountable Agent Id */
+            accountable_agent_id: string | null;
+            /** Also In */
+            also_in?: components["schemas"]["GoalEvidenceScope"][];
+            blocker: components["schemas"]["GoalExecutionBlocker"] | null;
+            /** Desired State */
+            desired_state: string | null;
+            /** Execution Disposition */
+            execution_disposition: string;
+            /** Goal Id */
+            goal_id: string;
+            /** Goal Revision Seen */
+            goal_revision_seen: string | null;
+            /** Goal Revisions */
+            goal_revisions: string[];
+            /** Goal State */
+            goal_state: string | null;
+            /** Goal State Source */
+            goal_state_source: string;
+            /** Parent Goal Id */
+            parent_goal_id: string | null;
+            /** Project Id */
+            project_id: string | null;
+            /** Run Count */
+            run_count: number;
+            /** Runs */
+            runs: components["schemas"]["GoalRunEvidence"][];
+            /** Selected Graphs */
+            selected_graphs: components["schemas"]["GoalSelectedGraph"][];
+            /** Stop Condition */
+            stop_condition: string | null;
+            /** Stop Conditions */
+            stop_conditions: string[];
+            /** Subgoals */
+            subgoals: string[];
+            /** Success Condition */
+            success_condition: string | null;
+            /** Success Conditions */
+            success_conditions: string[];
+            /** Unmatched Pipelines */
+            unmatched_pipelines: string[];
+            /** Workspace Id */
+            workspace_id: string | null;
+        };
+        /**
+         * GoalRunEvidence
+         * @description Transport projection of canonical Run evidence, not a lifecycle owner.
+         */
+        GoalRunEvidence: {
+            /** Actor Principal Id */
+            actor_principal_id: string | null;
+            /** Canonical Run Id */
+            canonical_run_id: string;
+            /** Dag Id */
+            dag_id: string;
+            /** Error */
+            error: string | null;
+            /** Finished At */
+            finished_at: number | null;
+            /** Goal Revision */
+            goal_revision: string;
+            /** Graph Id */
+            graph_id: string | null;
+            /** Graph Name */
+            graph_name: string | null;
+            /** Parent Node Run Id */
+            parent_node_run_id: string | null;
+            /** Parent Run Id */
+            parent_run_id: string | null;
+            /** Persona Id */
+            persona_id: string | null;
+            /** Provenance */
+            provenance: {
+                [key: string]: unknown;
+            };
+            /** Run Id */
+            run_id: string;
+            /** Started At */
+            started_at: number | null;
+            /** Status */
+            status: string;
+        };
+        /** GoalSelectedGraph */
+        GoalSelectedGraph: {
+            /** Graph Id */
+            graph_id: string;
+            /** Name */
+            name: string | null;
+        };
         /** GrantPermissionsBody */
         GrantPermissionsBody: {
             /** Permissions */
@@ -6265,8 +6494,25 @@ export interface components {
         };
         /** MCPServer */
         MCPServer: {
+            /** Allowed Tools */
+            allowed_tools?: string[];
+            /**
+             * Approved
+             * @default false
+             */
+            approved: boolean;
+            /**
+             * Approved By
+             * @default
+             */
+            approved_by: string;
             /** Capabilities */
             capabilities?: string[];
+            /**
+             * Content Hash
+             * @default
+             */
+            content_hash: string;
             /** Description */
             description: string;
             /** Id */
@@ -6278,6 +6524,11 @@ export interface components {
             /** Name */
             name: string;
             /**
+             * Provenance
+             * @default
+             */
+            provenance: string;
+            /**
              * Status
              * @enum {string}
              */
@@ -6287,6 +6538,11 @@ export interface components {
              * @default 0
              */
             tools_count: number;
+            /**
+             * Trust Tier
+             * @default t3
+             */
+            trust_tier: string;
             /** Url */
             url: string;
             /**
@@ -6304,6 +6560,11 @@ export interface components {
              * @default general
              */
             category: string;
+            /**
+             * Content Hash
+             * @default
+             */
+            content_hash: string;
             /** Description */
             description: string;
             /** Id */
@@ -6902,6 +7163,11 @@ export interface components {
             /** Secret */
             secret: string;
         };
+        /** SetWorkspaceAgentPersonaBody */
+        SetWorkspaceAgentPersonaBody: {
+            /** Persona Template Id */
+            persona_template_id: string;
+        };
         /** SettingsModel */
         SettingsModel: {
             /**
@@ -7468,6 +7734,23 @@ export interface components {
             updated_at: string;
             /** Voice Tone Override */
             voice_tone_override?: string | null;
+        };
+        /**
+         * WorkspaceAgentPersonaResponse
+         * @description The one Workspace Agent's identity + current persona (#2277 / #1037).
+         */
+        WorkspaceAgentPersonaResponse: {
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Persona Template Id */
+            persona_template_id: string;
+            /** Workspace Agent Id */
+            workspace_agent_id: string;
+            /** Workspace Id */
+            workspace_id: string;
         };
         /** WorkspaceFeedbackBody */
         WorkspaceFeedbackBody: {
@@ -9273,7 +9556,9 @@ export interface operations {
     };
     list_sessions_v1_chat_sessions_get: {
         parameters: {
-            query?: never;
+            query: {
+                workspace_id: string;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -9287,6 +9572,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ChatSessionSummary"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
@@ -12209,6 +12503,41 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    approve_server_v1_mcp_servers__server_id__approve_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                server_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ApproveServerBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MCPServer"];
+                };
             };
             /** @description Validation Error */
             422: {
@@ -16190,6 +16519,72 @@ export interface operations {
             };
         };
     };
+    get_workspace_agent_v1_workspaces__workspace_id__agent_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspace_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkspaceAgentPersonaResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    put_workspace_agent_persona_v1_workspaces__workspace_id__agent_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspace_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SetWorkspaceAgentPersonaBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkspaceAgentPersonaResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     get_workspace_attention_v1_workspaces__workspace_id__attention_get: {
         parameters: {
             query?: never;
@@ -16245,6 +16640,71 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PersonaFeedback"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_goals_v1_workspaces__workspace_id__goals_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                workspace_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GoalInspectionView"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_goal_v1_workspaces__workspace_id__goals__goal_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspace_id: string;
+                goal_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GoalInspectionView"];
                 };
             };
             /** @description Validation Error */
