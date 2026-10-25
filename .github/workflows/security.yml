@@ -286,13 +286,22 @@ jobs:
           --load --cache-from type=gha,scope=engine-research
           --cache-to type=gha,scope=engine-research,mode=max .
 
+      # The scope carries a `-r2` rotation (PR #2283, CI run 40091186336 job
+      # 120864018186): `--no-cache-filter runtime-apt` forces the apt stage to
+      # re-execute, but the scan of the freshly loaded image still reported the
+      # pre-advisory libbrotli1 1.1.0-2+b7 while the same build's own log showed
+      # deb13u1 unpacked — a stale result read out of this week-old cache scope
+      # is the only state source that can carry that layer, and it is the same
+      # replay class #795 closed at instruction level. Rotation severs every
+      # cached vertex under the old scope; a cache miss rebuilds, so the worst
+      # case is one cold build per workflow.
       - name: Build maistro-rsi-runner image
         run: >-
           scripts/buildx-build-retry.sh --
           -f Dockerfile.rsi-runner -t "maistro-rsi-runner:pr-${CANDIDATE_TAG}"
           --no-cache-filter runtime-apt
-          --load --cache-from type=gha,scope=rsi-runner
-          --cache-to type=gha,scope=rsi-runner,mode=max .
+          --load --cache-from type=gha,scope=rsi-runner-r2
+          --cache-to type=gha,scope=rsi-runner-r2,mode=max .
 
       - name: Verify live Python packages and Conductor identity contract
         run: |

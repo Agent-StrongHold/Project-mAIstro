@@ -72,6 +72,11 @@ services:
       #   MAISTRO_ROUTER_API_KEY=dev-stub docker compose -f \
       #     docker-compose.test.yml --profile test up --build api-tests
       - "MAISTRO_ROUTER_API_KEY=${MAISTRO_ROUTER_API_KEY:?set a throwaway harness key, e.g. MAISTRO_ROUTER_API_KEY=dev-stub — it authenticates nothing, the harness has no gateway}"
+      # Shortens elevation grants so authorization.spec.ts can drive a real
+      # grant to its server-side expiry inside the CI test budget. The route
+      # clamps this override so it can only shorten, never extend, the
+      # 15-minute default (#373).
+      - HIVE_ELEVATION_TTL_SECONDS=8
     # No curl/shell in the `hive` runtime image (Chainguard/Wolfi, near-zero
     # CVEs — see Dockerfile). Its own HEALTHCHECK already uses Python's
     # urllib for exactly this reason; mirror that here rather than `curl`,
