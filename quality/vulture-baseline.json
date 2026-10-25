@@ -563,27 +563,6 @@
       ]
     },
     {
-      "id": "fastapi-app-state",
-      "category": "framework_decorator_surface",
-      "owner": "@BlakeMatthews-dev",
-      "path_regex": "packages/maistro-server/src/maistro_server/main\\.py|packages/hive-conductor/backend/main\\.py",
-      "message_regex": "unused attribute",
-      "source_contains_any": [
-        "app.state"
-      ],
-      "rationale": "FastAPI/Starlette app.state attributes are dynamic framework state consumed through the application object.",
-      "findings": []
-    },
-    {
-      "id": "hive-service-api-surface",
-      "category": "dynamic_import_surface",
-      "owner": "@BlakeMatthews-dev",
-      "path_regex": "packages/hive-conductor/backend/services/.*\\.py|packages/hive-conductor/cage/.*\\.py",
-      "message_regex": "unused (function|class|method|variable|attribute)",
-      "rationale": "Hive services are invoked from routes, websocket handlers, chat/tool dispatch, and operational scripts; this category preserves service APIs pending narrower per-service baselines.",
-      "findings": []
-    },
-    {
       "id": "maistro-cli-command-surface",
       "category": "dynamic_import_surface",
       "owner": "@BlakeMatthews-dev",
@@ -1208,15 +1187,6 @@
       ]
     },
     {
-      "id": "pytest-discovered-test-surface",
-      "category": "test_discovery_surface",
-      "owner": "@BlakeMatthews-dev",
-      "path_regex": ".*/tests?/.*\\.py|tests/.*\\.py",
-      "message_regex": "unused (function|class|method|variable|attribute)",
-      "rationale": "Pytest discovers test functions, fixtures, and helper classes by naming and fixture injection.",
-      "findings": []
-    },
-    {
       "id": "protocol-and-adapter-port",
       "category": "public_extension_point",
       "owner": "@BlakeMatthews-dev",
@@ -1264,7 +1234,6 @@
         "packages/maistro-design/src/maistro_design/engine.py::unused method 'run_discovery'",
         "packages/maistro-design/src/maistro_design/engine.py::unused property 'context_trust_tier'",
         "packages/maistro-design/src/maistro_design/engine.py::unused property 'systems'",
-        "packages/maistro-design/src/maistro_design/nodes.py::unused class 'DesignOrchestrateNode'",
         "packages/maistro-design/src/maistro_design/protocols.py::unused method 'list_available'",
         "packages/maistro-design/src/maistro_design/protocols.py::unused method 'list_by_mode'",
         "packages/maistro-design/src/maistro_design/protocols.py::unused method 'list_by_org'",
