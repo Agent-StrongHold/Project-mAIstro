@@ -276,6 +276,7 @@ async def test_goal_reader_rides_the_container_end_to_end() -> None:
     with pytest.raises(GoalNotVisible):
         await seam.get_goal(goal.goal_id, principal_id="nobody-else")
 
+
 async def test_required_postgres_refuses_memory_fallback() -> None:
     from maistro.goals.wiring import wire_goal_store
 
@@ -291,7 +292,5 @@ async def test_required_postgres_refuses_sqlite_fallback(tmp_path) -> None:
     async with aiosqlite.connect(tmp_path / "forbidden-goals.db") as conn:
         with pytest.raises(RuntimeError, match="requires PostgreSQL"):
             await wire_goal_store(conn, require_postgres=True)
-        async with conn.execute(
-            "SELECT name FROM sqlite_master WHERE type = 'table'"
-        ) as cursor:
+        async with conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'") as cursor:
             assert await cursor.fetchall() == []
