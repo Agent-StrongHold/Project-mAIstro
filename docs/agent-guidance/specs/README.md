@@ -2,7 +2,7 @@
 
 Progressive-disclosure entry point for the complete SPEC corpus.
 
-**Coverage:** 213/213 SPEC files indexed by exact filename, 0 missing.
+**Coverage:** 227 SPEC files tracked (`docs/specs/*.md`, excluding this corpus's `README.md`); 213 have domain-index entries. The 14 that landed after the audit snapshot are accounted for — enumerated with front-matter status, pending domain-index folding — under **Post-snapshot arrivals** in [ADR-SPEC-RECONCILIATION.md](../ADR-SPEC-RECONCILIATION.md).
 
 ## How to use
 

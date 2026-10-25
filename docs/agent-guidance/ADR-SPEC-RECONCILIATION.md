@@ -1,9 +1,10 @@
 # ADR ↔ SPEC Cross-Corpus Reconciliation
 
-**Audit coverage**
-- ADR decision files: **200/200 indexed**
-- SPEC files: **213/213 indexed**
-- Missing exact-file references: **0**
+**Audit coverage** (exact-filename accounting against this branch's tree)
+
+- ADR decision files (`docs/adr/*.md`, excluding `ADR-INDEX.md`, `ADR-000-template.md`, `DECISION-BACKLOG.md`, `OUT-OF-SCOPE.md`): **215 tracked; 200 domain-indexed**
+- SPEC files (`docs/specs/*.md`, excluding `README.md`): **227 tracked; 213 domain-indexed**
+- The audit snapshot itself covered 200/200 ADR decision files and 213/213 SPEC files with 0 missing. Fifteen ADRs and fourteen SPECs landed on `develop` after that snapshot (all present at this branch's base), so the corpus outgrew the audit as written. They are accounted for — enumerated with their verbatim front-matter status under **Post-snapshot arrivals** below — but are not yet folded into their domain indexes. Folding them in is the immediate next action before any "fully indexed" claim is restored.
 
 ## Highest-priority finding: canonical architecture is under-evidenced
 
@@ -120,3 +121,43 @@ Legacy requirements may be harvested, but these mechanisms are stale or deprecat
 When a current canonical spec and an older compatibility-oriented spec conflict, prefer the canonical architecture and delete the obsolete path after useful behavior is migrated.
 
 No pre-1.0 requirement gets architectural weight merely because it preserves an old unshipped interface.
+
+## Post-snapshot arrivals (accounted, pending domain-index folding)
+
+These files exist in `docs/adr/` / `docs/specs/` but have no domain-index entry yet. Each entry cites
+only the file's own front matter; statuses are recorded verbatim and no lifecycle claim is made here.
+
+ADR decision files (15):
+
+- [ADR-092926-7a01](../adr/ADR-092926-7a01-closed-loop-design-process.md) — status: Proposed
+- [ADR-093026-7a90](../adr/ADR-093026-7a90-design-process-is-a-first-class-object-graph.md) — status: Proposed
+- [ADR-100126-5445](../adr/ADR-100126-5445-a-learning-promotes-on-evidence-not-on-hits.md) — status: Accepted
+- [ADR-100126-8c2d](../adr/ADR-100126-8c2d-validated-collective-learning.md) — status: Proposed
+- [ADR-100126-a9c4](../adr/ADR-100126-a9c4-one-governed-promotion-contract.md) — status: Accepted
+- [ADR-100126-b118](../adr/ADR-100126-b118-dag-execution-budget-policy.md) — status: Proposed
+- [ADR-100126-f9d6](../adr/ADR-100126-f9d6-engine-lifecycle-gates-health-ready.md) — status: Accepted
+- [ADR-100526-9c55](../adr/ADR-100526-9c55-extension-contract-versioning-and-deprecation-policy.md) — status: Implemented
+- [ADR-100526-be49](../adr/ADR-100526-be49-connector-source-sdk.md) — status: Proposed
+- [ADR-100826-c0e1](../adr/ADR-100826-c0e1-coin-ledger-billing-identity.md) — status: Accepted
+- [ADR-101726-e4bb](../adr/ADR-101726-e4bb-verification-aware-execution-contracts.md) — status: Proposed
+- [ADR-101826-2a63](../adr/ADR-101826-2a63-biscuit-verification-adapter.md) — status: Proposed
+- [ADR-103](../adr/ADR-103-knowledge-stage-ladder.md) — status: Accepted
+- [ADR-104](../adr/ADR-104-extension-context-least-authority.md) — status: Accepted
+- [ADR-105](../adr/ADR-105-provider-adapter-sdk.md) — status: Accepted
+
+SPEC files (14):
+
+- [SPEC-092826-a774](../specs/SPEC-092826-a774-creative-brief-contract.md) — status: AC
+- [SPEC-092826-a780](../specs/SPEC-092826-a780-versioned-creative-artifact-state.md) — status: AC
+- [SPEC-092926-7a01](../specs/SPEC-092926-7a01-closed-loop-design-process.md) — status: Proposed
+- [SPEC-092926-7a02](../specs/SPEC-092926-7a02-closed-loop-design-process-contract.md) — status: Proposed
+- [SPEC-093026-7a90](../specs/SPEC-093026-7a90-closed-loop-design-process-contract.md) — status: Proposed
+- [SPEC-100126-5445](../specs/SPEC-100126-5445-learning-epistemics.md) — status: Tests
+- [SPEC-100126-a9c4](../specs/SPEC-100126-a9c4-canonical-promotion-contract.md) — status: AC
+- [SPEC-100126-b779](../specs/SPEC-100126-b779-cross-artifact-consistency-evaluation.md) — status: AC
+- [SPEC-100126-c041](../specs/SPEC-100126-c041-workspace-cutover-phase-0-contract.md) — status: Proposed
+- [SPEC-100426-b103](../specs/SPEC-100426-b103-knowledge-stage-ladder.md) — status: Accepted
+- [SPEC-100826-c0e1](../specs/SPEC-100826-c0e1-coin-ledger-billing-identity.md) — status: AC
+- [SPEC-282](../specs/SPEC-282-self-generated-curriculum.md) — status: Proposed
+- [SPEC-283](../specs/SPEC-283-learning-lifecycle.md) — status: Accepted
+- [SPEC-284](../specs/SPEC-284-provider-adapter-sdk.md) — status: Implemented
