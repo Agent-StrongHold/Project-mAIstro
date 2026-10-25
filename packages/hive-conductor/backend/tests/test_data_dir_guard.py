@@ -282,8 +282,10 @@ def test_fs_type_returns_deepest_containing_mount(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     fs_type = _fs_type
-    assert fs_type(Path("/dev/shm/conductor"), table) == "tmpfs"
-    assert fs_type(Path("/dev/shm/work/conductor"), table) == "tmpfs"
+    # These are synthetic mount-table keys looked up against the fixture above,
+    # never filesystem targets, so the hardcoded tmp path is the point of the test.
+    assert fs_type(Path("/dev/shm/conductor"), table) == "tmpfs"  # nosec B108
+    assert fs_type(Path("/dev/shm/work/conductor"), table) == "tmpfs"  # nosec B108
     assert fs_type(Path("/data/conductor"), table) == "overlay"
     assert fs_type(Path("/sys/class/block"), table) == "sysfs"
     assert fs_type(Path("/nonexistent"), tmp_path / "absent") is None

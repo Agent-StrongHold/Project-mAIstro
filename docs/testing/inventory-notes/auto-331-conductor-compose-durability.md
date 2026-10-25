@@ -2,6 +2,7 @@
 inventory-delta:
   packages/hive-conductor/backend/tests: +19
   packages/maistro-core/tests: +24
+  tests/: +4
 ---
 
 # #331 Conductor Compose data-directory durability
@@ -98,6 +99,16 @@ real and testable.
   pass, in-container unstattable-dir refusal, escape hatch (still probing
   writability), no mount requirement on a host, and Foundation.start
   refusing before any subsystem initializes.
+- `tests/test_compose_durability_harness.py` (new, 3 tests): the CI
+  durability harness must resolve the Conductor image by service, not by
+  `head -1` over every service's image. `+4` in the `tests` suite covers
+  these three plus the one node ID that this head already collected over
+  the recorded expectation before this file existed (measured: 5889
+  collected vs 5888 expected with the new file moved aside). No file under
+  `tests/` other than `tests/test_bump_version.py` differs from develop on
+  this branch, and that edit changes a parametrized *value*, not the case
+  count — so the extra node ID is not attributable to a branch change here
+  and is recorded rather than left as silent drift.
 
 ## Known pre-existing, out of scope
 
@@ -387,3 +398,75 @@ anything on disk is touched; `zlib.error` joins the refusal tuple.
   mypy over `packages/maistro-core/src` → clean; no vulture-observable
   dead code introduced (`_GZIP_DRAIN_CHUNK` and the `zlib` import are
   both used by the drained path).
+
+## CI-repair round (SAST / Bandit + harness image resolution), head 6ea8bec3b
+
+Two defects, both found by running the gates rather than by re-reading the
+previous round's claims.
+
+**1. `SAST / Bandit` failed the strict 0-Medium+ gate (2 findings).**
+Reproduced locally with CI's exact arguments (`bandit -r
+packages/maistro-core/src packages/hive-conductor/backend
+packages/maistro-server/src -ll --confidence-level=medium`):
+
+```
+packages/hive-conductor/backend/tests/test_data_dir_guard.py:285 [B108] MEDIUM
+packages/hive-conductor/backend/tests/test_data_dir_guard.py:286 [B108] MEDIUM
+```
+
+Both are the synthetic mount-table keys in
+`test_fs_type_returns_deepest_containing_mount` (`Path("/dev/shm/conductor")`,
+`Path("/dev/shm/work/conductor")`): they are looked up against the fixture's
+`/proc/self/mounts` text and never used as filesystem targets, which is the
+whole point of the case. Fixed the way this repo already handles the same
+shape (`# nosec B108` plus the reason, cf. `tests/test_cli_routes.py:44`,
+`services/rsi_container_dispatch.py:121`), not by hiding the literal behind a
+variable. Re-run: **0 Medium+ findings**, exit 0.
+
+**2. The durability harness itself was flaky — the acceptance scenario failed
+for a reason unrelated to state loss.** `scripts/verify-compose-durability.sh`
+resolved its helper image with `$COMPOSE config --images | head -1`. #331 added
+the `conductor-layout-check` one-shot (`image: alpine:3.20`), so that list has
+two entries and `docker compose config --images` emits them in Go map order —
+measured 5 alpine-first out of 12 invocations on this host. On the alpine-first
+half, the run died in the backup step with:
+
+```
+docker: Error response from daemon: ... exec: "maistro": executable file not found in $PATH
+```
+
+because every `docker run --entrypoint maistro "$IMAGE"` (inventory, backup,
+restore) then targeted alpine. Fixed by resolving the image from the container
+the script has just proved healthy —
+`docker inspect --format '{{.Config.Image}}' "$($COMPOSE ps -q hive-conductor)"`
+— which names the Conductor service's image explicitly and is independent of
+map order.
+
+- New test `tests/test_compose_durability_harness.py` (3 tests) pins the
+  property with a stub `docker`: `config --images` reports alpine first,
+  `inspect` reports the Conductor image, and the script's own `IMAGE=` line
+  (extracted from the script, so the test tracks the real code path) must
+  resolve to the Conductor image. Shown to fail against the regression it
+  names: with the `IMAGE=` line reverted to
+  `$COMPOSE config --images | head -1`, 2 of 3 tests fail
+  (`test_harness_selects_the_conductor_image_not_another_service`,
+  `test_harness_no_longer_lists_all_compose_images`); with the fix, 3 pass.
+- Full scenario re-executed with the exact script the CI job runs
+  (`CONDUCTOR_PORT=18431`, docker on the mirrored socket): **34 checks
+  passed, 0 failed, exit 0** — both guard refusals
+  (`DATA_DIR_UNWRITABLE`, `DATA_DIR_EPHEMERAL`), create via
+  `/v1/setup/complete`, writes (settings theme, `PUT /v1/credentials/github`),
+  volume inventory (`state.db`, `credential_master.key`,
+  `user_credentials.enc`, uid 65532 on both levels), `down`/`up` recreate,
+  image-rebuild recreate, reads after each (session cookie, login, setting,
+  decrypting credential store), owner-only 0600 backup archive, and restore
+  onto a destroyed volume.
+- Gates re-run at this head: `uv run ruff check .` and
+  `uv run ruff format --check .` clean; `check-vulture-baseline.py
+  packages/*/src --min-confidence 60 --exclude '*/third_party/*'` → 1297
+  reviewed identities → 1297 findings, exit 0 (no ledger amendment needed);
+  `check-compose-resources.py` / `check-compose-secrets.py` /
+  `check-workflow-inventory.py` / `check-workflow-write-safety.py` all clean;
+  `gitleaks git --redact --log-opts=<develop>..HEAD` → no leaks;
+  `semgrep --config tools/semgrep/maistro-rules.yaml` over the changed trees →
+  0 findings.

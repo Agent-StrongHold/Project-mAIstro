@@ -114,7 +114,15 @@ require "service healthy on first boot" wait_ready 20
 OWNED=1  # stack is up and is unambiguously ours (isolated project name)
 
 note "guard: startup must refuse an unwritable data directory"
-IMAGE="$($COMPOSE config --images | head -1)"
+# Resolve the Conductor image from the container we just proved healthy — NOT
+# from `$COMPOSE config --images | head -1`. That command lists the image of
+# every service in the file, including conductor-layout-check's alpine:3.20,
+# in Go map order: `head -1` returned alpine on roughly 40% of runs, and every
+# later `docker run --entrypoint maistro "$IMAGE"` then died with
+# `exec: "maistro": executable file not found in $PATH` — a flake in the
+# backup/restore half of the scenario, not a state-loss signal.
+IMAGE="$(docker inspect --format '{{.Config.Image}}' "$($COMPOSE ps -q hive-conductor)")"
+test -n "$IMAGE" || { echo "could not resolve the Conductor image" >&2; exit 1; }
 GUARD_UNWRITABLE_LOG="${BACKUP_DIR}/guard-unwritable.log"
 GUARD_RC=0
 timeout 240 docker run --rm --tmpfs /data:ro "$IMAGE" >"$GUARD_UNWRITABLE_LOG" 2>&1 || GUARD_RC=$?
