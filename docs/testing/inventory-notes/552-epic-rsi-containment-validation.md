@@ -392,3 +392,68 @@ the dependent Quality-gate summary — resolves only when an owner lands
 the promotion-surface tolerances (or a deliberate protection tier) on
 develop under the two-merge rule, after which this branch requeues
 **unchanged**. Same resolution shape as the #1572 checkpoint.
+
+## Round 3 (2026-10-25): develop sync to the M1-convergence tip + first-hand wall re-derivation at the new merge base
+
+origin/develop moved `4de7e906` → `2014ab888` (23 commits: "[MILESTONE M1]
+Full architecture convergence (#2262)", "M1 — Burn down reachability by
+coherent subsystem (#2302)", the Workspace/Capabilities UI shells, DevSkim
+triage). Merged into this branch as `0c52b2458`; the only content conflict
+was `uv.lock` (both sides re-locked the same unchanged pyprojects; ours was
+a stale beartype 0.22.9/0.23.1 fork from an earlier repair, develop's is a
+clean single 0.23.1 superset — setuptools 84.2.1 / fastmcp 4.1.3 /
+openapi-pydantic 0.6.0 identical on both sides), resolved to develop's
+coherent lock and proven end-to-end by the CI lock-reconciliation script
+(`check-image-lock-reconciliation.py`: "ships exactly the locked set",
+72 distributions) against the rebuilt hive-conductor image.
+
+**The blocked cluster was re-derived first-hand at the NEW merge base —
+develop's movement did not lift it.** `check-promotion-surface.py` exits 0
+on `2014ab888` itself (verified in a detached worktree of the canonical
+clone), so the failure is entirely this branch's delta: the #50-mandated
+canonical-runs wiring drags 387 uncovered core modules into the promotion
+closure (74 tolerated → 461 unprotected, per
+`check-promotion-surface-provenance.py` at RATCHET_BASE_REV=origin/develop).
+Measured with the checker's own graph: importing anything under
+`maistro.graph`/`maistro.runs.model` executes `maistro.graph/__init__` by
+prefix resolution (563-module closure, 562 uncovered); even the cheapest
+core import (`maistro.runs.sources`, `maistro.graph.definitions`) adds an
+uncovered finding of its own, so zero-core-imports is the only passing
+shape for the RSI chain — i.e. the convergence cannot be wired from any
+promotion root without the flood. Pattern escalation stays pinned out by
+`TestItStaysASurfaceAndNotAWildcard` (learnings/store.py, routes/chat.py,
+canvas types must not match), and the merge base carries no grant for
+runs/graph/backlog/workspaces (its 50 promotion-surface rows are the
+#55/#1362 effect-door set: agents/capabilities/events/observability/
+providers/quota/resilience/types). Moving the wiring to an undeclared entry
+point would be the exact "walk starts somewhere smaller and reports a clean
+tree" evasion the checker documents, so it was not taken.
+
+**Everything repairable re-proven green at `0c52b2458`** (CI-exact argv
+where CI pins one): ruff check + format (3507 files), CI ten-package mypy
+(939 files, no issues), radon 127==127, xenon 127 blocks == baseline with 0
+module/0 average violations, vulture 1297==1297 (develop's burn-down took
+the shared ledger from 1302), shipped-surface-truth complete,
+`check-ratchet-provenance.py` all ratchets OK except promotion-surface,
+frontend-typed-client ok, diff-coverage ok vs `origin/develop` (fresh
+`coverage run --branch` producers: rsi 1792 passed/4 skipped, core backlog
+97 passed/20 skipped → `coverage xml` → every measured changed file ≥90%
+lines / ≥80% branch arcs), RSI suite green against the merged develop
+(no API drift in the canonical seams), promotion-surface checker tests
+50 passed / 3 failed (the three real-tree tests, same wall). Container
+gate: `npm audit` 0 vulnerabilities and `npm ci` + `npm run build` exit 0
+in clean scratch copies of BOTH frontends on the merged locks; full
+hive-conductor image and maistro-rsi-runner image build exit 0; Conductor
+identity smoke passes in-image (`identity=operational python=3.13.16`);
+trivy 0.73.0 (CI's pinned version) HIGH/CRITICAL ignore-unfixed with
+`.trivyignore.yaml`: exit 0 on both built images; publish-set 87% floor
+carried by the same bounded argument as round 2 (every changed file ≥90%
+can only raise an aggregate the base passes).
+
+**Disposition (unchanged, now twice-derived): the promotion-surface cluster
+is externally owned.** The owner must land the promotion-surface tolerances
+for the canonical-convergence closure on develop (baseline rows + matching
+`ratchet-authorizations.json` grant, two-merge rule), after which this
+branch requeues unchanged. Until that lands, `check-promotion-surface.py`,
+the three real-tree tests, and the promotion-surface component of
+exact-debt-ledger stay red by construction.
