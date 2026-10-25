@@ -44,6 +44,45 @@ _STRATEGY_REGISTRY: dict[str, Any] = {
 }
 
 
+async def _upsert_agent_soul(
+    prompt_manager: Any,
+    name: str,
+    content: str,
+    *,
+    label: str = "production",
+) -> list[Any] | None:
+    """Upsert a soul prompt, recording a structured diff when production content changes.
+
+    Roots ``maistro.prompts.diff.compute_diff`` on the agent factory seed/load
+    path (ADR-060-shaped prompt compare; disposition root).
+    """
+    from maistro.prompts.diff import compute_diff
+
+    previous = ""
+    getter = getattr(prompt_manager, "get", None)
+    if callable(getter):
+        previous = await getter(name, label=label) or ""
+    diff: list[Any] | None = None
+    if previous and previous != content:
+        diff = compute_diff(
+            previous,
+            content,
+            old_label=f"{name}@{label}",
+            new_label="incoming",
+        )
+        adds = sum(1 for line in diff if line.op == "add")
+        removes = sum(1 for line in diff if line.op == "remove")
+        logger.info(
+            "Prompt soul change for %s: +%d -%d lines (%d diff entries)",
+            name,
+            adds,
+            removes,
+            len(diff),
+        )
+    await prompt_manager.upsert(name, content, label=label)
+    return diff
+
+
 def register_strategy(name: str, cls: type) -> None:
     _STRATEGY_REGISTRY[name] = cls
 
@@ -381,7 +420,8 @@ async def _load_agents_from_db(
         souls = await registry.souls()
         agents: dict[str, Agent] = {}
         for identity in identities:
-            await prompt_manager.upsert(
+            await _upsert_agent_soul(
+                prompt_manager,
                 f"agent.{identity.name}.soul",
                 souls.get(identity.name, ""),
                 label="production",
@@ -496,7 +536,8 @@ async def _seed_agent_directory(
     rendered_preamble = _render_preamble(preamble, manifest)
     full_soul = rendered_preamble + soul
 
-    await prompt_manager.upsert(
+    await _upsert_agent_soul(
+        prompt_manager,
         f"agent.{identity.name}.soul",
         full_soul,
         label="production",
