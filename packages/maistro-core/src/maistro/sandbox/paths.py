@@ -233,7 +233,7 @@ def make_beneath_guest_readable(root: Path | int, path: str, *, mount: str = "/w
     try:
         for part in parts[:-1]:
             next_fd = os.open(part, os.O_RDONLY | os.O_DIRECTORY | _NOFOLLOW, dir_fd=fd)
-            os.fchmod(next_fd, 0o755)
+            os.fchmod(next_fd, 0o755)  # nosec B103 - guest-readable dirs under sandbox bind  # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions
             os.close(fd)
             fd = next_fd
         file_fd = os.open(parts[-1], os.O_RDONLY | _NOFOLLOW, dir_fd=fd)

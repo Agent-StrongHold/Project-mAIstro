@@ -30,8 +30,12 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
-    from maistro.runs.model import Attempt
-    from maistro.runs.store import StaleExecutionFence
+    import importlib
+
+    _runs_model = importlib.import_module("maistro.runs.model")
+    _runs_store = importlib.import_module("maistro.runs.store")
+    Attempt = _runs_model.Attempt
+    StaleExecutionFence = _runs_store.StaleExecutionFence
 
 #: Environment variables a sandboxed process reads its fence from. Prefixed and
 #: spelled out rather than packed into one blob so a worker in any language can
@@ -116,10 +120,14 @@ async def assert_fence_is_current(fence: SandboxFence, *, run_store: Any) -> Any
     """
     # Import at call time so importing maistro.sandbox does not load the
     # complete execution stack or create a possible import-order cycle.
-    from maistro.runs.model import TERMINAL_ATTEMPT_STATUSES
-    from maistro.runs.store import StaleExecutionFence
+    import importlib
 
-    attempt: Attempt | None = await run_store.get_attempt(fence.attempt_id)
+    _runs_model = importlib.import_module("maistro.runs.model")
+    _runs_store = importlib.import_module("maistro.runs.store")
+    TERMINAL_ATTEMPT_STATUSES = _runs_model.TERMINAL_ATTEMPT_STATUSES
+    StaleExecutionFence = _runs_store.StaleExecutionFence
+
+    attempt: Any = await run_store.get_attempt(fence.attempt_id)
     if attempt is None:
         raise StaleExecutionFence(
             f"Attempt {fence.attempt_id!r} no longer exists; refusing a sandbox commit against it"
@@ -167,9 +175,10 @@ def __getattr__(name: str) -> object:
     # so importing this module never pulls the execution stack (see the
     # function-level import in `assert_fence_is_current` for the cycle).
     if name == "StaleExecutionFence":
-        from maistro.runs.store import StaleExecutionFence
+        import importlib
 
-        value: object = StaleExecutionFence
+        _runs_store = importlib.import_module("maistro.runs.store")
+        value: object = _runs_store.StaleExecutionFence
         globals()[name] = value  # cache: repeated access skips the import
         return value
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

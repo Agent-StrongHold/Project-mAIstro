@@ -174,6 +174,15 @@ class KataSandboxBackend:
             "--workdir",
             "/workspace",
         ]
+        argv += self._authorized_mount_args(config)
+        argv += self._read_only_mount_args(config)
+        argv += self._network_args(network)
+        argv += self._env_args(config)
+        argv += [config.image or self._image, "sleep", str(max(config.timeout_s, 1))]
+        return argv
+
+    def _authorized_mount_args(self, config: SandboxConfig) -> list[str]:
+        result: list[str] = []
         for index, extra in enumerate(
             authorized_host_mounts(
                 config.writable_paths, allowed_roots=self._allowed_writable_roots
@@ -182,24 +191,37 @@ class KataSandboxBackend:
             # Same contract as the Bubblewrap backend: expose a stable guest
             # name, not the host pathname; the source was canonicalized under
             # an explicit host-owned root first (#1198).
-            argv += ["--volume", f"{extra}:/work-extra-{index}:rw"]
+            result += ["--volume", f"{extra}:/work-extra-{index}:rw"]
+        return result
+
+    @staticmethod
+    def _read_only_mount_args(config: SandboxConfig) -> list[str]:
+        result: list[str] = []
         for ro in config.read_paths:
             # Read-only host exposure from a host-owned profile (#2014); never
             # a writable bind, so it cannot widen the sandbox's write surface.
             # A bind source must already exist, so a bogus grant fails closed
             # instead of letting the daemon materialize host directories.
-            argv += ["--mount", f"type=bind,src={ro},dst={ro},readonly"]
+            result += ["--mount", f"type=bind,src={ro},dst={ro},readonly"]
+        return result
+
+    @staticmethod
+    def _network_args(network: EgressMode) -> list[str]:
         if network is EgressMode.DENY:
-            argv.append("--network=none")
-        elif network is EgressMode.HOST:
-            argv.append("--network=host")
+            return ["--network=none"]
+        if network is EgressMode.HOST:
+            return ["--network=host"]
+        return []
+
+    @staticmethod
+    def _env_args(config: SandboxConfig) -> list[str]:
+        result: list[str] = []
         for key, value in sorted(config.env.items()):
-            argv += ["--env", f"{key}={value}"]
+            result += ["--env", f"{key}={value}"]
         if config.fence is not None:
             for key, value in sorted(config.fence.to_env().items()):
-                argv += ["--env", f"{key}={value}"]
-        argv += [config.image or self._image, "sleep", str(max(config.timeout_s, 1))]
-        return argv
+                result += ["--env", f"{key}={value}"]
+        return result
 
     async def exec(
         self, instance: SandboxInstance, command: list[str], *, timeout_s: int = 120

@@ -105,9 +105,10 @@ def __getattr__(name: str) -> Any:
     # The one lazy slot (see module docstring). Anything else is a genuine
     # AttributeError, so typos in eagerly-imported names still fail loudly.
     if name == "StaleExecutionFence":
-        from maistro.runs.store import StaleExecutionFence
+        import importlib
 
-        value = StaleExecutionFence
+        _runs_store = importlib.import_module("maistro.runs.store")
+        value = _runs_store.StaleExecutionFence
         globals()[name] = value  # cache: repeated access skips the import
         return value
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
