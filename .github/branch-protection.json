@@ -38,7 +38,8 @@
     "develop": {
       "$comment": [
         "Canonical development branch. PR-gated, zero approvals, linear history.",
-        "2026-10-25: classic branch-protection layer cleared live (stale ghost contexts + the unsatisfiable 1-approval requirement). `required_status_checks` below remains the offline audit vocabulary for the Pr merge ruleset's required check-runs \u2014 not a dump of the cleared classic API. The ruleset is the live enforcement surface."
+        "2026-10-25: classic branch-protection layer cleared live (stale ghost contexts + the unsatisfiable 1-approval requirement). `required_status_checks` below remains the offline audit vocabulary for the Pr merge ruleset's required check-runs \u2014 not a dump of the cleared classic API. The ruleset is the live enforcement surface.",
+        "gates-ran removed from ruleset.additional_required_checks 2026-10-25: merge queues evaluate check RUNS only, and the Gates Ran publisher emits a commit STATUS by design. The enqueue controller (check-enqueue-merge-queue.py) fail-closed enforces gates-ran at admission."
       ],
       "required_status_checks": {
         "strict": true,
@@ -90,8 +91,7 @@
         "bypass": {
           "OrganizationAdmin": "always",
           "RepositoryRole:admin": "always"
-        },
-        "$comment": "gates-ran removed 2026-10-25: merge queues evaluate check RUNS only, and the Gates Ran publisher emits a commit STATUS by design. The enqueue controller (check-enqueue-merge-queue.py) fail-closed enforces gates-ran at admission."
+        }
       }
     },
     "main": {
