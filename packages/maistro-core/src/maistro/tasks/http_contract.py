@@ -21,7 +21,6 @@ from typing import Literal
 
 WORKSPACE_ID_HEADER = "X-Maistro-Workspace-Id"
 WORKSPACE_SCOPE_SIGNATURE_HEADER = "X-Maistro-Workspace-Signature"
-DELEGATION_HEADER = "X-Maistro-Delegation"
 
 #: The standard idempotency-request header for task submission (#1176). The
 #: conventional name, so an ordinary HTTP client's retry policy can carry it
@@ -197,7 +196,6 @@ def verify_workspace_scope_signature(workspace_id: str, signature: str, key: str
 
 
 __all__ = [
-    "DELEGATION_HEADER",
     "IDEMPOTENCY_KEY_HEADER",
     "WORKSPACE_ID_HEADER",
     "WORKSPACE_SCOPE_SIGNATURE_HEADER",

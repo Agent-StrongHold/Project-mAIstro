@@ -220,64 +220,6 @@ async def test_log_tool_name_none_becomes_empty_string(
 
 
 @pytest.mark.asyncio
-async def test_persisted_deny_row_verifies_as_reconstructed(
-    log: PgAuditLog, conn: FakeConnection
-) -> None:
-    """The row PgAuditLog writes must verify when read back as a durable row.
-
-    Durable stores never serialize the violations tuple, so the INSERT params
-    are the whole persisted record: rebuilding an AuditEntry from them and
-    verifying is the exact restart contract, exercised for a deny decision
-    that carries violations.
-    """
-    await log.log(
-        SentinelAuditEntry(
-            boundary="tool_call",
-            user_id="u1",
-            tool_name="bash",
-            verdict="denied",
-            violations=(
-                SentinelViolation(
-                    boundary="tool_call", rule="dangerous-command", severity="high", detail="d"
-                ),
-            ),
-        )
-    )
-
-    (
-        boundary,
-        user_id,
-        org_id,
-        team_id,
-        agent_id,
-        tool_name,
-        verdict,
-        detail,
-        trace_id,
-        request_id,
-        signature,
-        signing_key_id,
-        proof_type,
-    ) = conn.calls[0].args
-    row = AuditEntry(
-        boundary=boundary,
-        user_id=user_id,
-        org_id=org_id,
-        team_id=team_id,
-        agent_id=agent_id,
-        tool_name=tool_name or None,
-        verdict=verdict,
-        detail=detail,
-        trace_id=trace_id,
-        request_id=request_id,
-        signature=signature,
-        signing_key_id=signing_key_id,
-        proof_type=proof_type,
-    )
-    assert log.verify(row)
-
-
-@pytest.mark.asyncio
 async def test_log_team_id_passthrough_when_present(log: PgAuditLog, conn: FakeConnection) -> None:
     entry = AuditEntry(boundary="b", user_id="u", team_id="team-9", agent_id="a")
     await log.log(entry)

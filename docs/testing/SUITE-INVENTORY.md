@@ -139,10 +139,10 @@ file per change, alongside the delta itself.
 
 | Suite | Runs in CI |
 |---|---|
-| `packages/maistro-core/tests` | `quality.yml` `coverage (no services)` (#654) |
+| `packages/maistro-core/tests` | `ci.yml` |
 | `packages/maistro-registry/tests` | `registry.yml` |
-| `packages/maistro-evolve/tests` | `quality.yml` `coverage (no services)` (#654) |
-| `packages/maistro-rsi/tests` | `quality.yml` `coverage (no services)` (#654) |
+| `packages/maistro-evolve/tests` | `ci.yml` |
+| `packages/maistro-rsi/tests` | `ci.yml` |
 | `packages/maistro-server/tests` | `ci.yml` |
 | `packages/maistro-turing/tests` | `ci.yml` |
 | `packages/maistro-design/tests` | `ci.yml` |

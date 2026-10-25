@@ -48,6 +48,8 @@ from uuid import uuid4
 
 from maistro.sqlite_schema import serialized_schema_upgrade
 
+from maistro.sqlite_schema import serialized_schema_upgrade
+
 if TYPE_CHECKING:
     import aiosqlite
 
@@ -749,13 +751,6 @@ class SqliteInvocationStore:
     async def ensure_schema(self) -> None:
         async with serialized_schema_upgrade(self._conn):
             await self._conn.execute(_SCHEMA)
-            columns = await self._conn.execute("PRAGMA table_info(handler_invocations)")
-            names = {str(row[1]) for row in await columns.fetchall()}
-            for upgrade in _RECEIPT_UPGRADES:
-                added = _upgrade_column(upgrade)
-                if added is not None and added in names:
-                    continue  # column already present
-                await self._conn.execute(upgrade)
 
     async def get(self, trigger_id: str, event_id: int) -> HandlerInvocation | None:
         cursor = await self._conn.execute(

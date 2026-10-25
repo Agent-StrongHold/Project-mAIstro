@@ -372,7 +372,7 @@ class CanvasCanonicalExecution:
                     job.result_paths = paths
                     changed = True
         elif (
-            job.status == JobStatus.RUNNING
+            job.status is JobStatus.RUNNING
             and job.lease_expires_at is not None
             and job.lease_expires_at > datetime.now(UTC)
         ):
@@ -383,13 +383,10 @@ class CanvasCanonicalExecution:
             # let `claim_next_pending` hand the same job to a second worker
             # and dispatch the provider twice. Only the lease reaper
             # (`reap_expired_leases`) may decide a worker is lost; recovery
-            # leaves a live lease alone. (Compared with `==`, not `is`:
-            # `JobStatus` is a StrEnum and a store that hydrates the column
-            # as a plain string must still take this branch -- found live in
-            # the #93 two-worker race, where the guard silently never fired.)
+            # leaves a live lease alone.
             target = job.status
         elif (
-            job.status == JobStatus.RUNNING
+            job.status is JobStatus.RUNNING
             and run.status in {RunStatus.CREATED, RunStatus.QUEUED}
             and job.attempts >= job.max_attempts
         ):
@@ -413,7 +410,7 @@ class CanvasCanonicalExecution:
                 if run.status in {RunStatus.CREATED, RunStatus.QUEUED}
                 else job.status
             )
-            if run.status is RunStatus.QUEUED and job.status == JobStatus.RUNNING:
+            if run.status is RunStatus.QUEUED and job.status is JobStatus.RUNNING:
                 changed = True
         if job.status != target:
             job.status = target
