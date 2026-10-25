@@ -605,7 +605,7 @@ async def test_sustained_admission_requires_work_and_retryable_backpressure(
 async def test_receipt_load_reads_admitted_tasks_through_production_router(
     soak: ModuleType, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Read observed receipts, including a peer's real process-local 404.
+    """Read an admitted receipt from a peer via the shared durable tier.
 
     Both queues use one canonical admission spine. This is an ASGI contract
     probe, not a production multi-replica soak or a second execution authority.
@@ -636,15 +636,16 @@ async def test_receipt_load_reads_admitted_tasks_through_production_router(
             if replica_index == 0:
                 await soak.one_request_with(client, LB, headers, "task_submit", stats, 1)
                 assert stats.kind_status_codes["task_submit"] == {202: 1}
-            # Use the same load state when the LB sends a read to the peer.
+            # Use the same load state when the LB sends a read to the peer;
+            # the production route resolves the receipt from shared Run truth.
             await soak.one_request_with(client, LB, headers, "run_get", stats, 2)
             if replica_index == 0:
                 assert stats.kind_status_codes["run_get"] == {200: 1}
-    assert stats.kind_status_codes["run_get"] == {200: 1, 404: 1}
+    assert stats.kind_status_codes["run_get"] == {200: 2}
     # main_async publishes this snapshot's kind_status_codes in thresholds;
     # preserve response classes through JSON serialization, not just totals.
     counters = json.loads(json.dumps(await stats.snapshot()))
-    assert counters["kind_status_codes"]["run_get"] == {"200": 1, "404": 1}
+    assert counters["kind_status_codes"]["run_get"] == {"200": 2}
 
 
 @pytest.mark.asyncio
