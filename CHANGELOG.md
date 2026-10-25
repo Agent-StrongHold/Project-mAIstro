@@ -526,6 +526,13 @@ or placeholder-only section.
   duplicate [ADR-061526-f383](docs/adr/ADR-061526-f383-foreign-harness-adapters-and-portability.md)
   in favor of ADR-101; added AC Defined spec index to [`docs/specs/README.md`](docs/specs/README.md).
 
+- **Evolution is hidden from the v1.0 shipped product surface (#2275,
+  `conductor-411`).** `/evolution` is unregistered from the Hive Conductor
+  route table and stays out of nav; the page module remains in-tree for the
+  **v1.2** restore. Docs no longer describe Evolution as an available feature.
+  Evolve implementation ownership stays with #51. The retirement ledger and
+  `route-inventory` record HIDE v1.0 / restore v1.2.
+
 - **Evolve proxy fitness no longer credits text narration (#384).** The
   `proxy_gaia` scorer lost its fuzzy fallbacks (0.9 raw-substring, 0.85
   digit-set, 0.7 word-overlap, and the `max(exact, judged)` merge): only a

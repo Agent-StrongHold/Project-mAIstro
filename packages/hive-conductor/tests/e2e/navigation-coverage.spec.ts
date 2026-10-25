@@ -79,7 +79,6 @@ const URL_ONLY_ENTRIES: Array<{ path: string; heading: string; navLabel: string 
   { path: "/work-items", heading: "Jira drafts", navLabel: "Work Items" },
   { path: "/skills", heading: "Skills", navLabel: "Skills" },
   { path: "/memory", heading: "Memory", navLabel: "Memory" },
-  { path: "/evolution", heading: "Evolution Engine", navLabel: "Evolution" },
 ];
 
 /** What the setup wizard's daily user is granted: routes/setup.py's
@@ -320,4 +319,21 @@ test("URL-only legacy rows still render but stay out of the navigation", async (
   for (const entry of URL_ONLY_ENTRIES) {
     await expect(rail.getByRole("link", { name: entry.navLabel, exact: true })).toHaveCount(0);
   }
+});
+
+test("Evolution is hidden for v1.0 — no nav entry and no shipped surface (#2275)", async () => {
+  // Hide, not URL-only: the route is unregistered so /evolution must not
+  // present Evolution Engine. Restore is v1.2 / #51 only.
+  await page.goto("/evolution");
+  // Absence means nothing while AppShellSkeleton is up (#2275 review):
+  // goto returns at `load`, before AuthGuard's setup/whoami round trips
+  // answer, so a count-0 taken then latches before the router renders
+  // anything. Wait out the skeleton itself — only it carries aria-busy,
+  // and it is removed exactly when the session round trips have answered
+  // and the resolved route (shell or empty fall-through) has rendered.
+  await expect(page.locator(".app-shell[aria-busy='true']")).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "Evolution Engine", exact: true })).toHaveCount(0);
+  await expect(
+    page.locator(".icon-sidebar").getByRole("link", { name: "Evolution", exact: true }),
+  ).toHaveCount(0);
 });
