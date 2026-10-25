@@ -244,7 +244,11 @@ def test_run_dag_canonical_failure_stays_failed(
     assert body["status"] == "failed"
     assert body["execution_id"] == "run-failed-1"
     assert body["run_id"] == "run-failed-1"
-    assert "node failed" in body["error"]
+    # Top-level error is the exception kind only (CodeQL py/stack-trace-exposure);
+    # node detail remains on the durable result for operators who fetch the run.
+    assert body["error"] == "CanonicalDagExecutionError: execution failed; see server logs"
+    assert "node failed" not in body["error"]
+    assert body["result"]["error"] == "node failed"
 
     from services.dag_run_store import get_dag_run_store
 
@@ -418,6 +422,7 @@ def canonical_dag_spine(_chat_spine_container: Any, monkeypatch: pytest.MonkeyPa
         graph_run_store=container.graph_run_store,
         workspace_store=container.workspace_store,
         project_scope_store=container.project_scope_store,
+        sentinel=getattr(container, "sentinel", None),
     )
     monkeypatch.setattr(get_engine(), "_agent_port", SimpleNamespace(container=spine))
     yield container

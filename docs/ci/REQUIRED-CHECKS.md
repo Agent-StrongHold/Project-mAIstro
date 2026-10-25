@@ -102,7 +102,9 @@ wait forever for an `Expected` result.
 | CI | `Compliance registry` | every PR |
 | CI | `cross-product-parity` | every PR |
 | CI | `docker-build` | every PR |
+| CI | `docker-rebuild-compare` | every PR |
 | CI | `durable-events` | every PR |
+| CI | `hive-conductor-compose-durability` | every PR |
 | CI | `hive-conductor-e2e` | every PR |
 | CI | `hive-conductor-e2e-ui` | every PR |
 | CI | `lint-and-type-check` | every PR |
@@ -128,6 +130,7 @@ wait forever for an `Expected` result.
 | Issue metadata integrity | `repair` | paths |
 | Registry CI | `Validate ADR/spec front-matter` | every PR |
 | Vulture Ratchet | `exact-debt-ledger` | every PR |
+| mutation | `Mutation gate (changed critical lines)` | paths |
 | quality | `Coverage gate (publish-set floor + diff coverage)` | every PR |
 | quality | `Quality / Acceptance state` | every PR |
 | quality | `Quality / Agent store writes` | every PR |
@@ -181,9 +184,11 @@ wait forever for an `Expected` result.
 
 ## Deliberate base-coupled checks
 
-`Analyze (actions)`, `Analyze (javascript-typescript)`, `Analyze (python)`, and
-`Container scan + SBOM + cosign` are required on `main` only. They do not report
-as real executed checks on a `develop`-based PR or develop merge group.
+`Analyze (actions)`, `Analyze (javascript-typescript)`, and `Analyze (python)` are
+required on `main` only. `Container scan + SBOM + cosign` also runs for
+`develop`-based PRs and develop merge groups (and on pushes to `develop`) so
+license and final-filesystem evidence exists before release promotion; branch
+protection still requires the check on `main`.
 
 `DevSkim` is a documented advisory check for `develop`-based PRs. It is
 intentionally excluded from both protected required-check sets until the owner

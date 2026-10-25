@@ -36,7 +36,6 @@ import stores
 
 from services import workspace_authority
 from services.model_store import JsonStore
-from services.owned_records import Owner, owned_chat_sessions
 
 logger = logging.getLogger("hive.home")
 
@@ -183,25 +182,37 @@ async def _run_items(user_id: str, workspace_id: str) -> list[dict]:
     return out[:PROJECTION_LIMIT]
 
 
-def _chat_sessions(user_id: str) -> list[dict]:
-    # The one door to the chat store: the scoping view, so the section can
-    # only ever see sessions that belong to the requesting principal — the
-    # same OwnedStore the chat routes read, never the raw module dict
-    # (#312, scripts/check-owned-store-access.py).
-    sessions = owned_chat_sessions(Owner(id=user_id)).values()
-    sessions.sort(key=lambda s: s.updated_at, reverse=True)
+async def _chat_sessions(user_id: str, workspace_id: str) -> list[dict]:
+    """Home chat section reads #1822 conversation_sessions, not legacy chat_sessions.
 
-    def _title(session: Any) -> str:
-        for message in getattr(session, "messages", None) or []:
-            content = getattr(message, "content", None)
+    Titles prefer the first non-empty user turn in SessionStore (same UX as the
+    prior OwnedStore projection); metadata title is the fallback when the
+    transcript is empty.
+    """
+    from services import conversation_sessions
+
+    records = await conversation_sessions.list_for(user_id, workspace_id)
+
+    def _title(record: Any, history: list[dict[str, str]]) -> str:
+        for entry in history:
+            content = entry.get("content")
             if isinstance(content, str) and content.strip():
                 return content.strip()[:80]
-        return str(getattr(session, "title", "") or "chat session")
+        return str(getattr(record, "title", "") or "chat session")
 
-    return [
-        _item("chat_session", s.id, _title(s), f"/chat?session={s.id}", s.updated_at)
-        for s in sessions[:PROJECTION_LIMIT]
-    ]
+    out: list[dict] = []
+    for record in records[:PROJECTION_LIMIT]:
+        _rec, history = await conversation_sessions.get(user_id, record.session_id)
+        out.append(
+            _item(
+                "chat_session",
+                record.session_id,
+                _title(record, history),
+                f"/chat?session={record.session_id}",
+                record.updated_at,
+            )
+        )
+    return out
 
 
 def _design() -> tuple[list[dict], str | None]:
@@ -279,7 +290,7 @@ async def list_projections(user_id: str, workspace_id: str) -> dict[str, Any]:
         else asyncio.sleep(0, result=_section("goals", [], reason=goal_reason)),
         _resolve("backlog", _backlog_items(user_id, workspace_id)),
         _resolve("runs", _run_items(user_id, workspace_id)),
-        _resolve("chat", asyncio.sleep(0, result=_chat_sessions(user_id))),
+        _resolve("chat", _chat_sessions(user_id, workspace_id)),
         _resolve("design", asyncio.sleep(0, result=design_items))
         if design_reason is None
         else _unavailable("design", design_reason),

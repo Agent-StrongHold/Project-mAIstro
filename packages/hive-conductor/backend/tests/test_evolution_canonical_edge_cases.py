@@ -218,7 +218,12 @@ def test_stub_cycle_route_returns_explicit_availability_error(
     assert caught.value.status_code == 503
     assert caught.value.detail["code"] == "evolution_unavailable"
     assert caught.value.detail["availability"] == "degraded"
-    assert "no Container" in caught.value.detail["message"]
+    # CanonicalExecutionUnavailable text stays in the server log; /cycle
+    # returns the public kind only (CodeQL py/stack-trace-exposure).
+    assert caught.value.detail["message"] == (
+        "CanonicalExecutionUnavailable: evolution failed; see server logs"
+    )
+    assert "no Container" not in caught.value.detail["message"]
 
 
 def test_unavailable_cycle_is_distinguishable_from_execution_failure(
@@ -226,6 +231,7 @@ def test_unavailable_cycle_is_distinguishable_from_execution_failure(
 ) -> None:
     class _Unavailable:
         async def _run_one_cycle(self, **_: Any) -> str:
+            # Intentional operator-facing DomainError message — already safe.
             raise EvolutionUnavailableError(
                 "canonical engine Container is unavailable", availability="degraded"
             )
@@ -241,6 +247,29 @@ def test_unavailable_cycle_is_distinguishable_from_execution_failure(
         "availability": "degraded",
         "message": "canonical engine Container is unavailable",
     }
+
+
+def test_unexpected_cycle_exception_returns_kind_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Bare Exception on /cycle must not echo the message (stack-trace exposure)."""
+
+    class _Boom:
+        cycle_count = 0
+
+        async def _run_one_cycle(self, **_: Any) -> str:
+            raise RuntimeError("dsn=postgresql://ops:s3cr3t@db.internal/hive")
+
+    import services.evolution as evolution_service
+
+    monkeypatch.setattr(evolution_service, "get_evolution_service", lambda: _Boom())
+    with pytest.raises(HTTPException) as caught:
+        asyncio.run(trigger_cycle(SimpleNamespace(state=SimpleNamespace())))
+
+    assert caught.value.status_code == 500
+    assert caught.value.detail == "RuntimeError: evolution failed; see server logs"
+    assert "s3cr3t" not in str(caught.value.detail)
+    assert "db.internal" not in str(caught.value.detail)
 
 
 @pytest.mark.parametrize(

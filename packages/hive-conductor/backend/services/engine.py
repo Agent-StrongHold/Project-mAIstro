@@ -45,27 +45,16 @@ __all__ = [
 #: optional component.
 EngineState = Literal["not_started", "starting", "ready", "degraded", "startup_failed", "stopped"]
 
-#: Health/JSON surfaces carry a bounded, type-qualified failure cause — never
-#: a raw traceback, and no settings value is ever interpolated into one (#1181).
-#: Text is also passed through the ADR-064 redactor before retention: startup
-#: dependency errors (DSNs, tokens, connection strings) reach the unauthenticated
-#: /health as `cause`/`degradations`, so truncation alone is not enough.
-_CAUSE_MAX_CHARS = 300
 
-
+#: Health/JSON surfaces carry the exception *kind* only — never its message
+#: and never a traceback (#1181). Startup dependency errors (DSNs, tokens,
+#: connection strings) used to be redacted and truncated into /health; CodeQL
+#: py/stack-trace-exposure still treats any exception-message flow into the
+#: unauthenticated probe as exposure, so the public cause is type-qualified
+#: fixed text and the real detail stays in the server log.
 def _sanitize_cause(exc: BaseException) -> str:
-    """One bounded, redacted, type-qualified line for /health and structured logs."""
-    try:
-        from maistro.security.redact import redact
-
-        text = redact(f"{type(exc).__name__}: {exc}")
-    except Exception:
-        # Fail closed: if the redactor itself is unavailable we cannot vouch
-        # for the message body, so publish the exception type only.
-        text = type(exc).__name__
-    if len(text) > _CAUSE_MAX_CHARS:
-        text = text[:_CAUSE_MAX_CHARS] + "…"
-    return text
+    """The failure kind /health may show: exception type, never its message."""
+    return f"{type(exc).__name__}: startup failed; see server logs"
 
 
 async def _unwind_agent_port(bridge: Any) -> None:
@@ -125,9 +114,9 @@ class EngineService:
         in flight), `ready` (all required steps succeeded), `degraded`
         (serving, but a documented optional component failed),
         `startup_failed` (a required step failed and startup was rolled
-        back), and `stopped`. `cause` is the sanitized startup failure;
-        `degradations` lists the optional-component failures this start
-        absorbed. Component entries are type names only.
+        back), and `stopped`. `cause` is the exception kind only (never its
+        message); `degradations` lists optional-component failures this start
+        absorbed, each as ``component: <Type>: startup failed; see server logs``.
         """
         return {
             "state": self._state,
@@ -215,6 +204,17 @@ class EngineService:
         """
         container = getattr(self._agent_port, "container", None)
         return getattr(container, "run_reader", None)
+
+    @property
+    def goal_reader(self) -> Any:
+        """The core Container's Workspace-scoped Goal reader, or None (#1572).
+
+        Goal inspection uses this principal-carrying seam rather than reading
+        the raw Goal store, just as Run inspection uses ``run_reader``.  It is
+        absent only when this process has no embedded core Container.
+        """
+        container = getattr(self._agent_port, "container", None)
+        return getattr(container, "goal_reader", None)
 
     @property
     def graph_run_store(self) -> Any:
