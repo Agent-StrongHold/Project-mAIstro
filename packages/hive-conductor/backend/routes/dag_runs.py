@@ -34,8 +34,6 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from services.dag_run_inspection import (
     can_inspect_run,
-    close_event_subscription,
-    event_subscription,
     list_visible_runs,
     retention_bounds,
     visible_run_detail,

@@ -47,7 +47,7 @@ import asyncio
 import json
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from maistro.scheduling.model import PendingFire, Schedule
 from maistro.sqlite_schema import serialized_schema_upgrade

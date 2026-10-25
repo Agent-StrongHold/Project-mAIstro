@@ -60,7 +60,7 @@ from pydantic import BaseModel, Field
 
 from maistro.agents.types import LLMProviderError
 from maistro.constants import STREAM_CHUNK_SIZE
-from maistro.runs.model import Run, RunStatus
+from maistro.runs.model import Run
 from maistro.security._types import AuthContext
 from maistro_server.api.auth import RequireAuth
 from maistro_server.api.principal import AuthenticatedPrincipal

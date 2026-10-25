@@ -44,7 +44,6 @@ from maistro.tasks.models import TaskCreate
 from maistro.tasks.progress_webhook import ProgressWebhookNotifier
 from maistro.tasks.queue import configure_task_queue, get_task_queue, reset_task_queue
 from maistro.tasks.runner import TaskRunner
-from maistro.tools.sandbox.server import cleanup_all_containers
 from maistro.types.config import AgentConfig, SecurityConfig
 from maistro_server.api import (
     a2a,

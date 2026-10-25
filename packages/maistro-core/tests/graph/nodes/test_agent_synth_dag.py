@@ -153,7 +153,6 @@ async def test_depth_at_cap_refuses_without_synthesizing() -> None:
 
 
 async def test_depth_below_cap_proceeds() -> None:
-    from maistro.graph.durable_runs import InMemoryDurableRunStore
 
     synthesizer = _CountingSynthesizer([_result([_ChildStep.kind])])
     node = AgentSynthDagNode(
@@ -211,7 +210,6 @@ async def test_unavailable_judge_does_not_dispatch_a_hostile_rationale() -> None
 
 
 async def test_needs_revision_retries_once_and_can_succeed() -> None:
-    from maistro.graph.durable_runs import InMemoryDurableRunStore
 
     first = _result(["scout", "architect", "coder"])
     second = _result([_ChildStep.kind])

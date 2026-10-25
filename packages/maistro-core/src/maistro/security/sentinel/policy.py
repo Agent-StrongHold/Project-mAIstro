@@ -21,9 +21,6 @@ from maistro.security.sentinel.approver_graph import ApproverGraph
 from maistro.security.sentinel.argument_limits import ToolArgumentLimits, check_argument_limits
 from maistro.security.sentinel.authz_types import AuthzDecision, Principal, Tier
 from maistro.security.sentinel.delegation import (
-    DelegationAuthority,
-    DelegationDecision,
-    DelegationRequest,
     utc_now,
 )
 from maistro.security.sentinel.elevation import ElevationStore, hash_args

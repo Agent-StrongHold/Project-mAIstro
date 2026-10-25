@@ -27,7 +27,6 @@ from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import ModuleType
-from typing import cast
 
 ROOT = Path(__file__).resolve().parents[1]
 LEDGER = ROOT / "quality" / "execution-lifecycles.json"

@@ -32,8 +32,6 @@ from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 from .._canonical_helpers import durable_record, hitl_authorization
 
-from .._canonical_helpers import durable_record
-
 
 class _StepIn(BaseModel):
     pass

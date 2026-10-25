@@ -11,19 +11,16 @@ from typing import Any, Literal
 
 from maistro.graph.execution_state import GraphExecutionState, thaw_json_value
 from maistro.graph.nodes.base import (
-    DEADLINE_WOKEN_PAUSE_REASONS,
     PAUSE_AWAITING_HARNESS,
     PAUSE_AWAITING_REMOTE_DELEGATION,
-    TIMER_RESUMABLE_PAUSE_REASONS,
 )
 from maistro.runs.lifecycle import settle_open_node_run, transition_node_run, transition_run
 from maistro.runs.model import TERMINAL_RUN_STATUSES, RunStatus
 from maistro.sqlite_schema import (
-    execute_schema_script_sync,
     serialized_schema_upgrade_sync,
 )
 
-from .fair_scan import DEFAULT_MAX_INSPECTED, ScanPage, cursor_time
+from .fair_scan import cursor_time
 from .hitl import (
     HitlAuthorization,
     HitlDeadlineElapsed,

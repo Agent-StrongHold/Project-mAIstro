@@ -10,7 +10,6 @@ fire into a Run.
 from __future__ import annotations
 
 import asyncio
-import logging
 import pathlib
 import sys
 from datetime import UTC, datetime, timedelta

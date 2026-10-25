@@ -22,7 +22,6 @@ from pydantic import (
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from maistro.config.settings import validate_cors_origins
-from maistro.types.config import ModelBindingConfig
 
 #: Hard bounds the schedule floor/cap settings cannot be configured outside of
 #: (#1200). See the field comments on the ``Settings`` fields for why these

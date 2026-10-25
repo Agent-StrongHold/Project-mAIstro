@@ -11,7 +11,7 @@ from importlib import import_module
 from pathlib import Path
 
 from config import get_settings
-from fastapi import APIRouter, FastAPI, Request, Response
+from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from logging_setup import configure_logging

@@ -13,8 +13,6 @@ from urllib.parse import quote
 
 from maistro.a2a.delegation_context import (
     DelegationContext,
-    DelegationContextError,
-    validate_goal_binding,
 )
 from maistro.a2a.inbound import InboundWarden, default_warden, scan_inbound
 from maistro.http import shared_client

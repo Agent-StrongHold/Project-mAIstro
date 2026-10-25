@@ -16,7 +16,6 @@ from maistro.runs import (
     RunStatus,
 )
 from maistro.runs.execution import ExecutionYielded
-from maistro.runs.lifecycle import InvalidLifecycleTransition
 from maistro.runtime import PythonExecutionRuntime, RuntimeDeadlineExceeded
 from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 

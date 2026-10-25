@@ -34,11 +34,10 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 from maistro.observability.correlation import current_execution_context
 from maistro.runs.admission import admit_direct_work
-from maistro.runs.lifecycle import RUN_TRANSITIONS, InvalidLifecycleTransition
-from maistro.runs.model import TERMINAL_RUN_STATUSES, Run, RunStatus
+from maistro.runs.lifecycle import InvalidLifecycleTransition
+from maistro.runs.model import Run, RunStatus
 from maistro.runs.sources import ADMISSION_SOURCE
 from maistro.runs.task_kinds import resolve_direct_work
-from maistro.tasks.idempotency import IDEMPOTENCY_KEY_PROVENANCE
 from maistro.tasks.models import TaskStatus
 
 if TYPE_CHECKING:  # pragma: no cover - typing only

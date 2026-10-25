@@ -6,7 +6,6 @@ import asyncio
 import json
 import time
 from collections.abc import AsyncIterator
-from dataclasses import replace
 
 import aiosqlite
 import pytest
@@ -19,9 +18,7 @@ from maistro.events.envelope import (
     EventStore,
     InMemoryEventStore,
     SqliteEventStore,
-    reconstruct_persisted_event,
 )
-from maistro.security.redact import REDACTED_FIELD
 
 #: Assembled from segments so no source line carries a contiguous `xoxb-`
 #: literal for a secret scanner to flag on a fresh clone.

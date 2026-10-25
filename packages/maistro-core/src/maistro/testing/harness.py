@@ -7,7 +7,6 @@ from maistro.agents.context_builder import ContextBuilder
 from maistro.agents.intents import IntentRegistry
 from maistro.classifier.engine import ClassifierEngine
 from maistro.container import Container
-from maistro.goals.reconciliation.store import InMemoryGoalStore
 from maistro.graph.events import GraphEvent
 from maistro.graph.run import GraphRun
 from maistro.graph.types import (

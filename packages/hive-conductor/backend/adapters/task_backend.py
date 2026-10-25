@@ -22,10 +22,8 @@ from maistro.http import shared_client
 from maistro.observability.correlation import current_execution_context
 from maistro.observability.middleware import REQUEST_ID_HEADER
 from maistro.tasks.http_contract import (
-    DELEGATION_HEADER,
     WORKSPACE_ID_HEADER,
     WORKSPACE_SCOPE_SIGNATURE_HEADER,
-    sign_delegation_context,
     sign_workspace_scope,
 )
 from maistro.tasks.models import TaskCreate, TaskResponse, TaskStatus

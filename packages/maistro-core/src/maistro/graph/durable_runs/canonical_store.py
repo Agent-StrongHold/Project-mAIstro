@@ -25,7 +25,6 @@ from maistro.runs.lifecycle import (
     transition_node_run,
     transition_run,
 )
-from maistro.runs.recovery_events import RecoveryEventSink
 from maistro.runs.model import (
     TERMINAL_RUN_STATUSES,
     Attempt,
@@ -33,6 +32,7 @@ from maistro.runs.model import (
     Run,
     RunStatus,
 )
+from maistro.runs.recovery_events import RecoveryEventSink
 from maistro.runs.store import RunCursor, RunIntegrityError, RunStore, run_cursor_key
 
 from .continuation import GraphContinuation, GraphContinuationStore
