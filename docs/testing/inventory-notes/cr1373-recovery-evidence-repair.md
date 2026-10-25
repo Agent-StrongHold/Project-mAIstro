@@ -81,3 +81,45 @@ Parent #62 acceptance is not declared complete:
 
 The scratch database `cr1373_repair_21171977` is retained on the already-running
 `cr1373-ac-pg` service. No existing database was truncated by this validation.
+
+## Round: governed harness polls + paused-sweep rotation (`00a515e52`, merged with develop `4019249e`)
+
+Verifier evidence against `9054f91e` found two reachable gaps, both fixed in
+`00a515e52` and re-validated here after the develop merge (`ec801784a`):
+
+1. The external seam polled harness providers without crossing the governed
+   Invocation/Binding boundary. The seam now requires the node-persisted
+   dispatch Invocation (COMPLETED, correlated with the Run and its Binding
+   reference) and a Binding that still resolves in the canonical authority;
+   `wake_due_registered_dag_runs` hands it the Container's canonical effect
+   authorities (`capability_effects.invocation_store` / `.bindings`).
+2. `reconcile_persistence` scanned canonical PAUSED Runs from the top every
+   tick, so a persistent parked Run consumed the whole budget at limit=1 and
+   terminal failed-Event retry discovery never ran. The paused half is now a
+   cursor-advancing fair page like the RUNNING half.
+
+Negative validation (regression tests copied onto a scratch worktree at the
+pre-fix commit `9054f91e`, fresh `uv sync --locked --extra dev`): all five
+bite — `test_a_revoked_binding_is_never_polled_by_the_seam`,
+`test_a_harness_pause_without_governed_dispatch_evidence_stays_parked`,
+`test_a_missing_or_foreign_dispatch_receipt_is_left_parked` and the conductor
+`test_a_revoked_binding_is_never_polled_by_the_external_seam` fail (the last
+asserts `wake_due_registered_dag_runs(limit=1) == 0`, got `1`), and
+`test_a_persistent_paused_run_cannot_starve_terminal_event_discovery` fails on
+the memory and sqlite params. All five pass at HEAD.
+
+Re-run at HEAD after the merge: full durable_runs suite 783 passed / 70
+skipped / 4 xfailed; conductor registered-DAG + DAG recovery 28 passed; ruff
+check + format clean; mypy clean (942 source files); vulture exit 0 (1256/1256
+identities banked, 0 unclassified); radon exit 0 (127/127); suite inventory ok
+(21 suites); backlog, execution-lifecycles, durable-table-inventory,
+convergence-matrix and M1-convergence-freeze (`--base 4019249e`) all exit 0.
+`check-ac-state.py --run-tests --ratchet` initially failed on an unbanked
+design_coverage improvement (measured 39.6633 vs folded floor 39.641, slack a
+regression could spend); banked to this branch's own
+`quality/ac-state-notes/auto-62.json` per the gate's instruction and re-ran the
+CI-shaped `--run-tests --ratchet`: exit 0, all counters exactly on their
+bounds. No shared quality ledger or grant was edited. Diff coverage was not
+re-measured locally this round (needs CI's full coverage producer); the branch
+diff beyond develop is unchanged for source files validated in the prior
+round.
