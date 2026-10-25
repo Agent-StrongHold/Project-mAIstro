@@ -1684,6 +1684,16 @@
       "effect_owner": "stores.workspaces"
     },
     {
+      "source": "packages/hive-conductor/backend/routes/workspaces.py",
+      "method": "PUT",
+      "route": "/{workspace_id}/agent",
+      "handler": "put_workspace_agent_persona",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "swaps the Workspace Agent persona template while keeping the stable agent id (owner-only; same write as chat tool set_workspace_agent_persona)",
+      "effect_owner": "services.workspace_agent.set_workspace_agent_persona"
+    },
+    {
       "source": "packages/hive-conductor/backend/routes/ws.py",
       "method": "WEBSOCKET",
       "route": "/tasks/{task_id}",
@@ -2566,13 +2576,13 @@
       "effect_owner": "routes/providers.py put_provider_key (vault)"
     },
     {
-      "source": "packages/hive-conductor/frontend/src/pages/Chat.tsx",
+      "source": "packages/hive-conductor/frontend/src/lib/chatSessions.ts",
       "signal": "mutating-api-call",
       "method": "POST",
       "route": "/v1/chat/stream",
       "disposition": "canonical",
       "production_enabled": true,
-      "reason": "streams a completion through the real backend route",
+      "reason": "streams a completion through the real backend route (openChatStream helper used by Chat.tsx)",
       "effect_owner": "routes/chat.py stream_complete (LLM port)"
     },
     {
@@ -2706,13 +2716,13 @@
       "effect_owner": "routes/auth.py register"
     },
     {
-      "source": "packages/hive-conductor/frontend/src/pages/Profile.tsx",
+      "source": "packages/hive-conductor/frontend/src/lib/profile.ts",
       "signal": "mutating-api-call",
       "method": "POST",
       "route": "/v1/chat/stream",
       "disposition": "canonical",
       "production_enabled": true,
-      "reason": "streams a completion through the real backend route",
+      "reason": "streams a completion through the real backend route (summarizeMemoriesFromContext helper used by Profile.tsx)",
       "effect_owner": "routes/chat.py stream_complete (LLM port)"
     },
     {

@@ -43,26 +43,28 @@ let adminNarrowPage: Page;
  * admin (every permission) and not the daily user (see
  * DAILY_USER_ENTRIES below). */
 const NAV_ENTRIES: Array<{ label: string; path: string; scope?: string; probe: (p: Page) => Locator }> = [
+  // #1048: Home is the default landing; keep Dashboard reachable until retirement.
+  { label: "Home", path: "/home", probe: (p) => p.getByRole("heading", { name: "Home", exact: true }) },
   { label: "Chat", path: "/chat", probe: (p) => p.getByLabel("Chat messages") },
   { label: "Dashboard", path: "/dashboard", probe: (p) => p.getByRole("heading", { name: "Live Operations", exact: true }) },
   // #65: the Goal-centric inspection surface. Its reachability is asserted
   // here like every other shipped destination; goals-navigation.spec.ts owns
   // the surface's own deep-link behavior so this row stays a chrome check.
   { label: "Goals", path: "/goals", probe: (p) => p.getByRole("heading", { name: "Goals", exact: true }) },
+  { label: "Attention", path: "/attention", probe: (p) => p.getByRole("heading", { name: "Attention", exact: true }) },
+  { label: "Approvals", path: "/approvals", probe: (p) => p.getByRole("heading", { name: "Approvals", exact: true }) },
   { label: "Design Studio", path: "/design-studio", probe: (p) => p.getByRole("heading", { name: "Design Studio", exact: true }) },
   { label: "DAG Builder", path: "/dags", probe: (p) => p.getByRole("heading", { name: "DAG Builder", exact: true }) },
   { label: "DAG Runs", path: "/dag-runs", probe: (p) => p.getByRole("heading", { name: "Runs", exact: true }) },
   { label: "Schedules", path: "/schedules", scope: "schedules.write", probe: (p) => p.getByRole("heading", { name: "Schedules", exact: true }) },
   { label: "Missions", path: "/missions", probe: (p) => p.getByRole("heading", { name: "Missions", exact: true }) },
   { label: "Backlog", path: "/backlog", probe: (p) => p.getByRole("heading", { name: "Backlog", exact: true }) },
-  { label: "Agents", path: "/agents", probe: (p) => p.getByRole("heading", { name: "The Hive", exact: true }) },
-  { label: "Topology", path: "/topology", probe: (p) => p.getByRole("heading", { name: "Topology", exact: true }) },
+  { label: "Capabilities", path: "/capabilities", probe: (p) => p.getByRole("heading", { name: "Capabilities", exact: true }) },
   { label: "Optimizer", path: "/optimizer", probe: (p) => p.getByRole("heading", { name: "Optimization Inbox", exact: true }) },
   { label: "Messages", path: "/messages", probe: (p) => p.getByRole("heading", { name: "Message Board", exact: true }) },
   { label: "Quotas", path: "/quotas", probe: (p) => p.getByRole("heading", { name: "Quotas & Stats", exact: true }) },
   { label: "Inner Temple", path: "/knowledge", probe: (p) => p.getByRole("heading", { name: "Inner Temple", exact: true }) },
   { label: "RSI", path: "/rsi", probe: (p) => p.getByRole("heading", { name: "RSI — Recursive Self-Improvement", exact: true }) },
-  { label: "Integrations", path: "/mcp", probe: (p) => p.getByRole("heading", { name: "MCP", exact: true }) },
   { label: "Containers", path: "/containers", scope: "containers.control", probe: (p) => p.getByRole("heading", { name: "Containers", exact: true }) },
   { label: "CLI", path: "/cli", probe: (p) => p.getByRole("heading", { name: "CLI", exact: true }) },
   { label: "Credentials", path: "/credentials", probe: (p) => p.getByRole("heading", { name: "Integration credentials", exact: true }) },
@@ -75,8 +77,10 @@ const NAV_ENTRIES: Array<{ label: string; path: string; scope?: string; probe: (
 const URL_ONLY_ENTRIES: Array<{ path: string; heading: string; navLabel: string }> = [
   { path: "/work-items", heading: "Jira drafts", navLabel: "Work Items" },
   { path: "/skills", heading: "Skills", navLabel: "Skills" },
+  { path: "/agents", heading: "The Hive", navLabel: "Agents" },
+  { path: "/topology", heading: "Topology", navLabel: "Topology" },
+  { path: "/mcp", heading: "MCP", navLabel: "Integrations" },
   { path: "/memory", heading: "Memory", navLabel: "Memory" },
-  { path: "/evolution", heading: "Evolution Engine", navLabel: "Evolution" },
 ];
 
 /** What the setup wizard's daily user is granted: routes/setup.py's
@@ -169,7 +173,7 @@ const DRAWER_CHUNK_SIZE = 7;
 
 for (const [index, group] of chunk(DAILY_USER_ENTRIES, RAIL_CHUNK_SIZE).entries()) {
   test(`desktop icon rail reaches destinations ${index + 1}/${chunk(DAILY_USER_ENTRIES, RAIL_CHUNK_SIZE).length} by keyboard (${group[0].label} → ${group[group.length - 1].label})`, async () => {
-    await page.goto("/dashboard");
+    await page.goto("/home");
     for (const entry of group) {
       // Scoped to the rail: the drawer renders the same labels and is
       // display:none here — a page-level name query would resolve two links
@@ -191,7 +195,7 @@ for (const [index, group] of chunk(DAILY_USER_ENTRIES, RAIL_CHUNK_SIZE).entries(
 
 for (const [index, group] of chunk(DAILY_USER_ENTRIES, DRAWER_CHUNK_SIZE).entries()) {
   test(`narrow-screen drawer reaches destinations ${index + 1}/${chunk(DAILY_USER_ENTRIES, DRAWER_CHUNK_SIZE).length} by keyboard and dismisses (${group[0].label} → ${group[group.length - 1].label})`, async () => {
-    await narrowPage.goto("/dashboard");
+    await narrowPage.goto("/home");
     for (const entry of group) {
       const hamburger = narrowPage.getByRole("button", { name: "Open menu" });
       await expect(hamburger).toBeVisible();
@@ -218,7 +222,7 @@ for (const [index, group] of chunk(DAILY_USER_ENTRIES, DRAWER_CHUNK_SIZE).entrie
  * would 403 for this account. Hidden, not merely unlinked from the rail. */
 test("mutation-scoped destinations stay out of both chrome modes without the grant", async () => {
   const scoped = NAV_ENTRIES.filter((entry) => entry.scope);
-  await page.goto("/dashboard");
+  await page.goto("/home");
   for (const entry of scoped) {
     await expect(page.locator(".icon-sidebar").getByRole("link", { name: entry.label, exact: true })).toHaveCount(0);
   }
@@ -237,7 +241,7 @@ test("mutation-scoped destinations stay out of both chrome modes without the gra
 
 for (const scopedGroup of chunk(NAV_ENTRIES.filter((entry) => entry.scope), 7)) {
   test(`admin icon rail reaches the grant-gated destinations by keyboard (${scopedGroup.map((e) => e.label).join(", ")})`, async () => {
-    await adminPage.goto("/dashboard");
+    await adminPage.goto("/home");
     for (const entry of scopedGroup) {
       const link = adminPage.locator(".icon-sidebar").getByRole("link", { name: entry.label, exact: true });
       await expect(link).toBeVisible();
@@ -250,7 +254,7 @@ for (const scopedGroup of chunk(NAV_ENTRIES.filter((entry) => entry.scope), 7)) 
   });
 
   test(`admin drawer reaches the grant-gated destinations by keyboard and dismisses (${scopedGroup.map((e) => e.label).join(", ")})`, async () => {
-    await adminNarrowPage.goto("/dashboard");
+    await adminNarrowPage.goto("/home");
     for (const entry of scopedGroup) {
       const hamburger = adminNarrowPage.getByRole("button", { name: "Open menu" });
       await expect(hamburger).toBeVisible();
@@ -289,16 +293,16 @@ test("browser back and forward return canonical surfaces after rail navigation",
   // Messages, not Schedules: the back/forward invariant is about history and
   // active state, and the daily-user session driving it may not hold
   // `schedules.write` (the scoped rows are walked under the admin account).
-  await page.goto("/dashboard");
+  await page.goto("/home");
   const link = page.locator(".icon-sidebar").getByRole("link", { name: "Messages", exact: true });
   await link.click();
   await page.waitForURL("**/messages");
   await expect(page.getByRole("heading", { name: "Message Board", exact: true })).toBeVisible();
 
   await page.goBack();
-  await page.waitForURL("**/dashboard");
-  await expect(page.getByRole("heading", { name: "Live Operations", exact: true })).toBeVisible();
-  await expectSingleActiveRailEntry(page, "Dashboard");
+  await page.waitForURL("**/home");
+  await expect(page.getByRole("heading", { name: "Home", exact: true })).toBeVisible();
+  await expectSingleActiveRailEntry(page, "Home");
 
   await page.goForward();
   await page.waitForURL("**/messages");
@@ -317,4 +321,21 @@ test("URL-only legacy rows still render but stay out of the navigation", async (
   for (const entry of URL_ONLY_ENTRIES) {
     await expect(rail.getByRole("link", { name: entry.navLabel, exact: true })).toHaveCount(0);
   }
+});
+
+test("Evolution is hidden for v1.0 — no nav entry and no shipped surface (#2275)", async () => {
+  // Hide, not URL-only: the route is unregistered so /evolution must not
+  // present Evolution Engine. Restore is v1.2 / #51 only.
+  await page.goto("/evolution");
+  // Absence means nothing while AppShellSkeleton is up (#2275 review):
+  // goto returns at `load`, before AuthGuard's setup/whoami round trips
+  // answer, so a count-0 taken then latches before the router renders
+  // anything. Wait out the skeleton itself — only it carries aria-busy,
+  // and it is removed exactly when the session round trips have answered
+  // and the resolved route (shell or empty fall-through) has rendered.
+  await expect(page.locator(".app-shell[aria-busy='true']")).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "Evolution Engine", exact: true })).toHaveCount(0);
+  await expect(
+    page.locator(".icon-sidebar").getByRole("link", { name: "Evolution", exact: true }),
+  ).toHaveCount(0);
 });

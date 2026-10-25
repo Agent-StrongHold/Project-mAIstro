@@ -406,7 +406,12 @@ def _dispatch_tool(session: BuilderSession, name: str, inputs: dict[str, Any]) -
             return result
         if name == "run_command":
             # This is deliberately run_argv: a model-authored command string
-            # must never become an implicit ``sh -c`` invocation.
+            # must never become an implicit ``sh -c`` invocation. The former
+            # model-authored requires_human_approval gate (tracked follow-up
+            # #329 / ADR-090726-9a4e) only bound cooperating models, so argv
+            # validation now enforces the constraint at the dispatch layer;
+            # the ADR still routes interactive approval toward crypto-bound
+            # decisions. Residual risk until then.
             argv_error = _run_command_argv(inputs)
             if argv_error is not None:
                 return argv_error
