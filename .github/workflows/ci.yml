@@ -791,7 +791,14 @@ jobs:
           sudo mkdir -p "$XDG_RUNTIME_DIR"
           sudo chown "$uid:$uid" "$XDG_RUNTIME_DIR"
           sudo chmod 700 "$XDG_RUNTIME_DIR"
+          # enable-linger can fail when logind already tracks a session for
+          # this uid; the delegated-cgroup proof below (reading memory.max
+          # back under a 64m limit) still fails the lane hard if linger was
+          # actually load-bearing.
           sudo loginctl enable-linger "$uid" || true
+          # A failed or partial apt is tolerated only because the `command -v`
+          # probe immediately below re-proves uidmap/slirp4netns exist before
+          # the daemon start depends on them (same posture as the age install).
           timeout 180 sudo apt-get update || true
           timeout 180 sudo apt-get install -y uidmap slirp4netns || true
           command -v newuidmap slirp4netns
@@ -824,6 +831,9 @@ jobs:
           done
           if [ "$daemon_ready" -ne 1 ]; then
             echo "::error::rootless dockerd did not become ready in 120s; dockerd.log tail follows"
+            # Diagnostic tail on an already-failing path: the `exit 1` below
+            # still fails the step, and a vanished log must not mask the
+            # not-ready error that is the actual finding.
             tail -n 200 "$lane_dir/dockerd.log" || true
             exit 1
           fi

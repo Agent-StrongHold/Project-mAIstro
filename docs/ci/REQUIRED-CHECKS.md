@@ -111,6 +111,7 @@ wait forever for an `Expected` result.
 | CI | `postgres (pg17)` | every PR |
 | CI | `postgres (pg18)` | every PR |
 | CI | `pr-base` | every PR |
+| CI | `sandbox-conformance` | every PR |
 | CI | `security` | every PR |
 | CI | `strike-ladder` | every PR |
 | CI | `test` | every PR |

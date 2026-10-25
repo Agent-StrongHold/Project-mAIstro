@@ -37,8 +37,8 @@ is also required live on both branches; because it is produced by
 
 | Branch | PR | Approvals | Linear history | Force-push | Deletion | Required checks |
 |---|:--:|:--:|:--:|:--:|:--:|:--:|
-| `develop` | yes | **0** | yes | no | no | **19** |
-| `main` | yes | **1** | no | no | no | **32** |
+| `develop` | yes | **0** | yes | no | no | **20** |
+| `main` | yes | **1** | no | no | no | **33** |
 
 | Check | `develop` | `main` |
 |---|:--:|:--:|
@@ -112,6 +112,7 @@ is also required live on both branches; because it is produced by
 | `postgres (pg17)` | adv | ● |
 | `postgres (pg18)` | adv | ● |
 | `pr-base` | adv | adv |
+| `sandbox-conformance` | ● | ● |
 | `security` | ● | ● |
 | `strike-ladder` | adv | ● |
 | `test` | ● | ● |
