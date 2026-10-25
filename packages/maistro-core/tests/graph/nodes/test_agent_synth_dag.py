@@ -154,7 +154,6 @@ async def test_depth_at_cap_refuses_without_synthesizing() -> None:
 
 async def test_depth_below_cap_proceeds() -> None:
 
-    synthesizer = _CountingSynthesizer([_result([_ChildStep.kind])])
     node = AgentSynthDagNode(
         sentinel=_compat_sentinel(),
         synthesizer=synthesizer,
@@ -373,7 +372,6 @@ async def test_registered_kind_config_dispatches_a_canonical_child_run() -> None
     from maistro.graph.durable_runs import InMemoryDurableRunStore
 
     store = InMemoryDurableRunStore()
-    synthesizer = _CountingSynthesizer([_result([_ChildStep.kind])])
     node = AgentSynthDagNode(
         sentinel=_compat_sentinel(),
         synthesizer=synthesizer,
@@ -412,7 +410,6 @@ async def test_unavailable_judge_still_dispatches_and_records_degraded_provenanc
     from maistro.graph.durable_runs import InMemoryDurableRunStore
 
     store = InMemoryDurableRunStore()
-    synthesizer = _CountingSynthesizer([_result([_ChildStep.kind])])
     node = AgentSynthDagNode(
         sentinel=_compat_sentinel(),
         proportionality_judge=_AlwaysJustified(),
@@ -522,7 +519,6 @@ async def test_non_mapping_result_metadata_on_an_exception_is_ignored() -> None:
 async def test_unscoped_context_fails_rather_than_inventing_scope() -> None:
     from maistro.graph.durable_runs import InMemoryDurableRunStore
 
-    synthesizer = _CountingSynthesizer([_result([_ChildStep.kind])])
     node = AgentSynthDagNode(
         sentinel=_compat_sentinel(),
         synthesizer=synthesizer,
@@ -606,7 +602,6 @@ async def test_kinds_outside_the_requested_allowlist_are_refused() -> None:
     """
     from maistro.graph.durable_runs import InMemoryDurableRunStore
 
-    synthesizer = _CountingSynthesizer([_result([_ChildStep.kind])])
     node = AgentSynthDagNode(
         sentinel=_compat_sentinel(),
         synthesizer=synthesizer,
@@ -627,7 +622,6 @@ async def test_an_empty_allowlist_leaves_the_registry_as_the_only_bound() -> Non
     """No allowlist means the caller named no restriction — not that none pass."""
     from maistro.graph.durable_runs import InMemoryDurableRunStore
 
-    synthesizer = _CountingSynthesizer([_result([_ChildStep.kind])])
     node = AgentSynthDagNode(
         sentinel=_compat_sentinel(),
         synthesizer=synthesizer,

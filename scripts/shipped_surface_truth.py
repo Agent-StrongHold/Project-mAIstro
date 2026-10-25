@@ -210,7 +210,6 @@ def _decorated_routes(node: ast.AsyncFunctionDef | ast.FunctionDef) -> list[tupl
             continue
         path = _route_path(path_expr, dynamic_at=decorator)
         name = decorator.func.attr.lower()
-        security_get = _security_surface(path, node.name)
         methods = [name.upper()] if name.upper() in MUTATING_METHODS else []
         if name in {"api_route", "route"}:
             methods = _declared_methods(decorator)
