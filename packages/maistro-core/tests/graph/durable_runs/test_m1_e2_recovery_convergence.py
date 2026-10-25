@@ -118,7 +118,9 @@ def _validate_pause_reason_wakers() -> None:
                 raise RuntimeError(f"pause waker {name!r} is not callable")
 
 
-@pytest.mark.ac("M1-E2/#1192")
+# No @pytest.mark.ac claim: M1-E2/#1192 names an issue, not a declared
+# criterion id, and the acceptance ledger ceilings markers that name nothing
+# (test_pause_reason_wakers.py carries no marker for the same reason).
 def test_every_registered_pause_reason_names_a_production_waker() -> None:
     """A new resumable reason cannot silently become an inert WAITING Run."""
     assert set(PAUSE_REASON_WAKERS) == set(PAUSE_REASON_OWNERS)
@@ -131,7 +133,6 @@ def test_every_registered_pause_reason_names_a_production_waker() -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.ac("M1-E2/#1192")
 async def test_cross_instance_polling_writes_the_canonical_external_result() -> None:
     """A remote peer has a real timer-tick ingress, not an in-process receipt assumption."""
     graph = _graph("ws-m1-e2-peer", "project-m1-e2-peer")
@@ -203,7 +204,6 @@ async def test_cross_instance_polling_writes_the_canonical_external_result() -> 
 
 
 @pytest.mark.asyncio
-@pytest.mark.ac("M1-E2/#1192")
 async def test_external_completion_wakes_a_system_owned_waiting_run() -> None:
     graph = _graph("ws-m1-e2", "project-m1-e2")
     run = Run(
@@ -252,7 +252,6 @@ async def test_external_completion_wakes_a_system_owned_waiting_run() -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.ac("M1-E2/#1151")
 async def test_recovery_rederives_parent_after_node_run_settlement_write() -> None:
     projects = InMemoryProjectScopeStore()
     workspace_id = "ws-m1-e2-replay"
@@ -296,8 +295,6 @@ async def test_recovery_rederives_parent_after_node_run_settlement_write() -> No
 
 
 @pytest.mark.asyncio
-@pytest.mark.asyncio
-@pytest.mark.ac("M1-E2/#1192")
 async def test_terminal_a2a_receipt_reaches_the_canonical_external_waker() -> None:
     calls: list[tuple[str, str, dict[str, object]]] = []
 
