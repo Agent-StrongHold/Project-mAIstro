@@ -17,6 +17,7 @@ from maistro.sandbox.network import DENY_ALL, EgressMode
 from maistro.sandbox.policy import WorkloadPolicy
 from maistro.sandbox.selector import NoSuitableBackendError
 from maistro.security.dangerous_tools import is_dangerous_command
+from maistro.tools.sandbox.env_sanitize import sanitize_env
 from maistro.tools.sandbox.microvm import _parse_mib
 from maistro.tools.sandbox.workspace import CONTAINER_WORKSPACE, ensure_workspace
 
@@ -89,9 +90,17 @@ async def create_sandbox(
     *,
     ttl: int | None = None,
     env: dict[str, str] | None = None,
+    trusted_env: dict[str, str] | None = None,
     policy: WorkloadPolicy = UNTRUSTED_CODE,
 ) -> CanonicalSandboxContainer:
-    """Create through canonical policy; settings may tighten, never grant egress."""
+    """Create through canonical policy; settings may tighten, never grant egress.
+
+    Like the microVM path, `env` is allowlist-sanitized — it may be ambient or
+    request-derived, so it must not carry host secrets (AWS_*, OPENAI_API_KEY,
+    ...) into the guest. Intentionally provisioned credentials go through
+    `trusted_env`, passed verbatim so every call site that trusts a secret into
+    the sandbox says so.
+    """
     overrides: dict[str, int] = {}
     if settings is not None:
         if settings.network_disabled:
@@ -108,7 +117,7 @@ async def create_sandbox(
         workspace_host=str(host_path),
         image=settings.image if settings is not None else config.image,
         cpu_cores=settings.cpu_count if settings is not None else config.cpu_cores,
-        env=dict(env or {}),
+        env={**sanitize_env(dict(env or {})), **dict(trusted_env or {})},
     )
     instance = await backend.spawn(config=config)
     # The guest's init process only lives for config.timeout_s (post-clamp), so

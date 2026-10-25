@@ -70,3 +70,27 @@ async def test_settings_cannot_enable_network_without_a_policy_grant(monkeypatch
             "/tmp/maistro-workspace/issue-76",
             SandboxSettings(network_disabled=False),
         )
+
+
+async def test_env_is_sanitized_and_trusted_env_passes_verbatim(monkeypatch):
+    """Ambient/request-derived `env` is allowlist-sanitized before it reaches
+    the guest (Codex, #262); explicit `trusted_env` is the only channel for
+    intentionally provisioned credentials."""
+    backend = AsyncMock()
+    backend.tier = "vm"
+    backend.supports_scoped_egress = False
+    backend.spawn.return_value = SandboxInstance(
+        id="test", backend="recording", isolation_tier="vm"
+    )
+    selector = SandboxSelector()
+    selector.register("vm", backend)
+    monkeypatch.setattr(canonical, "build_selector", lambda: selector)
+
+    container = await canonical.create_sandbox(
+        "/tmp/maistro-workspace/issue-76",
+        env={"TZ": "UTC", "AWS_SECRET_ACCESS_KEY": "leak", "OPENAI_API_KEY": "sk-x"},
+        trusted_env={"HARNESS_PROVIDER_KEY": "intentional"},
+    )
+    config = backend.spawn.call_args.kwargs["config"]
+    assert config.env == {"TZ": "UTC", "HARNESS_PROVIDER_KEY": "intentional"}
+    await container.destroy()
