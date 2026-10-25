@@ -47,6 +47,17 @@ def test_wire_process_delivery_gateway_registers_log_and_is_process_default() ->
     assert get_process_delivery_registry() is registry
 
 
+def test_wire_skips_log_registration_when_caller_already_has_log() -> None:
+    """Branch 46 False: do not double-register the default log channel."""
+    existing = LogChannel()
+    preloaded = ChannelRegistry()
+    preloaded.register(existing)
+    wired = wire_process_delivery_gateway(preloaded)
+    assert wired is preloaded
+    assert wired.list_channels().count("log") == 1
+    assert wired.get("log") is existing
+
+
 def test_get_process_delivery_registry_wires_when_absent() -> None:
     import maistro.delivery.wiring as wiring
 
