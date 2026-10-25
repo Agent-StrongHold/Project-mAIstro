@@ -65,12 +65,19 @@ dependencies = [
     # Bound is `>=0.9.0,<2` because 0.9.0 is what every package in this repo is
     # at today (root VERSION); nothing resolves at 1.0.0 yet. Tighten to
     # `>=1.0.0,<2` at tag time, per E1/E2 of the v1.0.0 release plan.
-    # `[bcrypt,identity]`: bcrypt for legacy password columns (see above);
-    # identity because the auth wiring imports maistro.identity
-    # (ConductorSeed), whose bip-utils/pynacl stack the extra declares. Both
-    # surfaces resolve through uv.lock — the image installs the locked pins,
-    # not this file (#348).
-    "maistro-core[bcrypt,identity]>=0.9.0,<2",
+    # `[bcrypt,identity,sqlite]`: bcrypt for legacy password columns (see
+    # above); identity because the auth wiring imports maistro.identity
+    # (ConductorSeed), whose bip-utils/pynacl stack the extra declares; sqlite
+    # because the shipped `maistro` CLI hard-imports aiosqlite at startup
+    # (`maistro.cli` registers `maistro.cli._fixtures`, whose module body
+    # imports aiosqlite unguarded), so without the driver every subcommand —
+    # including `maistro security backup`/`restore`, the documented atomic
+    # operators for this deployment's durable state (#331) — dies at import
+    # inside the image built from this file. The Conductor is also exactly the
+    # homelab/single-instance deployment maistro-core's `sqlite` extra exists
+    # for. All three surfaces resolve through uv.lock — the image installs the
+    # locked pins, not this file (#348).
+    "maistro-core[bcrypt,identity,sqlite]>=0.9.0,<2",
     # routes/design.py and services/design_*.py import maistro_design at
     # module load (unguarded) — the app cannot boot without it.
     # maistro-canvas arrives as maistro-design's own hard dependency.

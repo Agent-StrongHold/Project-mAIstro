@@ -104,6 +104,7 @@ wait forever for an `Expected` result.
 | CI | `docker-build` | every PR |
 | CI | `docker-rebuild-compare` | every PR |
 | CI | `durable-events` | every PR |
+| CI | `hive-conductor-compose-durability` | every PR |
 | CI | `hive-conductor-e2e` | every PR |
 | CI | `hive-conductor-e2e-ui` | every PR |
 | CI | `lint-and-type-check` | every PR |
