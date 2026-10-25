@@ -236,9 +236,7 @@ async def test_replay_refuses_a_completed_noderun_without_a_completed_attempt() 
     node_run = (await runs.list_node_runs(run_id))[0]
     for attempt_id, attempt in list(runs._attempts.items()):
         if attempt.node_run_id == node_run.node_run_id:
-            runs._attempts[attempt_id] = attempt.model_copy(
-                update={"status": AttemptStatus.FAILED}
-            )
+            runs._attempts[attempt_id] = attempt.model_copy(update={"status": AttemptStatus.FAILED})
 
     with pytest.raises(RunIntegrityError, match="no completed Attempt"):
         await canonical.execute(run_id, lambda: _value({"must": "not run"}))
@@ -290,6 +288,31 @@ async def test_execute_rebuilds_from_attempt_when_capture_is_empty() -> None:
     assert isinstance(rebuilt, DesignProject)
     assert rebuilt == project
     assert rebuilt.outputs[0].root.value == "# hello"
+
+
+async def test_execute_refuses_when_capture_is_empty_and_attempt_incomplete() -> None:
+    canonical, _runs = await _execution()
+    discovery = DiscoveryResult(
+        skill_slug="login-flow",
+        responses={"auth_methods": "email"},
+        design_system_slug="default",
+    )
+    run_id = await canonical.admit(discovery=discovery, actor_principal_id="principal-1")
+    original_execute = canonical._service.execute_node
+
+    async def _execute_node(*args: Any, executor: Any = None, **kwargs: Any) -> Any:
+        async def _wrapper(_work_item: object, _context: object) -> Any:
+            return {"ignored": True}
+
+        node_run, attempt = await original_execute(*args, executor=_wrapper, **kwargs)
+        # Capture stayed empty (outer execute never appended); force the
+        # Attempt into a non-COMPLETED status so execute raises integrity.
+        attempt = attempt.model_copy(update={"status": AttemptStatus.FAILED, "result": None})
+        return node_run, attempt
+
+    canonical._service.execute_node = _execute_node  # type: ignore[method-assign]
+    with pytest.raises(RunIntegrityError, match="without a completed Attempt result"):
+        await canonical.execute(run_id, lambda: _value({"no": True}))
 
 
 async def test_fail_is_a_noop_on_an_already_terminal_run() -> None:
