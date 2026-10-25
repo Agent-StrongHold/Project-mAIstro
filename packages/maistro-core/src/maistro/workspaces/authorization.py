@@ -41,29 +41,6 @@ def _is_blank(principal_id: object) -> bool:
     return not isinstance(principal_id, str) or not principal_id.strip()
 
 
-def decide_workspace_action(
-    membership: WorkspaceMembership | None,
-    action: WorkspaceAction,
-) -> WorkspaceMembership:
-    """The one Workspace rule: may this membership perform this action?
-
-    Shared by `WorkspaceAuthorizer.require` and by the re-check a durable
-    store performs on its own connection inside the write it guards
-    (#1150). The re-check answers the same question with a membership read
-    under the Workspace's own lock, so the role rule must not be written
-    twice: two copies of "an owner may administer" drift, and the second
-    copy is the one nobody reviews.
-
-    A missing membership is a refusal that reads as a missing Workspace, so
-    the answer never discloses whether the Workspace exists.
-    """
-    if membership is None:
-        raise WorkspaceAuthorizationDenied
-    if action is WorkspaceAction.VIEW or membership.can_administer:
-        return membership
-    raise WorkspaceAuthorizationDenied(membership)
-
-
 class WorkspaceAuthorizer:
     def __init__(self, store: WorkspaceStore) -> None:
         self._store = store
@@ -84,12 +61,11 @@ class WorkspaceAuthorizer:
         # a missing Workspace apart from a foreign one.
         with suppress(WorkspaceNotFound):
             membership = await self._store.get_membership(workspace_id, user_id=principal_id)
-        return decide_workspace_action(membership, wanted)
+        if membership is None:
+            raise WorkspaceAuthorizationDenied
+        if wanted is WorkspaceAction.VIEW or membership.can_administer:
+            return membership
+        raise WorkspaceAuthorizationDenied(membership)
 
 
-__all__ = [
-    "WorkspaceAction",
-    "WorkspaceAuthorizationDenied",
-    "WorkspaceAuthorizer",
-    "decide_workspace_action",
-]
+__all__ = ["WorkspaceAction", "WorkspaceAuthorizationDenied", "WorkspaceAuthorizer"]

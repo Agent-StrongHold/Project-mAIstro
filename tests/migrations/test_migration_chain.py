@@ -79,12 +79,6 @@ EXPECTED_TABLES = frozenset(
         # after a collision with 032_asset_instance_org_scope; #1079).
         # Bindings and Invocations are separate tables: Bindings are immutable
         # authorization records, Invocations the logical effect ledger.
-        "capability_approvals",
-        # The tombstone half of the same authority (047). Separate from
-        # `capability_bindings` because revoking deletes the binding row,
-        # so a `revoked_at` column would be deleted along with the thing
-        # it forbids and the id could be registered again (#846).
-        "capability_binding_revocations",
         "capability_bindings",
         "capability_invocations",
         "consumer_cursors",
@@ -184,12 +178,6 @@ EXPECTED_TABLES = frozenset(
         "prompt_labels",
         "prompts",
         "quota_usage",
-        # One immutable evidence row per canonical physical Invocation (041,
-        # #718): at-most-once quota accounting and explicit unreported usage
-        # evidence, projected into `quota_usage`.
-        "quota_invocation_evidence",
-        # Durable per-event identities that make `record_usage` retries and
-        # crash-ambiguous commits harmless (#1204).
         "quota_usage_events",
         # Schedule definitions and their fire cursors (016). Durable so that a
         # cursor survives a restart and two scheduler replicas share one rather
@@ -203,7 +191,7 @@ EXPECTED_TABLES = frozenset(
         # live on the message table (#327).
         "session_turns",
         "sessions",
-        # Admission claims for task submission (038). Durable and replica-shareable
+        # Admission claims for task submission (037). Durable and replica-shareable
         # so a retried submit resolves to the original receipt rather than minting
         # a second Run (#1176).
         "task_idempotency",

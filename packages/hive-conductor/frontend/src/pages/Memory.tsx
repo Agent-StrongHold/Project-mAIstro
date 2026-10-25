@@ -37,13 +37,9 @@ export default function Memory() {
     } catch { toast("Failed to create", "error"); }
   }
 
-  // Optimistic update (#1422): the edited fields are applied to local state
-  // and `sel` before the PUT resolves, reconciled with the server's record
-  // on success, and rolled back to the pre-edit entry on failure. Every
-  // write to `entries`/`sel` here is guarded by object identity against the
-  // exact `optimistic` snapshot this call created, so an in-flight request
-  // that resolves after a newer edit (or a delete) of the same entry can't
-  // clobber the newer state with its own stale one.
+  // One mutation, one request (matches WorkspaceContext.tsx's #1422 fix): the
+  // response is the changed record, so it is patched into local state rather
+  // than followed by a refetch of the whole collection.
   async function updateEntry() {
     if (!sel) return;
     const previous = sel;
@@ -53,16 +49,10 @@ export default function Memory() {
     setSel(optimistic);
     setEditing(false);
     try {
-      const updated = await apiPut<Entry>(`/v1/memory/entries/${previous.id}`, { key: editForm.key || undefined, value: editForm.value || undefined, tags: editForm.tags ? tags : undefined });
-      // `setEntries` cannot be conditioned on "is this still current" from out
-      // here: whether the updater above already ran is not observable
-      // synchronously, so the only reliable check is inside `setSel`'s own
-      // updater, which React always calls with the true current value.
-      setSel((current) => {
-        if (current !== optimistic) return current;
-        setEntries((prev) => prev.map((e) => (e === optimistic ? updated : e)));
-        return updated;
-      });
+      const updated = await apiPut<Entry>(`/v1/memory/entries/${sel.id}`, { key: editForm.key || undefined, value: editForm.value || undefined, tags: editForm.tags ? editForm.tags.split(",").map((t) => t.trim()).filter(Boolean) : undefined });
+      setEntries((prev) => prev.map((e) => (e.id === updated.id ? updated : e)));
+      setSel(updated);
+      setEditing(false);
       toast("Entry updated", "ok");
     } catch {
       setSel((current) => {
@@ -89,6 +79,8 @@ export default function Memory() {
     setDeleteTarget(null);
     try {
       await apiDelete(`/v1/memory/entries/${id}`);
+      setEntries((prev) => prev.filter((e) => e.id !== id));
+      if (sel?.id === id) setSel(null);
       toast("Entry deleted", "ok");
     } catch {
       if (removed) {

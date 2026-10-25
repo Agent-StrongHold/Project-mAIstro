@@ -642,21 +642,10 @@ def _register_job_routes(  # noqa: C901  route-registration closure: independent
             # would otherwise fall through to the global exception handler
             # as -- `RunIntegrityError` is a core canonical-execution error,
             # not one of the Canvas domain errors `_error()`/
-            # `_ERROR_STATUS_MAP` above know how to translate. The detail is
-            # fixed public text: exception messages can name operation ids
-            # and internal run state (CodeQL py/stack-trace-exposure).
-            logger.warning(
-                "canvas idempotency conflict for %s: %s",
-                canvas_id,
-                exc,
-                exc_info=True,
-            )
+            # `_ERROR_STATUS_MAP` above know how to translate.
             return JSONResponse(
                 status_code=409,
-                content={
-                    "code": "IDEMPOTENCY_KEY_CONFLICT",
-                    "detail": "idempotency key reused with different inputs",
-                },
+                content={"code": "IDEMPOTENCY_KEY_CONFLICT", "detail": str(exc)},
             )
 
         return JSONResponse(

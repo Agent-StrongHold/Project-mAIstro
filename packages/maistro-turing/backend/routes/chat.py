@@ -67,7 +67,7 @@ def _reply_from_record(record: DurableRunRecord) -> str:
 async def chat(
     body: ChatBody,
     request: Request,
-    user: Principal = Depends(require_user),
+    user: dict = Depends(require_user),
 ) -> dict:
     message = body.message.strip()
     if not message:
@@ -93,6 +93,7 @@ async def chat(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    plane = get_execution_plane()
     try:
         record = await plane.run_chat(
             session=session,
@@ -118,7 +119,7 @@ async def chat(
                 message,
                 boundary="user_input",
                 context=TuringSecurityContext(
-                    principal=user.user_id,
+                    principal=str(user["id"]),
                     route="/v1/chat",
                     action="chat",
                     workspace_id=record.run.workspace_id,

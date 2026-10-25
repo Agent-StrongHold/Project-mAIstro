@@ -30,8 +30,6 @@ from models.schemas import ChatCompletionRequest
 from pydantic import ValidationError
 from routes import chat, voice
 
-from maistro.identity import Principal
-
 # Model-reaching turns are admitted as canonical chat Runs (#1037).
 pytestmark = pytest.mark.usefixtures("chat_run_spine")
 
