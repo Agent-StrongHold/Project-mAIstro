@@ -150,25 +150,6 @@ class ProjectScopeStore(Protocol):
         ...
 
     async def memberships_for(
-        self, project_id: str, *, principal_id: str | None = None
-    ) -> list[ProjectMembership]:
-        """List memberships at one Project, optionally for one principal."""
-
-        The read that decides what to preserve and the write that stores it
-        are one critical section: when a row already exists for
-        `(project_id, principal_id)`, its `membership_id`, `created_at`,
-        `denies`, `role`, `grants` and `delegable_grants` are preserved and
-        the caller's `grants`/`delegable_grants` are unioned in; when none
-        exists, `membership` becomes the row. An owner's revocation that
-        commits first therefore leaves no row to preserve, so the merge
-        cannot resurrect a revoked principal carrying stale grants -- the
-        failure mode of reading `memberships_for` and then writing through
-        `set_membership` as two separate calls (#1148).
-        """
-
-        ...
-
-    async def memberships_for(
         self,
         project_id: str,
         *,

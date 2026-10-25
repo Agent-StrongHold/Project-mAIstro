@@ -29,6 +29,36 @@ from maistro.types.config import ModelBindingConfig
 logger = logging.getLogger(__name__)
 
 
+def _has_http_origin_authority(parsed: SplitResult) -> bool:
+    """Require a plain HTTP authority, without userinfo or URL components."""
+    port = parsed.port  # May raise for malformed/out-of-range ports.
+    return (
+        parsed.scheme == "http"
+        and parsed.username is None
+        and parsed.password is None
+        and not parsed.netloc.endswith(":")
+        and not any((parsed.path, parsed.query, parsed.fragment))
+        and (port is None or port > 0)
+    )
+
+
+def _is_http_loopback_origin(origin: str) -> bool:
+    """Classify the local HTTP warning exception without trusting URL prefixes."""
+    if any(char in origin for char in "\\?#") or any(
+        ord(char) <= 32 or ord(char) == 127 for char in origin
+    ):
+        return False
+    try:
+        parsed = urlsplit(origin)
+        return _has_http_origin_authority(parsed) and parsed.hostname in {
+            "localhost",  # DevSkim: ignore DS162092 until 2027-12-31
+            "127.0.0.1",  # DevSkim: ignore DS162092 until 2027-12-31
+            "::1",  # DevSkim: ignore DS162092 until 2027-12-31
+        }
+    except ValueError:
+        return False
+
+
 def validate_permission_preset(value: str) -> str:
     """Reject a preset name that the permission policy does not define."""
     from maistro.security.permission_policy import VALID_PRESETS
@@ -320,6 +350,7 @@ class Settings(BaseSettings):
     rate_limit_per_minute: int = BASELINE_RATE_LIMIT_PER_MINUTE
     rate_limit_burst: int = BASELINE_RATE_LIMIT_BURST
     circuit_breaker_failure_threshold: int = BASELINE_CIRCUIT_FAILURE_THRESHOLD
+    circuit_breaker_max_domains: int = 64
     circuit_breaker_recovery_timeout_s: float = BASELINE_CIRCUIT_RECOVERY_TIMEOUT_S
     # Governed ceilings on concurrently active root Runs (#1182), enforced by
     # every RunStore at admission. Tighten freely; loosening needs the override.

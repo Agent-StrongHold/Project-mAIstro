@@ -133,8 +133,6 @@ class ResolvedBinding(BaseModel):
             capability=binding.capability,
             provider_name=provider.name,
             provider_trust_tier=provider.trust_tier,
-            workspace_id=binding.workspace_id,
-            project_id=binding.project_id,
             config=binding.config,
             credential_refs=binding.credential_refs,
             policy_refs=binding.policy_refs,

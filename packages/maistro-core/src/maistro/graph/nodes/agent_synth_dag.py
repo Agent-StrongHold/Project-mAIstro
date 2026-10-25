@@ -63,7 +63,7 @@ from maistro.security.sentinel.policy import Sentinel
 from maistro.security.warden.detector import Warden
 
 from . import get_node, register_node
-from .base import BaseNode, NodeCompositionError, NodeContext
+from .base import BaseNode, NodeCompositionError, NodeContext, ReplaySemantics
 
 if TYPE_CHECKING:  # pragma: no cover - typing only; runtime import would cycle
     from maistro.graph.definitions import Graph

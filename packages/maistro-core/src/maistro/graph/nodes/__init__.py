@@ -55,6 +55,8 @@ AUTHORITY_NAMES: Final[frozenset[str]] = frozenset(
         "node_resolver",
         "provider_registry",
         "llm_router",
+        "warden",
+        "audit_log",
     }
 )
 

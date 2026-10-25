@@ -24,6 +24,7 @@ from fnmatch import fnmatchcase
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 from uuid import uuid4
 
+from maistro.events.invocations import ReplaySafety
 from maistro.sqlite_schema import serialized_schema_upgrade
 
 if TYPE_CHECKING:
