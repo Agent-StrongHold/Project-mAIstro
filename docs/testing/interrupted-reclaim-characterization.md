@@ -7,7 +7,9 @@ reclaimed Attempt as `CANCELLED`, the process stops before the Container can
 perform its first logical reconciliation, and a fresh Container later invokes
 only the public `recover_abandoned_attempts` tick.
 
-No production recovery policy or implementation is changed here.
+No production recovery policy or implementation is changed by the proof
+itself; the repair that closed the isolated gap is recorded under
+**Repair (#1872)** below.
 
 ## Candidate
 
@@ -97,6 +99,32 @@ The intended focused reproduction remains:
 uv run --frozen pytest packages/maistro-core/tests/runs/test_interrupted_reclaim_characterization.py -q -ra
 ```
 
-The draft deliberately remains red. Per #1863, the assertion is not xfailed,
-skipped, or inverted, and no production recovery policy is changed in this
-proof-only leaf.
+The draft deliberately remained red at the characterization heads above. Per
+#1863, the assertion is not xfailed, skipped, or inverted.
+
+## Repair (#1872)
+
+The gap the proof isolated is closed on this branch, without weakening the
+characterization: `Container.recover_abandoned_attempts`'s replay half now
+rediscovers a reclaimed Attempt that is still the newest row under a NodeRun
+the Run/NodeRun still show `RUNNING` for, and reconciles it with the default
+`RECOVERED` cause — the same disposition the positive controls proved the
+lifecycle already applies to known reclaimed evidence. Selection is
+deliberately narrow: retry-owned terminals (FAILED, TIMED_OUT,
+requested-CANCELLED) stay with their owners, a reclaimed Attempt a newer
+Attempt supersedes is left alone, and a stranded node parks only when the
+sweep reaches it — a leased sibling keeps the Run `RUNNING`.
+
+Scope guards for the new selection live in
+`packages/maistro-core/tests/runs/test_interrupted_reclaim_rediscovery.py`
+(inventory delta: `docs/testing/inventory-notes/1872-interrupted-reclaim-rediscovery-repair.md`).
+
+Re-running the focused reproduction on the repair head now yields:
+
+```text
+4 passed in 2.09s
+```
+
+The full `packages/maistro-core/tests/runs` suite and the ruff/format and
+suite-inventory gates were re-run on the repair head; see the PR's CI for the
+canonical evidence.
