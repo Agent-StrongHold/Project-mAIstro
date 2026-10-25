@@ -457,3 +457,79 @@ for the canonical-convergence closure on develop (baseline rows + matching
 branch requeues unchanged. Until that lands, `check-promotion-surface.py`,
 the three real-tree tests, and the promotion-surface component of
 exact-debt-ledger stay red by construction.
+
+## Convergence round at 2d465009f: the PR merged upstream; lane content == origin/develop
+
+PR #2263 was squash-merged to develop as `09d56b6a0` ("[EPIC M5-B] Deferred
+RSI containment, canonical convergence, and governed re-enable (#2263)",
+single parent `db1885b44`). This branch merged `origin/develop` (merge
+`2d465009f`, no conflicts; the only content that came over is develop's
+own `[M1 closeout]` Compose-durability work from `db1885b44`) and
+`git diff HEAD origin/develop` is now **empty** — every lane surface
+(maistro-rsi convergence/containment, backlog agent_surface, personas lazy
+tier, server extensions, the three 552 notes) is byte-identical on develop.
+
+**The promotion-surface wall from the previous rounds is resolved upstream,
+and first-hand re-proven here.** The unblock path this note named (owner
+lands the tolerance grants on develop) happened: #2318's promotion-surface
+grants (quota verifiers, resilience retry/rate/context_probe, and the
+canonical-closure remainder) are in develop's
+`quality/ratchet-authorizations.json`, and the squash-merge moved the
+ratchet base to `09d56b6a0`, against which this branch's delta is nil.
+Executed at `2d465009f`:
+`uv run python scripts/check-promotion-surface.py` → "promotion surface:
+ok" over 81 tolerated modules, **exit 0** (previously exit 1 with 386
+unprotected);
+`uv run python scripts/check-ratchet-provenance.py` → all nine ratchets
+(adr-status-language, citation-status, promotion-surface,
+reachability-dispositions, reachability, shell-execution, contract-markers,
+enumerations, lifecycle) **OK, exit 0**. The GH006 merge-queue block from
+the dispatch brief is thereby cleared: the queue admitted and merged the PR.
+
+Re-validation battery executed at `2d465009f` (all exit 0 unless noted):
+
+- `uv run ruff check .` / `uv run ruff format --check .` — clean (3529 files).
+- CI's ten-package mypy — no issues in 942 source files.
+- `uv run python scripts/check-suite-inventory.py` — ok, 21 suites, 34681
+  node IDs (develop's own baseline, absorbed with the merge).
+- `uv run python scripts/check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` (CI-exact argv) —
+  1263 reviewed identities == 1263 findings, 0 unclassified; **no ledger
+  amendment needed**.
+- `uv run python scripts/check-test-duplicates.py` — 1732 files, 0
+  byte-identical.
+- Hive OpenAPI regeneration (`scripts/dump-hive-openapi.py` +
+  `gen:api` + `git diff --exit-code types.gen.ts`) — diff-clean.
+- Root suite `pytest tests/ --ignore=tests/tools/registry --timeout=60` —
+  **5800 passed**, 139 skipped.
+- `pytest packages/hive-conductor/backend/tests --timeout=60` — **4063
+  passed**, 28 skipped (covers the merged data_dir_guard/foundation work).
+- Targeted develop additions (`tests/test_compose_durability_harness.py`,
+  `tests/test_bump_version.py`,
+  `packages/hive-conductor/backend/tests/test_data_dir_guard.py`,
+  `packages/maistro-core/tests/cli/test_security.py`) — 77 passed.
+- Prior-pass battery at the pre-merge head `ae25db468`, whose content for
+  these paths is identical to the merged head: server 646 passed/10 skipped;
+  core 16716 passed/1213 skipped; rsi 1793 passed/2 skipped; turing +
+  turing-backend + ext-harness + ext-sdk 770 passed; design + hive-backend
+  4706 passed; and CI's cross-suite single-process leakage proof
+  (`pytest tests/ packages/hive-conductor/backend/tests
+  packages/maistro-design/tests -q --timeout=60`) — **10596 passed**.
+
+**The recorded CI failure ("Event loop is closed", `test` job at
+`08db85823`) does not reproduce at the lane head.** Every pytest step of
+that CI job was executed locally green (server; turing and turing backend;
+ext-harness; ext-sdk; the root tree; hive-conductor backend; maistro-design;
+and the combined one-process proof), so the failure was an artifact of that
+intermediate merge state (or its runner), not of the content that shipped.
+
+Local environment repair only (no repo change): the operator
+`maistro-builders:latest` image left by a prior lane lacked the
+SPEC-082926 fitness toolchain, which turned the docker-gated
+contained-fitness tests into real failures locally (CI never sees this —
+there the image is absent and the tests skip). The image was rebuilt on the
+digest-pinned `python:3.12-slim` base with the spec-named toolchain (pytest,
+coverage, ruff, mypy, bandit, radon, interrogate, vulture, pylint, git);
+`packages/maistro-rsi/tests/test_contained_fitness.py` then passes **32/32
+with real in-container execution** — stronger evidence than CI, where these
+skip, and consistent with the closeout rule that a skip is not proof.

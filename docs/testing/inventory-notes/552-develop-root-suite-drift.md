@@ -43,3 +43,13 @@ failure mode this PR's earlier round hit at the previous base).
 
 **No test was added or removed by this note, at either base.** The +1 was
 correct relative to `1ddfea4f`; the base moved; the sum re-derives to 0.
+
+## Closure (base `09d56b6a0`, merge `2d465009f`)
+
+PR #2263 squash-merged as develop `09d56b6a0`; this branch merged
+`origin/develop` with no conflicts and is now content-identical to it
+(`git diff HEAD origin/develop` is empty). `tests/` still contributes
+**0** at the new base: the suite-inventory gate at the merged head reports
+`tests/` expected == collected == 6029, exit 0. The final state stands —
+no compensation row is owed at the current base, and this note's delta
+remains zero.
