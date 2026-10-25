@@ -11,7 +11,7 @@ queued ticks already run repairs it from durable facts alone.
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -26,20 +26,24 @@ from maistro.graph.durable_runs import (
     CanonicalDurableRunStore,
     InMemoryGraphContinuationStore,
     SqliteGraphContinuationStore,
+    recover_queued_graph_runs,
     resume_due_graph_runs,
     run_durable_graph,
 )
+from maistro.graph.durable_runs import canonical_store as canonical_store_module
 from maistro.graph.durable_runs.canonical_store import TERMINAL_SETTLE_QUIET_PERIOD
 from maistro.graph.durable_runs.continuation import GraphContinuation, GraphContinuationStore
 from maistro.graph.durable_runs.spine import mirror_node_run
 from maistro.graph.durable_runs.types import DurableRunRecord
 from maistro.graph.execution_state import GraphExecutionState
 from maistro.graph.nodes import BaseNode, NodeContext
+from maistro.graph.nodes.base import PAUSE_AWAITING_HARNESS, now_utc, pause_until
 from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.runs import InMemoryRunStore
 from maistro.runs.concurrency import RunConcurrencyLimits
 from maistro.runs.lifecycle import transition_run
 from maistro.runs.model import TERMINAL_RUN_STATUSES, RunStatus
+from maistro.runs.sqlite_store import SqliteRunStore
 from maistro.runs.store import RunStore
 from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
@@ -634,3 +638,125 @@ async def test_the_running_sweep_does_not_spend_the_per_status_budget(spine: _Sp
 
     assert await spine.store.reconcile_persistence(limit=5) == 1
     assert await spine.continuations.get("orphaned-continuation") is None
+
+
+class _ExternalWait(_Step):
+    """Parks WAITING on a system-owned pause; consumes the delivered answer on re-entry."""
+
+    kind: ClassVar[str] = "test.cross_store_crash.external_wait"
+
+    async def _execute(self, inputs: _In, ctx: NodeContext) -> _Out:
+        answers = (ctx.metadata or {}).get("hitl_answers") or {}
+        if isinstance(answers, Mapping) and answers.get(ctx.node_id):
+            return _Out(text="answered")
+        # Immediately due, so the resumed visit re-enters this body instead of
+        # replaying the parked Attempt until its poll timer elapses.
+        pause_until(PAUSE_AWAITING_HARNESS, resume_at=now_utc())
+
+
+async def test_an_external_result_mirror_lost_to_a_crash_is_requeued_after_restart(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The ``submit_external_result`` window: WAITING spine, QUEUED continuation.
+
+    The external-result seam writes the continuation (QUEUED, with the answer
+    evidence) and only then mirrors the lifecycle onto the spine. A process
+    that dies in between leaves a Run the queued tick cannot see (it pages the
+    spine, which still reads WAITING) and the due index never lists (it
+    excludes QUEUED continuations) -- stranded forever unless the reconcile
+    sweep rebuilds the interrupted mirror from the committed answer evidence.
+    This is the SQLite close/reopen shape: the recovery half shares no
+    connection or cached object with the interrupted writer, the way a
+    restarted process would.
+    """
+    db = tmp_path / "external-window.db"
+    projects = InMemoryProjectScopeStore()
+    root = await projects.create_root(_WORKSPACE)
+    project = await projects.create(
+        workspace_id=_WORKSPACE, parent_project_id=root.project_id, name="External window"
+    )
+
+    # ---- walker process: park, deliver the result, die at the mirror ----
+    conn = await aiosqlite.connect(db)
+    try:
+        run_store = SqliteRunStore(conn, project_store=projects, concurrency_limits=_BACKLOG_LIMITS)
+        await run_store.ensure_schema()
+        continuations = SqliteGraphContinuationStore(conn)
+        await continuations.ensure_schema()
+        store = CanonicalDurableRunStore(run_store, continuations)
+
+        graph = Graph(
+            workspace_id=_WORKSPACE,
+            project_id=project.project_id,
+            name="external window",
+            nodes=[Node(node_id="work", node_type=_ExternalWait.kind)],
+        )
+        admitted = await run_store.create_run(
+            graph,
+            initial_status=RunStatus.QUEUED,
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+        )
+        parked = await run_durable_graph(
+            graph,
+            store=store,
+            node_resolver=lambda node_id, current: _ExternalWait(),
+            run_id=admitted.run_id,
+            run_store=run_store,
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+        )
+        assert parked.status is RunStatus.WAITING
+
+        async def crashing_mirror(record: DurableRunRecord, *, run_store: RunStore) -> None:
+            raise _InjectedCrash
+
+        monkeypatch.setattr(canonical_store_module, "mirror_lifecycle", crashing_mirror)
+        with pytest.raises(_InjectedCrash):
+            await store.submit_external_result(
+                admitted.run_id,
+                "work",
+                {"status": "completed", "task_id": "remote-1", "result": "done"},
+            )
+        monkeypatch.undo()
+
+        # Exactly the window: the answer is committed on the continuation,
+        # the spine never heard about it.
+        stranded = await run_store.get_run(admitted.run_id)
+        assert stranded is not None and stranded.status is RunStatus.WAITING
+        residue = await continuations.get(admitted.run_id)
+        assert residue is not None and residue.status is RunStatus.QUEUED
+    finally:
+        await conn.close()
+
+    # ---- restarted process: fresh connection, fresh stores ----
+    conn = await aiosqlite.connect(db)
+    try:
+        run_store = SqliteRunStore(conn, project_store=projects, concurrency_limits=_BACKLOG_LIMITS)
+        await run_store.ensure_schema()
+        continuations = SqliteGraphContinuationStore(conn)
+        await continuations.ensure_schema()
+        store = CanonicalDurableRunStore(run_store, continuations)
+
+        # The reconcile sweep rebuilds the lost mirror from the committed
+        # answer evidence, and a second pass finds nothing left to repair.
+        assert await store.reconcile_persistence() == 1
+        repaired = await run_store.get_run(admitted.run_id)
+        assert repaired is not None and repaired.status is RunStatus.QUEUED
+        node_runs = await run_store.list_node_runs(admitted.run_id)
+        assert [node.status for node in node_runs] == [RunStatus.QUEUED]
+        assert await store.reconcile_persistence() == 0
+
+        # The queued tick now sees the Run and the walker finishes it with
+        # the delivered answer.
+        recovered = await recover_queued_graph_runs(
+            store=store,
+            run_store=run_store,
+            node_resolver_factory=lambda run: lambda node_id, current: _ExternalWait(),
+            eligible=lambda run: True,
+        )
+        assert recovered == 1
+        settled = await store.get(admitted.run_id)
+        assert settled is not None and settled.run.status is RunStatus.COMPLETED
+        assert all(node.status is RunStatus.COMPLETED for node in settled.node_runs)
+        assert settled.hitl_answers["work"]["result"] == "done"
+    finally:
+        await conn.close()

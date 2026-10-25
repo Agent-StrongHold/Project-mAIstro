@@ -724,25 +724,22 @@ class AgentSpawnHarnessNode(BaseNode[SpawnHarnessIn, SpawnHarnessOut]):
         _park(wait)
         raise AssertionError("pause_until must raise")
 
-    async def _resume_harness_wait(
-        self, pause: Mapping[str, Any], answer: Any, inputs: SpawnHarnessIn, ctx: NodeContext
-    ) -> SpawnHarnessOut:
-        if pause.get("paused_reason") != PAUSE_AWAITING_HARNESS:
-            raise ValueError("harness continuation has the wrong pause reason")
-        if isinstance(answer, Mapping) and answer.get("handle_id"):
-            terminal = self._resume_output(answer)
-            if terminal.handle_id != str(pause.get("handle_id") or ""):
-                raise ValueError("harness terminal answer has a foreign handle")
-            return terminal
-        return await self._poll(await self._load_wait(pause, inputs, ctx), inputs, ctx, pause)
-
     async def _resume(self, inputs: SpawnHarnessIn, ctx: NodeContext) -> SpawnHarnessOut | None:
         pause, answer = self._resume_evidence(ctx)
         reason = pause.get("paused_reason")
         if reason == PAUSE_AWAITING_HUMAN_APPROVAL:
             return await self._resume_approval(pause, inputs, ctx)
         if "harness_wait_version" in pause:
-            return await self._resume_harness_wait(pause, answer, inputs, ctx)
+            if reason != PAUSE_AWAITING_HARNESS:
+                raise ValueError("harness continuation has the wrong pause reason")
+            # Fencing: a versioned harness wait is always settled by a fresh
+            # poll of the durable dispatch receipt, never by a submitted
+            # answer body. At-least-once redelivery can deliver an answer
+            # that was stamped against an earlier wait ordinal (or a foreign
+            # handle) after the harness re-dispatched; trusting it would
+            # fail the run instead of recovering. The answer body only has
+            # standing where no pause carries provenance (see below).
+            return await self._poll(await self._load_wait(pause, inputs, ctx), inputs, ctx, pause)
         if {"dispatch_invocation_id", "observation_index", "deadline_at"}.intersection(pause):
             raise ValueError("harness continuation is missing its version")
         if reason == PAUSE_AWAITING_HARNESS and "invocation_id" in pause:

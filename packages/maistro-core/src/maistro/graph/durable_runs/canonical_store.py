@@ -204,13 +204,22 @@ def _requeue_answered_nodes(
     them has already settled. The Run re-queues at the newest accepted answer
     so no node is asked to resume before the moment its own answer was
     accepted.
+
+    Both parked shapes an accepted answer can interrupt are re-queued: a
+    human pause parks the NodeRun ``PAUSED``, and a machine wait (harness,
+    Jira subtasks) parks it ``WAITING``. The external-result seam records its
+    completions through the same answer evidence, so the mirror it lost to a
+    crash is rebuilt the same way.
     """
     matching = [node for node in record.node_runs if node.node_id in evidence]
     if not matching or all(node.status in TERMINAL_RUN_STATUSES for node in matching):
         return None
     node_runs = list(record.node_runs)
     for index, node_run in enumerate(node_runs):
-        if node_run.status is RunStatus.PAUSED and node_run.node_id in evidence:
+        if (
+            node_run.status in {RunStatus.PAUSED, RunStatus.WAITING}
+            and node_run.node_id in evidence
+        ):
             node_runs[index] = transition_node_run(
                 node_run,
                 RunStatus.QUEUED,
@@ -551,8 +560,20 @@ class CanonicalDurableRunStore:
         continuation: GraphContinuation,
         canonical: Run,
     ) -> bool:
-        """Repair an answer accepted between continuation and spine writes."""
-        if continuation.status is not RunStatus.QUEUED or canonical.status is not RunStatus.PAUSED:
+        """Repair an answer accepted between continuation and spine writes.
+
+        Both parked shapes are covered: a human answer strands the canonical
+        Run ``PAUSED``, and an external result (harness or remote completion
+        recorded through the same answer evidence) strands it ``WAITING``.
+        Answer evidence only exists after an accepted answer, and an accepted
+        answer is what advanced the continuation to QUEUED -- the due index
+        never lists QUEUED continuations and the queued tick pages the spine,
+        so no live claim or walker can hold the Run in this state.
+        """
+        if continuation.status is not RunStatus.QUEUED or canonical.status not in {
+            RunStatus.PAUSED,
+            RunStatus.WAITING,
+        }:
             return False
         evidence = _answered_hitl_evidence(continuation)
         if not evidence:
