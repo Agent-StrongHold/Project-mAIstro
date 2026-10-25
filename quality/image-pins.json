@@ -16,10 +16,10 @@
     {
       "image": "python",
       "tag": "3.12-slim",
-      "digest": "sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1",
-      "recorded": "2026-10-19",
-      "recorded_in": "#363",
-      "note": "CPython 3.12.x line as of the recording date (resolves to 3.12.15); research, RSI runner, e2e and sbx-tests images. Refreshed (#363): the grype leg of the container gate flags CPython binary HIGH/CRITICAL CVEs fixed in 3.12.15.",
+      "digest": "sha256:a0f57064cbdcd6285fa45f51237ab0b35ea8ebaed06a1f5973e89e19dfb86704",
+      "recorded": "2026-10-24",
+      "recorded_in": "#93",
+      "note": "CPython 3.12.x line as of the recording date (resolves to 3.12.15); research, RSI runner, e2e and sbx-tests images. Refreshed (#363): the grype leg of the container gate flags CPython binary HIGH/CRITICAL CVEs fixed in 3.12.15. Digest refreshed 2026-10-24 (#93): security.yml runs 40081082641/40088232144/40091186336 flag libbrotli1 1.1.0-2+b7 (CVE-2026-111497, HIGH, fixed 1.1.0-2+deb13u1 / DSA-6582-1) in maistro-rsi-runner even though the same runs' build logs show the re-executed apt stage installing 1.1.0-2+deb13u1 — buildx cache keys are computed pre-execution from the instruction string and parent key chain, never from a RUN's fresh bytes, so `--no-cache-filter runtime-apt` re-executes the stage but cannot stop the downstream stages from reusing pre-advisory cache chains (and mode=max cached manifests) that carry the old OS layer into the loaded image. The base-digest bump changes the key chain from the FROM down, so the rebuilt image assembles the freshly executed layers (same doctrine as the 3.13.16-slim-bookworm #1152 refresh).",
       "used_by": [
         "Dockerfile.research",
         "Dockerfile.rsi-runner",
@@ -35,8 +35,18 @@
       "recorded_in": "#349",
       "note": "Copier template base: rendered downstream images pin the identical digest.",
       "used_by": [
-        "templates/autonoetic/Dockerfile.jinja",
         "templates/single-tenant-multi-user/{% if host_target in ['docker', 'podman'] %}Dockerfile{% endif %}.jinja"
+      ]
+    },
+    {
+      "image": "python",
+      "tag": "3.14.8-slim-bookworm",
+      "digest": "sha256:48b13b003dda20b16f9442b8475aa05fe21bf6579a8c881db92ffb4d8fd20f83",
+      "recorded": "2026-10-23",
+      "recorded_in": "#2117",
+      "note": "Autonoetic Copier template base. Dependabot index pin verified against Docker Hub on 2026-10-23; its linux/amd64 image config reports PYTHON_VERSION=3.14.8. The mutable tag has since advanced to a newer index; this row preserves the reviewed immutable Dependabot pin. The single-tenant template retains its separate 3.12.12 pin.",
+      "used_by": [
+        "templates/autonoetic/Dockerfile.jinja"
       ]
     },
     {

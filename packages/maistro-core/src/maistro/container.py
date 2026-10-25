@@ -2769,6 +2769,12 @@ async def create_container(
 
         event_bus = EventBus()
 
+        # ADR-047 delivery gateway (#2312 CONNECT): process ChannelRegistry with
+        # the default log channel so outbound dispatch is process-reachable.
+        from maistro.delivery.wiring import wire_process_delivery_gateway
+
+        wire_process_delivery_gateway()
+
         async def _persist_bus_event(event: Any) -> None:
             # Bridge: every in-memory bus event is appended to the durable log.
             await durable_event_log.append(**append_from_bus_event(event))

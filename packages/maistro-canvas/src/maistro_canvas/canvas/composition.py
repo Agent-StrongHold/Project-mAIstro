@@ -101,6 +101,7 @@ def build_canvas_runtime(
     poll_interval: float = 1.0,
     reap_interval: float = 30.0,
     max_execution_seconds: float = 1800.0,
+    concurrency: int = 1,
 ) -> CanvasRuntime:
     """Build the canonical Canvas executor and its durable worker.
 
@@ -135,6 +136,7 @@ def build_canvas_runtime(
         poll_interval=poll_interval,
         reap_interval=reap_interval,
         max_execution_seconds=max_execution_seconds,
+        concurrency=concurrency,
     )
     return CanvasRuntime(
         store=store,
@@ -211,6 +213,7 @@ def build_canvas_router(
     poll_interval: float = 1.0,
     reap_interval: float = 30.0,
     max_execution_seconds: float = 1800.0,
+    concurrency: int = 1,
 ) -> APIRouter:
     """Build the HTTP boundary from the canonical Canvas runtime.
 
@@ -238,6 +241,7 @@ def build_canvas_router(
         poll_interval=poll_interval,
         reap_interval=reap_interval,
         max_execution_seconds=max_execution_seconds,
+        concurrency=concurrency,
     )
     from maistro_canvas.canvas.routes import make_canvas_router
 
