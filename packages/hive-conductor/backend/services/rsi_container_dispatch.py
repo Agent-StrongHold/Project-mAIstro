@@ -190,9 +190,6 @@ def work_root() -> Path:
     configured = (getattr(_settings(), "rsi_work_root", "") or "").strip()
     root = Path(configured).expanduser() if configured else Path(tempfile.gettempdir())
     root.mkdir(parents=True, exist_ok=True)
-    # Publish for maistro_rsi.promotion_review export containment (realpath +
-    # startswith against RSI_WORK_ROOT). setdefault keeps an operator's env.
-    os.environ.setdefault("RSI_WORK_ROOT", str(root.resolve()))
     return root
 
 

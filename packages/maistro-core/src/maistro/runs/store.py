@@ -14,7 +14,6 @@ from maistro.archive.protocols import ArchiveStore
 from maistro.archive.types import ArchiveKey
 from maistro.graph.definitions import Graph
 from maistro.projects.scope_store import ProjectScopeStore
-from maistro.runs.access import RunAuthorization, admission_identity_fields
 from maistro.runs.concurrency import (
     ACTIVE_ROOT_STATUSES,
     RunConcurrencyExceeded,
@@ -298,31 +297,6 @@ def validate_child_scope(
         )
 
 
-def validate_effect_claim_parent(
-    parent: Run | None,
-    parent_node_run: NodeRun | None,
-    *,
-    parent_run_id: str | None,
-    parent_node_run_id: str | None,
-    workspace_id: str,
-    project_id: str,
-    allow_cross_project: bool,
-) -> None:
-    """Validate optional parent evidence before admitting an effect-keyed child Run."""
-    if parent_node_run_id is not None and parent_run_id is None:
-        raise RunIntegrityError("parent_node_run_id requires parent_run_id")
-    if parent is None:
-        return
-    validate_child_scope(
-        parent,
-        workspace_id=workspace_id,
-        project_id=project_id,
-        allow_cross_project=allow_cross_project,
-    )
-    if parent_node_run is not None and parent_node_run.run_id != parent_run_id:
-        raise RunIntegrityError("parent_node_run_id does not belong to parent_run_id")
-
-
 @runtime_checkable
 class ContinuationPurge(Protocol):
     """The slice of a Graph continuation store that a purge needs (#1175).
@@ -555,31 +529,7 @@ class RunStore(Protocol):
 
     async def non_terminal_run_stats(self) -> tuple[int, datetime | None]: ...
 
-    async def list_recent_runs(
-        self, workspace_id: str, *, limit: int = 100, offset: int = 0
-    ) -> list[Run]:
-        """Retained hot Runs in one Workspace, newest first (created_at, run_id).
-
-        Filters scope before pagination. Cold archive payloads are outside
-        discovery, as with list_by_status; by-id inspection remains available.
-        Product readers use ScopedRunReader for authorization.
-        """
-        ...
-
     async def get_run(self, run_id: str, *, principal_id: str | None = None) -> Run | None: ...
-
-    async def find_run_by_task_receipt(self, task_id: str) -> Run | None:
-        """The Run whose provenance names one task receipt, or None.
-
-        The task admitter stamps the receipt id into ``provenance`` at admit;
-        this is the lookup that makes a minted Run discoverable from the
-        receipt its admission announced (#1176). None means no Run names the
-        receipt. A Run whose payload has been archived cold is outside this
-        search — hours past any retry window — and there is at most one: task
-        ids are minted unique, and a second Run naming the same receipt is
-        exactly the duplicate admission this lookup exists to prevent.
-        """
-        ...
 
     async def find_run_by_effect(self, effect_key: str) -> Run | None: ...
 
@@ -638,36 +588,11 @@ class RunStore(Protocol):
 
     async def find_delegation_run(self, delegation_key: str) -> Run | None: ...
 
-    async def find_run_by_task_id(
-        self,
-        task_id: str,
-        *,
-        admission_source: str | None = TASK_QUEUE_SOURCE,
-    ) -> Run | None:
-        """The Run admitted for one task receipt id (#1690), or None.
-
-        The read half of cross-replica task visibility: the Run is committed
-        before a `POST /tasks` 202 is answerable, so any process sharing this
-        store can resolve a receipt id it never admitted, even when the
-        accepting replica's best-effort TaskRecord write (ADR-018) never
-        landed. Scoped to `admission_source` by default because the
-        ``task_id`` provenance key is the task queue's own; callers reaching
-        for another source must say so explicitly. None means no Run claims
-        this receipt id — the same "not found" a `get_run` miss means, not an
-        error.
-        """
-        ...
-
     async def attach_delegation_receipt(
         self, run_id: str, task_id: str, *, target_agent: str | None = None
     ) -> Run: ...
 
     async def claim_delegation_transport_attempt(self, run_id: str) -> bool: ...
-
-    async def cancel_unstarted_chat_run(self, expected: Run, *, error: str) -> bool:
-        """Cancel only an unchanged chat admission with no NodeRuns, atomically."""
-        ...
-
     async def transition_run(
         self,
         run_id: str,
@@ -996,9 +921,7 @@ class InMemoryRunStore:
             parent_run_id=parent_run_id,
             parent_node_run_id=parent_node_run_id,
             persona_id=persona_id,
-            actor_principal_id=identities["actor_principal_id"],
-            initiating_principal_id=identities["initiating_principal_id"],
-            acting_principal_id=identities["acting_principal_id"],
+            actor_principal_id=require_admitted_actor(actor_principal_id),
             provenance=dict(provenance or {}),
             retention_expires_at=retention_expires_at,
             goal_id=goal_id,
@@ -1031,7 +954,6 @@ class InMemoryRunStore:
                     if principal is not None
                     else None
                 ),
-                system_active=len(active),
             )
         except RunConcurrencyExceeded:
             self._release_occurrence_claim(run, run.run_id)
@@ -1329,22 +1251,6 @@ class InMemoryRunStore:
             matching = [run for run in matching if run_cursor_key(run) > after]
         return [run.model_copy(deep=True) for run in matching[offset : offset + limit]]
 
-    async def list_recent_runs(
-        self, workspace_id: str, *, limit: int = 100, offset: int = 0
-    ) -> list[Run]:
-        if limit <= 0 or offset < 0:
-            raise ValueError("limit must be positive and offset non-negative")
-        matching = sorted(
-            (
-                run
-                for run in self._runs.values()
-                if run.workspace_id == workspace_id and run.run_id not in self._archived
-            ),
-            key=run_cursor_key,
-            reverse=True,
-        )
-        return [run.model_copy(deep=True) for run in matching[offset : offset + limit]]
-
     async def get_run(self, run_id: str, *, principal_id: str | None = None) -> Run | None:
         run = self._runs.get(run_id)
         if run is None:
@@ -1353,21 +1259,37 @@ class InMemoryRunStore:
             await self._run_boundary().require_run(run_id, principal_id=principal_id)
         return run.model_copy(deep=True)
 
-    async def find_run_by_task_receipt(self, task_id: str) -> Run | None:
-        # Insertion-order scan; a match is unique by construction (see the
-        # protocol docstring). The provenance key is spelled by the task
-        # admitter's TASK_ID_KEY; a literal here avoids the runs->tasks import
-        # edge the constant would drag in.
-        for run in self._runs.values():
-            if run.provenance.get("task_id") == task_id:
-                return run.model_copy(deep=True)
-        return None
-
     async def find_run_by_effect(self, effect_key: str) -> Run | None:
         for run in self._runs.values():
             if run.provenance.get("effect_key") == effect_key:
                 return run.model_copy(deep=True)
         return None
+
+    def _require_parent_scope(
+        self,
+        graph: Graph,
+        *,
+        parent_run_id: str | None,
+        parent_node_run_id: str | None,
+        allow_cross_project: bool,
+    ) -> Run | None:
+        """Validate the optional parent chain for an effect claim; return the parent."""
+        if parent_node_run_id is not None and parent_run_id is None:
+            raise RunIntegrityError("parent_node_run_id requires parent_run_id")
+        parent = self._require_run(parent_run_id) if parent_run_id is not None else None
+        if parent is None:
+            return None
+        validate_child_scope(
+            parent,
+            workspace_id=graph.workspace_id,
+            project_id=graph.project_id,
+            allow_cross_project=allow_cross_project,
+        )
+        if parent_node_run_id is not None:
+            parent_node_run = self._require_node_run(parent_node_run_id)
+            if parent_node_run.run_id != parent_run_id:
+                raise RunIntegrityError("parent_node_run_id does not belong to parent_run_id")
+        return parent
 
     async def claim_run_by_effect(
         self,
@@ -1396,19 +1318,10 @@ class InMemoryRunStore:
         for existing in self._runs.values():
             if existing.provenance.get("effect_key") == effect_key:
                 return RunEffectClaim(existing.model_copy(deep=True), False)
-        parent = self._require_run(parent_run_id) if parent_run_id is not None else None
-        parent_node_run = (
-            self._require_node_run(parent_node_run_id)
-            if parent is not None and parent_node_run_id is not None
-            else None
-        )
-        validate_effect_claim_parent(
-            parent,
-            parent_node_run,
+        self._require_parent_scope(
+            graph,
             parent_run_id=parent_run_id,
             parent_node_run_id=parent_node_run_id,
-            workspace_id=graph.workspace_id,
-            project_id=graph.project_id,
             allow_cross_project=allow_cross_project,
         )
         run = admit_in_state(
@@ -1454,26 +1367,6 @@ class InMemoryRunStore:
                 return run.model_copy(deep=True)
         return None
 
-    async def find_run_by_task_id(
-        self,
-        task_id: str,
-        *,
-        admission_source: str | None = TASK_QUEUE_SOURCE,
-    ) -> Run | None:
-        # The in-memory store is small by construction (bounded, pruned), so
-        # the reference implementation scans; the durable stores answer from
-        # their provenance expressions instead.
-        for run in self._runs.values():
-            if run.provenance.get("task_id") != task_id:
-                continue
-            if (
-                admission_source is not None
-                and run.provenance.get(ADMISSION_SOURCE) != admission_source
-            ):
-                continue
-            return run.model_copy(deep=True)
-        return None
-
     async def attach_delegation_receipt(
         self, run_id: str, task_id: str, *, target_agent: str | None = None
     ) -> Run:
@@ -1497,17 +1390,6 @@ class InMemoryRunStore:
         provenance = dict(run.provenance)
         provenance["transport_attempted"] = True
         self._runs[run_id] = run.model_copy(update={"provenance": provenance})
-        return True
-
-    async def cancel_unstarted_chat_run(self, expected: Run, *, error: str) -> bool:
-        # No await: parent comparison, child absence and cancellation are one
-        # event-loop operation, serialized with create_node_run.
-        current = self._require_run(expected.run_id)
-        if not matches_chat_admission_snapshot(current, expected):
-            return False
-        if self._node_runs_of(expected.run_id):
-            return False
-        self._runs[expected.run_id] = transition_run(current, RunStatus.CANCELLED, error=error)
         return True
 
     async def transition_run(
@@ -1616,13 +1498,7 @@ class InMemoryRunStore:
         score = self._eval_scores.get(eval_id)
         return score.model_copy(deep=True) if score is not None else None
 
-    async def create_node_run(
-        self,
-        run_id: str,
-        *,
-        node_id: str,
-        provenance: dict[str, Any] | None = None,
-    ) -> NodeRun:
+    async def create_node_run(self, run_id: str, *, node_id: str) -> NodeRun:
         run = self._require_run(run_id)
         if run.status in TERMINAL_RUN_STATUSES:
             raise RunIntegrityError("cannot create NodeRun under a terminal Run")
@@ -1638,16 +1514,6 @@ class InMemoryRunStore:
         )
         self._node_runs[node_run.node_run_id] = node_run
         return node_run.model_copy(deep=True)
-
-    async def record_node_run_provenance(
-        self, node_run_id: str, *, patch: dict[str, Any]
-    ) -> NodeRun:
-        node_run = self._require_node_run(node_run_id)
-        self._refuse_under_terminal_run(node_run)
-        merged = {**node_run.provenance, **patch}
-        updated = node_run.model_copy(update={"provenance": merged})
-        self._node_runs[node_run_id] = updated
-        return updated.model_copy(deep=True)
 
     async def get_node_run(
         self, node_run_id: str, *, principal_id: str | None = None

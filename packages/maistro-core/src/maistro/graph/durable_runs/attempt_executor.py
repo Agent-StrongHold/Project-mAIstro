@@ -216,15 +216,8 @@ async def resume_durable_graph(
     run_store: RunStore | None = None,
     events: RecoveryEventSink | None = None,
     max_steps: int = DEFAULT_MAX_STEPS,
-    now: datetime | None = None,
 ) -> DurableRunRecord:
-    """Claim and resume persisted Graph work through canonical physical evidence.
-
-    ``now`` is the calling tick's moment: a recovery claim is live or expired
-    by the same clock the due scan used, not by this process's wall clock
-    (a fixed/simulated tick clock must keep judging claims it lists). Direct
-    resumes omit it and judge by the wall clock.
-    """
+    """Claim and resume persisted Graph work through canonical physical evidence."""
     # A direct resume can be the first process to observe a crash between the
     # continuation write and its canonical lifecycle mirror. Repair that
     # narrow split before interpreting the spine's status.
@@ -611,6 +604,14 @@ async def _walk_frontier(
         )
     except Exception as exc:
         latest = await _reload_record(record.run_id, store=store, cause=exc)
+        return await traversal._mark_failed(
+            latest,
+            error_code="AttemptDeadlineExceeded",
+            error_message=str(exc),
+            store=store,
+        )
+    except Exception as exc:
+        latest = await _reload_record(record.run_id, store=store, cause=exc)
         if _frontier_has_active_attempt(latest):
             return latest
         return await traversal._mark_failed(
@@ -744,7 +745,9 @@ async def _execute_frontier(
         prior_completion_accepted = False
         logical_effect_key = _node_logical_effect_key(node, inputs, ctx)
         attempts = await execution_store.list_attempts(node_run.node_run_id)
-        semantics = _node_replay_semantics(node)
+        semantics = ReplaySemantics(
+            getattr(node, "replay_semantics", ReplaySemantics.NON_RETRYABLE)
+        )
         if attempts and attempts[-1].status is AttemptStatus.COMPLETED:
             persisted_result = NodeResult.model_validate(attempts[-1].result)
             prior_completion_accepted = _requires_continuation_redispatch(
@@ -759,10 +762,7 @@ async def _execute_frontier(
                     node_run,
                     ctx,
                     persisted_result,
-                    ReplaySemantics(
-                        getattr(node, "replay_semantics", ReplaySemantics.NON_RETRYABLE)
-                    ),
-                    logical_effect_key,
+                    semantics,
                 )
 
         # A prior Attempt that never completed means this NodeRun's work was
@@ -790,12 +790,7 @@ async def _execute_frontier(
             if interrupted and not semantics.retryable:
                 raw_result = _replay_refused(node_id, attempts[-1], semantics)
                 return raw_result
-            # Nested capability Invocations inherit this stable scope when
-            # their node omits an explicit one. Without the binding, their
-            # default per-NodeRun scope turns each graph retry into a fresh
-            # external effect despite this node's EFFECT_KEY contract (#1194).
-            with bind_logical_effect_scope(logical_effect_key):
-                result: NodeResult = await node.run(work_item, execution_context)
+            result: NodeResult = await node.run(work_item, execution_context)
             raw_result = result
             return result
 
@@ -811,37 +806,33 @@ async def _execute_frontier(
                 }
             )
 
-        try:
-            await execution_service.execute(
-                node_run.node_run_id,
-                inputs,
-                ctx,
-                executor=executor,
-                executor_id=str(getattr(node, "kind", None) or spec.node_type or node_id),
-                # The node's declared timeout policy, resolved through the bounded
-                # envelope, becomes the canonical ExecutionRuntime deadline for
-                # this Attempt: `deadline_at` is persisted before launch and
-                # expiry terminalizes the Attempt TIMED_OUT. Undeclared nodes keep
-                # today's no-deadline behavior. This is what makes a product
-                # runner's own transport timeout unable to extend work past the
-                # canonical policy — the runtime owns the enforcement (#1184).
-                timeout_s=declared_node_timeout_s(spec.policies),
-                reconcile_logical=False,
-                context_factory=context_for_attempt,
-                prior_completion_accepted=prior_completion_accepted,
-            )
-        except Exception as exc:
-            raw_result = await _resolve_committed_result(
-                execution_store, executing_attempt_id, cause=exc
-            )
+        await execution_service.execute(
+            node_run.node_run_id,
+            inputs,
+            ctx,
+            executor=executor,
+            executor_id=str(getattr(node, "kind", None) or spec.node_type or node_id),
+            # The node's declared timeout policy, resolved through the bounded
+            # envelope, becomes the canonical ExecutionRuntime deadline for
+            # this Attempt: `deadline_at` is persisted before launch and
+            # expiry terminalizes the Attempt TIMED_OUT. Undeclared nodes keep
+            # today's no-deadline behavior. This is what makes a product
+            # runner's own transport timeout unable to extend work past the
+            # canonical policy — the runtime owns the enforcement (#1184).
+            timeout_s=declared_node_timeout_s(spec.policies),
+            reconcile_logical=False,
+            context_factory=context_for_attempt,
+            prior_completion_accepted=prior_completion_accepted,
+        )
+        if raw_result is None:
+            raise RuntimeError(f"node {node_id!r} completed without a NodeResult")
         return traversal._FrontierItem(
             node_id,
             spec,
             node_run,
             ctx,
-            _require_node_result(raw_result, node_id),
+            raw_result,
             semantics,
-            logical_effect_key,
         )
 
     return tuple(

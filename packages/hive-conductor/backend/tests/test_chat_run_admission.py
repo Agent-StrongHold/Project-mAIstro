@@ -20,13 +20,10 @@ import pytest
 from services import chat_runs, default_workspace, workspace_agent, workspace_authority
 
 from maistro.container import Container, create_container
-from maistro.graph import Graph, Node
 from maistro.http import override_transport
 from maistro.identity import Principal
 from maistro.runs.chat_admission import ChatRunAdmitter
 from maistro.runs.chat_execution import ChatAttemptExecutor, ChatDispatchUnrecorded
-from maistro.runs.concurrency import RunConcurrencyLimits
-from maistro.runs.lifecycle import transition_path
 from maistro.runs.model import AttemptStatus, RunStatus
 from maistro.runs.store import RunIntegrityError
 from maistro.types import AgentConfig
@@ -225,9 +222,7 @@ def test_session_id_is_provenance_not_a_second_run_identity(
     authed_client: Any, container: Container, gateway: _Gateway
 ) -> None:
     ws = _workspace()
-    sid = authed_client.post("/v1/chat/sessions", json={"title": "t", "workspace_id": ws}).json()[
-        "id"
-    ]
+    sid = authed_client.post("/v1/chat/sessions", json={"title": "t"}).json()["id"]
 
     first = _complete(authed_client, workspace_id=ws, session_id=sid)
     second = _complete(authed_client, workspace_id=ws, session_id=sid)
@@ -244,17 +239,23 @@ def test_session_id_is_provenance_not_a_second_run_identity(
 def test_a_session_id_the_caller_does_not_own_is_not_recorded(
     authed_client: Any, container: Container, gateway: _Gateway
 ) -> None:
-    from services import conversation_sessions
+    from datetime import UTC, datetime
 
-    foreign_ws = _workspace(owner="someone-else", name="foreign")
-    foreign = _run(conversation_sessions.create("someone-else", foreign_ws, "t")).session_id
+    from models.schemas import ChatSession
+    from services.owned_records import Owner, owned_chat_sessions
+
+    now = datetime.now(UTC)
+    foreign = "someone-elses-session"
+    owned_chat_sessions(Owner(id="someone-else")).create(
+        foreign, ChatSession(id=foreign, title="t", messages=[], created_at=now, updated_at=now)
+    )
 
     r = _complete(authed_client, session_id=foreign)
 
     assert r.status_code == 200
     run, _node_runs, _attempts = _evidence(container, r.json()["run_id"])
     assert "session_id" not in run.provenance
-    _run(conversation_sessions.delete("someone-else", foreign))
+    owned_chat_sessions(Owner(id="someone-else")).discard(foreign)
 
 
 @pytest.mark.contract("behavioral")
@@ -501,140 +502,6 @@ def _answer() -> dict[str, Any]:
     return {"choices": [{"message": {"role": "assistant", "content": "hello"}}]}
 
 
-def _seed_active_roots(container: Container, workspace_id: str, principals: list[str]) -> list[str]:
-    """Admit active root Runs until the canonical store's ceiling is full.
-
-    The seeds go through the store's own `create_run` -- the one canonical
-    limiter (#1182) -- so the tested submission is refused by the real
-    configured ceiling, not by a stubbed admitter. QUEUED is an active
-    status that holds a slot.
-    """
-
-    async def _seed() -> list[str]:
-        root = await container.project_scope_store.create_root(workspace_id)
-        graph = Graph(
-            workspace_id=workspace_id,
-            project_id=root.project_id,
-            name="seeded active root",
-            nodes=[Node(node_id="seed-node", node_type="agent")],
-        )
-        ids = []
-        for principal in principals:
-            run = await container.run_store.create_run(
-                graph,
-                actor_principal_id=principal,
-                initial_status=RunStatus.QUEUED,
-            )
-            ids.append(run.run_id)
-        return ids
-
-    return _run(_seed())
-
-
-def _snapshot(container: Container, workspace_id: str) -> dict[str, RunStatus]:
-    return {run.run_id: run.status for run in _runs_in(container, workspace_id)}
-
-
-@pytest.mark.contract("behavioral")
-@pytest.mark.parametrize(
-    ("route", "scope"),
-    [
-        (route, scope)
-        for route in ("/v1/chat/complete", "/v1/chat/stream", "/v1/voice/intent")
-        for scope in ("principal", "workspace")
-    ],
-)
-def test_chat_capacity_refusal_returns_429_before_model_or_stream(
-    authed_client: Any,
-    container: Container,
-    gateway: _Gateway,
-    route: str,
-    scope: str,
-) -> None:
-    """#1182: a full canonical admission ceiling is backpressure, answered 429.
-
-    Complete, stream, and voice sit on the one shared `admit_turn` admission
-    service, so all three carry the same refusal -- before the model is called
-    and, for the stream, before any SSE response starts. The seeds saturate
-    the actual configured store: the caller's own principal for the principal
-    scope, other principals in the turn's Workspace (the caller's default one
-    for voice, which selects no Workspace) for the Workspace scope.
-    """
-    limits = RunConcurrencyLimits.configured()
-    if route.endswith("intent"):
-        target = _run(default_workspace.resolve_default_workspace(USER)).id
-        submit: Any = lambda: authed_client.post(route, json={"text": "hi"})  # noqa: E731
-    else:
-        target = _workspace()
-
-        def submit() -> Any:
-            return authed_client.post(
-                route,
-                json={
-                    "messages": [{"role": "user", "content": "hi"}],
-                    "model": "m",
-                    "workspace_id": target,
-                },
-            )
-
-    if scope == "principal":
-        principals = [USER] * limits.per_principal
-    else:
-        principals = [f"seed-principal-{n}" for n in range(limits.per_workspace)]
-    seed_ids = _seed_active_roots(container, target, principals)
-    before = _snapshot(container, target)
-    assert set(before) == set(seed_ids), "the seeds must be the saturated state"
-
-    r = submit()
-
-    assert r.status_code == 429
-    assert r.headers["Retry-After"] == chat_runs.RETRY_AFTER_SECONDS
-    assert r.json()["detail"] == f"too many active runs for this {scope}; retry shortly"
-    if route.endswith("stream"):
-        # Refused before the streaming response exists: a plain JSON error,
-        # never a 200 event-stream start frame.
-        assert r.headers["content-type"].startswith("application/json")
-    assert gateway.requests == []
-
-    after = _snapshot(container, target)
-    assert after == before, "a refusal must not create or move canonical Runs"
-    for run_id in before:
-        _run_obj, node_runs, attempts = _evidence(container, run_id)
-        assert node_runs == [] and attempts == []
-    admitter = chat_runs._admitters[target]
-    assert admitter._dispatch_pending == set(), "the shield outlived a refused admission"
-
-
-@pytest.mark.contract("behavioral")
-def test_a_turn_is_admitted_again_once_capacity_returns(
-    authed_client: Any, container: Container, gateway: _Gateway
-) -> None:
-    ws = _workspace()
-    limits = RunConcurrencyLimits.configured()
-    seed_ids = _seed_active_roots(container, ws, [USER] * limits.per_principal)
-
-    assert _complete(authed_client, workspace_id=ws).status_code == 429
-
-    async def _settle_seeds() -> None:
-        for run_id in seed_ids:
-            run = await container.run_store.get_run(run_id)
-            assert run is not None
-            for step in transition_path(run.status, RunStatus.COMPLETED):
-                await container.run_store.transition_run(run_id, step)
-
-    _run(_settle_seeds())
-
-    answered = _complete(authed_client, workspace_id=ws)
-
-    assert answered.status_code == 200
-    run, node_runs, attempts = _evidence(container, answered.json()["run_id"])
-    assert run.status is RunStatus.COMPLETED
-    assert run.workspace_id == ws
-    assert run.actor_principal_id == USER
-    assert len(node_runs) == 1 and len(attempts) == 1
-    assert attempts[0].result["agent"] == f"workspace-agent:{ws}"
-
-
 @pytest.mark.contract("behavioral")
 def test_hive_window_forgets_completed_turns_without_a_later_admission(
     container: Container,
@@ -790,59 +657,3 @@ def test_settling_a_turn_never_turns_a_failed_sweep_into_a_failed_answer() -> No
     _run(chat_runs._settle_window(admitter, run))  # type: ignore[arg-type]
 
     assert admitter.calls == ["release:run-1", "sweep"]
-
-
-@pytest.mark.asyncio
-async def test_persist_conversation_turn_skips_non_string_model_content(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Non-str assistant content must not call SessionStore (coverage #1822)."""
-    calls: list[object] = []
-
-    async def _append(*_a: object, **_k: object) -> None:
-        calls.append(1)
-
-    monkeypatch.setattr(
-        "services.chat_runs.conversation_sessions.append_turn",
-        _append,
-    )
-    turn = chat_runs.AdmittedTurn(
-        run=SimpleNamespace(run_id="run-ns"),
-        agent_id="agent-1",
-        container=None,
-        admitter=SimpleNamespace(),  # type: ignore[arg-type]
-        session_id="sess-1",
-    )
-    await chat_runs._persist_conversation_turn(
-        turn,
-        [{"role": "user", "content": "hi"}],
-        {"choices": [{"message": {"content": None}}]},
-    )
-    assert calls == []
-
-
-@pytest.mark.asyncio
-async def test_persist_conversation_turn_swallows_append_failures(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Transcript append failure must not undo an already-answered Run."""
-
-    async def _boom(*_a: object, **_k: object) -> None:
-        raise RuntimeError("session store unavailable")
-
-    monkeypatch.setattr(
-        "services.chat_runs.conversation_sessions.append_turn",
-        _boom,
-    )
-    turn = chat_runs.AdmittedTurn(
-        run=SimpleNamespace(run_id="run-fail"),
-        agent_id="agent-1",
-        container=None,
-        admitter=SimpleNamespace(),  # type: ignore[arg-type]
-        session_id="sess-1",
-    )
-    await chat_runs._persist_conversation_turn(
-        turn,
-        [{"role": "user", "content": "hi"}],
-        {"choices": [{"message": {"content": "ok"}}]},
-    )

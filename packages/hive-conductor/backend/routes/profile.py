@@ -24,7 +24,6 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 from services.profile_store import ProfilePersistenceError, ProfileSchemaError
 from services.request_principal import require_actor_id
-from services.workspace_preferences import PreferenceValueError
 
 router = APIRouter(tags=["profile"])
 

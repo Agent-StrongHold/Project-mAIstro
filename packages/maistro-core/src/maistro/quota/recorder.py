@@ -3,26 +3,23 @@
 The live path is :class:`CanonicalInvocationUsageRecorder`, installed once at
 Invocation terminalization by ``CapabilityEffectContext``. It records provider,
 cycle, usage evidence and Invocation identity exactly once, including an
-explicit unreported marker when a provider omits usage. After the local write,
-#2318 optionally runs provider-side ``maybe_reconcile`` when a ``QuotaVerifier``
-is installed (OpenRouter key verifier when ``OPENROUTER_API_KEY`` is set). A
-second live entry point covers the one call class that crosses no canonical
-authority: the conductor's raw-gateway fallback (``agents/conductor.py``)
-records its usage evidence on the process default usage log with explicit
-provenance and, when the Container composition root registered a process
-default quota ledger, on that ledger too — reported tokens as usage, a missing
-report as an unreported marker — so an ungoverned composition can neither be
-silently invisible nor present complete quota percentages while omitting the
-call. The raw ``on_response`` hook below is a compatibility adapter for older
-raw-HTTP call sites; after the #718 cutover no shipped production call site
-supplies it, and ambient/header reconciliation with it is retained for
-compatibility callers — the canonical Invocation recorder is the only
-Invocation-keyed recording mechanism.
+explicit unreported marker when a provider omits usage. A second live entry
+point covers the one call class that crosses no canonical authority: the
+conductor's raw-gateway fallback (``agents/conductor.py``) records its usage
+evidence on the process default usage log with explicit provenance and, when
+the Container composition root registered a process default quota ledger, on
+that ledger too — reported tokens as usage, a missing report as an unreported
+marker — so an ungoverned composition can neither be silently invisible nor
+present complete quota percentages while omitting the call. The raw
+``on_response`` hook below is a compatibility adapter for older raw-HTTP call
+sites; after the #718 cutover no shipped production call site supplies it, and
+ambient/header reconciliation with it is explicitly not a wired production
+path — the canonical Invocation recorder is the only Invocation-keyed
+recording mechanism.
 """
 
 from __future__ import annotations
 
-import os
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any, cast
@@ -180,6 +177,89 @@ class CanonicalInvocationUsageRecorder:
         await maybe_reconcile(state, scope_key, self._log, self._verifier)
 
 
+class CanonicalInvocationUsageRecorder:
+    """Record completed model Invocations exactly once on the quota ledger.
+
+    Canonical model effects use this hook from Invocation terminalization, so
+    retries and deduplicated effects cannot charge twice. Missing usage is
+    recorded as unreported evidence, never as a measured zero.
+    """
+
+    def __init__(
+        self,
+        log: InMemoryUsageLog,
+        quota_tracker: Any | None = None,
+        *,
+        billing_cycle: str = "monthly",
+    ) -> None:
+        self._log = log
+        self._quota_tracker = quota_tracker
+        self._billing_cycle = billing_cycle
+        self._recorded: set[str] = set()
+
+    async def record(self, invocation: Invocation) -> None:
+        """Record one completed physical effect, keyed by Invocation identity.
+
+        At-least-once: the Invocation is marked recorded only after every
+        write succeeds, so a transient ledger failure raised here leaves the
+        effect unmarked and the next ``record`` attempt (a terminalization
+        retry, or a deduplicated effect hand-out re-confirming evidence)
+        repairs the ledger instead of permanently omitting it. Charging stays
+        at-most-once: durable trackers are idempotent on Invocation identity
+        (``record_invocation``), and this in-process guard plus the tracker's
+        own dedupe keep retries charge-free.
+        """
+        if invocation.invocation_id in self._recorded:
+            return
+        provider = invocation.binding.provider_name
+        usage = invocation.usage
+        input_tokens = usage.input_units if usage is not None else 0
+        output_tokens = usage.output_units if usage is not None else 0
+        # Durable ledger first: it is the authoritative sink and is idempotent
+        # on Invocation identity, so a failure here records nothing rather
+        # than half the evidence. The usage-log append that follows cannot
+        # fail in practice, and only after both succeed is the Invocation
+        # marked recorded.
+        if self._quota_tracker is not None:
+            record_invocation = getattr(self._quota_tracker, "record_invocation", None)
+            if record_invocation is not None:
+                await record_invocation(
+                    invocation.invocation_id,
+                    provider,
+                    self._billing_cycle,
+                    input_tokens,
+                    output_tokens,
+                    usage is not None,
+                )
+            elif usage is not None:
+                # Compatibility for external trackers predating canonical
+                # evidence. Not identity-keyed, so it charges on the first
+                # successful attempt only — the mark below plus this guard
+                # make retries no-ops in-process.
+                await self._quota_tracker.record_usage(
+                    provider, self._billing_cycle, input_tokens, output_tokens
+                )
+            else:
+                record_unreported = getattr(self._quota_tracker, "record_unreported", None)
+                if record_unreported is not None:
+                    # Not on the QuotaTracker protocol; a tracker that tracks
+                    # unreported evidence still exposes this async hook.
+                    await cast("Callable[[str, str], Awaitable[None]]", record_unreported)(
+                        provider, self._billing_cycle
+                    )
+        self._log.record(
+            provider,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cost_usd=((usage.cost_cents or 0.0) / 100.0) if usage is not None else 0.0,
+            invocation_id=invocation.invocation_id,
+            provider=provider,
+            billing_cycle=self._billing_cycle,
+            usage_reported=usage is not None,
+        )
+        self._recorded.add(invocation.invocation_id)
+
+
 def record_llm_usage(
     log: InMemoryUsageLog,
     scope_key: str,
@@ -242,11 +322,12 @@ def build_quota_recording_hook(
     """Build a compatibility `on_response` callback for legacy raw HTTP sites.
 
     Canonical model calls do not supply this callback: their Invocation
-    terminalization invokes ``CanonicalInvocationUsageRecorder`` once (and
-    #2318 runs explicit ``maybe_reconcile`` there when a verifier is
-    installed). After the #718 cutover no shipped production entry point
-    passes this hook — ambient/header reconciliation through it is retained
-    for compatibility callers and tests only.
+    terminalization invokes ``CanonicalInvocationUsageRecorder`` once. After
+    the #718 cutover no shipped production entry point passes this hook —
+    ambient/header reconciliation through it is retained for compatibility
+    callers and tests only, not as a wired production recording path (the
+    explicit-verifier wiring is recorded as owed in
+    ``quality/reachability-dispositions.json``, id ``quota-verification``).
 
     For older `(response_json, response) -> None` callback sites this still
     wires both recording paths in one line:

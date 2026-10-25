@@ -58,14 +58,14 @@ Every roadmap and backlog item is tagged by the part of the product it belongs t
 
 ## v1.0 release contract (ratified 2026-10-01)
 
-Ship **maistro-engine v1.0.0** as a stable library **and** a **Workspaces** product (`packages/hive-conductor`) that **deletes** legacy Conductor routes — not a rebrand. Item detail: [`BACKLOG.md`](BACKLOG.md) `[conductor-402]`–`[conductor-413]`, `[engine-112]`–`[engine-115]`. Cutover mechanics: [`docs/architecture/WORKSPACE-CUTOVER-PLAN.md`](docs/architecture/WORKSPACE-CUTOVER-PLAN.md). Per-feature Workspace-UI/API/CLI availability and owned gaps: [`docs/architecture/FEATURE-PARITY-MATRIX.md`](docs/architecture/FEATURE-PARITY-MATRIX.md) (#1874) — no parity or gap-completion claim counts without its executable evidence.
+Ship **maistro-engine v1.0.0** as a stable library **and** a **Workspaces** product (`packages/hive-conductor`) that **deletes** legacy Conductor routes — not a rebrand. Item detail: [`BACKLOG.md`](BACKLOG.md) `[conductor-402]`–`[conductor-413]`, `[engine-112]`–`[engine-115]`. Cutover mechanics: [`docs/architecture/WORKSPACE-CUTOVER-PLAN.md`](docs/architecture/WORKSPACE-CUTOVER-PLAN.md).
 
 ### Release blockers
 
 | Area | Requirement |
 |---|---|
-| Workspaces shell | Home ([#1048](https://github.com/Agent-StrongHold/Project-mAIstro/issues/1048)), Agent chat UI ([#1822](https://github.com/Agent-StrongHold/Project-mAIstro/issues/1822); foundation [#1037](https://github.com/Agent-StrongHold/Project-mAIstro/issues/1037) closed), Attention ([#1049](https://github.com/Agent-StrongHold/Project-mAIstro/issues/1049)), Backlog ([#82](https://github.com/Agent-StrongHold/Project-mAIstro/issues/82)) |
-| Capabilities | Unified surface; retire separate Agents/MCP/Skills pages ([#2273](https://github.com/Agent-StrongHold/Project-mAIstro/issues/2273); security deps [#59](https://github.com/Agent-StrongHold/Project-mAIstro/issues/59)/[#848](https://github.com/Agent-StrongHold/Project-mAIstro/issues/848)) |
+| Workspaces shell | Home ([#1048](https://github.com/Agent-StrongHold/Project-mAIstro/issues/1048)), Agent chat ([#1037](https://github.com/Agent-StrongHold/Project-mAIstro/issues/1037)), Attention ([#1049](https://github.com/Agent-StrongHold/Project-mAIstro/issues/1049)), Backlog ([#82](https://github.com/Agent-StrongHold/Project-mAIstro/issues/82)) |
+| Capabilities | Unified surface; retire separate Agents/MCP/Skills pages ([#59](https://github.com/Agent-StrongHold/Project-mAIstro/issues/59)) |
 | Execution spine | Single canonical `RunStore` — no parallel `DurableRunStore` for new work ([#251](https://github.com/Agent-StrongHold/Project-mAIstro/issues/251)) |
 | Workspace Agent | Persistent goals + reconciliation (M3-D / [#804](https://github.com/Agent-StrongHold/Project-mAIstro/issues/804)) |
 | Canvas + Design Studio | `/v2/canvas` operable in default compose; Design Studio beyond discovery-only |
@@ -75,7 +75,7 @@ Ship **maistro-engine v1.0.0** as a stable library **and** a **Workspaces** prod
 
 ### Explicit non-goals for v1.0
 
-Evolution UI hidden until v1.2 · Turing/autonoetic agent v1.1 · Stronghold v1.5 · team memory scope v1.1 · task-queue recovery on restart deferred ([#91](https://github.com/Agent-StrongHold/Project-mAIstro/issues/91)) · ADR-068 authz implementation post-v1.0 · **Run retry** deferred ([#2279](https://github.com/Agent-StrongHold/Project-mAIstro/issues/2279) — cancel/HITL cover blocked work; post-v1.0 retry must be a new Attempt under the same Run/NodeRun) · **CLI in-product CRUD** deferred ([#2280](https://github.com/Agent-StrongHold/Project-mAIstro/issues/2280) — CLI stays operator-lifecycle only; Workspace UI owns product CRUD).
+Evolution UI hidden until v1.2 · Turing/autonoetic agent v1.1 · Stronghold v1.5 · team memory scope v1.1 · task-queue recovery on restart deferred ([#91](https://github.com/Agent-StrongHold/Project-mAIstro/issues/91)) · ADR-068 authz implementation post-v1.0.
 
 ### Critical path when conflicts arise
 
@@ -156,15 +156,15 @@ Dominant constraint: ease of self-hosting with an honest product surface. Ships 
 | `[conductor-007]` Per-user isolation property test | Implemented | Cross-user retrieval is structurally impossible |
 | `[conductor-402]` Workspaces cutover epic | Accepted; `gap-impl` | #1046 — delete legacy routes; default landing → Workspace Home |
 | `[conductor-403]` Workspace Home | Proposed; `gap-impl` | #1048 — v1.0 blocker |
-| `[conductor-404]` Workspace Agent chat | Proposed; `gap-impl` | #1822 UI / #804 reconciliation / M3-D — v1.0 blocker (#1037 foundation closed; persona #2277) |
+| `[conductor-404]` Workspace Agent chat | Proposed; `gap-impl` | #1037 / M3-D — v1.0 blocker |
 | `[conductor-405]` Attention surface | Proposed; `gap-impl` | #1049 — v1.0 blocker |
 | `[conductor-406]` Backlog / work items | Proposed; `gap-impl` | #82 / M3-C — v1.0 blocker |
-| `[conductor-407]` Capabilities unified surface | Proposed; `gap-impl` | #2273 UI — replaces Agents/MCP/Skills pages (#59/#848 security deps only) |
-| `[conductor-408]` Legacy page retirement | Accepted; `gap-impl` | #2274 — ledger-enforced deletes per cutover plan §9 |
+| `[conductor-407]` Capabilities unified surface | Proposed; `gap-impl` | #59 — replaces Agents/MCP/Skills pages |
+| `[conductor-408]` Legacy page retirement | Accepted; `gap-impl` | Ledger-enforced deletes per cutover plan §9 |
 | `[conductor-409]` Design Studio v1.0 scope | Proposed; `gap-impl` | Beyond discovery-only; persona template framework |
 | `[conductor-410]` Canvas v2 in default compose | Proposed; `gap-impl` | #735 / M3-B — `/v2/canvas` not 503 |
-| `[conductor-411]` Hide Evolution UI | Proposed | #2275 — remove from nav/routes until v1.2 |
-| `[conductor-412]` Tool binding dispatch | Proposed; `gap-impl` | #2276 — Workspace overrides at dispatch (`tool_binding.py`) |
+| `[conductor-411]` Hide Evolution UI | Proposed | Remove from nav/routes until v1.2 |
+| `[conductor-412]` Tool binding dispatch | Proposed; `gap-impl` | Persona overrides at dispatch (`tool_binding.py`) |
 | `[conductor-413]` Hive service wiring | Proposed; `gap-impl` | `repo_scanner`, `pipeline_orchestrator`, `chatbot_integration` |
 | `[engine-112]` RunStore unification | Accepted; `gap-impl` | #251 — single canonical run browser; no new `DurableRunStore` callers |
 | `[engine-113]` ADR-INDEX completeness | Implemented | All ADRs indexed; CI enforces completeness |
@@ -306,17 +306,17 @@ Phase 0 (contract: principal, routes, types, audit, effect context)
     │
     ├─→ engine-112 (RunStore unification #251)
     │       └─→ conductor-403..406 (Home, Agent, Attention, Backlog)
-    ├─→ conductor-407 (Capabilities UI #2273; security #59/#848)
+    ├─→ conductor-407 (Capabilities #59)
     ├─→ conductor-410 (Canvas v2 #735)
     └─→ engine-114 (Memory scopes)
 
 conductor-402 (cutover epic #1046)
     │
-    ├─→ conductor-408 (legacy page retirement #2274)
-    ├─→ conductor-411 (hide Evolution #2275)
+    ├─→ conductor-408 (legacy page retirement)
+    ├─→ conductor-411 (hide Evolution)
     └─→ conductor-413 (hive service wiring)
 
-M2 security (#66) — parallel after conductor-404 (Workspace Agent chat #1822; foundation #1037)
+M2 security (#66) — parallel after conductor-404 (Workspace Agent #1037)
 
 engine-001 (Registry CI)
     └─→ engine-113 (ADR-INDEX completeness)

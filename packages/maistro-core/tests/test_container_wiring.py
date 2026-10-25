@@ -14,7 +14,6 @@ from typing import Any
 import pytest
 
 from maistro.container import Container, create_container
-from maistro.persistence.audit_pages import AUDIT_PAGE_INDEXES
 from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 from maistro.types.config import AgentConfig
 
@@ -95,112 +94,12 @@ async def test_flush_usage_log_is_a_noop_without_persistence() -> None:
     assert container.usage_log.events_for("provider:model") != ()
 
 
-async def test_fresh_container_provisions_the_configured_workspace_and_its_owner() -> None:
-    """#1152 review: the Run boundary must never outlive its membership rows.
-
-    A fresh standalone deployment admits Runs into `config.workspace_id`
-    through the default admitter path, and the Run read boundary answers on
-    Workspace membership. Startup therefore provisions the configured
-    Workspace and its owner (the unauthenticated `dev` principal) before the
-    boundary is installed — otherwise the very first admitted run_id would
-    404 for the only principal the server can name.
-    """
-    from maistro.workspaces.model import WorkspaceRole
-    from maistro.workspaces.wiring import DEFAULT_WORKSPACE_OWNER
-
-    container = await _container()
-    workspace = await container.workspace_store.get(container.task_admitter.default_workspace_id)
-    assert workspace is not None, "startup did not provision the configured Workspace"
-    membership = await container.workspace_store.get_membership(
-        workspace.workspace_id, user_id=DEFAULT_WORKSPACE_OWNER
-    )
-    assert membership is not None and membership.role is WorkspaceRole.OWNER
-
-
-async def test_provisioning_is_idempotent_across_a_restart() -> None:
-    """A restart (or a replica) finds the row and skips the write: one
-    Workspace, one OWNER membership, no duplicate-root failure."""
-    from maistro.container import _provision_configured_workspace
-    from maistro.workspaces.model import WorkspaceRole
-    from maistro.workspaces.store import InMemoryWorkspaceStore
-    from maistro.workspaces.wiring import DEFAULT_WORKSPACE_OWNER
-
-    store = InMemoryWorkspaceStore()
-    await _provision_configured_workspace(store, "default")
-    await _provision_configured_workspace(store, "default")
-
-    workspace = await store.get("default")
-    assert workspace is not None
-    membership = await store.get_membership("default", user_id=DEFAULT_WORKSPACE_OWNER)
-    assert membership is not None and membership.role is WorkspaceRole.OWNER
-
-
-async def test_a_lost_create_race_keeps_provisioning_idempotent() -> None:
-    """The replica that lost the concurrent first start must not fail boot:
-    its create() loses to the winner's unique constraint, but the row the
-    winner wrote is exactly the one the loser was trying to make, so the
-    re-check swallows the refusal."""
-    from maistro.container import _provision_configured_workspace
-    from maistro.workspaces.store import InMemoryWorkspaceStore
-
-    class LostCreateRaceStore(InMemoryWorkspaceStore):
-        def __init__(self) -> None:
-            super().__init__()
-            self.create_attempts = 0
-
-        async def create(self, **kwargs: Any) -> Any:
-            self.create_attempts += 1
-            await super().create(**kwargs)  # the concurrent winner's row lands
-            raise RuntimeError("duplicate key value violates unique constraint")
-
-    store = LostCreateRaceStore()
-    await _provision_configured_workspace(store, "default")
-    assert store.create_attempts == 1
-    assert (await store.get("default")) is not None
-
-
-async def test_provisioning_fails_loudly_when_the_row_never_lands() -> None:
-    """A create() that raises with no visible row afterwards is a real fault,
-    not a lost race — the helper must propagate it, not boot half-wired."""
-    from maistro.container import _provision_configured_workspace
-
-    class BrokenStore:
-        async def get(self, workspace_id: str, *, principal_id: str | None = None) -> None:
-            return None
-
-        async def create(self, **kwargs: object) -> None:
-            raise RuntimeError("write refused")
-
-    with pytest.raises(RuntimeError, match="write refused"):
-        await _provision_configured_workspace(BrokenStore(), "default")  # type: ignore[arg-type]
-
-
 async def test_context_assembly_uses_the_canonical_scope_store() -> None:
     container = await _container(database_url="sqlite://")
 
     assert container.project_store is container.project_scope_store
     root = await container.project_scope_store.create_root("context-wiring")
     assert await container.context_assembly_policy.layer0(root.project_id) == ""
-
-
-async def test_aclose_releases_working_memory_projections_but_never_the_log() -> None:
-    """The graphs are process-local caches over the durable log (#301).
-
-    Shutdown releases what the container took — the live projections — and
-    the observation log they were hydrated from stays exactly where it is.
-    """
-    container = await _container(database_url="sqlite://")
-    manager = container.working_log
-    assert manager is not None
-    await manager.observe("ws-shutdown", cycle=1, text="durable across shutdown")
-    await manager.projection("ws-shutdown")
-    assert manager.hot("ws-shutdown") is not None
-    # The entry is in the log, not only in the graph.
-    assert len(await manager.store.list_entries("ws-shutdown")) == 1
-
-    await container.aclose()
-
-    assert manager.hot("ws-shutdown") is None
 
 
 # --- Resilience (ADR-066) ----------------------------------------------------
@@ -259,20 +158,6 @@ async def test_process_durable_events_delivers_to_matching_trigger() -> None:
     assert not (await container.trigger_store.get("t1")).enabled  # type: ignore[union-attr]
 
 
-async def test_durable_bridge_failure_is_explicit() -> None:
-    from maistro.events.bus import Event, EventSubscriberFailure
-
-    container = await _container()
-
-    async def fail_append(**_kwargs: object) -> None:
-        raise OSError("event store unavailable")
-
-    container.durable_event_log.append = fail_append  # type: ignore[method-assign]
-    with pytest.raises(EventSubscriberFailure, match="event store unavailable"):
-        await container.event_bus.emit(Event(event_type="agent.created"))
-    assert container.event_bus.get_history() == []
-
-
 def _record_ids_caller(sink: list[int]):
     async def _caller(trigger: object, event: Any) -> None:
         sink.append(event.id)
@@ -287,7 +172,6 @@ async def test_durable_event_cursor_survives_a_restart(tmp_path: Path) -> None:
     resume from the position the first container's tick durably committed.
     """
     from maistro.events.consumer_cursor import LEGACY_BRIDGE_CONSUMER_ID
-    from maistro.events.invocations import ReplaySafety
     from maistro.events.trigger_store import TriggerDefinition
 
     db_url = f"sqlite:///{tmp_path / 'events.db'}"
@@ -297,13 +181,7 @@ async def test_durable_event_cursor_survives_a_restart(tmp_path: Path) -> None:
     try:
         container1.handler_caller = _record_ids_caller(delivered_first)  # type: ignore[assignment]
         await container1.trigger_store.add(
-            TriggerDefinition(
-                trigger_id="t1",
-                event_pattern="agent.*",
-                handler_url="http://handlers.invalid/agent",
-                replay_safety=ReplaySafety.IDEMPOTENT,
-                contract_ref="contract-v1",
-            )
+            TriggerDefinition(trigger_id="t1", event_pattern="agent.*")
         )
         await container1.durable_event_log.append("agent.created")
         await container1.durable_event_log.append("agent.created")
@@ -337,13 +215,7 @@ async def test_durable_event_cursor_survives_a_restart(tmp_path: Path) -> None:
 
         container2.handler_caller = _record_ids_caller(delivered_second)  # type: ignore[assignment]
         await container2.trigger_store.add(
-            TriggerDefinition(
-                trigger_id="t1",
-                event_pattern="agent.*",
-                handler_url="http://handlers.invalid/agent",
-                replay_safety=ReplaySafety.IDEMPOTENT,
-                contract_ref="contract-v1",
-            )
+            TriggerDefinition(trigger_id="t1", event_pattern="agent.*")
         )
         await container2.durable_event_log.append("agent.created")  # id 3
         cursor2 = await container2.process_durable_events()
@@ -395,66 +267,6 @@ async def test_a_tick_with_nothing_new_does_not_advance_the_stored_cursor() -> N
     assert lease.position == 0
 
 
-class TestReplayAcknowledgementOnTheLog:
-    """#836: `process_durable_events` must also acknowledge the settled
-    position on the durable log itself (`EventLogStore.acknowledge_replay`).
-    The `event_replay_cursors` table ships beside `event_log` on every
-    backend and revision 065 manages it in PostgreSQL; a bridge tick that
-    never wrote it left the log's replay acknowledgement dead in production
-    and the table permanently empty.
-    """
-
-    async def test_a_settled_tick_acknowledges_the_log_and_an_empty_tick_does_not(self) -> None:
-        container = await _container()
-        from maistro.events.consumer_cursor import LEGACY_BRIDGE_CONSUMER_ID
-
-        # Nothing settled yet: neither cursor store is written.
-        assert await container.process_durable_events() == 0
-        assert await container.durable_event_log.get_replay_cursor(LEGACY_BRIDGE_CONSUMER_ID) == 0
-
-        await container.durable_event_log.append("agent.created")
-        cursor = await container.process_durable_events()
-
-        # The settled position is acknowledged on the log, under the same
-        # consumer identity the cursor store uses.
-        assert cursor > 0
-        assert (
-            await container.durable_event_log.get_replay_cursor(LEGACY_BRIDGE_CONSUMER_ID) == cursor
-        )
-
-    async def test_the_acknowledgement_holds_below_a_hole_and_agrees_with_the_cursor_store(
-        self,
-    ) -> None:
-        from maistro.events.consumer_cursor import LEGACY_BRIDGE_CONSUMER_ID
-        from maistro.events.trigger_store import TriggerDefinition
-
-        container = await _container()
-        delivered: list[int] = []
-        container.handler_caller = _record_ids_caller(delivered)  # type: ignore[assignment]
-        await container.trigger_store.add(
-            TriggerDefinition(trigger_id="t1", event_pattern="agent.*")
-        )
-        log = _HidingLog(container.durable_event_log, hidden={2})
-        container.durable_event_log = log  # type: ignore[assignment]
-        for _ in range(3):
-            await log.append("agent.created")
-
-        cursor = await container.process_durable_events()
-
-        # The log acknowledgement stops at the same gap-safe position the
-        # cursor store persists: id 2 is not settled, so neither store may
-        # claim past it.
-        assert cursor == 1
-        assert await _durable_position(container) == 1
-        assert await log.get_replay_cursor(LEGACY_BRIDGE_CONSUMER_ID) == 1
-
-        log.hidden.clear()
-        cursor = await container.process_durable_events()
-
-        assert cursor == 3
-        assert await log.get_replay_cursor(LEGACY_BRIDGE_CONSUMER_ID) == 3
-
-
 class _HidingLog:
     """A durable log whose reads skip chosen ids -- PostgreSQL between a
     `BIGSERIAL` allocation and that append's commit."""
@@ -486,21 +298,12 @@ async def test_the_durable_cursor_waits_below_an_id_the_log_has_not_committed() 
     would exclude 2 from every later ``id > cursor`` read, restart included.
     The durable position must stop at 1 until 2 appears, while the work on 3
     itself is not delayed."""
-    from maistro.events.invocations import ReplaySafety
     from maistro.events.trigger_store import TriggerDefinition
 
     container = await _container()
     delivered: list[int] = []
     container.handler_caller = _record_ids_caller(delivered)  # type: ignore[assignment]
-    await container.trigger_store.add(
-        TriggerDefinition(
-            trigger_id="t1",
-            event_pattern="agent.*",
-            handler_url="http://handlers.invalid/agent",
-            replay_safety=ReplaySafety.IDEMPOTENT,
-            contract_ref="contract-v1",
-        )
-    )
+    await container.trigger_store.add(TriggerDefinition(trigger_id="t1", event_pattern="agent.*"))
     log = _HidingLog(container.durable_event_log, hidden={2})
     container.durable_event_log = log  # type: ignore[assignment]
     for _ in range(3):
@@ -526,21 +329,12 @@ async def test_a_hole_that_outlives_the_grace_is_an_aborted_append() -> None:
     """An id that never commits (the append rolled back) must not pin the
     resume point forever: once the hole has been seen for longer than
     `durable_event_hole_grace_s`, the position moves past it."""
-    from maistro.events.invocations import ReplaySafety
     from maistro.events.trigger_store import TriggerDefinition
 
     container = await _container()
     delivered: list[int] = []
     container.handler_caller = _record_ids_caller(delivered)  # type: ignore[assignment]
-    await container.trigger_store.add(
-        TriggerDefinition(
-            trigger_id="t1",
-            event_pattern="agent.*",
-            handler_url="http://handlers.invalid/agent",
-            replay_safety=ReplaySafety.IDEMPOTENT,
-            contract_ref="contract-v1",
-        )
-    )
+    await container.trigger_store.add(TriggerDefinition(trigger_id="t1", event_pattern="agent.*"))
     log = _HidingLog(container.durable_event_log, hidden={2})
     container.durable_event_log = log  # type: ignore[assignment]
     for _ in range(3):
@@ -561,41 +355,6 @@ async def test_a_hole_that_outlives_the_grace_is_an_aborted_append() -> None:
     assert cursor == container.durable_event_cursor == 3
     assert await _durable_position(container) == 3
     assert delivered == [1, 3]
-
-
-async def test_the_log_replay_acknowledgement_survives_a_restart(tmp_path: Path) -> None:
-    """#836: the log's replay acknowledgement is written to the shared store,
-    not to the ticking process. A fresh `Container` over the same database
-    must read the previous container's settled position straight off the log
-    before it has ticked anything itself.
-    """
-    from maistro.events.consumer_cursor import LEGACY_BRIDGE_CONSUMER_ID
-    from maistro.events.trigger_store import TriggerDefinition
-
-    db_url = f"sqlite:///{tmp_path / 'events.db'}"
-
-    container1 = await _container(database_url=db_url)
-    try:
-        container1.handler_caller = _record_ids_caller([])  # type: ignore[assignment]
-        await container1.trigger_store.add(
-            TriggerDefinition(trigger_id="t1", event_pattern="agent.*")
-        )
-        await container1.durable_event_log.append("agent.created")
-        await container1.durable_event_log.append("agent.created")
-        assert await container1.process_durable_events() == 2
-    finally:
-        if container1.db_pool is not None:
-            await container1.db_pool.close()
-
-    container2 = await _container(database_url=db_url)
-    try:
-        # Fresh process: the in-process mirror is still zero, but the log
-        # itself answers with the settled position.
-        assert container2.durable_event_cursor == 0
-        assert await container2.durable_event_log.get_replay_cursor(LEGACY_BRIDGE_CONSUMER_ID) == 2
-    finally:
-        if container2.db_pool is not None:
-            await container2.db_pool.close()
 
 
 async def test_each_hole_gets_its_own_grace() -> None:

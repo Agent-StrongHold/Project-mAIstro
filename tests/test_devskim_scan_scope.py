@@ -83,35 +83,10 @@ def _shipped_sources() -> list[str]:
                     continue
                 rel = path.relative_to(REPO_ROOT)
                 parts = set(rel.parts)
-                # Tests, vendored code, and the vendored swagger-ui-dist
-                # release (#1425, served by backend/routes/api_docs.py with
-                # sha256 provenance pinned in `_ASSETS` and enforced by
-                # `backend/tests/test_docs_first_party.py`) are what the list
-                # is *for*; they are not the shipped surface it must leave
-                # alone.
-                if parts & {
-                    "tests",
-                    "__tests__",
-                    "node_modules",
-                    "dist",
-                    "third_party",
-                    "swagger-ui",
-                    "corpora",
-                }:
+                # Tests and vendored code are what the list is *for*; they are
+                # not the shipped surface it must leave alone.
+                if parts & {"tests", "__tests__", "node_modules", "dist", "third_party"}:
                     continue
-                # Bundled Open Design fixtures (json/md/css only) under
-                # systems/catalog — excluded as a location, not a filename shape.
-                if "systems" in rel.parts and "catalog" in rel.parts:
-                    try:
-                        systems_i = rel.parts.index("systems")
-                    except ValueError:
-                        systems_i = -1
-                    if (
-                        systems_i >= 0
-                        and systems_i + 1 < len(rel.parts)
-                        and rel.parts[systems_i + 1] == "catalog"
-                    ):
-                        continue
                 if ".test." in path.name:
                     continue
                 seen.add(rel.as_posix())
@@ -183,13 +158,6 @@ def test_a_shipped_template_under_a_docs_directory_stays_in_scope() -> None:
         "packages/hive-conductor/backend/tests/test_scheduler.py",
         "packages/maistro-canvas/frontend/server/security.test.js",
         "packages/maistro-evolve/src/maistro_evolve/benchmarks/third_party/ifeval/instructions.py",
-        "packages/hive-conductor/backend/static/swagger-ui/swagger-ui-bundle.js",
-        "packages/maistro-design/src/maistro_design/systems/catalog/catalog.json",
-        "packages/maistro-evolve/src/maistro_evolve/benchmarks/corpora/repo_history_tasks.json",
-        "formal/models/test_pipeline_integration.py",
-        ".github/workflows/ci.yml",
-        "deploy/scripts/backup.sh",
-        "alembic/env.py",
     ],
 )
 def test_the_noisy_trees_are_still_excluded(path: str) -> None:

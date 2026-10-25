@@ -162,7 +162,6 @@ async def _construct_runtime(settings: Settings) -> EmbeddedRuntime:
     from services.tool_executor import admitted_tool_executor
 
     from maistro.agents.factory import _load_preamble, create_agents
-    from maistro.capabilities.admitted_model import AdmittedModelCalls
     from maistro.capabilities.providers.llm_gateway import GatewayEndpoint
     from maistro.config.database import resolve_database_url
     from maistro.container import create_container
@@ -226,24 +225,10 @@ async def _construct_runtime(settings: Settings) -> EmbeddedRuntime:
     gateway_base = llm_base or _BUNDLED_GATEWAY_BASE
     llm_client = _HttpOpenAILLMClient(
         base_url=gateway_base,
-        # No ``or "sk-noop"`` (#1824): an unconfigured credential must reach
-        # the gateway as a sanitized refusal before dispatch, not as a fake
-        # bearer token a real gateway can only answer with a 401.
-        api_key=llm_key,
+        api_key=llm_key or "sk-noop",
         model=model,
     )
-    model_endpoint = GatewayEndpoint(
-        base_url=gateway_base, api_key=llm_key, base_url_is_api_base=True
-    )
-    admitted_calls = AdmittedModelCalls(
-        container.capability_effects,
-        registry=container.provider_registry,
-        router=container.llm_router,
-        endpoint=model_endpoint,
-        run_store=container.run_store,
-        binding_ids=tuple(binding.binding_id for binding in config.model_bindings),
-        adapters=getattr(container, "provider_adapter_catalog", None),
-    )
+    model_endpoint = GatewayEndpoint(base_url=gateway_base, api_key=llm_key)
     prompt_manager = container.prompt_manager
 
     agents_dir = settings.maistro_agents_dir
@@ -281,7 +266,7 @@ async def _construct_runtime(settings: Settings) -> EmbeddedRuntime:
         # against hive's real tool functions instead of silently refusing via
         # react's un-guarded branch. ADR-082526-3ca6: the runtime that owns
         # the agents owns their delegation dependencies.
-        tool_executor=admitted_tool_executor(admitted_calls),
+        tool_executor=dispatch_tool,
         # Project the same roster allow-lists into the Container-owned A2A
         # receipt service. Without this, construction was wired but every
         # in-process delegation still refused as "no capabilities" (#147).

@@ -20,7 +20,7 @@ import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from maistro_rsi.competitors import parse_competitors
 from maistro_rsi.export_policy import (

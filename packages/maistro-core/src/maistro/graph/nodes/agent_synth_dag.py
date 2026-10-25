@@ -455,13 +455,8 @@ class AgentSynthDagNode(BaseNode[SynthDagIn, SynthDagOut]):
         from maistro.orchestrator.waves.fan_out import validate_fan_out_width
         from maistro.orchestrator.waves.types import WaveSpec
 
-        validate_fan_out_width(
-            tuple(
-                WaveSpec(wave_id=f"n{i}", agent_recipe=kind, inputs={})
-                for i, kind in enumerate(synthesized_kinds)
-            ),
-            max_parallel=inputs.max_nodes,
-        )
+        if verdict.status != "approved":
+            raise SynthDagFailed(_verdict_error(verdict))
 
         if verdict.status not in ("approved", "approved_degraded"):
             raise SynthDagFailed(_verdict_error(verdict))
@@ -511,8 +506,6 @@ class AgentSynthDagNode(BaseNode[SynthDagIn, SynthDagOut]):
             "admission_source": "agent.synth_dag",
             "objective": inputs.objective[:200],
         }
-        if proportionality_disposition != "allow":
-            provenance["proportionality"] = proportionality_disposition
         # The child starts one level deeper than the node that spawned it,
         # so a nested agent.synth_dag inside it hits the same hard cap.
         blackboard_metadata = {"synth_depth": depth + 1}

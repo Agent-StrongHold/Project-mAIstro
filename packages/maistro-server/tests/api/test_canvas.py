@@ -394,6 +394,280 @@ class TestGovernedExport:
         assert "no composite exists" in resp.json()["detail"]
 
 
+class TestGovernedPublish:
+    def test_publish_creates_version_with_provenance(self, store: FakeCanvasStore) -> None:
+        events: list[tuple[str, dict[str, Any]]] = []
+        compositor = StubCompositor()
+        app = _governed_app(store, compositor=compositor, events=events)
+        client = TestClient(app)
+        created = _create(client)
+        events.clear()  # drop design.created from create; assert publish only
+        resp = client.post(
+            f"/v2/canvas/designs/{created['id']}/publish",
+            json={"format": "png", "design_project_id": "dp-42"},
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["published"] is True
+        assert body["design_project_id"] == "dp-42"
+        assert body["invocation_id"]
+        assert body["binding_id"]
+        assert body["run_id"]
+        assert body["node_run_id"]
+        assert body["attempt_id"]
+        assert body["state_digest"]
+        assert body["sha256"]
+        assert body["download_url"].endswith(body["export_id"])
+        assert [name for name, _ in events] == ["design.published"]
+
+    def test_publish_then_download_delivers_exact_bytes(self, store: FakeCanvasStore) -> None:
+        compositor = StubCompositor(png=b"\x89PNGpublish")
+        app = _governed_app(store, compositor=compositor)
+        client = TestClient(app)
+        created = _create(client)
+        body = client.post(f"/v2/canvas/designs/{created['id']}/publish", json={}).json()
+        downloaded = client.get(body["download_url"])
+        assert downloaded.status_code == 200
+        assert downloaded.content == b"\x89PNGpublish"
+
+    def test_export_and_publish_emit_distinct_events(self, store: FakeCanvasStore) -> None:
+        events: list[tuple[str, dict[str, Any]]] = []
+        compositor = StubCompositor()
+        app = _governed_app(store, compositor=compositor, events=events)
+        client = TestClient(app)
+        created = _create(client)
+        events.clear()
+        client.get(f"/v2/canvas/designs/{created['id']}/export/png")
+        client.post(f"/v2/canvas/designs/{created['id']}/publish", json={})
+        assert [name for name, _ in events] == ["design.exported", "design.published"]
+        assert all(e["design_id"] == created["id"] for _, e in events)
+
+
+# ── Route failure contract (#94): every failure is truthful and typed ──
+
+
+class _FormatslessExporter:
+    """Duck-typed exporter that declares no ``supported_formats`` contract.
+
+    maistro-server carries no maistro-canvas dependency: a silent exporter
+    must not be handed an invented route-level refusal — format truthfulness
+    belongs to the governed capability itself.
+    """
+
+    def __init__(self, inner: Any) -> None:
+        self._inner = inner
+
+    @property
+    def export_store(self) -> Any:
+        return self._inner.export_store
+
+    async def export_canvas(self, *args: Any, **kwargs: Any) -> Any:
+        return await self._inner.export_canvas(*args, **kwargs)
+
+
+class TestRouteFailureContract:
+    def test_no_declared_formats_skips_route_validation(self, store: FakeCanvasStore) -> None:
+        """No ``supported_formats`` declaration → the route invents no 422."""
+        app = _governed_app(store, compositor=StubCompositor())
+        app.state.canvas_exporter = _FormatslessExporter(app.state.canvas_exporter)
+        client = TestClient(app)
+        created = _create(client)
+        resp = client.get(f"/v2/canvas/designs/{created['id']}/export/png")
+        assert resp.status_code == 200
+
+    def test_capability_refuses_undeclared_format_with_its_own_422(
+        self, store: FakeCanvasStore
+    ) -> None:
+        """The governed capability's own refusal carries the machine-readable code."""
+        from maistro_canvas.canvas.publishing import SUPPORTED_EXPORT_FORMATS
+
+        app = _governed_app(store, compositor=StubCompositor())
+        app.state.canvas_exporter = _FormatslessExporter(app.state.canvas_exporter)
+        client = TestClient(app)
+        created = _create(client)
+        resp = client.get(f"/v2/canvas/designs/{created['id']}/export/pdf")
+        assert resp.status_code == 422
+        body = resp.json()["detail"]
+        assert body["code"] == "EXPORT_FORMAT_UNSUPPORTED"
+        assert "out of scope" in body["reason"]
+        assert "pdf" not in SUPPORTED_EXPORT_FORMATS
+
+    def test_explicit_export_store_shadows_exporter_store(self, store: FakeCanvasStore) -> None:
+        from maistro_canvas.canvas.publishing import InMemoryExportStore
+
+        app = _governed_app(store, compositor=StubCompositor())
+        client = TestClient(app)
+        created = _create(client)
+        client.get(f"/v2/canvas/designs/{created['id']}/export/png")
+        app.state.canvas_exports = InMemoryExportStore()
+        history = client.get(f"/v2/canvas/designs/{created['id']}/exports")
+        assert history.status_code == 200
+        assert history.json() == []  # the explicit store, not the exporter's
+
+    def test_export_history_without_any_store_501(self, store: FakeCanvasStore) -> None:
+        class _NoStoreExporter:
+            async def export_canvas(self, *args: Any, **kwargs: Any) -> Any:  # pragma: no cover
+                raise AssertionError("history listing must not export")
+
+        app = _make_app(store)
+        app.state.canvas_exporter = _NoStoreExporter()
+        client = TestClient(app)
+        created = _create(client)
+        resp = client.get(f"/v2/canvas/designs/{created['id']}/exports")
+        assert resp.status_code == 501
+        assert "no export store is configured" in resp.json()["detail"]
+
+    def test_compositor_http_error_passes_through(self, store: FakeCanvasStore) -> None:
+        from fastapi import HTTPException
+
+        class _UpstreamGone(StubCompositor):
+            async def composite(self, canvas: Any, layers: list[Any]) -> Any:
+                raise HTTPException(status_code=404, detail="upstream render gone")
+
+        app = _governed_app(store, compositor=_UpstreamGone())
+        client = TestClient(app)
+        created = _create(client)
+        resp = client.get(f"/v2/canvas/designs/{created['id']}/export/png")
+        assert resp.status_code == 404
+        assert resp.json()["detail"] == "upstream render gone"
+
+    def test_compositor_crash_is_truthful_502(self, store: FakeCanvasStore) -> None:
+        class _Crashing(StubCompositor):
+            async def composite(self, canvas: Any, layers: list[Any]) -> Any:
+                raise RuntimeError("compositor core dumped")
+
+        app = _governed_app(store, compositor=_Crashing())
+        client = TestClient(app)
+        created = _create(client)
+        resp = client.get(f"/v2/canvas/designs/{created['id']}/export/png")
+        assert resp.status_code == 502
+        assert "Composite failed" in resp.json()["detail"]
+        assert "compositor core dumped" in resp.json()["detail"]
+
+    def test_composite_persistence_failure_is_502(self, store: FakeCanvasStore) -> None:
+        class _Unsaveable(FakeCanvasStore):
+            async def save_composite(self, composite: Any) -> None:
+                raise OSError("composite bucket unavailable")
+
+        app = _governed_app(_Unsaveable(), compositor=StubCompositor())
+        client = TestClient(app)
+        created = _create(client)
+        resp = client.get(f"/v2/canvas/designs/{created['id']}/export/png")
+        assert resp.status_code == 502
+        assert "Composite persistence failed" in resp.json()["detail"]
+        assert "composite bucket unavailable" in resp.json()["detail"]
+
+    def test_missing_export_dependency_is_501_with_code(self, store: FakeCanvasStore) -> None:
+        from maistro_canvas.export import ExporterDependencyError
+
+        class _NoPptxExporter:
+            async def export_canvas(self, *args: Any, **kwargs: Any) -> Any:
+                raise ExporterDependencyError("python-pptx is not installed")
+
+        app = _make_app(store)
+        app.state.canvas_exporter = _NoPptxExporter()
+        app.state.canvas_compositor = StubCompositor()  # composite succeeds; export refuses
+        client = TestClient(app)
+        created = _create(client)
+        resp = client.get(f"/v2/canvas/designs/{created['id']}/export/pptx")
+        assert resp.status_code == 501
+        body = resp.json()["detail"]
+        assert body["code"] == "EXPORTER_DEPENDENCY_MISSING"
+        assert "python-pptx" in body["reason"]
+
+    def test_failed_invocation_reports_invocation_identity(self, store: FakeCanvasStore) -> None:
+        from maistro_canvas.canvas.publishing import ExportFailed
+
+        class _SettledFailedExporter:
+            async def export_canvas(self, *args: Any, **kwargs: Any) -> Any:
+                raise ExportFailed(
+                    "export invocation inv-9 ended failed: provider refused",
+                    invocation_id="inv-9",
+                    status="failed",
+                )
+
+        app = _make_app(store)
+        app.state.canvas_exporter = _SettledFailedExporter()
+        app.state.canvas_compositor = StubCompositor()  # composite succeeds; invocation failed
+        client = TestClient(app)
+        created = _create(client)
+        resp = client.get(f"/v2/canvas/designs/{created['id']}/export/png")
+        assert resp.status_code == 502
+        body = resp.json()["detail"]
+        assert body["code"] == "EXPORT_FAILED"
+        assert body["invocation_id"] == "inv-9"
+        assert body["invocation_status"] == "failed"
+
+    def test_publish_provider_failure_is_truthful_502(self, store: FakeCanvasStore) -> None:
+        class Exploding(StubCompositor):
+            async def encode(
+                self, image_bytes: bytes, *, fmt: str = "png", quality: int = 90
+            ) -> bytes:
+                raise ValueError("encoder exploded")
+
+        app = _governed_app(store, compositor=Exploding())
+        client = TestClient(app)
+        created = _create(client)
+        # webp routes through the provider's encode step (png streams the
+        # composite as-is), so the crash actually happens under the governed
+        # Invocation rather than being silently absent from the path.
+        resp = client.post(f"/v2/canvas/designs/{created['id']}/publish", json={"format": "webp"})
+        assert resp.status_code == 502
+        assert "encoder exploded" in resp.json()["detail"]
+
+    def test_unknown_export_version_404(self, store: FakeCanvasStore) -> None:
+        app = _governed_app(store, compositor=StubCompositor())
+        client = TestClient(app)
+        created = _create(client)
+        resp = client.get(f"/v2/canvas/designs/{created['id']}/exports/does-not-exist")
+        assert resp.status_code == 404
+        assert resp.json()["detail"] == "Export version not found"
+
+
+# ── Org scope (#857: reads and writes carry the authenticated principal) ─
+
+
+class TestOrgScope:
+    def test_foreign_design_reads_as_absent(self, store: FakeCanvasStore) -> None:
+        app = _make_app(store, api_keys=["alice:token-a", "bob:token-b"])
+        client = TestClient(app)
+        alice = {"Authorization": "Bearer token-a"}
+        bob = {"Authorization": "Bearer token-b"}
+        created = _create(client, headers=alice)
+
+        assert client.get(f"/v2/canvas/designs/{created['id']}", headers=bob).status_code == 404
+        assert (
+            client.put(
+                f"/v2/canvas/designs/{created['id']}", json={"name": "stolen"}, headers=bob
+            ).status_code
+            == 404
+        )
+        assert client.delete(f"/v2/canvas/designs/{created['id']}", headers=bob).status_code == 404
+        assert client.get("/v2/canvas/designs", headers=bob).json() == []
+        # Alice still sees hers untouched.
+        assert (
+            client.get(f"/v2/canvas/designs/{created['id']}", headers=alice).json()["name"]
+            == (created["name"])
+        )
+
+    def test_store_receives_the_authenticated_org(self, store: FakeCanvasStore) -> None:
+        seen: list[str] = []
+        original = store.get_canvas
+
+        async def spy(canvas_id: str, *, org_id: str) -> Any:
+            seen.append(org_id)
+            return await original(canvas_id, org_id=org_id)
+
+        store.get_canvas = spy  # type: ignore[method-assign]
+        app = _make_app(store, api_keys=["alice:token-a"])
+        client = TestClient(app)
+        created = _create(client, headers={"Authorization": "Bearer token-a"})
+        client.get(
+            f"/v2/canvas/designs/{created['id']}", headers={"Authorization": "Bearer token-a"}
+        )
+        assert seen == ["alice"]
+
+
 class _TypedCanvasLimitError(Exception):
     """Exception shaped like maistro-canvas's typed #393 rejections.
 

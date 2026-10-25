@@ -11,10 +11,7 @@ executes, and the Container that owns the spine terminalizes, exactly as
 the route's conversation-only model call, never the tool-capable Conduit.
 
 A turn that cannot be admitted is refused with a retryable 503 before the
-model is called (#1108): an ungoverned answer is not a fallback. A turn the
-canonical active-Run ceiling refuses (#1182) is answered 429 instead --
-backpressure, not an outage -- with the same detail and `Retry-After` the
-maistro-server chat door uses for the same canonical limiter.
+model is called (#1108): an ungoverned answer is not a fallback.
 """
 
 from __future__ import annotations
@@ -33,11 +30,11 @@ from maistro.runs.chat_execution import (
     ChatAttemptExecutor,
     ChatDispatchUnrecorded,
 )
-from maistro.runs.concurrency import RunConcurrencyExceeded
 from maistro.runs.model import Run, RunStatus
 from maistro.runs.wiring import wire_chat_admission
-from services import conversation_sessions, workspace_authority
+from services import workspace_authority
 from services.default_workspace import resolve_default_workspace
+from services.owned_records import chat_sessions_for
 from services.program_hyperagent import user_id_from_request
 from services.workspace_agent import resolve_workspace_agent
 
@@ -61,44 +58,12 @@ class AdmittedTurn:
     agent_id: str
     container: Any
     admitter: ChatRunAdmitter
-    session_id: str | None = None
-
-
-def _capacity(exc: RunConcurrencyExceeded) -> HTTPException:
-    """The shared 429 for a full canonical admission ceiling (#1182).
-
-    Same status, detail, and `Retry-After` as maistro-server's chat door for
-    the same `RunStore` limiter: `exc.scope` says which ceiling is full, and
-    the exception's type and fields stay intact on the chained cause.
-    """
-    return HTTPException(
-        status_code=429,
-        detail=f"too many active runs for this {exc.scope}; retry shortly",
-        headers={"Retry-After": RETRY_AFTER_SECONDS},
-    )
 
 
 def _unavailable(detail: str) -> HTTPException:
     return HTTPException(
         status_code=503, detail=detail, headers={"Retry-After": RETRY_AFTER_SECONDS}
     )
-
-
-def _release_dispatch_shield(
-    admitter: ChatRunAdmitter | None,
-    run: Run | None,
-    marked: bool,
-) -> None:
-    """Release the dispatch shield exactly when one was set.
-
-    One cleanup invariant for every `admit_turn` failure path -- a full
-    admission ceiling (#1182), a cancellation mid-admission, any other
-    admission failure. `marked` implies both arguments are live: the marker
-    is set only after a successful `mark_dispatch_pending(run.run_id)` on an
-    admitted Run (#338).
-    """
-    if marked and admitter is not None and run is not None:
-        admitter.release_dispatch_pending(run.run_id)
 
 
 def _container() -> Any:
@@ -184,25 +149,16 @@ async def _settle_window(admitter: ChatRunAdmitter, run: Run) -> None:
         logger.warning("chat Run retention sweep failed", exc_info=True)
 
 
-def _owned_session(
-    request: Request,
-    session_id: Any,
-    workspace_id: Any = None,
-) -> str | None:
+def _owned_session(request: Request, session_id: Any) -> str | None:
     """The session id to record as provenance, when it is the caller's own.
 
     Provenance is what a conversation's Runs are later found by, so a caller
-    must not be able to file a turn under someone else's session. Unknown or
-    foreign session ids still admit the turn — provenance is simply omitted
-    (AC-5 stream non-disclosure). When `workspace_id` is provided, the
-    session's Workspace must match or provenance is dropped the same way.
+    must not be able to file a turn under someone else's session.
     """
     if not isinstance(session_id, str) or not session_id:
         return None
-    user_id = user_id_from_request(request)
-    ws = workspace_id if isinstance(workspace_id, str) and workspace_id else None
     try:
-        conversation_sessions.require_owned(user_id, session_id, workspace_id=ws)
+        chat_sessions_for(request).require(session_id)
     except HTTPException:
         return None
     return session_id
@@ -226,15 +182,13 @@ async def admit_turn(
     run: Run | None = None
     admitter: ChatRunAdmitter | None = None
     marked = False
-    owned_session: str | None = None
     try:
         ws = await _turn_workspace(user_id, workspace_id)
         agent = await resolve_workspace_agent(ws)
         admitter = await _admitter_for(container, ws)
-        owned_session = _owned_session(request, session_id, workspace_id)
         run = await admitter.admit(
             messages,
-            session_id=owned_session,
+            session_id=_owned_session(request, session_id),
             request_id=_request_id(request),
             actor_principal_id=user_id,
         )
@@ -245,30 +199,17 @@ async def admit_turn(
         marked = True
         run = await container.run_store.transition_run(run.run_id, RunStatus.RUNNING)
     except asyncio.CancelledError:
-        _release_dispatch_shield(admitter, run, marked)
+        if marked and admitter is not None and run is not None:
+            admitter.release_dispatch_pending(run.run_id)
         await asyncio.shield(container._cancel_incomplete_admission(run))
         raise
-    except RunConcurrencyExceeded as exc:
-        # Backpressure, not an admission outage (#1182): 429, not the 503 an
-        # ordinary admission failure gets. The same cleanup as the other
-        # refusals -- the ceiling usually refuses the create itself, before
-        # any marker exists, but the invariant is not capacity-specific.
-        logger.info("chat turn refused: active Run ceiling full", exc_info=True)
-        _release_dispatch_shield(admitter, run, marked)
-        await container._cancel_incomplete_admission(run)
-        raise _capacity(exc) from exc
     except Exception:
         logger.warning("chat turn could not be admitted as a Run", exc_info=True)
-        _release_dispatch_shield(admitter, run, marked)
+        if marked and admitter is not None and run is not None:
+            admitter.release_dispatch_pending(run.run_id)
         await container._cancel_incomplete_admission(run)
         raise _unavailable("chat turn could not be admitted; retry shortly") from None
-    return AdmittedTurn(
-        run=run,
-        agent_id=agent.id,
-        container=container,
-        admitter=admitter,
-        session_id=owned_session,
-    )
+    return AdmittedTurn(run=run, agent_id=agent.id, container=container, admitter=admitter)
 
 
 async def execute_turn(
@@ -321,50 +262,9 @@ async def execute_turn(
         else:
             await container._close_chat_run(run, result=chat_turn_outcome(result))
         result["run_id"] = run.run_id
-        await _persist_conversation_turn(turn, messages, result)
         return result
     finally:
         await _settle_window(turn.admitter, run)
-
-
-async def _persist_conversation_turn(
-    turn: AdmittedTurn,
-    messages: list[dict[str, Any]],
-    result: dict[str, Any],
-) -> None:
-    """Append the accepted user+assistant pair to SessionStore after a model answer.
-
-    Uses the Run id as `turn_id` so a retry of the same Run cannot duplicate
-    the transcript (#327 / ADR-083026-5fab). Failures here must not undo the
-    answered turn — the Run already closed successfully.
-    """
-    if not turn.session_id:
-        return
-    choice = (result.get("choices") or [{}])[0]
-    content = (choice.get("message") or {}).get("content")
-    if not isinstance(content, str):
-        return
-    batch: list[dict[str, str]] = []
-    last_user = next(
-        (m for m in reversed(messages) if m.get("role") == "user"),
-        None,
-    )
-    if last_user is not None and isinstance(last_user.get("content"), str):
-        batch.append({"role": "user", "content": last_user["content"]})
-    batch.append({"role": "assistant", "content": content})
-    try:
-        await conversation_sessions.append_turn(
-            turn.session_id,
-            batch,
-            turn_id=turn.run.run_id,
-        )
-    except Exception:
-        logger.warning(
-            "conversation transcript append failed for session %s turn %s",
-            turn.session_id,
-            turn.run.run_id,
-            exc_info=True,
-        )
 
 
 async def cancel_unstarted(turn: AdmittedTurn) -> None:

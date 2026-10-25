@@ -6,8 +6,7 @@ from copy import deepcopy
 from datetime import UTC, datetime
 
 from .archive import OperatorKind, stamp_provenance
-from .attribution import CandidateOrigin, EvalContext, ProducerKind, producer_identity, stamp_origin
-from .mutate import MUTATION_OPERATOR_NAMES, mutate_all, mutate_selected
+from .mutate import mutate_all
 from .types import (
     DAGEdgeGenome,
     DAGTopology,
@@ -96,9 +95,20 @@ def crossover(
             n.id = new_id
             child_nodes.append(n)
 
-    child_edges = _rewire_parent_edges(
-        parent_a.topology.edges + parent_b.topology.edges, node_id_map
-    )
+    child_edges: list[DAGEdgeGenome] = []
+    for edge in parent_a.topology.edges + parent_b.topology.edges:
+        from_mapped = node_id_map.get(edge.from_node)
+        to_mapped = node_id_map.get(edge.to_node) if edge.to_node else None
+        if from_mapped is None:
+            continue
+        child_edges.append(
+            DAGEdgeGenome(
+                id=_new_id(),
+                from_node=from_mapped,
+                to_node=to_mapped,
+                condition=edge.condition,
+            )
+        )
 
     # eval_weights is an inert legacy field since #853 (scoring reads the
     # population-owned objective). Inherit parent_a's verbatim — it is
@@ -127,28 +137,11 @@ def crossover(
         created_at=_fresh_timestamp(),
         updated_at=_fresh_timestamp(),
     )
-    # M4-A6 candidate record: parents/operator/objective/prompt version, with
-    # the legacy parent_a_id/parent_b_id fields re-derived from the parents.
-    stamp_provenance(
+    return stamp_provenance(
         child,
         parents=[parent_a.id, parent_b.id],
         operator=OperatorKind.CROSSOVER,
         base=parent_a,
-    )
-    if not _stamp:
-        return child
-    # M4-A8 producer attribution: the generator identity+version, the credit
-    # baseline (parents' stored scores), and the eval context, frozen at birth.
-    producer = producer_identity("crossover", ProducerKind.GENERATOR)
-    return stamp_origin(
-        child,
-        CandidateOrigin(
-            producer=producer,
-            parents=(parent_a.id, parent_b.id),
-            chain=(producer.key(),),
-            baseline_scores=_crossover_baseline(parent_a, parent_b),
-            context=origin_context or EvalContext(),
-        ),
     )
 
 
@@ -166,58 +159,20 @@ def crossover_and_mutate(
     models the gateway can't serve.
 
     M4-A6 lineage: the returned child records BOTH crossover parents. The
-    intermediate crossover child is a construction detail — the mutation
-    composite re-parents to its immediate input, which would otherwise replace
-    this child's recorded second parent with a genome that never joined the
+    intermediate crossover child is a construction detail — ``mutate_all``
+    re-parents to its immediate input, which would otherwise replace this
+    child's recorded second parent with a genome that never joined the
     population, making the two-parent record unraversable. The final
     ``stamp_provenance`` re-derives the legacy ``parent_a_id``/``parent_b_id``
     fields from the authoritative parents record, so no manual re-pointing is
     needed (and none can drift).
-
-    M4-A8 producer attribution: the produced child also carries a
-    CandidateOrigin whose direct producer is the mutation composite that last
-    shaped it (``mutate_all``/``mutate_selected``), with ``upstream`` recording
-    the two crossover parents and ``chain`` preserving the full
-    crossover→mutation pipeline for audit. ``operators=None`` applies every
-    mutation operator (legacy behavior); a ledger-driven subset is how the
-    cycle favors productive operators.
     """
-    cross_child = crossover(parent_a, parent_b, origin_context=origin_context, _stamp=False)
-    cross_baseline = _crossover_baseline(parent_a, parent_b)
-    if operators is None:
-        final = mutate_all(
-            cross_child, mutation_rate, models, origin_context=origin_context, _stamp=False
-        )
-        applied: list[str] = list(MUTATION_OPERATOR_NAMES)
-        composite = "mutate_all"
-    else:
-        final = mutate_selected(
-            cross_child,
-            mutation_rate,
-            models,
-            operators=operators,
-            origin_context=origin_context,
-            _stamp=False,
-        )
-        applied = list(operators)
-        composite = "mutate_selected"
-    stamp_provenance(
-        final,
+    crossed = crossover(parent_a, parent_b)
+    child = mutate_all(crossed, mutation_rate, models)
+    return stamp_provenance(
+        child,
         parents=[parent_a.id, parent_b.id],
         operator=OperatorKind.CROSSOVER,
         base=parent_a,
-        detail="crossover+" + composite,
-    )
-    producer = producer_identity(composite, ProducerKind.MUTATION_OPERATOR)
-    return stamp_origin(
-        final,
-        CandidateOrigin(
-            producer=producer,
-            parents=(cross_child.id,),
-            upstream=(parent_a.id, parent_b.id),
-            chain=(producer_identity("crossover", ProducerKind.GENERATOR).key(), producer.key()),
-            baseline_scores=cross_baseline,
-            context=origin_context or EvalContext(),
-            note="crossover then " + composite + " (" + ", ".join(applied) + ")",
-        ),
+        detail="crossover+mutate_all",
     )

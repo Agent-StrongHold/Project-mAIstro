@@ -40,8 +40,7 @@ import asyncio
 import contextlib
 import logging
 import re
-import threading
-from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -53,7 +52,6 @@ from models.schemas import Agent
 from maistro.personas.expander import expand_persona
 from maistro.personas.schema import PersonaTemplate
 from maistro.security.warden.detector import (
-    WARDEN_POLICY_VERSION,
     Warden,
     context_from_messages,
     message_to_scan_text,
@@ -134,28 +132,6 @@ def _warden() -> Warden:
 _warden_instance: Warden | None = None
 
 
-def _scan_provenance(
-    *, boundary: str, target: Mapping[str, Any] | None, scanned_values: int
-) -> dict[str, Any]:
-    """The self-describing fields every scan result carries (#288).
-
-    `scanner` names the detector and its policy version, `target` names what
-    was scanned, `scanned_at` is the completion timestamp, and `scanned_values`
-    is how many values the walk judged -- the evidence that distinguishes a
-    completed analysis from one that never ran.
-    """
-    return {
-        "scanner": {
-            "name": "warden",
-            "policy_version": WARDEN_POLICY_VERSION,
-            "boundary": boundary,
-        },
-        "target": dict(target) if target is not None else {"kind": "config", "id": None},
-        "scanned_at": datetime.now(UTC).isoformat(),
-        "scanned_values": scanned_values,
-    }
-
-
 def _looks_like_chat_messages(payload: object) -> bool:
     if not isinstance(payload, list) or not payload:
         return False
@@ -166,7 +142,6 @@ async def scan_messages(
     messages: Sequence[Mapping[str, object]],
     *,
     boundary: str = "user_input",
-    target: Mapping[str, Any] | None = None,
 ) -> dict:
     """Scan every forwarded message with bounded, ordered prior context.
 
@@ -174,9 +149,6 @@ async def scan_messages(
     no user turn at all. Those messages still reach the model and must not be
     omitted. Each current message is untrusted input; context provenance and
     its bounded window remain the canonical Warden helper's responsibility.
-
-    The result carries the same self-describing provenance as `scan_config`
-    (#288), so a clean chat payload is never mistaken for an unexecuted scan.
     """
     # Keep the generic config walk's budgets before serializing chat metadata.
     # Checking only the latest user turn or Warden's truncated context would
@@ -196,19 +168,10 @@ async def scan_messages(
         verdict = await warden.scan(content, boundary, context=context)
         if not verdict.clean:
             findings.extend(f"messages[{index}]: {flag}" for flag in verdict.flags)
-    return {
-        "findings": findings,
-        "status": "clean" if not findings else "flagged",
-        **_scan_provenance(boundary=boundary, target=target, scanned_values=len(messages)),
-    }
+    return {"findings": findings, "status": "clean" if not findings else "flagged"}
 
 
-async def scan_config(
-    config: object,
-    *,
-    boundary: str = "user_input",
-    target: Mapping[str, Any] | None = None,
-) -> dict:
+async def scan_config(config: object, *, boundary: str = "user_input") -> dict:
     """Scan every string in a configuration at a Warden boundary.
 
     The default boundary is the one inbound configurations cross; `tool_result`
@@ -217,17 +180,9 @@ async def scan_config(
 
     OpenAI-shaped chat message lists scan every forwarded message with prior
     conversation context instead of walking structural fields such as ``role``.
-
-    The result is self-describing (#288): `scanner` names the detector and its
-    policy version, `target` names what was scanned, `scanned_at` is the
-    completion timestamp, and `scanned_values` is how many strings the walk
-    judged -- the evidence that distinguishes a completed analysis from one
-    that never ran. `status` is only ever `clean` or `flagged`, and only on a
-    completed walk: a scanner that raises raises, and the routes translate
-    that into an explicit unknown state (503) rather than a clean bill.
     """
     if _looks_like_chat_messages(config):
-        return await scan_messages(config, boundary=boundary, target=target)
+        return await scan_messages(config, boundary=boundary)
     warden = _warden()
     findings: list[str] = []
     scanned_values = 0

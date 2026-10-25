@@ -225,10 +225,12 @@
       "kind": "page",
       "path": "packages/hive-conductor/frontend/src/pages/Evolution.tsx",
       "disposition": "PROJECT",
-      "replaced_by": "HIDE v1.0 (#2275 / conductor-411): route unregistered; restore v1.2 as Run inspection over canonical Evolve Runs (#51)",
-      "delete_by": "v1.2",
+      "replaced_by": "hidden for v1.0; Run inspection over canonical Evolve Runs returns v1.2 (#51)",
+      "delete_by": "M4",
       "owner": "#51",
-      "importers": []
+      "importers": [
+        "packages/hive-conductor/frontend/src/App.tsx"
+      ]
     },
     {
       "kind": "page",

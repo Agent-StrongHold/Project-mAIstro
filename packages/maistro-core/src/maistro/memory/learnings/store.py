@@ -27,12 +27,6 @@ from maistro.memory.learnings.lifecycle import (
 from maistro.memory.types import Learning, LearningStage
 from maistro.observability.correlation import observed_provenance
 from maistro.persistence.learning_scope import matches_learning_scope
-from maistro.types.memory import (
-    CONTRADICT_DELTA,
-    EPISTEMIC_BONUS,
-    LEARNING_STAGE_ORDER,
-    REINFORCE_DELTA,
-)
 
 logger = logging.getLogger(__name__)
 
@@ -124,33 +118,14 @@ class InMemoryLearningStore:
             )
             existing.learning = learning.learning
             existing.trigger_keys = learning.trigger_keys
-            # The epistemic type moves with the text it qualifies. Keeping the
-            # old row's type would let the reworded claim ride the stronger
-            # ranking bonus and skip the counterfactual evaluation its new
-            # type owes before promotion (M4-B3).
-            existing.epistemic_type = learning.epistemic_type
             # The producer moves with the content it produced. Dedup
             # replaces what the row says, so leaving the old ids in place
             # would attribute the surviving text to the Run that no longer
             # wrote it, and `produced_by` would return nothing for the Run
             # that did (Codex, #709).
-            # The outgoing producer is not lost with the move: it taught a
-            # version of this claim, so it joins `evidence_run_ids` and stays
-            # answerable from `produced_by` of the evidence, not just of the
-            # text (M4-B3: provenance survives consolidation/rewording).
-            if existing.run_id and existing.run_id != learning.run_id:
-                learning.evidence_run_ids = list(
-                    dict.fromkeys([*learning.evidence_run_ids, existing.run_id])
-                )
             existing.run_id = learning.run_id
             existing.node_run_id = learning.node_run_id
             existing.attempt_id = learning.attempt_id
-            # What the row *rests on* does not move: applicability and evidence
-            # union across the consolidation, so a reworded claim stays
-            # accountable to every Run that taught any of its versions and
-            # keeps every context any version named (M4-B3). The old producer
-            # survives in `evidence_run_ids` even though `run_id` moved.
-            merge_applicability(existing, learning)
             return existing.id or 0
 
         if len(self._learnings) >= self._max:
@@ -170,6 +145,7 @@ class InMemoryLearningStore:
         sets in common. Split out so `store` reads as probe-then-insert and
         this stays the one place the threshold and axes live.
         """
+        new_keys = set(learning.trigger_keys)
         for existing in self._learnings:
             if existing.tool_name != learning.tool_name:
                 continue
@@ -181,7 +157,8 @@ class InMemoryLearningStore:
                 continue
             if existing.status != "active":
                 continue
-            overlap = lifecycle.trigger_key_overlap(existing.trigger_keys, learning.trigger_keys)
+            existing_keys = set(existing.trigger_keys)
+            overlap = len(existing_keys & new_keys) / max(len(existing_keys | new_keys), 1)
             if overlap >= 0.5:
                 return existing, overlap
         return None
@@ -212,7 +189,7 @@ class InMemoryLearningStore:
             ):
                 continue
 
-            score: float = sum(1 for k in learning.trigger_keys if k and k.lower() in text_lower)
+            score = sum(1 for k in learning.trigger_keys if k and k.lower() in text_lower)
             if score > 0:
                 # Epistemic type is a tie-break, not a second gate (M4-B3):
                 # every bonus is < 1.0, so it reorders keyword ties — a tested
@@ -298,8 +275,6 @@ class InMemoryLearningStore:
             if learning.status != "active" or learning.hit_count < threshold:
                 continue
             if not matches_learning_scope(learning, org_id=org_id):
-                continue
-            if promotion_blockers(learning, min_confidence=min_confidence):
                 continue
             learning.status = "promoted"
             promoted.append(learning)

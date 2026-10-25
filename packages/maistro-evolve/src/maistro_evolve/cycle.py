@@ -9,12 +9,10 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 from .archive import CandidateArchive, apply_objective
-from .attribution import EvalContext, ProducerKind, ProducerLedger, producer_identity
 from .crossover import crossover_and_mutate
 from .fitness import compute_fitness, passes_hard_gate
 from .harness import EvalHarness, evidence_method
 from .hyper_mutator import entry_node, hyper_mutate, slot_lineage
-from .mutate import MUTATION_OPERATOR_NAMES
 from .objective import DEFAULT_OBJECTIVE, EvaluationObjective
 from .optimizer import extract_signal, optimize_topology
 from .population import IslandPopulation, PopulationStore, migrate_islands
@@ -101,27 +99,6 @@ class EvolutionConfig(BaseModel):
     # agent-nondeterminism noise on repeat sampling (a genome scored 0.76 then
     # 0.0 across two identical evals in a live run).
     eval_ema_alpha: float = Field(default=0.5, gt=0.0, le=1.0)
-    # M4-A8 producer attribution (#115): stamp every candidate with the
-    # generator/mutation/prompt/search operator that produced it and credit
-    # evaluation results back to those producers in an append-only ledger.
-    # Bookkeeping only — changes no selection/breeding behavior on its own.
-    producer_attribution: bool = True
-    # Favor productive operators: when True, breeding draws a weighted SUBSET
-    # of the mutation operators per child (ledger-ranked, exploration-floored)
-    # instead of always applying every operator. Opt-in because it changes
-    # search dynamics; attribution bookkeeping works with it on or off.
-    favor_productive_operators: bool = False
-    # Diversity floor for operator favoring: collectively the non-favored
-    # operators keep at least this share of selection probability, so a
-    # productive operator can never starve the others of exploration.
-    producer_exploration_floor: float = Field(default=0.2, ge=0.0, le=1.0)
-    # Regressions at/above this count (with regression-majority signal) mark a
-    # producer as a repeated regressor: its weight is demoted, never zeroed,
-    # and the negative credit is never decayed away.
-    producer_regression_limit: int = Field(default=3, ge=1)
-    # Size of the mutation-operator subset drawn per child when
-    # favor_productive_operators is enabled (clamped to the registry size).
-    mutation_operators_per_child: int = Field(default=3, ge=1)
     # M4-A5 retrodiction prefilter: before spending a fresh isolated
     # execution / frontier call, replay the candidate against prior cycle
     # traces (content-addressed in a TraceLedger). "enforce" skips known
@@ -184,7 +161,6 @@ class EvolutionCycle:
         harness: EvalHarness | None = None,
         tournament: EloTournament | None = None,
         archive: CandidateArchive | None = None,
-        ledger: ProducerLedger | None = None,
         objective: EvaluationObjective | None = None,
     ) -> None:
         self.harness = harness or EvalHarness()
@@ -202,9 +178,6 @@ class EvolutionCycle:
         # Latest fitness evidence per genome id (#853): the cross-cycle
         # determinism guard's memory — see _check_fitness_recomputability.
         self.fitness_evidence: dict[str, FitnessEvidenceRecord] = {}
-        # M4-A8: append-only producer credit ledger (process-local, same
-        # posture as the Elo tournament — see attribution.ProducerLedger).
-        self.ledger = ledger or ProducerLedger()
         self._island_pop: IslandPopulation | None = None
         self._cycle_count: int = 0
         # Prior-cycle trace evidence for the retrodiction prefilter (M4-A5).
@@ -222,10 +195,6 @@ class EvolutionCycle:
         if self._prefilter is None:
             return None
         return self._prefilter.stats.summary()
-
-    def _eval_context(self, config: EvolutionConfig) -> EvalContext:
-        """The comparable evaluation scope of this cycle's harness + targets."""
-        return EvalContext.from_harness(self.harness, config.target_benchmarks)
 
     def _register_child(
         self,
@@ -315,19 +284,6 @@ class EvolutionCycle:
             genome.harness_params["avg_latency_seconds"] = (
                 genome.harness_params.get("avg_latency_seconds", 0.0) + r.duration_seconds
             ) / max(len(genome.eval_scores), 1)
-            # M4-A8: credit the producing operator for this verified result.
-            # Append-only on the ledger side; the candidate's own history
-            # (origin, lineage) is never rewritten by it. Shared by first
-            # evals and #854 reconfirmations alike — every verified sample is
-            # evidence about the producer that built the candidate.
-            if cfg.producer_attribution:
-                self.ledger.credit(
-                    genome,
-                    r.benchmark,
-                    r.score,
-                    context=self._eval_context(cfg),
-                    stub=bool(r.metadata.get("stub")),
-                )
         self._stamp_evidence(genome, cfg)
         genome.updated_at = datetime.now(UTC).isoformat()
         return results
@@ -638,9 +594,15 @@ class EvolutionCycle:
             for i in range(0, min(needed, len(parent_ids) - 1), 2):
                 a = genome_map.get(parent_ids[i])
                 b = genome_map.get(parent_ids[i + 1] if i + 1 < len(parent_ids) else parent_ids[0])
-                self._spawn_island_child(
-                    a, b, config, operators, origin_context, population, island_pop, island_id
-                )
+                if a and b:
+                    child = crossover_and_mutate(
+                        a, b, config.mutation_rate, models=config.allowed_models or None
+                    )
+                    self._register_child(population, child, objective=config.goal)
+                    # Use force_assign: mutation chains rewrite parent_a_id, so
+                    # assign() would fall back to round-robin and place the child
+                    # on the wrong island.
+                    island_pop.force_assign(child.id, island_id)
         else:
             island_scored = [
                 g
@@ -658,9 +620,12 @@ class EvolutionCycle:
                 else:
                     pa = breeding_pool[0] if breeding_pool else None
                     pb = None
-                self._spawn_island_child(
-                    pa, pb, config, operators, origin_context, population, island_pop, island_id
-                )
+                if pa and pb:
+                    child = crossover_and_mutate(
+                        pa, pb, config.mutation_rate, models=config.allowed_models or None
+                    )
+                    self._register_child(population, child, objective=config.goal)
+                    island_pop.force_assign(child.id, island_id)
 
     async def _hyper_mutate_one(
         self,
@@ -824,12 +789,6 @@ class EvolutionCycle:
                 prompt_history=prompt_history,
                 node_attribution=config.node_attribution,
                 prefilter=self._prefilter,
-            )
-            self._credit_verified_outcome(
-                outcome,
-                config,
-                producer_name="reflective_improve",
-                kind=ProducerKind.PROMPT_OPERATOR,
             )
             if outcome is not None and outcome.accepted and outcome.challenger is not None:
                 # Winner's-curse provenance (#854) — same guard as the

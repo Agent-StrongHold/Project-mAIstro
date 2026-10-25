@@ -106,7 +106,9 @@
       "disposition": "LIBRARY",
       "rationale": "The canonical envelope surfaces #61 ships: the PostgreSQL EventEnvelope store (identity and deterministic Workspace sequence, deliberately separate from ADR-086's legacy PgEventLog cursor), the persist-first publisher, the convergence contract for package-local projections, and the backend composition helper. maistro-core is a published library (AGENTS.md) and these are its importable surfaces for downstream products; no process entry point in this repository subscribes the wiring yet, so unreachable is their correct state for the same reason the rest of the published library is baselined. #62 is where a shipped process adopts the envelope.",
       "modules": [
-        "maistro.events.convergence"
+        "maistro.events.convergence",
+        "maistro.events.publisher",
+        "maistro.events.wiring"
       ]
     },
     {
@@ -171,6 +173,19 @@
       ]
     },
     {
+      "id": "quota-verification",
+      "subsystem": "Quota and billing",
+      "disposition": "CONNECT",
+      "rationale": "ADR-085 provider-side quota verification. #718 wired the recording half (maistro.quota.recorder, and the ambient/reconciliation modules it composes) into the canonical Invocation terminalization, so those left this disposition; #1204 wired the SQLite usage-log snapshot behind the sqlite backend of create_container. The explicit verifier half (verify.py + the per-provider verifiers) still has no production caller and remains owed.",
+      "root": "the Invocation cost path (#56)",
+      "modules": [
+        "maistro.quota.verifiers",
+        "maistro.quota.verifiers.mistral",
+        "maistro.quota.verifiers.openrouter",
+        "maistro.quota.verify"
+      ]
+    },
+    {
       "id": "rsi-unwired",
       "subsystem": "RSI autorun",
       "disposition": "CONNECT",
@@ -201,6 +216,16 @@
       "root": "a Conductor session-search route over pgvector (ADR-082226-5104)",
       "modules": [
         "maistro.sessions.search"
+      ]
+    },
+    {
+      "id": "config-loader",
+      "subsystem": "Shared contracts and config",
+      "disposition": "CONNECT",
+      "rationale": "ADR-078's file-based config loader; shipped processes construct settings directly instead.",
+      "root": "maistro.config.settings construction",
+      "modules": [
+        "maistro.config.loader"
       ]
     },
     {

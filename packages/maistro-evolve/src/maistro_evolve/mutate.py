@@ -7,13 +7,6 @@ from copy import deepcopy
 from datetime import UTC, datetime
 
 from .archive import OperatorKind, stamp_provenance
-from .attribution import (
-    CandidateOrigin,
-    EvalContext,
-    ProducerKind,
-    producer_identity,
-    stamp_origin,
-)
 from .fixer_genome import (
     FixerGenome,
     FixerStrategy,
@@ -24,7 +17,6 @@ from .fixer_genome import (
 )
 from .types import (
     DAGEdgeGenome,
-    DAGTopology,
     NodeGenome,
     PipelineGenome,
 )
@@ -185,7 +177,24 @@ def mutate_topology(
             )
         )
 
-    _rewire_edges(topo, rate)
+    if random.random() < rate and topo.edges:
+        idx = random.randint(0, len(topo.edges) - 1)
+        topo.edges.pop(idx)
+
+    if random.random() < rate and topo.nodes:
+        a = random.choice(topo.nodes)
+        b_candidates = [n for n in topo.nodes if n.id != a.id]
+        if b_candidates:
+            b = random.choice(b_candidates)
+            topo.edges.append(
+                DAGEdgeGenome(
+                    id=_new_id(),
+                    from_node=a.id,
+                    to_node=b.id,
+                    condition=random.choice([None, "success", "failure", "timeout"]),
+                )
+            )
+
     child = PipelineGenome(
         id=_new_id(),
         name=genome.name + "-topo-mut",
@@ -200,14 +209,9 @@ def mutate_topology(
         created_at=_fresh_timestamp(),
         updated_at=_fresh_timestamp(),
     )
-    # M4-A6 candidate record, then M4-A8 producer attribution (both stamped so
-    # the promotion gate and the credit ledger each see a complete identity).
-    stamp_provenance(
+    return stamp_provenance(
         child, parents=[genome.id], operator=OperatorKind.TOPOLOGY_MUTATION, base=genome
     )
-    if not _stamp:
-        return child
-    return stamp_origin(child, _mutation_origin("mutate_topology", genome, origin_context))
 
 
 def mutate_node(
@@ -247,10 +251,9 @@ def mutate_node(
         created_at=_fresh_timestamp(),
         updated_at=_fresh_timestamp(),
     )
-    stamp_provenance(child, parents=[genome.id], operator=OperatorKind.NODE_MUTATION, base=genome)
-    if not _stamp:
-        return child
-    return stamp_origin(child, _mutation_origin("mutate_node", genome, origin_context))
+    return stamp_provenance(
+        child, parents=[genome.id], operator=OperatorKind.NODE_MUTATION, base=genome
+    )
 
 
 def mutate_prompt(
@@ -284,10 +287,9 @@ def mutate_prompt(
         created_at=_fresh_timestamp(),
         updated_at=_fresh_timestamp(),
     )
-    stamp_provenance(child, parents=[genome.id], operator=OperatorKind.PROMPT_MUTATION, base=genome)
-    if not _stamp:
-        return child
-    return stamp_origin(child, _mutation_origin("mutate_prompt", genome, origin_context))
+    return stamp_provenance(
+        child, parents=[genome.id], operator=OperatorKind.PROMPT_MUTATION, base=genome
+    )
 
 
 # The eval_weights mutation operator is gone (#853): the evaluation objective
@@ -295,12 +297,10 @@ def mutate_prompt(
 # ruler. A tombstone that only raises would be dead code with no callers, so
 # the operator is removed outright — tests/test_mutate.py pins its absence,
 # and reintroducing any weight-mutating operator must clear the per-identity
-# vulture ledger before it can land. (M4-A8 merge note: it is likewise absent
-# from MUTATION_OPERATOR_NAMES and PRODUCER_VERSIONS, so no attributable
-# identity remains for a removed operator. M4-A6 reconciliation: the archive's
-# provenance-stamping contract covers the surviving producers — topology, node,
-# prompt, fixer, crossover, hyper/reflect challenges — and the retired weights
-# operator was dropped from that surface along with the operator itself.)
+# vulture ledger before it can land. M4-A6 reconciliation: the archive's
+# provenance-stamping contract covers the surviving producers (topology, node,
+# prompt, fixer, crossover, hyper/reflect challenges); the retired weights
+# operator was dropped from that surface along with the operator itself.
 
 
 def _mutate_one_fixer(fixer: FixerGenome, rate: float) -> FixerGenome:
@@ -356,60 +356,8 @@ def mutate_fixer_genome(
         created_at=_fresh_timestamp(),
         updated_at=_fresh_timestamp(),
     )
-    stamp_provenance(child, parents=[genome.id], operator=OperatorKind.FIXER_MUTATION, base=genome)
-    if not _stamp:
-        return child
-    return stamp_origin(child, _mutation_origin("mutate_fixer_genome", genome, origin_context))
-
-
-def mutate_selected(
-    genome: PipelineGenome,
-    rate: float,
-    models: list[str] | None = None,
-    *,
-    operators: Sequence[str],
-    origin_context: EvalContext | None = None,
-    _stamp: bool = True,
-) -> PipelineGenome:
-    """Apply exactly the selected mutation operators, in the given order, and
-    stamp the child with a composite ``mutate_selected`` origin naming the
-    applied subset — this is the entry point ledger-driven operator favoring
-    uses (the cycle selects a productive, diversity-floored subset instead of
-    always applying every operator). The M4-A6 candidate record is stamped
-    alongside it (composite ``all_mutation`` operator + the applied subset as
-    ``detail``) so the promotion gate sees a complete identity too.
-    """
-    unknown = [name for name in operators if name not in MUTATION_OPERATOR_NAMES]
-    if unknown:
-        raise ValueError(
-            f"unknown mutation operator(s) {unknown}; known: {list(MUTATION_OPERATOR_NAMES)}"
-        )
-    if not operators:
-        raise ValueError("mutate_selected requires at least one operator")
-    current = genome
-    for name in operators:
-        current = _apply_mutation_operator(
-            name, current, rate, models, stamp=False, origin_context=origin_context
-        )
-    shorts = "-".join(_MUTATION_SHORT_NAMES[name] for name in operators)
-    current.name = f"{genome.name}-sel-{shorts}-mut"
-    if not _stamp:
-        return current
-    stamp_provenance(
-        current,
-        parents=[genome.id],
-        operator=OperatorKind.ALL_MUTATION,
-        base=genome,
-        detail="selected: " + ", ".join(operators),
-    )
-    return stamp_origin(
-        current,
-        _mutation_origin(
-            "mutate_selected",
-            genome,
-            origin_context,
-            note="components: " + ", ".join(operators),
-        ),
+    return stamp_provenance(
+        child, parents=[genome.id], operator=OperatorKind.FIXER_MUTATION, base=genome
     )
 
 
@@ -450,31 +398,19 @@ def mutate_all(
         composite ``mutate_all`` CandidateOrigin (the intermediate per-operator
         children are transient and carry no origin into the population).
     """
-    # Each per-operator child is transient (_stamp=False): the composite
-    # mutate_all origin stamped below is the candidate's single provenance
-    # record (M4-A8).
-    current = mutate_topology(genome, rate, models, _stamp=False)
-    current = mutate_node(current, rate, models, _stamp=False)
-    current = mutate_prompt(current, rate, _stamp=False)
-    current = mutate_fixer_genome(current, rate, _stamp=False)
+    current = mutate_topology(genome, rate, models)
+    current = mutate_node(current, rate, models)
+    current = mutate_prompt(current, rate)
+    current = mutate_fixer_genome(current, rate)
     # No mutate_eval_weights: the objective is population-owned (#853).
     current.name = genome.name + "-all-mut"
     # Lineage points at the STORED parent, never at the intermediate children
     # the operator chain built and discarded (M4-A6): each mutate_* step above
     # re-parents to its immediate input, so without this the returned child's
     # parent_a_id named a genome that exists nowhere — a lineage record that
-    # could not be traversed. stamp_provenance re-derives the legacy
-    # parent_a_id from the authoritative parents record; the composite operator
-    # still says exactly what happened (all_mutation over the operator chain).
-    if not _stamp:
-        return current
-    stamp_provenance(current, parents=[genome.id], operator=OperatorKind.ALL_MUTATION, base=genome)
-    return stamp_origin(
-        current,
-        _mutation_origin(
-            "mutate_all",
-            genome,
-            origin_context,
-            note="components: " + ", ".join(MUTATION_OPERATOR_NAMES),
-        ),
+    # could not be traversed. The composite operator still says exactly what
+    # happened (all_mutation over the operator chain).
+    current.parent_a_id = genome.id
+    return stamp_provenance(
+        current, parents=[genome.id], operator=OperatorKind.ALL_MUTATION, base=genome
     )

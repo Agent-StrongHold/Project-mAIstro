@@ -14,12 +14,13 @@ them directly would compare inverses. So reconciliation compares *deltas*
 over the interval between two checks: how much the provider's remaining
 balance dropped vs. how much the local log observed in the same window.
 
-Wiring (#2318): ``CanonicalInvocationUsageRecorder`` calls `maybe_reconcile`
-after each local Invocation write when a ``QuotaVerifier`` is installed
-(OpenRouter key verifier when ``OPENROUTER_API_KEY`` is set). Ambient/header
-snapshots also arrive through the compatibility hook in ``recorder.py``.
-Verifier-error isolation and mismatch surfacing here (metric, warning log,
-policy state transition) keep verification from failing the Invocation path.
+Retirement note (#718): no shipped entry point calls `maybe_reconcile` yet.
+The explicit-verifier wiring is recorded as owed, not wired, in
+``quality/reachability-dispositions.json`` (id ``quota-verification``);
+ambient/header snapshots arrive only through the compatibility hook in
+``recorder.py``. The verifier-error isolation and mismatch surfacing here
+(metric, warning log, policy state transition) are the truthful failure
+semantics any future wiring inherits.
 """
 
 from __future__ import annotations

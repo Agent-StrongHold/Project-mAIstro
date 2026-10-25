@@ -37,7 +37,6 @@ from services.workspace_agent import (
     WorkspaceNotFound,
     persona_template_id,
     resolve_workspace_agent,
-    set_workspace_agent_persona,
 )
 from services.workspace_authority import create_workspace as create_canonical_workspace
 from services.workspace_authority import delete_workspace as delete_canonical_workspace

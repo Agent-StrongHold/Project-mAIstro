@@ -11,7 +11,6 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 from maistro.memory.episodic.store import InMemoryEpisodicStore
-from maistro.memory.exposure import MemoryExposureMode
 from maistro.memory.working_graph import (
     ArtifactHistorySource,
     ArtifactVersionRecord,
@@ -206,7 +205,7 @@ async def test_run_provenance_keeps_goal_and_parent_linkage() -> None:
             ),
         ]
     )
-    episodic = InMemoryEpisodicStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
+    episodic = InMemoryEpisodicStore()
     await episodic.store(make_memory("mem-5", "revise hero banner again", run_id="run-2"))
     manager = WorkspaceWorkingMemoryManager(
         sources=[

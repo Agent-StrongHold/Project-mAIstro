@@ -105,48 +105,18 @@ def _require_store() -> Any:
     service returns ``None`` for a disabled store during startup and older
     callers can still expose its initialization ``RuntimeError``; normalize
     both forms to the same explicit unavailable response.
-
-    When startup recorded a store cause (#1826), that sanitized failure is the
-    answer — a configured database whose engine would not build must not be
-    reported with the same words as one nobody named, and not as a durable
-    success either.
     """
-    status = get_design_status()
     try:
         store = get_design_store()
     except RuntimeError as exc:
-        # Startup degraded before it could build the store. Its recorded cause
-        # is the truth; a ready service with no cause is the deliberate
-        # no-database mode (#1826); anything else is a service that never
-        # started, and the initialization error is the honest answer for it.
-        if status.store_cause:
-            raise HTTPException(
-                status_code=503,
-                detail=f"Design persistence unavailable: {status.store_cause}",
-            ) from None
-        if status.ready:
-            raise HTTPException(
-                status_code=503,
-                detail="Design persistence unavailable (no database URL configured)",
-            ) from None
         raise HTTPException(
             status_code=503,
             detail=f"Design persistence unavailable: {exc}",
         ) from None
     if store is None:
-        # Two ways to be here (#1826): nothing configured -- the supported
-        # no-database mode -- or a URL that was configured and failed. The
-        # second carries its own recorded, sanitized cause, and answering it
-        # with "DATABASE_URL not set" is exactly the conflation that kept a
-        # broken deployment indistinguishable from a deliberate one.
-        if status.store_cause:
-            raise HTTPException(
-                status_code=503,
-                detail=f"Design persistence unavailable: {status.store_cause}",
-            )
         raise HTTPException(
             status_code=503,
-            detail="Design persistence unavailable (no database URL configured)",
+            detail="Design persistence unavailable (DATABASE_URL not set)",
         )
     return store
 
