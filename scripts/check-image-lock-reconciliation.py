@@ -16,10 +16,42 @@ versions), so pass each member pin explicitly:
     --member maistro-core==0.9.0 --member maistro-server==0.9.0
 
 Actual side: `docker run --rm --entrypoint <image-python> <image>`, dumping
-`name==version` for every distribution importlib.metadata can see.
+`name==version` for every distribution importlib.metadata can see — plus one
+`@image-env@` line carrying the interpreter's PEP 508 marker environment
+(`python_full_version`, `sys_platform`, ...), so marker-conditional pins can
+be judged against the environment they were installed for.
 
 Any difference — a package in the image the lock does not name, or a locked
 pin the image does not carry — is a red exit with the diff on stdout.
+
+Marker-conditional pins (issue #93 repair round)
+------------------------------------------------
+`uv export` writes one line per locked artifact *with its environment marker*,
+and a single package name can legitimately carry more than one version: the
+develop line's lock forks `beartype` (0.22.9 for `python_full_version < '3.15'`,
+0.23.1 for `>= '3.15'`) because an upstream floor moved while the interpreter
+range stayed wide. A name→pin dict keyed by name cannot represent that: the
+last fork overwrote the first, and a Python 3.13 image correctly shipping
+0.22.9 was falsely flagged as skewing against the 3.15-only 0.23.1 pin.
+
+The reconciler therefore groups pins by name and splits them three ways:
+
+- **unconditional** (no marker): required, exact version, exactly as before;
+- **single-version conditional** (one version behind a marker, e.g.
+  `pywin32 ; sys_platform == 'win32'`): gates nothing on presence; its version
+  is still checked when it ships — the pre-fork lenient behavior, unchanged;
+- **forked** (more than one distinct version for one name): each fork's marker
+  is evaluated against the image interpreter's own environment (the same
+  evaluation `uv pip install` performed at build time), the applicable fork
+  becomes required, and a wrong version is a named mismatch. Without the
+  image env line — or if a marker uses syntax this stdlib-only evaluator does
+  not implement — the fork degrades to the lenient rule: any of the locked
+  fork versions satisfies the gate. Unknown markers can only *relax* toward
+  the old behavior, never invent a requirement. A lenient-fork mismatch line
+  names the full accepted set (`one of beartype==0.22.9, beartype==0.23.1`) —
+  the reporting contract merged from the develop-side #1182 fix — so the
+  operator sees every version the lock accepts rather than an arbitrary
+  survivor.
 
 Usage:
     uv export --locked --package maistro-server \
@@ -44,9 +76,12 @@ dependencies, not the members themselves.
 from __future__ import annotations
 
 import argparse
+import json
 import re
 import subprocess
 import sys
+from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
 
 # A requirement line in a uv-export requirements.txt: `name==version` at the
@@ -54,26 +89,502 @@ from pathlib import Path
 # (which are separate lines and never match this prefix pattern).
 _REQ = re.compile(r"^([A-Za-z0-9][A-Za-z0-9._-]*)==([^\s\\;]+)")
 
+
+def canon(name: str) -> str:
+    """PEP 503 normalized name: the lock says `bip-utils`, the wheel metadata
+    says `bip_utils` (or `PyJWT` vs `pyjwt`) — same distribution."""
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+@dataclass(frozen=True)
+class LockedPin:
+    """One `name==version[ ; marker]` line from the export."""
+
+    name: str
+    version: str
+    marker: str | None
+
+    @property
+    def pin(self) -> str:
+        return f"{self.name}=={self.version}"
+
+
+# The PEP 508 marker variables whose values the gate captures from the image
+# interpreter. `extras` is deliberately absent: exports never carry it.
+_MARKER_ENV_VARS = frozenset(
+    {
+        "python_version",
+        "python_full_version",
+        "os_name",
+        "sys_platform",
+        "platform_release",
+        "platform_system",
+        "platform_version",
+        "platform_machine",
+        "platform_python_implementation",
+        "implementation_name",
+        "implementation_version",
+    }
+)
+
+# The PEP 508 value each marker variable reads from, as a stdlib expression
+# evaluated inside the image interpreter.
+_PY_EXPR = {
+    "python_version": "'.'.join(platform.python_version_tuple()[:2])",
+    "python_full_version": "platform.python_version()",
+    "os_name": "os.name",
+    "sys_platform": "sys.platform",
+    "platform_release": "platform.release()",
+    "platform_system": "platform.system()",
+    "platform_version": "platform.version()",
+    "platform_machine": "platform.machine()",
+    "platform_python_implementation": "platform.python_implementation()",
+    "implementation_name": "sys.implementation.name",
+    "implementation_version": "platform.python_version()",
+}
+
+# Runs inside the image: first the PEP 508 environment as JSON on one
+# `@image-env@` line, then every installed distribution. JSON (stdlib) keeps
+# values like `platform_version`'s "#58-Ubuntu SMP ..." parseable on the gate
+# side. Each key is captured in its own try/except so an exotic interpreter
+# degrades to a smaller env (or none) — lenient forks — instead of a red
+# docker step.
+_CAPTURES = "\n".join(
+    f"try: _env[{k!r}] = {_PY_EXPR[k]}\nexcept Exception: pass" for k in sorted(_PY_EXPR)
+)
+_IMAGE_ENV_SNIPPET = (
+    "import json, os, platform, sys; _env = {}\n"
+    + _CAPTURES
+    + "\nprint('@image-env@ ' + json.dumps(_env, sort_keys=True))"
+)
+
+_DUMP = (
+    _IMAGE_ENV_SNIPPET + "; import importlib.metadata as m; "
+    "print(*sorted(f\"{d.metadata['Name']}=={d.version}\" for d in m.distributions()), "
+    "sep='\\n')"
+)
+
+_IMAGE_ENV_PREFIX = "@image-env@ "
+
+
+def parse_image_env(dump: str) -> dict[str, str] | None:
+    """Extract the image interpreter's marker environment from its dump.
+
+    Returns None when the dump carries no `@image-env@` line or an unparseable
+    one — the fork comparison then degrades to the lenient rule rather than
+    inventing a requirement from an environment it cannot see.
+    """
+    for line in dump.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith(_IMAGE_ENV_PREFIX):
+            continue
+        try:
+            env = json.loads(stripped[len(_IMAGE_ENV_PREFIX) :])
+        except ValueError:
+            return None
+        if not isinstance(env, dict):
+            return None
+        return {str(k): str(v) for k, v in env.items() if isinstance(v, (str, int, float))}
+    return None
+
+
+class UnsupportedMarker(Exception):
+    """The marker uses syntax the stdlib-only evaluator does not implement."""
+
+
+# Marker tokenizer: quoted strings, numbers-in-versions stay string literals,
+# variable names, operators (including the two-word `not in`), parens, and the
+# `and`/`or` keywords.
+_TOKEN = re.compile(
+    r"""\s*(?:
+        (?P<str>'[^']*'|"[^"]*")
+      | (?P<op><=|>=|===|==|!=|~=|<|>)
+      | (?P<lparen>\()
+      | (?P<rparen>\))
+      | (?P<word>[A-Za-z_][A-Za-z0-9_.]*)
+    )""",
+    re.VERBOSE,
+)
+
+
+def _tokenize(marker: str) -> list[tuple[str, str]]:
+    tokens: list[tuple[str, str]] = []
+    pos = 0
+    while pos < len(marker):
+        m = _TOKEN.match(marker, pos)
+        if not m or m.end() == pos:
+            rest = marker[pos:].strip()
+            if not rest:
+                break
+            raise UnsupportedMarker(f"cannot tokenize near: {rest[:40]!r}")
+        pos = m.end()
+        kind = m.lastgroup or ""
+        tokens.append((kind, m.group(kind)))
+    return tokens
+
+
+def _as_version(value: str) -> tuple[int, ...] | None:
+    try:
+        return tuple(int(part) for part in value.split("."))
+    except ValueError:
+        return None
+
+
+def _compare(lhs: str, op: str, rhs: str) -> bool:
+    if op == "===":
+        return lhs == rhs
+    lhs_v, rhs_v = _as_version(lhs), _as_version(rhs)
+    if lhs_v is not None and rhs_v is not None:
+        left: tuple[int, ...] | str = lhs_v
+        right: tuple[int, ...] | str = rhs_v
+    else:
+        left, right = lhs, rhs
+    if op == "==":
+        return left == right
+    if op == "!=":
+        return left != right
+    if op == "<":
+        return left < right  # type: ignore[operator]
+    if op == ">":
+        return left > right  # type: ignore[operator]
+    if op == "<=":
+        return left <= right  # type: ignore[operator]
+    if op == ">=":
+        return left >= right  # type: ignore[operator]
+    raise UnsupportedMarker(f"operator {op!r}")
+
+
+class _MarkerParser:
+    """Recursive-descent evaluator over the tokenized marker subset.
+
+    A class rather than closures so no single function concentrates the
+    complexity: `evaluate_marker` is the public entry, the `parse_*` methods
+    the grammar levels, and every failure path raises `UnsupportedMarker` —
+    the caller's signal to degrade leniently rather than guess.
+    """
+
+    def __init__(self, tokens: list[tuple[str, str]], env: Mapping[str, str]):
+        self._tokens = tokens
+        self._env = env
+        self._pos = 0
+
+    def _peek(self) -> tuple[str, str] | None:
+        return self._tokens[self._pos] if self._pos < len(self._tokens) else None
+
+    def _take(self) -> tuple[str, str]:
+        if self._pos >= len(self._tokens):
+            raise UnsupportedMarker("unexpected end of marker")
+        token = self._tokens[self._pos]
+        self._pos += 1
+        return token
+
+    def _operand(self, kind: str, value: str) -> str:
+        if kind == "str":
+            return value[1:-1]
+        if kind == "word":
+            if value not in _MARKER_ENV_VARS:
+                raise UnsupportedMarker(f"unknown marker variable {value!r}")
+            return self._env.get(value, "")
+        raise UnsupportedMarker(f"expected operand, got {value!r}")
+
+    def _parse_atom(self) -> bool:
+        token = self._peek()
+        if token is None:
+            raise UnsupportedMarker("unexpected end of marker")
+        if token[0] == "lparen":
+            self._take()
+            result = self._parse_or()
+            if self._peek() != ("rparen", ")"):
+                raise UnsupportedMarker("unbalanced parenthesis")
+            self._take()
+            return result
+        lhs = self._operand(*self._take())
+        op_token = self._take()
+        if op_token == ("word", "not"):
+            if self._take() != ("word", "in"):
+                raise UnsupportedMarker("'not' without 'in'")
+            return lhs not in self._operand(*self._take())
+        if op_token == ("word", "in"):
+            return lhs in self._operand(*self._take())
+        if op_token[0] != "op":
+            raise UnsupportedMarker(f"expected operator, got {op_token[1]!r}")
+        return _compare(lhs, op_token[1], self._operand(*self._take()))
+
+    def _parse_and(self) -> bool:
+        result = self._parse_atom()
+        while self._peek() == ("word", "and"):
+            self._take()
+            # Parse the right side unconditionally: short-circuiting here
+            # would strand the remaining tokens and mis-report the marker.
+            rhs = self._parse_atom()
+            result = result and rhs
+        return result
+
+    def _parse_or(self) -> bool:
+        result = self._parse_and()
+        while self._peek() == ("word", "or"):
+            self._take()
+            rhs = self._parse_and()
+            result = result or rhs
+        return result
+
+    def evaluate(self) -> bool:
+        result = self._parse_or()
+        if self._pos != len(self._tokens):
+            raise UnsupportedMarker(f"trailing tokens near {self._tokens[self._pos][1]!r}")
+        return result
+
+
+def evaluate_marker(marker: str, env: Mapping[str, str]) -> bool:
+    """Evaluate the PEP 508 marker subset uv writes into requirements exports.
+
+    Supports parentheses, `and`/`or` (and binds tighter), the version
+    comparisons, and `in`/`not in`. Comparison semantics mirror packaging's:
+    both sides are compared as versions when both look like dotted-integer
+    releases, otherwise as strings.
+    """
+    return _MarkerParser(_tokenize(marker), env).evaluate()
+
+
+def parse_expected(text: str) -> dict[str, list[LockedPin]]:
+    """Group every exported pin by canonical name, markers attached.
+
+    A name may legitimately carry several versions — the lock forks an
+    artifact across interpreter ranges (beartype 0.22.9 below 3.15, 0.23.1
+    above) — so the value is a list, never an overwrite.
+    """
+    pins: dict[str, list[LockedPin]] = {}
+    for line in text.splitlines():
+        stripped = line.strip()
+        m = _REQ.match(stripped)
+        if m:
+            name = canon(m.group(1))
+            if ";" in stripped:
+                # uv export continues the line with ` \\` when hashes follow;
+                # the continuation belongs to the export format, not the marker.
+                marker = stripped.split(";", 1)[1].strip().rstrip("\\").strip()
+            else:
+                marker = None
+            pins.setdefault(name, []).append(LockedPin(name, m.group(2), marker))
+    if not pins:
+        raise SystemExit(
+            "error: expected-file contains no `name==version` pins — is it "
+            "a `uv export --format requirements-txt` output?"
+        )
+    return pins
+
+
+def parse_actual(text: str) -> set[str]:
+    pins: set[str] = set()
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith(
+            ("@", "+", "*", "-", "WARN", "Using", "Checked", _PYFULL_LINE)
+        ):
+            continue
+        m = _REQ.match(line)
+        if m:
+            pins.add(f"{canon(m.group(1))}=={m.group(2)}")
+    if not pins:
+        raise SystemExit(f"error: no distributions dumped from the image:\n{text}")
+    return pins
+
+
+def _classify_expected(
+    pins_by_name: dict[str, list[LockedPin]], members: list[str]
+) -> tuple[dict[str, str], dict[str, str], dict[str, list[LockedPin]]]:
+    """Split the export into required / lenient-conditional / forked pins.
+
+    Members are unconditional required pins by definition (installed from the
+    copied sources, not named in the export).
+    """
+    required: dict[str, str] = {}
+    conditional: dict[str, str] = {}
+    forked: dict[str, list[LockedPin]] = {}
+    for name, pins in sorted(pins_by_name.items()):
+        versions = {p.version for p in pins}
+        if len(versions) == 1:
+            if all(p.marker is None for p in pins):
+                required[name] = pins[0].pin
+            else:
+                conditional[name] = pins[0].pin
+        else:
+            forked[name] = pins
+    for m in members:
+        name, _, version = m.partition("==")
+        required[canon(name)] = f"{canon(name)}=={version}"
+    return required, conditional, forked
+
+
+def _expected_clause(candidates: set[str]) -> str:
+    """The expected-side half of a mismatch line.
+
+    A single pin reads exactly as it always has (`foo==1.0`); a fork evaluated
+    leniently names every version the lock accepts for the name, so the
+    operator sees the full accepted set rather than an arbitrary survivor
+    (reporting contract merged from the develop-side #1182 fix).
+    """
+    ordered = sorted(candidates)
+    if len(ordered) == 1:
+        return ordered[0]
+    return "one of " + ", ".join(ordered) + " (" + " or ".join(ordered) + ")"
+
+
+def _skew_message(
+    name: str,
+    actual_pin: str,
+    forked: dict[str, list[LockedPin]],
+    image_env: dict[str, str] | None,
+) -> str | None:
+    """The mismatch description for a forked name, or None if it reconciles."""
+    versions = {p.version for p in forked[name]}
+    applicable = _applicable_forks(forked[name], image_env) if image_env is not None else []
+    allowed = {p.version for p in applicable} or versions
+    if actual_pin.partition("==")[2] in allowed:
+        return None
+    detail = (
+        " or ".join(f"{p.pin} (marker: {p.marker})" for p in applicable)
+        if applicable
+        else _expected_clause({f"{name}=={v}" for v in versions})
+    )
+    return f"{actual_pin} (image) != {detail}"
+
+
+def _missing_pins(
+    expected_names: set[str],
+    actual_by_name: dict[str, str],
+    required: dict[str, str],
+    forked: dict[str, list[LockedPin]],
+    image_env: dict[str, str] | None,
+) -> list[str]:
+    missing: list[str] = []
+    for name in sorted(expected_names - actual_by_name.keys()):
+        if name in required:
+            missing.append(required[name])
+        elif name in forked and image_env is not None:
+            applicable = _applicable_forks(forked[name], image_env)
+            if applicable:
+                locked = ", ".join(f"{p.pin} (marker: {p.marker})" for p in applicable)
+                missing.append(f"{locked} — applicable to the image interpreter")
+        # A conditional name absent from the image gates nothing (its marker
+        # may not apply); a forked name without an interpreter environment
+        # likewise degrades to lenient.
+    return missing
+
+
+def _reconcile(
+    pins_by_name: dict[str, list[LockedPin]],
+    members: list[str],
+    actual: set[str],
+    image_env: dict[str, str] | None,
+) -> tuple[list[str], list[str], list[str], int]:
+    """Classify every difference as missing/extra/skew. Returns
+    (missing, extra, skewed, lenient_conditional_count)."""
+    missing: list[str] = []
+    extra: list[str] = []
+    skewed: list[str] = []
+
+    required, conditional, forked = _classify_expected(pins_by_name, members)
+
+    actual_by_name = {p.partition("==")[0]: p for p in actual}
+    expected_names = set(pins_by_name) | {n.partition("==")[0] for n in members}
+    everything_expected = (
+        set(required.values())
+        | set(conditional.values())
+        | {p.pin for pins in forked.values() for p in pins}
+    )
+
+    missing = _missing_pins(expected_names, actual_by_name, required, forked, image_env)
+
+    for name in sorted(actual_by_name.keys() - expected_names):
+        extra.append(actual_by_name[name])
+
+    # Comparing by canonical NAME (not by pin string) is what makes a version
+    # skew nameable: `foo==1.0` expected and `foo==2.0` installed shares no
+    # exact string, so a set difference alone would report it as a confusing
+    # missing+extra pair.
+    for name in sorted(actual_by_name.keys() & expected_names):
+        actual_pin = actual_by_name[name]
+        if name in required or name in conditional:
+            expected_pin = required.get(name) or conditional.get(name)
+            assert expected_pin is not None
+            if actual_pin != expected_pin:
+                skewed.append(f"{actual_pin} (image) != {expected_pin}")
+        elif name in forked:
+            message = _skew_message(name, actual_pin, forked, image_env)
+            if message:
+                skewed.append(message)
+        else:  # pragma: no cover - expected_names covers members
+            raise AssertionError(f"unclassified name {name}")
+
+    # A fork matched only leniently (no interpreter env) must not also be
+    # reported extra: its pin is part of everything_expected already.
+    extra = [p for p in extra if p not in everything_expected]
+    return missing, extra, skewed, len(conditional)
+
+
+def _applicable_forks(pins: list[LockedPin], env: Mapping[str, str]) -> list[LockedPin]:
+    applicable: list[LockedPin] = []
+    for pin in pins:
+        if pin.marker is None:
+            applicable.append(pin)
+            continue
+        try:
+            if evaluate_marker(pin.marker, env):
+                applicable.append(pin)
+        except UnsupportedMarker:
+            return []  # unknown syntax: caller degrades to lenient
+    return applicable
+
+
+def reconcile_variance(
+    required: set[str], conditional: set[str], actual: set[str]
+) -> tuple[list[str], list[str], list[str]]:
+    """Compare an image's pins against the lock and return (missing, extra, skewed).
+
+    Compatibility shim for the develop-side test surface: groups pins by name
+    and treats any locked variant of a name as acceptable.
+    """
+    everything_expected = required | conditional
+    allowed_by_name: dict[str, set[str]] = {}
+    for pin in everything_expected:
+        allowed_by_name.setdefault(pin.partition("==")[0], set()).add(pin)
+
+    actual_by_name = {p.partition("==")[0]: p for p in actual}
+    skewed_names: set[str] = set()
+    skewed: list[str] = []
+    for name, pin in actual_by_name.items():
+        allowed = allowed_by_name.get(name)
+        if allowed is not None and pin not in allowed:
+            skewed_names.add(name)
+            skewed.append(f"{pin} (image) != {_expected_clause(allowed)}")
+    skewed.sort()
+
+    missing = sorted(p for p in required - actual if p.partition("==")[0] not in skewed_names)
+    extra = sorted(
+        p for p in actual - everything_expected if p.partition("==")[0] not in skewed_names
+    )
+    return missing, extra, skewed
+
+
+# ---------------------------------------------------------------------------
+# Legacy `python-full-version` header (the #325 lane's in-image protocol)
+# ---------------------------------------------------------------------------
+# The develop-side protocol above emits the whole PEP 508 marker environment
+# on an `@image-env@` line. Older or exotic interpreters may carry only the
+# bare `python-full-version <ver>` header this lane originally captured; these
+# helpers keep that path readable and let `main()` fall back to it when no
+# `@image-env@` line is present.
+
 # One `python_full_version <op> '<version>'` clause inside a PEP 508 marker.
 # Only python-version clauses are evaluated; every other variable (platform,
 # implementation) is irrelevant to choosing between two pins of the same
 # distribution, which is the only case this gate needs to disambiguate.
 _PYFULL_CLAUSE = re.compile(r"python_full_version\s*(==|!=|<=|>=|<|>)\s*['\"]([^'\"]+)['\"]")
 
-#: The first line `_DUMP` prints, before the distribution pins: the image
-#: interpreter's own `python_full_version`. The marker-variant disambiguation
-#: below needs it — `uv export` lists a marker-split dependency (e.g.
-#: `beartype==0.22.9 ; python_full_version < '3.15'` beside
-#: `beartype==0.23.1 ; python_full_version >= '3.15'`) as two rows, and the
-#: image carries exactly one of them.
+#: The first line `_DUMP` printed on the #325 lane: the image interpreter's own
+#: `python_full_version`.
 _PYFULL_LINE = "python-full-version "
-
-_DUMP = (
-    "import sys, importlib.metadata as m; "
-    "print('python-full-version', '.'.join(str(p) for p in sys.version_info[:3])); "
-    "print(*sorted(f\"{d.metadata['Name']}=={d.version}\" for d in m.distributions()), "
-    "sep='\\n')"
-)
 
 
 def _version_tuple(text: str) -> tuple[int, ...] | None:
@@ -122,57 +633,6 @@ def _marker_selects_version(marker: str | None, image_version: str | None) -> bo
     return result
 
 
-def canon(name: str) -> str:
-    """PEP 503 normalized name: the lock says `bip-utils`, the wheel metadata
-    says `bip_utils` (or `PyJWT` vs `pyjwt`) — same distribution."""
-    return re.sub(r"[-_.]+", "-", name).lower()
-
-
-def _expected_clause(candidates: set[str]) -> str:
-    ordered = sorted(candidates)
-    if len(ordered) == 1:
-        return ordered[0]
-    return "one of " + ", ".join(ordered) + " (" + " or ".join(ordered) + ")"
-
-
-def parse_expected(text: str) -> tuple[set[str], set[str]]:
-    """Returns (unconditional pins, marker-conditional pins).
-
-    uv export lists every environment's entries: `pywin32 ; sys_platform ==
-    'win32'` is in the export but correctly absent from a linux image, while
-    `secretstorage ; sys_platform == 'linux'` is correctly present. A
-    conditional pin matches either way — it gates nothing; its version is
-    still checked when it does ship.
-
-    Every marker-carrying row lands in the conditional set — a name the export
-    splits across markers (one distribution, several python-version rows)
-    keeps all of its rows here, so the image's one build is never mistaken for
-    an un-locked extra just because a name-keyed dict could hold only the
-    last row.
-    """
-    unconditional: dict[str, str] = {}
-    conditional: set[str] = set()
-    for line in text.splitlines():
-        stripped = line.strip()
-        m = _REQ.match(stripped)
-        if m:
-            name = canon(m.group(1))
-            pin = f"{name}=={m.group(2)}"
-            if ";" in stripped:
-                conditional.add(pin)
-            else:
-                unconditional[name] = pin
-    if not unconditional and not conditional:
-        raise SystemExit(
-            "error: expected-file contains no `name==version` pins — is it "
-            "a `uv export --format requirements-txt` output?"
-        )
-    required = set(unconditional.values()) - {
-        pin for pin in conditional if pin.partition("==")[0] in unconditional
-    }
-    return required, conditional
-
-
 def parse_marker_variants(text: str) -> dict[str, list[tuple[str, str | None]]]:
     """Names the export pins under MORE THAN ONE version, with their markers.
 
@@ -201,79 +661,11 @@ def parse_marker_variants(text: str) -> dict[str, list[tuple[str, str | None]]]:
 
 
 def image_python_version(dump_text: str) -> str | None:
-    """The `python-full-version` line `_DUMP` prints first, or `None`."""
+    """The `python-full-version` line `_DUMP` printed first, or `None`."""
     for line in dump_text.splitlines():
         if line.startswith(_PYFULL_LINE):
             return line[len(_PYFULL_LINE) :].strip()
     return None
-
-
-def parse_actual(text: str) -> set[str]:
-    pins: set[str] = {}
-    for line in text.splitlines():
-        line = line.strip()
-        if not line or line.startswith(("+", "*", "-", "WARN", "Using", "Checked")):
-            continue
-        m = _REQ.match(line)
-        if m:
-            pins[canon(m.group(1))] = f"{canon(m.group(1))}=={m.group(2)}"
-    if not pins:
-        raise SystemExit(f"error: no distributions dumped from the image:\n{text}")
-    return set(pins.values())
-
-
-def _applicable_variant_pins(expected_text: str, py_version: str | None) -> dict[str, str]:
-    """For every marker-split name this gate can disambiguate: the one pin
-    whose marker applies on the image interpreter. Names whose applicable pin
-    cannot be determined are absent — their caller must gate nothing."""
-    applicable: dict[str, str] = {}
-    for name, rows in parse_marker_variants(expected_text).items():
-        selected = {
-            pin for pin, marker in rows if _marker_selects_version(marker, py_version) is True
-        }
-        if len(selected) == 1:
-            applicable[name] = next(iter(selected))
-    return applicable
-
-
-def _skewed(
-    actual_by_name: dict[str, str],
-    expected_by_name: dict[str, str],
-    applicable: dict[str, str],
-    variants: dict[str, list[tuple[str, str | None]]],
-) -> dict[str, str]:
-    """Map each name whose installed pin is not the expected one to the pin
-    it should have carried.
-
-    A marker-split dependency is pinned under two versions whose markers
-    partition the python versions; the image carries the one its interpreter
-    selects. Compare against that pin — not an arbitrary member of the set,
-    which reported the correct image as skewed whenever the set happened to
-    surface the other row. When the applicable pin cannot be determined (no
-    dumped interpreter version, markers this gate cannot evaluate), the name
-    falls back to the lenient treatment — but only for the lock's OWN
-    branches: a shipped version the split never named is still a real
-    divergence and is reported against the whole named set. The fallback
-    excludes rather than guesses; it never whitelists a version the lock
-    does not offer at all.
-    """
-
-    def _expected_pin(name: str) -> str | None:
-        if name in applicable:
-            return applicable[name]
-        if name in variants:
-            branches = {pin for pin, _ in variants[name]}
-            if actual_by_name[name] not in branches:
-                return _expected_clause(branches)
-            return None
-        return expected_by_name[name]
-
-    skewed: dict[str, str] = {}
-    for name in actual_by_name.keys() & expected_by_name.keys():
-        expected = _expected_pin(name)
-        if expected is not None and expected != actual_by_name[name]:
-            skewed[name] = expected
-    return skewed
 
 
 def main() -> int:
@@ -305,12 +697,10 @@ def main() -> int:
     expected_text = (
         sys.stdin.read() if args.expected_stdin else Path(args.expected_file).read_text()
     )
-    required, conditional = parse_expected(expected_text)
+    pins_by_name = parse_expected(expected_text)
     for m in args.member:
-        name, _, version = m.partition("==")
-        if not version:
+        if m.partition("==")[2] == "":
             raise SystemExit(f"error: --member expects name==version, got: {m}")
-        required.add(f"{canon(name)}=={version}")
 
     proc = subprocess.run(
         [
@@ -331,47 +721,36 @@ def main() -> int:
         print(proc.stderr, file=sys.stderr)
         return 1
     actual = parse_actual(proc.stdout)
+    image_env = parse_image_env(proc.stdout)
+    if image_env is None:
+        # Fall back to the bare `python-full-version` header older dumps emit:
+        # build the two marker variables a python-version fork needs so the
+        # reconciler can still select the applicable branch instead of guessing.
+        py_version = image_python_version(proc.stdout)
+        if py_version is not None:
+            image_env = {
+                "python_full_version": py_version,
+                "python_version": ".".join(py_version.split(".")[:2]),
+            }
 
-    # Conditional pins gate nothing: their marker may or may not apply on the
-    # image's platform. Every pin in the image must be expected (with the
-    # expected version); every unconditional expected pin must be in the image.
-    # Comparing by canonical NAME (not by pin string) is what makes a version
-    # skew nameable: `foo==1.0` expected and `foo==2.0` installed shares no
-    # exact string, so a set difference alone would report it as a confusing
-    # missing+extra pair — and the original string-keyed `skewed` comprehension
-    # (`for pin in actual & everything_expected ... .pop() != pin`) compared
-    # each pin against itself and could never fire at all.
-    everything_expected = required | conditional
-    actual_by_name = {p.partition("==")[0]: p for p in actual}
-    expected_by_name = {p.partition("==")[0]: p for p in everything_expected}
-    variants = parse_marker_variants(expected_text)
-    skewed = _skewed(
-        actual_by_name,
-        expected_by_name,
-        _applicable_variant_pins(expected_text, image_python_version(proc.stdout)),
-        variants,
+    missing, extra, skewed, conditional_count = _reconcile(
+        pins_by_name, args.member, actual, image_env
     )
-    skewed_names = set(skewed)
-    missing = sorted(p for p in required - actual if p.partition("==")[0] not in skewed_names)
-    extra = sorted(
-        p for p in actual - everything_expected if p.partition("==")[0] not in skewed_names
-    )
-    skewed_lines = sorted(
-        f"{actual_by_name[name]} (image) != {expected}" for name, expected in skewed.items()
-    )
-    if missing or extra or skewed_lines:
+    if missing or extra or skewed:
         print(f"image {args.image} does NOT reconcile to the lock:")
         for p in missing:
             print(f"  locked, not in image : {p}")
         for p in extra:
             print(f"  in image, not locked : {p}")
-        for p in skewed_lines:
+        for p in skewed:
             print(f"  version mismatch     : {p}")
         return 1
     print(
         f"OK: {args.image} ships exactly the locked set "
         f"({len(actual)} distributions, incl. {len(args.member)} workspace member(s); "
-        f"{len(conditional)} marker-conditional pin(s) evaluated leniently)"
+        f"{conditional_count} marker-conditional pin(s) evaluated leniently; "
+        f"forks evaluated against the image interpreter's environment: "
+        f"{'yes' if image_env is not None else 'no @image-env@ line — lenient'})"
     )
     return 0
 

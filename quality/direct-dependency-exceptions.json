@@ -18,13 +18,6 @@
         "rationale": "Never imported by backend/; declared so the lock-installed image carries the pinned security floor (>=1.2.1: Trivy blocks 1.1.2 for GHSA-6v7p-g79w-8964). security.yml asserts the version inside the built image, so the runtime use is the image content itself, not a Python import."
       }
     },
-    "packages/maistro-canvas/pyproject.toml": {
-      "asyncpg": {
-        "category": "PLATFORM_RUNTIME",
-        "owner": "#352",
-        "rationale": "frontend/server/models/db.py selects the postgresql+asyncpg SQLAlchemy dialect, which loads asyncpg by driver name rather than a source import."
-      }
-    },
     "packages/maistro-server/pyproject.toml": {
       "uvicorn": {
         "category": "ENTRYPOINT_RUNTIME",
