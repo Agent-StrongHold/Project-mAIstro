@@ -8194,3 +8194,67 @@ no code, ledger, or gate file was edited this round.
   integration lands — is invariant, and the residual CI failures are
   that documented blocker surfacing, not a defect repairable inside this
   leaf without violating the issue's prohibitions.
+
+## Round 125 (2026-10-25): develop sync to bcd7acb7f + independent re-verification at merged head 7d7ed24e5 — blocker invariant
+
+Dispatch head was the round-124 tip `47c4a1ffc230` (worktree clean, leaf md5
+`257a6e45c382349dd12f559099663fbc`, unchanged since round 89). The job
+directory carried **no check-*.log verifier files** this round, so every
+number below is first-hand at these exact heads.
+
+- **Develop sync:** origin/develop advanced `2014ab888` → `bcd7acb7f` (this
+  round's assigned base) with exactly one commit — #2332, a promotion-surface
+  grant for the #2318 quota/resilience CONNECT modules, touching only
+  `quality/ratchet-authorizations.json` (+35). `git grep admission_generation
+  origin/develop -- packages/*/src quality` finds nothing: still no runtime
+  consumer upstream. Branch-side `git diff --numstat 2014ab888 HEAD -- quality/`
+  was **empty** before the merge (no silent ledger row loss), and the merge
+  (`7d7ed24e568e`, auto-resolved — the branch never touches that file) leaves
+  `git diff --numstat origin/develop HEAD -- quality/` **empty**; the landed
+  grant contains zero `admission_generation` rows.
+- **Focused battery at `7d7ed24e5`:** leaf suite 132 passed (all 10
+  issue-named test identities present); live-flow regression
+  (`test_root_admission_identity.py` + `test_idempotency.py`) 146 passed;
+  ruff check + `format --check` clean on the leaf pair; `mypy` on the module
+  Success; `check-suite-inventory.py` ok (21/21 suites match recorded
+  inventory, 0 duplicates; leaf suite collects exactly 132 nodes — no
+  inventory delta, no test additions this round).
+- **exact-debt-ledger re-bound at CI's exact argv**
+  (`vulture-ratchet.yml:82-85`): `check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` rc=0 — base `bcd7acb7fd66`
+  → candidate `7d7ed24e568e`, 1297 reviewed identities = 1297 findings,
+  unclassified 0, never_allowlist 0. The lane-authorized vulture per-identity
+  ledger repair remains empty: nothing to amend, no quality edit made or
+  needed.
+- **The composite ledger failure binds solely to the reachability
+  sub-ratchet:** `RATCHET_BASE_REV=origin/develop check-ratchet-provenance.py`
+  rc=1 with 8/9 sub-ratchets OK and the sole FAIL `reachability` — 148 → 149
+  unreachable of 1464, both findings naming exactly
+  `maistro.tasks.admission_generation` (NEW unreachable absent from trusted
+  base + missing from candidate baseline). `check-reachability.py` rc=1
+  naming exactly that one NEWLY UNREACHABLE module (grep count 1);
+  `check-reachability-dispositions.py`, `check-promotion-surface.py`,
+  `check-shipped-surface-truth.py` all rc=0. The CI test trio
+  (`tests/test_check_reachability.py` +
+  `tests/test_reachability_baseline_identity.py`) reproduces 3 failed / 36
+  passed with the single set delta — byte-consistent with the recorded CI
+  failures at e28574228.
+- **Mutation spot-check re-killed first-hand:** TAKEOVER/REPLACE_EXPIRED
+  swapped in the decision-order table → 50 failed / 82 passed; module
+  restored from a /tmp cp backup (never git restore), md5
+  `257a6e45c382349dd12f559099663fbc` verified identical before/after, worktree
+  clean, post-restore suite 132 passed. The suite demonstrably bites on the
+  issue-named regression.
+- **Scope guards:** zero production-source references to
+  `admission_generation` outside the module (grep rc=1 over `packages/*/src`);
+  `tasks/idempotency.py`, `tasks/queue.py`, `tasks/__init__.py`,
+  `runs/__init__.py`, `runs/admission_identity.py` zero-diff vs origin/develop.
+- **Verdict re-derived, unchanged:** the tree is exactly the #1852-mandated
+  state — implementation/test readiness proven, the one residual red bound
+  solely to the issue-predicted NEW-unreachable leaf, whose every in-leaf
+  remedy (baseline entry, disposition, grant, dummy caller, keep-alive
+  import, gate edit) #1852 explicitly prohibits, reserving activation for the
+  #1845 integration head that must pass the unchanged gates ("If that
+  integration is unavailable, report implementation/test readiness plus the
+  explicit merge blocker and leave the stack unmerged"). BLOCKED remains the
+  issue-conform terminal state; this round is sync + note-only commit.
