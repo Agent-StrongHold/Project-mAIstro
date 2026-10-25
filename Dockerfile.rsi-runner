@@ -16,21 +16,31 @@
 # 2.5.0-1+deb12u4 after deb12u5 (CVE-2025-59375/CVE-2026-77214) had published.
 # security.yml builds this stage with `--no-cache-filter runtime-apt`.
 #
+# That flag is necessary but NOT sufficient (#93 CI repair, 2026-10-24):
+# buildx cache keys are computed pre-execution from the instruction string
+# and the parent key chain, never from a RUN's freshly produced bytes. A
+# re-executed apt stage therefore cannot propagate: the downstream stages'
+# keys still match pre-advisory cache entries, whose restored layer chains
+# (and, under mode=max, cached manifests) carry the old OS state into the
+# loaded image. Runs 40081082641/40088232144/40091186336 all executed apt
+# with libbrotli1 1.1.0-2+deb13u1 (DSA-6582-1, CVE-2026-111497) yet trivy
+# scanned the loaded tag at the pre-DSA 1.1.0-2+b7. The #1152 doctrine
+# applies: bump the digest-pinned base so the key chain changes from the
+# FROM down and the rebuilt image assembles the freshly executed layers.
+# Re-bump this pin whenever a DSA lands faster than this bump mechanism
+# can be exercised (recorded in quality/image-pins.json).
+#
 # SECURITY_PATCH_KEY stamps this stage's output with the CI run that executed
-# it. The stage's buildx cache key is the pinned base digest plus this RUN's
-# command string, and neither changes when the security mirror's answer does,
-# so a result cached before a fix published stays valid-KEYED forever — and
-# `--no-cache-filter` forces this RUN to execute without guaranteeing the
-# fresh result is the one the final stage binds to. That combination was the
-# libbrotli1 1.1.0-2+b7 phantom: three consecutive security.yml `containers`
-# jobs (runs 40066333928, 40079655352, 40088280240) each executed this RUN
-# fresh — their own logs unpack and set up 1.1.0-2+deb13u1 — yet the trivy
-# step scanned an image whose dpkg state was the pre-fix 1.1.0-2+b7, which no
-# input of those builds could produce. security.yml passes the run id here and
-# then asserts the stamp on the loaded image, so a stale binding fails the
-# build step, loudly and attributed, instead of as a scanner-vs-log
-# contradiction two steps later. Local builds stamp `local`.
-FROM python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1 AS runtime-apt
+# it — the complementary half of that doctrine: the digest bump invalidates
+# stale keys once, but any future cached-binding regression needs to fail
+# attributed. The stage's buildx cache key is the pinned base digest plus
+# this RUN's command string, and neither changes when the security mirror's
+# answer does, so a result cached before a fix published stays valid-KEYED
+# forever. security.yml passes the run id here and then asserts the stamp on
+# the loaded image, so a stale binding fails the build step, loudly and
+# attributed, instead of as a scanner-vs-log contradiction two steps later.
+# Local builds stamp `local`.
+FROM python:3.12-slim@sha256:a0f57064cbdcd6285fa45f51237ab0b35ea8ebaed06a1f5973e89e19dfb86704 AS runtime-apt
 
 ARG SECURITY_PATCH_KEY=local
 
