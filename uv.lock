@@ -3114,7 +3114,7 @@ requires-dist = [
     { name = "maistro-bootstrap", extras = ["builders"], marker = "extra == 'builders'", editable = "packages/maistro-bootstrap" },
     { name = "maistro-core", extras = ["llm", "sandbox", "observability", "tui", "builders", "sqlite", "asgi", "identity", "s3", "bcrypt"], marker = "extra == 'all'", editable = "packages/maistro-core" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.14,<3" },
-    { name = "openai", marker = "extra == 'browser'", specifier = ">=1.40,<2" },
+    { name = "openai", marker = "extra == 'browser'", specifier = ">=1.40,<4" },
     { name = "opentelemetry-api", marker = "extra == 'observability'", specifier = ">=1.30,<2" },
     { name = "opentelemetry-exporter-otlp", marker = "extra == 'observability'", specifier = ">=1.30,<2" },
     { name = "opentelemetry-sdk", marker = "extra == 'observability'", specifier = ">=1.30,<2" },
@@ -3347,7 +3347,7 @@ requires-dist = [
     { name = "maistro-core", extras = ["llm"], editable = "packages/maistro-core" },
     { name = "maistro-core", extras = ["observability"], marker = "extra == 'observability'", editable = "packages/maistro-core" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.14,<3" },
-    { name = "openai", marker = "extra == 'image'", specifier = ">=1.40,<2" },
+    { name = "openai", marker = "extra == 'image'", specifier = ">=1.40,<4" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.2" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=9.0.3,<10" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.25,<2" },
@@ -4159,21 +4159,19 @@ wheels = [
 
 [[package]]
 name = "openai"
-version = "1.109.1"
+version = "3.36.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anyio" },
-    { name = "distro" },
-    { name = "httpx" },
+    { name = "httpx2" },
     { name = "jiter" },
     { name = "pydantic" },
     { name = "sniffio" },
-    { name = "tqdm" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/c6/a1/a303104dc55fc546a3f6914c842d3da471c64eec92043aef8f652eb6c524/openai-1.109.1.tar.gz", hash = "sha256:d173ed8dbca665892a6db099b4a2dfac624f94d20a93f46eb0b56aae940ed869", size = 564133, upload-time = "2025-09-24T13:00:53.075Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/e4/5e/a7c7e6f565950764214fb13e2b72076e5957ce80c37eb1b0ddda2102e4f4/openai-3.36.1.tar.gz", hash = "sha256:ad8e5d56f20198915d98726ac1edb12ae38e7ecfa9bd560057e84642168b20c9", size = 2307878, upload-time = "2026-10-22T03:33:16.563Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/1d/2a/7dd3d207ec669cacc1f186fd856a0f61dbc255d24f6fdc1a6715d6051b0f/openai-1.109.1-py3-none-any.whl", hash = "sha256:6bcaf57086cf59159b8e27447e4e7dd019db5d29a438072fbd49c290c7e65315", size = 948627, upload-time = "2025-09-24T13:00:50.754Z" },
+    { url = "https://files.pythonhosted.org/packages/be/e4/83f139714d10d75af2b6891a20c973945dd9b942b11cc407ba4536fb40b9/openai-3.36.1-py3-none-any.whl", hash = "sha256:4c15b6765fe1792c5ad753556f44c7f82c2920c5e9e40219c0fca97369e923d3", size = 2296265, upload-time = "2026-10-22T03:33:14.555Z" },
 ]
 
 [[package]]
