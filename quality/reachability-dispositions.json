@@ -309,16 +309,6 @@
       ]
     },
     {
-      "id": "canvas-job-runner",
-      "subsystem": "Canvas ability",
-      "disposition": "CONNECT",
-      "rationale": "The wiring debt this disposition names was paid by #93: the maistro-canvas-worker service (maistro_canvas.canvas.worker_service, a declared reachability root) builds the runner through build_canvas_runtime and starts it at deploy time, so PENDING jobs advance without an external ad-hoc process. It stays in the baseline only because the module graph deliberately cannot see composition.py's constant-string importlib.import_module(\"maistro_canvas.canvas.runner\") edge \u2014 the same gate refuses to guess at non-literal-sweep dynamic imports \u2014 so the graph identity remains 'no static import path' even though a real process entry point reaches it. canvas/executor.py documents the 'CanvasJobRunner contract' on _execute_claimed; alembic revision 003_canvas_job_lease_203 exists specifically so the runner can take leases and retry; and dedicated suites cover it, including single-claim-under-contention and lease reaping.",
-      "root": "maistro-canvas-worker (maistro_canvas.canvas.worker_service), reached through build_canvas_runtime",
-      "modules": [
-        "maistro_canvas.canvas.runner"
-      ]
-    },
-    {
       "id": "tools-net-guard-compat",
       "subsystem": "Tool execution",
       "disposition": "LIBRARY",

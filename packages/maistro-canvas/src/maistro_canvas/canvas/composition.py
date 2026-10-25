@@ -9,7 +9,6 @@ Run -> NodeRun -> Attempt adapter.
 from __future__ import annotations
 
 import asyncio
-import importlib
 import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol, cast
@@ -17,6 +16,7 @@ from typing import TYPE_CHECKING, Any, Protocol, cast
 from maistro.runs.store import RunStore
 from maistro_canvas.canvas.canonical_execution import CanvasCanonicalExecution
 from maistro_canvas.canvas.executor import CanvasExecutor
+from maistro_canvas.canvas.runner import CanvasJobRunner
 from maistro_canvas.protocols import CanvasStore, ImageGenClient
 
 if TYPE_CHECKING:
@@ -107,10 +107,9 @@ def build_canvas_runtime(
         canonical_execution=canonical,
         execution_timeout_s=max_execution_seconds,
     )
-    # Keep the worker import at the composition boundary: the package's
-    # reachability gate treats the runner as a lifecycle-loaded component.
-    runner_type = importlib.import_module("maistro_canvas.canvas.runner").CanvasJobRunner
-    runner = runner_type(
+    # Static import so the reachability graph sees the runner on the
+    # maistro-canvas-worker / build_canvas_runtime path (#93 CONNECT).
+    runner = CanvasJobRunner(
         store=store,
         executor=executor,
         worker_id=worker_id,
